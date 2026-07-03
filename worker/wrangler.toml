@@ -5,3 +5,9 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 ELEVENLABS_VOICE_ID = "kPzsL2i3teMYv0FxEYQ6"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "dazl"
+database_id = "PLACEHOLDER_RUN_WRANGLER_D1_CREATE"
+migrations_dir = "migrations"
