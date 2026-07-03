@@ -10,4 +10,13 @@ export interface Env {
   DB: D1Database;
   EMPLOYEE: DurableObjectNamespace<import("./employee-state").EmployeeState>;
   EMPLOYEE_CYCLE: Workflow;
+  // Sandbox container running Claude Code + swamp (the "brain" — see
+  // worker/Dockerfile). One binding, hydrated per cycle from BRAIN_REPO.
+  SANDBOX: DurableObjectNamespace<import("@cloudflare/sandbox").Sandbox>;
+  // Subscription auth for Claude Code inside the Sandbox container (from
+  // `claude setup-token`), set via `npx wrangler secret put CLAUDE_CODE_OAUTH_TOKEN`.
+  CLAUDE_CODE_OAUTH_TOKEN: string;
+  // R2-persisted swamp brain repo (workflows, models, versioned artifacts),
+  // synced to/from the Sandbox container's /brain directory each cycle.
+  BRAIN_REPO: R2Bucket;
 }

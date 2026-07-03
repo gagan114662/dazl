@@ -25,9 +25,36 @@ name = "employee-cycle"
 binding = "EMPLOYEE_CYCLE"
 class_name = "EmployeeCycle"
 
+# Sandbox container: Claude Code + swamp + a seeded swamp repo (worker/brain-repo).
+# Runs the per-cycle "brain" — Claude does the research/writing, swamp
+# structures it as a versioned workflow artifact. See worker/Dockerfile.
+[[containers]]
+class_name = "Sandbox"
+image = "./Dockerfile"
+instance_type = "standard-1"
+max_instances = 1
+
+[[durable_objects.bindings]]
+name = "SANDBOX"
+class_name = "Sandbox"
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Sandbox"]
+
+# R2-persisted swamp brain repo: hydrated into the Sandbox container at the
+# start of each cycle, synced back after (see Task 3's brain.ts bridge).
+[[r2_buckets]]
+binding = "BRAIN_REPO"
+bucket_name = "dazl-brain-repo"
+
 [triggers]
 crons = ["0 * * * *"]
 
 # DAZL_API_SECRET (required by the employee HTTP routes' auth guard) is a
 # secret, not a var — do NOT put its value here. Before deploying, set it with:
 #   npx wrangler secret put DAZL_API_SECRET
+# CLAUDE_CODE_OAUTH_TOKEN (subscription auth for Claude Code inside the
+# Sandbox container) is also a secret. Before deploying, set it with:
+#   npx wrangler secret put CLAUDE_CODE_OAUTH_TOKEN
+# (obtain the token via `claude setup-token` — see Task 5's BRAIN_VERIFY.md)

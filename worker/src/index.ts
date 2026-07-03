@@ -1,5 +1,6 @@
 export { EmployeeState } from "./runtime/employee-state";
 export { EmployeeCycle } from "./runtime/employee-cycle-workflow";
+export { Sandbox } from "@cloudflare/sandbox";
 
 /**
  * Clicky Proxy Worker
