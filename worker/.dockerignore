@@ -1,0 +1,15 @@
+# Keep the prod image built from a clean seed, not the local dev working
+# tree. `Dockerfile` does `COPY brain-repo/ /brain/`, which — without this
+# file — would also copy local swamp runtime state (SQLite DBs, cached
+# evaluated workflows, etc.) that must never ship in the image; runtime
+# state is regenerated in-container / hydrated from R2 instead (see
+# `hydrateRepo` in src/runtime/brain.ts).
+brain-repo/.swamp/
+
+# Never needed inside the container image; the base image installs its own
+# tooling and node_modules is host-platform-specific dev tooling for the
+# Worker itself, not the sandboxed brain-repo seed.
+node_modules/
+
+# Local wrangler dev state — never relevant to the container image.
+.wrangler/

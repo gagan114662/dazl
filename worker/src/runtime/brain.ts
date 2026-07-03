@@ -40,6 +40,16 @@ export function buildResearchStdin(task: string): string {
 
 const claudeEnv = (env: Env) => ({ CLAUDE_CODE_OAUTH_TOKEN: env.CLAUDE_CODE_OAUTH_TOKEN });
 
+// The installed `@cloudflare/sandbox` (v0.12.3) `BaseExecOptions.timeout` is
+// "Maximum execution time in milliseconds" (confirmed via the shipped
+// `.d.ts`: worker/node_modules/@cloudflare/sandbox/dist/sandbox-BhIQBik-.d.ts).
+// `sandbox.exec()` has no default timeout, so a slow `claude -p --max-turns 4`
+// research/reflect call (which can legitimately take minutes) would otherwise
+// hang indefinitely rather than failing fast with a clear error. Five minutes
+// is generous headroom for a `--max-turns 4` Claude call plus the swamp
+// workflow steps around it, while still bounding worst-case sandbox exec time.
+const BRAIN_EXEC_TIMEOUT_MS = 300_000;
+
 // Run one research cycle in the sandbox: hydrate repo from R2, run the swamp
 // workflow with the task piped via stdin (injection-safe), read the versioned
 // artifact back, sync the repo to R2. Returns the artifact text.
@@ -62,12 +72,16 @@ export async function runResearchCycle(env: Env, task: string): Promise<{ artifa
   const runResult = await sandbox.exec(buildResearchCommand(researchStdinFilePath), {
     cwd: "/brain",
     env: claudeEnv(env),
+    timeout: BRAIN_EXEC_TIMEOUT_MS,
   });
   if (!runResult.success) {
     throw new Error(`swamp research-cycle failed (exit ${runResult.exitCode}): ${runResult.stderr.slice(0, 500)}`);
   }
 
-  const dataResult = await sandbox.exec("swamp --no-telemetry data get research-cycle --json", { cwd: "/brain" });
+  const dataResult = await sandbox.exec("swamp --no-telemetry data get research-cycle --json", {
+    cwd: "/brain",
+    timeout: BRAIN_EXEC_TIMEOUT_MS,
+  });
   // Best-effort cleanup of the per-call stdin file. Failure here (e.g. the
   // sandbox already recycled) is non-fatal — the file is a temp scratch file
   // with a unique name, so a leftover doesn't cause the race this refactor
@@ -103,6 +117,7 @@ export async function reflectWithClaude(env: Env, artifact: string): Promise<str
   const out = await sandbox.exec(command, {
     cwd: "/brain",
     env: { ...claudeEnv(env), REFLECT_INPUT: artifact.slice(0, 4000) },
+    timeout: BRAIN_EXEC_TIMEOUT_MS,
   });
   return out.stdout.trim();
 }
@@ -115,13 +130,35 @@ export async function reflectWithClaude(env: Env, artifact: string): Promise<str
 // A missing snapshot just means the baked-in seed is used (non-fatal).
 async function hydrateRepo(env: Env, sandbox: ReturnType<typeof getSandbox>): Promise<void> {
   const snapshot = await env.BRAIN_REPO.get("brain-repo.tar.b64");
+  // No snapshot yet (first run, or R2 object never written) just means the
+  // image's baked-in seed is used as-is — non-fatal.
   if (!snapshot) return;
   await sandbox.writeFile("/tmp/brain-repo.tar", await snapshot.text(), { encoding: "base64" });
-  await sandbox.exec("tar -xf /tmp/brain-repo.tar -C /", { cwd: "/" });
+  const extractResult = await sandbox.exec("tar -xf /tmp/brain-repo.tar -C /", {
+    cwd: "/",
+    timeout: BRAIN_EXEC_TIMEOUT_MS,
+  });
+  // A snapshot DOES exist but failed to extract (corrupt archive, disk
+  // issue, etc.) — that's a real failure, not the "no snapshot" case above,
+  // so it must throw rather than silently falling back to a stale/partial
+  // extraction.
+  if (!extractResult.success) {
+    throw new Error(
+      `tar extract of brain-repo snapshot failed (exit ${extractResult.exitCode}): ${extractResult.stderr.slice(0, 500)}`,
+    );
+  }
 }
 
 async function persistRepo(env: Env, sandbox: ReturnType<typeof getSandbox>): Promise<void> {
-  await sandbox.exec("tar -cf /tmp/brain-repo.tar -C / brain", { cwd: "/" });
+  const archiveResult = await sandbox.exec("tar -cf /tmp/brain-repo.tar -C / brain", {
+    cwd: "/",
+    timeout: BRAIN_EXEC_TIMEOUT_MS,
+  });
+  if (!archiveResult.success) {
+    throw new Error(
+      `tar archive of brain-repo failed (exit ${archiveResult.exitCode}): ${archiveResult.stderr.slice(0, 500)}`,
+    );
+  }
   const tarBase64 = await sandbox.readFile("/tmp/brain-repo.tar", { encoding: "base64" });
   await env.BRAIN_REPO.put("brain-repo.tar.b64", tarBase64.content);
 }

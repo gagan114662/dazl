@@ -1,6 +1,6 @@
 import { env } from "cloudflare:test";
 import { describe, it, expect, beforeAll } from "vitest";
-import type { WorkflowEvent, WorkflowStep, WorkflowStepContext } from "cloudflare:workers";
+import type { WorkflowEvent, WorkflowStep, WorkflowStepConfig, WorkflowStepContext } from "cloudflare:workers";
 import { applyMigrations } from "./helpers/apply-migrations";
 import { EmployeeCycle, type EmployeeCycleParams } from "../src/runtime/employee-cycle-workflow";
 import { recallRecentMemories } from "../src/runtime/memory";
@@ -93,9 +93,19 @@ describe("EmployeeCycle.run (the shipped orchestration path)", () => {
     // a step name-only stub), so this test proves run()'s body — not just
     // its wiring — actually executes.
     const recordedStepNames: string[] = [];
+    // `EmployeeCycle.run()` now calls `step.do(name, config, callback)` (the
+    // bounded-retry overload) instead of the bare `step.do(name, callback)`
+    // form, so this fake accepts either shape: if the second argument is a
+    // function, it's the callback (no config passed); otherwise the second
+    // argument is the config object and the callback is third.
     const fakeStep = {
-      do: (async (name: string, callback: (ctx: WorkflowStepContext) => Promise<unknown>) => {
+      do: (async (
+        name: string,
+        configOrCallback: WorkflowStepConfig | ((ctx: WorkflowStepContext) => Promise<unknown>),
+        maybeCallback?: (ctx: WorkflowStepContext) => Promise<unknown>,
+      ) => {
         recordedStepNames.push(name);
+        const callback = typeof configOrCallback === "function" ? configOrCallback : maybeCallback!;
         return await callback({} as WorkflowStepContext);
       }) as WorkflowStep["do"],
       sleep: async () => {},
