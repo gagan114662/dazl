@@ -11,6 +11,12 @@ const EMPLOYEE_NAME_PATTERN = /^[a-z0-9-]+$/;
 // scheduled/cron path, which Cloudflare triggers internally and is not
 // externally reachable.
 export function isAuthorized(request: Request, env: Env): boolean {
+  // If DAZL_API_SECRET is unset/empty, `Bearer ${env.DAZL_API_SECRET}` would
+  // evaluate to `Bearer undefined` (or `Bearer `), which an attacker could
+  // send verbatim to bypass auth. Deny outright whenever no real secret is
+  // configured, before ever comparing headers.
+  if (!env.DAZL_API_SECRET) return false;
+
   const authorizationHeader = request.headers.get("Authorization");
   if (!authorizationHeader) return false;
   const expectedHeader = `Bearer ${env.DAZL_API_SECRET}`;
