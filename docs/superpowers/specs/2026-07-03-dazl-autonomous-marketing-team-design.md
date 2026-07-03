@@ -38,6 +38,39 @@ dazl.ai's own GTM team runs dazl.ai's go-to-market.
    original — never generic AI filler. Quality gates it, not volume. (See §2.5.)
 9. **No API ceiling.** For anything without a clean API, employees operate a real
    browser like a human — so "all of GTM" isn't limited to what has an API. (See §7.2.6.)
+10. **Compounding, not static.** The team gets measurably better every week from the
+    real results of its own work — a living system, not a fixed prompt. (See §2.6.)
+
+## 2.6 Compounding intelligence — a living system (trajectory-inspired)
+
+> "Every product of the future will be a living system." The intelligence stack stops
+> being static: the employees' models, prompts, and harness improve together, compounding
+> from real usage into something more capable than yesterday. (Pattern adapted from
+> [trajectory.ai](https://trajectory.ai/) — a continual-learning platform; dazl applies
+> the *pattern*, not its infra, to marketing/sales.)
+
+dazl's employees are not fixed prompts that do the same thing forever — they **learn from
+what actually worked**. Four moves, wrapped around the existing Plan→…→Reflect loop:
+
+1. **Instrument every trajectory.** A "trajectory" = an employee action + everything that
+   happened next: the real metric (impressions/clicks/replies/pipeline) AND the human
+   signal (you approved / edited / rejected / rewrote it at the approval gate, §9). Both
+   are captured as durable training signal — the full success/failure chain, not an
+   isolated label.
+2. **Understand.** Surface where each employee succeeds vs. fails and *why* — per channel,
+   per format, per campaign — so the team (and you) can see what's working.
+3. **Steer.** You shape employee behavior directly with the precision of a creative tool,
+   not a labeling UI: nudge voice, kill an angle, promote a winning pattern — from the
+   employee's on-screen blob or the web mirror.
+4. **Learn & compound.** Each employee's Brand-Brain (§7.2.5) + tactics + prompts update
+   from its own trajectories on a cadence (weekly → toward daily), so next week's output
+   beats last week's — measurably.
+
+**Governance — "Nothing ships without you."** No learned change to public behavior goes
+live until it clears (a) the guardrails (§9) and (b) your approval/eval gate — the same
+seatbelt as the approval gate, extended to *learning*. Full auditability: every trajectory,
+metric, human decision, and behavior change is replayable in the timeline (§10, §12). This
+is what turns dazl from "a team that runs" into "a team that gets better."
 
 ## 2.5 The quality bar — insight quality & zero AI slop
 
