@@ -1,5 +1,6 @@
 swampVersion: 20260702.230118.0
-initializedAt: '2026-07-03T20:56:14.494Z'
-repoId: be211518-321b-42b8-aff1-1b67e512ba8b
-tools: []
+initializedAt: '2026-07-03T21:11:57.398Z'
+repoId: 046ec6b6-8d37-410a-b0a3-99e4f5ef22a0
+tools:
+  - claude
 gitignoreManaged: true
