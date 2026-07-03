@@ -9,7 +9,7 @@ ELEVENLABS_VOICE_ID = "kPzsL2i3teMYv0FxEYQ6"
 [[d1_databases]]
 binding = "DB"
 database_name = "dazl"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "32e7517e-8ee2-44b0-9a08-15980977f6eb"
 migrations_dir = "migrations"
 
 [[durable_objects.bindings]]
