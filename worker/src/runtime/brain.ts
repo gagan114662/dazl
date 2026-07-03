@@ -113,7 +113,7 @@ export async function reflectWithClaude(env: Env, artifact: string): Promise<str
   const sandbox = getSandbox(env.SANDBOX, "dazl-brain");
   const command =
     `claude -p "Summarize the single most useful marketing lesson in one sentence from: $REFLECT_INPUT" ` +
-    `--model claude-sonnet-5 --max-turns 1 --permission-mode bypassPermissions`;
+    `--model claude-sonnet-5 --max-turns 3 --dangerously-skip-permissions`;
   const out = await sandbox.exec(command, {
     cwd: "/brain",
     env: { ...claudeEnv(env), REFLECT_INPUT: artifact.slice(0, 4000) },
