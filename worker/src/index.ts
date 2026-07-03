@@ -1,6 +1,16 @@
 export { EmployeeState } from "./runtime/employee-state";
 export { EmployeeCycle } from "./runtime/employee-cycle-workflow";
-export { Sandbox } from "@cloudflare/sandbox";
+
+import { Sandbox as BaseSandbox } from "@cloudflare/sandbox";
+
+// The brain container sleeps 45s after it goes idle, overriding the SDK default
+// of 10 minutes. A cycle does ~1-2 min of active work; 45s of idle buffer is
+// ample. Container memory + disk bill for the ENTIRE time the instance is alive
+// (not just active compute), so the default 10-min idle tail was ~87% pure
+// waste — this cuts container cost ~75-80% with zero change to behavior.
+export class Sandbox extends BaseSandbox {
+  sleepAfter = "45s";
+}
 
 /**
  * Clicky Proxy Worker
