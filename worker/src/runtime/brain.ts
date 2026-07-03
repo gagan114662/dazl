@@ -48,7 +48,7 @@ const claudeEnv = (env: Env) => ({ CLAUDE_CODE_OAUTH_TOKEN: env.CLAUDE_CODE_OAUT
 // hang indefinitely rather than failing fast with a clear error. Five minutes
 // is generous headroom for a `--max-turns 4` Claude call plus the swamp
 // workflow steps around it, while still bounding worst-case sandbox exec time.
-const BRAIN_EXEC_TIMEOUT_MS = 300_000;
+const BRAIN_EXEC_TIMEOUT_MS = 480_000;
 
 // Run one research cycle in the sandbox: hydrate repo from R2, run the swamp
 // workflow with the task piped via stdin (injection-safe), read the versioned

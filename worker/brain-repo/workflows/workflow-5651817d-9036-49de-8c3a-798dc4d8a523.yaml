@@ -24,7 +24,7 @@ jobs:
           modelIdOrName: claude-agent
           methodName: execute
           inputs:
-            run: 'claude -p "$AGENT_TASK" --model claude-sonnet-5 --max-turns 15 --dangerously-skip-permissions'
+            run: 'claude -p "$AGENT_TASK" --model claude-sonnet-5 --max-turns 5 --dangerously-skip-permissions'
             env:
               AGENT_TASK: ${{ inputs.task }}
         dependsOn: []
