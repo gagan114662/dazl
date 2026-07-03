@@ -10,44 +10,55 @@ export { EmployeeCycle } from "./runtime/employee-cycle-workflow";
  * Routes:
  *   POST /chat  → Anthropic Messages API (streaming)
  *   POST /tts   → ElevenLabs TTS API
+ *
+ * Also hosts the dazl runtime spine routes (employee spawn/inspect) and
+ * the cron-driven scheduled handler that wakes every known employee.
  */
 
-interface Env {
-  ANTHROPIC_API_KEY: string;
-  ELEVENLABS_API_KEY: string;
-  ELEVENLABS_VOICE_ID: string;
-  ASSEMBLYAI_API_KEY: string;
-}
+import type { Env } from "./runtime/env";
+import { handleSpawnEmployee, handleInspectEmployee, wakeAllEmployees } from "./runtime/routes";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
-    if (request.method !== "POST") {
-      return new Response("Method not allowed", { status: 405 });
+    // --- dazl runtime routes ---
+    if (url.pathname === "/employees" && request.method === "POST") {
+      return await handleSpawnEmployee(request, env);
+    }
+    const inspectMatch = url.pathname.match(/^\/employees\/([a-z0-9-]+)$/);
+    if (inspectMatch && request.method === "GET") {
+      return await handleInspectEmployee(inspectMatch[1], env);
     }
 
-    try {
-      if (url.pathname === "/chat") {
-        return await handleChat(request, env);
+    // --- existing proxy routes (POST only) ---
+    // Scoped to the three known proxy paths so an unmatched path (any method)
+    // still falls through to the 404 below instead of being masked by 405.
+    const isKnownProxyPath =
+      url.pathname === "/chat" ||
+      url.pathname === "/tts" ||
+      url.pathname === "/transcribe-token";
+    if (isKnownProxyPath) {
+      if (request.method !== "POST") {
+        return new Response("Method not allowed", { status: 405 });
       }
-
-      if (url.pathname === "/tts") {
-        return await handleTTS(request, env);
+      try {
+        if (url.pathname === "/chat") return await handleChat(request, env);
+        if (url.pathname === "/tts") return await handleTTS(request, env);
+        if (url.pathname === "/transcribe-token") return await handleTranscribeToken(env);
+      } catch (error) {
+        console.error(`[${url.pathname}] Unhandled error:`, error);
+        return new Response(JSON.stringify({ error: String(error) }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        });
       }
-
-      if (url.pathname === "/transcribe-token") {
-        return await handleTranscribeToken(env);
-      }
-    } catch (error) {
-      console.error(`[${url.pathname}] Unhandled error:`, error);
-      return new Response(
-        JSON.stringify({ error: String(error) }),
-        { status: 500, headers: { "content-type": "application/json" } }
-      );
     }
-
     return new Response("Not found", { status: 404 });
+  },
+
+  async scheduled(_event: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
+    await wakeAllEmployees(env);
   },
 };
 

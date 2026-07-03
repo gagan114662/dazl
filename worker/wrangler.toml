@@ -24,3 +24,6 @@ new_sqlite_classes = ["EmployeeState"]
 name = "employee-cycle"
 binding = "EMPLOYEE_CYCLE"
 class_name = "EmployeeCycle"
+
+[triggers]
+crons = ["0 * * * *"]
