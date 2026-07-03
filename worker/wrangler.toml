@@ -19,3 +19,8 @@ class_name = "EmployeeState"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["EmployeeState"]
+
+[[workflows]]
+name = "employee-cycle"
+binding = "EMPLOYEE_CYCLE"
+class_name = "EmployeeCycle"
