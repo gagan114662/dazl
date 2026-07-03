@@ -1,0 +1,8 @@
+type: command/shell
+typeVersion: 2026.02.09.1
+id: c9cbaab4-bac6-45f0-820e-49e6763c7baf
+name: claude-agent
+version: 1
+tags: {}
+globalArguments: {}
+methods: {}

@@ -1,0 +1,34 @@
+# One research pass. Input `task` -> passed to Claude via the AGENT_TASK env var
+# (NOT interpolated into the command), so shell metacharacters are inert.
+# swamp versions Claude's stdout as an immutable `log` + structured `result` artifact.
+id: 5651817d-9036-49de-8c3a-798dc4d8a523
+name: research-cycle
+description: Run one Claude Code research pass via the claude-agent command/shell model.
+tags: {}
+version: 1
+inputs:
+  properties:
+    task:
+      type: string
+      description: The research task for Claude to perform.
+  required:
+    - task
+jobs:
+  - name: main
+    description: Run the claude-agent model with the task passed via env, never the command string.
+    steps:
+      - name: research
+        description: Invoke claude -p with the task piped in via the AGENT_TASK env var.
+        task:
+          type: model_method
+          modelIdOrName: claude-agent
+          methodName: execute
+          inputs:
+            run: 'claude -p "$AGENT_TASK" --model claude-sonnet-5 --max-turns 4 --permission-mode bypassPermissions'
+            env:
+              AGENT_TASK: ${{ inputs.task }}
+        dependsOn: []
+        weight: 0
+        allowFailure: false
+    dependsOn: []
+    weight: 0

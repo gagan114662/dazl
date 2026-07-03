@@ -14,3 +14,11 @@ declare module "*.sql?raw" {
   const content: string;
   export default content;
 }
+
+// The `?raw` import suffix is also used by test/brain-repo.test.ts to inline
+// the swamp model/workflow YAML definitions as strings for a pure parse/
+// consistency check (no container, no swamp binary needed in the test pool).
+declare module "*.yaml?raw" {
+  const content: string;
+  export default content;
+}
