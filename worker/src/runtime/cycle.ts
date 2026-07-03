@@ -1,49 +1,36 @@
-import type { Env } from "./env";
+import { runResearchCycle as defaultRunResearchCycle, reflectWithClaude as defaultReflectWithClaude } from "./brain";
 import { rememberFact } from "./memory";
+import type { Env } from "./env";
 
-export type PlannedAction = { action: "research"; query: string };
-
-// PLAN: decide the next action from the current goal.
-// Phase 1 always researches; later phases add real Claude-driven planning.
-export function planNextAction(goal: string | null): PlannedAction {
-  const query = goal ?? "what should dazl.ai talk about";
-  return { action: "research", query };
+// Injectable seam over the swamp brain (Task 2/3): a real research cycle run
+// in the Sandbox container, plus a Claude reflection over its artifact. Tests
+// inject a fake Brain so they stay deterministic and don't need a container.
+export interface Brain {
+  runResearchCycle: (env: Env, task: string) => Promise<{ artifact: string }>;
+  reflectWithClaude: (env: Env, artifact: string) => Promise<string>;
 }
 
-// ACT: perform a REAL http request and return an observation string.
-// fetchImpl is injectable so tests stay deterministic; defaults to global fetch.
-export async function act(
-  action: PlannedAction,
-  fetchImpl: typeof fetch = fetch
-): Promise<string> {
-  const response = await fetchImpl("https://example.com/");
-  const body = await response.text();
-  return body.slice(0, 500);
-}
+const defaultBrain: Brain = {
+  runResearchCycle: defaultRunResearchCycle,
+  reflectWithClaude: defaultReflectWithClaude,
+};
 
-// REFLECT: turn the observation into a durable lesson in D1.
-export async function reflect(
+// One full employee cycle driven by the swamp brain: read the employee's
+// goal from its EmployeeState Durable Object, turn it into a research task,
+// run that task through the swamp brain's research-cycle workflow to get a
+// versioned artifact, have Claude reflect on the artifact into a single
+// marketing lesson, and persist that lesson as durable memory.
+export async function runEmployeeCycleWithBrain(
   env: Env,
   employeeName: string,
-  observation: string
+  brain: Brain = defaultBrain
 ): Promise<void> {
-  const lesson = `Observed while researching: ${observation.slice(0, 200)}`;
-  await rememberFact(env.DB, employeeName, "lesson", lesson);
-}
+  const employeeStateId = env.EMPLOYEE.idFromName(employeeName);
+  const goal = await env.EMPLOYEE.get(employeeStateId).getGoal();
+  const researchTask = `Research this for dazl marketing and report key findings: ${goal ?? "grow dazl.ai"}`;
 
-// Orchestrate one full cycle. The Workflow (Task 6) calls the three
-// functions individually inside step.do() for durability; this helper
-// keeps the logic testable outside the Workflows runtime.
-export async function runEmployeeCycle(
-  env: Env,
-  employeeName: string,
-  fetchImpl: typeof fetch = fetch
-): Promise<string> {
-  const stubId = env.EMPLOYEE.idFromName(employeeName);
-  const goal = await env.EMPLOYEE.get(stubId).getGoal();
+  const { artifact } = await brain.runResearchCycle(env, researchTask);
+  const lesson = await brain.reflectWithClaude(env, artifact);
 
-  const action = planNextAction(goal);
-  const observation = await act(action, fetchImpl);
-  await reflect(env, employeeName, observation);
-  return observation;
+  await rememberFact(env.DB, employeeName, "lesson", lesson || artifact.slice(0, 200));
 }

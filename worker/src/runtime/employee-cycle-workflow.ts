@@ -1,29 +1,19 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import type { Env } from "./env";
-import { planNextAction, act, reflect } from "./cycle";
+import { runEmployeeCycleWithBrain } from "./cycle";
 
 export interface EmployeeCycleParams {
   employeeName: string;
 }
 
-// Durable wrapper around the cycle logic. Each step.do() checkpoints, so a
-// crash resumes mid-cycle instead of restarting.
+// Durable wrapper around the cycle logic. The entire swamp-brain cycle runs
+// inside a single step.do() so a crash before it completes simply re-runs
+// the whole cycle rather than resuming from a partial, non-idempotent
+// research/reflect state.
 export class EmployeeCycle extends WorkflowEntrypoint<Env, EmployeeCycleParams> {
   async run(event: WorkflowEvent<EmployeeCycleParams>, step: WorkflowStep): Promise<void> {
     const { employeeName } = event.payload;
 
-    const goal = await step.do("plan: read goal", async () => {
-      const stubId = this.env.EMPLOYEE.idFromName(employeeName);
-      return await this.env.EMPLOYEE.get(stubId).getGoal();
-    });
-
-    const observation = await step.do("act: research", async () => {
-      const action = planNextAction(goal);
-      return await act(action);
-    });
-
-    await step.do("reflect: persist lesson", async () => {
-      await reflect(this.env, employeeName, observation);
-    });
+    await step.do("swamp-brain cycle", () => runEmployeeCycleWithBrain(this.env, employeeName));
   }
 }
