@@ -1,3 +1,5 @@
+export { EmployeeState } from "./runtime/employee-state";
+
 /**
  * Clicky Proxy Worker
  *

@@ -11,3 +11,11 @@ binding = "DB"
 database_name = "dazl"
 database_id = "PLACEHOLDER_RUN_WRANGLER_D1_CREATE"
 migrations_dir = "migrations"
+
+[[durable_objects.bindings]]
+name = "EMPLOYEE"
+class_name = "EmployeeState"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["EmployeeState"]
