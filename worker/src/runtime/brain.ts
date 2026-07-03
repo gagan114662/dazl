@@ -6,23 +6,34 @@ import { getSandbox } from "@cloudflare/sandbox";
 // `timeout`/`env`/`cwd`/`encoding`; `ExecOptions` adds only streaming/abort/
 // origin callbacks — see worker/node_modules/@cloudflare/sandbox/dist/
 // sandbox-*.d.ts). `sandbox.exec()` has no way to pipe data onto a process's
-// stdin. So the task JSON is first written to a FIXED, non-task-derived path
-// via `writeFile` (a data write, not a shell operation — its byte content is
-// never parsed as shell), and RESEARCH_COMMAND redirects that fixed file into
-// swamp's stdin reader with the shell `<` operator. Because `sandbox.exec`
-// runs its `command` string through a real shell (per the resolved API facts:
-// "command is a SINGLE shell string"), `<` redirection works, and the command
-// string stays 100% static — it names only the fixed file path, never the task.
-const RESEARCH_STDIN_FILE_PATH = "/tmp/dazl-research-input.json";
+// stdin. So the task JSON is first written to a file via `writeFile` (a data
+// write, not a shell operation — its byte content is never parsed as shell),
+// and the swamp command redirects that file into swamp's stdin reader with
+// the shell `<` operator. Because `sandbox.exec` runs its `command` string
+// through a real shell (per the resolved API facts: "command is a SINGLE
+// shell string"), `<` redirection works, and the command string stays 100%
+// static in shape — it names only the stdin file path, never the task.
+//
+// The stdin file path is generated FRESH per `runResearchCycle` call (see
+// `crypto.randomUUID()` below) rather than being a fixed constant. All
+// employees run inside the SAME shared sandbox container (`getSandbox(env.SANDBOX,
+// "dazl-brain")`), and the hourly cron can wake multiple employees concurrently.
+// If every call wrote to the same fixed path, two concurrent
+// `runResearchCycle` calls could race: one call's `writeFile` could overwrite
+// another's task JSON before that other call's `swamp workflow run` reads it,
+// causing a call to silently execute the WRONG employee's task. A per-call
+// UUID-based path eliminates that collision. The UUID contains no shell
+// metacharacters, so it is safe to interpolate directly into the command
+// string — the constraint that must hold is that the TASK itself (untrusted
+// input) never appears in the command string, which remains true here.
+export function buildResearchCommand(researchStdinFilePath: string): string {
+  return `swamp --no-telemetry workflow run research-cycle --stdin --json < ${researchStdinFilePath}`;
+}
 
-// Static command — the task is NOT here; it rides swamp's stdin (via the file
-// redirected below), read as piped JSON by `--stdin`.
-export const RESEARCH_COMMAND =
-  `swamp --no-telemetry workflow run research-cycle --stdin --json < ${RESEARCH_STDIN_FILE_PATH}`;
-
-// The JSON written to RESEARCH_STDIN_FILE_PATH and piped to swamp's stdin.
-// The task is data, never shell. Key (`task`) matches the research-cycle
-// workflow's declared input (worker/brain-repo/workflows/*research-cycle*.yaml).
+// The JSON written to the per-call stdin file path and piped to swamp's
+// stdin. The task is data, never shell. Key (`task`) matches the
+// research-cycle workflow's declared input
+// (worker/brain-repo/workflows/*research-cycle*.yaml).
 export function buildResearchStdin(task: string): string {
   return JSON.stringify({ task });
 }
@@ -36,14 +47,19 @@ export async function runResearchCycle(env: Env, task: string): Promise<{ artifa
   const sandbox = getSandbox(env.SANDBOX, "dazl-brain");
   await hydrateRepo(env, sandbox);
 
-  // Write the task as data to a fixed path — never interpolated into a shell
-  // command. RESEARCH_COMMAND then redirects this exact file into swamp's
-  // `--stdin` reader.
-  await sandbox.writeFile(RESEARCH_STDIN_FILE_PATH, buildResearchStdin(task), {
+  // Unique per-call stdin file path — see the comment on `buildResearchCommand`
+  // above for why a fixed shared path is unsafe when multiple employees run
+  // concurrently against the same shared sandbox container.
+  const researchStdinFilePath = `/tmp/dazl-research-${crypto.randomUUID()}.json`;
+
+  // Write the task as data to the unique path — never interpolated into a
+  // shell command. buildResearchCommand then redirects this exact file into
+  // swamp's `--stdin` reader.
+  await sandbox.writeFile(researchStdinFilePath, buildResearchStdin(task), {
     encoding: "utf-8",
   });
 
-  const runResult = await sandbox.exec(RESEARCH_COMMAND, {
+  const runResult = await sandbox.exec(buildResearchCommand(researchStdinFilePath), {
     cwd: "/brain",
     env: claudeEnv(env),
   });
@@ -52,8 +68,29 @@ export async function runResearchCycle(env: Env, task: string): Promise<{ artifa
   }
 
   const dataResult = await sandbox.exec("swamp --no-telemetry data get research-cycle --json", { cwd: "/brain" });
+  // Best-effort cleanup of the per-call stdin file. Failure here (e.g. the
+  // sandbox already recycled) is non-fatal — the file is a temp scratch file
+  // with a unique name, so a leftover doesn't cause the race this refactor
+  // fixes; it's just tidiness.
+  await sandbox.deleteFile(researchStdinFilePath).catch(() => {});
+
   await persistRepo(env, sandbox);
-  return { artifact: (dataResult.stdout || runResult.stdout).trim() };
+
+  // `dataResult` (the versioned `swamp data get` read-back) is preferred over
+  // `runResult.stdout` because it's the authoritative stored artifact, not
+  // just whatever the workflow run happened to print. Unlike `runResult`
+  // above, we do NOT throw on `!dataResult.success` — the workflow run itself
+  // already succeeded, and `runResult.stdout` is a reasonable fallback for
+  // that case. But if BOTH are empty (the data-get failed AND the run
+  // produced no usable stdout), silently returning an empty artifact would
+  // hide a real failure, so we throw instead of returning an empty string.
+  const artifact = (dataResult.success ? dataResult.stdout : "") || runResult.stdout;
+  if (!artifact.trim()) {
+    throw new Error(
+      `swamp data get research-cycle failed (exit ${dataResult.exitCode}) and workflow run produced no stdout: ${dataResult.stderr.slice(0, 500)}`,
+    );
+  }
+  return { artifact: artifact.trim() };
 }
 
 // Reflect on the artifact using Claude on the subscription. The artifact rides an
