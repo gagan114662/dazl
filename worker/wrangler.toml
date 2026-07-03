@@ -27,3 +27,7 @@ class_name = "EmployeeCycle"
 
 [triggers]
 crons = ["0 * * * *"]
+
+# DAZL_API_SECRET (required by the employee HTTP routes' auth guard) is a
+# secret, not a var — do NOT put its value here. Before deploying, set it with:
+#   npx wrangler secret put DAZL_API_SECRET

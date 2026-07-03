@@ -9,5 +9,5 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["src", "test", "env.d.ts"]
+  "include": ["src", "test", "env.d.ts", "globals.d.ts"]
 }

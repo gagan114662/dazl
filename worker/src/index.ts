@@ -19,7 +19,7 @@ import type { Env } from "./runtime/env";
 import { handleSpawnEmployee, handleInspectEmployee, wakeAllEmployees } from "./runtime/routes";
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
     // --- dazl runtime routes ---
@@ -28,7 +28,7 @@ export default {
     }
     const inspectMatch = url.pathname.match(/^\/employees\/([a-z0-9-]+)$/);
     if (inspectMatch && request.method === "GET") {
-      return await handleInspectEmployee(inspectMatch[1], env);
+      return await handleInspectEmployee(inspectMatch[1], env, request);
     }
 
     // --- existing proxy routes (POST only) ---

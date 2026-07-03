@@ -7,8 +7,7 @@ export interface EmployeeCycleParams {
 }
 
 // Durable wrapper around the cycle logic. Each step.do() checkpoints, so a
-// crash resumes mid-cycle instead of restarting. step.sleep lets an employee
-// idle for days between cycles without holding any compute.
+// crash resumes mid-cycle instead of restarting.
 export class EmployeeCycle extends WorkflowEntrypoint<Env, EmployeeCycleParams> {
   async run(event: WorkflowEvent<EmployeeCycleParams>, step: WorkflowStep): Promise<void> {
     const { employeeName } = event.payload;

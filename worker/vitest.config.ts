@@ -11,6 +11,12 @@ export default defineWorkersConfig({
         // Task 7's routes actually start Workflows, so isolated storage must be
         // disabled to avoid the "Workflows...must be manually disposed" failure.
         isolatedStorage: false,
+        miniflare: {
+          // Test-only value for the shared-secret guard on the employee HTTP
+          // routes; real deployments set DAZL_API_SECRET via
+          // `npx wrangler secret put DAZL_API_SECRET`.
+          bindings: { DAZL_API_SECRET: "test-secret" },
+        },
       },
     },
   },
