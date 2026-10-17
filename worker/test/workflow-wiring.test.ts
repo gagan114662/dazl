@@ -72,8 +72,9 @@ describe("EmployeeCycle.run (the shipped orchestration path)", () => {
   });
 
   it("runs the real step callback end-to-end, using a stubbed SANDBOX so no container is needed, and persists a lesson memory", async () => {
+    const tenantId = "wiring-tenant";
     const employeeName = "wf-run-tester";
-    const stubId = env.EMPLOYEE.idFromName(employeeName);
+    const stubId = env.EMPLOYEE.idFromName(`${tenantId}::${employeeName}`);
     await env.EMPLOYEE.get(stubId).setGoal("test goal");
 
     // Everything except SANDBOX uses the real `cloudflare:test` bindings
@@ -114,7 +115,7 @@ describe("EmployeeCycle.run (the shipped orchestration path)", () => {
     } as unknown as WorkflowStep;
 
     const fakeEvent = {
-      payload: { employeeName },
+      payload: { tenantId, employeeName },
       timestamp: new Date(),
       instanceId: "test-instance",
       workflowName: "employee-cycle",
@@ -136,7 +137,7 @@ describe("EmployeeCycle.run (the shipped orchestration path)", () => {
     // The primary assertion: run()'s real body — goal -> research (via the
     // stubbed SANDBOX) -> Claude reflect (via the stubbed SANDBOX) ->
     // persisted memory — actually ran, not just a step-name stub.
-    const memories = await recallRecentMemories(env.DB, employeeName, 1);
+    const memories = await recallRecentMemories(env.DB, tenantId, employeeName, 1);
     expect(memories[0]?.kind).toBe("lesson");
     expect(memories[0]?.content.length).toBeGreaterThan(0);
   });

@@ -8,6 +8,10 @@ import type { Env } from "./env";
 import { runEmployeeCycleWithBrain } from "./cycle";
 
 export interface EmployeeCycleParams {
+  // Fail-closed tenant context: the cycle refuses to run without it (see
+  // the guard in run()) so a workflow can never fall back to a shared,
+  // untenant-scoped execution path.
+  tenantId: string;
   employeeName: string;
 }
 
@@ -29,10 +33,17 @@ const EMPLOYEE_CYCLE_STEP_CONFIG: WorkflowStepConfig = {
 // research/reflect state.
 export class EmployeeCycle extends WorkflowEntrypoint<Env, EmployeeCycleParams> {
   async run(event: WorkflowEvent<EmployeeCycleParams>, step: WorkflowStep): Promise<void> {
-    const { employeeName } = event.payload;
+    const { tenantId, employeeName } = event.payload;
+
+    // Fail closed: a workflow instance missing its tenant context (e.g. an
+    // old pre-multitenancy instance being retried after a deploy) must
+    // error out, not silently run against a shared/default tenant scope.
+    if (typeof tenantId !== "string" || tenantId.length === 0) {
+      throw new Error("EmployeeCycle missing tenantId — refusing to run untenant-scoped");
+    }
 
     await step.do("swamp-brain cycle", EMPLOYEE_CYCLE_STEP_CONFIG, () =>
-      runEmployeeCycleWithBrain(this.env, employeeName),
+      runEmployeeCycleWithBrain(this.env, tenantId, employeeName),
     );
   }
 }
