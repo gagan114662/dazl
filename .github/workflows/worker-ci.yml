@@ -1,0 +1,23 @@
+name: worker-ci
+on:
+  pull_request:
+    paths: ["worker/**", ".github/workflows/worker-ci.yml"]
+  push:
+    branches: [main]
+    paths: ["worker/**"]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npx vitest run

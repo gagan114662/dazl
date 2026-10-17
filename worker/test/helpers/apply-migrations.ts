@@ -1,6 +1,7 @@
 import migration0001 from "../../migrations/0001_init.sql?raw";
 import migration0002 from "../../migrations/0002_multitenancy.sql?raw";
 import migration0003 from "../../migrations/0003_cycle_runs.sql?raw";
+import migration0004 from "../../migrations/0004_product.sql?raw";
 
 // Migration files in order, paired with the schema artifact each one leaves
 // behind (used to wait out a concurrent apply — see below).
@@ -22,6 +23,12 @@ const MIGRATIONS: Array<{ name: string; sql: string; appliedWhen: string }> = [
     sql: migration0003,
     appliedWhen:
       "SELECT name FROM sqlite_master WHERE type='table' AND name='cycle_runs'",
+  },
+  {
+    name: "0004_product.sql",
+    sql: migration0004,
+    appliedWhen:
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='creatives'",
   },
 ];
 
