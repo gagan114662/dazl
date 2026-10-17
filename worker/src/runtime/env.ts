@@ -9,6 +9,9 @@ export interface Env {
   DAZL_API_SECRET: string;
   DB: D1Database;
   EMPLOYEE: DurableObjectNamespace<import("./employee-state").EmployeeState>;
+  // Per-tenant mutual-exclusion lock serializing each tenant's brain cycles
+  // (they share that tenant's single sandbox workspace). See tenant-lock.ts.
+  TENANT_LOCK: DurableObjectNamespace<import("./tenant-lock").TenantLock>;
   EMPLOYEE_CYCLE: Workflow;
   // Sandbox container running Claude Code + swamp (the "brain" — see
   // worker/Dockerfile). One binding, hydrated per cycle from BRAIN_REPO.

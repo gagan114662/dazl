@@ -57,26 +57,48 @@ real guarantee.
   share a filesystem or agent context.
 - **R2**: brain-repo snapshots moved from `brain-repo.tar.b64` to
   `tenants/${tenantId}/brain-repo.tar.b64`.
-- **Cron**: the hourly wake iterates every tenant's roster and uses a
-  deterministic per-hour instance id (`cron-<sha256(tenant, name, hour)>` —
-  hashed because the Workflows runtime rejects ids containing `:`) so a
-  re-run within the hour dedupes instead of double-billing cycles.
+- **Cron**: the hourly wake iterates every tenant's roster. Dedupe is a
+  once-per-hour claim in the `cycle_runs` D1 table (the Workflows runtime
+  does NOT reject duplicate instance ids — verified empirically — so the
+  claim is the guarantee), with deterministic hashed instance ids
+  (`cron-<sha256(tenant, name, hour)>`); a failed create rolls its claim back
+  so the next wake retries.
+- **Same-tenant serialization**: a per-tenant `TenantLock` Durable Object
+  (one instance per tenant) serializes each tenant's brain cycles — one
+  tenant's employees share that tenant's single sandbox workspace, so
+  concurrent same-tenant cycles would interleave hydrate/persist and
+  overwrite each other's snapshots. The lock has a TTL (10 min, aligned with
+  the workflow step timeout) so a crashed holder cannot deadlock its
+  tenant, and cross-tenant cycles never block each other. Proven by tests
+  (same-tenant serialized, cross-tenant concurrent, failure releases).
 
-## Deploying the migration — CONTROLLED CUTOVER REQUIRED
+## Deploying the migration — OPERATIONAL RUNBOOK
 
 `migrations/0002_multitenancy.sql` is data-preserving but NOT a
 drop-in additive migration: `employees` is rebuilt with a new primary key,
 and the old worker code (which never supplies `tenant_id`) cannot write to
-the rebuilt table. Applying it while the old code still serves requests will
-break them. Treat it as a breaking schema change:
+the rebuilt table. Do NOT apply it while old code is serving. Steps:
 
-1. Announce a brief maintenance window (minutes, not hours).
-2. Let in-flight `EmployeeCycle` workflow instances finish or age out (old
-   instances have no `tenantId` and will fail closed — that is intended; see
-   the workflow guard). Draining first avoids noisy failures.
-3. Apply the migration, then deploy the new code immediately:
-   `npx wrangler d1 migrations apply <db> --remote && npx wrangler deploy`
-   (one window; do not leave the migrated schema serving old code).
+1. **Pause scheduled wakes** — comment out the `crons` trigger in
+   wrangler.toml and `npx wrangler deploy` (old code + old schema, no
+   interruption to request serving).
+2. **Drain** — let in-flight `EmployeeCycle` instances finish (minutes;
+   cycles are bounded by the 10-minute step timeout). Any instance still
+   retrying after the cutover will fail closed (it has no `tenantId`) —
+   that is intended; the next hourly wake re-runs those employees.
+3. **Migrate + deploy in one window** —
+   `npx wrangler d1 migrations apply <db> --remote` then immediately
+   `npx wrangler deploy` (with crons still commented). Do not leave the
+   migrated schema serving old code.
+4. **Verify before resuming** — with the admin secret: `POST /v1/tenants`
+   (expect tenantId + one-time apiKey), `POST /v1/employees` with the new
+   key, `GET /v1/employees/:name` (expect the goal back), and confirm the
+   default tenant's pre-existing employees appear via the legacy
+   `GET /employees/:name` with their goals intact.
+5. **Resume** — restore the `crons` trigger and deploy again.
+6. **If step 3 or 4 fails** — keep traffic paused and roll FORWARD (fix and
+   redeploy). The migrated schema cannot serve the old code, so a rollback
+   would require reverting the migration too (0002 has no down-migration).
 
 Cutover behavior:
 
@@ -118,13 +140,11 @@ roughly in priority order:
 2. **Billing/quota** — per-tenant usage metering (sandbox minutes, LLM
    tokens, workflow runs) and plan limits; today an admin-minted key has
    unlimited spend.
-3. **Sandbox capacity AND same-tenant concurrency** — `max_instances = 1`
-   on the Sandbox class in `src/index.ts` supports exactly one concurrent
-   tenant brain. Real multi-tenant load needs a higher limit (costs scale
-   with it). Separately: within one tenant, multiple employees/overlapping
-   workflows still share that tenant's single sandbox workspace (hydrate →
-   run → persist), so concurrent same-tenant cycles can interleave. Serialize
-   per-tenant cycles or add safe persistence semantics before real load.
+3. **Sandbox capacity** — `max_instances = 1` on the Sandbox class in
+   `src/index.ts` supports exactly one concurrent tenant brain (the same-
+   tenant interleaving problem is solved by the TenantLock; this is purely a
+   throughput limit). Real multi-tenant load needs a higher limit — costs
+   scale with it.
 4. **Open paid proxy routes** — `/chat`, `/tts`, `/transcribe-token` remain
    unauthenticated for Swift-app compatibility; update the client to send
    auth and set `PROXY_SHARED_SECRET` before public production exposure.

@@ -1,5 +1,6 @@
 export { EmployeeState } from "./runtime/employee-state";
 export { EmployeeCycle } from "./runtime/employee-cycle-workflow";
+export { TenantLock } from "./runtime/tenant-lock";
 
 import { Sandbox as BaseSandbox } from "@cloudflare/sandbox";
 
@@ -82,8 +83,10 @@ export default {
         }
         return new Response("Not found", { status: 404 });
       } catch (error) {
+        // Generic 500 — details go to logs only (see errorResponse in
+        // routes.ts for why echoing String(error) leaks internals).
         console.error("[/v1] Unhandled error:", error);
-        return new Response(JSON.stringify({ error: String(error) }), {
+        return new Response(JSON.stringify({ error: "internal error" }), {
           status: 500,
           headers: { "content-type": "application/json" },
         });

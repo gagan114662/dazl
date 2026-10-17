@@ -325,31 +325,48 @@ export async function handleInspectEmployee(employeeName: string, env: Env, requ
   }
 }
 
-// Cron wake: start a cycle for every known employee of every tenant, with a
-// deterministic per-hour instance id so a re-run inside the same hour is a
-// no-op rather than a duplicate billed cycle. Not guarded by auth — this
-// path is triggered internally by Cloudflare's cron scheduler, not by an
-// externally reachable HTTP request.
+// Cron wake: start a cycle for every known employee of every tenant.
+// Not guarded by auth — this path is triggered internally by Cloudflare's cron
+// scheduler, not by an externally reachable HTTP request.
+//
+// DEDUPE: a re-run within the same clock hour must not start a second billed
+// cycle per employee. Relying on the Workflows runtime to reject a duplicate
+// instance id does NOT work — verified empirically, a second create() with
+// the same id neither throws nor is observably a no-op — so the once-per-hour
+// claim lives in the cycle_runs D1 table: INSERT OR IGNORE makes exactly one
+// concurrent caller the claimer, and everyone else skips.
 export async function wakeAllEmployees(env: Env): Promise<void> {
   const result = await env.DB.prepare(
     "SELECT tenant_id, employee_name FROM employees"
   ).all<{ tenant_id: string; employee_name: string }>();
 
   for (const row of result.results) {
+    const hourBucket = Math.floor(Date.now() / 3_600_000);
+    const claim = await env.DB.prepare(
+      "INSERT OR IGNORE INTO cycle_runs (tenant_id, employee_name, hour_bucket) VALUES (?, ?, ?)"
+    ).bind(row.tenant_id, row.employee_name, hourBucket).run();
+
+    if (claim.meta.changes === 0) {
+      // This employee already has its cycle for this hour (a previous wake,
+      // or a concurrent wake that claimed it first). Skip.
+      continue;
+    }
+
     const instanceId = await buildCronCycleInstanceId(row.tenant_id, row.employee_name, Date.now());
     try {
       await startEmployeeCycle(env, row.tenant_id, row.employee_name, instanceId);
     } catch (error) {
-      // Cloudflare Workflows rejects a create() whose instance id already
-      // exists — that is the dedupe working, not a failure. Only genuinely
-      // unexpected errors should be (and are) logged.
-      const errorMessage = String(error);
-      const isDuplicateInstanceError = errorMessage.includes("already exists");
-      if (isDuplicateInstanceError) continue;
+      // The create failed AFTER the claim was recorded — delete the claim so
+      // the next wake (or a manual re-run) retries instead of losing this
+      // employee's hour entirely.
+      await env.DB.prepare(
+        "DELETE FROM cycle_runs WHERE tenant_id = ? AND employee_name = ? AND hour_bucket = ?"
+      ).bind(row.tenant_id, row.employee_name, hourBucket).run();
+
       // One employee failing to wake should not abort waking the rest of
       // the roster.
       console.error(
-        `[wakeAllEmployees] Failed to start cycle for "${row.tenant_id}::${row.employee_name}":`,
+        `[wakeAllEmployees] Failed to start cycle for "${row.tenant_id}::${row.employee_name}" (claim rolled back):`,
         error
       );
     }
