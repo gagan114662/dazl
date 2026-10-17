@@ -35,6 +35,11 @@ export default defineWorkersConfig({
           // Local R2 bucket simulation for BRAIN_REPO (the swamp brain repo
           // snapshot) so binding tests can run without a real R2 bucket.
           r2Buckets: ["BRAIN_REPO"],
+          // Test-only second D1 database for the cutover test: it must start
+          // from the 0001 schema and apply 0002 on top of seeded data, which
+          // is impossible on the shared env.DB (parallel files apply 0002
+          // first). A dedicated database makes the cutover deterministic.
+          d1Databases: { CUTOVER_DB: { id: "cutover-test-db" } },
         },
       },
     },

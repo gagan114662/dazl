@@ -11,14 +11,15 @@ describe("employee cycle", () => {
 
   it("runs a swamp-brain cycle and stores the Claude-reflected lesson", async () => {
     const fakeBrain = {
-      runResearchCycle: async (_e: any, task: string) => {
+      runResearchCycle: async (_e: any, tenantId: string, task: string) => {
+        expect(tenantId).toBe("tenant-a");
         expect(task.length).toBeGreaterThan(0);
         return { artifact: "raw research about AI marketing tools" };
       },
       reflectWithClaude: async () => "Lesson: launch on dev communities first.",
     };
-    await runEmployeeCycleWithBrain(env as any, "swamp-tester", fakeBrain);
-    const memories = await recallRecentMemories(env.DB, "swamp-tester", 5);
+    await runEmployeeCycleWithBrain(env as any, "tenant-a", "swamp-tester", fakeBrain);
+    const memories = await recallRecentMemories(env.DB, "tenant-a", "swamp-tester", 5);
     expect(memories[0].kind).toBe("lesson");
     expect(memories[0].content).toContain("dev communities");
   });

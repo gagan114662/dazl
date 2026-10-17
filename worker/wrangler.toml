@@ -16,6 +16,12 @@ migrations_dir = "migrations"
 name = "EMPLOYEE"
 class_name = "EmployeeState"
 
+# Per-tenant lock serializing each tenant's brain cycles (they share that
+# tenant's single sandbox workspace). See src/runtime/tenant-lock.ts.
+[[durable_objects.bindings]]
+name = "TENANT_LOCK"
+class_name = "TenantLock"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["EmployeeState"]
@@ -41,6 +47,10 @@ class_name = "Sandbox"
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["Sandbox"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["TenantLock"]
 
 # R2-persisted swamp brain repo: hydrated into the Sandbox container at the
 # start of each cycle, synced back after (see Task 3's brain.ts bridge).

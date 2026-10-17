@@ -50,12 +50,19 @@ const claudeEnv = (env: Env) => ({ CLAUDE_CODE_OAUTH_TOKEN: env.CLAUDE_CODE_OAUT
 // workflow steps around it, while still bounding worst-case sandbox exec time.
 const BRAIN_EXEC_TIMEOUT_MS = 480_000;
 
-// Run one research cycle in the sandbox: hydrate repo from R2, run the swamp
-// workflow with the task piped via stdin (injection-safe), read the versioned
-// artifact back, sync the repo to R2. Returns the artifact text.
-export async function runResearchCycle(env: Env, task: string): Promise<{ artifact: string }> {
-  const sandbox = getSandbox(env.SANDBOX, "dazl-brain");
-  await hydrateRepo(env, sandbox);
+// One research cycle in the tenant's sandbox: hydrate the tenant's repo from
+// R2, run the swamp workflow with the task piped via stdin (injection-safe),
+// read the versioned artifact back, sync the repo to R2. Returns the
+// artifact text.
+//
+// TENANT ISOLATION: the sandbox name (`dazl-brain-${tenantId}`) and the R2
+// snapshot key (`tenants/${tenantId}/brain-repo.tar.b64`) are both derived
+// from the caller's authenticated tenantId, so each tenant's brain runs in
+// its own container with its own persisted workspace. Two tenants never
+// share a filesystem, a Claude session, or an R2 object.
+export async function runResearchCycle(env: Env, tenantId: string, task: string): Promise<{ artifact: string }> {
+  const sandbox = getSandbox(env.SANDBOX, `dazl-brain-${tenantId}`);
+  await hydrateRepo(env, sandbox, tenantId);
 
   // Unique per-call stdin file path — see the comment on `buildResearchCommand`
   // above for why a fixed shared path is unsafe when multiple employees run
@@ -88,7 +95,7 @@ export async function runResearchCycle(env: Env, task: string): Promise<{ artifa
   // fixes; it's just tidiness.
   await sandbox.deleteFile(researchStdinFilePath).catch(() => {});
 
-  await persistRepo(env, sandbox);
+  await persistRepo(env, sandbox, tenantId);
 
   // `dataResult` (the versioned `swamp data get` read-back) is preferred over
   // `runResult.stdout` because it's the authoritative stored artifact, not
@@ -109,8 +116,9 @@ export async function runResearchCycle(env: Env, task: string): Promise<{ artifa
 
 // Reflect on the artifact using Claude on the subscription. The artifact rides an
 // env var (REFLECT_INPUT); the command is static — no interpolation, no escaping.
-export async function reflectWithClaude(env: Env, artifact: string): Promise<string> {
-  const sandbox = getSandbox(env.SANDBOX, "dazl-brain");
+// Uses the same per-tenant sandbox as the research cycle.
+export async function reflectWithClaude(env: Env, tenantId: string, artifact: string): Promise<string> {
+  const sandbox = getSandbox(env.SANDBOX, `dazl-brain-${tenantId}`);
   const command =
     `claude -p "Summarize the single most useful marketing lesson in one sentence from: $REFLECT_INPUT" ` +
     `--model claude-sonnet-5 --max-turns 3 --dangerously-skip-permissions`;
@@ -128,8 +136,10 @@ export async function reflectWithClaude(env: Env, artifact: string): Promise<str
 // @cloudflare/sandbox's shipped types. `writeFile` takes the raw string
 // content plus `{ encoding }` and returns a status object with no content.
 // A missing snapshot just means the baked-in seed is used (non-fatal).
-async function hydrateRepo(env: Env, sandbox: ReturnType<typeof getSandbox>): Promise<void> {
-  const snapshot = await env.BRAIN_REPO.get("brain-repo.tar.b64");
+// The snapshot key is tenant-prefixed, so each tenant's brain repo is a
+// separate R2 object hydrated into that tenant's own container.
+async function hydrateRepo(env: Env, sandbox: ReturnType<typeof getSandbox>, tenantId: string): Promise<void> {
+  const snapshot = await env.BRAIN_REPO.get(`tenants/${tenantId}/brain-repo.tar.b64`);
   // No snapshot yet (first run, or R2 object never written) just means the
   // image's baked-in seed is used as-is — non-fatal.
   if (!snapshot) return;
@@ -149,7 +159,7 @@ async function hydrateRepo(env: Env, sandbox: ReturnType<typeof getSandbox>): Pr
   }
 }
 
-async function persistRepo(env: Env, sandbox: ReturnType<typeof getSandbox>): Promise<void> {
+async function persistRepo(env: Env, sandbox: ReturnType<typeof getSandbox>, tenantId: string): Promise<void> {
   const archiveResult = await sandbox.exec("tar -cf /tmp/brain-repo.tar -C / brain", {
     cwd: "/",
     timeout: BRAIN_EXEC_TIMEOUT_MS,
@@ -160,5 +170,5 @@ async function persistRepo(env: Env, sandbox: ReturnType<typeof getSandbox>): Pr
     );
   }
   const tarBase64 = await sandbox.readFile("/tmp/brain-repo.tar", { encoding: "base64" });
-  await env.BRAIN_REPO.put("brain-repo.tar.b64", tarBase64.content);
+  await env.BRAIN_REPO.put(`tenants/${tenantId}/brain-repo.tar.b64`, tarBase64.content);
 }

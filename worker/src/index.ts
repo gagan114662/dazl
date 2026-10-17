@@ -1,5 +1,6 @@
 export { EmployeeState } from "./runtime/employee-state";
 export { EmployeeCycle } from "./runtime/employee-cycle-workflow";
+export { TenantLock } from "./runtime/tenant-lock";
 
 import { Sandbox as BaseSandbox } from "@cloudflare/sandbox";
 
@@ -27,13 +28,72 @@ export class Sandbox extends BaseSandbox {
  */
 
 import type { Env } from "./runtime/env";
-import { handleSpawnEmployee, handleInspectEmployee, wakeAllEmployees } from "./runtime/routes";
+import {
+  handleSpawnEmployee,
+  handleInspectEmployee,
+  wakeAllEmployees,
+  handleCreateTenant,
+  handleMintTenantKey,
+  handleRevokeKey,
+  handleSpawnEmployeeV1,
+  handleListEmployeesV1,
+  handleInspectEmployeeV1,
+} from "./runtime/routes";
+import { authenticateRequest } from "./runtime/auth";
 
 export default {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
-    // --- dazl runtime routes ---
+    // --- dazl multitenant API (v1) ---
+    // Tenant context is derived from the credential (API key or admin
+    // secret), never from a tenantId the request supplies.
+    if (url.pathname.startsWith("/v1/")) {
+      try {
+        const auth = await authenticateRequest(request, env);
+
+        if (url.pathname === "/v1/tenants" && request.method === "POST") {
+          return await handleCreateTenant(request, env);
+        }
+        const mintKeyMatch = url.pathname.match(/^\/v1\/tenants\/([a-zA-Z0-9_-]+)\/api-keys$/);
+        if (mintKeyMatch && request.method === "POST") {
+          return await handleMintTenantKey(request, env, mintKeyMatch[1]);
+        }
+        const revokeKeyMatch = url.pathname.match(/^\/v1\/api-keys\/([a-zA-Z0-9_-]+)$/);
+        if (revokeKeyMatch && request.method === "DELETE") {
+          return await handleRevokeKey(request, env, revokeKeyMatch[1]);
+        }
+
+        if (!auth) {
+          return new Response(JSON.stringify({ error: "unauthorized" }), {
+            status: 401,
+            headers: { "content-type": "application/json" },
+          });
+        }
+
+        if (url.pathname === "/v1/employees" && request.method === "POST") {
+          return await handleSpawnEmployeeV1(request, env, auth);
+        }
+        if (url.pathname === "/v1/employees" && request.method === "GET") {
+          return await handleListEmployeesV1(env, auth);
+        }
+        const inspectV1Match = url.pathname.match(/^\/v1\/employees\/([a-z0-9-]+)$/);
+        if (inspectV1Match && request.method === "GET") {
+          return await handleInspectEmployeeV1(inspectV1Match[1], env, auth);
+        }
+        return new Response("Not found", { status: 404 });
+      } catch (error) {
+        // Generic 500 — details go to logs only (see errorResponse in
+        // routes.ts for why echoing String(error) leaks internals).
+        console.error("[/v1] Unhandled error:", error);
+        return new Response(JSON.stringify({ error: "internal error" }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        });
+      }
+    }
+
+    // --- dazl runtime routes (LEGACY, default tenant; deprecated in favor of /v1) ---
     if (url.pathname === "/employees" && request.method === "POST") {
       return await handleSpawnEmployee(request, env);
     }
@@ -50,6 +110,19 @@ export default {
       url.pathname === "/tts" ||
       url.pathname === "/transcribe-token";
     if (isKnownProxyPath) {
+      // Optional auth: with PROXY_SHARED_SECRET set, the proxy routes require
+      // it; unset (default), they stay open so the shipped Swift app — which
+      // does not yet send an Authorization header on these routes — keeps
+      // working. See env.ts.
+      if (env.PROXY_SHARED_SECRET) {
+        const authorizationHeader = request.headers.get("Authorization");
+        if (authorizationHeader !== `Bearer ${env.PROXY_SHARED_SECRET}`) {
+          return new Response(JSON.stringify({ error: "unauthorized" }), {
+            status: 401,
+            headers: { "content-type": "application/json" },
+          });
+        }
+      }
       if (request.method !== "POST") {
         return new Response("Method not allowed", { status: 405 });
       }
