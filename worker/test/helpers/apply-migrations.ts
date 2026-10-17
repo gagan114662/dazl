@@ -29,17 +29,14 @@ function splitStatements(sql: string): string[] {
     .filter((statement) => statement.length > 0);
 }
 
-// Applies all migration SQL to a D1 database for tests, exactly once per
-// database even when test files run concurrently against the same shared
-// storage (vitest config deliberately sets isolatedStorage: false because
-// routes tests start real Workflow instances — see the comment there).
+// Applies migrations to a D1 database for tests, exactly once per database
+// even when test files run concurrently against the same shared storage
+// (vitest config deliberately sets isolatedStorage: false because routes
+// tests start real Workflow instances — see the comment there).
 //
-// Concurrency-safe claiming: `INSERT OR IGNORE` into schema_migrations is a
-// single atomic statement, so exactly one concurrent caller sees changes=1
-// and becomes the applier. The applier runs the migration statements plus
-// the `applied=1` flip in ONE db.batch() (atomic). Everyone else waits
-// (bounded) for `applied=1` instead of racing to re-run the statements.
-export async function applyMigrations(db: D1Database): Promise<void> {
+// `only` restricts the set of migrations applied — used by the cutover test
+// to seed 0001-only data and then apply 0002 on top of it.
+export async function applyMigrations(db: D1Database, only?: string[]): Promise<void> {
   await db
     .prepare(
       "CREATE TABLE IF NOT EXISTS schema_migrations (" +
@@ -50,6 +47,8 @@ export async function applyMigrations(db: D1Database): Promise<void> {
     .run();
 
   for (const migration of MIGRATIONS) {
+    if (only !== undefined && !only.includes(migration.name)) continue;
+
     const claim = await db
       .prepare("INSERT OR IGNORE INTO schema_migrations (name, applied) VALUES (?, 0)")
       .bind(migration.name)
@@ -68,6 +67,15 @@ export async function applyMigrations(db: D1Database): Promise<void> {
     );
     await db.batch(statements);
   }
+}
+
+// Runs ONE migration's raw SQL statements directly, bypassing the claim
+// table — for tests that need to control exactly which migration runs when.
+export async function runMigrationStatements(db: D1Database, migrationName: string): Promise<void> {
+  const migration = MIGRATIONS.find((entry) => entry.name === migrationName);
+  if (migration === undefined) throw new Error(`Unknown migration: ${migrationName}`);
+  const statements = splitStatements(migration.sql).map((statement) => db.prepare(statement));
+  await db.batch(statements);
 }
 
 async function waitForApplied(db: D1Database, migrationName: string, appliedWhen: string): Promise<void> {

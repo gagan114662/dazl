@@ -13,7 +13,7 @@ async function fetchWorker(request: Request): Promise<Response> {
   return response;
 }
 
-async function createTenant(name: string): Promise<{ tenantId: string; apiKey: string }> {
+async function createTenant(name: string): Promise<{ tenantId: string; apiKey: string; keyId: string }> {
   const response = await fetchWorker(
     new Request("https://x/v1/tenants", {
       method: "POST",
@@ -22,7 +22,7 @@ async function createTenant(name: string): Promise<{ tenantId: string; apiKey: s
     })
   );
   expect(response.status).toBe(200);
-  return response.json<{ tenantId: string; apiKey: string }>();
+  return response.json<{ tenantId: string; apiKey: string; keyId: string }>();
 }
 
 async function spawnEmployee(apiKey: string, employeeName: string, goal: string, extraBody: object = {}): Promise<Response> {
@@ -41,15 +41,16 @@ describe("multitenancy", () => {
   });
 
   it("provisions tenants with the admin secret and returns a one-time API key whose digest — not the key — is stored", async () => {
-    const { tenantId, apiKey } = await createTenant("digest-check");
+    const { tenantId, apiKey, keyId } = await createTenant("digest-check");
 
     expect(tenantId).toMatch(/^t_[0-9a-f]{16}$/);
     expect(apiKey).toMatch(/^dazl_[A-Za-z0-9_-]+$/);
+    expect(keyId).toMatch(/^k_[0-9a-f]{16}$/);
 
     // Only the SHA-256 digest is persisted; a DB read must not contain the key.
     const keyRow = await env.DB.prepare(
-      "SELECT key_digest FROM api_keys WHERE tenant_id = ?"
-    ).bind(tenantId).first<{ key_digest: string }>();
+      "SELECT key_digest FROM api_keys WHERE key_id = ?"
+    ).bind(keyId).first<{ key_digest: string }>();
     expect(keyRow).not.toBeNull();
     expect(keyRow!.key_digest).not.toContain(apiKey);
     expect(keyRow!.key_digest).toMatch(/^[0-9a-f]{64}$/);
@@ -139,12 +140,9 @@ describe("multitenancy", () => {
 
   it("rejects a revoked API key", async () => {
     const tenant = await createTenant("revoke-check");
-    const keyRow = await env.DB.prepare(
-      "SELECT key_id FROM api_keys WHERE tenant_id = ?"
-    ).bind(tenant.tenantId).first<{ key_id: string }>();
 
     const revoke = await fetchWorker(
-      new Request(`https://x/v1/api-keys/${keyRow!.key_id}`, {
+      new Request(`https://x/v1/api-keys/${tenant.keyId}`, {
         method: "DELETE",
         headers: { Authorization: ADMIN_SECRET },
       })
@@ -205,14 +203,38 @@ describe("multitenancy", () => {
     expect(row?.tenant_id).toBe("default");
   });
 
-  it("builds deterministic per-hour cron instance ids so an hourly re-run dedupes instead of double-billing", () => {
+  it("rejects malformed or out-of-bounds request bodies with 400s, not 500s", async () => {
+    const tenant = await createTenant("validation-check");
+
+    // Malformed JSON must be a 400, not an unhandled-parse 500.
+    const malformed = await fetchWorker(
+      new Request("https://x/v1/employees", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${tenant.apiKey}`, "content-type": "application/json" },
+        body: "{not json",
+      })
+    );
+    expect(malformed.status).toBe(400);
+
+    // Missing role / goal, and overlong values, are 400s.
+    const missingRole = await spawnEmployee(tenant.apiKey, "valid-name", "goal", { role: undefined as never });
+    expect(missingRole.status).toBe(400);
+
+    const overlongGoal = await spawnEmployee(tenant.apiKey, "valid-name", "x".repeat(2001));
+    expect(overlongGoal.status).toBe(400);
+  });
+
+  it("builds deterministic per-hour cron instance ids so an hourly re-run dedupes instead of double-billing", async () => {
+    // Full behavioral coverage (including runtime acceptance of the ids) lives
+    // in test/cron-wake.test.ts; this keeps the pure determinism assertion
+    // next to the rest of the tenant tests.
     const hourMs = 3_600_000;
     const now = 1_780_000_000_000;
 
-    const firstRun = buildCronCycleInstanceId("t_abc", "researcher", now);
-    const sameHourAgain = buildCronCycleInstanceId("t_abc", "researcher", now + 10 * 60 * 1000);
-    const nextHour = buildCronCycleInstanceId("t_abc", "researcher", now + hourMs);
-    const otherTenant = buildCronCycleInstanceId("t_def", "researcher", now);
+    const firstRun = await buildCronCycleInstanceId("t_abc", "researcher", now);
+    const sameHourAgain = await buildCronCycleInstanceId("t_abc", "researcher", now + 10 * 60 * 1000);
+    const nextHour = await buildCronCycleInstanceId("t_abc", "researcher", now + hourMs);
+    const otherTenant = await buildCronCycleInstanceId("t_def", "researcher", now);
 
     expect(firstRun).toBe(sameHourAgain);
     expect(firstRun).not.toBe(nextHour);

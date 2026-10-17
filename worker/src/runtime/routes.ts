@@ -1,5 +1,6 @@
 import type { Env } from "./env";
 import { recallRecentMemories } from "./memory";
+import { getEffectiveGoal } from "./cycle";
 import { authenticateRequest, type RequestAuth } from "./auth";
 import { createTenant, mintApiKey, revokeApiKey, tenantExists } from "./tenants";
 
@@ -44,11 +45,30 @@ function notFoundResponse(message = "not found"): Response {
 }
 
 function errorResponse(routeLabel: string, error: unknown): Response {
+  // Full details go to the logs only — echoing String(error) to the caller
+  // can leak internals (SQL fragments, binding names) and is a 500 smell.
   console.error(`[${routeLabel}] Unhandled error:`, error);
-  return new Response(JSON.stringify({ error: String(error) }), {
+  return new Response(JSON.stringify({ error: "internal error" }), {
     status: 500,
     headers: { "content-type": "application/json" },
   });
+}
+
+function invalidRequestResponse(message: string): Response {
+  return new Response(JSON.stringify({ error: message }), {
+    status: 400,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+// Parse a JSON request body, mapping malformed JSON to a 400 instead of the
+// 500 an unhandled parse exception would produce.
+async function parseJsonBody<T>(request: Request): Promise<T | null> {
+  try {
+    return await request.json<T>();
+  } catch {
+    return null;
+  }
 }
 
 function invalidEmployeeNameResponse(): Response {
@@ -76,9 +96,25 @@ function employeeDurableObjectId(env: Env, tenantId: string, employeeName: strin
 // Cloudflare Workflows rejects a duplicate instance id, so the second create
 // is a no-op instead of a second billed cycle. Explicit spawns (POST /v1/employees)
 // intentionally do NOT use this — a human asking twice should get two cycles.
-export function buildCronCycleInstanceId(tenantId: string, employeeName: string, nowMs: number): string {
+//
+// The id is a SHA-256 hex digest of the (tenant, employee, hour) tuple, not
+// the raw tuple: Workflows rejects ids containing `:` (verified empirically
+// — "Workflow instance has invalid id"), and hashing also bounds the id
+// length and charset regardless of how long tenant/employee names are.
+export async function buildCronCycleInstanceId(
+  tenantId: string,
+  employeeName: string,
+  nowMs: number
+): Promise<string> {
   const hourBucket = Math.floor(nowMs / 3_600_000);
-  return `cron:${tenantId}::${employeeName}:${hourBucket}`;
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(`${tenantId}::${employeeName}:${hourBucket}`)
+  );
+  const digestHex = Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+  return `cron-${digestHex}`;
 }
 
 async function startEmployeeCycle(env: Env, tenantId: string, employeeName: string, instanceId?: string): Promise<void> {
@@ -95,12 +131,10 @@ export async function handleCreateTenant(request: Request, env: Env): Promise<Re
   if (!auth?.isAdmin) return unauthorizedResponse();
 
   try {
-    const body = await request.json<{ name?: unknown }>();
+    const body = await parseJsonBody<{ name?: unknown }>(request);
+    if (body === null) return invalidRequestResponse("request body must be valid JSON");
     if (typeof body.name !== "string" || body.name.trim().length === 0 || body.name.length > 200) {
-      return new Response(JSON.stringify({ error: "name must be a non-empty string (max 200 chars)" }), {
-        status: 400,
-        headers: { "content-type": "application/json" },
-      });
+      return invalidRequestResponse("name must be a non-empty string (max 200 chars)");
     }
 
     const tenant = await createTenant(env.DB, body.name.trim());
@@ -109,6 +143,7 @@ export async function handleCreateTenant(request: Request, env: Env): Promise<Re
     return Response.json({
       tenantId: tenant.tenantId,
       name: tenant.name,
+      keyId: firstKey.keyId,
       apiKey: firstKey.apiKey,
       note: "This apiKey is shown once. Store it now — only its SHA-256 digest is persisted.",
     });
@@ -161,10 +196,26 @@ export async function handleSpawnEmployeeV1(request: Request, env: Env, auth: Re
   if (auth.tenantId === null) return unauthorizedResponse();
 
   try {
-    const body = await request.json<{ employeeName: string; role: string; goal: string; tenantId?: unknown }>();
+    const body = await parseJsonBody<{
+      employeeName: string;
+      role: string;
+      goal: string;
+      tenantId?: unknown;
+    }>(request);
 
-    if (typeof body.employeeName !== "string" || !EMPLOYEE_NAME_PATTERN.test(body.employeeName)) {
+    if (body === null) return invalidRequestResponse("request body must be valid JSON");
+    if (
+      typeof body.employeeName !== "string" ||
+      body.employeeName.length > 64 ||
+      !EMPLOYEE_NAME_PATTERN.test(body.employeeName)
+    ) {
       return invalidEmployeeNameResponse();
+    }
+    if (typeof body.role !== "string" || body.role.length === 0 || body.role.length > 200) {
+      return invalidRequestResponse("role must be a non-empty string (max 200 chars)");
+    }
+    if (typeof body.goal !== "string" || body.goal.length === 0 || body.goal.length > 2000) {
+      return invalidRequestResponse("goal must be a non-empty string (max 2000 chars)");
     }
 
     // Insert the D1 roster row FIRST: it is the source of truth the cron
@@ -222,8 +273,7 @@ export async function handleInspectEmployeeV1(employeeName: string, env: Env, au
     ).bind(auth.tenantId, employeeName).first<{ employee_name: string }>();
     if (rosterRow === null) return notFoundResponse("unknown employee");
 
-    const stubId = employeeDurableObjectId(env, auth.tenantId, employeeName);
-    const goal = await env.EMPLOYEE.get(stubId).getGoal();
+    const goal = await getEffectiveGoal(env, auth.tenantId, employeeName);
     const memories = await recallRecentMemories(env.DB, auth.tenantId, employeeName, 20);
     return Response.json({ tenantId: auth.tenantId, employeeName, goal, memories });
   } catch (error) {
@@ -265,8 +315,9 @@ export async function handleInspectEmployee(employeeName: string, env: Env, requ
   if (!isAuthorized(request, env)) return unauthorizedResponse();
 
   try {
-    const stubId = employeeDurableObjectId(env, DEFAULT_TENANT_ID, employeeName);
-    const goal = await env.EMPLOYEE.get(stubId).getGoal();
+    // getEffectiveGoal (not a bare DO read) so a legacy employee whose goal
+    // lives only in the D1 roster row is hydrated and reported correctly.
+    const goal = await getEffectiveGoal(env, DEFAULT_TENANT_ID, employeeName);
     const memories = await recallRecentMemories(env.DB, DEFAULT_TENANT_ID, employeeName, 20);
     return Response.json({ employeeName, goal, memories });
   } catch (error) {
@@ -285,7 +336,7 @@ export async function wakeAllEmployees(env: Env): Promise<void> {
   ).all<{ tenant_id: string; employee_name: string }>();
 
   for (const row of result.results) {
-    const instanceId = buildCronCycleInstanceId(row.tenant_id, row.employee_name, Date.now());
+    const instanceId = await buildCronCycleInstanceId(row.tenant_id, row.employee_name, Date.now());
     try {
       await startEmployeeCycle(env, row.tenant_id, row.employee_name, instanceId);
     } catch (error) {

@@ -39,6 +39,11 @@ deprecated in favor of `/v1`.
 
 ## Isolation mechanics
 
+Isolation is enforced by EVERY query and binding being tenant-scoped (below)
+and by the test suite proving it — the composite keys enable the
+namespacing, but a mis-scoped query would still leak, so the tests are the
+real guarantee.
+
 - **D1**: `employees` PK is `(tenant_id, employee_name)`; `memory` and
   `api_keys` carry `tenant_id` and every query filters on it. Two tenants can
   hire identically-named employees with zero interaction.
@@ -53,29 +58,44 @@ deprecated in favor of `/v1`.
 - **R2**: brain-repo snapshots moved from `brain-repo.tar.b64` to
   `tenants/${tenantId}/brain-repo.tar.b64`.
 - **Cron**: the hourly wake iterates every tenant's roster and uses a
-  deterministic per-hour instance id (`cron:<tenant>::<name>:<hourBucket>`) so
-  a re-run within the hour dedupes instead of double-billing cycles.
+  deterministic per-hour instance id (`cron-<sha256(tenant, name, hour)>` —
+  hashed because the Workflows runtime rejects ids containing `:`) so a
+  re-run within the hour dedupes instead of double-billing cycles.
 
-## Deploying the migration
+## Deploying the migration — CONTROLLED CUTOVER REQUIRED
 
-`migrations/0002_multitenancy.sql` is additive: existing employees/memory are
-re-homed under the `default` tenant and nothing is dropped.
+`migrations/0002_multitenancy.sql` is data-preserving but NOT a
+drop-in additive migration: `employees` is rebuilt with a new primary key,
+and the old worker code (which never supplies `tenant_id`) cannot write to
+the rebuilt table. Applying it while the old code still serves requests will
+break them. Treat it as a breaking schema change:
 
-```
-npx wrangler d1 migrations apply dazl-main-db --remote   # adjust binding/env as needed
-```
+1. Announce a brief maintenance window (minutes, not hours).
+2. Let in-flight `EmployeeCycle` workflow instances finish or age out (old
+   instances have no `tenantId` and will fail closed — that is intended; see
+   the workflow guard). Draining first avoids noisy failures.
+3. Apply the migration, then deploy the new code immediately:
+   `npx wrangler d1 migrations apply <db> --remote && npx wrangler deploy`
+   (one window; do not leave the migrated schema serving old code).
 
-Cutover notes:
+Cutover behavior:
 
-1. **Orphaned legacy DOs** — pre-migration `EmployeeState` objects were named
-   `employeeName`; they are now addressed as `default::employeeName`. Old
-   objects simply stop receiving traffic (goals are re-set on the next spawn;
-   nothing reads the old instances). No action required.
-2. **Orphaned R2 snapshot** — a pre-migration `brain-repo.tar.b64` at the
+1. **Employee goals are preserved.** Roster rows (including goals) and
+   memories survive the migration, re-homed under the `default` tenant —
+   covered by `test/cutover.test.ts`, which seeds a 0001 world and upgrades
+   it in place. `getEffectiveGoal` hydrates the newly-named
+   `default::<name>` Durable Objects from the preserved roster rows, so
+   cycles keep researching each employee's real goal instead of silently
+   falling back to the generic "grow dazl.ai".
+2. **Orphaned legacy DOs** — pre-migration `EmployeeState` objects were
+   named `employeeName`; they are now addressed as `default::employeeName`.
+   Old objects simply stop receiving traffic; nothing reads them. No action
+   required.
+3. **Orphaned R2 snapshot** — a pre-migration `brain-repo.tar.b64` at the
    bucket root is not read anymore. If you want the default tenant to keep
    its history, copy it to `tenants/default/brain-repo.tar.b64`; otherwise
    the next cycle re-seeds from the baked-in seed.
-3. **Legacy routes** keep working against the `default` tenant so existing
+4. **Legacy routes** keep working against the `default` tenant so existing
    scripts and `RUNTIME_VERIFY.md` flows don't break. Migrate them to `/v1`
    at leisure.
 
@@ -98,11 +118,22 @@ roughly in priority order:
 2. **Billing/quota** — per-tenant usage metering (sandbox minutes, LLM
    tokens, workflow runs) and plan limits; today an admin-minted key has
    unlimited spend.
-3. **Sandbox capacity** — `max_instances = 1` on the Sandbox class in
-   `src/index.ts` supports exactly one concurrent tenant brain. Real
-   multi-tenant load needs a higher limit (costs scale with it).
-4. **Outbound channels** — Gojiberry/Gooseworks parity (email, LinkedIn,
+3. **Sandbox capacity AND same-tenant concurrency** — `max_instances = 1`
+   on the Sandbox class in `src/index.ts` supports exactly one concurrent
+   tenant brain. Real multi-tenant load needs a higher limit (costs scale
+   with it). Separately: within one tenant, multiple employees/overlapping
+   workflows still share that tenant's single sandbox workspace (hydrate →
+   run → persist), so concurrent same-tenant cycles can interleave. Serialize
+   per-tenant cycles or add safe persistence semantics before real load.
+4. **Open paid proxy routes** — `/chat`, `/tts`, `/transcribe-token` remain
+   unauthenticated for Swift-app compatibility; update the client to send
+   auth and set `PROXY_SHARED_SECRET` before public production exposure.
+5. **Real-container verification** — the test suite stubs the sandbox
+   (containers are not enabled under vitest); a successful end-to-end cycle
+   against a real container in a preview environment is still required
+   before claiming operational readiness.
+6. **Outbound channels** — Gojiberry/Gooseworks parity (email, LinkedIn,
    social publishing) is not started; the employee loop currently produces
    research lessons only.
-5. **Observability** — structured logs/tenant tags in Sentry, per-tenant
+7. **Observability** — structured logs/tenant tags in Sentry, per-tenant
    error budgets, alerting on failed cycles.

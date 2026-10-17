@@ -15,6 +15,34 @@ const defaultBrain: Brain = {
   reflectWithClaude: defaultReflectWithClaude,
 };
 
+// Resolve an employee's effective goal, hydrating the tenant-namespaced DO
+// from the D1 roster row when the DO has none.
+//
+// Cutover preservation: after the multitenancy migration, DOs are addressed
+// as `${tenantId}::${employeeName}` while pre-migration employees' goals
+// live on in the D1 roster rows. Without this fallback, the newly-addressed
+// DOs start goal-less and cycles would silently research the generic
+// "grow dazl.ai" fallback instead of the employee's actual goal.
+export async function getEffectiveGoal(env: Env, tenantId: string, employeeName: string): Promise<string | null> {
+  const employeeStateId = env.EMPLOYEE.idFromName(`${tenantId}::${employeeName}`);
+  const stub = env.EMPLOYEE.get(employeeStateId);
+
+  let goal = await stub.getGoal();
+  if (goal === null) {
+    const rosterRow = await env.DB.prepare(
+      "SELECT goal FROM employees WHERE tenant_id = ? AND employee_name = ?"
+    ).bind(tenantId, employeeName).first<{ goal: string | null }>();
+
+    // Only a non-empty roster goal is worth hydrating; otherwise leave the DO
+    // untouched so callers see a truthful null.
+    if (rosterRow?.goal != null && rosterRow.goal.length > 0) {
+      goal = rosterRow.goal;
+      await stub.setGoal(goal);
+    }
+  }
+  return goal;
+}
+
 // One full employee cycle driven by the swamp brain: read the employee's
 // goal from its tenant-namespaced EmployeeState Durable Object, turn it into
 // a research task, run that task through the tenant's swamp brain research
@@ -29,8 +57,7 @@ export async function runEmployeeCycleWithBrain(
   employeeName: string,
   brain: Brain = defaultBrain
 ): Promise<void> {
-  const employeeStateId = env.EMPLOYEE.idFromName(`${tenantId}::${employeeName}`);
-  const goal = await env.EMPLOYEE.get(employeeStateId).getGoal();
+  const goal = await getEffectiveGoal(env, tenantId, employeeName);
   const researchTask = `Research this for dazl marketing and report key findings: ${goal ?? "grow dazl.ai"}`;
 
   const { artifact } = await brain.runResearchCycle(env, tenantId, researchTask);
