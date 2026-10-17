@@ -29,4 +29,18 @@ export interface Env {
   // sends `Authorization: Bearer <PROXY_SHARED_SECRET>`, set this via
   // `npx wrangler secret put PROXY_SHARED_SECRET` to close them.
   PROXY_SHARED_SECRET?: string;
+  // Model for tenant-facing generation (scoring, drafts, creatives).
+  LLM_MODEL?: string;
+  // Outbound email (Resend). Sending is disabled (503) until both are set.
+  RESEND_API_KEY?: string;
+  EMAIL_FROM?: string;
+  // Public https origin of this worker (used in unsubscribe links).
+  PUBLIC_BASE_URL?: string;
+  // HMAC key for unsubscribe links; falls back to DAZL_API_SECRET.
+  UNSUBSCRIBE_SECRET?: string;
+  // Stripe billing. Checkout is disabled until the first two are set; the
+  // webhook secret is required for /v1/billing/webhook to accept events.
+  STRIPE_SECRET_KEY?: string;
+  STRIPE_PRICE_PRO?: string;
+  STRIPE_WEBHOOK_SECRET?: string;
 }

@@ -3,6 +3,8 @@ import { recallRecentMemories } from "./memory";
 import { getEffectiveGoal } from "./cycle";
 import { authenticateRequest, type RequestAuth } from "./auth";
 import { createTenant, mintApiKey, revokeApiKey, tenantExists } from "./tenants";
+import { checkQuota, getTenantPlan, PLAN_LIMITS, QuotaError, quotaExceededResponse, recordUsage, reserveUsage } from "./plans";
+import { logEvent } from "./log";
 
 // The plan's identity convention for employee names: lowercase kebab-case.
 // Shared by spawn validation and the route path matchers so routes and
@@ -45,9 +47,10 @@ function notFoundResponse(message = "not found"): Response {
 }
 
 function errorResponse(routeLabel: string, error: unknown): Response {
+  if (error instanceof QuotaError) return error.toResponse();
   // Full details go to the logs only — echoing String(error) to the caller
   // can leak internals (SQL fragments, binding names) and is a 500 smell.
-  console.error(`[${routeLabel}] Unhandled error:`, error);
+  logEvent("error", "unhandled_route_error", { route: routeLabel, error: String(error) });
   return new Response(JSON.stringify({ error: "internal error" }), {
     status: 500,
     headers: { "content-type": "application/json" },
@@ -119,7 +122,16 @@ export async function buildCronCycleInstanceId(
 
 async function startEmployeeCycle(env: Env, tenantId: string, employeeName: string, instanceId?: string): Promise<void> {
   const createParams = { id: instanceId, params: { tenantId, employeeName } };
-  await env.EMPLOYEE_CYCLE.create(createParams);
+  // Reserve the cycle atomically BEFORE creating it so concurrent starts
+  // cannot overshoot the plan; refund if the create fails.
+  const reservation = await reserveUsage(env.DB, tenantId, "cycle");
+  if (!reservation.reserved) throw new QuotaError("cycle", reservation);
+  try {
+    await env.EMPLOYEE_CYCLE.create(createParams);
+  } catch (error) {
+    await recordUsage(env.DB, tenantId, "cycle", -1);
+    throw error;
+  }
 }
 
 // POST /v1/tenants — provision a tenant. Admin-secret only: tenant
@@ -217,6 +229,23 @@ export async function handleSpawnEmployeeV1(request: Request, env: Env, auth: Re
     if (typeof body.goal !== "string" || body.goal.length === 0 || body.goal.length > 2000) {
       return invalidRequestResponse("goal must be a non-empty string (max 2000 chars)");
     }
+
+    // Plan quotas: a NEW employee counts against the plan's headcount cap
+    // (re-goaling an existing one does not), and every spawn starts a cycle.
+    const existingEmployee = await env.DB.prepare(
+      "SELECT 1 AS x FROM employees WHERE tenant_id = ? AND employee_name = ?"
+    ).bind(auth.tenantId, body.employeeName).first();
+    if (existingEmployee === null) {
+      const plan = await getTenantPlan(env.DB, auth.tenantId);
+      const headcount = await env.DB.prepare("SELECT COUNT(*) AS n FROM employees WHERE tenant_id = ?")
+        .bind(auth.tenantId).first<{ n: number }>();
+      const limit = PLAN_LIMITS[plan].maxEmployees;
+      if ((headcount?.n ?? 0) >= limit) {
+        return quotaExceededResponse("employees", { allowed: false, used: headcount?.n ?? 0, limit, plan });
+      }
+    }
+    const cycleQuota = await checkQuota(env.DB, auth.tenantId, "cycle");
+    if (!cycleQuota.allowed) return quotaExceededResponse("cycle", cycleQuota);
 
     // Insert the D1 roster row FIRST: it is the source of truth the cron
     // wake path reads, so an employee must be visible there before the DO
@@ -341,6 +370,13 @@ export async function wakeAllEmployees(env: Env): Promise<void> {
   ).all<{ tenant_id: string; employee_name: string }>();
 
   for (const row of result.results) {
+    // Over-quota tenants are skipped (no claim, no billed cycle); they resume
+    // automatically when the month rolls over or the plan is upgraded.
+    const cycleQuota = await checkQuota(env.DB, row.tenant_id, "cycle");
+    if (!cycleQuota.allowed) {
+      logEvent("warn", "cycle_skipped_over_quota", { tenantId: row.tenant_id, employeeName: row.employee_name, used: cycleQuota.used, limit: cycleQuota.limit });
+      continue;
+    }
     const hourBucket = Math.floor(Date.now() / 3_600_000);
     const claim = await env.DB.prepare(
       "INSERT OR IGNORE INTO cycle_runs (tenant_id, employee_name, hour_bucket) VALUES (?, ?, ?)"
@@ -365,10 +401,7 @@ export async function wakeAllEmployees(env: Env): Promise<void> {
 
       // One employee failing to wake should not abort waking the rest of
       // the roster.
-      console.error(
-        `[wakeAllEmployees] Failed to start cycle for "${row.tenant_id}::${row.employee_name}" (claim rolled back):`,
-        error
-      );
+      logEvent("error", "cron_cycle_start_failed", { tenantId: row.tenant_id, employeeName: row.employee_name, claimRolledBack: true, error: String(error) });
     }
   }
 }

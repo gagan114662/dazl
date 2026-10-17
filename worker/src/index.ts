@@ -40,10 +40,22 @@ import {
   handleInspectEmployeeV1,
 } from "./runtime/routes";
 import { authenticateRequest } from "./runtime/auth";
+import { handleProductRoute, handleSetPlan, handleStripeWebhook, handleUnsubscribe } from "./runtime/product-routes";
+import { dashboardResponse } from "./runtime/dashboard";
 
 export default {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    // --- public, unauthenticated-by-bearer endpoints ---
+    // Dashboard shell (holds no data; every API call it makes needs a key).
+    if ((url.pathname === "/app" || url.pathname === "/app/") && request.method === "GET") {
+      return dashboardResponse();
+    }
+    // Recipient-facing unsubscribe link (authenticated by HMAC signature).
+    if (url.pathname === "/unsubscribe" && request.method === "GET") {
+      return await handleUnsubscribe(url, env);
+    }
 
     // --- dazl multitenant API (v1) ---
     // Tenant context is derived from the credential (API key or admin
@@ -64,12 +76,27 @@ export default {
           return await handleRevokeKey(request, env, revokeKeyMatch[1]);
         }
 
+        // Stripe calls this without a bearer; it is authenticated by signature.
+        if (url.pathname === "/v1/billing/webhook" && request.method === "POST") {
+          return await handleStripeWebhook(request, env);
+        }
+        const planMatch = url.pathname.match(/^\/v1\/tenants\/([a-zA-Z0-9_-]+)\/plan$/);
+        if (planMatch && request.method === "PUT") {
+          if (!auth?.isAdmin) {
+            return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { "content-type": "application/json" } });
+          }
+          return await handleSetPlan(request, env, planMatch[1]);
+        }
+
         if (!auth) {
           return new Response(JSON.stringify({ error: "unauthorized" }), {
             status: 401,
             headers: { "content-type": "application/json" },
           });
         }
+
+        const productResponse = await handleProductRoute(request, env, auth, url);
+        if (productResponse) return productResponse;
 
         if (url.pathname === "/v1/employees" && request.method === "POST") {
           return await handleSpawnEmployeeV1(request, env, auth);
