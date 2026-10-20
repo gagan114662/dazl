@@ -85,7 +85,8 @@ export interface Enrichment { connector: string; kind: string; value: string; la
 
 export function addEnrichment(db: Database.Database, tenantId: string, leadId: string, e: Enrichment): void {
   db.prepare(
-    `INSERT OR IGNORE INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (lead_id, connector, kind, value) DO NOTHING`,
   ).run(randomBytes(12).toString('hex'), leadId, tenantId, e.connector, e.kind, e.value, e.label, e.confidence, e.source_url, e.source_date, e.retrieved_at)
 }
 
