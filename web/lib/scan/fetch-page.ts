@@ -31,7 +31,7 @@ export function isPublicIp(ip: string): boolean {
 }
 
 // Checked at connect time on the address actually used, so DNS rebinding cannot swap in a private IP.
-function guardedLookup(hostname: string, options: { all?: boolean }, cb: (...args: unknown[]) => void) {
+export function guardedLookup(hostname: string, options: { all?: boolean }, cb: (...args: unknown[]) => void) {
   dnsLookup(hostname, { all: true }, (err, addrs) => {
     if (err) return cb(err)
     if (addrs.length === 0 || addrs.some(a => !isPublicIp(a.address))) return cb(new Error('blocked_address'))

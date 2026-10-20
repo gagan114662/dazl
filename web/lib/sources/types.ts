@@ -1,0 +1,31 @@
+// Source adapters collect public, dated evidence for a scan. They are deliberately small and isolated:
+//  - they receive plain data (the request, keywords, feed URLs) and a guarded HTTP function,
+//  - they never see the database, tenant keys or any credential,
+//  - they return Evidence items, which the model may turn into leads. Every lead is then checked by the
+//    normal verifier against the page it cites, exactly like web-search leads.
+// Adapters that need a user's own approved credential (an OAuth token or API key) can be added later: the runner
+// would pass that credential in via `AdapterInput.credential`, and only for that adapter.
+export interface Evidence {
+  source: string // adapter id
+  url: string // public https page
+  title: string
+  quote: string // text expected to appear on that page, 20-300 chars
+  date: string | null // YYYY-MM-DD
+}
+
+export interface HttpResult { status: number; body: string }
+export type SafeGet = (url: string, opts?: { accept?: string; headers?: Record<string, string> }) => Promise<HttpResult | null>
+
+export interface AdapterInput {
+  query: string
+  keywords: string[]
+  feeds: string[]
+  http: SafeGet
+  credential?: string // reserved for future user-approved connectors; no adapter below uses it
+}
+
+export interface SourceAdapter {
+  id: string
+  label: string
+  collect(input: AdapterInput): Promise<Evidence[]>
+}

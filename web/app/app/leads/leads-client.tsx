@@ -24,6 +24,8 @@ export default function LeadsClient() {
   const [leads, setLeads] = useState<Lead[]>([])
   const [error, setError] = useState('')
   const [quality, setQuality] = useState<Quality | null>(null)
+  const [useGithub, setUseGithub] = useState(false)
+  const [feedText, setFeedText] = useState('')
 
   const lines = (v: string) => v.split('\n').map(x => x.trim()).filter(Boolean)
 
@@ -40,7 +42,7 @@ export default function LeadsClient() {
 
   async function run(withIcp: Icp | null) {
     setError('')
-    const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}) }) })
+    const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(useGithub || feedText.trim() ? { sources: { adapters: [...(useGithub ? ['github'] : []), ...(feedText.trim() ? ['rss'] : [])], feeds: lines(feedText) } } : {}) }) })
     const j = await r.json().catch(() => ({}))
     if (!r.ok) return setError(j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')
     setJobId(j.job_id); setStatus('pending'); setLeads([]); setQuality(null); setIcp(null); setDraft(null)
@@ -71,6 +73,15 @@ export default function LeadsClient() {
       <form onSubmit={preview} className="mb-4">
         <textarea className={`${input} w-full`} rows={3} required minLength={3} maxLength={600} value={query} onChange={e => setQuery(e.target.value)}
           placeholder="What are you looking for? e.g. Seed-stage fintech founders in Europe who just hired their first sales rep" />
+        <details className="mt-2 text-sm">
+          <summary className="cursor-pointer text-gray-400">More sources (optional)</summary>
+          <div className="mt-2 space-y-2">
+            <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useGithub} onChange={e => setUseGithub(e.target.checked)} /> Also search public GitHub repositories</label>
+            <label className="block text-xs text-gray-500">RSS or Atom feed URLs to include (https only, one per line, up to 5)</label>
+            <textarea className={`${input} w-full`} rows={2} value={feedText} onChange={e => setFeedText(e.target.value)} placeholder="https://example.com/news/feed.xml" />
+            <p className="text-xs text-gray-500">Items from these sources are checked against their page like every other lead.</p>
+          </div>
+        </details>
         <div className="flex gap-2 mt-2">
           <button disabled={busy} className="btn-primary">{busy ? 'Working out your profile...' : 'Find leads'}</button>
           <button type="button" disabled={query.trim().length < 3} onClick={() => run(null)} className="text-gray-400 hover:text-white text-sm px-3">Skip review, just run</button>

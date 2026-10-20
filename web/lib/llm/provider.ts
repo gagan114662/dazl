@@ -20,7 +20,7 @@ export class ProviderError extends Error {
 export interface Provider {
   research(apiKey: string, prompt: string, fetchImpl?: typeof fetch): Promise<ResearchResult>
   // Short plain answer with no tools (used for the contradiction check). Optional so test doubles can omit it.
-  complete?(apiKey: string, prompt: string, fetchImpl?: typeof fetch): Promise<string>
+  complete?(apiKey: string, prompt: string, fetchImpl?: typeof fetch, maxTokens?: number): Promise<string>
 }
 
 const TIMEOUT_MS = Number(process.env.SCAN_LLM_TIMEOUT_MS || 150_000)
@@ -69,11 +69,11 @@ export const anthropicProvider: Provider = {
     }
     return { text, citedUrls: [...urls] }
   },
-  async complete(apiKey, prompt, fetchImpl = fetch) {
+  async complete(apiKey, prompt, fetchImpl = fetch, maxTokens = 10) {
     const json = await post(
       'https://api.anthropic.com/v1/messages',
       { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-      { model: process.env.DAZL_ANTHROPIC_MODEL || 'claude-sonnet-4-5', max_tokens: 10, messages: [{ role: 'user', content: prompt }] },
+      { model: process.env.DAZL_ANTHROPIC_MODEL || 'claude-sonnet-4-5', max_tokens: maxTokens, messages: [{ role: 'user', content: prompt }] },
       fetchImpl,
     )
     return arr(json.content).map(b => (b.type === 'text' && typeof b.text === 'string' ? b.text : '')).join('')
@@ -101,8 +101,8 @@ export const openaiProvider: Provider = {
     }
     return { text, citedUrls: [...urls] }
   },
-  async complete(apiKey, prompt, fetchImpl = fetch) {
-    const json = await post('https://api.openai.com/v1/responses', { authorization: `Bearer ${apiKey}` }, { model: process.env.DAZL_OPENAI_MODEL || 'gpt-4.1', input: prompt, max_output_tokens: 16 }, fetchImpl)
+  async complete(apiKey, prompt, fetchImpl = fetch, maxTokens = 16) {
+    const json = await post('https://api.openai.com/v1/responses', { authorization: `Bearer ${apiKey}` }, { model: process.env.DAZL_OPENAI_MODEL || 'gpt-4.1', input: prompt, max_output_tokens: maxTokens }, fetchImpl)
     let text = ''
     for (const item of arr(json.output)) if (item.type === 'message') for (const part of arr(item.content)) if (part.type === 'output_text' && typeof part.text === 'string') text += part.text
     return text

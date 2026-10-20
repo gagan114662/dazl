@@ -10,7 +10,7 @@ export interface ScanInput {
   location: string
 }
 // Free-text request. The legacy columns stay filled (placeholders) so older workers keep working.
-export interface QueryInput { query: string; icp?: string | null }
+export interface QueryInput { query: string; icp?: string | null; sources?: string | null }
 
 // Schema notes for the external worker (Hermes). Everything is enforced in
 // SQLite itself, so a writer that bypasses the web app cannot corrupt state:
@@ -89,6 +89,7 @@ function addColumns(db: Database.Database): void {
   add('scan_jobs', 'query', 'TEXT CHECK (query IS NULL OR length(query) <= 600)')
   add('scan_jobs', 'icp', 'TEXT CHECK (icp IS NULL OR length(icp) <= 4000)')
   add('scan_jobs', 'icp_inferred', 'INTEGER')
+  add('scan_jobs', 'sources', 'TEXT CHECK (sources IS NULL OR length(sources) <= 2000)')
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS leads_dedup ON leads (scan_job_id, dedup_key) WHERE dedup_key IS NOT NULL')
 }
 
@@ -103,8 +104,8 @@ export function createJob(db: Database.Database, userId: string, input: ScanInpu
 // icp is a JSON string the user already saw and accepted/edited; null means "infer it when the job runs".
 export function createQueryJob(db: Database.Database, userId: string, input: QueryInput): string {
   const id = randomBytes(12).toString('hex')
-  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, icp_inferred) VALUES (?, ?, ?, '(from request)', '-', ?, ?, ?)").run(
-    id, userId, input.query.slice(0, 150) || '-', input.query, input.icp ?? null, input.icp ? 0 : null,
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, icp_inferred, sources) VALUES (?, ?, ?, '(from request)', '-', ?, ?, ?, ?)").run(
+    id, userId, input.query.slice(0, 150) || '-', input.query, input.icp ?? null, input.icp ? 0 : null, input.sources ?? null,
   )
   return id
 }

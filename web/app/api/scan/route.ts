@@ -6,6 +6,7 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { MAX_QUERY, normalizeIcp } from '@/lib/scan/icp'
 import { countActiveJobs, createJob, createQueryJob } from '@/lib/scan/store'
 import { scanQuota } from '@/lib/plans'
+import { normalizeSources } from '@/lib/sources'
 import { kickRunner } from '@/lib/scan/runner'
 
 export async function POST(req: NextRequest) {
@@ -37,7 +38,8 @@ export async function POST(req: NextRequest) {
   if (!q.allowed) {
     return NextResponse.json({ error: 'quota_exceeded', plan: q.plan, used: q.used, limit: q.limit }, { status: 402 })
   }
-  const job_id = query.length >= 3 ? createQueryJob(db, user.id, { query, icp: icp ? JSON.stringify(icp) : null }) : createJob(db, user.id, { business_name, industry, location })
+  const sel = body?.sources ? normalizeSources(body.sources) : null
+  const job_id = query.length >= 3 ? createQueryJob(db, user.id, { query, icp: icp ? JSON.stringify(icp) : null, sources: sel ? JSON.stringify(sel) : null }) : createJob(db, user.id, { business_name, industry, location })
   after(() => kickRunner(db))
   return NextResponse.json({ job_id }, { status: 202 })
 }
