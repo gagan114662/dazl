@@ -1,4 +1,5 @@
 'use client'
+import { emptyMessage } from '@/lib/scan/empty-message'
 import { useEffect, useState } from 'react'
 
 interface Lead { id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null }
@@ -13,6 +14,11 @@ const REASON: Record<string, string> = {
 }
 const REVIEW: Record<string, string> = { blocked_by_site: 'The site blocked our check', needs_javascript: 'The page needs JavaScript to show its content' }
 
+const FAILURE: Record<string, string> = {
+  no_api_key: 'failed: no AI key is saved. Add one in Settings, then run again.',
+  key_rejected: 'failed: your AI provider rejected the key. Check it in Settings.',
+}
+
 export default function LeadsClient() {
   const [query, setQuery] = useState('')
   const [draft, setDraft] = useState<Icp | null>(null)
@@ -24,6 +30,7 @@ export default function LeadsClient() {
   const [leads, setLeads] = useState<Lead[]>([])
   const [error, setError] = useState('')
   const [quality, setQuality] = useState<Quality | null>(null)
+  const [failure, setFailure] = useState('')
 
   const lines = (v: string) => v.split('\n').map(x => x.trim()).filter(Boolean)
 
@@ -43,7 +50,7 @@ export default function LeadsClient() {
     const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}) }) })
     const j = await r.json().catch(() => ({}))
     if (!r.ok) return setError(j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')
-    setJobId(j.job_id); setStatus('pending'); setLeads([]); setQuality(null); setIcp(null); setDraft(null)
+    setJobId(j.job_id); setStatus('pending'); setLeads([]); setQuality(null); setFailure(''); setIcp(null); setDraft(null)
   }
 
   useEffect(() => {
@@ -54,6 +61,7 @@ export default function LeadsClient() {
       const s = await r.json()
       setStatus(s.status)
       setQuality(s.quality ?? null)
+      if (s.status === 'failed') setFailure(typeof s.error === 'string' ? s.error : '')
       if (s.icp) setIcp({ icp: s.icp, source: s.icp_source })
       if (s.status === 'done') {
         const l = await fetch(`/api/leads?job_id=${jobId}`)
@@ -103,7 +111,7 @@ export default function LeadsClient() {
         </details>
       )}
       {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
-      {jobId && status !== 'done' && <p className="text-gray-400 text-sm mb-4">Scan {status === 'failed' ? 'failed. Try again.' : `${status}... this can take a few minutes.`}</p>}
+      {jobId && status !== 'done' && <p className="text-gray-400 text-sm mb-4">Scan {status === 'failed' ? (FAILURE[failure] ?? 'failed. Try again.') : `${status}... this can take a few minutes.`}</p>}
       {quality && status === 'done' && (
         <p className="text-gray-400 text-sm mb-4">
           {quality.candidates} found: {quality.passed ?? 0} verified, {quality.needs_review ?? 0} need your review, {quality.dropped ?? 0} dropped
@@ -112,7 +120,7 @@ export default function LeadsClient() {
       )}
       <div className="card divide-y divide-white/5">
         {leads.filter(l => !l.review_reason).length === 0 ? (
-          <p className="p-10 text-center text-gray-500 text-sm">{status === 'done' ? 'The scan finished with no leads.' : 'No leads yet. Run a scan.'}</p>
+          <p className="p-10 text-center text-gray-500 text-sm">{status === 'done' ? emptyMessage(quality) : 'No leads yet. Run a scan.'}</p>
         ) : leads.filter(l => !l.review_reason).map(l => (
           <div key={l.id} className="p-4 text-sm">
             <div className="font-medium">{l.company || l.name} <span className="text-gray-500">score {l.score}</span></div>
