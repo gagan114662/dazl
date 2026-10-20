@@ -32,9 +32,9 @@ export default function SignIn() {
 
   return (
     <main className="min-h-screen flex items-center justify-center glow px-4 py-10">
-      <div className="card p-8 sm:p-10 w-full max-w-sm shadow-2xl shadow-indigo-950/40 backdrop-blur">
-        <a href="/" className="text-xl font-bold tracking-tight block text-center mb-6">dazl<span className="text-indigo-400">.</span></a>
-        <h1 className="text-2xl font-bold mb-1 text-center">Sign in</h1>
+      <div className="card p-8 sm:p-10 w-full max-w-sm">
+        <a href="/" className="text-xl font-medium tracking-tight block text-center mb-6">dazl<span className="text-indigo-400">.</span></a>
+        <h1 className="text-2xl font-medium mb-1 text-center">Sign in</h1>
         <p className="text-gray-400 text-sm mb-6 text-center">Enter your email to continue</p>
         <a href="/api/auth/google" className="flex items-center justify-center gap-2 bg-white text-gray-900 hover:bg-gray-100 px-6 py-3 rounded-xl font-semibold transition mb-4 text-sm">Continue with Google</a>
         <div className="flex items-center gap-3 text-gray-600 text-xs mb-4"><span className="h-px flex-1 bg-white/10" />or use email<span className="h-px flex-1 bg-white/10" /></div>
