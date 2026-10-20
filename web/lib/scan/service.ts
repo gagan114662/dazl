@@ -2,6 +2,7 @@ import { cookies } from 'next/headers'
 import { getAuthDb, getSessionUser } from '../auth-db'
 import { migrateScan } from './store.ts'
 import { migrateKeys } from '../llm/key-store.ts'
+import { migrateAdvanced } from '../advanced/index.ts'
 import { migrateConnectors } from '../connectors/store.ts'
 import { migratePlans } from '../plans.ts'
 import { migrateBilling } from '../billing/stripe.ts'
@@ -14,6 +15,7 @@ export function getScanDb() {
     migrateKeys(db)
     migratePlans(db)
     migrateConnectors(db)
+    migrateAdvanced(db)
     migrateBilling(db)
     ready = true
   }

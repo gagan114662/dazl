@@ -24,6 +24,8 @@ export default function LeadsClient() {
   const [leads, setLeads] = useState<Lead[]>([])
   const [error, setError] = useState('')
   const [quality, setQuality] = useState<Quality | null>(null)
+  const [useGithub, setUseGithub] = useState(false)
+  const [feedText, setFeedText] = useState('')
 
   const lines = (v: string) => v.split('\n').map(x => x.trim()).filter(Boolean)
 
@@ -38,9 +40,13 @@ export default function LeadsClient() {
     setDraftNote(j.inferred ? 'dazl worked this out from your request. Edit anything that is off, then run the scan.' : 'dazl could not infer more, so it will use your words as they are. Add detail below if you like.')
   }
 
+  const [advReady, setAdvReady] = useState<string[]>([])
+  const [advPick, setAdvPick] = useState<string[]>([])
+  useEffect(() => { void fetch('/api/settings/advanced').then(r => r.ok ? r.json() : null).then(j => { if (j?.available) setAdvReady(j.platforms.filter((p: { consent: boolean; connected: boolean; enabled: boolean }) => p.consent && p.connected && p.enabled).map((p: { platform: string }) => p.platform)) }).catch(() => {}) }, [])
+
   async function run(withIcp: Icp | null) {
     setError('')
-    const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}) }) })
+    const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(useGithub || feedText.trim() || advPick.length ? { sources: { adapters: [...(useGithub ? ['github'] : []), ...(feedText.trim() ? ['rss'] : [])], feeds: lines(feedText), advanced: advPick } } : {}) }) })
     const j = await r.json().catch(() => ({}))
     if (!r.ok) return setError(j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')
     setJobId(j.job_id); setStatus('pending'); setLeads([]); setQuality(null); setIcp(null); setDraft(null)
@@ -71,6 +77,16 @@ export default function LeadsClient() {
       <form onSubmit={preview} className="mb-4">
         <textarea className={`${input} w-full`} rows={3} required minLength={3} maxLength={600} value={query} onChange={e => setQuery(e.target.value)}
           placeholder="What are you looking for? e.g. Seed-stage fintech founders in Europe who just hired their first sales rep" />
+        <details className="mt-2 text-sm">
+          <summary className="cursor-pointer text-gray-400">More sources (optional)</summary>
+          <div className="mt-2 space-y-2">
+            <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useGithub} onChange={e => setUseGithub(e.target.checked)} /> Also search public GitHub repositories</label>
+            <label className="block text-xs text-gray-500">RSS or Atom feed URLs to include (https only, one per line, up to 5)</label>
+            <textarea className={`${input} w-full`} rows={2} value={feedText} onChange={e => setFeedText(e.target.value)} placeholder="https://example.com/news/feed.xml" />
+            {advReady.map(p => <label key={p} className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={advPick.includes(p)} onChange={e => setAdvPick(e.target.checked ? [...advPick, p] : advPick.filter(x => x !== p))} /> Also search {p} with my session (advanced, may risk the account)</label>)}
+            <p className="text-xs text-gray-500">Items from these sources are checked against their page like every other lead.</p>
+          </div>
+        </details>
         <div className="flex gap-2 mt-2">
           <button disabled={busy} className="btn-primary">{busy ? 'Working out your profile...' : 'Find leads'}</button>
           <button type="button" disabled={query.trim().length < 3} onClick={() => run(null)} className="text-gray-400 hover:text-white text-sm px-3">Skip review, just run</button>
