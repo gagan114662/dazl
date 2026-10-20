@@ -1,0 +1,55 @@
+import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
+
+// Envelope encryption for tenant secrets (their LLM API keys).
+//  - A fresh random 256-bit data key encrypts each secret (AES-256-GCM).
+//  - The data key is wrapped with a master key that lives only in the server
+//    environment (DAZL_MASTER_KEY, base64 of 32 random bytes), never in the DB.
+//  - The context string (tenant + vendor) is bound as GCM additional data on
+//    both layers, so a stored blob cannot be copied to another tenant's row.
+// Rotation: add the new master key, re-wrap rows (decrypt+encrypt), remove the old one.
+
+export function getMasterKey(env: NodeJS.ProcessEnv = process.env): Buffer {
+  const raw = env.DAZL_MASTER_KEY
+  if (!raw) throw new Error('DAZL_MASTER_KEY is not set')
+  const key = Buffer.from(raw, 'base64')
+  if (key.length !== 32) throw new Error('DAZL_MASTER_KEY must be base64 of exactly 32 bytes')
+  return key
+}
+
+const b64 = (b: Buffer) => b.toString('base64')
+
+function seal(key: Buffer, plaintext: Buffer, aad: Buffer) {
+  const iv = randomBytes(12)
+  const c = createCipheriv('aes-256-gcm', key, iv)
+  c.setAAD(aad)
+  const ct = Buffer.concat([c.update(plaintext), c.final()])
+  return { iv, ct, tag: c.getAuthTag() }
+}
+
+function open(key: Buffer, iv: Buffer, ct: Buffer, tag: Buffer, aad: Buffer): Buffer {
+  const d = createDecipheriv('aes-256-gcm', key, iv)
+  d.setAAD(aad)
+  d.setAuthTag(tag)
+  return Buffer.concat([d.update(ct), d.final()])
+}
+
+export function encryptSecret(plaintext: string, context: string, master = getMasterKey()): string {
+  const aad = Buffer.from(context)
+  const dataKey = randomBytes(32)
+  const body = seal(dataKey, Buffer.from(plaintext, 'utf8'), aad)
+  const wrap = seal(master, dataKey, aad)
+  dataKey.fill(0)
+  return JSON.stringify({ v: 1, iv: b64(body.iv), ct: b64(body.ct), tag: b64(body.tag), wiv: b64(wrap.iv), wct: b64(wrap.ct), wtag: b64(wrap.tag) })
+}
+
+export function decryptSecret(blob: string, context: string, master = getMasterKey()): string {
+  const o = JSON.parse(blob)
+  if (o?.v !== 1) throw new Error('unsupported secret format')
+  const aad = Buffer.from(context)
+  const dataKey = open(master, Buffer.from(o.wiv, 'base64'), Buffer.from(o.wct, 'base64'), Buffer.from(o.wtag, 'base64'), aad)
+  try {
+    return open(dataKey, Buffer.from(o.iv, 'base64'), Buffer.from(o.ct, 'base64'), Buffer.from(o.tag, 'base64'), aad).toString('utf8')
+  } finally {
+    dataKey.fill(0)
+  }
+}

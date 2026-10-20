@@ -1,8 +1,12 @@
+import LlmKeyPanel from './llm-key-panel'
+
 export default function Settings() {
   return (
     <div className="p-8 max-w-2xl">
       <h1 className="text-2xl font-bold mb-1">Settings</h1>
       <p className="text-gray-400 text-sm mb-8">Connect your accounts and configure your GTM agent.</p>
+
+      <LlmKeyPanel />
 
       {/* Gmail */}
       <div className="bg-white/5 border border-white/10 rounded-2xl p-6 mb-4">

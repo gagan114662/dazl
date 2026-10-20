@@ -3,6 +3,7 @@ import { cleanText } from '@/lib/validate'
 import { rateLimit } from '@/lib/rate-limit'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { countActiveJobs, createJob } from '@/lib/scan/store'
+import { scanQuota } from '@/lib/plans'
 
 export async function POST(req: NextRequest) {
   const user = await requireUser()
@@ -22,6 +23,10 @@ export async function POST(req: NextRequest) {
   const db = getScanDb()
   if (countActiveJobs(db, user.id) >= 2) {
     return NextResponse.json({ error: 'You already have scans in progress. Wait for them to finish.' }, { status: 429 })
+  }
+  const q = scanQuota(db, user.id)
+  if (!q.allowed) {
+    return NextResponse.json({ error: 'quota_exceeded', plan: q.plan, used: q.used, limit: q.limit }, { status: 402 })
   }
   const job_id = createJob(db, user.id, { business_name, industry, location })
   return NextResponse.json({ job_id }, { status: 202 })
