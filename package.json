@@ -15,9 +15,14 @@
     "typecheck": "tsc"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.84",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/nodemailer": "^8.0.2",
     "@vercel/connect": "2.5.2",
     "ai": "^7.0.137",
+    "better-sqlite3": "^13.0.3",
     "eve": "^0.81.1",
+    "nodemailer": "^10.1.7",
     "zod": "4.5.4"
   },
   "devDependencies": {
@@ -27,5 +32,4 @@
   "engines": {
     "node": "24.x"
   }
-
 }
