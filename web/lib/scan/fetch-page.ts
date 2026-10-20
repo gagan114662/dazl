@@ -101,26 +101,90 @@ export function htmlToText(html: string): { text: string; title: string } {
   return { text, title: title.replace(/\s+/g, ' ').trim().slice(0, 300) }
 }
 
-// Fetches a public https page. Returns null on any refusal or failure.
-export async function safeFetchPage(rawUrl: string): Promise<Page | null> {
+export type FetchFail = { fail: 'blocked' | 'js_required' | 'not_found' | 'error' | 'refused' }
+export const isFail = (r: Page | FetchFail | null): r is FetchFail => !!r && 'fail' in r
+
+const CHALLENGE = /just a moment|attention required|access denied|verify you are (a )?human|are you a robot|captcha|cf-chl|enable javascript and cookies/i
+const NEEDS_JS = /enable javascript|requires javascript|javascript is (required|disabled)|you need to enable javascript/i
+const EMPTY_SHELL = /<div[^>]+id=["'](root|__next|app|__nuxt)["'][^>]*>\s*<\/div>/i
+
+// Why a page gave us (almost) nothing: a bot wall, or a JavaScript-only shell.
+export function classifyThin(html: string, text: string): 'blocked' | 'js_required' | null {
+  if (text.length >= 400) return null
+  if (CHALLENGE.test(html)) return 'blocked'
+  if (NEEDS_JS.test(html) || EMPTY_SHELL.test(html) || (/<script/i.test(html) && text.length < 120)) return 'js_required'
+  return null
+}
+
+// Optional rendering service (Browserless-compatible POST {SCAN_RENDER_URL}/content), used only
+// for pages that came back blocked or JavaScript-only. The browser runs OUTSIDE this process.
+// The operator must run it in a network that cannot reach internal addresses: this process
+// can check the URL's DNS before handing it over, but cannot control the browser's own lookups.
+export async function renderViaService(rawUrl: string, fetchImpl: typeof fetch = fetch): Promise<string | null> {
+  const base = process.env.SCAN_RENDER_URL
+  if (!base) return null
   try {
-    let url = new URL(rawUrl)
-    for (let i = 0; i <= MAX_REDIRECTS; i++) {
-      if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')) return null
-      const host = url.hostname.replace(/^\[|\]$/g, '')
-      if (isIP(host) && !isPublicIp(host)) return null
-      const r = await once(url)
-      if (r.status >= 300 && r.status < 400) {
-        if (!r.location) return null
-        url = new URL(r.location, url)
-        continue
-      }
-      if (r.status < 200 || r.status >= 300 || !r.body) return null
-      const { text, title } = htmlToText(r.body)
-      return text ? { text, title, retrievedAt: Math.floor(Date.now() / 1000) } : null
-    }
-    return null
+    const u = new URL(rawUrl)
+    if (u.protocol !== 'https:' || u.username || u.password || (u.port && u.port !== '443')) return null
+    const host = u.hostname.replace(/^\[|\]$/g, '')
+    const addrs = isIP(host) ? [host] : (await new Promise<string[]>((res, rej) => dnsLookup(host, { all: true }, (e, a) => (e ? rej(e) : res(a.map(x => x.address)))))) 
+    if (addrs.length === 0 || addrs.some(a => !isPublicIp(a))) return null
+    const token = process.env.SCAN_RENDER_TOKEN
+    const res = await fetchImpl(`${base.replace(/\/$/, '')}/content${token ? `?token=${encodeURIComponent(token)}` : ''}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url: u.toString(), gotoOptions: { waitUntil: 'networkidle2', timeout: 20_000 } }),
+      signal: AbortSignal.timeout(35_000),
+    })
+    if (!res.ok) return null
+    const html = await res.text()
+    return html.length > 0 && html.length <= MAX_BYTES ? html : null
   } catch {
     return null
   }
+}
+
+// Fetches a public https page and says why when it cannot. Private addresses are never contacted.
+export async function fetchPageDetailed(rawUrl: string, render: (url: string) => Promise<string | null> = renderViaService): Promise<Page | FetchFail> {
+  try {
+    let url = new URL(rawUrl)
+    for (let i = 0; i <= MAX_REDIRECTS; i++) {
+      if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')) return { fail: 'refused' }
+      const host = url.hostname.replace(/^\[|\]$/g, '')
+      if (isIP(host) && !isPublicIp(host)) return { fail: 'refused' }
+      const r = await once(url)
+      if (r.status >= 300 && r.status < 400) {
+        if (!r.location) return { fail: 'error' }
+        url = new URL(r.location, url)
+        continue
+      }
+      let thin: 'blocked' | 'js_required' | null = null
+      let html = r.body
+      if (r.status === 401 || r.status === 403 || r.status === 429) thin = 'blocked'
+      else if (r.status === 404 || r.status === 410) return { fail: 'not_found' }
+      else if (r.status < 200 || r.status >= 300) return { fail: 'error' }
+      else if (!html) return { fail: 'error' }
+      else {
+        const t = htmlToText(html)
+        thin = classifyThin(html, t.text)
+        if (!thin) return t.text ? { ...t, retrievedAt: Math.floor(Date.now() / 1000) } : { fail: 'error' }
+      }
+      // blocked or JavaScript-only: try the rendering service if one is configured
+      const rendered = await render(url.toString())
+      if (rendered) {
+        const t = htmlToText(rendered)
+        if (t.text.length >= 200 && !classifyThin(rendered, t.text)) return { ...t, retrievedAt: Math.floor(Date.now() / 1000) }
+      }
+      return { fail: thin }
+    }
+    return { fail: 'error' }
+  } catch {
+    return { fail: 'error' }
+  }
+}
+
+// Compatibility wrapper: the page, or null on any failure.
+export async function safeFetchPage(rawUrl: string): Promise<Page | null> {
+  const r = await fetchPageDetailed(rawUrl)
+  return isFail(r) ? null : r
 }

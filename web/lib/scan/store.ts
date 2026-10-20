@@ -78,7 +78,11 @@ function addColumns(db: Database.Database): void {
   add('leads', 'retrieved_at', 'INTEGER')
   add('leads', 'confidence', 'INTEGER CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 100)')
   add('leads', 'dedup_key', 'TEXT')
+  add('leads', 'review_reason', 'TEXT')
   add('scan_jobs', 'candidates', 'INTEGER')
+  add('scan_jobs', 'needs_review', 'INTEGER')
+  add('scan_jobs', 'dropped', 'INTEGER')
+  add('scan_jobs', 'drop_reasons', 'TEXT')
   add('scan_jobs', 'verified', 'INTEGER')
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS leads_dedup ON leads (scan_job_id, dedup_key) WHERE dedup_key IS NOT NULL')
 }
@@ -107,8 +111,8 @@ export function reapStaleJobs(db: Database.Database): void {
 export function getJob(db: Database.Database, userId: string, id: string) {
   reapStaleJobs(db)
   const job = db
-    .prepare('SELECT id, status, error, created_at, finished_at, candidates, verified FROM scan_jobs WHERE id = ? AND user_id = ?')
-    .get(id, userId) as { id: string; status: string; error: string | null; created_at: number; finished_at: number | null; candidates: number | null; verified: number | null } | undefined
+    .prepare('SELECT id, status, error, created_at, finished_at, candidates, verified, needs_review, dropped, drop_reasons FROM scan_jobs WHERE id = ? AND user_id = ?')
+    .get(id, userId) as { id: string; status: string; error: string | null; created_at: number; finished_at: number | null; candidates: number | null; verified: number | null; needs_review: number | null; dropped: number | null; drop_reasons: string | null } | undefined
   if (!job) return undefined
   const { n } = db.prepare('SELECT count(*) AS n FROM leads WHERE scan_job_id = ?').get(id) as { n: number }
   return { ...job, lead_count: n }
@@ -122,9 +126,9 @@ export function listLeads(db: Database.Database, userId: string, jobId: string, 
   return db
     .prepare(
       `SELECT l.id, l.scan_job_id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.created_at,
-         l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence
+         l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l.review_reason
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
-       WHERE j.id = ? AND j.user_id = ? ORDER BY l.score DESC, l.created_at DESC LIMIT ?`,
+       WHERE j.id = ? AND j.user_id = ? ORDER BY (l.confidence IS NULL), l.score DESC, l.created_at DESC LIMIT ?`,
     )
     .all(jobId, userId, Math.min(limit, 500))
 }
