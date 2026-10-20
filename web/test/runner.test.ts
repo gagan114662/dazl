@@ -19,7 +19,10 @@ function setup() {
   saveKey(db, 'B', 'anthropic', KB, master)
   return db
 }
-const lead = (url: string, extra = {}) => ({ name: 'Pat', company: 'Co', contact: null, signal: 'Hiring', source_url: url, score: 80, ...extra })
+const QUOTE = 'Northside Builders announced it is hiring three roofing crews for the Toronto market'
+const recent = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10)
+const lead = (url: string, extra = {}) => ({ name: 'Pat', company: 'Northside Builders', contact: null, signal: 'Hiring', source_url: url, score: 80, excerpt: QUOTE, event_date: recent, ...extra })
+const page = async () => ({ text: `News ${recent.slice(0, 4)}. ${QUOTE}. More text.`, title: 'Northside Builders news', retrievedAt: 1_700_000_000 })
 const fake = (fn: (key: string) => Promise<{ text: string; citedUrls: string[] }>): Record<'anthropic' | 'openai', Provider> => ({
   anthropic: { research: (k) => fn(k) },
   openai: { research: (k) => fn(k) },
@@ -39,7 +42,7 @@ test('a run writes leads for the job owner and marks it done', async () => {
   const id = createJob(db, 'A', input)
   const job = claimKeyedJob(db)!
   assert.equal(job.id, id)
-  assert.equal(await runJob(db, job, { providers: fake(ok([lead('https://a.com')], ['https://a.com'])), master }), 'done')
+  assert.equal(await runJob(db, job, { providers: fake(ok([lead('https://a.com')], ['https://a.com'])), master, fetchPage: page }), 'done')
   assert.equal(getJob(db, 'A', id)?.status, 'done')
   assert.equal(listLeads(db, 'A', id).length, 1)
 })
@@ -98,10 +101,10 @@ test('bad model output is retried; a stale run cannot overwrite a newer attempt'
   assert.equal(getJob(db, 'A', id)?.status, 'pending')
   const second = claimKeyedJob(db)!
   assert.equal(second.attempts, first.attempts + 1)
-  await runJob(db, first, { providers: fake(ok([lead('https://old.com')], ['https://old.com'])), master }) // stale: ignored
+  await runJob(db, first, { providers: fake(ok([lead('https://old.com')], ['https://old.com'])), master, fetchPage: page }) // stale: ignored
   assert.equal(getJob(db, 'A', id)?.status, 'running')
   assert.equal(listLeads(db, 'A', id).length, 0)
-  await runJob(db, second, { providers: fake(ok([lead('https://new.com')], ['https://new.com'])), master })
+  await runJob(db, second, { providers: fake(ok([lead('https://new.com')], ['https://new.com'])), master, fetchPage: page })
   assert.equal((listLeads(db, 'A', id)[0] as { source_url: string }).source_url, 'https://new.com')
 })
 

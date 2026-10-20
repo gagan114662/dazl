@@ -12,5 +12,5 @@ export async function GET(req: NextRequest) {
   if (!job) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   // polling also restarts retries and jobs reaped after a crash or restart
   if (job.status === 'pending') after(() => kickRunner(getScanDb()))
-  return NextResponse.json({ job_id: job.id, status: job.status, lead_count: job.lead_count, error: job.error })
+  return NextResponse.json({ job_id: job.id, status: job.status, lead_count: job.lead_count, candidates: job.candidates, verified: job.verified, error: job.error })
 }
