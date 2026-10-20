@@ -1,8 +1,14 @@
+import LlmKeyPanel from './llm-key-panel'
+import PlanPanel from './plan-panel'
+
 export default function Settings() {
   return (
     <div className="p-8 max-w-2xl">
       <h1 className="text-2xl font-bold mb-1">Settings</h1>
       <p className="text-gray-400 text-sm mb-8">Connect your accounts and configure your GTM agent.</p>
+
+      <PlanPanel />
+      <LlmKeyPanel />
 
       {/* Gmail */}
       <div className="bg-white/5 border border-white/10 rounded-2xl p-6 mb-4">
@@ -24,7 +30,7 @@ export default function Settings() {
         <h2 className="font-semibold mb-1">Your business</h2>
         <p className="text-gray-400 text-sm mb-4">Tell dazl what you sell so it can find the right buyers.</p>
         <form className="flex flex-col gap-3" action="/api/settings/business" method="POST">
-          <input name="business_name" type="text" placeholder="Business name"
+          <input name="business_name" type="text" placeholder="Company (optional)"
             className="bg-white/10 border border-white/20 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 text-sm" />
           <textarea name="what_you_sell" rows={3} placeholder="What do you sell? Who buys it? What problem does it solve?"
             className="bg-white/10 border border-white/20 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 text-sm resize-none" />

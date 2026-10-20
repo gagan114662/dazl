@@ -1,0 +1,22 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { getScanDb, requireUser } from '@/lib/scan/service'
+import { createCheckoutUrl } from '@/lib/billing/stripe'
+import { getPlan } from '@/lib/plans'
+import { rateLimit } from '@/lib/rate-limit'
+import { sameOriginJson } from '@/lib/same-origin'
+
+export async function POST(req: NextRequest) {
+  const user = await requireUser()
+  if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
+  if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
+  if (!process.env.STRIPE_SECRET_KEY || !process.env.STRIPE_PRICE_PRO) return NextResponse.json({ error: 'Billing is not available yet' }, { status: 503 })
+  if (!rateLimit(`checkout:${user.id}`, 10, 60 * 60 * 1000).ok) return NextResponse.json({ error: 'Too many attempts' }, { status: 429 })
+  const db = getScanDb()
+  if (getPlan(db, user.id) === 'pro') return NextResponse.json({ error: 'Already on Pro' }, { status: 409 })
+  try {
+    return NextResponse.json({ url: await createCheckoutUrl(db, user.id, user.email) })
+  } catch (e) {
+    console.error('checkout failed', e)
+    return NextResponse.json({ error: 'Could not start checkout' }, { status: 502 })
+  }
+}
