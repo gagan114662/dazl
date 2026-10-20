@@ -35,7 +35,7 @@ export default function Home() {
           <h1 className="text-[40px] md:text-[52px] font-semibold leading-[1.08] tracking-[-0.02em] max-w-3xl">Where buyers get found, and proven.</h1>
           <p className="text-lg md:text-[20px] text-[#555] mt-5 max-w-[700px] leading-[1.45]">Tell dazl who you are looking for in plain words. It searches the web for buyers showing intent right now, and checks every lead against the page it came from.</p>
           <div className="flex flex-wrap gap-3 mt-8">
-            <Link href="/sign-up" className="btn-accent">Start for free</Link>
+            <Link href="/sign-up" className="btn-primary">Start for free</Link>
             <a href="#how" className="btn-ghost">How it works</a>
           </div>
           <p className="text-sm text-[#666] mt-4">Free plan: 50 scans a month. Bring your own Anthropic or OpenAI key.</p>
@@ -43,19 +43,19 @@ export default function Home() {
 
         <section className="px-4 md:px-8 pb-16">
           <div className="stage px-4 md:px-10 py-12 md:py-20 flex flex-col items-center gap-4">
-            <div className="flex gap-1 rounded-md bg-white/15 p-1 mono">
+            <div className="flex gap-1 rounded-md bg-white border border-black/15 p-1 mono">
               {['Find', 'Verify', 'Review', 'Send'].map((t, i) => <span key={t} className="tab" data-on={i === 0}>{t}</span>)}
             </div>
-            <div className="w-full max-w-2xl rounded-lg bg-white p-5 text-left text-[#111]">
+            <div className="w-full max-w-2xl rounded-lg bg-white border border-black/15 p-5 text-left text-[#111]">
               <div className="text-xs text-[#666] mb-2">What are you looking for?</div>
               <div className="text-base md:text-lg">Seed-stage fintech founders in Europe who just hired their first sales rep</div>
               <div className="mt-5 grid gap-2 text-sm border-t border-black/10 pt-4">
                 <div className="flex gap-2 items-start"><span className="badge mono shrink-0">verified</span><span>Head of Sales role posted after a seed round <span className="text-[#666]">(quote on page, dated this month)</span></span></div>
                 <div className="flex gap-2 items-start"><span className="badge mono shrink-0">verified</span><span>New Berlin office with two sales roles <span className="text-[#666]">(source linked)</span></span></div>
-                <div className="flex gap-2 items-start"><span className="badge mono shrink-0 !text-amber-800 !border-amber-600/30 !bg-amber-100">review</span><span>Site blocked our check, open the source yourself</span></div>
+                <div className="flex gap-2 items-start"><span className="badge mono shrink-0 badge-review">review</span><span>Site blocked our check, open the source yourself</span></div>
               </div>
             </div>
-            <div className="text-xs" style={{color:"#fff"}}>Illustration only. Real results depend on your request and the live web.</div>
+            <div className="text-xs text-[#555]">Illustration only. Real results depend on your request and the live web.</div>
           </div>
         </section>
       </div>
@@ -65,7 +65,7 @@ export default function Home() {
         <div className="grid md:grid-cols-3 gap-5">
           {STEPS.map(s => (
             <div key={s.n} className="card card-hover p-6">
-              <div className="w-8 h-8 rounded-full bg-orange-500/10 text-[#c2410c] text-sm font-semibold flex items-center justify-center mb-4">{s.n}</div>
+              <div className="w-8 h-8 rounded-full bg-black/5 text-[#111] text-sm font-semibold flex items-center justify-center mb-4">{s.n}</div>
               <h3 className="font-semibold text-lg mb-2">{s.title}</h3>
               <p className="text-[#555] text-sm leading-relaxed">{s.desc}</p>
             </div>
@@ -95,7 +95,7 @@ export default function Home() {
             <Link href="/sign-up" className="btn-ghost w-full">Start free</Link>
           </div>
           <div className="card p-8 max-w-xs w-full text-left !border-black/50 ">
-            <div className="text-sm text-[#c2410c] mb-1">Pro</div>
+            <div className="text-sm text-[#111] mb-1">Pro</div>
             <div className="text-4xl font-medium mb-1">CA$99<span className="text-lg font-normal text-[#555]">/mo</span></div>
             <p className="text-[#555] text-sm mb-6">Unlimited scans</p>
             <Link href="/sign-up" className="btn-primary w-full">Start free, upgrade any time</Link>

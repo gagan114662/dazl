@@ -12,10 +12,10 @@ export default function AppHome() {
           { n: '3', t: 'Review verified leads', d: 'Each lead has its source, quote and date. Nothing is sent until you approve.', href: '/app/leads', cta: 'See results' },
         ].map(s => (
           <div key={s.n} className="card card-hover p-5 flex flex-col">
-            <div className="w-7 h-7 rounded-full bg-orange-500/10 text-[#c2410c] text-xs font-semibold flex items-center justify-center mb-3">{s.n}</div>
+            <div className="w-7 h-7 rounded-full bg-black/5 text-[#111] text-xs font-semibold flex items-center justify-center mb-3">{s.n}</div>
             <div className="font-semibold mb-1">{s.t}</div>
             <p className="text-[#555] text-sm mb-4 flex-1">{s.d}</p>
-            <Link href={s.href} className="text-[#c2410c] hover:text-[#c2410c] text-sm">{s.cta} &rarr;</Link>
+            <Link href={s.href} className="text-[#111] underline underline-offset-2 text-sm">{s.cta} &rarr;</Link>
           </div>
         ))}
       </div>

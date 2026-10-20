@@ -3,7 +3,7 @@ export const metadata = { title: 'Terms of Service - dazl' }
 export default function Terms() {
   return (
     <main className="max-w-2xl mx-auto px-6 py-16 text-[#555] text-sm leading-relaxed">
-      <p className="mb-6 rounded-lg border border-yellow-500/40 bg-yellow-500/10 p-3 text-yellow-200">
+      <p className="mb-6 rounded-lg border border-black/40 bg-[#f4f4f4] p-3 text-[#111]">
         DRAFT - placeholder text for review by the site owner and a lawyer before launch. Not legal advice.
       </p>
       <h1 className="text-2xl font-semibold text-[#111] mb-4">Terms of Service</h1>

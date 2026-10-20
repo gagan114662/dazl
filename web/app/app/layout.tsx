@@ -22,10 +22,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex h-screen bg-white">
       <aside className="w-56 shrink-0 border-r border-black/10 bg-[#fafafa] flex flex-col py-6 px-4 gap-1">
-        <Link href="/app" className="text-lg font-semibold tracking-tight mb-6 px-2">dazl<span className="text-[#c2410c]">.</span></Link>
+        <Link href="/app" className="text-lg font-semibold tracking-tight mb-6 px-2">dazl<span className="text-[#111]">.</span></Link>
         {NAV.map(n => (
           <Link key={n.href} href={n.href}
-            className="text-sm px-3 py-2 rounded-lg text-[#555] hover:text-[#111] hover:bg-orange-500/10 transition">
+            className="text-sm px-3 py-2 rounded-lg text-[#555] hover:text-[#111] hover:bg-black/5 transition">
             {n.label}
           </Link>
         ))}

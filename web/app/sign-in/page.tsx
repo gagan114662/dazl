@@ -33,12 +33,12 @@ export default function SignIn() {
   return (
     <main className="min-h-screen flex items-center justify-center glow px-4 py-10">
       <div className="card p-8 sm:p-10 w-full max-w-sm">
-        <a href="/" className="text-xl font-medium tracking-tight block text-center mb-6">dazl<span className="text-[#c2410c]">.</span></a>
+        <a href="/" className="text-xl font-medium tracking-tight block text-center mb-6">dazl<span className="text-[#111]">.</span></a>
         <h1 className="text-2xl font-medium mb-1 text-center">Sign in</h1>
         <p className="text-[#555] text-sm mb-6 text-center">Enter your email to continue</p>
         <a href="/api/auth/google" className="flex items-center justify-center gap-2 bg-white text-[#111] border border-black/25 hover:bg-gray-50 px-6 py-3 rounded font-medium transition mb-4 text-sm">Continue with Google</a>
         <div className="flex items-center gap-3 text-[#6b6b6b] text-xs mb-4"><span className="h-px flex-1 bg-black/5" />or use email<span className="h-px flex-1 bg-black/5" /></div>
-        {error && <p role="alert" className="text-red-700 text-sm mb-4 text-center bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
+        {error && <p role="alert" className="text-[#111] text-sm mb-4 text-center bg-[#f4f4f4] border border-black/40 rounded-lg px-3 py-2">{error}</p>}
         <form onSubmit={handleSubmit} className="flex flex-col gap-3">
           <input name="email" type="email" required placeholder="you@company.com"
             className="field" />
@@ -50,7 +50,7 @@ export default function SignIn() {
           </button>
         </form>
         <p className="mt-4 text-sm text-[#666] text-center">
-          No account? <a href="/sign-up" className="text-[#c2410c] hover:underline">Create an account</a>
+          No account? <a href="/sign-up" className="text-[#111] underline underline-offset-2 hover:underline">Create an account</a>
         </p>
       </div>
     </main>
