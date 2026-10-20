@@ -12,7 +12,7 @@ export interface Candidate {
 }
 
 export type Verdict =
-  | { ok: true; confidence: number; contact: string | null; dateStatus: 'verified' | 'unverified' | 'undated'; retrievedAt: number }
+  | { ok: true; confidence: number; contact: string | null; dateStatus: 'verified' | 'unverified' | 'undated'; retrievedAt: number; passage: string }
   | { ok: false; reason: string }
 
 export const MAX_AGE_DAYS = Number(process.env.SCAN_MAX_AGE_DAYS || 365)
@@ -81,5 +81,6 @@ export function verifyEvidence(c: Candidate, page: Page, now = new Date()): Verd
   }
   confidence = Math.max(0, Math.min(100, confidence))
   if (confidence < MIN_CONFIDENCE) return { ok: false, reason: 'low_confidence' }
-  return { ok: true, confidence, contact, dateStatus, retrievedAt: page.retrievedAt }
+  const passage = text.slice(Math.max(0, at - 800), at + excerpt.length + 800)
+  return { ok: true, confidence, contact, dateStatus, retrievedAt: page.retrievedAt, passage }
 }
