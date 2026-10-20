@@ -9,6 +9,8 @@ export interface ScanInput {
   industry: string
   location: string
 }
+// Free-text request. The legacy columns stay filled (placeholders) so older workers keep working.
+export interface QueryInput { query: string; icp?: string | null }
 
 // Schema notes for the external worker (Hermes). Everything is enforced in
 // SQLite itself, so a writer that bypasses the web app cannot corrupt state:
@@ -84,6 +86,9 @@ function addColumns(db: Database.Database): void {
   add('scan_jobs', 'dropped', 'INTEGER')
   add('scan_jobs', 'drop_reasons', 'TEXT')
   add('scan_jobs', 'verified', 'INTEGER')
+  add('scan_jobs', 'query', 'TEXT CHECK (query IS NULL OR length(query) <= 600)')
+  add('scan_jobs', 'icp', 'TEXT CHECK (icp IS NULL OR length(icp) <= 4000)')
+  add('scan_jobs', 'icp_inferred', 'INTEGER')
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS leads_dedup ON leads (scan_job_id, dedup_key) WHERE dedup_key IS NOT NULL')
 }
 
@@ -91,6 +96,15 @@ export function createJob(db: Database.Database, userId: string, input: ScanInpu
   const id = randomBytes(12).toString('hex')
   db.prepare('INSERT INTO scan_jobs (id, user_id, business_name, industry, location) VALUES (?, ?, ?, ?, ?)').run(
     id, userId, input.business_name, input.industry, input.location,
+  )
+  return id
+}
+
+// icp is a JSON string the user already saw and accepted/edited; null means "infer it when the job runs".
+export function createQueryJob(db: Database.Database, userId: string, input: QueryInput): string {
+  const id = randomBytes(12).toString('hex')
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, icp_inferred) VALUES (?, ?, ?, '(from request)', '-', ?, ?, ?)").run(
+    id, userId, input.query.slice(0, 150) || '-', input.query, input.icp ?? null, input.icp ? 0 : null,
   )
   return id
 }
@@ -111,8 +125,8 @@ export function reapStaleJobs(db: Database.Database): void {
 export function getJob(db: Database.Database, userId: string, id: string) {
   reapStaleJobs(db)
   const job = db
-    .prepare('SELECT id, status, error, created_at, finished_at, candidates, verified, needs_review, dropped, drop_reasons FROM scan_jobs WHERE id = ? AND user_id = ?')
-    .get(id, userId) as { id: string; status: string; error: string | null; created_at: number; finished_at: number | null; candidates: number | null; verified: number | null; needs_review: number | null; dropped: number | null; drop_reasons: string | null } | undefined
+    .prepare('SELECT id, status, error, query, icp, icp_inferred, created_at, finished_at, candidates, verified, needs_review, dropped, drop_reasons FROM scan_jobs WHERE id = ? AND user_id = ?')
+    .get(id, userId) as { id: string; status: string; error: string | null; query: string | null; icp: string | null; icp_inferred: number | null; created_at: number; finished_at: number | null; candidates: number | null; verified: number | null; needs_review: number | null; dropped: number | null; drop_reasons: string | null } | undefined
   if (!job) return undefined
   const { n } = db.prepare('SELECT count(*) AS n FROM leads WHERE scan_job_id = ?').get(id) as { n: number }
   return { ...job, lead_count: n }

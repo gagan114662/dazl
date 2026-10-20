@@ -5,8 +5,8 @@ import './globals.css'
 const geist = Geist({ subsets: ['latin'] })
 
 export const metadata: Metadata = {
-  title: 'dazl — your GTM AI coworker',
-  description: 'Finds buyers, reaches them, books meetings, takes payment. All without you.',
+  title: 'dazl - find leads with proof',
+  description: 'Say who you are looking for. dazl finds buyers showing intent and verifies each lead against its source.',
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
