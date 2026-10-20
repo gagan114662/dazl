@@ -99,10 +99,10 @@ export default function LeadsClient() {
             {icp.icp.signals.length > 0 && <li>Signals: {icp.icp.signals.join('; ')}</li>}
             {icp.icp.exclude.length > 0 && <li>Skipping: {icp.icp.exclude.join('; ')}</li>}
           </ul>
-          <button className="text-[#c2410c] text-xs mt-2" onClick={() => { setDraft(icp.icp); setDraftNote('Edit the profile and run again.') }}>Edit and run again</button>
+          <button className="text-[#111] underline underline-offset-2 text-xs mt-2" onClick={() => { setDraft(icp.icp); setDraftNote('Edit the profile and run again.') }}>Edit and run again</button>
         </details>
       )}
-      {error && <p className="text-red-700 text-sm mb-4">{error}</p>}
+      {error && <p className="text-[#111] text-sm mb-4">{error}</p>}
       {jobId && status !== 'done' && <p className="text-[#555] text-sm mb-4">Scan {status === 'failed' ? 'failed. Try again.' : `${status}... this can take a few minutes.`}</p>}
       {quality && status === 'done' && (
         <p className="text-[#555] text-sm mb-4">
@@ -119,7 +119,7 @@ export default function LeadsClient() {
             <div className="text-[#555]">{l.signal}</div>
             {l.evidence_excerpt && <blockquote className="text-[#666] text-xs border-l border-black/10 pl-3 my-1">&ldquo;{l.evidence_excerpt}&rdquo;</blockquote>}
             <span className="text-[#666] text-xs mr-3">{l.confidence === null ? 'not verified' : `confidence ${l.confidence}`}{l.event_date ? `, ${l.event_date}${l.date_status === 'unverified' ? ' (date not confirmed on page)' : ''}` : ''}</span>
-            <a className="text-[#c2410c] text-xs" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
+            <a className="text-[#111] underline underline-offset-2 text-xs" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
             {l.contact && <span className="text-[#666] text-xs ml-3">{l.contact}</span>}
           </div>
         ))}
@@ -133,8 +133,8 @@ export default function LeadsClient() {
               <div key={l.id} className="p-4 text-sm">
                 <div className="font-medium">{l.company || l.name}</div>
                 <div className="text-[#555]">{l.signal}</div>
-                <span className="text-yellow-500 text-xs mr-3">{REVIEW[l.review_reason ?? ''] ?? 'Not verified'}</span>
-                <a className="text-[#c2410c] text-xs" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
+                <span className="text-[#555] italic text-xs mr-3">{REVIEW[l.review_reason ?? ''] ?? 'Not verified'}</span>
+                <a className="text-[#111] underline underline-offset-2 text-xs" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
               </div>
             ))}
           </div>

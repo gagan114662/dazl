@@ -38,7 +38,7 @@ export default function LlmKeyPanel() {
       {keys.map(k => (
         <div key={k.vendor} className="flex items-center justify-between text-sm mb-3">
           <span>{k.vendor === 'anthropic' ? 'Anthropic' : 'OpenAI'} key ending in {k.last4}</span>
-          <button onClick={() => remove(k.vendor)} className="text-red-700 hover:text-red-700">Remove</button>
+          <button onClick={() => remove(k.vendor)} className="text-[#111] underline underline-offset-2">Remove</button>
         </div>
       ))}
       <form onSubmit={save} className="flex flex-col gap-3" autoComplete="off">
