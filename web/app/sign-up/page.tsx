@@ -32,6 +32,8 @@ export default function SignUp() {
         <a href="/" className="text-xl font-bold tracking-tight block text-center mb-6">dazl<span className="text-indigo-400">.</span></a>
         <h1 className="text-2xl font-bold mb-1 text-center">Create your account</h1>
         <p className="text-gray-400 text-sm mb-6 text-center">Free: 50 scans a month · Upgrade any time</p>
+        <a href="/api/auth/google" className="flex items-center justify-center gap-2 bg-white text-gray-900 hover:bg-gray-100 px-6 py-3 rounded-xl font-semibold transition mb-3 text-sm">Continue with Google</a>
+        <p className="text-center text-gray-600 text-xs mb-3">or use email</p>
         {error && <p className="text-red-400 text-sm mb-4 text-center">{error}</p>}
         <form onSubmit={handleSubmit} className="flex flex-col gap-3">
           <input name="name" type="text" required placeholder="Your name"
