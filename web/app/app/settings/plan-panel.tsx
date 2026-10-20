@@ -18,11 +18,11 @@ export default function PlanPanel() {
   return (
     <div className="card p-6 mb-4">
       <h2 className="font-semibold mb-1">Plan <span className="badge ml-2">{u.plan === 'pro' ? 'Pro' : 'Free'}</span></h2>
-      <p className="text-gray-400 text-sm mb-4">{u.scan_limit === null ? `${u.scans_used} scans this month, unlimited.` : `${u.scans_used} of ${u.scan_limit} scans used this month.`}</p>
+      <p className="text-[#555] text-sm mb-4">{u.scan_limit === null ? `${u.scans_used} scans this month, unlimited.` : `${u.scans_used} of ${u.scan_limit} scans used this month.`}</p>
       {u.plan === 'pro'
         ? <button onClick={() => go('/api/billing/portal')} className="btn-ghost">Manage billing</button>
         : <button onClick={() => go('/api/billing/checkout')} className="btn-primary">Upgrade to Pro</button>}
-      {msg && <p className="text-sm text-gray-400 mt-3">{msg}</p>}
+      {msg && <p className="text-sm text-[#555] mt-3">{msg}</p>}
     </div>
   )
 }

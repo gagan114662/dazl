@@ -3,8 +3,8 @@ import Link from 'next/link'
 export default function AppHome() {
   return (
     <div className="p-8 max-w-4xl">
-      <h1 className="text-2xl font-bold tracking-tight mb-1">Welcome to dazl</h1>
-      <p className="text-gray-400 text-sm mb-8">Three steps to your first verified leads.</p>
+      <h1 className="text-2xl font-semibold tracking-tight mb-1">Welcome to dazl</h1>
+      <p className="text-[#555] text-sm mb-8">Three steps to your first verified leads.</p>
       <div className="grid md:grid-cols-3 gap-4">
         {[
           { n: '1', t: 'Add your AI key', d: 'Scans run on your own Anthropic or OpenAI key.', href: '/app/settings', cta: 'Open Settings' },
@@ -12,10 +12,10 @@ export default function AppHome() {
           { n: '3', t: 'Review verified leads', d: 'Each lead has its source, quote and date. Nothing is sent until you approve.', href: '/app/leads', cta: 'See results' },
         ].map(s => (
           <div key={s.n} className="card card-hover p-5 flex flex-col">
-            <div className="w-7 h-7 rounded-full bg-indigo-500/20 text-indigo-300 text-xs font-semibold flex items-center justify-center mb-3">{s.n}</div>
+            <div className="w-7 h-7 rounded-full bg-orange-500/10 text-[#c2410c] text-xs font-semibold flex items-center justify-center mb-3">{s.n}</div>
             <div className="font-semibold mb-1">{s.t}</div>
-            <p className="text-gray-400 text-sm mb-4 flex-1">{s.d}</p>
-            <Link href={s.href} className="text-indigo-300 hover:text-indigo-200 text-sm">{s.cta} &rarr;</Link>
+            <p className="text-[#555] text-sm mb-4 flex-1">{s.d}</p>
+            <Link href={s.href} className="text-[#c2410c] hover:text-[#c2410c] text-sm">{s.cta} &rarr;</Link>
           </div>
         ))}
       </div>

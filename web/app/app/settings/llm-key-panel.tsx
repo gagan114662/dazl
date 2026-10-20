@@ -34,11 +34,11 @@ export default function LlmKeyPanel() {
   return (
     <div className="card p-6 mb-4">
       <h2 className="font-semibold mb-1">AI provider key</h2>
-      <p className="text-gray-400 text-sm mb-4">Scans use your own Anthropic or OpenAI key, so usage is billed to you by the provider. Your key is encrypted and never shown again.</p>
+      <p className="text-[#555] text-sm mb-4">Scans use your own Anthropic or OpenAI key, so usage is billed to you by the provider. Your key is encrypted and never shown again.</p>
       {keys.map(k => (
         <div key={k.vendor} className="flex items-center justify-between text-sm mb-3">
           <span>{k.vendor === 'anthropic' ? 'Anthropic' : 'OpenAI'} key ending in {k.last4}</span>
-          <button onClick={() => remove(k.vendor)} className="text-red-400 hover:text-red-300">Remove</button>
+          <button onClick={() => remove(k.vendor)} className="text-red-700 hover:text-red-700">Remove</button>
         </div>
       ))}
       <form onSubmit={save} className="flex flex-col gap-3" autoComplete="off">
@@ -48,7 +48,7 @@ export default function LlmKeyPanel() {
         </select>
         <input className={field} type="password" autoComplete="off" placeholder="Paste your API key" value={apiKey} onChange={e => setApiKey(e.target.value)} />
         <button className="btn-primary w-fit">Save key</button>
-        {msg && <p className="text-sm text-gray-400">{msg}</p>}
+        {msg && <p className="text-sm text-[#555]">{msg}</p>}
       </form>
     </div>
   )
