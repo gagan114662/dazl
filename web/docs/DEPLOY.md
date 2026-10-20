@@ -5,7 +5,7 @@ Run it as ONE Node process (in-memory rate limits and the in-process scan runner
 ## Env vars
 Required:
 - `DB_PATH` - SQLite file. Use a NEW path (for example /var/lib/dazl-next/app.db). Never point it at the old app's database.
-- `DAZL_MASTER_KEY` - 32 bytes, base64 or hex. Encrypts customer API keys. Losing it makes stored keys unreadable. Do not rotate casually.
+- `DAZL_MASTER_KEY` - base64 of exactly 32 random bytes (`openssl rand -base64 32`). Encrypts customer API keys. Losing it makes stored keys unreadable. Do not rotate casually.
 - `PUBLIC_BASE_URL` - https://dazl.ai
 - `STRIPE_SECRET_KEY` - sk_test_ until you go live, then sk_live_
 - `STRIPE_PRICE_PRO` - the Pro price ID (copy it from the Stripe dashboard)
