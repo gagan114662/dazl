@@ -73,3 +73,13 @@ test('scan quota: free = 50 per month, pro unlimited, per tenant', () => {
   // last month's scans do not count
   assert.equal(scanQuota(db, 'a', new Date(Date.UTC(2099, 0, 15))).used, 0)
 })
+
+test('hasKey is true only for tenants that saved a key', async () => {
+  const { hasKey } = await import('../lib/llm/key-store.ts')
+  const db = new Database(':memory:')
+  migrateKeys(db)
+  assert.equal(hasKey(db, 'A'), false)
+  saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', Buffer.alloc(32, 7))
+  assert.equal(hasKey(db, 'A'), true)
+  assert.equal(hasKey(db, 'B'), false)
+})

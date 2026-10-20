@@ -31,6 +31,10 @@ export function keyStatus(db: Database.Database, tenantId: string) {
   return db.prepare('SELECT vendor, last4, validated_at FROM tenant_llm_keys WHERE tenant_id = ?').all(tenantId) as { vendor: Vendor; last4: string; validated_at: number }[]
 }
 
+export function hasKey(db: Database.Database, tenantId: string): boolean {
+  return db.prepare('SELECT 1 FROM tenant_llm_keys WHERE tenant_id = ? LIMIT 1').get(tenantId) !== undefined
+}
+
 export function deleteKey(db: Database.Database, tenantId: string, vendor: Vendor): boolean {
   return db.prepare('DELETE FROM tenant_llm_keys WHERE tenant_id = ? AND vendor = ?').run(tenantId, vendor).changes === 1
 }
