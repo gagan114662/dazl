@@ -16,7 +16,13 @@ export default function Home() {
     <main className="min-h-screen flex flex-col glow relative overflow-hidden">
       <div className="grid-fade absolute inset-x-0 top-0 h-[40rem] pointer-events-none" />
       <nav className="relative flex items-center justify-between px-6 md:px-10 py-5 max-w-6xl mx-auto w-full">
-        <span className="text-xl font-bold tracking-tight">dazl<span className="text-indigo-400">.</span></span>
+        <span className="text-xl font-medium tracking-tight">dazl<span className="text-indigo-400">.</span></span>
+        <div className="hidden md:flex gap-7 text-sm text-gray-400">
+          <a href="#how" className="hover:text-white transition">Product</a>
+          <a href="#pricing" className="hover:text-white transition">Pricing</a>
+          <a href="#faq" className="hover:text-white transition">Docs</a>
+          <a href="#updates" className="hover:text-white transition">Blog</a>
+        </div>
         <div className="flex gap-3 items-center">
           <Link href="/sign-in" className="text-sm text-gray-400 hover:text-white transition px-3 py-2">Sign in</Link>
           <Link href="/sign-up" className="btn-primary mono">Start free</Link>
@@ -25,9 +31,9 @@ export default function Home() {
 
       <div className="rails relative max-w-6xl mx-auto w-full">
         <section className="px-6 md:px-12 pt-16 pb-10">
-          <span className="badge mono">Find · Verify · Reach</span>
-          <h1 className="text-5xl md:text-7xl font-semibold leading-[1.04] tracking-tight mt-6 max-w-4xl">Where buyers get found, and proven.</h1>
-          <p className="text-xl md:text-2xl text-gray-400 mt-5 max-w-3xl leading-snug">Tell dazl who you are looking for in plain words. It searches the web for buyers showing intent right now, and checks every lead against the page it came from.</p>
+          <p className="mono text-xs text-gray-500">Lead research with proof</p>
+          <h1 className="text-5xl md:text-7xl font-medium leading-[1.05] tracking-tight mt-5 max-w-4xl">Where buyers get found, and proven.</h1>
+          <p className="text-xl text-gray-400 mt-5 max-w-[500px] leading-snug">Tell dazl who you are looking for in plain words. It searches the web for buyers showing intent right now, and checks every lead against the page it came from.</p>
           <div className="flex flex-wrap gap-3 mt-8">
             <Link href="/sign-up" className="btn-primary mono">Start for free</Link>
             <a href="#how" className="btn-ghost mono">How it works</a>
@@ -55,7 +61,7 @@ export default function Home() {
       </div>
 
       <section id="how" className="relative px-6 py-20 max-w-5xl mx-auto w-full">
-        <h2 className="text-3xl font-bold tracking-tight text-center mb-12">How it works</h2>
+        <h2 className="text-3xl font-medium tracking-tight mb-10">How it works</h2>
         <div className="grid md:grid-cols-3 gap-5">
           {STEPS.map(s => (
             <div key={s.n} className="card card-hover p-6">
@@ -78,23 +84,42 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="relative text-center px-6 py-20 border-t border-white/10">
-        <h2 className="text-3xl font-bold tracking-tight mb-2">Simple pricing</h2>
+      <section id="pricing" className="relative text-center px-6 py-20 border-t border-white/10">
+        <h2 className="text-3xl font-medium tracking-tight mb-2">Simple pricing</h2>
         <p className="text-gray-400 mb-10">You pay your AI provider directly for the usage on your own key.</p>
         <div className="flex flex-wrap gap-5 justify-center">
           <div className="card p-8 max-w-xs w-full text-left">
             <div className="text-sm text-gray-400 mb-1">Free</div>
-            <div className="text-4xl font-bold mb-1">CA$0</div>
+            <div className="text-4xl font-medium mb-1">CA$0</div>
             <p className="text-gray-400 text-sm mb-6">50 scans a month</p>
             <Link href="/sign-up" className="btn-ghost w-full">Start free</Link>
           </div>
-          <div className="card p-8 max-w-xs w-full text-left !border-indigo-400/50 shadow-xl shadow-indigo-950/50">
+          <div className="card p-8 max-w-xs w-full text-left !border-indigo-400/50 ">
             <div className="text-sm text-indigo-300 mb-1">Pro</div>
-            <div className="text-4xl font-bold mb-1">CA$99<span className="text-lg font-normal text-gray-400">/mo</span></div>
+            <div className="text-4xl font-medium mb-1">CA$99<span className="text-lg font-normal text-gray-400">/mo</span></div>
             <p className="text-gray-400 text-sm mb-6">Unlimited scans</p>
             <Link href="/sign-up" className="btn-primary w-full">Start free, upgrade any time</Link>
           </div>
         </div>
+      </section>
+
+      <section id="faq" className="relative px-6 py-20 max-w-3xl mx-auto w-full border-t border-white/10">
+        <h2 className="text-3xl font-medium tracking-tight mb-8">Questions</h2>
+        {[
+          ['Which AI key do I need?', 'An Anthropic or OpenAI API key. Add it in Settings. Scans run on your key and the provider bills you directly.'],
+          ['How are leads checked?', 'dazl opens the cited page, confirms the quote is on it, that it names the company, and that the date is recent. Leads that fail are dropped, and you see the counts and reasons.'],
+          ['Does dazl send email for me?', 'Not by itself. Sending is off in this release. When it is available, each email goes from your own Gmail after you approve the exact text.'],
+        ].map(([q, a]) => (
+          <details key={q} className="border-b border-white/10 py-4 group">
+            <summary className="cursor-pointer text-gray-200 list-none flex justify-between">{q}<span className="text-gray-500 group-open:rotate-45 transition">+</span></summary>
+            <p className="text-gray-400 text-sm mt-3 leading-relaxed">{a}</p>
+          </details>
+        ))}
+      </section>
+
+      <section id="updates" className="relative px-6 py-14 max-w-3xl mx-auto w-full border-t border-white/10">
+        <h2 className="text-xl font-medium tracking-tight mb-2">Updates</h2>
+        <p className="text-gray-500 text-sm">Nothing posted yet.</p>
       </section>
 
       <footer className="relative text-center py-8 text-gray-600 text-sm border-t border-white/10">
