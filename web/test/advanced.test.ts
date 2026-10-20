@@ -8,7 +8,7 @@ import { advFlags } from '../lib/advanced/config.ts'
 import { normalizeSources } from '../lib/sources/index.ts'
 
 const master = randomBytes(32)
-const ON = { ADVANCED_CONNECTORS: '1', ADVANCED_WORKER_URL: 'http://worker.internal:9000', ADVANCED_WORKER_TOKEN: 't' }
+const ON: Record<string, string | undefined> = { ADVANCED_CONNECTORS: '1', ADVANCED_WORKER_URL: 'http://worker.internal:9000', ADVANCED_WORKER_TOKEN: 't' }
 const item = { url: 'https://x.example/p/1', title: 'Acme hires', quote: 'Acme Robotics is hiring its first sales lead', date: '2026-10-10', login_walled: true }
 function setup() { const db = new Database(':memory:'); migrateConnectors(db); migrateAdvanced(db); return db }
 
