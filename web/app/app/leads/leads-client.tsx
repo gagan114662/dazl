@@ -63,21 +63,21 @@ export default function LeadsClient() {
     return () => clearInterval(t)
   }, [jobId, status])
 
-  const input = 'bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm'
+  const input = 'field'
   return (
     <div className="p-8">
-      <h1 className="text-2xl font-bold mb-1">Leads</h1>
+      <h1 className="text-2xl font-bold tracking-tight mb-1">Leads</h1>
       <p className="text-gray-400 text-sm mb-6">Buyers showing purchase intent, with the signal and source for each.</p>
       <form onSubmit={preview} className="mb-4">
         <textarea className={`${input} w-full`} rows={3} required minLength={3} maxLength={600} value={query} onChange={e => setQuery(e.target.value)}
           placeholder="What are you looking for? e.g. Seed-stage fintech founders in Europe who just hired their first sales rep" />
         <div className="flex gap-2 mt-2">
-          <button disabled={busy} className="bg-indigo-500 hover:bg-indigo-400 disabled:opacity-60 px-5 py-2 rounded-xl text-sm font-medium transition">{busy ? 'Working out your profile...' : 'Find leads'}</button>
+          <button disabled={busy} className="btn-primary">{busy ? 'Working out your profile...' : 'Find leads'}</button>
           <button type="button" disabled={query.trim().length < 3} onClick={() => run(null)} className="text-gray-400 hover:text-white text-sm px-3">Skip review, just run</button>
         </div>
       </form>
       {draft && (
-        <div className="bg-white/5 border border-white/10 rounded-2xl p-4 mb-6 text-sm">
+        <div className="card p-4 mb-6 text-sm">
           <p className="text-gray-400 mb-3">{draftNote}</p>
           <label className="block text-xs text-gray-500 mb-1">Who you want</label>
           <textarea className={`${input} w-full mb-2`} rows={2} maxLength={300} value={draft.summary} onChange={e => setDraft({ ...draft, summary: e.target.value })} />
@@ -87,7 +87,7 @@ export default function LeadsClient() {
               <textarea className={`${input} w-full mb-2`} rows={2} value={draft[k].join('\n')} onChange={e => setDraft({ ...draft, [k]: lines(e.target.value) })} />
             </div>
           ))}
-          <button onClick={() => run(draft)} className="bg-indigo-500 hover:bg-indigo-400 px-5 py-2 rounded-xl text-sm font-medium transition">Run scan with this profile</button>
+          <button onClick={() => run(draft)} className="btn-primary">Run scan with this profile</button>
         </div>
       )}
       {icp && !draft && (
@@ -110,7 +110,7 @@ export default function LeadsClient() {
           {Object.keys(quality.drop_reasons).length > 0 && <> ({Object.entries(quality.drop_reasons).map(([k, n]) => `${n} ${REASON[k] ?? k}`).join(', ')})</>}.
         </p>
       )}
-      <div className="bg-white/5 border border-white/10 rounded-2xl divide-y divide-white/5">
+      <div className="card divide-y divide-white/5">
         {leads.filter(l => !l.review_reason).length === 0 ? (
           <p className="p-10 text-center text-gray-500 text-sm">{status === 'done' ? 'The scan finished with no leads.' : 'No leads yet. Run a scan.'}</p>
         ) : leads.filter(l => !l.review_reason).map(l => (
@@ -128,7 +128,7 @@ export default function LeadsClient() {
         <>
           <h2 className="text-sm font-semibold mt-8 mb-2">Needs your review</h2>
           <p className="text-gray-500 text-xs mb-3">dazl could not read these pages, so nothing is confirmed and they will not be emailed. Open the source and check them yourself.</p>
-          <div className="bg-white/5 border border-white/10 rounded-2xl divide-y divide-white/5">
+          <div className="card divide-y divide-white/5">
             {leads.filter(l => l.review_reason).map(l => (
               <div key={l.id} className="p-4 text-sm">
                 <div className="font-medium">{l.company || l.name}</div>

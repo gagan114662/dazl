@@ -30,9 +30,9 @@ export default function LlmKeyPanel() {
     void load()
   }
 
-  const field = 'bg-white/10 border border-white/20 rounded-xl px-4 py-2.5 text-white text-sm'
+  const field = 'field'
   return (
-    <div className="bg-white/5 border border-white/10 rounded-2xl p-6 mb-4">
+    <div className="card p-6 mb-4">
       <h2 className="font-semibold mb-1">AI provider key</h2>
       <p className="text-gray-400 text-sm mb-4">Scans use your own Anthropic or OpenAI key, so usage is billed to you by the provider. Your key is encrypted and never shown again.</p>
       {keys.map(k => (
@@ -47,7 +47,7 @@ export default function LlmKeyPanel() {
           <option value="openai">OpenAI</option>
         </select>
         <input className={field} type="password" autoComplete="off" placeholder="Paste your API key" value={apiKey} onChange={e => setApiKey(e.target.value)} />
-        <button className="bg-indigo-500 hover:bg-indigo-400 px-5 py-2 rounded-xl text-sm font-medium transition w-fit">Save key</button>
+        <button className="btn-primary w-fit">Save key</button>
         {msg && <p className="text-sm text-gray-400">{msg}</p>}
       </form>
     </div>
