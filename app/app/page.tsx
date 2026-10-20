@@ -2,7 +2,7 @@ import Link from 'next/link'
 
 export default function Home() {
   return (
-    <main className="min-h-screen flex flex-col">
+    <main className="min-h-screen flex flex-col" style={{backgroundColor:"#030712",color:"#f9fafb"}}>
       {/* Nav */}
       <nav className="flex items-center justify-between px-8 py-5 border-b border-white/10">
         <span className="text-xl font-bold tracking-tight">dazl<span className="text-indigo-400">.</span></span>
