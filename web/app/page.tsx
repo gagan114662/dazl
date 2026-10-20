@@ -14,27 +14,27 @@ export default function Home() {
 
       {/* Hero */}
       <section className="flex flex-col items-center justify-center text-center flex-1 px-6 py-24 gap-6">
-        <div className="text-xs font-semibold tracking-widest text-indigo-400 uppercase">Find · Reach · Book · Paid</div>
+        <div className="text-xs font-semibold tracking-widest text-indigo-400 uppercase">Find · Verify · Reach</div>
         <h1 className="text-5xl md:text-6xl font-bold max-w-3xl leading-tight">
-          One agent that finds customers,<br/>reaches them, and books the work.
+          Tell dazl who you are looking for.<br/>Get leads with proof.
         </h1>
         <p className="text-lg text-gray-400 max-w-xl">
-          dazl watches 30+ live signals — Reddit, LinkedIn, funding rounds, competitor reviews, job posts — finds buyers right now, emails them, handles replies, books meetings, and takes payment. You just show up.
+          Type what you want in plain words. dazl works out the ideal customer profile, searches the web for people and companies showing buying intent right now, and checks every lead against the page it came from. You review, approve and send.
         </p>
         <div className="flex gap-4 mt-2">
           <Link href="/sign-up" className="bg-indigo-500 hover:bg-indigo-400 px-8 py-3 rounded-xl font-semibold text-lg transition">
-            Start free — CA$99/mo after trial
+            Start free
           </Link>
         </div>
-        <p className="text-sm text-gray-500">14 days free. No credit card to start.</p>
+        <p className="text-sm text-gray-500">Free plan: 50 scans a month. Bring your own Anthropic or OpenAI key.</p>
       </section>
 
       {/* Feature grid */}
       <section className="grid md:grid-cols-3 gap-6 px-8 py-16 max-w-5xl mx-auto w-full">
         {[
-          { title: '30+ live signals', desc: 'Reddit intent, LinkedIn job changes, funding rounds, competitor reviews, permit filings, property sales — cited with source URL.' },
-          { title: 'Reaches them first', desc: 'Hyper-personalised email + LinkedIn outreach that references the exact signal. 3-step follow-up sequence that stops the moment they reply.' },
-          { title: 'Closes the loop', desc: 'Handles every reply, books calendar meetings, sends Stripe payment links. Neither Gojiberry nor Gooseworks does all of this.' },
+          { title: 'Just say what you want', desc: 'No forms about your business. Describe the buyer in a sentence, in any industry or country. dazl builds the profile, shows it to you, and you can edit it.' },
+          { title: 'Every lead has proof', desc: 'Each lead links to its source, quotes the exact line that shows the signal, and is checked for the right company and a recent date. Leads that fail the check are dropped, and you see how many.' },
+          { title: 'You stay in control', desc: 'Emails go out from your own Gmail, one at a time, after you approve the exact text. Every message carries an unsubscribe link, and unsubscribes are honored right away.' },
         ].map(f => (
           <div key={f.title} className="bg-white/5 border border-white/10 rounded-2xl p-6">
             <h3 className="font-semibold text-lg mb-2">{f.title}</h3>
@@ -45,24 +45,24 @@ export default function Home() {
 
       {/* Pricing */}
       <section className="text-center px-8 py-16 border-t border-white/10">
-        <h2 className="text-3xl font-bold mb-2">One plan. Everything included.</h2>
-        <p className="text-gray-400 mb-8">Every feature, every channel, every integration.</p>
-        <div className="inline-block bg-white/5 border border-white/10 rounded-2xl p-8 max-w-sm w-full">
-          <div className="text-5xl font-bold mb-1">CA$99<span className="text-xl font-normal text-gray-400">/mo</span></div>
-          <p className="text-gray-400 text-sm mb-6">Start free — CA$99/mo after 14-day trial</p>
-          <Link href="/sign-up" className="block w-full bg-indigo-500 hover:bg-indigo-400 px-6 py-3 rounded-xl font-semibold transition text-center">
-            Start free trial
-          </Link>
-          <ul className="text-left mt-6 space-y-2 text-sm text-gray-300">
-            {['30+ signal sources', 'Email + LinkedIn outreach', '3-step follow-up sequences', 'Auto calendar booking', 'Stripe payment links', '24/7 front desk', 'Marketing content generator', 'Unlimited businesses'].map(f => (
-              <li key={f} className="flex gap-2 items-center"><span className="text-indigo-400">✓</span>{f}</li>
-            ))}
-          </ul>
+        <h2 className="text-3xl font-bold mb-2">Simple pricing</h2>
+        <p className="text-gray-400 mb-8">You pay your AI provider directly for the model usage on your own key.</p>
+        <div className="flex flex-wrap gap-6 justify-center">
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-8 max-w-xs w-full text-left">
+            <div className="text-4xl font-bold mb-1">Free</div>
+            <p className="text-gray-400 text-sm mb-4">50 scans a month</p>
+            <Link href="/sign-up" className="block w-full bg-white/10 hover:bg-white/20 px-6 py-3 rounded-xl font-semibold transition text-center">Start free</Link>
+          </div>
+          <div className="bg-white/5 border border-indigo-500/50 rounded-2xl p-8 max-w-xs w-full text-left">
+            <div className="text-4xl font-bold mb-1">CA$99<span className="text-xl font-normal text-gray-400">/mo</span></div>
+            <p className="text-gray-400 text-sm mb-4">Pro: unlimited scans</p>
+            <Link href="/sign-up" className="block w-full bg-indigo-500 hover:bg-indigo-400 px-6 py-3 rounded-xl font-semibold transition text-center">Start free, upgrade any time</Link>
+          </div>
         </div>
       </section>
 
       <footer className="text-center py-8 text-gray-600 text-sm border-t border-white/10">
-        © 2026 dazl · <a href="/terms" className="hover:text-gray-400">Terms</a>
+        © 2026 dazl · <a href="/terms" className="hover:text-gray-400">Terms</a> · <a href="/privacy" className="hover:text-gray-400">Privacy</a>
       </footer>
     </main>
   )

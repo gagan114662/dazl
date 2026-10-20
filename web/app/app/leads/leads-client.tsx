@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react'
 
 interface Lead { id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null }
+interface Icp { summary: string; who: string[]; where: string[]; signals: string[]; exclude: string[] }
 interface Quality { candidates: number; passed: number | null; needs_review: number | null; dropped: number | null; drop_reasons: Record<string, number> }
 
 const REASON: Record<string, string> = {
@@ -13,20 +14,36 @@ const REASON: Record<string, string> = {
 const REVIEW: Record<string, string> = { blocked_by_site: 'The site blocked our check', needs_javascript: 'The page needs JavaScript to show its content' }
 
 export default function LeadsClient() {
-  const [form, setForm] = useState({ business_name: '', industry: '', location: '' })
+  const [query, setQuery] = useState('')
+  const [draft, setDraft] = useState<Icp | null>(null)
+  const [draftNote, setDraftNote] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [icp, setIcp] = useState<{ icp: Icp; source: string } | null>(null)
   const [jobId, setJobId] = useState<string | null>(null)
   const [status, setStatus] = useState<string>('')
   const [leads, setLeads] = useState<Lead[]>([])
   const [error, setError] = useState('')
   const [quality, setQuality] = useState<Quality | null>(null)
 
-  async function start(e: React.FormEvent) {
+  const lines = (v: string) => v.split('\n').map(x => x.trim()).filter(Boolean)
+
+  async function preview(e: React.FormEvent) {
     e.preventDefault()
+    setError(''); setDraft(null); setBusy(true)
+    const r = await fetch('/api/scan/icp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query }) })
+    const j = await r.json().catch(() => ({}))
+    setBusy(false)
+    if (!r.ok) return setError(j.error === 'no_api_key' ? 'Add your AI key in Settings first.' : j.error === 'key_rejected' ? 'Your AI key was rejected. Check it in Settings.' : j.error || 'Could not build the profile')
+    setDraft(j.icp)
+    setDraftNote(j.inferred ? 'dazl worked this out from your request. Edit anything that is off, then run the scan.' : 'dazl could not infer more, so it will use your words as they are. Add detail below if you like.')
+  }
+
+  async function run(withIcp: Icp | null) {
     setError('')
-    const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(form) })
-    const j = await r.json()
-    if (!r.ok) return setError(j.error || 'Could not start the scan')
-    setJobId(j.job_id); setStatus('pending'); setLeads([]); setQuality(null)
+    const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}) }) })
+    const j = await r.json().catch(() => ({}))
+    if (!r.ok) return setError(j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')
+    setJobId(j.job_id); setStatus('pending'); setLeads([]); setQuality(null); setIcp(null); setDraft(null)
   }
 
   useEffect(() => {
@@ -37,6 +54,7 @@ export default function LeadsClient() {
       const s = await r.json()
       setStatus(s.status)
       setQuality(s.quality ?? null)
+      if (s.icp) setIcp({ icp: s.icp, source: s.icp_source })
       if (s.status === 'done') {
         const l = await fetch(`/api/leads?job_id=${jobId}`)
         if (l.ok) setLeads((await l.json()).leads)
@@ -50,12 +68,40 @@ export default function LeadsClient() {
     <div className="p-8">
       <h1 className="text-2xl font-bold mb-1">Leads</h1>
       <p className="text-gray-400 text-sm mb-6">Buyers showing purchase intent, with the signal and source for each.</p>
-      <form onSubmit={start} className="flex flex-wrap gap-2 mb-6">
-        <input className={input} placeholder="Business name" required maxLength={150} value={form.business_name} onChange={e => setForm({ ...form, business_name: e.target.value })} />
-        <input className={input} placeholder="Industry" required maxLength={100} value={form.industry} onChange={e => setForm({ ...form, industry: e.target.value })} />
-        <input className={input} placeholder="Location" required maxLength={100} value={form.location} onChange={e => setForm({ ...form, location: e.target.value })} />
-        <button className="bg-indigo-500 hover:bg-indigo-400 px-5 py-2 rounded-xl text-sm font-medium transition">Run scan</button>
+      <form onSubmit={preview} className="mb-4">
+        <textarea className={`${input} w-full`} rows={3} required minLength={3} maxLength={600} value={query} onChange={e => setQuery(e.target.value)}
+          placeholder="What are you looking for? e.g. Seed-stage fintech founders in Europe who just hired their first sales rep" />
+        <div className="flex gap-2 mt-2">
+          <button disabled={busy} className="bg-indigo-500 hover:bg-indigo-400 disabled:opacity-60 px-5 py-2 rounded-xl text-sm font-medium transition">{busy ? 'Working out your profile...' : 'Find leads'}</button>
+          <button type="button" disabled={query.trim().length < 3} onClick={() => run(null)} className="text-gray-400 hover:text-white text-sm px-3">Skip review, just run</button>
+        </div>
       </form>
+      {draft && (
+        <div className="bg-white/5 border border-white/10 rounded-2xl p-4 mb-6 text-sm">
+          <p className="text-gray-400 mb-3">{draftNote}</p>
+          <label className="block text-xs text-gray-500 mb-1">Who you want</label>
+          <textarea className={`${input} w-full mb-2`} rows={2} maxLength={300} value={draft.summary} onChange={e => setDraft({ ...draft, summary: e.target.value })} />
+          {([['who', 'Roles or kinds of buyer (one per line)'], ['where', 'Where (one per line, empty means anywhere)'], ['signals', 'Buying signals to look for (one per line)'], ['exclude', 'Skip these (one per line)']] as const).map(([k, label]) => (
+            <div key={k}>
+              <label className="block text-xs text-gray-500 mb-1">{label}</label>
+              <textarea className={`${input} w-full mb-2`} rows={2} value={draft[k].join('\n')} onChange={e => setDraft({ ...draft, [k]: lines(e.target.value) })} />
+            </div>
+          ))}
+          <button onClick={() => run(draft)} className="bg-indigo-500 hover:bg-indigo-400 px-5 py-2 rounded-xl text-sm font-medium transition">Run scan with this profile</button>
+        </div>
+      )}
+      {icp && !draft && (
+        <details className="text-sm text-gray-400 mb-4">
+          <summary className="cursor-pointer">Profile used: {icp.icp.summary} <span className="text-gray-600">({icp.source === 'inferred' ? 'worked out by dazl' : icp.source === 'user' ? 'reviewed by you' : 'your words as written'})</span></summary>
+          <ul className="mt-2 ml-4 list-disc text-xs">
+            {icp.icp.who.length > 0 && <li>Who: {icp.icp.who.join('; ')}</li>}
+            {icp.icp.where.length > 0 && <li>Where: {icp.icp.where.join('; ')}</li>}
+            {icp.icp.signals.length > 0 && <li>Signals: {icp.icp.signals.join('; ')}</li>}
+            {icp.icp.exclude.length > 0 && <li>Skipping: {icp.icp.exclude.join('; ')}</li>}
+          </ul>
+          <button className="text-indigo-400 text-xs mt-2" onClick={() => { setDraft(icp.icp); setDraftNote('Edit the profile and run again.') }}>Edit and run again</button>
+        </details>
+      )}
       {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
       {jobId && status !== 'done' && <p className="text-gray-400 text-sm mb-4">Scan {status === 'failed' ? 'failed. Try again.' : `${status}... this can take a few minutes.`}</p>}
       {quality && status === 'done' && (

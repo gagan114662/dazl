@@ -30,7 +30,7 @@ export default function Settings() {
         <h2 className="font-semibold mb-1">Your business</h2>
         <p className="text-gray-400 text-sm mb-4">Tell dazl what you sell so it can find the right buyers.</p>
         <form className="flex flex-col gap-3" action="/api/settings/business" method="POST">
-          <input name="business_name" type="text" placeholder="Business name"
+          <input name="business_name" type="text" placeholder="Company (optional)"
             className="bg-white/10 border border-white/20 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 text-sm" />
           <textarea name="what_you_sell" rows={3} placeholder="What do you sell? Who buys it? What problem does it solve?"
             className="bg-white/10 border border-white/20 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 text-sm resize-none" />
