@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 
-interface Lead { id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number }
+interface Lead { id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null }
 
 export default function LeadsClient() {
   const [form, setForm] = useState({ business_name: '', industry: '', location: '' })
@@ -54,6 +54,8 @@ export default function LeadsClient() {
           <div key={l.id} className="p-4 text-sm">
             <div className="font-medium">{l.company || l.name} <span className="text-gray-500">score {l.score}</span></div>
             <div className="text-gray-400">{l.signal}</div>
+            {l.evidence_excerpt && <blockquote className="text-gray-500 text-xs border-l border-white/10 pl-3 my-1">&ldquo;{l.evidence_excerpt}&rdquo;</blockquote>}
+            <span className="text-gray-500 text-xs mr-3">{l.confidence === null ? 'not verified' : `confidence ${l.confidence}`}{l.event_date ? `, ${l.event_date}${l.date_status === 'unverified' ? ' (date not confirmed on page)' : ''}` : ''}</span>
             <a className="text-indigo-400 text-xs" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
             {l.contact && <span className="text-gray-500 text-xs ml-3">{l.contact}</span>}
           </div>
