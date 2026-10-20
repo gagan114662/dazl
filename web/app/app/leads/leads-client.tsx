@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 
-interface Lead { id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null }
+interface Lead { id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; enrichments?: { kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string }[] }
 interface Icp { summary: string; who: string[]; where: string[]; signals: string[]; exclude: string[] }
 interface Quality { candidates: number; passed: number | null; needs_review: number | null; dropped: number | null; drop_reasons: Record<string, number> }
 
@@ -117,6 +117,16 @@ export default function LeadsClient() {
           <div key={l.id} className="p-4 text-sm">
             <div className="font-medium">{l.company || l.name} <span className="text-gray-500">score {l.score}</span></div>
             <div className="text-gray-400">{l.signal}</div>
+            {l.enrichments && l.enrichments.length > 0 && (
+              <div className="text-xs mt-1 space-y-0.5">
+                {l.enrichments.map(e => (
+                  <div key={e.kind + e.value} className="text-gray-400">
+                    <span className="text-gray-200">{e.value}</span>{e.label ? ` (${e.label})` : ''} <span className="text-gray-500">via Hunter{e.confidence !== null ? `, ${e.confidence}% confidence` : ''}, seen {e.source_date}</span>{' '}
+                    <a className="text-indigo-400" href={e.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
+                  </div>
+                ))}
+              </div>
+            )}
             {l.evidence_excerpt && <blockquote className="text-gray-500 text-xs border-l border-white/10 pl-3 my-1">&ldquo;{l.evidence_excerpt}&rdquo;</blockquote>}
             <span className="text-gray-500 text-xs mr-3">{l.confidence === null ? 'not verified' : `confidence ${l.confidence}`}{l.event_date ? `, ${l.event_date}${l.date_status === 'unverified' ? ' (date not confirmed on page)' : ''}` : ''}</span>
             <a className="text-indigo-400 text-xs" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>

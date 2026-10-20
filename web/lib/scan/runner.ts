@@ -6,6 +6,7 @@ import type { Vendor } from '../llm/vendors.ts'
 import { MAX_ATTEMPTS, reapStaleJobs } from './store.ts'
 import { dedupKey, MIN_CONFIDENCE, verifyEvidence, type Candidate } from './evidence.ts'
 import { inferIcp, normalizeIcp, type Icp } from './icp.ts'
+import { enrichJob } from '../connectors/enrich.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
 
 export interface Job { id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null }
@@ -237,6 +238,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     if (!leads) throw new ProviderError('retry', 'bad_output')
     const outcome = await verifyLeads(leads, deps.fetchPage, deps.now, deps.judge === undefined ? makeJudge(providers_[vendor], key, deps.fetchImpl) : deps.judge ?? undefined)
     finish(db, job, 'done', null, outcome, leads.length)
+    await enrichJob(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl, master: deps.master })
     return 'done'
   } catch (e) {
     const err = e instanceof ProviderError ? e : new ProviderError('retry', 'internal_error')

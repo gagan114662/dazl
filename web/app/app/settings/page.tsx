@@ -1,5 +1,6 @@
 import LlmKeyPanel from './llm-key-panel'
 import PlanPanel from './plan-panel'
+import ConnectorsPanel from './connectors-panel'
 
 export default function Settings() {
   return (
@@ -8,6 +9,7 @@ export default function Settings() {
       <p className="text-gray-400 text-sm mb-8">Your plan and the AI key your scans run on.</p>
       <PlanPanel />
       <LlmKeyPanel />
+      <ConnectorsPanel />
       <div className="card p-6 mb-4 opacity-80">
         <div className="flex items-center justify-between mb-1">
           <h2 className="font-semibold">Gmail sending</h2>
