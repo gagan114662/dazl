@@ -5,6 +5,7 @@ import { migrateKeys } from '../llm/key-store.ts'
 import { migrateConnectors } from '../connectors/store.ts'
 import { migratePlans } from '../plans.ts'
 import { migrateBilling } from '../billing/stripe.ts'
+import { migrateOutreach } from '../outreach/store.ts'
 
 let ready = false
 export function getScanDb() {
@@ -15,6 +16,7 @@ export function getScanDb() {
     migratePlans(db)
     migrateConnectors(db)
     migrateBilling(db)
+    migrateOutreach(db)
     ready = true
   }
   return db

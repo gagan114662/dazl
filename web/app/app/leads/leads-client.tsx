@@ -29,6 +29,13 @@ export default function LeadsClient() {
 
   const lines = (v: string) => v.split('\n').map(x => x.trim()).filter(Boolean)
 
+  const [drafted, setDrafted] = useState<Record<string, string>>({})
+  async function makeDraft(leadId: string) {
+    const r = await fetch('/api/outreach', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lead_id: leadId }) })
+    const j = await r.json()
+    setDrafted(d => ({ ...d, [leadId]: r.ok ? 'Draft created. Review it in Outreach.' : j.error || 'Could not create the draft' }))
+  }
+
   async function preview(e: React.FormEvent) {
     e.preventDefault()
     setError(''); setDraft(null); setBusy(true)
@@ -110,7 +117,7 @@ export default function LeadsClient() {
             {icp.icp.signals.length > 0 && <li>Signals: {icp.icp.signals.join('; ')}</li>}
             {icp.icp.exclude.length > 0 && <li>Skipping: {icp.icp.exclude.join('; ')}</li>}
           </ul>
-          <button className="text-indigo-400 text-xs mt-2" onClick={() => { setDraft(icp.icp); setDraftNote('Edit the profile and run again.') }}>Edit and run again</button>
+          <button className="underline text-[#111] text-xs mt-2" onClick={() => { setDraft(icp.icp); setDraftNote('Edit the profile and run again.') }}>Edit and run again</button>
         </details>
       )}
       {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
@@ -133,15 +140,20 @@ export default function LeadsClient() {
                 {l.enrichments.map(e => (
                   <div key={e.kind + e.value} className="text-gray-400">
                     <span className="text-gray-200">{e.value}</span>{e.label ? ` (${e.label})` : ''} <span className="text-gray-500">via Hunter{e.confidence !== null ? `, ${e.confidence}% confidence` : ''}, seen {e.source_date}</span>{' '}
-                    <a className="text-indigo-400" href={e.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
+                    <a className="underline text-[#111]" href={e.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
                   </div>
                 ))}
               </div>
             )}
             {l.evidence_excerpt && <blockquote className="text-gray-500 text-xs border-l border-white/10 pl-3 my-1">&ldquo;{l.evidence_excerpt}&rdquo;</blockquote>}
             <span className="text-gray-500 text-xs mr-3">{l.confidence === null ? 'not verified' : `confidence ${l.confidence}`}{l.event_date ? `, ${l.event_date}${l.date_status === 'unverified' ? ' (date not confirmed on page)' : ''}` : ''}</span>
-            <a className="text-indigo-400 text-xs" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
+            <a className="underline text-[#111] text-xs" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
             {l.contact && <span className="text-gray-500 text-xs ml-3">{l.contact}</span>}
+            {l.contact?.includes('@') && l.confidence !== null && (
+              drafted[l.id]
+                ? <span className="text-gray-400 text-xs ml-3">{drafted[l.id]}</span>
+                : <button onClick={() => makeDraft(l.id)} className="font-mono text-xs uppercase border border-black px-2 py-1 ml-3 hover:bg-black hover:text-white">Draft email</button>
+            )}
           </div>
         ))}
       </div>
@@ -155,7 +167,7 @@ export default function LeadsClient() {
                 <div className="font-medium">{l.company || l.name}</div>
                 <div className="text-gray-400">{l.signal}</div>
                 <span className="text-yellow-500 text-xs mr-3">{REVIEW[l.review_reason ?? ''] ?? 'Not verified'}</span>
-                <a className="text-indigo-400 text-xs" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
+                <a className="underline text-[#111] text-xs" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
               </div>
             ))}
           </div>
