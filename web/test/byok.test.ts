@@ -54,6 +54,10 @@ test('key shape and vendor validation (mocked fetch)', async () => {
   const mk = (status: number) => (async () => new Response('{}', { status })) as unknown as typeof fetch
   assert.equal(await validateKey('anthropic', KEY, mk(200)), 'valid')
   assert.equal(await validateKey('anthropic', KEY, mk(401)), 'invalid')
+  const d: { message?: string } = {}
+  const f400 = (async () => new Response(JSON.stringify({ error: { message: 'This API key is not scoped to a workspace' } }), { status: 400 })) as unknown as typeof fetch
+  assert.equal(await validateKey('anthropic', KEY, f400, d), 'rejected')
+  assert.equal(d.message, 'This API key is not scoped to a workspace')
   assert.equal(await validateKey('openai', 'sk-' + 'a'.repeat(40), mk(429)), 'unavailable')
   assert.equal(await validateKey('openai', 'sk-' + 'a'.repeat(40), (async () => { throw new Error('net') }) as unknown as typeof fetch), 'unavailable')
 })

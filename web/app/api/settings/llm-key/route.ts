@@ -28,8 +28,10 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ error: 'Key storage is not available right now' }, { status: 503 })
   }
 
-  const check = await validateKey(vendor, apiKey)
+  const detail: { message?: string } = {}
+  const check = await validateKey(vendor, apiKey, fetch, detail)
   if (check === 'invalid') return NextResponse.json({ error: 'The provider rejected this key' }, { status: 400 })
+  if (check === 'rejected') return NextResponse.json({ error: `The provider could not use this key${detail.message ? ': ' + detail.message : '.'}` }, { status: 400 })
   if (check === 'unavailable') return NextResponse.json({ error: 'Could not reach the provider to check the key. Try again.' }, { status: 502 })
 
   saveKey(getScanDb(), user.id, vendor, apiKey)
