@@ -9,7 +9,6 @@ const NAV = [
   { href: '/app/leads', label: 'Leads' },
   { href: '/app/outreach', label: 'Outreach' },
   { href: '/app/follow-ups', label: 'Follow-ups' },
-  { href: '/app/marketing', label: 'Marketing' },
   { href: '/app/settings', label: 'Settings' },
 ]
 
@@ -21,17 +20,17 @@ async function AuthGate({ children }: { children: React.ReactNode }) {
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex h-screen bg-gray-950">
-      <aside className="w-56 border-r border-white/10 flex flex-col py-6 px-4 gap-1">
+    <div className="flex h-screen glow">
+      <aside className="w-56 shrink-0 border-r border-white/10 bg-black/20 backdrop-blur flex flex-col py-6 px-4 gap-1">
         <Link href="/app" className="text-lg font-bold tracking-tight mb-6 px-2">dazl<span className="text-indigo-400">.</span></Link>
         {NAV.map(n => (
           <Link key={n.href} href={n.href}
-            className="text-sm px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition">
+            className="text-sm px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-indigo-500/10 transition">
             {n.label}
           </Link>
         ))}
         <div className="flex-1" />
-        <Link href="/app/settings" className="text-xs text-gray-600 hover:text-gray-400 px-3 py-2 transition">Settings</Link>
+        <form action="/api/auth/signout" method="POST"><button className="text-xs text-gray-500 hover:text-gray-300 px-3 py-2 transition">Sign out</button></form>
       </aside>
       <main className="flex-1 overflow-auto">
         <Suspense fallback={null}>

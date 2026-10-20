@@ -31,21 +31,21 @@ export default function SignIn() {
   }
 
   return (
-    <main style={{backgroundColor:'#030712',color:'#f9fafb',minHeight:'100vh'}} className="flex items-center justify-center">
-      <div className="bg-white/5 border border-white/10 rounded-2xl p-10 w-full max-w-sm">
+    <main className="min-h-screen flex items-center justify-center glow px-4 py-10">
+      <div className="card p-8 sm:p-10 w-full max-w-sm shadow-2xl shadow-indigo-950/40 backdrop-blur">
         <a href="/" className="text-xl font-bold tracking-tight block text-center mb-6">dazl<span className="text-indigo-400">.</span></a>
         <h1 className="text-2xl font-bold mb-1 text-center">Sign in</h1>
         <p className="text-gray-400 text-sm mb-6 text-center">Enter your email to continue</p>
-        <a href="/api/auth/google" className="flex items-center justify-center gap-2 bg-white text-gray-900 hover:bg-gray-100 px-6 py-3 rounded-xl font-semibold transition mb-3 text-sm">Continue with Google</a>
-        <p className="text-center text-gray-600 text-xs mb-3">or use email</p>
-        {error && <p className="text-red-400 text-sm mb-4 text-center">{error}</p>}
+        <a href="/api/auth/google" className="flex items-center justify-center gap-2 bg-white text-gray-900 hover:bg-gray-100 px-6 py-3 rounded-xl font-semibold transition mb-4 text-sm">Continue with Google</a>
+        <div className="flex items-center gap-3 text-gray-600 text-xs mb-4"><span className="h-px flex-1 bg-white/10" />or use email<span className="h-px flex-1 bg-white/10" /></div>
+        {error && <p role="alert" className="text-red-300 text-sm mb-4 text-center bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{error}</p>}
         <form onSubmit={handleSubmit} className="flex flex-col gap-3">
           <input name="email" type="email" required placeholder="you@company.com"
-            className="bg-white/10 border border-white/20 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 text-sm" />
+            className="field" />
           <input name="password" type="password" required placeholder="Password"
-            className="bg-white/10 border border-white/20 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 text-sm" />
+            className="field" />
           <button type="submit" disabled={loading}
-            className="bg-indigo-500 hover:bg-indigo-400 disabled:opacity-60 px-6 py-3 rounded-xl font-semibold transition mt-1">
+            className="btn-primary mt-1 !py-3">
             {loading ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
