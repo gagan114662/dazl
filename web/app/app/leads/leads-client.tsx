@@ -10,6 +10,13 @@ export default function LeadsClient() {
   const [leads, setLeads] = useState<Lead[]>([])
   const [error, setError] = useState('')
 
+  const [drafted, setDrafted] = useState<Record<string, string>>({})
+  async function draft(leadId: string) {
+    const r = await fetch('/api/outreach', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lead_id: leadId }) })
+    const j = await r.json()
+    setDrafted(d => ({ ...d, [leadId]: r.ok ? 'Draft created. Review it in Outreach.' : j.error || 'Could not create the draft' }))
+  }
+
   async function start(e: React.FormEvent) {
     e.preventDefault()
     setError('')
@@ -58,6 +65,11 @@ export default function LeadsClient() {
             <span className="text-gray-500 text-xs mr-3">{l.confidence === null ? 'not verified' : `confidence ${l.confidence}`}{l.event_date ? `, ${l.event_date}${l.date_status === 'unverified' ? ' (date not confirmed on page)' : ''}` : ''}</span>
             <a className="text-indigo-400 text-xs" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
             {l.contact && <span className="text-gray-500 text-xs ml-3">{l.contact}</span>}
+            {l.contact?.includes('@') && l.confidence !== null && (
+              drafted[l.id]
+                ? <span className="text-gray-400 text-xs ml-3">{drafted[l.id]}</span>
+                : <button onClick={() => draft(l.id)} className="text-xs bg-white/10 hover:bg-white/20 px-2 py-1 rounded ml-3">Draft email</button>
+            )}
           </div>
         ))}
       </div>
