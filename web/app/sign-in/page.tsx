@@ -1,11 +1,20 @@
 "use client"
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
 export default function SignIn() {
   const router = useRouter()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  useEffect(() => {
+    const e = new URLSearchParams(window.location.search).get('error')
+    const m: Record<string, string> = {
+      google_failed: 'Google sign-in did not work. Try again.', google_unavailable: 'Google sign-in is not available right now.',
+      google_email_unverified: 'Your Google email is not verified, so we cannot use it.',
+      google_email_exists: 'An account with this email already exists. Sign in with your password.', too_many: 'Too many attempts. Try again later.',
+    }
+    if (e && m[e]) setError(m[e])
+  }, [])
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -27,6 +36,8 @@ export default function SignIn() {
         <a href="/" className="text-xl font-bold tracking-tight block text-center mb-6">dazl<span className="text-indigo-400">.</span></a>
         <h1 className="text-2xl font-bold mb-1 text-center">Sign in</h1>
         <p className="text-gray-400 text-sm mb-6 text-center">Enter your email to continue</p>
+        <a href="/api/auth/google" className="flex items-center justify-center gap-2 bg-white text-gray-900 hover:bg-gray-100 px-6 py-3 rounded-xl font-semibold transition mb-3 text-sm">Continue with Google</a>
+        <p className="text-center text-gray-600 text-xs mb-3">or use email</p>
         {error && <p className="text-red-400 text-sm mb-4 text-center">{error}</p>}
         <form onSubmit={handleSubmit} className="flex flex-col gap-3">
           <input name="email" type="email" required placeholder="you@company.com"
