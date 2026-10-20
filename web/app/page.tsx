@@ -62,7 +62,7 @@ export default function Home() {
       </section>
 
       <footer className="text-center py-8 text-gray-600 text-sm border-t border-white/10">
-        © 2026 dazl · <a href="/terms" className="hover:text-gray-400">Terms</a>
+        © 2026 dazl · <a href="/terms" className="hover:text-gray-400">Terms</a> · <a href="/privacy" className="hover:text-gray-400">Privacy</a>
       </footer>
     </main>
   )
