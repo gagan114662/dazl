@@ -39,7 +39,7 @@ export default function SignIn() {
           </button>
         </form>
         <p className="mt-4 text-sm text-gray-500 text-center">
-          No account? <a href="/sign-up" className="text-indigo-400 hover:underline">Start free trial</a>
+          No account? <a href="/sign-up" className="text-indigo-400 hover:underline">Create an account</a>
         </p>
       </div>
     </main>

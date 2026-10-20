@@ -1,12 +1,10 @@
 import { NextResponse } from 'next/server'
-import { cookies } from 'next/headers'
-import { getAuthDb, getSessionUser } from '@/lib/auth-db'
-import { getUsage, migrateUsage } from '@/lib/llm/usage'
+import { getScanDb, requireUser } from '@/lib/scan/service'
+import { scanQuota } from '@/lib/plans'
 
 export async function GET() {
-  const user = getSessionUser((await cookies()).get('dazl_session')?.value)
+  const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  const db = getAuthDb()
-  migrateUsage(db)
-  return NextResponse.json(getUsage(db, user.id))
+  const q = scanQuota(getScanDb(), user.id)
+  return NextResponse.json({ plan: q.plan, scans_used: q.used, scan_limit: q.limit })
 }

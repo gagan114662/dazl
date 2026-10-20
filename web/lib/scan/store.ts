@@ -9,6 +9,8 @@ export interface ScanInput {
   industry: string
   location: string
 }
+// Free-text request. The legacy columns stay filled (placeholders) so older workers keep working.
+export interface QueryInput { query: string; icp?: string | null }
 
 // Schema notes for the external worker (Hermes). Everything is enforced in
 // SQLite itself, so a writer that bypasses the web app cannot corrupt state:
@@ -64,12 +66,45 @@ export function migrateScan(db: Database.Database): void {
     WHEN (SELECT status FROM scan_jobs WHERE id = NEW.scan_job_id) IS NOT 'running'
     BEGIN SELECT RAISE(ABORT, 'leads can only be added to a running job'); END;
   `)
+  addColumns(db)
+}
+
+// Evidence columns. Nullable, so rows written by other workers (Hermes) stay valid:
+// a lead with no evidence_excerpt was not verified by dazl.
+function addColumns(db: Database.Database): void {
+  const has = (t: string, c: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).some(r => r.name === c)
+  const add = (t: string, c: string, def: string) => { if (!has(t, c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`) }
+  add('leads', 'evidence_excerpt', 'TEXT CHECK (evidence_excerpt IS NULL OR length(evidence_excerpt) <= 400)')
+  add('leads', 'event_date', 'TEXT')
+  add('leads', 'date_status', "TEXT CHECK (date_status IS NULL OR date_status IN ('verified','unverified','undated'))")
+  add('leads', 'retrieved_at', 'INTEGER')
+  add('leads', 'confidence', 'INTEGER CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 100)')
+  add('leads', 'dedup_key', 'TEXT')
+  add('leads', 'review_reason', 'TEXT')
+  add('scan_jobs', 'candidates', 'INTEGER')
+  add('scan_jobs', 'needs_review', 'INTEGER')
+  add('scan_jobs', 'dropped', 'INTEGER')
+  add('scan_jobs', 'drop_reasons', 'TEXT')
+  add('scan_jobs', 'verified', 'INTEGER')
+  add('scan_jobs', 'query', 'TEXT CHECK (query IS NULL OR length(query) <= 600)')
+  add('scan_jobs', 'icp', 'TEXT CHECK (icp IS NULL OR length(icp) <= 4000)')
+  add('scan_jobs', 'icp_inferred', 'INTEGER')
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS leads_dedup ON leads (scan_job_id, dedup_key) WHERE dedup_key IS NOT NULL')
 }
 
 export function createJob(db: Database.Database, userId: string, input: ScanInput): string {
   const id = randomBytes(12).toString('hex')
   db.prepare('INSERT INTO scan_jobs (id, user_id, business_name, industry, location) VALUES (?, ?, ?, ?, ?)').run(
     id, userId, input.business_name, input.industry, input.location,
+  )
+  return id
+}
+
+// icp is a JSON string the user already saw and accepted/edited; null means "infer it when the job runs".
+export function createQueryJob(db: Database.Database, userId: string, input: QueryInput): string {
+  const id = randomBytes(12).toString('hex')
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, icp_inferred) VALUES (?, ?, ?, '(from request)', '-', ?, ?, ?)").run(
+    id, userId, input.query.slice(0, 150) || '-', input.query, input.icp ?? null, input.icp ? 0 : null,
   )
   return id
 }
@@ -90,8 +125,8 @@ export function reapStaleJobs(db: Database.Database): void {
 export function getJob(db: Database.Database, userId: string, id: string) {
   reapStaleJobs(db)
   const job = db
-    .prepare('SELECT id, status, error, created_at, finished_at FROM scan_jobs WHERE id = ? AND user_id = ?')
-    .get(id, userId) as { id: string; status: string; error: string | null; created_at: number; finished_at: number | null } | undefined
+    .prepare('SELECT id, status, error, query, icp, icp_inferred, created_at, finished_at, candidates, verified, needs_review, dropped, drop_reasons FROM scan_jobs WHERE id = ? AND user_id = ?')
+    .get(id, userId) as { id: string; status: string; error: string | null; query: string | null; icp: string | null; icp_inferred: number | null; created_at: number; finished_at: number | null; candidates: number | null; verified: number | null; needs_review: number | null; dropped: number | null; drop_reasons: string | null } | undefined
   if (!job) return undefined
   const { n } = db.prepare('SELECT count(*) AS n FROM leads WHERE scan_job_id = ?').get(id) as { n: number }
   return { ...job, lead_count: n }
@@ -104,9 +139,10 @@ export function countActiveJobs(db: Database.Database, userId: string): number {
 export function listLeads(db: Database.Database, userId: string, jobId: string, limit = 200) {
   return db
     .prepare(
-      `SELECT l.id, l.scan_job_id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.created_at
+      `SELECT l.id, l.scan_job_id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.created_at,
+         l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l.review_reason
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
-       WHERE j.id = ? AND j.user_id = ? ORDER BY l.score DESC, l.created_at DESC LIMIT ?`,
+       WHERE j.id = ? AND j.user_id = ? ORDER BY (l.confidence IS NULL), l.score DESC, l.created_at DESC LIMIT ?`,
     )
     .all(jobId, userId, Math.min(limit, 500))
 }
