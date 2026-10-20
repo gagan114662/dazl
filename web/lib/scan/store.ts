@@ -114,3 +114,51 @@ export function listLeads(db: Database.Database, userId: string, jobId: string, 
 export function latestJobId(db: Database.Database, userId: string): string | undefined {
   return (db.prepare('SELECT id FROM scan_jobs WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(userId) as { id: string } | undefined)?.id
 }
+
+// ---- Worker-side operations (used by /api/worker/*, never by browser sessions) ----
+
+export interface WorkerLead {
+  name?: string
+  company?: string
+  contact?: string | null
+  signal: string
+  source_url: string
+  score?: number
+}
+
+export function claimNextJob(db: Database.Database) {
+  reapStaleJobs(db)
+  return db.transaction(() => {
+    const job = db
+      .prepare("SELECT id, business_name, industry, location, attempts FROM scan_jobs WHERE status = 'pending' ORDER BY created_at, rowid LIMIT 1")
+      .get() as { id: string; business_name: string; industry: string; location: string; attempts: number } | undefined
+    if (!job) return null
+    const r = db
+      .prepare("UPDATE scan_jobs SET status='running', attempts = attempts + 1, claimed_at = CAST(strftime('%s','now') AS INTEGER) WHERE id = ? AND status = 'pending'")
+      .run(job.id)
+    if (r.changes !== 1) return null
+    db.prepare('DELETE FROM leads WHERE scan_job_id = ?').run(job.id) // clear partial results from an earlier attempt
+    return { job_id: job.id, business_name: job.business_name, industry: job.industry, location: job.location, attempt: job.attempts + 1 }
+  })()
+}
+
+export function addWorkerLeads(db: Database.Database, jobId: string, leads: WorkerLead[]): number {
+  const ins = db.prepare('INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+  return db.transaction(() => {
+    let n = 0
+    for (const l of leads) {
+      ins.run(randomBytes(12).toString('hex'), jobId, l.name ?? '', l.company ?? '', l.contact ?? null, l.signal, l.source_url, l.score ?? 50)
+      n++
+    }
+    return n
+  })()
+}
+
+export function completeJob(db: Database.Database, jobId: string, outcome: 'done' | 'failed', error?: string): boolean {
+  const r = db
+    .prepare(
+      "UPDATE scan_jobs SET status = ?, error = ?, finished_at = CAST(strftime('%s','now') AS INTEGER) WHERE id = ? AND status = 'running'",
+    )
+    .run(outcome, outcome === 'failed' ? (error || 'worker_error').slice(0, 200) : null, jobId)
+  return r.changes === 1
+}
