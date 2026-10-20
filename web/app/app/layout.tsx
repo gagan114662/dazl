@@ -1,4 +1,8 @@
 import Link from 'next/link'
+import { Suspense } from 'react'
+import { cookies } from 'next/headers'
+import { redirect } from 'next/navigation'
+import { getSessionUser } from '@/lib/auth-db'
 
 const NAV = [
   { href: '/app', label: 'Home' },
@@ -8,6 +12,12 @@ const NAV = [
   { href: '/app/marketing', label: 'Marketing' },
   { href: '/app/settings', label: 'Settings' },
 ]
+
+async function AuthGate({ children }: { children: React.ReactNode }) {
+  const token = (await cookies()).get('dazl_session')?.value
+  if (!getSessionUser(token)) redirect('/sign-in')
+  return <>{children}</>
+}
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -24,7 +34,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <Link href="/app/settings" className="text-xs text-gray-600 hover:text-gray-400 px-3 py-2 transition">Settings</Link>
       </aside>
       <main className="flex-1 overflow-auto">
-        {children}
+        <Suspense fallback={null}>
+          <AuthGate>{children}</AuthGate>
+        </Suspense>
       </main>
     </div>
   )
