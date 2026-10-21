@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { gmailStatus } from '@/lib/gmail/oauth'
+import { READ_CONSENT_TEXT } from '@/lib/outreach/replies'
 import { DAILY_CAP, getSettings, OutreachError, saveSettings, sentLast24h } from '@/lib/outreach/service'
 import { sameOriginJson } from '@/lib/same-origin'
 
@@ -8,7 +9,7 @@ export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const db = getScanDb()
-  return NextResponse.json({ gmail: gmailStatus(db, user.id), sender: getSettings(db, user.id) ?? null, daily_cap: DAILY_CAP, sent_24h: sentLast24h(db, user.id) })
+  return NextResponse.json({ gmail: gmailStatus(db, user.id), sender: getSettings(db, user.id) ?? null, daily_cap: DAILY_CAP, sent_24h: sentLast24h(db, user.id), read_notice: READ_CONSENT_TEXT })
 }
 
 export async function PUT(req: NextRequest) {
