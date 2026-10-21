@@ -44,6 +44,7 @@ export async function POST(req: NextRequest) {
       // Manual run, still inside the 10/week allowance.
       const r = await runIndexChecks(db, user.id)
       if (r === null) return NextResponse.json({ error: 'Nothing to run, or this week\'s checks are spent. They re-run weekly.' }, { status: 400 })
+      if (r.length === 0) return NextResponse.json({ error: 'The search backend is at its daily cap right now - nothing was checked or spent. The weekly check will retry automatically.' }, { status: 503 })
       return NextResponse.json({ ok: true, results: r })
     }
     default:
