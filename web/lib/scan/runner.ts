@@ -408,21 +408,28 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
             for (const l of extra) (walled.has(l.source_url) ? walledLeads : leads).push(l)
           }
         }
-        // Competitor complaints on Reddit (configured in Settings, same consent/session/rate
-        // budget as the Reddit fetcher). Posts become candidates like any other evidence and
-        // keep their competitor tag so the badge can be applied after verification.
-        if (complaints.length === 0) {
-          complaints = await collectCompetitorComplaints(db, job.user_id, job.id, { master: deps.master, worker: deps.advancedWorker }).catch(() => [])
-          if (complaints.length > 0 && complete) {
-            const text = await complete.call(providers_[vendor], key, buildSourcePrompt(job.query!, icpForSources, complaints), deps.fetchImpl, 3000)
-            const walled = new Set(complaints.filter(i => i.login_walled).map(i => i.url))
-            const extra = parseLeads(text, complaints.map(i => i.url)) ?? []
-            for (const l of extra) (walled.has(l.source_url) ? walledLeads : leads).push(l)
-          }
-        }
       } catch (e) {
         if (e instanceof ProviderError && e.kind === 'auth') throw e // a rejected key still fails the scan
         // any other source failure only means no extra candidates
+      }
+    }
+    // Competitor complaints on Reddit run whenever competitors are configured - they do NOT
+    // depend on the per-scan source selection (found live: a scan with no sources selected
+    // skips the sources block entirely, and the collector never ran). Same consent, session
+    // and rate budget as the Reddit fetcher; posts become candidates like any other evidence
+    // and keep their competitor tag so the badge can be applied after verification.
+    if (complaints.length === 0 && job.query && icpForSources && complete) {
+      try {
+        complaints = await collectCompetitorComplaints(db, job.user_id, job.id, { master: deps.master, worker: deps.advancedWorker })
+        if (complaints.length > 0) {
+          const text = await complete.call(providers_[vendor], key, buildSourcePrompt(job.query!, icpForSources, complaints), deps.fetchImpl, 3000)
+          const walled = new Set(complaints.filter(i => i.login_walled).map(i => i.url))
+          const extra = parseLeads(text, complaints.map(i => i.url)) ?? []
+          for (const l of extra) (walled.has(l.source_url) ? walledLeads : leads).push(l)
+        }
+      } catch (e) {
+        if (e instanceof ProviderError && e.kind === 'auth') throw e // a rejected key still fails the scan
+        // any other complaint-search failure only means no extra candidates
       }
     }
     // Nothing to verify at all: fail honestly. Failed scans do not count toward the monthly quota,

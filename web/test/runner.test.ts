@@ -4,7 +4,10 @@ import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { anthropicProvider, openaiProvider, ProviderError, type Provider } from '../lib/llm/provider.ts'
-import { migrateScan, createJob, getJob, listLeads, reapStaleJobs } from '../lib/scan/store.ts'
+import { migrateScan, createJob, createQueryJob, getJob, listLeads, reapStaleJobs } from '../lib/scan/store.ts'
+import { migrateConnectors } from '../lib/connectors/store.ts'
+import { migrateAdvanced, acceptConsent } from '../lib/advanced/index.ts'
+import { migrateCompetitors, setCompetitors, COMPLAINT_CONNECTOR } from '../lib/signals/competitor-reddit.ts'
 import { buildPrompt, claimKeyedJob, parseLeads, runJob } from '../lib/scan/runner.ts'
 
 const master = randomBytes(32)
@@ -45,6 +48,32 @@ test('a run writes leads for the job owner and marks it done', async () => {
   assert.equal(await runJob(db, job, { providers: fake(ok([lead('https://a.com')], ['https://a.com'])), master, fetchPage: page }), 'done')
   assert.equal(getJob(db, 'A', id)?.status, 'done')
   assert.equal(listLeads(db, 'A', id).length, 1)
+})
+
+
+test('competitor complaints run even when the scan selected no sources, and the badge lands', async () => {
+  const db = setup()
+  migrateConnectors(db); migrateAdvanced(db); migrateCompetitors(db)
+  acceptConsent(db, 'A', 'advanced')
+  setCompetitors(db, 'A', ['Salesforce'])
+  const savedEnv = { ...process.env }
+  Object.assign(process.env, { ADVANCED_CONNECTORS: '1', ADVANCED_WORKER_URL: 'http://w', ADVANCED_WORKER_TOKEN: 't' })
+  const complaintUrl = 'https://www.reddit.com/r/saas/comments/xyz/salesforce_alternatives'
+  // No `sources` on the job: the sources block is skipped entirely; complaints must still run.
+  const id = createQueryJob(db, 'A', { query: 'teams unhappy with their crm', icp: JSON.stringify({ summary: 'x', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] }) } as never)
+  const worker = async () => [{ url: complaintUrl, title: 'Salesforce is terrible, alternatives?', quote: QUOTE, date: new Date().toISOString().slice(0, 10), login_walled: false }]
+  const cLead = () => lead(complaintUrl, { signal: "complained about Salesforce" })
+  const prov = fake(ok([cLead()], [complaintUrl]))
+  prov.anthropic.complete = async () => "Here: " + JSON.stringify([cLead()])
+  assert.equal(await runJob(db, claimKeyedJob(db, id)!, { providers: prov, master, fetchPage: page, advancedWorker: worker }), 'done')
+  const leads = listLeads(db, 'A', id)
+  assert.equal(leads.length, 1)
+  assert.deepEqual(JSON.parse((leads[0] as { signals: string }).signals), ['complained about Salesforce'])
+  const row = db.prepare("SELECT status, results FROM connector_audit WHERE connector = ?").get(COMPLAINT_CONNECTOR) as { status: string; results: number }
+  assert.equal(row.status, 'ok')
+  assert.equal(row.results, 1)
+  for (const k of Object.keys(process.env)) if (!(k in savedEnv)) delete process.env[k]
+  Object.assign(process.env, savedEnv)
 })
 
 test('tenant isolation: each job runs with its own owner key, and B cannot see A leads', async () => {
