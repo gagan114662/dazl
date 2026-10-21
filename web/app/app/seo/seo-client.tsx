@@ -1,7 +1,9 @@
 'use client'
 import { useEffect, useState } from 'react'
 import IndexingPanel from './indexing-panel'
+
 import DirectoriesPanel from './directories-panel'
+import BriefPanel from './brief-panel'
 
 interface Check { id: string; label: string; ok: boolean; value: string; hint: string }
 interface Audit { id: string; domain: string; results: { domain: string; fetched_at: number; checks: Check[] }; created_at: number }
@@ -37,6 +39,7 @@ export default function SeoClient() {
         <button className="btn-primary px-5 py-2 text-sm" disabled={busy || !domain.trim()}>{busy ? 'Auditing...' : 'Run audit'}</button>
       </form>
       {msg && <p className="text-sm text-red-700 mb-4">{msg}</p>}
+      <BriefPanel />
       <IndexingPanel />
       <DirectoriesPanel />
       {audits.map(a => (
