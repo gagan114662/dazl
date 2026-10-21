@@ -126,7 +126,15 @@ export const findCompanySite = (company: string, html: string, url: string) => f
 export function probeDomains(company: string): string[] {
   const want = norm(company)
   if (want.length < 4 || want.length > 30) return []
-  return [`${want}.com`, `${want}.ai`, `${want}.io`, `${want}.co`]
+  const out = [`${want}.com`, `${want}.ai`, `${want}.io`, `${want}.co`]
+  // Brands named "<word> AI" usually live at <word>.ai (seen live: "Wavee Ai" at wavee.ai);
+  // norm() flattens the space, so the plain probes above would only try waveeai.*.
+  const words = company.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+  if (words.length > 1 && words[words.length - 1] === 'ai') {
+    const stem = norm(words.slice(0, -1).join(' '))
+    if (stem.length >= 3) out.unshift(`${stem}.ai`)
+  }
+  return out
 }
 
 // Most leads per scan that get domain probes, so a big scan cannot turn into hundreds of fetches.

@@ -112,6 +112,14 @@ test('probeDomains: name-derived domains, safe lengths only', async () => {
   assert.deepEqual(probeDomains('ab'), [])
 })
 
+test('probeDomains: names ending in "AI" also probe the .ai stem domain', async () => {
+  const { probeDomains } = await import('../lib/connectors/sitecrawl.ts')
+  assert.deepEqual(probeDomains('Wavee Ai'), ['wavee.ai', 'waveeai.com', 'waveeai.ai', 'waveeai.io', 'waveeai.co'])
+  assert.deepEqual(probeDomains('Acme AI'), ['acme.ai', 'acmeai.com', 'acmeai.ai', 'acmeai.io', 'acmeai.co'])
+  // single-word names and names only containing "ai" stay unchanged
+  assert.deepEqual(probeDomains('Linear'), ['linear.com', 'linear.ai', 'linear.io', 'linear.co'])
+})
+
 test('crawlJob probes name-derived domains when evidence links nothing, verifies by homepage name', async () => {
   const db = new Database(':memory:'); migrateConnectors(db)
   db.exec("CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT)")
