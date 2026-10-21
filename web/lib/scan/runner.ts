@@ -18,7 +18,7 @@ import { enrichJobSignals } from '../signals/index.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
 import { sourceCap } from './source-quality.ts'
 
-export interface Job { id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string }
+export interface Job { id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string; seller?: string | null }
 export interface LeadDraft extends Candidate {}
 export interface VerifiedLead extends LeadDraft { confidence: number; date_status: 'verified' | 'unverified' | 'undated'; retrieved_at: number; contact: string | null; fit?: number; intent?: number; action?: number; why?: string; signals?: string; icp_match?: string }
 
@@ -336,7 +336,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     if (job.query) {
       let icp = job.icp ? normalizeIcp(safeJson(job.icp)) : null
       if (!icp) {
-        const r = await inferIcp(providers_[vendor], key, job.query, deps.fetchImpl)
+        const r = await inferIcp(providers_[vendor], key, job.query, deps.fetchImpl, job.seller ?? undefined)
         icp = r.icp
         db.prepare("UPDATE scan_jobs SET icp = ?, icp_inferred = ? WHERE id = ? AND status = 'running' AND attempts = ?").run(JSON.stringify(icp), r.inferred ? 1 : 2, job.id, job.attempts)
       }

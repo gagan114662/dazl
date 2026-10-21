@@ -10,6 +10,7 @@ import { scanQuota } from '@/lib/plans'
 import { normalizeSources } from '@/lib/sources'
 import { kickRunner } from '@/lib/scan/runner'
 import { recordTrialScan, trialStatus } from '@/lib/scan/trial'
+import { getAuthDb, sellerProfile } from '@/lib/auth-db'
 
 export async function POST(req: NextRequest) {
   const user = await requireUser()
@@ -55,7 +56,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'quota_exceeded', plan: q.plan, used: q.used, limit: q.limit }, { status: 402 })
   }
   const sel = body?.sources ? normalizeSources(body.sources) : null
-  const job_id = query.length >= 3 ? createQueryJob(db, user.id, { query, icp: icp ? JSON.stringify(icp) : null, sources: sel ? JSON.stringify(sel) : null }) : createJob(db, user.id, { business_name, industry, location })
+  const job_id = query.length >= 3 ? createQueryJob(db, user.id, { query, icp: icp ? JSON.stringify(icp) : null, sources: sel ? JSON.stringify(sel) : null, seller: sellerProfile(getAuthDb(), user.id) }) : createJob(db, user.id, { business_name, industry, location })
   if (funded === 'trial') {
     db.prepare("UPDATE scan_jobs SET funded_by = 'trial' WHERE id = ?").run(job_id)
     recordTrialScan(db, user.id, job_id, ip)

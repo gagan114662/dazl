@@ -16,6 +16,8 @@ export function getAuthDb(): Database.Database {
       email TEXT UNIQUE NOT NULL,
       name TEXT,
       business_name TEXT,
+      sells TEXT,
+      website TEXT,
       password_hash TEXT NOT NULL,
       salt TEXT NOT NULL,
       created_at INTEGER DEFAULT (unixepoch())
@@ -27,6 +29,8 @@ export function getAuthDb(): Database.Database {
       expires_at INTEGER NOT NULL
     );
   `)
+    try { db.exec('ALTER TABLE users ADD COLUMN sells TEXT') } catch { /* exists */ }
+  try { db.exec('ALTER TABLE users ADD COLUMN website TEXT') } catch { /* exists */ }
   return db
 }
 
@@ -43,6 +47,21 @@ export function createSession(userId: string): string {
     .prepare('INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)')
     .run(hashToken(token), userId, Math.floor(Date.now() / 1000) + SESSION_TTL_S)
   return token
+}
+
+// What the seller sells + their site, collected once on the home page. Used to aim ICP inference.
+export function getSellerProfile(db: Database.Database, userId: string): { sells: string; website: string } {
+  const r = db.prepare('SELECT sells, website FROM users WHERE id = ?').get(userId) as { sells: string | null; website: string | null } | undefined
+  return { sells: r?.sells ?? '', website: r?.website ?? '' }
+}
+
+export function sellerProfile(db: Database.Database, userId: string): string {
+  const p = getSellerProfile(db, userId)
+  return [p.sells, p.website].filter(Boolean).join(' - ').slice(0, 300)
+}
+
+export function setSellerProfile(db: Database.Database, userId: string, sells: string, website: string): void {
+  db.prepare('UPDATE users SET sells = ?, website = ? WHERE id = ?').run(sells.slice(0, 150), website.slice(0, 200), userId)
 }
 
 export function getSessionUser(token: string | undefined): { id: string; email: string; business_name: string } | null {

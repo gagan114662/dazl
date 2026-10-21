@@ -10,7 +10,7 @@ export interface ScanInput {
   location: string
 }
 // Free-text request. The legacy columns stay filled (placeholders) so older workers keep working.
-export interface QueryInput { query: string; icp?: string | null; sources?: string | null }
+export interface QueryInput { query: string; icp?: string | null; sources?: string | null; seller?: string }
 
 // Schema notes for the external worker (Hermes). Everything is enforced in
 // SQLite itself, so a writer that bypasses the web app cannot corrupt state:
@@ -77,6 +77,7 @@ export function migrateScan(db: Database.Database): void {
 function addColumns(db: Database.Database): void {
   const has = (t: string, c: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).some(r => r.name === c)
   const add = (t: string, c: string, def: string) => { if (!has(t, c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`) }
+  add('scan_jobs', 'seller', 'TEXT')
   add('leads', 'evidence_excerpt', 'TEXT CHECK (evidence_excerpt IS NULL OR length(evidence_excerpt) <= 400)')
   add('leads', 'icp_match', 'TEXT CHECK (icp_match IS NULL OR length(icp_match) <= 400)')
   add('leads', 'event_date', 'TEXT')
@@ -115,10 +116,15 @@ export function createJob(db: Database.Database, userId: string, input: ScanInpu
 // icp is a JSON string the user already saw and accepted/edited; null means "infer it when the job runs".
 export function createQueryJob(db: Database.Database, userId: string, input: QueryInput): string {
   const id = randomBytes(12).toString('hex')
-  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, icp_inferred, sources) VALUES (?, ?, ?, '(from request)', '-', ?, ?, ?, ?)").run(
-    id, userId, input.query.slice(0, 150) || '-', input.query, input.icp ?? null, input.icp ? 0 : null, input.sources ?? null,
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, icp_inferred, sources, seller) VALUES (?, ?, ?, '(from request)', '-', ?, ?, ?, ?, ?)").run(
+    id, userId, input.query.slice(0, 150) || '-', input.query, input.icp ?? null, input.icp ? 0 : null, input.sources ?? null, (input.seller ?? '').trim().slice(0, 300) || null,
   )
   return id
+}
+
+// The tenant's most recent query scan - feeds the "your profile is still here" restore on the leads page.
+export function latestQueryJob(db: Database.Database, userId: string): { query: string | null; icp: string | null; icp_inferred: number | null } | undefined {
+  return db.prepare('SELECT query, icp, icp_inferred FROM scan_jobs WHERE user_id = ? AND query IS NOT NULL ORDER BY created_at DESC, rowid DESC LIMIT 1').get(userId) as { query: string | null; icp: string | null; icp_inferred: number | null } | undefined
 }
 
 // Jobs stuck in 'running' past the timeout go back to 'pending' for another
