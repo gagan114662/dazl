@@ -64,16 +64,32 @@ function callsLastHour(db: Database.Database, tenantId: string, platform: AdvPla
   return (db.prepare("SELECT count(*) AS n FROM connector_audit WHERE tenant_id = ? AND connector = ? AND status IN ('ok','empty','worker_error') AND created_at >= CAST(strftime('%s','now') AS INTEGER) - 3600").get(tenantId, connectorId(platform)) as { n: number }).n
 }
 
+// X search AND-matches every token, so a full natural-language scan sentence returns
+// nothing. Build a short keyword query from the scan's ICP instead: intent words first
+// (the buying signals), then buyer words. Reddit and the rest keep the raw query.
+const STOP = new Set(['the', 'and', 'for', 'with', 'that', 'this', 'from', 'their', 'they', 'them', 'are', 'was', 'were', 'has', 'have', 'had', 'who', 'what', 'where', 'when', 'into', 'your', 'you', 'our', 'out', 'all', 'any', 'not', 'but', 'his', 'her', 'its', 'over', 'under', 'about', 'after', 'before', 'more', 'most', 'some', 'such', 'just', 'like', 'also', 'than', 'then', 'too', 'very', 'can', 'will', 'would', 'could', 'should', 'first', 'new'])
+export function xSearchQuery(icp: { who: string[]; signals: string[] }): string {
+  const words = (text: string) => text.toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length >= 3 && !STOP.has(w))
+  const seen = new Set<string>()
+  const pick: string[] = []
+  for (const w of [...icp.signals.map(words).flat().slice(0, 6), ...icp.who.map(words).flat().slice(0, 6)]) {
+    if (!seen.has(w)) { seen.add(w); pick.push(w) }
+    if (pick.length >= 5) break
+  }
+  return pick.slice(0, 5).join(' ').slice(0, 100)
+}
+
 // Runs the platforms this tenant chose for one scan. Every gate is re-checked here, so a stale
 // request cannot get around a flag, a kill switch, a missing consent or the rate limit.
-export async function collectAdvanced(db: Database.Database, tenantId: string, jobId: string, platforms: AdvPlatform[], query: string, deps: { worker?: WorkerFetch; master?: Buffer; env?: Record<string, string | undefined> } = {}): Promise<(Evidence & { login_walled: boolean })[]> {
+export async function collectAdvanced(db: Database.Database, tenantId: string, jobId: string, platforms: AdvPlatform[], query: string, deps: { worker?: WorkerFetch; master?: Buffer; env?: Record<string, string | undefined>; xQuery?: string } = {}): Promise<(Evidence & { login_walled: boolean })[]> {
   const env = deps.env ?? process.env
   const flags = advFlags(env)
   const worker = deps.worker ?? httpWorker(env)
   const out: (Evidence & { login_walled: boolean })[] = []
   for (const p of platforms) {
     const id = connectorId(p)
-    const skip = (status: string) => audit(db, { tenantId, connector: id, jobId, lookup: query, status, results: 0 })
+    const q = p === 'x' && deps.xQuery ? deps.xQuery : query
+    const skip = (status: string) => audit(db, { tenantId, connector: id, jobId, lookup: q, status, results: 0 })
     if (!platformAllowed(p, flags)) { skip('disabled'); continue }
     if (!hasConsent(db, tenantId, scopeFor(p))) { skip('no_consent'); continue }
     // Tenant's own session when stored; '' otherwise - the worker falls back to the
@@ -82,9 +98,9 @@ export async function collectAdvanced(db: Database.Database, tenantId: string, j
     // neither answers no_session, which audits as worker_error here.
     const session = getEnabledCredential(db, tenantId, id, deps.master) || ''
     if (callsLastHour(db, tenantId, p) >= maxCallsPerHour(p, env)) { skip('rate_limited'); continue }
-    const items = await worker({ platform: p, query: query.slice(0, 300), session })
+    const items = await worker({ platform: p, query: q.slice(0, 300), session })
     if (items === null) { skip('worker_error'); continue }
-    audit(db, { tenantId, connector: id, jobId, lookup: query, status: items.length ? 'ok' : 'empty', results: items.length })
+    audit(db, { tenantId, connector: id, jobId, lookup: q, status: items.length ? 'ok' : 'empty', results: items.length })
     for (const it of items) out.push({ source: id, url: it.url, title: it.title, quote: it.quote, date: it.date, login_walled: it.login_walled })
   }
   return out

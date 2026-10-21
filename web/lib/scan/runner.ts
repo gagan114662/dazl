@@ -8,7 +8,7 @@ import { runAutopilot } from '../outreach/autopilot.ts'
 import { MAX_ATTEMPTS, reapStaleJobs } from './store.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, verifyEvidence, type Candidate } from './evidence.ts'
 import { inferIcp, normalizeIcp, type Icp } from './icp.ts'
-import { collectAdvanced } from '../advanced/index.ts'
+import { collectAdvanced, xSearchQuery } from '../advanced/index.ts'
 import type { AdvPlatform } from '../advanced/config.ts'
 import { buildSourcePrompt, collectEvidence, normalizeSources } from '../sources/index.ts'
 import { migrateTinyfish, parseQueries, queryPrompt, tfFetch, tfSearch, tinyfishEnabled, toEvidence } from '../search/tinyfish.ts'
@@ -379,7 +379,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         // Advanced connectors (opt-in tier, own flag, consent and session). A page behind a login is never
         // verified by us: it goes to "needs review" as is, shown to the user and never emailed.
         if (sel.advanced?.length) {
-          const adv = await collectAdvanced(db, job.user_id, job.id, sel.advanced as AdvPlatform[], job.query!, { master: deps.master, worker: deps.advancedWorker })
+          const adv = await collectAdvanced(db, job.user_id, job.id, sel.advanced as AdvPlatform[], job.query!, { master: deps.master, worker: deps.advancedWorker, xQuery: xSearchQuery(icpForSources) || undefined })
           if (adv.length > 0) {
             const text = await complete.call(providers_[vendor], key, buildSourcePrompt(job.query!, icpForSources, adv), deps.fetchImpl, 3000)
             const walled = new Set(adv.filter(i => i.login_walled).map(i => i.url))
