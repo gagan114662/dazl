@@ -28,13 +28,13 @@ export default function SignUp() {
 
   return (
     <main className="min-h-screen flex items-center justify-center glow px-4 py-10">
-      <div className="card p-8 sm:p-10 w-full max-w-sm shadow-2xl shadow-indigo-950/40 backdrop-blur">
-        <a href="/" className="text-xl font-bold tracking-tight block text-center mb-6">dazl<span className="text-indigo-400">.</span></a>
-        <h1 className="text-2xl font-bold mb-1 text-center">Create your account</h1>
-        <p className="text-gray-400 text-sm mb-6 text-center">Free: 50 scans a month · Upgrade any time</p>
-        <a href="/api/auth/google" className="flex items-center justify-center gap-2 bg-white text-gray-900 hover:bg-gray-100 px-6 py-3 rounded-xl font-semibold transition mb-4 text-sm">Continue with Google</a>
-        <div className="flex items-center gap-3 text-gray-600 text-xs mb-4"><span className="h-px flex-1 bg-white/10" />or use email<span className="h-px flex-1 bg-white/10" /></div>
-        {error && <p role="alert" className="text-red-300 text-sm mb-4 text-center bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{error}</p>}
+      <div className="card p-8 sm:p-10 w-full max-w-sm">
+        <a href="/" className="text-xl font-medium tracking-tight block text-center mb-6">dazl<span className="text-[#111]">.</span></a>
+        <h1 className="text-2xl font-medium mb-1 text-center">Create your account</h1>
+        <p className="text-[#555] text-sm mb-6 text-center">Free: 50 scans a month · Upgrade any time</p>
+        <a href="/api/auth/google" className="flex items-center justify-center gap-2 bg-white text-[#111] border border-black/25 hover:bg-gray-50 px-6 py-3 rounded font-medium transition mb-4 text-sm">Continue with Google</a>
+        <div className="flex items-center gap-3 text-[#6b6b6b] text-xs mb-4"><span className="h-px flex-1 bg-black/5" />or use email<span className="h-px flex-1 bg-black/5" /></div>
+        {error && <p role="alert" className="text-[#111] text-sm mb-4 text-center bg-[#f4f4f4] border border-black/40 rounded-lg px-3 py-2">{error}</p>}
         <form onSubmit={handleSubmit} className="flex flex-col gap-3">
           <input name="name" type="text" required placeholder="Your name"
             className="field" />
@@ -49,8 +49,8 @@ export default function SignUp() {
             {loading ? 'Creating account…' : 'Create your account'}
           </button>
         </form>
-        <p className="mt-4 text-sm text-gray-500 text-center">
-          Already have an account? <a href="/sign-in" className="text-indigo-400 hover:underline">Sign in</a>
+        <p className="mt-4 text-sm text-[#666] text-center">
+          Already have an account? <a href="/sign-in" className="text-[#111] underline underline-offset-2 hover:underline">Sign in</a>
         </p>
       </div>
     </main>
