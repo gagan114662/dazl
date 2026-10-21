@@ -1,8 +1,9 @@
 'use client'
 import { useEffect, useState } from 'react'
 
-interface Lead { id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string }[] }
+interface Lead { id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; watch_new?: number; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string }[] }
 interface Icp { summary: string; who: string[]; industries: string[]; sizes: string[]; where: string[]; signals: string[]; exclude: string[] }
+interface Watch { id: string; query: string; active: boolean; next_run_at: number | null; last_run_at: number | null; paused_reason: string | null; last_job_id: string | null; last_status: string | null; new_leads: number }
 interface Quality { candidates: number; passed: number | null; needs_review: number | null; dropped: number | null; drop_reasons: Record<string, number> }
 
 // Leads written by other workers can carry anything in signals; never let a bad value crash the page.
@@ -43,6 +44,8 @@ export default function LeadsClient() {
   const [drafted, setDrafted] = useState<Record<string, string>>({})
   const [pushed, setPushed] = useState<Record<string, string>>({})
   const [crmOn, setCrmOn] = useState(false)
+  const [watches, setWatches] = useState<Watch[]>([])
+  const [watchNote, setWatchNote] = useState('')
   const [hiddenCount, setHiddenCount] = useState(0)
   const [showHidden, setShowHidden] = useState(false)
   async function pushCrm(leadId: string) {
@@ -99,6 +102,24 @@ export default function LeadsClient() {
   }
   useEffect(() => { if (status === 'done') void loadLeads() }, [jobId, status, showHidden])
   useEffect(() => { fetch('/api/crm').then(r => r.ok ? r.json() : null).then(j => setCrmOn(!!j?.configured)).catch(() => {}) }, [])
+  const loadWatches = async () => {
+    const r = await fetch('/api/watch').catch(() => null)
+    if (r?.ok) { const j = await r.json(); setWatches(j.watches ?? []) }
+  }
+  useEffect(() => { void loadWatches() }, [status])
+  // Deep link: /app/leads?job_id=... (watch cards link here to show a past watch run).
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get('job_id')
+    if (id && /^[a-f0-9]{24}$/.test(id)) { setJobId(id); setStatus('pending') }
+  }, [])
+  const watchReq = async (body: Record<string, unknown>) => {
+    setWatchNote('')
+    const r = await fetch('/api/watch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => null)
+    const j = r ? await r.json().catch(() => null) : null
+    if (!r?.ok) { setWatchNote(j?.error ?? 'Could not update the watch.'); return }
+    if (j?.error) setWatchNote(j.error)
+    await loadWatches()
+  }
   // Restore the last profile so a reload never loses it (item: ICP persistence).
   useEffect(() => {
     if (jobId) return
@@ -167,7 +188,11 @@ export default function LeadsClient() {
             {icp.icp.signals.length > 0 && <li>Signals: {icp.icp.signals.join('; ')}</li>}
             {icp.icp.exclude.length > 0 && <li>Skipping: {icp.icp.exclude.join('; ')}</li>}
           </ul>
-          <button className="underline text-[#111] text-xs mt-2" onClick={() => { setDraft(icp.icp); setDraftNote('Edit the profile and run again.') }}>Edit and run again</button>
+          <div className="flex items-center gap-3 mt-2">
+            <button className="underline text-[#111] text-xs" onClick={() => { setDraft(icp.icp); setDraftNote('Edit the profile and run again.') }}>Edit and run again</button>
+            <button className="underline text-[#111] text-xs" onClick={() => void watchReq({ query: query.trim(), icp: icp.icp })}>Watch this weekly</button>
+          </div>
+          {watchNote && <p className="text-xs text-gray-500 mt-1">{watchNote}</p>}
         </details>
       )}
       {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
@@ -181,6 +206,26 @@ export default function LeadsClient() {
         </div>
       )}
       {jobId && status === 'failed' && <p className="text-gray-400 text-sm mb-4">{jobError === 'no_candidates' ? 'No candidates found for that search. Try rephrasing or broadening it - this scan did not count toward your monthly scans.' : jobError === 'trial_key_invalid' ? 'The scan service is having trouble right now. Try again later - this scan did not count toward your free scans.' : 'Scan failed. Try again.'}</p>}
+      {watches.length > 0 && (
+        <div className="card p-4 mb-4 text-sm">
+          <h2 className="text-sm font-semibold mb-1">Weekly watches</h2>
+          <p className="text-gray-500 text-xs mb-2">These searches re-run once a week and only show leads you have not seen. They count toward your monthly scans.</p>
+          {watches.map(w => (
+            <div key={w.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2 border-t border-white/5 first:border-t-0">
+              <span className="text-gray-200 min-w-0 flex-1 truncate" title={w.query}>{w.query}</span>
+              {!w.active && <span className="text-yellow-500 text-xs">{w.paused_reason === 'no_key' ? 'Paused - the scan service key is missing' : w.paused_reason === 'quota' ? 'Paused - monthly scans are used up' : 'Paused'}</span>}
+              {w.active && w.next_run_at && <span className="text-gray-500 text-xs">next run {new Date(w.next_run_at * 1000).toLocaleDateString()}</span>}
+              {w.last_status === 'running' || w.last_status === 'pending' ? <span className="text-gray-500 text-xs">running now</span> : null}
+              {w.last_job_id && w.new_leads > 0 && <a className="underline text-[#111] text-xs" href={`/app/leads?job_id=${w.last_job_id}`}>{w.new_leads} new</a>}
+              {w.last_job_id && w.new_leads === 0 && w.last_status === 'done' && <a className="underline text-gray-500 text-xs" href={`/app/leads?job_id=${w.last_job_id}`}>last run: nothing new</a>}
+              {w.active
+                ? <button className="text-gray-500 hover:text-white text-xs" onClick={() => void watchReq({ action: 'pause', id: w.id })}>Pause</button>
+                : <button className="text-gray-500 hover:text-white text-xs" onClick={() => void watchReq({ action: 'resume', id: w.id })}>Resume</button>}
+              <button className="text-gray-500 hover:text-white text-xs" onClick={() => void watchReq({ action: 'delete', id: w.id })}>Delete</button>
+            </div>
+          ))}
+        </div>
+      )}
       {quality && status === 'done' && (
         <p className="text-gray-400 text-sm mb-4">
           {quality.candidates} found: {quality.passed ?? 0} verified, {quality.needs_review ?? 0} need your review, {quality.dropped ?? 0} dropped
@@ -193,6 +238,7 @@ export default function LeadsClient() {
         ) : leads.filter(l => !l.review_reason).map(l => (
           <div key={l.id} className="p-4 text-sm">
 <div className="font-medium">{l.company_domain ? <a className="underline decoration-white/30 hover:decoration-white" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{l.company || l.name}</a> : (l.company || l.name)} <span className="text-gray-500">score {l.score}</span>
+              {!!l.watch_new && <span className="ml-2 text-[10px] uppercase tracking-wide text-green-300 border border-green-300/30 px-1 py-0.5">new</span>}
               {l.fit != null && <span className="ml-2 text-xs font-normal text-gray-300 border border-white/15 px-1.5 py-0.5">fit {l.fit}/5 · intent {l.intent}/5 · action {l.action}/5</span>}
               {l.fit != null && l.icp_match && (() => {
                 let m: { role?: string; industry?: string; size?: string; location?: string; note?: string } | null = null

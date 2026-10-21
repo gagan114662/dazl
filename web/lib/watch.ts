@@ -1,4 +1,4 @@
-// Watch scans: a saved query + ICP re-run weekly. Hard rules (owner-approved):
+// Watch scans: a saved query + ICP re-run weekly. Design approved by the repo owner on 2026-10-21:
 // - every run counts against the monthly scan quota
 // - never trial-funded: a watch with no user key pauses, it never touches the operator key
 // - max 3 active watches per user
