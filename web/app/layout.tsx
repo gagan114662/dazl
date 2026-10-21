@@ -14,6 +14,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" style={{backgroundColor:"#fff",color:"#111"}}>
       <body className={`${geist.className} antialiased`}>
         {children}
+        <footer style={{padding:'12px 24px',fontSize:'11px',color:'#999',textAlign:'center',borderTop:'1px solid #f0f0f0'}}>
+          Contact crawl powered by{' '}
+          <a href="https://crawlee.dev" target="_blank" rel="noopener noreferrer" style={{color:'#999'}}>Crawlee</a>
+          {' '}— software developed by Apify.
+        </footer>
       </body>
     </html>
   )
