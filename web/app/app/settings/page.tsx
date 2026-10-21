@@ -5,9 +5,10 @@ import GmailPanel from './gmail-panel'
 import AutopilotPanel from './autopilot-panel'
 import RepliesPanel from './replies-panel'
 import CrmPanel from './crm-panel'
+import EnrichmentPanel from './enrichment-panel'
 import CompetitorsPanel from './competitors-panel'
 
-const SECTIONS = [['plan', 'Plan'], ['model-key', 'Model key'], ['connectors', 'Connectors'], ['gmail', 'Gmail'], ['autopilot', 'Autopilot'], ['replies', 'Replies']]
+const SECTIONS = [['plan', 'Plan'], ['model-key', 'Model key'], ['connectors', 'Connectors'], ['enrichment', 'Enrichment'], ['gmail', 'Gmail'], ['autopilot', 'Autopilot'], ['replies', 'Replies']]
 
 export default function Settings() {
   return (
@@ -25,6 +26,7 @@ export default function Settings() {
       <div id="autopilot" className="scroll-mt-6"><AutopilotPanel /></div>
       <div id="replies" className="scroll-mt-6"><RepliesPanel /></div>
       <div id="crm" className="scroll-mt-6"><CrmPanel /></div>
+      <div id="enrichment" className="scroll-mt-6"><EnrichmentPanel /></div>
     </div>
   )
 }

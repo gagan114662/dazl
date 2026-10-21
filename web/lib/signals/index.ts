@@ -127,6 +127,9 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
   audit(db, { tenantId, connector: 'signals:sec-edgar', jobId, lookup: `${leads.length} leads`, status: funding ? 'ok' : 'empty', results: funding })
   audit(db, { tenantId, connector: 'signals:ats', jobId, lookup: `${leads.length} leads`, status: hiring ? 'ok' : 'empty', results: hiring })
   audit(db, { tenantId, connector: 'signals:funding-round', jobId, lookup: `${leads.length} leads, ${news.length} raise reports`, status: rounds ? 'ok' : 'empty', results: rounds })
+  // BYOK contact/firmographic pass: runs only with the tenant's own Apollo/PDL key.
+  const { enrichLeadContacts } = await import('../enrich/index.ts')
+  await enrichLeadContacts(db, tenantId, jobId, leads, { fetchImpl }).catch(() => {})
 }
 
 export function newId(): string { return randomBytes(12).toString('hex') }
