@@ -35,12 +35,23 @@ export const SIGNALS = [
 export type SignalId = (typeof SIGNALS)[number]
 const SIGNAL_SET = new Set<string>(SIGNALS)
 
+export type MatchValue = 'match' | 'mismatch' | 'unknown'
+export interface IcpMatch {
+  role: MatchValue
+  industry: MatchValue
+  size: MatchValue
+  location: MatchValue
+  note: string       // short mismatch reason, '' when everything matches or is unknown
+}
+const UNKNOWN_MATCH: IcpMatch = { role: 'unknown', industry: 'unknown', size: 'unknown', location: 'unknown', note: '' }
+
 export interface LeadScore {
   fit: number        // 0-5 ICP fit: would this user sell to this company
   intent: number     // 0-5 is there a reason to contact them NOW
   action: number     // 0-5 can the user act: identifiable company, reachable, right size
   why: string        // one sentence: why this lead, why now
   signals: SignalId[]
+  match: IcpMatch    // per-criterion role/industry/size/location read from the evidence
 }
 
 // Leads at or below this fit stay in the scan but are hidden behind a toggle.
@@ -61,9 +72,14 @@ Rules:
 - Announcements, listicles and news about a company are not the same as that company being a buyer; grade fit on who the company is, intent on what just happened to them.
 - why: one sentence, "why this lead, why now", grounded in the evidence. No flattery.
 - signals: pick from this list only, and only when the evidence supports them: ${SIGNALS.join(', ')}
+- match: four letters, one per ICP criterion, in this order: role, industry, size, location.
+  y = the evidence shows the lead matches that criterion, n = the evidence shows it does NOT,
+  ? = the evidence does not say. Judge each criterion only against the ICP above; when the ICP
+  says nothing about a criterion, answer ?. Never guess a y or n without evidence.
+- mism: when any match letter is n, a few words naming what is off (e.g. "wrong industry: manufacturing"); omit it otherwise.
 
 Reply with one line per lead, exactly this format, no preamble:
-LEAD <n> | fit <0-5> | intent <0-5> | action <0-5> | signals <comma list or none> | why <sentence>
+LEAD <n> | fit <0-5> | intent <0-5> | action <0-5> | match <4 letters like yy?n> | signals <comma list or none> | why <sentence>[ | mism <words>]
 
 ${leads.map((l, i) => `LEAD ${i + 1}: company=${l.company || '?'} name=${l.name || '?'}\nsignal: ${l.signal}\nevidence: ${l.excerpt ?? '(none)'}`).join('\n\n')}`
 }
@@ -86,7 +102,16 @@ export function parseScores(text: string, count: number): LeadScore[] | null {
     const sm = /signals\s*[:=|]?\s*([^|\n]*)/i.exec(chunk)
     const signals = (sm?.[1] ?? '').split(',').map(s => s.trim().toLowerCase().replace(/[\s-]+/g, '_')).filter(s => SIGNAL_SET.has(s)) as SignalId[]
     const wm = /why\s*[:=|]?\s*(.+)/i.exec(chunk)
-    out[idx] = { fit, intent, action, signals, why: (wm?.[1] ?? '').trim().slice(0, 300) }
+    let why = (wm?.[1] ?? '').trim()
+    const mm = /match\s*[:=|]?\s*([yn?]{4})/i.exec(chunk)
+    const nm = /mism\s*[:=|]?\s*(.+)$/im.exec(chunk)
+    const note = (nm?.[1] ?? '').trim().slice(0, 160)
+    if (note && why.endsWith(note)) why = why.slice(0, -note.length).replace(/[|\s]*mism\s*[:=|]?\s*$/i, '').replace(/[|\s]+$/, '')
+    const letter = (c: string): MatchValue => (c.toLowerCase() === 'y' ? 'match' : c.toLowerCase() === 'n' ? 'mismatch' : 'unknown')
+    const match: IcpMatch = mm
+      ? { role: letter(mm[1][0]), industry: letter(mm[1][1]), size: letter(mm[1][2]), location: letter(mm[1][3]), note }
+      : { ...UNKNOWN_MATCH }
+    out[idx] = { fit, intent, action, signals, why: why.slice(0, 300), match }
   }
   // All-or-nothing: a partially parsed batch would rank unscored leads unfairly.
   return out.every(Boolean) ? (out as LeadScore[]) : null
@@ -109,5 +134,27 @@ export async function scoreLeads(provider: Provider, apiKey: string, icpText: st
 
 export function icpTextFor(icp: Icp | null, fallback: string): string {
   if (!icp) return fallback
-  return [icp.summary, icp.who.length ? `buyers: ${icp.who.join('; ')}` : '', icp.where.length ? `where: ${icp.where.join('; ')}` : '', icp.signals.length ? `intent signals: ${icp.signals.join('; ')}` : '', icp.exclude.length ? `exclude: ${icp.exclude.join('; ')}` : ''].filter(Boolean).join('\n')
+  return [icp.summary, icp.who.length ? `buyers: ${icp.who.join('; ')}` : '', icp.industries.length ? `industries: ${icp.industries.join('; ')}` : '', icp.sizes.length ? `sizes: ${icp.sizes.join('; ')}` : '', icp.where.length ? `where: ${icp.where.join('; ')}` : '', icp.signals.length ? `intent signals: ${icp.signals.join('; ')}` : '', icp.exclude.length ? `exclude: ${icp.exclude.join('; ')}` : ''].filter(Boolean).join('\n')
+}
+
+// Gate on criteria the ICP actually specifies. A mismatch the model read from the
+// evidence on a specified criterion moves the lead into the hidden lane (fit <= 1)
+// with the reason named; 'unknown' never gates, and criteria the ICP leaves open
+// never gate either. Returns the same array with scores adjusted in place.
+export function applyIcpGate(scores: LeadScore[], icp: Icp | null): LeadScore[] {
+  if (!icp) return scores
+  const checks: { key: keyof Omit<IcpMatch, 'note'>; specified: boolean }[] = [
+    { key: 'role', specified: icp.who.length > 0 },
+    { key: 'industry', specified: icp.industries.length > 0 },
+    { key: 'size', specified: icp.sizes.length > 0 },
+    { key: 'location', specified: icp.where.length > 0 },
+  ]
+  for (const s of scores) {
+    const misses = checks.filter(c => c.specified && s.match[c.key] === 'mismatch')
+    if (!misses.length) continue
+    const names = misses.map(m => m.key).join('/')
+    s.fit = Math.min(s.fit, HIDE_FIT_AT)
+    s.why = `ICP mismatch (${names}${s.match.note ? `: ${s.match.note}` : ''}). ${s.why}`.slice(0, 300)
+  }
+  return scores
 }
