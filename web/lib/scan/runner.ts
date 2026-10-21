@@ -14,6 +14,7 @@ import { buildSourcePrompt, collectEvidence, normalizeSources } from '../sources
 import { migrateTinyfish, parseQueries, queryPrompt, tfFetch, tfSearch, tinyfishEnabled, toEvidence } from '../search/tinyfish.ts'
 import { crawlJob } from '../connectors/sitecrawl.ts'
 import { applyIcpGate, icpTextFor, scoreLeads } from './score.ts'
+import { enrichJobSignals } from '../signals/index.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
 import { sourceCap } from './source-quality.ts'
 
@@ -440,6 +441,9 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     finish(db, job, 'done', null, outcome, leads.length + walledLeads.length)
     // Contact-page crawl enriches verified leads with role emails (robots.txt hard rule). Never affects the scan result.
     await crawlJob(db, job.user_id, job.id, deps.crawlGet ? { get: deps.crawlGet } : {})
+    // Intent-signal enrichment (SEC Form D, public job boards). Bonus rows beside the
+    // leads, never part of verification; failures are silent.
+    try { await enrichJobSignals(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl }) } catch (e) { console.error('signal enrichment failed', e instanceof Error ? e.message : 'error') }
     // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.
     try { await runAutopilot(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
     return 'done'
