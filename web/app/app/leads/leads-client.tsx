@@ -25,7 +25,10 @@ export default function LeadsClient() {
   const [error, setError] = useState('')
   const [quality, setQuality] = useState<Quality | null>(null)
   const [useGithub, setUseGithub] = useState(false)
+  const [useYoutube, setUseYoutube] = useState(false)
+  const [useV2ex, setUseV2ex] = useState(false)
   const [feedText, setFeedText] = useState('')
+  const [pageText, setPageText] = useState('')
 
   const lines = (v: string) => v.split('\n').map(x => x.trim()).filter(Boolean)
 
@@ -53,7 +56,7 @@ export default function LeadsClient() {
 
   async function run(withIcp: Icp | null) {
     setError('')
-    const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(useGithub || feedText.trim() || advPick.length ? { sources: { adapters: [...(useGithub ? ['github'] : []), ...(feedText.trim() ? ['rss'] : [])], feeds: lines(feedText), advanced: advPick } } : {}) }) })
+    const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(useGithub || useYoutube || useV2ex || feedText.trim() || pageText.trim() || advPick.length ? { sources: { adapters: [...(useGithub ? ['github'] : []), ...(useYoutube ? ['youtube'] : []), ...(useV2ex ? ['v2ex'] : []), ...(feedText.trim() ? ['rss'] : []), ...(pageText.trim() ? ['web'] : [])], feeds: lines(feedText), pages: lines(pageText), advanced: advPick } } : {}) }) })
     const j = await r.json().catch(() => ({}))
     if (!r.ok) return setError(j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')
     setJobId(j.job_id); setStatus('pending'); setLeads([]); setQuality(null); setIcp(null); setDraft(null)
@@ -88,6 +91,10 @@ export default function LeadsClient() {
           <summary className="cursor-pointer text-gray-400">More sources (optional)</summary>
           <div className="mt-2 space-y-2">
             <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useGithub} onChange={e => setUseGithub(e.target.checked)} /> Also search public GitHub repositories</label>
+            <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useYoutube} onChange={e => setUseYoutube(e.target.checked)} /> Also search public YouTube videos</label>
+            <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useV2ex} onChange={e => setUseV2ex(e.target.checked)} /> Also search public V2EX topics</label>
+            <label className="block text-xs text-gray-500">Web page URLs to read (https only, one per line, up to 3). Pages are read through Jina Reader, a third-party service: the URLs are sent to it, and it rate limits requests without a key.</label>
+            <textarea className={`${input} w-full`} rows={2} value={pageText} onChange={e => setPageText(e.target.value)} placeholder="https://example.com/blog/post" />
             <label className="block text-xs text-gray-500">RSS or Atom feed URLs to include (https only, one per line, up to 5)</label>
             <textarea className={`${input} w-full`} rows={2} value={feedText} onChange={e => setFeedText(e.target.value)} placeholder="https://example.com/news/feed.xml" />
             {advReady.map(p => <label key={p} className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={advPick.includes(p)} onChange={e => setAdvPick(e.target.checked ? [...advPick, p] : advPick.filter(x => x !== p))} /> Also search {p} with my session (advanced, may risk the account)</label>)}

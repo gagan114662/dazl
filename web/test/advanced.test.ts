@@ -21,7 +21,7 @@ test('flags: off by default, kill switch wins, linkedin needs its own flag', () 
 })
 
 test('selection keeps only known advanced platforms', () => {
-  assert.deepEqual(normalizeSources({ advanced: ['reddit', 'nope'] }), { adapters: [], feeds: [], advanced: ['reddit'] })
+  assert.deepEqual(normalizeSources({ advanced: ['reddit', 'nope'] }), { adapters: [], feeds: [], pages: [], advanced: ['reddit'] })
   assert.equal(normalizeSources({ advanced: ['nope'] }), null)
 })
 

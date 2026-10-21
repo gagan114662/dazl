@@ -1,24 +1,30 @@
 import type { AdapterInput, Evidence, SourceAdapter } from './types.ts'
 import { githubAdapter } from './github.ts'
 import { rssAdapter } from './rss.ts'
+import { jinaAdapter } from './jina.ts'
+import { v2exAdapter } from './v2ex.ts'
+import { youtubeAdapter } from './youtube.ts'
 import { safeGet } from './http.ts'
 import { isAdvPlatform } from '../advanced/config.ts'
 
-export const ADAPTERS: Record<string, SourceAdapter> = { rss: rssAdapter, github: githubAdapter }
+export const ADAPTERS: Record<string, SourceAdapter> = { rss: rssAdapter, github: githubAdapter, web: jinaAdapter, v2ex: v2exAdapter, youtube: youtubeAdapter }
 export const isAdapterId = (v: unknown): v is string => typeof v === 'string' && Object.hasOwn(ADAPTERS, v)
 
-export interface SourceSelection { adapters: string[]; feeds: string[]; advanced?: string[] }
+export interface SourceSelection { adapters: string[]; feeds: string[]; pages?: string[]; advanced?: string[] }
 
 // Validates what the user chose for one scan. Feeds must be public https URLs.
 export function normalizeSources(raw: unknown): SourceSelection | null {
   if (!raw || typeof raw !== 'object') return null
-  const r = raw as { adapters?: unknown; feeds?: unknown; advanced?: unknown }
+  const r = raw as { adapters?: unknown; feeds?: unknown; pages?: unknown; advanced?: unknown }
   const advanced = [...new Set((Array.isArray(r.advanced) ? r.advanced : []).filter(isAdvPlatform))]
   const adapters = [...new Set((Array.isArray(r.adapters) ? r.adapters : []).filter(isAdapterId))]
-  const feeds = [...new Set((Array.isArray(r.feeds) ? r.feeds : []).filter((u): u is string => typeof u === 'string').map(u => u.trim()).filter(u => /^https:\/\/[^\s]+$/.test(u) && u.length <= 300))].slice(0, 5)
+  const urls = (v: unknown, max: number) => [...new Set((Array.isArray(v) ? v : []).filter((u): u is string => typeof u === 'string').map(u => u.trim()).filter(u => /^https:\/\/[^\s]+$/.test(u) && u.length <= 300))].slice(0, max)
+  const feeds = urls(r.feeds, 5)
+  const pages = urls(r.pages, 3)
   if (adapters.includes('rss') && feeds.length === 0) adapters.splice(adapters.indexOf('rss'), 1)
+  if (adapters.includes('web') && pages.length === 0) adapters.splice(adapters.indexOf('web'), 1)
   if (!adapters.length && !advanced.length) return null
-  return advanced.length ? { adapters, feeds, advanced } : { adapters, feeds }
+  return advanced.length ? { adapters, feeds, pages, advanced } : { adapters, feeds, pages }
 }
 
 const STOP = new Set(['looking', 'find', 'companies', 'company', 'people', 'who', 'that', 'with', 'from', 'have', 'just', 'recently', 'their', 'they', 'in', 'for', 'and', 'the'])
@@ -28,7 +34,7 @@ export function keywordsFor(query: string): string[] {
 
 // Runs the chosen adapters in parallel with an overall time limit. Failures give no evidence, never an error.
 export async function collectEvidence(sel: SourceSelection, query: string, http = safeGet, timeoutMs = 25_000): Promise<Evidence[]> {
-  const input: AdapterInput = { query, keywords: keywordsFor(query), feeds: sel.feeds, http }
+  const input: AdapterInput = { query, keywords: keywordsFor(query), feeds: sel.feeds, pages: sel.pages ?? [], http }
   const run = Promise.all(sel.adapters.map(id => ADAPTERS[id].collect(input).catch(() => [] as Evidence[])))
   const timeout = new Promise<Evidence[][]>(res => setTimeout(() => res([]), timeoutMs).unref?.())
   return (await Promise.race([run, timeout])).flat().slice(0, 40)
