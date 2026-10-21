@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import GmailGate from '../gmail-gate'
 
 interface Thread { thread_id: string; company: string; name: string; to_email: string; last_lead_reply_at: number | null; followups_sent: number; next_due_at: number | null; stopped: string | null }
 interface Sent { thread_id: string; company: string; to_email: string; step: number; status: string; created_at: number }
@@ -25,9 +26,14 @@ export default function FollowupsClient() {
       <h1 className="text-2xl font-semibold tracking-tight mb-1">Follow-ups</h1>
       <p className="text-[#555] text-sm mb-6">
         Automatic follow-ups only go to people who replied with interest, at most two per thread, 3 and 5 days after the last activity. A new reply from them stops the sequence.
-        {data && !data.enabled && ' They are off right now - turn them on in Settings.'}
+        {data && !data.enabled && ' They are off right now.'}
       </p>
       {error && <p className="text-red-600 text-sm">{error}</p>}
+      {data && !data.enabled && (
+        <div className="mb-6">
+          <GmailGate intro="Connect Gmail to unlock Inbox and Follow-ups. Follow-ups start only after Gmail is connected and the follow-ups switch is on in Settings." />
+        </div>
+      )}
       {data && (
         <>
           <h2 className="text-sm font-semibold mb-2">Active sequences</h2>

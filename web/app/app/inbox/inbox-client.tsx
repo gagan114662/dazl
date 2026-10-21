@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import GmailGate from '../gmail-gate'
 
 interface Row { gmail_id: string; from_email: string; excerpt: string; classification: string; received_at: number; company: string | null; lead_name: string | null; followups_sent: number | null; stopped: string | null }
 interface Info { available: boolean; consent_accepted: boolean; read_granted: boolean; rows: Row[] }
@@ -22,9 +23,7 @@ export default function InboxClient() {
       <h1 className="text-2xl font-bold tracking-tight mb-1">Inbox</h1>
       <p className="text-[#555] text-sm mb-6">Replies to the email threads dazl started for you. Nothing else in your mailbox is read.</p>
       {(!i.consent_accepted || !i.read_granted) && (
-        <div className="card p-6 text-sm text-[#555]">
-          Reply reading is off. Turn it on in <a className="underline underline-offset-2" href="/app/settings">Settings</a> to see replies here.
-        </div>
+        <GmailGate intro="Connect Gmail to unlock Inbox and Follow-ups. Only replies to outreach threads dazl started are read - nothing else in your mailbox." />
       )}
       {i.consent_accepted && i.read_granted && i.rows.length === 0 && (
         <div className="card p-6 text-sm text-[#555]">No replies yet. When someone answers an outreach email, it shows up here.</div>
