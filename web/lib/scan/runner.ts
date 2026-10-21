@@ -6,10 +6,12 @@ import type { Vendor } from '../llm/vendors.ts'
 import { MAX_ATTEMPTS, reapStaleJobs } from './store.ts'
 import { dedupKey, MIN_CONFIDENCE, verifyEvidence, type Candidate } from './evidence.ts'
 import { inferIcp, normalizeIcp, type Icp } from './icp.ts'
+import { buildSourcePrompt, collectEvidence, normalizeSources } from '../sources/index.ts'
+import { migrateTinyfish, parseQueries, queryPrompt, tfFetch, tfSearch, tinyfishEnabled, toEvidence } from '../search/tinyfish.ts'
 import { enrichJob } from '../connectors/enrich.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
 
-export interface Job { id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null }
+export interface Job { id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null }
 export interface LeadDraft extends Candidate {}
 export interface VerifiedLead extends LeadDraft { confidence: number; date_status: 'verified' | 'unverified' | 'undated'; retrieved_at: number; contact: string | null }
 
@@ -169,7 +171,7 @@ export function claimKeyedJob(db: Database.Database, jobId?: string): Job | null
   return db.transaction(() => {
     const row = db
       .prepare(
-        `SELECT id, user_id, business_name, industry, location, attempts, query, icp FROM scan_jobs
+        `SELECT id, user_id, business_name, industry, location, attempts, query, icp, sources FROM scan_jobs
          WHERE status = 'pending' ${jobId ? 'AND id = ?' : ''}
            AND user_id IN (SELECT tenant_id FROM tenant_llm_keys)
          ORDER BY created_at, rowid LIMIT 1`,
@@ -212,6 +214,23 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
   })()
 }
 
+async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider: Provider, key: string, fetchImpl?: typeof fetch): Promise<LeadDraft[] | null> {
+  migrateTinyfish(db)
+  const complete = provider.complete!
+  const spent = { searches: 0, fetches: 0 }
+  const q = parseQueries(await complete.call(provider, key, queryPrompt(job.query!, icp, 3), fetchImpl, 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, 3)
+  const after = new Date(Date.now() - 365 * 86400_000).toISOString().slice(0, 10)
+  const hits: Awaited<ReturnType<typeof tfSearch>> extends infer R ? (R extends { ok: true; hits: infer H } ? H : never) : never = []
+  for (const query of q) { const r = await tfSearch(db, job.user_id, query, { afterDate: after }, spent); if (!r.ok) { if (hits.length === 0) return null; break } hits.push(...r.hits) }
+  if (hits.length === 0) return null
+  const urls = [...new Set(hits.map(h => h.url))].slice(0, 8)
+  const f = await tfFetch(db, job.user_id, urls, spent)
+  const items = toEvidence(hits, f.ok ? f.pages : [])
+  if (items.length === 0) return null
+  const text = await complete.call(provider, key, buildSourcePrompt(job.query!, icp, items), fetchImpl, 3000)
+  return parseLeads(text, items.map(i => i.url)) ?? null
+}
+
 export interface RunDeps { providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null }
 
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
@@ -224,6 +243,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
   try {
     const providers_ = deps.providers ?? providers
     let prompt = buildPrompt(job)
+    let icpForSources: Icp | null = null
     if (job.query) {
       let icp = job.icp ? normalizeIcp(safeJson(job.icp)) : null
       if (!icp) {
@@ -231,11 +251,41 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         icp = r.icp
         db.prepare("UPDATE scan_jobs SET icp = ?, icp_inferred = ? WHERE id = ? AND status = 'running' AND attempts = ?").run(JSON.stringify(icp), r.inferred ? 1 : 2, job.id, job.attempts)
       }
+      icpForSources = icp
       prompt = buildIcpPrompt(job.query, icp)
     }
-    const res = await providers_[vendor].research(key, prompt, deps.fetchImpl)
-    const leads = parseLeads(res.text, res.citedUrls)
+    const complete = providers_[vendor].complete
+    // Primary backend when the operator set TINYFISH_API_KEY: TinyFish search and fetch, the user's own model reads the
+    // pages. If TinyFish is off, capped, failing or finds nothing, fall back to the provider's built-in web search.
+    let leads: LeadDraft[] | null = null
+    if (job.query && icpForSources && complete && tinyfishEnabled()) {
+      try { leads = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl) } catch (e) {
+        if (e instanceof ProviderError && e.kind === 'auth') throw e
+        leads = null
+      }
+      if (leads && leads.length === 0) leads = null
+    }
+    if (!leads) {
+      const res = await providers_[vendor].research(key, prompt, deps.fetchImpl)
+      leads = parseLeads(res.text, res.citedUrls)
+    }
     if (!leads) throw new ProviderError('retry', 'bad_output')
+    // Optional per-scan sources: public evidence is collected without any key or DB access, then the user's own model
+    // turns it into candidates. They go through the same verifier as web-search leads.
+    const sel = job.query && job.sources ? normalizeSources(safeJson(job.sources)) : null
+    if (sel && icpForSources && complete) {
+      try {
+        const items = await collectEvidence(sel, job.query!)
+        if (items.length > 0) {
+          const text = await complete.call(providers_[vendor], key, buildSourcePrompt(job.query!, icpForSources, items), deps.fetchImpl, 3000)
+          const extra = parseLeads(text, items.map(i => i.url)) ?? []
+          leads.push(...extra)
+        }
+      } catch (e) {
+        if (e instanceof ProviderError && e.kind === 'auth') throw e // a rejected key still fails the scan
+        // any other source failure only means no extra candidates
+      }
+    }
     const outcome = await verifyLeads(leads, deps.fetchPage, deps.now, deps.judge === undefined ? makeJudge(providers_[vendor], key, deps.fetchImpl) : deps.judge ?? undefined)
     finish(db, job, 'done', null, outcome, leads.length)
     await enrichJob(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl, master: deps.master })
