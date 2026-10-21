@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react'
 
 interface Lead { id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string }[] }
-interface Icp { summary: string; who: string[]; where: string[]; signals: string[]; exclude: string[] }
+interface Icp { summary: string; who: string[]; industries: string[]; sizes: string[]; where: string[]; signals: string[]; exclude: string[] }
 interface Quality { candidates: number; passed: number | null; needs_review: number | null; dropped: number | null; drop_reasons: Record<string, number> }
 
 // Leads written by other workers can carry anything in signals; never let a bad value crash the page.
@@ -27,6 +27,7 @@ export default function LeadsClient() {
   const [icp, setIcp] = useState<{ icp: Icp; source: string } | null>(null)
   const [jobId, setJobId] = useState<string | null>(null)
   const [status, setStatus] = useState<string>('')
+  const [leadsSoFar, setLeadsSoFar] = useState(0)
   const [leads, setLeads] = useState<Lead[]>([])
   const [error, setError] = useState('')
   const [quality, setQuality] = useState<Quality | null>(null)
@@ -75,7 +76,7 @@ export default function LeadsClient() {
     const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(useGithub || useYoutube || useV2ex || feedText.trim() || pageText.trim() || advPick.length ? { sources: { adapters: [...(useGithub ? ['github'] : []), ...(useYoutube ? ['youtube'] : []), ...(useV2ex ? ['v2ex'] : []), ...(feedText.trim() ? ['rss'] : []), ...(pageText.trim() ? ['web'] : [])], feeds: lines(feedText), pages: lines(pageText), advanced: advPick } } : {}) }) })
     const j = await r.json().catch(() => ({}))
     if (!r.ok) return setError(j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : j.error === 'trial_exhausted' ? 'Your 3 free scans are used up. Add your own AI key in Settings to keep scanning.' : j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')
-    setJobId(j.job_id); setStatus('pending'); setLeads([]); setQuality(null); setIcp(null); setDraft(null)
+    setJobId(j.job_id); setStatus('pending'); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0)
   }
 
   useEffect(() => {
@@ -84,7 +85,7 @@ export default function LeadsClient() {
       const r = await fetch(`/api/scan/status?job_id=${jobId}`)
       if (!r.ok) return
       const s = await r.json()
-      setStatus(s.status); setJobError(s.error ?? '')
+      setStatus(s.status); setJobError(s.error ?? ''); setLeadsSoFar(s.lead_count ?? 0)
       setQuality(s.quality ?? null)
       if (s.icp) setIcp({ icp: s.icp, source: s.icp_source })
     }, 5000)
@@ -133,10 +134,13 @@ export default function LeadsClient() {
       </form>
       {draft && (
         <div className="card p-4 mb-6 text-sm">
-          <p className="text-gray-400 mb-3">{draftNote}</p>
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <p className="text-gray-400">{draftNote}</p>
+            <button onClick={() => run(draft)} className="btn-primary shrink-0">Run scan with this profile</button>
+          </div>
           <label className="block text-xs text-gray-500 mb-1">Who you want</label>
           <textarea className={`${input} w-full mb-2`} rows={2} maxLength={300} value={draft.summary} onChange={e => setDraft({ ...draft, summary: e.target.value })} />
-          {([['who', 'Roles or kinds of buyer (one per line)'], ['where', 'Where (one per line, empty means anywhere)'], ['signals', 'Buying signals to look for (one per line)'], ['exclude', 'Skip these (one per line)']] as const).map(([k, label]) => (
+          {([['who', 'Roles or kinds of buyer (one per line)'], ['industries', 'Industries (one per line, empty means any)'], ['sizes', 'Company sizes (one per line, empty means any)'], ['where', 'Where (one per line, empty means anywhere)'], ['signals', 'Buying signals to look for (one per line)'], ['exclude', 'Skip these (one per line)']] as const).map(([k, label]) => (
             <div key={k}>
               <label className="block text-xs text-gray-500 mb-1">{label}</label>
               <textarea className={`${input} w-full mb-2`} rows={2} value={draft[k].join('\n')} onChange={e => setDraft({ ...draft, [k]: lines(e.target.value) })} />
@@ -158,7 +162,16 @@ export default function LeadsClient() {
         </details>
       )}
       {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
-      {jobId && status !== 'done' && <p className="text-gray-400 text-sm mb-4">{status === 'failed' ? (jobError === 'no_candidates' ? 'No candidates found for that search. Try rephrasing or broadening it - this scan did not count toward your monthly scans.' : jobError === 'trial_key_invalid' ? 'The scan service is having trouble right now. Try again later - this scan did not count toward your free scans.' : 'Scan failed. Try again.') : `Scan ${status}... this can take a few minutes.`}</p>}
+      {jobId && status !== 'done' && status !== 'failed' && (
+        <div className="card p-4 mb-4 flex items-center gap-3">
+          <span className="inline-block h-4 w-4 rounded-full border-2 border-gray-500 border-t-white animate-spin" aria-hidden />
+          <div className="text-sm">
+            <div>Scanning - this can take a few minutes.</div>
+            <div className="text-gray-400 text-xs">{leadsSoFar > 0 ? `${leadsSoFar} lead${leadsSoFar === 1 ? '' : 's'} so far` : 'Searching sources...'}</div>
+          </div>
+        </div>
+      )}
+      {jobId && status === 'failed' && <p className="text-gray-400 text-sm mb-4">{jobError === 'no_candidates' ? 'No candidates found for that search. Try rephrasing or broadening it - this scan did not count toward your monthly scans.' : jobError === 'trial_key_invalid' ? 'The scan service is having trouble right now. Try again later - this scan did not count toward your free scans.' : 'Scan failed. Try again.'}</p>}
       {quality && status === 'done' && (
         <p className="text-gray-400 text-sm mb-4">
           {quality.candidates} found: {quality.passed ?? 0} verified, {quality.needs_review ?? 0} need your review, {quality.dropped ?? 0} dropped
