@@ -42,6 +42,8 @@ export function isSuppressed(db: Database.Database, tenantId: string, email: str
 export function suppress(db: Database.Database, tenantId: string, email: string, reason: 'unsubscribe' | 'manual' | 'bounce'): void {
   db.transaction(() => {
     db.prepare('INSERT OR IGNORE INTO suppressions (tenant_id, email, reason) VALUES (?, ?, ?)').run(tenantId, norm(email), reason)
+    // an opt-out ends every kind of automated contact with this address
+    try { db.prepare('UPDATE consent_ledger SET revoked_at = CAST(strftime(\'%s\',\'now\') AS INTEGER), revoke_reason = ? WHERE tenant_id = ? AND contact = ? AND revoked_at IS NULL').run(reason, tenantId, norm(email)) } catch { /* ledger not created yet */ }
     // nothing waiting to go out to this address may go out
     db.prepare("UPDATE outreach_messages SET status = 'skipped', error = 'suppressed', approved_hash = NULL WHERE tenant_id = ? AND to_email = ? AND status IN ('draft','approved')").run(tenantId, norm(email))
   })()
@@ -210,7 +212,7 @@ export async function sendMessage(db: Database.Database, tenantId: string, id: s
   }))
   try {
     const out = await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl)
-    db.prepare("UPDATE outreach_messages SET status = 'sent', sent_at = ?, gmail_id = ?, error = NULL WHERE id = ? AND status = 'sending'").run(nowS(d), out.id, id)
+    db.prepare("UPDATE outreach_messages SET status = 'sent', sent_at = ?, gmail_id = ?, thread_id = ?, error = NULL WHERE id = ? AND status = 'sending'").run(nowS(d), out.id, (out as { threadId?: string }).threadId ?? null, id)
     return 'sent'
   } catch (e) {
     if (e instanceof GmailSendError) {
