@@ -94,8 +94,13 @@ export default function LeadsClient() {
   const input = 'field'
   return (
     <div className="p-8">
-      <h1 className="text-2xl font-bold tracking-tight mb-1">Leads</h1>
-      <p className="text-gray-400 text-sm mb-6">Buyers showing purchase intent, with the signal and source for each.</p>
+      <div className="flex items-baseline justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight mb-1">Leads</h1>
+          <p className="text-gray-400 text-sm mb-6">Buyers showing purchase intent, with the signal and source for each.</p>
+        </div>
+        <a className="text-sm text-gray-300 underline underline-offset-4 hover:text-white" href={jobId ? `/api/leads/export?job_id=${jobId}` : '/api/leads/export'}>Download CSV</a>
+      </div>
       <form onSubmit={preview} className="mb-4">
         <textarea className={`${input} w-full`} rows={3} required minLength={3} maxLength={600} value={query} onChange={e => setQuery(e.target.value)}
           placeholder="What are you looking for? e.g. Seed-stage fintech founders in Europe who just hired their first sales rep" />

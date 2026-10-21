@@ -169,3 +169,18 @@ export function countHiddenLeads(db: Database.Database, userId: string, jobId: s
 export function latestJobId(db: Database.Database, userId: string): string | undefined {
   return (db.prepare('SELECT id FROM scan_jobs WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(userId) as { id: string } | undefined)?.id
 }
+
+// CSV export: every lead the tenant can see (hidden fit<=1 rows excluded unless
+// includeHidden), across one job or all of their jobs, newest first. Read-only.
+export function exportLeads(db: Database.Database, userId: string, jobId?: string, limit = 5000) {
+  return db
+    .prepare(
+      `SELECT l.scan_job_id AS job_id, l.company, l.name, l.contact, l.signal, l.source_url,
+              l.fit, l.intent, l.action, l.score, l.confidence, l.event_date, l.review_reason,
+              l.evidence_excerpt, l.created_at
+       FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
+       WHERE j.user_id = ? ${jobId ? 'AND j.id = ?' : ''} AND (l.fit IS NULL OR l.fit > 1)
+       ORDER BY l.created_at DESC LIMIT ?`,
+    )
+    .all(...(jobId ? [userId, jobId, limit] : [userId, limit]))
+}
