@@ -88,3 +88,21 @@ test('x gets the keyword query and audit shows it; reddit keeps the raw query', 
   assert.equal(rows.find(r => r.connector === 'adv:x')?.lookup, kw)
   assert.equal(rows.find(r => r.connector === 'adv:reddit')?.lookup, raw)
 })
+
+test('x via operator index: consent alone, no session, no worker call - mirrors the UI operator_index gate', async () => {
+  const db = setup(); acceptConsent(db, 'A', 'advanced')
+  const { migrateTinyfish, resetTinyfishState } = await import('../lib/search/tinyfish.ts')
+  migrateTinyfish(db); resetTinyfishState()
+  let workerCalled = false
+  const worker: WorkerFetch = async () => { workerCalled = true; return [item] }
+  const fetchImpl = (async (u: string) => new Response(JSON.stringify({ results: [
+    { url: 'https://x.com/acme/status/12345', title: 't', snippet: 'we are dumping our current sales tool, it never works', date: '2026-10-20' },
+  ] }), { status: 200 })) as unknown as typeof fetch
+  const env = { ...ON, TINYFISH_API_KEY: 'tf-key' }
+  const out = await collectAdvanced(db, 'A', 'j1', ['x'], 'sales software alternatives', { worker, master, env, fetchImpl })
+  assert.equal(workerCalled, false) // operator index path, never the session worker
+  assert.equal(out.length, 1)
+  assert.equal(out[0].login_walled, true) // snippets stay in the review lane
+  const rows = recentAudit(db, 'A', 10) as { connector: string; status: string }[]
+  assert.equal(rows.find(r => r.connector === 'adv:x')?.status, 'ok')
+})
