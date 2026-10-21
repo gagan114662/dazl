@@ -24,6 +24,8 @@ export interface LeadDraft extends Candidate {}
 export interface VerifiedLead extends LeadDraft { confidence: number; date_status: 'verified' | 'unverified' | 'undated'; retrieved_at: number; contact: string | null; fit?: number; intent?: number; action?: number; why?: string; signals?: string; icp_match?: string }
 
 const MAX_LEADS = 20
+// At most this many verified (or review) leads may come from a single source page in one scan.
+export const MAX_LEADS_PER_SOURCE = 3
 
 // The model's sense of "recent" drifts with its training cutoff: without an anchor it
 // happily returns two-year-old funding news. Spell out today and the cutoff in every prompt.
@@ -247,7 +249,23 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
   })
   // a company we already verified does not also need a manual review entry
   for (const k of best.keys()) if (review.delete(k)) drop('duplicate')
-  return { leads: [...best.values()], review: [...review.values()], dropped }
+  // Per-source cap (gagan approved 2026-10-21): one listicle or directory page must not fill a
+  // scan with lookalike leads. Keep the strongest MAX_LEADS_PER_SOURCE per source page.
+  const capPer = <T extends { source_url: string }>(list: T[], rank: (a: T, b: T) => number): T[] => {
+    const seen = new Map<string, number>()
+    const out: T[] = []
+    for (const l of [...list].sort(rank)) {
+      const n = seen.get(l.source_url) ?? 0
+      if (n >= MAX_LEADS_PER_SOURCE) { drop('source_cap'); continue }
+      seen.set(l.source_url, n + 1); out.push(l)
+    }
+    return out
+  }
+  return {
+    leads: capPer([...best.values()], (a, b) => (b.confidence ?? 0) - (a.confidence ?? 0)),
+    review: capPer([...review.values()], (a, b) => b.score - a.score),
+    dropped,
+  }
 }
 
 // Atomically claims one pending job whose owner has a key stored, or a trial-funded

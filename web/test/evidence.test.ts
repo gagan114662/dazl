@@ -106,3 +106,16 @@ test('htmlToText drops scripts and styles and decodes entities', () => {
   assert.equal(r.title, 'Acme & Co')
   assert.equal(r.text, 'Acme & Co Hello world & more')
 })
+
+test('per-source cap: a single page yields at most 3 verified leads, strongest kept', async () => {
+  const companies = ['Acme Alpha', 'Acme Beta', 'Acme Gamma', 'Acme Delta', 'Acme Epsilon']
+  const quote = (c: string) => `${c} announced a second depot and is hiring twelve drivers this spring`
+  const bigPage = async () => page(`Roundup 2026. ${companies.map(quote).join('. ')}.`)
+  const { leads, dropped } = await verifyLeads(
+    companies.map((c, i) => cand({ company: c, source_url: 'https://roundup.example/list', excerpt: quote(c), score: 90 - i })),
+    bigPage, NOW,
+  )
+  assert.equal(leads.length, 3)
+  assert.equal(dropped['source_cap'], 2)
+  assert.deepEqual(leads.map(l => l.company).sort(), ['Acme Alpha', 'Acme Beta', 'Acme Gamma'])
+})
