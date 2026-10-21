@@ -2,20 +2,23 @@ import type { AdapterInput, Evidence, SourceAdapter } from './types.ts'
 import { githubAdapter } from './github.ts'
 import { rssAdapter } from './rss.ts'
 import { safeGet } from './http.ts'
+import { isAdvPlatform } from '../advanced/config.ts'
 
 export const ADAPTERS: Record<string, SourceAdapter> = { rss: rssAdapter, github: githubAdapter }
 export const isAdapterId = (v: unknown): v is string => typeof v === 'string' && Object.hasOwn(ADAPTERS, v)
 
-export interface SourceSelection { adapters: string[]; feeds: string[] }
+export interface SourceSelection { adapters: string[]; feeds: string[]; advanced?: string[] }
 
 // Validates what the user chose for one scan. Feeds must be public https URLs.
 export function normalizeSources(raw: unknown): SourceSelection | null {
   if (!raw || typeof raw !== 'object') return null
-  const r = raw as { adapters?: unknown; feeds?: unknown }
+  const r = raw as { adapters?: unknown; feeds?: unknown; advanced?: unknown }
+  const advanced = [...new Set((Array.isArray(r.advanced) ? r.advanced : []).filter(isAdvPlatform))]
   const adapters = [...new Set((Array.isArray(r.adapters) ? r.adapters : []).filter(isAdapterId))]
   const feeds = [...new Set((Array.isArray(r.feeds) ? r.feeds : []).filter((u): u is string => typeof u === 'string').map(u => u.trim()).filter(u => /^https:\/\/[^\s]+$/.test(u) && u.length <= 300))].slice(0, 5)
   if (adapters.includes('rss') && feeds.length === 0) adapters.splice(adapters.indexOf('rss'), 1)
-  return adapters.length ? { adapters, feeds } : null
+  if (!adapters.length && !advanced.length) return null
+  return advanced.length ? { adapters, feeds, advanced } : { adapters, feeds }
 }
 
 const STOP = new Set(['looking', 'find', 'companies', 'company', 'people', 'who', 'that', 'with', 'from', 'have', 'just', 'recently', 'their', 'they', 'in', 'for', 'and', 'the'])

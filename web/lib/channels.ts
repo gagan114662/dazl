@@ -1,0 +1,24 @@
+// The channel registry shown in Settings > Connectors. `status` says what really works today:
+//  live     - the adapter runs in scans now
+//  worker   - session is stored and gated, but fetching needs an operator-run worker that is not in this repo
+//  soon     - nothing is built; the UI shows it but offers no connect flow
+export type Tier = 0 | 1 | 2
+export type ChannelStatus = 'live' | 'worker' | 'soon'
+export interface Channel { id: string; name: string; tier: Tier; status: ChannelStatus; note: string; platform?: 'x' | 'reddit' | 'linkedin' | 'xiaohongshu' | 'bilibili' }
+
+export const CHANNELS: Channel[] = [
+  { id: 'web', name: 'Web pages (Jina Reader)', tier: 0, status: 'soon', note: 'Not built yet. Jina Reader is a third-party service: page URLs would be sent to it, and it rate limits requests without a key.' },
+  { id: 'youtube', name: 'YouTube', tier: 0, status: 'soon', note: 'Not built yet.' },
+  { id: 'github', name: 'GitHub', tier: 0, status: 'live', note: 'On. Public repos and issues. Pick it in a scan under Sources. No key.' },
+  { id: 'rss', name: 'RSS', tier: 0, status: 'live', note: 'On. Add feed URLs in a scan under Sources. No key.' },
+  { id: 'search', name: 'Web search', tier: 0, status: 'live', note: 'On. TinyFish search when the operator has set a key, otherwise your own model provider search. Exa is not used because it needs a paid key.' },
+  { id: 'v2ex', name: 'V2EX', tier: 0, status: 'soon', note: 'Not built yet.' },
+  { id: 'x', name: 'Twitter / X', tier: 1, status: 'worker', platform: 'x', note: 'Needs a worker. X disallows automated access in robots.txt and its terms.' },
+  { id: 'reddit', name: 'Reddit', tier: 1, status: 'worker', platform: 'reddit', note: 'Needs a worker. Reddit limits automated access under its terms.' },
+  { id: 'instagram', name: 'Instagram', tier: 1, status: 'soon', note: 'Not built. Instagram disallows automated access in robots.txt and its terms.' },
+  { id: 'facebook', name: 'Facebook', tier: 1, status: 'soon', note: 'Not built. Facebook disallows automated access in robots.txt and its terms.' },
+  { id: 'bilibili', name: 'Bilibili', tier: 1, status: 'worker', platform: 'bilibili', note: 'Needs a worker.' },
+  { id: 'xiaohongshu', name: 'XiaoHongShu', tier: 1, status: 'worker', platform: 'xiaohongshu', note: 'Needs a worker.' },
+  { id: 'linkedin', name: 'LinkedIn', tier: 2, status: 'worker', platform: 'linkedin', note: 'Needs a worker and a separate operator switch. Highest ban risk. Public pages through Jina Reader are not built yet.' },
+]
+export const TIER_LABEL: Record<Tier, string> = { 0: 'Tier 0 · no setup', 1: 'Tier 1 · your session', 2: 'Tier 2 · login required' }
