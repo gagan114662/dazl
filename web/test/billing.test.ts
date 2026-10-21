@@ -58,3 +58,14 @@ test('unknown tenant, unknown type and non-subscription checkout are ignored', (
   assert.equal(applyStripeEvent(db, { id: 'evt_4', type: 'checkout.session.completed', data: { object: { mode: 'payment', client_reference_id: 'u9' } } }), 'ignored')
   assert.equal(getPlan(db, 'u9'), 'free')
 })
+
+test('failed scans do not use quota', async () => {
+  const { default: Database } = await import('better-sqlite3')
+  const { migrateScan } = await import('../lib/scan/store.ts')
+  const { scansThisMonth } = await import('../lib/plans.ts')
+  const db = new Database(':memory:'); migrateScan(db)
+  const now = Math.floor(Date.now() / 1000)
+  const ins = db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, created_at) VALUES (?, 'u1', 'b', 'i', 'l', ?, ?)")
+  ins.run('a', 'done', now); ins.run('b', 'failed', now); ins.run('c', 'pending', now)
+  assert.equal(scansThisMonth(db, 'u1'), 2)
+})
