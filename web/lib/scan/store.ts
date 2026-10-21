@@ -33,6 +33,9 @@ export function migrateScan(db: Database.Database): void {
       finished_at   INTEGER
     );
     CREATE INDEX IF NOT EXISTS scan_jobs_user ON scan_jobs (user_id, created_at);
+  `)
+  try { db.exec("ALTER TABLE scan_jobs ADD COLUMN funded_by TEXT NOT NULL DEFAULT 'user'") } catch { /* column exists */ }
+  db.exec(`
     CREATE INDEX IF NOT EXISTS scan_jobs_status ON scan_jobs (status, created_at);
 
     CREATE TABLE IF NOT EXISTS leads (

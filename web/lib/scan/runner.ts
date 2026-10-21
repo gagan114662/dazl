@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getKey } from '../llm/key-store.ts'
+import { operatorKey, trialStatus } from './trial.ts'
 import { ProviderError, providers, type Provider } from '../llm/provider.ts'
 import type { Vendor } from '../llm/vendors.ts'
 import { runAutopilot } from '../outreach/autopilot.ts'
@@ -16,7 +17,7 @@ import { icpTextFor, scoreLeads } from './score.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
 import { sourceCap } from './source-quality.ts'
 
-export interface Job { id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null }
+export interface Job { id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string }
 export interface LeadDraft extends Candidate {}
 export interface VerifiedLead extends LeadDraft { confidence: number; date_status: 'verified' | 'unverified' | 'undated'; retrieved_at: number; contact: string | null; fit?: number; intent?: number; action?: number; why?: string; signals?: string }
 
@@ -291,8 +292,11 @@ export interface RunDeps {
   score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get }
 
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
-  const vendor = pickVendor(db, job.user_id)
-  const key = vendor ? getKey(db, job.user_id, vendor, deps.master) : null // only ever this job's owner
+  // Trial-funded jobs run on the shared operator key from the server environment; everything
+  // else runs on the job owner's own key. The operator key is never read from the tenant DB.
+  const op = job.funded_by === 'trial' ? operatorKey() : null
+  const vendor = job.funded_by === 'trial' ? op?.vendor ?? null : pickVendor(db, job.user_id)
+  const key = job.funded_by === 'trial' ? op?.key ?? null : vendor ? getKey(db, job.user_id, vendor, deps.master) : null // only ever this job's owner
   if (!vendor || !key) {
     finish(db, job, 'failed', 'no_api_key')
     return 'failed'
@@ -415,9 +419,16 @@ export async function kickRunner(db: Database.Database, deps: RunDeps = {}): Pro
 
 // Preview for the "what are you looking for" form: infers the ICP with the tenant's own key
 // so the user can read and edit it before the scan runs.
-export async function previewIcp(db: Database.Database, tenantId: string, query: string, deps: Pick<RunDeps, 'providers' | 'fetchImpl' | 'master'> = {}): Promise<{ icp: Icp; inferred: boolean } | { error: 'no_api_key' | 'key_rejected' }> {
-  const vendor = pickVendor(db, tenantId)
-  const key = vendor ? getKey(db, tenantId, vendor, deps.master) : null
+export async function previewIcp(db: Database.Database, tenantId: string, query: string, deps: Pick<RunDeps, 'providers' | 'fetchImpl' | 'master'> = {}, ip?: string): Promise<{ icp: Icp; inferred: boolean } | { error: 'no_api_key' | 'key_rejected' }> {
+  let vendor = pickVendor(db, tenantId)
+  let key = vendor ? getKey(db, tenantId, vendor, deps.master) : null
+  if ((!vendor || !key) && ip !== undefined && trialStatus(db, tenantId, ip).funded) {
+    // A preview is cheap and does not consume one of the account's trial scans; only starting
+    // the scan does. It still needs the trial to be live and the account under its caps.
+    const op = operatorKey()
+    vendor = op?.vendor ?? null
+    key = op?.key ?? null
+  }
   if (!vendor || !key) return { error: 'no_api_key' }
   try {
     return await inferIcp((deps.providers ?? providers)[vendor], key, query, deps.fetchImpl)
