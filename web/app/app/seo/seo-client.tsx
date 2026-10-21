@@ -40,11 +40,9 @@ export default function SeoClient() {
         <button className="btn-primary px-5 py-2 text-sm" disabled={busy || !domain.trim()}>{busy ? 'Auditing...' : 'Run audit'}</button>
       </form>
       {msg && <p className="text-sm text-red-700 mb-4">{msg}</p>}
-<<<<<<< HEAD
+
       <BriefPanel />
-=======
       <NewsjackPanel />
->>>>>>> origin/feat/newsjacking
       <IndexingPanel />
       <DirectoriesPanel />
       {audits.map(a => (
