@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3'
 import { getKey } from '../llm/key-store.ts'
 import { ProviderError, providers, type Provider } from '../llm/provider.ts'
 import type { Vendor } from '../llm/vendors.ts'
+import { runAutopilot } from '../outreach/autopilot.ts'
 import { MAX_ATTEMPTS, reapStaleJobs } from './store.ts'
 import { dedupKey, MIN_CONFIDENCE, verifyEvidence, type Candidate } from './evidence.ts'
 import { inferIcp, normalizeIcp, type Icp } from './icp.ts'
@@ -289,6 +290,8 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     const outcome = await verifyLeads(leads, deps.fetchPage, deps.now, deps.judge === undefined ? makeJudge(providers_[vendor], key, deps.fetchImpl) : deps.judge ?? undefined)
     finish(db, job, 'done', null, outcome, leads.length)
     await enrichJob(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl, master: deps.master })
+    // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.
+    try { await runAutopilot(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
     return 'done'
   } catch (e) {
     const err = e instanceof ProviderError ? e : new ProviderError('retry', 'internal_error')

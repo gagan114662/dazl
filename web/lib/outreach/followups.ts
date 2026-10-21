@@ -1,0 +1,80 @@
+import type Database from 'better-sqlite3'
+import { buildMime, toBase64Url } from '../gmail/mime.ts'
+import { getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
+import { auditAt, autopilotAvailable, getState, pause } from './autopilot.ts'
+import { hasConsent } from './ledger.ts'
+import { composeBody, getSettings, isSuppressed, unsubToken, type Deps } from './service.ts'
+import { getMasterKey } from '../secrets.ts'
+
+// Follow-ups only for people who replied with interest (a ledger row) and only fill silence.
+// At most 2, 3 and 5 days after the last activity in the thread. A newer reply from them stops the
+// sequence for the user to handle. Every autopilot guardrail still applies.
+export const MAX_FOLLOWUPS = 2
+export const GAPS_DAYS = [3, 5]
+
+export function setFollowups(db: Database.Database, tenantId: string, on: boolean): void {
+  db.prepare('UPDATE autopilot_settings SET followups_enabled = ? WHERE tenant_id = ?').run(on ? 1 : 0, tenantId)
+  auditAt(db, tenantId, on ? 'followups_on' : 'followups_off')
+}
+export const followupsEnabled = (db: Database.Database, tenantId: string) =>
+  (db.prepare('SELECT followups_enabled AS f FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as { f: number } | undefined)?.f === 1
+
+export function followupText(step: number, lead: { company: string; name: string; signal: string; source_url: string }, businessName: string): string {
+  const who = lead.name ? lead.name.split(' ')[0] : 'there'
+  const fact = `${lead.signal} (${lead.source_url})`
+  return step === 0
+    ? `Hi ${who},\n\nThanks for getting back to me. Following up in case it got buried: ${fact}\n\nI run ${businessName}. Would a short call this week make sense?\n\nThanks,`
+    : `Hi ${who},\n\nLast note from me on this: ${fact}\n\nIf it isn't a priority right now, no problem, and I won't follow up again.\n\nThanks,`
+}
+
+export interface FollowResult { sent: number; skipped: number; stopped?: string }
+
+export async function runFollowups(db: Database.Database, tenantId: string, businessName: string, d: Deps & { flags?: Record<string, string | undefined> } = {}): Promise<FollowResult> {
+  const out: FollowResult = { sent: 0, skipped: 0 }
+  const flags = d.flags ?? process.env
+  const now = d.now ?? Math.floor(Date.now() / 1000)
+  const stop = (w: string): FollowResult => { out.stopped = w; return out }
+  if (!autopilotAvailable(flags)) return stop('not_available')
+  const st = getState(db, tenantId)
+  if (!st.enabled || st.paused || !st.consent_current) return stop('autopilot_off')
+  if (!followupsEnabled(db, tenantId)) return stop('followups_off')
+  const settings = getSettings(db, tenantId)
+  const acct = gmailStatus(db, tenantId)
+  if (!settings || acct?.status !== 'active') return stop('gmail_or_identity')
+  if (db.prepare("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND status = 'uncertain'").get(tenantId) || db.prepare("SELECT 1 FROM followup_messages WHERE tenant_id = ? AND status IN ('uncertain','sending') AND created_at < ?").get(tenantId, now - 600)) { pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send') }
+
+  const threads = db.prepare('SELECT thread_id, lead_id, to_email, root_message_id, last_activity_at, last_lead_reply_at, followups_sent, last_followup_at FROM followup_threads WHERE tenant_id = ? AND stopped IS NULL AND followups_sent < ? AND last_lead_reply_at IS NOT NULL').all(tenantId, MAX_FOLLOWUPS) as { thread_id: string; lead_id: string; to_email: string; root_message_id: string; last_activity_at: number; last_lead_reply_at: number; followups_sent: number; last_followup_at: number | null }[]
+  for (const t of threads) {
+    const cur = getState(db, tenantId)
+    if (cur.paused || !cur.enabled || !autopilotAvailable(flags) || !followupsEnabled(db, tenantId)) return stop('paused')
+    const skip = (why: string) => { out.skipped++; auditAt(db, tenantId, 'followup_skipped', why, t.lead_id, undefined, now) }
+    if (t.last_followup_at && t.last_lead_reply_at > t.last_followup_at) { db.prepare("UPDATE followup_threads SET stopped = 'replied_again' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, t.thread_id); skip('replied again, left for you'); continue }
+    if (now - t.last_activity_at < GAPS_DAYS[t.followups_sent] * 86400) continue
+    if (isSuppressed(db, tenantId, t.to_email)) { db.prepare("UPDATE followup_threads SET stopped = 'suppressed' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, t.thread_id); skip('suppressed'); continue }
+    if (!hasConsent(db, tenantId, t.to_email, 'email', 'followup', now)) { skip('no valid consent'); continue }
+    const sentToday = (db.prepare("SELECT count(*) AS n FROM autopilot_audit WHERE tenant_id = ? AND action IN ('sent','followup_sent') AND created_at >= ?").get(tenantId, now - 86400) as { n: number }).n
+    if (sentToday >= cur.daily_cap) return stop('daily_cap')
+
+    // at most once: the claim row is unique per thread and step
+    const claim = db.prepare("INSERT OR IGNORE INTO followup_messages (tenant_id, thread_id, step, status, created_at) VALUES (?, ?, ?, 'sending', ?)").run(tenantId, t.thread_id, t.followups_sent, now)
+    if (claim.changes !== 1) { skip('already claimed'); continue }
+    const lead = db.prepare('SELECT l.company, l.name, l.signal, l.source_url FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(t.lead_id, tenantId) as { company: string; name: string; signal: string; source_url: string } | undefined
+    const orig = db.prepare('SELECT id, subject FROM outreach_messages WHERE tenant_id = ? AND lead_id = ?').get(tenantId, t.lead_id) as { id: string; subject: string } | undefined
+    if (!lead || !orig) { db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId, t.thread_id, t.followups_sent); skip('lead missing'); continue }
+    const master = d.master ?? getMasterKey()
+    const unsubUrl = `${(d.baseUrl ?? process.env.PUBLIC_BASE_URL ?? 'https://dazl.ai').replace(/\/$/, '')}/api/unsubscribe?t=${unsubToken(orig.id, master)}`
+    let token: string
+    try { token = await getAccessToken(db, tenantId, d as OAuthDeps) } catch { db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId, t.thread_id, t.followups_sent); pause(db, tenantId, 'gmail_reconnect_needed'); return stop('gmail_unavailable') }
+    try {
+      const raw = toBase64Url(buildMime({ fromName: settings.sender_name, fromEmail: acct.email, to: t.to_email, subject: orig.subject.startsWith('Re:') ? orig.subject : `Re: ${orig.subject}`, body: composeBody(followupText(t.followups_sent, lead, businessName), settings, unsubUrl), messageId: `dazl.f${t.followups_sent}.${orig.id}@${acct.email.split('@')[1]}`, unsubscribeUrl: unsubUrl, date: new Date(now * 1000), inReplyTo: t.root_message_id }))
+      const r = await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, t.thread_id)
+      db.prepare("UPDATE followup_messages SET status = 'sent', gmail_id = ? WHERE tenant_id = ? AND thread_id = ? AND step = ?").run(r.id, tenantId, t.thread_id, t.followups_sent)
+      db.prepare('UPDATE followup_threads SET followups_sent = followups_sent + 1, last_followup_at = ?, last_activity_at = ? WHERE tenant_id = ? AND thread_id = ?').run(now, now, tenantId, t.thread_id)
+      auditAt(db, tenantId, 'followup_sent', `step ${t.followups_sent + 1}`, t.lead_id, orig.id, now); out.sent++
+    } catch {
+      db.prepare("UPDATE followup_messages SET status = 'uncertain' WHERE tenant_id = ? AND thread_id = ? AND step = ?").run(tenantId, t.thread_id, t.followups_sent)
+      auditAt(db, tenantId, 'uncertain', 'follow-up outcome unknown', t.lead_id, orig.id, now); pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send')
+    }
+  }
+  return out
+}
