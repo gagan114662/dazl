@@ -98,7 +98,10 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
   if (process.env.SIGNALS_ENRICH === '0') return
   const fetchImpl = deps.fetchImpl ?? fetch
   const leads = (listLeads(db, tenantId, jobId, MAX_LEADS) as { id: string; company: string; company_domain: string | null }[]).filter(l => l.company)
-  let funding = 0, hiring = 0
+  const { fundingNews, fundingRoundFor } = await import('./funding-round.ts')
+  const news = process.env.SIGNALS_FUNDING_RSS === '0' ? [] : await fundingNews(fetchImpl).catch(() => [])
+  const jinaLeft = { n: 2 }
+  let funding = 0, hiring = 0, rounds = 0
   const today = new Date().toISOString().slice(0, 10)
   const now = Math.floor(Date.now() / 1000)
   for (const lead of leads) {
@@ -114,9 +117,16 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
       addEnrichment(db, tenantId, lead.id, { connector: `signals:${h.board}`, kind: 'hiring', value: `${h.openRoles} open role${h.openRoles === 1 ? '' : 's'}`, label: h.titles.join('; ').slice(0, 200) || null, confidence: 70, source_url: h.url, source_date: today, retrieved_at: now })
       hiring++
     }
+    const r = await fundingRoundFor(lead.company, news, { fetchImpl, jinaLeft }).catch(() => null)
+    if (r) {
+      const what = [r.amount, r.stage].filter(Boolean).join(' ') || 'funding'
+      addEnrichment(db, tenantId, lead.id, { connector: 'signals:funding-round', kind: 'funding', value: `Raised ${what} ${r.daysAgo} day${r.daysAgo === 1 ? '' : 's'} ago`.slice(0, 254), label: `reported ${r.date}`, confidence: 75, source_url: r.url, source_date: r.date, retrieved_at: now })
+      rounds++
+    }
   }
   audit(db, { tenantId, connector: 'signals:sec-edgar', jobId, lookup: `${leads.length} leads`, status: funding ? 'ok' : 'empty', results: funding })
   audit(db, { tenantId, connector: 'signals:ats', jobId, lookup: `${leads.length} leads`, status: hiring ? 'ok' : 'empty', results: hiring })
+  audit(db, { tenantId, connector: 'signals:funding-round', jobId, lookup: `${leads.length} leads, ${news.length} raise reports`, status: rounds ? 'ok' : 'empty', results: rounds })
 }
 
 export function newId(): string { return randomBytes(12).toString('hex') }
