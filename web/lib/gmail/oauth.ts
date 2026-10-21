@@ -5,11 +5,14 @@ import { norm } from '../outreach/store.ts'
 
 // Least privilege: send only. dazl can never read the user's mailbox.
 export const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send'
+// Reading is a separate, optional grant. gmail.readonly is the narrowest scope that returns message bodies.
+// dazl only ever opens threads it started itself (by thread id) and never lists or searches the mailbox.
+export const GMAIL_READ_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly'
 const SCOPES = ['openid', 'email', GMAIL_SEND_SCOPE]
 const STATE_TTL_S = 600
 
 export interface OAuthEnv { GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string; PUBLIC_BASE_URL?: string }
-export interface OAuthDeps { env?: OAuthEnv; fetchImpl?: typeof fetch; master?: Buffer; now?: number }
+export interface OAuthDeps { withRead?: boolean; env?: OAuthEnv; fetchImpl?: typeof fetch; master?: Buffer; now?: number }
 
 const sha = (s: string) => createHash('sha256').update(s).digest('hex')
 const nowS = (d: OAuthDeps) => d.now ?? Math.floor(Date.now() / 1000)
@@ -40,12 +43,12 @@ export function startOAuth(db: Database.Database, tenantId: string, deps: OAuthD
   const verifier = randomBytes(32).toString('base64url')
   const t = nowS(deps)
   db.prepare('DELETE FROM oauth_states WHERE expires_at < ?').run(t)
-  db.prepare('INSERT INTO oauth_states (state_hash, tenant_id, verifier, expires_at) VALUES (?, ?, ?, ?)').run(sha(state), tenantId, verifier, t + STATE_TTL_S)
+  db.prepare('INSERT INTO oauth_states (state_hash, tenant_id, verifier, expires_at, read_scope) VALUES (?, ?, ?, ?, ?)').run(sha(state), tenantId, verifier, t + STATE_TTL_S, deps.withRead ? 1 : 0)
   const q = new URLSearchParams({
     client_id: c.id,
     redirect_uri: redirectUri(env),
     response_type: 'code',
-    scope: SCOPES.join(' '),
+    scope: (deps.withRead ? [...SCOPES, GMAIL_READ_SCOPE] : SCOPES).join(' '),
     access_type: 'offline',
     prompt: 'consent',
     state,
@@ -68,7 +71,7 @@ function idTokenEmail(idToken: string): { email: string; verified: boolean } | n
 export async function completeOAuth(db: Database.Database, tenantId: string, code: string, state: string, deps: OAuthDeps = {}): Promise<{ email: string }> {
   const env: OAuthEnv = deps.env ?? (process.env as OAuthEnv)
   const c = creds(env)
-  const row = db.prepare('SELECT tenant_id, verifier, expires_at FROM oauth_states WHERE state_hash = ?').get(sha(state)) as { tenant_id: string; verifier: string; expires_at: number } | undefined
+  const row = db.prepare('SELECT tenant_id, verifier, expires_at, read_scope FROM oauth_states WHERE state_hash = ?').get(sha(state)) as { tenant_id: string; verifier: string; expires_at: number; read_scope: number } | undefined
   db.prepare('DELETE FROM oauth_states WHERE state_hash = ?').run(sha(state)) // one use, even on failure
   if (!row || row.tenant_id !== tenantId || row.expires_at < nowS(deps)) throw new GmailError('state', 'bad_state')
 
@@ -87,13 +90,15 @@ export async function completeOAuth(db: Database.Database, tenantId: string, cod
   const t = (await res.json()) as { refresh_token?: string; scope?: string; id_token?: string }
   if (!t.refresh_token) throw new GmailError('google', 'no_refresh_token')
   if (!(t.scope ?? '').split(' ').includes(GMAIL_SEND_SCOPE)) throw new GmailError('google', 'send_scope_not_granted')
+  const readGranted = (t.scope ?? '').split(' ').includes(GMAIL_READ_SCOPE)
+  if (row.read_scope === 1 && !readGranted) throw new GmailError('google', 'read_scope_not_granted')
   const who = t.id_token ? idTokenEmail(t.id_token) : null
   if (!who || !who.verified) throw new GmailError('google', 'email_not_verified')
 
   db.prepare(
-    `INSERT INTO gmail_accounts (tenant_id, email, refresh_ct, status) VALUES (?, ?, ?, 'active')
-     ON CONFLICT(tenant_id) DO UPDATE SET email = excluded.email, refresh_ct = excluded.refresh_ct, status = 'active', connected_at = CAST(strftime('%s','now') AS INTEGER)`,
-  ).run(tenantId, who.email, encryptSecret(t.refresh_token, ctx(tenantId), deps.master))
+    `INSERT INTO gmail_accounts (tenant_id, email, refresh_ct, status, read_granted) VALUES (?, ?, ?, 'active', ?)
+     ON CONFLICT(tenant_id) DO UPDATE SET email = excluded.email, refresh_ct = excluded.refresh_ct, status = 'active', read_granted = excluded.read_granted, connected_at = CAST(strftime('%s','now') AS INTEGER)`,
+  ).run(tenantId, who.email, encryptSecret(t.refresh_token, ctx(tenantId), deps.master), row.read_scope === 1 && readGranted ? 1 : 0)
   return { email: who.email }
 }
 
@@ -145,16 +150,16 @@ export async function disconnectGmail(db: Database.Database, tenantId: string, d
   db.prepare('DELETE FROM gmail_accounts WHERE tenant_id = ?').run(tenantId)
 }
 
-export async function gmailSend(accessToken: string, raw: string, fetchImpl: typeof fetch = fetch): Promise<{ id: string }> {
+export async function gmailSend(accessToken: string, raw: string, fetchImpl: typeof fetch = fetch, threadId?: string): Promise<{ id: string; threadId?: string }> {
   const res = await fetchImpl('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
     method: 'POST',
     headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ raw }),
+    body: JSON.stringify(threadId ? { raw, threadId } : { raw }),
     signal: AbortSignal.timeout(20_000),
   })
   if (!res.ok) throw new GmailSendError(res.status)
-  const j = (await res.json().catch(() => ({}))) as { id?: string }
-  return { id: j.id ?? '' }
+  const j = (await res.json().catch(() => ({}))) as { id?: string; threadId?: string }
+  return { id: j.id ?? '', threadId: j.threadId }
 }
 
 export class GmailSendError extends Error {
