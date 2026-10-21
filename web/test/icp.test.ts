@@ -113,3 +113,11 @@ test('a query job with a key-less owner is left for another worker', () => {
   createQueryJob(db, 'B', { query: 'roofers' })
   assert.equal(claimKeyedJob(db), null)
 })
+
+test('inferIcp asks for enough output tokens (a 10-token budget truncated every profile)', async () => {
+  let seen = 0
+  const r = await inferIcp({ research: async () => ({ text: '', citedUrls: [] }), complete: async (_k, _p, _f, max) => { seen = max ?? 0; return seen < 300 ? '{"summary":"roofers","who":["own' : '{"summary":"roofers in Ohio","who":["owners"],"where":["Ohio"],"signals":["hiring"],"exclude":[]}' } }, KA, 'roofers in Ohio')
+  assert.ok(seen >= 300)
+  assert.equal(r.inferred, true)
+  assert.deepEqual(r.icp.where, ['Ohio'])
+})
