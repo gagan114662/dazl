@@ -138,12 +138,41 @@ const sameSite = (emailDomain: string, site: string) => { const a = emailDomain.
 
 export interface Found { kind: 'email' | 'phone'; value: string; label: string; url: string }
 
+// JSON-LD blocks name contact emails in structured form (Organization/Person/contactPoint).
+// They live inside <script>, which the visible-text pass strips, so read them first.
+function jsonLdEmails(html: string): string[] {
+  const out: string[] = []
+  for (const m of html.matchAll(/<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
+    let root: unknown; try { root = JSON.parse(m[1]) } catch { continue }
+    const stack = [root]
+    while (stack.length) {
+      const node = stack.pop()
+      if (!node || typeof node !== 'object') continue
+      if (Array.isArray(node)) { stack.push(...node); continue }
+      const rec = node as Record<string, unknown>
+      if (typeof rec.email === 'string') out.push(rec.email.replace(/^mailto:/i, ''))
+      for (const v of Object.values(rec)) if (v && typeof v === 'object') stack.push(v)
+    }
+  }
+  return out
+}
+
+// Common obfuscations: "info [at] company.com", "sales(at)company dot com". Deobfuscated
+// candidates go through the same role + same-site filter as everything else.
+function deobfuscatedEmails(body: string): string[] {
+  const out: string[] = []
+  const re = /\b([a-z0-9][a-z0-9._%+-]{0,63})\s*(?:\[at\]|\(at\)|\sat\s)\s*([a-z0-9][a-z0-9.-]{0,251})(?:\.|\s*(?:\[dot\]|\(dot\)|\sdot\s)\s*)([a-z]{2,24})(?![a-z]|\.[a-z])/gi
+  for (const m of body.matchAll(re)) out.push(`${m[1]}@${m[2]}.${m[3]}`)
+  return out
+}
+
 export function extractContacts(html: string, pageUrl: string, site: string): Found[] {
   const out = new Map<string, Found>()
   const body = html.replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, ' ').replace(/<!--[\s\S]*?-->/g, ' ')
   const add = (f: Found) => { if (!out.has(f.kind + f.value)) out.set(f.kind + f.value, f) }
-  // Crawlee's parser finds mailto: links and addresses in visible text; our filters below decide what is kept.
-  const emails: string[] = social.parseHandlesFromHtml(body).emails
+  // Crawlee's parser finds mailto: links and addresses in visible text; JSON-LD and
+  // deobfuscation cover the two forms it misses. The filters below decide what is kept.
+  const emails: string[] = [...social.parseHandlesFromHtml(body).emails, ...jsonLdEmails(html), ...deobfuscatedEmails(body)]
   for (const e of emails) {
     const m = /^([^@\s]+)@([^@\s]+)$/.exec(e.trim().toLowerCase()); if (!m) continue
     if (!sameSite(m[2], site) || !ROLE.test(m[1].replace(/[._-]/g, '')) ) continue
