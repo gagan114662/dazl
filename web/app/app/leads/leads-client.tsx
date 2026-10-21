@@ -54,7 +54,7 @@ export default function LeadsClient() {
     const r = await fetch('/api/scan/icp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query }) })
     const j = await r.json().catch(() => ({}))
     setBusy(false)
-    if (!r.ok) return setError(j.error === 'no_api_key' ? 'Add your AI key in Settings first.' : j.error === 'key_rejected' ? 'Your AI key was rejected. Check it in Settings.' : j.error || 'Could not build the profile')
+    if (!r.ok) return setError(j.error === 'no_api_key' ? 'Add your AI key in Settings first.' : j.error === 'key_rejected' ? 'Your AI key was rejected. Check it in Settings.' : j.error === 'trial_key_invalid' ? 'The scan service is having trouble right now. Try again later.' : j.error || 'Could not build the profile')
     setDraft(j.icp)
     setDraftNote(j.inferred ? 'dazl worked this out from your request. Edit anything that is off, then run the scan.' : 'dazl could not infer more, so it will use your words as they are. Add detail below if you like.')
   }
@@ -145,7 +145,7 @@ export default function LeadsClient() {
         </details>
       )}
       {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
-      {jobId && status !== 'done' && <p className="text-gray-400 text-sm mb-4">{status === 'failed' ? (jobError === 'no_candidates' ? 'No candidates found for that search. Try rephrasing or broadening it - this scan did not count toward your monthly scans.' : 'Scan failed. Try again.') : `Scan ${status}... this can take a few minutes.`}</p>}
+      {jobId && status !== 'done' && <p className="text-gray-400 text-sm mb-4">{status === 'failed' ? (jobError === 'no_candidates' ? 'No candidates found for that search. Try rephrasing or broadening it - this scan did not count toward your monthly scans.' : jobError === 'trial_key_invalid' ? 'The scan service is having trouble right now. Try again later - this scan did not count toward your free scans.' : 'Scan failed. Try again.') : `Scan ${status}... this can take a few minutes.`}</p>}
       {quality && status === 'done' && (
         <p className="text-gray-400 text-sm mb-4">
           {quality.candidates} found: {quality.passed ?? 0} verified, {quality.needs_review ?? 0} need your review, {quality.dropped ?? 0} dropped
