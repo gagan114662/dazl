@@ -137,6 +137,16 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
   return out
 }
 
+// Inbox surface: one row per captured reply with lead and follow-up state joined in.
+export interface InboxRow { gmail_id: string; thread_id: string; lead_id: string | null; from_email: string; excerpt: string; classification: ReplyClass; received_at: number; company: string | null; lead_name: string | null; followups_sent: number | null; stopped: string | null }
+export const inboxRows = (db: Database.Database, tenantId: string, limit = 100): InboxRow[] =>
+  db.prepare(`SELECT m.gmail_id, m.thread_id, m.lead_id, m.from_email, m.excerpt, m.classification, m.received_at,
+                     l.company, l.name AS lead_name, t.followups_sent, t.stopped
+              FROM inbound_messages m
+              LEFT JOIN leads l ON l.id = m.lead_id
+              LEFT JOIN followup_threads t ON t.tenant_id = m.tenant_id AND t.thread_id = m.thread_id
+              WHERE m.tenant_id = ? ORDER BY m.received_at DESC LIMIT ?`).all(tenantId, limit) as InboxRow[]
+
 export const recentInbound = (db: Database.Database, tenantId: string, limit = 30) =>
   db.prepare('SELECT from_email, excerpt, classification, received_at FROM inbound_messages WHERE tenant_id = ? ORDER BY received_at DESC LIMIT ?').all(tenantId, limit) as { from_email: string; excerpt: string; classification: string; received_at: number }[]
 void randomBytes
