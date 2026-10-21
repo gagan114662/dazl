@@ -62,3 +62,29 @@ test('worker output is validated: https only, quote length, bad shapes dropped',
   assert.deepEqual(parseWorkerItems({ items: [{ ...item, login_walled: 'yes' }, { ...item, url: 'http://x.example' }, { ...item, quote: 'short' }, null, 'x'] }).map(i => i.login_walled), [false])
   assert.deepEqual(parseWorkerItems('nope'), [])
 })
+
+test('xSearchQuery: intent words first, stopwords dropped, short and deduped', async () => {
+  const { xSearchQuery } = await import('../lib/advanced/index.ts')
+  const q = xSearchQuery({ who: ['Founders and early executives at seed-stage startups'], signals: ['hiring their first sales rep', 'just raised funding'], where: [], industries: [], sizes: [], exclude: [] } as never)
+  assert.ok(q.length > 0 && q.length <= 100)
+  assert.ok(q.split(' ').length <= 5)
+  assert.ok(q.includes('hiring'))
+  assert.ok(!/\b(their|first|and|at)\b/.test(q))
+  assert.equal(xSearchQuery({ who: [], signals: [], where: [], industries: [], sizes: [], exclude: [] } as never), '')
+})
+
+test('x gets the keyword query and audit shows it; reddit keeps the raw query', async () => {
+  const { xSearchQuery } = await import('../lib/advanced/index.ts')
+  const db = setup(); acceptConsent(db, 'A', 'advanced')
+  const seen: { platform: string; query: string }[] = []
+  const worker: WorkerFetch = async r => { seen.push(r); return [item] }
+  const raw = 'founders of recently funded B2B startups who are hiring their first sales rep'
+  const kw = xSearchQuery({ who: ['founders of recently funded B2B startups'], signals: ['hiring their first sales rep'], where: [], industries: [], sizes: [], exclude: [] } as never)
+  await collectAdvanced(db, 'A', 'j1', ['x', 'reddit'], raw, { worker, master, env: ON, xQuery: kw })
+  assert.deepEqual(seen.map(s => s.platform), ['x', 'reddit'])
+  assert.equal(seen[0].query, kw)
+  assert.equal(seen[1].query, raw)
+  const rows = recentAudit(db, 'A', 10) as { connector: string; lookup: string }[]
+  assert.equal(rows.find(r => r.connector === 'adv:x')?.lookup, kw)
+  assert.equal(rows.find(r => r.connector === 'adv:reddit')?.lookup, raw)
+})
