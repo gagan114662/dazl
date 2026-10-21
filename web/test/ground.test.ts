@@ -50,7 +50,7 @@ test('end to end: memory-quoted candidates are rewritten from real pages and ver
   }
   let fetches = 0
   const fetchPage = async () => { fetches++; return page(`October 2026 news. ${QUOTE}.`) }
-  const out = await runJob(db, claimKeyedJob(db)!, { providers, master, now: new Date('2026-10-20'), fetchPage, judge: null })
+  const out = await runJob(db, claimKeyedJob(db)!, { providers, master, now: new Date('2026-10-20'), fetchPage, judge: null, score: false })
   assert.equal(out, 'done')
   assert.equal(completeCalls, 1)
   const rows = listLeads(db, 'A', id) as { evidence_excerpt: string }[]
@@ -67,7 +67,7 @@ test('grounding off or producing nothing keeps the original candidates', async (
   const id = createJob(db, 'A', { business_name: 'SalesTools', industry: 'saas', location: 'London' })
   const good = JSON.stringify([{ name: '', company: 'Acme Robotics', contact: null, signal: 'raised seed', source_url: 'https://acmerobotics.example/blog/seed', excerpt: QUOTE, event_date: '2026-10-01', score: 80 }])
   const providers = { anthropic: { research: async () => ({ text: good, citedUrls: ['https://acmerobotics.example/blog/seed'] }), complete: async () => 'garbage' }, openai: { research: async () => ({ text: '[]', citedUrls: [] }) } }
-  const out = await runJob(db, claimKeyedJob(db)!, { providers, master, now: new Date('2026-10-20'), fetchPage: async () => page(QUOTE), judge: null })
+  const out = await runJob(db, claimKeyedJob(db)!, { providers, master, now: new Date('2026-10-20'), fetchPage: async () => page(QUOTE), judge: null, score: false })
   assert.equal(out, 'done')
   assert.equal((listLeads(db, 'A', id) as unknown[]).length, 1)
 })
