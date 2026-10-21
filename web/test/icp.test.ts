@@ -69,7 +69,7 @@ test('a query job with no profile infers it, stores it, and researches with it',
   const job = claimKeyedJob(db)!
   let prompt = ''
   const out = await runJob(db, job, { master, judge: null, fetchPage: async () => null, providers: prov(async () => GOOD, async (_k, p) => { prompt = p; return { text: '[]', citedUrls: [] } }) })
-  assert.equal(out, 'done')
+  assert.equal(out, 'failed') // zero candidates: honest failure, quota refunded
   assert.ok(prompt.includes('Seed-stage fintech founders in Europe'))
   assert.ok(prompt.includes('fintech founders in Europe who just hired sales'))
   const j = getJob(db, 'A', id)!
@@ -92,7 +92,8 @@ test('inference failure still runs the scan, using the request itself, marked re
   const db = setup()
   const id = createQueryJob(db, 'A', { query: 'plumbers in Leeds' })
   const job = claimKeyedJob(db)!
-  assert.equal(await runJob(db, job, { master, judge: null, providers: prov(async () => 'garbage') }), 'done')
+  assert.equal(await runJob(db, job, { master, judge: null, providers: prov(async () => 'garbage') }), 'failed') // no parseable candidates
+  assert.equal(getJob(db, 'A', id)!.error, 'no_candidates')
   assert.equal(getJob(db, 'A', id)!.icp_inferred, 2)
 })
 

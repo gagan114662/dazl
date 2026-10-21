@@ -24,6 +24,7 @@ export default function LeadsClient() {
   const [leads, setLeads] = useState<Lead[]>([])
   const [error, setError] = useState('')
   const [quality, setQuality] = useState<Quality | null>(null)
+  const [jobError, setJobError] = useState('')
   const [useGithub, setUseGithub] = useState(false)
   const [useYoutube, setUseYoutube] = useState(false)
   const [useV2ex, setUseV2ex] = useState(false)
@@ -70,7 +71,7 @@ export default function LeadsClient() {
       const r = await fetch(`/api/scan/status?job_id=${jobId}`)
       if (!r.ok) return
       const s = await r.json()
-      setStatus(s.status)
+      setStatus(s.status); setJobError(s.error ?? '')
       setQuality(s.quality ?? null)
       if (s.icp) setIcp({ icp: s.icp, source: s.icp_source })
     }, 5000)
@@ -138,7 +139,7 @@ export default function LeadsClient() {
         </details>
       )}
       {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
-      {jobId && status !== 'done' && <p className="text-gray-400 text-sm mb-4">Scan {status === 'failed' ? 'failed. Try again.' : `${status}... this can take a few minutes.`}</p>}
+      {jobId && status !== 'done' && <p className="text-gray-400 text-sm mb-4">{status === 'failed' ? (jobError === 'no_candidates' ? 'No candidates found for that search. Try rephrasing or broadening it - this scan did not count toward your monthly scans.' : 'Scan failed. Try again.') : `Scan ${status}... this can take a few minutes.`}</p>}
       {quality && status === 'done' && (
         <p className="text-gray-400 text-sm mb-4">
           {quality.candidates} found: {quality.passed ?? 0} verified, {quality.needs_review ?? 0} need your review, {quality.dropped ?? 0} dropped

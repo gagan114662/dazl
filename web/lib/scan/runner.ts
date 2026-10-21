@@ -14,6 +14,7 @@ import { migrateTinyfish, parseQueries, queryPrompt, tfFetch, tfSearch, tinyfish
 import { crawlJob } from '../connectors/sitecrawl.ts'
 import { icpTextFor, scoreLeads } from './score.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
+import { sourceCap } from './source-quality.ts'
 
 export interface Job { id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null }
 export interface LeadDraft extends Candidate {}
@@ -156,7 +157,8 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
   passed.forEach(({ c, v }, i) => {
     const j = verdicts[i]
     if (j === 'contradicts') { drop('contradicted'); return }
-    const confidence = Math.max(0, Math.min(100, v.confidence + (j ? JUDGE_DELTA[j] : 0)))
+    // Cap by source class: a content farm that copied the quote never outranks the company's own page.
+    const confidence = Math.max(0, Math.min(sourceCap(c.source_url, c.company), Math.min(100, v.confidence + (j ? JUDGE_DELTA[j] : 0))))
     if (confidence < MIN_CONFIDENCE) { drop(j === 'unclear' ? 'claim_unclear' : 'low_confidence'); return }
     const lead: VerifiedLead = { ...c, contact: v.contact, confidence, date_status: v.dateStatus, retrieved_at: v.retrievedAt }
     const key = dedupKey(c)
@@ -303,6 +305,9 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         // any other source failure only means no extra candidates
       }
     }
+    // Nothing to verify at all: fail honestly. Failed scans do not count toward the monthly quota,
+    // so the user gets the slot back instead of a silent empty result.
+    if (leads.length === 0 && walledLeads.length === 0) { finish(db, job, 'failed', 'no_candidates'); return 'failed' }
     const outcome = await verifyLeads(leads, deps.fetchPage, deps.now, deps.judge === undefined ? makeJudge(providers_[vendor], key, deps.fetchImpl) : deps.judge ?? undefined)
     // Quality stage: grade each verified lead for ICP fit, timing and actionability. One model call
     // per scan; a scoring failure never fails the scan, the leads just stay unscored.
