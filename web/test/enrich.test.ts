@@ -148,3 +148,23 @@ test('enrichJobSignals wiring: saved apollo key adds apollo enrichments inside t
     assert.ok(rows.some(r => r.connector === 'enrich:apollo' && r.kind === 'firmographic'))
   } finally { delete process.env.DAZL_MASTER_KEY }
 })
+
+test('enrichLeadContacts: lead without a domain reuses the org-discovered domain for people search', async () => {
+  const db = new Database(':memory:')
+  migrateScan(db); migrateConnectors(db)
+  const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
+  db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(jobId)
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url) VALUES ('lead1', ?, '', 'The Jackson Laboratory (JAX)', NULL, 'hiring', 'https://x.com/1')").run(jobId)
+  saveCredential(db, 'u1', 'enrich:apollo', 'test-apollo-key-1234', master)
+  const bodies: string[] = []
+  const fetchImpl = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    bodies.push(String(init?.body))
+    const u = String(url)
+    if (u.includes('organizations/enrich')) return ok({ organization: { name: 'The Jackson Laboratory', estimated_num_employees: 3000, industry: 'research', founded_year: 1929, website_url: 'https://www.jax.org', linkedin_url: 'https://linkedin.com/company/jacksonlaboratory' } })
+    return ok({ people: [{ name: 'Jane Doe', title: 'CIO', linkedin_url: null }] })
+  }) as never
+  await enrichLeadContacts(db, 'u1', jobId, [{ id: 'lead1', company: 'The Jackson Laboratory (JAX)', company_domain: null }], { fetchImpl, master })
+  const peopleReq = bodies.find(b => b.includes('per_page'))!
+  assert.match(peopleReq, /"q_organization_domains":"jax.org"/) // www stripped, org-discovered domain used
+  assert.ok(!peopleReq.includes('q_organization_name'))
+})
