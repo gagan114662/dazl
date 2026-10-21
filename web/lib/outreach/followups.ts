@@ -19,12 +19,13 @@ export function setFollowups(db: Database.Database, tenantId: string, on: boolea
 export const followupsEnabled = (db: Database.Database, tenantId: string) =>
   (db.prepare('SELECT followups_enabled AS f FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as { f: number } | undefined)?.f === 1
 
-export function followupText(step: number, lead: { company: string; name: string; signal: string; source_url: string }, businessName: string): string {
+export function followupText(step: number, lead: { company: string; name: string; signal: string; source_url: string }, businessName: string, bookingUrl?: string | null): string {
   const who = lead.name ? lead.name.split(' ')[0] : 'there'
   const fact = `${lead.signal} (${lead.source_url})`
+  const book = bookingUrl ? `\n\nYou can grab a time here: ${bookingUrl}` : ''
   return step === 0
-    ? `Hi ${who},\n\nThanks for getting back to me. Following up in case it got buried: ${fact}\n\nI run ${businessName}. Would a short call this week make sense?\n\nThanks,`
-    : `Hi ${who},\n\nLast note from me on this: ${fact}\n\nIf it isn't a priority right now, no problem, and I won't follow up again.\n\nThanks,`
+    ? `Hi ${who},\n\nThanks for getting back to me. Following up in case it got buried: ${fact}\n\nI run ${businessName}. Would a short call this week make sense?${book}\n\nThanks,`
+    : `Hi ${who},\n\nLast note from me on this: ${fact}${book}\n\nIf it isn't a priority right now, no problem, and I won't follow up again.\n\nThanks,`
 }
 
 export interface FollowResult { sent: number; skipped: number; stopped?: string }
@@ -66,7 +67,7 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
     let token: string
     try { token = await getAccessToken(db, tenantId, d as OAuthDeps) } catch { db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId, t.thread_id, t.followups_sent); pause(db, tenantId, 'gmail_reconnect_needed'); return stop('gmail_unavailable') }
     try {
-      const raw = toBase64Url(buildMime({ fromName: settings.sender_name, fromEmail: acct.email, to: t.to_email, subject: orig.subject.startsWith('Re:') ? orig.subject : `Re: ${orig.subject}`, body: composeBody(followupText(t.followups_sent, lead, businessName), settings, unsubUrl), messageId: `dazl.f${t.followups_sent}.${orig.id}@${acct.email.split('@')[1]}`, unsubscribeUrl: unsubUrl, date: new Date(now * 1000), inReplyTo: t.root_message_id }))
+      const raw = toBase64Url(buildMime({ fromName: settings.sender_name, fromEmail: acct.email, to: t.to_email, subject: orig.subject.startsWith('Re:') ? orig.subject : `Re: ${orig.subject}`, body: composeBody(followupText(t.followups_sent, lead, businessName, settings.booking_url), settings, unsubUrl), messageId: `dazl.f${t.followups_sent}.${orig.id}@${acct.email.split('@')[1]}`, unsubscribeUrl: unsubUrl, date: new Date(now * 1000), inReplyTo: t.root_message_id }))
       const r = await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, t.thread_id)
       db.prepare("UPDATE followup_messages SET status = 'sent', gmail_id = ? WHERE tenant_id = ? AND thread_id = ? AND step = ?").run(r.id, tenantId, t.thread_id, t.followups_sent)
       db.prepare('UPDATE followup_threads SET followups_sent = followups_sent + 1, last_followup_at = ?, last_activity_at = ? WHERE tenant_id = ? AND thread_id = ?').run(now, now, tenantId, t.thread_id)

@@ -18,10 +18,10 @@ export async function PUT(req: NextRequest) {
   const body = await req.json().catch(() => null)
   if (typeof body?.sender_name !== 'string' || typeof body?.postal_address !== 'string') return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   try {
-    saveSettings(getScanDb(), user.id, { sender_name: body.sender_name, postal_address: body.postal_address })
+    saveSettings(getScanDb(), user.id, { sender_name: body.sender_name, postal_address: body.postal_address, booking_url: body.booking_url })
     return NextResponse.json({ ok: true })
   } catch (e) {
-    if (e instanceof OutreachError) return NextResponse.json({ error: e.code === 'bad_postal_address' ? 'Enter your full mailing address (required by anti-spam law).' : 'Enter the name recipients will see.' }, { status: 400 })
+    if (e instanceof OutreachError) return NextResponse.json({ error: e.code === 'bad_postal_address' ? 'Enter your full mailing address (required by anti-spam law).' : e.code === 'bad_booking_url' ? 'The booking link must be a full https URL (or leave it empty).' : 'Enter the name recipients will see.' }, { status: 400 })
     throw e
   }
 }
