@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 interface Lead { id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; watch_new?: number; seen_before?: number; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string }[] }
 interface Icp { summary: string; who: string[]; industries: string[]; sizes: string[]; where: string[]; signals: string[]; exclude: string[] }
 interface Watch { id: string; query: string; active: boolean; next_run_at: number | null; last_run_at: number | null; paused_reason: string | null; last_job_id: string | null; last_status: string | null; new_leads: number }
+interface Monitor { id: string; query: string; interval_hours: number; enabled: number; paused_reason: string | null; next_run_at: number | null; last_new_count: number | null; run_count: number }
 interface Quality { candidates: number; passed: number | null; needs_review: number | null; dropped: number | null; drop_reasons: Record<string, number> }
 
 // Leads written by other workers can carry anything in signals; never let a bad value crash the page.
@@ -47,6 +48,13 @@ export default function LeadsClient() {
   const [crmOn, setCrmOn] = useState(false)
   const [watches, setWatches] = useState<Watch[]>([])
   const [watchNote, setWatchNote] = useState('')
+  const [monitors, setMonitors] = useState<Monitor[]>([])
+  const [monError, setMonError] = useState('')
+  const loadMonitors = () => fetch('/api/monitors').then(r => r.ok ? r.json() : null).then(j => { if (j) setMonitors(j.monitors) }).catch(() => {})
+  useEffect(() => { void loadMonitors() }, [])
+  const addMonitor = async () => { if (!query.trim()) return; setMonError(''); const r = await fetch('/api/monitors', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: query.trim(), ...(icp ? { icp: icp.icp } : {}) }) }); const j = await r.json().catch(() => ({})); if (!r.ok) return setMonError(j.error === 'monitor_limit' ? `Your plan allows ${j.limit} monitors.` : j.error === 'interval_too_short' ? `The shortest interval on your plan is ${j.min} hours.` : j.error || 'Could not create the monitor'); void loadMonitors() }
+  const toggleMonitor = async (id: string, enabled: boolean) => { await fetch(`/api/monitors/${id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled }) }); void loadMonitors() }
+  const removeMonitor = async (id: string) => { await fetch(`/api/monitors/${id}`, { method: 'DELETE' }); void loadMonitors() }
   const [hiddenCount, setHiddenCount] = useState(0)
   const [showHidden, setShowHidden] = useState(false)
   const [showSeen, setShowSeen] = useState(false)
@@ -304,6 +312,25 @@ export default function LeadsClient() {
             ))}
           </div>
         </>
+      )}
+
+      {monitors.length > 0 && (
+        <div className="mt-6">
+          <h2 className="text-sm font-semibold mb-2 text-gray-300">Continuous Monitors</h2>
+          <p className="text-gray-500 text-xs mb-2">Re-runs your search on a schedule. New companies show up here automatically.</p>
+          <div className="space-y-1">
+            {monitors.map(m => (
+              <div key={m.id} className="flex items-center gap-3 text-xs text-gray-400 bg-white/5 rounded px-3 py-2">
+                <span className="flex-1 truncate">{m.query}</span>
+                {m.last_new_count != null && <span className="text-green-400">+{m.last_new_count} new</span>}
+                <span>{m.run_count ?? 0} runs</span>
+                <button onClick={() => toggleMonitor(m.id, !m.enabled)} className="hover:text-white">{m.enabled ? 'Pause' : 'Resume'}</button>
+                <button onClick={() => removeMonitor(m.id)} className="hover:text-red-400">Delete</button>
+              </div>
+            ))}
+          </div>
+          {monError && <p className="text-red-400 text-xs mt-1">{monError}</p>}
+        </div>
       )}
     </div>
   )

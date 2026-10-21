@@ -10,6 +10,7 @@ import { migrateBilling } from '../billing/stripe.ts'
 import { migrateOutreach } from '../outreach/store.ts'
 import { migrateAutopilot } from '../outreach/autopilot.ts'
 import { migrateLedger } from '../outreach/ledger.ts'
+import { migrateMonitors } from '../monitors.ts'
 import { migrateReplies } from '../outreach/replies.ts'
 import { migrateTrial } from './trial.ts'
 import { migrateCompetitors } from '../signals/competitor-reddit.ts'
@@ -31,6 +32,7 @@ export function getScanDb() {
     migrateReplies(db)
     migrateTrial(db)
     migrateCompetitors(db)
+    migrateMonitors(db)
     ready = true
   }
   return db
