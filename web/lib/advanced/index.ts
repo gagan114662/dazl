@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3'
 import { audit, getEnabledCredential } from '../connectors/store.ts'
 import type { Evidence } from '../sources/types.ts'
 import { advFlags, CONSENT_VERSION, connectorId, maxCallsPerHour, platformAllowed, scopeFor, type AdvPlatform, type ConsentScope } from './config.ts'
+import { tfSearch, tinyfishEnabled } from '../search/tinyfish.ts'
 
 export function migrateAdvanced(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS advanced_consent (
@@ -81,7 +82,7 @@ export function xSearchQuery(icp: { who: string[]; signals: string[] }): string 
 
 // Runs the platforms this tenant chose for one scan. Every gate is re-checked here, so a stale
 // request cannot get around a flag, a kill switch, a missing consent or the rate limit.
-export async function collectAdvanced(db: Database.Database, tenantId: string, jobId: string, platforms: AdvPlatform[], query: string, deps: { worker?: WorkerFetch; master?: Buffer; env?: Record<string, string | undefined>; xQuery?: string } = {}): Promise<(Evidence & { login_walled: boolean })[]> {
+export async function collectAdvanced(db: Database.Database, tenantId: string, jobId: string, platforms: AdvPlatform[], query: string, deps: { worker?: WorkerFetch; master?: Buffer; env?: Record<string, string | undefined>; xQuery?: string; fetchImpl?: typeof fetch } = {}): Promise<(Evidence & { login_walled: boolean })[]> {
   const env = deps.env ?? process.env
   const flags = advFlags(env)
   const worker = deps.worker ?? httpWorker(env)
@@ -92,12 +93,31 @@ export async function collectAdvanced(db: Database.Database, tenantId: string, j
     const skip = (status: string) => audit(db, { tenantId, connector: id, jobId, lookup: q, status, results: 0 })
     if (!platformAllowed(p, flags)) { skip('disabled'); continue }
     if (!hasConsent(db, tenantId, scopeFor(p))) { skip('no_consent'); continue }
-    // Tenant's own session when stored; '' otherwise - the worker falls back to the
+    if (callsLastHour(db, tenantId, p) >= maxCallsPerHour(p, env)) { skip('rate_limited'); continue }
+    // X path 1: operator-key web search of the public index (TinyFish free tier, capped
+    // per scan / tenant / day). No account session is used, so nothing here can get a
+    // tenant's account banned. A search snippet is not the verbatim post text, so every
+    // hit is login_walled: the quote-verification gate keeps them in the review lane and
+    // they are never auto-verified. Set X_VIA_SEARCH=0 to force the worker path.
+    if (p === 'x' && env.X_VIA_SEARCH !== '0' && tinyfishEnabled(env)) {
+      const r = await tfSearch(db, tenantId, `site:x.com ${q}`.slice(0, 300), {}, { searches: 0 }, { env, fetchImpl: deps.fetchImpl })
+      if (!r.ok) { skip(r.reason); continue }
+      const items: (Evidence & { login_walled: boolean })[] = []
+      for (const h of r.hits.slice(0, 20)) {
+        if (!/^https:\/\/(www\.)?(x|twitter)\.com\/[^\s]{4,460}$/.test(h.url)) continue
+        const quote = (h.snippet.length >= 20 ? h.snippet : h.title).slice(0, 300)
+        if (quote.length < 20) continue
+        items.push({ source: id, url: h.url, title: h.title.slice(0, 200), quote, date: h.date, login_walled: true })
+      }
+      audit(db, { tenantId, connector: id, jobId, lookup: q, status: items.length ? 'ok' : 'empty', results: items.length })
+      out.push(...items)
+      continue
+    }
+    // X path 2 (worker): tenant's own session when stored; '' otherwise - the worker falls back to the
     // throwaway sessions in its env (X_SESSION_COOKIE / REDDIT_SESSION_COOKIE),
     // which the site owner placed there for the connector fetchers. A worker with
     // neither answers no_session, which audits as worker_error here.
     const session = getEnabledCredential(db, tenantId, id, deps.master) || ''
-    if (callsLastHour(db, tenantId, p) >= maxCallsPerHour(p, env)) { skip('rate_limited'); continue }
     const items = await worker({ platform: p, query: q.slice(0, 300), session })
     if (items === null) { skip('worker_error'); continue }
     audit(db, { tenantId, connector: id, jobId, lookup: q, status: items.length ? 'ok' : 'empty', results: items.length })
