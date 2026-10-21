@@ -33,8 +33,9 @@ export async function enrichLeadContacts(
   for (const lead of leads.slice(0, MAX_LEADS)) {
     const src = lead.company_domain ? `https://${lead.company_domain}` : `https://www.linkedin.com/company/${encodeURIComponent(lead.company.toLowerCase().replace(/[^a-z0-9]+/g, '-'))}`
     if (apolloKey) {
+      let org: Awaited<ReturnType<typeof apolloOrgEnrich>> = null
       try {
-        const org = await apolloOrgEnrich(apolloKey, { domain: lead.company_domain, name: lead.company }, fetchImpl)
+        org = await apolloOrgEnrich(apolloKey, { domain: lead.company_domain, name: lead.company }, fetchImpl)
         if (org && (org.employees || org.industry)) {
           const bits = [org.employees ? `${org.employees} employees` : null, org.industry, org.founded ? `founded ${org.founded}` : null].filter(Boolean).join(' · ')
           addEnrichment(db, tenantId, lead.id, { connector: ENRICH_APOLLO, kind: 'firmographic', value: bits.slice(0, 254), label: org.name, confidence: 75, source_url: org.linkedin ?? org.website ?? src, source_date: today, retrieved_at: now })
@@ -45,7 +46,11 @@ export async function enrichLeadContacts(
         if (e instanceof EnrichError && e.code === 'auth') return // a bad key stops the whole pass, not just this lead
       }
       try {
-        const people = await apolloPeopleSearch(apolloKey, { domain: lead.company_domain, name: lead.company }, fetchImpl, MAX_CONTACTS)
+        // The org lookup above often discovers the domain even when the lead had none -
+        // search people by that domain (much more reliable than a raw company name,
+        // especially noisy ones like "The Jackson Laboratory (JAX)").
+        const orgDomain = lead.company_domain ?? (/^[a-z]+:\/\/([^/?#]+)/i.exec(org?.website ?? '')?.[1]?.replace(/^www\./, '') || null)
+        const people = await apolloPeopleSearch(apolloKey, { domain: orgDomain, name: lead.company }, fetchImpl, MAX_CONTACTS)
         for (const p of people) addEnrichment(db, tenantId, lead.id, { connector: ENRICH_APOLLO, kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: 'Apollo', confidence: 70, source_url: p.linkedin ?? src, source_date: today, retrieved_at: now })
         audit(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: `people ${lead.company}`, status: people.length ? 'ok' : 'empty', results: people.length })
       } catch (e) {
