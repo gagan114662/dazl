@@ -56,3 +56,33 @@ test('fetchX returns SearchTimeline results without calling adaptive', async () 
 test('fetchX rejects a session missing auth_token/ct0', async () => {
   await assert.rejects(() => fetchX({ query: 'q', session: 'foo=bar' }))
 })
+
+test('fetchX sends the live-bundle query id and the fieldToggles variable X now requires', async () => {
+  const urls = []
+  await withFetch(async (url) => {
+    urls.push(String(url))
+    return new Response(JSON.stringify(TIMELINE_OK), { status: 200 })
+  }, async () => {
+    delete process.env.X_QUERY_ID
+    const items = await fetchX({ query: 'hiring founding engineer', session: SESSION })
+    assert.equal(items.length, 1)
+  })
+  assert.equal(urls.length, 1) // SearchTimeline succeeds, no fallback
+  assert.ok(urls[0].includes('/graphql/BYppgupFFS2yqVmmRNjlsw/SearchTimeline'))
+  const variables = JSON.parse(decodeURIComponent(new URL(urls[0]).searchParams.get('variables')))
+  assert.deepEqual(variables.fieldToggles, [])
+  assert.equal(variables.rawQuery, 'hiring founding engineer')
+  assert.equal(variables.product, 'Latest')
+})
+
+test('fetchX: X_QUERY_ID env override still wins over the shipped default', async () => {
+  const urls = []
+  await withFetch(async (url) => {
+    urls.push(String(url))
+    return new Response(JSON.stringify(TIMELINE_OK), { status: 200 })
+  }, async () => {
+    process.env.X_QUERY_ID = 'OverrideId123'
+    try { await fetchX({ query: 'q', session: SESSION }) } finally { delete process.env.X_QUERY_ID }
+  })
+  assert.ok(urls[0].includes('/graphql/OverrideId123/SearchTimeline'))
+})

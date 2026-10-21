@@ -4,7 +4,7 @@
 // the query id and the required feature flags. Both are env-overridable so the
 // operator can refresh them without a redeploy (see README.md).
 const BEARER = 'AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA'
-const DEFAULT_QUERY_ID = 'nK1dw4oV3k4w5TdtcAdSww' // SearchTimeline, web app, Oct 2026
+const DEFAULT_QUERY_ID = 'BYppgupFFS2yqVmmRNjlsw' // SearchTimeline, web app live bundle, Oct 21 2026 (operator-verified)
 const DEFAULT_FEATURES = JSON.stringify({
   rweb_tipjar_consumption_enabled: true, responsive_web_graphql_exclude_directive_enabled: true,
   verified_phone_label_enabled: false, creator_subscriptions_tweet_preview_api_enabled: true,
@@ -37,8 +37,9 @@ function xHeaders(session, ct0) {
   }
 }
 
-// SearchTimeline first (richest data, but the query id/features rotate and X has been
-// returning empty result sets for stale feature sets). On ANY error or a 0-item reply,
+// SearchTimeline first (richest data, but the query id/features/variables rotate: X 404s
+// the endpoint wholesale when any of the three drift, and returns empty result sets for
+// stale feature sets). On ANY error or a 0-item reply,
 // fall back to the legacy adaptive.json search, which has survived every GraphQL
 // rotation so far. Statuses are logged server-side (never the cookie).
 export async function fetchX({ query, session }) {
@@ -46,7 +47,7 @@ export async function fetchX({ query, session }) {
   if (!ct0 || !cookieValue(session, 'auth_token')) throw new Error('x session needs auth_token and ct0 cookies')
   const headers = xHeaders(session, ct0)
   const queryId = process.env.X_QUERY_ID || DEFAULT_QUERY_ID
-  const variables = JSON.stringify({ rawQuery: query, count: 20, querySource: 'typed_query', product: 'Latest' })
+  const variables = JSON.stringify({ rawQuery: query, count: 20, querySource: 'typed_query', product: 'Latest', fieldToggles: [], withGrokTranslatedBio: false })
   const url = `https://x.com/i/api/graphql/${queryId}/SearchTimeline?variables=${encodeURIComponent(variables)}&features=${encodeURIComponent(process.env.X_FEATURES || DEFAULT_FEATURES)}`
   try {
     const res = await fetch(url, { headers, redirect: 'error', signal: AbortSignal.timeout(30_000) })
