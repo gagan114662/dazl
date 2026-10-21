@@ -1,5 +1,6 @@
 import LlmKeyPanel from './llm-key-panel'
 import PlanPanel from './plan-panel'
+import GmailPanel from './gmail-panel'
 
 export default function Settings() {
   return (
@@ -10,20 +11,7 @@ export default function Settings() {
       <PlanPanel />
       <LlmKeyPanel />
 
-      {/* Gmail */}
-      <div className="bg-white/5 border border-white/10 rounded-2xl p-6 mb-4">
-        <h2 className="font-semibold mb-1">Gmail</h2>
-        <p className="text-gray-400 text-sm mb-4">Your outreach sends from your own inbox. Required to start sending.</p>
-        <form className="flex flex-col gap-3" action="/api/settings/gmail" method="POST">
-          <input name="gmail_user" type="email" placeholder="you@gmail.com"
-            className="bg-white/10 border border-white/20 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 text-sm" />
-          <input name="gmail_password" type="password" placeholder="App password (not your Google password)"
-            className="bg-white/10 border border-white/20 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 text-sm" />
-          <button type="submit" className="bg-indigo-500 hover:bg-indigo-400 px-5 py-2 rounded-xl text-sm font-medium transition w-fit">
-            Save Gmail
-          </button>
-        </form>
-      </div>
+      <GmailPanel />
 
       {/* Business */}
       <div className="bg-white/5 border border-white/10 rounded-2xl p-6 mb-4">
