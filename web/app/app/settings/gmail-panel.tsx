@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 
-interface State { gmail: { email: string; status: string } | null; sender: { sender_name: string; postal_address: string; booking_url?: string | null } | null; daily_cap: number; sent_24h: number }
+interface State { gmail: { email: string; status: string; read_granted: boolean } | null; sender: { sender_name: string; postal_address: string; booking_url?: string | null } | null; daily_cap: number; sent_24h: number; read_notice: string[] }
 
 export default function GmailPanel() {
   const [s, setS] = useState<State | null>(null)
@@ -41,17 +41,26 @@ export default function GmailPanel() {
   return (
     <div className="card p-6 mb-4">
       <h2 className="font-semibold mb-1">Email sending (Gmail)</h2>
-      <p className="text-[#555] text-sm mb-4">Emails go out from your own Gmail, one at a time, only after you approve each one. dazl can send but cannot read your mail.</p>
+      <p className="text-[#555] text-sm mb-4">Emails go out from your own Gmail, one at a time, only after you approve each one. Connecting also asks for read access, limited to replies in the threads dazl started for you and delivery-failure notices for them - dazl never lists, searches, or reads anything else in your mailbox. On Google&apos;s consent screen you can untick the read access and still connect send-only.</p>
       {s?.gmail ? (
-        <div className="flex items-center justify-between text-sm mb-4">
-          <span>{s.gmail.email} {s.gmail.status === 'active' ? '(connected)' : '(needs reconnecting)'}</span>
-          <span className="flex gap-3">
-            {s.gmail.status !== 'active' && <a href="/api/gmail/connect" className="underline text-[#111]">Reconnect</a>}
-            <button onClick={disconnect} className="underline text-[#111]">Disconnect</button>
-          </span>
+        <div className="text-sm mb-4">
+          <div className="flex items-center justify-between">
+            <span>{s.gmail.email} {s.gmail.status === 'active' ? '(connected)' : '(needs reconnecting)'}</span>
+            <span className="flex gap-3">
+              {(s.gmail.status !== 'active' || !s.gmail.read_granted) && <a href="/api/gmail/connect" className="underline text-[#111]">Reconnect</a>}
+              <button onClick={disconnect} className="underline text-[#111]">Disconnect</button>
+            </span>
+          </div>
+          {s.gmail.status === 'active' && (
+            <p className="text-[#666] text-xs mt-1">{s.gmail.read_granted ? 'Reply reading: on. Only threads dazl started are read.' : 'Reply reading: off (send only). Reconnect and leave the read access ticked to turn it on.'}</p>
+          )}
         </div>
       ) : (
-        <a href="/api/gmail/connect" className="inline-block btn-primary px-5 py-2 text-sm mb-4">Connect Gmail</a>
+        <div className="mb-4">
+          {s?.read_notice && <ul className="list-disc pl-5 text-[#555] text-sm mb-3 space-y-1">{s.read_notice.map((t, k) => <li key={k}>{t}</li>)}</ul>}
+          <a href="/api/gmail/connect" className="inline-block btn-primary px-5 py-2 text-sm">Connect Gmail</a>
+          <p className="text-[#666] text-xs mt-2">Connecting means you agree to the reply-reading above. You can withdraw it any time in Settings.</p>
+        </div>
       )}
       <form onSubmit={saveSender} className="flex flex-col gap-3">
         <input className={field} placeholder="Name recipients see (e.g. Pat Smith, Acme Roofing)" value={name} maxLength={100} onChange={e => setName(e.target.value)} />

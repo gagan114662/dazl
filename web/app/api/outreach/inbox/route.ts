@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { hasReadConsent, inboxRows, threadMessages } from '@/lib/outreach/replies'
-import { autopilotAvailable } from '@/lib/outreach/autopilot'
 import { gmailStatus } from '@/lib/gmail/oauth'
 
 export async function GET(req: NextRequest) {
@@ -16,7 +15,7 @@ export async function GET(req: NextRequest) {
   const acc = db.prepare('SELECT read_granted FROM gmail_accounts WHERE tenant_id = ?').get(user.id) as { read_granted: number } | undefined
   const gmail = gmailStatus(db, user.id)
   return NextResponse.json({
-    available: autopilotAvailable(),
+    available: true,
     consent_accepted: hasReadConsent(db, user.id),
     read_granted: acc?.read_granted === 1,
     account: gmail?.status === 'active' ? gmail.email : null,

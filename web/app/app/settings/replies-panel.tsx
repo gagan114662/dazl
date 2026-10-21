@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 
-interface Info { available: boolean; consent: { version: string; text: string[]; accepted: boolean }; read_granted: boolean; followups_enabled: boolean; autopilot_on: boolean; inbound: { from_email: string; excerpt: string; classification: string; received_at: number }[] }
+interface Info { available: boolean; gmail_connected: boolean; consent: { version: string; text: string[]; accepted: boolean }; read_granted: boolean; followups_enabled: boolean; autopilot_on: boolean; inbound: { from_email: string; excerpt: string; classification: string; received_at: number }[] }
 
 export default function RepliesPanel() {
   const [i, setI] = useState<Info | null>(null)
@@ -17,13 +17,17 @@ export default function RepliesPanel() {
     <div className="card p-6 mb-4">
       <h2 className="font-semibold mb-1">Replies and follow-ups</h2>
       <p className="text-[#555] text-sm mb-3">Lets dazl stop emailing people who unsubscribe or bounce, and follow up with people who replied with interest. Needs read access to the threads dazl started.</p>
-      {!i.consent.accepted ? (
+      {!i.gmail_connected ? (
         <div className="text-sm space-y-2">
           <ul className="list-disc pl-5 text-[#555]">{i.consent.text.map((t, k) => <li key={k}>{t}</li>)}</ul>
-          <button className="btn-primary" onClick={() => act('consent')}>I agree</button>
+          <a className="btn-primary inline-block" href="/api/gmail/connect">Connect Gmail</a>
+          <p className="text-xs text-[#888]">Connecting means you agree to the reply-reading above. On Google&apos;s screen you can untick the read access and still connect send-only.</p>
         </div>
       ) : !i.read_granted ? (
-        <div className="text-sm"><a className="btn-primary inline-block" href="/api/gmail/connect?read=1">Connect Gmail with reply access</a></div>
+        <div className="text-sm space-y-2">
+          <p className="text-[#555]">Gmail is connected send-only (the read access was unticked on Google&apos;s screen, or it predates reply reading). Reconnect and leave the read access ticked to turn on reply reading.</p>
+          <a className="btn-primary inline-block" href="/api/gmail/connect">Reconnect Gmail with reply access</a>
+        </div>
       ) : (
         <div className="text-sm space-y-2">
           <div>Reading replies: on. Follow-ups: {i.followups_enabled ? 'on' : 'off'}. Up to 2 follow-ups, only to people who showed interest, never after they opt out.</div>

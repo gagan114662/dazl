@@ -199,3 +199,17 @@ test('booking link: https-only, stored on sender settings, lands in follow-up te
   saveSettings(db, 'A', { sender_name: 'Pat', postal_address: '1 King St W, Toronto ON M5H 1A1', booking_url: '' })
   assert.equal(getSettings(db, 'A')?.booking_url, null) // cleared
 })
+test('granular consent: read requested but unticked on Google\'s screen connects send-only, no error', async () => {
+  const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db)
+  // The connect always requests read now (withRead: true), but the granted scope lacks it.
+  const state = new URL(startOAuth(db, 'A', { env: genv, now: NOW, withRead: true })).searchParams.get('state')!
+  const r = await completeOAuth(db, 'A', 'c', state, { env: genv, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'rt', scope: SEND, id_token: idToken('me@acme.example') })) as unknown as typeof fetch })
+  assert.equal(r.email, 'me@acme.example')
+  const acc = db.prepare('SELECT status, read_granted FROM gmail_accounts WHERE tenant_id = ?').get('A') as { status: string; read_granted: number }
+  assert.deepEqual(acc, { status: 'active', read_granted: 0 })
+  // Reading stays off even if the in-app notice was accepted: read_granted is the gate.
+  acceptReadConsent(db, 'A')
+  const sync = await syncReplies(db, 'A', { env: genv, master, now: NOW })
+  assert.equal(sync.error, 'reading_not_enabled')
+  assert.equal(sync.threads, 0)
+})

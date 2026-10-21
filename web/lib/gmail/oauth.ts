@@ -90,20 +90,23 @@ export async function completeOAuth(db: Database.Database, tenantId: string, cod
   const t = (await res.json()) as { refresh_token?: string; scope?: string; id_token?: string }
   if (!t.refresh_token) throw new GmailError('google', 'no_refresh_token')
   if (!(t.scope ?? '').split(' ').includes(GMAIL_SEND_SCOPE)) throw new GmailError('google', 'send_scope_not_granted')
+  // Google's granular consent lets the user untick the read scope on the consent screen.
+  // That is a valid choice: the connection still works send-only, and read_granted records
+  // what was actually granted. Only a missing send scope is a failure (handled above).
   const readGranted = (t.scope ?? '').split(' ').includes(GMAIL_READ_SCOPE)
-  if (row.read_scope === 1 && !readGranted) throw new GmailError('google', 'read_scope_not_granted')
   const who = t.id_token ? idTokenEmail(t.id_token) : null
   if (!who || !who.verified) throw new GmailError('google', 'email_not_verified')
 
   db.prepare(
     `INSERT INTO gmail_accounts (tenant_id, email, refresh_ct, status, read_granted) VALUES (?, ?, ?, 'active', ?)
      ON CONFLICT(tenant_id) DO UPDATE SET email = excluded.email, refresh_ct = excluded.refresh_ct, status = 'active', read_granted = excluded.read_granted, connected_at = CAST(strftime('%s','now') AS INTEGER)`,
-  ).run(tenantId, who.email, encryptSecret(t.refresh_token, ctx(tenantId), deps.master), row.read_scope === 1 && readGranted ? 1 : 0)
+  ).run(tenantId, who.email, encryptSecret(t.refresh_token, ctx(tenantId), deps.master), readGranted ? 1 : 0)
   return { email: who.email }
 }
 
-export function gmailStatus(db: Database.Database, tenantId: string): { email: string; status: string } | null {
-  return (db.prepare('SELECT email, status FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string; status: string } | undefined) ?? null
+export function gmailStatus(db: Database.Database, tenantId: string): { email: string; status: string; read_granted: boolean } | null {
+  const r = db.prepare('SELECT email, status, read_granted FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string; status: string; read_granted: number } | undefined
+  return r ? { email: r.email, status: r.status, read_granted: r.read_granted === 1 } : null
 }
 
 // Short-lived access token from the stored refresh token. A revoked or expired
