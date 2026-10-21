@@ -132,3 +132,29 @@ test('crawlJob probes name-derived domains when evidence links nothing, verifies
   const a = db.prepare("SELECT status FROM connector_audit").all() as { status: string }[]
   assert.ok(a.some(x => x.status === 'name_mismatch'))
 })
+
+test('extractContacts keeps role emails from JSON-LD blocks (stripped from visible text)', () => {
+  const html = `<html><head><script type="application/ld+json">
+    {"@context":"https://schema.org","@type":"Organization","name":"Acme","contactPoint":{"@type":"ContactPoint","email":"sales@acme.com","contactType":"sales"}}
+  </script></head><body><p>No visible address here.</p></body></html>`
+  const found = extractContacts(html, 'https://acme.com/contact', 'acme.com')
+  assert.deepEqual(found.map(f => f.value), ['sales@acme.com'])
+})
+
+test('extractContacts deobfuscates "at/dot" forms and applies the same role + same-site filter', () => {
+  const html = `<p>Reach us at info [at] acme.com or sales(at)acme dot com. Personal: pat@acme.com. Other site: info@other.com</p>`
+  const found = extractContacts(html, 'https://acme.com/contact', 'acme.com')
+  const values = found.map(f => f.value).sort()
+  assert.deepEqual(values, ['info@acme.com', 'sales@acme.com']) // pat@ is not a role mailbox; other.com is off-site
+})
+
+test('extractContacts keeps person emails out of JSON-LD too (role mailboxes only)', () => {
+  const html = `<script type="application/ld+json">{"@type":"Person","email":"pat.smith@acme.com"}</script>`
+  assert.deepEqual(extractContacts(html, 'https://acme.com/about', 'acme.com'), [])
+})
+
+test('deobfuscation resolves multi-part subdomains to the full domain', () => {
+  const html = `<p>Write to info at mail.acme dot com for details.</p>`
+  const found = extractContacts(html, 'https://acme.com/contact', 'acme.com')
+  assert.deepEqual(found.map(f => f.value), ['info@mail.acme.com'])
+})
