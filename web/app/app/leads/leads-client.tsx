@@ -99,6 +99,15 @@ export default function LeadsClient() {
   }
   useEffect(() => { if (status === 'done') void loadLeads() }, [jobId, status, showHidden])
   useEffect(() => { fetch('/api/crm').then(r => r.ok ? r.json() : null).then(j => setCrmOn(!!j?.configured)).catch(() => {}) }, [])
+  // Restore the last profile so a reload never loses it (item: ICP persistence).
+  useEffect(() => {
+    if (jobId) return
+    void fetch('/api/scan/latest').then(r => r.ok ? r.json() : null).then(j => {
+      if (!j) return
+      if (j.query && !query) setQuery(j.query)
+      if (j.icp) setIcp({ icp: j.icp, source: j.icp_source ?? 'user' })
+    }).catch(() => {})
+  }, [])
 
   const input = 'field'
   return (
