@@ -7,10 +7,11 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --experimental-strip-types --test test/*.test.ts"
+    "test": "SITECRAWL_ENABLED=0 node --experimental-strip-types --test test/*.test.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.84",
+    "@crawlee/utils": "^3.18.2",
     "@types/better-sqlite3": "^9.6.0",
     "@types/nodemailer": "^8.0.2",
     "ai": "^7.0.146",
@@ -19,7 +20,9 @@
     "next-auth": "^5.0.0-beta.32",
     "nodemailer": "^8.0.11",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "robots-parser": "^3.0.1",
+    "tldts": "^7.4.19"
   },
   "devDependencies": {
     "@tailwindcss/turbopack": "^4",

@@ -95,7 +95,15 @@ export function createDraft(db: Database.Database, tenantId: string, leadId: str
   ).get(leadId, tenantId) as Lead | undefined
   if (!lead) throw new OutreachError('not_found')
   if (!lead.evidence_excerpt || lead.confidence === null) throw new OutreachError('lead_not_verified')
-  const to = norm(lead.contact ?? '')
+  // The address must be published: on the cited page (lead.contact) or on the company's own contact page (sitecrawl, with its source URL).
+  let published = lead.contact ?? ''
+  if (!EMAIL_RE.test(norm(published))) {
+    try {
+      const r = db.prepare("SELECT value FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'sitecrawl' AND kind = 'email' ORDER BY retrieved_at DESC LIMIT 1").get(lead.id, tenantId) as { value: string } | undefined
+      if (r) published = r.value
+    } catch { /* enrichment table not present */ }
+  }
+  const to = norm(published)
   if (!EMAIL_RE.test(to)) throw new OutreachError('no_email_contact')
   if (CONSUMER.has(to.split('@')[1])) throw new OutreachError('personal_email')
   if (isSuppressed(db, tenantId, to)) throw new OutreachError('suppressed')

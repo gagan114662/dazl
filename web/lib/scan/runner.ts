@@ -11,6 +11,7 @@ import { collectAdvanced } from '../advanced/index.ts'
 import type { AdvPlatform } from '../advanced/config.ts'
 import { buildSourcePrompt, collectEvidence, normalizeSources } from '../sources/index.ts'
 import { migrateTinyfish, parseQueries, queryPrompt, tfFetch, tfSearch, tinyfishEnabled, toEvidence } from '../search/tinyfish.ts'
+import { crawlJob } from '../connectors/sitecrawl.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
 
 export interface Job { id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null }
@@ -233,7 +234,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   return parseLeads(text, items.map(i => i.url)) ?? null
 }
 
-export interface RunDeps { providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch }
+export interface RunDeps { providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get }
 
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
   const vendor = pickVendor(db, job.user_id)
@@ -304,6 +305,8 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     const seen = new Set(outcome.review.map(r => dedupKey(r)))
     for (const l of walledLeads) { const k = dedupKey(l); if (!seen.has(k)) { seen.add(k); outcome.review.push({ ...l, contact: null, review_reason: 'login_required' }) } }
     finish(db, job, 'done', null, outcome, leads.length + walledLeads.length)
+    // Contact-page crawl enriches verified leads with role emails (robots.txt hard rule). Never affects the scan result.
+    await crawlJob(db, job.user_id, job.id, deps.crawlGet ? { get: deps.crawlGet } : {})
     // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.
     try { await runAutopilot(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
     return 'done'
