@@ -55,7 +55,7 @@ export default function LeadsClient() {
     setError('')
     const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(useGithub || feedText.trim() || advPick.length ? { sources: { adapters: [...(useGithub ? ['github'] : []), ...(feedText.trim() ? ['rss'] : [])], feeds: lines(feedText), advanced: advPick } } : {}) }) })
     const j = await r.json().catch(() => ({}))
-    if (!r.ok) return setError(j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')
+    if (!r.ok) return setError(j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')
     setJobId(j.job_id); setStatus('pending'); setLeads([]); setQuality(null); setIcp(null); setDraft(null)
   }
 

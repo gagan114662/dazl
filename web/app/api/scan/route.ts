@@ -5,6 +5,7 @@ import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { MAX_QUERY, normalizeIcp } from '@/lib/scan/icp'
 import { countActiveJobs, createJob, createQueryJob } from '@/lib/scan/store'
+import { hasKey } from '@/lib/llm/key-store'
 import { scanQuota } from '@/lib/plans'
 import { normalizeSources } from '@/lib/sources'
 import { kickRunner } from '@/lib/scan/runner'
@@ -31,6 +32,8 @@ export async function POST(req: NextRequest) {
   }
 
   const db = getScanDb()
+  // No worker takes keyless jobs in this release, so queuing one would hang forever and burn a scan.
+  if (!hasKey(db, user.id)) return NextResponse.json({ error: 'no_api_key' }, { status: 400 })
   if (countActiveJobs(db, user.id) >= 2) {
     return NextResponse.json({ error: 'You already have scans in progress. Wait for them to finish.' }, { status: 429 })
   }
