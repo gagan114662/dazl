@@ -1,0 +1,18 @@
+# /etc/systemd/system/dazl-worker.service - alternative to Docker
+[Unit]
+Description=dazl advanced-connectors worker
+After=network.target
+
+[Service]
+Type=simple
+User=dazl
+WorkingDirectory=/opt/dazl-worker
+Environment=NODE_ENV=production
+Environment=PORT=8787
+EnvironmentFile=/etc/dazl-worker.env
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
