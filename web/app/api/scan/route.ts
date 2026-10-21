@@ -1,6 +1,6 @@
 import { after, NextRequest, NextResponse } from 'next/server'
 import { cleanText } from '@/lib/validate'
-import { rateLimit } from '@/lib/rate-limit'
+import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { MAX_QUERY, normalizeIcp } from '@/lib/scan/icp'
@@ -9,6 +9,7 @@ import { hasKey } from '@/lib/llm/key-store'
 import { scanQuota } from '@/lib/plans'
 import { normalizeSources } from '@/lib/sources'
 import { kickRunner } from '@/lib/scan/runner'
+import { recordTrialScan, trialStatus } from '@/lib/scan/trial'
 
 export async function POST(req: NextRequest) {
   const user = await requireUser()
@@ -32,8 +33,20 @@ export async function POST(req: NextRequest) {
   }
 
   const db = getScanDb()
-  // No worker takes keyless jobs in this release, so queuing one would hang forever and burn a scan.
-  if (!hasKey(db, user.id)) return NextResponse.json({ error: 'no_api_key' }, { status: 400 })
+  // Keyless accounts fall back to the shared trial key: 3 scans per account, throttled per IP
+  // per day. With no trial configured, queuing a keyless job would hang forever and burn a scan.
+  let funded: 'user' | 'trial' = 'user'
+  const ip = clientIp(req)
+  if (!hasKey(db, user.id)) {
+    const t = trialStatus(db, user.id, ip)
+    if (!t.funded) {
+      if (t.reason === 'account_cap' || t.reason === 'ip_throttle') {
+        return NextResponse.json({ error: 'trial_exhausted', used: t.used }, { status: 402 })
+      }
+      return NextResponse.json({ error: 'no_api_key' }, { status: 400 })
+    }
+    funded = 'trial'
+  }
   if (countActiveJobs(db, user.id) >= 2) {
     return NextResponse.json({ error: 'You already have scans in progress. Wait for them to finish.' }, { status: 429 })
   }
@@ -43,6 +56,10 @@ export async function POST(req: NextRequest) {
   }
   const sel = body?.sources ? normalizeSources(body.sources) : null
   const job_id = query.length >= 3 ? createQueryJob(db, user.id, { query, icp: icp ? JSON.stringify(icp) : null, sources: sel ? JSON.stringify(sel) : null }) : createJob(db, user.id, { business_name, industry, location })
+  if (funded === 'trial') {
+    db.prepare("UPDATE scan_jobs SET funded_by = 'trial' WHERE id = ?").run(job_id)
+    recordTrialScan(db, user.id, job_id, ip)
+  }
   after(() => kickRunner(db))
   return NextResponse.json({ job_id }, { status: 202 })
 }

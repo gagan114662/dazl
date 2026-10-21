@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { cleanText } from '@/lib/validate'
-import { rateLimit } from '@/lib/rate-limit'
+import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { sameOriginJson } from '@/lib/same-origin'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { previewIcp } from '@/lib/scan/runner'
@@ -16,7 +16,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   const query = cleanText(body?.query, MAX_QUERY)
   if (query.length < 3) return NextResponse.json({ error: 'Describe who you are looking for' }, { status: 400 })
-  const out = await previewIcp(getScanDb(), user.id, query)
+  const out = await previewIcp(getScanDb(), user.id, query, {}, clientIp(req))
   if ('error' in out) return NextResponse.json({ error: out.error }, { status: out.error === 'no_api_key' ? 400 : 402 })
   return NextResponse.json(out)
 }
