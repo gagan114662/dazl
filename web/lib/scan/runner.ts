@@ -7,9 +7,10 @@ import { runAutopilot } from '../outreach/autopilot.ts'
 import { MAX_ATTEMPTS, reapStaleJobs } from './store.ts'
 import { dedupKey, MIN_CONFIDENCE, verifyEvidence, type Candidate } from './evidence.ts'
 import { inferIcp, normalizeIcp, type Icp } from './icp.ts'
+import { collectAdvanced } from '../advanced/index.ts'
+import type { AdvPlatform } from '../advanced/config.ts'
 import { buildSourcePrompt, collectEvidence, normalizeSources } from '../sources/index.ts'
 import { migrateTinyfish, parseQueries, queryPrompt, tfFetch, tfSearch, tinyfishEnabled, toEvidence } from '../search/tinyfish.ts'
-import { enrichJob } from '../connectors/enrich.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
 
 export interface Job { id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null }
@@ -232,7 +233,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   return parseLeads(text, items.map(i => i.url)) ?? null
 }
 
-export interface RunDeps { providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null }
+export interface RunDeps { providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch }
 
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
   const vendor = pickVendor(db, job.user_id)
@@ -274,13 +275,25 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // Optional per-scan sources: public evidence is collected without any key or DB access, then the user's own model
     // turns it into candidates. They go through the same verifier as web-search leads.
     const sel = job.query && job.sources ? normalizeSources(safeJson(job.sources)) : null
+    const walledLeads: LeadDraft[] = []
     if (sel && icpForSources && complete) {
       try {
-        const items = await collectEvidence(sel, job.query!)
+        const items = sel.adapters.length ? await collectEvidence(sel, job.query!) : []
         if (items.length > 0) {
           const text = await complete.call(providers_[vendor], key, buildSourcePrompt(job.query!, icpForSources, items), deps.fetchImpl, 3000)
           const extra = parseLeads(text, items.map(i => i.url)) ?? []
           leads.push(...extra)
+        }
+        // Advanced connectors (opt-in tier, own flag, consent and session). A page behind a login is never
+        // verified by us: it goes to "needs review" as is, shown to the user and never emailed.
+        if (sel.advanced?.length) {
+          const adv = await collectAdvanced(db, job.user_id, job.id, sel.advanced as AdvPlatform[], job.query!, { master: deps.master, worker: deps.advancedWorker })
+          if (adv.length > 0) {
+            const text = await complete.call(providers_[vendor], key, buildSourcePrompt(job.query!, icpForSources, adv), deps.fetchImpl, 3000)
+            const walled = new Set(adv.filter(i => i.login_walled).map(i => i.url))
+            const extra = parseLeads(text, adv.map(i => i.url)) ?? []
+            for (const l of extra) (walled.has(l.source_url) ? walledLeads : leads).push(l)
+          }
         }
       } catch (e) {
         if (e instanceof ProviderError && e.kind === 'auth') throw e // a rejected key still fails the scan
@@ -288,8 +301,9 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       }
     }
     const outcome = await verifyLeads(leads, deps.fetchPage, deps.now, deps.judge === undefined ? makeJudge(providers_[vendor], key, deps.fetchImpl) : deps.judge ?? undefined)
-    finish(db, job, 'done', null, outcome, leads.length)
-    await enrichJob(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl, master: deps.master })
+    const seen = new Set(outcome.review.map(r => dedupKey(r)))
+    for (const l of walledLeads) { const k = dedupKey(l); if (!seen.has(k)) { seen.add(k); outcome.review.push({ ...l, contact: null, review_reason: 'login_required' }) } }
+    finish(db, job, 'done', null, outcome, leads.length + walledLeads.length)
     // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.
     try { await runAutopilot(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
     return 'done'
