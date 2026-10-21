@@ -8,7 +8,7 @@ import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.
 import { saveSettings, isSuppressed } from '../lib/outreach/service.ts'
 import { ATTESTATIONS, CONSENT_VERSION, enable, getState, migrateAutopilot, recentAutopilotAudit } from '../lib/outreach/autopilot.ts'
 import { grantConsent, hasConsent, migrateLedger, revokeAll } from '../lib/outreach/ledger.ts'
-import { acceptReadConsent, classifyReply, inboxRows, migrateReplies, newText, syncReplies } from '../lib/outreach/replies.ts'
+import { acceptReadConsent, classifyReply, inboxRows, migrateReplies, newText, syncReplies, threadMessages } from '../lib/outreach/replies.ts'
 import { followupText, runFollowups, setFollowups } from '../lib/outreach/followups.ts'
 
 const master = randomBytes(32)
@@ -169,4 +169,18 @@ test('inboxRows: joins lead company and follow-up state, newest first, tenant-sc
   assert.equal(rows[1].lead_name, 'Ada')
   assert.equal(rows[1].followups_sent, 1)
   assert.equal(rows[1].stopped, null)
+})
+
+test('threadMessages: original outreach and replies interleave oldest-first; another tenant sees nothing', async () => {
+  const db = await setup()
+  const { lead, mid, thread } = sentLead(db, 'sam@northside.example')
+  db.prepare("INSERT INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at, last_lead_reply_at) VALUES ('A', ?, ?, ?, ?, ?, ?)").run(thread, lead, 'sam@northside.example', mid, NOW - 4 * DAY, NOW - DAY)
+  db.prepare("INSERT INTO followup_messages (tenant_id, thread_id, step, status, created_at) VALUES ('A', ?, 0, 'sent', ?)").run(thread, NOW - 2 * DAY)
+  db.prepare("INSERT INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at) VALUES ('g-r1', 'A', ?, ?, 'sam@northside.example', 'Sounds good, tell me more', 'positive', ?)").run(thread, lead, NOW - DAY)
+  const t = threadMessages(db, 'A', thread)
+  assert.deepEqual(t.map(m => m.kind), ['original', 'followup', 'reply'])
+  assert.equal(t[0].dir, 'out'); assert.equal(t[0].subject, 'Quick question')
+  assert.equal(t[1].subject, 'Follow-up 1')
+  assert.equal(t[2].dir, 'in'); assert.equal(t[2].classification, 'positive')
+  assert.deepEqual(threadMessages(db, 'B', thread), []) // tenant isolation
 })
