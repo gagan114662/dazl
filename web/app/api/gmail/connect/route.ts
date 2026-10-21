@@ -5,7 +5,7 @@ import { hasReadConsent } from '@/lib/outreach/replies'
 
 export async function GET(req: NextRequest) {
   const user = await requireUser()
-  if (!user) return NextResponse.redirect(new URL('/sign-in', req.url))
+  if (!user) return NextResponse.redirect(new URL('/sign-in', process.env.PUBLIC_BASE_URL || req.url))
   try {
     const withRead = req.nextUrl.searchParams.get('read') === '1'
     if (withRead && !hasReadConsent(getScanDb(), user.id)) return NextResponse.json({ error: 'Accept the reply-reading notice first' }, { status: 403 })
