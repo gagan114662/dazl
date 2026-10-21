@@ -5,6 +5,7 @@ import GmailPanel from './gmail-panel'
 import AutopilotPanel from './autopilot-panel'
 import RepliesPanel from './replies-panel'
 import CrmPanel from './crm-panel'
+import CompetitorsPanel from './competitors-panel'
 
 const SECTIONS = [['plan', 'Plan'], ['model-key', 'Model key'], ['connectors', 'Connectors'], ['gmail', 'Gmail'], ['autopilot', 'Autopilot'], ['replies', 'Replies']]
 
@@ -18,6 +19,7 @@ export default function Settings() {
       </nav>
       <div id="plan" className="scroll-mt-6"><PlanPanel /></div>
       <div id="model-key" className="scroll-mt-6"><LlmKeyPanel /></div>
+      <CompetitorsPanel />
       <AdvancedPanel />
       <div id="gmail" className="scroll-mt-6"><GmailPanel /></div>
       <div id="autopilot" className="scroll-mt-6"><AutopilotPanel /></div>

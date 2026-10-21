@@ -16,6 +16,7 @@ import { migrateTinyfish, parseQueries, queryPrompt, tfFetch, tfSearch, tinyfish
 import { crawlJob } from '../connectors/sitecrawl.ts'
 import { applyIcpGate, icpTextFor, scoreLeads } from './score.ts'
 import { enrichJobSignals } from '../signals/index.ts'
+import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } from '../signals/competitor-reddit.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
 import { sourceCap } from './source-quality.ts'
 
@@ -387,6 +388,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // turns it into candidates. They go through the same verifier as web-search leads.
     const sel = job.query && job.sources ? normalizeSources(safeJson(job.sources)) : null
     const walledLeads: LeadDraft[] = []
+    let complaints: ComplaintItem[] = []
     if (sel && icpForSources && complete) {
       try {
         const items = sel.adapters.length ? await collectEvidence(sel, job.query!) : []
@@ -403,6 +405,18 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
             const text = await complete.call(providers_[vendor], key, buildSourcePrompt(job.query!, icpForSources, adv), deps.fetchImpl, 3000)
             const walled = new Set(adv.filter(i => i.login_walled).map(i => i.url))
             const extra = parseLeads(text, adv.map(i => i.url)) ?? []
+            for (const l of extra) (walled.has(l.source_url) ? walledLeads : leads).push(l)
+          }
+        }
+        // Competitor complaints on Reddit (configured in Settings, same consent/session/rate
+        // budget as the Reddit fetcher). Posts become candidates like any other evidence and
+        // keep their competitor tag so the badge can be applied after verification.
+        if (complaints.length === 0) {
+          complaints = await collectCompetitorComplaints(db, job.user_id, job.id, { master: deps.master, worker: deps.advancedWorker }).catch(() => [])
+          if (complaints.length > 0 && complete) {
+            const text = await complete.call(providers_[vendor], key, buildSourcePrompt(job.query!, icpForSources, complaints), deps.fetchImpl, 3000)
+            const walled = new Set(complaints.filter(i => i.login_walled).map(i => i.url))
+            const extra = parseLeads(text, complaints.map(i => i.url)) ?? []
             for (const l of extra) (walled.has(l.source_url) ? walledLeads : leads).push(l)
           }
         }
@@ -458,6 +472,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     const seen = new Set(outcome.review.map(r => dedupKey(r)))
     for (const l of walledLeads) { const k = dedupKey(l); if (!seen.has(k)) { seen.add(k); outcome.review.push({ ...l, contact: null, review_reason: 'login_required' }) } }
     finish(db, job, 'done', null, outcome, leads.length + walledLeads.length)
+    if (complaints.length > 0) { try { badgeComplaintLeads(db, job.id, complaints) } catch { /* badge only */ } }
     // Watch run: flag the leads this watch has never surfaced, remember the rest.
     if (job.watch_id) { try { markWatchLeads(db, job.watch_id, job.id) } catch { /* bonus only */ } }
     // Contact-page crawl enriches verified leads with role emails (robots.txt hard rule). Never affects the scan result.

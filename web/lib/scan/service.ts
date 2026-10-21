@@ -12,6 +12,7 @@ import { migrateAutopilot } from '../outreach/autopilot.ts'
 import { migrateLedger } from '../outreach/ledger.ts'
 import { migrateReplies } from '../outreach/replies.ts'
 import { migrateTrial } from './trial.ts'
+import { migrateCompetitors } from '../signals/competitor-reddit.ts'
 
 let ready = false
 export function getScanDb() {
@@ -29,6 +30,7 @@ export function getScanDb() {
     migrateLedger(db)
     migrateReplies(db)
     migrateTrial(db)
+    migrateCompetitors(db)
     ready = true
   }
   return db
