@@ -122,3 +122,18 @@ test('inferIcp asks for enough output tokens (a 10-token budget truncated every 
   assert.equal(r.inferred, true)
   assert.deepEqual(r.icp.where, ['Ohio'])
 })
+
+test('normalizeIcp: industries and sizes are extracted, capped and defaulted', () => {
+  const icp = normalizeIcp({ summary: 'B2B seller', who: ['VP Sales'], industries: ['SaaS', 'Fintech', '  '], sizes: ['1-10 employees'], where: [], signals: [], exclude: [] })
+  assert.deepEqual(icp?.industries, ['SaaS', 'Fintech'])
+  assert.deepEqual(icp?.sizes, ['1-10 employees'])
+  const bare = normalizeIcp({ summary: 'anything' })
+  assert.deepEqual(bare?.industries, [])
+  assert.deepEqual(bare?.sizes, [])
+  assert.deepEqual(fallbackIcp('q').industries, [])
+})
+
+test('icpPrompt asks for industries and sizes', () => {
+  const p = icpPrompt('seed fintech founders in London')
+  assert.ok(p.includes('"industries"') && p.includes('"sizes"'))
+})

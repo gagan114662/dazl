@@ -1,6 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { icpTextFor, isHidden, parseScores, scorePrompt, SIGNALS } from '../lib/scan/score.ts'
+import { applyIcpGate, icpTextFor, isHidden, parseScores, scorePrompt, SIGNALS, type IcpMatch } from '../lib/scan/score.ts'
+
+const UM: IcpMatch = { role: 'unknown', industry: 'unknown', size: 'unknown', location: 'unknown', note: '' }
 
 test('taxonomy has 15-30 key-free signals, all snake_case ids', () => {
   assert.ok(SIGNALS.length >= 15 && SIGNALS.length <= 30)
@@ -12,8 +14,8 @@ test('parseScores: parses one line per lead, clamps to 0-5, keeps known signals 
 LEAD 2 | fit 9 | intent -2 | action 2 | signals none | why Big incumbent, no trigger`
   const s = parseScores(text, 2)
   assert.ok(s)
-  assert.deepEqual(s[0], { fit: 4, intent: 5, action: 3, signals: ['raised_funding', 'hiring_relevant_role'], why: 'Just raised seed and hiring first AE' })
-  assert.deepEqual(s[1], { fit: 5, intent: 0, action: 2, signals: [], why: 'Big incumbent, no trigger' })
+  assert.deepEqual(s[0], { fit: 4, intent: 5, action: 3, signals: ['raised_funding', 'hiring_relevant_role'], why: 'Just raised seed and hiring first AE', match: UM })
+  assert.deepEqual(s[1], { fit: 5, intent: 0, action: 2, signals: [], why: 'Big incumbent, no trigger', match: UM })
 })
 
 test('parseScores: missing lead line fails the whole batch (no unfair ranking)', () => {
@@ -22,8 +24,8 @@ test('parseScores: missing lead line fails the whole batch (no unfair ranking)',
 })
 
 test('isHidden: fit 0-1 hides, higher fits and unscored stay visible', () => {
-  assert.equal(isHidden({ fit: 1, intent: 5, action: 5, why: '', signals: [] }), true)
-  assert.equal(isHidden({ fit: 2, intent: 0, action: 0, why: '', signals: [] }), false)
+  assert.equal(isHidden({ fit: 1, intent: 5, action: 5, why: '', signals: [], match: UM }), true)
+  assert.equal(isHidden({ fit: 2, intent: 0, action: 0, why: '', signals: [], match: UM }), false)
   assert.equal(isHidden(null), false)
 })
 
@@ -39,7 +41,7 @@ test('scorePrompt: carries the ICP text and every lead with its evidence', () =>
 })
 
 test('icpTextFor: renders the reviewed ICP, falls back to the raw query', () => {
-  const t = icpTextFor({ summary: 'SaaS seller', who: ['VP Sales'], where: ['London'], signals: ['seed round'], exclude: ['agencies'] }, 'fallback')
+  const t = icpTextFor({ summary: 'SaaS seller', who: ['VP Sales'], industries: ['SaaS'], sizes: ['1-10'], where: ['London'], signals: ['seed round'], exclude: ['agencies'] }, 'fallback')
   assert.ok(t.includes('SaaS seller') && t.includes('VP Sales') && t.includes('London') && t.includes('agencies'))
   assert.equal(icpTextFor(null, 'fallback'), 'fallback')
 })
@@ -50,6 +52,32 @@ LEAD 1: fit 4, intent 5, action 3, signals raised_funding, hiring | why Just rai
 LEAD 2 | fit: 1 | intent: 2 | action: 2 | signals: none | why: Incumbent with no trigger`
   const s = parseScores(text, 2)
   assert.ok(s)
-  assert.deepEqual(s[0], { fit: 4, intent: 5, action: 3, signals: ['raised_funding', 'hiring'], why: 'Just raised and hiring' })
+  assert.deepEqual(s[0], { fit: 4, intent: 5, action: 3, signals: ['raised_funding', 'hiring'], why: 'Just raised and hiring', match: UM })
   assert.equal(s[1].fit, 1)
+})
+
+test('parseScores: match segment parses; mism reason is kept out of why', () => {
+  const text = `LEAD 1 | fit 4 | intent 4 | action 4 | match yy?n | signals hiring | why Good fit, wrong region | mism wrong location: US-only, ICP is London
+LEAD 2 | fit 3 | intent 3 | action 3 | match ???? | signals none | why Nothing known`
+  const s = parseScores(text, 2)
+  assert.ok(s)
+  assert.deepEqual(s[0].match, { role: 'match', industry: 'match', size: 'unknown', location: 'mismatch', note: 'wrong location: US-only, ICP is London' })
+  assert.equal(s[0].why, 'Good fit, wrong region')
+  assert.deepEqual(s[1].match, { role: 'unknown', industry: 'unknown', size: 'unknown', location: 'unknown', note: '' })
+})
+
+test('applyIcpGate: mismatch on a specified criterion hides with reason; unknown and open criteria never gate', () => {
+  const score = (match: IcpMatch, fit = 4) => ({ fit, intent: 3, action: 3, why: 'solid', signals: [], match })
+  const icp = { summary: 'x', who: ['VP Sales'], industries: ['SaaS'], sizes: [], where: ['London'], signals: [], exclude: [] }
+  const wrongIndustry = score({ role: 'match', industry: 'mismatch', size: 'unknown', location: 'match', note: 'manufacturing' })
+  const allUnknown = score({ role: 'unknown', industry: 'unknown', size: 'unknown', location: 'unknown', note: '' })
+  const wrongSizeOnly = score({ role: 'match', industry: 'match', size: 'mismatch', location: 'match', note: 'too big' }) // size not in ICP: never gates
+  const out = applyIcpGate([wrongIndustry, allUnknown, wrongSizeOnly], icp)
+  assert.equal(out[0].fit, 1)
+  assert.ok(out[0].why.includes('ICP mismatch (industry: manufacturing)'))
+  assert.equal(out[1].fit, 4)
+  assert.equal(out[2].fit, 4)
+  // null ICP: no gating at all
+  const g = score({ role: 'mismatch', industry: 'mismatch', size: 'mismatch', location: 'mismatch', note: 'x' })
+  assert.equal(applyIcpGate([g], null)[0].fit, 4)
 })

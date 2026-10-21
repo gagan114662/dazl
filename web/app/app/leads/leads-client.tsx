@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 
-interface Lead { id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string }[] }
+interface Lead { id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string }[] }
 interface Icp { summary: string; who: string[]; where: string[]; signals: string[]; exclude: string[] }
 interface Quality { candidates: number; passed: number | null; needs_review: number | null; dropped: number | null; drop_reasons: Record<string, number> }
 
@@ -164,6 +164,13 @@ export default function LeadsClient() {
           <div key={l.id} className="p-4 text-sm">
 <div className="font-medium">{l.company_domain ? <a className="underline decoration-white/30 hover:decoration-white" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{l.company || l.name}</a> : (l.company || l.name)} <span className="text-gray-500">score {l.score}</span>
               {l.fit != null && <span className="ml-2 text-xs font-normal text-gray-300 border border-white/15 px-1.5 py-0.5">fit {l.fit}/5 · intent {l.intent}/5 · action {l.action}/5</span>}
+              {l.fit != null && l.icp_match && (() => {
+                let m: { role?: string; industry?: string; size?: string; location?: string; note?: string } | null = null
+                try { m = JSON.parse(l.icp_match) } catch { m = null }
+                if (!m) return null
+                const chip = (label: string, v?: string) => !v ? null : <span key={label} className={`text-[10px] px-1 border ${v === 'match' ? 'text-green-300 border-green-300/30' : v === 'mismatch' ? 'text-red-300 border-red-300/30' : 'text-gray-500 border-white/10'}`} title={m.note || `${label}: ${v}`}>{label}</span>
+                return <span className="ml-1 inline-flex gap-0.5 align-middle">{chip('role', m.role)}{chip('industry', m.industry)}{chip('size', m.size)}{chip('location', m.location)}</span>
+              })()}
             </div>
             <div className="text-gray-400">{l.signal}</div>
             {l.why && <div className="text-xs text-gray-300 mt-1">Why now: {l.why}</div>}
