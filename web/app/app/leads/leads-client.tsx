@@ -163,7 +163,7 @@ export default function LeadsClient() {
             <textarea className={`${input} w-full`} rows={2} value={pageText} onChange={e => setPageText(e.target.value)} placeholder="https://example.com/blog/post" />
             <label className="block text-xs text-gray-500">RSS or Atom feed URLs to include (https only, one per line, up to 5)</label>
             <textarea className={`${input} w-full`} rows={2} value={feedText} onChange={e => setFeedText(e.target.value)} placeholder="https://example.com/news/feed.xml" />
-            {advReady.map(p => <label key={p} className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={advPick.includes(p)} onChange={e => setAdvPick(e.target.checked ? [...advPick, p] : advPick.filter(x => x !== p))} /> Also search {p} with my session (advanced, may risk the account)</label>)}
+            {advReady.map(p => <label key={p} className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={advPick.includes(p)} onChange={e => setAdvPick(e.target.checked ? [...advPick, p] : advPick.filter(x => x !== p))} /> {p === "x" ? "Also search X posts (via web index, no account risk)" : `Also search ${p} (uses operator session, posts may be flagged)`}</label>)}
             <p className="text-xs text-gray-500">Items from these sources are checked against their page like every other lead.</p>
           </div>
         </details>
