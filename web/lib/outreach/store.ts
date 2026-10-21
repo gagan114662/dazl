@@ -55,4 +55,8 @@ export function migrateOutreach(db: Database.Database): void {
     WHEN OLD.status IN ('sent','skipped') AND NEW.status <> OLD.status
     BEGIN SELECT RAISE(ABORT, 'final outreach status'); END;
   `)
+  const addCol = (t: string, c: string, def: string) => { try { db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`) } catch { /* exists */ } }
+  addCol('oauth_states', 'read_scope', 'INTEGER NOT NULL DEFAULT 0')
+  addCol('gmail_accounts', 'read_granted', 'INTEGER NOT NULL DEFAULT 0')
+  addCol('outreach_messages', 'thread_id', 'TEXT')
 }

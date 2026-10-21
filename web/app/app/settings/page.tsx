@@ -2,6 +2,7 @@ import LlmKeyPanel from './llm-key-panel'
 import PlanPanel from './plan-panel'
 import GmailPanel from './gmail-panel'
 import AutopilotPanel from './autopilot-panel'
+import RepliesPanel from './replies-panel'
 
 export default function Settings() {
   return (
@@ -14,6 +15,7 @@ export default function Settings() {
 
       <GmailPanel />
       <AutopilotPanel />
+      <RepliesPanel />
 
       {/* Business */}
       <div className="bg-white/5 border border-white/10 rounded-2xl p-6 mb-4">
