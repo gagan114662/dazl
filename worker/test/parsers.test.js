@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { parseRedditListing } from '../lib/reddit.js'
-import { parseXTweets } from '../lib/x.js'
+import { parseXTweets, parseAdaptiveTweets } from '../lib/x.js'
 
 test('reddit listing parses to worker items matching the app contract', () => {
   const items = parseRedditListing({
@@ -34,4 +34,19 @@ test('x search response parses tweets out of the nested GraphQL structure', () =
 test('x parser survives empty and malformed payloads', () => {
   assert.deepEqual(parseXTweets({}), [])
   assert.deepEqual(parseXTweets({ data: { errors: [{ message: 'Rate limit exceeded' }] } }), [])
+})
+
+test('x adaptive.json payload parses to the same worker item contract', () => {
+  const items = parseAdaptiveTweets({ globalObjects: {
+    tweets: {
+      '999': { id_str: '999', full_text: 'we just raised a seed round and are hiring engineers for our dev tools startup', created_at: 'Mon Oct 20 12:00:00 +0000 2026', user_id_str: '42' },
+      '998': { id_str: '998', full_text: 'short', created_at: 'Mon Oct 20 12:00:00 +0000 2026', user_id_str: '42' }, // too short, dropped
+      '997': { id_str: '997', full_text: 'a tweet whose user is missing from the users map, dropped', created_at: 'Mon Oct 20 12:00:00 +0000 2026', user_id_str: '43' },
+    },
+    users: { '42': { screen_name: 'acme' } },
+  } })
+  assert.equal(items.length, 1)
+  assert.equal(items[0].url, 'https://x.com/acme/status/999')
+  assert.equal(items[0].date, '2026-10-20')
+  assert.deepEqual(parseAdaptiveTweets({}), [])
 })

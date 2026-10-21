@@ -95,3 +95,21 @@ dazl.ai server side (the Next.js app env), so the app gates open and calls the w
 
 `npm test` - parser contracts (item shape matches what the dazl app validates) and
 the HTTP auth/validation surface. No live platform calls in tests.
+
+## Operator sessions (env)
+
+If the request carries no tenant session, the worker falls back to these env vars:
+
+- `X_SESSION_COOKIE` - `auth_token=...; ct0=...` for a throwaway X account
+- `REDDIT_SESSION_COOKIE` - reddit_session cookie value
+- `LINKEDIN_SESSION_COOKIE` - li_at cookie value (reserved; no LinkedIn handler yet)
+
+`/health` reports `operator_sessions` as booleans only. Values are never logged.
+With neither a tenant session nor an env session, /fetch answers 400 `no_session`.
+
+## X fetcher rotation knobs
+
+X rotates the SearchTimeline query id and required feature flags. `X_QUERY_ID` and
+`X_FEATURES` env vars override the built-in values without a redeploy. When the
+timeline call fails or returns 0 items, the fetcher falls back to the legacy
+`search/adaptive.json` endpoint automatically; check worker logs for which path ran.

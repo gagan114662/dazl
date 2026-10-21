@@ -25,28 +25,45 @@ function cookieValue(session, name) {
   return m ? decodeURIComponent(m.slice(name.length + 1)) : null
 }
 
+function xHeaders(session, ct0) {
+  return {
+    authorization: `Bearer ${decodeURIComponent(BEARER)}`,
+    'x-csrf-token': ct0,
+    cookie: session,
+    'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    accept: 'application/json',
+    'x-twitter-active-user': 'yes',
+    'x-twitter-client-language': 'en',
+  }
+}
+
+// SearchTimeline first (richest data, but the query id/features rotate and X has been
+// returning empty result sets for stale feature sets). On ANY error or a 0-item reply,
+// fall back to the legacy adaptive.json search, which has survived every GraphQL
+// rotation so far. Statuses are logged server-side (never the cookie).
 export async function fetchX({ query, session }) {
   const ct0 = cookieValue(session, 'ct0')
   if (!ct0 || !cookieValue(session, 'auth_token')) throw new Error('x session needs auth_token and ct0 cookies')
+  const headers = xHeaders(session, ct0)
   const queryId = process.env.X_QUERY_ID || DEFAULT_QUERY_ID
   const variables = JSON.stringify({ rawQuery: query, count: 20, querySource: 'typed_query', product: 'Latest' })
   const url = `https://x.com/i/api/graphql/${queryId}/SearchTimeline?variables=${encodeURIComponent(variables)}&features=${encodeURIComponent(process.env.X_FEATURES || DEFAULT_FEATURES)}`
-  const res = await fetch(url, {
-    headers: {
-      authorization: `Bearer ${decodeURIComponent(BEARER)}`,
-      'x-csrf-token': ct0,
-      cookie: session,
-      'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-      accept: 'application/json',
-      'x-twitter-active-user': 'yes',
-      'x-twitter-client-language': 'en',
-    },
-    redirect: 'error',
-    signal: AbortSignal.timeout(30_000),
-  })
+  try {
+    const res = await fetch(url, { headers, redirect: 'error', signal: AbortSignal.timeout(30_000) })
+    if (res.ok) {
+      const items = parseXTweets(await res.json())
+      if (items.length) return items
+      console.error('x: SearchTimeline 200 with 0 items; falling back to adaptive.json')
+    } else {
+      console.error(`x: SearchTimeline HTTP ${res.status}; falling back to adaptive.json`)
+    }
+  } catch (e) {
+    console.error(`x: SearchTimeline failed (${e instanceof Error ? e.message : 'error'}); falling back to adaptive.json`)
+  }
+  const adaptiveUrl = `https://x.com/i/api/1.1/search/adaptive.json?q=${encodeURIComponent(query)}&count=20&tweet_mode=extended&query_source=typed_query`
+  const res = await fetch(adaptiveUrl, { headers, redirect: 'error', signal: AbortSignal.timeout(30_000) })
   if (!res.ok) throw new Error(`x ${res.status}`)
-  const data = await res.json()
-  return parseXTweets(data)
+  return parseAdaptiveTweets(await res.json())
 }
 
 // Walks the response for tweet result objects, robust to query-id/feature drift.
@@ -82,4 +99,27 @@ export function parseXTweets(data) {
     }
   }
   return tweets
+}
+
+// adaptive.json shape: { globalObjects: { tweets: {id: {id_str, full_text, created_at,
+// user_id_str}}, users: {id: {screen_name}} } }. Same output contract as parseXTweets.
+export function parseAdaptiveTweets(data) {
+  const tweets = data?.globalObjects?.tweets
+  const users = data?.globalObjects?.users
+  if (!tweets || typeof tweets !== 'object') return []
+  const out = []
+  for (const t of Object.values(tweets)) {
+    if (!t || typeof t.full_text !== 'string' || t.full_text.length < 20 || !t.id_str) continue
+    const user = users?.[t.user_id_str]?.screen_name
+    if (!user) continue
+    const date = t.created_at ? new Date(t.created_at) : null
+    out.push({
+      url: `https://x.com/${user}/status/${t.id_str}`,
+      title: t.full_text.slice(0, 120),
+      quote: t.full_text.slice(0, 300),
+      date: date && !isNaN(date) ? date.toISOString().slice(0, 10) : null,
+      login_walled: false,
+    })
+  }
+  return out
 }
