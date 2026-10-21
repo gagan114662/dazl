@@ -25,24 +25,26 @@ test('selection keeps only known advanced platforms', () => {
   assert.equal(normalizeSources({ advanced: ['nope'] }), null)
 })
 
-test('gates: no consent, no session, flag off, then success, with audit and per-tenant isolation', async () => {
+test('gates: no consent, flag off, then success, with audit and per-tenant isolation', async () => {
   const db = setup(); let calls = 0; const seen: unknown[] = []
   const worker: WorkerFetch = async r => { calls++; seen.push(r); return [item] }
   const run = (t: string, env = ON, p: 'reddit' | 'linkedin' = 'reddit') => collectAdvanced(db, t, 'j1', [p], 'q', { worker, master, env })
   assert.equal((await run('A')).length, 0)
   acceptConsent(db, 'A', 'advanced'); assert.equal(hasConsent(db, 'A', 'advanced'), true)
-  assert.equal((await run('A')).length, 0) // no session yet
+  // No tenant session: the worker is still called with '' - it falls back to the
+  // operator throwaway session from its env.
+  assert.equal((await run('A')).length, 1)
+  assert.deepEqual(seen, [{ platform: 'reddit', query: 'q', session: '' }])
   saveCredential(db, 'A', 'adv:reddit', 'session-of-tenant-A-123', master)
   assert.equal((await run('A', {})).length, 0) // flag off
-  assert.equal((await run('B')).length, 0) // other tenant has nothing
-  assert.equal(calls, 0)
+  assert.equal((await run('B')).length, 0) // other tenant never consented: gate still stops the call
   const out = await run('A'); assert.equal(out.length, 1); assert.equal(out[0].login_walled, true)
-  assert.deepEqual(seen, [{ platform: 'reddit', query: 'q', session: 'session-of-tenant-A-123' }])
+  assert.deepEqual(seen[seen.length - 1], { platform: 'reddit', query: 'q', session: 'session-of-tenant-A-123' })
   saveCredential(db, 'A', 'adv:linkedin', 'li-session-of-A-1234', master); acceptConsent(db, 'A', 'linkedin')
   assert.equal((await run('A', ON, 'linkedin')).length, 0) // linkedin flag off
   assert.equal((await run('A', { ...ON, ADVANCED_LINKEDIN: '1' }, 'linkedin')).length, 1)
   const st = (recentAudit(db, 'A', 50) as { status: string }[]).map(a => a.status)
-  assert.ok(st.includes('no_session') && st.includes('disabled') && st.includes('ok'))
+  assert.ok(st.includes('no_consent') && st.includes('disabled') && st.includes('ok'))
 })
 
 test('rate limit: per user per hour, kill switch stops calls', async () => {

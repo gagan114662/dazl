@@ -76,8 +76,11 @@ export async function collectAdvanced(db: Database.Database, tenantId: string, j
     const skip = (status: string) => audit(db, { tenantId, connector: id, jobId, lookup: query, status, results: 0 })
     if (!platformAllowed(p, flags)) { skip('disabled'); continue }
     if (!hasConsent(db, tenantId, scopeFor(p))) { skip('no_consent'); continue }
-    const session = getEnabledCredential(db, tenantId, id, deps.master)
-    if (!session) { skip('no_session'); continue }
+    // Tenant's own session when stored; '' otherwise - the worker falls back to the
+    // throwaway sessions in its env (X_SESSION_COOKIE / REDDIT_SESSION_COOKIE),
+    // which the site owner placed there for the connector fetchers. A worker with
+    // neither answers no_session, which audits as worker_error here.
+    const session = getEnabledCredential(db, tenantId, id, deps.master) || ''
     if (callsLastHour(db, tenantId, p) >= maxCallsPerHour(p, env)) { skip('rate_limited'); continue }
     const items = await worker({ platform: p, query: query.slice(0, 300), session })
     if (items === null) { skip('worker_error'); continue }
