@@ -6,6 +6,7 @@ import { runFollowups } from '@/lib/outreach/followups'
 import { runDueWatches } from '@/lib/watch'
 import { collectMonitorResults, runDueMonitors } from '@/lib/monitors'
 import { kickRunner } from '@/lib/scan/runner'
+import { migrateIndexing, dueTenants, runIndexChecks } from '@/lib/seo/indexing'
 
 // Called by a scheduler (cron or a systemd timer) with AUTOPILOT_TICK_SECRET. Reads replies and sends due
 // follow-ups for tenants who turned both on. Without the secret configured the route does not exist.
@@ -27,5 +28,12 @@ export async function POST(req: NextRequest) {
   const monitorJobs = runDueMonitors(db)
   if (monitorJobs.length > 0) after(() => kickRunner(db))
   const monitorAlerts = collectMonitorResults(db)
-  return NextResponse.json({ ok: true, tenants: done, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts })
+  // Weekly indexing checks: one TinyFish site: search per saved keyword, inside the tenant's
+  // own 10-searches-per-week allowance (separate from the scan caps). Best-effort per tenant.
+  migrateIndexing(db)
+  let indexChecked = 0
+  for (const t of dueTenants(db, Math.floor(Date.now() / 1000))) {
+    try { const r = await runIndexChecks(db, t); if (r && r.length > 0) indexChecked++ } catch (e) { console.error('index check failed', t, e instanceof Error ? e.message : 'error') }
+  }
+  return NextResponse.json({ ok: true, tenants: done, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, index_checks: indexChecked })
 }
