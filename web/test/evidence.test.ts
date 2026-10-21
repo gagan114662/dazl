@@ -62,7 +62,7 @@ test('company key ignores legal suffixes and case; dedup picks the best lead per
   const { leads, dropped } = await verifyLeads([
     cand({ source_url: 'https://northsidebuilders.example/a', event_date: null }),
     cand({ source_url: 'https://northsidebuilders.example/b', company: 'Northside Builders Ltd', contact: 'jobs@northside.example' }),
-    cand({ source_url: 'https://northsidebuilders.example/c', excerpt: 'this quote does not exist anywhere on the page at all' }),
+    cand({ source_url: 'https://northsidebuilders.example/c', company: 'Someone Else', excerpt: 'this quote does not exist anywhere on the page at all' }),
   ], fetchPage, NOW)
   assert.equal(leads.length, 1)
   assert.equal(leads[0].source_url, 'https://northsidebuilders.example/b')
