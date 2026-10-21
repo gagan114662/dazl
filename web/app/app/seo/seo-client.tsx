@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import IndexingPanel from './indexing-panel'
 
 interface Check { id: string; label: string; ok: boolean; value: string; hint: string }
 interface Audit { id: string; domain: string; results: { domain: string; fetched_at: number; checks: Check[] }; created_at: number }
@@ -35,6 +36,7 @@ export default function SeoClient() {
         <button className="btn-primary px-5 py-2 text-sm" disabled={busy || !domain.trim()}>{busy ? 'Auditing...' : 'Run audit'}</button>
       </form>
       {msg && <p className="text-sm text-red-700 mb-4">{msg}</p>}
+      <IndexingPanel />
       {audits.map(a => (
         <div key={a.id} className="card p-6 mb-4">
           <div className="flex items-center justify-between mb-3">
