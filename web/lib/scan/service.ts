@@ -14,6 +14,7 @@ import { migrateMonitors } from '../monitors.ts'
 import { migrateReplies } from '../outreach/replies.ts'
 import { migrateTrial } from './trial.ts'
 import { migrateCompetitors } from '../signals/competitor-reddit.ts'
+import { migrateSeo } from '../seo/audit.ts'
 
 let ready = false
 export function getScanDb() {
@@ -32,6 +33,7 @@ export function getScanDb() {
     migrateReplies(db)
     migrateTrial(db)
     migrateCompetitors(db)
+    migrateSeo(db)
     migrateMonitors(db)
     ready = true
   }
