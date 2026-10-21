@@ -7,7 +7,7 @@ const STEPS = [
   { n: '3', title: 'Every lead is checked', desc: 'Each lead links to its source page and quotes the exact line. dazl confirms the company and date on the page, and drops what fails.' },
 ]
 const FEATURES = [
-  { title: 'Contacts with the source', desc: 'Contacts companies publish themselves, with the source.' },
+  { title: 'Contacts with the source', desc: 'Named contacts, each with its source: company pages, or your own Apollo or PDL key.' },
   { title: 'One flat price', desc: 'One flat price. No credits, no overages, no per-lead fees.' },
   { title: 'No region locks', desc: 'Works from public sources worldwide.' },
   { title: 'Proof on every lead', desc: 'Source link, exact quote, event date and a confidence score. Leads that cannot be verified never reach your list, and you see how many were dropped and why.' },
