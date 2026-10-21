@@ -1,6 +1,7 @@
 import LlmKeyPanel from './llm-key-panel'
 import PlanPanel from './plan-panel'
 import ConnectorsPanel from './connectors-panel'
+import GmailPanel from './gmail-panel'
 
 export default function Settings() {
   return (
@@ -10,13 +11,7 @@ export default function Settings() {
       <PlanPanel />
       <LlmKeyPanel />
       <ConnectorsPanel />
-      <div className="card p-6 mb-4 opacity-80">
-        <div className="flex items-center justify-between mb-1">
-          <h2 className="font-semibold">Gmail sending</h2>
-          <span className="badge">Coming soon</span>
-        </div>
-        <p className="text-[#555] text-sm">Connect your Gmail to send approved emails from your own inbox. Not available yet.</p>
-      </div>
+      <GmailPanel />
     </div>
   )
 }
