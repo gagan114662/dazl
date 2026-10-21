@@ -10,7 +10,8 @@ import { audit, addEnrichment, type Enrichment } from './store.ts'
 // Contact-page crawl. No key. For a verified lead it finds the company's own website, reads a handful of
 // contact/about pages and keeps only business contacts the company itself published there.
 // Rules: https only; robots.txt is obeyed (unreachable robots = do not crawl); one request per 2 s per host;
-// at most 5 pages per site; the site must be linked from the page that evidenced the lead (no guessed domains);
+// at most 5 pages per site; the site is linked from the page that evidenced the lead, or probed from the
+// company name and accepted only when the homepage itself names the company (never trusted by guess alone);
 // no guessed or pattern-built addresses; only role mailboxes (info@, sales@...) on the company's own domain;
 // every contact stores the exact page URL it came from and the retrieval date, so the basis is auditable.
 export const UA = 'dazl-contact-check/1.0 (+https://dazl.ai/bot)'
@@ -117,6 +118,19 @@ export function findCompanySites(company: string, evidenceHtml: string, evidence
 }
 export const findCompanySite = (company: string, html: string, url: string) => findCompanySites(company, html, url)[0] ?? null
 
+// When the evidence page does not link the company's site (aggregator/news evidence), probe the
+// obvious domains built from the company name. A probed domain is never trusted on its own: the
+// crawl still fetches the homepage and rejects it unless the company is named there (name_mismatch),
+// and robots.txt stays a hard rule. Key-free; no search API involved.
+export function probeDomains(company: string): string[] {
+  const want = norm(company)
+  if (want.length < 4 || want.length > 30) return []
+  return [`${want}.com`, `${want}.ai`, `${want}.io`, `${want}.co`]
+}
+
+// Most leads per scan that get domain probes, so a big scan cannot turn into hundreds of fetches.
+export const MAX_PROBES_PER_SCAN = 8
+
 // ---- extraction ----
 const ROLE = /^(info|hello|hi|contact|contactus|enquiries|enquiry|inquiries|inquiry|sales|business|office|admin|general|mail|team|support|help|press|media|partnerships|partners|bookings|booking|reservations|hola|contacto|kontakt|bonjour|ciao|ola|connect)$/i
 const EMAIL = /\b([a-z0-9][a-z0-9._%+-]{0,63})@([a-z0-9][a-z0-9.-]{0,251}\.[a-z]{2,24})\b/gi
@@ -206,10 +220,18 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     const leads = db.prepare("SELECT id, company, source_url FROM leads WHERE scan_job_id = ? AND review_reason IS NULL AND confidence IS NOT NULL AND company <> '' ORDER BY score DESC LIMIT ?").all(jobId, MAX_SITES_PER_SCAN) as { id: string; company: string; source_url: string }[]
     const today = new Date((deps.now ?? Date.now())).toISOString().slice(0, 10)
     const done = new Set<string>()
+    let probed = 0
     for (const l of leads) {
       const ev = await get(l.source_url)
-      const sites = ev ? findCompanySites(l.company, ev.body, ev.finalUrl) : []
-      if (sites.length === 0) { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 }); continue }
+      let sites = ev ? findCompanySites(l.company, ev.body, ev.finalUrl) : []
+      if (sites.length === 0) {
+        // Evidence page does not link the company site: probe name-derived domains. Wrong guesses
+        // are rejected by the homepage name check inside crawlSite.
+        if (probed >= MAX_PROBES_PER_SCAN) { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 }); continue }
+        probed++
+        sites = probeDomains(l.company).filter(d => !done.has(d))
+        if (sites.length === 0) { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 }); continue }
+      }
       let r: Awaited<ReturnType<typeof crawlSite>> = { found: [], reason: 'name_mismatch', pages: 0 }; let site = sites[0]
       for (const cand of sites) {
         if (done.has(cand)) continue
@@ -219,6 +241,9 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: r.reason, results: 0 })
       }
       if (r.reason === 'name_mismatch' || r.reason === 'site_unreachable') continue
+      // The homepage named the company: the domain is confirmed as the company's own site, whether
+      // or not it publishes contacts. Record it so leads link out and later runs skip the search.
+      if (r.reason === 'ok' || r.reason === 'none_published') db.prepare('UPDATE leads SET company_domain = ? WHERE id = ?').run(site, l.id)
       let n = 0
       for (const f of r.found) {
         const e: Enrichment = { connector: 'sitecrawl', kind: f.kind, value: f.value.slice(0, 254), label: f.label, confidence: null, source_url: f.url.slice(0, 500), source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) }

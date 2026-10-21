@@ -55,8 +55,8 @@ test('crawl obeys robots: disallowed contact page is never requested; unreachabl
 
 test('crawlJob stores each contact with its source page and date, once per site', async () => {
   const db = new Database(':memory:'); migrateConnectors(db)
-  db.exec("CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER)")
-  db.prepare("INSERT INTO leads VALUES ('l1','j1','Stabyl','https://news.example/a',NULL,90,80),('l2','j1','Stabyl','https://news.example/b',NULL,90,70),('l3','j1','NoSite Ltd','https://news.example/c',NULL,90,60)").run()
+  db.exec("CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT)")
+  db.prepare("INSERT INTO leads VALUES ('l1','j1','Stabyl','https://news.example/a',NULL,90,80,NULL),('l2','j1','Stabyl','https://news.example/b',NULL,90,70,NULL),('l3','j1','NoSite Ltd','https://news.example/c',NULL,90,60,NULL)").run()
   const pages: Record<string, { body: string }> = {
     '/a': { body: html('<a href="https://stabyl.com">s</a>') }, '/b': { body: html('<a href="https://stabyl.com">s</a>') }, '/c': { body: html('nothing') },
     '/robots.txt': { body: '' }, '/': { body: html('Stabyl home <a href="/contact-us">c</a>') }, '/contact-us': { body: html('Email: hello@stabyl.com') },
@@ -66,7 +66,10 @@ test('crawlJob stores each contact with its source page and date, once per site'
   const rows = db.prepare('SELECT lead_id, kind, value, source_url, source_date, connector FROM lead_enrichments').all()
   assert.deepEqual(rows, [{ lead_id: 'l1', kind: 'email', value: 'hello@stabyl.com', source_url: 'https://stabyl.com/contact-us', source_date: '2026-10-20', connector: 'sitecrawl' }])
   const a = db.prepare("SELECT lookup, status, results FROM connector_audit ORDER BY rowid").all()
-  assert.ok(a.some(x => (x as { status: string }).status === 'no_site_linked') && a.some(x => (x as { status: string; results: number }).status === 'ok'))
+  // l3's evidence links nothing, so its name-derived probes were tried; the mock's shared home page
+  // names a different company, so every probe is rejected by the homepage name check.
+  assert.ok(a.some(x => (x as { status: string }).status === 'name_mismatch') && a.some(x => (x as { status: string; results: number }).status === 'ok'))
+  assert.equal((db.prepare("SELECT company_domain FROM leads WHERE id = 'l1'").get() as { company_domain: string }).company_domain, 'stabyl.com')
   await crawlJob(db, 't1', 'j1', { get, gapMs: 0, env: { SITECRAWL_ENABLED: '0' } }) // switch off does nothing
 })
 
@@ -101,4 +104,31 @@ test('social adapter: robots-disallowed profiles are never fetched; allowed ones
 test('homepage must name the company, else nothing is kept', async () => {
   const s = site({ '/robots.txt': { body: '' }, '/': { body: html('Totally different site info@acme.com') } })
   assert.equal((await crawlSite('acme.com', s.get, 0, 'Stabyl')).reason, 'name_mismatch')
+})
+
+test('probeDomains: name-derived domains, safe lengths only', async () => {
+  const { probeDomains } = await import('../lib/connectors/sitecrawl.ts')
+  assert.deepEqual(probeDomains('Acme Robotics'), ['acmerobotics.com', 'acmerobotics.ai', 'acmerobotics.io', 'acmerobotics.co'])
+  assert.deepEqual(probeDomains('ab'), [])
+})
+
+test('crawlJob probes name-derived domains when evidence links nothing, verifies by homepage name', async () => {
+  const db = new Database(':memory:'); migrateConnectors(db)
+  db.exec("CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT)")
+  db.prepare("INSERT INTO leads VALUES ('l1','j1','Acme Robotics','https://news.example/a',NULL,90,80,NULL),('l2','j1','Ghost Corp','https://news.example/b',NULL,90,70,NULL)").run()
+  const get: Get = async url => {
+    const u = new URL(url)
+    if (u.hostname === 'news.example') return { status: 200, body: html('a roundup with no company links'), finalUrl: url }
+    if (u.hostname === 'acmerobotics.com' && u.pathname === '/') return { status: 200, body: html('Acme Robotics home. Email: hello@acmerobotics.com'), finalUrl: url }
+    if (u.hostname === 'ghost.com' && u.pathname === '/') return { status: 200, body: html('Totally Different Company landing page'), finalUrl: url }
+    if (u.pathname === '/robots.txt') return { status: 200, body: '', finalUrl: url }
+    return { status: 404, body: '', finalUrl: url }
+  }
+  await crawlJob(db, 't1', 'j1', { get, gapMs: 0, env: {}, now: Date.parse('2026-10-20T12:00:00Z') })
+  assert.equal((db.prepare("SELECT company_domain FROM leads WHERE id = 'l1'").get() as { company_domain: string }).company_domain, 'acmerobotics.com')
+  assert.equal((db.prepare("SELECT value FROM lead_enrichments WHERE lead_id = 'l1'").get() as { value: string }).value, 'hello@acmerobotics.com')
+  // Wrong-domain probe rejected by the homepage name check: no domain recorded, mismatch audited.
+  assert.equal((db.prepare("SELECT company_domain FROM leads WHERE id = 'l2'").get() as { company_domain: string | null }).company_domain, null)
+  const a = db.prepare("SELECT status FROM connector_audit").all() as { status: string }[]
+  assert.ok(a.some(x => x.status === 'name_mismatch'))
 })
