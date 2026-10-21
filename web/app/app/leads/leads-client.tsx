@@ -33,6 +33,19 @@ export default function LeadsClient() {
   const lines = (v: string) => v.split('\n').map(x => x.trim()).filter(Boolean)
 
   const [drafted, setDrafted] = useState<Record<string, string>>({})
+  const [monitors, setMonitors] = useState<{ id: string; query: string; interval_hours: number; enabled: number; paused_reason: string | null; next_run_at: number | null; last_new_count: number | null; run_count: number }[]>([])
+  const [monError, setMonError] = useState('')
+  const loadMonitors = () => fetch('/api/monitors').then(r => r.ok ? r.json() : null).then(j => { if (j) setMonitors(j.monitors) }).catch(() => {})
+  useEffect(() => { void loadMonitors() }, [])
+  const addMonitor = async () => {
+    setMonError('')
+    const r = await fetch('/api/monitors', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: query.trim(), ...(icp ? { icp: icp.icp } : {}) }) })
+    const j = await r.json().catch(() => ({}))
+    if (!r.ok) return setMonError(j.error === 'monitor_limit' ? `Your plan allows ${j.limit} monitors.` : j.error === 'interval_too_short' ? `The shortest interval on your plan is ${j.min} hours.` : j.error || 'Could not create the monitor')
+    void loadMonitors()
+  }
+  const toggleMonitor = async (id: string, enabled: boolean) => { await fetch(`/api/monitors/${id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled }) }); void loadMonitors() }
+  const removeMonitor = async (id: string) => { await fetch(`/api/monitors/${id}`, { method: 'DELETE' }); void loadMonitors() }
   async function makeDraft(leadId: string) {
     const r = await fetch('/api/outreach', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lead_id: leadId }) })
     const j = await r.json()
@@ -104,7 +117,9 @@ export default function LeadsClient() {
         <div className="flex gap-2 mt-2">
           <button disabled={busy} className="btn-primary">{busy ? 'Working out your profile...' : 'Find leads'}</button>
           <button type="button" disabled={query.trim().length < 3} onClick={() => run(null)} className="text-gray-400 hover:text-white text-sm px-3">Skip review, just run</button>
+          <button type="button" disabled={query.trim().length < 3} onClick={addMonitor} className="text-gray-400 hover:text-white text-sm px-3">Monitor this search</button>
         </div>
+        {monError && <p className="text-red-400 text-xs mt-2">{monError}</p>}
       </form>
       {draft && (
         <div className="card p-4 mb-6 text-sm">
@@ -133,6 +148,29 @@ export default function LeadsClient() {
         </details>
       )}
       {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
+      {monitors.length > 0 && (
+        <div className="mb-6">
+          <h2 className="text-sm font-semibold mb-2">Monitors</h2>
+          <p className="text-gray-500 text-xs mb-2">A monitor re-runs its search on a schedule and counts toward your monthly scans. New companies it finds show up here.</p>
+          <div className="card divide-y divide-white/5 text-sm">
+            {monitors.map(m => (
+              <div key={m.id} className="p-3 flex items-center gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="truncate">{m.query}</div>
+                  <div className="text-xs text-gray-500">
+                    every {m.interval_hours >= 24 ? `${Math.round(m.interval_hours / 24)}d` : `${m.interval_hours}h`}
+                    {m.paused_reason === 'quota' ? ' · paused: monthly scan quota used up' : m.enabled ? (m.next_run_at ? ` · next run ${new Date(m.next_run_at * 1000).toLocaleDateString()}` : '') : ' · paused'}
+                    {m.run_count > 0 && ` · ${m.run_count} run${m.run_count === 1 ? '' : 's'}`}
+                    {m.last_new_count !== null && m.last_new_count > 0 && <span className="text-[#111]"> · {m.last_new_count} new last run</span>}
+                  </div>
+                </div>
+                <button onClick={() => toggleMonitor(m.id, !m.enabled)} className="text-xs text-gray-400 hover:text-white">{m.enabled ? 'Pause' : 'Resume'}</button>
+                <button onClick={() => removeMonitor(m.id)} className="text-xs text-gray-500 hover:text-red-400">Delete</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {jobId && status !== 'done' && <p className="text-gray-400 text-sm mb-4">Scan {status === 'failed' ? 'failed. Try again.' : `${status}... this can take a few minutes.`}</p>}
       {quality && status === 'done' && (
         <p className="text-gray-400 text-sm mb-4">

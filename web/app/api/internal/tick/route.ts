@@ -1,8 +1,10 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { after, NextRequest, NextResponse } from 'next/server'
 import { timingSafeEqual } from 'node:crypto'
 import { getScanDb } from '@/lib/scan/service'
 import { syncReplies } from '@/lib/outreach/replies'
 import { runFollowups } from '@/lib/outreach/followups'
+import { collectMonitorResults, runDueMonitors } from '@/lib/monitors'
+import { kickRunner } from '@/lib/scan/runner'
 
 // Called by a scheduler (cron or a systemd timer) with AUTOPILOT_TICK_SECRET. Reads replies and sends due
 // follow-ups for tenants who turned both on. Without the secret configured the route does not exist.
@@ -17,5 +19,10 @@ export async function POST(req: NextRequest) {
   for (const t of tenants) {
     try { await syncReplies(db, t.tenant_id); await runFollowups(db, t.tenant_id, t.business_name ?? ''); done++ } catch (e) { console.error('tick failed', t.tenant_id, e instanceof Error ? e.message : 'error') }
   }
-  return NextResponse.json({ ok: true, tenants: done })
+  // Continuous monitoring: queue due monitors as ordinary scans, then fold finished runs into
+  // per-monitor new-lead counts. Monitor jobs respect the same quota and pipeline as manual scans.
+  const monitorJobs = runDueMonitors(db)
+  if (monitorJobs.length > 0) after(() => kickRunner(db))
+  const monitorAlerts = collectMonitorResults(db)
+  return NextResponse.json({ ok: true, tenants: done, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts })
 }
