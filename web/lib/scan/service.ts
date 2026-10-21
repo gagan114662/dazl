@@ -1,6 +1,7 @@
 import { cookies } from 'next/headers'
 import { getAuthDb, getSessionUser } from '../auth-db'
 import { migrateScan } from './store.ts'
+import { migrateWatch } from '../watch.ts'
 import { migrateKeys } from '../llm/key-store.ts'
 import { migrateAdvanced } from '../advanced/index.ts'
 import { migrateConnectors } from '../connectors/store.ts'
@@ -17,6 +18,7 @@ export function getScanDb() {
   const db = getAuthDb()
   if (!ready) {
     migrateScan(db)
+    migrateWatch(db)
     migrateKeys(db)
     migratePlans(db)
     migrateConnectors(db)
