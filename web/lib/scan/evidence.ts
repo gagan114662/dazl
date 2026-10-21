@@ -26,7 +26,7 @@ export function companyKey(company: string): string {
   return words.join(' ')
 }
 
-const hasPhrase = (hay: string, phrase: string) => !!phrase && new RegExp(`(^| )${phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( |$)`).test(hay)
+export const hasPhrase = (hay: string, phrase: string) => !!phrase && new RegExp(`(^| )${phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( |$)`).test(hay)
 
 export function dedupKey(c: { company: string; name: string }): string {
   return companyKey(c.company) || norm(c.name)

@@ -136,3 +136,61 @@ test('providers: request shape and citation extraction (mocked fetch)', async ()
   await assert.rejects(anthropicProvider.research('k', 'p', f(401)), (e: ProviderError) => e.kind === 'auth')
   await assert.rejects(openaiProvider.research('k', 'p', f(429)), (e: ProviderError) => e.kind === 'retry')
 })
+
+test('prompts anchor recency to the actual date (no training-cutoff drift)', async () => {
+  const { buildIcpPrompt, buildPrompt } = await import('../lib/scan/runner.ts')
+  const now = new Date('2026-10-21T12:00:00Z')
+  const p = buildIcpPrompt('q', { summary: 's', who: [], where: [], signals: [], exclude: [] } as never, now)
+  assert.ok(p.includes('Today is 2026-10-21'))
+  assert.ok(p.includes('2025-10-21')) // 365-day cutoff spelled out
+  assert.ok(buildPrompt(input, now).includes('Today is 2026-10-21'))
+})
+
+test('verifyLeads: unconfirmable quote goes to needs-review when the page is about the company; vanishes when not', async () => {
+  const { verifyLeads } = await import('../lib/scan/runner.ts')
+  const cand = (excerpt: string) => [{ name: '', company: 'Northside Builders', contact: null, signal: 'Hiring', source_url: 'https://nb.com/news', excerpt, event_date: recent, score: 70 }]
+  const pageAbout = async () => ({ text: 'Northside Builders company news. Some text without the quoted sentence at all.', title: 'Northside Builders news', retrievedAt: 1_700_000_000 })
+  const out = await verifyLeads(cand('a quote the model wrote that never appears on the page'), pageAbout)
+  assert.equal(out.leads.length, 0)
+  assert.equal(out.review.length, 1)
+  assert.equal(out.review[0].review_reason, 'quote_unconfirmed')
+  const pageOther = async () => ({ text: 'A page about an entirely different topic with nothing matching.', title: 'Unrelated', retrievedAt: 1_700_000_000 })
+  const out2 = await verifyLeads(cand('a quote the model wrote that never appears on the page'), pageOther)
+  assert.equal(out2.review.length, 0)
+  assert.equal(out2.dropped['excerpt_not_on_page'], 1)
+})
+
+test('stale-heavy first round triggers one freshness retry and merges the fresh leads', async () => {
+  const db = setup()
+  const id = createJob(db, 'A', input)
+  const staleLead = { ...lead('https://old.com/x'), event_date: '2024-01-15' }
+  const QUOTE2 = 'Second Old Co announced it is hiring five engineers for the Toronto market'
+  const staleLead2 = { ...staleLead, company: 'Second Old Co', source_url: 'https://old.com/y', excerpt: QUOTE2 }
+  let calls = 0
+  const prov = fake(async () => {
+    calls++
+    return calls === 1
+      ? { text: JSON.stringify([staleLead, staleLead2]), citedUrls: ['https://old.com/x', 'https://old.com/y'] }
+      : { text: JSON.stringify([lead('https://new.com/z')]), citedUrls: ['https://new.com/z'] }
+  })
+  const fetchPage = async (url: string) => url.startsWith('https://new.com')
+    ? { text: `News. ${QUOTE}. More text.`, title: 'Northside Builders news', retrievedAt: 1_700_000_000 }
+    : url.endsWith('/y')
+      ? { text: `Old news from 2024. ${QUOTE2}.`, title: 'Second Old Co archive', retrievedAt: 1_700_000_000 }
+      : { text: `Old news from 2024. ${QUOTE}.`, title: 'Northside Builders archive', retrievedAt: 1_700_000_000 }
+  const r = await runJob(db, claimKeyedJob(db)!, { providers: prov, master, fetchPage, ground: false })
+  assert.equal(r, 'done')
+  assert.equal(calls, 2) // exactly one bounded retry
+  assert.equal(listLeads(db, 'A', id).length, 1) // only the fresh lead survived
+})
+
+test('no stale retry when the first round already produced leads', async () => {
+  const db = setup()
+  createJob(db, 'A', input)
+  let calls = 0
+  const prov = fake(async () => { calls++; return { text: JSON.stringify([lead('https://a.com'), lead('https://b.com'), lead('https://c.com')]), citedUrls: ['https://a.com', 'https://b.com', 'https://c.com'] } })
+  const fetchPage = async () => ({ text: `News ${recent.slice(0, 4)}. ${QUOTE}. More text.`, title: 'Northside Builders news', retrievedAt: 1_700_000_000 })
+  const r = await runJob(db, claimKeyedJob(db)!, { providers: prov, master, fetchPage, ground: false })
+  assert.equal(r, 'done')
+  assert.equal(calls, 1)
+})
