@@ -81,3 +81,40 @@ test('applyIcpGate: mismatch on a specified criterion hides with reason; unknown
   const g = score({ role: 'mismatch', industry: 'mismatch', size: 'mismatch', location: 'mismatch', note: 'x' })
   assert.equal(applyIcpGate([g], null)[0].fit, 4)
 })
+
+test('evidence-quality gate: job-posting boilerplate without pain is capped below 50, intent forced to 1', async () => {
+  const { applyEvidenceQualityGate } = await import('../lib/scan/score.ts')
+  const leads = [
+    // the JM Eagle case: generic role-summary quote, no pain language
+    { signal: 'Hiring Sales Operations Manager with responsibility for managing CRM systems and process improvement', excerpt: 'SUMMARY A sales operations manager is responsible for overseeing and optimizing the sales processes, tools, and resources within an organization. 5+ years of experience required.', score: 85, intent: 4, why: 'hiring for CRM work' },
+    // job posting that DOES show pain: keeps its grade
+    { signal: 'Hiring a CRM admin because the team is frustrated with their current CRM and looking to switch', excerpt: 'We are looking for a CRM admin. Responsibilities include migrating away from our clunky legacy CRM.', score: 88, intent: 5, why: 'switching' },
+    // non-job-posting evidence: untouched
+    { signal: 'Founder post: our CRM is a nightmare, evaluating alternatives', excerpt: 'Honestly our CRM is a nightmare and we are actively evaluating alternatives this quarter.', score: 91, intent: 5, why: 'active pain' },
+  ]
+  const gated = applyEvidenceQualityGate(leads)
+  assert.equal(gated, 1)
+  assert.equal(leads[0].score, 49)
+  assert.equal(leads[0].intent, 1)
+  assert.match(leads[0].why, /job posting/i)
+  assert.equal(leads[1].score, 88)
+  assert.equal(leads[1].intent, 5)
+  assert.equal(leads[2].score, 91)
+})
+
+test('evidence-quality gate: marker coverage and never raises intent', async () => {
+  const { applyEvidenceQualityGate, readsLikeJobPosting, showsActivePain } = await import('../lib/scan/score.ts')
+  for (const t of ['see the Responsibilities section', 'Requirements: 3 years of experience', 'We are looking for a driven SDR', 'What you\'ll do day-to-day', 'About the role: you will own']) {
+    assert.ok(readsLikeJobPosting(t), t)
+  }
+  for (const t of ['announced Series B funding', 'opened a Berlin office', 'launched a new integration']) {
+    assert.ok(!readsLikeJobPosting(t), t)
+  }
+  for (const t of ['frustrated with HubSpot', 'fed up and switching', 'looking for an alternative', 'rip it out', 'too expensive for what it is']) {
+    assert.ok(showsActivePain(t), t)
+  }
+  const low = [{ signal: 'Hiring SDR. Responsibilities include outbound. Requirements: 1 years of experience', excerpt: '', score: 40, intent: 0, why: '' }]
+  applyEvidenceQualityGate(low)
+  assert.equal(low[0].intent, 0) // gate never raises
+  assert.equal(low[0].score, 40) // already below the cap stays
+})
