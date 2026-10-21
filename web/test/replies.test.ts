@@ -8,7 +8,7 @@ import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.
 import { saveSettings, isSuppressed } from '../lib/outreach/service.ts'
 import { ATTESTATIONS, CONSENT_VERSION, enable, getState, migrateAutopilot, recentAutopilotAudit } from '../lib/outreach/autopilot.ts'
 import { grantConsent, hasConsent, migrateLedger, revokeAll } from '../lib/outreach/ledger.ts'
-import { acceptReadConsent, classifyReply, migrateReplies, newText, syncReplies } from '../lib/outreach/replies.ts'
+import { acceptReadConsent, classifyReply, inboxRows, migrateReplies, newText, syncReplies } from '../lib/outreach/replies.ts'
 import { followupText, runFollowups, setFollowups } from '../lib/outreach/followups.ts'
 
 const master = randomBytes(32)
@@ -150,4 +150,23 @@ test('an uncertain follow-up send pauses autopilot', async () => {
   const r = await runFollowups(db, 'A', 'Acme', base({ sendFn: (async () => { throw new Error('network') }) as never }))
   assert.equal(r.stopped, 'uncertain_send'); assert.equal(getState(db, 'A').paused, true)
   assert.match(followupText(0, { company: 'C', name: 'Pat Q', signal: 's', source_url: 'https://x.example' }, 'Acme'), /^Hi Pat,/)
+})
+
+test('inboxRows: joins lead company and follow-up state, newest first, tenant-scoped', () => {
+  const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db)
+  const jobId = createJob(db, 'A', { business_name: 'B', industry: 'I', location: 'L' })
+  db.prepare("UPDATE scan_jobs SET status='running' WHERE id = ?").run(jobId)
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url) VALUES ('lead1', ?, 'Ada', 'Acme Co', 'hiring', 'https://x.com/1')").run(jobId)
+  const ins = "INSERT INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at) VALUES (?, 'A', 't1', 'lead1', 'ada@acme.example', ?, ?, ?)"
+  db.prepare(ins).run('g1', 'yes, tell me more about pricing', 'positive', NOW - 100)
+  db.prepare(ins).run('g2', 'not interested, thanks', 'negative', NOW - 50)
+  db.prepare("INSERT INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at, followups_sent, stopped) VALUES ('A', 't1', 'lead1', 'ada@acme.example', 'root', ?, 1, NULL)").run(NOW - 90)
+  db.prepare("INSERT INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at) VALUES ('g3', 'B', 't9', NULL, 'x@y.example', 'hi', 'other', ?)").run(NOW)
+  const rows = inboxRows(db, 'A')
+  assert.equal(rows.length, 2) // tenant B's row is invisible
+  assert.equal(rows[0].gmail_id, 'g2') // newest first
+  assert.equal(rows[1].company, 'Acme Co')
+  assert.equal(rows[1].lead_name, 'Ada')
+  assert.equal(rows[1].followups_sent, 1)
+  assert.equal(rows[1].stopped, null)
 })
