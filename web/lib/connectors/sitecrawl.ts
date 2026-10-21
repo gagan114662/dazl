@@ -6,6 +6,7 @@ import { social } from '@crawlee/utils'
 import { lookup as dnsLookup } from 'node:dns/promises'
 import { guardedLookup, isPublicIp } from '../scan/fetch-page.ts'
 import { audit, addEnrichment, type Enrichment } from './store.ts'
+import { detectTech, type TechHit } from './techstack.ts'
 
 // Contact-page crawl. No key. For a verified lead it finds the company's own website, reads a handful of
 // contact/about pages and keeps only business contacts the company itself published there.
@@ -200,7 +201,7 @@ export function contactPaths(homeHtml: string, home: URL): string[] {
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 const lastHit = new Map<string, number>()
 
-export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS, expectName?: string, social = false): Promise<{ found: Found[]; reason: string; pages: number }> {
+export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS, expectName?: string, social = false): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[] }> {
   const origin = `https://${site}`
   const polite = async (url: string, delay: number) => { const h = new URL(url).hostname; const wait = (lastHit.get(h) ?? 0) + Math.max(gapMs, delay) - Date.now(); if (wait > 0) await sleep(wait); lastHit.set(h, Date.now()); return get(url) }
   const rob = await polite(`${origin}/robots.txt`, 0)
@@ -238,7 +239,7 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
       for (const f of extractContacts(pg.body, pg.finalUrl, site)) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, { ...f, label: 'published on the company social profile' })
     }
   }
-  return { found: [...found.values()].slice(0, 6), reason: found.size ? 'ok' : 'none_published', pages }
+  return { found: [...found.values()].slice(0, 6), reason: found.size ? 'ok' : 'none_published', pages, tech: detectTech(home.body) }
 }
 
 // Runs for one finished scan. Never throws, never touches the lead row, one audit row per site.
@@ -274,6 +275,10 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // or not it publishes contacts. Record it so leads link out and later runs skip the search.
       if (r.reason === 'ok' || r.reason === 'none_published') db.prepare('UPDATE leads SET company_domain = ? WHERE id = ?').run(site, l.id)
       let n = 0
+      for (const t of r.tech ?? []) {
+        const e: Enrichment = { connector: 'sitecrawl', kind: 'tech', value: t.name.slice(0, 254), label: `seen on the company website (${t.where})`.slice(0, 200), confidence: null, source_url: `https://${site}/`, source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) }
+        addEnrichment(db, tenantId, l.id, e); n++
+      }
       for (const f of r.found) {
         const e: Enrichment = { connector: 'sitecrawl', kind: f.kind, value: f.value.slice(0, 254), label: f.label, confidence: null, source_url: f.url.slice(0, 500), source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) }
         addEnrichment(db, tenantId, l.id, e); n++

@@ -258,7 +258,7 @@ export default function LeadsClient() {
               <div className="text-xs mt-1 space-y-0.5">
                 {l.enrichments.map(e => (
                   <div key={e.kind + e.value} className="text-gray-400">
-                    <span className="text-[#111]">{e.value}</span>{e.label ? ` (${e.label})` : ''} <span className="text-gray-500">{e.connector === 'sitecrawl' ? 'from the company contact page' : e.connector === 'hunter' ? 'via Hunter (earlier)' : `via ${e.connector}`}{e.confidence !== null ? `, ${e.confidence}% confidence` : ''}, seen {e.source_date}</span>{' '}
+                    <span className="text-[#111]">{e.value}</span>{e.label ? ` (${e.label})` : ''} <span className="text-gray-500">{e.kind === 'tech' ? 'seen on the company website' : e.connector === 'sitecrawl' ? 'from the company contact page' : e.connector === 'hunter' ? 'via Hunter (earlier)' : `via ${e.connector}`}{e.confidence !== null ? `, ${e.confidence}% confidence` : ''}, seen {e.source_date}</span>{' '}
                     <a className="underline text-[#111]" href={e.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
                   </div>
                 ))}
