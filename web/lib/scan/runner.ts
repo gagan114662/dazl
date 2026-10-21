@@ -9,7 +9,7 @@ import { inferIcp, normalizeIcp, type Icp } from './icp.ts'
 import { enrichJob } from '../connectors/enrich.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
 
-export interface Job { id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null }
+export interface Job { id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null }
 export interface LeadDraft extends Candidate {}
 export interface VerifiedLead extends LeadDraft { confidence: number; date_status: 'verified' | 'unverified' | 'undated'; retrieved_at: number; contact: string | null }
 
