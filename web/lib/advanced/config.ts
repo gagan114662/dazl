@@ -1,5 +1,10 @@
 // Advanced connectors: opt-in, session-credential backends that run in a separate worker.
 // Everything here is off unless the operator turns it on. The kill switch is read on every call.
+// TODO(decision 2026-10-21, deferred): LinkedIn comment auto-replies ("reply to every
+// commenter with the lead magnet") are NOT to be built as automation - automated posting on
+// LinkedIn violates its terms, risks the account, and conflicts with the throwaway-account
+// rule. The read-side version (surface commenters, draft replies the user posts by hand)
+// needs the user's explicit go-ahead first.
 export const ADV_PLATFORMS = ['x', 'reddit', 'instagram', 'facebook', 'xiaohongshu', 'bilibili', 'linkedin'] as const
 export const UI_PLATFORMS = ['linkedin', 'x', 'reddit', 'instagram', 'facebook', 'xiaohongshu', 'bilibili'] as const
 export type AdvPlatform = (typeof ADV_PLATFORMS)[number]
