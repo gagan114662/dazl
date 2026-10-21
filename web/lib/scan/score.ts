@@ -70,15 +70,23 @@ ${leads.map((l, i) => `LEAD ${i + 1}: company=${l.company || '?'} name=${l.name 
 
 const clamp5 = (n: number) => Math.max(0, Math.min(5, Math.round(n)))
 
+// Tolerant parser: models rarely keep the exact pipe format. Split on LEAD <n> markers and read
+// each axis wherever it appears in that lead's chunk (colon, pipe or comma separated).
 export function parseScores(text: string, count: number): LeadScore[] | null {
   const out: (LeadScore | null)[] = Array.from({ length: count }, () => null)
-  const re = /LEAD\s+(\d+)\s*\|\s*fit\s+(-?\d+(?:\.\d+)?)\s*\|\s*intent\s+(-?\d+(?:\.\d+)?)\s*\|\s*action\s+(-?\d+(?:\.\d+)?)\s*\|\s*signals\s+([^|]*)\|\s*why\s+(.+)/gi
-  let m: RegExpExecArray | null
-  while ((m = re.exec(text))) {
-    const idx = Number(m[1]) - 1
+  const chunks = text.split(/(?=LEAD\s+\d+)/i)
+  for (const chunk of chunks) {
+    const head = /^LEAD\s+(\d+)/i.exec(chunk.trim())
+    if (!head) continue
+    const idx = Number(head[1]) - 1
     if (idx < 0 || idx >= count) continue
-    const signals = m[5].split(',').map(s => s.trim().toLowerCase().replace(/\s+/g, '_')).filter(s => SIGNAL_SET.has(s)) as SignalId[]
-    out[idx] = { fit: clamp5(Number(m[2])), intent: clamp5(Number(m[3])), action: clamp5(Number(m[4])), signals, why: m[6].trim().slice(0, 300) }
+    const num = (axis: string) => { const m = new RegExp(`${axis}\\s*[:=|]?\\s*(-?\\d+(?:\\.\\d+)?)`, 'i').exec(chunk); return m ? clamp5(Number(m[1])) : null }
+    const fit = num('fit'), intent = num('intent'), action = num('action')
+    if (fit === null || intent === null || action === null) continue
+    const sm = /signals\s*[:=|]?\s*([^|\n]*)/i.exec(chunk)
+    const signals = (sm?.[1] ?? '').split(',').map(s => s.trim().toLowerCase().replace(/[\s-]+/g, '_')).filter(s => SIGNAL_SET.has(s)) as SignalId[]
+    const wm = /why\s*[:=|]?\s*(.+)/i.exec(chunk)
+    out[idx] = { fit, intent, action, signals, why: (wm?.[1] ?? '').trim().slice(0, 300) }
   }
   // All-or-nothing: a partially parsed batch would rank unscored leads unfairly.
   return out.every(Boolean) ? (out as LeadScore[]) : null
@@ -90,8 +98,11 @@ export async function scoreLeads(provider: Provider, apiKey: string, icpText: st
   if (!provider.complete || leads.length === 0) return null
   try {
     const text = await provider.complete(apiKey, scorePrompt(icpText, leads.slice(0, 40)), fetchImpl, 2500)
-    return parseScores(text, Math.min(leads.length, 40))
-  } catch {
+    const parsed = parseScores(text, Math.min(leads.length, 40))
+    if (!parsed) console.error('lead scoring: could not parse model output', text.slice(0, 300))
+    return parsed
+  } catch (e) {
+    console.error('lead scoring failed', e instanceof Error ? e.message : 'error')
     return null
   }
 }

@@ -5,6 +5,12 @@ interface Lead { id: string; name: string; company: string; contact: string | nu
 interface Icp { summary: string; who: string[]; where: string[]; signals: string[]; exclude: string[] }
 interface Quality { candidates: number; passed: number | null; needs_review: number | null; dropped: number | null; drop_reasons: Record<string, number> }
 
+// Leads written by other workers can carry anything in signals; never let a bad value crash the page.
+function parseSignals(v: string | null): string[] {
+  if (!v) return []
+  try { const p = JSON.parse(v); return Array.isArray(p) ? p.filter(x => typeof x === 'string') : [] } catch { return [] }
+}
+
 const REASON: Record<string, string> = {
   excerpt_not_on_page: 'quote not on the page', no_excerpt: 'no usable quote', entity_mismatch: 'company not named in the quote', no_company: 'no company name',
   stale: 'older than 12 months', date_conflict: 'page shows an older date', future_date: 'date in the future', bad_date: 'unreadable date', low_confidence: 'low confidence',
@@ -152,12 +158,12 @@ export default function LeadsClient() {
         ) : leads.filter(l => !l.review_reason).map(l => (
           <div key={l.id} className="p-4 text-sm">
 <div className="font-medium">{l.company_domain ? <a className="underline decoration-white/30 hover:decoration-white" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{l.company || l.name}</a> : (l.company || l.name)} <span className="text-gray-500">score {l.score}</span>
-              {l.fit !== null && <span className="ml-2 text-xs font-normal text-gray-300 border border-white/15 px-1.5 py-0.5">fit {l.fit}/5 · intent {l.intent}/5 · action {l.action}/5</span>}
+              {l.fit != null && <span className="ml-2 text-xs font-normal text-gray-300 border border-white/15 px-1.5 py-0.5">fit {l.fit}/5 · intent {l.intent}/5 · action {l.action}/5</span>}
             </div>
             <div className="text-gray-400">{l.signal}</div>
             {l.why && <div className="text-xs text-gray-300 mt-1">Why now: {l.why}</div>}
-            {l.signals && (JSON.parse(l.signals) as string[]).length > 0 && (
-              <div className="flex flex-wrap gap-1 mt-1">{(JSON.parse(l.signals) as string[]).map(sg => <span key={sg} className="text-[10px] uppercase tracking-wide text-gray-500 border border-white/10 px-1 py-0.5">{sg.replace(/_/g, ' ')}</span>)}</div>
+            {parseSignals(l.signals).length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-1">{parseSignals(l.signals).map(sg => <span key={sg} className="text-[10px] uppercase tracking-wide text-gray-500 border border-white/10 px-1 py-0.5">{sg.replace(/_/g, ' ')}</span>)}</div>
             )}
             {l.enrichments && l.enrichments.length > 0 && (
               <div className="text-xs mt-1 space-y-0.5">

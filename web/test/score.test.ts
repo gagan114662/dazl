@@ -43,3 +43,13 @@ test('icpTextFor: renders the reviewed ICP, falls back to the raw query', () => 
   assert.ok(t.includes('SaaS seller') && t.includes('VP Sales') && t.includes('London') && t.includes('agencies'))
   assert.equal(icpTextFor(null, 'fallback'), 'fallback')
 })
+
+test('parseScores tolerates colons, commas and prose around the lines', () => {
+  const text = `Here are my grades:
+LEAD 1: fit 4, intent 5, action 3, signals raised_funding, hiring | why Just raised and hiring
+LEAD 2 | fit: 1 | intent: 2 | action: 2 | signals: none | why: Incumbent with no trigger`
+  const s = parseScores(text, 2)
+  assert.ok(s)
+  assert.deepEqual(s[0], { fit: 4, intent: 5, action: 3, signals: ['raised_funding', 'hiring'], why: 'Just raised and hiring' })
+  assert.equal(s[1].fit, 1)
+})
