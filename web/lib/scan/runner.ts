@@ -5,7 +5,7 @@ import { operatorKey, trialStatus } from './trial.ts'
 import { ProviderError, providers, type Provider } from '../llm/provider.ts'
 import type { Vendor } from '../llm/vendors.ts'
 import { runAutopilot } from '../outreach/autopilot.ts'
-import { MAX_ATTEMPTS, reapStaleJobs } from './store.ts'
+import { MAX_ATTEMPTS, reapStaleJobs, markSeenBefore } from './store.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, verifyEvidence, type Candidate } from './evidence.ts'
 import { inferIcp, normalizeIcp, type Icp } from './icp.ts'
 import { collectAdvanced, xSearchQuery } from '../advanced/index.ts'
@@ -482,6 +482,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     if (complaints.length > 0) { try { badgeComplaintLeads(db, job.id, complaints) } catch { /* badge only */ } }
     // Watch run: flag the leads this watch has never surfaced, remember the rest.
     if (job.watch_id) { try { markWatchLeads(db, job.watch_id, job.id) } catch { /* bonus only */ } }
+    try { markSeenBefore(db, job.user_id, job.id, companyKey) } catch { /* flag only, never affects the scan */ }
     // Contact-page crawl enriches verified leads with role emails (robots.txt hard rule). Never affects the scan result.
     await crawlJob(db, job.user_id, job.id, deps.crawlGet ? { get: deps.crawlGet } : {})
     // Intent-signal enrichment (SEC Form D, public job boards). Bonus rows beside the
