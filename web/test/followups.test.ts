@@ -11,7 +11,7 @@ import type { Candidate } from '../lib/scan/evidence.ts'
 
 const NOW = new Date('2026-10-20T12:00:00Z')
 const QUOTE = 'Northside Builders announced layoffs affecting forty roofing crew members this month'
-const cand = (o: Partial<Candidate> = {}): Candidate => ({ name: '', company: 'Northside Builders', contact: null, signal: 'Laying off roofers, so they may need staffing help', source_url: 'https://news.example/a', score: 70, excerpt: QUOTE, event_date: '2026-10-05', ...o })
+const cand = (o: Partial<Candidate> = {}): Candidate => ({ name: '', company: 'Northside Builders', contact: null, signal: 'Laying off roofers, so they may need staffing help', source_url: 'https://northsidebuilders.example/a', score: 70, excerpt: QUOTE, event_date: '2026-10-05', ...o })
 const page = (text: string) => ({ text, title: 'Northside Builders', retrievedAt: 1_800_000_000 })
 const good: PageFetcher = async () => page(`October 2026. ${QUOTE}. Spokesperson: this is the first step of a restructure.`)
 

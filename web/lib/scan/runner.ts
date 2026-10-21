@@ -12,11 +12,13 @@ import type { AdvPlatform } from '../advanced/config.ts'
 import { buildSourcePrompt, collectEvidence, normalizeSources } from '../sources/index.ts'
 import { migrateTinyfish, parseQueries, queryPrompt, tfFetch, tfSearch, tinyfishEnabled, toEvidence } from '../search/tinyfish.ts'
 import { crawlJob } from '../connectors/sitecrawl.ts'
+import { icpTextFor, scoreLeads } from './score.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
+import { sourceCap } from './source-quality.ts'
 
 export interface Job { id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null }
 export interface LeadDraft extends Candidate {}
-export interface VerifiedLead extends LeadDraft { confidence: number; date_status: 'verified' | 'unverified' | 'undated'; retrieved_at: number; contact: string | null }
+export interface VerifiedLead extends LeadDraft { confidence: number; date_status: 'verified' | 'unverified' | 'undated'; retrieved_at: number; contact: string | null; fit?: number; intent?: number; action?: number; why?: string; signals?: string }
 
 const MAX_LEADS = 20
 
@@ -155,7 +157,8 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
   passed.forEach(({ c, v }, i) => {
     const j = verdicts[i]
     if (j === 'contradicts') { drop('contradicted'); return }
-    const confidence = Math.max(0, Math.min(100, v.confidence + (j ? JUDGE_DELTA[j] : 0)))
+    // Cap by source class: a content farm that copied the quote never outranks the company's own page.
+    const confidence = Math.max(0, Math.min(sourceCap(c.source_url, c.company), Math.min(100, v.confidence + (j ? JUDGE_DELTA[j] : 0))))
     if (confidence < MIN_CONFIDENCE) { drop(j === 'unclear' ? 'claim_unclear' : 'low_confidence'); return }
     const lead: VerifiedLead = { ...c, contact: v.contact, confidence, date_status: v.dateStatus, retrieved_at: v.retrievedAt }
     const key = dedupKey(c)
@@ -203,9 +206,9 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
     const own = db.prepare("SELECT 1 FROM scan_jobs WHERE id = ? AND status = 'running' AND attempts = ?").get(job.id, job.attempts)
     if (!own) return
     const ins = db.prepare(
-      'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, fit, intent, action, why, signals) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
-    for (const l of leads) ins.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, dedupKey(l))
+    for (const l of leads) ins.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, dedupKey(l), l.fit ?? null, l.intent ?? null, l.action ?? null, l.why ?? null, l.signals ?? null)
     const insReview = db.prepare(
       'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, review_reason) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)',
     )
@@ -234,7 +237,8 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   return parseLeads(text, items.map(i => i.url)) ?? null
 }
 
-export interface RunDeps { providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get }
+export interface RunDeps {
+  score?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get }
 
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
   const vendor = pickVendor(db, job.user_id)
@@ -301,7 +305,17 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         // any other source failure only means no extra candidates
       }
     }
+    // Nothing to verify at all: fail honestly. Failed scans do not count toward the monthly quota,
+    // so the user gets the slot back instead of a silent empty result.
+    if (leads.length === 0 && walledLeads.length === 0) { finish(db, job, 'failed', 'no_candidates'); return 'failed' }
     const outcome = await verifyLeads(leads, deps.fetchPage, deps.now, deps.judge === undefined ? makeJudge(providers_[vendor], key, deps.fetchImpl) : deps.judge ?? undefined)
+    // Quality stage: grade each verified lead for ICP fit, timing and actionability. One model call
+    // per scan; a scoring failure never fails the scan, the leads just stay unscored.
+    if (complete && outcome.leads.length > 0 && (deps.score !== false)) {
+      const icpText = icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`
+      const grades = await scoreLeads(providers_[vendor], key, icpText, outcome.leads, deps.fetchImpl)
+      if (grades) outcome.leads.forEach((l, i) => { const g = grades[i]; if (g) { l.fit = g.fit; l.intent = g.intent; l.action = g.action; l.why = g.why; l.signals = JSON.stringify(g.signals) } })
+    }
     const seen = new Set(outcome.review.map(r => dedupKey(r)))
     for (const l of walledLeads) { const k = dedupKey(l); if (!seen.has(k)) { seen.add(k); outcome.review.push({ ...l, contact: null, review_reason: 'login_required' }) } }
     finish(db, job, 'done', null, outcome, leads.length + walledLeads.length)

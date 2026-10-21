@@ -24,6 +24,7 @@ export default function LeadsClient() {
   const [leads, setLeads] = useState<Lead[]>([])
   const [error, setError] = useState('')
   const [quality, setQuality] = useState<Quality | null>(null)
+  const [jobError, setJobError] = useState('')
   const [useGithub, setUseGithub] = useState(false)
   const [useYoutube, setUseYoutube] = useState(false)
   const [useV2ex, setUseV2ex] = useState(false)
@@ -33,6 +34,8 @@ export default function LeadsClient() {
   const lines = (v: string) => v.split('\n').map(x => x.trim()).filter(Boolean)
 
   const [drafted, setDrafted] = useState<Record<string, string>>({})
+  const [hiddenCount, setHiddenCount] = useState(0)
+  const [showHidden, setShowHidden] = useState(false)
   async function makeDraft(leadId: string) {
     const r = await fetch('/api/outreach', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lead_id: leadId }) })
     const j = await r.json()
@@ -68,16 +71,19 @@ export default function LeadsClient() {
       const r = await fetch(`/api/scan/status?job_id=${jobId}`)
       if (!r.ok) return
       const s = await r.json()
-      setStatus(s.status)
+      setStatus(s.status); setJobError(s.error ?? '')
       setQuality(s.quality ?? null)
       if (s.icp) setIcp({ icp: s.icp, source: s.icp_source })
-      if (s.status === 'done') {
-        const l = await fetch(`/api/leads?job_id=${jobId}`)
-        if (l.ok) setLeads((await l.json()).leads)
-      }
     }, 5000)
     return () => clearInterval(t)
   }, [jobId, status])
+
+  const loadLeads = async () => {
+    if (!jobId) return
+    const l = await fetch(`/api/leads?job_id=${jobId}${showHidden ? '&all=1' : ''}`)
+    if (l.ok) { const j = await l.json(); setLeads(j.leads); setHiddenCount(j.hidden_count ?? 0) }
+  }
+  useEffect(() => { if (status === 'done') void loadLeads() }, [jobId, status, showHidden])
 
   const input = 'field'
   return (
@@ -133,7 +139,7 @@ export default function LeadsClient() {
         </details>
       )}
       {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
-      {jobId && status !== 'done' && <p className="text-gray-400 text-sm mb-4">Scan {status === 'failed' ? 'failed. Try again.' : `${status}... this can take a few minutes.`}</p>}
+      {jobId && status !== 'done' && <p className="text-gray-400 text-sm mb-4">{status === 'failed' ? (jobError === 'no_candidates' ? 'No candidates found for that search. Try rephrasing or broadening it - this scan did not count toward your monthly scans.' : 'Scan failed. Try again.') : `Scan ${status}... this can take a few minutes.`}</p>}
       {quality && status === 'done' && (
         <p className="text-gray-400 text-sm mb-4">
           {quality.candidates} found: {quality.passed ?? 0} verified, {quality.needs_review ?? 0} need your review, {quality.dropped ?? 0} dropped
@@ -145,8 +151,14 @@ export default function LeadsClient() {
           <p className="p-10 text-center text-gray-500 text-sm">{status === 'done' ? 'The scan finished with no leads.' : 'No leads yet. Run a scan.'}</p>
         ) : leads.filter(l => !l.review_reason).map(l => (
           <div key={l.id} className="p-4 text-sm">
-            <div className="font-medium">{l.company_domain ? <a className="underline decoration-white/30 hover:decoration-white" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{l.company || l.name}</a> : (l.company || l.name)} <span className="text-gray-500">score {l.score}</span></div>
+<div className="font-medium">{l.company_domain ? <a className="underline decoration-white/30 hover:decoration-white" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{l.company || l.name}</a> : (l.company || l.name)} <span className="text-gray-500">score {l.score}</span>
+              {l.fit !== null && <span className="ml-2 text-xs font-normal text-gray-300 border border-white/15 px-1.5 py-0.5">fit {l.fit}/5 · intent {l.intent}/5 · action {l.action}/5</span>}
+            </div>
             <div className="text-gray-400">{l.signal}</div>
+            {l.why && <div className="text-xs text-gray-300 mt-1">Why now: {l.why}</div>}
+            {l.signals && (JSON.parse(l.signals) as string[]).length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-1">{(JSON.parse(l.signals) as string[]).map(sg => <span key={sg} className="text-[10px] uppercase tracking-wide text-gray-500 border border-white/10 px-1 py-0.5">{sg.replace(/_/g, ' ')}</span>)}</div>
+            )}
             {l.enrichments && l.enrichments.length > 0 && (
               <div className="text-xs mt-1 space-y-0.5">
                 {l.enrichments.map(e => (
@@ -169,6 +181,11 @@ export default function LeadsClient() {
           </div>
         ))}
       </div>
+      {status === 'done' && (hiddenCount > 0 || showHidden) && (
+        <button onClick={() => setShowHidden(v => !v)} className="text-gray-500 hover:text-white text-xs mt-2">
+          {showHidden ? 'Hide lower-fit leads' : `Show ${hiddenCount} lower-fit lead${hiddenCount === 1 ? '' : 's'} (fit 0-1)`}
+        </button>
+      )}
       {leads.some(l => l.review_reason) && (
         <>
           <h2 className="text-sm font-semibold mt-8 mb-2">Needs your review</h2>
