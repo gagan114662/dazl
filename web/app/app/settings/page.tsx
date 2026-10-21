@@ -3,6 +3,7 @@ import PlanPanel from './plan-panel'
 import ConnectorsPanel from './connectors-panel'
 import GmailPanel from './gmail-panel'
 import AutopilotPanel from './autopilot-panel'
+import RepliesPanel from './replies-panel'
 
 export default function Settings() {
   return (
@@ -14,6 +15,7 @@ export default function Settings() {
       <ConnectorsPanel />
       <GmailPanel />
       <AutopilotPanel />
+      <RepliesPanel />
     </div>
   )
 }

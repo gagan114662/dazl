@@ -28,3 +28,10 @@ Not built: reading bounce notices from the inbox (entry point `recordBounce` exi
 - LinkedIn does not allow third-party software or extensions that scrape or automate activity, and may restrict accounts: https://www.linkedin.com/help/linkedin/answer/a1340567, https://www.linkedin.com/help/linkedin/answer/a1341387. Automated DMs from the user's account are exactly this.
 - X and Meta (Instagram, Facebook): I could not retrieve an official page from their own domains in this pass, so no claim is made. They have official messaging APIs with their own business-account and messaging-window rules that need to be read before any design.
 - Recommendation: draft messages and let the user send them by hand.
+
+## Replies, consent ledger and follow-ups (added)
+- Reading is a separate consent and a separate Gmail scope (`gmail.readonly`, a Google restricted scope: https://developers.google.com/workspace/gmail/api/auth/scopes). dazl opens only threads it started, by thread id; it never lists or searches the mailbox. It keeps sender, time, a 200-character excerpt and the result, not full bodies.
+- Replies are classified by conservative rules. Opt-out or negative wording always wins. Unsure means no consent. Auto-replies are ignored. A permanent (5.x.x) bounce suppresses; a soft bounce does not.
+- The consent ledger records channel, scope, basis, evidence (Gmail message id), grant time, expiry (180 days) and revocation. Any opt-out or suppression revokes all channels for the address.
+- Follow-ups: off by default; need autopilot on, reply reading on and a ledger row from a positive reply. At most 2, after 3 and 5 days of silence, threaded, with unsubscribe. A newer reply from the contact stops the sequence. The daily cap is shared with first-touch sends. Pause, kill switch and the uncertain-send pause apply.
+- A scheduler must call `POST /api/internal/tick` with `AUTOPILOT_TICK_SECRET` (for example every 15 minutes), or the user can press "Check replies now".

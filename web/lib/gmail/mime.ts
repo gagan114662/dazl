@@ -17,6 +17,7 @@ export interface MimeInput {
   messageId: string // without angle brackets
   unsubscribeUrl: string
   date?: Date
+  inReplyTo?: string // message id without angle brackets
 }
 
 export function buildMime(m: MimeInput): string {
@@ -29,6 +30,7 @@ export function buildMime(m: MimeInput): string {
     `Subject: ${encWord(clean(m.subject))}`,
     `Date: ${(m.date ?? new Date()).toUTCString()}`,
     `Message-ID: <${clean(m.messageId)}>`,
+    ...(m.inReplyTo ? [`In-Reply-To: <${clean(m.inReplyTo)}>`, `References: <${clean(m.inReplyTo)}>`] : []),
     `List-Unsubscribe: <${clean(m.unsubscribeUrl)}>`,
     'List-Unsubscribe-Post: List-Unsubscribe=One-Click',
     'MIME-Version: 1.0',
