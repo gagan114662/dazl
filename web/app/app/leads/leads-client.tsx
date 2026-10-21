@@ -40,8 +40,15 @@ export default function LeadsClient() {
   const lines = (v: string) => v.split('\n').map(x => x.trim()).filter(Boolean)
 
   const [drafted, setDrafted] = useState<Record<string, string>>({})
+  const [pushed, setPushed] = useState<Record<string, string>>({})
+  const [crmOn, setCrmOn] = useState(false)
   const [hiddenCount, setHiddenCount] = useState(0)
   const [showHidden, setShowHidden] = useState(false)
+  async function pushCrm(leadId: string) {
+    const r = await fetch('/api/crm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'push', lead_id: leadId }) })
+    const j = await r.json().catch(() => ({}))
+    setPushed(d => ({ ...d, [leadId]: r.ok ? (j.message || 'Pushed to CRM') : j.error || 'Push failed' }))
+  }
   async function makeDraft(leadId: string) {
     const r = await fetch('/api/outreach', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lead_id: leadId }) })
     const j = await r.json()
@@ -90,6 +97,7 @@ export default function LeadsClient() {
     if (l.ok) { const j = await l.json(); setLeads(j.leads); setHiddenCount(j.hidden_count ?? 0) }
   }
   useEffect(() => { if (status === 'done') void loadLeads() }, [jobId, status, showHidden])
+  useEffect(() => { fetch('/api/crm').then(r => r.ok ? r.json() : null).then(j => setCrmOn(!!j?.configured)).catch(() => {}) }, [])
 
   const input = 'field'
   return (
@@ -194,8 +202,10 @@ export default function LeadsClient() {
             {l.contact?.includes('@') && l.confidence !== null && (
               drafted[l.id]
                 ? <span className="text-gray-400 text-xs ml-3">{drafted[l.id]}</span>
-                : <button onClick={() => makeDraft(l.id)} className="font-mono text-xs uppercase border border-black px-2 py-1 ml-3 hover:bg-black hover:text-white">Draft email</button>
-            )}
+                : <button onClick={() => makeDraft(l.id)} className="font-mono text-xs uppercase border border-black px-2 py-1 ml-3 hover:bg-black hover:text-white">Draft email</button>)}
+            {crmOn && (pushed[l.id]
+              ? <span className="text-gray-400 text-xs ml-2">{pushed[l.id]}</span>
+              : <button onClick={() => pushCrm(l.id)} className="font-mono text-xs uppercase border border-black px-2 py-1 ml-2 hover:bg-black hover:text-white">Push to CRM</button>)}
           </div>
         ))}
       </div>
