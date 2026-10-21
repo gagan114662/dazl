@@ -2,6 +2,7 @@ import LlmKeyPanel from './llm-key-panel'
 import PlanPanel from './plan-panel'
 import ConnectorsPanel from './connectors-panel'
 import GmailPanel from './gmail-panel'
+import AutopilotPanel from './autopilot-panel'
 
 export default function Settings() {
   return (
@@ -12,6 +13,7 @@ export default function Settings() {
       <LlmKeyPanel />
       <ConnectorsPanel />
       <GmailPanel />
+      <AutopilotPanel />
     </div>
   )
 }
