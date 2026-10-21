@@ -10,7 +10,7 @@ import { randomBytes } from 'node:crypto'
 
 const NOW = new Date('2026-10-20T12:00:00Z')
 const QUOTE = 'Northside Builders opened a second yard and is hiring five roofers this month'
-const cand = (o: Partial<Candidate> = {}): Candidate => ({ name: '', company: 'Northside Builders Inc.', contact: null, signal: 'Expanding', source_url: 'https://news.example/a', score: 70, excerpt: QUOTE, event_date: '2026-10-01', ...o })
+const cand = (o: Partial<Candidate> = {}): Candidate => ({ name: '', company: 'Northside Builders Inc.', contact: null, signal: 'Expanding', source_url: 'https://northsidebuilders.example/a', score: 70, excerpt: QUOTE, event_date: '2026-10-01', ...o })
 const page = (text: string, title = '') => ({ text, title, retrievedAt: 1_800_000_000 })
 const good = page(`October 2026 local news. ${QUOTE}. Call 416-555-0199 or email jobs@northside.example.`)
 
@@ -60,12 +60,12 @@ test('company key ignores legal suffixes and case; dedup picks the best lead per
   assert.equal(dedupKey({ company: 'NORTHSIDE BUILDERS LTD', name: 'x' }), dedupKey({ company: 'Northside Builders', name: 'y' }))
   const fetchPage = async (u: string) => (u.endsWith('/b') ? page(`Posted 2026. ${QUOTE}. Email jobs@northside.example`) : page(`${QUOTE}.`))
   const { leads, dropped } = await verifyLeads([
-    cand({ source_url: 'https://news.example/a', event_date: null }),
-    cand({ source_url: 'https://news.example/b', company: 'Northside Builders Ltd', contact: 'jobs@northside.example' }),
-    cand({ source_url: 'https://news.example/c', excerpt: 'this quote does not exist anywhere on the page at all' }),
+    cand({ source_url: 'https://northsidebuilders.example/a', event_date: null }),
+    cand({ source_url: 'https://northsidebuilders.example/b', company: 'Northside Builders Ltd', contact: 'jobs@northside.example' }),
+    cand({ source_url: 'https://northsidebuilders.example/c', excerpt: 'this quote does not exist anywhere on the page at all' }),
   ], fetchPage, NOW)
   assert.equal(leads.length, 1)
-  assert.equal(leads[0].source_url, 'https://news.example/b')
+  assert.equal(leads[0].source_url, 'https://northsidebuilders.example/b')
   assert.equal(dropped.duplicate, 1)
   assert.equal(dropped.excerpt_not_on_page, 1)
 })
@@ -82,8 +82,8 @@ test('end to end: only verified leads are stored with evidence, per tenant; coun
   migrateScan(db); migrateKeys(db)
   saveKey(db, 'A', 'anthropic', 'sk-ant-api03-' + 'A'.repeat(40), master)
   const id = createJob(db, 'A', { business_name: 'Acme', industry: 'roofing', location: 'Toronto' })
-  const text = JSON.stringify([cand({ event_date: '2026-10-05' }), cand({ source_url: 'https://news.example/zzz', excerpt: 'Fabricated quote that never appeared on any page anywhere', company: 'Other Co' })])
-  const providers = { anthropic: { research: async () => ({ text, citedUrls: ['https://news.example/a', 'https://news.example/zzz'] }) }, openai: { research: async () => ({ text: '[]', citedUrls: [] }) } }
+  const text = JSON.stringify([cand({ event_date: '2026-10-05' }), cand({ source_url: 'https://northsidebuilders.example/zzz', excerpt: 'Fabricated quote that never appeared on any page anywhere', company: 'Other Co' })])
+  const providers = { anthropic: { research: async () => ({ text, citedUrls: ['https://northsidebuilders.example/a', 'https://northsidebuilders.example/zzz'] }) }, openai: { research: async () => ({ text: '[]', citedUrls: [] }) } }
   await runJob(db, claimKeyedJob(db)!, { providers, master, now: NOW, fetchPage: async () => good })
   const rows = listLeads(db, 'A', id) as { evidence_excerpt: string; confidence: number; event_date: string }[]
   assert.equal(rows.length, 1)

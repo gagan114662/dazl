@@ -70,7 +70,7 @@ test('a scan with sources adds source candidates to the same verifier; rejected 
   const prov = { research: async () => ({ text: '[]', citedUrls: [] }), complete: async () => { completeCalls++; return extra } }
   // collectEvidence uses the real network guard; the test only checks the wiring when no evidence is reachable
   const out = await runJob(db, job, { providers: { anthropic: prov, openai: prov } as never, master, fetchPage: async () => null, now: new Date('2026-10-20'), judge: null })
-  assert.equal(out, 'done')
+  assert.equal(out, 'failed') // no candidates at all: fails honestly instead of an empty done
   assert.ok(completeCalls <= 1)
 })
 
