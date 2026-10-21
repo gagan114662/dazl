@@ -9,7 +9,18 @@ export default function GmailGate({ intro }: { intro: string }) {
   const [i, setI] = useState<RepliesInfo | null>(null)
   const [busy, setBusy] = useState(false)
   useEffect(() => { fetch('/api/outreach/replies').then(r => r.ok ? r.json() : null).then(setI).catch(() => {}) }, [])
-  if (!i || !i.available) return null
+  // Fetch failed: fall back to pointing at Settings, never a blank page.
+  if (!i) return (
+    <div className="card p-6 text-sm text-[#555]">
+      {intro} <a className="underline underline-offset-2" href="/app/settings">Open Settings</a>
+    </div>
+  )
+  // Gmail is not wired up on this deployment yet: say so honestly instead of rendering nothing.
+  if (!i.available) return (
+    <div className="card p-6 text-sm text-[#555]">
+      Reply reading is not available yet - dazl is still wiring up the Gmail connection. Nothing is wrong with your account; check back soon.
+    </div>
+  )
   if (i.consent.accepted && i.read_granted) return null
   async function agree() {
     setBusy(true)
