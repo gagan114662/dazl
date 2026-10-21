@@ -1,7 +1,7 @@
 // Advanced connectors: opt-in, session-credential backends that run in a separate worker.
 // Everything here is off unless the operator turns it on. The kill switch is read on every call.
-export const ADV_PLATFORMS = ['x', 'reddit', 'xiaohongshu', 'bilibili', 'linkedin'] as const
-export const UI_PLATFORMS = ['linkedin', 'x', 'reddit', 'xiaohongshu', 'bilibili'] as const
+export const ADV_PLATFORMS = ['x', 'reddit', 'instagram', 'facebook', 'xiaohongshu', 'bilibili', 'linkedin'] as const
+export const UI_PLATFORMS = ['linkedin', 'x', 'reddit', 'instagram', 'facebook', 'xiaohongshu', 'bilibili'] as const
 export type AdvPlatform = (typeof ADV_PLATFORMS)[number]
 export const isAdvPlatform = (v: unknown): v is AdvPlatform => typeof v === 'string' && (ADV_PLATFORMS as readonly string[]).includes(v)
 export const CONSENT_VERSION = '2026-10-20'

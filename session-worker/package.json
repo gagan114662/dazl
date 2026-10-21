@@ -1,0 +1,9 @@
+{
+  "name": "dazl-session-worker",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "start": "node --experimental-strip-types src/server.ts",
+    "test": "node --experimental-strip-types --test test/*.test.ts"
+  }
+}
