@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     configured: !!secret,
     secret, // the user's own secret - they must paste it into Cal.com
-    webhook_url: `${req.nextUrl.origin}/api/hooks/calcom?u=${encodeURIComponent(user.id)}`,
+    webhook_url: `${(process.env.PUBLIC_BASE_URL || req.nextUrl.origin).replace(/\/$/, '')}/api/hooks/calcom?u=${encodeURIComponent(user.id)}`,
     bookings: listBookings(db, user.id),
   })
 }
