@@ -20,6 +20,7 @@ export interface AdapterInput {
   query: string
   keywords: string[]
   feeds: string[]
+  pages?: string[] // page URLs the user asked to read; only the web (Jina) adapter uses it
   http: SafeGet
   credential?: string // reserved for future user-approved connectors; no adapter below uses it
 }
