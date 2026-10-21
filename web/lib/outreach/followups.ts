@@ -78,3 +78,52 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
   }
   return out
 }
+
+// Read model for the Follow-ups page: every sequence with its schedule state, plus the
+// follow-ups already sent. Read-only; nothing here starts or stops a sequence.
+export interface FollowupThreadView {
+  thread_id: string
+  company: string
+  name: string
+  to_email: string
+  last_lead_reply_at: number | null
+  followups_sent: number
+  next_due_at: number | null
+  stopped: string | null
+}
+export interface FollowupOverview {
+  enabled: boolean
+  threads: FollowupThreadView[]
+  sent: { thread_id: string; company: string; to_email: string; step: number; status: string; created_at: number }[]
+}
+
+export function followupOverview(db: Database.Database, tenantId: string, now = Math.floor(Date.now() / 1000)): FollowupOverview {
+  const rows = db.prepare(
+    `SELECT t.thread_id, t.to_email, t.last_activity_at, t.last_lead_reply_at, t.followups_sent, t.stopped,
+            COALESCE(l.company, '') AS company, COALESCE(l.name, '') AS name
+     FROM followup_threads t LEFT JOIN leads l ON l.id = t.lead_id
+     WHERE t.tenant_id = ? ORDER BY t.last_activity_at DESC LIMIT 100`,
+  ).all(tenantId) as { thread_id: string; to_email: string; last_activity_at: number; last_lead_reply_at: number | null; followups_sent: number; stopped: string | null; company: string; name: string }[]
+  const threads = rows.map(r => ({
+    thread_id: r.thread_id,
+    company: r.company,
+    name: r.name,
+    to_email: r.to_email,
+    last_lead_reply_at: r.last_lead_reply_at,
+    followups_sent: r.followups_sent,
+    stopped: r.stopped,
+    // The next follow-up is due GAPS_DAYS[sent] days after the last activity; nothing is due for
+    // stopped or exhausted sequences, or threads with no interested reply yet.
+    next_due_at: r.stopped || r.followups_sent >= MAX_FOLLOWUPS || r.last_lead_reply_at === null
+      ? null
+      : r.last_activity_at + (GAPS_DAYS[r.followups_sent] ?? GAPS_DAYS[GAPS_DAYS.length - 1]) * 86400,
+  }))
+  const sent = db.prepare(
+    `SELECT m.thread_id, m.step, m.status, m.created_at, t.to_email, COALESCE(l.company, '') AS company
+     FROM followup_messages m JOIN followup_threads t ON t.tenant_id = m.tenant_id AND t.thread_id = m.thread_id
+     LEFT JOIN leads l ON l.id = t.lead_id
+     WHERE m.tenant_id = ? ORDER BY m.created_at DESC LIMIT 100`,
+  ).all(tenantId) as { thread_id: string; company: string; to_email: string; step: number; status: string; created_at: number }[]
+  void now
+  return { enabled: followupsEnabled(db, tenantId), threads, sent }
+}
