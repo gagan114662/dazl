@@ -7,10 +7,11 @@ import http from 'node:http'
 import { timingSafeEqual } from 'node:crypto'
 import { fetchReddit } from './lib/reddit.js'
 import { fetchX } from './lib/x.js'
+import { fetchLinkedIn } from './lib/linkedin.js'
 
 const PORT = Number(process.env.PORT || 8787)
 const TOKEN = process.env.ADVANCED_WORKER_TOKEN || ''
-const HANDLERS = { reddit: fetchReddit, x: fetchX }
+const HANDLERS = { reddit: fetchReddit, x: fetchX, linkedin: fetchLinkedIn }
 const SUPPORTED = Object.keys(HANDLERS)
 // Operator-level throwaway sessions, used only when the requesting tenant did not
 // supply its own session cookie. Never logged; /health exposes booleans only.
@@ -40,7 +41,7 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === 'GET' && req.url === '/health') {
       const operator_sessions = Object.fromEntries(Object.entries(OPERATOR_SESSIONS).map(([k, v]) => [k, Boolean(v)]))
-      return send(res, 200, { ok: true, platforms: SUPPORTED, operator_sessions, version: '0.2.0' })
+      return send(res, 200, { ok: true, platforms: SUPPORTED, operator_sessions, version: '0.3.0' })
     }
     if (req.method !== 'POST' || req.url !== '/fetch') return send(res, 404, { error: 'not_found' })
     if (!tokenOk(req.headers.authorization)) return send(res, 401, { error: 'unauthorized' })
