@@ -419,7 +419,7 @@ export async function kickRunner(db: Database.Database, deps: RunDeps = {}): Pro
 
 // Preview for the "what are you looking for" form: infers the ICP with the tenant's own key
 // so the user can read and edit it before the scan runs.
-export async function previewIcp(db: Database.Database, tenantId: string, query: string, deps: Pick<RunDeps, 'providers' | 'fetchImpl' | 'master'> = {}, ip?: string): Promise<{ icp: Icp; inferred: boolean } | { error: 'no_api_key' | 'key_rejected' }> {
+export async function previewIcp(db: Database.Database, tenantId: string, query: string, deps: Pick<RunDeps, 'providers' | 'fetchImpl' | 'master'> = {}, ip?: string): Promise<{ icp: Icp; inferred: boolean } | { error: 'no_api_key' | 'key_rejected' | 'trial_key_invalid' }> {
   let vendor = pickVendor(db, tenantId)
   let key = vendor ? getKey(db, tenantId, vendor, deps.master) : null
   if ((!vendor || !key) && ip !== undefined && trialStatus(db, tenantId, ip).funded) {
@@ -428,6 +428,13 @@ export async function previewIcp(db: Database.Database, tenantId: string, query:
     const op = operatorKey()
     vendor = op?.vendor ?? null
     key = op?.key ?? null
+    if (!vendor || !key) return { error: 'no_api_key' }
+    try {
+      return await inferIcp((deps.providers ?? providers)[vendor], key, query, deps.fetchImpl)
+    } catch {
+      // A trial user has no key of their own - never blame them for the server's key failing.
+      return { error: 'trial_key_invalid' }
+    }
   }
   if (!vendor || !key) return { error: 'no_api_key' }
   try {
