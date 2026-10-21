@@ -5,6 +5,7 @@ import GmailPanel from './gmail-panel'
 import AutopilotPanel from './autopilot-panel'
 import RepliesPanel from './replies-panel'
 import CrmPanel from './crm-panel'
+import CalcomPanel from './calcom-panel'
 import EnrichmentPanel from './enrichment-panel'
 import CompetitorsPanel from './competitors-panel'
 
@@ -26,6 +27,7 @@ export default function Settings() {
       <div id="autopilot" className="scroll-mt-6"><AutopilotPanel /></div>
       <div id="replies" className="scroll-mt-6"><RepliesPanel /></div>
       <div id="crm" className="scroll-mt-6"><CrmPanel /></div>
+      <CalcomPanel />
       <div id="enrichment" className="scroll-mt-6"><EnrichmentPanel /></div>
     </div>
   )

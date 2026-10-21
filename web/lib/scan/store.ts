@@ -78,6 +78,7 @@ function addColumns(db: Database.Database): void {
   const has = (t: string, c: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).some(r => r.name === c)
   const add = (t: string, c: string, def: string) => { if (!has(t, c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`) }
   add('scan_jobs', 'seller', 'TEXT')
+  add('leads', 'stage', 'TEXT')
   add('scan_jobs', 'watch_id', 'TEXT')
   add('leads', 'watch_new', 'INTEGER NOT NULL DEFAULT 0')
   add('leads', 'evidence_excerpt', 'TEXT CHECK (evidence_excerpt IS NULL OR length(evidence_excerpt) <= 400)')
@@ -164,7 +165,7 @@ export function listLeads(db: Database.Database, userId: string, jobId: string, 
     .prepare(
       `SELECT l.id, l.scan_job_id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.created_at,
 l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
-         l.fit, l.intent, l.action, l.why, l.signals, l.icp_match, l.watch_new, l.seen_before
+         l.fit, l.intent, l.action, l.why, l.signals, l.icp_match, l.watch_new, l.seen_before, l.stage
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
        WHERE j.id = ? AND j.user_id = ? ${includeHidden ? '' : 'AND (l.fit IS NULL OR l.fit > 1)'}
        ORDER BY (l.fit IS NULL), l.fit DESC, l.intent DESC, l.action DESC, (l.confidence IS NULL), l.confidence DESC, l.score DESC, l.created_at DESC LIMIT ?`,
