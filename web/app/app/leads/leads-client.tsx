@@ -6,6 +6,8 @@ interface Icp { summary: string; who: string[]; industries: string[]; sizes: str
 interface Watch { id: string; query: string; active: boolean; next_run_at: number | null; last_run_at: number | null; paused_reason: string | null; last_job_id: string | null; last_status: string | null; new_leads: number }
 interface Monitor { id: string; query: string; interval_hours: number; enabled: number; paused_reason: string | null; next_run_at: number | null; last_new_count: number | null; run_count: number }
 interface Quality { candidates: number; passed: number | null; needs_review: number | null; dropped: number | null; drop_reasons: Record<string, number> }
+interface CsvRow { domain: string; status: 'pending' | 'skipped' | 'queued' | 'running' | 'done' | 'failed'; job_id: string | null; leads: number | null; error: string | null }
+interface CsvBatch { batch_id: string; total: number; note: string | null; counts: Record<string, number>; rows: CsvRow[]; quota_stop?: boolean }
 
 // Leads written by other workers can carry anything in signals; never let a bad value crash the page.
 function parseSignals(v: string | null): string[] {
@@ -55,6 +57,45 @@ export default function LeadsClient() {
   const addMonitor = async () => { if (!query.trim()) return; setMonError(''); const r = await fetch('/api/monitors', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: query.trim(), ...(icp ? { icp: icp.icp } : {}) }) }); const j = await r.json().catch(() => ({})); if (!r.ok) return setMonError(j.error === 'monitor_limit' ? `Your plan allows ${j.limit} monitors.` : j.error === 'interval_too_short' ? `The shortest interval on your plan is ${j.min} hours.` : j.error || 'Could not create the monitor'); void loadMonitors() }
   const toggleMonitor = async (id: string, enabled: boolean) => { await fetch(`/api/monitors/${id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled }) }); void loadMonitors() }
   const removeMonitor = async (id: string) => { await fetch(`/api/monitors/${id}`, { method: 'DELETE' }); void loadMonitors() }
+  const [csvBatch, setCsvBatch] = useState<CsvBatch | null>(null)
+  const [csvNote, setCsvNote] = useState('')
+  const [csvInvalid, setCsvInvalid] = useState<{ line: string; reason: string }[]>([])
+  const [csvBusy, setCsvBusy] = useState(false)
+  async function importCsv(file: File) {
+    setCsvNote(''); setCsvInvalid([]); setCsvBusy(true)
+    const text = await file.text().catch(() => '')
+    const r = await fetch('/api/scan/csv', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ csv: text }) })
+    const j = await r.json().catch(() => ({}))
+    setCsvBusy(false)
+    if (!r.ok) {
+      setCsvNote(j.error === 'pro_only' ? 'Bulk import is a Pro feature. Upgrade in Settings.' : j.error === 'no_api_key' ? 'Add your AI key in Settings first. Every imported domain runs on it.' : j.error === 'No valid domains found' ? 'No valid domains found - one domain per line, like acme.com.' : j.error || 'Could not import the file')
+      if (Array.isArray(j.invalid)) setCsvInvalid(j.invalid)
+      return
+    }
+    setCsvInvalid(j.invalid ?? [])
+    setCsvNote(`${j.accepted} domain${j.accepted === 1 ? '' : 's'} imported${j.overflow ? `, first ${j.max_domains} only` : ''}. Each runs as one scan on your AI key and counts toward your monthly scans.${j.message ? ` ${j.message}.` : ''}`)
+    void pollCsv(j.batch_id)
+  }
+  async function pollCsv(batchId: string) {
+    const r = await fetch(`/api/scan/csv/${batchId}`).catch(() => null)
+    if (r?.ok) setCsvBatch(await r.json())
+  }
+  async function resumeCsv() {
+    if (!csvBatch) return
+    setCsvBusy(true)
+    const r = await fetch(`/api/scan/csv/${csvBatch.batch_id}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+    const j = await r.json().catch(() => ({}))
+    setCsvBusy(false)
+    if (!r.ok) { setCsvNote(j.error === 'quota_exceeded' ? 'Monthly scans are used up.' : j.error || 'Could not resume'); return }
+    setCsvBatch(j)
+  }
+  const csvActive = !!csvBatch && ((csvBatch.counts.queued ?? 0) + (csvBatch.counts.running ?? 0) > 0)
+  useEffect(() => {
+    if (!csvActive || !csvBatch) return
+    const t = setInterval(() => void pollCsv(csvBatch.batch_id), 5000)
+    return () => clearInterval(t)
+  }, [csvActive, csvBatch?.batch_id])
+
   const [hiddenCount, setHiddenCount] = useState(0)
   const [showHidden, setShowHidden] = useState(false)
   const [showSeen, setShowSeen] = useState(false)
@@ -172,6 +213,41 @@ export default function LeadsClient() {
           <button type="button" disabled={query.trim().length < 3} onClick={() => run(null)} className="text-gray-400 hover:text-white text-sm px-3">Skip review, just run</button>
         </div>
       </form>
+      <details className="mb-4 text-sm">
+        <summary className="cursor-pointer text-gray-400">Bulk import company domains (Pro)</summary>
+        <div className="card p-4 mt-2">
+          <p className="text-gray-500 text-xs mb-2">A CSV or text file with one company domain per line, up to 50. Each domain runs as its own scan on your AI key - contacts and signals land in the table below. Blank rows are skipped; bad rows are flagged.</p>
+          <input type="file" accept=".csv,.txt,text/csv,text/plain" disabled={csvBusy} onChange={e => { const f = e.target.files?.[0]; if (f) void importCsv(f); e.target.value = '' }} className="text-xs text-gray-300 file:mr-3 file:font-mono file:uppercase file:text-xs file:border file:border-black file:px-2 file:py-1 file:bg-transparent file:text-white hover:file:bg-black" />
+          {csvNote && <p className="text-xs text-gray-400 mt-2">{csvNote}</p>}
+          {csvInvalid.length > 0 && (
+            <div className="mt-2">
+              <p className="text-xs text-yellow-500">Skipped {csvInvalid.length} invalid row{csvInvalid.length === 1 ? '' : 's'}:</p>
+              <ul className="text-xs text-gray-500 ml-4 list-disc">{csvInvalid.slice(0, 10).map(r => <li key={r.line}>{r.line} - {r.reason}</li>)}</ul>
+              {csvInvalid.length > 10 && <p className="text-xs text-gray-600">and {csvInvalid.length - 10} more</p>}
+            </div>
+          )}
+          {csvBatch && (
+            <div className="mt-3">
+              <div className="flex items-center gap-3 text-xs text-gray-400 mb-1">
+                <span>{csvBatch.total} domains: {(['done','running','queued','failed','pending'] as const).filter(k => csvBatch.counts[k]).map(k => `${csvBatch.counts[k]} ${k === 'pending' ? 'waiting' : k}`).join(', ')}</span>
+                {(csvBatch.counts.pending ?? 0) > 0 && !csvActive && <button onClick={() => void resumeCsv()} disabled={csvBusy} className="font-mono text-xs uppercase border border-black px-2 py-1 hover:bg-black hover:text-white">Resume</button>}
+              </div>
+              {csvBatch.note && <p className="text-xs text-yellow-500 mb-1">{csvBatch.note}</p>}
+              <div className="divide-y divide-white/5 border-t border-white/5">
+                {csvBatch.rows.map(r => (
+                  <div key={r.domain} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5 text-xs">
+                    <span className="text-gray-200 min-w-0 flex-1 truncate">{r.domain}</span>
+                    <span className={r.status === 'failed' ? 'text-red-400' : r.status === 'done' ? 'text-green-300' : 'text-gray-500'}>
+                      {r.status === 'queued' ? 'queued' : r.status === 'running' ? 'scanning' : r.status === 'pending' ? 'waiting - quota reached' : r.status === 'failed' ? `failed${r.error === 'no_candidates' ? ' - nothing found' : ''}` : 'done'}
+                    </span>
+                    {r.status === 'done' && r.job_id && <a className="underline text-[#111]" href={`/app/leads?job_id=${r.job_id}`}>{r.leads ?? 0} lead{(r.leads ?? 0) === 1 ? '' : 's'}</a>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </details>
       {draft && (
         <div className="card p-4 mb-6 text-sm">
           <div className="flex items-center justify-between gap-3 mb-3">

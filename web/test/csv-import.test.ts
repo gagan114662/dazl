@@ -1,0 +1,125 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { randomBytes } from 'node:crypto'
+import Database from 'better-sqlite3'
+import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
+import { migrateScan, countActiveJobs, getJob, listLeads } from '../lib/scan/store.ts'
+import { migratePlans, setPlan, scanQuota } from '../lib/plans.ts'
+import type { Provider } from '../lib/llm/provider.ts'
+import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
+import { batchStatus, createBatch, normalizeDomain, parseDomains, queuePendingRows, MAX_DOMAINS } from '../lib/scan/csv-import.ts'
+import { migrateCsv } from '../lib/scan/csv-import.ts'
+
+const master = randomBytes(32)
+const KEY = 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+
+function setup() {
+  const db = new Database(':memory:')
+  migrateScan(db); migrateKeys(db); migratePlans(db); migrateCsv(db)
+  saveKey(db, 'A', 'anthropic', KEY, master)
+  return db
+}
+
+test('normalizeDomain strips protocol, credentials, port, path and www; rejects IPs and internal hosts', () => {
+  assert.deepEqual(normalizeDomain('https://www.Acme.com/pricing?x=1'), { domain: 'acme.com' })
+  assert.deepEqual(normalizeDomain('user@host.io:8443/path'), { domain: 'host.io' })
+  assert.deepEqual(normalizeDomain('example.com.'), { domain: 'example.com' })
+  assert.equal('reason' in normalizeDomain('1.2.3.4'), true)
+  assert.equal('reason' in normalizeDomain('::1'), true)
+  assert.equal('reason' in normalizeDomain('localhost'), true)
+  assert.equal('reason' in normalizeDomain('printer.internal'), true)
+  assert.equal('reason' in normalizeDomain('no-tld'), true)
+  assert.equal('reason' in normalizeDomain('bad host!.com'), true)
+})
+
+test('parseDomains dedupes, skips blanks silently, flags invalid rows, takes the first CSV column, caps at 50', () => {
+  const lines = ['domain,notes', 'acme.com,some note', 'https://www.acme.com/', '', '   ', '1.2.3.4', '"quoted.io",x', 'printer.internal']
+  const p = parseDomains(lines.join('\n'))
+  assert.deepEqual(p.valid, ['domain', 'acme.com', 'quoted.io'].filter(d => d !== 'domain')) // 'domain' header is invalid (no TLD)... 
+  assert.equal(p.valid.length, 2)
+  assert.deepEqual(p.valid, ['acme.com', 'quoted.io'])
+  assert.equal(p.invalid.length, 3) // header, ip, internal
+  const many = Array.from({ length: 60 }, (_, i) => `co${i}.com`).join('\n')
+  const q = parseDomains(many)
+  assert.equal(q.valid.length, MAX_DOMAINS)
+  assert.equal(q.overflow, 10)
+})
+
+test('queuePendingRows creates one user-funded scan job per domain and batchStatus reports progress', () => {
+  const db = setup()
+  setPlan(db, 'A', 'pro')
+  const b = createBatch(db, 'A', ['acme.com', 'beta.io'])
+  const { queued, quotaStop } = queuePendingRows(db, 'A', b)
+  assert.equal(queued, 2)
+  assert.equal(quotaStop, false)
+  const jobs = db.prepare('SELECT csv_domain, batch_id, funded_by, query FROM scan_jobs').all() as { csv_domain: string; batch_id: string; funded_by: string; query: string | null }[]
+  assert.equal(jobs.length, 2)
+  assert.equal(jobs[0].funded_by, 'user') // never trial
+  assert.equal(jobs[0].query, null)
+  assert.deepEqual(jobs.map(j => j.csv_domain).sort(), ['acme.com', 'beta.io'])
+  assert.ok(jobs.every(j => j.batch_id === b))
+  const st = batchStatus(db, 'A', b)!
+  assert.equal(st.counts.queued, 2)
+  assert.equal(st.rows[0].domain, 'acme.com')
+  // tenant isolation
+  assert.equal(batchStatus(db, 'B', b), undefined)
+  // CSV jobs do not block manual scans
+  assert.equal(countActiveJobs(db, 'A'), 0)
+})
+
+test('mid-batch quota stop queues what it can and says X of Y ran, quota reached; resume finishes the rest', () => {
+  const db = setup()
+  // free plan: 50 scans/month. Burn 49.
+  const ins = db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES (?, 'A', 'x', '-', '-', 'done')")
+  for (let i = 0; i < 49; i++) ins.run(randomBytes(12).toString('hex'))
+  const b = createBatch(db, 'A', ['a.com', 'b.com', 'c.com'])
+  const r1 = queuePendingRows(db, 'A', b)
+  assert.equal(r1.queued, 1)
+  assert.equal(r1.quotaStop, true)
+  assert.equal(batchStatus(db, 'A', b)!.note, '1 of 3 ran, quota reached')
+  assert.equal(scanQuota(db, 'A').allowed, false)
+  // upgrade to pro, resume queues the rest
+  setPlan(db, 'A', 'pro')
+  const r2 = queuePendingRows(db, 'A', b)
+  assert.equal(r2.queued, 2)
+  assert.equal(r2.quotaStop, false)
+  assert.equal(batchStatus(db, 'A', b)!.counts.queued, 3)
+})
+
+const QUOTE = 'Acme announced it is hiring three account executives for the Toronto market'
+const recent = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10)
+const lead = { name: 'Pat', company: 'Acme', contact: null, signal: 'Hiring AEs', source_url: 'https://news.com/acme', score: 80, excerpt: QUOTE, event_date: recent }
+const page = async () => ({ text: `News ${recent.slice(0, 4)}. ${QUOTE}. More text.`, title: 'Acme news', retrievedAt: 1_700_000_000 })
+
+test('a csv_domain job researches the company and finishes done with the lead written', async () => {
+  const db = setup()
+  const b = createBatch(db, 'A', ['acme.com'])
+  queuePendingRows(db, 'A', b)
+  const job = claimKeyedJob(db)!
+  assert.equal(job.csv_domain, 'acme.com')
+  const providers: Record<'anthropic' | 'openai', Provider> = {
+    anthropic: { research: async () => ({ text: 'Here: ' + JSON.stringify([lead]), citedUrls: ['https://news.com/acme'] }) },
+    openai: { research: async () => ({ text: '', citedUrls: [] }) },
+  }
+  assert.equal(await runJob(db, job, { providers, master, fetchPage: page }), 'done')
+  const st = batchStatus(db, 'A', b)!
+  assert.equal(st.counts.done, 1)
+  assert.equal(st.rows[0].leads, 1)
+  const leads = listLeads(db, 'A', job.id) as { company: string }[]
+  assert.equal(leads.length, 1)
+  assert.equal(leads[0].company, 'Acme')
+})
+
+test('a csv job with no candidates fails honestly and does not burn quota semantics', async () => {
+  const db = setup()
+  const b = createBatch(db, 'A', ['ghost.example.co'])
+  queuePendingRows(db, 'A', b)
+  const job = claimKeyedJob(db)!
+  const providers: Record<'anthropic' | 'openai', Provider> = {
+    anthropic: { research: async () => ({ text: '[]', citedUrls: [] }) },
+    openai: { research: async () => ({ text: '', citedUrls: [] }) },
+  }
+  assert.equal(await runJob(db, job, { providers, master, fetchPage: page }), 'failed')
+  assert.equal(getJob(db, 'A', job.id)?.error, 'no_candidates')
+  assert.equal(batchStatus(db, 'A', b)!.counts.failed, 1)
+})
