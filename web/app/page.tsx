@@ -93,7 +93,7 @@ export default function Home() {
         <div className="flex flex-wrap gap-5 justify-center">
           <div className="card p-8 max-w-xs w-full text-left">
             <div className="text-sm text-[#555] mb-1">Free</div>
-            <div className="text-4xl font-medium mb-1">CA$0</div>
+            <div className="text-4xl font-medium mb-1">$0</div>
             <p className="text-[#555] text-sm mb-6">3 trial scans, then your own AI key</p>
             <Link href="/sign-up" className="btn-ghost w-full">Start free</Link>
           </div>
