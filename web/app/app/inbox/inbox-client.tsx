@@ -2,8 +2,9 @@
 import { useEffect, useState } from 'react'
 import GmailGate from '../gmail-gate'
 
-interface Row { gmail_id: string; from_email: string; excerpt: string; classification: string; received_at: number; company: string | null; lead_name: string | null; followups_sent: number | null; stopped: string | null }
-interface Info { available: boolean; consent_accepted: boolean; read_granted: boolean; rows: Row[] }
+interface Row { gmail_id: string; thread_id: string; from_email: string; excerpt: string; classification: string; received_at: number; company: string | null; lead_name: string | null; followups_sent: number | null; stopped: string | null }
+interface Info { available: boolean; consent_accepted: boolean; read_granted: boolean; account: string | null; rows: Row[] }
+interface ThreadMsg { dir: 'out' | 'in'; kind: 'original' | 'followup' | 'reply'; subject: string | null; body: string; at: number; classification: string | null }
 
 const BADGE: Record<string, string> = {
   positive: 'text-green-700 border-green-600/40',
@@ -16,12 +17,22 @@ const LABEL: Record<string, string> = { positive: 'interested', negative: 'not i
 
 export default function InboxClient() {
   const [i, setI] = useState<Info | null>(null)
+  const [open, setOpen] = useState<string | null>(null)
+  const [threads, setThreads] = useState<Record<string, ThreadMsg[]>>({})
   useEffect(() => { fetch('/api/outreach/inbox').then(r => r.ok ? r.json() : null).then(setI).catch(() => setI(null)) }, [])
+  function toggle(threadId: string) {
+    if (open === threadId) return setOpen(null)
+    setOpen(threadId)
+    if (!threads[threadId]) void fetch(`/api/outreach/inbox?thread_id=${encodeURIComponent(threadId)}`).then(r => r.ok ? r.json() : null).then(j => { if (j) setThreads(t => ({ ...t, [threadId]: j.messages })) }).catch(() => {})
+  }
   if (!i) return <div className="p-8 text-sm text-[#555]">Loading...</div>
   return (
     <div className="p-8 max-w-4xl">
       <h1 className="text-2xl font-bold tracking-tight mb-1">Inbox</h1>
       <p className="text-[#555] text-sm mb-6">Replies to the email threads dazl started for you. Nothing else in your mailbox is read.</p>
+      {i.read_granted && i.account && (
+        <p className="text-xs text-[#555] mb-4">Reading replies to your outreach as <span className="font-medium">{i.account}</span>. Nothing else in the mailbox is read.</p>
+      )}
       {(!i.consent_accepted || !i.read_granted) && (
         <GmailGate intro="Connect Gmail to unlock Inbox and Follow-ups. Only replies to outreach threads dazl started are read - nothing else in your mailbox." />
       )}
@@ -43,9 +54,21 @@ export default function InboxClient() {
                 </div>
               </div>
               <p className="text-sm text-[#333] mt-2">{r.excerpt}</p>
-              <div className="text-xs text-[#888] mt-2">
-                {r.stopped ? `Follow-ups stopped (${r.stopped.replace(/_/g, ' ')})` : r.followups_sent ? `Follow-ups sent: ${r.followups_sent}` : 'No follow-up sent'}
+              <div className="text-xs text-[#888] mt-2 flex items-center gap-3">
+                <span>{r.stopped ? `Follow-ups stopped (${r.stopped.replace(/_/g, ' ')})` : r.followups_sent ? `Follow-ups sent: ${r.followups_sent}` : 'No follow-up sent'}</span>
+                <button className="underline underline-offset-2" onClick={() => toggle(r.thread_id)}>{open === r.thread_id ? 'Hide thread' : 'View thread'}</button>
               </div>
+              {open === r.thread_id && (
+                <div className="mt-3 border-l-2 border-black/10 pl-3 space-y-2">
+                  {(threads[r.thread_id] ?? []).length === 0 && <p className="text-xs text-[#888]">Loading...</p>}
+                  {(threads[r.thread_id] ?? []).map((m, idx) => (
+                    <div key={idx} className="text-xs">
+                      <div className="text-[#888]">{m.dir === 'out' ? (m.kind === 'followup' ? 'You (automatic follow-up)' : 'You') : 'Them'} · {new Date(m.at * 1000).toLocaleString()}{m.subject ? ` · ${m.subject}` : ''}</div>
+                      {m.body && <p className="text-[#333] whitespace-pre-wrap mt-0.5">{m.body}</p>}
+                    </div>
+                  ))}
+                </div>
+              )}
             </li>
           ))}
         </ul>

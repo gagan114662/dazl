@@ -4,7 +4,7 @@ import GmailGate from '../gmail-gate'
 
 interface Thread { thread_id: string; company: string; name: string; to_email: string; last_lead_reply_at: number | null; followups_sent: number; next_due_at: number | null; stopped: string | null }
 interface Sent { thread_id: string; company: string; to_email: string; step: number; status: string; created_at: number }
-interface Overview { enabled: boolean; threads: Thread[]; sent: Sent[] }
+interface Overview { enabled: boolean; account: string | null; threads: Thread[]; sent: Sent[] }
 
 const STOPPED: Record<string, string> = { replied: 'They replied again - the sequence stops for you to handle', bounced: 'The address bounced', unsubscribed: 'They unsubscribed', manual: 'Stopped by you' }
 const day = (t: number) => new Date(t * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
@@ -28,6 +28,7 @@ export default function FollowupsClient() {
         Automatic follow-ups only go to people who replied with interest, at most two per thread, 3 and 5 days after the last activity. A new reply from them stops the sequence.
         {data && !data.enabled && ' They are off right now.'}
       </p>
+      {data?.account && <p className="text-xs text-[#555] -mt-4 mb-6">Gmail connected as <span className="font-medium">{data.account}</span>.</p>}
       {error && <p className="text-red-600 text-sm">{error}</p>}
       {data && !data.enabled && (
         <div className="mb-6">

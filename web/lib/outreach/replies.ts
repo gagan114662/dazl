@@ -149,4 +149,22 @@ export const inboxRows = (db: Database.Database, tenantId: string, limit = 100):
 
 export const recentInbound = (db: Database.Database, tenantId: string, limit = 30) =>
   db.prepare('SELECT from_email, excerpt, classification, received_at FROM inbound_messages WHERE tenant_id = ? ORDER BY received_at DESC LIMIT ?').all(tenantId, limit) as { from_email: string; excerpt: string; classification: string; received_at: number }[]
+
+// Thread view for the Inbox: the outreach emails dazl sent (the user's own words, full body)
+// interleaved with the captured replies (excerpts only), oldest first.
+export interface ThreadMsg { dir: 'out' | 'in'; kind: 'original' | 'followup' | 'reply'; subject: string | null; body: string; at: number; classification: string | null }
+export function threadMessages(db: Database.Database, tenantId: string, threadId: string): ThreadMsg[] {
+  const out: ThreadMsg[] = []
+  const root = db.prepare(`SELECT m.subject, m.body, COALESCE(m.sent_at, m.created_at) AS at FROM followup_threads t
+                           JOIN outreach_messages m ON m.id = t.root_message_id AND m.tenant_id = t.tenant_id
+                           WHERE t.tenant_id = ? AND t.thread_id = ?`).get(tenantId, threadId) as { subject: string; body: string; at: number } | undefined
+  if (!root) return [] // not this tenant's thread, or not an outreach thread at all
+  out.push({ dir: 'out', kind: 'original', subject: root.subject, body: root.body, at: root.at, classification: null })
+  for (const r of db.prepare('SELECT step, status, created_at FROM followup_messages WHERE tenant_id = ? AND thread_id = ?').all(tenantId, threadId) as { step: number; status: string; created_at: number }[])
+    if (r.status === 'sent') out.push({ dir: 'out', kind: 'followup', subject: `Follow-up ${r.step + 1}`, body: '', at: r.created_at, classification: null })
+  for (const r of db.prepare('SELECT excerpt, classification, received_at FROM inbound_messages WHERE tenant_id = ? AND thread_id = ?').all(tenantId, threadId) as { excerpt: string; classification: string; received_at: number }[])
+    out.push({ dir: 'in', kind: 'reply', subject: null, body: r.excerpt, at: r.received_at, classification: r.classification })
+  return out.sort((a, b) => a.at - b.at)
+}
+
 void randomBytes

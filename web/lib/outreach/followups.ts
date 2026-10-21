@@ -93,6 +93,7 @@ export interface FollowupThreadView {
 }
 export interface FollowupOverview {
   enabled: boolean
+  account: string | null
   threads: FollowupThreadView[]
   sent: { thread_id: string; company: string; to_email: string; step: number; status: string; created_at: number }[]
 }
@@ -125,5 +126,6 @@ export function followupOverview(db: Database.Database, tenantId: string, now = 
      WHERE m.tenant_id = ? ORDER BY m.created_at DESC LIMIT 100`,
   ).all(tenantId) as { thread_id: string; company: string; to_email: string; step: number; status: string; created_at: number }[]
   void now
-  return { enabled: followupsEnabled(db, tenantId), threads, sent }
+  const acct = gmailStatus(db, tenantId)
+  return { enabled: followupsEnabled(db, tenantId), account: acct?.status === 'active' ? acct.email : null, threads, sent }
 }

@@ -4,10 +4,11 @@ import Database from 'better-sqlite3'
 import { followupOverview, GAPS_DAYS, MAX_FOLLOWUPS } from '../lib/outreach/followups.ts'
 import { migrateReplies } from '../lib/outreach/replies.ts'
 import { migrateAutopilot } from '../lib/outreach/autopilot.ts'
+import { migrateOutreach } from '../lib/outreach/store.ts'
 
 const setup = () => {
   const db = new Database(':memory:')
-  migrateAutopilot(db); migrateReplies(db)
+  migrateAutopilot(db); migrateReplies(db); migrateOutreach(db)
   db.exec("CREATE TABLE leads (id TEXT PRIMARY KEY, company TEXT, name TEXT)")
   db.prepare("INSERT INTO leads VALUES ('l1', 'Acme Robotics', 'Pat Lee')").run()
   db.prepare("INSERT INTO autopilot_settings (tenant_id, enabled, followups_enabled) VALUES ('t1', 1, 1)").run()
