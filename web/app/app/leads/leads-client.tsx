@@ -82,7 +82,7 @@ export default function LeadsClient() {
 
   const [advReady, setAdvReady] = useState<string[]>([])
   const [advPick, setAdvPick] = useState<string[]>([])
-  useEffect(() => { void fetch('/api/settings/advanced').then(r => r.ok ? r.json() : null).then(j => { if (j?.available) setAdvReady(j.platforms.filter((p: { consent: boolean; connected: boolean; enabled: boolean }) => p.consent && p.connected && p.enabled).map((p: { platform: string }) => p.platform)) }).catch(() => {}) }, [])
+  useEffect(() => { void fetch('/api/settings/advanced').then(r => r.ok ? r.json() : null).then(j => { if (j?.available) setAdvReady(j.platforms.filter((p: { consent: boolean; connected: boolean; enabled: boolean; operator_index?: boolean }) => p.consent && ((p.connected && p.enabled) || p.operator_index)).map((p: { platform: string }) => p.platform)) }).catch(() => {}) }, [])
 
   async function run(withIcp: Icp | null) {
     setError('')
