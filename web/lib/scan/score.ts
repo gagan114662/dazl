@@ -158,3 +158,29 @@ export function applyIcpGate(scores: LeadScore[], icp: Icp | null): LeadScore[] 
   }
   return scores
 }
+
+// Evidence-quality gate (deterministic, post-model): a lead whose quoted evidence reads as
+// generic job-posting boilerplate is not a buying signal - it is a job ad. When the excerpt
+// trips the job-posting markers and shows no active pain (frustration, switching intent or a
+// competitor being named), cap the 0-100 score below 50 and force intent to 1/5. Hiring alone
+// is not intent; the quote has to show the pain. Leads whose job post DOES show pain keep
+// their grade.
+const JOB_POSTING_MARKERS = /\b(responsibilities|requirements|qualifications|we are looking for|years? of experience|what you'?ll (do|be doing)|about the role|job description|job duties|who you are|what we'?re looking for|preferred qualifications|day[- ]to[- ]day)\b/i
+const ACTIVE_PAIN_MARKERS = /\b(frustrat\w*|fed up|switch(ing)?\b|switch to|looking for (an? )?(alternative|replacement)|replac(e|ing|ment)\w*|migrat(e|ing|ion)\w* (away|off|from)|moving (off|away from)|hate|hates|sucks|terrible|awful|painful|nightmare|overpriced|too expensive|broken|clunky|outgrow(n|ing)?\b|rip (it |them )?out|ditch\w*|unhappy|disappointed|complain\w*|lacks?\b|missing features|can'?t do|limitation)\w*/i
+
+export function readsLikeJobPosting(text: string): boolean { return JOB_POSTING_MARKERS.test(text) }
+export function showsActivePain(text: string): boolean { return ACTIVE_PAIN_MARKERS.test(text) }
+
+// Mutates leads in place. Returns how many leads were gated (for the audit trail).
+export function applyEvidenceQualityGate(leads: { signal: string; excerpt?: string | null; score: number; intent?: number; why?: string }[]): number {
+  let gated = 0
+  for (const l of leads) {
+    const text = `${l.signal}\n${l.excerpt ?? ''}`
+    if (!readsLikeJobPosting(text) || showsActivePain(text)) continue
+    gated++
+    l.score = Math.min(l.score, 49)
+    if (typeof l.intent === 'number') l.intent = Math.min(l.intent, 1)
+    l.why = `Evidence reads as a job posting without active pain. ${l.why ?? ''}`.trim().slice(0, 300)
+  }
+  return gated
+}

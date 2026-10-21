@@ -14,7 +14,7 @@ import type { AdvPlatform } from '../advanced/config.ts'
 import { buildSourcePrompt, collectEvidence, normalizeSources } from '../sources/index.ts'
 import { migrateTinyfish, parseQueries, queryPrompt, tfFetch, tfSearch, tinyfishEnabled, toEvidence } from '../search/tinyfish.ts'
 import { crawlJob } from '../connectors/sitecrawl.ts'
-import { applyIcpGate, icpTextFor, scoreLeads } from './score.ts'
+import { applyEvidenceQualityGate, applyIcpGate, icpTextFor, scoreLeads } from './score.ts'
 import { enrichJobSignals } from '../signals/index.ts'
 import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } from '../signals/competitor-reddit.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
@@ -476,6 +476,9 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         outcome.leads.forEach((l, i) => { const g = grades[i]; if (g) { l.fit = g.fit; l.intent = g.intent; l.action = g.action; l.why = g.why; l.signals = JSON.stringify(g.signals); l.icp_match = JSON.stringify(g.match) } })
       }
     }
+    // Evidence-quality gate: job-posting boilerplate without active pain is not intent -
+    // cap the score below 50 and force intent low, scored and unscored leads alike.
+    try { applyEvidenceQualityGate(outcome.leads) } catch { /* gate only, never fails the scan */ }
     const seen = new Set(outcome.review.map(r => dedupKey(r)))
     for (const l of walledLeads) { const k = dedupKey(l); if (!seen.has(k)) { seen.add(k); outcome.review.push({ ...l, contact: null, review_reason: 'login_required' }) } }
     finish(db, job, 'done', null, outcome, leads.length + walledLeads.length)
