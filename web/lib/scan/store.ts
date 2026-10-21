@@ -90,6 +90,12 @@ function addColumns(db: Database.Database): void {
   add('scan_jobs', 'icp', 'TEXT CHECK (icp IS NULL OR length(icp) <= 4000)')
   add('scan_jobs', 'icp_inferred', 'INTEGER')
   add('scan_jobs', 'sources', 'TEXT CHECK (sources IS NULL OR length(sources) <= 2000)')
+  // Lead scoring (ICP fit / intent / actionability, 0-5 each) + per-lead rationale and signals.
+  add('leads', 'fit', 'INTEGER CHECK (fit IS NULL OR fit BETWEEN 0 AND 5)')
+  add('leads', 'intent', 'INTEGER CHECK (intent IS NULL OR intent BETWEEN 0 AND 5)')
+  add('leads', 'action', 'INTEGER CHECK (action IS NULL OR action BETWEEN 0 AND 5)')
+  add('leads', 'why', 'TEXT CHECK (why IS NULL OR length(why) <= 300)')
+  add('leads', 'signals', 'TEXT CHECK (signals IS NULL OR length(signals) <= 1000)')
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS leads_dedup ON leads (scan_job_id, dedup_key) WHERE dedup_key IS NOT NULL')
 }
 
@@ -137,15 +143,23 @@ export function countActiveJobs(db: Database.Database, userId: string): number {
   return (db.prepare("SELECT count(*) AS n FROM scan_jobs WHERE user_id = ? AND status IN ('pending','running')").get(userId) as { n: number }).n
 }
 
-export function listLeads(db: Database.Database, userId: string, jobId: string, limit = 200) {
+// Ranked: scored leads first by ICP fit, then intent, actionability and evidence confidence.
+// Low-fit scored leads (fit <= 1) are hidden unless includeHidden - they stay in the scan.
+export function listLeads(db: Database.Database, userId: string, jobId: string, limit = 200, includeHidden = false) {
   return db
     .prepare(
       `SELECT l.id, l.scan_job_id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.created_at,
-         l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l.review_reason
+         l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l.review_reason,
+         l.fit, l.intent, l.action, l.why, l.signals
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
-       WHERE j.id = ? AND j.user_id = ? ORDER BY (l.confidence IS NULL), l.score DESC, l.created_at DESC LIMIT ?`,
+       WHERE j.id = ? AND j.user_id = ? ${includeHidden ? '' : 'AND (l.fit IS NULL OR l.fit > 1)'}
+       ORDER BY (l.fit IS NULL), l.fit DESC, l.intent DESC, l.action DESC, (l.confidence IS NULL), l.confidence DESC, l.score DESC, l.created_at DESC LIMIT ?`,
     )
     .all(jobId, userId, Math.min(limit, 500))
+}
+
+export function countHiddenLeads(db: Database.Database, userId: string, jobId: string): number {
+  return (db.prepare('SELECT count(*) AS n FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.id = ? AND j.user_id = ? AND l.fit IS NOT NULL AND l.fit <= 1').get(jobId, userId) as { n: number }).n
 }
 
 export function latestJobId(db: Database.Database, userId: string): string | undefined {
