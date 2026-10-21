@@ -222,15 +222,16 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
   return { leads: [...best.values()], review: [...review.values()], dropped }
 }
 
-// Atomically claims one pending job whose owner has a key stored. Jobs from
-// users with no key are left alone (a worker such as Hermes can take them).
+// Atomically claims one pending job whose owner has a key stored, or a trial-funded
+// job from a keyless account (those run on the shared operator key). Keyless non-trial
+// jobs are left alone (a worker such as Hermes can take them).
 export function claimKeyedJob(db: Database.Database, jobId?: string): Job | null {
   return db.transaction(() => {
     const row = db
       .prepare(
-        `SELECT id, user_id, business_name, industry, location, attempts, query, icp, sources FROM scan_jobs
+        `SELECT id, user_id, business_name, industry, location, attempts, query, icp, sources, funded_by FROM scan_jobs
          WHERE status = 'pending' ${jobId ? 'AND id = ?' : ''}
-           AND user_id IN (SELECT tenant_id FROM tenant_llm_keys)
+           AND (user_id IN (SELECT tenant_id FROM tenant_llm_keys) OR funded_by = 'trial')
          ORDER BY created_at, rowid LIMIT 1`,
       )
       .get(...(jobId ? [jobId] : [])) as Job | undefined

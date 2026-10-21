@@ -3,6 +3,9 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateTrial, trialStatus, recordTrialScan, operatorKey, TRIAL_SCANS_PER_ACCOUNT, TRIAL_SCANS_PER_IP_PER_DAY } from '../lib/scan/trial.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
+import { migrateKeys } from '../lib/llm/key-store.ts'
+import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
+import type { Provider } from '../lib/llm/provider.ts'
 import { scansThisMonth } from '../lib/plans.ts'
 
 const KEY_ENV = { DAZL_TRIAL_ANTHROPIC_KEY: 'sk-ant-test' }
@@ -76,4 +79,33 @@ test('not configured: keyless accounts get no_api_key behavior (not funded)', ()
   const db = setup()
   const t = trialStatus(db, 't1', '1.2.3.4')
   assert.equal(t.funded, false); assert.equal(t.reason, 'not_configured')
+})
+
+test('runner claims trial-funded jobs from keyless accounts and runs them on the operator key', async () => {
+  process.env.DAZL_TRIAL_ANTHROPIC_KEY = 'sk-ant-test'
+  try {
+    const db = new Database(':memory:')
+    migrateScan(db); migrateKeys(db); migrateTrial(db)
+    // keyless tenant: no row in tenant_llm_keys, job funded by the trial
+    const id = createJob(db, 'keyless', { business_name: 'B', industry: 'i', location: 'l' })
+    db.prepare("UPDATE scan_jobs SET funded_by='trial' WHERE id=?").run(id)
+    recordTrialScan(db, 'keyless', id, '1.2.3.4')
+    const claimed = claimKeyedJob(db)
+    assert.equal(claimed?.id, id)
+    assert.equal(claimed?.funded_by, 'trial')
+    let seenKey = ''
+    const prov: Record<'anthropic' | 'openai', Provider> = {
+      anthropic: { research: async (k: string) => { seenKey = k; return { text: '[]', citedUrls: [] } } },
+      openai: { research: async () => ({ text: '[]', citedUrls: [] }) },
+    }
+    await runJob(db, claimed!, { providers: prov })
+    assert.equal(seenKey, 'sk-ant-test') // operator key, never a tenant key
+  } finally { delete process.env.DAZL_TRIAL_ANTHROPIC_KEY }
+})
+
+test('keyless non-trial jobs are still never claimed', () => {
+  const db = new Database(':memory:')
+  migrateScan(db); migrateKeys(db); migrateTrial(db)
+  createJob(db, 'keyless', { business_name: 'B', industry: 'i', location: 'l' }) // funded_by defaults to 'user'
+  assert.equal(claimKeyedJob(db), null)
 })
