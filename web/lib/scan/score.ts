@@ -159,12 +159,16 @@ export function applyIcpGate(scores: LeadScore[], icp: Icp | null): LeadScore[] 
   return scores
 }
 
-// Evidence-quality gate (deterministic, post-model): a lead whose quoted evidence reads as
-// generic job-posting boilerplate is not a buying signal - it is a job ad. When the excerpt
-// trips the job-posting markers and shows no active pain (frustration, switching intent or a
-// competitor being named), cap the 0-100 score below 50 and force intent to 1/5. Hiring alone
-// is not intent; the quote has to show the pain. Leads whose job post DOES show pain keep
-// their grade.
+// Evidence-quality gate (deterministic, post-model): a job posting is not a buying signal
+// unless the QUOTED evidence shows real pain. Two triggers, one rescue, all keyed off the
+// evidence - never the model's own framing in the signal text:
+//   trigger 1 (type): the signal is hiring-type (a job ad by nature);
+//   trigger 2 (text): the excerpt reads as job-posting boilerplate.
+//   rescue: the quoted evidence itself shows active pain (frustration, switching intent or
+//   a competitor being named). Pain words in the model-written signal do NOT rescue.
+// A gated lead is capped below 50 and forced to intent 1/5. Login-walled review items have
+// no verified quote; their snippet is the only quote there is, and the same rule applies.
+const HIRING_SIGNAL = /\bhiring\b|\bwe'?re hiring\b|\bjob (posting|opening|ad)\b|\bopen(ing)? (role|position)\b|\bvacancy\b/i
 const JOB_POSTING_MARKERS = /\b(responsibilities|requirements|qualifications|we are looking for|years? of experience|what you'?ll (do|be doing)|about the role|job description|job duties|who you are|what we'?re looking for|preferred qualifications|day[- ]to[- ]day)\b/i
 const ACTIVE_PAIN_MARKERS = /\b(frustrat\w*|fed up|switch(ing)?\b|switch to|looking for (an? )?(alternative|replacement)|replac(e|ing|ment)\w*|migrat(e|ing|ion)\w* (away|off|from)|moving (off|away from)|hate|hates|sucks|terrible|awful|painful|nightmare|overpriced|too expensive|broken|clunky|outgrow(n|ing)?\b|rip (it |them )?out|ditch\w*|unhappy|disappointed|complain\w*|lacks?\b|missing features|can'?t do|limitation)\w*/i
 
@@ -175,12 +179,13 @@ export function showsActivePain(text: string): boolean { return ACTIVE_PAIN_MARK
 export function applyEvidenceQualityGate(leads: { signal: string; excerpt?: string | null; score: number; intent?: number; why?: string }[]): number {
   let gated = 0
   for (const l of leads) {
-    const text = `${l.signal}\n${l.excerpt ?? ''}`
-    if (!readsLikeJobPosting(text) || showsActivePain(text)) continue
+    const quote = l.excerpt ?? ''
+    if (showsActivePain(quote)) continue // the quote itself shows the pain: keeps its grade
+    if (!HIRING_SIGNAL.test(l.signal) && !readsLikeJobPosting(`${l.signal}\n${quote}`)) continue
     gated++
     l.score = Math.min(l.score, 49)
     if (typeof l.intent === 'number') l.intent = Math.min(l.intent, 1)
-    l.why = `Evidence reads as a job posting without active pain. ${l.why ?? ''}`.trim().slice(0, 300)
+    l.why = `Hiring signal without pain in the quoted evidence. ${l.why ?? ''}`.trim().slice(0, 300)
   }
   return gated
 }

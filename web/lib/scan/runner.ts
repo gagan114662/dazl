@@ -476,11 +476,16 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         outcome.leads.forEach((l, i) => { const g = grades[i]; if (g) { l.fit = g.fit; l.intent = g.intent; l.action = g.action; l.why = g.why; l.signals = JSON.stringify(g.signals); l.icp_match = JSON.stringify(g.match) } })
       }
     }
-    // Evidence-quality gate: job-posting boilerplate without active pain is not intent -
-    // cap the score below 50 and force intent low, scored and unscored leads alike.
+    // Evidence-quality gate: hiring signals without pain in the quoted evidence are not
+    // intent - cap the score below 50 and force intent low, scored and unscored alike.
     try { applyEvidenceQualityGate(outcome.leads) } catch { /* gate only, never fails the scan */ }
     const seen = new Set(outcome.review.map(r => dedupKey(r)))
-    for (const l of walledLeads) { const k = dedupKey(l); if (!seen.has(k)) { seen.add(k); outcome.review.push({ ...l, contact: null, review_reason: 'login_required' }) } }
+    const walledRows: typeof outcome.review = []
+    for (const l of walledLeads) { const k = dedupKey(l); if (!seen.has(k)) { seen.add(k); walledRows.push({ ...l, contact: null, review_reason: 'login_required' }) } }
+    // Login-walled items keep their candidate-level score; the same gate applies to them -
+    // a walled hiring post with no pain in its snippet is capped below 50 like any job ad.
+    try { applyEvidenceQualityGate(walledRows) } catch { /* gate only */ }
+    outcome.review.push(...walledRows)
     finish(db, job, 'done', null, outcome, leads.length + walledLeads.length)
     if (complaints.length > 0) { try { badgeComplaintLeads(db, job.id, complaints) } catch { /* badge only */ } }
     // Watch run: flag the leads this watch has never surfaced, remember the rest.

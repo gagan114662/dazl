@@ -96,7 +96,7 @@ test('evidence-quality gate: job-posting boilerplate without pain is capped belo
   assert.equal(gated, 1)
   assert.equal(leads[0].score, 49)
   assert.equal(leads[0].intent, 1)
-  assert.match(leads[0].why, /job posting/i)
+  assert.match(leads[0].why, /without pain/i)
   assert.equal(leads[1].score, 88)
   assert.equal(leads[1].intent, 5)
   assert.equal(leads[2].score, 91)
@@ -117,4 +117,40 @@ test('evidence-quality gate: marker coverage and never raises intent', async () 
   applyEvidenceQualityGate(low)
   assert.equal(low[0].intent, 0) // gate never raises
   assert.equal(low[0].score, 40) // already below the cap stays
+})
+
+test('evidence-quality gate: type-keyed cap - the 3 live X leads (JAX 75, Chainalysis 72, Synerise 70) all cap below 50', async () => {
+  const { applyEvidenceQualityGate } = await import('../lib/scan/score.ts')
+  // Verbatim signal texts from the live scan job b1fbaa43460ac65eeefb4248 (2026-10-21):
+  // login_walled review rows, no verified quote (evidence_excerpt null), model-read pain in the signal.
+  const leads = [
+    { signal: 'Hiring for Director, Sales Operations & Enablement position indicates potential evaluation of sales tools and processes.', excerpt: null, score: 75, why: 'x' },
+    { signal: 'Hiring for Head of Sales Enablement position suggests sales operations scaling and potential need for supporting software solutions.', excerpt: null, score: 72, why: 'x' },
+    { signal: 'Hiring for Partner Onboarding & Sales Enablement Managers indicates expansion of sales operations and potential need for new sales tools.', excerpt: null, score: 70, why: 'x' },
+  ]
+  const gated = applyEvidenceQualityGate(leads)
+  assert.equal(gated, 3)
+  assert.deepEqual(leads.map(l => l.score), [49, 49, 49])
+  for (const l of leads) assert.match(l.why, /without pain in the quoted evidence/i)
+})
+
+test('evidence-quality gate: pain in the model-written signal does NOT rescue; pain in the quote does', async () => {
+  const { applyEvidenceQualityGate } = await import('../lib/scan/score.ts')
+  const leads = [
+    // Boilerplate job post; the model claims pain in the signal but the quote shows none: capped.
+    { signal: 'Hiring a CRM admin - team is frustrated and switching vendors soon', excerpt: 'Responsibilities include administering the CRM. Requirements: 3 years of experience.', score: 80, intent: 4, why: 'x' },
+    // Login-walled complaint item: no verified quote, but the snippet itself shows pain: keeps grade (still review-lane only).
+    { signal: 'Founder complaint about their CRM', excerpt: 'our acme crm is a nightmare, switching next quarter, anyone else?', score: 77, intent: 4, why: 'x' },
+    // Hiring-type signal with a real pain quote: keeps grade.
+    { signal: 'Hiring a RevOps lead after their CRM rollout failed', excerpt: 'we are hiring because our current CRM is broken and we are ripping it out', score: 82, intent: 4, why: 'x' },
+    // Non-hiring, non-boilerplate signal without pain language: untouched.
+    { signal: 'Announced Series B funding round', excerpt: 'Acme raised a Series B to expand the team.', score: 66, intent: 3, why: 'x' },
+  ]
+  const gated = applyEvidenceQualityGate(leads)
+  assert.equal(gated, 1)
+  assert.equal(leads[0].score, 49)
+  assert.equal(leads[0].intent, 1)
+  assert.equal(leads[1].score, 77)
+  assert.equal(leads[2].score, 82)
+  assert.equal(leads[3].score, 66)
 })
