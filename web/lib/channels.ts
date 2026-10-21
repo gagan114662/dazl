@@ -13,7 +13,7 @@ export const CHANNELS: Channel[] = [
   { id: 'rss', name: 'RSS', tier: 0, status: 'live', note: 'On. Add feed URLs in a scan under Sources. No key.' },
   { id: 'search', name: 'Web search', tier: 0, status: 'live', note: 'On. TinyFish search when the operator has set a key, otherwise your own model provider search. Exa is not used because it needs a paid key.' },
   { id: 'v2ex', name: 'V2EX', tier: 0, status: 'live', note: 'On. Pick it in a scan under Sources. Keyword search goes through sov2ex.com, a third-party service that receives the keywords. Most posts are Chinese; only topics with English text can be verified.' },
-  { id: 'x', name: 'Twitter / X', tier: 1, status: 'worker', platform: 'x', note: 'Needs a worker. X disallows automated access in robots.txt and its terms.' },
+  { id: 'x', name: 'Twitter / X', tier: 1, status: 'worker', platform: 'x', note: 'Found through web search of the public index when the operator sets a TinyFish key - no session needed and no account at risk; results go to needs review. Otherwise needs a worker session. X disallows automated access in robots.txt and its terms.' },
   { id: 'reddit', name: 'Reddit', tier: 1, status: 'worker', platform: 'reddit', note: 'Needs a worker. Reddit limits automated access under its terms.' },
   { id: 'instagram', name: 'Instagram', tier: 1, status: 'worker', platform: 'instagram', note: 'Needs a worker. Instagram disallows automated access in robots.txt and its terms.' },
   { id: 'facebook', name: 'Facebook', tier: 1, status: 'worker', platform: 'facebook', note: 'Needs a worker. Facebook disallows automated access in robots.txt and its terms. The worker does not fetch Facebook yet.' },
