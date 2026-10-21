@@ -15,7 +15,7 @@ test('health is open; fetch needs the bearer token; bad bodies are 400s; unknown
   await withServer(async () => {
     const health = await fetch(`http://127.0.0.1:${PORT}/health`)
     assert.equal(health.status, 200)
-    assert.deepEqual((await health.json()).platforms.sort(), ['reddit', 'x'])
+    assert.deepEqual((await health.json()).platforms.sort(), ['linkedin', 'reddit', 'x'])
 
     const noAuth = await fetch(`http://127.0.0.1:${PORT}/fetch`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
     assert.equal(noAuth.status, 401)
