@@ -14,6 +14,18 @@ const b64u = (b: Buffer) => b.toString('base64url')
 export interface OauthStart { url: string; cookie: string }
 
 // cookie is "state.nonce.verifier", kept in an HttpOnly cookie for 10 minutes.
+// The OAuth start and callback can run on different hosts (a user on www.dazl.ai starts
+// the flow; PUBLIC_BASE_URL points the callback at the apex). Host-only cookies then
+// never reach the callback and the flow fails with google_failed. Spanning the parent
+// domain fixes both legs. Undefined for localhost/IPs, where a Domain attribute breaks.
+export function cookieDomain(base: string): string | undefined {
+  try {
+    const h = new URL(base).hostname
+    if (h === 'localhost' || h.endsWith('.localhost') || /^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.includes(':')) return undefined
+    return `.${h}`
+  } catch { return undefined }
+}
+
 export function startAuth(clientId: string, redirectUri: string): OauthStart {
   const state = b64u(randomBytes(24))
   const nonce = b64u(randomBytes(24))

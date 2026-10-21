@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { startAuth } from '@/lib/auth-google'
+import { cookieDomain, startAuth } from '@/lib/auth-google'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 
 export async function GET(req: NextRequest) {
@@ -10,6 +10,6 @@ export async function GET(req: NextRequest) {
   if (!rl.ok) return NextResponse.redirect(new URL('/sign-in?error=too_many', base))
   const { url, cookie } = startAuth(clientId, `${base.replace(/\/$/, '')}/api/auth/callback/google`)
   const res = NextResponse.redirect(url)
-  res.cookies.set('dazl_oauth', cookie, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: 600, path: '/api/auth' })
+  res.cookies.set('dazl_oauth', cookie, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: 600, path: '/api/auth', ...(cookieDomain(base) ? { domain: cookieDomain(base) } : {}) })
   return res
 }

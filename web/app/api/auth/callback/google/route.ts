@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createSession, getAuthDb, SESSION_TTL_S } from '@/lib/auth-db'
-import { exchangeCode, migrateOauth, parseCookie, resolveUser, sameString, verifyIdToken } from '@/lib/auth-google'
+import { cookieDomain, exchangeCode, migrateOauth, parseCookie, resolveUser, sameString, verifyIdToken } from '@/lib/auth-google'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 
 const back = (base: string, err: string) => {
   const res = NextResponse.redirect(new URL(`/sign-in?error=${err}`, base))
-  res.cookies.set('dazl_oauth', '', { maxAge: 0, path: '/api/auth' })
+  res.cookies.set('dazl_oauth', '', { maxAge: 0, path: '/api/auth', ...(cookieDomain(base) ? { domain: cookieDomain(base) } : {}) })
   return res
 }
 
@@ -33,7 +33,7 @@ export async function GET(req: NextRequest) {
   if ('error' in r) return back(base, 'google_email_exists')
 
   const res = NextResponse.redirect(new URL('/app', base))
-  res.cookies.set('dazl_session', createSession(r.user_id), { httpOnly: true, secure: true, sameSite: 'lax', maxAge: SESSION_TTL_S, path: '/' })
-  res.cookies.set('dazl_oauth', '', { maxAge: 0, path: '/api/auth' })
+  res.cookies.set('dazl_session', createSession(r.user_id), { httpOnly: true, secure: true, sameSite: 'lax', maxAge: SESSION_TTL_S, path: '/', ...(cookieDomain(base) ? { domain: cookieDomain(base) } : {}) })
+  res.cookies.set('dazl_oauth', '', { maxAge: 0, path: '/api/auth', ...(cookieDomain(base) ? { domain: cookieDomain(base) } : {}) })
   return res
 }
