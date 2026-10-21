@@ -105,6 +105,7 @@ function addColumns(db: Database.Database): void {
   add('leads', 'why', 'TEXT CHECK (why IS NULL OR length(why) <= 300)')
   add('leads', 'signals', 'TEXT CHECK (signals IS NULL OR length(signals) <= 1000)')
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS leads_dedup ON leads (scan_job_id, dedup_key) WHERE dedup_key IS NOT NULL')
+  add('leads', 'seen_before', 'INTEGER NOT NULL DEFAULT 0')
 }
 
 export function createJob(db: Database.Database, userId: string, input: ScanInput): string {
@@ -163,7 +164,7 @@ export function listLeads(db: Database.Database, userId: string, jobId: string, 
     .prepare(
       `SELECT l.id, l.scan_job_id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.created_at,
 l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
-         l.fit, l.intent, l.action, l.why, l.signals, l.icp_match, l.watch_new
+         l.fit, l.intent, l.action, l.why, l.signals, l.icp_match, l.watch_new, l.seen_before
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
        WHERE j.id = ? AND j.user_id = ? ${includeHidden ? '' : 'AND (l.fit IS NULL OR l.fit > 1)'}
        ORDER BY (l.fit IS NULL), l.fit DESC, l.intent DESC, l.action DESC, (l.confidence IS NULL), l.confidence DESC, l.score DESC, l.created_at DESC LIMIT ?`,
@@ -173,6 +174,25 @@ l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l
 
 export function countHiddenLeads(db: Database.Database, userId: string, jobId: string): number {
   return (db.prepare('SELECT count(*) AS n FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.id = ? AND j.user_id = ? AND l.fit IS NOT NULL AND l.fit <= 1').get(jobId, userId) as { n: number }).n
+}
+
+// Cross-scan dedupe: flag leads whose company already appeared in one of the user's EARLIER
+// jobs (by company domain, else normalized company name). Repeat and watch runs re-surface the
+// same companies; the flag lets the UI tuck them behind a toggle instead of showing them as fresh.
+export function markSeenBefore(db: Database.Database, userId: string, jobId: string, keyOf: (company: string) => string): number {
+  const job = db.prepare('SELECT created_at, rowid AS r FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, userId) as { created_at: number; r: number } | undefined
+  if (!job) return 0
+  const prior = db.prepare('SELECT l.company, l.company_domain, j.rowid AS jr FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ? AND j.rowid < ? AND l.review_reason IS NULL').all(userId, job.r) as { company: string; company_domain: string | null }[]
+  if (prior.length === 0) return 0
+  const domains = new Set(prior.map(p => p.company_domain?.toLowerCase()).filter((d): d is string => !!d))
+  const names = new Set(prior.map(p => keyOf(p.company)))
+  const mine = db.prepare('SELECT id, company, company_domain FROM leads WHERE scan_job_id = ? AND review_reason IS NULL').all(jobId) as { id: string; company: string; company_domain: string | null }[]
+  const mark = db.prepare('UPDATE leads SET seen_before = 1 WHERE id = ?')
+  let n = 0
+  for (const l of mine) {
+    if ((l.company_domain && domains.has(l.company_domain.toLowerCase())) || (l.company && names.has(keyOf(l.company)))) { mark.run(l.id); n++ }
+  }
+  return n
 }
 
 export function latestJobId(db: Database.Database, userId: string): string | undefined {

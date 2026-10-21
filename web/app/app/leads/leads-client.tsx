@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 
-interface Lead { id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; watch_new?: number; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string }[] }
+interface Lead { id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; watch_new?: number; seen_before?: number; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string }[] }
 interface Icp { summary: string; who: string[]; industries: string[]; sizes: string[]; where: string[]; signals: string[]; exclude: string[] }
 interface Watch { id: string; query: string; active: boolean; next_run_at: number | null; last_run_at: number | null; paused_reason: string | null; last_job_id: string | null; last_status: string | null; new_leads: number }
 interface Quality { candidates: number; passed: number | null; needs_review: number | null; dropped: number | null; drop_reasons: Record<string, number> }
@@ -49,6 +49,7 @@ export default function LeadsClient() {
   const [watchNote, setWatchNote] = useState('')
   const [hiddenCount, setHiddenCount] = useState(0)
   const [showHidden, setShowHidden] = useState(false)
+  const [showSeen, setShowSeen] = useState(false)
   async function pushCrm(leadId: string) {
     const r = await fetch('/api/crm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'push', lead_id: leadId }) })
     const j = await r.json().catch(() => ({}))
@@ -234,9 +235,9 @@ export default function LeadsClient() {
         </p>
       )}
       <div className="card divide-y divide-white/5">
-        {leads.filter(l => !l.review_reason).length === 0 ? (
+        {leads.filter(l => !l.review_reason && (showSeen || !l.seen_before)).length === 0 ? (
           <p className="p-10 text-center text-gray-500 text-sm">{status === 'done' ? 'The scan finished with no leads.' : 'No leads yet. Run a scan.'}</p>
-        ) : leads.filter(l => !l.review_reason).map(l => (
+        ) : leads.filter(l => !l.review_reason && (showSeen || !l.seen_before)).map(l => (
           <div key={l.id} className="p-4 text-sm">
 <div className="font-medium">{l.company_domain ? <a className="underline decoration-white/30 hover:decoration-white" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{l.company || l.name}</a> : (l.company || l.name)} <span className="text-gray-500">score {l.score}</span>
               {!!l.watch_new && <span className="ml-2 text-[10px] uppercase tracking-wide text-green-300 border border-green-300/30 px-1 py-0.5">new</span>}
@@ -278,6 +279,11 @@ export default function LeadsClient() {
           </div>
         ))}
       </div>
+      {status === 'done' && leads.some(l => l.seen_before) && (
+        <button onClick={() => setShowSeen(v => !v)} className="text-gray-500 hover:text-white text-xs mt-2 block">
+          {showSeen ? 'Hide leads from earlier scans' : `Show ${leads.filter(l => l.seen_before).length} lead${leads.filter(l => l.seen_before).length === 1 ? '' : 's'} seen in your earlier scans`}
+        </button>
+      )}
       {status === 'done' && (hiddenCount > 0 || showHidden) && (
         <button onClick={() => setShowHidden(v => !v)} className="text-gray-500 hover:text-white text-xs mt-2">
           {showHidden ? 'Hide lower-fit leads' : `Show ${hiddenCount} lower-fit lead${hiddenCount === 1 ? '' : 's'} (fit 0-1)`}

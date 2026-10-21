@@ -74,3 +74,31 @@ test('stale running jobs are retried, then failed after max attempts', () => {
   }
   assert.equal(getJob(db, 'u', id)?.error, 'timeout')
 })
+
+test('cross-scan dedupe: leads repeat-flagged by domain or normalized name, earliest job wins', async () => {
+  const { markSeenBefore } = await import('../lib/scan/store.ts')
+  const { companyKey } = await import('../lib/scan/evidence.ts')
+  const db = setup()
+  const j1 = createJob(db, 'user-a', input)
+  claim(db, j1)
+  addLead(db, j1, { company: 'Alpha Inc', company_domain: null })
+  db.prepare("UPDATE leads SET company_domain = 'alpha.com' WHERE company = 'Alpha Inc'").run()
+  addLead(db, j1, { company: 'Beta Co' })
+  const j2 = createJob(db, 'user-b', input) // another tenant's history must not count
+  claim(db, j2)
+  addLead(db, j2, { company: 'Gamma' })
+  db.prepare("UPDATE leads SET company_domain = 'gamma.com' WHERE company = 'Gamma'").run()
+  const j3 = createJob(db, 'user-a', input)
+  claim(db, j3)
+  addLead(db, j3, { company: 'Alpha', })  // same company, looser name
+  db.prepare("UPDATE leads SET company_domain = 'alpha.com' WHERE company = 'Alpha'").run()
+  addLead(db, j3, { company: 'Beta Company' }) // normalized-name match
+  addLead(db, j3, { company: 'Gamma' })        // only the OTHER tenant has it
+  db.prepare("UPDATE leads SET company_domain = 'gamma.com' WHERE company = 'Gamma' AND scan_job_id = ?").run(j3)
+  addLead(db, j3, { company: 'Fresh Newco' })
+  assert.equal(markSeenBefore(db, 'user-a', j3, companyKey), 2)
+  const flagged = (db.prepare('SELECT company FROM leads WHERE scan_job_id = ? AND seen_before = 1 ORDER BY company').all(j3) as { company: string }[]).map(r => r.company)
+  assert.deepEqual(flagged, ['Alpha', 'Beta Company'])
+  assert.equal(markSeenBefore(db, 'user-a', j1, companyKey), 0, 'the earliest job has nothing before it')
+  assert.equal(markSeenBefore(db, 'user-a', 'no-such-job', companyKey), 0)
+})
