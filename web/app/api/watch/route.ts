@@ -1,0 +1,33 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { getScanDb, requireUser } from '@/lib/scan/service'
+import { sameOriginJson } from '@/lib/same-origin'
+import { rateLimit } from '@/lib/rate-limit'
+import { normalizeIcp } from '@/lib/scan/icp'
+import { createWatch, listWatches, watchAction } from '@/lib/watch'
+
+export async function GET() {
+  const user = await requireUser()
+  if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
+  return NextResponse.json({ watches: listWatches(getScanDb(), user.id) })
+}
+
+export async function POST(req: NextRequest) {
+  const user = await requireUser()
+  if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
+  if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
+  if (!rateLimit(`watch:${user.id}`, 30, 60_000).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  const body = await req.json().catch(() => null)
+  const db = getScanDb()
+  if (body?.action) {
+    const id = typeof body.id === 'string' ? body.id : ''
+    if (!['pause', 'resume', 'delete'].includes(body.action) || !/^[a-f0-9]{24}$/.test(id)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
+    if (!watchAction(db, user.id, id, body.action)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    return NextResponse.json({ ok: true })
+  }
+  const query = typeof body?.query === 'string' ? body.query.trim() : ''
+  const icp = normalizeIcp(body?.icp)
+  if (query.length < 3 || query.length > 600 || !icp) return NextResponse.json({ error: 'A search and its profile are needed' }, { status: 400 })
+  const { watch, error } = createWatch(db, user.id, query, JSON.stringify(icp))
+  if (error) return NextResponse.json({ error }, { status: 400 })
+  return NextResponse.json({ watch })
+}

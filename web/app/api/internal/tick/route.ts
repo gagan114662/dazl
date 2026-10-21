@@ -3,6 +3,8 @@ import { timingSafeEqual } from 'node:crypto'
 import { getScanDb } from '@/lib/scan/service'
 import { syncReplies } from '@/lib/outreach/replies'
 import { runFollowups } from '@/lib/outreach/followups'
+import { runDueWatches } from '@/lib/watch'
+import { kickRunner } from '@/lib/scan/runner'
 
 // Called by a scheduler (cron or a systemd timer) with AUTOPILOT_TICK_SECRET. Reads replies and sends due
 // follow-ups for tenants who turned both on. Without the secret configured the route does not exist.
@@ -17,5 +19,7 @@ export async function POST(req: NextRequest) {
   for (const t of tenants) {
     try { await syncReplies(db, t.tenant_id); await runFollowups(db, t.tenant_id, t.business_name ?? ''); done++ } catch (e) { console.error('tick failed', t.tenant_id, e instanceof Error ? e.message : 'error') }
   }
-  return NextResponse.json({ ok: true, tenants: done })
+  const watches = runDueWatches(db)
+  if (watches.ran > 0) await kickRunner(db)
+  return NextResponse.json({ ok: true, tenants: done, watches })
 }

@@ -9,6 +9,7 @@ import { MAX_ATTEMPTS, reapStaleJobs } from './store.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, verifyEvidence, type Candidate } from './evidence.ts'
 import { inferIcp, normalizeIcp, type Icp } from './icp.ts'
 import { collectAdvanced, xSearchQuery } from '../advanced/index.ts'
+import { markWatchLeads } from '../watch.ts'
 import type { AdvPlatform } from '../advanced/config.ts'
 import { buildSourcePrompt, collectEvidence, normalizeSources } from '../sources/index.ts'
 import { migrateTinyfish, parseQueries, queryPrompt, tfFetch, tfSearch, tinyfishEnabled, toEvidence } from '../search/tinyfish.ts'
@@ -18,7 +19,7 @@ import { enrichJobSignals } from '../signals/index.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
 import { sourceCap } from './source-quality.ts'
 
-export interface Job { id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string; seller?: string | null }
+export interface Job { id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string; seller?: string | null; watch_id?: string | null }
 export interface LeadDraft extends Candidate {}
 export interface VerifiedLead extends LeadDraft { confidence: number; date_status: 'verified' | 'unverified' | 'undated'; retrieved_at: number; contact: string | null; fit?: number; intent?: number; action?: number; why?: string; signals?: string; icp_match?: string }
 
@@ -256,7 +257,7 @@ export function claimKeyedJob(db: Database.Database, jobId?: string): Job | null
   return db.transaction(() => {
     const row = db
       .prepare(
-        `SELECT id, user_id, business_name, industry, location, attempts, query, icp, sources, funded_by FROM scan_jobs
+        `SELECT id, user_id, business_name, industry, location, attempts, query, icp, sources, funded_by, watch_id FROM scan_jobs
          WHERE status = 'pending' ${jobId ? 'AND id = ?' : ''}
            AND (user_id IN (SELECT tenant_id FROM tenant_llm_keys) OR funded_by = 'trial')
          ORDER BY created_at, rowid LIMIT 1`,
@@ -439,6 +440,8 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     const seen = new Set(outcome.review.map(r => dedupKey(r)))
     for (const l of walledLeads) { const k = dedupKey(l); if (!seen.has(k)) { seen.add(k); outcome.review.push({ ...l, contact: null, review_reason: 'login_required' }) } }
     finish(db, job, 'done', null, outcome, leads.length + walledLeads.length)
+    // Watch run: flag the leads this watch has never surfaced, remember the rest.
+    if (job.watch_id) { try { markWatchLeads(db, job.watch_id, job.id) } catch { /* bonus only */ } }
     // Contact-page crawl enriches verified leads with role emails (robots.txt hard rule). Never affects the scan result.
     await crawlJob(db, job.user_id, job.id, deps.crawlGet ? { get: deps.crawlGet } : {})
     // Intent-signal enrichment (SEC Form D, public job boards). Bonus rows beside the
