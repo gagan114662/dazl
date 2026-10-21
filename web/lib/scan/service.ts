@@ -6,6 +6,7 @@ import { migrateConnectors } from '../connectors/store.ts'
 import { migratePlans } from '../plans.ts'
 import { migrateBilling } from '../billing/stripe.ts'
 import { migrateOutreach } from '../outreach/store.ts'
+import { migrateAutopilot } from '../outreach/autopilot.ts'
 
 let ready = false
 export function getScanDb() {
@@ -17,6 +18,7 @@ export function getScanDb() {
     migrateConnectors(db)
     migrateBilling(db)
     migrateOutreach(db)
+    migrateAutopilot(db)
     ready = true
   }
   return db
