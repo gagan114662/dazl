@@ -1,4 +1,5 @@
 import LlmKeyPanel from './llm-key-panel'
+import PlanPanel from './plan-panel'
 
 export default function Settings() {
   return (
@@ -6,6 +7,7 @@ export default function Settings() {
       <h1 className="text-2xl font-bold mb-1">Settings</h1>
       <p className="text-gray-400 text-sm mb-8">Connect your accounts and configure your GTM agent.</p>
 
+      <PlanPanel />
       <LlmKeyPanel />
 
       {/* Gmail */}

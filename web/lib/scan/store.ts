@@ -64,6 +64,23 @@ export function migrateScan(db: Database.Database): void {
     WHEN (SELECT status FROM scan_jobs WHERE id = NEW.scan_job_id) IS NOT 'running'
     BEGIN SELECT RAISE(ABORT, 'leads can only be added to a running job'); END;
   `)
+  addColumns(db)
+}
+
+// Evidence columns. Nullable, so rows written by other workers (Hermes) stay valid:
+// a lead with no evidence_excerpt was not verified by dazl.
+function addColumns(db: Database.Database): void {
+  const has = (t: string, c: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).some(r => r.name === c)
+  const add = (t: string, c: string, def: string) => { if (!has(t, c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`) }
+  add('leads', 'evidence_excerpt', 'TEXT CHECK (evidence_excerpt IS NULL OR length(evidence_excerpt) <= 400)')
+  add('leads', 'event_date', 'TEXT')
+  add('leads', 'date_status', "TEXT CHECK (date_status IS NULL OR date_status IN ('verified','unverified','undated'))")
+  add('leads', 'retrieved_at', 'INTEGER')
+  add('leads', 'confidence', 'INTEGER CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 100)')
+  add('leads', 'dedup_key', 'TEXT')
+  add('scan_jobs', 'candidates', 'INTEGER')
+  add('scan_jobs', 'verified', 'INTEGER')
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS leads_dedup ON leads (scan_job_id, dedup_key) WHERE dedup_key IS NOT NULL')
 }
 
 export function createJob(db: Database.Database, userId: string, input: ScanInput): string {
@@ -90,8 +107,8 @@ export function reapStaleJobs(db: Database.Database): void {
 export function getJob(db: Database.Database, userId: string, id: string) {
   reapStaleJobs(db)
   const job = db
-    .prepare('SELECT id, status, error, created_at, finished_at FROM scan_jobs WHERE id = ? AND user_id = ?')
-    .get(id, userId) as { id: string; status: string; error: string | null; created_at: number; finished_at: number | null } | undefined
+    .prepare('SELECT id, status, error, created_at, finished_at, candidates, verified FROM scan_jobs WHERE id = ? AND user_id = ?')
+    .get(id, userId) as { id: string; status: string; error: string | null; created_at: number; finished_at: number | null; candidates: number | null; verified: number | null } | undefined
   if (!job) return undefined
   const { n } = db.prepare('SELECT count(*) AS n FROM leads WHERE scan_job_id = ?').get(id) as { n: number }
   return { ...job, lead_count: n }
@@ -104,7 +121,8 @@ export function countActiveJobs(db: Database.Database, userId: string): number {
 export function listLeads(db: Database.Database, userId: string, jobId: string, limit = 200) {
   return db
     .prepare(
-      `SELECT l.id, l.scan_job_id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.created_at
+      `SELECT l.id, l.scan_job_id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.created_at,
+         l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
        WHERE j.id = ? AND j.user_id = ? ORDER BY l.score DESC, l.created_at DESC LIMIT ?`,
     )
