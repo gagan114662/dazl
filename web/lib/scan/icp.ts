@@ -62,7 +62,7 @@ export async function inferIcp(provider: Provider, apiKey: string, query: string
   const complete = provider.complete
   if (!complete) return { icp: fallbackIcp(query), inferred: false }
   try {
-    const icp = parseIcp(await complete.call(provider, apiKey, icpPrompt(query), fetchImpl))
+    const icp = parseIcp(await complete.call(provider, apiKey, icpPrompt(query), fetchImpl, 800))
     if (icp) return { icp, inferred: true }
   } catch (err) {
     if (err && typeof err === 'object' && 'kind' in err && (err as { kind: string }).kind === 'auth') throw err
