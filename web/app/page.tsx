@@ -7,6 +7,9 @@ const STEPS = [
   { n: '3', title: 'Every lead is checked', desc: 'Each lead links to its source page and quotes the exact line. dazl confirms the company and date on the page, and drops what fails.' },
 ]
 const FEATURES = [
+  { title: 'Contacts with the source', desc: 'Contacts companies publish themselves, with the source.' },
+  { title: 'One flat price', desc: 'One flat price. No credits, no overages, no per-lead fees.' },
+  { title: 'No region locks', desc: 'Works from public sources worldwide.' },
   { title: 'Proof on every lead', desc: 'Source link, exact quote, event date and a confidence score. Leads that cannot be verified never reach your list, and you see how many were dropped and why.' },
   { title: 'Your key, your cost', desc: 'Bring your own Anthropic or OpenAI key. Usage is billed by the provider at cost, and your key is encrypted at rest.' },
   { title: 'You approve every send', desc: 'Email goes from your own Gmail, one message at a time, after you approve the exact text. Unsubscribe links are built in and honored right away.' },
@@ -33,7 +36,7 @@ export default function Home() {
       <div className="rails relative max-w-6xl mx-auto w-full">
         <section className="px-6 md:px-12 pt-14 md:pt-20 pb-10">
           <h1 className="text-[40px] md:text-[52px] font-semibold leading-[1.08] tracking-[-0.02em] max-w-3xl">Where buyers get found, and proven.</h1>
-          <p className="text-lg md:text-[20px] text-[#555] mt-5 max-w-[700px] leading-[1.45]">Tell dazl who you are looking for in plain words. It searches the web for buyers showing intent right now, and checks every lead against the page it came from.</p>
+          <p className="text-lg md:text-[20px] text-[#555] mt-5 max-w-[700px] leading-[1.45]">Find warm leads from live buying signals (hiring, funding, complaints, expansions), each with the proof quoted and linked.</p>
           <div className="flex flex-wrap gap-3 mt-8">
             <Link href="/sign-up" className="btn-primary">Start for free</Link>
             <a href="#how" className="btn-ghost">How it works</a>
@@ -96,8 +99,8 @@ export default function Home() {
           </div>
           <div className="card p-8 max-w-xs w-full text-left !border-black/50 ">
             <div className="text-sm text-[#111] mb-1">Pro</div>
-            <div className="text-4xl font-medium mb-1">CA$99<span className="text-lg font-normal text-[#555]">/mo</span></div>
-            <p className="text-[#555] text-sm mb-6">Unlimited scans</p>
+            <div className="text-4xl font-medium mb-1">Unlimited</div>
+            <p className="text-[#555] text-sm mb-6">scans. One flat monthly price. No credits, no overages.</p>
             <Link href="/sign-up" className="btn-primary w-full">Start free, upgrade any time</Link>
           </div>
         </div>
