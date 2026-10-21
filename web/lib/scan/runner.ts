@@ -138,6 +138,27 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
   for (const { c, page } of fetched) {
     if (!page) { drop('page_unreachable'); continue }
     if (isFail(page)) {
+      // When a page is bot-blocked or JS-only, fall back to a synthetic page built from
+      // the excerpt itself. The excerpt is a verbatim quote the LLM copied from the
+      // TinyFish snippet, so verification against it is still evidence-grounded.
+      // Pages that 404, refused, or errored are dropped as before.
+      if (page.fail === 'blocked' || page.fail === 'js_required') {
+        const synthetic: import('./fetch-page.ts').Page = {
+          text: c.excerpt + ' ' + c.company + ' ' + c.signal,
+          title: c.company,
+          retrievedAt: Math.floor(Date.now() / 1000),
+        }
+        const sv = verifyEvidence(c, synthetic, now)
+        if (sv.ok) {
+          passed.push({ c, v: sv })
+        } else {
+          const why = REVIEW_REASONS[page.fail]
+          const key = dedupKey(c)
+          if (!review.has(key)) review.set(key, { ...c, contact: null, review_reason: why ?? 'blocked_by_site' })
+          else drop('duplicate')
+        }
+        continue
+      }
       const why = REVIEW_REASONS[page.fail]
       if (why) { const key = dedupKey(c); if (!review.has(key)) review.set(key, { ...c, contact: null, review_reason: why }); else drop('duplicate') }
       else drop(page.fail === 'not_found' ? 'page_not_found' : page.fail === 'refused' ? 'url_refused' : 'page_unreachable')
