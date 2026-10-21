@@ -5,7 +5,7 @@ import Database from 'better-sqlite3'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
-import { saveSettings, isSuppressed } from '../lib/outreach/service.ts'
+import { saveSettings, getSettings, isSuppressed, cleanBookingUrl } from '../lib/outreach/service.ts'
 import { ATTESTATIONS, CONSENT_VERSION, enable, getState, migrateAutopilot, recentAutopilotAudit } from '../lib/outreach/autopilot.ts'
 import { grantConsent, hasConsent, migrateLedger, revokeAll } from '../lib/outreach/ledger.ts'
 import { acceptReadConsent, classifyReply, inboxRows, migrateReplies, newText, syncReplies } from '../lib/outreach/replies.ts'
@@ -169,4 +169,19 @@ test('inboxRows: joins lead company and follow-up state, newest first, tenant-sc
   assert.equal(rows[1].lead_name, 'Ada')
   assert.equal(rows[1].followups_sent, 1)
   assert.equal(rows[1].stopped, null)
+})
+
+test('booking link: https-only, stored on sender settings, lands in follow-up text only when set', async () => {
+  const db = await setup()
+  assert.throws(() => cleanBookingUrl('http://cal.com/pat'), /bad_booking_url/)
+  assert.throws(() => cleanBookingUrl('javascript:alert(1)'), /bad_booking_url/)
+  assert.equal(cleanBookingUrl(''), '')
+  saveSettings(db, 'A', { sender_name: 'Pat', postal_address: '1 King St W, Toronto ON M5H 1A1', booking_url: 'https://cal.com/pat/15min' })
+  assert.equal(getSettings(db, 'A')?.booking_url, 'https://cal.com/pat/15min')
+  const lead = { company: 'Northside', name: 'Sam Lee', signal: 'Hiring roofers', source_url: 'https://n.example/a' }
+  assert.ok(followupText(0, lead, 'Acme', 'https://cal.com/pat/15min').includes('https://cal.com/pat/15min'))
+  assert.ok(followupText(1, lead, 'Acme', 'https://cal.com/pat/15min').includes('https://cal.com/pat/15min'))
+  assert.ok(!followupText(0, lead, 'Acme').includes('cal.com'))
+  saveSettings(db, 'A', { sender_name: 'Pat', postal_address: '1 King St W, Toronto ON M5H 1A1', booking_url: '' })
+  assert.equal(getSettings(db, 'A')?.booking_url, null) // cleared
 })

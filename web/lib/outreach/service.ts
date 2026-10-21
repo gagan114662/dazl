@@ -60,17 +60,24 @@ export function unsubscribeByToken(db: Database.Database, token: string, master 
 }
 
 // ---------- sender identity ----------
-export interface Settings { sender_name: string; postal_address: string }
+export interface Settings { sender_name: string; postal_address: string; booking_url?: string | null }
+export function cleanBookingUrl(v: unknown): string {
+  const u = String(v ?? '').trim()
+  if (!u) return ''
+  if (!/^https:\/\/\S{4,300}$/.test(u) || /[\s"'<>]/.test(u)) throw new OutreachError('bad_booking_url')
+  return u
+}
 const ctl = /[\u0000-\u001f\u007f]/g
 export function saveSettings(db: Database.Database, tenantId: string, s: Settings): void {
   const sender_name = s.sender_name.replace(ctl, ' ').trim()
   const postal_address = s.postal_address.replace(ctl, ' ').replace(/\s+/g, ' ').trim()
   if (sender_name.length < 1 || sender_name.length > 100) throw new OutreachError('bad_sender_name')
   if (postal_address.length < 10 || postal_address.length > 300) throw new OutreachError('bad_postal_address')
-  db.prepare('INSERT INTO outreach_settings (tenant_id, sender_name, postal_address) VALUES (?, ?, ?) ON CONFLICT(tenant_id) DO UPDATE SET sender_name = excluded.sender_name, postal_address = excluded.postal_address').run(tenantId, sender_name, postal_address)
+  const booking_url = cleanBookingUrl(s.booking_url)
+  db.prepare('INSERT INTO outreach_settings (tenant_id, sender_name, postal_address, booking_url) VALUES (?, ?, ?, ?) ON CONFLICT(tenant_id) DO UPDATE SET sender_name = excluded.sender_name, postal_address = excluded.postal_address, booking_url = excluded.booking_url').run(tenantId, sender_name, postal_address, booking_url || null)
 }
 export const getSettings = (db: Database.Database, tenantId: string) =>
-  db.prepare('SELECT sender_name, postal_address FROM outreach_settings WHERE tenant_id = ?').get(tenantId) as Settings | undefined
+  db.prepare('SELECT sender_name, postal_address, booking_url FROM outreach_settings WHERE tenant_id = ?').get(tenantId) as Settings | undefined
 
 // ---------- drafts ----------
 const hash = (to: string, subject: string, body: string) => createHash('sha256').update(JSON.stringify([to, subject, body])).digest('hex')

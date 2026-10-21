@@ -1,12 +1,13 @@
 'use client'
 import { useEffect, useState } from 'react'
 
-interface State { gmail: { email: string; status: string } | null; sender: { sender_name: string; postal_address: string } | null; daily_cap: number; sent_24h: number }
+interface State { gmail: { email: string; status: string } | null; sender: { sender_name: string; postal_address: string; booking_url?: string | null } | null; daily_cap: number; sent_24h: number }
 
 export default function GmailPanel() {
   const [s, setS] = useState<State | null>(null)
   const [name, setName] = useState('')
   const [addr, setAddr] = useState('')
+  const [booking, setBooking] = useState('')
   const [msg, setMsg] = useState('')
 
   async function load() {
@@ -16,6 +17,7 @@ export default function GmailPanel() {
     setS(j)
     setName(n => n || j.sender?.sender_name || '')
     setAddr(a => a || j.sender?.postal_address || '')
+    setBooking(b => b || j.sender?.booking_url || '')
   }
   useEffect(() => {
     void load()
@@ -26,7 +28,7 @@ export default function GmailPanel() {
 
   async function saveSender(e: React.FormEvent) {
     e.preventDefault()
-    const r = await fetch('/api/outreach/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sender_name: name, postal_address: addr }) })
+    const r = await fetch('/api/outreach/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sender_name: name, postal_address: addr, booking_url: booking }) })
     setMsg(r.ok ? 'Saved.' : (await r.json()).error || 'Could not save')
     void load()
   }
@@ -54,6 +56,7 @@ export default function GmailPanel() {
       <form onSubmit={saveSender} className="flex flex-col gap-3">
         <input className={field} placeholder="Name recipients see (e.g. Pat Smith, Acme Roofing)" value={name} maxLength={100} onChange={e => setName(e.target.value)} />
         <input className={field} placeholder="Mailing address (required in every email by law)" value={addr} maxLength={300} onChange={e => setAddr(e.target.value)} />
+        <input className={field} type="url" placeholder="Booking link, optional (https://cal.com/you or https://calendly.com/you) - included in automatic follow-ups" value={booking} maxLength={300} onChange={e => setBooking(e.target.value)} />
         <button className="btn-ghost px-5 py-2 text-sm w-fit">Save sender details</button>
       </form>
       {s && <p className="text-[#666] text-xs mt-3">Sent in the last 24 hours: {s.sent_24h} of {s.daily_cap}.</p>}

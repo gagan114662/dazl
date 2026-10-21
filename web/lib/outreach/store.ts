@@ -59,4 +59,5 @@ export function migrateOutreach(db: Database.Database): void {
   addCol('oauth_states', 'read_scope', 'INTEGER NOT NULL DEFAULT 0')
   addCol('gmail_accounts', 'read_granted', 'INTEGER NOT NULL DEFAULT 0')
   addCol('outreach_messages', 'thread_id', 'TEXT')
+  addCol('outreach_settings', 'booking_url', 'TEXT')
 }
