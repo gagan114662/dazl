@@ -1,6 +1,6 @@
 'use client'
 import { KEY_UNREADABLE_COPY, knownErrorCopy } from '@/lib/error-copy'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { emptyLeadsMessage, scoreLabel } from '@/lib/scan/leads-view'
 import { contactsFromEnrichments } from '@/lib/people/rank'
 import { publishedEmail, publishedContact } from '@/lib/outreach/published-email'
@@ -60,6 +60,8 @@ export default function LeadsClient() {
   const [error, setError] = useState('')
   const [quality, setQuality] = useState<Quality | null>(null)
   const [jobError, setJobError] = useState('')
+  const [statusError, setStatusError] = useState<'not_found' | 'unavailable' | null>(null)
+  const statusFails = useRef(0)
   const [useGithub, setUseGithub] = useState(false)
   const [useYoutube, setUseYoutube] = useState(false)
   const [useV2ex, setUseV2ex] = useState(false)
@@ -225,22 +227,30 @@ export default function LeadsClient() {
   }
 
   useEffect(() => {
-    if (!jobId || status === 'done' || status === 'failed') return
+    if (!jobId || status === 'done' || status === 'failed' || statusError) return
     let stop = false
     const tick = async () => {
       const r = await fetch(`/api/scan/status?job_id=${jobId}`).catch(() => null)
-      // An unknown or cross-account job 404s: say so and stop, never spin forever.
-      if (!r || !r.ok) { if (!stop) { setStatus('failed'); setJobError(r && r.status === 404 ? 'not_found' : 'status_unavailable') } return }
-      const s = await r.json()
       if (stop) return
+      // 404: this account cannot see that scan - terminal, say so and stop.
+      if (r && r.status === 404) { setStatusError('not_found'); return }
+      // Network/5xx: the scan itself may be fine. Retry a few times, then surface a
+      // status-load error with a retry affordance - never mark the scan failed.
+      if (!r || !r.ok) {
+        statusFails.current += 1
+        if (statusFails.current >= 3) setStatusError('unavailable')
+        return
+      }
+      statusFails.current = 0
+      const s = await r.json()
       setStatus(s.status); setJobError(s.error ?? ''); setLeadsSoFar(s.lead_count ?? 0)
       setQuality(s.quality ?? null)
       if (s.icp) setIcp({ icp: s.icp, source: s.icp_source })
     }
-    void tick() // immediate first check: a done deep link must not flash "Scanning" for a full interval
+    void tick() // immediate first check: a done deep link must not sit on a loading state for a full interval
     const t = setInterval(tick, 5000)
     return () => { stop = true; clearInterval(t) }
-  }, [jobId, status])
+  }, [jobId, status, statusError])
 
   const loadLeads = async () => {
     if (!jobId) return
@@ -257,7 +267,7 @@ export default function LeadsClient() {
   // Deep link: /app/leads?job_id=... (watch cards link here to show a past watch run).
   useEffect(() => {
     const id = new URLSearchParams(window.location.search).get('job_id')
-    if (id && /^[a-f0-9]{24}$/.test(id)) { setJobId(id); setStatus('pending') }
+    if (id && /^[a-f0-9]{24}$/.test(id)) { setJobId(id); setStatus('loading') }
   }, [])
   const watchReq = async (body: Record<string, unknown>) => {
     setWatchNote('')
@@ -428,6 +438,12 @@ export default function LeadsClient() {
         </details>
       )}
       {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
+      {jobId && status === 'loading' && !statusError && (
+        <div className="card p-4 mb-4 flex items-center gap-3">
+          <span className="inline-block h-4 w-4 rounded-full border-2 border-gray-500 border-t-white animate-spin" aria-hidden />
+          <div className="text-sm text-gray-400">Loading this scan...</div>
+        </div>
+      )}
       {jobId && (status === 'pending' || status === 'running') && (
         <div className="card p-4 mb-4 flex items-center gap-3">
           <span className="inline-block h-4 w-4 rounded-full border-2 border-gray-500 border-t-white animate-spin" aria-hidden />
@@ -437,7 +453,12 @@ export default function LeadsClient() {
           </div>
         </div>
       )}
-      {jobId && status === 'failed' && <p className="text-gray-400 text-sm mb-4">{jobError === 'no_candidates' ? 'No candidates found for that search. Try rephrasing or broadening it - this scan did not count toward your monthly scans.' : jobError === 'trial_key_invalid' ? 'The scan service is having trouble right now. Try again later - this scan did not count toward your free scans.' : jobError === 'key_unreadable' ? KEY_UNREADABLE_COPY.replace(/\.$/, ', then run the scan again.') : jobError === 'not_found' ? 'That scan was not found in this account. Pick one from your past scans below.' : jobError === 'status_unavailable' ? 'Could not load the scan status. Refresh to try again.' : 'Scan failed. Try again.'}</p>}
+      {jobId && status === 'failed' && <p className="text-gray-400 text-sm mb-4">{jobError === 'no_candidates' ? 'No candidates found for that search. Try rephrasing or broadening it - this scan did not count toward your monthly scans.' : jobError === 'trial_key_invalid' ? 'The scan service is having trouble right now. Try again later - this scan did not count toward your free scans.' : jobError === 'key_unreadable' ? KEY_UNREADABLE_COPY.replace(/\.$/, ', then run the scan again.') : 'Scan failed. Try again.'}</p>}
+      {jobId && statusError && (
+        <p className="text-gray-400 text-sm mb-4">{statusError === 'not_found'
+          ? <>That scan was not found in this account. <a className="underline text-[#111]" href="/app/leads">View your past scans</a>.</>
+          : <>Could not load the scan status - this may be a connection problem, and the scan itself may still be running. <button className="underline text-[#111]" onClick={() => { statusFails.current = 0; setStatusError(null) }}>Retry</button></>}</p>
+      )}
       {watches.length > 0 && (
         <div className="card p-4 mb-4 text-sm">
           <h2 className="text-sm font-semibold mb-1">Weekly watches</h2>
