@@ -137,6 +137,8 @@ export default function LeadsClient() {
   }, [csvActive, csvBatch?.batch_id])
 
   const [hiddenCount, setHiddenCount] = useState(0)
+  const [siteUrl, setSiteUrl] = useState('')
+  const [siteBusy, setSiteBusy] = useState(false)
   const [showHidden, setShowHidden] = useState(false)
   const [showSeen, setShowSeen] = useState(false)
   async function pushCrm(leadId: string) {
@@ -163,6 +165,25 @@ export default function LeadsClient() {
       setError('Could not reach the server. Check your connection and try again.')
     } finally {
       setBusy(false)
+    }
+  }
+
+  // "Fill from my website": the returned profile is a draft for review - it is only
+  // ever persisted if the user runs a scan with it. Nothing is auto-saved.
+  async function fillFromSite() {
+    setError(''); setSiteBusy(true)
+    try {
+      const r = await fetch('/api/scan/icp-from-url', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: siteUrl.trim() }) })
+      const j = await r.json().catch(() => ({}))
+      if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first - filling from your website runs on your key.' : j.error === 'invalid' || j.error === 'not_public' ? 'That address is not a public website.' : j.error === 'js_only' || j.error === 'not_html' ? 'We could not read enough text from that page (it may need JavaScript). Try your about page, or describe your buyers above.' : j.error === 'blocked' || j.error === 'timeout' ? 'That site did not let us read it. Describe your buyers above instead.' : 'Could not read that site. Describe your buyers above instead.')); return }
+      setDraft(j.icp)
+      let host = 'your website'
+      try { host = new URL(j.source).hostname } catch { /* keep generic */ }
+      setDraftNote(`Filled from ${host}. Edit anything that is off, then run the scan.`)
+    } catch {
+      setError('Could not reach the server. Check your connection and try again.')
+    } finally {
+      setSiteBusy(false)
     }
   }
 
@@ -262,6 +283,10 @@ export default function LeadsClient() {
             <p className="text-xs text-gray-500">Items from these sources are checked against their page like every other lead.</p>
           </div>
         </details>
+        <div className="flex gap-2 mt-2 items-center">
+          <input type="text" value={siteUrl} onChange={e => setSiteUrl(e.target.value)} maxLength={300} placeholder="Your website - we will fill the profile from it" className={`${input} flex-1`} />
+          <button type="button" onClick={() => void fillFromSite()} disabled={siteBusy || siteUrl.trim().length < 5} className="text-gray-400 hover:text-white text-sm px-3 whitespace-nowrap disabled:opacity-40">{siteBusy ? 'Reading your site...' : 'Fill from my website'}</button>
+        </div>
         <div className="flex gap-2 mt-2">
           <button disabled={busy} className="btn-primary">{busy ? 'Working out your profile...' : 'Find leads'}</button>
           <button type="button" disabled={query.trim().length < 3 || starting} onClick={() => run(null)} className="text-gray-400 hover:text-white text-sm px-3 disabled:opacity-40">{starting ? 'Starting...' : 'Skip review, just run'}</button>
