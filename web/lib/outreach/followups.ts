@@ -4,7 +4,7 @@ import { buildMime, toBase64Url } from '../gmail/mime.ts'
 import { getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { auditAt, autopilotAvailable, getState, pause } from './autopilot.ts'
 import { hasConsent } from './ledger.ts'
-import { composeBody, getSettings, isSuppressed, unsubToken, type Deps } from './service.ts'
+import { composeBody, getSettings, isSuppressed, leadHeld, recipientAllowed, unsubToken, type Deps } from './service.ts'
 import { llmFollowupText } from './draft-llm.ts'
 import { getMasterKey } from '../secrets.ts'
 
@@ -53,6 +53,7 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
     if (cur.paused || !cur.enabled || !autopilotAvailable(flags) || !followupsEnabled(db, tenantId)) return stop('paused')
     if (tableExists(db, 'sequences') && db.prepare("SELECT 1 FROM sequences WHERE tenant_id = ? AND lead_id = ?").get(tenantId,t.lead_id)) continue // sequence enrollment owns this thread; never layer warm automation on it
     const skip = (why: string) => { out.skipped++; auditAt(db, tenantId, 'followup_skipped', why, t.lead_id, undefined, now) }
+    if (leadHeld(db,tenantId,t.lead_id) || !recipientAllowed(db,tenantId,t.to_email)) { skip(leadHeld(db,tenantId,t.lead_id) ? 'lead_ungraded' : 'personal_email'); continue }
     if (t.last_followup_at && t.last_lead_reply_at > t.last_followup_at) { db.prepare("UPDATE followup_threads SET stopped = 'replied_again' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, t.thread_id); skip('replied again, left for you'); continue }
     if (now - t.last_activity_at < GAPS_DAYS[t.followups_sent] * 86400) continue
     if (isSuppressed(db, tenantId, t.to_email)) { db.prepare("UPDATE followup_threads SET stopped = 'suppressed' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, t.thread_id); skip('suppressed'); continue }
@@ -73,6 +74,10 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
     try { token = await getAccessToken(db, tenantId, d as OAuthDeps) } catch { db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId, t.thread_id, t.followups_sent); pause(db, tenantId, 'gmail_reconnect_needed'); return stop('gmail_unavailable') }
     try {
       const raw = toBase64Url(buildMime({ fromName: settings.sender_name, fromEmail: acct.email, to: t.to_email, subject: orig.subject.startsWith('Re:') ? orig.subject : `Re: ${orig.subject}`, body: composeBody((await llmFollowupText(db, tenantId, t.followups_sent, lead, businessName, settings.booking_url, d)) ?? followupText(t.followups_sent, lead, businessName, settings.booking_url), settings, unsubUrl), messageId: `dazl.f${t.followups_sent}.${orig.id}@${acct.email.split('@')[1]}`, unsubscribeUrl: unsubUrl, date: new Date(now * 1000), inReplyTo: t.root_message_id }))
+      if (leadHeld(db,tenantId,t.lead_id) || !recipientAllowed(db,tenantId,t.to_email)) {
+        db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId,t.thread_id,t.followups_sent)
+        skip(leadHeld(db,tenantId,t.lead_id) ? 'lead_ungraded' : 'personal_email'); continue
+      }
       const r = await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, t.thread_id)
       db.prepare("UPDATE followup_messages SET status = 'sent', gmail_id = ? WHERE tenant_id = ? AND thread_id = ? AND step = ?").run(r.id, tenantId, t.thread_id, t.followups_sent)
       db.prepare('UPDATE followup_threads SET followups_sent = followups_sent + 1, last_followup_at = ?, last_activity_at = ? WHERE tenant_id = ? AND thread_id = ?').run(now, now, tenantId, t.thread_id)

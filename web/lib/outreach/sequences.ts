@@ -6,7 +6,7 @@ import { buildMime, toBase64Url } from '../gmail/mime.ts'
 import { getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { auditAt, getState, pause } from './autopilot.ts'
 import { grantConsent } from './ledger.ts'
-import { composeBody, getSettings, isSuppressed, unsubToken, type Deps } from './service.ts'
+import { composeBody, getSettings, isSuppressed, leadHeld, recipientAllowed, testRecipientApproved, unsubToken, type Deps } from './service.ts'
 import { getMasterKey } from '../secrets.ts'
 import { readKey } from '../llm/key-store.ts'
 import { providers } from '../llm/provider.ts'
@@ -140,6 +140,7 @@ export class SequenceError extends Error {
 export function createSequence(db: Database.Database, tenantId: string, messageId: string, d: Deps & { businessName?: string } = {}): string {
   const m = db.prepare("SELECT id, lead_id, to_email, subject, body, status FROM outreach_messages WHERE id = ? AND tenant_id = ?").get(messageId, tenantId) as { id: string; lead_id: string; to_email: string; subject: string; body: string; status: string } | undefined
   if (!m) throw new SequenceError('not_found')
+  if (leadHeld(db,tenantId,m.lead_id)) throw new SequenceError('lead_ungraded')
   if (m.status !== 'draft') throw new SequenceError('not_a_draft')
   const lead = db.prepare('SELECT l.company, l.name, l.signal, l.source_url FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(m.lead_id, tenantId) as { company: string; name: string; signal: string; source_url: string } | undefined
   if (!lead) throw new SequenceError('lead_missing')
@@ -286,6 +287,7 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
                              FROM sequences s JOIN outreach_messages m ON m.id = s.message_id
                              WHERE s.tenant_id = ? AND s.status = 'active'`).all(tenantId) as { id: string; lead_id: string; message_id: string; to_email: string; msg_subject: string; step1_sent: number | null; thread_id: string | null }[]
   for (const s of active) {
+    if (leadHeld(db,tenantId,s.lead_id) || !recipientAllowed(db,tenantId,s.to_email)) { stopSequenceForThread(db,tenantId,s.lead_id,'stopped',leadHeld(db,tenantId,s.lead_id) ? 'lead_ungraded' : 'personal_email',now); out.skipped++; continue }
     if (!s.thread_id) { out.skipped++; continue } // never send a bump without a readable original thread
     if (!s.step1_sent) continue // activation lags one tick
     if (db.prepare("SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND lead_id = ? AND classification NOT IN ('auto','soft_bounce')").get(tenantId,s.lead_id)) { stopSequenceForThread(db,tenantId,s.lead_id,'replied','existing_reply',now); continue }
@@ -319,6 +321,10 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
     }
     try {
       // Recheck after token refresh: suppression/reply/pause can change during await.
+      if (leadHeld(db,tenantId,s.lead_id) || !recipientAllowed(db,tenantId,s.to_email)) {
+        db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step)
+        stopSequenceForThread(db,tenantId,s.lead_id,'stopped',leadHeld(db,tenantId,s.lead_id) ? 'lead_ungraded' : 'personal_email',now); out.skipped++; continue
+      }
       const current = getSeq(db,tenantId,s.id)
       const currentStep = db.prepare('SELECT body,subject,approved_hash FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? AND step = ?').get(tenantId,s.id,stepRow.step) as {body:string;subject:string;approved_hash:string}
       if (currentStep.body !== stepRow.body || currentStep.subject !== stepRow.subject || currentStep.approved_hash !== hash(s.to_email,currentStep.subject,currentStep.body)) {
@@ -336,6 +342,7 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
       }))
       const r = await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, s.thread_id ?? undefined)
       db.prepare("UPDATE sequence_steps SET status = 'sent', sent_at = ?, gmail_id = ? WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(now, r.id, tenantId, s.id, stepRow.step)
+      if (testRecipientApproved(db,tenantId,s.to_email)) auditAt(db,tenantId,'test_mode','sequence test inbox',s.lead_id,s.message_id,now)
       auditAt(db, tenantId, 'sequence_sent', `step ${stepRow.step}`, s.lead_id, s.message_id, now)
       out.sent++
       if (stepRow.step >= MAX_STEPS) db.prepare("UPDATE sequences SET status = 'done' WHERE tenant_id = ? AND id = ?").run(tenantId, s.id)

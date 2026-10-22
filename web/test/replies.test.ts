@@ -213,3 +213,11 @@ test('granular consent: read requested but unticked on Google\'s screen connects
   assert.equal(sync.error, 'reading_not_enabled')
   assert.equal(sync.threads, 0)
 })
+
+test('held lead cannot receive warm followups',async()=>{
+ const db=await setup(),s=await interested(db),{sent,sendFn}=sendSpy()
+ setFollowups(db,'A',true)
+ db.prepare('UPDATE leads SET fit=0,intent=NULL WHERE id=?').run(s.lead)
+ assert.equal((await runFollowups(db,'A','Acme',base({sendFn}))).sent,0)
+ assert.equal(sent.length,0)
+})

@@ -8,7 +8,7 @@ import { randomBytes } from 'node:crypto'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
 import { getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { getMasterKey } from '../secrets.ts'
-import { composeBody, getSettings, isSuppressed, OutreachError, unsubToken, type Deps } from './service.ts'
+import { composeBody, getSettings, isSuppressed, leadHeld, recipientAllowed, OutreachError, unsubToken, type Deps } from './service.ts'
 
 export const WARM_MIN_DAYS = 30
 export const WARM_MAX_DAYS = 90
@@ -82,6 +82,7 @@ function qualify(db: Database.Database, tenantId: string, threadId: string): War
 
 export function createReopenDraft(db: Database.Database, tenantId: string, threadId: string, businessName: string): void {
   const t = qualify(db, tenantId, threadId)
+  if (leadHeld(db,tenantId,t.lead_id)) throw new OutreachError('lead_ungraded')
   if (isSuppressed(db, tenantId, t.to_email)) throw new OutreachError('suppressed')
   const lead = db.prepare('SELECT company, name, signal, source_url FROM leads WHERE id = ?').get(t.lead_id) as { company: string; name: string; signal: string; source_url: string } | undefined
   if (!lead) throw new OutreachError('lead_missing')
@@ -113,6 +114,8 @@ export function skipReopen(db: Database.Database, tenantId: string, threadId: st
 export async function sendReopen(db: Database.Database, tenantId: string, threadId: string, d: Deps & { now?: number } = {}): Promise<void> {
   const r = getReopen(db, tenantId, threadId)
   if (!r) throw new OutreachError('not_found')
+  if (!recipientAllowed(db,tenantId,r.to_email)) throw new OutreachError('personal_email')
+  if (leadHeld(db,tenantId,r.lead_id)) throw new OutreachError('lead_ungraded')
   if (r.status === 'sent') throw new OutreachError('already_sent')
   if (r.status === 'skipped') throw new OutreachError('final')
   if (isSuppressed(db, tenantId, r.to_email)) throw new OutreachError('suppressed')
@@ -127,6 +130,8 @@ export async function sendReopen(db: Database.Database, tenantId: string, thread
   const now = d.now ?? Math.floor(Date.now() / 1000)
   let token: string
   try { token = await getAccessToken(db, tenantId, d as OAuthDeps) } catch { throw new OutreachError('gmail_reconnect_needed') }
+  if (!recipientAllowed(db,tenantId,r.to_email)) throw new OutreachError('personal_email')
+  if (leadHeld(db,tenantId,r.lead_id)) throw new OutreachError('lead_ungraded')
   const raw = toBase64Url(buildMime({ fromName: settings.sender_name, fromEmail: acct.email, to: r.to_email, subject: orig.subject.startsWith('Re:') ? orig.subject : `Re: ${orig.subject}`, body: composeBody(r.body, settings, unsubUrl), messageId: `dazl.reopen.${orig.id}@${acct.email.split('@')[1]}`, unsubscribeUrl: unsubUrl, date: new Date(now * 1000), inReplyTo: t.root_message_id }))
   const res = await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, threadId)
   db.prepare("UPDATE reopen_messages SET status = 'sent', gmail_id = ?, sent_at = ? WHERE tenant_id = ? AND thread_id = ?").run(res.id, now, tenantId, threadId)
