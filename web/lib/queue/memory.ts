@@ -7,9 +7,10 @@
 // perTenantInFlight, the tenant whose oldest eligible item is oldest wins
 // (inter-tenant head-of-line FIFO); within a tenant, oldest eligible first.
 // That is the strongest fairness the current single-process runner can offer
-// without reordering one tenant's own jobs, and it removes the starvation
+// without reordering one tenant's own jobs, and under it the starvation
 // claimKeyedJob's global FIFO allows (one tenant's CSV batch ahead of every
-// other tenant's manual scan).
+// other tenant's manual scan) cannot occur. Scope note: this is adapter
+// behavior only - production claiming is unchanged until a later wiring PR.
 
 import { randomBytes } from 'node:crypto'
 import { backoffSeconds, DEFAULT_BACKOFF, type BackoffPolicy } from './backoff.ts'
