@@ -119,3 +119,25 @@ export function listCompanyEvents(db: Database.Database, tenantId: string, opts:
     .map(r => ({ ...r, fresh: r.last_seen_at >= now - FRESHNESS_DAYS[r.event_type] * 86400 }))
     .filter(r => !opts.freshOnly || r.fresh)
 }
+
+// Events visible for one lead: account-scope rows keyed by the lead record itself, plus
+// rows keyed by the lead's domain when it has one. The two key families are not merged
+// (documented identity rule) - both kinds are returned, each with its own key.
+export function eventsForLeads(db: Database.Database, tenantId: string, leads: { id: string; company_domain: string | null }[], opts: { now?: number } = {}): Record<string, CompanyEventRow[]> {
+  const out: Record<string, CompanyEventRow[]> = {}
+  for (const l of leads) {
+    const keys = [`lead:${l.id}`]
+    const d = (l.company_domain ?? '').toLowerCase().replace(/^www\./, '').trim()
+    if (d.includes('.')) keys.push(d)
+    const seen = new Set<string>()
+    const rows: CompanyEventRow[] = []
+    for (const k of keys) for (const e of listCompanyEvents(db, tenantId, { companyKey: k, scope: 'account', now: opts.now })) {
+      if (seen.has(e.id)) continue
+      seen.add(e.id)
+      rows.push(e)
+    }
+    rows.sort((a, b) => b.last_seen_at - a.last_seen_at)
+    if (rows.length) out[l.id] = rows
+  }
+  return out
+}

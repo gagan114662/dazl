@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { companyKey, listCompanyEvents, migrateEvents, recordCompanyEvent } from '../lib/events/store.ts'
+import { companyKey, eventsForLeads, listCompanyEvents, migrateEvents, recordCompanyEvent } from '../lib/events/store.ts'
 
 const NOW = 1_800_000_000
 const setup = () => { const db = new Database(':memory:'); migrateEvents(db); return db }
@@ -96,4 +96,18 @@ test('two distinct same-name companies never share a history', () => {
   // Same lead re-observed from the same source still dedups within its own history.
   assert.equal(recordCompanyEvent(db, 'T1', ev({ companyKey: 'lead:lead-a', companyName: 'Acme Corp', leadId: 'lead-a', retrievedAt: NOW + 5 })), false)
   assert.equal(listCompanyEvents(db, 'T1', { now: NOW }).length, 2)
+})
+
+test('eventsForLeads: lead-keyed and domain-keyed histories surface per lead, tenant-scoped', () => {
+  const db = setup()
+  recordCompanyEvent(db, 'T1', ev({ companyKey: 'lead:l1', leadId: 'l1', summary: 'SEC Form D filed 2026-10-01' }))
+  recordCompanyEvent(db, 'T1', ev({ companyKey: 'acme.example', leadId: 'l1', eventType: 'hiring_surge', summary: '5 open roles', sourceUrl: 'https://jobs.example/board' }))
+  recordCompanyEvent(db, 'T1', ev({ companyKey: 'lead:l2', leadId: 'l2', summary: 'SEC Form D filed 2026-09-15', sourceUrl: 'https://www.sec.gov/Archives/edgar/data/3/4/z.htm' }))
+  recordCompanyEvent(db, 'T2', ev({ companyKey: 'lead:l1', leadId: 'l1', summary: 'other tenant event', sourceUrl: 'https://www.sec.gov/Archives/edgar/data/5/6/w.htm' }))
+  const out = eventsForLeads(db, 'T1', [{ id: 'l1', company_domain: 'acme.example' }, { id: 'l2', company_domain: null }, { id: 'l3', company_domain: null }], { now: NOW })
+  assert.deepEqual(out.l1.map(e => e.summary).sort(), ['5 open roles', 'SEC Form D filed 2026-10-01'])
+  assert.deepEqual(out.l2.map(e => e.summary), ['SEC Form D filed 2026-09-15'])
+  assert.equal(out.l3, undefined)
+  // The other tenant's row for the same lead id never crosses over.
+  assert.ok(!out.l1.some(e => e.summary === 'other tenant event'))
 })
