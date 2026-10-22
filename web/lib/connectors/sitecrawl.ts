@@ -251,16 +251,20 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
 }
 
 // Runs for one finished scan. Never throws, never touches the lead row, one audit row per site.
-export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number } = {}): Promise<void> {
+// deps.leads overrides the lead selection (commenter import: imported rows carry no
+// confidence); deps.skipEvidenceFetch skips fetching the lead's source_url (commenter
+// import again: the URL is stored provenance that must never be fetched - the crawl
+// goes straight to name-derived domain probing, confirmed by the homepage name check).
+export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string }[]; skipEvidenceFetch?: boolean } = {}): Promise<void> {
   try {
     if (!sitecrawlEnabled(deps.env)) return
     const get = deps.get ?? defaultGet(deps.env)
-    const leads = db.prepare("SELECT id, company, source_url FROM leads WHERE scan_job_id = ? AND review_reason IS NULL AND confidence IS NOT NULL AND company <> '' ORDER BY score DESC LIMIT ?").all(jobId, MAX_SITES_PER_SCAN) as { id: string; company: string; source_url: string }[]
+    const leads = deps.leads ?? db.prepare("SELECT id, company, source_url FROM leads WHERE scan_job_id = ? AND review_reason IS NULL AND confidence IS NOT NULL AND company <> '' ORDER BY score DESC LIMIT ?").all(jobId, MAX_SITES_PER_SCAN) as { id: string; company: string; source_url: string }[]
     const today = new Date((deps.now ?? Date.now())).toISOString().slice(0, 10)
     const done = new Set<string>()
     let probed = 0
     for (const l of leads) {
-      const ev = await get(l.source_url)
+      const ev = deps.skipEvidenceFetch ? null : await get(l.source_url)
       let sites = ev ? findCompanySites(l.company, ev.body, ev.finalUrl) : []
       if (sites.length === 0) {
         // Evidence page does not link the company site: probe name-derived domains. Wrong guesses

@@ -111,10 +111,6 @@ function addColumns(db: Database.Database): void {
   // researches and the batch it belongs to. NULL on every manual/watch scan.
   add('scan_jobs', 'csv_domain', 'TEXT CHECK (csv_domain IS NULL OR length(csv_domain) <= 253)')
   add('scan_jobs', 'batch_id', 'TEXT')
-  // Commenter import: a job researching one imported engager carries the slug-derived
-  // name (labeled 'derived' everywhere it is shown). The profile URL lives only in the
-  // commenter batch row, as provenance, and is never fetched.
-  add('scan_jobs', 'person_name', 'TEXT CHECK (person_name IS NULL OR length(person_name) <= 150)')
 }
 
 export function createJob(db: Database.Database, userId: string, input: ScanInput): string {

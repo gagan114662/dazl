@@ -8,6 +8,8 @@ interface Monitor { id: string; query: string; interval_hours: number; enabled: 
 interface Quality { candidates: number; passed: number | null; needs_review: number | null; dropped: number | null; drop_reasons: Record<string, number> }
 interface CsvRow { domain: string; status: 'pending' | 'skipped' | 'queued' | 'running' | 'done' | 'failed'; job_id: string | null; leads: number | null; error: string | null }
 interface CsvBatch { batch_id: string; total: number; note: string | null; counts: Record<string, number>; rows: CsvRow[]; quota_stop?: boolean }
+interface CommenterRow { profile_url: string; name: string; name_source: 'csv' | 'derived'; title: string | null; company: string | null; lead_id: string | null }
+interface CommenterBatch { batch_id: string; context: string; total: number; note: string | null; job_id: string | null; rows: CommenterRow[] }
 
 // Leads written by other workers can carry anything in signals; never let a bad value crash the page.
 function parseSignals(v: string | null): string[] {
@@ -80,6 +82,41 @@ export default function LeadsClient() {
     const r = await fetch(`/api/scan/csv/${batchId}`).catch(() => null)
     if (r?.ok) setCsvBatch(await r.json())
   }
+  const [cmtBatch, setCmtBatch] = useState<CommenterBatch | null>(null)
+  const [cmtNote, setCmtNote] = useState('')
+  const [cmtInvalid, setCmtInvalid] = useState<{ line: string; reason: string }[]>([])
+  const [cmtBusy, setCmtBusy] = useState(false)
+  const [cmtText, setCmtText] = useState('')
+  const [cmtContext, setCmtContext] = useState('')
+  async function importCommenters() {
+    setCmtNote(''); setCmtInvalid([]); setCmtBusy(true)
+    const r = await fetch('/api/scan/commenters', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ csv: cmtText, context: cmtContext }) })
+    const j = await r.json().catch(() => ({}))
+    setCmtBusy(false)
+    if (!r.ok) {
+      setCmtNote(j.error === 'pro_only' ? 'Commenter import is a Pro feature. Upgrade in Settings.' : j.error || 'Could not import')
+      if (Array.isArray(j.invalid)) setCmtInvalid(j.invalid)
+      return
+    }
+    setCmtInvalid(j.invalid ?? [])
+    setCmtNote(`${j.accepted} ${j.accepted === 1 ? 'person' : 'people'} imported${j.overflow ? `, first ${j.max_profiles} only` : ''}. They are in the table below; company enrichment runs in the background.${j.mode === 'urls' ? ' Names guessed from the link are marked derived.' : ''}`)
+    setCmtText('')
+    void pollCommenters(j.batch_id)
+  }
+  async function pollCommenters(batchId: string) {
+    const r = await fetch(`/api/scan/commenters/${batchId}`).catch(() => null)
+    if (r?.ok) setCmtBatch(await r.json())
+  }
+  async function deleteCommenters() {
+    if (!cmtBatch) return
+    setCmtBusy(true)
+    const r = await fetch(`/api/scan/commenters/${cmtBatch.batch_id}`, { method: 'DELETE', headers: { 'content-type': 'application/json' } })
+    setCmtBusy(false)
+    if (r.ok) { setCmtBatch(null); setCmtNote('Batch deleted - its leads and enrichments are gone.') }
+    else setCmtNote('Could not delete the batch')
+  }
+  useEffect(() => { void fetch('/api/scan/commenters').then(r => r.ok ? r.json() : null).then(j => { if (j?.batch) setCmtBatch(j.batch) }).catch(() => {}) }, [])
+
   async function resumeCsv() {
     if (!csvBatch) return
     setCsvBusy(true)
@@ -241,6 +278,43 @@ export default function LeadsClient() {
                       {r.status === 'queued' ? 'queued' : r.status === 'running' ? 'scanning' : r.status === 'pending' ? 'waiting - quota reached' : r.status === 'failed' ? `failed${r.error === 'no_candidates' ? ' - nothing found' : ''}` : 'done'}
                     </span>
                     {r.status === 'done' && r.job_id && <a className="underline text-[#111]" href={`/app/leads?job_id=${r.job_id}`}>{r.leads ?? 0} lead{(r.leads ?? 0) === 1 ? '' : 's'}</a>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </details>
+      <details className="mb-4 text-sm">
+        <summary className="cursor-pointer text-gray-400">Import post commenters (Pro)</summary>
+        <div className="card p-4 mt-2">
+          <p className="text-gray-500 text-xs mb-2">People who engaged with a post, imported as leads. Upload a CSV with profile URL, name, title and company columns, or paste LinkedIn profile links (linkedin.com/in/...) one per line, up to 100. Links are never opened - no scraping. Names guessed from a link are marked derived; your CSV names win. Only your Apollo/PDL key (org lookup, 1 credit per company, max 50) and free sources enrich them.</p>
+          <input value={cmtContext} onChange={e => setCmtContext(e.target.value)} maxLength={500} placeholder="Context: what they engaged with, e.g. Commented on my post about CRM switching costs" className="field w-full mb-2 text-xs" />
+          <textarea value={cmtText} onChange={e => setCmtText(e.target.value)} rows={4} placeholder={'profile_url,name,title,company\nhttps://www.linkedin.com/in/jane-doe,Jane Doe,VP Sales,Acme'} className="field w-full mb-2 text-xs font-mono" />
+          <div className="flex items-center gap-3">
+            <button onClick={() => void importCommenters()} disabled={cmtBusy || !cmtText.trim() || !cmtContext.trim()} className="font-mono text-xs uppercase border border-black px-2 py-1 hover:bg-black hover:text-white disabled:opacity-40">Import</button>
+            <label className="text-xs text-gray-400 underline cursor-pointer">or upload a file<input type="file" accept=".csv,.txt,text/csv,text/plain" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) void f.text().then(t => setCmtText(t)); e.target.value = '' }} /></label>
+          </div>
+          {cmtNote && <p className="text-xs text-gray-400 mt-2">{cmtNote}</p>}
+          {cmtInvalid.length > 0 && (
+            <div className="mt-2">
+              <p className="text-xs text-yellow-500">Skipped {cmtInvalid.length} invalid row{cmtInvalid.length === 1 ? '' : 's'}:</p>
+              <ul className="text-xs text-gray-500 ml-4 list-disc">{cmtInvalid.slice(0, 10).map(r => <li key={r.line}>{r.line} - {r.reason}</li>)}</ul>
+              {cmtInvalid.length > 10 && <p className="text-xs text-gray-600">and {cmtInvalid.length - 10} more</p>}
+            </div>
+          )}
+          {cmtBatch && (
+            <div className="mt-3">
+              <div className="flex items-center gap-3 text-xs text-gray-400 mb-1">
+                <span>{cmtBatch.total} imported: {cmtBatch.context}</span>
+                <button onClick={() => void deleteCommenters()} disabled={cmtBusy} className="font-mono text-xs uppercase border border-red-900 text-red-400 px-2 py-1 hover:bg-red-900 hover:text-white">Delete batch</button>
+              </div>
+              <div className="divide-y divide-white/5 border-t border-white/5">
+                {cmtBatch.rows.map(r => (
+                  <div key={r.profile_url} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5 text-xs">
+                    <span className="text-gray-200 min-w-0 flex-1 truncate">{r.name}{r.title ? ` - ${r.title}` : ''}{r.company ? `, ${r.company}` : ''}</span>
+                    {r.name_source === 'derived' && <span className="text-yellow-500">name derived from link</span>}
+                    {r.lead_id && <a className="underline text-[#111]" href={`/app/leads?job_id=${cmtBatch.job_id}`}>in leads</a>}
                   </div>
                 ))}
               </div>
