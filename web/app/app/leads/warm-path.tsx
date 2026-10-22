@@ -135,12 +135,13 @@ export function WarmPath({ leadId, company = '', signal = '' }: { leadId: string
         {warm && warm.user_reported.map(u => (
           <div key={u.id} className="text-gray-400">
             <span className="text-yellow-500">Reported by you, not verified:</span> {u.mutual_name} knows{' '}
-            <a className="underline text-[#111]" href={`https://${bare(u.contact_url)}`} target="_blank" rel="noopener noreferrer nofollow">this contact</a>{u.note ? ` - ${u.note}` : ''}{' '}
+            <a className="underline text-[#111]" href={`https://${bare(u.contact_url)}`} target="_blank" rel="noopener noreferrer nofollow">{contactNameFor(u.contact_url) || 'LinkedIn contact'}</a>{u.note ? ` - ${u.note}` : ''}{' '}
             <button className="underline text-gray-500" onClick={() => void removePath(u.id)}>remove</button>{' '}
             <button className="underline text-gray-500" onClick={() => setDraftFor(draftFor === u.id ? null : u.id)}>{draftFor === u.id ? 'hide draft' : 'draft an intro request'}</button>
-            {draftFor === u.id && (
+            {draftFor === u.id && (<>
+              <p className="text-gray-700 mt-1">To: {u.mutual_name}. Introduction target: {contactNameFor(u.contact_url) || 'the linked contact'}. This is your report, not a verified relationship.</p>
               <ReviewDraft reported text={draftIntroRequest({ mutualName: u.mutual_name, contactName: contactNameFor(u.contact_url), company })} />
-            )}
+            </>)}
           </div>
         ))}
         {warm && warm.manual_check.map(c => (
