@@ -20,10 +20,13 @@ A database file alone does not bring the service back. Also needed, none of them
 
 ## Current state (honest, as of 2026-10-22)
 
-- No automated backup of the app DB exists anywhere in the repo: no schedule, no script,
-  no off-box copy. RPO today is effectively total loss on disk failure; RTO is unproven.
-- This PR adds tooling + tests only. Nothing is backed up until someone schedules it on
-  the EC2 box, and an off-box copy still needs a separate decision (see Gaps).
+- What is verified: no backup tooling or schedule for the app DB exists in this repo
+  (grep-verified). What exists on the EC2 host outside the repo - EBS/cloud snapshots,
+  manual copies, anything Gagan's side already runs - is unknown and not verified here.
+- So: if nothing exists outside the repo, RPO is effectively total loss on disk failure.
+  RTO is unproven either way - no restore has ever been drilled on the host.
+- This PR adds tooling + tests only. It changes nothing on the box. The schedule,
+  off-box copy and retention policy are open decisions (see Gaps), not assignments.
 
 ## Taking a backup (safe while the app runs)
 
@@ -45,6 +48,9 @@ node --experimental-strip-types scripts/backup/create-backup.ts --source "$DB_PA
   `.partial` then atomic rename), normalizes the result to `journal_mode=DELETE` so the
   backup is ONE self-contained file safe to rsync/archive, runs `integrity_check` on what
   it wrote, and drops a `<backup>.json` sidecar with the sha256 and byte count.
+  The sidecar catches accidental modification after creation; it is NOT an authenticity
+  check - anything that can rewrite the backup can rewrite the sidecar sitting next to
+  it. Real integrity anchoring would store the manifest separately from the backups.
 - Suggested starting schedule (operator's side): hourly cron, keep 48 hourly + 14 daily.
   Retention/pruning is deliberately NOT implemented in this PR - deleting backups is its
   own policy decision.
@@ -62,7 +68,8 @@ The drill:
    directory it did not create itself (marker file; there is no override).
 2. Verifies the backup file against its `.json` sidecar manifest when present. SQLite
    has no content checksums, so without the manifest a byte-level edit that keeps the
-   file valid is undetectable - the drill says so as a warning.
+   file valid is undetectable - the drill says so as a warning. The manifest proves
+   accidental-change detection only, not authenticity (both files are equally mutable).
 3. Restores into the throwaway dir via the backup API (proving the backup opens as a
    real database), then compares backup vs restored: `integrity_check`, schema hash,
    per-table row counts and full-content hashes.
@@ -91,9 +98,11 @@ never been drilled is a rumor. Run the drill on every backup - it is millisecond
 
 | item | state | consequence |
 |---|---|---|
-| Backup schedule on the box | not set up | RPO = total loss until it is |
-| Off-box copy (rsync/object storage) | not set up | box loss = total loss even with local backups |
-| RTO | unmeasured | no real drill on the EC2 host has been run |
-| RPO target | undecided | hourly cron is the suggestion, not an agreement |
-| Retention/pruning | not implemented | disk fills if scheduled without a policy |
+| Backup schedule on the box | open decision, not yet grounded | repo tooling sits unused until decided |
+| Existing host/cloud/manual backups | unknown | ask before assuming either presence or absence |
+| Off-box copy (rsync/object storage) | open decision, not yet grounded | on-box-only backups die with the box |
+| Sidecar manifests stored with the backups | as shipped | tamper-evidence only; separate storage would add authenticity |
+| RTO | unmeasured | no restore drill has ever run on the EC2 host |
+| RPO target | open decision | hourly cron above is a suggestion, not an agreement |
+| Retention/pruning | open decision (not implemented) | scheduling without a policy fills the disk |
 | Large DBs | drill holds table rows in memory for hashing | fine at current scale; revisit past ~1GB |
