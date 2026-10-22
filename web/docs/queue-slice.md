@@ -62,7 +62,8 @@ Additional guarantees the current code does **not** have:
 
 - **Per-tenant fairness**: `claim` picks across tenants by oldest head-of-line
   item, with `perTenantInFlight` (default 1) capping how much one tenant can
-  hold. Global FIFO starvation is no longer possible.
+  hold, so global FIFO starvation cannot occur *inside this adapter*.
+  Production claiming is unchanged until the wiring PR lands.
 - **Backoff**: `fail(retryable)` sets `notBefore = now + backoff(attempt)`
   (30s base, 2x, 30min cap, ±20% jitter) instead of immediate re-pend.
 - **Idempotent enqueue**: optional `dedupeKey`, namespaced per tenant+kind,
@@ -71,6 +72,10 @@ Additional guarantees the current code does **not** have:
   schedule its next run.
 
 ## Integration seam (later PRs, not this one)
+
+Wiring the in-process adapter does not depend on the data-layer migration:
+steps 1-3 below can land on SQLite today. Only the durable SQL backend
+(further below) needs Postgres.
 
 1. **Scan runner**: `kickRunner` claims through the adapter with
    `kinds: ['scan']`, `maxInFlight: SCAN_MAX_CONCURRENT`, and maps the claim
