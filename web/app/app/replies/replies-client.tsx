@@ -44,7 +44,9 @@ export default function RepliesClient() {
       const parts = Object.entries((j.platforms ?? {}) as Record<string, string>).map(([p, s]) => `${p === 'x' ? 'X' : 'Reddit'}: ${s === 'ok' ? 'checked' : s.replaceAll('_', ' ')}`)
       const kept = `${j.added} new thread${j.added === 1 ? '' : 's'} found`
       const dropped = j.filtered > 0 ? `, ${j.filtered} off-topic result${j.filtered === 1 ? '' : 's'} filtered out` : ''
-      setMsg(j.added > 0 ? `${kept}${dropped}. ${parts.join(' - ')}` : `Nothing new${dropped}. ${parts.join(' - ')}`)
+      const gradedPart = j.graded > 0 ? ` Buyer intent graded on your AI key: ${j.graded}.` : ''
+      const backlog = (j.ungraded_remaining ?? 0) > 0 ? ` ${j.ungraded_remaining} older thread${j.ungraded_remaining === 1 ? ' is' : 's are'} still ungraded - check again to grade more.` : ''
+      setMsg((j.added > 0 ? `${kept}${dropped}. ${parts.join(' - ')}` : `Nothing new${dropped}. ${parts.join(' - ')}`) + gradedPart + backlog)
     } catch (e) { setMsg((e as Error).message) }
     setBusy('')
     void load()
@@ -113,6 +115,9 @@ export default function RepliesClient() {
           <button className="btn-primary text-sm" disabled={busy === 'refresh' || state.queries.length === 0 || !anyPlatform || !state.consent} onClick={refresh}>
             {busy === 'refresh' ? 'Checking Reddit and X...' : 'Check for new threads'}
           </button>
+          {state.has_key && (
+            <p className="text-xs text-[#999] mt-2">Checking also grades matches for buyer intent on your AI key - up to 10 gradings per check, at your key&apos;s cost. Without a key, matches are keyword-only.</p>
+          )}
         </div>
         {msg && <p className="text-sm text-[#555] mt-3">{msg}</p>}
       </div>
