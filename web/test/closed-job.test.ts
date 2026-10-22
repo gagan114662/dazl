@@ -24,3 +24,16 @@ test('inaccessible sources remain unknown, not closed',async()=>{
   assert.equal(result.leads.length,0)
   assert.ok(!result.review.some(r=>r.review_reason==='job_closed'))
 })
+test('short-page footer marker: positional window cannot isolate footer content (documented limitation)',()=>{
+  // The first-2000-visible-characters window is a positional heuristic, not
+  // structural header isolation. On a short page (<2000 chars) a closure marker
+  // that sits in the footer region (e.g. a "similar jobs" recommendation card)
+  // is still inside the window and still triggers. This false-positive path is
+  // preserved deliberately: the detector does not parse scoped job content, so
+  // the row lands in review where a person checks the source. Longer pages are
+  // safe because footer markers fall outside the window (see test above).
+  const shortFooter={...page,text:'Sales Operations Manager at JM Eagle. Apply on our careers site. '+'similar jobs: sales rep at acme '.repeat(20)+'this position is no longer available'}
+  const hit=closedJobEvidence(candidate,shortFooter)
+  assert.ok(hit,'known limitation: short-page footer markers inside the 2000-char window trigger review')
+  assert.equal(hit.marker.toLowerCase(),'this position is no longer available')
+})
