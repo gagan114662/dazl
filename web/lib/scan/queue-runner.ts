@@ -1,4 +1,4 @@
-// Queue-backed scan execution (DAZL_QUEUE_SCANS=on, default OFF).
+// Queue-backed scan execution (DAZL_QUEUE_TENANTS tenant allowlist, default OFF).
 //
 // Wiring-preparation slice, scans only - other kinds are explicitly out of
 // scope until they have a defined domain fence. Design invariants:
@@ -13,9 +13,12 @@
 //    scan_jobs row = execution state. After the executor resolves, the
 //    bridge maps the DOMAIN outcome onto the queue item by token; a stale
 //    token (reaped, re-claimed) makes complete/fail a rejected no-op.
-// 3. No dual runner: the single gate is in kickRunner - env on means the
-//    legacy claimKeyedJob path never runs scans. Rollback = unset the env;
-//    queue rows sit inert and pending scan_jobs claim via the legacy path.
+// 3. Mixed-mode routing: the single gate is in kickRunner - LISTED tenants
+//    are claimed by this bridge, UNLISTED tenants keep running through the
+//    legacy claimKeyedJob path in the same process. Both runners share one
+//    slot budget (run-slots.ts) and this bridge claims first each kick.
+//    Rollback = remove the tenant id from the env; queue rows sit inert and
+//    pending scan_jobs claim via the legacy path.
 // 4. Cron ownership unchanged: the existing */5 cron hits /api/internal/
 //    tick which calls kickRunner; the gate is inside kickRunner, so no cron
 //    or route changes are part of activation.

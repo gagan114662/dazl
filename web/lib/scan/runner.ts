@@ -703,8 +703,9 @@ export async function kickRunner(db: Database.Database, deps: RunDeps = {}): Pro
   // Tenant-scoped queue gate (default OFF): listed tenants are claimed by the
   // queue bridge, the legacy claimer skips exactly those tenants - every
   // kicker (tick, scan/csv routes, status poll) funnels through here, so the
-  // two runners can never own the same tenant's job. Malformed flag fails
-  // closed to pure legacy. Rollback = remove the id + restart.
+  // two runners can never own the same tenant's job. Malformed flag, or more
+  // than one id (canary cap), fails closed to pure legacy. Rollback = remove
+  // the id + restart.
   const qt = queueTenants()
   if (qt !== null) await kickQueueRunner(db, deps, runJob, { tenants: qt })
   reapStaleJobs(db)
