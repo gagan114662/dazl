@@ -7,7 +7,7 @@ import Database from 'better-sqlite3'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { claimKeyedJob } from '../lib/scan/runner.ts'
-import { queueTenants, syncPendingScansToQueue } from '../lib/scan/queue-runner.ts'
+import { queueTenants, syncPendingScansToQueue, kickQueueRunner } from '../lib/scan/queue-runner.ts'
 import { SqliteQueue } from '../lib/queue/sqlite.ts'
 
 const master = randomBytes(32)
@@ -24,7 +24,10 @@ test('parser: unset/empty off; clean list parsed; any malformed entry fails clos
   assert.equal(queueTenants({}), null)
   assert.equal(queueTenants({ DAZL_QUEUE_TENANTS: '' }), null)
   assert.equal(queueTenants({ DAZL_QUEUE_TENANTS: '  ' }), null)
-  assert.deepEqual(queueTenants({ DAZL_QUEUE_TENANTS: 'alice,bob-2' }), ['alice', 'bob-2'])
+  assert.deepEqual(queueTenants({ DAZL_QUEUE_TENANTS: 'alice' }), ['alice'])
+  // Canary cap: more than one id fails closed to pure legacy - broader
+  // rollout is a separate reviewed change, never an ops edit.
+  assert.equal(queueTenants({ DAZL_QUEUE_TENANTS: 'alice,bob-2' }), null)
   assert.equal(queueTenants({ DAZL_QUEUE_TENANTS: 'alice,bad id!,bob' }), null)
   assert.equal(queueTenants({ DAZL_QUEUE_TENANTS: 'alice,,bob' }), null)
   assert.equal(queueTenants({ DAZL_QUEUE_TENANTS: '*' }), null)
@@ -76,4 +79,14 @@ test('mixed-mode coherence: exclusion set is exactly the queue set', () => {
   assert.deepEqual([...new Set([...Array(q.depth())].map(() => null))].length <= 1, true) // depth sanity
   assert.equal(q.depth(), 1)
   assert.equal(q.claim({ tenants: qt })!.item.tenantId, 'alice')
+})
+
+test('canary slot policy: bridge pins perTenantInFlight=1 (one kick, many pending -> one running)', async () => {
+  const db = setup()
+  createJob(db, 'alice', input); createJob(db, 'alice', input); createJob(db, 'alice', input)
+  const slow = async (): Promise<'done'> => { await new Promise((r) => setTimeout(r, 150)); return 'done' }
+  await kickQueueRunner(db, {}, slow as never, { tenants: ['alice'] })
+  const running = (db.prepare("SELECT count(*) c FROM scan_jobs WHERE status='running'").get() as { c: number }).c
+  assert.equal(running, 1, 'at most one in-flight slot for the queue tenant, explicit pin not adapter default')
+  await new Promise((r) => setTimeout(r, 250)) // let the claimed run settle before db teardown
 })

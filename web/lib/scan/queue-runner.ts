@@ -91,6 +91,15 @@ export function queueTenants(env: Record<string, string | undefined> = process.e
     console.error('DAZL_QUEUE_TENANTS malformed - queue mode disabled (fail closed)')
     return null
   }
+  // Canary cap: queue mode is approved for ONE tenant at a time. A longer
+  // list means a broader rollout was configured without the reviewed policy
+  // (slot sharing beyond the adapter's perTenantInFlight=1 default is not
+  // approved) - fail closed to pure legacy rather than widen activation by
+  // an ops edit.
+  if (parts.length > 1) {
+    console.error('DAZL_QUEUE_TENANTS lists more than one tenant - canary cap is 1, queue mode disabled (fail closed)')
+    return null
+  }
   return parts
 }
 
@@ -110,7 +119,11 @@ export async function kickQueueRunner(
   const q = new SqliteQueue(db)
   syncPendingScansToQueue(db, q, opts?.leaseSeconds ?? QUEUE_LEASE_S, opts?.tenants)
   while (slotAvailable()) {
-    const claim = q.claim({ kinds: ['scan'], leaseSeconds: opts?.leaseSeconds ?? QUEUE_LEASE_S, now: opts?.now, tenants: opts?.tenants })
+    // Canary slot policy, pinned EXPLICITLY (not inherited from the adapter
+    // default, which a future adapter change could alter): the queue tenant
+    // holds at most one in-flight slot, so a continuous queue backlog cannot
+    // starve legacy tenants out of the shared budget.
+    const claim = q.claim({ kinds: ['scan'], leaseSeconds: opts?.leaseSeconds ?? QUEUE_LEASE_S, now: opts?.now, tenants: opts?.tenants, perTenantInFlight: 1 })
     if (!claim) return
     // Bind the domain row. Guard mirrors claimKeyedJob (status='pending'),
     // plus the crash-recovery case: the queue only re-claims after the
