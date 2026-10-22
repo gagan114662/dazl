@@ -34,6 +34,13 @@ separate explicit activation decision must satisfy.
 2. Config coherence: queue lease derives from SCAN_STALE_RUNNING_S (already
    single-sourced in the bridge). Activation config review must confirm no
    second process sets a divergent value and SCAN_MAX_CONCURRENT is unchanged.
+   Effective global budget: the legacy loop and the queue bridge share one
+   in-process slot counter (lib/scan/run-slots.ts), so mixed mode cannot
+   exceed SCAN_MAX_CONCURRENT in total; without that shared count the two
+   runners would each run up to the cap and double provider/host exposure.
+   The bound is in-process only - one Node process serves :3100 today; any
+   future multi-worker setup needs a durable global bound before activation
+   there.
 3. Restart/rollback plan: activation = env edit + process restart (the only
    writer process). Rollback = remove tenant id + restart. Queue rows are
    inert in legacy mode; legacy-mode recovery of queue-claimed rows is via
