@@ -1,0 +1,154 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import Database from 'better-sqlite3'
+import { randomBytes } from 'node:crypto'
+import { migrateThreadReplies, setQueries, listQueries, looksLikeQuestion, refreshReplies, listThreads, dismissThread, draftReply, saveDraft, markDraft } from '../lib/replies/threads.ts'
+import { effectiveStepStatus } from '../lib/outreach/sequences.ts'
+import { migrateConnectors } from '../lib/connectors/store.ts'
+import { migrateAdvanced, acceptConsent } from '../lib/advanced/index.ts'
+import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
+
+const master = randomBytes(32)
+const ENV_ON = { ADVANCED_CONNECTORS: '1', ADVANCED_WORKER_URL: 'https://w.example', ADVANCED_WORKER_TOKEN: 't' } as Record<string, string>
+const NOW = Date.UTC(2026, 9, 22)
+const FRESH = '2026-10-21'
+const OLD = '2026-09-01'
+const item = (url: string, title: string, date: string | null) => ({ url, title, quote: 'Some quoted thread text long enough to be useful.', date, login_walled: false })
+
+function db() {
+  const d = new Database(':memory:')
+  migrateConnectors(d); migrateAdvanced(d); migrateKeys(d); migrateThreadReplies(d)
+  return d
+}
+
+test('queries: cleaned, deduped, ordered, max 5, min length', () => {
+  const d = db()
+  const r = setQueries(d, 't1', [' outbound tool ', 'outbound tool', 'cold email software', ''])
+  assert.equal(r.ok, true)
+  assert.deepEqual(listQueries(d, 't1'), ['outbound tool', 'cold email software'])
+  assert.equal(setQueries(d, 't1', ['q1','q2','q3','q4','q5','q6']).ok, false)
+  assert.equal(setQueries(d, 't1', ['ab']).ok, false)
+})
+
+test('question detection: question mark or question-word title', () => {
+  assert.equal(looksLikeQuestion('Anyone use a tool for outbound?'), true)
+  assert.equal(looksLikeQuestion('Best cold email software for a small team'), true)
+  assert.equal(looksLikeQuestion('How do you find B2B leads'), true)
+  assert.equal(looksLikeQuestion('We just launched our new dashboard'), false)
+  assert.equal(looksLikeQuestion(''), false)
+})
+
+test('refresh: no consent means no worker calls; disabled means disabled', async () => {
+  const d = db()
+  setQueries(d, 't1', ['outbound tool'])
+  let calls = 0
+  const worker = async () => { calls++; return [] }
+  const r1 = await refreshReplies(d, 't1', { worker, env: ENV_ON, now: NOW })
+  assert.equal(calls, 0)
+  assert.equal(r1.platforms.reddit, 'no_consent')
+  const r2 = await refreshReplies(d, 't1', { worker, env: {}, now: NOW })
+  assert.equal(r2.platforms.reddit, 'disabled')
+  assert.equal(calls, 0)
+})
+
+test('refresh: keeps only fresh question threads, dedupes by url, tenant-scoped', async () => {
+  const d = db()
+  acceptConsent(d, 't1', 'advanced')
+  setQueries(d, 't1', ['outbound tool'])
+  const worker = async () => [
+    item('https://www.reddit.com/r/sales/comments/a1', 'Anyone use a tool for outbound?', FRESH),
+    item('https://www.reddit.com/r/sales/comments/a2', 'Anyone use a tool for outbound?', OLD),
+    item('https://www.reddit.com/r/sales/comments/a3', 'We just launched our dashboard', FRESH),
+    item('https://www.reddit.com/r/sales/comments/a4', 'Anyone use a tool for outbound?', null),
+    item('https://x.com/founder/status/55', 'Best cold email software for a small team?', FRESH),
+  ]
+  const r = await refreshReplies(d, 't1', { worker, env: ENV_ON, now: NOW })
+  assert.equal(r.added, 2)
+  assert.equal(r.platforms.reddit, 'ok')
+  const threads = listThreads(d, 't1')
+  assert.equal(threads.length, 2)
+  assert.ok(threads.every(t => t.date === FRESH && t.query === 'outbound tool'))
+  const again = await refreshReplies(d, 't1', { worker, env: ENV_ON, now: NOW })
+  assert.equal(again.added, 0)
+  assert.equal(listThreads(d, 't1').length, 2)
+  assert.equal(listThreads(d, 't2').length, 0)
+})
+
+test('refresh: worker error reported per platform, nothing stored', async () => {
+  const d = db()
+  acceptConsent(d, 't1', 'advanced')
+  setQueries(d, 't1', ['outbound tool'])
+  const r = await refreshReplies(d, 't1', { worker: async () => null, env: ENV_ON, now: NOW })
+  assert.equal(r.added, 0)
+  assert.equal(r.platforms.reddit, 'worker_error')
+  const row = d.prepare("SELECT status FROM connector_audit WHERE connector = 'adv:reddit-replies'").get() as { status: string }
+  assert.equal(row.status, 'worker_error')
+})
+
+test('refresh: hourly budget is shared with other advanced features', async () => {
+  const d = db()
+  acceptConsent(d, 't1', 'advanced')
+  setQueries(d, 't1', ['outbound tool'])
+  // 10 prior adv:reddit calls this hour exhaust the shared budget (default 10/hour)
+  const ins = d.prepare("INSERT INTO connector_audit (id, tenant_id, connector, lookup, status, results) VALUES (?, 't1', 'adv:reddit', 'q', 'ok', 1)")
+  for (let i = 0; i < 10; i++) ins.run(`a${i}`)
+  let calls = 0
+  const r = await refreshReplies(d, 't1', { worker: async () => { calls++; return [] }, env: ENV_ON, now: NOW })
+  assert.equal(r.platforms.reddit, 'rate_limited')
+  assert.equal(r.platforms.x, 'ok') // x has its own budget
+  assert.equal(calls, 1) // only x was fetched; reddit was gated before any worker call
+})
+
+const LONG_DRAFT = 'Start with a tight ICP and a short list. Manual first, then automate the two steps that repeat. Happy to share what worked for us.'
+
+test('draft: not found, no key, then drafted on the tenant key with edit and marks', async () => {
+  const d = db()
+  acceptConsent(d, 't1', 'advanced')
+  setQueries(d, 't1', ['outbound tool'])
+  await refreshReplies(d, 't1', { worker: async () => [item('https://www.reddit.com/r/sales/comments/a1', 'Anyone use a tool for outbound?', FRESH)], env: ENV_ON, now: NOW })
+  const thread = listThreads(d, 't1')[0]
+
+  assert.deepEqual(await draftReply(d, 't1', 'f'.repeat(24), { sells: '', website: '' }, { master }), { error: 'not_found' })
+  assert.deepEqual(await draftReply(d, 't1', thread.id, { sells: '', website: '' }, { master }), { error: 'no_key' })
+
+  saveKey(d, 't1', 'anthropic', 'sk-ant-test-key-1234', master)
+  let sentKey = ''
+  let prompt = ''
+  const f = (async (_u: string, init: RequestInit) => {
+    sentKey = (init.headers as Record<string, string>)['x-api-key']
+    prompt = JSON.parse(String(init.body)).messages[0].content
+    return new Response(JSON.stringify({ content: [{ type: 'text', text: LONG_DRAFT }] }), { status: 200 })
+  }) as unknown as typeof fetch
+  const r = await draftReply(d, 't1', thread.id, { sells: 'lead research for agencies', website: 'https://dazl.ai' }, { fetchImpl: f, master, now: 1_800_000_000 })
+  assert.ok(!('error' in r))
+  assert.equal(sentKey, 'sk-ant-test-key-1234') // the tenant's own key, never the operator's
+  assert.match(prompt, /Anyone use a tool for outbound\?/)
+  assert.match(prompt, /lead research for agencies/)
+  assert.match(prompt, /Reddit reacts badly to marketing/)
+  assert.equal(listThreads(d, 't1')[0].draft_status, 'draft')
+
+  assert.equal(saveDraft(d, 't1', thread.id, '  my edited reply ').ok, true)
+  assert.equal(listThreads(d, 't1')[0].draft, 'my edited reply')
+  assert.equal(listThreads(d, 't1')[0].draft_status, 'edited')
+  assert.equal(markDraft(d, 't1', thread.id, 'copied'), true)
+  assert.equal(markDraft(d, 't1', thread.id, 'posted'), true)
+  assert.equal(listThreads(d, 't1')[0].draft_status, 'posted')
+
+  // regenerate overwrites with a fresh draft
+  const r2 = await draftReply(d, 't1', thread.id, { sells: '', website: '' }, { fetchImpl: f, master })
+  assert.ok(!('error' in r2))
+  assert.equal(listThreads(d, 't1')[0].draft_status, 'draft')
+
+  assert.equal(dismissThread(d, 't1', thread.id), true)
+  assert.equal(listThreads(d, 't1').length, 0)
+})
+
+test('effective step status: unsent steps of a terminal sequence read as stopped', () => {
+  assert.equal(effectiveStepStatus('replied', 'approved'), 'stopped')
+  assert.equal(effectiveStepStatus('stopped', 'approved'), 'stopped')
+  assert.equal(effectiveStepStatus('done', 'approved'), 'stopped')
+  assert.equal(effectiveStepStatus('active', 'approved'), 'approved')
+  assert.equal(effectiveStepStatus('approved', 'approved'), 'approved')
+  assert.equal(effectiveStepStatus('replied', 'sent'), 'sent')
+  assert.equal(effectiveStepStatus('replied', 'uncertain'), 'uncertain')
+})
