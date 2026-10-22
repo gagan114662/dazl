@@ -3,7 +3,7 @@ import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { approve, OutreachError } from '@/lib/outreach/service'
-import { createSequence, draftSequenceSteps, editSequenceStep, approveSequence, sequenceAnalytics, sequenceStatusByLead, effectiveStepStatus, testAddresses, setTestAddresses, SequenceError, resolveSequenceUncertain, resumeSequences } from '@/lib/outreach/sequences'
+import { createSequence, draftSequenceSteps, editSequenceStep, approveSequence, sequenceAnalytics, sequenceStatusByLead, sequenceStepsView, testAddresses, setTestAddresses, SequenceError, resolveSequenceUncertain, resumeSequences } from '@/lib/outreach/sequences'
 import { createSequenceTestFixture, createReplyStopTestFixture, fixtureAvailable, FixtureError } from '@/lib/outreach/test-fixture'
 
 export async function GET(req: NextRequest) {
@@ -11,7 +11,7 @@ export async function GET(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Sign in first.' }, { status: 401 })
   const db = getScanDb()
   const rows = db.prepare('SELECT id, message_id, lead_id, to_email, status, stop_reason FROM sequences WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 200').all(user.id) as { id: string; status: string }[]
-  const sequences = rows.map(s => ({ ...s, steps: (db.prepare('SELECT step,subject,body,status FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? ORDER BY step').all(user.id,s.id) as { status: string }[]).map(st => ({ ...st, status: effectiveStepStatus(s.status, st.status) })) }))
+  const sequences = rows.map(s => ({ ...s, steps: sequenceStepsView(db, user.id, s as { id: string; message_id: string; status: string }) }))
   const campaigns = db.prepare('SELECT DISTINCT j.id,j.query FROM scan_jobs j JOIN leads l ON l.scan_job_id = j.id JOIN outreach_messages m ON m.lead_id = l.id AND m.tenant_id = j.user_id WHERE j.user_id = ? ORDER BY j.created_at DESC LIMIT 50').all(user.id) as { id: string; query: string }[]
   return NextResponse.json({ sequences, test_addresses: testAddresses(db,user.id), test_fixture_available: fixtureAvailable(db,user.id), status: Object.fromEntries(sequenceStatusByLead(db,user.id)), campaigns: campaigns.map(c => ({ ...c, analytics: sequenceAnalytics(db,user.id,(db.prepare('SELECT id FROM leads WHERE scan_job_id = ?').all(c.id) as { id: string }[]).map(l => l.id)) })) })
 }
