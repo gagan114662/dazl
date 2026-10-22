@@ -480,7 +480,7 @@ export default function LeadsClient() {
                 </div>
               )
             })()}
-            <WarmPath leadId={l.id} />
+            <WarmPath leadId={l.id} company={l.company} signal={l.signal} />
             {l.enrichments && l.enrichments.some(e => e.kind !== 'contact') && (
               <div className="text-xs mt-1 space-y-0.5">
                 {l.enrichments.filter(e => e.kind !== 'contact').map(e => (

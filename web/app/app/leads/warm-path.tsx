@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import { draftFirstDegreeMessage, draftIntroRequest } from '@/lib/warm/draft'
 
 // Warm paths: first-degree connections from the user's OWN imported LinkedIn
 // connections export, plus mutuals the user saw and reported by hand. dazl never
@@ -67,10 +68,11 @@ export function WarmConnections() {
   )
 }
 
-export function WarmPath({ leadId }: { leadId: string }) {
+export function WarmPath({ leadId, company = '', signal = '' }: { leadId: string; company?: string; signal?: string }) {
   const [warm, setWarm] = useState<Warm | null>(null)
   const [mutual, setMutual] = useState<Record<string, string>>({})
   const [note, setNote] = useState('')
+  const [draftFor, setDraftFor] = useState<string | null>(null)
 
   const load = () => fetch(`/api/leads/${leadId}/warm-path`).then(async r => { if (r.ok) setWarm(await r.json()); else setNote('Could not load warm paths.') }).catch(() => setNote('Could not load warm paths.'))
 
@@ -79,6 +81,11 @@ export function WarmPath({ leadId }: { leadId: string }) {
     if (!name) return
     const r = await fetch(`/api/leads/${leadId}/warm-path`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ contact_url: contactUrl, mutual_name: name }) })
     if (r.ok) { setMutual({ ...mutual, [contactUrl]: '' }); void load() } else setNote('Could not save that.')
+  }
+
+  const contactNameFor = (url: string): string => {
+    const all = [...(warm?.first_degree ?? []), ...(warm?.manual_check ?? [])]
+    return all.find(c => c.linkedin_url === url)?.contact_name ?? ''
   }
 
   async function removePath(id: string) {
@@ -99,13 +106,27 @@ export function WarmPath({ leadId }: { leadId: string }) {
             <span className="text-green-300">First degree:</span> you are connected to <span className="text-[#111]">{f.connection_name}</span>{f.connection_position ? ` (${f.connection_position}${f.connection_company ? ` at ${f.connection_company}` : ''})` : ''} - matches {f.contact_name}{f.contact_title ? `, ${f.contact_title}` : ''} here. From your imported connections.{' '}
             <a className="underline text-[#111]" href={f.linkedin_url} target="_blank" rel="noopener noreferrer nofollow">profile</a>
             <div className="text-gray-500 mt-1">Consider a personal LinkedIn message before a cold email - dazl does not send it for you.</div>
+            <button className="underline text-gray-500 mt-1" onClick={() => setDraftFor(draftFor === f.linkedin_url ? null : f.linkedin_url)}>{draftFor === f.linkedin_url ? 'hide draft' : 'draft a message'}</button>
+            {draftFor === f.linkedin_url && (
+              <div className="mt-1">
+                <textarea readOnly className="w-full border border-white/10 bg-transparent p-1 text-xs" rows={6} value={draftFirstDegreeMessage({ connectionName: f.connection_name, company, signal })} />
+                <p className="text-gray-500">A starting draft only - review, edit, fill the bracketed line, then copy and send it yourself on LinkedIn. dazl does not send messages, and nothing here claims any past conversation.</p>
+              </div>
+            )}
           </div>
         ))}
         {warm && warm.user_reported.map(u => (
           <div key={u.id} className="text-gray-400">
             <span className="text-yellow-500">Reported by you, not verified:</span> {u.mutual_name} knows{' '}
             <a className="underline text-[#111]" href={u.contact_url} target="_blank" rel="noopener noreferrer nofollow">this contact</a>{u.note ? ` - ${u.note}` : ''}{' '}
-            <button className="underline text-gray-500" onClick={() => void removePath(u.id)}>remove</button>
+            <button className="underline text-gray-500" onClick={() => void removePath(u.id)}>remove</button>{' '}
+            <button className="underline text-gray-500" onClick={() => setDraftFor(draftFor === u.id ? null : u.id)}>{draftFor === u.id ? 'hide draft' : 'draft an intro request'}</button>
+            {draftFor === u.id && (
+              <div className="mt-1">
+                <textarea readOnly className="w-full border border-white/10 bg-transparent p-1 text-xs" rows={6} value={draftIntroRequest({ mutualName: u.mutual_name, contactName: contactNameFor(u.contact_url), company })} />
+                <p className="text-gray-500">A starting draft only - based on a mutual YOU reported, not a verified connection. Review, edit, fill the bracketed line, then copy and send it yourself. dazl does not send messages.</p>
+              </div>
+            )}
           </div>
         ))}
         {warm && warm.manual_check.map(c => (
