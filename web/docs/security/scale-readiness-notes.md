@@ -14,12 +14,12 @@ is exploitable depends on the edge:
   bypass sign-in (20/15min), signup (5/hr), unsubscribe (30/hr) and the trial
   scan IP throttle (free-scan farming on the shared operator key).
 
-Verification (deploy owner, read-only): send a request with a forged
-`X-Forwarded-For: 203.0.113.99` header through the public endpoint and check
-what the app logs/observes as the client IP; or inspect the Caddyfile for how
-the reverse_proxy directive handles XFF (Caddy's reverse_proxy sets XFF to the
-immediate peer by default, which is safe if the app is only reachable through
-Caddy).
+Verification (deploy owner): inspect the Caddyfile for how the reverse_proxy
+directive handles XFF - Caddy's reverse_proxy sets XFF to the immediate peer by
+default, which is safe if the app is only reachable through Caddy. A
+forged-header probe against the public endpoint would also settle it but is NOT
+authorized by this note; it needs its own explicit approval before anyone sends
+it.
 
 Code-side hardening options (no deploy change needed):
 1. Trust only the rightmost XFF entry appended by the known proxy count
