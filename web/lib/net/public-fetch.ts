@@ -1,4 +1,7 @@
 import { lookup as dnsLookup } from 'node:dns/promises'
+import { request as httpRequest } from 'node:http'
+import { request as httpsRequest } from 'node:https'
+import { isIP } from 'node:net'
 
 // Fetches a page the user gave us (their own site, for the ICP-from-website feature).
 // SSRF protection: only public hosts, every redirect hop re-validated, hard size and
@@ -37,32 +40,73 @@ export function isPublicIp(ip: string): boolean {
     if (a >= 224) return false                                               // multicast / reserved
     return true
   }
-  if (!v.includes(':')) return false
-  if (v === '::' || v === '::1') return false
-  if (v.startsWith('64:ff9b:')) return false                                 // NAT64
-  if (v.startsWith('2001:db8:')) return false                                // documentation
-  const h = parseInt(v.split(':')[0] || '0', 16)
-  if ((h & 0xffc0) === 0xfe80) return false                                  // link-local
-  if ((h & 0xfe00) === 0xfc00) return false                                  // unique local
+  // Only global unicast IPv6, excluding transition and special-purpose space.
+  if (isIP(v) !== 6) return false
+  const first = parseInt(v.split(':')[0], 16)
+  if (!Number.isFinite(first) || first < 0x2000 || first > 0x3fff) return false
+  if (/^2001:(?:0{1,4}|0?db8|[12][0-9a-f]{2}):/i.test(v)) return false
+  if (first === 0x2002) return false // 6to4 embeds an IPv4 destination
   return true
 }
 
-const isIpLiteral = (host: string) => /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(':')
+export type PublicAddress = { address: string; family: number }
+export async function resolvePublic(host: string, lookup: Lookup): Promise<PublicAddress[] | null> {
+  const bare = host.replace(/^\[|\]$/g, '')
+  const family = isIP(bare)
+  if (family) return isPublicIp(bare) ? [{ address: bare, family }] : null
+  let records: PublicAddress[]
+  try { records = await lookup(bare) } catch { return null }
+  return records.length > 0 && records.every(r => isPublicIp(r.address)) ? records : null
+}
 
-async function resolvePublic(host: string, lookup: Lookup): Promise<boolean> {
-  const bare = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
-  if (isIpLiteral(bare)) return isPublicIp(bare)
-  let records: { address: string }[]
-  try { records = await lookup(bare) } catch { return false }
-  // Every resolved address must be public: a round-robin record with one private
-  // answer is a rebinding attack, not a website.
-  return records.length > 0 && records.every(r => isPublicIp(r.address))
+// Crucial: the TCP connection uses ONLY the validated address. Host and TLS SNI stay
+// the original hostname, but there is no second DNS lookup (no rebinding window).
+export function pinnedLookup(address: PublicAddress): import('node:net').LookupFunction {
+  return (_hostname, options, cb) => {
+    if (options.all) cb(null, [address])
+    else cb(null, address.address, address.family)
+  }
+}
+
+export function pinnedHtmlRequest(url: URL, records: PublicAddress[], signal: AbortSignal): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const address = records[0]
+    const request = url.protocol === 'https:' ? httpsRequest : httpRequest
+    const req = request(url, {
+      agent: false,
+      signal,
+      lookup: pinnedLookup(address),
+      headers: { 'user-agent': 'dazl-icp/1.0 (+https://dazl.ai)', accept: 'text/html,application/xhtml+xml' },
+    }, res => {
+      const headers = new Headers()
+      for (const [k, v] of Object.entries(res.headers)) if (v !== undefined) headers.set(k, Array.isArray(v) ? v.join(', ') : v)
+      const chunks: Buffer[] = []
+      let total = 0
+      let finished = false
+      const finish = () => {
+        if (finished) return
+        finished = true
+        const status = res.statusCode ?? 502
+        resolve(new Response(status === 204 || status === 304 ? null : Buffer.concat(chunks, total), { status, headers }))
+      }
+      if ((res.statusCode ?? 0) >= 300 && (res.statusCode ?? 0) < 400) { finish(); res.destroy(); return }
+      res.on('data', (chunk: Buffer) => {
+        const part = chunk.subarray(0, MAX_BYTES - total)
+        chunks.push(part); total += part.length
+        if (total >= MAX_BYTES) { finish(); res.destroy() }
+      })
+      res.on('end', finish)
+      res.on('error', e => { if (!finished) reject(e) })
+    })
+    req.on('error', reject)
+    req.end()
+  })
 }
 
 export interface PublicFetchDeps { fetchImpl?: typeof fetch; lookup?: Lookup }
 
 export async function fetchPublicHtml(rawUrl: string, deps: PublicFetchDeps = {}): Promise<{ html: string; finalUrl: string } | { error: PublicFetchError }> {
-  const f = deps.fetchImpl ?? fetch
+  const deadline = AbortSignal.timeout(TIMEOUT_MS)
   const lookup = deps.lookup ?? defaultLookup
   let url: URL
   try { url = new URL(rawUrl.trim()) } catch { return { error: 'invalid' } }
@@ -70,14 +114,22 @@ export async function fetchPublicHtml(rawUrl: string, deps: PublicFetchDeps = {}
   if (url.username || url.password) return { error: 'invalid' }
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    if (!(await resolvePublic(url.hostname, lookup))) return { error: 'not_public' }
+    if (url.username || url.password || (url.port && url.port !== '80' && url.port !== '443')) return { error: 'invalid' }
+    let records: PublicAddress[] | null
+    try {
+      records = await Promise.race([
+        resolvePublic(url.hostname, lookup),
+        new Promise<never>((_, reject) => { if (deadline.aborted) reject(new Error('timeout')); else deadline.addEventListener('abort', () => reject(new Error('timeout')), { once: true }) }),
+      ])
+    } catch { return { error: 'timeout' } }
+    if (!records) return { error: 'not_public' }
     let res: Response
     try {
-      res = await f(url.toString(), {
+      res = deps.fetchImpl ? await deps.fetchImpl(url.toString(), {
         redirect: 'manual', // we follow by hand and re-validate every hop
-        signal: AbortSignal.timeout(TIMEOUT_MS),
+        signal: deadline,
         headers: { 'user-agent': 'dazl-icp/1.0 (+https://dazl.ai)', accept: 'text/html,application/xhtml+xml' },
-      })
+      }) : await pinnedHtmlRequest(url, records, deadline)
     } catch (e) {
       const name = e instanceof Error ? e.name : ''
       return { error: name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'blocked' }
@@ -102,8 +154,9 @@ export async function fetchPublicHtml(rawUrl: string, deps: PublicFetchDeps = {}
         for (;;) {
           const { done, value } = await reader.read()
           if (done) break
-          total += value.byteLength
-          chunks.push(value)
+          const part = value.subarray(0, MAX_BYTES - total)
+          total += part.byteLength
+          chunks.push(part)
           if (total >= MAX_BYTES) { await reader.cancel().catch(() => {}); break }
         }
       } catch { return { error: 'timeout' } }

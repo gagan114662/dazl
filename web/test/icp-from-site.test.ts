@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
-import { isPublicIp, fetchPublicHtml, type Lookup } from '../lib/net/public-fetch.ts'
+import { isPublicIp, fetchPublicHtml, pinnedLookup, type Lookup } from '../lib/net/public-fetch.ts'
 import { extractSiteText, icpFromWebsite } from '../lib/scan/icp-from-site.ts'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import type { Provider } from '../lib/llm/provider.ts'
@@ -116,4 +116,24 @@ test('icpFromWebsite: the key is checked before any fetch (trial or operator key
   const empty = new Database(':memory:'); migrateKeys(empty)
   await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: counting, providers: { anthropic: goodProvider } })
   assert.equal(called, 0, 'no outbound fetch without a tenant key')
+})
+
+
+test('pinned lookup never asks DNS again when the transport connects', async () => {
+  const lookup = pinnedLookup({ address: '93.184.216.34', family: 4 })
+  const address = await new Promise<string>((resolve, reject) => lookup('rebind.example', {}, (err, address) => err ? reject(err) : resolve(typeof address === 'string' ? address : address[0].address)))
+  assert.equal(address, '93.184.216.34')
+})
+
+test('IPv6 transitions, mapped hex loopback, multicast and invalid literals are not public', () => {
+  for (const ip of ['::ffff:7f00:1', 'ff02::1', '2002:7f00:1::', '2001:0000::1', '2001:db8::5', '::', 'not:an:ip']) assert.equal(isPublicIp(ip), false, ip)
+})
+
+test('redirects cannot introduce credentials or a nonstandard port', async () => {
+  for (const location of ['https://u:p@acme.example/', 'https://acme.example:8080/']) {
+    let calls = 0
+    const f = (async () => { calls++; return htmlResponse('', 302, 'text/html', { location }) }) as unknown as typeof fetch
+    assert.deepEqual(await fetchPublicHtml('https://acme.example', { lookup: pubLookup, fetchImpl: f }), { error: 'invalid' })
+    assert.equal(calls, 1)
+  }
 })
