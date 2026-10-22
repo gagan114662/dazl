@@ -39,6 +39,11 @@ test('mixed mode: combined in-flight runs never exceed SCAN_MAX_CONCURRENT', asy
     anthropic: { research: slow },
     openai: { research: slow },
   }
+  // Post-finish enrichment (EDGAR/ATS/RSS) uses deps.fetchImpl, NOT the
+  // sitecrawl flag - without this stub a direct node --test run would attempt
+  // real egress. npm test's global fence is the harness-level backstop; the
+  // test itself must be egress-free either way.
+  const fetchImpl = async () => new Response('{}', { status: 200 })
   const savedEnv = process.env.DAZL_QUEUE_TENANTS
   const savedCrawl = process.env.SITECRAWL_ENABLED
   process.env.DAZL_QUEUE_TENANTS = 'alice'
@@ -46,7 +51,7 @@ test('mixed mode: combined in-flight runs never exceed SCAN_MAX_CONCURRENT', asy
   try {
     // Drain: kick repeatedly until every job is done.
     for (let i = 0; i < 60; i++) {
-      await kickRunner(db, { providers, master, fetchPage: page })
+      await kickRunner(db, { providers, master, fetchPage: page, fetchImpl })
       await new Promise((r) => setTimeout(r, 80))
       const remaining = (db.prepare("SELECT count(*) c FROM scan_jobs WHERE status IN ('pending','running')").get() as { c: number }).c
       if (remaining === 0) break
