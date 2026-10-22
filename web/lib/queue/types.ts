@@ -17,6 +17,10 @@
 //   - Claim fencing: a claim hands out a monotonically increasing token.
 //     complete/fail with a stale token is rejected, exactly like finish()
 //     in runner.ts refusing to write when scan_jobs.attempts has moved on.
+//     The token fences only the queue row: a worker that mutates domain
+//     tables (leads, sequences, followups) must keep its own domain-level
+//     ownership check, the way scan writes guard on scan_jobs.attempts.
+//     Adding those guards is part of each wiring PR, not this slice.
 //   - Leases: a claimed item expires after leaseSeconds and becomes
 //     claimable again (reapExpired), mirroring reapStaleJobs in store.ts
 //     (STALE_RUNNING_S = 20 min default).
@@ -111,9 +115,10 @@ export interface QueueAdapter {
   claim(opts?: ClaimOptions): Claim | null
   complete(token: number, opts?: { now?: number }): boolean
   fail(token: number, opts?: FailOptions): FailOutcome
-  // Return expired claims to pending (or failed past maxAttempts). Called
-  // inside claim() too, so no separate cron is required - same shape as
-  // reapStaleJobs being called on reads.
+  // Return expired claims to pending with backoff (or failed past
+  // maxAttempts). Called inside claim() too, so no separate cron is
+  // required - same shape as reapStaleJobs being called on reads, but with
+  // retry spacing reapStaleJobs does not have.
   reapExpired(now?: number): number
   get(id: string): WorkItem | undefined
   depth(opts?: { tenantId?: string; kind?: string; status?: WorkStatus }): number

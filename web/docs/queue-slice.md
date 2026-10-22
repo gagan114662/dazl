@@ -53,6 +53,8 @@ does not change callers:
 | -------------------- | --------------------------------------------------------------- |
 | claim fencing token  | `finish()` writes only if `attempts` still matches (runner.ts)  |
 | lease + reap         | `reapStaleJobs`, `STALE_RUNNING_S` = 20 min (store.ts)          |
+|                      | (queue diverges deliberately: reaped attempts re-pend WITH      |
+|                      | backoff, so a crash-looping job cannot spin through attempts)   |
 | attempts             | `MAX_ATTEMPTS` = 3, `attempts + 1` on claim (store.ts)          |
 | non-retryable error  | `ProviderError` auth → `key_rejected`, no retry (runner.ts)     |
 | error text cap       | `scan_jobs.error` CHECK ≤ 200 chars (store.ts)                  |
@@ -60,10 +62,14 @@ does not change callers:
 
 Additional guarantees the current code does **not** have:
 
-- **Per-tenant fairness**: `claim` picks across tenants by oldest head-of-line
-  item, with `perTenantInFlight` (default 1) capping how much one tenant can
-  hold, so global FIFO starvation cannot occur *inside this adapter*.
-  Production claiming is unchanged until the wiring PR lands.
+- **Per-tenant fairness, bounded not proven**: `claim` picks across tenants
+  by oldest head-of-line item, with `perTenantInFlight` (default 1) capping
+  how many slots one tenant can hold. This strictly improves on the global
+  FIFO (other tenants claim in parallel up to `maxInFlight` instead of
+  waiting behind one backlog), but it is NOT unconditional starvation
+  freedom: a tenant with an old finite backlog keeps winning the
+  head-of-line comparison until that backlog drains, and no weighted
+  fairness is proven. Production claiming is unchanged until wiring.
 - **Backoff**: `fail(retryable)` sets `notBefore = now + backoff(attempt)`
   (30s base, 2x, 30min cap, ±20% jitter) instead of immediate re-pend.
 - **Idempotent enqueue**: optional `dedupeKey`, namespaced per tenant+kind,
@@ -88,6 +94,23 @@ steps 1-3 below can land on SQLite today. Only the durable SQL backend
    `monitor:<id>:<dueDay>` dedupe keys) are visible in the tick route today.
 3. **External worker (Hermes)**: claims `kinds: ['scan']` with its own lease;
    the HTTPS claim/complete API maps 1:1 onto `claim`/`complete`/`fail`.
+
+## Known limits of the in-process adapter
+
+- `claim()` is O(N) over stored items; fine at expected scale, the SQL
+  backend replaces the scan with an index.
+- FIFO within a tenant: a tenant's manual scan queues behind its own
+  earlier CSV batch. Per-kind lanes are future work.
+- Caller-supplied ids must be unique per run, including terminal items: a
+  completed item keeps its id, so recurring workloads mint a fresh id each
+  run (`scan_jobs` already does).
+- The claim token fences only the queue row. A worker mutating domain
+  tables (leads, sequences, followups) must keep its own domain-level
+  ownership check, the way scan writes guard on `scan_jobs.attempts`;
+  adding those guards is part of each wiring PR.
+- State is in-memory: items do not survive a process restart. That is
+  acceptable only for workloads whose source of truth is a domain table
+  (scan jobs re-pend via their own row); the durable backend is the fix.
 
 ## Postgres backend (after the data-layer migration lands)
 

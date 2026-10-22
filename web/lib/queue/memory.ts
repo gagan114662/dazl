@@ -6,11 +6,21 @@
 // Fairness model: among tenants with claimable work and room under
 // perTenantInFlight, the tenant whose oldest eligible item is oldest wins
 // (inter-tenant head-of-line FIFO); within a tenant, oldest eligible first.
-// That is the strongest fairness the current single-process runner can offer
-// without reordering one tenant's own jobs, and under it the starvation
-// claimKeyedJob's global FIFO allows (one tenant's CSV batch ahead of every
-// other tenant's manual scan) cannot occur. Scope note: this is adapter
-// behavior only - production claiming is unchanged until a later wiring PR.
+// This is bounded sharing, NOT proven weighted fairness: perTenantInFlight
+// caps how many slots one tenant can hold, but a tenant with an old finite
+// backlog keeps winning the head-of-line comparison until that backlog
+// drains, so no unconditional starvation-freedom claim is made. It still
+// strictly improves on claimKeyedJob's global FIFO, where one tenant's CSV
+// batch sits ahead of EVERY slot; here other tenants claim in parallel up
+// to maxInFlight. Scope note: adapter behavior only - production claiming
+// is unchanged until a later wiring PR.
+//
+// Known limits: claim() is O(N) over stored items (fine at expected scale;
+// the SQL backend uses an index instead), and FIFO within a tenant means a
+// tenant's manual scan queues behind its own earlier CSV batch (per-kind
+// lanes are future work). Caller-supplied ids must be unique per run,
+// including terminal items: a completed item keeps its id, so a recurring
+// workload must mint a fresh id each run (e.g. scan_jobs already does).
 
 import { randomBytes } from 'node:crypto'
 import { backoffSeconds, DEFAULT_BACKOFF, type BackoffPolicy } from './backoff.ts'
@@ -169,10 +179,15 @@ export class InProcessQueue implements QueueAdapter {
     let n = 0
     for (const it of this.items.values()) {
       if (it.status !== 'claimed' || it.leaseExpiresAt === null || it.leaseExpiresAt > now) continue
-      // Parity with reapStaleJobs: a timed-out attempt goes straight back to
-      // pending (no backoff) or fails as 'timeout' once attempts are spent.
+      // A timed-out attempt fails as 'timeout' once attempts are spent;
+      // otherwise it re-pends WITH backoff. This deliberately diverges from
+      // reapStaleJobs (which re-pends immediately): a crash-looping job must
+      // not spin through its remaining attempts as fast as the lease expires.
       if (it.attempts >= it.maxAttempts) this.release(it, 'failed', 'timeout')
-      else this.release(it, 'pending', it.lastError)
+      else {
+        it.notBefore = now + backoffSeconds(it.attempts, this.backoff, this.rng)
+        this.release(it, 'pending', it.lastError)
+      }
       n++
     }
     return n
