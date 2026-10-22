@@ -3,6 +3,7 @@ import { KEY_UNREADABLE_COPY, knownErrorCopy } from '@/lib/error-copy'
 import { useEffect, useState } from 'react'
 import { emptyLeadsMessage, scoreLabel } from '@/lib/scan/leads-view'
 import { contactsFromEnrichments } from '@/lib/people/rank'
+import { publishedEmail, publishedContact } from '@/lib/outreach/published-email'
 import SourceMetrics from './source-metrics'
 import { WarmConnections, WarmPath } from './warm-path'
 import VerificationFixture from './verification-fixture'
@@ -570,11 +571,19 @@ export default function LeadsClient() {
             {l.evidence_excerpt && <blockquote className="text-gray-500 text-xs border-l border-white/10 pl-3 my-1">&ldquo;{l.evidence_excerpt}&rdquo;</blockquote>}
             <span className="text-gray-500 text-xs mr-3">{l.confidence === null ? 'not verified' : `confidence ${l.confidence}`}{l.event_date ? `, ${l.event_date}${l.date_status === 'unverified' ? ' (date not confirmed on page)' : ''}` : ''}</span>
             <a className="underline text-[#111] text-xs" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
-            {l.contact && <span className="text-gray-500 text-xs ml-3">{l.contact}</span>}
-            {l.contact?.includes('@') && l.confidence !== null && !(l.fit === 0 && l.intent === null) && (
-              drafted[l.id]
-                ? <span className="text-gray-400 text-xs ml-3">{drafted[l.id]}</span>
-                : <button onClick={() => makeDraft(l.id)} className="font-mono text-xs uppercase border border-black px-2 py-1 ml-3 hover:bg-black hover:text-white">Draft email</button>)}
+            {(() => {
+              const pc = publishedContact(l)
+              const draftTo = publishedEmail(l)
+              return <>
+                {pc && pc.purpose === 'sales' && <span className="text-gray-500 text-xs ml-3">{pc.email}</span>}
+                {pc && pc.purpose === 'non-sales' && <span className="text-gray-500 text-xs ml-3">{pc.email} - published {pc.purposeHint} inbox, not a sales contact</span>}
+                {!pc && l.contact && <span className="text-gray-500 text-xs ml-3">{l.contact}</span>}
+                {draftTo && l.confidence !== null && !(l.fit === 0 && l.intent === null) && (
+                  drafted[l.id]
+                    ? <span className="text-gray-400 text-xs ml-3">{drafted[l.id]}</span>
+                    : <button onClick={() => makeDraft(l.id)} className="font-mono text-xs uppercase border border-black px-2 py-1 ml-3 hover:bg-black hover:text-white">Draft email</button>)}
+              </>
+            })()}
             {crmOn && (pushed[l.id]
               ? <span className="text-gray-400 text-xs ml-2">{pushed[l.id]}</span>
               : <button onClick={() => pushCrm(l.id)} className="font-mono text-xs uppercase border border-black px-2 py-1 ml-2 hover:bg-black hover:text-white">Push to CRM</button>)}

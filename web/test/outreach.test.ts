@@ -23,7 +23,7 @@ function addLead(db: Database.Database, tenant: string, o: Partial<{ contact: st
   const id = randomBytes(12).toString('hex')
   db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
   db.prepare('INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence, fit, intent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
-    id, job, 'Northside Builders', 'contact' in o ? o.contact : 'jobs@northside.example', 'Hiring five roofers', 'https://news.example/a',
+    id, job, 'Northside Builders', 'contact' in o ? o.contact : 'info@northside.example', 'Hiring five roofers', 'https://news.example/a',
     'evidence' in o ? o.evidence : 'Northside Builders is hiring five roofers', 'confidence' in o ? o.confidence : 85,
     'fit' in o ? o.fit : null, 'intent' in o ? o.intent : null)
   return id
@@ -94,6 +94,21 @@ test('draft rules: needs a verified lead, a business email, no suppression; one 
   assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { contact: null }), 'Acme'), /no_email_contact/)
   assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { contact: '(416) 555-0199' }), 'Acme'), /no_email_contact/)
   assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { contact: 'someone@gmail.com' }), 'Acme'), /personal_email/)
+  // A published inbox whose purpose is not sales must never receive a sales draft -
+  // whether it came from the cited page or from the company's own contact page.
+  assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { contact: 'press@northside.example' }), 'Acme'), /not_sales_contact/)
+  assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { contact: 'support@northside.example' }), 'Acme'), /not_sales_contact/)
+  assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { contact: 'jobs@northside.example' }), 'Acme'), /not_sales_contact/)
+  {
+    const db2 = setup()
+    db2.prepare("CREATE TABLE IF NOT EXISTS lead_enrichments (tenant_id TEXT, lead_id TEXT, connector TEXT, kind TEXT, value TEXT, label TEXT, confidence REAL, source_url TEXT, source_date TEXT, retrieved_at INTEGER)").run()
+    const leadId = addLead(db2, 'A', { contact: null })
+    db2.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', 'email', 'press@figma.com', 'https://figma.com/contact', '2026-10-22', 1)").run(leadId)
+    assert.throws(() => createDraft(db2, 'A', leadId, 'Acme'), /not_sales_contact/)
+    const leadId2 = addLead(db2, 'A', { contact: null })
+    db2.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', 'email', 'info@northside.example', 'https://northside.example/contact', '2026-10-22', 1)").run(leadId2)
+    assert.ok(createDraft(db2, 'A', leadId2, 'Acme'))
+  }
   // Held by failed grading (fit 0, intent unset): not draftable until a rescan grades it.
   assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { fit: 0, intent: null }), 'Acme'), /lead_ungraded/)
   // A real grade of 0 (mismatch) and a never-scored lead (fit unset) stay draftable.
@@ -101,7 +116,7 @@ test('draft rules: needs a verified lead, a business email, no suppression; one 
   assert.ok(createDraft(db, 'A', addLead(db, 'A', { contact: 'x@unscored.example' }), 'Acme'))
   const lead = addLead(db, 'A')
   assert.throws(() => createDraft(db, 'B', lead, 'Acme'), /not_found/)
-  suppress(db, 'A', 'JOBS@northside.example', 'manual')
+  suppress(db, 'A', 'INFO@northside.example', 'manual')
   assert.throws(() => createDraft(db, 'A', lead, 'Acme'), /suppressed/)
   const db2 = setup(); const l2 = addLead(db2, 'A')
   createDraft(db2, 'A', l2, 'Acme')
@@ -137,7 +152,7 @@ test('send: once only. repeated and concurrent calls never double send; footer, 
   const mime = Buffer.from(sent[0], 'base64url').toString()
   const [head, bodyB64] = mime.split('\r\n\r\n')
   assert.match(head, /^From: "Pat Smith" <me@acme.example>/m)
-  assert.match(head, /^To: jobs@northside.example$/m)
+  assert.match(head, /^To: info@northside.example$/m)
   assert.match(head, /^List-Unsubscribe: <https:\/\/app.test\/api\/unsubscribe\?t=[a-f0-9]{24}\.[a-f0-9]{32}>$/m)
   assert.match(head, /^List-Unsubscribe-Post: List-Unsubscribe=One-Click$/m)
   const body = Buffer.from(bodyB64.replace(/\r\n/g, ''), 'base64').toString()
@@ -192,11 +207,11 @@ test('suppression: enforced at send time, by unsubscribe token, and cancels pend
   const other = createDraft(db, 'A', addLead(db, 'A'), 'Acme') // same address, second lead
   const { sent, sendFn } = okSend()
   // the recipient unsubscribes between approval and send
-  db.prepare("INSERT INTO suppressions (tenant_id, email, reason) VALUES ('A','jobs@northside.example','manual')").run()
+  db.prepare("INSERT INTO suppressions (tenant_id, email, reason) VALUES ('A','info@northside.example','manual')").run()
   await assert.rejects(sendMessage(db, 'A', id, deps({ sendFn })), /suppressed/)
   assert.equal(sent.length, 0)
-  assert.equal(isSuppressed(db, 'A', ' JOBS@northside.example '), true)
-  assert.equal(isSuppressed(db, 'B', 'jobs@northside.example'), false) // per tenant
+  assert.equal(isSuppressed(db, 'A', ' INFO@northside.example '), true)
+  assert.equal(isSuppressed(db, 'B', 'info@northside.example'), false) // per tenant
   void other
 
   const db2 = setup(); await connect(db2, 'A'); ready(db2)

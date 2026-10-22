@@ -6,6 +6,7 @@ import { getMasterKey } from '../secrets.ts'
 import { buildMime, EMAIL_RE, toBase64Url } from '../gmail/mime.ts'
 import { GmailError, GmailSendError, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { norm } from './store.ts'
+import { classifyPurpose } from './published-email.ts'
 
 export const DAILY_CAP = Math.min(ACCOUNT_SEND_CAP, Number(process.env.OUTREACH_DAILY_CAP || 20))
 export const SENDING_STALE_S = 10 * 60
@@ -139,6 +140,10 @@ export function createDraft(db: Database.Database, tenantId: string, leadId: str
   }
   const to = norm(published)
   if (!EMAIL_RE.test(to)) throw new OutreachError('no_email_contact')
+  // Published is not the same as sales-contactable: press, support, privacy,
+  // careers and similar inboxes exist for another purpose. Never aim a sales
+  // draft at them - the UI applies this same classification before offering a draft.
+  if (classifyPurpose(to).purpose === 'non-sales') throw new OutreachError('not_sales_contact')
   const test = testRecipientApproved(db, tenantId, to) ? 1 : 0
   if (!recipientAllowed(db,tenantId,to)) throw new OutreachError('personal_email')
   if (isSuppressed(db, tenantId, to)) throw new OutreachError('suppressed')
