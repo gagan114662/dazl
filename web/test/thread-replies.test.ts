@@ -94,6 +94,7 @@ test('relevance gate: the live-observed defect cases (2026-10-22)', () => {
   assert.equal(isRelevantToQuery('sales', 'How do you find B2B sales leads', ''), true)
   assert.equal(isRelevantToQuery('', 'Anything?', 'x'), false)
 })
+
 test('sequence step view: a sent step 1 is never labeled stopped (live mislabel 2026-10-22)', () => {
   const d = new Database(':memory:')
   migrateOutreach(d); migrateSequences(d)

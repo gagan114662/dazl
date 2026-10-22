@@ -126,14 +126,23 @@ export function listCompanyEvents(db: Database.Database, tenantId: string, opts:
 export function eventsForLeads(db: Database.Database, tenantId: string, leads: { id: string; company_domain: string | null }[], opts: { now?: number } = {}): Record<string, CompanyEventRow[]> {
   const out: Record<string, CompanyEventRow[]> = {}
   for (const l of leads) {
-    const keys = [`lead:${l.id}`]
     const d = (l.company_domain ?? '').toLowerCase().replace(/^www\./, '').trim()
-    if (d.includes('.')) keys.push(d)
+    // Canonical identity first: domain key before the tenant lead key.
+    const keys = d.includes('.') ? [d, `lead:${l.id}`] : [`lead:${l.id}`]
     const seen = new Set<string>()
+    const seenObservation = new Set<string>()
     const rows: CompanyEventRow[] = []
     for (const k of keys) for (const e of listCompanyEvents(db, tenantId, { companyKey: k, scope: 'account', now: opts.now })) {
       if (seen.has(e.id)) continue
+      // An event observed under the lead key before the domain was known can be
+      // re-recorded under the domain key afterwards. Same source reporting the same
+      // event type is ONE observation - count it once, keep the domain-keyed row
+      // (canonical identity). Different source URLs stay separate: independent
+      // sources reporting the same kind of event is itself evidence, never merged.
+      const obs = `${e.event_type}|${e.source_url}`
+      if (seenObservation.has(obs)) continue
       seen.add(e.id)
+      seenObservation.add(obs)
       rows.push(e)
     }
     rows.sort((a, b) => b.last_seen_at - a.last_seen_at)
