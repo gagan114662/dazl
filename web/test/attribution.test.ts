@@ -24,7 +24,7 @@ test('snapshots preserve all signal types and unknown collector provenance',()=>
 })
 test('only stored collector provenance is copied; historical messages remain unknown',()=>{
   const db=setup();assert.equal((messageSignalContext(db,'A','m') as any).captured_at,null)
-  db.exec('CREATE TABLE lead_sources (lead_id TEXT, collector TEXT, attempt INTEGER)')
+  db.exec('CREATE TABLE IF NOT EXISTS lead_sources (lead_id TEXT, collector TEXT, attempt INTEGER)')
   db.exec("INSERT INTO lead_sources VALUES ('l','adapter:rss',1),('l','adapter:rss',2),('l','search:openai',1)")
   snapshotSignalContext(db,'A','m',100)
   assert.equal((messageSignalContext(db,'A','m') as any).collectors_json,'["adapter:rss","search:openai"]')
