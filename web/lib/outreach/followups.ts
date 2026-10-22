@@ -131,3 +131,14 @@ export function followupOverview(db: Database.Database, tenantId: string, now = 
   const acct = gmailStatus(db, tenantId)
   return { enabled: followupsEnabled(db, tenantId), account: acct?.status === 'active' ? acct.email : null, threads, sent }
 }
+
+// What the follow-ups page should ask for when automatic follow-ups are not running.
+// 'none'    - everything is on, nothing to ask.
+// 'switch'  - Gmail is connected; only the follow-ups switch is off. Asking the user
+//             to "Connect Gmail" here contradicts the "Gmail connected as ..." line.
+// 'connect' - Gmail is not connected; the switch is moot until it is.
+export type FollowupAsk = 'none' | 'switch' | 'connect'
+export function followupAsk(o: Pick<FollowupOverview, 'enabled' | 'account'>): FollowupAsk {
+  if (o.enabled) return 'none'
+  return o.account ? 'switch' : 'connect'
+}

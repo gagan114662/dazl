@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import { emptyLeadsMessage, scoreLabel } from '@/lib/scan/leads-view'
 
 interface Lead { id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; watch_new?: number; seen_before?: number; stage?: string | null; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string }[] }
 interface Icp { summary: string; who: string[]; industries: string[]; sizes: string[]; where: string[]; signals: string[]; exclude: string[] }
@@ -31,6 +32,7 @@ export default function LeadsClient() {
   const [draft, setDraft] = useState<Icp | null>(null)
   const [draftNote, setDraftNote] = useState('')
   const [busy, setBusy] = useState(false)
+  const [starting, setStarting] = useState(false)
   const [icp, setIcp] = useState<{ icp: Icp; source: string } | null>(null)
   const [jobId, setJobId] = useState<string | null>(null)
   const [status, setStatus] = useState<string>('')
@@ -150,12 +152,17 @@ export default function LeadsClient() {
   async function preview(e: React.FormEvent) {
     e.preventDefault()
     setError(''); setDraft(null); setBusy(true)
-    const r = await fetch('/api/scan/icp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query }) })
-    const j = await r.json().catch(() => ({}))
-    setBusy(false)
-    if (!r.ok) return setError(j.error === 'no_api_key' ? 'Add your AI key in Settings first.' : j.error === 'key_rejected' ? 'Your AI key was rejected. Check it in Settings.' : j.error === 'trial_key_invalid' ? 'The scan service is having trouble right now. Try again later.' : j.error || 'Could not build the profile')
-    setDraft(j.icp)
-    setDraftNote(j.inferred ? 'dazl worked this out from your request. Edit anything that is off, then run the scan.' : 'dazl could not infer more, so it will use your words as they are. Add detail below if you like.')
+    try {
+      const r = await fetch('/api/scan/icp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query }) })
+      const j = await r.json().catch(() => ({}))
+      if (!r.ok) { setError(j.error === 'no_api_key' ? 'Add your AI key in Settings first.' : j.error === 'key_rejected' ? 'Your AI key was rejected. Check it in Settings.' : j.error === 'trial_key_invalid' ? 'The scan service is having trouble right now. Try again later.' : j.error || 'Could not build the profile'); return }
+      setDraft(j.icp)
+      setDraftNote(j.inferred ? 'dazl worked this out from your request. Edit anything that is off, then run the scan.' : 'dazl could not infer more, so it will use your words as they are. Add detail below if you like.')
+    } catch {
+      setError('Could not reach the server. Check your connection and try again.')
+    } finally {
+      setBusy(false)
+    }
   }
 
   const [advReady, setAdvReady] = useState<string[]>([])
@@ -163,11 +170,18 @@ export default function LeadsClient() {
   useEffect(() => { void fetch('/api/settings/advanced').then(r => r.ok ? r.json() : null).then(j => { if (j?.available) setAdvReady(j.platforms.filter((p: { consent: boolean; connected: boolean; enabled: boolean; operator_index?: boolean }) => p.consent && ((p.connected && p.enabled) || p.operator_index)).map((p: { platform: string }) => p.platform)) }).catch(() => {}) }, [])
 
   async function run(withIcp: Icp | null) {
-    setError('')
-    const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(useGithub || useYoutube || useV2ex || feedText.trim() || pageText.trim() || advPick.length ? { sources: { adapters: [...(useGithub ? ['github'] : []), ...(useYoutube ? ['youtube'] : []), ...(useV2ex ? ['v2ex'] : []), ...(feedText.trim() ? ['rss'] : []), ...(pageText.trim() ? ['web'] : [])], feeds: lines(feedText), pages: lines(pageText), advanced: advPick } } : {}) }) })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) return setError(j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : j.error === 'trial_exhausted' ? 'Your 3 free scans are used up. Add your own AI key in Settings to keep scanning.' : j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')
-    setJobId(j.job_id); setStatus('pending'); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0)
+    setError(''); setStarting(true)
+    try {
+      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(useGithub || useYoutube || useV2ex || feedText.trim() || pageText.trim() || advPick.length ? { sources: { adapters: [...(useGithub ? ['github'] : []), ...(useYoutube ? ['youtube'] : []), ...(useV2ex ? ['v2ex'] : []), ...(feedText.trim() ? ['rss'] : []), ...(pageText.trim() ? ['web'] : [])], feeds: lines(feedText), pages: lines(pageText), advanced: advPick } } : {}) }) })
+      const j = await r.json().catch(() => ({}))
+      if (!r.ok) { setError(j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : j.error === 'trial_exhausted' ? 'Your 3 free scans are used up. Add your own AI key in Settings to keep scanning.' : j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan'); return }
+      setJobId(j.job_id); setStatus('pending'); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0)
+    } catch {
+      // A rejected fetch (offline, aborted) used to fail silently - the click looked dead.
+      setError('Could not reach the server. Check your connection and try again.')
+    } finally {
+      setStarting(false)
+    }
   }
 
   useEffect(() => {
@@ -219,6 +233,8 @@ export default function LeadsClient() {
   }, [])
 
   const input = 'field'
+  const visibleLeads = leads.filter(l => !l.review_reason && (showSeen || !l.seen_before))
+
   return (
     <div className="p-8">
       <div className="flex items-baseline justify-between">
@@ -247,7 +263,7 @@ export default function LeadsClient() {
         </details>
         <div className="flex gap-2 mt-2">
           <button disabled={busy} className="btn-primary">{busy ? 'Working out your profile...' : 'Find leads'}</button>
-          <button type="button" disabled={query.trim().length < 3} onClick={() => run(null)} className="text-gray-400 hover:text-white text-sm px-3">Skip review, just run</button>
+          <button type="button" disabled={query.trim().length < 3 || starting} onClick={() => run(null)} className="text-gray-400 hover:text-white text-sm px-3 disabled:opacity-40">{starting ? 'Starting...' : 'Skip review, just run'}</button>
         </div>
       </form>
       <details className="mb-4 text-sm">
@@ -326,7 +342,7 @@ export default function LeadsClient() {
         <div className="card p-4 mb-6 text-sm">
           <div className="flex items-center justify-between gap-3 mb-3">
             <p className="text-gray-400">{draftNote}</p>
-            <button onClick={() => run(draft)} className="btn-primary shrink-0">Run scan with this profile</button>
+            <button onClick={() => run(draft)} disabled={starting} className="btn-primary shrink-0 disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
           </div>
           <label className="block text-xs text-gray-500 mb-1">Who you want</label>
           <textarea className={`${input} w-full mb-2`} rows={2} maxLength={300} value={draft.summary} onChange={e => setDraft({ ...draft, summary: e.target.value })} />
@@ -336,7 +352,7 @@ export default function LeadsClient() {
               <textarea className={`${input} w-full mb-2`} rows={2} value={draft[k].join('\n')} onChange={e => setDraft({ ...draft, [k]: lines(e.target.value) })} />
             </div>
           ))}
-          <button onClick={() => run(draft)} className="btn-primary">Run scan with this profile</button>
+          <button onClick={() => run(draft)} disabled={starting} className="btn-primary disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
         </div>
       )}
       {icp && !draft && (
@@ -393,11 +409,11 @@ export default function LeadsClient() {
         </p>
       )}
       <div className="card divide-y divide-white/5">
-        {leads.filter(l => !l.review_reason && (showSeen || !l.seen_before)).length === 0 ? (
-          <p className="p-10 text-center text-gray-500 text-sm">{status === 'done' ? 'The scan finished with no leads.' : 'No leads yet. Run a scan.'}</p>
-        ) : leads.filter(l => !l.review_reason && (showSeen || !l.seen_before)).map(l => (
+        {visibleLeads.length === 0 ? (
+          <p className="p-10 text-center text-gray-500 text-sm">{emptyLeadsMessage(status, 0, hiddenCount) ?? ''}</p>
+        ) : visibleLeads.map(l => (
           <div key={l.id} className="p-4 text-sm">
-<div className="font-medium">{l.company_domain ? <a className="underline decoration-white/30 hover:decoration-white" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{l.company || l.name}</a> : (l.company || l.name)} <span className="text-gray-500">score {l.score}</span>
+<div className="font-medium">{l.company_domain ? <a className="underline decoration-white/30 hover:decoration-white" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{l.company || l.name}</a> : (l.company || l.name)} <span className="text-gray-500">{scoreLabel(l.score, l.fit)}</span>
               {!!l.watch_new && <span className="ml-2 text-[10px] uppercase tracking-wide text-green-300 border border-green-300/30 px-1 py-0.5">new</span>}
               {l.stage === 'booked_call' && <span className="ml-2 text-[10px] uppercase tracking-wide text-blue-300 border border-blue-300/30 px-1 py-0.5">booked call</span>}
               {l.fit != null && <span className="ml-2 text-xs font-normal text-gray-300 border border-white/15 px-1.5 py-0.5">fit {l.fit}/5 · intent {l.intent}/5 · action {l.action}/5</span>}

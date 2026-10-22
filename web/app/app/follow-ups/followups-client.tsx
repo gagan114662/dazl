@@ -1,6 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import GmailGate from '../gmail-gate'
+import { followupAsk } from '@/lib/outreach/followups'
 
 interface Thread { thread_id: string; company: string; name: string; to_email: string; last_lead_reply_at: number | null; followups_sent: number; next_due_at: number | null; stopped: string | null }
 interface Sent { thread_id: string; company: string; to_email: string; step: number; status: string; created_at: number }
@@ -43,9 +44,14 @@ export default function FollowupsClient() {
       </p>
       {data?.account && <p className="text-xs text-[#555] -mt-4 mb-6">Gmail connected as <span className="font-medium">{data.account}</span>.</p>}
       {error && <p className="text-red-600 text-sm">{error}</p>}
-      {data && !data.enabled && (
+      {data && followupAsk(data) === 'connect' && (
         <div className="mb-6">
           <GmailGate intro="Connect Gmail to unlock Inbox and Follow-ups. Follow-ups start only after Gmail is connected and the follow-ups switch is on in Settings." />
+        </div>
+      )}
+      {data && followupAsk(data) === 'switch' && (
+        <div className="mb-6 card p-6 text-sm text-[#555]">
+          Gmail is connected. Turn on the follow-ups switch in <a className="underline underline-offset-2" href="/app/settings">Settings</a> to start automatic follow-ups.
         </div>
       )}
       {data && (
