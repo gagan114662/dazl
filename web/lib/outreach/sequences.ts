@@ -234,6 +234,16 @@ export function effectiveStepStatus(seqStatus: string, stepStatus: string): stri
   return TERMINAL_SEQ.has(seqStatus) && stepStatus === 'approved' ? 'stopped' : stepStatus
 }
 
+// Step view for the outreach page. Step 1 sends through the single-message path, which
+// flips outreach_messages.status but never the sequence_steps row, so that row stays
+// 'approved' forever - and once the sequence turns terminal, effectiveStepStatus would
+// mislabel a sent step 1 as 'stopped'. Derive step 1 from the message, the source of truth.
+export function sequenceStepsView(db: Database.Database, tenantId: string, seq: { id: string; message_id: string; status: string }) {
+  const msg = db.prepare('SELECT status FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(seq.message_id, tenantId) as { status: string } | undefined
+  const steps = db.prepare('SELECT step,subject,body,status FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? ORDER BY step').all(tenantId, seq.id) as { step: number; subject: string; body: string; status: string }[]
+  return steps.map(st => ({ ...st, status: effectiveStepStatus(seq.status, st.step === 1 ? (msg?.status ?? st.status) : st.status) }))
+}
+
 // Per-lead status for the Leads page. next_due_at is only set while waiting between steps.
 export function sequenceStatusByLead(db: Database.Database, tenantId: string, d: Deps = {}): Map<string, { status: string; step: number; next_due_at: number | null; stop_reason: string | null }> {
   const now = d.now ?? Math.floor(Date.now() / 1000); void now

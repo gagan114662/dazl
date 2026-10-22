@@ -4,6 +4,9 @@ import Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { migrateThreadReplies, setQueries, listQueries, looksLikeQuestion, isRelevantToQuery, refreshReplies, listThreads, dismissThread, draftReply, saveDraft, markDraft } from '../lib/replies/threads.ts'
 import { effectiveStepStatus } from '../lib/outreach/sequences.ts'
+import { migrateThreadReplies, setQueries, listQueries, looksLikeQuestion, refreshReplies, listThreads, dismissThread, draftReply, saveDraft, markDraft } from '../lib/replies/threads.ts'
+import { effectiveStepStatus, sequenceStepsView, migrateSequences } from '../lib/outreach/sequences.ts'
+import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateAdvanced, acceptConsent } from '../lib/advanced/index.ts'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
@@ -92,6 +95,23 @@ test('relevance gate: the live-observed defect cases (2026-10-22)', () => {
   assert.equal(isRelevantToQuery('outbound tool', 'Best cold email software for a small team?', ''), false)
   assert.equal(isRelevantToQuery('sales', 'How do you find B2B sales leads', ''), true)
   assert.equal(isRelevantToQuery('', 'Anything?', 'x'), false)
+test('sequence step view: a sent step 1 is never labeled stopped (live mislabel 2026-10-22)', () => {
+  const d = new Database(':memory:')
+  migrateOutreach(d); migrateSequences(d)
+  d.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at) VALUES ('m1','t1','l1','a@b.c','Hello there','Body of the first step here.','sent', 1)").run()
+  d.prepare("INSERT INTO sequences (id, tenant_id, lead_id, message_id, to_email, status, stop_reason) VALUES ('s1','t1','l1','m1','a@b.c','replied','reply')").run()
+  d.prepare("INSERT INTO sequence_steps (tenant_id, sequence_id, step, subject, body, status) VALUES ('t1','s1',1,'Hello there','Body of the first step here.','approved')").run()
+  d.prepare("INSERT INTO sequence_steps (tenant_id, sequence_id, step, subject, body, status) VALUES ('t1','s1',2,'Re: Hello','Follow-up body long enough.','approved')").run()
+  const steps = sequenceStepsView(d, 't1', { id: 's1', message_id: 'm1', status: 'replied' })
+  // Production data showed step 1 as 'stopped' even though its email went out: the send
+  // path flips outreach_messages, not sequence_steps. Step 1 must read 'sent'.
+  assert.equal(steps[0].status, 'sent')
+  assert.equal(steps[1].status, 'stopped')
+  // A non-terminal sequence keeps the approved label on pending steps.
+  d.prepare("UPDATE sequences SET status = 'active' WHERE id = 's1'").run()
+  const active = sequenceStepsView(d, 't1', { id: 's1', message_id: 'm1', status: 'active' })
+  assert.equal(active[0].status, 'sent')
+  assert.equal(active[1].status, 'approved')
 })
 
 test('refresh: worker error reported per platform, nothing stored', async () => {
