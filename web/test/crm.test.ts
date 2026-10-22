@@ -4,6 +4,9 @@ import Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { pushLead, saveCrmConfig, getCrmConfig, disconnectCrm } from '../lib/crm/index.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
+import type { Lookup } from '../lib/net/public-fetch.ts'
+
+const pubLookup: Lookup = async () => [{ address: '93.184.216.34', family: 4 }]
 
 const master = randomBytes(32)
 const LEAD = { company: 'Acme Co', name: 'Ada Lovelace', contact: 'ada@acme.example', signal: 'hired VP Sales', source_url: 'https://x.com/1', fit: 5, intent: 4, why: 'why now' }
@@ -42,10 +45,10 @@ test('pushLead pipedrive + webhook payloads', async () => {
   assert.equal(msg, 'Person created in Pipedrive')
   assert.ok(url.startsWith('https://api.pipedrive.com/v1/persons?api_token=tok123'))
   assert.deepEqual(body, { name: 'Ada Lovelace', email: 'ada@acme.example', org_name: 'Acme Co' })
-  const wmsg = await pushLead({ provider: 'webhook', url: 'https://hooks.example/dazl' }, LEAD, f as never)
+  const wmsg = await pushLead({ provider: 'webhook', url: 'https://hooks.example/dazl' }, LEAD, f as never, { lookup: pubLookup })
   assert.equal(wmsg, 'Lead sent to your webhook')
   assert.equal(url, 'https://hooks.example/dazl')
   assert.equal((body as unknown as { event: string }).event, 'lead.pushed')
   assert.equal((body as unknown as { lead: { company: string } }).lead.company, 'Acme Co')
-  await assert.rejects(() => pushLead({ provider: 'webhook', url: 'https://hooks.example/dazl' }, LEAD, (async () => new Response('x', { status: 500 })) as never))
+  await assert.rejects(() => pushLead({ provider: 'webhook', url: 'https://hooks.example/dazl' }, LEAD, (async () => new Response('x', { status: 500 })) as never, { lookup: pubLookup }))
 })

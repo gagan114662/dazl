@@ -4,6 +4,7 @@
 // A push failure is reported to the caller, never swallowed silently.
 import type Database from 'better-sqlite3'
 import { getEnabledCredential, saveCredential, deleteCredential, audit } from '../connectors/store.ts'
+import { fetchPublicHtml, defaultLookup, type Lookup } from '../net/public-fetch.ts'
 
 export type CrmProvider = 'hubspot' | 'pipedrive' | 'webhook'
 export interface CrmConfig { provider: CrmProvider; key?: string; url?: string }
@@ -29,11 +30,11 @@ export function getCrmConfig(db: Database.Database, tenantId: string, master?: B
 export const disconnectCrm = (db: Database.Database, tenantId: string): boolean => deleteCredential(db, tenantId, CONNECTOR)
 
 // Returns a short human-facing confirmation (what was created where), throws on failure.
-export async function pushLead(cfg: CrmConfig, lead: CrmLead, fetchImpl: typeof fetch = fetch): Promise<string> {
+export async function pushLead(cfg: CrmConfig, lead: CrmLead, fetchImpl?: typeof fetch, deps: { lookup?: Lookup } = {}): Promise<string> {
   const name = lead.name || lead.company
   if (cfg.provider === 'hubspot') {
     const [firstname, ...rest] = name.split(' ')
-    const res = await fetchImpl('https://api.hubapi.com/crm/v3/objects/contacts', {
+    const res = await (fetchImpl ?? fetch)('https://api.hubapi.com/crm/v3/objects/contacts', {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.key}` },
       body: JSON.stringify({ properties: { email: lead.contact ?? undefined, firstname, lastname: rest.join(' ') || undefined, company: lead.company, hs_lead_status: 'NEW' } }),
@@ -44,7 +45,7 @@ export async function pushLead(cfg: CrmConfig, lead: CrmLead, fetchImpl: typeof 
     return 'Contact created in HubSpot'
   }
   if (cfg.provider === 'pipedrive') {
-    const res = await fetchImpl(`https://api.pipedrive.com/v1/persons?api_token=${encodeURIComponent(cfg.key ?? '')}`, {
+    const res = await (fetchImpl ?? fetch)(`https://api.pipedrive.com/v1/persons?api_token=${encodeURIComponent(cfg.key ?? '')}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name, email: lead.contact ?? undefined, org_name: lead.company }),
@@ -55,14 +56,21 @@ export async function pushLead(cfg: CrmConfig, lead: CrmLead, fetchImpl: typeof 
     if (j?.success === false) throw new Error('Pipedrive rejected the contact')
     return 'Person created in Pipedrive'
   }
-  // generic webhook: the tenant's own HTTPS endpoint gets the full lead payload
-  const res = await fetchImpl(cfg.url!, {
+  // generic webhook: the tenant's own HTTPS endpoint gets the full lead payload.
+  // Tenant-controlled URL, so the POST goes through the SSRF guard at push time (DNS can
+  // be re-pointed after the URL was saved): public addresses only, pinned at connect time,
+  // redirects are NOT followed (a redirecting webhook is reported as the 3xx it returns).
+  const r = await fetchPublicHtml(cfg.url!, {
+    fetchImpl,
+    lookup: deps.lookup ?? defaultLookup,
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'user-agent': 'dazl-crm-webhook/1.0' },
     body: JSON.stringify({ source: 'dazl', event: 'lead.pushed', lead: { company: lead.company, name: lead.name, contact: lead.contact, signal: lead.signal, source_url: lead.source_url, fit: lead.fit ?? null, intent: lead.intent ?? null, why: lead.why ?? null }, at: new Date().toISOString() }),
-    signal: AbortSignal.timeout(TIMEOUT),
+    accept: null,
+    maxBytes: 64_000,
+    timeoutMs: TIMEOUT,
   })
-  if (!res.ok) throw new Error(`Webhook ${res.status}`)
+  if ('error' in r) throw new Error(r.error === 'not_public' ? 'Webhook address is not public' : r.status ? `Webhook ${r.status}` : `Webhook ${r.error}`)
   return 'Lead sent to your webhook'
 }
 

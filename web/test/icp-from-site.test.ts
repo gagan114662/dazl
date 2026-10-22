@@ -54,9 +54,9 @@ test('fetchPublicHtml: redirect loop, http errors and non-html are typed', async
   const loop = (async () => htmlResponse('', 301, 'text/html', { location: 'https://loop.example/again' })) as unknown as typeof fetch
   assert.deepEqual(await fetchPublicHtml('https://loop.example', { lookup: pubLookup, fetchImpl: loop }), { error: 'blocked' })
   const denied = (async () => htmlResponse('nope', 403)) as unknown as typeof fetch
-  assert.deepEqual(await fetchPublicHtml('https://x.example', { lookup: pubLookup, fetchImpl: denied }), { error: 'blocked' })
+  assert.deepEqual(await fetchPublicHtml('https://x.example', { lookup: pubLookup, fetchImpl: denied }), { error: 'blocked', status: 403 }) // HTTP errors carry the status so callers can show it
   const pdf = (async () => htmlResponse('%PDF-1.4', 200, 'application/pdf')) as unknown as typeof fetch
-  assert.deepEqual(await fetchPublicHtml('https://x.example', { lookup: pubLookup, fetchImpl: pdf }), { error: 'not_html' })
+  assert.deepEqual(await fetchPublicHtml('https://x.example', { lookup: pubLookup, fetchImpl: pdf }), { error: 'not_html', status: 200 })
 })
 
 test('fetchPublicHtml: happy path returns html and the final url, oversized pages are capped', async () => {
