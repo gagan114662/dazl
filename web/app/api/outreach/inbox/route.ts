@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { hasReadConsent, inboxRows, threadMessages } from '@/lib/outreach/replies'
 import { gmailStatus } from '@/lib/gmail/oauth'
+import { getSettings } from '@/lib/outreach/service'
 
 export async function GET(req: NextRequest) {
   const user = await requireUser()
@@ -20,5 +21,8 @@ export async function GET(req: NextRequest) {
     read_granted: acc?.read_granted === 1,
     account: gmail?.status === 'active' ? gmail.email : null,
     rows: inboxRows(db, user.id),
+    // The tenant's own booking link, shown back only to that tenant. Validated https-only
+    // on save (cleanBookingUrl). Display is a handoff - it never proves availability or books.
+    booking_url: getSettings(db, user.id)?.booking_url ?? null,
   })
 }
