@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { edgarFunding, atsHiring, enrichJobSignals, nameTokens } from '../lib/signals/index.ts'
+import { edgarFunding, atsHiring, enrichJobSignals, nameTokens, topTitles } from '../lib/signals/index.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, recentAudit } from '../lib/connectors/store.ts'
 import { migrateEvents } from '../lib/events/store.ts'
@@ -52,6 +52,30 @@ test('atsHiring: lever array and ashby jobs parse; nothing found yields null', a
   const ashby = await atsHiring('Acme', 'acme.com', async (url) => String(url).includes('ashby') ? ok({ jobs: [{ title: 'AE', jobUrl: 'https://jobs.ashbyhq.com/acme/1' }] }) : notFound())
   assert.equal(ashby?.board, 'ashby')
   assert.equal(await atsHiring('Acme', 'acme.com', async () => notFound()), null)
+})
+
+test('topTitles: dedupes reposted roles before capping at three', () => {
+  const jobs = [
+    { text: 'AI Deployment Strategist' }, { text: 'AI Deployment Strategist' }, { text: 'AI Deployment Strategist' },
+    { text: 'sales operations manager' }, { text: 'Sales Operations Manager' }, { text: 'RevOps Lead' }, { text: 'Data Engineer' },
+  ]
+  // one distinct title per role family, case-insensitive; first-seen casing kept
+  assert.deepEqual(topTitles(jobs, (j: { text: string }) => j.text), ['AI Deployment Strategist', 'sales operations manager', 'RevOps Lead'])
+  assert.deepEqual(topTitles([], (j: { text: string }) => j.text), [])
+})
+
+test('atsHiring: lever board with the same role posted per location yields distinct titles, full count kept', async () => {
+  const postings = [
+    { text: 'AI Deployment Strategist', hostedUrl: 'https://jobs.lever.co/acme/1' },
+    { text: 'AI Deployment Strategist', hostedUrl: 'https://jobs.lever.co/acme/2' },
+    { text: 'AI Deployment Strategist', hostedUrl: 'https://jobs.lever.co/acme/3' },
+    { text: 'Senior Sales Operations Manager, Americas', hostedUrl: 'https://jobs.lever.co/acme/4' },
+  ]
+  const h = await atsHiring('Acme', 'acme.com', async (url) => String(url).includes('lever') ? ok(postings) : notFound())
+  assert.ok(h)
+  assert.equal(h.board, 'lever')
+  assert.equal(h.openRoles, 4) // count reflects every posting, duplicates included
+  assert.deepEqual(h.titles, ['AI Deployment Strategist', 'Senior Sales Operations Manager, Americas'])
 })
 
 test('enrichJobSignals: writes enrichment rows with source url+date and audits; silent on total failure', async () => {

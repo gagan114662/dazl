@@ -64,6 +64,23 @@ function slugCandidates(company: string, domain: string | null): string[] {
   return out.slice(0, 2)
 }
 
+// Job boards list the same role once per location/team, so the first three raw
+// postings are often one title repeated. Dedupe case-insensitively, then cap at
+// three distinct examples - the open-role count still reflects every posting.
+export function topTitles<T>(jobs: T[], pick: (j: T) => string): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const j of jobs) {
+    const t = pick(j).trim().slice(0, 80)
+    const k = t.toLowerCase()
+    if (!t || seen.has(k)) continue
+    seen.add(k)
+    out.push(t)
+    if (out.length === 3) break
+  }
+  return out
+}
+
 const get = async (url: string, fetchImpl: typeof fetch) => {
   const res = await fetchImpl(url, { headers: { 'user-agent': 'dazl/1.0', accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(TIMEOUT) })
   if (!res.ok) return null
@@ -77,17 +94,17 @@ export async function atsHiring(company: string, domain: string | null, fetchImp
     const gh = await get(`https://boards-api.greenhouse.io/v1/boards/${slug}/jobs`, fetchImpl)
     if (Array.isArray(gh?.jobs) && gh.jobs.length > 0) {
       const jobs = gh.jobs.filter((j: { title?: string }) => typeof j?.title === 'string')
-      if (jobs.length) return { board: 'greenhouse', openRoles: jobs.length, titles: jobs.slice(0, 3).map((j: { title: string }) => j.title.slice(0, 80)), url: jobs[0].absolute_url || `https://boards.greenhouse.io/${slug}` }
+      if (jobs.length) return { board: 'greenhouse', openRoles: jobs.length, titles: topTitles(jobs, (j: { title: string }) => j.title), url: jobs[0].absolute_url || `https://boards.greenhouse.io/${slug}` }
     }
     const lever = await get(`https://api.lever.co/v0/postings/${slug}?mode=json`, fetchImpl)
     if (Array.isArray(lever) && lever.length > 0) {
       const jobs = lever.filter((j: { text?: string }) => typeof j?.text === 'string')
-      if (jobs.length) return { board: 'lever', openRoles: jobs.length, titles: jobs.slice(0, 3).map((j: { text: string }) => j.text.slice(0, 80)), url: jobs[0].hostedUrl || `https://jobs.lever.co/${slug}` }
+      if (jobs.length) return { board: 'lever', openRoles: jobs.length, titles: topTitles(jobs, (j: { text: string }) => j.text), url: jobs[0].hostedUrl || `https://jobs.lever.co/${slug}` }
     }
     const ashby = await get(`https://api.ashbyhq.com/posting-api/job-board/${slug}`, fetchImpl)
     if (Array.isArray(ashby?.jobs) && ashby.jobs.length > 0) {
       const jobs = ashby.jobs.filter((j: { title?: string }) => typeof j?.title === 'string')
-      if (jobs.length) return { board: 'ashby', openRoles: jobs.length, titles: jobs.slice(0, 3).map((j: { title: string }) => j.title.slice(0, 80)), url: jobs[0].jobUrl || `https://api.ashbyhq.com/posting-api/job-board/${slug}` }
+      if (jobs.length) return { board: 'ashby', openRoles: jobs.length, titles: topTitles(jobs, (j: { title: string }) => j.title), url: jobs[0].jobUrl || `https://api.ashbyhq.com/posting-api/job-board/${slug}` }
     }
   }
   return null

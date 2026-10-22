@@ -1,5 +1,14 @@
 @import "tailwindcss";
 
+/* Light-theme readability: Tailwind's stock gray-300 (#d1d5db, ~1.6:1) and
+   gray-400 (#9ca3af, ~2.9:1) fail WCAG AA on white at 12px. Remap the scale
+   steps this app actually uses so secondary text stays >= 4.5:1. */
+:root {
+  --color-gray-300: #737373; /* ~4.8:1 on white */
+  --color-gray-400: #595959; /* ~7.0:1 on white */
+  --color-gray-500: #525252; /* ~7.9:1 on white, keeps 500 darker than 400 */
+}
+
 :root {
   --bg: #ffffff;
   --panel: #ffffff;

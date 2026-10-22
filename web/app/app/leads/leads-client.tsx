@@ -33,6 +33,18 @@ const REASON: Record<string, string> = {
 }
 const REVIEW: Record<string, string> = { counterparty_signal: 'Names this company as someone else\'s customer - not evidence of its own buying intent', job_closed: 'Source says applications are closed - historical hiring evidence, not an active opening', quote_unconfirmed: 'The saved quote could not be confirmed on the source', login_required: 'Source requires sign-in - evidence unknown', blocked_by_site: 'The site blocked our check', needs_javascript: 'The page needs JavaScript to show its content' }
 
+// Enrichment labels join example titles with '; ' - older rows can repeat one
+// title per posting. Show each distinct title once; the count stays untouched.
+function dedupeLabel(label: string): string {
+  const seen = new Set<string>()
+  return label.split('; ').map(t => t.trim()).filter(t => {
+    const k = t.toLowerCase()
+    if (!t || seen.has(k)) return false
+    seen.add(k)
+    return true
+  }).join('; ')
+}
+
 export default function LeadsClient() {
   const [query, setQuery] = useState('')
   const [draft, setDraft] = useState<Icp | null>(null)
@@ -410,7 +422,7 @@ export default function LeadsClient() {
         </details>
       )}
       {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
-      {jobId && status !== 'done' && status !== 'failed' && (
+      {jobId && (status === 'pending' || status === 'running') && (
         <div className="card p-4 mb-4 flex items-center gap-3">
           <span className="inline-block h-4 w-4 rounded-full border-2 border-gray-500 border-t-white animate-spin" aria-hidden />
           <div className="text-sm">
@@ -517,7 +529,7 @@ export default function LeadsClient() {
               <div className="text-xs mt-1 space-y-0.5">
                 {l.enrichments.filter(e => e.kind !== 'contact').map(e => (
                   <div key={e.kind + e.value} className="text-gray-400">
-                    <span className="text-[#111]">{e.value}</span>{e.label ? ` (${e.label})` : ''} <span className="text-gray-500">{e.kind === 'tech' ? 'seen on the company website' : e.connector === 'sitecrawl' ? 'from the company contact page' : e.connector === 'hunter' ? 'via Hunter (earlier)' : `via ${e.connector}`}{e.confidence !== null ? `, ${e.confidence}% confidence` : ''}, seen {e.source_date}</span>{' '}
+                    <span className="text-[#111]">{e.value}</span>{e.label ? ` (${dedupeLabel(e.label)})` : ''} <span className="text-gray-500">{e.kind === 'tech' ? 'seen on the company website' : e.connector === 'sitecrawl' ? 'from the company contact page' : e.connector === 'hunter' ? 'via Hunter (earlier)' : `via ${e.connector}`}{e.confidence !== null ? `, ${e.confidence}% confidence` : ''}, seen {e.source_date}</span>{' '}
                     <a className="underline text-[#111]" href={e.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
                   </div>
                 ))}
