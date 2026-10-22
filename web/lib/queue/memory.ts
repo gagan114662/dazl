@@ -51,8 +51,8 @@ export class InProcessQueue implements QueueAdapter {
   private backoff: BackoffPolicy
   private rng: () => number
 
-  constructor(opts: { backoff?: BackoffPolicy; rng?: () => number } = {}) {
-    this.backoff = opts.backoff ?? DEFAULT_BACKOFF
+  constructor(opts: { backoff?: Partial<BackoffPolicy>; rng?: () => number } = {}) {
+    this.backoff = { ...DEFAULT_BACKOFF, ...opts.backoff }
     this.rng = opts.rng ?? Math.random
   }
 

@@ -49,7 +49,9 @@ export class SqliteQueue implements QueueAdapter {
     this.db = db
     this.backoff = { ...DEFAULT_BACKOFF, ...opts?.backoff }
     this.rng = opts?.rng ?? Math.random
-    db.pragma('journal_mode = WAL')
+    // NOTE: no journal_mode pragma here - mutating a shared handle from a
+    // constructor is surprising. The app's DB handles already run WAL
+    // (lib/auth-db.ts); a caller supplying its own handle owns its pragmas.
     db.exec(`CREATE TABLE IF NOT EXISTS work_queue (
         id TEXT PRIMARY KEY,
         tenant_id TEXT NOT NULL,
@@ -81,12 +83,8 @@ export class SqliteQueue implements QueueAdapter {
 
   enqueue(input: EnqueueInput): EnqueueResult {
     const now = input.now ?? Math.floor(Date.now() / 1000)
-    if (input.dedupeKey) {
-      const existing = this.db
-        .prepare(`SELECT id FROM work_queue WHERE tenant_id=? AND kind=? AND dedupe_key=? AND status IN ('pending','claimed')`)
-        .get(input.tenantId, input.kind, input.dedupeKey) as { id: string } | undefined
-      if (existing) return { id: existing.id, created: false }
-    }
+    // No SELECT-first: the INSERT itself is the atomic dedupe check (partial
+    // unique index), so the check-then-insert race window does not exist.
     const id = input.id ?? randomBytes(8).toString('hex')
     try {
       this.db.prepare(`INSERT INTO work_queue
@@ -95,21 +93,48 @@ export class SqliteQueue implements QueueAdapter {
         .run(id, input.tenantId, input.kind, 'pending',
           input.maxAttempts ?? DEFAULT_MAX_ATTEMPTS, input.notBefore ?? now, now, input.dedupeKey ?? null)
     } catch (e) {
-      if ((e as Error).message.includes('UNIQUE')) throw new Error(`queue item id already exists: ${id}`)
-      throw e
+      const msg = (e as Error).message
+      // Another writer won the dedupe race between our SELECT and INSERT:
+      // the contract says an active duplicate returns the existing item.
+      if (input.dedupeKey && msg.includes('dedupe_key') && msg.includes('UNIQUE constraint failed')) {
+        const winner = this.db
+          .prepare(`SELECT id FROM work_queue WHERE tenant_id=? AND kind=? AND dedupe_key=? AND status IN ('pending','claimed')`)
+          .get(input.tenantId, input.kind, input.dedupeKey) as { id: string } | undefined
+        if (winner) return { id: winner.id, created: false }
+        // Winner went terminal in between: safe to retry once as a fresh insert.
+        this.db.prepare(`INSERT INTO work_queue
+            (id, tenant_id, kind, status, attempts, max_attempts, not_before, created_at, dedupe_key)
+            VALUES (?,?,?,?,0,?,?,?,?)`)
+          .run(id, input.tenantId, input.kind, 'pending',
+            input.maxAttempts ?? DEFAULT_MAX_ATTEMPTS, input.notBefore ?? now, now, input.dedupeKey ?? null)
+      } else if (msg.includes('UNIQUE')) {
+        throw new Error(`queue item id already exists: ${id}`)
+      } else {
+        throw e
+      }
     }
     return { id, created: true }
   }
 
-  private release(id: string, status: 'pending' | 'done' | 'failed', error: string | null, notBefore?: number): void {
+  private release(
+    id: string,
+    to: 'pending' | 'done' | 'failed',
+    error: string | null,
+    expect: { token: number },
+    notBefore?: number,
+  ): boolean {
     // Terminal release clears dedupe_key (recurring work may re-enqueue);
     // the unique index is partial on active statuses so this stays race-safe.
-    this.db.prepare(`UPDATE work_queue SET status=?, last_error=?,
+    // The WHERE clause pins status AND the captured claim token: if the row
+    // was reaped and re-claimed since we read it, this updates 0 rows and the
+    // caller must treat its action as stale.
+    const ch = this.db.prepare(`UPDATE work_queue SET status=?, last_error=?,
         not_before = COALESCE(?, not_before),
         claimed_at=NULL, lease_expires_at=NULL, claim_token=NULL,
         dedupe_key = CASE WHEN ? IN ('done','failed') THEN NULL ELSE dedupe_key END
-      WHERE id=?`)
-      .run(status, error, notBefore ?? null, status, id)
+      WHERE id=? AND status='claimed' AND claim_token=?`)
+      .run(to, error, notBefore ?? null, to, id, expect.token)
+    return ch.changes === 1
   }
 
   claim(opts?: ClaimOptions): Claim | null {
@@ -123,12 +148,15 @@ export class SqliteQueue implements QueueAdapter {
       if (inFlight >= maxInFlight) return null
       // Inter-tenant head-of-line FIFO, same as InProcessQueue: pick the
       // oldest claimable item whose tenant is under its in-flight cap.
+      // kinds:[] means "this worker executes nothing" (fail closed), matching
+      // the memory adapter's empty-Set behavior - not "all kinds".
+      if (opts?.kinds && opts.kinds.length === 0) return null
       const kindFilter = opts?.kinds?.length
         ? `AND kind IN (${opts.kinds.map(() => '?').join(',')})` : ''
       const rows = this.db.prepare(
-        `SELECT * FROM work_queue
+        `SELECT rowid AS rid, * FROM work_queue
          WHERE status='pending' AND not_before<=? ${kindFilter}
-         ORDER BY created_at ASC, id ASC`).all(now, ...(opts?.kinds ?? [])) as Row[]
+         ORDER BY created_at ASC, rid ASC`).all(now, ...(opts?.kinds ?? [])) as Row[]
       for (const r of rows) {
         const tenantInFlight = (this.db.prepare(
           `SELECT count(*) c FROM work_queue WHERE status='claimed' AND tenant_id=?`).get(r.tenant_id) as { c: number }).c
@@ -152,8 +180,7 @@ export class SqliteQueue implements QueueAdapter {
     void opts
     const r = this.owned(token)
     if (!r) return false
-    this.release(r.id, 'done', null)
-    return true
+    return this.release(r.id, 'done', null, { token })
   }
 
   fail(token: number, opts?: FailOptions): FailOutcome {
@@ -163,22 +190,26 @@ export class SqliteQueue implements QueueAdapter {
     if (!r) return 'stale'
     const error = (opts?.error ?? 'failed').slice(0, MAX_ERROR)
     if (!retryable || r.attempts >= r.max_attempts) {
-      this.release(r.id, 'failed', error)
-      return 'failed'
+      return this.release(r.id, 'failed', error, { token }) ? 'failed' : 'stale'
     }
-    this.release(r.id, 'pending', error, now + backoffSeconds(r.attempts, this.backoff, this.rng))
-    return 'retry'
+    return this.release(r.id, 'pending', error, { token }, now + backoffSeconds(r.attempts, this.backoff, this.rng))
+      ? 'retry' : 'stale'
   }
 
   reapExpired(now?: number): number {
     const t = now ?? Math.floor(Date.now() / 1000)
     const rows = this.db.prepare(
       `SELECT * FROM work_queue WHERE status='claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at<=?`).all(t) as Row[]
+    let n = 0
     for (const r of rows) {
-      if (r.attempts >= r.max_attempts) this.release(r.id, 'failed', 'timeout')
-      else this.release(r.id, 'pending', r.last_error, t + backoffSeconds(r.attempts, this.backoff, this.rng))
+      // Conditional on the captured token: a re-claim between our SELECT and
+      // this UPDATE makes it a 0-row no-op instead of clobbering the live claim.
+      const ok = r.attempts >= r.max_attempts
+        ? this.release(r.id, 'failed', 'timeout', { token: r.claim_token! })
+        : this.release(r.id, 'pending', r.last_error, { token: r.claim_token! }, t + backoffSeconds(r.attempts, this.backoff, this.rng))
+      if (ok) n++
     }
-    return rows.length
+    return n
   }
 
   get(id: string): WorkItem | undefined {

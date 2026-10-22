@@ -8,6 +8,7 @@ import { ProviderError, providers, type Provider } from '../llm/provider.ts'
 import type { Vendor } from '../llm/vendors.ts'
 import { runAutopilot } from '../outreach/autopilot.ts'
 import { MAX_ATTEMPTS, reapStaleJobs, markSeenBefore } from './store.ts'
+import { kickQueueRunner } from './queue-runner.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, verifyEvidence, type Candidate } from './evidence.ts'
 import { inferIcp, normalizeIcp, type Icp } from './icp.ts'
 import { collectAdvanced, xSearchQuery } from '../advanced/index.ts'
@@ -694,6 +695,10 @@ const MAX_CONCURRENT = Number(process.env.SCAN_MAX_CONCURRENT || 3)
 let active = 0
 
 export async function kickRunner(db: Database.Database, deps: RunDeps = {}): Promise<void> {
+  // Single gate for queue-mode scans (default OFF): when on, the legacy
+  // claimKeyedJob path never runs scans, so the two runners cannot both
+  // own a job. Rollback is unsetting the env. See lib/scan/queue-runner.ts.
+  if ((process.env.DAZL_QUEUE_SCANS ?? 'off') === 'on') return kickQueueRunner(db, deps, runJob)
   reapStaleJobs(db)
   while (active < MAX_CONCURRENT) {
     const job = claimKeyedJob(db)

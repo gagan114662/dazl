@@ -139,3 +139,66 @@ test('depth filters by tenant, kind and status', () => {
   assert.equal(q.depth({ tenantId: 'A', kind: 'scan', status: 'pending' }), 1)
   db.close(); rmSync(path, { force: true })
 })
+
+// --- Reviewer-2 regression battery (blocking findings on 04dc453) ---
+
+test('reap clobber regression: stale reaper cannot revert a live claim (two connections)', () => {
+  const dir = mkdtempSync('/tmp/qsq-')
+  const dbA = new Database(`${dir}/q.db`)
+  const dbB = new Database(`${dir}/q.db`)
+  const qA = new SqliteQueue(dbA, { rng: noJitter })
+  const qB = new SqliteQueue(dbB, { rng: noJitter })
+  qA.enqueue({ tenantId: 'A', kind: 'scan', id: 'victim', now: T0 })
+  qA.claim({ now: T0, leaseSeconds: 10 })
+  // A begins reapExpired(T0+50): its SELECT sees the expired row, then stalls.
+  const staleRead = dbA.prepare(
+    `SELECT * FROM work_queue WHERE status='claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at<=?`).all(T0 + 50) as { id: string }[]
+  assert.deepEqual(staleRead.map(r => r.id), ['victim'])
+  // B honestly reaps (backoff to T0+80) and re-claims with a long live lease.
+  qB.claim({ now: T0 + 50 })
+  const c2 = qB.claim({ now: T0 + 80, leaseSeconds: 1000 })
+  assert.ok(c2)
+  // A's stalled conditional release now lands with the OLD token: 0 rows.
+  const ch = dbA.prepare(`UPDATE work_queue SET status=?, last_error=?,
+      not_before = COALESCE(?, not_before),
+      claimed_at=NULL, lease_expires_at=NULL, claim_token=NULL,
+      dedupe_key = CASE WHEN ? IN ('done','failed') THEN NULL ELSE dedupe_key END
+    WHERE id=? AND status='claimed' AND claim_token=?`)
+    .run('pending', null, T0 + 50 + 30, 'pending', 'victim', 1)
+  assert.equal(ch.changes, 0, 'stale write must be a no-op')
+  assert.equal(qB.complete(c2!.token), true, 'live claim survives')
+  dbA.close(); dbB.close(); rmSync(dir, { recursive: true, force: true })
+})
+
+test('enqueue race regression: dedupe-index conflict returns existing item, not a false PK error', () => {
+  const dir = mkdtempSync('/tmp/qsq-')
+  const dbA = new Database(`${dir}/q.db`)
+  const dbB = new Database(`${dir}/q.db`)
+  const qA = new SqliteQueue(dbA, { rng: noJitter })
+  const qB = new SqliteQueue(dbB, { rng: noJitter })
+  const a = qA.enqueue({ tenantId: 'A', kind: 'scan', dedupeKey: 'race-key', now: T0 })
+  // B's INSERT conflicts on the partial dedupe index (the race's loser path).
+  const b = qB.enqueue({ tenantId: 'A', kind: 'scan', dedupeKey: 'race-key', now: T0 })
+  assert.deepEqual(b, { id: a.id, created: false })
+  // A genuine PK collision (caller-supplied id) still throws.
+  assert.throws(() => qB.enqueue({ tenantId: 'A', kind: 'scan', id: a.id, now: T0 }), /already exists/)
+  dbA.close(); dbB.close(); rmSync(dir, { recursive: true, force: true })
+})
+
+test('kinds: [] claims nothing (fail closed, parity with memory adapter)', () => {
+  const { db, path } = tmpDb()
+  const q = new SqliteQueue(db, { rng: noJitter })
+  q.enqueue({ tenantId: 'A', kind: 'scan', now: T0 })
+  assert.equal(q.claim({ now: T0, kinds: [] }), null)
+  db.close(); rmSync(path, { force: true })
+})
+
+test('same-second claims follow insertion order (rowid tiebreak)', () => {
+  const { db, path } = tmpDb()
+  const q = new SqliteQueue(db, { rng: noJitter })
+  q.enqueue({ tenantId: 'A', kind: 'scan', id: 'zz-first', now: T0 })
+  q.enqueue({ tenantId: 'B', kind: 'scan', id: 'aa-second', now: T0 }) // same second, id sorts earlier
+  const c1 = q.claim({ now: T0, leaseSeconds: 100 })
+  assert.equal(c1!.item.id, 'zz-first')
+  db.close(); rmSync(path, { force: true })
+})
