@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { applyIcpGate, icpTextFor, isHidden, parseScores, scorePrompt, SIGNALS, type IcpMatch } from '../lib/scan/score.ts'
+import { WHY_MAX, applyIcpGate, icpTextFor, isHidden, parseScores, scorePrompt, SIGNALS, type IcpMatch } from '../lib/scan/score.ts'
 
 const UM: IcpMatch = { role: 'unknown', industry: 'unknown', size: 'unknown', location: 'unknown', note: '' }
 
@@ -153,4 +153,11 @@ test('evidence-quality gate: pain in the model-written signal does NOT rescue; p
   assert.equal(leads[1].score, 77)
   assert.equal(leads[2].score, 82)
   assert.equal(leads[3].score, 66)
+})
+
+test('parseScores: why is capped at WHY_MAX (600), not the old 300', () => {
+  const long = 'x'.repeat(700)
+  const s = parseScores(`LEAD 1 | fit 4 | intent 4 | action 4 | signals hiring | why ${long}`, 1)!
+  assert.equal(s[0].why.length, 600)
+  assert.equal(WHY_MAX, 600)
 })
