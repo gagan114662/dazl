@@ -5,7 +5,14 @@ import { resolveServedCommit } from '../lib/commit-marker.ts'
 
 const SHA = '0123456789abcdef0123456789abcdef01234567'
 
-test('env var wins over everything', () => {
+test('build stamp beats env: an old build cannot report a newer commit', () => {
+  const d = mkdtempSync('/tmp/cm-')
+  writeFileSync(`${d}/.build-commit`, SHA + '\n')
+  assert.equal(resolveServedCommit({ DAZL_COMMIT_SHA: 'f'.repeat(40) }, d), SHA)
+  rmSync(d, { recursive: true, force: true })
+})
+
+test('env var is the last resort before unknown', () => {
   assert.equal(resolveServedCommit({ DAZL_COMMIT_SHA: SHA }, '/nonexistent'), SHA)
 })
 

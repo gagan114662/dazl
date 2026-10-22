@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "SITECRAWL_ENABLED=0 node --experimental-strip-types --test test/*.test.ts"
+    "test": "SITECRAWL_ENABLED=0 node --experimental-strip-types --test test/*.test.ts",
+    "prebuild": "git rev-parse HEAD > .build-commit 2>/dev/null || rm -f .build-commit"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.84",

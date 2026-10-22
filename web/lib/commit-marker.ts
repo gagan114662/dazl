@@ -10,11 +10,23 @@ export function resolveServedCommit(
   env: Record<string, string | undefined> = process.env,
   root: string = process.cwd(),
 ): string {
-  const fromEnv = env.DAZL_COMMIT_SHA?.trim()
-  if (fromEnv) return fromEnv
+  // Precedence: the build-stamped file wins - it is written by `prebuild`
+  // from the checkout actually being built, so a stale process serving an
+  // old build cannot report a newer commit. An operator-provided env var
+  // (arbitrary, could be set wrong) is only a last resort above 'unknown'.
+  let dir = root
+  for (let i = 0; i < 4; i++) {
+    try {
+      const stamp = readFileSync(path.join(dir, '.build-commit'), 'utf8').trim()
+      if (/^[0-9a-f]{40}$/.test(stamp)) return stamp
+    } catch { /* no stamp at this level */ }
+    const parent = path.dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
   // The server usually runs from web/, but .git lives at the repo root -
   // walk up so the probe does not silently return 'unknown' in production.
-  let dir = root
+  dir = root
   for (let i = 0; i < 4; i++) {
     const found = probeGitDir(env, dir)
     if (found) return found
@@ -22,6 +34,8 @@ export function resolveServedCommit(
     if (parent === dir) break
     dir = parent
   }
+  const fromEnv = env.DAZL_COMMIT_SHA?.trim()
+  if (fromEnv) return fromEnv
   return 'unknown'
 }
 
