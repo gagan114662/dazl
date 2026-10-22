@@ -26,11 +26,13 @@ separate explicit activation decision must satisfy.
 
 1. Tenant-scoped flag, not a global one. Add DAZL_QUEUE_TENANTS=<ids> so queue
    mode applies ONLY to listed tenants (the OUTREACH_TEST_TENANT_ID pattern
-   already exists in the run env). A tenant not in the list stays bit-for-bit
-   on the legacy path: no provider use, no queue behavior change. This needs a
-   small gate change (kickRunner routes per-job, not globally) - implement
-   under review before any activation. Global DAZL_QUEUE_SCANS=on should never
-   be used in prod.
+   already exists in the run env). A tenant not in the list keeps legacy
+   claim semantics - its jobs are never mirrored, claimed, or executed by the
+   queue - but NOT a bit-for-bit unchanged world: by design it now shares the
+   single slot budget with the queue bridge, and each kick claims queue work
+   first. This needs a small gate change (kickRunner routes per-job, not
+   globally) - implement under review before any activation. Global
+   DAZL_QUEUE_SCANS=on should never be used in prod.
 2. Config coherence: queue lease derives from SCAN_STALE_RUNNING_S (already
    single-sourced in the bridge). Activation config review must confirm no
    second process sets a divergent value and SCAN_MAX_CONCURRENT is unchanged.
@@ -51,11 +53,17 @@ separate explicit activation decision must satisfy.
 5. Canary scope is ONE tenant (the test tenant), enforced twice in code:
    (a) the bridge claims with perTenantInFlight: 1 pinned EXPLICITLY (not
    inherited from the adapter default, which a future adapter edit could
-   change) - the queue tenant holds at most one of the shared slots, so a
-   continuous queue-tenant backlog cannot starve legacy tenants;
+   change) - the queue tenant holds at most one of the shared slots;
    (b) queueTenants() fails closed to pure legacy when DAZL_QUEUE_TENANTS
    lists more than one id. A broader tenant list is a separate reviewed
    change with its own slot-policy decision, never an ops edit.
+   Starvation floor: with (a), a continuous queue-tenant backlog cannot
+   starve legacy tenants ONLY while SCAN_MAX_CONCURRENT >= 2 (queue-first
+   claiming takes one slot, at least one remains). At SCAN_MAX_CONCURRENT=1
+   the queue claim takes the only slot every kick and legacy starves.
+   Activation therefore requires SCAN_MAX_CONCURRENT >= 2. Current effective
+   value: 3 - the run env sets no SCAN_MAX_CONCURRENT (verified on the box
+   2026-10-22) and the code default is 3 (run-slots.ts).
 6. Slot tails and recovery honesty: post-finish network work (contact crawl,
    enrichment) holds a run slot for seconds to minutes after the scan itself
    completes (bounded by per-request timeouts, worst case roughly 8 sites x
