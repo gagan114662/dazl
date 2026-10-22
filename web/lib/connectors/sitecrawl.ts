@@ -27,19 +27,21 @@ export const sitecrawlEnabled = (env: Record<string, string | undefined> = proce
 
 export type Get = (url: string) => Promise<{ status: number; body: string; finalUrl: string } | null>
 
-function rawGet(rawUrl: string, hops = 0): Promise<{ status: number; body: string; finalUrl: string } | null> {
+// timeoutMs/lookup are injectable for tests only; production callers use the
+// defaults. Lookup defaults to the SSRF-guarded resolver (private IPs refused).
+export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup): Promise<{ status: number; body: string; finalUrl: string } | null> {
   return new Promise(resolve => {
     let u: URL
     try { u = new URL(rawUrl) } catch { return resolve(null) }
     if (u.protocol !== 'https:' || u.username || u.password || hops > 2) return resolve(null)
-    const req = https.request(u, { method: 'GET', lookup: guardedLookup as never, timeout: TIMEOUT_MS, headers: { 'user-agent': UA, accept: 'text/html,text/plain;q=0.9', 'accept-encoding': 'identity' } }, res => {
+    const req = https.request(u, { method: 'GET', lookup: lookup as never, timeout: timeoutMs, headers: { 'user-agent': UA, accept: 'text/html,text/plain;q=0.9', 'accept-encoding': 'identity' } }, res => {
       const status = res.statusCode ?? 0
       if (status >= 300 && status < 400 && res.headers.location) {
         res.resume()
         let next: URL
         try { next = new URL(String(res.headers.location), u) } catch { return resolve(null) }
         if (next.hostname.replace(/^www\./, '') !== u.hostname.replace(/^www\./, '')) return resolve(null) // stay on the same site
-        return resolve(rawGet(next.toString(), hops + 1))
+        return resolve(rawGet(next.toString(), hops + 1, timeoutMs, lookup))
       }
       if (!/^text\/(html|plain)|application\/xhtml/i.test(String(res.headers['content-type'] ?? ''))) { res.destroy(); return resolve({ status, body: '', finalUrl: u.toString() }) }
       const chunks: Buffer[] = []; let n = 0
@@ -47,7 +49,11 @@ function rawGet(rawUrl: string, hops = 0): Promise<{ status: number; body: strin
       res.on('end', () => resolve({ status, body: Buffer.concat(chunks).toString('utf8'), finalUrl: u.toString() }))
       res.on('error', () => resolve(null))
     })
-    req.on('timeout', () => req.destroy())
+    // Destroy WITH an error: relying on plain destroy() to surface an 'error'
+    // event is observed Node behavior, not a documented guarantee - a silent
+    // destroy would leave this promise pending forever, and the caller's
+    // caller (runJob) holds a runner slot until this settles.
+    req.on('timeout', () => req.destroy(new Error('timeout')))
     req.on('error', () => resolve(null))
     req.end()
   })
