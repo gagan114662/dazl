@@ -10,9 +10,12 @@ import { readFileSync, copyFileSync, rmSync } from 'node:fs'
 
 const SRC_TEMPLATE = process.env.FULL_SCHEMA_DB || '/tmp/full-schema.db'
 const SRC = '/tmp/full-rehearse.db'
-const PG_URL = process.env.DAZL_PG_FULL || process.env.DAZL_PG_SLICE
+// Guarded target: an admin loopback URL is used to PROVISION a fresh, dedicated
+// dazl_rehearse_* database + non-superuser role; the copy itself runs as that
+// role. No path to an arbitrary target exists.
+const PG_ADMIN = process.env.DAZL_PG_ADMIN
 const ROWS = Number(process.env.REHEARSE_ROWS || 3)
-if (!PG_URL) { console.error('set DAZL_PG_FULL'); process.exit(2) }
+if (!PG_ADMIN) { console.error('set DAZL_PG_ADMIN (loopback maintenance URL)'); process.exit(2) }
 
 rmSync(SRC, { force: true }); rmSync(`${SRC}-wal`, { force: true }); rmSync(`${SRC}-shm`, { force: true })
 copyFileSync(SRC_TEMPLATE, SRC)
@@ -20,7 +23,7 @@ const ddl = readFileSync(process.env.SQLITE_SCHEMA || '/tmp/full-schema.sql', 'u
 
 // Parse each table's column defs: name, type, notnull, dflt, pk + inline CHECK IN / LIKE.
 const tables = [...ddl.matchAll(/CREATE TABLE (\w+) \(([\s\S]*?)\);/g)].map(m => ({ name: m[1], body: m[2] }))
-type Col = { name: string; int: boolean; notnull: boolean; dflt: boolean; pk: boolean; inList?: string[]; like?: string; exactLen?: number; maxLen?: number; minLen?: number; intMin?: number; intMax?: number }
+type Col = { name: string; int: boolean; uniq: boolean; notnull: boolean; dflt: boolean; pk: boolean; inList?: string[]; like?: string; exactLen?: number; maxLen?: number; minLen?: number; intMin?: number; intMax?: number }
 const fks: Record<string, { col: string; ref: string }[]> = {}
 const cols: Record<string, Col[]> = {}
 for (const t of tables) {
@@ -45,12 +48,12 @@ for (const t of tables) {
     const eqM = restS.match(/length\(\w+\) = (\d+)/i)
     const leM = restS.match(/length\(\w+\) <= (\d+)/i)
     const bwM = restS.match(/length\(\w+\) BETWEEN (\d+) AND (\d+)/i)
-    const ibM = restS.match(/CHECK \(\w+ BETWEEN (\d+) AND (\d+)\)/i)
+    const ibM = restS.match(/(?<!length\(\w+\) )\bBETWEEN (\d+) AND (\d+)/i)
     const likeM = restS.match(/LIKE '([^']+)'/i)
     const refM = restS.match(/REFERENCES (\w+)/i)
     if (refM) (fks[t.name] ||= []).push({ col: name, ref: refM[1] })
     list.push({
-      name, int: colType.toUpperCase() !== 'TEXT',
+      name, int: colType.toUpperCase() !== 'TEXT', uniq: /\bUNIQUE\b/i.test(restS),
       notnull: /NOT NULL/i.test(restS), dflt: /DEFAULT/i.test(restS), pk: /PRIMARY KEY/i.test(restS),
       inList: inM ? [...inM[1].matchAll(/'([^']*)'/g)].map(x => x[1]) : undefined,
       like: likeM ? likeM[1].replace(/%/g, '') : undefined,
@@ -61,10 +64,15 @@ for (const t of tables) {
       intMax: ibM ? Number(ibM[2]) : undefined,
     })
   }
-  // composite PK table-level
+  // composite PK + table-level UNIQUE constraints
   const pkM = t.body.match(/PRIMARY KEY \(([^)]*)\)/i)
   if (pkM) for (const n of pkM[1].split(',').map(s => s.trim())) {
     const c = list.find(c => c.name === n); if (c) c.pk = true
+  }
+  for (const uq of t.body.matchAll(/UNIQUE \(([^)]*)\)/gi)) {
+    for (const n of uq[1].split(',').map(s => s.trim())) {
+      const c = list.find(c => c.name === n); if (c) c.uniq = true
+    }
   }
   cols[t.name] = list
   // FKs may also be table-level
@@ -85,35 +93,57 @@ while (remaining.size) {
 }
 
 // Trigger: leads need a RUNNING parent scan_job.
-const OVERRIDES: Record<string, Record<string, string>> = { scan_jobs: { status: 'running' }, leads: { company: 'acme-co' } }
+const OVERRIDES: Record<string, Record<string, string>> = { scan_jobs: { status: 'running' } }
+
+// Dense value generation: every column populated with a deterministic mix of
+// NULLs (nullable only), unicode, boundary-length text, and int-range extremes.
+const UNICODE = 'héllo wörld ünïcode ☃ 日本語'
+const denseText = (c: Col, i: number, ci: number): string => {
+  const kind = (i + ci) % 3
+  let v = kind === 2 ? `${UNICODE} ${i}` : `${t8(c)}-${i}`
+  function t8(c: Col) { return c.name.slice(0, 8) }
+  if (kind === 1 && (c.maxLen || c.exactLen)) v = 'm'.repeat((c.maxLen || c.exactLen)!) // boundary: exactly max
+  if (c.exactLen) v = (v + 'x'.repeat(c.exactLen)).slice(0, c.exactLen)
+  else if (c.maxLen && v.length > c.maxLen) v = v.slice(0, c.maxLen)
+  if (c.minLen && v.length < c.minLen) v = v + 'x'.repeat(c.minLen - v.length)
+  if (v === '') v = 'x' // CHECK (name <> '' ...) style guards
+  return v
+}
 
 const db = new Database(SRC)
 const parentKeys: Record<string, any[]> = {}
-const valueFor = (t: string, c: Col, i: number): any => {
+const valueFor = (t: string, c: Col, i: number, ci: number): any => {
   const ov = OVERRIDES[t]?.[c.name]; if (ov !== undefined) return ov
   const fk = (fks[t] || []).find(f => f.col === c.name)
   if (fk) {
     const parents = parentKeys[fk.ref]
     if (parents?.length) return parents[i % parents.length]
+    if (!c.notnull && i % 4 === 0) return null // nullable FK: exercise the NULL mix
     return `orphan-${i}` // nullable FK without parent rows (SET NULL style)
   }
-  if (c.int) return c.intMin !== undefined && c.intMax !== undefined ? c.intMin + (i % (c.intMax - c.intMin + 1)) : i + 1
-  if (c.inList?.length) return c.inList[0]
-  let v = c.like ? `${c.like}x${i}` : `${t.slice(0, 8)}-${c.name.slice(0, 8)}-${i}`
-  if (c.exactLen) v = (v + 'x'.repeat(c.exactLen)).slice(0, c.exactLen)
-  else if (c.maxLen && v.length > c.maxLen) v = v.slice(0, c.maxLen)
-  if (c.minLen && v.length < c.minLen) v = v + 'x'.repeat(c.minLen - v.length)
-  return v
+  if (!c.notnull && !c.pk && i % 4 === 0) return null // NULL mix on nullable columns
+  if (c.int) {
+    if (c.intMin !== undefined && c.intMax !== undefined) {
+      const span = c.intMax - c.intMin + 1
+      return c.intMin + ((i + ci) % span) // boundary extremes included
+    }
+    return i + 1
+  }
+  if (c.inList?.length) return c.inList[(i + ci) % c.inList.length] // CHECK IN wins; other cols carry uniqueness
+  if (c.like) return `${c.like}${t.slice(0, 6)}-${c.name.slice(0, 6)}-${i}`
+  if (c.pk || c.uniq) return `${t.slice(0, 6)}-${c.name.slice(0, 6)}-${i}` // uniqueness-safe
+  return denseText(c, i, ci)
 }
 
 let inserted = 0
 const insert = db.transaction(() => {
   for (const t of order) {
     const cs = cols[t]
-    const targets = cs.filter(c => c.pk || (c.notnull && !c.dflt) || OVERRIDES[t]?.[c.name] !== undefined)
+    const targets = cs // dense pass: ALL columns populated (NULL mix handled in valueFor)
     for (let i = 0; i < ROWS; i++) {
       const row: Record<string, any> = {}
-      for (const c of targets) row[c.name] = valueFor(t, c, i)
+      let ci = 0
+      for (const c of targets) row[c.name] = valueFor(t, c, i, ci++)
       const names = Object.keys(row)
       try {
         db.prepare(`INSERT INTO ${t} (${names.join(',')}) VALUES (${names.map(() => '?').join(',')})`).run(...names.map(n => row[n]))
@@ -141,10 +171,17 @@ catch (e: any) { guardOk = /readonly|attempt to write/i.test(String(e?.message))
 console.log(`write-guard: source frozen, write attempt ${guardOk ? 'REJECTED as expected' : 'WAS NOT REJECTED - GUARD FAILURE'}`)
 if (!guardOk) process.exit(1)
 
-// Copy every table to PG, then verify counts + full-content equality.
-const client = new pg.Client({ connectionString: PG_URL })
+// Provision a fresh, dedicated, guarded rehearsal target and apply the
+// guarded generated schema (the file itself refuses non-rehearsal databases).
+const { provisionRehearsalDb, assertRehearsalTarget, dropRehearsalDb } = await import('./guard.ts')
+const rolePassword = 'rhz-' + Math.random().toString(36).slice(2)
+const prov = await provisionRehearsalDb(PG_ADMIN, rolePassword)
+console.log(`provisioned guarded target: ${prov.dbName} (loopback, dedicated role ${'dazl_rehearse'}, marker verified)`)
+const client = new pg.Client({ connectionString: prov.url })
 await client.connect()
-await client.query(`TRUNCATE ${order.join(', ')} CASCADE`)
+await assertRehearsalTarget(client, prov.token)
+await client.query(readFileSync(process.env.PG_SCHEMA || '/tmp/full-schema-pg.sql', 'utf8'))
+await assertRehearsalTarget(client, prov.token)
 const divergences: string[] = []
 for (const t of order) {
   const rows = frozen.prepare(`SELECT * FROM ${t}`).all() as Record<string, any>[]
@@ -188,4 +225,6 @@ await client.end()
 console.log(`divergences: ${divergences.length}`)
 for (const d of divergences.slice(0, 10)) console.log('  ' + d)
 if (divergences.length) process.exit(1)
+await dropRehearsalDb(PG_ADMIN, prov.dbName)
+console.log(`rehearsal target ${prov.dbName} dropped`)
 console.log(`FULL REHEARSAL CLEAN: ${order.length} tables, all rows copied losslessly under frozen writes (synthetic data)`)

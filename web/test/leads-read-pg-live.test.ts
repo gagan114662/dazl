@@ -10,11 +10,15 @@ import { migrateSequences } from '../lib/outreach/sequences.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateReplies } from '../lib/outreach/replies.ts'
 
-// REAL Postgres contract run (not pg-mem). Skips unless DAZL_PG_SLICE points at a
-// throwaway, isolated Postgres already loaded with scripts/pg-migrate/schema.sql.
-// Seeds the same synthetic rows into SQLite and real pg and deep-equals all 8
-// LeadsReadDb methods. This is the wire-protocol/dialect proof pg-mem cannot give.
-const PG = process.env.DAZL_PG_SLICE
+// REAL Postgres contract run (not pg-mem). Skips unless DAZL_PG_ADMIN points at a
+// loopback maintenance URL: the test provisions its own guarded, dedicated
+// dazl_rehearse_* database (guard.ts) and loads the FULL translated schema
+// (schema-full.generated.sql, BIGINT numerics) - this exercises the int8-as-string
+// driver behavior that pg-mem masks. Seeds the same synthetic rows into SQLite and
+// real pg and deep-equals all 8 LeadsReadDb methods.
+const PG_ADMIN = process.env.DAZL_PG_ADMIN
+if (process.env.DAZL_PG_ADMIN === '') process.env.DAZL_PG_ADMIN = undefined
+const FULL_SCHEMA = new URL('../scripts/pg-migrate/schema-full.generated.sql', import.meta.url)
 
 const T = 't1', J = 'job000000000000000000001'
 const now = 1800000000
@@ -36,21 +40,26 @@ function seedSqlite(d: Database.Database) {
   d.prepare("INSERT INTO company_events (id, tenant_id, company_key, company_name, scope, lead_id, event_type, summary, detail, source_url, source_published_at, retrieved_at, first_seen_at, last_seen_at, confidence) VALUES ('V1', ?, 'acme.com', 'Acme', 'account', 'L1', 'funding_round', 'Raised', NULL, 'https://news.example/a', '2026-10-01', 4000, 3900, 4000, 80)").run(T)
 }
 
-test('real Postgres implementation matches sqlite adapter on identical synthetic rows', { skip: !PG && 'DAZL_PG_SLICE not set' }, async () => {
+test('real Postgres implementation matches sqlite adapter on identical synthetic rows', { skip: !PG_ADMIN && 'DAZL_PG_ADMIN not set' }, async () => {
   const { Client } = await import('pg')
-  const client = new Client({ connectionString: PG })
+  const { provisionRehearsalDb, assertRehearsalTarget, dropRehearsalDb } = await import('../scripts/pg-migrate/guard.ts')
+  const { readFileSync } = await import('node:fs')
+  const prov = await provisionRehearsalDb(PG_ADMIN as string, 'rhz-' + Math.random().toString(36).slice(2))
+  const client = new Client({ connectionString: prov.url })
   await client.connect()
   try {
-    // clean slate: schema is already applied by the rehearsal setup
-    for (const t of ['lead_enrichments', 'company_events', 'sequence_steps', 'sequences', 'outreach_messages', 'sequence_settings', 'inbound_messages', 'suppressions', 'leads', 'scan_jobs']) await client.query(`DELETE FROM ${t}`)
+    await assertRehearsalTarget(client, prov.token)
+    await client.query(readFileSync(FULL_SCHEMA, 'utf8'))
+    await assertRehearsalTarget(client, prov.token)
     const q = (t: string, p: unknown[]) => client.query(t, p)
-    await q("INSERT INTO scan_jobs (id, user_id, status, business_name, industry, location, created_at, query) VALUES ($1, $2, 'done', 'Biz', 'software', 'Toronto', $3, 'q')", [J, T, now - 100])
+    await q("INSERT INTO scan_jobs (id, user_id, status, business_name, industry, location, created_at, query) VALUES ($1, $2, 'running', 'Biz', 'software', 'Toronto', $3, 'q')", [J, T, now - 100])
     const ins = "INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, created_at, fit, intent, action, company_domain) VALUES ($1, $2, '', $3, NULL, $4, 'https://example.com/jobs/1', 80, $5, $6, $7, $8, $9)"
     await q(ins, ['L1', J, 'Acme', 'Hiring sales operations manager', now - 90, 5, 4, 3, 'acme.com'])
     await q(ins, ['L2', J, 'Hidden Co', 'weak signal here', now - 80, 1, 1, 1, null])
     await q(ins, ['L3', J, 'Beta', 'Sales operations manager needed', now - 70, 4, 4, 4, null])
     await q(ins, ['L4', J, 'Gamma', 'CRM administrator and sales operations', now - 60, 4, 4, 4, null])
     await q(ins, ['L5', J, 'Delta', 'sales operations lead opening', now - 50, 4, 4, 4, null])
+    await q("UPDATE scan_jobs SET status = 'done' WHERE id = $1", [J])
     await q("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, created_at) VALUES ('M1', $1, 'L1', 'a@b.c', 's', '01234567890123456789', 'sent', 1000, 999)", [T])
     await q("INSERT INTO sequences (id, tenant_id, lead_id, message_id, to_email, status, created_at) VALUES ('S1', $1, 'L1', 'M1', 'a@b.c', 'active', 998)", [T])
     await q("INSERT INTO sequence_steps (tenant_id, sequence_id, step, subject, body, status, sent_at, created_at) VALUES ($1, 'S1', 2, 's2', '01234567890123456789', 'sent', 2000, 997)", [T])
@@ -75,7 +84,13 @@ test('real Postgres implementation matches sqlite adapter on identical synthetic
     assert.deepEqual(await pg.leadPriorities(T, leadsL), await lite.leadPriorities(T, leadsL))
     const lookInput = leadsL.map(l => ({ id: l.id, signal: l.signal, industry: 'software', location: 'Toronto' }))
     assert.deepEqual(await pg.lookalikeSignals(T, lookInput), await lite.lookalikeSignals(T, lookInput))
+
+    // pin the driver behavior the numeric policy depends on: int8 comes back as
+    // STRING from the real driver (pg-mem returns numbers and masks this)
+    const raw = await client.query('SELECT created_at FROM scan_jobs WHERE id = $1', [J])
+    assert.equal(typeof (raw.rows[0] as { created_at: unknown }).created_at, 'string', 'pg driver must return BIGINT as string - if this changes, revisit the coercion policy')
   } finally {
     await client.end()
+    await dropRehearsalDb(PG_ADMIN as string, prov.dbName)
   }
 })

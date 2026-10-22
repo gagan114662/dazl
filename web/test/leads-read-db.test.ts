@@ -69,6 +69,7 @@ test('pg-mem implementation matches sqlite adapter on identical synthetic rows',
   const mem = newDb()
   mem.public.registerFunction({ name: 'char_length', args: [DataType.text], returns: DataType.integer, implementation: (x: string) => x.length, impure: false })
   mem.public.registerFunction({ name: 'btrim', args: [DataType.text], returns: DataType.text, implementation: (x: string) => x.trim(), impure: false })
+  mem.public.registerFunction({ name: 'floor', args: [DataType.float], returns: DataType.float, implementation: (x: number) => Math.floor(x), impure: false })
   mem.public.none(readFileSync(new URL('../scripts/pg-migrate/schema.sql', import.meta.url), 'utf8'))
   const { Pool } = mem.adapters.createPg()
   const pool = new Pool()

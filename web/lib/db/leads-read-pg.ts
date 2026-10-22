@@ -19,6 +19,23 @@ export interface PgQueryable { query(text: string, params?: unknown[]): Promise<
 
 const norm = (e: string) => e.trim().toLowerCase()
 
+// Numeric policy: sqlite INTEGER maps to BIGINT in the translated PG schema,
+// and the pg driver returns int8 (OID 20) values as STRINGS. pg-mem returns
+// numbers, which masks this - every numeric column is coerced explicitly with
+// a safe-integer check. A value beyond 2^53 fails loudly instead of silently
+// losing precision.
+const num = (v: unknown): number | null => {
+  if (v === null || v === undefined) return null
+  const n = Number(v)
+  if (!Number.isSafeInteger(n)) throw new Error(`unsafe integer from pg: ${v}`)
+  return n
+}
+const numReq = (v: unknown): number => {
+  const n = num(v)
+  if (n === null) throw new Error('unexpected NULL numeric from pg')
+  return n
+}
+
 export function pgLeadsRead(pg: PgQueryable): LeadsReadDb {
   return {
     async getJob(userId, id) {
@@ -26,7 +43,7 @@ export function pgLeadsRead(pg: PgQueryable): LeadsReadDb {
       await pg.query(
         `UPDATE scan_jobs SET status = CASE WHEN attempts >= $1 THEN 'failed' ELSE 'pending' END,
            error = CASE WHEN attempts >= $1 THEN 'timeout' ELSE error END,
-           finished_at = CASE WHEN attempts >= $1 THEN CAST(extract(epoch from now()) AS INTEGER) ELSE finished_at END,
+           finished_at = CASE WHEN attempts >= $1 THEN CAST(floor(extract(epoch from now())) AS BIGINT) ELSE finished_at END,
            claimed_at = NULL
          WHERE status = 'running' AND claimed_at < $2`,
         [MAX_ATTEMPTS, cutoff],
@@ -38,7 +55,13 @@ export function pgLeadsRead(pg: PgQueryable): LeadsReadDb {
       const job = rows[0] as Record<string, unknown> | undefined
       if (!job) return undefined
       const c = await pg.query('SELECT count(*) AS n FROM leads WHERE scan_job_id = $1', [id])
-      return { ...job, lead_count: Number((c.rows[0] as { n: number | string }).n) } as never
+      return {
+        ...job,
+        created_at: numReq(job.created_at), finished_at: num(job.finished_at),
+        candidates: num(job.candidates), verified: num(job.verified),
+        needs_review: num(job.needs_review), dropped: num(job.dropped),
+        lead_count: numReq((c.rows[0] as { n: number | string }).n),
+      } as never
     },
 
     async listLeads(userId, jobId, limit = 200, includeHidden = false) {
@@ -51,7 +74,12 @@ l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l
          ORDER BY (l.fit IS NULL), l.fit DESC, l.intent DESC, l.action DESC, (l.confidence IS NULL), l.confidence DESC, l.score DESC, l.created_at DESC LIMIT $3`,
         [jobId, userId, Math.min(limit, 500)],
       )
-      return rows as never
+      return (rows as Record<string, unknown>[]).map(r => ({
+        ...r,
+        score: numReq(r.score), created_at: numReq(r.created_at), retrieved_at: num(r.retrieved_at),
+        confidence: num(r.confidence), fit: num(r.fit), intent: num(r.intent), action: num(r.action),
+        watch_new: num(r.watch_new), seen_before: num(r.seen_before),
+      })) as never
     },
 
     async countHiddenLeads(userId, jobId) {
@@ -59,7 +87,7 @@ l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l
         'SELECT count(*) AS n FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.id = $1 AND j.user_id = $2 AND l.fit IS NOT NULL AND l.fit <= 1',
         [jobId, userId],
       )
-      return Number((rows[0] as { n: number | string }).n) as never
+      return numReq((rows[0] as { n: number | string }).n) as never
     },
 
     async sequenceStatusByLead(tenantId) {
@@ -76,12 +104,13 @@ l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l
       let testList: string[] = []
       try { testList = (JSON.parse((t.rows[0] as { test_addresses: string } | undefined)?.test_addresses ?? '[]') as string[]).map(norm) } catch { testList = [] }
       const out = new Map<string, { status: string; step: number; next_due_at: number | null; stop_reason: string | null }>()
-      for (const r of rows as { lead_id: string; status: string; stop_reason: string | null; to_email: string; step1_sent: number | null; steps_sent: number | string }[]) {
-        const stepsSent = Number(r.steps_sent)
+      for (const r of rows as { lead_id: string; status: string; stop_reason: string | null; to_email: string; step1_sent: number | string | null; steps_sent: number | string }[]) {
+        const stepsSent = numReq(r.steps_sent)
+        const step1Sent = num(r.step1_sent)
         let nextDue: number | null = null
-        if ((r.status === 'active' || r.status === 'approved') && r.step1_sent && stepsSent < MAX_STEPS) {
+        if ((r.status === 'active' || r.status === 'approved') && step1Sent && stepsSent < MAX_STEPS) {
           const gaps = testList.includes(norm(r.to_email)) ? TEST_GAPS_S : GAPS_S
-          nextDue = r.step1_sent + gaps[stepsSent]
+          nextDue = step1Sent + gaps[stepsSent]
         }
         out.set(r.lead_id, { status: r.status, step: stepsSent, next_due_at: nextDue, stop_reason: r.stop_reason })
       }
@@ -98,6 +127,8 @@ l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l
       )
       for (const row of rows as ({ lead_id: string } & Record<string, unknown>)[]) {
         const { lead_id, ...e } = row
+        e.confidence = num(e.confidence)
+        e.retrieved_at = num(e.retrieved_at)
         ;(out[lead_id] ??= []).push(e)
       }
       return out as never
@@ -113,7 +144,14 @@ l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l
            ORDER BY last_seen_at DESC LIMIT $4`,
           [tenantId, companyKey, 'account', 200],
         )
-        return (rows as Omit<CompanyEventRow, 'fresh'>[]).map(r => ({ ...r, fresh: r.last_seen_at >= now - FRESHNESS_DAYS[r.event_type as EventType] * 86400 }))
+        return (rows as Omit<CompanyEventRow, 'fresh'>[]).map(r => {
+          const coerced = {
+            ...r,
+            retrieved_at: numReq(r.retrieved_at), first_seen_at: numReq(r.first_seen_at),
+            last_seen_at: numReq(r.last_seen_at), confidence: num(r.confidence),
+          }
+          return { ...coerced, fresh: coerced.last_seen_at >= now - FRESHNESS_DAYS[coerced.event_type as EventType] * 86400 }
+        })
       }
       const out: Record<string, CompanyEventRow[]> = {}
       for (const l of leads) {

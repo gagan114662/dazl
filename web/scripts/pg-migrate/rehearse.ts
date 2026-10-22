@@ -14,8 +14,8 @@ import { migrateSequences } from '../../lib/outreach/sequences.ts'
 import { migrateConnectors } from '../../lib/connectors/store.ts'
 import { migrateReplies } from '../../lib/outreach/replies.ts'
 
-const PG = process.env.DAZL_PG_SLICE
-if (!PG) { console.error('DAZL_PG_SLICE required'); process.exit(1) }
+const PG_ADMIN = process.env.DAZL_PG_ADMIN
+if (!PG_ADMIN) { console.error('DAZL_PG_ADMIN (loopback maintenance URL) required - the script provisions its own guarded dazl_rehearse_* target'); process.exit(1) }
 const TENANTS = Number(process.env.REHEARSE_TENANTS ?? 5)
 const JOBS = Number(process.env.REHEARSE_JOBS ?? 4)
 const LEADS = Number(process.env.REHEARSE_LEADS ?? 25)
@@ -56,11 +56,17 @@ for (let t = 0; t < TENANTS; t++) {
 console.log(`synthetic sqlite: ${TENANTS} tenants x ${JOBS} jobs x ${LEADS} leads = ${leadCount} leads`)
 
 const TABLES = ['scan_jobs', 'leads', 'outreach_messages', 'sequences', 'sequence_steps', 'sequence_settings', 'lead_enrichments', 'company_events', 'suppressions', 'inbound_messages']
-const client = new Client({ connectionString: PG })
+const { provisionRehearsalDb, assertRehearsalTarget, dropRehearsalDb } = await import('./guard.ts')
+const prov = await provisionRehearsalDb(PG_ADMIN, 'rhz-' + Math.random().toString(36).slice(2))
+console.log(`provisioned guarded target: ${prov.dbName}`)
+const client = new Client({ connectionString: prov.url })
 await client.connect()
-for (const t of [...TABLES].reverse()) await client.query(`DELETE FROM ${t}`)
+await assertRehearsalTarget(client, prov.token)
+await client.query((await import('node:fs')).readFileSync(new URL('./schema-full.generated.sql', import.meta.url), 'utf8'))
+await assertRehearsalTarget(client, prov.token)
 
 const divergences: string[] = []
+process.on('exit', () => {})
 for (const t of TABLES) {
   const rows = db.prepare(`SELECT * FROM ${t}`).all() as Record<string, unknown>[]
   if (rows.length === 0) continue
@@ -70,7 +76,10 @@ for (const t of TABLES) {
   if (missing.length) divergences.push(`${t}: sqlite columns absent from pg slice schema: ${missing.join(', ')}`)
   const use = cols.filter(c => pgCols.includes(c))
   let inserted = 0
-  for (const r of rows) {
+  for (const r0 of rows) {
+    const r = { ...r0 }
+    // leads_only_while_running trigger: copy jobs as 'running', restore after leads land
+    if (t === 'scan_jobs') r.status = 'running'
     const ph = use.map((_, i) => `$${i + 1}`).join(',')
     try {
       await client.query(`INSERT INTO ${t} (${use.join(',')}) VALUES (${ph})`, use.map(c => r[c]))
@@ -83,12 +92,20 @@ for (const t of TABLES) {
   if (inserted !== rows.length) divergences.push(`${t}: copied ${inserted}/${rows.length}`)
 }
 
+// restore real job statuses (running->done/failed are legal transitions)
+const realStatuses = db.prepare('SELECT id, status FROM scan_jobs').all() as { id: string; status: string }[]
+for (const j of realStatuses) {
+  if (j.status !== 'running') await client.query('UPDATE scan_jobs SET status = $1 WHERE id = $2', [j.status, j.id])
+}
+
+
 for (const t of TABLES) {
   const sRows = db.prepare(`SELECT * FROM ${t}`).all() as Record<string, unknown>[]
   const pgCols = (await client.query(`SELECT column_name FROM information_schema.columns WHERE table_name = $1`, [t])).rows.map((r: { column_name: string }) => r.column_name)
   const use = Object.keys(sRows[0] ?? {}).filter(c => pgCols.includes(c))
   const pRows = (await client.query(`SELECT ${use.length ? use.join(',') : '*'} FROM ${t}`)).rows as Record<string, unknown>[]
-  const norm = (rows: Record<string, unknown>[]) => rows.map(r => JSON.stringify(use.length ? Object.fromEntries(use.map(c => [c, r[c]])) : r)).sort()
+  // normalize both sides to strings: pg returns BIGINT (int8) as string, sqlite as number
+  const norm = (rows: Record<string, unknown>[]) => rows.map(r => JSON.stringify((use.length ? use : Object.keys(r)).map(c => r[c] === null || r[c] === undefined ? null : String(r[c])))).sort()
   const a = norm(sRows), b = norm(pRows)
   if (a.length !== b.length) { divergences.push(`${t}: count sqlite=${a.length} pg=${b.length}`); continue }
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) { divergences.push(`${t}: content mismatch row ${i}: ${a[i].slice(0, 150)} vs ${b[i].slice(0, 150)}`); break }
@@ -98,3 +115,5 @@ console.log(`divergences: ${divergences.length}`)
 for (const d of divergences.slice(0, 20)) console.log(` - ${d}`)
 console.log(divergences.length === 0 ? 'REHEARSAL CLEAN: slice tables copy losslessly (synthetic data)' : 'REHEARSAL DIVERGENCES ABOVE')
 await client.end()
+await dropRehearsalDb(PG_ADMIN, prov.dbName)
+console.log(`rehearsal target ${prov.dbName} dropped`)
