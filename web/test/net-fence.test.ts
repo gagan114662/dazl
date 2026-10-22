@@ -82,6 +82,17 @@ test("redirect: 'manual' returns the 3xx untouched (no following, no checking be
   await origin.close()
 })
 
+test("Request-carried redirect: 'manual' (no init) is preserved, not silently followed", SKIP, async () => {
+  const origin = await serve('127.0.0.1', (_req, res) => {
+    res.writeHead(302, { location: 'http://127.0.0.2:1/nope' })
+    res.end()
+  })
+  const out = await fetch(new Request(`${origin.url}/`, { redirect: 'manual' }))
+  assert.equal(out.status, 302)
+  assert.equal(out.headers.get('location'), 'http://127.0.0.2:1/nope')
+  await origin.close()
+})
+
 test('redirect loop hits the hop cap instead of following forever', SKIP, async () => {
   const origin = await serve('127.0.0.1', (_req, res) => {
     res.writeHead(302, { location: '/again' })

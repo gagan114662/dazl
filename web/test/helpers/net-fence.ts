@@ -67,9 +67,11 @@ function stripContentHeaders(headers: Headers): void {
 
 globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
   assertLoopback(input, 'fetch')
-  const mode = init?.redirect ?? 'follow'
-  if (mode === 'manual') return realFetch(input as never, init)
   const req = input instanceof Request ? input : new Request(input as never, init)
+  // Mode comes from the merged Request, not only init: a caller passing
+  // new Request(url, { redirect: 'manual' }) with no init must keep 'manual'.
+  const mode = init?.redirect ?? req.redirect
+  if (mode === 'manual') return realFetch(input as never, init)
   if (mode === 'error') {
     const res = await realFetch(req, { redirect: 'manual' })
     if (REDIRECT_STATUSES.has(res.status)) throw new TypeError('fetch failed (redirect mode: error)')
@@ -158,6 +160,9 @@ for (const [mod, name, methods] of [
 //   credential name, and credential FILES on disk (~/.ssh, .env, cloud cred
 //   files) are out of scope. The suite runs from web/ and lib code under
 //   node --test does not load dotenv.
+// - net.connect/createConnection calls with no resolvable host (unix-socket
+//   paths, IPC handles) are DENIED by the fail-closed host check; no test
+//   needs one today - loosen deliberately if that changes, not by default.
 // - Loopback is allowed by design (tests run local servers); the PG live
 //   contract test's own guard stack (loopback-only, fresh dazl_rehearse_* DB,
 //   ownership-marker token, per-run non-superuser role) is what bounds it,
