@@ -53,7 +53,7 @@ export default function SequencesClient() {
       const state=data.status[s.lead_id]
       const label=s.status==='active'?`Step ${state?.step??1} sent / awaiting step ${(state?.step??1)+1}`:s.status
       return <article key={s.id} className="card p-4 mt-4 text-sm">
-        <div className="font-medium">{s.to_email}</div><div className="text-xs text-[#555] mt-1">{label}{s.stop_reason?` (${s.stop_reason})`:''}{state?.next_due_at?` - due ${new Date(state.next_due_at*1000).toLocaleString()}`:''}</div>
+        <div className="font-medium">{s.to_email}{data?.test_addresses.map(a=>a.toLowerCase()).includes(s.to_email.toLowerCase()) ? <span className="ml-2 text-[10px] uppercase tracking-wide text-yellow-300 border border-yellow-300/40 px-1 py-0.5">test mode</span> : null}</div><div className="text-xs text-[#555] mt-1">{label}{s.stop_reason?` (${s.stop_reason})`:''}{state?.next_due_at?` - due ${new Date(state.next_due_at*1000).toLocaleString()}`:''}</div>
         {s.steps.map(st=><div key={st.step} className="mt-4 border-t border-black/10 pt-3">
           <h3 className="font-medium">Step {st.step}{st.step>1?` - ${st.step===2?'3':'7'} days after step 1`:''} ({st.status})</h3>
           {edit?.id===s.id&&edit.step===st.step?<div className="mt-2">

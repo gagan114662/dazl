@@ -37,6 +37,22 @@ Removing an address restores normal delays. Saving the list sends nothing.
 This implementation was tested with synthetic fixtures and mocked Gmail only.
 No real message was sent during development.
 
+### Test-only route to a consumer test inbox (OUTREACH_TEST_MODE)
+
+Drafts are normally rejected when the recipient is a consumer mailbox
+(Gmail, Yahoo, ... - a published address there is not a business contact).
+For the approved own-inbox test only, the operator can set
+`OUTREACH_TEST_MODE=1`. With that env on, the consumer-recipient gate is
+bypassed ONLY for addresses the tenant explicitly entered in their own
+test-inbox allowlist - nothing else changes: prospect addresses are not on
+that list, every other consumer address still rejects, and with the env
+unset even an allowlisted consumer address rejects. Drafts to any
+allowlisted test inbox are stored with `test = 1`, badged "test mode" in
+Outreach and on sequence cards, and logged as `outreach TEST MODE send`.
+Test sends still count against the shared 20-per-day account budget, and
+approve-before-send still applies to step 1. Turn the env off after the
+test; it must never be on for real tenant sends.
+
 ## Send safety
 
 A shared rolling budget reserves at most 20 emails per account in 24 hours across
