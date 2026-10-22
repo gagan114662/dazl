@@ -29,7 +29,7 @@ export type Get = (url: string) => Promise<{ status: number; body: string; final
 
 // timeoutMs/lookup are injectable for tests only; production callers use the
 // defaults. Lookup defaults to the SSRF-guarded resolver (private IPs refused).
-export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup): Promise<{ status: number; body: string; finalUrl: string } | null> {
+export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup, signal?: AbortSignal): Promise<{ status: number; body: string; finalUrl: string } | null> {
   return new Promise(resolve => {
     let u: URL
     try { u = new URL(rawUrl) } catch { return resolve(null) }
@@ -54,6 +54,11 @@ export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup:
     // destroy would leave this promise pending forever, and the caller's
     // caller (runJob) holds a runner slot until this settles.
     req.on('timeout', () => req.destroy(new Error('timeout')))
+    // Cooperative cancellation: an aborted signal destroys the socket with an
+    // error, so the promise settles NOW - the slot budget can then be released
+    // with no uncancelled request still in flight behind it.
+    if (signal?.aborted) { resolve(null); req.destroy(new Error('aborted')); return }
+    signal?.addEventListener('abort', () => req.destroy(new Error('aborted')), { once: true })
     req.on('error', () => resolve(null))
     req.end()
   })
@@ -213,11 +218,19 @@ export function contactPaths(homeHtml: string, home: URL): string[] {
 }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+// Abort-aware sleep: resolves early (to false) when the signal fires, so the
+// polite per-host gap does not outlive a post-processing deadline.
+const sleepAbort = (ms: number, signal?: AbortSignal) => new Promise<boolean>((resolve) => {
+  if (signal?.aborted) return resolve(false)
+  const t = setTimeout(() => resolve(true), ms)
+  signal?.addEventListener('abort', () => { clearTimeout(t); resolve(false) }, { once: true })
+})
 const lastHit = new Map<string, number>()
 
-export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS, expectName?: string, social = false): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[] }> {
+export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[] }> {
   const origin = `https://${site}`
-  const polite = async (url: string, delay: number) => { const h = new URL(url).hostname; const wait = (lastHit.get(h) ?? 0) + Math.max(gapMs, delay) - Date.now(); if (wait > 0) await sleep(wait); lastHit.set(h, Date.now()); return get(url) }
+  const stopped = () => signal?.aborted ?? false
+  const polite = async (url: string, delay: number) => { const h = new URL(url).hostname; const wait = (lastHit.get(h) ?? 0) + Math.max(gapMs, delay) - Date.now(); if (wait > 0 && !(await sleepAbort(wait, signal))) return null; lastHit.set(h, Date.now()); return get(url) }
   const rob = await polite(`${origin}/robots.txt`, 0)
   let robots: Robots
   if (!rob) return { found: [], reason: 'robots_unreachable', pages: 0 }
@@ -230,6 +243,7 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
   const found = new Map<string, Found>(); let pages = 1
   for (const f of extractContacts(home.body, home.finalUrl, site)) found.set(f.kind + f.value, f)
   for (const p of contactPaths(home.body, new URL(home.finalUrl))) {
+    if (stopped()) break
     if (pages >= MAX_PAGES) break
     if (!robots.allows(p)) continue
     const r = await polite(origin + p, robots.delayMs)
@@ -261,15 +275,20 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
 // confidence); deps.skipEvidenceFetch skips fetching the lead's source_url (commenter
 // import again: the URL is stored provenance that must never be fetched - the crawl
 // goes straight to name-derived domain probing, confirmed by the homepage name check).
-export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string }[]; skipEvidenceFetch?: boolean } = {}): Promise<void> {
+export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal } = {}): Promise<void> {
   try {
     if (!sitecrawlEnabled(deps.env)) return
-    const get = deps.get ?? defaultGet(deps.env)
+    // Signal threads only into the rawGet path; a crawl4ai backend keeps its
+    // own 40s per-call bound (outer deadline does not reach it yet - tracked).
+    const get = deps.get ?? (deps.signal && !deps.env?.CRAWL4AI_URL && !process.env.CRAWL4AI_URL
+      ? (url: string) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, deps.signal)
+      : defaultGet(deps.env))
     const leads = deps.leads ?? db.prepare("SELECT id, company, source_url FROM leads WHERE scan_job_id = ? AND review_reason IS NULL AND confidence IS NOT NULL AND company <> '' ORDER BY score DESC LIMIT ?").all(jobId, MAX_SITES_PER_SCAN) as { id: string; company: string; source_url: string }[]
     const today = new Date((deps.now ?? Date.now())).toISOString().slice(0, 10)
     const done = new Set<string>()
     let probed = 0
     for (const l of leads) {
+      if (deps.signal?.aborted) return // post-processing deadline: stop starting new sites
       const ev = deps.skipEvidenceFetch ? null : await get(l.source_url)
       let sites = ev ? findCompanySites(l.company, ev.body, ev.finalUrl) : []
       if (sites.length === 0) {
@@ -284,7 +303,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       for (const cand of sites) {
         if (done.has(cand)) continue
         done.add(cand); site = cand
-        r = await crawlSite(cand, get, deps.gapMs, l.company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1')
+        r = await crawlSite(cand, get, deps.gapMs, l.company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal)
         if (r.reason !== 'name_mismatch' && r.reason !== 'site_unreachable') break
         audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: r.reason, results: 0 })
       }

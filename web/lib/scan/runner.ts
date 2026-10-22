@@ -683,11 +683,28 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // Watch run: flag the leads this watch has never surfaced, remember the rest.
     if (job.watch_id) { try { markWatchLeads(db, job.watch_id, job.id) } catch { /* bonus only */ } }
     try { markSeenBefore(db, job.user_id, job.id, companyKey) } catch { /* flag only, never affects the scan */ }
-    // Contact-page crawl enriches verified leads with role emails (robots.txt hard rule). Never affects the scan result.
-    await crawlJob(db, job.user_id, job.id, deps.crawlGet ? { get: deps.crawlGet } : {})
-    // Intent-signal enrichment (SEC Form D, public job boards). Bonus rows beside the
-    // leads, never part of verification; failures are silent.
-    try { await enrichJobSignals(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl }) } catch (e) { console.error('signal enrichment failed', e instanceof Error ? e.message : 'error') }
+    // Bounded post-processing: crawl + enrichment run under one cooperative
+    // abort deadline. When it fires, in-flight requests are DESTROYED (not
+    // merely timed out), so runJob settles and the runner slot is released
+    // with no uncancelled network work continuing behind it - this is what
+    // makes an early release safe, unlike a watchdog that frees the slot
+    // while the request lives on. The provider/research phase is unaffected
+    // (it has its own per-call timeout). Autopilot is intentionally OUTSIDE
+    // the deadline: it is operator-gated, does no provider calls, and its
+    // duration is DB-bound - aborting it mid-write has no cancel protocol.
+    const postBudgetMs = Number(process.env.SCAN_POST_FINISH_BUDGET_MS || 90_000)
+    const postCtrl = new AbortController()
+    const postTimer = setTimeout(() => postCtrl.abort(), postBudgetMs)
+    try {
+      // Contact-page crawl enriches verified leads with role emails (robots.txt hard rule). Never affects the scan result.
+      await crawlJob(db, job.user_id, job.id, deps.crawlGet ? { get: deps.crawlGet, signal: postCtrl.signal } : { signal: postCtrl.signal })
+      // Intent-signal enrichment (SEC Form D, public job boards). Bonus rows beside the
+      // leads, never part of verification; failures are silent.
+      const enrichFetch = (url: string, init?: RequestInit) => (deps.fetchImpl ?? fetch)(url, { ...init, signal: AbortSignal.any([init?.signal, postCtrl.signal].filter((x): x is AbortSignal => Boolean(x))) })
+      try { await enrichJobSignals(db, job.user_id, job.id, { fetchImpl: enrichFetch as typeof fetch }) } catch (e) { console.error('signal enrichment failed', e instanceof Error ? e.message : 'error') }
+    } finally {
+      clearTimeout(postTimer)
+    }
     // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.
     try { await runAutopilot(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
     return 'done'
