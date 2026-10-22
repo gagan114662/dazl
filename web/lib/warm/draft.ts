@@ -23,9 +23,9 @@ export interface FirstDegreeDraftInput {
 export function draftFirstDegreeMessage({ connectionName, company, signal }: FirstDegreeDraftInput): string {
   const name = firstName(connectionName)
   const where = company.trim() || 'your company'
-  const why = signal.trim() ? ` - I saw that ${signalClause(signal)}` : ''
+  void signal // A stored signal may be stale, inferred or about another company.
   return [
-    `Hi ${name} - hope you are well${why} at ${where}.`,
+    `Hi ${name} - I would like to ask about ${where}.`,
     ``,
     `[One line on what you offer and why it is relevant to them.]`,
     ``,
@@ -43,9 +43,10 @@ export interface IntroDraftInput {
 // Claims nothing about the mutual's relationship beyond what the user reported.
 export function draftIntroRequest({ mutualName, contactName, company }: IntroDraftInput): string {
   const name = firstName(mutualName)
-  const whom = contactName.trim() ? `${contactName.trim()}${company.trim() ? ` at ${company.trim()}` : ''}` : company.trim() || 'someone I would like to reach'
+  void company // A profile match does not prove current employment.
+  const whom = contactName.trim() || '[contact name]'
   return [
-    `Hi ${name} - I noticed you know ${whom}.`,
+    `Hi ${name} - do you know ${whom} well enough to consider an introduction?`,
     ``,
     `[One line on why you would like to reach them.]`,
     ``,

@@ -5,19 +5,19 @@ import { draftFirstDegreeMessage, draftIntroRequest, signalClause } from '../lib
 describe('warm draft templates', () => {
   it('first-degree draft uses first name, company and grounded signal', () => {
     const d = draftFirstDegreeMessage({ connectionName: 'Ada Lovelace', company: 'Acme', signal: 'Hiring a Sales Operations Manager.' })
-    assert.match(d, /^Hi Ada - hope you are well/)
-    assert.match(d, /hiring a Sales Operations Manager at Acme/)
+    assert.match(d, /^Hi Ada - I would like to ask about Acme/)
+    assert.ok(!d.includes('Hiring'))
     assert.match(d, /\[One line on what you offer/)
     assert.ok(!d.includes('great catching up'))
   })
   it('handles empty company and signal without inventing', () => {
     const d = draftFirstDegreeMessage({ connectionName: 'Grace Hopper', company: ' ', signal: '' })
-    assert.match(d, /Hi Grace - hope you are well at your company\./)
+    assert.match(d, /Hi Grace - I would like to ask about your company\./)
     assert.ok(!d.includes('undefined'))
   })
   it('intro request names the mutual and contact, claims no familiarity', () => {
     const d = draftIntroRequest({ mutualName: 'Alan Turing', contactName: 'Grace Hopper', company: 'Acme' })
-    assert.match(d, /Hi Alan - I noticed you know Grace Hopper at Acme\./)
+    assert.match(d, /Hi Alan - do you know Grace Hopper well enough/)
     assert.match(d, /Would you be comfortable making an introduction\?/)
   })
   it('signalClause truncates long signals at a word boundary', () => {
