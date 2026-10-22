@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
+import { primarySignalKind } from './score.ts'
 
 export const STALE_RUNNING_S = Number(process.env.SCAN_STALE_RUNNING_S || 20 * 60)
 export const MAX_ATTEMPTS = 3
@@ -107,11 +108,39 @@ function addColumns(db: Database.Database): void {
   add('leads', 'signals', 'TEXT CHECK (signals IS NULL OR length(signals) <= 1000)')
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS leads_dedup ON leads (scan_job_id, dedup_key) WHERE dedup_key IS NOT NULL')
   add('leads', 'seen_before', 'INTEGER NOT NULL DEFAULT 0')
+  // Normalized attribution tags, filled at write time from data the pipeline already has:
+  // signal_kind = the grader's primary signal id; source_kind = the producing channel.
+  add('leads', 'signal_kind', 'TEXT')
+  add('leads', 'source_kind', 'TEXT')
   // CSV bulk import: a job created from an uploaded domain list carries the domain it
   // researches and the batch it belongs to. NULL on every manual/watch scan.
   add('scan_jobs', 'csv_domain', 'TEXT CHECK (csv_domain IS NULL OR length(csv_domain) <= 253)')
   add('scan_jobs', 'batch_id', 'TEXT')
   widenWhyCap(db)
+  backfillKindTags(db)
+}
+
+
+// One-time, idempotent backfill for rows written before the tag columns existed. Uses only
+// data already stored: the grader's signals JSON, scan_jobs fields, and known fixture names.
+// Unknown or unrecognized values stay NULL - the tags never invent a kind.
+function backfillKindTags(db: Database.Database): void {
+  const hasTable = (t: string) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(t)
+  db.exec(`UPDATE leads SET source_kind = (
+    SELECT CASE
+      WHEN j.watch_id IS NOT NULL THEN 'watch'
+      WHEN j.csv_domain IS NOT NULL THEN 'csv'
+      ELSE 'query' END
+    FROM scan_jobs j WHERE j.id = leads.scan_job_id)
+    WHERE source_kind IS NULL`)
+  if (hasTable('commenter_batches')) db.exec(`UPDATE leads SET source_kind = 'commenter', signal_kind = COALESCE(signal_kind, 'competitor_complaint')
+    WHERE scan_job_id IN (SELECT job_id FROM commenter_batches)`)
+  if (hasTable('monitor_runs')) db.exec(`UPDATE leads SET source_kind = 'monitor'
+    WHERE scan_job_id IN (SELECT job_id FROM monitor_runs)`)
+  db.exec(`UPDATE leads SET source_kind = 'test' WHERE company LIKE 'dazl % test fixture (test only)'`)
+  const rows = db.prepare('SELECT id, signals FROM leads WHERE signal_kind IS NULL AND signals IS NOT NULL').all() as { id: string; signals: string }[]
+  const upd = db.prepare('UPDATE leads SET signal_kind = ? WHERE id = ?')
+  for (const r of rows) { const k = primarySignalKind(r.signals); if (k) upd.run(k, r.id) }
 }
 
 // Score reasoning grew from one sentence to 2-3 (cap 300 -> 600). SQLite cannot alter a

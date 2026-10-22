@@ -35,6 +35,20 @@ export const SIGNALS = [
 export type SignalId = (typeof SIGNALS)[number]
 const SIGNAL_SET = new Set<string>(SIGNALS)
 
+
+// The stored signals column is a JSON array of SignalIds from the grader. The normalized
+// per-lead signal kind is its first valid entry; anything unrecognized stays untagged
+// rather than inventing a kind.
+export function primarySignalKind(signalsJson: string | null | undefined): SignalId | null {
+  if (!signalsJson) return null
+  try {
+    const arr = JSON.parse(signalsJson) as unknown
+    if (!Array.isArray(arr)) return null
+    for (const v of arr) if (typeof v === 'string' && SIGNAL_SET.has(v)) return v as SignalId
+  } catch { /* malformed JSON: untagged */ }
+  return null
+}
+
 export type MatchValue = 'match' | 'mismatch' | 'unknown'
 export interface IcpMatch {
   role: MatchValue

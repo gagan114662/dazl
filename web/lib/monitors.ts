@@ -112,6 +112,8 @@ export function collectMonitorResults(db: Database.Database): number {
     const ins = db.prepare('INSERT OR IGNORE INTO monitor_seen (monitor_id, dedup_key) VALUES (?, ?)')
     for (const { dedup_key } of keys) if (ins.run(r.monitor_id, dedup_key).changes === 1) fresh++
     db.prepare('UPDATE monitor_runs SET processed = 1, new_count = ? WHERE id = ?').run(fresh, r.id)
+    // Monitor jobs reuse the query pipeline; stamp the producing channel now that the run is recorded.
+    db.prepare("UPDATE leads SET source_kind = 'monitor' WHERE scan_job_id = ?").run(r.job_id)
     if (fresh > 0) alerts++
   }
   return alerts

@@ -71,7 +71,7 @@ function createFixture(db: Database.Database, tenantId: string, step1Subject: st
     db.prepare('INSERT INTO scan_jobs (id, user_id, business_name, industry, location) VALUES (?, ?, ?, ?, ?)').run(jobId, tenantId, company, 'test only', 'test only')
     // The leads table only accepts rows while its job is running; the job finishes immediately after.
     db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ? AND status = 'pending'").run(jobId)
-    db.prepare('INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    db.prepare("INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, source_kind) VALUES (?, ?, ?, ?, ?, ?, ?, 'test')")
       .run(leadId, jobId, 'Gagan', company, TEST_INBOX, FIXTURE_SIGNAL, FIXTURE_SOURCE_URL)
     db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ? AND status = 'running'").run(jobId)
     const step1 = steps[0]
