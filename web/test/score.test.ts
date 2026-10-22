@@ -161,3 +161,16 @@ test('parseScores: why is capped at WHY_MAX (600), not the old 300', () => {
   assert.equal(s[0].why.length, 600)
   assert.equal(WHY_MAX, 600)
 })
+
+test('holdUngraded: holds fit at 0 with the reason, leaves intent/action unset', async () => {
+  const { holdUngraded, GRADING_FAILED_WHY, NOT_GRADED_WHY } = await import('../lib/scan/score.ts')
+  const leads = [{ score: 85 }, { score: 72, why: 'old' }] as { score: number; fit?: number; why?: string; intent?: number }[]
+  holdUngraded(leads, GRADING_FAILED_WHY)
+  assert.equal(leads[0].fit, 0)
+  assert.equal(leads[1].fit, 0)
+  assert.match(leads[0].why ?? '', /grading failed/i)
+  assert.match(leads[1].why ?? '', /grading failed/i)
+  assert.equal(leads[0].intent, undefined)
+  holdUngraded(leads, NOT_GRADED_WHY)
+  assert.match(leads[0].why ?? '', /not icp-graded/i)
+})

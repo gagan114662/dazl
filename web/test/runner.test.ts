@@ -65,7 +65,7 @@ test('competitor complaints run even when the scan selected no sources, and the 
   const cLead = () => lead(complaintUrl, { signal: "complained about Salesforce" })
   const prov = fake(ok([cLead()], [complaintUrl]))
   prov.anthropic.complete = async () => "Here: " + JSON.stringify([cLead()])
-  assert.equal(await runJob(db, claimKeyedJob(db, id)!, { providers: prov, master, fetchPage: page, advancedWorker: worker }), 'done')
+  assert.equal(await runJob(db, claimKeyedJob(db, id)!, { providers: prov, master, fetchPage: page, advancedWorker: worker, score: false }), 'done')
   const leads = listLeads(db, 'A', id)
   assert.equal(leads.length, 1)
   assert.deepEqual(JSON.parse((leads[0] as { signals: string }).signals), ['complained about Salesforce'])
@@ -222,4 +222,44 @@ test('no stale retry when the first round already produced leads', async () => {
   const r = await runJob(db, claimKeyedJob(db)!, { providers: prov, master, fetchPage, ground: false })
   assert.equal(r, 'done')
   assert.equal(calls, 1)
+})
+
+test('scoring failure holds leads at fit 0; the raw candidate score is not passed through as a grade', async () => {
+  const db = setup()
+  const id = createJob(db, 'A', input)
+  const prov = fake(ok([lead('https://a.com', { signal: 'Announced expansion into Toronto' })], ['https://a.com']))
+  prov.anthropic.complete = async () => { throw new Error('model down') }
+  assert.equal(await runJob(db, claimKeyedJob(db)!, { providers: prov, master, fetchPage: page, ground: false }), 'done')
+  assert.equal(listLeads(db, 'A', id).length, 0) // held leads leave the default lane
+  const leads = listLeads(db, 'A', id, 200, true) as { fit: number | null; intent: number | null; why: string | null; score: number }[]
+  assert.equal(leads.length, 1)
+  assert.equal(leads[0].fit, 0)
+  assert.equal(leads[0].intent, null)
+  assert.match(leads[0].why ?? '', /grading failed/i)
+  assert.equal(leads[0].score, 80) // raw candidate score preserved, but held out of the graded lanes
+})
+
+test('unparseable scoring output also fails closed (all-or-nothing parse)', async () => {
+  const db = setup()
+  const id = createJob(db, 'A', input)
+  const prov = fake(ok([lead('https://a.com')], ['https://a.com']))
+  prov.anthropic.complete = async () => 'sorry, I cannot grade these leads'
+  assert.equal(await runJob(db, claimKeyedJob(db)!, { providers: prov, master, fetchPage: page, ground: false }), 'done')
+  const leads = listLeads(db, 'A', id, 200, true) as { fit: number | null; intent: number | null; why: string | null; score: number }[]
+  assert.equal(leads.length, 1)
+  assert.equal(leads[0].fit, 0)
+  assert.match(leads[0].why ?? '', /grading failed/i)
+})
+
+test('successful scoring still grades leads normally', async () => {
+  const db = setup()
+  const id = createJob(db, 'A', input)
+  const prov = fake(ok([lead('https://a.com', { signal: 'Raised a Series B to expand the sales team' })], ['https://a.com']))
+  prov.anthropic.complete = async () => 'LEAD 1 | fit 4 | intent 3 | action 4 | match yyyy | signals raised_funding | why fresh funding, exact ICP'
+  assert.equal(await runJob(db, claimKeyedJob(db)!, { providers: prov, master, fetchPage: page, ground: false }), 'done')
+  const leads = listLeads(db, 'A', id) as { fit: number | null; intent: number | null; why: string | null }[]
+  assert.equal(leads.length, 1)
+  assert.equal(leads[0].fit, 4)
+  assert.equal(leads[0].intent, 3)
+  assert.match(leads[0].why ?? '', /exact ICP/)
 })

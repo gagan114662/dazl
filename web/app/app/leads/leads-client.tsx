@@ -440,10 +440,10 @@ export default function LeadsClient() {
         ) : visibleLeads.map(l => (
           <div key={l.id} className="p-4 text-sm">
             {l.sequence && <p className="text-xs text-[#555] mb-2">Sequence: {l.sequence.status} / {l.sequence.step} steps sent{l.sequence.next_due_at ? ` / next due ${new Date(l.sequence.next_due_at * 1000).toLocaleString()}` : ''}{l.sequence.stop_reason ? ` (${l.sequence.stop_reason})` : ''}</p>}
-<div className="font-medium">{l.company_domain ? <a className="underline decoration-white/30 hover:decoration-white" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{l.company || l.name}</a> : (l.company || l.name)} <span className="text-gray-500">{scoreLabel(l.score, l.fit)}</span>
+<div className="font-medium">{l.company_domain ? <a className="underline decoration-white/30 hover:decoration-white" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{l.company || l.name}</a> : (l.company || l.name)} <span className="text-gray-500">{scoreLabel(l.score, l.fit, l.intent)}</span>
               {!!l.watch_new && <span className="ml-2 text-[10px] uppercase tracking-wide text-green-300 border border-green-300/30 px-1 py-0.5">new</span>}
               {l.stage === 'booked_call' && <span className="ml-2 text-[10px] uppercase tracking-wide text-blue-300 border border-blue-300/30 px-1 py-0.5">booked call</span>}
-              {l.fit != null && <span className="ml-2 text-xs font-normal text-gray-300 border border-white/15 px-1.5 py-0.5">fit {l.fit}/5 · intent {l.intent}/5 · action {l.action}/5</span>}
+              {l.fit != null && <span className="ml-2 text-xs font-normal text-gray-300 border border-white/15 px-1.5 py-0.5">fit {l.fit}/5 · intent {l.intent ?? '?'}/5 · action {l.action ?? '?'}/5</span>}
               {l.fit != null && l.icp_match && (() => {
                 let m: { role?: string; industry?: string; size?: string; location?: string; note?: string } | null = null
                 try { m = JSON.parse(l.icp_match) } catch { m = null }
@@ -488,7 +488,7 @@ export default function LeadsClient() {
       )}
       {status === 'done' && (hiddenCount > 0 || showHidden) && (
         <button onClick={() => setShowHidden(v => !v)} className="text-gray-500 hover:text-white text-xs mt-2">
-          {showHidden ? 'Hide lower-fit leads' : `Show ${hiddenCount} lower-fit lead${hiddenCount === 1 ? '' : 's'} (fit 0-1)`}
+          {showHidden ? 'Hide hidden leads' : `Show ${hiddenCount} hidden lead${hiddenCount === 1 ? '' : 's'} (low fit or ungraded)`}
         </button>
       )}
       {leads.some(l => l.review_reason) && (
