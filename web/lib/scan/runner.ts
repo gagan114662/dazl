@@ -11,7 +11,7 @@ import { inferIcp, normalizeIcp, type Icp } from './icp.ts'
 import { collectAdvanced, xSearchQuery } from '../advanced/index.ts'
 import { markWatchLeads } from '../watch.ts'
 import type { AdvPlatform } from '../advanced/config.ts'
-import { buildSourcePrompt, collectEvidence, normalizeSources } from '../sources/index.ts'
+import { buildSourcePrompt, collectEvidenceReport, normalizeSources } from '../sources/index.ts'
 import { migrateTinyfish, parseQueries, queryPrompt, tfFetch, tfSearch, tinyfishEnabled, toEvidence } from '../search/tinyfish.ts'
 import { crawlJob } from '../connectors/sitecrawl.ts'
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads } from './score.ts'
@@ -21,6 +21,7 @@ import { primarySignalKind } from './score.ts'
 import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } from '../signals/competitor-reddit.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
 import { sourceCap } from './source-quality.ts'
+import { SourceRunLedger } from './source-runs.ts'
 
 export interface Job { id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string; seller?: string | null; watch_id?: string | null; csv_domain?: string | null }
 export interface LeadDraft extends Candidate {}
@@ -304,7 +305,7 @@ export function pickVendor(db: Database.Database, tenantId: string): Vendor | nu
 
 // Writes only if this attempt still owns the job (a reaped and re-claimed job
 // has a higher attempts number), so a slow old run cannot clobber a newer one.
-function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pending', error: string | null, out: VerifyOutcome | null = null, candidates: number | null = null) {
+function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pending', error: string | null, out: VerifyOutcome | null = null, candidates: number | null = null, ledger?: SourceRunLedger) {
   const leads = out?.leads ?? []
   const review = out?.review ?? []
   const dropped = out ? Object.values(out.dropped).reduce((a, b) => a + b, 0) : null
@@ -314,11 +315,13 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
     const ins = db.prepare(
       'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, fit, intent, action, why, signals, icp_match, signal_kind, source_kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
-    for (const l of leads) ins.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, dedupKey(l), l.fit ?? null, l.intent ?? null, l.action ?? null, l.why ?? null, l.signals ?? null, l.icp_match ?? null, primarySignalKind(l.signals), sourceKind(job))
+    const insertedKeys = new Set<string>()
+    for (const l of leads) { const result = ins.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, dedupKey(l), l.fit ?? null, l.intent ?? null, l.action ?? null, l.why ?? null, l.signals ?? null, l.icp_match ?? null, primarySignalKind(l.signals), sourceKind(job)); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
     const insReview = db.prepare(
       'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, review_reason, source_kind) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?)',
     )
-    for (const l of review) insReview.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.signal, l.source_url, l.score, `review:${dedupKey(l)}`, l.review_reason, sourceKind(job))
+    for (const l of review) { const result = insReview.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.signal, l.source_url, l.score, `review:${dedupKey(l)}`, l.review_reason, sourceKind(job)); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
+    ledger?.write(db, job.id, job.attempts, out ? leads : null, out ? review : null, insertedKeys)
     db.prepare(
       `UPDATE scan_jobs SET status = ?, error = ?, claimed_at = NULL, candidates = ?, verified = ?, needs_review = ?, dropped = ?, drop_reasons = ?,
          finished_at = CASE WHEN ? = 'pending' THEN NULL ELSE CAST(strftime('%s','now') AS INTEGER) END WHERE id = ?`,
@@ -328,17 +331,17 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
 
 // Shared failure handling: a rejected key fails the job outright; anything else retries
 // until MAX_ATTEMPTS, then fails. Returns the run outcome.
-function failOrRetry(db: Database.Database, job: Job, e: unknown): 'failed' | 'retry' {
+function failOrRetry(db: Database.Database, job: Job, e: unknown, ledger?: SourceRunLedger): 'failed' | 'retry' {
   const err = e instanceof ProviderError ? e : new ProviderError('retry', 'internal_error')
   if (err.kind === 'auth') {
-    finish(db, job, 'failed', 'key_rejected')
+    finish(db, job, 'failed', 'key_rejected', null, null, ledger)
     return 'failed'
   }
   if (job.attempts >= MAX_ATTEMPTS) {
-    finish(db, job, 'failed', err.message.slice(0, 200))
+    finish(db, job, 'failed', err.message.slice(0, 200), null, null, ledger)
     return 'failed'
   }
-  finish(db, job, 'pending', err.message.slice(0, 200))
+  finish(db, job, 'pending', err.message.slice(0, 200), null, null, ledger)
   return 'retry'
 }
 
@@ -388,13 +391,19 @@ async function tinyfishCompany(db: Database.Database, job: Job, domain: string, 
 // research/ground/verify/enrich stages as a discovery scan. No ICP scoring (there is no
 // profile to fit against) and no autopilot: an uploaded account list never triggers outreach.
 async function runCompanyJob(db: Database.Database, job: Job, provider: Provider, vendor: Vendor, key: string, deps: RunDeps): Promise<'done' | 'failed' | 'retry'> {
+  const ledger = new SourceRunLedger()
   const domain = job.csv_domain!
   const request = `The company at https://${domain}`
   try {
     const complete = provider.complete
     let leads: LeadDraft[] | null = null
     if (complete && tinyfishEnabled()) {
-      try { leads = await tinyfishCompany(db, job, domain, provider, key, deps.fetchImpl) } catch (e) {
+      try {
+        ledger.record('search:tinyfish', 'started')
+        leads = await tinyfishCompany(db, job, domain, provider, key, deps.fetchImpl)
+        ledger.record('search:tinyfish', leads === null ? 'unavailable' : leads.length ? 'ok' : 'empty')
+        if (leads) ledger.candidates('search:tinyfish', leads)
+      } catch (e) {
         if (e instanceof ProviderError && e.kind === 'auth') throw e
         leads = null
       }
@@ -402,6 +411,7 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
     }
     const fetchP = cachedFetcher(deps.fetchPage ?? fetchPageDetailed)
     if (!leads) {
+      ledger.record(`search:${vendor}`, 'started')
       const res = await provider.research(key, buildCompanyPrompt(domain, deps.now ?? new Date()), deps.fetchImpl)
       leads = parseLeads(res.text, res.citedUrls)
       if (leads && leads.length > 0 && complete && deps.ground !== false) {
@@ -410,11 +420,12 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
       }
     }
     if (!leads) throw new ProviderError('retry', 'bad_output')
-    if (leads.length === 0) { finish(db, job, 'failed', 'no_candidates'); return 'failed' }
+    if (ledger.has(`search:${vendor}`)) { ledger.record(`search:${vendor}`, leads.length ? 'ok' : 'empty'); ledger.candidates(`search:${vendor}`, leads) }
+    if (leads.length === 0) { finish(db, job, 'failed', 'no_candidates', null, 0, ledger); return 'failed' }
     const judge = deps.judge === undefined ? makeJudge(provider, key, deps.fetchImpl) : deps.judge ?? undefined
     const outcome = await verifyLeads(leads, fetchP, deps.now, judge)
     try { applyEvidenceQualityGate(outcome.leads) } catch { /* gate only, never fails the job */ }
-    finish(db, job, 'done', null, outcome, leads.length)
+    finish(db, job, 'done', null, outcome, leads.length, ledger)
     try { markSeenBefore(db, job.user_id, job.id, companyKey) } catch { /* flag only */ }
     // Contact-page crawl and free intent signals (SEC Form D, public job boards) - this is
     // where the batch table's contacts come from. Same bonuses, same silence on failure.
@@ -422,7 +433,7 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
     try { await enrichJobSignals(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl }) } catch (e) { console.error('signal enrichment failed', e instanceof Error ? e.message : 'error') }
     return 'done'
   } catch (e) {
-    return failOrRetry(db, job, e)
+    return failOrRetry(db, job, e, ledger)
   }
 }
 
@@ -447,6 +458,7 @@ export interface RunDeps {
   score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null }
 
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
+  const ledger = new SourceRunLedger()
   // Trial-funded jobs run on the shared operator key from the server environment; everything
   // else runs on the job owner's own key. The operator key is never read from the tenant DB.
   const op = job.funded_by === 'trial' ? operatorKey() : null
@@ -483,7 +495,12 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // pages. If TinyFish is off, capped, failing or finds nothing, fall back to the provider's built-in web search.
     let leads: LeadDraft[] | null = null
     if (job.query && icpForSources && complete && tinyfishEnabled()) {
-      try { leads = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl) } catch (e) {
+      try {
+        ledger.record('search:tinyfish', 'started')
+        leads = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl)
+        ledger.record('search:tinyfish', leads === null ? 'unavailable' : leads.length ? 'ok' : 'empty')
+        if (leads) ledger.candidates('search:tinyfish', leads)
+      } catch (e) {
         if (e instanceof ProviderError && e.kind === 'auth') throw e
         leads = null
       }
@@ -491,6 +508,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     }
     const fetchP = cachedFetcher(deps.fetchPage ?? fetchPageDetailed)
     if (!leads) {
+      ledger.record(`search:${vendor}`, 'started')
       const res = await providers_[vendor].research(key, prompt, deps.fetchImpl)
       leads = parseLeads(res.text, res.citedUrls)
       if (leads && leads.length > 0 && complete && deps.ground !== false) {
@@ -499,6 +517,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       }
     }
     if (!leads) throw new ProviderError('retry', 'bad_output')
+    if (ledger.has(`search:${vendor}`)) { ledger.record(`search:${vendor}`, leads.length ? 'ok' : 'empty'); ledger.candidates(`search:${vendor}`, leads) }
     // Optional per-scan sources: public evidence is collected without any key or DB access, then the user's own model
     // turns it into candidates. They go through the same verifier as web-search leads.
     const sel = job.query && job.sources ? normalizeSources(safeJson(job.sources)) : null
@@ -506,20 +525,25 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     let complaints: ComplaintItem[] = []
     if (sel && icpForSources && complete) {
       try {
-        const items = sel.adapters.length ? await collectEvidence(sel, job.query!) : []
+        const collected = await collectEvidenceReport(sel, job.query!)
+        const items = collected.items
+        for (const run of collected.runs) ledger.record(run.collector, run.status, run.evidence)
         if (items.length > 0) {
           const text = await complete.call(providers_[vendor], key, buildSourcePrompt(job.query!, icpForSources, items), deps.fetchImpl, 3000)
           const extra = parseLeads(text, items.map(i => i.url)) ?? []
+          ledger.evidenceCandidates(items.map(i => ({ ...i, source: `adapter:${i.source}` })), extra)
           leads.push(...extra)
         }
         // Advanced connectors (opt-in tier, own flag, consent and session). A page behind a login is never
         // verified by us: it goes to "needs review" as is, shown to the user and never emailed.
         if (sel.advanced?.length) {
           const adv = await collectAdvanced(db, job.user_id, job.id, sel.advanced as AdvPlatform[], job.query!, { master: deps.master, worker: deps.advancedWorker, xQuery: xSearchQuery(icpForSources) || undefined })
+          for (const collector of new Set(adv.map(i => i.source))) ledger.record(collector, 'ok', adv.filter(i => i.source === collector).length)
           if (adv.length > 0) {
             const text = await complete.call(providers_[vendor], key, buildSourcePrompt(job.query!, icpForSources, adv), deps.fetchImpl, 3000)
             const walled = new Set(adv.filter(i => i.login_walled).map(i => i.url))
             const extra = parseLeads(text, adv.map(i => i.url)) ?? []
+            ledger.evidenceCandidates(adv, extra)
             for (const l of extra) (walled.has(l.source_url) ? walledLeads : leads).push(l)
           }
         }
@@ -537,9 +561,11 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       try {
         complaints = await collectCompetitorComplaints(db, job.user_id, job.id, { master: deps.master, worker: deps.advancedWorker })
         if (complaints.length > 0) {
+          for (const collector of new Set(complaints.map(i => i.source))) ledger.record(collector, 'ok', complaints.filter(i => i.source === collector).length)
           const text = await complete.call(providers_[vendor], key, buildSourcePrompt(job.query!, icpForSources, complaints), deps.fetchImpl, 3000)
           const walled = new Set(complaints.filter(i => i.login_walled).map(i => i.url))
           const extra = parseLeads(text, complaints.map(i => i.url)) ?? []
+          ledger.evidenceCandidates(complaints, extra)
           for (const l of extra) (walled.has(l.source_url) ? walledLeads : leads).push(l)
         }
       } catch (e) {
@@ -549,7 +575,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     }
     // Nothing to verify at all: fail honestly. Failed scans do not count toward the monthly quota,
     // so the user gets the slot back instead of a silent empty result.
-    if (leads.length === 0 && walledLeads.length === 0) { finish(db, job, 'failed', 'no_candidates'); return 'failed' }
+    if (leads.length === 0 && walledLeads.length === 0) { finish(db, job, 'failed', 'no_candidates', null, 0, ledger); return 'failed' }
     const judge = deps.judge === undefined ? makeJudge(providers_[vendor], key, deps.fetchImpl) : deps.judge ?? undefined
     let outcome = await verifyLeads(leads, fetchP, deps.now, judge)
     // First-scan killer: the model's stale memory returns only old news and the verifier
@@ -565,6 +591,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
           const g = await groundLeads(providers_[vendor], key, job.query ?? `${job.business_name} ${job.industry} ${job.location}`, more, fetchP, deps.fetchImpl)
           if (g) more = g
         }
+        if (more) ledger.candidates(`search:${vendor}`, more)
         const seen = new Set(leads.map(l => `${l.source_url}|${companyKey(l.company)}`))
         const fresh = (more ?? []).filter(l => !seen.has(`${l.source_url}|${companyKey(l.company)}`))
         if (fresh.length > 0) {
@@ -621,7 +648,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // a walled hiring post with no pain in its snippet is capped below 50 like any job ad.
     try { applyEvidenceQualityGate(walledRows) } catch { /* gate only */ }
     outcome.review.push(...walledRows)
-    finish(db, job, 'done', null, outcome, leads.length + walledLeads.length)
+    finish(db, job, 'done', null, outcome, leads.length + walledLeads.length, ledger)
     if (complaints.length > 0) { try { badgeComplaintLeads(db, job.id, complaints) } catch { /* badge only */ } }
     // Watch run: flag the leads this watch has never surfaced, remember the rest.
     if (job.watch_id) { try { markWatchLeads(db, job.watch_id, job.id) } catch { /* bonus only */ } }
@@ -635,7 +662,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     try { await runAutopilot(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
     return 'done'
   } catch (e) {
-    return failOrRetry(db, job, e)
+    return failOrRetry(db, job, e, ledger)
   }
 }
 
