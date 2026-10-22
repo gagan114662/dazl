@@ -39,12 +39,13 @@ export function rankPeople<T extends PersonContact>(contacts: T[], icpText: stri
 }
 
 // Stored enrichment rows carry a contact as value "Name - Title" (title optional),
-// label = connector name, source_url = profile link. Split on the FIRST " - " only.
+// connector = source connector, source_url = profile link. Split on the FIRST " - " only.
 export interface ContactEnrichment {
   kind: string
   value: string
   label: string | null
   source_url: string
+  connector?: string
 }
 
 export function contactsFromEnrichments(rows: ContactEnrichment[], icpText: string): RankedPerson[] {
@@ -56,7 +57,7 @@ export function contactsFromEnrichments(rows: ContactEnrichment[], icpText: stri
         name: (i === -1 ? r.value : r.value.slice(0, i)).trim(),
         title: i === -1 ? null : r.value.slice(i + 3).trim(),
         linkedin: r.source_url || null,
-        connector: r.label ?? 'enrichment',
+        connector: r.connector ?? r.label ?? 'enrichment',
       }
     })
   return rankPeople(contacts, icpText)
