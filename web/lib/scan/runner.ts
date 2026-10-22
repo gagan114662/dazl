@@ -9,6 +9,7 @@ import type { Vendor } from '../llm/vendors.ts'
 import { runAutopilot } from '../outreach/autopilot.ts'
 import { MAX_ATTEMPTS, reapStaleJobs, markSeenBefore } from './store.ts'
 import { kickQueueRunner, queueTenants } from './queue-runner.ts'
+import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, verifyEvidence, type Candidate } from './evidence.ts'
 import { inferIcp, normalizeIcp, type Icp } from './icp.ts'
 import { collectAdvanced, xSearchQuery } from '../advanced/index.ts'
@@ -695,9 +696,8 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
   }
 }
 
-// In-process scheduler (one Node process). Caps concurrent runs.
-const MAX_CONCURRENT = Number(process.env.SCAN_MAX_CONCURRENT || 3)
-let active = 0
+// In-process scheduler (one Node process). The concurrency budget is shared
+// with the queue bridge via run-slots.ts - see that file for why.
 
 export async function kickRunner(db: Database.Database, deps: RunDeps = {}): Promise<void> {
   // Tenant-scoped queue gate (default OFF): listed tenants are claimed by the
@@ -708,14 +708,14 @@ export async function kickRunner(db: Database.Database, deps: RunDeps = {}): Pro
   const qt = queueTenants()
   if (qt !== null) await kickQueueRunner(db, deps, runJob, { tenants: qt })
   reapStaleJobs(db)
-  while (active < MAX_CONCURRENT) {
+  while (slotAvailable()) {
     const job = claimKeyedJob(db, undefined, qt ?? undefined)
     if (!job) return
-    active++
+    acquireSlot()
     void runJob(db, job, deps)
       .catch(e => console.error('scan run crashed', job.id, e))
       .finally(() => {
-        active--
+        releaseSlot()
         // a retry may have gone back to pending; the next kick or status poll picks it up
       })
   }

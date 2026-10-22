@@ -21,6 +21,7 @@
 //    or route changes are part of activation.
 import type Database from 'better-sqlite3'
 import { SqliteQueue } from '../queue/sqlite.ts'
+import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
 import type { RunDeps, Job } from './runner.ts'
 
 export type ScanExecutor = (db: Database.Database, job: Job, deps: RunDeps) => Promise<'done' | 'failed' | 'retry'>
@@ -93,14 +94,11 @@ export function queueTenants(env: Record<string, string | undefined> = process.e
   return parts
 }
 
-const MAX_CONCURRENT = Number(process.env.SCAN_MAX_CONCURRENT || 3)
 // One threshold source: the queue lease IS the store's stale-running window.
 // Passing a different leaseSeconds to a kick (tests aside) would let a job be
 // re-claimed while the legacy reaper still considers it fresh (or vice versa)
 // and can double-run provider calls. Do not configure them apart.
 const QUEUE_LEASE_S = Number(process.env.SCAN_STALE_RUNNING_S || 20 * 60)
-let active = 0
-
 // One queue-mode kick: claim via SqliteQueue, bind the domain row in the same
 // transaction, run the executor, map the domain outcome back by token.
 export async function kickQueueRunner(
@@ -111,7 +109,7 @@ export async function kickQueueRunner(
 ): Promise<void> {
   const q = new SqliteQueue(db)
   syncPendingScansToQueue(db, q, opts?.leaseSeconds ?? QUEUE_LEASE_S, opts?.tenants)
-  while (active < MAX_CONCURRENT) {
+  while (slotAvailable()) {
     const claim = q.claim({ kinds: ['scan'], leaseSeconds: opts?.leaseSeconds ?? QUEUE_LEASE_S, now: opts?.now, tenants: opts?.tenants })
     if (!claim) return
     // Bind the domain row. Guard mirrors claimKeyedJob (status='pending'),
@@ -135,7 +133,7 @@ export async function kickQueueRunner(
       `SELECT id, user_id, business_name, industry, location, attempts, query, icp, sources, funded_by, watch_id, csv_domain
        FROM scan_jobs WHERE id = ?`,
     ).get(claim.item.id) as Job
-    active++
+    acquireSlot()
     const token = claim.token
     void executor(db, { ...jobRow, attempts: jobRow.attempts }, deps)
       .catch((e) => { console.error('queue scan run crashed', jobRow.id, e); return 'retry' as const })
@@ -146,6 +144,6 @@ export async function kickQueueRunner(
         else if (outcome === 'failed') q.fail(token, { retryable: false, error: 'executor_failed' })
         else q.fail(token, { retryable: true, error: 'executor_retry' })
       })
-      .finally(() => { active-- })
+      .finally(() => { releaseSlot() })
   }
 }
