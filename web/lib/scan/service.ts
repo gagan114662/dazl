@@ -12,6 +12,7 @@ import { migrateAutopilot } from '../outreach/autopilot.ts'
 import { migrateLedger } from '../outreach/ledger.ts'
 import { migrateMonitors } from '../monitors.ts'
 import { migrateCsv } from './csv-import.ts'
+import { migrateCommenterImport } from './commenter-import.ts'
 import { migrateMemory } from '../memory.ts'
 import { migrateReplies } from '../outreach/replies.ts'
 import { migrateTrial } from './trial.ts'
@@ -38,6 +39,7 @@ export function getScanDb() {
     migrateSeo(db)
     migrateMonitors(db)
     migrateCsv(db)
+    migrateCommenterImport(db)
     migrateMemory(db)
     ready = true
   }
