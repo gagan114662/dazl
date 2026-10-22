@@ -17,6 +17,7 @@ import { migrateCommenterImport } from './commenter-import.ts'
 import { migrateMemory } from '../memory.ts'
 import { migrateReopen } from '../outreach/reopen.ts'
 import { migrateReplies } from '../outreach/replies.ts'
+import { migrateThreadReplies } from '../replies/threads.ts'
 import { migrateTrial } from './trial.ts'
 import { migrateCompetitors } from '../signals/competitor-reddit.ts'
 import { migrateSeo } from '../seo/audit.ts'
@@ -36,6 +37,7 @@ export function getScanDb() {
     migrateAutopilot(db)
     migrateLedger(db)
     migrateReplies(db)
+    migrateThreadReplies(db)
     migrateSequences(db)
     migrateTrial(db)
     migrateCompetitors(db)

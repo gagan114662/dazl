@@ -226,6 +226,14 @@ export function approveSequence(db: Database.Database, tenantId: string, sequenc
   })()
 }
 
+// Display status for one step, derived from the source of truth: a step still 'approved'
+// under a terminal sequence (replied/done/stopped) can never send, so its effective status
+// is 'stopped'. Sent and in-flight steps keep their real status.
+const TERMINAL_SEQ = new Set(['replied', 'done', 'stopped'])
+export function effectiveStepStatus(seqStatus: string, stepStatus: string): string {
+  return TERMINAL_SEQ.has(seqStatus) && stepStatus === 'approved' ? 'stopped' : stepStatus
+}
+
 // Per-lead status for the Leads page. next_due_at is only set while waiting between steps.
 export function sequenceStatusByLead(db: Database.Database, tenantId: string, d: Deps = {}): Map<string, { status: string; step: number; next_due_at: number | null; stop_reason: string | null }> {
   const now = d.now ?? Math.floor(Date.now() / 1000); void now

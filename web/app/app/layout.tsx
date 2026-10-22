@@ -9,6 +9,7 @@ const NAV = [
   { href: '/app/leads', label: 'Leads' },
   { href: '/app/outreach', label: 'Outreach' },
   { href: '/app/follow-ups', label: 'Follow-ups' },
+  { href: '/app/replies', label: 'Replies' },
   { href: '/app/inbox', label: 'Inbox' },
   { href: '/app/seo', label: 'SEO' },
   { href: '/app/settings', label: 'Settings' },
