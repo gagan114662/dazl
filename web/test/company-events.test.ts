@@ -111,3 +111,21 @@ test('eventsForLeads: lead-keyed and domain-keyed histories surface per lead, te
   // The other tenant's row for the same lead id never crosses over.
   assert.ok(!out.l1.some(e => e.summary === 'other tenant event'))
 })
+
+test('eventsForLeads: same observation re-keyed under lead and domain counts once; independent sources stay separate', () => {
+  const db = setup()
+  // Before the domain was known, the funding event was recorded under the lead key.
+  recordCompanyEvent(db, 'T1', ev({ companyKey: 'lead:l1', leadId: 'l1' }))
+  // After the domain became known, the SAME source observation was recorded under the domain key.
+  recordCompanyEvent(db, 'T1', ev({ companyKey: 'acme.example', leadId: 'l1', retrievedAt: NOW + 10 }))
+  // An independent second source reporting the same kind of event is separate evidence.
+  recordCompanyEvent(db, 'T1', ev({ companyKey: 'acme.example', leadId: 'l1', summary: 'Press: Series A announced', sourceUrl: 'https://news.example/acme-series-a' }))
+  const out = eventsForLeads(db, 'T1', [{ id: 'l1', company_domain: 'acme.example' }], { now: NOW + 10 })
+  assert.equal(out.l1.length, 2)
+  // The re-keyed observation survives once, under the canonical domain identity.
+  const formD = out.l1.filter(e => e.summary === 'SEC Form D filed 2026-10-01')
+  assert.equal(formD.length, 1)
+  assert.equal(formD[0].company_key, 'acme.example')
+  // Source independence preserved: the press report is not merged into the SEC one.
+  assert.ok(out.l1.some(e => e.source_url === 'https://news.example/acme-series-a'))
+})
