@@ -85,7 +85,7 @@ export const getSettings = (db: Database.Database, tenantId: string) =>
 const hash = (to: string, subject: string, body: string) => createHash('sha256').update(JSON.stringify([to, subject, body])).digest('hex')
 const id24 = () => randomBytes(12).toString('hex')
 
-interface Lead { id: string; company: string; name: string; contact: string | null; signal: string; source_url: string; evidence_excerpt: string | null; confidence: number | null }
+interface Lead { id: string; company: string; name: string; contact: string | null; signal: string; source_url: string; evidence_excerpt: string | null; confidence: number | null; fit: number | null; intent: number | null }
 
 export function draftTemplate(lead: Lead, businessName: string): { subject: string; body: string } {
   const who = lead.name ? lead.name.split(' ')[0] : 'there'
@@ -99,11 +99,15 @@ export function draftTemplate(lead: Lead, businessName: string): { subject: stri
 // on that page), a business email address, and no suppression.
 export function createDraft(db: Database.Database, tenantId: string, leadId: string, businessName: string): string {
   const lead = db.prepare(
-    `SELECT l.id, l.company, l.name, l.contact, l.signal, l.source_url, l.evidence_excerpt, l.confidence
+    `SELECT l.id, l.company, l.name, l.contact, l.signal, l.source_url, l.evidence_excerpt, l.confidence, l.fit, l.intent
      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`,
   ).get(leadId, tenantId) as Lead | undefined
   if (!lead) throw new OutreachError('not_found')
   if (!lead.evidence_excerpt || lead.confidence === null) throw new OutreachError('lead_not_verified')
+  // Held lead: ICP grading failed, so it sits at fit 0 with intent unset. That hold is not a
+  // grade, and the lead must not be emailed until a rescan grades it successfully. A real
+  // grade of 0 (intent set) and never-scored leads (fit unset) are not affected.
+  if (lead.fit === 0 && lead.intent === null) throw new OutreachError('lead_ungraded')
   // The address must be published: on the cited page (lead.contact) or on the company's own contact page (sitecrawl, with its source URL).
   let published = lead.contact ?? ''
   if (!EMAIL_RE.test(norm(published))) {

@@ -17,13 +17,14 @@ function setup() {
   migrateScan(db); migrateOutreach(db)
   return db
 }
-function addLead(db: Database.Database, tenant: string, o: Partial<{ contact: string | null; evidence: string | null; confidence: number | null }> = {}) {
+function addLead(db: Database.Database, tenant: string, o: Partial<{ contact: string | null; evidence: string | null; confidence: number | null; fit: number | null; intent: number | null }> = {}) {
   const job = createJob(db, tenant, { business_name: 'Acme', industry: 'roofing', location: 'Toronto' })
   const id = randomBytes(12).toString('hex')
   db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
-  db.prepare('INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
+  db.prepare('INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence, fit, intent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
     id, job, 'Northside Builders', 'contact' in o ? o.contact : 'jobs@northside.example', 'Hiring five roofers', 'https://news.example/a',
-    'evidence' in o ? o.evidence : 'Northside Builders is hiring five roofers', 'confidence' in o ? o.confidence : 85)
+    'evidence' in o ? o.evidence : 'Northside Builders is hiring five roofers', 'confidence' in o ? o.confidence : 85,
+    'fit' in o ? o.fit : null, 'intent' in o ? o.intent : null)
   return id
 }
 const idToken = (email: string, verified = true) => 'x.' + Buffer.from(JSON.stringify({ email, email_verified: verified })).toString('base64url') + '.y'
@@ -92,6 +93,11 @@ test('draft rules: needs a verified lead, a business email, no suppression; one 
   assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { contact: null }), 'Acme'), /no_email_contact/)
   assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { contact: '(416) 555-0199' }), 'Acme'), /no_email_contact/)
   assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { contact: 'someone@gmail.com' }), 'Acme'), /personal_email/)
+  // Held by failed grading (fit 0, intent unset): not draftable until a rescan grades it.
+  assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { fit: 0, intent: null }), 'Acme'), /lead_ungraded/)
+  // A real grade of 0 (mismatch) and a never-scored lead (fit unset) stay draftable.
+  assert.ok(createDraft(db, 'A', addLead(db, 'A', { fit: 0, intent: 1 }), 'Acme'))
+  assert.ok(createDraft(db, 'A', addLead(db, 'A', { contact: 'x@unscored.example' }), 'Acme'))
   const lead = addLead(db, 'A')
   assert.throws(() => createDraft(db, 'B', lead, 'Acme'), /not_found/)
   suppress(db, 'A', 'JOBS@northside.example', 'manual')
