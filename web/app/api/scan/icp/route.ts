@@ -17,6 +17,6 @@ export async function POST(req: NextRequest) {
   const query = cleanText(body?.query, MAX_QUERY)
   if (query.length < 3) return NextResponse.json({ error: 'Describe who you are looking for' }, { status: 400 })
   const out = await previewIcp(getScanDb(), user.id, query, {}, clientIp(req))
-  if ('error' in out) return NextResponse.json({ error: out.error }, { status: out.error === 'no_api_key' ? 400 : out.error === 'trial_key_invalid' ? 503 : 402 })
+  if ('error' in out) return NextResponse.json({ error: out.error }, { status: out.error === 'no_api_key' || out.error === 'key_unreadable' ? 400 : out.error === 'trial_key_invalid' ? 503 : 402 })
   return NextResponse.json(out)
 }

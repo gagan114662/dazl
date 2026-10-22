@@ -156,6 +156,7 @@ export default function LeadsClient() {
       const r = await fetch('/api/scan/icp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query }) })
       const j = await r.json().catch(() => ({}))
       if (!r.ok) { setError(j.error === 'no_api_key' ? 'Add your AI key in Settings first.' : j.error === 'key_rejected' ? 'Your AI key was rejected. Check it in Settings.' : j.error === 'trial_key_invalid' ? 'The scan service is having trouble right now. Try again later.' : j.error || 'Could not build the profile'); return }
+      if (!r.ok) { setError(j.error === 'no_api_key' ? 'Add your AI key in Settings first.' : j.error === 'key_unreadable' ? 'Your stored AI key could not be read. Re-enter it in Settings.' : j.error === 'key_rejected' ? 'Your AI key was rejected. Check it in Settings.' : j.error === 'trial_key_invalid' ? 'The scan service is having trouble right now. Try again later.' : j.error || 'Could not build the profile'); return }
       setDraft(j.icp)
       setDraftNote(j.inferred ? 'dazl worked this out from your request. Edit anything that is off, then run the scan.' : 'dazl could not infer more, so it will use your words as they are. Add detail below if you like.')
     } catch {
@@ -175,6 +176,7 @@ export default function LeadsClient() {
       const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(useGithub || useYoutube || useV2ex || feedText.trim() || pageText.trim() || advPick.length ? { sources: { adapters: [...(useGithub ? ['github'] : []), ...(useYoutube ? ['youtube'] : []), ...(useV2ex ? ['v2ex'] : []), ...(feedText.trim() ? ['rss'] : []), ...(pageText.trim() ? ['web'] : [])], feeds: lines(feedText), pages: lines(pageText), advanced: advPick } } : {}) }) })
       const j = await r.json().catch(() => ({}))
       if (!r.ok) { setError(j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : j.error === 'trial_exhausted' ? 'Your 3 free scans are used up. Add your own AI key in Settings to keep scanning.' : j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan'); return }
+      if (!r.ok) { setError(j.error === 'key_unreadable' ? 'Your stored AI key could not be read. Re-enter it in Settings.' : j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : j.error === 'trial_exhausted' ? 'Your 3 free scans are used up. Add your own AI key in Settings to keep scanning.' : j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan'); return }
       setJobId(j.job_id); setStatus('pending'); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0)
     } catch {
       // A rejected fetch (offline, aborted) used to fail silently - the click looked dead.
@@ -381,7 +383,7 @@ export default function LeadsClient() {
           </div>
         </div>
       )}
-      {jobId && status === 'failed' && <p className="text-gray-400 text-sm mb-4">{jobError === 'no_candidates' ? 'No candidates found for that search. Try rephrasing or broadening it - this scan did not count toward your monthly scans.' : jobError === 'trial_key_invalid' ? 'The scan service is having trouble right now. Try again later - this scan did not count toward your free scans.' : 'Scan failed. Try again.'}</p>}
+      {jobId && status === 'failed' && <p className="text-gray-400 text-sm mb-4">{jobError === 'no_candidates' ? 'No candidates found for that search. Try rephrasing or broadening it - this scan did not count toward your monthly scans.' : jobError === 'trial_key_invalid' ? 'The scan service is having trouble right now. Try again later - this scan did not count toward your free scans.' : jobError === 'key_unreadable' ? 'Your stored AI key could not be read. Re-enter it in Settings, then run the scan again.' : 'Scan failed. Try again.'}</p>}
       {watches.length > 0 && (
         <div className="card p-4 mb-4 text-sm">
           <h2 className="text-sm font-semibold mb-1">Weekly watches</h2>
