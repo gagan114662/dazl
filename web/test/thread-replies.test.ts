@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
-import { migrateThreadReplies, setQueries, listQueries, looksLikeQuestion, refreshReplies, listThreads, dismissThread, draftReply, saveDraft, markDraft } from '../lib/replies/threads.ts'
+import { migrateThreadReplies, setQueries, listQueries, looksLikeQuestion, isRelevantToQuery, refreshReplies, listThreads, dismissThread, draftReply, saveDraft, markDraft } from '../lib/replies/threads.ts'
 import { effectiveStepStatus } from '../lib/outreach/sequences.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateAdvanced, acceptConsent } from '../lib/advanced/index.ts'
@@ -51,7 +51,7 @@ test('refresh: no consent means no worker calls; disabled means disabled', async
   assert.equal(calls, 0)
 })
 
-test('refresh: keeps only fresh question threads, dedupes by url, tenant-scoped', async () => {
+test('refresh: keeps only fresh, on-topic question threads, dedupes by url, tenant-scoped', async () => {
   const d = db()
   acceptConsent(d, 't1', 'advanced')
   setQueries(d, 't1', ['outbound tool'])
@@ -63,15 +63,35 @@ test('refresh: keeps only fresh question threads, dedupes by url, tenant-scoped'
     item('https://x.com/founder/status/55', 'Best cold email software for a small team?', FRESH),
   ]
   const r = await refreshReplies(d, 't1', { worker, env: ENV_ON, now: NOW })
-  assert.equal(r.added, 2)
+  // The X item asks about cold email software - a fresh question, but off-topic for the
+  // "outbound tool" query, so the relevance gate filters it instead of presenting it.
+  assert.equal(r.added, 1)
+  // The mock returns the same list for both platform passes, so the off-topic
+  // candidate is counted once per pass.
+  assert.equal(r.filtered, 2)
   assert.equal(r.platforms.reddit, 'ok')
   const threads = listThreads(d, 't1')
-  assert.equal(threads.length, 2)
+  assert.equal(threads.length, 1)
   assert.ok(threads.every(t => t.date === FRESH && t.query === 'outbound tool'))
   const again = await refreshReplies(d, 't1', { worker, env: ENV_ON, now: NOW })
   assert.equal(again.added, 0)
-  assert.equal(listThreads(d, 't1').length, 2)
+  assert.equal(listThreads(d, 't1').length, 1)
   assert.equal(listThreads(d, 't2').length, 0)
+})
+
+test('relevance gate: the live-observed defect cases (2026-10-22)', () => {
+  // Real threads returned by worker search for "cold email software" that were shown as fits:
+  assert.equal(isRelevantToQuery('cold email software', 'Does GPA actually matter?', 'Hi guys. I am doing a bachelor of economics and I really cared about my GPA'), false)
+  assert.equal(isRelevantToQuery('cold email software', 'Long-shot 1987 cold case: Did someone you know in NY fly out to Washington State?', 'deep dive into the police files'), false)
+  assert.equal(isRelevantToQuery('cold email software', 'Looking for a few groups of playtesters.', 'I have created a tabletop card game'), false)
+  // And the genuinely relevant one that must survive:
+  assert.equal(isRelevantToQuery('cold email software', 'too many filters that automatically reject emails ?', 'supposed to be scaling the cold email program'), true)
+  assert.equal(isRelevantToQuery('cold email software', 'What cold email software do you use?', 'Comparing tools'), true)
+  // Two-word queries need both words; phrase match always wins.
+  assert.equal(isRelevantToQuery('outbound tool', 'Anyone use a tool for outbound?', ''), true)
+  assert.equal(isRelevantToQuery('outbound tool', 'Best cold email software for a small team?', ''), false)
+  assert.equal(isRelevantToQuery('sales', 'How do you find B2B sales leads', ''), true)
+  assert.equal(isRelevantToQuery('', 'Anything?', 'x'), false)
 })
 
 test('refresh: worker error reported per platform, nothing stored', async () => {
