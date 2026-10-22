@@ -22,6 +22,7 @@ import { migrateTrial } from './trial.ts'
 import { migrateCompetitors } from '../signals/competitor-reddit.ts'
 import { migrateEvents } from '../events/store.ts'
 import { migrateSeo } from '../seo/audit.ts'
+import { migrateWarm } from '../warm/connections.ts'
 
 let ready = false
 export function getScanDb() {
@@ -43,6 +44,7 @@ export function getScanDb() {
     migrateTrial(db)
     migrateCompetitors(db)
     migrateEvents(db)
+    migrateWarm(db)
     migrateSeo(db)
     migrateMonitors(db)
     migrateCsv(db)

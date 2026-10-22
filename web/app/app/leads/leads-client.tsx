@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { emptyLeadsMessage, scoreLabel } from '@/lib/scan/leads-view'
 import { contactsFromEnrichments } from '@/lib/people/rank'
 import SourceMetrics from './source-metrics'
+import { WarmConnections, WarmPath } from './warm-path'
 
 interface Lead { sequence?: { status: string; step: number; next_due_at: number | null; stop_reason: string | null } | null; id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; watch_new?: number; seen_before?: number; stage?: string | null; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string }[]; events?: { id: string; event_type: string; summary: string; source_url: string; source_published_at: string | null; last_seen_at: number; fresh: boolean }[]; priority?: { graded: boolean; fit: number | null; intent: number | null; action: number | null; evidence_score: number; reasons: string[]; uncounted: string[] } | null }
 interface Icp { summary: string; who: string[]; industries: string[]; sizes: string[]; where: string[]; signals: string[]; exclude: string[] }
@@ -437,6 +438,7 @@ export default function LeadsClient() {
         </p>
       )}
       <SourceMetrics />
+      <WarmConnections />
       <div className="card divide-y divide-white/5">
         {visibleLeads.length === 0 ? (
           <p className="p-10 text-center text-gray-500 text-sm">{emptyLeadsMessage(status, 0, hiddenCount) ?? ''}</p>
@@ -476,6 +478,7 @@ export default function LeadsClient() {
                 </div>
               )
             })()}
+            <WarmPath leadId={l.id} />
             {l.enrichments && l.enrichments.some(e => e.kind !== 'contact') && (
               <div className="text-xs mt-1 space-y-0.5">
                 {l.enrichments.filter(e => e.kind !== 'contact').map(e => (
