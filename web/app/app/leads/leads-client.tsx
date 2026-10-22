@@ -1,6 +1,6 @@
 'use client'
 import { KEY_UNREADABLE_COPY, knownErrorCopy } from '@/lib/error-copy'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { emptyLeadsMessage, scoreLabel } from '@/lib/scan/leads-view'
 import { contactsFromEnrichments } from '@/lib/people/rank'
 import { publishedEmail, publishedContact } from '@/lib/outreach/published-email'
@@ -60,6 +60,8 @@ export default function LeadsClient() {
   const [error, setError] = useState('')
   const [quality, setQuality] = useState<Quality | null>(null)
   const [jobError, setJobError] = useState('')
+  const [statusError, setStatusError] = useState<'not_found' | 'unavailable' | null>(null)
+  const statusFails = useRef(0)
   const [useGithub, setUseGithub] = useState(false)
   const [useYoutube, setUseYoutube] = useState(false)
   const [useV2ex, setUseV2ex] = useState(false)
@@ -215,7 +217,7 @@ export default function LeadsClient() {
       const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(useGithub || useYoutube || useV2ex || feedText.trim() || pageText.trim() || advPick.length ? { sources: { adapters: [...(useGithub ? ['github'] : []), ...(useYoutube ? ['youtube'] : []), ...(useV2ex ? ['v2ex'] : []), ...(feedText.trim() ? ['rss'] : []), ...(pageText.trim() ? ['web'] : [])], feeds: lines(feedText), pages: lines(pageText), advanced: advPick } } : {}) }) })
       const j = await r.json().catch(() => ({}))
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : j.error === 'trial_exhausted' ? 'Your 3 free scans are used up. Add your own AI key in Settings to keep scanning.' : j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')); return }
-      setJobId(j.job_id); setStatus('pending'); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0)
+      setJobId(j.job_id); setStatus('pending'); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0
     } catch {
       // A rejected fetch (offline, aborted) used to fail silently - the click looked dead.
       setError('Could not reach the server. Check your connection and try again.')
@@ -225,17 +227,30 @@ export default function LeadsClient() {
   }
 
   useEffect(() => {
-    if (!jobId || status === 'done' || status === 'failed') return
-    const t = setInterval(async () => {
-      const r = await fetch(`/api/scan/status?job_id=${jobId}`)
-      if (!r.ok) return
+    if (!jobId || status === 'done' || status === 'failed' || statusError) return
+    let stop = false
+    const tick = async () => {
+      const r = await fetch(`/api/scan/status?job_id=${jobId}`).catch(() => null)
+      if (stop) return
+      // 404: this account cannot see that scan - terminal, say so and stop.
+      if (r && r.status === 404) { setStatusError('not_found'); return }
+      // Network/5xx: the scan itself may be fine. Retry a few times, then surface a
+      // status-load error with a retry affordance - never mark the scan failed.
+      if (!r || !r.ok) {
+        statusFails.current += 1
+        if (statusFails.current >= 3) setStatusError('unavailable')
+        return
+      }
+      statusFails.current = 0
       const s = await r.json()
       setStatus(s.status); setJobError(s.error ?? ''); setLeadsSoFar(s.lead_count ?? 0)
       setQuality(s.quality ?? null)
       if (s.icp) setIcp({ icp: s.icp, source: s.icp_source })
-    }, 5000)
-    return () => clearInterval(t)
-  }, [jobId, status])
+    }
+    void tick() // immediate first check: a done deep link must not sit on a loading state for a full interval
+    const t = setInterval(tick, 5000)
+    return () => { stop = true; clearInterval(t) }
+  }, [jobId, status, statusError])
 
   const loadLeads = async () => {
     if (!jobId) return
@@ -252,7 +267,7 @@ export default function LeadsClient() {
   // Deep link: /app/leads?job_id=... (watch cards link here to show a past watch run).
   useEffect(() => {
     const id = new URLSearchParams(window.location.search).get('job_id')
-    if (id && /^[a-f0-9]{24}$/.test(id)) { setJobId(id); setStatus('pending') }
+    if (id && /^[a-f0-9]{24}$/.test(id)) { setJobId(id); setStatus('loading') }
   }, [])
   const watchReq = async (body: Record<string, unknown>) => {
     setWatchNote('')
@@ -423,6 +438,12 @@ export default function LeadsClient() {
         </details>
       )}
       {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
+      {jobId && status === 'loading' && !statusError && (
+        <div className="card p-4 mb-4 flex items-center gap-3">
+          <span className="inline-block h-4 w-4 rounded-full border-2 border-gray-500 border-t-white animate-spin" aria-hidden />
+          <div className="text-sm text-gray-400">Loading this scan...</div>
+        </div>
+      )}
       {jobId && (status === 'pending' || status === 'running') && (
         <div className="card p-4 mb-4 flex items-center gap-3">
           <span className="inline-block h-4 w-4 rounded-full border-2 border-gray-500 border-t-white animate-spin" aria-hidden />
@@ -433,6 +454,11 @@ export default function LeadsClient() {
         </div>
       )}
       {jobId && status === 'failed' && <p className="text-gray-400 text-sm mb-4">{jobError === 'no_candidates' ? 'No candidates found for that search. Try rephrasing or broadening it - this scan did not count toward your monthly scans.' : jobError === 'trial_key_invalid' ? 'The scan service is having trouble right now. Try again later - this scan did not count toward your free scans.' : jobError === 'key_unreadable' ? KEY_UNREADABLE_COPY.replace(/\.$/, ', then run the scan again.') : 'Scan failed. Try again.'}</p>}
+      {jobId && statusError && (
+        <p className="text-gray-400 text-sm mb-4">{statusError === 'not_found'
+          ? <>That scan was not found in this account. <a className="underline text-[#111]" href="/app/leads">View your past scans</a>.</>
+          : <>Could not load the scan status - this may be a connection problem, and the scan itself may still be running. <button className="underline text-[#111]" onClick={() => { statusFails.current = 0; setStatusError(null) }}>Retry</button></>}</p>
+      )}
       {watches.length > 0 && (
         <div className="card p-4 mb-4 text-sm">
           <h2 className="text-sm font-semibold mb-1">Weekly watches</h2>
@@ -488,7 +514,9 @@ export default function LeadsClient() {
       )}
       <div className="card divide-y divide-white/5">
         {visibleLeads.length === 0 ? (
-          <p className="p-10 text-center text-gray-500 text-sm">{emptyLeadsMessage(status, 0, hiddenCount) ?? ''}</p>
+          // Loading, failed and status-error states have their own truthful copy above.
+          status === 'loading' || status === 'failed' || statusError ? null
+            : <p className="p-10 text-center text-gray-500 text-sm">{emptyLeadsMessage(status, 0, hiddenCount) ?? ''}</p>
         ) : visibleLeads.map(l => (
           <div key={l.id} className="p-4 text-sm">
             {l.sequence && <p className="text-xs text-[#555] mb-2">Sequence: {l.sequence.status} / {l.sequence.step} steps sent{l.sequence.next_due_at ? ` / next due ${new Date(l.sequence.next_due_at * 1000).toLocaleString()}` : ''}{l.sequence.stop_reason ? ` (${l.sequence.stop_reason})` : ''}</p>}
