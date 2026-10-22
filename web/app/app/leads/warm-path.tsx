@@ -83,9 +83,11 @@ export function WarmPath({ leadId, company = '', signal = '' }: { leadId: string
     if (r.ok) { setMutual({ ...mutual, [contactUrl]: '' }); void load() } else setNote('Could not save that.')
   }
 
+  // contact_url is stored normalized (no scheme); compare both sides normalized.
+  const bare = (u: string): string => u.replace(/^https?:\/\//, '').replace(/^www\./, '')
   const contactNameFor = (url: string): string => {
     const all = [...(warm?.first_degree ?? []), ...(warm?.manual_check ?? [])]
-    return all.find(c => c.linkedin_url === url)?.contact_name ?? ''
+    return all.find(c => bare(c.linkedin_url) === bare(url))?.contact_name ?? ''
   }
 
   async function removePath(id: string) {
