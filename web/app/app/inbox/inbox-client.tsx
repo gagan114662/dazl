@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import GmailGate from '../gmail-gate'
 
 interface Row { gmail_id: string; thread_id: string; from_email: string; excerpt: string; classification: string; received_at: number; company: string | null; lead_name: string | null; followups_sent: number | null; stopped: string | null }
-interface Info { available: boolean; consent_accepted: boolean; read_granted: boolean; account: string | null; rows: Row[] }
+interface Info { available: boolean; consent_accepted: boolean; read_granted: boolean; account: string | null; rows: Row[]; booking_url: string | null }
 interface ThreadMsg { dir: 'out' | 'in'; kind: 'original' | 'followup' | 'reply'; subject: string | null; body: string; at: number; classification: string | null }
 
 const BADGE: Record<string, string> = {
@@ -19,6 +19,7 @@ export default function InboxClient() {
   const [i, setI] = useState<Info | null>(null)
   const [open, setOpen] = useState<string | null>(null)
   const [threads, setThreads] = useState<Record<string, ThreadMsg[]>>({})
+  const [copied, setCopied] = useState<string | null>(null)
   useEffect(() => { fetch('/api/outreach/inbox').then(r => r.ok ? r.json() : null).then(setI).catch(() => setI(null)) }, [])
   function toggle(threadId: string) {
     if (open === threadId) return setOpen(null)
@@ -58,6 +59,20 @@ export default function InboxClient() {
                 <span>{r.stopped ? `Follow-ups stopped (${r.stopped.replace(/_/g, ' ')})` : r.followups_sent ? `Follow-ups sent: ${r.followups_sent}` : 'No follow-up sent'}</span>
                 <button className="underline underline-offset-2" onClick={() => toggle(r.thread_id)}>{open === r.thread_id ? 'Hide thread' : 'View thread'}</button>
               </div>
+              {r.classification === 'positive' && (
+                <div className="mt-2 text-xs border border-black/10 p-2 space-y-1">
+                  <p className="text-[#555]">Marked interested by keyword match only - read the reply yourself before acting. dazl sends nothing for you here.</p>
+                  {i.booking_url ? (
+                    <p className="text-[#333]">If you want to offer a time, paste your own booking link into your reply:{' '}
+                      <span className="font-mono break-all">{i.booking_url}</span>{' '}
+                      <button className="underline" onClick={() => { void navigator.clipboard?.writeText(i.booking_url ?? ''); setCopied(r.gmail_id); setTimeout(() => setCopied(null), 1500) }}>{copied === r.gmail_id ? 'Copied' : 'Copy link'}</button>
+                      <span className="block text-[#888] mt-0.5">This is your saved link only - showing it does not check availability, reserve a time, or book anything.</span>
+                    </p>
+                  ) : (
+                    <p className="text-[#555]">Add a booking link in <a className="underline" href="/app/settings">Settings</a> and it shows here for the next step.</p>
+                  )}
+                </div>
+              )}
               {open === r.thread_id && (
                 <div className="mt-3 border-l-2 border-black/10 pl-3 space-y-2">
                   {(threads[r.thread_id] ?? []).length === 0 && <p className="text-xs text-[#888]">Loading...</p>}

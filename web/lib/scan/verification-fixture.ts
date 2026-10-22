@@ -3,6 +3,8 @@ import type Database from 'better-sqlite3'
 import { fixtureAvailable, FixtureError } from '../outreach/test-fixture.ts'
 import { TEST_INBOX } from '../outreach/service.ts'
 import { migrateWarm } from '../warm/connections.ts'
+import { migrateReplies } from '../outreach/replies.ts'
+import { migrateOutreach } from '../outreach/store.ts'
 
 // Test-only VERIFICATION fixture for the operator-designated test tenant. Lets the
 // populated rendering of the right-people block (#135), source-quality metrics (#136)
@@ -19,6 +21,10 @@ export const VERIFICATION_FIXTURE_JOB = 'dazl verification fixture (test only)'
 export const VERIFICATION_FIXTURE_LEAD = 'dazl verification fixture A (test only)'
 const SRC = 'https://dazl.ai/test-only-verification-fixture'
 const SIGNAL = 'Test-only fixture for verifying populated UI. Not a real company or person. dazl did not find, scrape or verify anything and claims no evidence.'
+
+// Synthetic positive reply for the Inbox handoff check. Clearly test-only, from the
+// suppressed test inbox, and short enough for the 200-char excerpt CHECK.
+export const FIXTURE_REPLY = "Sounds good - let's talk. What times work for you? (test-only fixture reply, not a real person)"
 
 export const FIXTURE_CONTACTS = [
   { name: 'Ada Lovelace', title: 'Head of Sales Operations', linkedin: 'https://www.linkedin.com/in/dazl-test-ada' },
@@ -55,6 +61,16 @@ export function createVerificationFixture(db: Database.Database, tenantId: strin
     ls.run(leadId, 'search:tinyfish'); ls.run(leadId, 'adapter:reddit')
     db.prepare("INSERT INTO sequences (id, tenant_id, lead_id, message_id, to_email, status, created_at) VALUES (?, ?, ?, ?, ?, 'replied', ?)")
       .run(randomBytes(12).toString('hex'), tenantId, leadId, `dazl-test-${randomBytes(6).toString('hex')}`, TEST_INBOX, now - 9 * 86400)
+    // A full synthetic thread so the Inbox renders the reply -> booking-link handoff:
+    // one 'sent' outreach message, one follow-up thread, one positive inbound reply.
+    const omId = `dazl-test-om-${randomBytes(6).toString('hex')}`
+    const threadId = `dazl-test-thread-${randomBytes(6).toString('hex')}`
+    db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at) VALUES (?, ?, ?, ?, ?, ?, 'sent', ?)")
+      .run(omId, tenantId, leadId, TEST_INBOX, 'Test-only fixture thread (not a real email)', 'Test-only fixture message created to verify the reply to booking-link handoff. Not a real outreach email; nothing was sent.', now - 10 * 86400)
+    db.prepare('INSERT INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at, last_lead_reply_at, followups_sent) VALUES (?, ?, ?, ?, ?, ?, ?, 0)')
+      .run(tenantId, threadId, leadId, TEST_INBOX, omId, now - 9 * 86400, now - 9 * 86400)
+    db.prepare("INSERT INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at) VALUES (?, ?, ?, ?, ?, ?, 'positive', ?)")
+      .run(`dazl-test-in-${randomBytes(6).toString('hex')}`, tenantId, threadId, leadId, TEST_INBOX, FIXTURE_REPLY, now - 9 * 86400)
     db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(jobId)
   })()
   return { jobId, leadId, created: true }
@@ -70,7 +86,12 @@ export function deleteVerificationFixture(db: Database.Database, tenantId: strin
       db.prepare('DELETE FROM lead_sources WHERE lead_id = ?').run(ids.leadId)
       db.prepare('DELETE FROM sequences WHERE tenant_id = ? AND lead_id = ?').run(tenantId, ids.leadId)
       migrateWarm(db)
+      migrateReplies(db)
+      migrateOutreach(db)
       db.prepare('DELETE FROM warm_user_paths WHERE tenant_id = ? AND lead_id = ?').run(tenantId, ids.leadId)
+      db.prepare("DELETE FROM inbound_messages WHERE tenant_id = ? AND gmail_id LIKE 'dazl-test-in-%'").run(tenantId)
+      db.prepare("DELETE FROM followup_threads WHERE tenant_id = ? AND thread_id LIKE 'dazl-test-thread-%'").run(tenantId)
+      db.prepare("DELETE FROM outreach_messages WHERE tenant_id = ? AND id LIKE 'dazl-test-om-%'").run(tenantId)
       db.prepare('DELETE FROM leads WHERE id = ?').run(ids.leadId)
     }
     db.prepare('DELETE FROM scan_source_runs WHERE job_id = ?').run(ids.jobId)
