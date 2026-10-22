@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { primarySignalKind } from './score.ts'
+import { migrateSourceRuns } from './source-runs.ts'
 
 export const STALE_RUNNING_S = Number(process.env.SCAN_STALE_RUNNING_S || 20 * 60)
 export const MAX_ATTEMPTS = 3
@@ -71,6 +72,7 @@ export function migrateScan(db: Database.Database): void {
     BEGIN SELECT RAISE(ABORT, 'leads can only be added to a running job'); END;
   `)
   addColumns(db)
+  migrateSourceRuns(db)
 }
 
 // Evidence columns. Nullable, so rows written by other workers (Hermes) stay valid:
