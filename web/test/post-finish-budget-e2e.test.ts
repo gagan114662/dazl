@@ -60,12 +60,12 @@ test('post-finish deadline: runJob settles and the slot is released (egress-free
 })
 
 test('config validation: NaN/negative/Infinity fall back to the 90s default; valid passes through', () => {
-  assert.equal(postFinishBudgetMs({} as NodeJS.ProcessEnv), 90_000)
-  assert.equal(postFinishBudgetMs({ SCAN_POST_FINISH_BUDGET_MS: 'not-a-number' } as NodeJS.ProcessEnv), 90_000)
-  assert.equal(postFinishBudgetMs({ SCAN_POST_FINISH_BUDGET_MS: '-50' } as NodeJS.ProcessEnv), 90_000)
-  assert.equal(postFinishBudgetMs({ SCAN_POST_FINISH_BUDGET_MS: 'Infinity' } as NodeJS.ProcessEnv), 90_000)
-  assert.equal(postFinishBudgetMs({ SCAN_POST_FINISH_BUDGET_MS: '0' } as NodeJS.ProcessEnv), 90_000)
-  assert.equal(postFinishBudgetMs({ SCAN_POST_FINISH_BUDGET_MS: '45000' } as NodeJS.ProcessEnv), 45_000)
+  assert.equal(postFinishBudgetMs({}), 90_000)
+  assert.equal(postFinishBudgetMs({ SCAN_POST_FINISH_BUDGET_MS: 'not-a-number' }), 90_000)
+  assert.equal(postFinishBudgetMs({ SCAN_POST_FINISH_BUDGET_MS: '-50' }), 90_000)
+  assert.equal(postFinishBudgetMs({ SCAN_POST_FINISH_BUDGET_MS: 'Infinity' }), 90_000)
+  assert.equal(postFinishBudgetMs({ SCAN_POST_FINISH_BUDGET_MS: '0' }), 90_000)
+  assert.equal(postFinishBudgetMs({ SCAN_POST_FINISH_BUDGET_MS: '45000' }), 45_000)
 })
 
 test('CSV company path runs the SAME bounded post-processing (one deadline source)', async () => {

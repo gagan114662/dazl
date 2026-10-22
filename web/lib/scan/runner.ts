@@ -696,7 +696,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
 // Post-processing budget config: finite positive ms, else the 90s default.
 // NaN/negative/Infinity would make setTimeout fire immediately (aborting all
 // post-work on every scan) or never - fail safe to the default and log why.
-export function postFinishBudgetMs(env: NodeJS.ProcessEnv = process.env): number {
+export function postFinishBudgetMs(env: Record<string, string | undefined> = process.env): number {
   const raw = env.SCAN_POST_FINISH_BUDGET_MS
   if (raw === undefined) return 90_000
   const n = Number(raw)
