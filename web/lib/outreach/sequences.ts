@@ -206,7 +206,12 @@ export function approveSequence(db: Database.Database, tenantId: string, sequenc
   if (!root || !['draft','approved'].includes(root.status)) throw new SequenceError('not_a_draft')
   if (!hasReadConsent(db,tenantId) || !gmailStatus(db,tenantId)?.read_granted) throw new SequenceError('reading_not_enabled')
   const steps = db.prepare('SELECT step, subject, body FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ?').all(tenantId, sequenceId) as { step: number; subject: string; body: string }[]
-  if (steps.length !== MAX_STEPS || steps.some(st => st.body.length < 20)) throw new SequenceError('steps_missing')
+  // Production sets are always exactly MAX_STEPS. A shorter set is accepted only for the
+  // test-only fixture on the designated test tenant: exact hardcoded test inbox, allowlisted,
+  // and a message row created by the fixture (test = 1). Every other rule applies unchanged.
+  const rootMsg = db.prepare('SELECT test FROM outreach_messages WHERE tenant_id = ? AND id = ?').get(tenantId, s.message_id) as { test: number } | undefined
+  const shortTestSet = testRecipientApproved(db, tenantId, s.to_email) && rootMsg?.test === 1
+  if ((steps.length !== MAX_STEPS && !shortTestSet) || steps.length < 2 || steps.some(st => st.body.length < 20)) throw new SequenceError('steps_missing')
   if (isSuppressed(db, tenantId, s.to_email)) throw new SequenceError('suppressed')
   db.transaction(() => {
   const first = steps.find(st => st.step === 1)!

@@ -4,7 +4,7 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { approve, OutreachError } from '@/lib/outreach/service'
 import { createSequence, draftSequenceSteps, editSequenceStep, approveSequence, sequenceAnalytics, sequenceStatusByLead, testAddresses, setTestAddresses, SequenceError, resolveSequenceUncertain, resumeSequences } from '@/lib/outreach/sequences'
-import { createSequenceTestFixture, fixtureAvailable, FixtureError } from '@/lib/outreach/test-fixture'
+import { createSequenceTestFixture, createReplyStopTestFixture, fixtureAvailable, FixtureError } from '@/lib/outreach/test-fixture'
 
 export async function GET(req: NextRequest) {
   const user = await requireUser()
@@ -30,6 +30,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ id })
     }
     if (b?.action === 'create_test_fixture') return NextResponse.json(createSequenceTestFixture(db,user.id))
+    if (b?.action === 'create_reply_stop_fixture') return NextResponse.json(createReplyStopTestFixture(db,user.id))
     if (b?.action === 'resume') { resumeSequences(db,user.id); return NextResponse.json({ ok: true }) }
     if (typeof b?.id !== 'string') return NextResponse.json({ error: 'Bad request' }, { status: 400 })
     if (b.action === 'approve') approveSequence(db,user.id,b.id,id => approve(db,user.id,id,true))
