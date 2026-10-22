@@ -231,16 +231,16 @@ test('mime: header injection is neutralised, non-ASCII is encoded, bad addresses
   void createHash
 })
 
-test('test mode: an allowlisted own-inbox consumer address drafts only with OUTREACH_TEST_MODE=1 and is labelled', () => {
+test('test mode: an allowlisted own-inbox consumer address drafts only with matching operator test tenant and is labelled', () => {
   const db = setup()
   migrateSequences(db)
   setTestAddresses(db, 'A', ['instinct114114@gmail.com'])
   const lead = addLead(db, 'A', { contact: 'instinct114114@gmail.com' })
   // Default (env unset): the consumer-recipient gate still rejects, allowlist or not.
-  delete process.env.OUTREACH_TEST_MODE
+  delete process.env.OUTREACH_TEST_TENANT_ID
   assert.throws(() => createDraft(db, 'A', lead, 'Acme'), /personal_email/)
   // Operator test mode + tenant allowlist: the draft is allowed and marked as a test.
-  process.env.OUTREACH_TEST_MODE = '1'
+  process.env.OUTREACH_TEST_TENANT_ID = 'A'
   try {
     const id = createDraft(db, 'A', lead, 'Acme')
     assert.equal((db.prepare('SELECT test FROM outreach_messages WHERE id = ?').get(id) as { test: number }).test, 1)
@@ -248,20 +248,22 @@ test('test mode: an allowlisted own-inbox consumer address drafts only with OUTR
     // A consumer address NOT on the tenant's test list is still rejected.
     assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { contact: 'someone@yahoo.com' }), 'Acme'), /personal_email/)
   } finally {
-    delete process.env.OUTREACH_TEST_MODE
+    delete process.env.OUTREACH_TEST_TENANT_ID
   }
-  // A business-domain allowlisted address never needed the bypass; it is still labelled as a test recipient.
+  // A business-domain allowlisted address never needed the bypass; it is not part of the test exception.
   const biz = createDraft(db, 'A', addLead(db, 'A', { contact: 'founder@acme.example' }), 'Acme')
   assert.equal((db.prepare('SELECT test FROM outreach_messages WHERE id = ?').get(biz) as { test: number }).test, 0)
-  process.env.OUTREACH_TEST_MODE = '1'
+  process.env.OUTREACH_TEST_TENANT_ID = 'A'
   try {
     setTestAddresses(db, 'A', ['instinct114114@gmail.com', 'founder@acme2.example'])
     const id2 = createDraft(db, 'A', addLead(db, 'A', { contact: 'founder@acme2.example' }), 'Acme')
-    assert.equal((db.prepare('SELECT test FROM outreach_messages WHERE id = ?').get(id2) as { test: number }).test, 1)
+    assert.equal((db.prepare('SELECT test FROM outreach_messages WHERE id = ?').get(id2) as { test: number }).test, 0)
   } finally {
-    delete process.env.OUTREACH_TEST_MODE
+    delete process.env.OUTREACH_TEST_TENANT_ID
   }
- test('existing approved draft cannot send after lead becomes held; successful regrade permits it', async () => {
+})
+
+test('existing approved draft cannot send after lead becomes held; successful regrade permits it', async () => {
   const db = setup(); await connect(db, 'A'); ready(db)
   const lead = addLead(db, 'A'), id = createDraft(db, 'A', lead, 'Acme'); approve(db, 'A', id)
   const { sent, sendFn } = okSend()
@@ -281,4 +283,18 @@ test('held status is rechecked after async token refresh', async () => {
   d.fetchImpl = (async (...args: Parameters<typeof fetch>) => { db.prepare('UPDATE leads SET fit=0,intent=NULL WHERE id=?').run(lead); return fetchImpl(...args) }) as typeof fetch
   await assert.rejects(sendMessage(db,'A',id,d), /lead_ungraded/)
   assert.equal(sent.length,0)
+})
+
+test('test bypass cannot expand recipient or tenant via tenant editable allowlist, and is checked again at send',async()=>{
+ const db=setup(); migrateSequences(db); await connect(db,'A'); ready(db)
+ process.env.OUTREACH_TEST_TENANT_ID='A'
+ try {
+  setTestAddresses(db,'A',['instinct114114@gmail.com','other@gmail.com'])
+  assert.throws(()=>createDraft(db,'A',addLead(db,'A',{contact:'other@gmail.com'}),'Acme'),/personal_email/)
+  setTestAddresses(db,'B',['instinct114114@gmail.com'])
+  assert.throws(()=>createDraft(db,'B',addLead(db,'B',{contact:'instinct114114@gmail.com'}),'Acme'),/personal_email/)
+  const id=createDraft(db,'A',addLead(db,'A',{contact:'instinct114114@gmail.com'}),'Acme'); approve(db,'A',id)
+  delete process.env.OUTREACH_TEST_TENANT_ID
+  await assert.rejects(sendMessage(db,'A',id,deps()),/personal_email/)
+ } finally { delete process.env.OUTREACH_TEST_TENANT_ID }
 })

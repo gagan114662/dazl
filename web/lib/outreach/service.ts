@@ -12,11 +12,13 @@ export const SENDING_STALE_S = 10 * 60
 // Personal mailbox providers: a published address there is not a business contact.
 const CONSUMER = new Set(['gmail.com', 'googlemail.com', 'yahoo.com', 'yahoo.ca', 'hotmail.com', 'outlook.com', 'live.com', 'msn.com', 'icloud.com', 'me.com', 'aol.com', 'proton.me', 'protonmail.com', 'gmx.com'])
 
-// Test mode (operator env OUTREACH_TEST_MODE=1, default OFF). The only thing it unlocks:
-// drafts addressed to a consumer mailbox that the tenant explicitly entered in their own
-// test-inbox allowlist. Real tenant sends to prospects are never affected - a prospect
-// address is not on the tenant's test list, and with the env unset nothing changes at all.
-export const testSendsEnabled = () => process.env.OUTREACH_TEST_MODE === '1'
+// Off by default. Only this operator-selected test tenant and this exact inbox qualify.
+const TEST_INBOX = 'instinct114114@gmail.com'
+export const testRecipientApproved = (db: Database.Database, tenantId: string, email: string): boolean =>
+  !!process.env.OUTREACH_TEST_TENANT_ID && process.env.OUTREACH_TEST_TENANT_ID === tenantId &&
+  norm(email) === TEST_INBOX && isAllowlistedTestRecipient(db,tenantId,email)
+export const recipientAllowed = (db: Database.Database, tenantId: string, email: string): boolean =>
+  !CONSUMER.has(norm(email).split('@')[1]) || testRecipientApproved(db,tenantId,email)
 // Mirrors sequences.ts testAddresses (that module owns the allowlist; read directly here to
 // avoid a service -> sequences import cycle). Table may not exist on older databases.
 const isAllowlistedTestRecipient = (db: Database.Database, tenantId: string, email: string): boolean => {
@@ -136,8 +138,8 @@ export function createDraft(db: Database.Database, tenantId: string, leadId: str
   }
   const to = norm(published)
   if (!EMAIL_RE.test(to)) throw new OutreachError('no_email_contact')
-  const test = isAllowlistedTestRecipient(db, tenantId, to) ? 1 : 0
-  if (CONSUMER.has(to.split('@')[1]) && !(test === 1 && testSendsEnabled())) throw new OutreachError('personal_email')
+  const test = testRecipientApproved(db, tenantId, to) ? 1 : 0
+  if (!recipientAllowed(db,tenantId,to)) throw new OutreachError('personal_email')
   if (isSuppressed(db, tenantId, to)) throw new OutreachError('suppressed')
   const t = draftTemplate(lead, businessName)
   const id = id24()
@@ -226,6 +228,7 @@ export async function sendMessage(db: Database.Database, tenantId: string, id: s
   const pre = getMsg(db, tenantId, id)
   if (!pre) throw new OutreachError('not_found')
   if (pre.status === 'sent') return 'sent' // idempotent retry
+  if (!recipientAllowed(db,tenantId,pre.to_email)) throw new OutreachError('personal_email')
   if (leadHeld(db, tenantId, pre.lead_id)) throw new OutreachError('lead_ungraded')
   if (anyUncertainSend(db, tenantId)) throw new OutreachError('already_uncertain')
   if (tableExists(db, 'autopilot_settings') && (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as { paused: number } | undefined)?.paused) throw new OutreachError('paused')
@@ -266,6 +269,7 @@ export async function sendMessage(db: Database.Database, tenantId: string, id: s
 
   // Token refresh is asynchronous. Recheck authorization and suppression after it,
   // immediately before handing the immutable MIME bytes to Gmail.
+  if (!recipientAllowed(db,tenantId,m.to_email)) release('personal_email')
   if (leadHeld(db,tenantId,m.lead_id)) release('lead_ungraded')
   if (isSuppressed(db,tenantId,m.to_email)) release('suppressed')
   const final = getMsg(db,tenantId,id)!

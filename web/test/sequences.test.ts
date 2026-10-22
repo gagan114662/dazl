@@ -199,3 +199,17 @@ test('already approved active sequence stops when lead becomes held',async()=>{
   assert.equal(m.calls.length,1)
   assert.equal((db.prepare('SELECT stop_reason FROM sequences WHERE id=?').get(s.seq) as {stop_reason:string}).stop_reason,'lead_ungraded')
 })
+
+test('removing test grant blocks an already approved consumer sequence',async()=>{
+ const db=await setup(); setTestAddresses(db,'A',['instinct114114@gmail.com'])
+ const s=add(db,'instinct114114@gmail.com'),m=mock()
+ process.env.OUTREACH_TEST_TENANT_ID='A'
+ try {
+  await start(db,s,m)
+  await runSequences(db,'A','', {...m,now:NOW+1})
+  delete process.env.OUTREACH_TEST_TENANT_ID
+  assert.equal((await runSequences(db,'A','', {...m,now:NOW+180})).sent,0)
+  assert.equal(m.calls.length,1)
+  assert.equal((db.prepare('SELECT stop_reason FROM sequences WHERE id=?').get(s.seq) as {stop_reason:string}).stop_reason,'personal_email')
+ } finally { delete process.env.OUTREACH_TEST_TENANT_ID }
+})

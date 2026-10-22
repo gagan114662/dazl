@@ -37,21 +37,22 @@ Removing an address restores normal delays. Saving the list sends nothing.
 This implementation was tested with synthetic fixtures and mocked Gmail only.
 No real message was sent during development.
 
-### Test-only route to a consumer test inbox (OUTREACH_TEST_MODE)
+### Test-only route to the one approved consumer test inbox
 
-Drafts are normally rejected when the recipient is a consumer mailbox
-(Gmail, Yahoo, ... - a published address there is not a business contact).
-For the approved own-inbox test only, the operator can set
-`OUTREACH_TEST_MODE=1`. With that env on, the consumer-recipient gate is
-bypassed ONLY for addresses the tenant explicitly entered in their own
-test-inbox allowlist - nothing else changes: prospect addresses are not on
-that list, every other consumer address still rejects, and with the env
-unset even an allowlisted consumer address rejects. Drafts to any
-allowlisted test inbox are stored with `test = 1`, badged "test mode" in
-Outreach and on sequence cards, and logged as `outreach TEST MODE send`.
-Test sends still count against the shared 20-per-day account budget, and
-approve-before-send still applies to step 1. Turn the env off after the
-test; it must never be on for real tenant sends.
+Default is OFF: leave `OUTREACH_TEST_TENANT_ID` unset. To prepare the own-inbox
+sequence test, the operator sets it to the isolated test account's exact tenant ID.
+The exception requires ALL of: matching operator-selected tenant, exact recipient
+`instinct114114@gmail.com`, and that address in that tenant's test inbox list.
+Neither another address nor another tenant qualifies, even if they edit their list.
+The list alone controls short sequence timing, never permission to bypass the gate.
+
+The grant is rechecked at draft and send time, including after token refresh.
+Removing the env or list entry blocks outstanding consumer-recipient drafts and
+steps. Qualified drafts have `test = 1` and show "test mode" in Outreach and on
+sequence cards. First-touch and sequence sends log test mode. Every other guard,
+approval and shared daily cap still applies. Unset the env after the test.
+Never select a production tenant as the test tenant. This does not enable real
+prospect sends to consumer inboxes.
 
 ## Send safety
 
@@ -81,3 +82,5 @@ Run `npm test` and `npm run build` in web. Tests use injected Gmail/token respon
 never real mail. Browser previews use an isolated local database and synthetic
 addresses ending in example.invalid. Production verification remains a separate,
 explicitly approved own-inbox test after merge/deploy.
+
+The consumer-recipient exception is hard-coded to instinct114114@gmail.com. It also requires that exact tenant ID in OUTREACH_TEST_TENANT_ID and membership in that tenant's test inbox list. Other tenants and other addresses cannot qualify even by editing their list. The grant and list are rechecked at send time on all Gmail send paths; removing the env or list entry blocks outstanding consumer-recipient drafts/steps. No production tenant should be selected as the test tenant.
