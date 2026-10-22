@@ -5,7 +5,7 @@ import { migrateIndexing, saveDomain, getConfig, addKeyword, removeKeyword, list
 import { migrateTinyfish, resetTinyfishState } from '../lib/search/tinyfish.ts'
 
 const NOW = 1_800_000_000
-const env = { TINYFISH_API_KEY: 'tf-key' }
+const env = { TINYFISH_API_KEY: 'tf-key', TINYFISH_APPROVED_TENANTS: '[{"tenantId": "u1", "approvalRef": "MOCK TEST ONLY u1", "acceptsPossibleCharges": true, "expiresAt": 1900000000, "maxRequests": 1000}]' }
 function setup() { const db = new Database(':memory:'); migrateTinyfish(db); migrateIndexing(db); resetTinyfishState(); return db }
 const hits = (urls: string[]) => (async () => new Response(JSON.stringify({ results: urls.map(u => ({ url: u, title: 't', snippet: 'a long enough snippet for the test', date: '2027-01-01' })) }), { status: 200 })) as unknown as typeof fetch
 

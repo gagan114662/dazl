@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import type { Evidence } from '../sources/types.ts'
+import { tinyfishGrant } from './provider-grant.ts'
 
 // TinyFish Search + Fetch as the scan search backend (https://docs.tinyfish.ai/search-api, /fetch-api).
 // The key is the OPERATOR's (TINYFISH_API_KEY). It is read from the environment on the server only, sent only in the
@@ -22,6 +23,7 @@ export const limits = (env: Env = process.env): Limits => ({
 export const tinyfishEnabled = (env: Env = process.env) => !!env.TINYFISH_API_KEY && env.TINYFISH_ENABLED !== '0'
 
 export function migrateTinyfish(db: Database.Database): void {
+  db.exec(`CREATE TABLE IF NOT EXISTS tinyfish_grant_usage (tenant_id TEXT NOT NULL, approval_ref TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (tenant_id, approval_ref))`)
   db.exec(`CREATE TABLE IF NOT EXISTS tinyfish_usage (day TEXT NOT NULL, tenant_id TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('search','fetch')), n INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (day, tenant_id, kind))`)
 }
 const dayOf = (now: number) => new Date(now * 1000).toISOString().slice(0, 10)
@@ -35,6 +37,18 @@ function used(db: Database.Database, day: string, tenant: string | null, kind: '
 const bump = (db: Database.Database, day: string, tenant: string, kind: 'search' | 'fetch', by: number) =>
   db.prepare('INSERT INTO tinyfish_usage (day, tenant_id, kind, n) VALUES (?, ?, ?, ?) ON CONFLICT(day, tenant_id, kind) DO UPDATE SET n = n + excluded.n').run(day, tenant, kind, by)
 
+// Count fetched URLs as units too. Reserve atomically BEFORE network; failed calls
+// remain consumed because the provider might have charged. Not a dollar guarantee.
+function reserveGrant(db: Database.Database, env: Env, tenant: string, max: number, units: number): boolean {
+  const g = (JSON.parse(env.TINYFISH_APPROVED_TENANTS!) as { tenantId: string; approvalRef: string }[]).find(g => g.tenantId === tenant)!
+  return db.transaction(() => {
+    const row = db.prepare('SELECT n FROM tinyfish_grant_usage WHERE tenant_id=? AND approval_ref=?').get(tenant, g.approvalRef) as { n: number } | undefined
+    if ((row?.n ?? 0) + units > max) return false
+    db.prepare('INSERT INTO tinyfish_grant_usage (tenant_id,approval_ref,n) VALUES (?,?,?) ON CONFLICT(tenant_id,approval_ref) DO UPDATE SET n=n+excluded.n').run(tenant, g.approvalRef, units)
+    return true
+  })()
+}
+
 // Process-wide guards: a minute window, and a breaker after auth or allowance errors.
 const stamps: number[] = []
 let blockedUntil = 0
@@ -47,7 +61,7 @@ function allow(now: number, perMinute: number): boolean {
   return true
 }
 
-export type Fail = 'disabled' | 'cap' | 'rate' | 'auth' | 'quota' | 'unavailable'
+export type Fail = 'approval_missing' | 'approval_expired' | 'approval_invalid' | 'approval_limit' | 'disabled' | 'cap' | 'rate' | 'auth' | 'quota' | 'unavailable'
 export interface TfDeps { env?: Env; fetchImpl?: typeof fetch; now?: number }
 export interface SearchHit { url: string; title: string; snippet: string; date: string | null }
 
@@ -67,9 +81,12 @@ async function call(url: string, init: RequestInit, key: string, f: typeof fetch
 export async function tfSearch(db: Database.Database, tenant: string, query: string, opts: { afterDate?: string; location?: string }, spent: { searches: number }, d: TfDeps = {}): Promise<{ ok: true; hits: SearchHit[] } | { ok: false; reason: Fail }> {
   const env = d.env ?? process.env; const now = d.now ?? Math.floor(Date.now() / 1000); const L = limits(env)
   if (!tinyfishEnabled(env)) return { ok: false, reason: 'disabled' }
+  const grant = tinyfishGrant(env, tenant, now)
+  if (!grant.allowed) return { ok: false, reason: grant.reason }
   const day = dayOf(now)
   if (spent.searches >= L.searchesPerScan || used(db, day, tenant, 'search') >= L.tenantDaily || used(db, day, null, 'search') >= L.globalSearchDaily) return { ok: false, reason: 'cap' }
   if (!allow(now, L.perMinute)) return { ok: false, reason: 'rate' }
+  if (!reserveGrant(db, env, tenant, grant.maxRequests, 1)) return { ok: false, reason: 'approval_limit' }
   spent.searches++; bump(db, day, tenant, 'search', 1)
   const q = new URLSearchParams({ query: query.slice(0, 300), ...(opts.afterDate ? { after_date: opts.afterDate } : {}), ...(opts.location ? { location: opts.location } : {}) })
   const r = await call(`${SEARCH_URL}?${q}`, { method: 'GET' }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
@@ -87,11 +104,14 @@ export async function tfSearch(db: Database.Database, tenant: string, query: str
 export async function tfFetch(db: Database.Database, tenant: string, urls: string[], spent: { fetches: number }, d: TfDeps = {}): Promise<{ ok: true; pages: { url: string; title: string; text: string }[] } | { ok: false; reason: Fail }> {
   const env = d.env ?? process.env; const now = d.now ?? Math.floor(Date.now() / 1000); const L = limits(env)
   if (!tinyfishEnabled(env)) return { ok: false, reason: 'disabled' }
+  const grant = tinyfishGrant(env, tenant, now)
+  if (!grant.allowed) return { ok: false, reason: grant.reason }
   const day = dayOf(now)
   const room = Math.min(10, L.fetchesPerScan - spent.fetches, L.tenantDaily - used(db, day, tenant, 'search'), L.globalFetchDaily - used(db, day, null, 'fetch'))
   const batch = urls.slice(0, Math.max(0, room))
   if (batch.length === 0) return { ok: false, reason: 'cap' }
   if (!allow(now, L.perMinute)) return { ok: false, reason: 'rate' }
+  if (!reserveGrant(db, env, tenant, grant.maxRequests, batch.length)) return { ok: false, reason: 'approval_limit' }
   spent.fetches += batch.length; bump(db, day, tenant, 'fetch', batch.length)
   const r = await call(FETCH_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ urls: batch, format: 'markdown' }) }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
   if (!r.ok) return r
