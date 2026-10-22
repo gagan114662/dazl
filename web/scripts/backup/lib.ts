@@ -36,7 +36,17 @@ function mustBeExistingFile(abs: string, what: string): fs.Stats {
 }
 
 function sha256File(abs: string): string {
-  return crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex')
+  // Chunked: a multi-GB backup must not be read into memory whole.
+  const h = crypto.createHash('sha256')
+  const fd = fs.openSync(abs, 'r')
+  try {
+    const buf = Buffer.allocUnsafe(8 * 1024 * 1024)
+    let n: number
+    while ((n = fs.readSync(fd, buf, 0, buf.length, null)) > 0) h.update(buf.subarray(0, n))
+  } finally {
+    fs.closeSync(fd)
+  }
+  return h.digest('hex')
 }
 
 // ---------- metrics ----------
@@ -75,12 +85,19 @@ function canonRow(row: Record<string, unknown>): string {
 
 // Deterministic content hash of one table: every row is canonicalized, the row strings
 // are sorted (so no ORDER BY / primary-key assumptions are needed), then hashed.
+// Order-independent, O(1)-memory content hash: sum of per-row sha256 digests mod
+// 2^256. Order-independence needs no sort (so no materializing the table), and the
+// sum is duplicate-safe (n identical rows contribute n*h, unlike xor). Rows are
+// streamed with .iterate(), so a large table does not load into memory.
+const MOD = BigInt(1) << BigInt(256)
 function tableContentHash(db: Database.Database, table: string): { rows: number; sha256: string } {
-  const rows = db.prepare(`SELECT * FROM "${table.replace(/"/g, '""')}"`).all() as Record<string, unknown>[]
-  const lines = rows.map(canonRow).sort()
-  const h = crypto.createHash('sha256')
-  for (const line of lines) h.update(line + '\n')
-  return { rows: rows.length, sha256: h.digest('hex') }
+  let acc = BigInt(0)
+  let rows = 0
+  for (const row of db.prepare(`SELECT * FROM "${table.replace(/"/g, '""')}"`).iterate() as Iterable<Record<string, unknown>>) {
+    acc = (acc + BigInt('0x' + crypto.createHash('sha256').update(canonRow(row) + '\n').digest('hex'))) % MOD
+    rows++
+  }
+  return { rows, sha256: acc.toString(16).padStart(64, '0') }
 }
 
 export function collectDbMetrics(db: Database.Database): DbMetrics {
