@@ -135,7 +135,7 @@ export function WarmPath({ leadId, company = '', signal = '' }: { leadId: string
         {warm && warm.user_reported.map(u => (
           <div key={u.id} className="text-gray-400">
             <span className="text-yellow-500">Reported by you, not verified:</span> {u.mutual_name} knows{' '}
-            <a className="underline text-[#111]" href={u.contact_url} target="_blank" rel="noopener noreferrer nofollow">this contact</a>{u.note ? ` - ${u.note}` : ''}{' '}
+            <a className="underline text-[#111]" href={`https://${bare(u.contact_url)}`} target="_blank" rel="noopener noreferrer nofollow">this contact</a>{u.note ? ` - ${u.note}` : ''}{' '}
             <button className="underline text-gray-500" onClick={() => void removePath(u.id)}>remove</button>{' '}
             <button className="underline text-gray-500" onClick={() => setDraftFor(draftFor === u.id ? null : u.id)}>{draftFor === u.id ? 'hide draft' : 'draft an intro request'}</button>
             {draftFor === u.id && (
