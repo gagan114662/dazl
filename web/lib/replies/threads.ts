@@ -154,11 +154,15 @@ export interface ThreadRow {
 }
 
 export function listThreads(db: Database.Database, tenantId: string, limit = 50): ThreadRow[] {
-  return db.prepare(
+  const rows = db.prepare(
     `SELECT t.id, t.platform, t.url, t.title, t.quote, t.query, t.date, t.login_walled, t.created_at,
             d.draft, d.status AS draft_status, d.updated_at AS draft_updated_at
      FROM reply_threads t LEFT JOIN reply_drafts d ON d.thread_id = t.id AND d.tenant_id = t.tenant_id
      WHERE t.tenant_id = ? ORDER BY t.created_at DESC LIMIT ?`).all(tenantId, limit) as ThreadRow[]
+  // Re-qualify at read time: threads stored before the relevance gate existed must not
+  // keep presenting as fits. A thread the tenant already engaged with (a draft exists)
+  // stays visible - their work is not hidden.
+  return rows.filter(t => t.draft !== null || isRelevantToQuery(t.query, t.title, t.quote))
 }
 
 export function getThread(db: Database.Database, tenantId: string, id: string): ThreadRow | undefined {
