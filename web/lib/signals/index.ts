@@ -108,7 +108,7 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
   for (const lead of leads) {
     // Company event write-through: the same fact, stored once per company for account-level
     // history. Skipped when no reliable company key exists - never guessed.
-    const ck = companyKey(lead.company_domain, lead.company)
+    const ck = companyKey(lead.company_domain, lead.id)
     const [f, h] = await Promise.all([
       edgarFunding(lead.company, fetchImpl).catch(() => null),
       atsHiring(lead.company, lead.company_domain, fetchImpl).catch(() => null),

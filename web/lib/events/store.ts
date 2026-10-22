@@ -48,17 +48,21 @@ export function migrateEvents(db: Database.Database): void {
   `)
 }
 
-// Domain when known, else a conservative normalized name. Never a guess.
-// Name-derived keys are prefixed "name:" so they can never collide with a domain key:
-// two different companies that normalize to the same words would otherwise share one
-// history - false company history is worse than split history. Name-keyed identity is
-// provisional; the same company appearing later with a domain gets a separate key and
-// the two histories are not merged automatically.
-export function companyKey(domain: string | null | undefined, name: string | null | undefined): string | null {
+// Identity rule: a history may only aggregate facts about ONE entity.
+// - Domain known: the domain is the key. Domains are unique, so aggregation is safe.
+// - Domain unknown: the key is the tenant's own account record ("lead:<leadId>"). Events
+//   aggregate within that record only - two different companies that happen to share a
+//   name ("Acme Corp" in two cities) are different leads, get different keys, and never
+//   merge into one false history. The normalized name is display metadata, not identity.
+// - Neither known: the event is not recorded. Unresolved entity identity is preserved,
+//   never merged by name.
+// When a lead later gains a domain, future events key by the domain; the older
+// lead-keyed history is not auto-merged (explicit reconciliation is a future decision).
+export function companyKey(domain: string | null | undefined, leadId: string | null | undefined): string | null {
   const d = (domain ?? '').toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0].trim()
   if (d.includes('.')) return d.slice(0, 250)
-  const n = (name ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
-  return n.length >= 3 ? `name:${n}`.slice(0, 254) : null
+  const id = (leadId ?? '').trim()
+  return id ? `lead:${id}`.slice(0, 254) : null
 }
 
 export interface CompanyEventInput {

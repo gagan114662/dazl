@@ -12,10 +12,13 @@ tenant's own leads/accounts) share the table and are separated by `scope`.
 - **Provenance is required.** A row cannot exist without `source_url` (http/https, <= 500
   chars) and `retrieved_at` (when dazl fetched it). `source_published_at` is the date the
   source itself states, when it states one.
-- **Identity is conservative.** `company_key` is the domain when known. Name-derived keys
-  are prefixed `name:` and can never collide with a domain key; similar names never merge
-  into one history (false company history is worse than split history), and a later
-  domain-keyed history is not auto-merged with a name-keyed one.
+- **Identity is conservative; a history aggregates one entity only.** `company_key` is the
+  domain when known (domains are unique). Without a domain, the key is the tenant's own
+  account record (`lead:<leadId>`): events aggregate within that record only, so two
+  different companies that happen to share a name never merge into one false history.
+  The normalized name is display metadata, never identity. When a lead later gains a
+  domain, future events key by the domain; older lead-keyed history is not auto-merged
+  (explicit reconciliation is a future decision).
 - **Unknowns stay NULL.** No inferred published dates, no guessed people, no assumed
   companies. `company_key` is the domain when known, else a normalized name, else the
   event is not recorded.

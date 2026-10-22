@@ -75,9 +75,25 @@ test('unknown event type rejected; market scope accepted', () => {
   assert.equal(listCompanyEvents(db, 'T1', { now: NOW, scope: 'market' }).length, 1)
 })
 
-test('companyKey prefers domain, prefixes name keys so they never merge with domain history', () => {
-  assert.equal(companyKey('https://www.Acme.example/path', 'Acme'), 'acme.example')
-  assert.equal(companyKey(null, 'Acme Corp!!'), 'name:acme corp')
-  assert.equal(companyKey(null, 'ab'), null)
+test('companyKey: domain is identity; without one the lead record is, never the name', () => {
+  assert.equal(companyKey('https://www.Acme.example/path', 'lead1'), 'acme.example')
+  assert.equal(companyKey(null, 'lead1'), 'lead:lead1')
+  assert.equal(companyKey(null, null), null)
   assert.equal(companyKey(undefined, undefined), null)
+})
+
+test('two distinct same-name companies never share a history', () => {
+  const db = setup()
+  // "Acme Corp" in two cities, no domain for either: different leads, different keys.
+  recordCompanyEvent(db, 'T1', ev({ companyKey: companyKey(null, 'lead-a')!, companyName: 'Acme Corp', leadId: 'lead-a' }))
+  recordCompanyEvent(db, 'T1', ev({ companyKey: companyKey(null, 'lead-b')!, companyName: 'Acme Corp', leadId: 'lead-b', sourceUrl: 'https://www.sec.gov/Archives/edgar/data/9/9/y.htm' }))
+  const a = listCompanyEvents(db, 'T1', { companyKey: 'lead:lead-a', now: NOW })
+  const b = listCompanyEvents(db, 'T1', { companyKey: 'lead:lead-b', now: NOW })
+  assert.equal(a.length, 1)
+  assert.equal(b.length, 1)
+  assert.notEqual(a[0].source_url, b[0].source_url)
+  assert.equal(listCompanyEvents(db, 'T1', { now: NOW }).length, 2)
+  // Same lead re-observed from the same source still dedups within its own history.
+  assert.equal(recordCompanyEvent(db, 'T1', ev({ companyKey: 'lead:lead-a', companyName: 'Acme Corp', leadId: 'lead-a', retrievedAt: NOW + 5 })), false)
+  assert.equal(listCompanyEvents(db, 'T1', { now: NOW }).length, 2)
 })
