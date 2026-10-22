@@ -33,6 +33,11 @@ export class OutreachError extends Error {
   }
 }
 
+// Tenant-scoped, checked again after every async preparation before a send.
+export function leadHeld(db: Database.Database, tenantId: string, leadId: string): boolean {
+  return !!db.prepare('SELECT 1 FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ? AND l.fit = 0 AND l.intent IS NULL').get(leadId, tenantId)
+}
+
 export interface Deps extends OAuthDeps { baseUrl?: string; sendFn?: typeof gmailSend }
 const nowS = (d: Deps) => d.now ?? Math.floor(Date.now() / 1000)
 const baseUrl = (d: Deps) => (d.baseUrl ?? process.env.PUBLIC_BASE_URL ?? 'https://dazl.ai').replace(/\/$/, '')
@@ -221,6 +226,7 @@ export async function sendMessage(db: Database.Database, tenantId: string, id: s
   const pre = getMsg(db, tenantId, id)
   if (!pre) throw new OutreachError('not_found')
   if (pre.status === 'sent') return 'sent' // idempotent retry
+  if (leadHeld(db, tenantId, pre.lead_id)) throw new OutreachError('lead_ungraded')
   if (anyUncertainSend(db, tenantId)) throw new OutreachError('already_uncertain')
   if (tableExists(db, 'autopilot_settings') && (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as { paused: number } | undefined)?.paused) throw new OutreachError('paused')
   if (pre.status !== 'approved') throw new OutreachError(pre.status === 'sending' || pre.status === 'uncertain' ? `already_${pre.status}` : 'not_approved')
@@ -260,6 +266,7 @@ export async function sendMessage(db: Database.Database, tenantId: string, id: s
 
   // Token refresh is asynchronous. Recheck authorization and suppression after it,
   // immediately before handing the immutable MIME bytes to Gmail.
+  if (leadHeld(db,tenantId,m.lead_id)) release('lead_ungraded')
   if (isSuppressed(db,tenantId,m.to_email)) release('suppressed')
   const final = getMsg(db,tenantId,id)!
   if (final.approved_hash !== hash(final.to_email,final.subject,final.body) || final.body !== m.body || final.subject !== m.subject || final.to_email !== m.to_email) release('changed_since_approval')
