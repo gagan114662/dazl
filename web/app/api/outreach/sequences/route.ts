@@ -4,6 +4,7 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { approve, OutreachError } from '@/lib/outreach/service'
 import { createSequence, draftSequenceSteps, editSequenceStep, approveSequence, sequenceAnalytics, sequenceStatusByLead, testAddresses, setTestAddresses, SequenceError, resolveSequenceUncertain, resumeSequences } from '@/lib/outreach/sequences'
+import { createSequenceTestFixture, fixtureAvailable, FixtureError } from '@/lib/outreach/test-fixture'
 
 export async function GET(req: NextRequest) {
   const user = await requireUser()
@@ -12,7 +13,7 @@ export async function GET(req: NextRequest) {
   const rows = db.prepare('SELECT id, message_id, lead_id, to_email, status, stop_reason FROM sequences WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 200').all(user.id) as { id: string }[]
   const sequences = rows.map(s => ({ ...s, steps: db.prepare('SELECT step,subject,body,status FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? ORDER BY step').all(user.id,s.id) }))
   const campaigns = db.prepare('SELECT DISTINCT j.id,j.query FROM scan_jobs j JOIN leads l ON l.scan_job_id = j.id JOIN outreach_messages m ON m.lead_id = l.id AND m.tenant_id = j.user_id WHERE j.user_id = ? ORDER BY j.created_at DESC LIMIT 50').all(user.id) as { id: string; query: string }[]
-  return NextResponse.json({ sequences, test_addresses: testAddresses(db,user.id), status: Object.fromEntries(sequenceStatusByLead(db,user.id)), campaigns: campaigns.map(c => ({ ...c, analytics: sequenceAnalytics(db,user.id,(db.prepare('SELECT id FROM leads WHERE scan_job_id = ?').all(c.id) as { id: string }[]).map(l => l.id)) })) })
+  return NextResponse.json({ sequences, test_addresses: testAddresses(db,user.id), test_fixture_available: fixtureAvailable(db,user.id), status: Object.fromEntries(sequenceStatusByLead(db,user.id)), campaigns: campaigns.map(c => ({ ...c, analytics: sequenceAnalytics(db,user.id,(db.prepare('SELECT id FROM leads WHERE scan_job_id = ?').all(c.id) as { id: string }[]).map(l => l.id)) })) })
 }
 export async function POST(req: NextRequest) {
   const user = await requireUser()
@@ -28,6 +29,7 @@ export async function POST(req: NextRequest) {
       await draftSequenceSteps(db,user.id,id,user.business_name)
       return NextResponse.json({ id })
     }
+    if (b?.action === 'create_test_fixture') return NextResponse.json(createSequenceTestFixture(db,user.id))
     if (b?.action === 'resume') { resumeSequences(db,user.id); return NextResponse.json({ ok: true }) }
     if (typeof b?.id !== 'string') return NextResponse.json({ error: 'Bad request' }, { status: 400 })
     if (b.action === 'approve') approveSequence(db,user.id,b.id,id => approve(db,user.id,id,true))
@@ -37,7 +39,7 @@ export async function POST(req: NextRequest) {
     else return NextResponse.json({ error: 'Bad request' }, { status: 400 })
     return NextResponse.json({ ok: true })
   } catch (e) {
-    if (e instanceof SequenceError || e instanceof OutreachError) return NextResponse.json({ error: e.code }, { status: 400 })
+    if (e instanceof SequenceError || e instanceof OutreachError || e instanceof FixtureError) return NextResponse.json({ error: e.code }, { status: 400 })
     throw e
   }
 }

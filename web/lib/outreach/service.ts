@@ -13,7 +13,7 @@ export const SENDING_STALE_S = 10 * 60
 const CONSUMER = new Set(['gmail.com', 'googlemail.com', 'yahoo.com', 'yahoo.ca', 'hotmail.com', 'outlook.com', 'live.com', 'msn.com', 'icloud.com', 'me.com', 'aol.com', 'proton.me', 'protonmail.com', 'gmx.com'])
 
 // Off by default. Only this operator-selected test tenant and this exact inbox qualify.
-const TEST_INBOX = 'instinct114114@gmail.com'
+export const TEST_INBOX = 'instinct114114@gmail.com'
 export const testRecipientApproved = (db: Database.Database, tenantId: string, email: string): boolean =>
   !!process.env.OUTREACH_TEST_TENANT_ID && process.env.OUTREACH_TEST_TENANT_ID === tenantId &&
   norm(email) === TEST_INBOX && isAllowlistedTestRecipient(db,tenantId,email)
