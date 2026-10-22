@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 
 type Thread = {
   id: string; platform: 'reddit' | 'x'; url: string; title: string; quote: string; query: string
-  date: string | null; created_at: number
+  date: string | null; created_at: number; buyer_intent?: string | null
   draft: string | null; draft_status: 'draft' | 'edited' | 'copied' | 'posted' | null
 }
 type State = { queries: string[]; threads: Thread[]; platforms: { reddit: boolean; x: boolean }; consent: boolean; has_key: boolean }
@@ -125,6 +125,8 @@ export default function RepliesClient() {
             <span className="border border-black/15 rounded-full px-2 py-0.5">{t.platform === 'x' ? 'X' : 'Reddit'}</span>
             {t.date && <span className="text-[#999]">{t.date}</span>}
             <span className="text-[#999]">found by &quot;{t.query}&quot;</span>
+            {t.buyer_intent === 'yes' && <span className="text-[#999]">buyer intent: model-graded - heuristic, review yourself</span>}
+            {t.buyer_intent === 'uncertain' && <span className="text-[#999]">buyer intent: unverified</span>}
             {t.draft_status && <span className={t.draft_status === 'posted' ? 'text-green-700' : 'text-[#999]'}>{t.draft_status === 'posted' ? 'posted by you' : t.draft_status === 'copied' ? 'copied' : t.draft_status}</span>}
           </div>
           <a className="font-medium underline" href={t.url} target="_blank" rel="noopener noreferrer">{t.title}</a>

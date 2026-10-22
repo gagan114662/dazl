@@ -4,6 +4,7 @@ import { audit, getEnabledCredential } from '../connectors/store.ts'
 import { hasConsent, httpWorker, type WorkerFetch } from '../advanced/index.ts'
 import { advFlags, connectorId, maxCallsPerHour, platformAllowed, scopeFor } from '../advanced/config.ts'
 import { getKey, keyStatus } from '../llm/key-store.ts'
+import { getAuthDb, getSellerProfile } from '../auth-db.ts'
 import { providers, ProviderError } from '../llm/provider.ts'
 import type { Vendor } from '../llm/vendors.ts'
 
@@ -42,9 +43,16 @@ export function migrateThreadReplies(db: Database.Database): void {
       query        TEXT NOT NULL,
       date         TEXT,
       login_walled INTEGER NOT NULL DEFAULT 0,
+      buyer_intent TEXT CHECK (buyer_intent IS NULL OR buyer_intent IN ('yes','uncertain')),
       created_at   INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
       UNIQUE (tenant_id, url)
     );
+    -- buyer_intent: NULL = keyword-matched only (no model verdict), else the tenant-key
+    -- model verdict from refresh time: 'yes' | 'uncertain'. 'no' threads are never stored.
+    -- A model verdict is a heuristic signal for review, never proof of buyer intent.
+  `)
+  try { db.exec("ALTER TABLE reply_threads ADD COLUMN buyer_intent TEXT CHECK (buyer_intent IS NULL OR buyer_intent IN ('yes','uncertain'))") } catch { /* column exists */ }
+  db.exec(`
     CREATE INDEX IF NOT EXISTS reply_threads_tenant ON reply_threads (tenant_id, created_at);
     CREATE TABLE IF NOT EXISTS reply_drafts (
       thread_id  TEXT PRIMARY KEY,
@@ -101,6 +109,43 @@ export function isRelevantToQuery(query: string, title: string, quote: string): 
   return present >= need
 }
 
+// Buyer-intent grading at refresh: the keyword gate keeps topically matching threads, but
+// a student asking who to cold-email for internships matches "cold email software" without
+// being a buyer. When the tenant has an enabled AI key, each keyword-qualified candidate
+// gets one short verdict call on the TENANT'S OWN key (same BYOK path as reply drafting),
+// judged against the tenant's stored seller profile. Verdicts: 'yes' or 'uncertain' are
+// stored and labelled; 'no' is filtered at ingestion like other irrelevant candidates.
+// No key or a provider error stores NULL - the thread stays keyword-matched only, and the
+// page keeps saying so. Grading is capped per refresh for spend discipline.
+export const MAX_INTENT_GRADES_PER_REFRESH = 10
+const INTENT_PROMPT = (sells: string, website: string, t: { title: string; quote: string }) => `Someone sells: ${sells || '(not specified)'}${website ? ` (${website})` : ''}.
+
+A thread titled "${t.title.slice(0, 200)}" says: "${t.quote.slice(0, 400)}"
+
+Is the person who wrote this plausibly a BUYER of what the seller sells - someone with the problem the product solves, evaluating or asking about solutions? Job seekers, students, researchers, and people who merely mention the product category for an unrelated goal are NOT buyers.
+Answer with exactly one word: yes, no, or uncertain.`
+
+export type BuyerIntent = 'yes' | 'uncertain'
+
+// Returns null when no verdict can be made (no key, unreadable key, provider error,
+// unparseable answer) - callers store NULL and keep the keyword-matched label.
+export async function gradeBuyerIntent(
+  db: Database.Database, tenantId: string,
+  candidate: { title: string; quote: string },
+  deps: { fetchImpl?: typeof fetch; master?: Buffer; sells?: string; website?: string } = {},
+): Promise<BuyerIntent | 'no' | null> {
+  const vendor = (keyStatus(db, tenantId)[0]?.vendor ?? null) as Vendor | null
+  if (!vendor) return null
+  const key = getKey(db, tenantId, vendor, deps.master)
+  if (!key) return null
+  let out: string
+  try {
+    out = (await providers[vendor].complete!(key, INTENT_PROMPT(deps.sells ?? '', deps.website ?? '', candidate), deps.fetchImpl ?? fetch, 200)).trim().toLowerCase()
+  } catch { return null }
+  const word = out.split(/[^a-z]+/)[0]
+  return word === 'yes' ? 'yes' : word === 'no' ? 'no' : word === 'uncertain' ? 'uncertain' : null
+}
+
 // Replies share each platform's hourly budget with every other advanced feature.
 function platformCallsLastHour(db: Database.Database, tenantId: string, p: ReplyPlatform): number {
   const r = db.prepare("SELECT COUNT(*) AS n FROM connector_audit WHERE tenant_id = ? AND (connector = ? OR connector LIKE ?) AND created_at > CAST(strftime('%s','now') AS INTEGER) - 3600").get(tenantId, `adv:${p}`, `adv:${p}-%`) as { n: number }
@@ -113,7 +158,7 @@ export interface RefreshResult {
   platforms: Partial<Record<ReplyPlatform, 'ok' | 'disabled' | 'no_consent' | 'rate_limited' | 'worker_error'>>
 }
 
-export async function refreshReplies(db: Database.Database, tenantId: string, deps: { worker?: WorkerFetch; master?: Buffer; env?: Record<string, string | undefined>; now?: number } = {}): Promise<RefreshResult> {
+export async function refreshReplies(db: Database.Database, tenantId: string, deps: { worker?: WorkerFetch; fetchImpl?: typeof fetch; master?: Buffer; env?: Record<string, string | undefined>; now?: number } = {}): Promise<RefreshResult> {
   const env = deps.env ?? process.env
   const flags = advFlags(env)
   const queries = listQueries(db, tenantId).slice(0, MAX_QUERIES)
@@ -122,7 +167,18 @@ export async function refreshReplies(db: Database.Database, tenantId: string, de
   const now = deps.now ?? Date.now()
   const cutoff = now - MAX_THREAD_AGE_DAYS * 86400_000
   const worker = deps.worker ?? httpWorker(env)
-  const ins = db.prepare('INSERT OR IGNORE INTO reply_threads (id, tenant_id, platform, url, title, quote, query, date, login_walled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+  const ins = db.prepare('INSERT OR IGNORE INTO reply_threads (id, tenant_id, platform, url, title, quote, query, date, login_walled, buyer_intent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+  // Seller context + grading budget are resolved once per refresh, not per candidate.
+  // Seller context is a bonus, never the bar: if the auth db is unavailable the grading
+  // prompt runs with an empty profile rather than failing the refresh.
+  let sells = ''
+  let website = ''
+  try {
+    const profile = getSellerProfile(getAuthDb(), tenantId)
+    sells = profile.sells
+    website = profile.website
+  } catch { /* keyword gate already applied; refresh continues */ }
+  let gradesLeft = MAX_INTENT_GRADES_PER_REFRESH
   for (const p of REPLY_PLATFORMS) {
     if (!platformAllowed(p, flags)) { out.platforms[p] = 'disabled'; continue }
     if (!hasConsent(db, tenantId, scopeFor(p))) { out.platforms[p] = 'no_consent'; continue }
@@ -135,11 +191,23 @@ export async function refreshReplies(db: Database.Database, tenantId: string, de
       const items = await worker({ platform: p, query: q, session }).catch(() => null)
       if (items === null) { audit(db, { tenantId, connector, lookup: q, status: 'worker_error', results: 0 }); anyError = true; continue }
       const fresh = items.filter(i => i.date && new Date(i.date).getTime() >= cutoff && looksLikeQuestion(i.title))
-      const qualified = fresh.filter(i => isRelevantToQuery(q, i.title, i.quote))
+      let qualified = fresh.filter(i => isRelevantToQuery(q, i.title, i.quote))
       out.filtered += fresh.length - qualified.length
+      const graded: ({ title: string; quote: string } & typeof qualified[number] & { buyer_intent: string | null })[] = []
+      for (const it of qualified) {
+        let buyer_intent: string | null = null
+        if (gradesLeft > 0) {
+          gradesLeft--
+          const verdict = await gradeBuyerIntent(db, tenantId, it, { fetchImpl: deps.fetchImpl, master: deps.master, sells, website })
+          if (verdict === 'no') { out.filtered++; continue }
+          buyer_intent = verdict
+        }
+        graded.push({ ...it, buyer_intent })
+      }
+      qualified = graded as unknown as typeof qualified
       audit(db, { tenantId, connector, lookup: q, status: qualified.length ? 'ok' : fresh.length ? 'filtered' : 'empty', results: qualified.length })
       for (const it of qualified.slice(0, MAX_NEW_PER_QUERY)) {
-        out.added += ins.run(id24(), tenantId, p, it.url, it.title, it.quote, q, it.date, it.login_walled ? 1 : 0).changes
+        out.added += ins.run(id24(), tenantId, p, it.url, it.title, it.quote, q, it.date, it.login_walled ? 1 : 0, (it as { buyer_intent?: string | null }).buyer_intent ?? null).changes
       }
     }
     out.platforms[p] = anyError ? 'worker_error' : 'ok'
@@ -149,13 +217,13 @@ export async function refreshReplies(db: Database.Database, tenantId: string, de
 
 export interface ThreadRow {
   id: string; platform: ReplyPlatform; url: string; title: string; quote: string; query: string
-  date: string | null; login_walled: number; created_at: number
+  date: string | null; login_walled: number; created_at: number; buyer_intent?: string | null
   draft: string | null; draft_status: 'draft' | 'edited' | 'copied' | 'posted' | null; draft_updated_at: number | null
 }
 
 export function listThreads(db: Database.Database, tenantId: string, limit = 50): ThreadRow[] {
   const rows = db.prepare(
-    `SELECT t.id, t.platform, t.url, t.title, t.quote, t.query, t.date, t.login_walled, t.created_at,
+    `SELECT t.id, t.platform, t.url, t.title, t.quote, t.query, t.date, t.login_walled, t.created_at, t.buyer_intent,
             d.draft, d.status AS draft_status, d.updated_at AS draft_updated_at
      FROM reply_threads t LEFT JOIN reply_drafts d ON d.thread_id = t.id AND d.tenant_id = t.tenant_id
      WHERE t.tenant_id = ? ORDER BY t.created_at DESC LIMIT ?`).all(tenantId, limit) as ThreadRow[]
