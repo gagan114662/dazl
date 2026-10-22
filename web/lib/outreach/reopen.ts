@@ -8,11 +8,7 @@ import { randomBytes } from 'node:crypto'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
 import { getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { getMasterKey } from '../secrets.ts'
-<<<<<<< HEAD
-import { composeBody, getSettings, isSuppressed, leadHeld, OutreachError, unsubToken, type Deps } from './service.ts'
-=======
 import { composeBody, getSettings, isSuppressed, leadHeld, recipientAllowed, OutreachError, unsubToken, type Deps } from './service.ts'
->>>>>>> origin/feat/test-only-send-route
 
 export const WARM_MIN_DAYS = 30
 export const WARM_MAX_DAYS = 90
@@ -118,10 +114,7 @@ export function skipReopen(db: Database.Database, tenantId: string, threadId: st
 export async function sendReopen(db: Database.Database, tenantId: string, threadId: string, d: Deps & { now?: number } = {}): Promise<void> {
   const r = getReopen(db, tenantId, threadId)
   if (!r) throw new OutreachError('not_found')
-<<<<<<< HEAD
-=======
   if (!recipientAllowed(db,tenantId,r.to_email)) throw new OutreachError('personal_email')
->>>>>>> origin/feat/test-only-send-route
   if (leadHeld(db,tenantId,r.lead_id)) throw new OutreachError('lead_ungraded')
   if (r.status === 'sent') throw new OutreachError('already_sent')
   if (r.status === 'skipped') throw new OutreachError('final')
@@ -137,10 +130,7 @@ export async function sendReopen(db: Database.Database, tenantId: string, thread
   const now = d.now ?? Math.floor(Date.now() / 1000)
   let token: string
   try { token = await getAccessToken(db, tenantId, d as OAuthDeps) } catch { throw new OutreachError('gmail_reconnect_needed') }
-<<<<<<< HEAD
-=======
   if (!recipientAllowed(db,tenantId,r.to_email)) throw new OutreachError('personal_email')
->>>>>>> origin/feat/test-only-send-route
   if (leadHeld(db,tenantId,r.lead_id)) throw new OutreachError('lead_ungraded')
   const raw = toBase64Url(buildMime({ fromName: settings.sender_name, fromEmail: acct.email, to: r.to_email, subject: orig.subject.startsWith('Re:') ? orig.subject : `Re: ${orig.subject}`, body: composeBody(r.body, settings, unsubUrl), messageId: `dazl.reopen.${orig.id}@${acct.email.split('@')[1]}`, unsubscribeUrl: unsubUrl, date: new Date(now * 1000), inReplyTo: t.root_message_id }))
   const res = await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, threadId)
