@@ -151,12 +151,15 @@ export class SqliteQueue implements QueueAdapter {
       // kinds:[] means "this worker executes nothing" (fail closed), matching
       // the memory adapter's empty-Set behavior - not "all kinds".
       if (opts?.kinds && opts.kinds.length === 0) return null
+      if (opts?.tenants && opts.tenants.length === 0) return null
       const kindFilter = opts?.kinds?.length
         ? `AND kind IN (${opts.kinds.map(() => '?').join(',')})` : ''
+      const tenantFilter = opts?.tenants?.length
+        ? `AND tenant_id IN (${opts.tenants.map(() => '?').join(',')})` : ''
       const rows = this.db.prepare(
         `SELECT rowid AS rid, * FROM work_queue
-         WHERE status='pending' AND not_before<=? ${kindFilter}
-         ORDER BY created_at ASC, rid ASC`).all(now, ...(opts?.kinds ?? [])) as Row[]
+         WHERE status='pending' AND not_before<=? ${kindFilter} ${tenantFilter}
+         ORDER BY created_at ASC, rid ASC`).all(now, ...(opts?.kinds ?? []), ...(opts?.tenants ?? [])) as Row[]
       for (const r of rows) {
         const tenantInFlight = (this.db.prepare(
           `SELECT count(*) c FROM work_queue WHERE status='claimed' AND tenant_id=?`).get(r.tenant_id) as { c: number }).c
