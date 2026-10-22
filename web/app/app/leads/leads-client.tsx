@@ -2,6 +2,7 @@
 import { KEY_UNREADABLE_COPY, knownErrorCopy } from '@/lib/error-copy'
 import { useEffect, useState } from 'react'
 import { emptyLeadsMessage, scoreLabel } from '@/lib/scan/leads-view'
+import { contactsFromEnrichments } from '@/lib/people/rank'
 
 interface Lead { sequence?: { status: string; step: number; next_due_at: number | null; stop_reason: string | null } | null; id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; watch_new?: number; seen_before?: number; stage?: string | null; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string }[]; events?: { id: string; event_type: string; summary: string; source_url: string; source_published_at: string | null; last_seen_at: number; fresh: boolean }[]; priority?: { graded: boolean; fit: number | null; intent: number | null; action: number | null; evidence_score: number; reasons: string[]; uncounted: string[] } | null }
 interface Icp { summary: string; who: string[]; industries: string[]; sizes: string[]; where: string[]; signals: string[]; exclude: string[] }
@@ -457,9 +458,25 @@ export default function LeadsClient() {
             {parseSignals(l.signals).length > 0 && (
               <div className="flex flex-wrap gap-1 mt-1">{parseSignals(l.signals).map(sg => <span key={sg} className="text-[10px] uppercase tracking-wide text-gray-500 border border-white/10 px-1 py-0.5">{sg.replace(/_/g, ' ')}</span>)}</div>
             )}
-            {l.enrichments && l.enrichments.length > 0 && (
+            {l.enrichments && l.enrichments.some(e => e.kind === 'contact') && (() => {
+              const people = contactsFromEnrichments(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')
+              return (
+                <div className="text-xs mt-1 space-y-0.5">
+                  <div className="text-gray-500 uppercase tracking-wide text-[10px]">Right people</div>
+                  {people.map(p => (
+                    <div key={p.name + (p.title ?? '')} className="text-gray-400">
+                      <span className="text-[#111]">{p.name}</span>{p.title ? ` - ${p.title}` : ''}{' '}
+                      <span className="text-gray-500">via {p.connector}{p.matched.length > 0 ? `, title matches: ${p.matched.join(', ')}` : ''}</span>{' '}
+                      {p.linkedin && <a className="underline text-[#111]" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow">profile</a>}
+                    </div>
+                  ))}
+                  <div className="text-gray-500">{icp && icp.icp.who.length > 0 ? 'Ordered by title match to your profile - a heuristic, verify the person before reaching out.' : 'People found for this company - verify the person before reaching out.'}</div>
+                </div>
+              )
+            })()}
+            {l.enrichments && l.enrichments.some(e => e.kind !== 'contact') && (
               <div className="text-xs mt-1 space-y-0.5">
-                {l.enrichments.map(e => (
+                {l.enrichments.filter(e => e.kind !== 'contact').map(e => (
                   <div key={e.kind + e.value} className="text-gray-400">
                     <span className="text-[#111]">{e.value}</span>{e.label ? ` (${e.label})` : ''} <span className="text-gray-500">{e.kind === 'tech' ? 'seen on the company website' : e.connector === 'sitecrawl' ? 'from the company contact page' : e.connector === 'hunter' ? 'via Hunter (earlier)' : `via ${e.connector}`}{e.confidence !== null ? `, ${e.confidence}% confidence` : ''}, seen {e.source_date}</span>{' '}
                     <a className="underline text-[#111]" href={e.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
