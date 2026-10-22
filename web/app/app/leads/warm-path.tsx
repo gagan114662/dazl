@@ -13,6 +13,24 @@ type ManualCheck = { contact_name: string; contact_title: string | null; linkedi
 type UserPath = { id: string; contact_url: string; mutual_name: string; note: string | null; created_at: number }
 type Warm = { first_degree: FirstDegree[]; manual_check: ManualCheck[]; user_reported: UserPath[]; imported_connections: number }
 
+function ReviewDraft({ text, reported = false }: { text: string; reported?: boolean }) {
+  const [value, setValue] = useState(text)
+  const [status, setStatus] = useState('')
+  async function copy() {
+    try { await navigator.clipboard.writeText(value); setStatus('Copied. Nothing was sent.') }
+    catch { setStatus('Select the text and copy it manually. Nothing was sent.') }
+  }
+  return <div className="mt-2 space-y-2">
+    <label className="block text-gray-600">Review and edit your draft
+      <textarea aria-label="Warm message draft" className="w-full border border-gray-300 rounded p-2 text-xs text-gray-800 bg-white" rows={7} value={value} onChange={e => setValue(e.target.value)} />
+    </label>
+    <p className="text-gray-600">{reported ? 'Based on a mutual you reported, not a verified connection. ' : ''}Fill the bracketed line and check every claim before copying. This template does not know your relationship or past conversations.</p>
+    <button className="border border-gray-400 rounded px-2 py-1 text-gray-800" onClick={() => void copy()}>Copy draft</button>
+    <span className="text-gray-600 ml-2" role="status">{status}</span>
+    <p className="text-gray-600">Send it yourself on LinkedIn only when ready. dazl does not send this message.</p>
+  </div>
+}
+
 export function WarmConnections() {
   const [status, setStatus] = useState<{ count: number; imported_at: number | null } | null>(null)
   const [note, setNote] = useState('')
@@ -110,10 +128,7 @@ export function WarmPath({ leadId, company = '', signal = '' }: { leadId: string
             <div className="text-gray-500 mt-1">Consider a personal LinkedIn message before a cold email - dazl does not send it for you.</div>
             <button className="underline text-gray-500 mt-1" onClick={() => setDraftFor(draftFor === f.linkedin_url ? null : f.linkedin_url)}>{draftFor === f.linkedin_url ? 'hide draft' : 'draft a message'}</button>
             {draftFor === f.linkedin_url && (
-              <div className="mt-1">
-                <textarea readOnly className="w-full border border-white/10 bg-transparent p-1 text-xs" rows={6} value={draftFirstDegreeMessage({ connectionName: f.connection_name, company, signal })} />
-                <p className="text-gray-500">A starting draft only - review, edit, fill the bracketed line, then copy and send it yourself on LinkedIn. dazl does not send messages, and nothing here claims any past conversation.</p>
-              </div>
+              <ReviewDraft text={draftFirstDegreeMessage({ connectionName: f.connection_name, company, signal })} />
             )}
           </div>
         ))}
@@ -124,10 +139,7 @@ export function WarmPath({ leadId, company = '', signal = '' }: { leadId: string
             <button className="underline text-gray-500" onClick={() => void removePath(u.id)}>remove</button>{' '}
             <button className="underline text-gray-500" onClick={() => setDraftFor(draftFor === u.id ? null : u.id)}>{draftFor === u.id ? 'hide draft' : 'draft an intro request'}</button>
             {draftFor === u.id && (
-              <div className="mt-1">
-                <textarea readOnly className="w-full border border-white/10 bg-transparent p-1 text-xs" rows={6} value={draftIntroRequest({ mutualName: u.mutual_name, contactName: contactNameFor(u.contact_url), company })} />
-                <p className="text-gray-500">A starting draft only - based on a mutual YOU reported, not a verified connection. Review, edit, fill the bracketed line, then copy and send it yourself. dazl does not send messages.</p>
-              </div>
+              <ReviewDraft reported text={draftIntroRequest({ mutualName: u.mutual_name, contactName: contactNameFor(u.contact_url), company })} />
             )}
           </div>
         ))}
