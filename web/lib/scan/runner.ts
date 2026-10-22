@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
-import { getKey } from '../llm/key-store.ts'
+import { getKey, readKey } from '../llm/key-store.ts'
 import { operatorKey, trialStatus } from './trial.ts'
 import { ProviderError, providers, type Provider } from '../llm/provider.ts'
 import type { Vendor } from '../llm/vendors.ts'
@@ -445,7 +445,14 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
   // else runs on the job owner's own key. The operator key is never read from the tenant DB.
   const op = job.funded_by === 'trial' ? operatorKey() : null
   const vendor = job.funded_by === 'trial' ? op?.vendor ?? null : pickVendor(db, job.user_id)
-  const key = job.funded_by === 'trial' ? op?.key ?? null : vendor ? getKey(db, job.user_id, vendor, deps.master) : null // only ever this job's owner
+  // readKey, not getKey: a getKey throw here escaped runJob's try, the runner swallowed
+  // it, and the job crash-looped in 'running' forever instead of failing visibly.
+  const read = vendor && job.funded_by !== 'trial' ? readKey(db, job.user_id, vendor, deps.master) : { key: null, unreadable: false }
+  const key = job.funded_by === 'trial' ? op?.key ?? null : read.key // only ever this job's owner
+  if (read.unreadable) {
+    finish(db, job, 'failed', 'key_unreadable')
+    return 'failed'
+  }
   if (!vendor || !key) {
     finish(db, job, 'failed', 'no_api_key')
     return 'failed'
@@ -639,9 +646,10 @@ export async function kickRunner(db: Database.Database, deps: RunDeps = {}): Pro
 
 // Preview for the "what are you looking for" form: infers the ICP with the tenant's own key
 // so the user can read and edit it before the scan runs.
-export async function previewIcp(db: Database.Database, tenantId: string, query: string, deps: Pick<RunDeps, 'providers' | 'fetchImpl' | 'master'> = {}, ip?: string): Promise<{ icp: Icp; inferred: boolean } | { error: 'no_api_key' | 'key_rejected' | 'trial_key_invalid' }> {
+export async function previewIcp(db: Database.Database, tenantId: string, query: string, deps: Pick<RunDeps, 'providers' | 'fetchImpl' | 'master'> = {}, ip?: string): Promise<{ icp: Icp; inferred: boolean } | { error: 'no_api_key' | 'key_rejected' | 'trial_key_invalid' | 'key_unreadable' }> {
   let vendor = pickVendor(db, tenantId)
-  let key = vendor ? getKey(db, tenantId, vendor, deps.master) : null
+  const read = vendor ? readKey(db, tenantId, vendor, deps.master) : { key: null, unreadable: false }
+  let key = read.key
   if ((!vendor || !key) && ip !== undefined && trialStatus(db, tenantId, ip).funded) {
     // A preview is cheap and does not consume one of the account's trial scans; only starting
     // the scan does. It still needs the trial to be live and the account under its caps.
@@ -656,10 +664,14 @@ export async function previewIcp(db: Database.Database, tenantId: string, query:
       return { error: 'trial_key_invalid' }
     }
   }
+  // An unreadable stored key is not "no key" - say which, or the user re-enters a good
+  // key into a slot that stays broken.
+  if (read.unreadable) return { error: 'key_unreadable' }
   if (!vendor || !key) return { error: 'no_api_key' }
   try {
     return await inferIcp((deps.providers ?? providers)[vendor], key, query, deps.fetchImpl)
-  } catch {
+  } catch (e) {
+    console.error('icp preview failed:', e instanceof Error ? e.message : e)
     return { error: 'key_rejected' }
   }
 }

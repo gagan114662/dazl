@@ -50,3 +50,17 @@ export function getKey(db: Database.Database, tenantId: string, vendor: Vendor, 
   const r = db.prepare('SELECT ciphertext FROM tenant_llm_keys WHERE tenant_id = ? AND vendor = ?').get(tenantId, vendor) as { ciphertext: string } | undefined
   return r ? decryptSecret(r.ciphertext, ctx(tenantId, vendor), master) : null
 }
+
+// getKey throws when the stored row cannot be decrypted (bad ciphertext from a manual
+// insert, ciphertext copied from another tenant - the encryption context binds it to
+// the tenant id, wrong master). On user-facing paths that throw escapes as a bare 500,
+// so those callers use readKey instead: the real error is logged server-side and the
+// caller gets a typed "unreadable" it can show honestly.
+export function readKey(db: Database.Database, tenantId: string, vendor: Vendor, master?: Buffer): { key: string | null; unreadable: boolean } {
+  try {
+    return { key: getKey(db, tenantId, vendor, master), unreadable: false }
+  } catch (e) {
+    console.error(`stored ${vendor} key for tenant ${tenantId} could not be read:`, e instanceof Error ? e.message : e)
+    return { key: null, unreadable: true }
+  }
+}
