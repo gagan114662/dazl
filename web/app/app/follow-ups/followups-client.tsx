@@ -3,12 +3,18 @@ import { useEffect, useState } from 'react'
 import GmailGate from '../gmail-gate'
 import { followupAsk } from '@/lib/outreach/followups'
 
-interface Thread { thread_id: string; company: string; name: string; to_email: string; last_lead_reply_at: number | null; followups_sent: number; next_due_at: number | null; stopped: string | null }
+interface Thread { thread_id: string; company: string; name: string; to_email: string; last_lead_reply_at: number | null; followups_sent: number; next_due_at: number | null; hold_reason: string | null; stopped: string | null }
 interface Sent { thread_id: string; company: string; to_email: string; step: number; status: string; created_at: number }
 interface Overview { enabled: boolean; account: string | null; threads: Thread[]; sent: Sent[] }
 interface Warm { thread_id: string; company: string; name: string; to_email: string; last_reply_at: number; reply_excerpt: string; reopen: { status: string; body: string } | null }
 
 const STOPPED: Record<string, string> = { replied: 'They replied again - the sequence stops for you to handle', bounced: 'The address bounced', unsubscribed: 'They unsubscribed', manual: 'Stopped by you' }
+const HOLD: Record<string, string> = {
+  sequence_owned: 'Handled by your outreach sequence - no automatic follow-up is scheduled here',
+  autopilot_off: 'Automatic follow-ups are off - nothing is scheduled',
+  consent_stale: 'Paused - consent needs renewing in Settings before anything is scheduled',
+  followups_off: 'Automatic follow-ups are off - nothing is scheduled',
+}
 const day = (t: number) => new Date(t * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 
 export default function FollowupsClient() {
@@ -68,7 +74,9 @@ export default function FollowupsClient() {
                 </div>
                 <div className="text-xs text-[#555] text-right">
                   {t.followups_sent} of 2 sent
-                  {t.next_due_at && <div>{t.next_due_at <= Math.floor(Date.now() / 1000) ? 'next one due now' : `next one ${day(t.next_due_at)}`}</div>}
+                  {t.next_due_at
+                    ? <div>{t.next_due_at <= Math.floor(Date.now() / 1000) ? 'next one due now' : `next one ${day(t.next_due_at)}`}</div>
+                    : t.hold_reason ? <div>{HOLD[t.hold_reason] ?? 'No follow-up scheduled'}</div> : null}
                 </div>
               </div>
             ))}
