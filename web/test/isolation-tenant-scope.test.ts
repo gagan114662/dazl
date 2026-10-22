@@ -6,7 +6,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
-import { countHiddenLeads, createJob, exportLeads, getJob, latestJobId, listLeads, migrateScan } from '../lib/scan/store.ts'
+import { countHiddenLeads, createJob, exportLeads, getJob, latestJobId, listJobs, listLeads, migrateScan } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { approve, createDraft, editDraft, isSuppressed, OutreachError, readUnsubToken, skip, suppress, unsubscribeByToken, unsubToken } from '../lib/outreach/service.ts'
 import { createMonitor, deleteMonitor, migrateMonitors, setMonitorEnabled } from '../lib/monitors.ts'
@@ -52,6 +52,8 @@ test('scan jobs, leads, hidden counts and exports are invisible across tenants',
   assert.equal(exportLeads(db, B, jobId).length, 0)
   assert.equal(exportLeads(db, B).length, 0)
   assert.equal(latestJobId(db, B), undefined)
+  assert.equal(listJobs(db, B).length, 0)
+  assert.equal(listJobs(db, A).some(j => j.id === jobId), true)
 })
 
 test('outreach drafts cannot be read, approved, edited or skipped across tenants', () => {

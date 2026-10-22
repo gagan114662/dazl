@@ -267,6 +267,36 @@ export function latestJobId(db: Database.Database, userId: string): string | und
   return (db.prepare('SELECT id FROM scan_jobs WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(userId) as { id: string } | undefined)?.id
 }
 
+// History list for the leads page: the tenant's own past scans, newest first, one row per job.
+// Explicit selection only - the UI links each row to /app/leads?job_id=<id>; nothing autoselects.
+export interface JobSummary {
+  id: string
+  status: string
+  error: string | null
+  query: string | null
+  business_name: string
+  csv_domain: string | null
+  created_at: number
+  finished_at: number | null
+  candidates: number | null
+  verified: number | null
+  needs_review: number | null
+  dropped: number | null
+  lead_count: number
+}
+export function listJobs(db: Database.Database, userId: string, limit = 20): JobSummary[] {
+  return db
+    .prepare(
+      `SELECT j.id, j.status, j.error, j.query, j.business_name, j.csv_domain, j.created_at, j.finished_at,
+              j.candidates, j.verified, j.needs_review, j.dropped,
+              (SELECT count(*) FROM leads l WHERE l.scan_job_id = j.id) AS lead_count
+       FROM scan_jobs j
+       WHERE j.user_id = ?
+       ORDER BY j.created_at DESC, j.rowid DESC LIMIT ?`,
+    )
+    .all(userId, limit) as JobSummary[]
+}
+
 // CSV export: every lead the tenant can see (hidden fit<=1 rows excluded unless
 // includeHidden), across one job or all of their jobs, newest first. Read-only.
 export function exportLeads(db: Database.Database, userId: string, jobId?: string, limit = 5000) {
