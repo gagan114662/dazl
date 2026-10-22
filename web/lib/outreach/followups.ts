@@ -100,8 +100,15 @@ export interface FollowupThreadView {
   last_lead_reply_at: number | null
   followups_sent: number
   next_due_at: number | null
+  hold_reason: FollowupHold | null
   stopped: string | null
 }
+// Why a follow-up that looks scheduled will not actually send. Mirrors the runner's own
+// gates (runFollowups): sequence ownership is checked per thread every tick; the tenant
+// gates stop the run before any send. Surfaced so the page never shows a deadline that
+// cannot fire.
+export type FollowupHold = 'sequence_owned' | 'autopilot_off' | 'consent_stale' | 'followups_off'
+
 export interface FollowupOverview {
   enabled: boolean
   account: string | null
@@ -111,25 +118,45 @@ export interface FollowupOverview {
 
 export function followupOverview(db: Database.Database, tenantId: string, now = Math.floor(Date.now() / 1000)): FollowupOverview {
   const rows = db.prepare(
-    `SELECT t.thread_id, t.to_email, t.last_activity_at, t.last_lead_reply_at, t.followups_sent, t.stopped,
+    `SELECT t.thread_id, t.lead_id, t.to_email, t.last_activity_at, t.last_lead_reply_at, t.followups_sent, t.stopped,
             COALESCE(l.company, '') AS company, COALESCE(l.name, '') AS name
      FROM followup_threads t LEFT JOIN leads l ON l.id = t.lead_id
      WHERE t.tenant_id = ? ORDER BY t.last_activity_at DESC LIMIT 100`,
-  ).all(tenantId) as { thread_id: string; to_email: string; last_activity_at: number; last_lead_reply_at: number | null; followups_sent: number; stopped: string | null; company: string; name: string }[]
-  const threads = rows.map(r => ({
-    thread_id: r.thread_id,
-    company: r.company,
-    name: r.name,
-    to_email: r.to_email,
-    last_lead_reply_at: r.last_lead_reply_at,
-    followups_sent: r.followups_sent,
-    stopped: r.stopped,
-    // The next follow-up is due GAPS_DAYS[sent] days after the last activity; nothing is due for
-    // stopped or exhausted sequences, or threads with no interested reply yet.
-    next_due_at: r.stopped || r.followups_sent >= MAX_FOLLOWUPS || r.last_lead_reply_at === null
-      ? null
-      : r.last_activity_at + (GAPS_DAYS[r.followups_sent] ?? GAPS_DAYS[GAPS_DAYS.length - 1]) * 86400,
-  }))
+  ).all(tenantId) as { thread_id: string; lead_id: string; to_email: string; last_activity_at: number; last_lead_reply_at: number | null; followups_sent: number; stopped: string | null; company: string; name: string }[]
+  const st = getState(db, tenantId)
+  const fuOn = followupsEnabled(db, tenantId)
+  // The runner skips any thread whose lead is enrolled in a sequence, every single tick:
+  // "sequence enrollment owns this thread; never layer warm automation on it".
+  const seqOwned = new Set(
+    (tableExists(db, 'sequences')
+      ? db.prepare('SELECT lead_id FROM sequences WHERE tenant_id = ?').all(tenantId) as { lead_id: string }[]
+      : []
+    ).map(r => r.lead_id),
+  )
+  const threads = rows.map(r => {
+    const hold: FollowupHold | null =
+      seqOwned.has(r.lead_id) ? 'sequence_owned'
+      : !st.enabled || st.paused ? 'autopilot_off'
+      : !st.consent_current ? 'consent_stale'
+      : !fuOn ? 'followups_off'
+      : null
+    return {
+      thread_id: r.thread_id,
+      company: r.company,
+      name: r.name,
+      to_email: r.to_email,
+      last_lead_reply_at: r.last_lead_reply_at,
+      followups_sent: r.followups_sent,
+      stopped: r.stopped,
+      // The next follow-up is due GAPS_DAYS[sent] days after the last activity; nothing is due for
+      // stopped or exhausted sequences, threads with no interested reply yet, or threads a runner
+      // gate holds back. A due date that cannot fire is not shown as one.
+      next_due_at: r.stopped || r.followups_sent >= MAX_FOLLOWUPS || r.last_lead_reply_at === null || hold !== null
+        ? null
+        : r.last_activity_at + (GAPS_DAYS[r.followups_sent] ?? GAPS_DAYS[GAPS_DAYS.length - 1]) * 86400,
+      hold_reason: hold,
+    }
+  })
   const sent = db.prepare(
     `SELECT m.thread_id, m.step, m.status, m.created_at, t.to_email, COALESCE(l.company, '') AS company
      FROM followup_messages m JOIN followup_threads t ON t.tenant_id = m.tenant_id AND t.thread_id = m.thread_id
