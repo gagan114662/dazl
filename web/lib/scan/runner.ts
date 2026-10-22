@@ -15,6 +15,7 @@ import { buildSourcePrompt, collectEvidence, normalizeSources } from '../sources
 import { migrateTinyfish, parseQueries, queryPrompt, tfFetch, tfSearch, tinyfishEnabled, toEvidence } from '../search/tinyfish.ts'
 import { crawlJob } from '../connectors/sitecrawl.ts'
 import { applyEvidenceQualityGate, applyIcpGate, icpTextFor, scoreLeads } from './score.ts'
+import { getMemory, isExcluded, memoryPromptBlock } from '../memory.ts'
 import { enrichJobSignals } from '../signals/index.ts'
 import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } from '../signals/competitor-reddit.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
@@ -437,7 +438,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
 }
 
 export interface RunDeps {
-  score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get }
+  score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null }
 
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
   // Trial-funded jobs run on the shared operator key from the server environment; everything
@@ -565,10 +566,22 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         if (e instanceof ProviderError && e.kind === 'auth') throw e
       }
     }
+    // Memory exclusions are enforced in code, not the prompt: matching leads never reach
+    // scoring, the UI or outreach. Counted in dropped like every other gate.
+    let memory = deps.memory === undefined ? null : deps.memory
+    if (deps.memory === undefined) { try { memory = getMemory(db, job.user_id) } catch { memory = null } } // table may predate this deploy
+    if (memory && memory.exclusions.length > 0) {
+      const kept = outcome.leads.filter(l => !isExcluded(memory, l))
+      outcome.dropped['excluded'] = (outcome.dropped['excluded'] ?? 0) + outcome.leads.length - kept.length
+      outcome.leads = kept
+      const keptReview = outcome.review.filter(l => !isExcluded(memory, l))
+      outcome.dropped['excluded'] += outcome.review.length - keptReview.length
+      outcome.review = keptReview
+    }
     // Quality stage: grade each verified lead for ICP fit, timing and actionability. One model call
     // per scan; a scoring failure never fails the scan, the leads just stay unscored.
     if (complete && outcome.leads.length > 0 && (deps.score !== false)) {
-      const icpText = icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`
+      const icpText = (icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`) + memoryPromptBlock(memory ?? null)
       const grades = await scoreLeads(providers_[vendor], key, icpText, outcome.leads, deps.fetchImpl)
       if (grades) {
         // ICP match gate: a mismatch on a criterion the ICP specifies moves the lead

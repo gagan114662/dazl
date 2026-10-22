@@ -8,8 +8,9 @@ import CrmPanel from './crm-panel'
 import CalcomPanel from './calcom-panel'
 import EnrichmentPanel from './enrichment-panel'
 import CompetitorsPanel from './competitors-panel'
+import MemoryPanel from './memory-panel'
 
-const SECTIONS = [['plan', 'Plan'], ['model-key', 'Model key'], ['connectors', 'Connectors'], ['enrichment', 'Enrichment'], ['gmail', 'Gmail'], ['autopilot', 'Autopilot'], ['replies', 'Replies']]
+const SECTIONS = [['plan', 'Plan'], ['memory', 'Memory'], ['model-key', 'Model key'], ['connectors', 'Connectors'], ['enrichment', 'Enrichment'], ['gmail', 'Gmail'], ['autopilot', 'Autopilot'], ['replies', 'Replies']]
 
 export default function Settings() {
   return (
@@ -20,6 +21,7 @@ export default function Settings() {
         {SECTIONS.map(([id, label]) => <a key={id} href={`#${id}`} className="underline underline-offset-4 text-[#111]">{label}</a>)}
       </nav>
       <div id="plan" className="scroll-mt-6"><PlanPanel /></div>
+      <div id="memory" className="scroll-mt-6"><MemoryPanel /></div>
       <div id="model-key" className="scroll-mt-6"><LlmKeyPanel /></div>
       <CompetitorsPanel />
       <AdvancedPanel />

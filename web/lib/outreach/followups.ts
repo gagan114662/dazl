@@ -4,6 +4,7 @@ import { getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail
 import { auditAt, autopilotAvailable, getState, pause } from './autopilot.ts'
 import { hasConsent } from './ledger.ts'
 import { composeBody, getSettings, isSuppressed, unsubToken, type Deps } from './service.ts'
+import { llmFollowupText } from './draft-llm.ts'
 import { getMasterKey } from '../secrets.ts'
 
 // Follow-ups only for people who replied with interest (a ledger row) and only fill silence.
@@ -67,7 +68,7 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
     let token: string
     try { token = await getAccessToken(db, tenantId, d as OAuthDeps) } catch { db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId, t.thread_id, t.followups_sent); pause(db, tenantId, 'gmail_reconnect_needed'); return stop('gmail_unavailable') }
     try {
-      const raw = toBase64Url(buildMime({ fromName: settings.sender_name, fromEmail: acct.email, to: t.to_email, subject: orig.subject.startsWith('Re:') ? orig.subject : `Re: ${orig.subject}`, body: composeBody(followupText(t.followups_sent, lead, businessName, settings.booking_url), settings, unsubUrl), messageId: `dazl.f${t.followups_sent}.${orig.id}@${acct.email.split('@')[1]}`, unsubscribeUrl: unsubUrl, date: new Date(now * 1000), inReplyTo: t.root_message_id }))
+      const raw = toBase64Url(buildMime({ fromName: settings.sender_name, fromEmail: acct.email, to: t.to_email, subject: orig.subject.startsWith('Re:') ? orig.subject : `Re: ${orig.subject}`, body: composeBody((await llmFollowupText(db, tenantId, t.followups_sent, lead, businessName, settings.booking_url, d)) ?? followupText(t.followups_sent, lead, businessName, settings.booking_url), settings, unsubUrl), messageId: `dazl.f${t.followups_sent}.${orig.id}@${acct.email.split('@')[1]}`, unsubscribeUrl: unsubUrl, date: new Date(now * 1000), inReplyTo: t.root_message_id }))
       const r = await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, t.thread_id)
       db.prepare("UPDATE followup_messages SET status = 'sent', gmail_id = ? WHERE tenant_id = ? AND thread_id = ? AND step = ?").run(r.id, tenantId, t.thread_id, t.followups_sent)
       db.prepare('UPDATE followup_threads SET followups_sent = followups_sent + 1, last_followup_at = ?, last_activity_at = ? WHERE tenant_id = ? AND thread_id = ?').run(now, now, tenantId, t.thread_id)
