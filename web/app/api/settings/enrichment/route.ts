@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { audit, connectorStatus, deleteCredential, recentAudit, saveCredential } from '@/lib/connectors/store'
 import { sameOriginJson } from '@/lib/same-origin'
-import { rateLimit } from '@/lib/rate-limit'
+import { enrichmentWriteLimit } from '@/lib/settings/enrichment-guard'
 
 const CONNECTORS = ['enrich:apollo', 'enrich:pdl']
 
@@ -20,10 +20,8 @@ export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad origin' }, { status: 403 })
-  // Per-tenant bucket: a global key here let anyone (signed in or not) block every
-  // tenant's key saves by exhausting one shared 20/min allowance.
-  const limited = rateLimit(`settings:enrichment:${user.id}`, 20, 60_000)
-  if (!limited.ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  const limited = enrichmentWriteLimit(user.id)
+  if (!limited.ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429, headers: { 'Retry-After': String(limited.retryAfterS) } })
   if (!process.env.DAZL_MASTER_KEY) return NextResponse.json({ error: 'Credential storage unavailable' }, { status: 503 })
   const body = (await req.json().catch(() => null)) as { connector?: string; key?: string; disconnect?: boolean } | null
   if (!body || !body.connector || !CONNECTORS.includes(body.connector)) return NextResponse.json({ error: 'Unknown connector' }, { status: 400 })
