@@ -9,6 +9,7 @@ import VerificationFixture from './verification-fixture'
 
 interface Lead { sequence?: { status: string; step: number; next_due_at: number | null; stop_reason: string | null } | null; id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; watch_new?: number; seen_before?: number; stage?: string | null; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string }[]; events?: { id: string; event_type: string; summary: string; source_url: string; source_published_at: string | null; last_seen_at: number; fresh: boolean }[]; priority?: { graded: boolean; fit: number | null; intent: number | null; action: number | null; evidence_score: number; reasons: string[]; uncounted: string[] } | null; lookalike?: { state: 'insufficient' | 'scored'; cohort_size: number; matches: number; matched_on: string[] } | null }
 interface Icp { summary: string; who: string[]; industries: string[]; sizes: string[]; where: string[]; signals: string[]; exclude: string[] }
+interface JobSummary { id: string; status: string; error: string | null; query: string | null; business_name: string; csv_domain: string | null; created_at: number; finished_at: number | null; candidates: number | null; verified: number | null; needs_review: number | null; dropped: number | null; lead_count: number; test_only: boolean }
 interface Watch { id: string; query: string; active: boolean; next_run_at: number | null; last_run_at: number | null; paused_reason: string | null; last_job_id: string | null; last_status: string | null; new_leads: number }
 interface Monitor { id: string; query: string; interval_hours: number; enabled: number; paused_reason: string | null; next_run_at: number | null; last_new_count: number | null; run_count: number }
 interface Quality { candidates: number; passed: number | null; needs_review: number | null; dropped: number | null; drop_reasons: Record<string, number> }
@@ -248,6 +249,13 @@ export default function LeadsClient() {
     if (j?.error) setWatchNote(j.error)
     await loadWatches()
   }
+  const [pastJobs, setPastJobs] = useState<JobSummary[] | null>(null)
+  // History: a returning user picks a past scan explicitly - nothing autoselects, so an
+  // older job or a test fixture can never silently become the default view.
+  useEffect(() => {
+    if (jobId) return
+    void fetch('/api/scan/jobs').then(r => r.ok ? r.json() : null).then(j => { if (j) setPastJobs(j.jobs ?? []) }).catch(() => {})
+  }, [jobId])
   // Restore the last profile so a reload never loses it (item: ICP persistence).
   useEffect(() => {
     if (jobId) return
@@ -441,6 +449,30 @@ export default function LeadsClient() {
       <SourceMetrics />
       <WarmConnections />
       <VerificationFixture />
+      {!jobId && pastJobs && pastJobs.length > 0 && (
+        <div className="card divide-y divide-white/5 mb-4">
+          <div className="p-4">
+            <h2 className="text-sm font-semibold">Past scans</h2>
+            <p className="text-gray-500 text-xs mt-0.5">Pick one to review its leads. Nothing runs until you start a new scan above.</p>
+          </div>
+          {pastJobs.map(j => (
+            <a key={j.id} href={`/app/leads?job_id=${j.id}`} className="block p-4 hover:bg-white/5">
+              <div className="text-sm font-medium">
+                {j.test_only && <span className="text-gray-500">test only · </span>}
+                {j.query ?? (j.csv_domain ? `CSV import: ${j.csv_domain}` : j.business_name)}
+              </div>
+              <div className="text-gray-500 text-xs mt-0.5">
+                {new Date(j.created_at * 1000).toLocaleDateString()} · {j.status === 'done'
+                  ? (j.candidates !== null
+                      ? `${j.candidates} found: ${j.verified ?? 0} verified, ${j.needs_review ?? 0} need your review, ${j.dropped ?? 0} dropped`
+                      : `${j.lead_count} lead${j.lead_count === 1 ? '' : 's'}`)
+                  : j.status === 'failed' ? 'failed'
+                  : 'still running'}
+              </div>
+            </a>
+          ))}
+        </div>
+      )}
       <div className="card divide-y divide-white/5">
         {visibleLeads.length === 0 ? (
           <p className="p-10 text-center text-gray-500 text-sm">{emptyLeadsMessage(status, 0, hiddenCount) ?? ''}</p>
