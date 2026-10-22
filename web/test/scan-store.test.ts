@@ -102,3 +102,55 @@ test('cross-scan dedupe: leads repeat-flagged by domain or normalized name, earl
   assert.equal(markSeenBefore(db, 'user-a', j1, companyKey), 0, 'the earliest job has nothing before it')
   assert.equal(markSeenBefore(db, 'user-a', 'no-such-job', companyKey), 0)
 })
+
+test('widenWhyCap: a database with the old 300-char why CHECK is rebuilt to 600, rows preserved, guards intact', () => {
+  // Simulate a production database created before the cap widening: base schema, why capped at 300.
+  const db = new Database(':memory:')
+  db.pragma('foreign_keys = ON')
+  db.exec(`
+    CREATE TABLE scan_jobs (
+      id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','done','failed')),
+      business_name TEXT NOT NULL CHECK (length(business_name) BETWEEN 1 AND 150),
+      industry TEXT NOT NULL CHECK (length(industry) BETWEEN 1 AND 100),
+      location TEXT NOT NULL CHECK (length(location) BETWEEN 1 AND 100),
+      attempts INTEGER NOT NULL DEFAULT 0,
+      error TEXT CHECK (error IS NULL OR length(error) <= 200),
+      created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
+      claimed_at INTEGER, finished_at INTEGER
+    );
+    CREATE TABLE leads (
+      id TEXT PRIMARY KEY,
+      scan_job_id TEXT NOT NULL REFERENCES scan_jobs(id) ON DELETE CASCADE,
+      name TEXT NOT NULL DEFAULT '' CHECK (length(name) <= 150),
+      company TEXT NOT NULL DEFAULT '' CHECK (length(company) <= 150),
+      contact TEXT CHECK (contact IS NULL OR length(contact) <= 254),
+      signal TEXT NOT NULL CHECK (length(signal) BETWEEN 1 AND 500),
+      source_url TEXT NOT NULL CHECK (length(source_url) <= 500 AND (source_url LIKE 'https://%' OR source_url LIKE 'http://%')),
+      score INTEGER NOT NULL DEFAULT 50 CHECK (score BETWEEN 0 AND 100),
+      created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
+      why TEXT CHECK (why IS NULL OR length(why) <= 300),
+      CHECK (name <> '' OR company <> '')
+    );
+    CREATE TRIGGER leads_only_while_running BEFORE INSERT ON leads
+    WHEN (SELECT status FROM scan_jobs WHERE id = NEW.scan_job_id) IS NOT 'running'
+    BEGIN SELECT RAISE(ABORT, 'leads can only be added to a running job'); END;
+  `)
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES ('j1', 'u', 'b', 'i', 'l', 'running')").run()
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, why) VALUES ('l1', 'j1', 'Pat', 'Acme', 'hiring', 'https://x.co/a', ?)").run('x'.repeat(290))
+  assert.throws(() => db.prepare("UPDATE leads SET why = ? WHERE id = 'l1'").run('y'.repeat(400))) // old cap still on
+
+  migrateScan(db) // widens
+
+  assert.equal((db.prepare("SELECT length(why) AS n FROM leads WHERE id = 'l1'").get() as { n: number }).n, 290) // row preserved
+  db.prepare("UPDATE leads SET why = ? WHERE id = 'l1'").run('y'.repeat(500)) // 500 now fits
+  assert.throws(() => db.prepare("UPDATE leads SET why = ? WHERE id = 'l1'").run('z'.repeat(601))) // 601 still rejected
+  // trigger restored: leads only into a running job
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES ('j2', 'u', 'b', 'i', 'l', 'done')").run()
+  assert.throws(() => db.prepare("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url) VALUES ('l2', 'j2', 'P', 'C', 'sig', 'https://x.co/b')").run())
+  // dedup index restored
+  const idx = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'leads_dedup'").get()
+  assert.ok(idx)
+  migrateScan(db) // idempotent no-op
+  assert.equal((db.prepare("SELECT count(*) AS n FROM leads").get() as { n: number }).n, 1)
+})

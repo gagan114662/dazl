@@ -103,7 +103,7 @@ function addColumns(db: Database.Database): void {
   add('leads', 'fit', 'INTEGER CHECK (fit IS NULL OR fit BETWEEN 0 AND 5)')
   add('leads', 'intent', 'INTEGER CHECK (intent IS NULL OR intent BETWEEN 0 AND 5)')
   add('leads', 'action', 'INTEGER CHECK (action IS NULL OR action BETWEEN 0 AND 5)')
-  add('leads', 'why', 'TEXT CHECK (why IS NULL OR length(why) <= 300)')
+  add('leads', 'why', 'TEXT CHECK (why IS NULL OR length(why) <= 600)')
   add('leads', 'signals', 'TEXT CHECK (signals IS NULL OR length(signals) <= 1000)')
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS leads_dedup ON leads (scan_job_id, dedup_key) WHERE dedup_key IS NOT NULL')
   add('leads', 'seen_before', 'INTEGER NOT NULL DEFAULT 0')
@@ -111,6 +111,37 @@ function addColumns(db: Database.Database): void {
   // researches and the batch it belongs to. NULL on every manual/watch scan.
   add('scan_jobs', 'csv_domain', 'TEXT CHECK (csv_domain IS NULL OR length(csv_domain) <= 253)')
   add('scan_jobs', 'batch_id', 'TEXT')
+  widenWhyCap(db)
+}
+
+// Score reasoning grew from one sentence to 2-3 (cap 300 -> 600). SQLite cannot alter a
+// column CHECK, so databases that already carry the 300 cap get the leads table rebuilt
+// with the wider one. The rebuild preserves every row, index and trigger. No-op on
+// fresh databases and on databases already at 600.
+function widenWhyCap(db: Database.Database): void {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'leads'").get() as { sql: string } | undefined
+  if (!row || !row.sql.includes('length(why) <= 300)')) return
+  const widened = row.sql.replace(/CREATE TABLE leads\b/, 'CREATE TABLE leads_new').replace('length(why) <= 300)', 'length(why) <= 600)')
+  db.pragma('foreign_keys = OFF')
+  try {
+    db.transaction(() => {
+      db.exec(widened)
+      db.exec('INSERT INTO leads_new SELECT * FROM leads')
+      db.exec('DROP TABLE leads')
+      db.exec('ALTER TABLE leads_new RENAME TO leads')
+    })()
+  } finally {
+    db.pragma('foreign_keys = ON')
+  }
+  // Indexes and triggers on leads were dropped with the old table; restore them.
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS leads_job ON leads (scan_job_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS leads_dedup ON leads (scan_job_id, dedup_key) WHERE dedup_key IS NOT NULL;
+    CREATE TRIGGER IF NOT EXISTS leads_only_while_running
+    BEFORE INSERT ON leads
+    WHEN (SELECT status FROM scan_jobs WHERE id = NEW.scan_job_id) IS NOT 'running'
+    BEGIN SELECT RAISE(ABORT, 'leads can only be added to a running job'); END;
+  `)
 }
 
 export function createJob(db: Database.Database, userId: string, input: ScanInput): string {

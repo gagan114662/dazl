@@ -49,10 +49,13 @@ export interface LeadScore {
   fit: number        // 0-5 ICP fit: would this user sell to this company
   intent: number     // 0-5 is there a reason to contact them NOW
   action: number     // 0-5 can the user act: identifiable company, reachable, right size
-  why: string        // one sentence: why this lead, why now
+  why: string        // 2-3 sentences: why this lead, why now
   signals: SignalId[]
   match: IcpMatch    // per-criterion role/industry/size/location read from the evidence
 }
+
+// Stored rationale cap: the leads.why column CHECKs this length, and the parser truncates to it.
+export const WHY_MAX = 600
 
 // Leads at or below this fit stay in the scan but are hidden behind a toggle.
 export const HIDE_FIT_AT = 1
@@ -70,7 +73,7 @@ Grade each lead below on three axes, 0-5 each:
 Rules:
 - Grade ONLY from the evidence shown. If the evidence does not show timing, intent is low. A true quote about the wrong company is still fit 0.
 - Announcements, listicles and news about a company are not the same as that company being a buyer; grade fit on who the company is, intent on what just happened to them.
-- why: one sentence, "why this lead, why now", grounded in the evidence. No flattery.
+- why: 2-3 sentences, "why this lead, why now": the live trigger from the evidence, why this company fits the ICP, and what to say first. Ground every claim in the quoted evidence - if the evidence does not show it, do not say it. No flattery.
 - signals: pick from this list only, and only when the evidence supports them: ${SIGNALS.join(', ')}
 - match: four letters, one per ICP criterion, in this order: role, industry, size, location.
   y = the evidence shows the lead matches that criterion, n = the evidence shows it does NOT,
@@ -111,7 +114,7 @@ export function parseScores(text: string, count: number): LeadScore[] | null {
     const match: IcpMatch = mm
       ? { role: letter(mm[1][0]), industry: letter(mm[1][1]), size: letter(mm[1][2]), location: letter(mm[1][3]), note }
       : { ...UNKNOWN_MATCH }
-    out[idx] = { fit, intent, action, signals, why: why.slice(0, 300), match }
+    out[idx] = { fit, intent, action, signals, why: why.slice(0, WHY_MAX), match }
   }
   // All-or-nothing: a partially parsed batch would rank unscored leads unfairly.
   return out.every(Boolean) ? (out as LeadScore[]) : null
@@ -154,7 +157,7 @@ export function applyIcpGate(scores: LeadScore[], icp: Icp | null): LeadScore[] 
     if (!misses.length) continue
     const names = misses.map(m => m.key).join('/')
     s.fit = Math.min(s.fit, HIDE_FIT_AT)
-    s.why = `ICP mismatch (${names}${s.match.note ? `: ${s.match.note}` : ''}). ${s.why}`.slice(0, 300)
+    s.why = `ICP mismatch (${names}${s.match.note ? `: ${s.match.note}` : ''}). ${s.why}`.slice(0, WHY_MAX)
   }
   return scores
 }
@@ -185,7 +188,7 @@ export function applyEvidenceQualityGate(leads: { signal: string; excerpt?: stri
     gated++
     l.score = Math.min(l.score, 49)
     if (typeof l.intent === 'number') l.intent = Math.min(l.intent, 1)
-    l.why = `Hiring signal without pain in the quoted evidence. ${l.why ?? ''}`.trim().slice(0, 300)
+    l.why = `Hiring signal without pain in the quoted evidence. ${l.why ?? ''}`.trim().slice(0, WHY_MAX)
   }
   return gated
 }
