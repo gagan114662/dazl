@@ -12,6 +12,23 @@ export function resolveServedCommit(
 ): string {
   const fromEnv = env.DAZL_COMMIT_SHA?.trim()
   if (fromEnv) return fromEnv
+  // The server usually runs from web/, but .git lives at the repo root -
+  // walk up so the probe does not silently return 'unknown' in production.
+  let dir = root
+  for (let i = 0; i < 4; i++) {
+    const found = probeGitDir(env, dir)
+    if (found) return found
+    const parent = path.dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return 'unknown'
+}
+
+function probeGitDir(
+  env: Record<string, string | undefined>,
+  root: string,
+): string | null {
   try {
     const gitDir = path.join(root, '.git')
     const head = readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim()
@@ -25,10 +42,10 @@ export function resolveServedCommit(
         const [sha, ref] = line.split(' ')
         if (ref === refMatch[1] && sha) return sha
       }
-      return 'unknown'
+      return null
     }
-    return /^[0-9a-f]{40}$/.test(head) ? head : 'unknown' // detached HEAD
+    return /^[0-9a-f]{40}$/.test(head) ? head : null // detached HEAD
   } catch {
-    return 'unknown'
+    return null
   }
 }
