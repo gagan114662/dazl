@@ -690,8 +690,10 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // makes an early release safe, unlike a watchdog that frees the slot
     // while the request lives on. The provider/research phase is unaffected
     // (it has its own per-call timeout). Autopilot is intentionally OUTSIDE
-    // the deadline: it is operator-gated, does no provider calls, and its
-    // duration is DB-bound - aborting it mid-write has no cancel protocol.
+    // the deadline and is the HONEST exception to "cancelled before release":
+    // it CAN do network work (outreach sends, e.g. Gmail per the runJob
+    // audit) and has no cancel protocol, so it is awaited to completion
+    // instead - the slot is held through it, never freed beneath it.
     const postBudgetMs = Number(process.env.SCAN_POST_FINISH_BUDGET_MS || 90_000)
     const postCtrl = new AbortController()
     const postTimer = setTimeout(() => postCtrl.abort(), postBudgetMs)
