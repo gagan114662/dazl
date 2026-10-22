@@ -98,7 +98,7 @@ test('x via operator index: consent alone, no session, no worker call - mirrors 
   const fetchImpl = (async (u: string) => new Response(JSON.stringify({ results: [
     { url: 'https://x.com/acme/status/12345', title: 't', snippet: 'we are dumping our current sales tool, it never works', date: '2026-10-20' },
   ] }), { status: 200 })) as unknown as typeof fetch
-  const env = { ...ON, TINYFISH_API_KEY: 'tf-key' }
+  const env = { ...ON, TINYFISH_API_KEY: 'tf-key', TINYFISH_APPROVED_TENANTS: '[{"tenantId": "A", "approvalRef": "MOCK TEST ONLY A", "acceptsPossibleCharges": true, "expiresAt": 4000000000, "maxRequests": 1000}]' }
   const out = await collectAdvanced(db, 'A', 'j1', ['x'], 'sales software alternatives', { worker, master, env, fetchImpl })
   assert.equal(workerCalled, false) // operator index path, never the session worker
   assert.equal(out.length, 1)

@@ -1,3 +1,4 @@
+import { tinyfishGrant } from '../search/provider-grant.ts'
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getKey, readKey } from '../llm/key-store.ts'
@@ -392,6 +393,12 @@ async function tinyfishCompany(db: Database.Database, job: Job, domain: string, 
 // profile to fit against) and no autopilot: an uploaded account list never triggers outreach.
 async function runCompanyJob(db: Database.Database, job: Job, provider: Provider, vendor: Vendor, key: string, deps: RunDeps): Promise<'done' | 'failed' | 'retry'> {
   const ledger = new SourceRunLedger()
+  // No model planning or built-in paid-search fallback may occur after a missing
+  // TinyFish grant. Review-only change: all configured-key scans fail visibly.
+  if (tinyfishEnabled()) {
+    const approval = tinyfishGrant(process.env, job.user_id, Math.floor(Date.now() / 1000))
+    if (!approval.allowed) { finish(db, job, 'failed', `search_${approval.reason}`); return 'failed' }
+  }
   const domain = job.csv_domain!
   const request = `The company at https://${domain}`
   try {
@@ -459,6 +466,12 @@ export interface RunDeps {
 
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
   const ledger = new SourceRunLedger()
+  // No model planning or built-in paid-search fallback may occur after a missing
+  // TinyFish grant. Review-only change: all configured-key scans fail visibly.
+  if (tinyfishEnabled()) {
+    const approval = tinyfishGrant(process.env, job.user_id, Math.floor(Date.now() / 1000))
+    if (!approval.allowed) { finish(db, job, 'failed', `search_${approval.reason}`); return 'failed' }
+  }
   // Trial-funded jobs run on the shared operator key from the server environment; everything
   // else runs on the job owner's own key. The operator key is never read from the tenant DB.
   const op = job.funded_by === 'trial' ? operatorKey() : null

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateTinyfish, tfSearch, tfFetch, tinyfishEnabled, parseQueries, toEvidence, resetTinyfishState } from '../lib/search/tinyfish.ts'
 
-const env = { TINYFISH_API_KEY: 'tf-secret-xyz', TINYFISH_SEARCHES_PER_SCAN: '2', TINYFISH_TENANT_DAILY: '3' }
+const env = { TINYFISH_API_KEY: 'tf-secret-xyz', TINYFISH_APPROVED_TENANTS: '[{"tenantId": "t1", "approvalRef": "MOCK TEST ONLY t1", "acceptsPossibleCharges": true, "expiresAt": 1800001000, "maxRequests": 1000}, {"tenantId": "t2", "approvalRef": "MOCK TEST ONLY t2", "acceptsPossibleCharges": true, "expiresAt": 1800001000, "maxRequests": 1000}]', TINYFISH_SEARCHES_PER_SCAN: '2', TINYFISH_TENANT_DAILY: '3' }
 const mk = () => { const db = new Database(':memory:'); migrateTinyfish(db); resetTinyfishState(); return db }
 const ok = (body: unknown, status = 200) => (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch
 const NOW = 1_800_000_000
