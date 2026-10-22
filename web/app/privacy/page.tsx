@@ -1,4 +1,6 @@
-export const metadata = { title: 'Privacy Policy - dazl' }
+import type { Metadata } from 'next'
+import { SITE_BASE } from '@/lib/site'
+export const metadata: Metadata = { title: 'Privacy Policy - dazl', alternates: { canonical: `${SITE_BASE}/privacy` } }
 
 export default function Privacy() {
   return (

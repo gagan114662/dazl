@@ -1,4 +1,6 @@
-export const metadata = { title: 'Terms of Service - dazl' }
+import type { Metadata } from 'next'
+import { SITE_BASE } from '@/lib/site'
+export const metadata: Metadata = { title: 'Terms of Service - dazl', alternates: { canonical: `${SITE_BASE}/terms` } }
 
 export default function Terms() {
   return (

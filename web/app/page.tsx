@@ -1,5 +1,15 @@
+import type { Metadata } from 'next'
 import Link from 'next/link'
 import Banner from './banner'
+
+import { SITE_BASE } from '@/lib/site'
+
+// Self-referencing canonical (Indexing audit finding: the homepage had none, so the
+// apex and www duplicates competed). Kept on the page, not the root layout, so child
+// routes don't inherit a canonical pointing at the homepage.
+export const metadata: Metadata = {
+  alternates: { canonical: SITE_BASE },
+}
 
 const STEPS = [
   { n: '1', title: 'Say what you want', desc: 'One sentence in plain words, any industry, any country. No forms about your company.' },
