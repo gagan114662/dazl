@@ -321,13 +321,13 @@ export function pickVendor(db: Database.Database, tenantId: string): Vendor | nu
 
 // Writes only if this attempt still owns the job (a reaped and re-claimed job
 // has a higher attempts number), so a slow old run cannot clobber a newer one.
-function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pending', error: string | null, out: VerifyOutcome | null = null, candidates: number | null = null, ledger?: SourceRunLedger) {
+function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pending', error: string | null, out: VerifyOutcome | null = null, candidates: number | null = null, ledger?: SourceRunLedger): boolean {
   const leads = out?.leads ?? []
   const review = out?.review ?? []
   const dropped = out ? Object.values(out.dropped).reduce((a, b) => a + b, 0) : null
-  db.transaction(() => {
+  return db.transaction((): boolean => {
     const own = db.prepare("SELECT 1 FROM scan_jobs WHERE id = ? AND status = 'running' AND attempts = ?").get(job.id, job.attempts)
-    if (!own) return
+    if (!own) return false
     const ins = db.prepare(
       'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, fit, intent, action, why, signals, icp_match, signal_kind, source_kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
@@ -342,6 +342,7 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
       `UPDATE scan_jobs SET status = ?, error = ?, claimed_at = NULL, candidates = ?, verified = ?, needs_review = ?, dropped = ?, drop_reasons = ?,
          finished_at = CASE WHEN ? = 'pending' THEN NULL ELSE CAST(strftime('%s','now') AS INTEGER) END WHERE id = ?`,
     ).run(status, error, candidates, status === 'done' ? leads.length : null, status === 'done' ? review.length : null, dropped, out ? JSON.stringify(out.dropped) : null, status, job.id)
+    return true
   })()
 }
 
@@ -664,7 +665,10 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // a walled hiring post with no pain in its snippet is capped below 50 like any job ad.
     try { applyEvidenceQualityGate(walledRows) } catch { /* gate only */ }
     outcome.review.push(...walledRows)
-    finish(db, job, 'done', null, outcome, leads.length + walledLeads.length, ledger)
+    const owned = finish(db, job, 'done', null, outcome, leads.length + walledLeads.length, ledger)
+    // Stale attempt: finish() wrote nothing, so every post-finish side effect
+    // must be skipped too - a re-claimed job belongs to the newer attempt.
+    if (!owned) return 'done'
     if (complaints.length > 0) { try { badgeComplaintLeads(db, job.id, complaints) } catch { /* badge only */ } }
     // Watch run: flag the leads this watch has never surfaced, remember the rest.
     if (job.watch_id) { try { markWatchLeads(db, job.watch_id, job.id) } catch { /* bonus only */ } }
