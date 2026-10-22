@@ -1,3 +1,4 @@
+import { counterpartySignal } from './counterparty.ts'
 import { closedJobEvidence } from './closed-job.ts'
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
@@ -246,6 +247,13 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
         }
       }
       drop(v.reason); continue
+    }
+    const cp = counterpartySignal(c, page, '')
+    if (cp) {
+      const k = dedupKey(c)
+      if (!review.has(k)) review.set(k, { ...c, contact: null, review_reason: 'counterparty_signal' })
+      else drop('duplicate')
+      continue
     }
     passed.push({ c, v })
   }
