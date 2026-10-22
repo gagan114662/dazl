@@ -71,3 +71,36 @@ test('stale attempt: finish no-ops AND zero post-finish side effects fire', asyn
   const row = db.prepare('SELECT status, attempts FROM scan_jobs WHERE id = ?').get(id) as { status: string; attempts: number }
   assert.deepEqual(row, { status: 'running', attempts: 2 })
 })
+
+test('stale CSV-batch attempt: owned-gate blocks seen-flags, crawl and enrichment', async () => {
+  const { createBatch, queuePendingRows, migrateCsv } = await import('../lib/scan/csv-import.ts')
+  const db = setup()
+  const { migratePlans, setPlan } = await import('../lib/plans.ts')
+  migratePlans(db)
+  setPlan(db, 'A', 'pro')
+  migrateCsv(db)
+  const b = createBatch(db, 'A', ['acme.com'])
+  queuePendingRows(db, 'A', b)
+  const stale = claimKeyedJob(db)! // attempts = 1
+  db.prepare("UPDATE scan_jobs SET status='pending' WHERE id = ?").run(stale.id)
+  const fresh = claimKeyedJob(db)!
+  assert.equal(fresh.attempts, 2)
+  const csvProviders: Record<'anthropic' | 'openai', Provider> = {
+    anthropic: { research: async () => ({ text: 'Here: ' + JSON.stringify([lead]), citedUrls: ['https://a.com/x'] }) },
+    openai: { research: async () => ({ text: '[]', citedUrls: [] }) },
+  }
+  let crawls = 0
+  const saved = process.env.SITECRAWL_ENABLED
+  process.env.SITECRAWL_ENABLED = '1'
+  try {
+    const out = await runJob(db, stale, { providers: csvProviders, master, fetchPage: page, crawlGet: async () => { crawls++; throw new Error('no net in test') } })
+    assert.equal(out, 'done')
+    assert.equal(listLeads(db, 'A', stale.id).length, 0, 'stale CSV finish wrote no leads')
+    assert.equal(crawls, 0, 'stale CSV run never crawls the fresh attempt\'s leads')
+  } finally {
+    if (saved === undefined) delete process.env.SITECRAWL_ENABLED
+    else process.env.SITECRAWL_ENABLED = saved
+  }
+  const row = db.prepare('SELECT status, attempts FROM scan_jobs WHERE id = ?').get(stale.id) as { status: string; attempts: number }
+  assert.deepEqual(row, { status: 'running', attempts: 2 })
+})

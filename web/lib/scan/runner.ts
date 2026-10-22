@@ -442,7 +442,10 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
     const judge = deps.judge === undefined ? makeJudge(provider, key, deps.fetchImpl) : deps.judge ?? undefined
     const outcome = await verifyLeads(leads, fetchP, deps.now, judge)
     try { applyEvidenceQualityGate(outcome.leads) } catch { /* gate only, never fails the job */ }
-    finish(db, job, 'done', null, outcome, leads.length, ledger)
+    const owned = finish(db, job, 'done', null, outcome, leads.length, ledger)
+    // Same stale-attempt gate as the main path: no side effects for a job
+    // this attempt no longer owns.
+    if (!owned) return 'done'
     try { markSeenBefore(db, job.user_id, job.id, companyKey) } catch { /* flag only */ }
     // Contact-page crawl and free intent signals (SEC Form D, public job boards) - this is
     // where the batch table's contacts come from. Same bonuses, same silence on failure.
