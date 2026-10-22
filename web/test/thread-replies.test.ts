@@ -3,8 +3,6 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { migrateThreadReplies, setQueries, listQueries, looksLikeQuestion, isRelevantToQuery, refreshReplies, listThreads, dismissThread, draftReply, saveDraft, markDraft } from '../lib/replies/threads.ts'
-import { effectiveStepStatus } from '../lib/outreach/sequences.ts'
-import { migrateThreadReplies, setQueries, listQueries, looksLikeQuestion, refreshReplies, listThreads, dismissThread, draftReply, saveDraft, markDraft } from '../lib/replies/threads.ts'
 import { effectiveStepStatus, sequenceStepsView, migrateSequences } from '../lib/outreach/sequences.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
@@ -151,7 +149,7 @@ test('draft: not found, no key, then drafted on the tenant key with edit and mar
   assert.deepEqual(await draftReply(d, 't1', 'f'.repeat(24), { sells: '', website: '' }, { master }), { error: 'not_found' })
   assert.deepEqual(await draftReply(d, 't1', thread.id, { sells: '', website: '' }, { master }), { error: 'no_key' })
 
-  saveKey(d, 't1', 'anthropic', 'sk-ant-test-key-1234', master)
+  saveKey(d, 't1', 'anthropic', 'sk-ant...1234', master)
   let sentKey = ''
   let prompt = ''
   const f = (async (_u: string, init: RequestInit) => {
@@ -161,7 +159,7 @@ test('draft: not found, no key, then drafted on the tenant key with edit and mar
   }) as unknown as typeof fetch
   const r = await draftReply(d, 't1', thread.id, { sells: 'lead research for agencies', website: 'https://dazl.ai' }, { fetchImpl: f, master, now: 1_800_000_000 })
   assert.ok(!('error' in r))
-  assert.equal(sentKey, 'sk-ant-test-key-1234') // the tenant's own key, never the operator's
+  assert.equal(sentKey, 'sk-ant...1234') // the tenant's own key, never the operator's
   assert.match(prompt, /Anyone use a tool for outbound\?/)
   assert.match(prompt, /lead research for agencies/)
   assert.match(prompt, /Reddit reacts badly to marketing/)
