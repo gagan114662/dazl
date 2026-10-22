@@ -7,7 +7,7 @@ import SourceMetrics from './source-metrics'
 import { WarmConnections, WarmPath } from './warm-path'
 import VerificationFixture from './verification-fixture'
 
-interface Lead { sequence?: { status: string; step: number; next_due_at: number | null; stop_reason: string | null } | null; id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; watch_new?: number; seen_before?: number; stage?: string | null; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string }[]; events?: { id: string; event_type: string; summary: string; source_url: string; source_published_at: string | null; last_seen_at: number; fresh: boolean }[]; priority?: { graded: boolean; fit: number | null; intent: number | null; action: number | null; evidence_score: number; reasons: string[]; uncounted: string[] } | null }
+interface Lead { sequence?: { status: string; step: number; next_due_at: number | null; stop_reason: string | null } | null; id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; watch_new?: number; seen_before?: number; stage?: string | null; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string }[]; events?: { id: string; event_type: string; summary: string; source_url: string; source_published_at: string | null; last_seen_at: number; fresh: boolean }[]; priority?: { graded: boolean; fit: number | null; intent: number | null; action: number | null; evidence_score: number; reasons: string[]; uncounted: string[] } | null; lookalike?: { state: 'insufficient' | 'scored'; cohort_size: number; matches: number; matched_on: string[] } | null }
 interface Icp { summary: string; who: string[]; industries: string[]; sizes: string[]; where: string[]; signals: string[]; exclude: string[] }
 interface Watch { id: string; query: string; active: boolean; next_run_at: number | null; last_run_at: number | null; paused_reason: string | null; last_job_id: string | null; last_status: string | null; new_leads: number }
 interface Monitor { id: string; query: string; interval_hours: number; enabled: number; paused_reason: string | null; next_run_at: number | null; last_new_count: number | null; run_count: number }
@@ -502,6 +502,13 @@ export default function LeadsClient() {
                 {l.priority.reasons.map((r, i) => <div key={`r${i}`} className="text-gray-400">+ {r}</div>)}
                 {l.priority.uncounted.map((u, i) => <div key={`u${i}`} className="text-gray-500">not scored: {u}</div>)}
                 <div className="text-gray-500">Leads rank by ICP fit first, then evidence - more evidence never outranks a better fit. Heuristic, not a prediction: same type + source-stated date grouped as one event; source independence not verified (syndication possible).</div>
+              </div>
+            )}
+            {l.lookalike && (
+              <div className="text-xs mt-1 text-gray-400">
+                {l.lookalike.state === 'scored'
+                  ? <>Resembles {l.lookalike.matches} of {l.lookalike.cohort_size} of your past fit-4+ or interested-reply leads{l.lookalike.matched_on.length > 0 ? ` (matched: ${l.lookalike.matched_on.join(', ')})` : ''} - keyword/field overlap, a heuristic, not a prediction. Those past leads are not customers or proven buyers.</>
+                  : <>Not enough past fit-4+ or interested-reply leads for a lookalike signal yet ({l.lookalike.cohort_size} of 3 needed) - nothing is invented in the meantime.</>}
               </div>
             )}
             {l.events && l.events.length > 0 && (
