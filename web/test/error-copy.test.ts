@@ -19,12 +19,12 @@ test('knownErrorCopy: shared codes map, context-specific and unknown codes retur
   assert.equal(knownErrorCopy(42), null)
 })
 
-test('leads page: preview and run route API errors through knownErrorCopy exactly once each', () => {
+test('leads page: every API error branch routes through knownErrorCopy exactly once', () => {
   const src = readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8')
   const branches = src.match(/if \(!r\.ok\) \{ setError\(/g) ?? []
-  assert.equal(branches.length, 2, 'preview() and run() each get one error branch - a second is dead code')
+  assert.equal(branches.length, 3, 'preview(), run() and fillFromSite() each get one error branch - a second is dead code')
   const routed = src.match(/if \(!r\.ok\) \{ setError\(knownErrorCopy\(j\.error\)/g) ?? []
-  assert.equal(routed.length, 2, 'both branches consult knownErrorCopy before raw/fallback text')
+  assert.deepEqual(routed.length, branches.length, 'every branch consults knownErrorCopy before raw/fallback text')
 })
 
 test('leads page: job-failed render never shows the raw code either', () => {
