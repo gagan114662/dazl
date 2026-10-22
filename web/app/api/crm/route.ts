@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { auditPush, disconnectCrm, getCrmConfig, pushLead, saveCrmConfig } from '@/lib/crm/index'
+import { defaultLookup, resolvePublic } from '@/lib/net/public-fetch'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 
@@ -27,6 +28,12 @@ export async function POST(req: NextRequest) {
       const key = typeof body?.key === 'string' ? body.key.trim() : ''
       const url = typeof body?.url === 'string' ? body.url.trim() : ''
       if (provider === 'webhook' && !/^https:\/\/\S{4,400}$/.test(url)) return NextResponse.json({ error: 'Webhook URL must be https' }, { status: 400 })
+      if (provider === 'webhook') {
+        let host = ''
+        try { host = new URL(url).hostname } catch { return NextResponse.json({ error: 'Webhook URL must be https' }, { status: 400 }) }
+        // Save-time check; the push path re-validates at send time since DNS can be re-pointed later.
+        if (!(await resolvePublic(host, defaultLookup))) return NextResponse.json({ error: 'Webhook URL must point at a public address' }, { status: 400 })
+      }
       if (provider !== 'webhook' && key.length < 8) return NextResponse.json({ error: 'That key looks too short' }, { status: 400 })
       if (!process.env.DAZL_MASTER_KEY) return NextResponse.json({ error: 'Key storage is not available right now' }, { status: 503 })
       saveCrmConfig(db, user.id, provider === 'webhook' ? { provider, url } : { provider, key })

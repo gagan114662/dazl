@@ -15,7 +15,7 @@ const MAX_REDIRECTS = 3
 const TIMEOUT_MS = 8_000
 
 export type Lookup = (hostname: string) => Promise<{ address: string; family: number }[]>
-const defaultLookup: Lookup = (hostname) => dnsLookup(hostname, { all: true, verbatim: true })
+export const defaultLookup: Lookup = (hostname) => dnsLookup(hostname, { all: true, verbatim: true })
 
 // Loopback, private, link-local (cloud metadata), CGNAT, multicast, documentation and
 // other non-public ranges. Anything we do not recognize as plainly public is rejected.
@@ -68,15 +68,18 @@ export function pinnedLookup(address: PublicAddress): import('node:net').LookupF
   }
 }
 
-export function pinnedHtmlRequest(url: URL, records: PublicAddress[], signal: AbortSignal): Promise<Response> {
+export interface PinnedRequestOptions { method?: string; headers?: Record<string, string>; body?: string; maxBytes?: number }
+export function pinnedHtmlRequest(url: URL, records: PublicAddress[], signal: AbortSignal, opts: PinnedRequestOptions = {}): Promise<Response> {
+  const maxBytes = opts.maxBytes ?? MAX_BYTES
   return new Promise((resolve, reject) => {
     const address = records[0]
     const request = url.protocol === 'https:' ? httpsRequest : httpRequest
     const req = request(url, {
       agent: false,
       signal,
+      method: opts.method ?? 'GET',
       lookup: pinnedLookup(address),
-      headers: { 'user-agent': 'dazl-icp/1.0 (+https://dazl.ai)', accept: 'text/html,application/xhtml+xml' },
+      headers: opts.headers ?? { 'user-agent': 'dazl-icp/1.0 (+https://dazl.ai)', accept: 'text/html,application/xhtml+xml' },
     }, res => {
       const headers = new Headers()
       for (const [k, v] of Object.entries(res.headers)) if (v !== undefined) headers.set(k, Array.isArray(v) ? v.join(', ') : v)
@@ -91,22 +94,41 @@ export function pinnedHtmlRequest(url: URL, records: PublicAddress[], signal: Ab
       }
       if ((res.statusCode ?? 0) >= 300 && (res.statusCode ?? 0) < 400) { finish(); res.destroy(); return }
       res.on('data', (chunk: Buffer) => {
-        const part = chunk.subarray(0, MAX_BYTES - total)
+        const part = chunk.subarray(0, maxBytes - total)
         chunks.push(part); total += part.length
-        if (total >= MAX_BYTES) { finish(); res.destroy() }
+        if (total >= maxBytes) { finish(); res.destroy() }
       })
       res.on('end', finish)
       res.on('error', e => { if (!finished) reject(e) })
     })
     req.on('error', reject)
+    if (opts.body !== undefined) req.write(opts.body)
     req.end()
   })
 }
 
-export interface PublicFetchDeps { fetchImpl?: typeof fetch; lookup?: Lookup }
+const HTML_ACCEPT = /text\/html|application\/xhtml/i
+export interface PublicFetchDeps {
+  fetchImpl?: typeof fetch
+  lookup?: Lookup
+  accept?: RegExp | null        // response content-type gate; default HTML only, null = no gate
+  acceptHeader?: string         // request Accept header
+  userAgent?: string
+  maxBytes?: number             // response body cap; default 512KB
+  timeoutMs?: number
+  method?: 'GET' | 'POST'       // default GET
+  body?: string                 // POST body
+  headers?: Record<string, string> // full request-header override (else UA/Accept defaults)
+}
 
-export async function fetchPublicHtml(rawUrl: string, deps: PublicFetchDeps = {}): Promise<{ html: string; finalUrl: string } | { error: PublicFetchError }> {
-  const deadline = AbortSignal.timeout(TIMEOUT_MS)
+export async function fetchPublicHtml(rawUrl: string, deps: PublicFetchDeps = {}): Promise<{ html: string; finalUrl: string; status: number } | { error: PublicFetchError; status?: number }> {
+  const deadline = AbortSignal.timeout(deps.timeoutMs ?? TIMEOUT_MS)
+  const maxBytes = deps.maxBytes ?? MAX_BYTES
+  const reqHeaders = deps.headers ?? {
+    'user-agent': deps.userAgent ?? 'dazl-icp/1.0 (+https://dazl.ai)',
+    accept: deps.acceptHeader ?? 'text/html,application/xhtml+xml',
+  }
+  const allowType = deps.accept === undefined ? HTML_ACCEPT : deps.accept
   const lookup = deps.lookup ?? defaultLookup
   let url: URL
   try { url = new URL(rawUrl.trim()) } catch { return { error: 'invalid' } }
@@ -128,8 +150,10 @@ export async function fetchPublicHtml(rawUrl: string, deps: PublicFetchDeps = {}
       res = deps.fetchImpl ? await deps.fetchImpl(url.toString(), {
         redirect: 'manual', // we follow by hand and re-validate every hop
         signal: deadline,
-        headers: { 'user-agent': 'dazl-icp/1.0 (+https://dazl.ai)', accept: 'text/html,application/xhtml+xml' },
-      }) : await pinnedHtmlRequest(url, records, deadline)
+        method: deps.method ?? 'GET',
+        headers: reqHeaders,
+        body: deps.body,
+      }) : await pinnedHtmlRequest(url, records, deadline, { method: deps.method, headers: reqHeaders, body: deps.body, maxBytes })
     } catch (e) {
       const name = e instanceof Error ? e.name : ''
       return { error: name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'blocked' }
@@ -141,9 +165,9 @@ export async function fetchPublicHtml(rawUrl: string, deps: PublicFetchDeps = {}
       if (url.protocol !== 'https:' && url.protocol !== 'http:') return { error: 'invalid' }
       continue
     }
-    if (!res.ok) return { error: 'blocked' }
+    if (!res.ok) return { error: 'blocked', status: res.status }
     const type = res.headers.get('content-type') ?? ''
-    if (type && !/text\/html|application\/xhtml/i.test(type)) return { error: 'not_html' }
+    if (allowType && type && !allowType.test(type)) return { error: 'not_html', status: res.status }
     // Size cap: read at most MAX_BYTES and keep that prefix (a huge page still yields a profile).
     let html: string
     if (res.body) {
@@ -154,20 +178,20 @@ export async function fetchPublicHtml(rawUrl: string, deps: PublicFetchDeps = {}
         for (;;) {
           const { done, value } = await reader.read()
           if (done) break
-          const part = value.subarray(0, MAX_BYTES - total)
+          const part = value.subarray(0, maxBytes - total)
           total += part.byteLength
           chunks.push(part)
-          if (total >= MAX_BYTES) { await reader.cancel().catch(() => {}); break }
+          if (total >= maxBytes) { await reader.cancel().catch(() => {}); break }
         }
       } catch { return { error: 'timeout' } }
-      const buf = new Uint8Array(Math.min(total, MAX_BYTES))
+      const buf = new Uint8Array(Math.min(total, maxBytes))
       let off = 0
       for (const c of chunks) { const n = Math.min(c.byteLength, buf.byteLength - off); buf.set(c.subarray(0, n), off); off += n }
       html = new TextDecoder().decode(buf)
     } else {
-      html = (await res.text()).slice(0, MAX_BYTES)
+      html = (await res.text()).slice(0, maxBytes)
     }
-    return { html, finalUrl: url.toString() }
+    return { html, finalUrl: url.toString(), status: res.status }
   }
   return { error: 'blocked' } // redirect loop
 }

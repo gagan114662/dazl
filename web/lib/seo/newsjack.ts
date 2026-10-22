@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3'
 import { getKey, keyStatus } from '../llm/key-store.ts'
 import { providers, ProviderError } from '../llm/provider.ts'
+import { fetchPublicHtml, defaultLookup, type Lookup } from '../net/public-fetch.ts'
 import type { Vendor } from '../llm/vendors.ts'
 
 // Newsjacking drafts: paste a news URL, get a draft commentary on the tenant's OWN AI key.
@@ -34,14 +35,13 @@ export function parseArticle(html: string): { title: string; excerpt: string } {
   return { title: title.slice(0, 200), excerpt: text.slice(0, 4000) }
 }
 
-async function fetchArticle(url: string, f: typeof fetch): Promise<{ title: string; excerpt: string } | null> {
-  try {
-    const res = await f(url, { redirect: 'follow', signal: AbortSignal.timeout(15_000), headers: { 'user-agent': 'dazl-newsjack/1.0', accept: 'text/html,*/*;q=0.5' } })
-    if (!res.ok) return null
-    const html = (await res.text()).slice(0, 500_000)
-    const a = parseArticle(html)
-    return a.excerpt.length >= 200 ? a : null
-  } catch { return null }
+// Tenant-pasted URL, fetched through the SSRF guard: public addresses only, pinned at
+// connect time, redirect hops re-validated. accept:null keeps the old any-type behavior.
+async function fetchArticle(url: string, f: typeof fetch | undefined, lookup: Lookup): Promise<{ title: string; excerpt: string } | null> {
+  const r = await fetchPublicHtml(url, { fetchImpl: f, lookup, accept: null, acceptHeader: 'text/html,*/*;q=0.5', userAgent: 'dazl-newsjack/1.0', maxBytes: 500_000, timeoutMs: 15_000 })
+  if ('error' in r) return null
+  const a = parseArticle(r.html)
+  return a.excerpt.length >= 200 ? a : null
 }
 
 const PROMPT = (title: string, excerpt: string) => `A B2B founder wants to comment on this news for their audience of sales and revenue teams.
@@ -58,7 +58,7 @@ Rules: no hype words, no invented statistics, state only what the excerpt suppor
 
 export type Newsjack = { id: string; url: string; title: string | null; draft: string; status: string; created_at: number }
 
-export async function createNewsjack(db: Database.Database, tenantId: string, rawUrl: string, deps: { fetchImpl?: typeof fetch; master?: Buffer; now?: number } = {}): Promise<Newsjack | { error: 'no_key' | 'invalid' | 'fetch' | 'upstream' }> {
+export async function createNewsjack(db: Database.Database, tenantId: string, rawUrl: string, deps: { fetchImpl?: typeof fetch; lookup?: Lookup; master?: Buffer; now?: number } = {}): Promise<Newsjack | { error: 'no_key' | 'invalid' | 'fetch' | 'upstream' }> {
   const url = rawUrl.trim()
   if (!/^https:\/\/[^\s]{4,480}$/.test(url)) return { error: 'invalid' }
   const vendor = (keyStatus(db, tenantId)[0]?.vendor ?? null) as Vendor | null
@@ -66,7 +66,7 @@ export async function createNewsjack(db: Database.Database, tenantId: string, ra
   const key = getKey(db, tenantId, vendor, deps.master)
   if (!key) return { error: 'no_key' }
   const f = deps.fetchImpl ?? fetch
-  const article = await fetchArticle(url, f)
+  const article = await fetchArticle(url, deps.fetchImpl, deps.lookup ?? defaultLookup)
   if (!article) return { error: 'fetch' }
   let draft: string
   try {

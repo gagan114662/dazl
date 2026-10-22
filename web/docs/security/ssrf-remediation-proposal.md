@@ -1,8 +1,29 @@
 # SSRF remediation proposal (F4 / F5)
 
-Status: proposal only. No existing file is modified here; implementation waits for
-the primary engineer's ownership confirmation on the touched files. Companion to
-`tenant-isolation-assessment.md` findings F4 and F5.
+Status: IMPLEMENTED on branch security/tenant-isolation-assessment (ownership
+confirmed by the primary engineer). Companion to `tenant-isolation-assessment.md`
+findings F4 and F5. F1 (CSV formula escaping) and F2 (per-tenant enrichment rate
+limit) landed in the same branch.
+
+Implementation notes:
+- `lib/net/public-fetch.ts` gained additive options (`accept`, `acceptHeader`,
+  `userAgent`, `maxBytes`, `timeoutMs`, `method`, `body`, `headers`); GET-HTML
+  defaults are unchanged for the existing ICP-from-site caller. HTTP-error and
+  content-type blocks now carry the response `status` so callers can show it.
+- SEO audit and newsjack call the guard with `accept: null` to preserve their
+  old any-content-type behavior; request UA/Accept headers, timeouts and size
+  caps are unchanged. Redirects are re-validated per hop (before, plain
+  `redirect: 'follow'`).
+- `normalizeDomain` no longer accepts `localhost`.
+- CRM webhook: save-time host validation in the route plus push-time pinned
+  POST. Deliberate narrowing: webhook redirects are no longer followed; a
+  redirecting endpoint gets its 3xx reported as an error instead.
+- Enrichment settings POST now authenticates first and rate-limits per tenant
+  (`settings:enrichment:<user id>`); no route-level test harness exists in this
+  repo for API routes, so that change is covered by tsc + review, not a test.
+- Regression tests: `web/test/isolation-fixes.test.ts` proves the callers route
+  through the guard (injected DNS, zero egress on block) and pins the CSV
+  escaping; `web/test/isolation-ssrf-guard.test.ts` pins the guard itself.
 
 ## Problem (demonstrated unsafe primitive, not a proven production exploit)
 

@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import { fetchPublicHtml, defaultLookup, type Lookup, type PublicFetchDeps } from '../net/public-fetch.ts'
 
 // Indexing audit: fetches the user's own homepage directly (not via Jina Reader - Jina
 // returns markdown, which strips the meta description and canonical tag this audit checks),
@@ -17,7 +18,7 @@ export interface AuditResult { domain: string; final_url: string; fetched_at: nu
 // Hostname only: no scheme, path, port, credentials, or trailing dot. http is upgraded to https.
 export function normalizeDomain(raw: string): string | null {
   const s = raw.trim().toLowerCase().replace(/^[a-z]+:\/\//, '').split(/[\/?#]/)[0].replace(/\.$/, '')
-  if (!/^(localhost|[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+)$/.test(s)) return null
+  if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/.test(s)) return null
   if (s.length > 253) return null
   return s
 }
@@ -49,23 +50,33 @@ export function parseRobots(txt: string): { blocksAll: boolean; sitemaps: string
   return { blocksAll, sitemaps }
 }
 
-async function get(url: string, f: typeof fetch, cap: number): Promise<{ ok: boolean; status: number; body: string; finalUrl: string }> {
-  try {
-    const res = await f(url, { redirect: 'follow', signal: AbortSignal.timeout(15_000), headers: { 'user-agent': 'dazl-indexing-audit/1.0', accept: 'text/html,text/plain,application/xml;q=0.9,*/*;q=0.5' } })
-    const body = (await res.text()).slice(0, cap)
-    return { ok: res.ok, status: res.status, body, finalUrl: res.url }
-  } catch { return { ok: false, status: 0, body: '', finalUrl: url } }
+// Every fetch goes through the SSRF guard: public addresses only, pinned at connect
+// time, each redirect hop re-validated. accept:null keeps the old any-content-type
+// behavior - the guard's job here is the address, not the type.
+async function get(url: string, deps: PublicFetchDeps, cap: number): Promise<{ ok: boolean; status: number; body: string; finalUrl: string; err?: string }> {
+  const r = await fetchPublicHtml(url, {
+    ...deps,
+    accept: null,
+    acceptHeader: 'text/html,text/plain,application/xml;q=0.9,*/*;q=0.5',
+    userAgent: 'dazl-indexing-audit/1.0',
+    maxBytes: cap,
+    timeoutMs: 15_000,
+  })
+  if ('error' in r) return { ok: false, status: r.status ?? 0, body: '', finalUrl: url, err: r.error }
+  return { ok: true, status: r.status, body: r.html, finalUrl: r.finalUrl }
 }
 
-export async function runAudit(db: Database.Database, tenantId: string, rawDomain: string, deps: { fetchImpl?: typeof fetch; now?: number; id?: string } = {}): Promise<AuditResult | { error: string }> {
+export async function runAudit(db: Database.Database, tenantId: string, rawDomain: string, deps: { fetchImpl?: typeof fetch; lookup?: Lookup; now?: number; id?: string } = {}): Promise<AuditResult | { error: string }> {
   const domain = normalizeDomain(rawDomain)
   if (!domain) return { error: 'Enter a domain like acme.com (no https://, no path).' }
-  const f = deps.fetchImpl ?? fetch
+  const fetchDeps: PublicFetchDeps = { fetchImpl: deps.fetchImpl, lookup: deps.lookup ?? defaultLookup }
   const now = deps.now ?? Math.floor(Date.now() / 1000)
   const checks: AuditCheck[] = []
-  const home = await get(`https://${domain}/`, f, 1_000_000)
-  if (!home.ok && home.status === 0) return { error: `Could not reach https://${domain}/ - check the domain and that the site is up.` }
-  const robots = await get(`https://${domain}/robots.txt`, f, 200_000)
+  const home = await get(`https://${domain}/`, fetchDeps, 1_000_000)
+  if (!home.ok && home.status === 0) {
+    return { error: home.err === 'not_public' ? 'That domain does not resolve to a public address.' : `Could not reach https://${domain}/ - check the domain and that the site is up.` }
+  }
+  const robots = await get(`https://${domain}/robots.txt`, fetchDeps, 200_000)
   const rb = robots.ok ? parseRobots(robots.body) : null
 
   if (!home.ok) {
@@ -82,7 +93,7 @@ export async function runAudit(db: Database.Database, tenantId: string, rawDomai
   const sitemapOk = rb && rb.sitemaps.length > 0 ? { found: true, where: rb.sitemaps[0] } : null
   let sitemapValue = '', sitemapFound = false
   if (sitemapOk) { sitemapFound = true; sitemapValue = `declared in robots.txt: ${sitemapOk.where}` } else {
-    const sm = await get(`https://${domain}/sitemap.xml`, f, 50_000)
+    const sm = await get(`https://${domain}/sitemap.xml`, fetchDeps, 50_000)
     if (sm.ok && /<(urlset|sitemapindex)[\s>]/i.test(sm.body)) { sitemapFound = true; sitemapValue = '/sitemap.xml exists' } else sitemapValue = 'not found'
   }
   checks.push({ id: 'sitemap', label: 'Sitemap', ok: sitemapFound, value: sitemapValue, hint: sitemapFound ? '' : 'Add an XML sitemap and reference it from robots.txt so crawlers find every page.' })
