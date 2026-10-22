@@ -15,7 +15,7 @@
 //     grant it nothing beyond the fresh DB and verify its role flags.
 import pg from 'pg'
 
-export const ROLE = 'dazl_rehearse'
+export const ROLE_PREFIX = 'dazl_rehearse_'
 export const DB_PREFIX = 'dazl_rehearse_'
 export const MARKER = 'dazl_rehearse_meta'
 
@@ -27,7 +27,7 @@ export function assertLoopback(url: string): void {
   }
 }
 
-export interface Provisioned { url: string; dbName: string; token: string }
+export interface Provisioned { url: string; dbName: string; token: string; role: string }
 
 // Creates a FRESH database (fails if the name somehow exists - never reuses or
 // marks an existing one), plants the ownership marker with a random token, and
@@ -37,37 +37,32 @@ export async function provisionRehearsalDb(adminUrl: string, rolePassword: strin
   const admin = new pg.Client({ connectionString: adminUrl })
   await admin.connect()
   try {
-    const dbName = DB_PREFIX + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+    const suffix = Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+    const dbName = DB_PREFIX + suffix
+    const role = ROLE_PREFIX + suffix // per-run role: concurrent runs never share credentials
     const token = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
     // UTF8 + template0 is REQUIRED: sqlite length() counts characters; under a
     // SQL_ASCII cluster default PG char_length counts BYTES and CHECKs diverge
     // (the dense unicode pass caught this). Production target encoding/collation
     // remains an explicit pre-migration decision.
     await admin.query(`CREATE DATABASE "${dbName}" WITH TEMPLATE template0 ENCODING 'UTF8' LOCALE 'C'`) // fails if it exists - safe by construction
-    const roleCheck = await admin.query('SELECT rolsuper, rolcreatedb, rolcreaterole FROM pg_roles WHERE rolname = $1', [ROLE])
-    if (roleCheck.rows.length === 0) {
-      // utility statement: no bind params allowed; password is generated base36, quote defensively anyway
-      await admin.query(`CREATE ROLE ${ROLE} LOGIN PASSWORD '${rolePassword.replace(/'/g, "''")}'`)
-    } else {
-      const r = roleCheck.rows[0] as { rolsuper: boolean; rolcreatedb: boolean; rolcreaterole: boolean }
-      if (r.rolsuper || r.rolcreatedb || r.rolcreaterole) {
-        throw new Error(`role ${ROLE} exists with elevated privileges (super=${r.rolsuper} createdb=${r.rolcreatedb} createrole=${r.rolcreaterole}) - refusing`)
-      }
-      // existing role from an earlier run: rotate to this run's password
-      await admin.query(`ALTER ROLE ${ROLE} PASSWORD '${rolePassword.replace(/'/g, "''")}'`)
-    }
-    await admin.query(`GRANT ALL ON DATABASE "${dbName}" TO ${ROLE}`)
+    // fresh per-run role (CREATE fails if the name exists); verify its flags are minimal
+    await admin.query(`CREATE ROLE ${role} LOGIN PASSWORD '${rolePassword.replace(/'/g, "''")}'`)
+    const roleCheck = await admin.query('SELECT rolsuper, rolcreatedb, rolcreaterole FROM pg_roles WHERE rolname = $1', [role])
+    const rf = roleCheck.rows[0] as { rolsuper: boolean; rolcreatedb: boolean; rolcreaterole: boolean } | undefined
+    if (!rf || rf.rolsuper || rf.rolcreatedb || rf.rolcreaterole) throw new Error(`role ${role} has unexpected privileges - refusing`)
+    await admin.query(`GRANT ALL ON DATABASE "${dbName}" TO ${role}`)
     const u = new URL(adminUrl)
     const dbUrl = `postgres://${u.username}:${u.password}@${u.host}/${dbName}`
     const onNew = new pg.Client({ connectionString: dbUrl })
     await onNew.connect()
     await onNew.query(`CREATE TABLE ${MARKER} (k TEXT PRIMARY KEY, v TEXT NOT NULL)`)
     await onNew.query(`INSERT INTO ${MARKER} (k, v) VALUES ('owned_by', 'dazl-pg-migrate'), ('token', $1), ('created_at', $2)`, [token, String(Math.floor(Date.now() / 1000))])
-    await onNew.query(`GRANT CREATE, USAGE ON SCHEMA public TO ${ROLE}`)
-    await onNew.query(`GRANT ALL ON ALL TABLES IN SCHEMA public TO ${ROLE}`)
-    await onNew.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO ${ROLE}`)
+    await onNew.query(`GRANT CREATE, USAGE ON SCHEMA public TO ${role}`)
+    await onNew.query(`GRANT ALL ON ALL TABLES IN SCHEMA public TO ${role}`)
+    await onNew.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO ${role}`)
     await onNew.end()
-    return { url: `postgres://${ROLE}:${encodeURIComponent(rolePassword)}@${u.host}/${dbName}`, dbName, token }
+    return { url: `postgres://${role}:${encodeURIComponent(rolePassword)}@${u.host}/${dbName}`, dbName, token, role }
   } finally {
     await admin.end()
   }
@@ -84,13 +79,15 @@ export async function assertRehearsalTarget(client: pg.Client, token: string): P
   if (m.token !== token) throw new Error('refusing: marker token mismatch - this DB was not provisioned by this run')
 }
 
-export async function dropRehearsalDb(adminUrl: string, dbName: string): Promise<void> {
+export async function dropRehearsalDb(adminUrl: string, dbName: string, role?: string): Promise<void> {
   if (!dbName.startsWith(DB_PREFIX)) throw new Error(`refusing to drop ${dbName}`)
+  if (role && !role.startsWith(ROLE_PREFIX)) throw new Error(`refusing to drop role ${role}`)
   assertLoopback(adminUrl)
   const admin = new pg.Client({ connectionString: adminUrl })
   await admin.connect()
   try {
     await admin.query(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`)
+    if (role) await admin.query(`DROP ROLE IF EXISTS ${role}`)
   } finally {
     await admin.end()
   }

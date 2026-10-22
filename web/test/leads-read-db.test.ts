@@ -78,7 +78,7 @@ test('pg-mem implementation matches sqlite adapter on identical synthetic rows',
   const T = 't1', J = 'job000000000000000000001'
   const now = 1800000000
   const seedSqlite = (d: InstanceType<typeof Database>) => {
-    d.prepare("INSERT INTO scan_jobs (id, user_id, status, business_name, industry, location, created_at, query) VALUES (?, ?, 'running', 'Biz', 'software', 'Toronto', ?, 'q')").run(J, T, now - 100)
+    d.prepare("INSERT INTO scan_jobs (id, user_id, status, business_name, industry, location, created_at, query, icp_inferred) VALUES (?, ?, 'running', 'Biz', 'software', 'Toronto', ?, 'q', 1)").run(J, T, now - 100)
     const ins = d.prepare("INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, created_at, fit, intent, action, company_domain) VALUES (?, ?, '', ?, NULL, ?, 'https://example.com/jobs/1', 80, ?, ?, ?, ?, ?)")
     ins.run('L1', J, 'Acme', 'Hiring sales operations manager', now - 90, 5, 4, 3, 'acme.com')
     ins.run('L2', J, 'Hidden Co', 'weak signal here', now - 80, 1, 1, 1, null)
@@ -95,7 +95,7 @@ test('pg-mem implementation matches sqlite adapter on identical synthetic rows',
   }
   const seedPg = async () => {
     const q = (t: string, p: unknown[]) => pool.query(t, p)
-    await q("INSERT INTO scan_jobs (id, user_id, status, business_name, industry, location, created_at, query) VALUES ($1, $2, 'done', 'Biz', 'software', 'Toronto', $3, 'q')", [J, T, now - 100])
+    await q("INSERT INTO scan_jobs (id, user_id, status, business_name, industry, location, created_at, query, icp_inferred) VALUES ($1, $2, 'done', 'Biz', 'software', 'Toronto', $3, 'q', 1)", [J, T, now - 100])
     const ins = "INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, created_at, fit, intent, action, company_domain) VALUES ($1, $2, '', $3, NULL, $4, 'https://example.com/jobs/1', 80, $5, $6, $7, $8, $9)"
     await q(ins, ['L1', J, 'Acme', 'Hiring sales operations manager', now - 90, 5, 4, 3, 'acme.com'])
     await q(ins, ['L2', J, 'Hidden Co', 'weak signal here', now - 80, 1, 1, 1, null])

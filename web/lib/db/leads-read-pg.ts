@@ -57,6 +57,7 @@ export function pgLeadsRead(pg: PgQueryable): LeadsReadDb {
       const c = await pg.query('SELECT count(*) AS n FROM leads WHERE scan_job_id = $1', [id])
       return {
         ...job,
+        icp_inferred: num(job.icp_inferred),
         created_at: numReq(job.created_at), finished_at: num(job.finished_at),
         candidates: num(job.candidates), verified: num(job.verified),
         needs_review: num(job.needs_review), dropped: num(job.dropped),

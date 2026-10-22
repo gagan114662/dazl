@@ -127,7 +127,7 @@ const valueFor = (t: string, c: Col, i: number, ci: number): any => {
       const span = c.intMax - c.intMin + 1
       return c.intMin + ((i + ci) % span) // boundary extremes included
     }
-    return i + 1
+    return [0, i + 1, 1_792_701_186 + i][(i + ci) % 3] // zero / small / epoch-scale
   }
   if (c.inList?.length) return c.inList[(i + ci) % c.inList.length] // CHECK IN wins; other cols carry uniqueness
   if (c.like) return `${c.like}${t.slice(0, 6)}-${c.name.slice(0, 6)}-${i}`
@@ -176,7 +176,7 @@ if (!guardOk) process.exit(1)
 const { provisionRehearsalDb, assertRehearsalTarget, dropRehearsalDb } = await import('./guard.ts')
 const rolePassword = 'rhz-' + Math.random().toString(36).slice(2)
 const prov = await provisionRehearsalDb(PG_ADMIN, rolePassword)
-console.log(`provisioned guarded target: ${prov.dbName} (loopback, dedicated role ${'dazl_rehearse'}, marker verified)`)
+console.log(`provisioned guarded target: ${prov.dbName} (loopback, per-run role ${prov.role}, marker verified)`)
 const client = new pg.Client({ connectionString: prov.url })
 await client.connect()
 await assertRehearsalTarget(client, prov.token)
@@ -221,10 +221,37 @@ await client.query("DELETE FROM outreach_messages WHERE id='TGO1'").catch(() => 
 await client.query("DELETE FROM sequence_steps WHERE tenant_id='t' AND sequence_id='s'").catch(() => {})
 await client.query("DELETE FROM scan_jobs WHERE id='TG1'").catch(() => {})
 console.log('trigger behavior: 4 guard triggers verified on PG')
+
+// Edge battery: multi-row atomicity, transaction rollback, missing parent.
+await client.query("INSERT INTO scan_jobs (id, user_id, business_name, industry, location) VALUES ('MR1','u','b','i','l'),('MR2','u','b','i','l'),('MR3','u','b','i','l')")
+try {
+  await client.query("UPDATE scan_jobs SET status='done' WHERE id IN ('MR1','MR2','MR3')")
+  divergences.push('multi-row: illegal bulk update was ALLOWED')
+} catch (e: any) {
+  if (!String(e?.message).includes('illegal scan job status transition')) divergences.push('multi-row: wrong error: ' + e?.message)
+}
+const pendingAfter = Number((await client.query("SELECT count(*) AS c FROM scan_jobs WHERE id IN ('MR1','MR2','MR3') AND status='pending'")).rows[0].c)
+if (pendingAfter !== 3) divergences.push(`multi-row: aborted statement was not atomic (${3 - pendingAfter} rows changed)`)
+await client.query('BEGIN')
+try {
+  await client.query("INSERT INTO scan_jobs (id, user_id, business_name, industry, location) VALUES ('RB1','u','b','i','l')")
+  await client.query("UPDATE scan_jobs SET status='done' WHERE id='RB1'")
+  divergences.push('rollback: illegal update inside transaction was ALLOWED')
+  await client.query('ROLLBACK')
+} catch {
+  await client.query('ROLLBACK')
+}
+const rbSurvives = Number((await client.query("SELECT count(*) AS c FROM scan_jobs WHERE id='RB1'")).rows[0].c)
+if (rbSurvives !== 0) divergences.push('rollback: row survived ROLLBACK after trigger error')
+await expectAbort('missing-parent lead',
+  "INSERT INTO leads (id, scan_job_id, company, signal, source_url) VALUES ('MPL1','NO_SUCH_JOB','c','sig','https://x.co')",
+  'leads can only be added to a running job')
+await client.query("DELETE FROM scan_jobs WHERE id IN ('MR1','MR2','MR3')")
+console.log('trigger edge battery: multi-row atomicity, rollback, missing-parent verified')
 await client.end()
 console.log(`divergences: ${divergences.length}`)
 for (const d of divergences.slice(0, 10)) console.log('  ' + d)
 if (divergences.length) process.exit(1)
-await dropRehearsalDb(PG_ADMIN, prov.dbName)
+await dropRehearsalDb(PG_ADMIN, prov.dbName, prov.role)
 console.log(`rehearsal target ${prov.dbName} dropped`)
 console.log(`FULL REHEARSAL CLEAN: ${order.length} tables, all rows copied losslessly under frozen writes (synthetic data)`)
