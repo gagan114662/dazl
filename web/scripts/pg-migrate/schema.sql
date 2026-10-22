@@ -28,7 +28,10 @@ CREATE TABLE IF NOT EXISTS scan_jobs (
   query         TEXT CHECK (query IS NULL OR char_length(query) <= 600),
   icp           TEXT CHECK (icp IS NULL OR char_length(icp) <= 4000),
   icp_inferred  INTEGER,
-  sources       TEXT CHECK (sources IS NULL OR char_length(sources) <= 2000)
+  sources       TEXT CHECK (sources IS NULL OR char_length(sources) <= 2000),
+  seller        TEXT,
+  csv_domain    TEXT,
+  batch_id      TEXT
 );
 CREATE INDEX IF NOT EXISTS scan_jobs_user ON scan_jobs (user_id, created_at);
 CREATE INDEX IF NOT EXISTS scan_jobs_status ON scan_jobs (status, created_at);
@@ -73,6 +76,9 @@ CREATE TABLE IF NOT EXISTS outreach_messages (
   claimed_at     INTEGER,
   sent_at        INTEGER,
   error          TEXT,
+  gmail_id       TEXT,
+  thread_id      TEXT,
+  test           INTEGER,
   created_at     INTEGER NOT NULL DEFAULT (CAST(extract(epoch from now()) AS INTEGER))
 );
 
