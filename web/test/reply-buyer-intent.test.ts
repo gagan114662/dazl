@@ -17,7 +17,8 @@ const ENV_ON = { ADVANCED_CONNECTORS: '1', ADVANCED_WORKER_URL: 'https://w.examp
 const NOW = Date.now()
 const DAY = new Date(NOW - 86400_000).toISOString().slice(0, 10)
 
-function setup(sells = 'cold email software for sales teams') {
+// The designated test tenant's actual seller profile (read live 2026-10-22).
+function setup(sells = 'Sales prospecting software for B2B sales teams') {
   const d = new Database(':memory:')
   migrateThreadReplies(d); migrateOutreach(d); migrateScan(d); migrateSequences(d); migrateConnectors(d); migrateAdvanced(d); migrateKeys(d)
   const master = randomBytes(32)
@@ -32,9 +33,11 @@ function setup(sells = 'cold email software for sales teams') {
 
 const fetchSays = (word: string) => (async () => new Response(JSON.stringify({ content: [{ type: 'text', text: word }] }), { status: 200 })) as unknown as typeof fetch
 
+// Verbatim threads from the designated tenant's live reply list (2026-10-22): a real
+// buyer thread and the internship thread that passed the keyword gate in production.
 const CANDIDATES = [
-  { url: 'https://reddit.com/r/sysadmin/1', title: 'too many filters that automatically reject emails ?', quote: 'scaling the cold email program, deliverability got harder', date: DAY, login_walled: false },
-  { url: 'https://reddit.com/r/jobs/2', title: 'HELPPPP What organizations should I cold email?', quote: 'I want to cold email PIs for an internship in drug discovery', date: DAY, login_walled: false },
+  { url: 'https://reddit.com/r/sysadmin/1', title: 'too many filters that automatically reject emails ?', quote: "how are you dealing with all the spam filters and other ones that filter out your email and make them dead on arrival? I've noticed a huge uptick in that over the last year and I'm supposed to be scaling the cold email program", date: DAY, login_walled: false },
+  { url: 'https://reddit.com/r/jobs/2', title: 'HELPPPP What organizations should I cold email?', quote: "I'm aiming for something drug discovery/pharmaceutical related in the West-Coast area, and I've entirely given up on internships :( so now I'm trying to cold email some PI's. Relevant research experience: A lot in molecules.", date: DAY, login_walled: false },
 ]
 
 test('buyer-intent grading: buyer thread stored with verdict, internship thread filtered as no', async () => {
@@ -76,4 +79,27 @@ test('no AI key: no grading calls, keyword behavior unchanged', async () => {
   const r = await refreshReplies(d, 't1', { worker, env: ENV_ON, now: NOW })
   assert.equal(r.added, 1) // keyword-only storage, honestly labelled (buyer_intent NULL)
   assert.equal(listThreads(d, 't1')[0].buyer_intent, null)
+})
+
+test('existing keyword-only rows are re-graded inside a manual refresh: internship row verdict no is hidden, drafted rows stay visible', async () => {
+  const { d, master } = setup()
+  // Pre-existing rows stored before grading existed (buyer_intent NULL), like the live tenant.
+  const ins = d.prepare("INSERT INTO reply_threads (id, tenant_id, platform, url, title, quote, query, date, login_walled, buyer_intent) VALUES (?, 't1', 'reddit', ?, ?, ?, 'cold email software', ?, 0, NULL)")
+  ins.run('old1', 'https://reddit.com/r/jobs/2', 'HELPPPP What organizations should I cold email?', "I'm trying to cold email some PI's for an internship in drug discovery", DAY)
+  ins.run('old2', 'https://reddit.com/r/sysadmin/1', 'too many filters that automatically reject emails ?', 'scaling the cold email program, deliverability got harder', DAY)
+  // The tenant drafted on the internship thread - their work is never hidden.
+  d.prepare("INSERT INTO reply_drafts (thread_id, tenant_id, draft, status) VALUES ('old1', 't1', 'my reply', 'draft')").run()
+  const fetchImpl = (async (_url: unknown, init: { body?: string } = {}) => {
+    const word = /internship/i.test(init?.body ?? '') ? 'no' : 'yes'
+    return new Response(JSON.stringify({ content: [{ type: 'text', text: word }] }), { status: 200 })
+  }) as unknown as typeof fetch
+  const worker = async () => [] as { url: string; title: string; quote: string; date: string | null; login_walled: boolean }[]
+  await refreshReplies(d, 't1', { worker, fetchImpl, master, env: ENV_ON, now: NOW })
+  const rows = d.prepare('SELECT id, buyer_intent FROM reply_threads ORDER BY id').all() as { id: string; buyer_intent: string | null }[]
+  assert.deepEqual(rows, [{ id: 'old1', buyer_intent: 'no' }, { id: 'old2', buyer_intent: 'yes' }])
+  // old1 keeps its verdict but stays listed because a draft exists; old2 shows normally.
+  assert.deepEqual(listThreads(d, 't1').map(t => t.id).sort(), ['old1', 'old2'])
+  // Without the draft, a 'no' verdict would drop the row from the list.
+  d.prepare("DELETE FROM reply_drafts WHERE thread_id = 'old1'").run()
+  assert.deepEqual(listThreads(d, 't1').map(t => t.id), ['old2'])
 })

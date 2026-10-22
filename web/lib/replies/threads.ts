@@ -43,15 +43,15 @@ export function migrateThreadReplies(db: Database.Database): void {
       query        TEXT NOT NULL,
       date         TEXT,
       login_walled INTEGER NOT NULL DEFAULT 0,
-      buyer_intent TEXT CHECK (buyer_intent IS NULL OR buyer_intent IN ('yes','uncertain')),
+      buyer_intent TEXT CHECK (buyer_intent IS NULL OR buyer_intent IN ('yes','no','uncertain')),
       created_at   INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
       UNIQUE (tenant_id, url)
     );
     -- buyer_intent: NULL = keyword-matched only (no model verdict), else the tenant-key
-    -- model verdict from refresh time: 'yes' | 'uncertain'. 'no' threads are never stored.
+    -- model verdict: 'yes' | 'uncertain' shown with a label, 'no' hidden from the list.
     -- A model verdict is a heuristic signal for review, never proof of buyer intent.
   `)
-  try { db.exec("ALTER TABLE reply_threads ADD COLUMN buyer_intent TEXT CHECK (buyer_intent IS NULL OR buyer_intent IN ('yes','uncertain'))") } catch { /* column exists */ }
+  try { db.exec("ALTER TABLE reply_threads ADD COLUMN buyer_intent TEXT CHECK (buyer_intent IS NULL OR buyer_intent IN ('yes','no','uncertain'))") } catch { /* column exists */ }
   db.exec(`
     CREATE INDEX IF NOT EXISTS reply_threads_tenant ON reply_threads (tenant_id, created_at);
     CREATE TABLE IF NOT EXISTS reply_drafts (
@@ -212,6 +212,19 @@ export async function refreshReplies(db: Database.Database, tenantId: string, de
     }
     out.platforms[p] = anyError ? 'worker_error' : 'ok'
   }
+  // Re-grade older keyword-only rows with whatever of the manual-refresh cap remains, so a
+  // tenant who adds a key later is not stuck with pre-grading rows (like the internship
+  // thread) forever. Bounded, user-initiated, their own key - not a silent backfill.
+  if (gradesLeft > 0) {
+    const ungraded = db.prepare("SELECT id, title, quote FROM reply_threads WHERE tenant_id = ? AND buyer_intent IS NULL ORDER BY created_at DESC LIMIT ?").all(tenantId, gradesLeft) as { id: string; title: string; quote: string }[]
+    const upd = db.prepare('UPDATE reply_threads SET buyer_intent = ? WHERE tenant_id = ? AND id = ? AND buyer_intent IS NULL')
+    for (const t of ungraded) {
+      const verdict = await gradeBuyerIntent(db, tenantId, t, { fetchImpl: deps.fetchImpl, master: deps.master, sells, website })
+      if (verdict === null) continue
+      upd.run(verdict, tenantId, t.id)
+      if (verdict === 'no') out.filtered++
+    }
+  }
   return out
 }
 
@@ -230,7 +243,7 @@ export function listThreads(db: Database.Database, tenantId: string, limit = 50)
   // Re-qualify at read time: threads stored before the relevance gate existed must not
   // keep presenting as fits. A thread the tenant already engaged with (a draft exists)
   // stays visible - their work is not hidden.
-  return rows.filter(t => t.draft !== null || isRelevantToQuery(t.query, t.title, t.quote))
+  return rows.filter(t => t.draft !== null || (t.buyer_intent !== 'no' && isRelevantToQuery(t.query, t.title, t.quote)))
 }
 
 export function getThread(db: Database.Database, tenantId: string, id: string): ThreadRow | undefined {
