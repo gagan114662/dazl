@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import { migrateAttribution } from './attribution.ts'
 
 export const norm = (email: string) => email.trim().toLowerCase()
 
@@ -61,4 +62,5 @@ export function migrateOutreach(db: Database.Database): void {
   addCol('outreach_messages', 'thread_id', 'TEXT')
   addCol('outreach_messages', 'test', 'INTEGER NOT NULL DEFAULT 0') // 1 = addressed to a tenant-allowlisted test inbox
   addCol('outreach_settings', 'booking_url', 'TEXT')
+  migrateAttribution(db)
 }

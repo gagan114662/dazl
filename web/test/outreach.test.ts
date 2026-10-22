@@ -269,3 +269,13 @@ test('held status is rechecked after async token refresh', async () => {
  await assert.rejects(sendMessage(db,'A',id,d), /lead_ungraded/)
  assert.equal(sent.length,0)
 })
+
+test('approval freezes lead signal context, preserving secondary signals and test marker', async () => {
+  const db=setup(); const lead=addLead(db,'A')
+  await connect(db,'A')
+  db.prepare("UPDATE leads SET signals='[\"hiring\",\"funding\"]',signal_kind='hiring',source_kind='query' WHERE id=?").run(lead)
+  saveSettings(db,'A',{sender_name:'Pat',postal_address:'1 King St W, Toronto ON M5H 1A1'})
+  const id=createDraft(db,'A',lead,'Seller'); approve(db,'A',id)
+  const row=db.prepare('SELECT signals_json,signal_kind,source_kind FROM outreach_signal_context WHERE message_id=?').get(id) as any
+  assert.deepEqual(row,{signals_json:'["hiring","funding"]',signal_kind:'hiring',source_kind:'query'})
+})

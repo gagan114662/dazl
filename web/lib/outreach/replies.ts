@@ -38,6 +38,8 @@ export function migrateReplies(db: Database.Database): void {
       gmail_id TEXT, created_at INTEGER NOT NULL, PRIMARY KEY (tenant_id, thread_id, step)
     );
   `)
+  const columns = db.prepare('PRAGMA table_info(inbound_messages)').all() as { name: string }[]
+  if (!columns.some(c => c.name === 'outreach_message_id')) db.exec('ALTER TABLE inbound_messages ADD COLUMN outreach_message_id TEXT')
 }
 
 export const acceptReadConsent = (db: Database.Database, tenantId: string) =>
@@ -110,7 +112,7 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
         if (from === acct.email) continue // our own or the user's message
         if (db.prepare('SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND gmail_id = ?').get(tenantId, g.id)) continue
         const text = newText(plainText(g.payload))
-        const log = (cls: string) => db.prepare('INSERT OR IGNORE INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(g.id, tenantId, thread, m.lead_id, from, text.slice(0, 200), cls, at)
+        const log = (cls: string) => db.prepare('INSERT OR IGNORE INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(g.id, tenantId, thread, m.lead_id, from, text.slice(0, 200), cls, at, m.id)
         // Delivery-failure notice: only a permanent (5.x.x) failure suppresses.
         if (/^(mailer-daemon|postmaster)@/.test(from)) {
           const full = plainText(g.payload)

@@ -221,3 +221,10 @@ test('held lead cannot receive warm followups',async()=>{
  assert.equal((await runFollowups(db,'A','Acme',base({sendFn}))).sent,0)
  assert.equal(sent.length,0)
 })
+
+test('reply capture stores the actual root outreach message link, not a guessed signal conversion', async () => {
+  const db = await setup(); const s = sentLead(db,'p@one.example')
+  await syncReplies(db,'A',{env:genv,master,now:NOW,fetchImpl:gmail({[s.thread]:[msg('linked-reply','p@one.example','Who is this?',NOW-1)]})})
+  const row = db.prepare('SELECT outreach_message_id,lead_id,classification FROM inbound_messages WHERE gmail_id=?').get('linked-reply') as any
+  assert.deepEqual(row,{outreach_message_id:s.mid,lead_id:s.lead,classification:'other'})
+})
