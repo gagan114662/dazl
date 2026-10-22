@@ -261,4 +261,24 @@ test('test mode: an allowlisted own-inbox consumer address drafts only with OUTR
   } finally {
     delete process.env.OUTREACH_TEST_MODE
   }
+ test('existing approved draft cannot send after lead becomes held; successful regrade permits it', async () => {
+  const db = setup(); await connect(db, 'A'); ready(db)
+  const lead = addLead(db, 'A'), id = createDraft(db, 'A', lead, 'Acme'); approve(db, 'A', id)
+  const { sent, sendFn } = okSend()
+  db.prepare('UPDATE leads SET fit=0, intent=NULL WHERE id=?').run(lead)
+  await assert.rejects(sendMessage(db,'A',id,deps({sendFn})), /lead_ungraded/)
+  assert.equal(sent.length,0)
+  db.prepare('UPDATE leads SET fit=4, intent=3 WHERE id=?').run(lead)
+  assert.equal(await sendMessage(db,'A',id,deps({sendFn})), 'sent')
+})
+
+test('held status is rechecked after async token refresh', async () => {
+  const db = setup(); await connect(db, 'A'); ready(db)
+  const lead = addLead(db,'A'), id = createDraft(db,'A',lead,'Acme'); approve(db,'A',id)
+  const {sent,sendFn} = okSend()
+  const d = deps({sendFn})
+  const fetchImpl = d.fetchImpl!
+  d.fetchImpl = (async (...args: Parameters<typeof fetch>) => { db.prepare('UPDATE leads SET fit=0,intent=NULL WHERE id=?').run(lead); return fetchImpl(...args) }) as typeof fetch
+  await assert.rejects(sendMessage(db,'A',id,d), /lead_ungraded/)
+  assert.equal(sent.length,0)
 })
