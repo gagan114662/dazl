@@ -61,3 +61,25 @@ test('crawlJob stops starting new work once the post-processing deadline fires',
   assert.ok(Date.now() - t0 < 2000, 'crawlJob settled near the deadline')
   assert.ok(fetches <= 2, `no new sites started after abort (fetches=${fetches})`)
 })
+
+test('abort survives a redirect: signal reaches the followed request (regression: recursion dropped it)', async () => {
+  // /redirect 302s to /hang, which never responds. Pre-fix, the recursive
+  // rawGet call dropped the signal, so the abort never reached the followed
+  // request and the promise settled only at the request timeout (reviewer
+  // measured 3021ms on a 3s timeout vs a 150ms abort).
+  const server = https.createServer({ cert: CERT, key: KEY }, (req, res) => {
+    if (req.url === '/redirect') { res.writeHead(302, { location: '/hang' }); res.end(); return }
+    // /hang: never respond
+  })
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+  const port = (server.address() as AddressInfo).port
+  const ctrl = new AbortController()
+  const t0 = Date.now()
+  const pending = rawGet(`https://127.0.0.1:${port}/redirect`, 0, 3_000, loopbackLookup as never, ctrl.signal)
+  setTimeout(() => ctrl.abort(), 150)
+  const out = await Promise.race([pending, new Promise<string>((r) => setTimeout(() => r('NEVER-SETTLED'), 2000))])
+  server.close()
+  assert.notEqual(out, 'NEVER-SETTLED', 'followed request must settle on abort')
+  assert.equal(out, null)
+  assert.ok(Date.now() - t0 < 2000, 'settled near the 150ms abort, not the 3s timeout')
+})

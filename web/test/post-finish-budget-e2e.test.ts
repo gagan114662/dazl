@@ -4,7 +4,9 @@ import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { migrateScan, createJob, getJob } from '../lib/scan/store.ts'
-import { kickRunner } from '../lib/scan/runner.ts'
+import { kickRunner, runJob, claimKeyedJob, postFinishBudgetMs } from '../lib/scan/runner.ts'
+import { migrateCsv, createBatch, queuePendingRows } from '../lib/scan/csv-import.ts'
+import { migratePlans } from '../lib/plans.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from '../lib/scan/run-slots.ts'
 
 // runJob-level proof of the bounded post-processing slice via the deps seam
@@ -49,6 +51,46 @@ test('post-finish deadline: runJob settles and the slot is released (egress-free
     assert.ok(elapsed < 4000, `settled near the deadline, not the full crawl tail (${elapsed}ms)`)
     assert.equal(probeActive(), 0, 'slot released after settle - nothing leaked')
     assert.ok(crawls <= 2, `no new crawl work started after the deadline (crawls=${crawls})`)
+  } finally {
+    if (saved === undefined) delete process.env.SCAN_POST_FINISH_BUDGET_MS
+    else process.env.SCAN_POST_FINISH_BUDGET_MS = saved
+    if (savedCrawl === undefined) delete process.env.SITECRAWL_ENABLED
+    else process.env.SITECRAWL_ENABLED = savedCrawl
+  }
+})
+
+test('config validation: NaN/negative/Infinity fall back to the 90s default; valid passes through', () => {
+  assert.equal(postFinishBudgetMs({} as NodeJS.ProcessEnv), 90_000)
+  assert.equal(postFinishBudgetMs({ SCAN_POST_FINISH_BUDGET_MS: 'not-a-number' } as NodeJS.ProcessEnv), 90_000)
+  assert.equal(postFinishBudgetMs({ SCAN_POST_FINISH_BUDGET_MS: '-50' } as NodeJS.ProcessEnv), 90_000)
+  assert.equal(postFinishBudgetMs({ SCAN_POST_FINISH_BUDGET_MS: 'Infinity' } as NodeJS.ProcessEnv), 90_000)
+  assert.equal(postFinishBudgetMs({ SCAN_POST_FINISH_BUDGET_MS: '0' } as NodeJS.ProcessEnv), 90_000)
+  assert.equal(postFinishBudgetMs({ SCAN_POST_FINISH_BUDGET_MS: '45000' } as NodeJS.ProcessEnv), 45_000)
+})
+
+test('CSV company path runs the SAME bounded post-processing (one deadline source)', async () => {
+  const db = new Database(':memory:')
+  migrateScan(db); migrateKeys(db); migratePlans(db); migrateCsv(db)
+  saveKey(db, 'bob', 'anthropic', 'sk-ant-api03-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', master)
+  const b = createBatch(db, 'bob', ['acme.com'])
+  queuePendingRows(db, 'bob', b)
+  const job = claimKeyedJob(db)!
+  assert.ok(job.csv_domain, 'fixture is a CSV job')
+  const fast = async () => ({ text: 'Here: ' + JSON.stringify([lead]), citedUrls: ['https://a.com/x'] })
+  const providers: any = { anthropic: { research: fast }, openai: { research: fast } }
+  let crawls = 0
+  const crawlGet = async () => { crawls++; await new Promise((r) => setTimeout(r, 300)); return null }
+  const saved = process.env.SCAN_POST_FINISH_BUDGET_MS
+  const savedCrawl = process.env.SITECRAWL_ENABLED
+  process.env.SCAN_POST_FINISH_BUDGET_MS = '150'
+  process.env.SITECRAWL_ENABLED = '1'
+  try {
+    const t0 = Date.now()
+    const outcome = await runJob(db, job, { providers, master, fetchPage: page, fetchImpl: (async () => new Response('{}')) as typeof fetch, crawlGet: crawlGet as never })
+    const elapsed = Date.now() - t0
+    assert.equal(outcome, 'done')
+    assert.ok(elapsed < 4000, `CSV path settled near the deadline, not the full tail (${elapsed}ms)`)
+    assert.ok(crawls <= 2, `no new crawl work after the deadline on the CSV path (crawls=${crawls})`)
   } finally {
     if (saved === undefined) delete process.env.SCAN_POST_FINISH_BUDGET_MS
     else process.env.SCAN_POST_FINISH_BUDGET_MS = saved

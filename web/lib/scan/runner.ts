@@ -456,8 +456,8 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
     try { markSeenBefore(db, job.user_id, job.id, companyKey) } catch { /* flag only */ }
     // Contact-page crawl and free intent signals (SEC Form D, public job boards) - this is
     // where the batch table's contacts come from. Same bonuses, same silence on failure.
-    await crawlJob(db, job.user_id, job.id, deps.crawlGet ? { get: deps.crawlGet } : {})
-    try { await enrichJobSignals(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl }) } catch (e) { console.error('signal enrichment failed', e instanceof Error ? e.message : 'error') }
+    // Same bounded post-processing as the main path - one deadline source.
+    await runPostFinishBounded(db, job, deps)
     return 'done'
   } catch (e) {
     return failOrRetry(db, job, e, ledger)
@@ -683,35 +683,53 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // Watch run: flag the leads this watch has never surfaced, remember the rest.
     if (job.watch_id) { try { markWatchLeads(db, job.watch_id, job.id) } catch { /* bonus only */ } }
     try { markSeenBefore(db, job.user_id, job.id, companyKey) } catch { /* flag only, never affects the scan */ }
-    // Bounded post-processing: crawl + enrichment run under one cooperative
-    // abort deadline. When it fires, in-flight requests are DESTROYED (not
-    // merely timed out), so runJob settles and the runner slot is released
-    // with no uncancelled network work continuing behind it - this is what
-    // makes an early release safe, unlike a watchdog that frees the slot
-    // while the request lives on. The provider/research phase is unaffected
-    // (it has its own per-call timeout). Autopilot is intentionally OUTSIDE
-    // the deadline and is the HONEST exception to "cancelled before release":
-    // it CAN do network work (outreach sends, e.g. Gmail per the runJob
-    // audit) and has no cancel protocol, so it is awaited to completion
-    // instead - the slot is held through it, never freed beneath it.
-    const postBudgetMs = Number(process.env.SCAN_POST_FINISH_BUDGET_MS || 90_000)
-    const postCtrl = new AbortController()
-    const postTimer = setTimeout(() => postCtrl.abort(), postBudgetMs)
-    try {
-      // Contact-page crawl enriches verified leads with role emails (robots.txt hard rule). Never affects the scan result.
-      await crawlJob(db, job.user_id, job.id, deps.crawlGet ? { get: deps.crawlGet, signal: postCtrl.signal } : { signal: postCtrl.signal })
-      // Intent-signal enrichment (SEC Form D, public job boards). Bonus rows beside the
-      // leads, never part of verification; failures are silent.
-      const enrichFetch = (url: string, init?: RequestInit) => (deps.fetchImpl ?? fetch)(url, { ...init, signal: AbortSignal.any([init?.signal, postCtrl.signal].filter((x): x is AbortSignal => Boolean(x))) })
-      try { await enrichJobSignals(db, job.user_id, job.id, { fetchImpl: enrichFetch as typeof fetch }) } catch (e) { console.error('signal enrichment failed', e instanceof Error ? e.message : 'error') }
-    } finally {
-      clearTimeout(postTimer)
-    }
+    // Bounded post-processing: see runPostFinishBounded.
+    await runPostFinishBounded(db, job, deps)
     // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.
     try { await runAutopilot(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
     return 'done'
   } catch (e) {
     return failOrRetry(db, job, e, ledger)
+  }
+}
+
+// Post-processing budget config: finite positive ms, else the 90s default.
+// NaN/negative/Infinity would make setTimeout fire immediately (aborting all
+// post-work on every scan) or never - fail safe to the default and log why.
+export function postFinishBudgetMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.SCAN_POST_FINISH_BUDGET_MS
+  if (raw === undefined) return 90_000
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n <= 0) {
+    console.error('SCAN_POST_FINISH_BUDGET_MS invalid (need finite positive ms) - using default 90000')
+    return 90_000
+  }
+  return n
+}
+
+// Bounded post-processing, shared by the main scan path and the CSV company
+// path: crawl + enrichment run under one cooperative abort deadline. When it
+// fires, in-flight requests are DESTROYED (not merely timed out), so runJob
+// settles and the runner slot is released with no uncancelled network work
+// continuing behind it - this is what makes an early release safe, unlike a
+// watchdog that frees the slot while the request lives on. The provider/
+// research phase is unaffected (it has its own per-call timeout). Autopilot
+// is intentionally OUTSIDE the deadline (main path only): it CAN do network
+// work (outreach sends, e.g. Gmail per the runJob audit) and has no cancel
+// protocol, so it is awaited to completion - the slot is held through it,
+// never freed beneath it.
+export async function runPostFinishBounded(db: Database.Database, job: Job, deps: RunDeps): Promise<void> {
+  const postCtrl = new AbortController()
+  const postTimer = setTimeout(() => postCtrl.abort(), postFinishBudgetMs())
+  try {
+    // Contact-page crawl enriches verified leads with role emails (robots.txt hard rule). Never affects the scan result.
+    await crawlJob(db, job.user_id, job.id, deps.crawlGet ? { get: deps.crawlGet, signal: postCtrl.signal } : { signal: postCtrl.signal })
+    // Intent-signal enrichment (SEC Form D, public job boards). Bonus rows beside the
+    // leads, never part of verification; failures are silent.
+    const enrichFetch = (url: string, init?: RequestInit) => (deps.fetchImpl ?? fetch)(url, { ...init, signal: AbortSignal.any([init?.signal, postCtrl.signal].filter((x): x is AbortSignal => Boolean(x))) })
+    try { await enrichJobSignals(db, job.user_id, job.id, { fetchImpl: enrichFetch as typeof fetch }) } catch (e) { console.error('signal enrichment failed', e instanceof Error ? e.message : 'error') }
+  } finally {
+    clearTimeout(postTimer)
   }
 }
 

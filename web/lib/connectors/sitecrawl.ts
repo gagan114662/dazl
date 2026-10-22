@@ -41,7 +41,7 @@ export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup:
         let next: URL
         try { next = new URL(String(res.headers.location), u) } catch { return resolve(null) }
         if (next.hostname.replace(/^www\./, '') !== u.hostname.replace(/^www\./, '')) return resolve(null) // stay on the same site
-        return resolve(rawGet(next.toString(), hops + 1, timeoutMs, lookup))
+        return resolve(rawGet(next.toString(), hops + 1, timeoutMs, lookup, signal))
       }
       if (!/^text\/(html|plain)|application\/xhtml/i.test(String(res.headers['content-type'] ?? ''))) { res.destroy(); return resolve({ status, body: '', finalUrl: u.toString() }) }
       const chunks: Buffer[] = []; let n = 0
