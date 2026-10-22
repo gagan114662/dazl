@@ -3,7 +3,7 @@ import { KEY_UNREADABLE_COPY, knownErrorCopy } from '@/lib/error-copy'
 import { useEffect, useState } from 'react'
 import { emptyLeadsMessage, scoreLabel } from '@/lib/scan/leads-view'
 
-interface Lead { sequence?: { status: string; step: number; next_due_at: number | null; stop_reason: string | null } | null; id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; watch_new?: number; seen_before?: number; stage?: string | null; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string }[]; events?: { id: string; event_type: string; summary: string; source_url: string; source_published_at: string | null; last_seen_at: number; fresh: boolean }[] }
+interface Lead { sequence?: { status: string; step: number; next_due_at: number | null; stop_reason: string | null } | null; id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; watch_new?: number; seen_before?: number; stage?: string | null; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string }[]; events?: { id: string; event_type: string; summary: string; source_url: string; source_published_at: string | null; last_seen_at: number; fresh: boolean }[]; priority?: { graded: boolean; fit: number | null; intent: number | null; action: number | null; evidence_score: number; reasons: string[]; uncounted: string[] } | null }
 interface Icp { summary: string; who: string[]; industries: string[]; sizes: string[]; where: string[]; signals: string[]; exclude: string[] }
 interface Watch { id: string; query: string; active: boolean; next_run_at: number | null; last_run_at: number | null; paused_reason: string | null; last_job_id: string | null; last_status: string | null; new_leads: number }
 interface Monitor { id: string; query: string; interval_hours: number; enabled: number; paused_reason: string | null; next_run_at: number | null; last_new_count: number | null; run_count: number }
@@ -465,6 +465,19 @@ export default function LeadsClient() {
                     <a className="underline text-[#111]" href={e.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
                   </div>
                 ))}
+              </div>
+            )}
+            {l.priority && (l.priority.graded || l.priority.evidence_score > 0) && (
+              <div className="text-xs mt-1 space-y-0.5">
+                <div className="text-gray-500 uppercase tracking-wide text-[10px]">Why this company, why now</div>
+                {l.priority.graded ? (
+                  <div className="text-gray-400">ICP grade {l.priority.fit} + {l.priority.intent} + {l.priority.action} = {(l.priority.fit ?? 0) + (l.priority.intent ?? 0) + (l.priority.action ?? 0)}/15, evidence <span className="text-[#111]">+{l.priority.evidence_score}</span></div>
+                ) : (
+                  <div className="text-gray-400">Not ICP-graded - evidence +{l.priority.evidence_score}, but fit is unverified</div>
+                )}
+                {l.priority.reasons.map((r, i) => <div key={`r${i}`} className="text-gray-400">+ {r}</div>)}
+                {l.priority.uncounted.map((u, i) => <div key={`u${i}`} className="text-gray-500">not scored: {u}</div>)}
+                <div className="text-gray-500">Leads rank by ICP fit first, then evidence - more evidence never outranks a better fit. Heuristic, not a prediction: same type + source-stated date grouped as one event; source independence not verified (syndication possible).</div>
               </div>
             )}
             {l.events && l.events.length > 0 && (
