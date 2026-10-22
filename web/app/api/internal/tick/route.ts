@@ -1,3 +1,4 @@
+import { runSequences } from '@/lib/outreach/sequences'
 import { after, NextRequest, NextResponse } from 'next/server'
 import { timingSafeEqual } from 'node:crypto'
 import { getScanDb } from '@/lib/scan/service'
@@ -19,7 +20,11 @@ export async function POST(req: NextRequest) {
   const tenants = db.prepare('SELECT s.tenant_id, u.business_name FROM autopilot_settings s JOIN users u ON u.id = s.tenant_id WHERE s.enabled = 1 AND s.paused = 0 AND s.followups_enabled = 1').all() as { tenant_id: string; business_name: string | null }[]
   let done = 0
   for (const t of tenants) {
-    try { await syncReplies(db, t.tenant_id); await runFollowups(db, t.tenant_id, t.business_name ?? ''); done++ } catch (e) { console.error('tick failed', t.tenant_id, e instanceof Error ? e.message : 'error') }
+    try { const sync = await syncReplies(db, t.tenant_id); if (sync.error) continue; await runFollowups(db, t.tenant_id, t.business_name ?? ''); done++ } catch (e) { console.error('tick failed', t.tenant_id, e instanceof Error ? e.message : 'error') }
+  }
+  let sequences = 0
+  for (const t of db.prepare("SELECT DISTINCT tenant_id FROM sequences WHERE status IN ('approved','active')").all() as { tenant_id: string }[]) {
+    try { const r = await runSequences(db,t.tenant_id,''); sequences += r.sent } catch (e) { console.error('sequence tick failed',t.tenant_id,e instanceof Error ? e.message : 'error') }
   }
   const watches = runDueWatches(db)
   if (watches.ran > 0) after(() => kickRunner(db))
@@ -35,5 +40,5 @@ export async function POST(req: NextRequest) {
   for (const t of dueTenants(db, Math.floor(Date.now() / 1000))) {
     try { const r = await runIndexChecks(db, t); if (r && r.length > 0) indexChecked++ } catch (e) { console.error('index check failed', t, e instanceof Error ? e.message : 'error') }
   }
-  return NextResponse.json({ ok: true, tenants: done, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, index_checks: indexChecked })
+  return NextResponse.json({ ok: true, tenants: done, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, index_checks: indexChecked })
 }

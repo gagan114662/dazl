@@ -1,10 +1,12 @@
+import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend } from './send-budget.ts'
+import { hasReadConsent, syncReplies } from './replies.ts'
 import { randomBytes, createHash } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
 import { getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { auditAt, getState, pause } from './autopilot.ts'
-import { grantConsent, hasConsent } from './ledger.ts'
-import { composeBody, getSettings, isSuppressed, sentLast24h, unsubToken, type Deps } from './service.ts'
+import { grantConsent } from './ledger.ts'
+import { composeBody, getSettings, isSuppressed, unsubToken, type Deps } from './service.ts'
 import { getMasterKey } from '../secrets.ts'
 import { readKey } from '../llm/key-store.ts'
 import { providers } from '../llm/provider.ts'
@@ -60,6 +62,10 @@ export function migrateSequences(db: Database.Database): void {
       tenant_id      TEXT PRIMARY KEY,
       test_addresses TEXT NOT NULL DEFAULT '[]'
     );
+    CREATE TRIGGER IF NOT EXISTS sequence_sent_final
+    BEFORE UPDATE ON sequence_steps
+    WHEN OLD.status = 'sent' AND (NEW.status <> 'sent' OR NEW.subject <> OLD.subject OR NEW.body <> OLD.body)
+    BEGIN SELECT RAISE(ABORT, 'sent sequence step is final'); END;
     CREATE INDEX IF NOT EXISTS sequences_tenant ON sequences (tenant_id, status);
   `)
 }
@@ -141,13 +147,15 @@ export function createSequence(db: Database.Database, tenantId: string, messageI
   const businessName = d.businessName ?? ''
   const re = (s: string) => s.startsWith('Re:') ? s : `Re: ${s}`
   const id = randomBytes(12).toString('hex')
+  db.transaction(() => {
   try {
     db.prepare('INSERT INTO sequences (id, tenant_id, lead_id, message_id, to_email) VALUES (?, ?, ?, ?, ?)').run(id, tenantId, m.lead_id, m.id, m.to_email)
-  } catch { throw new SequenceError('already_exists') } // one sequence per lead
+  } catch (e) { if ((e as { code?: string }).code === 'SQLITE_CONSTRAINT_UNIQUE') throw new SequenceError('already_exists'); throw e } // one sequence per lead
   const ins = db.prepare('INSERT INTO sequence_steps (tenant_id, sequence_id, step, subject, body) VALUES (?, ?, ?, ?, ?)')
   ins.run(tenantId, id, 1, m.subject, m.body)
-  // Bodies for steps 2/3 are filled by draftSequenceSteps; approval refuses empty steps.
-  for (const step of [2, 3] as const) ins.run(tenantId, id, step, re(m.subject), '')
+  // Templates are ready immediately. draftSequenceSteps can replace them before approval.
+  for (const step of [2, 3] as const) ins.run(tenantId, id, step, re(m.subject), sequenceStepText(step,lead,businessName,settings?.booking_url))
+  })()
   return id
 }
 
@@ -159,8 +167,9 @@ export async function draftSequenceSteps(db: Database.Database, tenantId: string
   const lead = db.prepare('SELECT l.company, l.name, l.signal, l.source_url FROM leads l WHERE l.id = ?').get(s.lead_id) as { company: string; name: string; signal: string; source_url: string }
   const settings = getSettings(db, tenantId)
   for (const step of [2, 3] as const) {
+    const before = db.prepare('SELECT body FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? AND step = ?').get(tenantId,sequenceId,step) as { body: string }
     const body = (await llmStepText(db, tenantId, step, lead, businessName, settings?.booking_url, d)) ?? sequenceStepText(step, lead, businessName, settings?.booking_url)
-    db.prepare('UPDATE sequence_steps SET body = ? WHERE tenant_id = ? AND sequence_id = ? AND step = ?').run(body, tenantId, sequenceId, step)
+    db.prepare("UPDATE sequence_steps SET body = ? WHERE tenant_id = ? AND sequence_id = ? AND step = ? AND status = 'draft' AND body = ? AND EXISTS (SELECT 1 FROM sequences WHERE id = ? AND tenant_id = ? AND status = 'draft')").run(body, tenantId, sequenceId, step,before.body,sequenceId,tenantId)
   }
 }
 
@@ -169,14 +178,20 @@ export async function draftSequenceSteps(db: Database.Database, tenantId: string
 export function editSequenceStep(db: Database.Database, tenantId: string, sequenceId: string, step: number, edit: { subject: string; body: string }): void {
   const s = getSeq(db, tenantId, sequenceId)
   if (!s) throw new SequenceError('not_found')
+  const root = db.prepare('SELECT status FROM outreach_messages WHERE tenant_id = ? AND id = ?').get(tenantId,s.message_id) as {status:string} | undefined
+  if (!root || !['draft','approved'].includes(root.status)) throw new SequenceError('not_editable')
+  if (!Number.isInteger(step) || step < 1 || step > 3) throw new SequenceError('invalid_step')
   if (s.status !== 'draft' && s.status !== 'approved') throw new SequenceError('not_editable')
   const subject = edit.subject.replace(/[\r\n\u0000]+/g, ' ').trim().slice(0, 150)
   const body = edit.body.trim().slice(0, 3000)
   if (subject.length < 1) throw new SequenceError('bad_subject')
   if (body.length < 20) throw new SequenceError('bad_body')
+  db.transaction(() => {
   db.prepare('UPDATE sequence_steps SET subject = ?, body = ? WHERE tenant_id = ? AND sequence_id = ? AND step = ?').run(subject, body, tenantId, sequenceId, step)
-  db.prepare('UPDATE sequence_steps SET approved_hash = NULL WHERE tenant_id = ? AND sequence_id = ?').run(tenantId, sequenceId)
+  db.prepare("UPDATE sequence_steps SET approved_hash = NULL, status = 'draft' WHERE tenant_id = ? AND sequence_id = ?").run(tenantId, sequenceId)
+  db.prepare("UPDATE outreach_messages SET status = 'draft', approved_hash = NULL WHERE tenant_id = ? AND id = ? AND status IN ('draft','approved')").run(tenantId,s.message_id)
   db.prepare("UPDATE sequences SET status = 'draft' WHERE tenant_id = ? AND id = ? AND status = 'approved'").run(tenantId, sequenceId)
+  })()
 }
 
 // Approves the set: every step's hash is taken over the exact words at this moment, and the
@@ -186,15 +201,23 @@ export function approveSequence(db: Database.Database, tenantId: string, sequenc
   const s = getSeq(db, tenantId, sequenceId)
   if (!s) throw new SequenceError('not_found')
   if (s.status !== 'draft') throw new SequenceError('not_a_draft')
+  const root = db.prepare('SELECT status FROM outreach_messages WHERE tenant_id = ? AND id = ?').get(tenantId,s.message_id) as {status:string} | undefined
+  if (!root || !['draft','approved'].includes(root.status)) throw new SequenceError('not_a_draft')
+  if (!hasReadConsent(db,tenantId) || !gmailStatus(db,tenantId)?.read_granted) throw new SequenceError('reading_not_enabled')
   const steps = db.prepare('SELECT step, subject, body FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ?').all(tenantId, sequenceId) as { step: number; subject: string; body: string }[]
   if (steps.length !== MAX_STEPS || steps.some(st => st.body.length < 20)) throw new SequenceError('steps_missing')
   if (isSuppressed(db, tenantId, s.to_email)) throw new SequenceError('suppressed')
+  db.transaction(() => {
+  const first = steps.find(st => st.step === 1)!
+  db.prepare("UPDATE outreach_messages SET subject = ?, body = ?, status = 'draft', approved_hash = NULL WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(first.subject, first.body, s.message_id, tenantId)
   approveStep1(s.message_id) // throws the same OutreachError codes as single-message approval
   for (const st of steps)
     db.prepare("UPDATE sequence_steps SET approved_hash = ?, status = 'approved' WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(hash(s.to_email, st.subject, st.body), tenantId, sequenceId, st.step)
   db.prepare("UPDATE sequences SET status = 'approved' WHERE tenant_id = ? AND id = ?").run(tenantId, sequenceId)
   grantConsent(db, tenantId, s.to_email, { channel: 'email', scope: 'sequence', basis: 'user_approved_set', evidenceRef: `sequence:${sequenceId}`, now })
+  db.prepare('INSERT OR IGNORE INTO autopilot_settings (tenant_id) VALUES (?)').run(tenantId)
   auditAt(db, tenantId, 'sequence_approved', `${steps.length} steps`, s.lead_id, s.message_id, now)
+  })()
 }
 
 // Per-lead status for the Leads page. next_due_at is only set while waiting between steps.
@@ -202,11 +225,11 @@ export function sequenceStatusByLead(db: Database.Database, tenantId: string, d:
   const now = d.now ?? Math.floor(Date.now() / 1000); void now
   const out = new Map<string, { status: string; step: number; next_due_at: number | null; stop_reason: string | null }>()
   const rows = db.prepare(`SELECT s.lead_id, s.status, s.stop_reason, s.to_email, m.sent_at AS step1_sent,
-                            (SELECT count(*) FROM sequence_steps st WHERE st.tenant_id = s.tenant_id AND st.sequence_id = s.id AND st.status = 'sent') AS steps_sent
+                            (SELECT count(*) FROM sequence_steps st WHERE st.tenant_id = s.tenant_id AND st.sequence_id = s.id AND st.step > 1 AND st.status = 'sent') + CASE WHEN m.status = 'sent' THEN 1 ELSE 0 END AS steps_sent
                            FROM sequences s JOIN outreach_messages m ON m.id = s.message_id WHERE s.tenant_id = ?`).all(tenantId) as { lead_id: string; status: string; stop_reason: string | null; to_email: string; step1_sent: number | null; steps_sent: number }[]
   for (const r of rows) {
     let nextDue: number | null = null
-    if (r.status === 'active' && r.step1_sent && r.steps_sent < MAX_STEPS) {
+    if ((r.status === 'active' || r.status === 'approved') && r.step1_sent && r.steps_sent < MAX_STEPS) {
       const gaps = isTestRecipient(db, tenantId, r.to_email) ? TEST_GAPS_S : GAPS_S
       nextDue = r.step1_sent + gaps[r.steps_sent] // steps_sent counts step 1: index of the NEXT step
     }
@@ -221,8 +244,16 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
   const out: SequenceResult = { started: 0, sent: 0, skipped: 0 }
   const now = d.now ?? Math.floor(Date.now() / 1000)
   const stop = (w: string): SequenceResult => { out.stopped = w; return out }
+  db.prepare("UPDATE sequence_steps SET status = 'uncertain' WHERE tenant_id = ? AND status = 'sending' AND claimed_at < ?").run(tenantId,now - UNCERTAIN_STALE_S)
+  db.prepare("UPDATE outreach_messages SET status = 'uncertain', error = 'send_interrupted' WHERE tenant_id = ? AND status = 'sending' AND claimed_at < ?").run(tenantId,now - UNCERTAIN_STALE_S)
+  db.prepare("UPDATE followup_messages SET status = 'uncertain' WHERE tenant_id = ? AND status = 'sending' AND created_at < ?").run(tenantId,now - UNCERTAIN_STALE_S)
   const st = getState(db, tenantId)
   if (st.paused) return stop('paused')
+  if ((d.flags ?? process.env).SEQUENCES_ENABLED !== '1' || (d.flags ?? process.env).AUTOPILOT_KILL === '1') return stop('sequences_disabled')
+  if (!hasReadConsent(db,tenantId)) return stop('reading_not_enabled')
+  const sync = await syncReplies(db,tenantId,d)
+  if (sync.error) return stop(sync.error)
+  if (anyUncertainSend(db,tenantId)) { pause(db,tenantId,'uncertain_send'); return stop('uncertain_send') }
   // Global kill switch shared with follow-ups: any uncertain send anywhere halts the scheduler.
   const stale = now - UNCERTAIN_STALE_S
   if (db.prepare("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND status = 'uncertain'").get(tenantId)
@@ -241,30 +272,32 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
                               JOIN outreach_messages m ON m.id = s.message_id
                               WHERE s.tenant_id = ? AND s.status = 'approved' AND m.status = 'sent'`).all(tenantId) as { id: string; lead_id: string; message_id: string; sent_at: number; gmail_id: string | null; thread_id: string | null }[]
   for (const r of toStart) {
+    if (db.prepare("SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND lead_id = ? AND classification NOT IN ('auto','soft_bounce')").get(tenantId,r.lead_id)) { stopSequenceForThread(db,tenantId,r.lead_id,'replied','existing_reply',now); continue }
     db.prepare("UPDATE sequence_steps SET status = 'sent', sent_at = ?, gmail_id = ? WHERE tenant_id = ? AND sequence_id = ? AND step = 1 AND status = 'approved'").run(r.sent_at, r.gmail_id, tenantId, r.id)
     db.prepare("UPDATE sequences SET status = 'active' WHERE tenant_id = ? AND id = ? AND status = 'approved'").run(tenantId, r.id)
     auditAt(db, tenantId, 'sequence_started', 'step 1 sent', r.lead_id, r.message_id, now)
     out.started++
   }
 
-  const sentFollowups24h = (db.prepare("SELECT count(*) AS n FROM followup_messages WHERE tenant_id = ? AND status = 'sent' AND created_at >= ?").get(tenantId, now - 86400) as { n: number }).n
-  const sentSeqSteps24h = (db.prepare("SELECT count(*) AS n FROM sequence_steps WHERE tenant_id = ? AND status = 'sent' AND sent_at >= ?").get(tenantId, now - 86400) as { n: number }).n
-  const dailyCap = Math.min(20, st.daily_cap) // his number: 20 per account, shared with existing sends
-  const sentShared24h = () => sentLast24h(db, tenantId, d) + sentFollowups24h + sentSeqSteps24h
+  const dailyCap = Math.min(ACCOUNT_SEND_CAP, st.daily_cap)
+  const sentShared24h = () => accountSendCount(db,tenantId,now)
 
   const active = db.prepare(`SELECT s.id, s.lead_id, s.message_id, s.to_email, m.subject AS msg_subject, m.sent_at AS step1_sent, m.thread_id
                              FROM sequences s JOIN outreach_messages m ON m.id = s.message_id
                              WHERE s.tenant_id = ? AND s.status = 'active'`).all(tenantId) as { id: string; lead_id: string; message_id: string; to_email: string; msg_subject: string; step1_sent: number | null; thread_id: string | null }[]
   for (const s of active) {
+    if (!s.thread_id) { out.skipped++; continue } // never send a bump without a readable original thread
     if (!s.step1_sent) continue // activation lags one tick
-    const stepRow = db.prepare("SELECT step, subject, body, approved_hash FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? AND status = 'approved' ORDER BY step LIMIT 1").get(tenantId, s.id) as { step: number; subject: string; body: string; approved_hash: string | null } | undefined
-    if (!stepRow) { db.prepare("UPDATE sequences SET status = 'done' WHERE tenant_id = ? AND id = ?").run(tenantId, s.id); continue }
+    if (db.prepare("SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND lead_id = ? AND classification NOT IN ('auto','soft_bounce')").get(tenantId,s.lead_id)) { stopSequenceForThread(db,tenantId,s.lead_id,'replied','existing_reply',now); continue }
+    const stepRow = db.prepare("SELECT step, subject, body, approved_hash, status FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? AND status <> 'sent' ORDER BY step LIMIT 1").get(tenantId, s.id) as { step: number; subject: string; body: string; approved_hash: string | null; status: string } | undefined
+    if (!stepRow) { if (db.prepare("SELECT 1 FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? AND status <> 'sent'").get(tenantId,s.id)) continue; db.prepare("UPDATE sequences SET status = 'done' WHERE tenant_id = ? AND id = ?").run(tenantId, s.id); continue }
+    if (stepRow.status !== 'approved') continue // never jump past an in-flight or uncertain step
     // Server-side test-mode enforcement: the allowlist decides timing, never a stored flag.
     const gaps = isTestRecipient(db, tenantId, s.to_email) ? TEST_GAPS_S : GAPS_S
     if (now - s.step1_sent < gaps[stepRow.step - 1]) continue
     const skip = (why: string) => { out.skipped++; auditAt(db, tenantId, 'sequence_skipped', why, s.lead_id, s.message_id, now) }
     if (isSuppressed(db, tenantId, s.to_email)) { db.prepare("UPDATE sequences SET status = 'stopped', stop_reason = 'suppressed' WHERE tenant_id = ? AND id = ?").run(tenantId, s.id); skip('suppressed'); continue }
-    if (!hasConsent(db, tenantId, s.to_email, 'email', 'sequence', now)) { skip('no valid consent'); continue }
+    if (!db.prepare("SELECT 1 FROM consent_ledger WHERE tenant_id = ? AND contact = ? AND scope = 'sequence' AND evidence_ref = ? AND revoked_at IS NULL AND expires_at > ?").get(tenantId,norm(s.to_email),`sequence:${s.id}`,now)) { skip('no valid consent'); continue }
     if (sentShared24h() >= dailyCap) return stop('daily_cap')
     if (stepRow.approved_hash !== hash(s.to_email, stepRow.subject, stepRow.body)) {
       // Words changed after approval: drop the whole set back to draft, never send stale approval.
@@ -275,6 +308,7 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
     }
     const claim = db.prepare("UPDATE sequence_steps SET status = 'sending', claimed_at = ? WHERE tenant_id = ? AND sequence_id = ? AND step = ? AND status = 'approved'").run(now, tenantId, s.id, stepRow.step)
     if (claim.changes !== 1) { skip('already claimed'); continue }
+    if (sentShared24h() > dailyCap) { db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step); return stop('daily_cap') }
     const master = d.master ?? getMasterKey()
     const unsubUrl = `${(d.baseUrl ?? process.env.PUBLIC_BASE_URL ?? 'https://dazl.ai').replace(/\/$/, '')}/api/unsubscribe?t=${unsubToken(s.message_id, master)}`
     let token: string
@@ -284,6 +318,15 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
       return stop('gmail_unavailable')
     }
     try {
+      // Recheck after token refresh: suppression/reply/pause can change during await.
+      const current = getSeq(db,tenantId,s.id)
+      const currentStep = db.prepare('SELECT body,subject,approved_hash FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? AND step = ?').get(tenantId,s.id,stepRow.step) as {body:string;subject:string;approved_hash:string}
+      if (currentStep.body !== stepRow.body || currentStep.subject !== stepRow.subject || currentStep.approved_hash !== hash(s.to_email,currentStep.subject,currentStep.body)) {
+        db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step); return stop('changed_since_approval')
+      }
+      if ((d.flags ?? process.env).SEQUENCES_ENABLED !== '1' || (d.flags ?? process.env).AUTOPILOT_KILL === '1' || current?.status !== 'active' || getState(db,tenantId).paused || isSuppressed(db,tenantId,s.to_email) || !hasReadConsent(db,tenantId) || !gmailStatus(db,tenantId)?.read_granted) {
+        db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step); continue
+      }
       const raw = toBase64Url(buildMime({
         fromName: settings.sender_name, fromEmail: acct.email, to: s.to_email, subject: stepRow.subject,
         body: composeBody(stepRow.body, settings, unsubUrl),
@@ -325,11 +368,33 @@ export function sequenceAnalytics(db: Database.Database, tenantId: string, leadI
   const n = (sql: string, ...a: unknown[]) => (db.prepare(sql).get(...a) as { n: number }).n
   const step1 = n(`SELECT count(*) AS n FROM outreach_messages WHERE tenant_id = ? AND status = 'sent' ${inList}`, tenantId, ...args)
   const later = n(`SELECT count(*) AS n FROM sequence_steps st JOIN sequences sq ON sq.tenant_id = st.tenant_id AND sq.id = st.sequence_id WHERE st.tenant_id = ? AND st.status = 'sent' AND st.step > 1 ${seqIn}`, tenantId, ...args)
-  const sent = step1 + later
-  const cls = (list: string) => n(`SELECT count(*) AS n FROM inbound_messages WHERE tenant_id = ? AND classification IN (${list}) ${inList}`, tenantId, ...args)
-  const replied = cls("'positive','negative','other'")
+  const warm = n(`SELECT count(*) AS n FROM followup_messages fm JOIN followup_threads ft ON ft.tenant_id = fm.tenant_id AND ft.thread_id = fm.thread_id WHERE fm.tenant_id = ? AND fm.status = 'sent' ${scoped ? (leadIds!.length ? `AND ft.lead_id IN (${ph})` : 'AND 1=0') : ''}`,tenantId,...args)
+  const sent = step1 + later + warm
+  const cls = (list: string) => n(`SELECT count(DISTINCT thread_id) AS n FROM inbound_messages WHERE tenant_id = ? AND classification IN (${list}) ${inList}`, tenantId, ...args)
+  const replied = cls("'positive','negative','other','opt_out'")
   const bounced = cls("'bounce'")
   const optOutReplies = cls("'opt_out'")
-  const linkUnsubscribes = n("SELECT count(*) AS n FROM suppressions WHERE tenant_id = ? AND reason = 'unsubscribe'", tenantId)
-  return { sent, delivered: Math.max(0, sent - bounced), replied, bounced, optOuts: optOutReplies + linkUnsubscribes, linkUnsubscribes }
+  const scopedSupp = scoped ? (leadIds!.length ? `AND email IN (SELECT to_email FROM outreach_messages WHERE tenant_id = ? ${inList})` : 'AND 1=0') : ''
+  const linkUnsubscribes = n(`SELECT count(*) AS n FROM suppressions WHERE tenant_id = ? AND reason = 'unsubscribe' ${scopedSupp}`,tenantId,...(scoped && leadIds!.length ? [tenantId,...args] : []))
+  // Reply opt-outs are already suppressions, so don't add them twice.
+  return { sent, delivered: Math.max(0, sent - bounced), replied, bounced, optOuts: Math.max(optOutReplies,linkUnsubscribes), linkUnsubscribes }
+
+}
+
+
+export function resolveSequenceUncertain(db: Database.Database, tenantId: string, id: string, step: number, result: 'sent' | 'retry', now = Math.floor(Date.now()/1000)): void {
+  const s = getSeq(db,tenantId,id)
+  if (!s) throw new SequenceError('not_found')
+  const row = db.prepare("SELECT status FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? AND step = ?").get(tenantId,id,step) as {status:string} | undefined
+  if (row?.status !== 'uncertain') throw new SequenceError('not_uncertain')
+  db.prepare("UPDATE sequence_steps SET status = ?, sent_at = ?, claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ? AND status = 'uncertain'").run(result === 'sent' ? 'sent' : 'approved',result === 'sent' ? now : null,tenantId,id,step)
+  auditAt(db,tenantId,'sequence_uncertain_resolved',`${step}: ${result}`,s.lead_id,s.message_id,now)
+  // Account stays paused until the owner resumes it explicitly.
+}
+
+export function resumeSequences(db: Database.Database, tenantId: string): void {
+  if (anyUncertainSend(db,tenantId)) throw new SequenceError('uncertain_send')
+  if (!hasReadConsent(db,tenantId) || !gmailStatus(db,tenantId)?.read_granted) throw new SequenceError('reading_not_enabled')
+  db.prepare('UPDATE autopilot_settings SET paused = 0, pause_reason = NULL WHERE tenant_id = ?').run(tenantId)
+  auditAt(db,tenantId,'sequence_resumed')
 }
