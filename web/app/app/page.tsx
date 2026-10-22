@@ -1,4 +1,5 @@
 import HomeSteps from './home-steps'
+import FeatureDiscovery from './feature-discovery'
 import SellerCard from './seller-card'
 
 export default function AppHome() {
@@ -8,6 +9,7 @@ export default function AppHome() {
       <p className="text-[#555] text-sm mb-8">Tell dazl what you sell, then three steps to your first verified leads.</p>
       <SellerCard />
       <HomeSteps />
+      <FeatureDiscovery />
     </div>
   )
 }
