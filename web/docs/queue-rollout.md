@@ -48,12 +48,30 @@ separate explicit activation decision must satisfy.
 4. In-flight reconcile at cutover: before enabling for a tenant, verify zero
    running jobs for that tenant (or wait for drain); the bridge's fresh-row
    bind refusal protects a live claim, but cutover at idle removes the case.
-5. Guard metrics (logged, no new infra): per-kick counts - mirrored, claimed,
+5. Canary scope is ONE tenant (the test tenant), not a policy: the bridge
+   claims queue work before the legacy loop on every kick, so under a
+   continuous queue-tenant backlog legacy tenants can starve. A per-tenant
+   slot policy (e.g. one tenant holds at most one slot) has been proposed but
+   is NOT designed or enforced - until it is, DAZL_QUEUE_TENANTS must list at
+   most the single canary tenant and any broader list is a separate reviewed
+   change, not an ops edit.
+6. Slot tails and recovery honesty: post-finish network work (contact crawl,
+   enrichment) holds a run slot for seconds to minutes after the scan itself
+   completes (bounded by per-request timeouts, worst case roughly 8 sites x
+   (robots + 5 pages) x (10s timeout + 2s gap)). A slot is released only when
+   its run promise settles; there is deliberately NO watchdog release -
+   freeing a slot while the old work continues uncancelled can double-run
+   provider calls. If slots ever wedge, the recovery is a process restart
+   (reapStaleJobs re-claims the abandoned rows within the bounded window),
+   not a force-release. A cancel/ownership/heartbeat design for safe timeout
+   release is a separate architecture assessment owed before any broader
+   rollout.
+7. Guard metrics (logged, no new infra): per-kick counts - mirrored, claimed,
    bind_refused, reaped, stale_token_rejections; scan_jobs status distribution
    for the tenant before/after. Rollback triggers: any bind_refused spike,
    any double-run evidence (two running rows sharing identity, duplicate
    provider spend), attempts advancing without domain progress.
-6. Live validation, two stages:
+8. Live validation, two stages:
    Stage 1 (no provider, no spend, prerequisite): a bounded synthetic dry-run
    for the exact test tenant `53d74a4bebd48368144a5e23f509a97e`
    (OUTREACH_TEST_TENANT_ID in the run env). A stub-executor path wired ONLY
