@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 type Step = { step: number; subject: string; body: string; status: string }
 type Sequence = { id: string; message_id: string; lead_id: string; to_email: string; status: string; stop_reason: string | null; steps: Step[] }
 type Analytics = { sent: number; delivered: number; replied: number; bounced: number; optOuts: number }
-type Data = { sequences: Sequence[]; test_addresses: string[]; status: Record<string,{status:string;step:number;next_due_at:number|null}>; campaigns: { id: string; query: string; analytics: Analytics }[] }
+type Data = { sequences: Sequence[]; test_addresses: string[]; test_fixture_available?: boolean; status: Record<string,{status:string;step:number;next_due_at:number|null}>; campaigns: { id: string; query: string; analytics: Analytics }[] }
 const COPY: Record<string,string> = {
   reading_not_enabled:'Enable reply reading in Settings before approving a sequence. Without it, sequences cannot stop on replies.',
   sender_identity_missing:'Add your sender name and mailing address in Settings.',
@@ -13,6 +13,8 @@ const COPY: Record<string,string> = {
   already_exists:'A sequence already exists for this lead.',
   suppressed:'This address is suppressed. Nothing will be sent.',
   not_a_draft:'This sequence is no longer a draft. Refresh the page.',
+  test_tenant_only:'The sequence test fixture is only available on the operator-designated test account.',
+  test_inbox_not_allowlisted:'Add the test inbox to the allowlist above first.',
 }
 export default function SequencesClient() {
   const [data,setData]=useState<Data|null>(null)
@@ -48,6 +50,11 @@ export default function SequencesClient() {
       <label className="block mt-2">Your test email addresses, one per line<textarea className="field w-full mt-1" rows={3} value={addresses} onChange={e=>setAddresses(e.target.value)}/></label>
       <button disabled={busy} className="btn-ghost text-xs mt-2" onClick={()=>void action({action:'test_addresses',addresses:addresses.split(/\s+/).filter(Boolean)})}>Save test inbox list</button>
     </details>
+    {data?.test_fixture_available&&<div className="mt-4 text-sm border border-yellow-300/40 rounded p-3">
+      <p className="font-medium">Own-inbox sequence test</p>
+      <p className="text-xs text-[#555] mt-1">Creates the approved three-step verification set addressed only to your allowlisted test inbox. It is labelled test-only, is not a real prospect, and nothing sends until you review the exact words and approve the set here.</p>
+      <button disabled={busy} className="btn-ghost text-xs mt-2" onClick={()=>void action({action:'create_test_fixture'})}>Create the test-only sequence fixture</button>
+    </div>}
     {note&&<p role="status" className="text-sm mt-3 text-[#555]">{note}</p>}
     {data?.sequences.map(s=>{
       const state=data.status[s.lead_id]

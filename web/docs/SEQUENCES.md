@@ -76,6 +76,22 @@ follow-ups. Replies/bounces are distinct threads. The UI labels the derived
 sent-minus-recorded-permanent-bounces number "No bounce reported". It is not
 proof of delivery. Opens and bookings are not measured. No tracking pixel.
 
+## Own-inbox sequence test fixture
+
+The operator-designated test tenant (OUTREACH_TEST_TENANT_ID) can create a fixed
+three-step verification set addressed only to its allowlisted own test inbox via
+POST /api/outreach/sequences with action=create_test_fixture (button on the
+Sequences page, shown only when the gate passes). The three step texts are fixed
+constants in lib/outreach/test-fixture.ts, approved word-for-word by the owner;
+no LLM or template touches them. The fixture lead claims no verification
+evidence (no excerpt, confidence or grade) and is labelled test-only; it is not
+a real prospect. The fixture stays in draft until the owner reviews the exact
+words in the UI and approves the set, then step 1 uses the normal manual send
+path and steps 2/3 use test-mode timing (3/7 minutes) only while the recipient
+remains the allowlisted test inbox. The route refuses any other tenant
+(test_tenant_only) and refuses to run before the inbox is allowlisted
+(test_inbox_not_allowlisted). Creating the fixture is idempotent.
+
 ## Verification
 
 Run `npm test` and `npm run build` in web. Tests use injected Gmail/token responses,
