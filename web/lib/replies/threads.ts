@@ -81,6 +81,26 @@ export function looksLikeQuestion(title: string): boolean {
   return t.includes('?') || QUESTION_WORD.test(t)
 }
 
+const STOPWORDS = new Set(['a','an','the','for','to','of','in','on','and','or','my','your','our','is','are','do','does','how','what','which','best','top','any','with','about'])
+
+// Topical relevance gate. Platform search matches loosely (a query for "cold email
+// software" returns GPA advice and cold-case posts), so retrieval candidates are NOT
+// presented as fits unless they actually talk about the query. Rule (a heuristic,
+// deliberately strict - a missed borderline thread beats an irrelevant one presented
+// as a fit): the query phrase appears in the title or quote, or enough of the query's
+// content words do (all for 1-2 word queries, at least two thirds for longer ones).
+export function isRelevantToQuery(query: string, title: string, quote: string): boolean {
+  const text = `${title} ${quote}`.toLowerCase()
+  const q = query.trim().toLowerCase()
+  if (!q) return false
+  if (text.includes(q)) return true
+  const words = q.split(/[^a-z0-9]+/).filter(w => w.length > 1 && !STOPWORDS.has(w))
+  if (words.length === 0) return text.includes(q)
+  const present = words.filter(w => new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i').test(text)).length
+  const need = words.length <= 2 ? words.length : Math.ceil(words.length * 2 / 3)
+  return present >= need
+}
+
 // Replies share each platform's hourly budget with every other advanced feature.
 function platformCallsLastHour(db: Database.Database, tenantId: string, p: ReplyPlatform): number {
   const r = db.prepare("SELECT COUNT(*) AS n FROM connector_audit WHERE tenant_id = ? AND (connector = ? OR connector LIKE ?) AND created_at > CAST(strftime('%s','now') AS INTEGER) - 3600").get(tenantId, `adv:${p}`, `adv:${p}-%`) as { n: number }
@@ -89,6 +109,7 @@ function platformCallsLastHour(db: Database.Database, tenantId: string, p: Reply
 
 export interface RefreshResult {
   added: number
+  filtered: number
   platforms: Partial<Record<ReplyPlatform, 'ok' | 'disabled' | 'no_consent' | 'rate_limited' | 'worker_error'>>
 }
 
@@ -96,7 +117,7 @@ export async function refreshReplies(db: Database.Database, tenantId: string, de
   const env = deps.env ?? process.env
   const flags = advFlags(env)
   const queries = listQueries(db, tenantId).slice(0, MAX_QUERIES)
-  const out: RefreshResult = { added: 0, platforms: {} }
+  const out: RefreshResult = { added: 0, filtered: 0, platforms: {} }
   if (queries.length === 0) return out
   const now = deps.now ?? Date.now()
   const cutoff = now - MAX_THREAD_AGE_DAYS * 86400_000
@@ -114,8 +135,10 @@ export async function refreshReplies(db: Database.Database, tenantId: string, de
       const items = await worker({ platform: p, query: q, session }).catch(() => null)
       if (items === null) { audit(db, { tenantId, connector, lookup: q, status: 'worker_error', results: 0 }); anyError = true; continue }
       const fresh = items.filter(i => i.date && new Date(i.date).getTime() >= cutoff && looksLikeQuestion(i.title))
-      audit(db, { tenantId, connector, lookup: q, status: fresh.length ? 'ok' : 'empty', results: fresh.length })
-      for (const it of fresh.slice(0, MAX_NEW_PER_QUERY)) {
+      const qualified = fresh.filter(i => isRelevantToQuery(q, i.title, i.quote))
+      out.filtered += fresh.length - qualified.length
+      audit(db, { tenantId, connector, lookup: q, status: qualified.length ? 'ok' : fresh.length ? 'filtered' : 'empty', results: qualified.length })
+      for (const it of qualified.slice(0, MAX_NEW_PER_QUERY)) {
         out.added += ins.run(id24(), tenantId, p, it.url, it.title, it.quote, q, it.date, it.login_walled ? 1 : 0).changes
       }
     }

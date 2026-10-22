@@ -42,7 +42,9 @@ export default function RepliesClient() {
     try {
       const j = await post({ action: 'refresh' })
       const parts = Object.entries((j.platforms ?? {}) as Record<string, string>).map(([p, s]) => `${p === 'x' ? 'X' : 'Reddit'}: ${s === 'ok' ? 'checked' : s.replaceAll('_', ' ')}`)
-      setMsg(j.added > 0 ? `${j.added} new thread${j.added === 1 ? '' : 's'} found. ${parts.join(' - ')}` : `Nothing new. ${parts.join(' - ')}`)
+      const kept = `${j.added} new thread${j.added === 1 ? '' : 's'} found`
+      const dropped = j.filtered > 0 ? `, ${j.filtered} off-topic result${j.filtered === 1 ? '' : 's'} filtered out` : ''
+      setMsg(j.added > 0 ? `${kept}${dropped}. ${parts.join(' - ')}` : `Nothing new${dropped}. ${parts.join(' - ')}`)
     } catch (e) { setMsg((e as Error).message) }
     setBusy('')
     void load()
