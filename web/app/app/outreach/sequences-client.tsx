@@ -54,6 +54,9 @@ export default function SequencesClient() {
       <p className="font-medium">Own-inbox sequence test</p>
       <p className="text-xs text-[#555] mt-1">Creates the approved three-step verification set addressed only to your allowlisted test inbox. It is labelled test-only, is not a real prospect, and nothing sends until you review the exact words and approve the set here.</p>
       <button disabled={busy} className="btn-ghost text-xs mt-2" onClick={()=>void action({action:'create_test_fixture'})}>Create the test-only sequence fixture</button>
+      <p className="font-medium mt-3">Reply-stop check</p>
+      <p className="text-xs text-[#555] mt-1">Creates a separate two-step test set for verifying that a reply stops a live sequence before the next step. Same rules: test-only, allowlisted inbox only, nothing sends until you review the exact words and approve.</p>
+      <button disabled={busy} className="btn-ghost text-xs mt-2" onClick={()=>void action({action:'create_reply_stop_fixture'})}>Create the reply-stop test fixture</button>
     </div>}
     {note&&<p role="status" className="text-sm mt-3 text-[#555]">{note}</p>}
     {data?.sequences.map(s=>{

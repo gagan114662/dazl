@@ -8,9 +8,9 @@ import { migrateAutopilot } from '../lib/outreach/autopilot.ts'
 import { migrateLedger } from '../lib/outreach/ledger.ts'
 import { migrateReplies, acceptReadConsent } from '../lib/outreach/replies.ts'
 import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
-import { saveSettings, approve, sendMessage, leadHeld, recipientAllowed, TEST_INBOX } from '../lib/outreach/service.ts'
+import { saveSettings, approve, sendMessage, leadHeld, recipientAllowed, isSuppressed, TEST_INBOX } from '../lib/outreach/service.ts'
 import { migrateSequences, setTestAddresses, approveSequence, runSequences } from '../lib/outreach/sequences.ts'
-import { createSequenceTestFixture, fixtureAvailable, FixtureError, FIXTURE_STEPS } from '../lib/outreach/test-fixture.ts'
+import { createSequenceTestFixture, createReplyStopTestFixture, fixtureAvailable, FixtureError, FIXTURE_STEPS, REPLY_FIXTURE_STEPS } from '../lib/outreach/test-fixture.ts'
 
 const NOW = 1800000000
 const master = randomBytes(32)
@@ -154,4 +154,60 @@ test('fixture set approves and sends steps on test timing exactly as written', a
   assert.equal((await runSequences(db2, 'A', '', { ...m2, now: NOW + 421 })).sent, 0) // no env grant now
   assert.equal(m2.calls.length, 1)
   assert.equal((db2.prepare('SELECT stop_reason FROM sequences WHERE id = ?').get(r2.sequenceId) as { stop_reason: string }).stop_reason, 'personal_email')
+})
+
+test('reply-stop fixture: gated, exact 2-step texts, idempotent, distinct from the 3-step fixture', async () => {
+  const db = await setup()
+  setTestAddresses(db, 'A', [TEST_INBOX])
+  const r = withTenant(() => createReplyStopTestFixture(db, 'A'))
+  assert.equal(r.created, true)
+
+  const steps = db.prepare('SELECT step, subject, body, status FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? ORDER BY step').all('A', r.sequenceId) as { step: number; subject: string; body: string; status: string }[]
+  assert.equal(steps.length, 2)
+  for (const st of steps) {
+    const want = REPLY_FIXTURE_STEPS[st.step - 1]
+    assert.equal(st.subject, want.subject)
+    assert.equal(st.body, want.body)
+    assert.equal(st.status, 'draft')
+  }
+  // Byte-exact approved texts, defensive against accidental edits of the constants.
+  assert.equal(steps[0].subject, 'dazl sequence test - reply stop check - step 1 of 2')
+  assert.equal(steps[0].body, 'Hi Gagan,\n\nThis is the reply-stop check in the dazl own-inbox sequence test. Its purpose is only to verify that a reply stops the sequence before step 2.\n\nThanks,')
+  assert.equal(steps[1].body, 'Hi Gagan,\n\nThis follow-up should never be sent. If it arrives, the reply-stop check in the dazl own-inbox sequence test has failed.\n\nThanks,')
+
+  // Same gating: other tenants cannot create it.
+  assert.throws(() => withTenant(() => createReplyStopTestFixture(db, 'B')), (e: unknown) => e instanceof FixtureError && (e as FixtureError).code === 'test_tenant_only')
+
+  // Idempotent per variant, and independent of the 3-step fixture.
+  const again = withTenant(() => createReplyStopTestFixture(db, 'A'))
+  assert.deepEqual(again, { ...r, created: false })
+  const main = withTenant(() => createSequenceTestFixture(db, 'A'))
+  assert.equal(main.created, true)
+  assert.notEqual(main.sequenceId, r.sequenceId)
+  assert.equal((db.prepare('SELECT count(*) AS n FROM sequences WHERE tenant_id = ?').get('A') as { n: number }).n, 2)
+})
+
+test('reply-stop fixture: a human reply before step 2 stops the sequence and step 2 never sends', async () => {
+  const db = await setup()
+  setTestAddresses(db, 'A', [TEST_INBOX])
+  const r = withTenant(() => createReplyStopTestFixture(db, 'A'))
+  const m = mock()
+  withTenant(() => approveSequence(db, 'A', r.sequenceId, id => approve(db, 'A', id, true), NOW))
+  assert.equal(await withTenantAsync(() => sendMessage(db, 'A', r.messageId, m)), 'sent')
+  assert.equal(m.calls.length, 1)
+  assert.match(m.calls[0], /Subject: dazl sequence test - reply stop check - step 1 of 2/)
+
+  // A neutral human reply lands in the thread before step 2 is due.
+  const reply = { id: 'g-reply', threadId: 'thread-1', internalDate: String((NOW + 60) * 1000), payload: { mimeType: 'text/plain', body: { data: Buffer.from('Hi, this is a test reply for the dazl sequence test. Nothing is needed.').toString('base64url') }, headers: [{ name: 'From', value: 'Owner <owner@example.com>' }] } }
+  const withReply = { ...m, fetchImpl: (async (u: unknown) => { const url = String(u); if (url.includes('oauth2')) return json({ access_token: 'at' }); if (url.includes('/threads/')) return json({ messages: [reply] }); return json({}, 404) }) as typeof fetch }
+
+  // Activation tick sees the reply and stops the sequence; the +3m tick sends nothing.
+  assert.equal((await withTenantAsync(() => runSequences(db, 'A', '', { ...withReply, now: NOW + 1 }))).sent, 0)
+  assert.equal((await withTenantAsync(() => runSequences(db, 'A', '', { ...withReply, now: NOW + 421 }))).sent, 0)
+  assert.equal(m.calls.length, 1)
+  const seq = db.prepare('SELECT status, stop_reason FROM sequences WHERE id = ?').get(r.sequenceId) as { status: string; stop_reason: string }
+  assert.equal(seq.status, 'replied')
+  assert.equal(seq.stop_reason, 'reply')
+  // A neutral reply must not suppress the test address.
+  assert.equal(isSuppressed(db, 'A', TEST_INBOX), false)
 })
