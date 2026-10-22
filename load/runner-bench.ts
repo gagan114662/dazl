@@ -25,6 +25,7 @@ import { monitorEventLoopDelay } from 'node:perf_hooks'
 import { createRequire } from 'node:module'
 
 process.env.SITECRAWL_ENABLED = '0'
+delete process.env.TINYFISH_API_KEY // TinyFish path stays disabled even if the shell exports a key
 process.env.DAZL_TRIAL_ANTHROPIC_KEY = 'load-harness-mock-key'
 process.env.SCAN_MAX_CONCURRENT = process.env.SCAN_MAX_CONCURRENT ?? '3'
 
@@ -102,6 +103,10 @@ async function main() {
     jobIds.push(id)
   }
 
+  // Hard fence, belt and braces: any code path that falls back to the global fetch
+  // (default parameters, the connector worker, anything not taking deps.fetchImpl)
+  // gets an instant 503 instead of egress. Mocks do not use the global fetch.
+  globalThis.fetch = fencedFetch()
   const provider = mockProvider(batches, { providerMs: PROVIDER_MS, fetchMs: FETCH_MS })
   const fetchPage = mockFetchPage(pageIndex, { providerMs: PROVIDER_MS, fetchMs: FETCH_MS })
   const deps = {
