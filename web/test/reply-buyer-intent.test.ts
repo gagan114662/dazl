@@ -103,3 +103,46 @@ test('existing keyword-only rows are re-graded inside a manual refresh: internsh
   d.prepare("DELETE FROM reply_drafts WHERE thread_id = 'old1'").run()
   assert.deepEqual(listThreads(d, 't1').map(t => t.id), ['old2'])
 })
+
+test('refresh reports graded count: new candidates graded once each, no backlog left', async () => {
+  const { d, master } = setup()
+  const fetchImpl = (async (_url: unknown, init: { body?: string } = {}) => {
+    const word = /internship/i.test(init?.body ?? '') ? 'no' : 'yes'
+    return new Response(JSON.stringify({ content: [{ type: 'text', text: word }] }), { status: 200 })
+  }) as unknown as typeof fetch
+  const worker = async () => CANDIDATES
+  const r = await refreshReplies(d, 't1', { worker, fetchImpl, master, env: ENV_ON, now: NOW })
+  // The mock worker returns the same 2 candidates for both platforms (reddit + x), and each
+  // platform pass grades them independently: 2 candidates x 2 platforms = 4 verdicts.
+  assert.equal(r.graded, 4)
+  assert.equal(r.ungraded_remaining, 0)
+})
+
+test('per-refresh cap is honest: 12 backlog rows, cap 10 - graded 10, ungraded_remaining 2, no full-backfill promise', async () => {
+  const { d, master } = setup()
+  const ins = d.prepare("INSERT INTO reply_threads (id, tenant_id, platform, url, title, quote, query, date, login_walled, buyer_intent) VALUES (?, 't1', 'reddit', ?, ?, ?, 'cold email software', ?, 0, NULL)")
+  for (let i = 0; i < 12; i++) ins.run(`old${i}`, `https://reddit.com/r/sysadmin/${i}`, `deliverability question ${i}`, `scaling cold email, filters got harder ${i}`, DAY)
+  const worker = async () => [] as { url: string; title: string; quote: string; date: string | null; login_walled: boolean }[]
+  const r = await refreshReplies(d, 't1', { worker, fetchImpl: fetchSays('yes'), master, env: ENV_ON, now: NOW })
+  assert.equal(r.graded, 10)
+  assert.equal(r.ungraded_remaining, 2)
+  const remaining = d.prepare('SELECT COUNT(*) AS n FROM reply_threads WHERE buyer_intent IS NULL').get() as { n: number }
+  assert.equal(remaining.n, 2)
+  // A second manual refresh grades the rest - the cap is per click, not permanent.
+  const r2 = await refreshReplies(d, 't1', { worker, fetchImpl: fetchSays('yes'), master, env: ENV_ON, now: NOW })
+  assert.equal(r2.graded, 2)
+  assert.equal(r2.ungraded_remaining, 0)
+})
+
+test('provider errors count nothing: graded 0, rows stay NULL, ungraded_remaining reports the backlog', async () => {
+  const { d, master } = setup()
+  const ins = d.prepare("INSERT INTO reply_threads (id, tenant_id, platform, url, title, quote, query, date, login_walled, buyer_intent) VALUES (?, 't1', 'reddit', ?, ?, ?, 'cold email software', ?, 0, NULL)")
+  ins.run('old1', 'https://reddit.com/r/sysadmin/1', 'deliverability one', 'scaling cold email', DAY)
+  ins.run('old2', 'https://reddit.com/r/sysadmin/2', 'deliverability two', 'spam filters got harder', DAY)
+  const fetchImpl = (async () => { throw new Error('upstream down') }) as unknown as typeof fetch
+  const worker = async () => [] as { url: string; title: string; quote: string; date: string | null; login_walled: boolean }[]
+  const r = await refreshReplies(d, 't1', { worker, fetchImpl, master, env: ENV_ON, now: NOW })
+  assert.equal(r.graded, 0)
+  assert.equal(r.ungraded_remaining, 2)
+  assert.ok((d.prepare('SELECT COUNT(*) AS n FROM reply_threads WHERE buyer_intent IS NULL').get() as { n: number }).n === 2)
+})
