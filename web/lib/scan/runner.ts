@@ -8,7 +8,7 @@ import { ProviderError, providers, type Provider } from '../llm/provider.ts'
 import type { Vendor } from '../llm/vendors.ts'
 import { runAutopilot } from '../outreach/autopilot.ts'
 import { MAX_ATTEMPTS, reapStaleJobs, markSeenBefore } from './store.ts'
-import { kickQueueRunner } from './queue-runner.ts'
+import { kickQueueRunner, queueTenants } from './queue-runner.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, verifyEvidence, type Candidate } from './evidence.ts'
 import { inferIcp, normalizeIcp, type Icp } from './icp.ts'
 import { collectAdvanced, xSearchQuery } from '../advanced/index.ts'
@@ -297,16 +297,21 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
 // Atomically claims one pending job whose owner has a key stored, or a trial-funded
 // job from a keyless account (those run on the shared operator key). Keyless non-trial
 // jobs are left alone (a worker such as Hermes can take them).
-export function claimKeyedJob(db: Database.Database, jobId?: string): Job | null {
+export function claimKeyedJob(db: Database.Database, jobId?: string, excludeTenants?: string[]): Job | null {
+  // excludeTenants: tenant-scoped queue rollout - listed tenants are claimed
+  // by the queue bridge instead, so the legacy claimer must skip them
+  // (mixed-mode coherence; every kicker funnels through kickRunner).
+  const excl = excludeTenants?.length ? `AND user_id NOT IN (${excludeTenants.map(() => '?').join(',')})` : ''
   return db.transaction(() => {
     const row = db
       .prepare(
         `SELECT id, user_id, business_name, industry, location, attempts, query, icp, sources, funded_by, watch_id, csv_domain FROM scan_jobs
          WHERE status = 'pending' ${jobId ? 'AND id = ?' : ''}
            AND (user_id IN (SELECT tenant_id FROM tenant_llm_keys) OR funded_by = 'trial')
+           ${excl}
          ORDER BY created_at, rowid LIMIT 1`,
       )
-      .get(...(jobId ? [jobId] : [])) as Job | undefined
+      .get(...(jobId ? [jobId] : []), ...(excludeTenants ?? [])) as Job | undefined
     if (!row) return null
     const ch = db.prepare("UPDATE scan_jobs SET status='running', attempts = attempts + 1, claimed_at = CAST(strftime('%s','now') AS INTEGER) WHERE id = ? AND status='pending'").run(row.id)
     return ch.changes === 1 ? { ...row, attempts: row.attempts + 1 } : null
@@ -695,13 +700,16 @@ const MAX_CONCURRENT = Number(process.env.SCAN_MAX_CONCURRENT || 3)
 let active = 0
 
 export async function kickRunner(db: Database.Database, deps: RunDeps = {}): Promise<void> {
-  // Single gate for queue-mode scans (default OFF): when on, the legacy
-  // claimKeyedJob path never runs scans, so the two runners cannot both
-  // own a job. Rollback is unsetting the env. See lib/scan/queue-runner.ts.
-  if ((process.env.DAZL_QUEUE_SCANS ?? 'off') === 'on') return kickQueueRunner(db, deps, runJob)
+  // Tenant-scoped queue gate (default OFF): listed tenants are claimed by the
+  // queue bridge, the legacy claimer skips exactly those tenants - every
+  // kicker (tick, scan/csv routes, status poll) funnels through here, so the
+  // two runners can never own the same tenant's job. Malformed flag fails
+  // closed to pure legacy. Rollback = remove the id + restart.
+  const qt = queueTenants()
+  if (qt !== null) await kickQueueRunner(db, deps, runJob, { tenants: qt })
   reapStaleJobs(db)
   while (active < MAX_CONCURRENT) {
-    const job = claimKeyedJob(db)
+    const job = claimKeyedJob(db, undefined, qt ?? undefined)
     if (!job) return
     active++
     void runJob(db, job, deps)

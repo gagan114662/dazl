@@ -90,6 +90,10 @@ export interface ClaimOptions {
   maxInFlight?: number
   // Lease length in seconds; scan semantics map STALE_RUNNING_S (1200) here.
   leaseSeconds?: number
+  // Restrict claiming to these tenant ids (tenant-scoped rollout). Items for
+  // other tenants stay queued but are never claimed - including ids removed
+  // from the list after enqueue.
+  tenants?: string[]
 }
 
 export interface Claim {

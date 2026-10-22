@@ -28,18 +28,21 @@ export type ScanExecutor = (db: Database.Database, job: Job, deps: RunDeps) => P
 // Mirror every pending, key-funded scan job into the queue. Caller-supplied
 // id keeps queue row and domain row the same identity; re-sync is idempotent.
 // Mirrors claimKeyedJob's funding filter exactly: tenant key or trial-funded.
-export function syncPendingScansToQueue(db: Database.Database, q: SqliteQueue, leaseSeconds: number = QUEUE_LEASE_S): number {
+export function syncPendingScansToQueue(db: Database.Database, q: SqliteQueue, leaseSeconds: number = QUEUE_LEASE_S, tenants?: string[]): number {
   // Mirrors pending jobs AND stale-running ones (claimed_at older than the
   // lease): the latter is the crash-recovery / env-flip path - a legacy- or
   // queue-claimed row whose worker died must re-enter scheduling, or it
   // would sit 'running' forever (queue mode does not call reapStaleJobs).
+  // tenants: when set (tenant-scoped rollout), ONLY listed tenants mirror.
+  const tenantFilter = tenants?.length ? `AND user_id IN (${tenants.map(() => '?').join(',')})` : ''
   const rows = db.prepare(
     `SELECT id, user_id FROM scan_jobs
      WHERE (status = 'pending'
             OR (status = 'running' AND claimed_at <= CAST(strftime('%s','now') AS INTEGER) - ?))
        AND (user_id IN (SELECT tenant_id FROM tenant_llm_keys) OR funded_by = 'trial')
+       ${tenantFilter}
      ORDER BY created_at, rowid`,
-  ).all(leaseSeconds) as { id: string; user_id: string }[]
+  ).all(leaseSeconds, ...(tenants ?? [])) as { id: string; user_id: string }[]
   let n = 0
   for (const r of rows) {
     if (mirrorRow(q, r)) n++
@@ -75,6 +78,21 @@ function mirrorRow(q: SqliteQueue, r: { id: string; user_id: string }): boolean 
     return true
   }
 
+// Tenant-scoped rollout flag. Unset/empty = queue mode OFF (pure legacy).
+// Set = queue mode for the listed tenant ids ONLY. Fail closed: any malformed
+// entry disables queue mode entirely (logged) - a bad flag must never widen
+// into a global queue claim.
+export function queueTenants(env: Record<string, string | undefined> = process.env): string[] | null {
+  const raw = env.DAZL_QUEUE_TENANTS
+  if (raw === undefined || raw.trim() === '') return null
+  const parts = raw.split(',').map(t => t.trim())
+  if (parts.some(t => !/^[A-Za-z0-9_-]+$/.test(t))) {
+    console.error('DAZL_QUEUE_TENANTS malformed - queue mode disabled (fail closed)')
+    return null
+  }
+  return parts
+}
+
 const MAX_CONCURRENT = Number(process.env.SCAN_MAX_CONCURRENT || 3)
 // One threshold source: the queue lease IS the store's stale-running window.
 // Passing a different leaseSeconds to a kick (tests aside) would let a job be
@@ -89,12 +107,12 @@ export async function kickQueueRunner(
   db: Database.Database,
   deps: RunDeps,
   executor: ScanExecutor,
-  opts?: { leaseSeconds?: number; now?: number },
+  opts?: { leaseSeconds?: number; now?: number; tenants?: string[] },
 ): Promise<void> {
   const q = new SqliteQueue(db)
-  syncPendingScansToQueue(db, q)
+  syncPendingScansToQueue(db, q, opts?.leaseSeconds ?? QUEUE_LEASE_S, opts?.tenants)
   while (active < MAX_CONCURRENT) {
-    const claim = q.claim({ kinds: ['scan'], leaseSeconds: opts?.leaseSeconds ?? QUEUE_LEASE_S, now: opts?.now })
+    const claim = q.claim({ kinds: ['scan'], leaseSeconds: opts?.leaseSeconds ?? QUEUE_LEASE_S, now: opts?.now, tenants: opts?.tenants })
     if (!claim) return
     // Bind the domain row. Guard mirrors claimKeyedJob (status='pending'),
     // plus the crash-recovery case: the queue only re-claims after the
