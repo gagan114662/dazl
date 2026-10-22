@@ -123,7 +123,10 @@ interface SeqRow { id: string; tenant_id: string; lead_id: string; message_id: s
 const getSeq = (db: Database.Database, tenantId: string, id: string) =>
   db.prepare('SELECT * FROM sequences WHERE id = ? AND tenant_id = ?').get(id, tenantId) as SeqRow | undefined
 
-export class SequenceError extends Error { constructor(public code: string) { super(code) } }
+export class SequenceError extends Error {
+  code: string
+  constructor(code: string) { super(code); this.code = code }
+}
 
 // Builds steps 2 and 3 for an existing draft (step 1). Steps are drafted now, shown
 // together, and nothing sends until the set is approved. LLM on the tenant's key with a
