@@ -87,9 +87,10 @@ export async function fundingRoundFor(
   company: string,
   news: RoundItem[],
   deps: { fetchImpl?: typeof fetch; jina?: (url: string) => Promise<string>; jinaLeft?: { n: number }; now?: Date } = {},
-): Promise<{ date: string; url: string; amount: string | null; stage: string | null; daysAgo: number } | null> {
+): Promise<{ date: string; url: string; amount: string | null; stage: string | null; daysAgo: number; matched: string } | null> {
   const now = deps.now ?? new Date()
   const hit = news.find(n => matchesCompany(company, n.company) || matchesCompany(company, n.title))
+  const matched = hit ? (matchesCompany(company, hit.company) ? hit.company : hit.title) : ''
   if (!hit) return null
   let { amount, stage } = hit
   if ((!amount || !stage) && isPublicHttp(hit.url)) {
@@ -105,5 +106,5 @@ export async function fundingRoundFor(
     }
   }
   const daysAgo = Math.max(0, Math.round((now.getTime() - new Date(hit.date).getTime()) / 86400_000))
-  return { date: hit.date, url: hit.url, amount, stage, daysAgo }
+  return { date: hit.date, url: hit.url, amount, stage, daysAgo, matched }
 }

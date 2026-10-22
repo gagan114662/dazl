@@ -9,6 +9,7 @@ import { randomBytes } from 'node:crypto'
 import { addEnrichment, audit } from '../connectors/store.ts'
 import { companyKey, recordCompanyEvent } from '../events/store.ts'
 import { listLeads } from '../scan/store.ts'
+import { classifyEntityMatch, domainSlug } from './entity-match.ts'
 
 const TIMEOUT = 8000
 const MAX_LEADS = 10
@@ -19,18 +20,12 @@ export function nameTokens(name: string): string[] {
   return name.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(t => t.length > 1 && !SUFFIXES.has(t))
 }
 
-function tokensMatch(company: string, entityName: string): boolean {
-  const want = nameTokens(company)
-  if (!want.length) return false
-  const have = new Set(nameTokens(entityName))
-  return want.every(t => have.has(t))
-}
-
 export interface FundingSignal { date: string; entity: string; url: string }
-export interface HiringSignal { board: string; openRoles: number; titles: string[]; url: string }
+export interface HiringSignal { board: string; openRoles: number; titles: string[]; url: string; via: 'domain' | 'name' }
 
-// Latest Form D (or D/A) filing for the company within the last 18 months, if the
-// entity name actually matches (token overlap - the search index matches loosely).
+// Latest Form D (or D/A) filing for the company within the last 18 months, but only
+// when the filing entity IS the company (exact name after suffix stripping - the search
+// index matches loosely, so a one-token name must not attach a same-named fund's filing).
 export async function edgarFunding(company: string, fetchImpl: typeof fetch = fetch): Promise<FundingSignal | null> {
   const start = new Date(Date.now() - 548 * 86400_000).toISOString().slice(0, 10)
   const url = `https://efts.sec.gov/LATEST/search-index?q=${encodeURIComponent(`"${company.slice(0, 80)}"`)}&forms=D&dateRange=custom&startdt=${start}`
@@ -48,7 +43,7 @@ export async function edgarFunding(company: string, fetchImpl: typeof fetch = fe
       const cik = String(Number(src?.ciks?.[0] ?? '')) // strip leading zeros
       const file = h._id?.split(':')[1] ?? ''
       if (!entity || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !adsh || !cik || cik === 'NaN' || !file) continue
-      if (!tokensMatch(company, entity)) continue
+      if (classifyEntityMatch(company, entity) !== 'confirmed') continue
       if (!best || date > best.date) best = { date, entity, url: `https://www.sec.gov/Archives/edgar/data/${cik}/${adsh}/${file}` }
     }
     return best
@@ -90,21 +85,23 @@ const get = async (url: string, fetchImpl: typeof fetch) => {
 // Public job boards. Board slug guessed from the company domain (then name): a 404
 // just means "no board under that slug" - no signal is recorded, nothing is faked.
 export async function atsHiring(company: string, domain: string | null, fetchImpl: typeof fetch = fetch): Promise<HiringSignal | null> {
+  const dom = domainSlug(domain)
   for (const slug of slugCandidates(company, domain)) {
+    const via: 'domain' | 'name' = dom && slug === dom ? 'domain' : 'name'
     const gh = await get(`https://boards-api.greenhouse.io/v1/boards/${slug}/jobs`, fetchImpl)
     if (Array.isArray(gh?.jobs) && gh.jobs.length > 0) {
       const jobs = gh.jobs.filter((j: { title?: string }) => typeof j?.title === 'string')
-      if (jobs.length) return { board: 'greenhouse', openRoles: jobs.length, titles: topTitles(jobs, (j: { title: string }) => j.title), url: jobs[0].absolute_url || `https://boards.greenhouse.io/${slug}` }
+      if (jobs.length) return { board: 'greenhouse', openRoles: jobs.length, titles: topTitles(jobs, (j: { title: string }) => j.title), url: jobs[0].absolute_url || `https://boards.greenhouse.io/${slug}`, via }
     }
     const lever = await get(`https://api.lever.co/v0/postings/${slug}?mode=json`, fetchImpl)
     if (Array.isArray(lever) && lever.length > 0) {
       const jobs = lever.filter((j: { text?: string }) => typeof j?.text === 'string')
-      if (jobs.length) return { board: 'lever', openRoles: jobs.length, titles: topTitles(jobs, (j: { text: string }) => j.text), url: jobs[0].hostedUrl || `https://jobs.lever.co/${slug}` }
+      if (jobs.length) return { board: 'lever', openRoles: jobs.length, titles: topTitles(jobs, (j: { text: string }) => j.text), url: jobs[0].hostedUrl || `https://jobs.lever.co/${slug}`, via }
     }
     const ashby = await get(`https://api.ashbyhq.com/posting-api/job-board/${slug}`, fetchImpl)
     if (Array.isArray(ashby?.jobs) && ashby.jobs.length > 0) {
       const jobs = ashby.jobs.filter((j: { title?: string }) => typeof j?.title === 'string')
-      if (jobs.length) return { board: 'ashby', openRoles: jobs.length, titles: topTitles(jobs, (j: { title: string }) => j.title), url: jobs[0].jobUrl || `https://api.ashbyhq.com/posting-api/job-board/${slug}` }
+      if (jobs.length) return { board: 'ashby', openRoles: jobs.length, titles: topTitles(jobs, (j: { title: string }) => j.title), url: jobs[0].jobUrl || `https://api.ashbyhq.com/posting-api/job-board/${slug}`, via }
     }
   }
   return null
@@ -135,13 +132,13 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
       if (ck) recordCompanyEvent(db, tenantId, { companyKey: ck, companyName: lead.company, scope: 'account', leadId: lead.id, eventType: 'funding_round', summary: `SEC Form D filed ${f.date}`, detail: f.entity.slice(0, 120), sourceUrl: f.url, sourcePublishedAt: f.date, retrievedAt: now, confidence: 80 })
       funding++
     }
-    if (h) {
+    if (h && h.via === 'domain') {
       addEnrichment(db, tenantId, lead.id, { connector: `signals:${h.board}`, kind: 'hiring', value: `${h.openRoles} open role${h.openRoles === 1 ? '' : 's'}`, label: h.titles.join('; ').slice(0, 200) || null, confidence: 70, source_url: h.url, source_date: today, retrieved_at: now })
       if (ck) recordCompanyEvent(db, tenantId, { companyKey: ck, companyName: lead.company, scope: 'account', leadId: lead.id, eventType: 'hiring_surge', summary: `${h.openRoles} open role${h.openRoles === 1 ? '' : 's'}`, detail: h.titles.join('; ').slice(0, 200) || null, sourceUrl: h.url, sourcePublishedAt: today, retrievedAt: now, confidence: 70 })
       hiring++
     }
     const r = await fundingRoundFor(lead.company, news, { fetchImpl, jinaLeft }).catch(() => null)
-    if (r) {
+    if (r && classifyEntityMatch(lead.company, r.matched) === 'confirmed') {
       const what = [r.amount, r.stage].filter(Boolean).join(' ') || 'funding'
       addEnrichment(db, tenantId, lead.id, { connector: 'signals:funding-round', kind: 'funding', value: `Raised ${what} ${r.daysAgo} day${r.daysAgo === 1 ? '' : 's'} ago`.slice(0, 254), label: `reported ${r.date}`, confidence: 75, source_url: r.url, source_date: r.date, retrieved_at: now })
       if (ck) recordCompanyEvent(db, tenantId, { companyKey: ck, companyName: lead.company, scope: 'account', leadId: lead.id, eventType: 'funding_round', summary: `Raised ${what} ${r.daysAgo} day${r.daysAgo === 1 ? '' : 's'} ago`.slice(0, 300), detail: `reported ${r.date}`, sourceUrl: r.url, sourcePublishedAt: r.date, retrievedAt: now, confidence: 75 })
