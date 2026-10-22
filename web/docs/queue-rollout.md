@@ -46,28 +46,41 @@ separate explicit activation decision must satisfy.
    for the tenant before/after. Rollback triggers: any bind_refused spike,
    any double-run evidence (two running rows sharing identity, duplicate
    provider spend), attempts advancing without domain progress.
-6. Live validation WITHOUT provider/outreach: enable for the test tenant and
-   run a synthetic job whose provider is unreachable-by-design? NO - that
-   burns attempts against real config. Instead: dry-run path - a scan job for
-   the test tenant is claimed, bound, and completed by a stub executor only if
-   one is explicitly wired for the test tenant (requires a small code path;
-   proposal only). No fake customer data: use the existing test tenant's own
-   fixture job pattern (?job_id= deep link + poll + remove), which exercises
-   real claim/bind/finish with the tenant's own key and a trivially small
-   query, then remove the job. Provider spend for one tiny test-tenant scan is
-   the minimum honest end-to-end proof; it requires the explicit activation
-   decision to say so. No outreach/autopilot for the test tenant (it is not
-   configured for autopilot today - keep it that way during validation).
+6. Live validation, two stages:
+   Stage 1 (no provider, no spend, prerequisite): a bounded synthetic dry-run
+   for the exact test tenant `53d74a4bebd48368144a5e23f509a97e`
+   (OUTREACH_TEST_TENANT_ID in the run env). A stub-executor path wired ONLY
+   for this tenant id exercises claim -> domain bind -> finish -> queue
+   completion and the restart/reap paths against the real DB with zero
+   provider or outreach calls. Requires a small code path (proposal only).
+   No fake customer data; the dry-run job is removed after.
+   Stage 2 (real end-to-end, SPEND - do not request yet): one tiny scan on the
+   same test tenant with its own key. This is blocked until provider cost is
+   grounded: per-scan cost, actual TinyFish billing rate, any cost cap, and
+   the maximum spend this validation could reach are currently UNKNOWN (the
+   TinyFish free allowance does not prevent wallet spend and no quota endpoint
+   exists - open item from the #147 review, still active). Ask for this scan
+   only after those numbers are grounded or the user makes an explicit budget
+   choice. Autopilot stays unconfigured for the test tenant throughout.
 
 ## Backup/schedule status (read-only, grounded on host 2026-10-22)
 
-- ~/backups EXISTS: two manual pre-cutover snapshots (dazl-pre-cutover-
-  20261019-*.sqlite), dazl-data tgz archives, Caddyfile copies. Manual,
-  one-off, latest 2026-10-19.
+- ~/backups EXISTS (metadata verified read-only, no bytes read): six sqlite
+  snapshots, all 2026-10-19 - two pre-cutover (~24MB, 0600 ubuntu:ubuntu,
+  'SQLite format 3' headers verified) and four pre-dq24x (latest 05:57) -
+  plus two dazl-data tgz (~190-200MB) and Caddyfile copies. The snapshots are
+  ~24MB while the live DB (~/dazl-data/dazl-pr16.db) is ~1.2MB, so the
+  snapshots appear to be from an earlier data era - same-era coverage of the
+  CURRENT DB is unknown.
 - NO scheduled backup: the only cron is the */5 tick. /etc/cron.d has nothing.
-- Implication: RPO today = last manual snapshot (3 days and drifting). The
-  merged backup tooling (scripts/backup) is ready; the SCHEDULE, off-box copy
-  and retention policy remain open owner decisions - not assumed here.
+- Implication: the newest observed snapshot is from Oct 19. That is a snapshot
+  AGE observation, not a validated RPO: no restore drill has run, snapshot
+  consistency is unproven, and DAZL_MASTER_KEY being present in the env is not
+  proof the historical snapshots' secrets decrypt with it. A real restore
+  drill touches private data and needs its own privacy/scope decision plus a
+  safe consistent-copy method - not assumed here. The merged backup tooling
+  (scripts/backup) is ready; SCHEDULE, off-box copy and retention remain open
+  owner decisions.
 
 ## Explicitly out of scope for activation prep
 
