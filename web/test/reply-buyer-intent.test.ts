@@ -146,3 +146,14 @@ test('provider errors count nothing: graded 0, rows stay NULL, ungraded_remainin
   assert.equal(r.ungraded_remaining, 2)
   assert.ok((d.prepare('SELECT COUNT(*) AS n FROM reply_threads WHERE buyer_intent IS NULL').get() as { n: number }).n === 2)
 })
+
+test('unreadable stored key: refresh completes keyword-only, rows stay NULL, graded 0, backlog counted', async () => {
+  const { d, master } = setup()
+  d.prepare("UPDATE tenant_llm_keys SET ciphertext = 'not-valid-ciphertext' WHERE tenant_id = 't1'").run()
+  const worker = async () => [CANDIDATES[1]] // internship thread passes the keyword gate
+  const r = await refreshReplies(d, 't1', { worker, master, env: ENV_ON, now: NOW })
+  assert.equal(r.added, 1)
+  assert.equal(r.graded, 0)
+  assert.equal(r.ungraded_remaining, 1)
+  assert.equal(listThreads(d, 't1')[0].buyer_intent, null)
+})
