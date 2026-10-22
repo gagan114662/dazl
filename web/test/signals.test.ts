@@ -4,6 +4,7 @@ import Database from 'better-sqlite3'
 import { edgarFunding, atsHiring, enrichJobSignals, nameTokens } from '../lib/signals/index.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, recentAudit } from '../lib/connectors/store.ts'
+import { migrateEvents } from '../lib/events/store.ts'
 
 const ok = (body: unknown) => new Response(JSON.stringify(body), { status: 200 })
 const notFound = () => new Response('nope', { status: 404 })
@@ -55,7 +56,7 @@ test('atsHiring: lever array and ashby jobs parse; nothing found yields null', a
 
 test('enrichJobSignals: writes enrichment rows with source url+date and audits; silent on total failure', async () => {
   const db = new Database(':memory:')
-  migrateScan(db); migrateConnectors(db)
+  migrateScan(db); migrateConnectors(db); migrateEvents(db)
   const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
   db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(jobId)
   db.prepare("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url) VALUES ('lead1', ?, '', 'Zymtrace', 'raised seed', 'https://x.com/1')").run(jobId)

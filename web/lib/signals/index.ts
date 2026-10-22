@@ -7,6 +7,7 @@
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { addEnrichment, audit } from '../connectors/store.ts'
+import { companyKey, recordCompanyEvent } from '../events/store.ts'
 import { listLeads } from '../scan/store.ts'
 
 const TIMEOUT = 8000
@@ -105,22 +106,28 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
   const today = new Date().toISOString().slice(0, 10)
   const now = Math.floor(Date.now() / 1000)
   for (const lead of leads) {
+    // Company event write-through: the same fact, stored once per company for account-level
+    // history. Skipped when no reliable company key exists - never guessed.
+    const ck = companyKey(lead.company_domain, lead.id)
     const [f, h] = await Promise.all([
       edgarFunding(lead.company, fetchImpl).catch(() => null),
       atsHiring(lead.company, lead.company_domain, fetchImpl).catch(() => null),
     ])
     if (f) {
       addEnrichment(db, tenantId, lead.id, { connector: 'signals:sec-edgar', kind: 'funding', value: `SEC Form D filed ${f.date}`, label: f.entity.slice(0, 120), confidence: 80, source_url: f.url, source_date: f.date, retrieved_at: now })
+      if (ck) recordCompanyEvent(db, tenantId, { companyKey: ck, companyName: lead.company, scope: 'account', leadId: lead.id, eventType: 'funding_round', summary: `SEC Form D filed ${f.date}`, detail: f.entity.slice(0, 120), sourceUrl: f.url, sourcePublishedAt: f.date, retrievedAt: now, confidence: 80 })
       funding++
     }
     if (h) {
       addEnrichment(db, tenantId, lead.id, { connector: `signals:${h.board}`, kind: 'hiring', value: `${h.openRoles} open role${h.openRoles === 1 ? '' : 's'}`, label: h.titles.join('; ').slice(0, 200) || null, confidence: 70, source_url: h.url, source_date: today, retrieved_at: now })
+      if (ck) recordCompanyEvent(db, tenantId, { companyKey: ck, companyName: lead.company, scope: 'account', leadId: lead.id, eventType: 'hiring_surge', summary: `${h.openRoles} open role${h.openRoles === 1 ? '' : 's'}`, detail: h.titles.join('; ').slice(0, 200) || null, sourceUrl: h.url, sourcePublishedAt: today, retrievedAt: now, confidence: 70 })
       hiring++
     }
     const r = await fundingRoundFor(lead.company, news, { fetchImpl, jinaLeft }).catch(() => null)
     if (r) {
       const what = [r.amount, r.stage].filter(Boolean).join(' ') || 'funding'
       addEnrichment(db, tenantId, lead.id, { connector: 'signals:funding-round', kind: 'funding', value: `Raised ${what} ${r.daysAgo} day${r.daysAgo === 1 ? '' : 's'} ago`.slice(0, 254), label: `reported ${r.date}`, confidence: 75, source_url: r.url, source_date: r.date, retrieved_at: now })
+      if (ck) recordCompanyEvent(db, tenantId, { companyKey: ck, companyName: lead.company, scope: 'account', leadId: lead.id, eventType: 'funding_round', summary: `Raised ${what} ${r.daysAgo} day${r.daysAgo === 1 ? '' : 's'} ago`.slice(0, 300), detail: `reported ${r.date}`, sourceUrl: r.url, sourcePublishedAt: r.date, retrievedAt: now, confidence: 75 })
       rounds++
     }
   }

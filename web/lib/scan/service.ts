@@ -20,6 +20,7 @@ import { migrateReplies } from '../outreach/replies.ts'
 import { migrateThreadReplies } from '../replies/threads.ts'
 import { migrateTrial } from './trial.ts'
 import { migrateCompetitors } from '../signals/competitor-reddit.ts'
+import { migrateEvents } from '../events/store.ts'
 import { migrateSeo } from '../seo/audit.ts'
 
 let ready = false
@@ -41,6 +42,7 @@ export function getScanDb() {
     migrateSequences(db)
     migrateTrial(db)
     migrateCompetitors(db)
+    migrateEvents(db)
     migrateSeo(db)
     migrateMonitors(db)
     migrateCsv(db)
