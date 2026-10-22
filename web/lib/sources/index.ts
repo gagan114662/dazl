@@ -33,11 +33,29 @@ export function keywordsFor(query: string): string[] {
 }
 
 // Runs the chosen adapters in parallel with an overall time limit. Failures give no evidence, never an error.
-export async function collectEvidence(sel: SourceSelection, query: string, http = safeGet, timeoutMs = 25_000): Promise<Evidence[]> {
+export interface AdapterRun { collector: string; status: 'ok' | 'empty' | 'error' | 'timeout'; evidence: number | null }
+export async function collectEvidenceReport(sel: SourceSelection, query: string, http = safeGet, timeoutMs = 25_000): Promise<{ items: Evidence[]; runs: AdapterRun[] }> {
   const input: AdapterInput = { query, keywords: keywordsFor(query), feeds: sel.feeds, pages: sel.pages ?? [], http }
-  const run = Promise.all(sel.adapters.map(id => ADAPTERS[id].collect(input).catch(() => [] as Evidence[])))
-  const timeout = new Promise<Evidence[][]>(res => setTimeout(() => res([]), timeoutMs).unref?.())
-  return (await Promise.race([run, timeout])).flat().slice(0, 40)
+  const results = new Map<string, Evidence[]>()
+  const runs = new Map<string, AdapterRun>()
+  let settled = false
+  const run = Promise.all(sel.adapters.map(async id => {
+    try {
+      const items = await ADAPTERS[id].collect(input)
+      if (!settled) { results.set(id, items); runs.set(id, { collector: `adapter:${id}`, status: items.length ? 'ok' : 'empty', evidence: items.length }) }
+    } catch { if (!settled) runs.set(id, { collector: `adapter:${id}`, status: 'error', evidence: null }) }
+  }))
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<void>(res => { timer = setTimeout(res, timeoutMs); timer.unref?.() })
+  await Promise.race([run, timeout]); settled = true; clearTimeout(timer)
+  // Preserve the prior all-or-nothing timeout behavior. Late results never mutate the report.
+  const timedOut = sel.adapters.some(id => !runs.has(id))
+  return { items: timedOut ? [] : sel.adapters.flatMap(id => results.get(id) ?? []).slice(0, 40),
+    runs: sel.adapters.map(id => runs.get(id) ?? { collector: `adapter:${id}`, status: 'timeout', evidence: null }) }
+}
+export async function collectEvidence(sel: SourceSelection, query: string, http = safeGet, timeoutMs = 25_000): Promise<Evidence[]> {
+  // Existing callers keep their original adapter source labels and payload.
+  return (await collectEvidenceReport(sel, query, http, timeoutMs)).items
 }
 
 export function buildSourcePrompt(query: string, icp: unknown, items: Evidence[]): string {
