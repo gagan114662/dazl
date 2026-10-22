@@ -14,6 +14,8 @@ export type EventScope = 'account' | 'market'
 
 // How long an event type stays "fresh" for ranking. Freshness is derived at read time,
 // never stored, so a policy change does not require rewriting rows.
+// These windows are PRODUCT HEURISTICS chosen for ranking convenience - they are not
+// verified external truth about how long any signal actually predicts anything.
 export const FRESHNESS_DAYS: Record<EventType, number> = {
   funding_round: 548, // a filed round stays relevant ~18 months
   hiring_surge: 30,
@@ -47,11 +49,16 @@ export function migrateEvents(db: Database.Database): void {
 }
 
 // Domain when known, else a conservative normalized name. Never a guess.
+// Name-derived keys are prefixed "name:" so they can never collide with a domain key:
+// two different companies that normalize to the same words would otherwise share one
+// history - false company history is worse than split history. Name-keyed identity is
+// provisional; the same company appearing later with a domain gets a separate key and
+// the two histories are not merged automatically.
 export function companyKey(domain: string | null | undefined, name: string | null | undefined): string | null {
   const d = (domain ?? '').toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0].trim()
-  if (d.includes('.')) return d.slice(0, 254)
+  if (d.includes('.')) return d.slice(0, 250)
   const n = (name ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
-  return n.length >= 3 ? n.slice(0, 254) : null
+  return n.length >= 3 ? `name:${n}`.slice(0, 254) : null
 }
 
 export interface CompanyEventInput {

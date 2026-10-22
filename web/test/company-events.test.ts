@@ -75,9 +75,9 @@ test('unknown event type rejected; market scope accepted', () => {
   assert.equal(listCompanyEvents(db, 'T1', { now: NOW, scope: 'market' }).length, 1)
 })
 
-test('companyKey prefers domain, falls back to normalized name, never guesses', () => {
+test('companyKey prefers domain, prefixes name keys so they never merge with domain history', () => {
   assert.equal(companyKey('https://www.Acme.example/path', 'Acme'), 'acme.example')
-  assert.equal(companyKey(null, 'Acme Corp!!'), 'acme corp')
+  assert.equal(companyKey(null, 'Acme Corp!!'), 'name:acme corp')
   assert.equal(companyKey(null, 'ab'), null)
   assert.equal(companyKey(undefined, undefined), null)
 })

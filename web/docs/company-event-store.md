@@ -12,6 +12,10 @@ tenant's own leads/accounts) share the table and are separated by `scope`.
 - **Provenance is required.** A row cannot exist without `source_url` (http/https, <= 500
   chars) and `retrieved_at` (when dazl fetched it). `source_published_at` is the date the
   source itself states, when it states one.
+- **Identity is conservative.** `company_key` is the domain when known. Name-derived keys
+  are prefixed `name:` and can never collide with a domain key; similar names never merge
+  into one history (false company history is worse than split history), and a later
+  domain-keyed history is not auto-merged with a name-keyed one.
 - **Unknowns stay NULL.** No inferred published dates, no guessed people, no assumed
   companies. `company_key` is the domain when known, else a normalized name, else the
   event is not recorded.
@@ -20,7 +24,8 @@ tenant's own leads/accounts) share the table and are separated by `scope`.
   instead of duplicating; `first_seen_at` is preserved.
 - **Freshness is derived.** `FRESHNESS_DAYS` per event type (funding_round 548d,
   hiring_surge 30d, tech_stack 90d, competitor_mention 30d) applied at read time. No
-  stored staleness flags to drift.
+  stored staleness flags to drift. These windows are product heuristics for ranking,
+  not verified external truth about signal predictive lifetime.
 - **No causal attribution.** Events describe what a source said and when we saw it. They
   never claim a deal, reply, or revenue resulted from a signal.
 - **No backfills.** The store accrues events from new collector runs only.
