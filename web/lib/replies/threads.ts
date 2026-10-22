@@ -155,6 +155,11 @@ function platformCallsLastHour(db: Database.Database, tenantId: string, p: Reply
 export interface RefreshResult {
   added: number
   filtered: number
+  // Buyer-intent grading on the tenant's own key during THIS refresh. graded counts new
+  // verdicts made (both platforms and re-grades of older rows); ungraded_remaining is the
+  // honest backlog still keyword-only after the per-refresh cap - one click may not grade all.
+  graded: number
+  ungraded_remaining: number
   platforms: Partial<Record<ReplyPlatform, 'ok' | 'disabled' | 'no_consent' | 'rate_limited' | 'worker_error'>>
 }
 
@@ -162,7 +167,7 @@ export async function refreshReplies(db: Database.Database, tenantId: string, de
   const env = deps.env ?? process.env
   const flags = advFlags(env)
   const queries = listQueries(db, tenantId).slice(0, MAX_QUERIES)
-  const out: RefreshResult = { added: 0, filtered: 0, platforms: {} }
+  const out: RefreshResult = { added: 0, filtered: 0, graded: 0, ungraded_remaining: 0, platforms: {} }
   if (queries.length === 0) return out
   const now = deps.now ?? Date.now()
   const cutoff = now - MAX_THREAD_AGE_DAYS * 86400_000
@@ -199,6 +204,7 @@ export async function refreshReplies(db: Database.Database, tenantId: string, de
         if (gradesLeft > 0) {
           gradesLeft--
           const verdict = await gradeBuyerIntent(db, tenantId, it, { fetchImpl: deps.fetchImpl, master: deps.master, sells, website })
+          if (verdict !== null) out.graded++
           if (verdict === 'no') { out.filtered++; continue }
           buyer_intent = verdict
         }
@@ -222,9 +228,11 @@ export async function refreshReplies(db: Database.Database, tenantId: string, de
       const verdict = await gradeBuyerIntent(db, tenantId, t, { fetchImpl: deps.fetchImpl, master: deps.master, sells, website })
       if (verdict === null) continue
       upd.run(verdict, tenantId, t.id)
+      out.graded++
       if (verdict === 'no') out.filtered++
     }
   }
+  out.ungraded_remaining = (db.prepare('SELECT COUNT(*) AS n FROM reply_threads WHERE tenant_id = ? AND buyer_intent IS NULL').get(tenantId) as { n: number }).n
   return out
 }
 
