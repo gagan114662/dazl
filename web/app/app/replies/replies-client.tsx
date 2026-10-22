@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 
 type Thread = {
   id: string; platform: 'reddit' | 'x'; url: string; title: string; quote: string; query: string
-  date: string | null; created_at: number
+  date: string | null; created_at: number; buyer_intent?: string | null
   draft: string | null; draft_status: 'draft' | 'edited' | 'copied' | 'posted' | null
 }
 type State = { queries: string[]; threads: Thread[]; platforms: { reddit: boolean; x: boolean }; consent: boolean; has_key: boolean }
@@ -44,7 +44,9 @@ export default function RepliesClient() {
       const parts = Object.entries((j.platforms ?? {}) as Record<string, string>).map(([p, s]) => `${p === 'x' ? 'X' : 'Reddit'}: ${s === 'ok' ? 'checked' : s.replaceAll('_', ' ')}`)
       const kept = `${j.added} new thread${j.added === 1 ? '' : 's'} found`
       const dropped = j.filtered > 0 ? `, ${j.filtered} off-topic result${j.filtered === 1 ? '' : 's'} filtered out` : ''
-      setMsg(j.added > 0 ? `${kept}${dropped}. ${parts.join(' - ')}` : `Nothing new${dropped}. ${parts.join(' - ')}`)
+      const gradedPart = j.graded > 0 ? ` Buyer intent graded on your AI key: ${j.graded}.` : ''
+      const backlog = (j.ungraded_remaining ?? 0) > 0 ? ` ${j.ungraded_remaining} older thread${j.ungraded_remaining === 1 ? ' is' : 's are'} still ungraded - check again to grade more.` : ''
+      setMsg((j.added > 0 ? `${kept}${dropped}. ${parts.join(' - ')}` : `Nothing new${dropped}. ${parts.join(' - ')}`) + gradedPart + backlog)
     } catch (e) { setMsg((e as Error).message) }
     setBusy('')
     void load()
@@ -113,6 +115,9 @@ export default function RepliesClient() {
           <button className="btn-primary text-sm" disabled={busy === 'refresh' || state.queries.length === 0 || !anyPlatform || !state.consent} onClick={refresh}>
             {busy === 'refresh' ? 'Checking Reddit and X...' : 'Check for new threads'}
           </button>
+          {state.has_key && (
+            <p className="text-xs text-[#999] mt-2">Checking also grades matches for buyer intent on your AI key - up to 10 gradings per check, at your key&apos;s cost. Without a key, matches are keyword-only.</p>
+          )}
         </div>
         {msg && <p className="text-sm text-[#555] mt-3">{msg}</p>}
       </div>
@@ -125,6 +130,8 @@ export default function RepliesClient() {
             <span className="border border-black/15 rounded-full px-2 py-0.5">{t.platform === 'x' ? 'X' : 'Reddit'}</span>
             {t.date && <span className="text-[#999]">{t.date}</span>}
             <span className="text-[#999]">found by &quot;{t.query}&quot;</span>
+            {t.buyer_intent === 'yes' && <span className="text-[#999]">buyer intent: model-graded - heuristic, review yourself</span>}
+            {t.buyer_intent === 'uncertain' && <span className="text-[#999]">buyer intent: unverified</span>}
             {t.draft_status && <span className={t.draft_status === 'posted' ? 'text-green-700' : 'text-[#999]'}>{t.draft_status === 'posted' ? 'posted by you' : t.draft_status === 'copied' ? 'copied' : t.draft_status}</span>}
           </div>
           <a className="font-medium underline" href={t.url} target="_blank" rel="noopener noreferrer">{t.title}</a>

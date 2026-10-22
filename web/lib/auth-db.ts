@@ -2,13 +2,11 @@ import Database from 'better-sqlite3'
 import { createHash, randomBytes } from 'crypto'
 import path from 'path'
 
-const DB_PATH = process.env.DB_PATH || path.join(process.cwd(), '..', '..', 'dazl-data', 'app.db')
-
 let db: Database.Database | null = null
 
 export function getAuthDb(): Database.Database {
   if (db) return db
-  db = new Database(DB_PATH)
+  db = new Database(process.env.DB_PATH || path.join(process.cwd(), '..', '..', 'dazl-data', 'app.db'))
   db.pragma('journal_mode = WAL')
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
