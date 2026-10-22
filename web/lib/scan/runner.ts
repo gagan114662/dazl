@@ -1,3 +1,4 @@
+import { closedJobEvidence } from './closed-job.ts'
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getKey, readKey } from '../llm/key-store.ts'
@@ -220,6 +221,13 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
       const why = REVIEW_REASONS[page.fail]
       if (why) { const key = dedupKey(c); if (!review.has(key)) review.set(key, { ...c, contact: null, review_reason: why }); else drop('duplicate') }
       else drop(page.fail === 'not_found' ? 'page_not_found' : page.fail === 'refused' ? 'url_refused' : 'page_unreachable')
+      continue
+    }
+    const closed = closedJobEvidence(c, page)
+    if (closed) {
+      const k = dedupKey(c)
+      if (!review.has(k)) review.set(k, { ...c, contact: null, review_reason: 'job_closed' })
+      else drop('duplicate')
       continue
     }
     const v = verifyEvidence(c, page, now)
