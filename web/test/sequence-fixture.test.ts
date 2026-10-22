@@ -8,8 +8,8 @@ import { migrateAutopilot } from '../lib/outreach/autopilot.ts'
 import { migrateLedger } from '../lib/outreach/ledger.ts'
 import { migrateReplies, acceptReadConsent } from '../lib/outreach/replies.ts'
 import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
-import { saveSettings, approve, sendMessage, leadHeld, recipientAllowed, isSuppressed, TEST_INBOX } from '../lib/outreach/service.ts'
-import { migrateSequences, setTestAddresses, approveSequence, runSequences } from '../lib/outreach/sequences.ts'
+import { saveSettings, approve, sendMessage, leadHeld, recipientAllowed, isSuppressed, OutreachError, TEST_INBOX } from '../lib/outreach/service.ts'
+import { migrateSequences, setTestAddresses, approveSequence, runSequences, SequenceError } from '../lib/outreach/sequences.ts'
 import { createSequenceTestFixture, createReplyStopTestFixture, fixtureAvailable, FixtureError, FIXTURE_STEPS, REPLY_FIXTURE_STEPS } from '../lib/outreach/test-fixture.ts'
 
 const NOW = 1800000000
@@ -210,4 +210,53 @@ test('reply-stop fixture: a human reply before step 2 stops the sequence and ste
   assert.equal(seq.stop_reason, 'reply')
   // A neutral reply must not suppress the test address.
   assert.equal(isSuppressed(db, 'A', TEST_INBOX), false)
+})
+
+// Boundary: the shorter-set relaxation is fenced to the exact fixture boundary -
+// designated test tenant (env grant) + hardcoded test inbox + allowlist + test=1 message.
+// Any real tenant, missing env grant, or non-fixture message keeps the exact-3-steps rule.
+test('shorter sets are rejected outside the exact test-fixture boundary', async () => {
+  const db = await setup()
+  setTestAddresses(db, 'A', [TEST_INBOX])
+  const mkSet = (test: 0 | 1) => {
+    const jobId = randomBytes(12).toString('hex')
+    const leadId = randomBytes(12).toString('hex')
+    const messageId = randomBytes(12).toString('hex')
+    const sequenceId = randomBytes(12).toString('hex')
+    db.prepare('INSERT INTO scan_jobs (id, user_id, business_name, industry, location) VALUES (?, ?, ?, ?, ?)').run(jobId, 'A', 'boundary check (test only)', 'test only', 'test only')
+    db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(jobId)
+    db.prepare('INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(leadId, jobId, 'Gagan', 'boundary check (test only)', TEST_INBOX, 'Test-only boundary check.', 'https://dazl.ai/test-only-sequence-fixture')
+    db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(jobId)
+    db.prepare('INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, test) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(messageId, 'A', leadId, TEST_INBOX, 'boundary - step 1 of 2', 'boundary check step one body, test only', test)
+    db.prepare('INSERT INTO sequences (id, tenant_id, lead_id, message_id, to_email) VALUES (?, ?, ?, ?, ?)').run(sequenceId, 'A', leadId, messageId, TEST_INBOX)
+    const ins = db.prepare('INSERT INTO sequence_steps (tenant_id, sequence_id, step, subject, body) VALUES (?, ?, ?, ?, ?)')
+    ins.run('A', sequenceId, 1, 'boundary - step 1 of 2', 'boundary check step one body, test only')
+    ins.run('A', sequenceId, 2, 'Re: boundary - step 1 of 2', 'boundary check step two body, test only')
+    return { messageId, sequenceId }
+  }
+  const stepsMissing = (e: unknown) => e instanceof SequenceError && (e as SequenceError).code === 'steps_missing'
+
+  // 1. Fixture-shaped 2-step set WITHOUT the operator env grant: rejected.
+  const noEnv = mkSet(1)
+  assert.throws(() => approveSequence(db, 'A', noEnv.sequenceId, id => approve(db, 'A', id, true), NOW), stepsMissing)
+
+  // 2. Same set but the env grant names a different tenant: rejected.
+  const wrongTenant = mkSet(1)
+  process.env.OUTREACH_TEST_TENANT_ID = 'SOMEONE_ELSE'
+  try { assert.throws(() => approveSequence(db, 'A', wrongTenant.sequenceId, id => approve(db, 'A', id, true), NOW), stepsMissing) }
+  finally { delete process.env.OUTREACH_TEST_TENANT_ID }
+
+  // 3. With the correct grant, but the message is not fixture-created (test = 0): rejected.
+  const notFixture = mkSet(0)
+  assert.throws(() => withTenant(() => approveSequence(db, 'A', notFixture.sequenceId, id => approve(db, 'A', id, true), NOW)), stepsMissing)
+
+  // 4. Send path defense-in-depth: a hand-raised approved 2-step set with test = 0 cannot send
+  // even with the grant and allowlist in place.
+  const direct = mkSet(0)
+  db.prepare("UPDATE outreach_messages SET status = 'approved', approved_hash = 'x' WHERE id = ?").run(direct.messageId)
+  db.prepare("UPDATE sequence_steps SET status = 'approved', approved_hash = 'x' WHERE sequence_id = ?").run(direct.sequenceId)
+  db.prepare("UPDATE sequences SET status = 'approved' WHERE id = ?").run(direct.sequenceId)
+  await assert.rejects(() => withTenantAsync(() => sendMessage(db, 'A', direct.messageId, mock())), (e: unknown) => e instanceof OutreachError && (e as OutreachError).code === 'changed_since_approval')
 })

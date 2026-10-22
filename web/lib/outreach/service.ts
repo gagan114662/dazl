@@ -251,9 +251,11 @@ export async function sendMessage(db: Database.Database, tenantId: string, id: s
     if (seq && (seq.status !== 'approved' || db.prepare("SELECT 1 FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? AND (status <> 'approved' OR approved_hash IS NULL)").get(tenantId,seq.id))) release('approve_sequence_set')
     if (seq) {
       const steps = db.prepare('SELECT step,subject,body,approved_hash FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ?').all(tenantId,seq.id) as {step:number;subject:string;body:string;approved_hash:string}[]
-      // Production sets are always exactly 3 steps. A set addressed to an allowlisted test
-      // inbox may be shorter (the reply-stop test fixture has 2 steps); hash checks still apply.
-      if ((steps.length !== 3 && !isAllowlistedTestRecipient(db, tenantId, m.to_email)) || steps.length < 2 || steps.some(st => st.approved_hash !== hash(m.to_email,st.subject,st.body)) || !steps.some(st => st.step === 1 && st.subject === m.subject && st.body === m.body)) release('changed_since_approval')
+      // Production sets are always exactly 3 steps. A shorter set passes only for the
+      // test-only fixture on the designated test tenant (exact inbox, allowlisted, test = 1);
+      // every hash / changed-since-approval check still applies.
+      const shortTestSet = testRecipientApproved(db, tenantId, m.to_email) && m.test === 1
+      if ((steps.length !== 3 && !shortTestSet) || steps.length < 2 || steps.some(st => st.approved_hash !== hash(m.to_email,st.subject,st.body)) || !steps.some(st => st.step === 1 && st.subject === m.subject && st.body === m.body)) release('changed_since_approval')
     }
   }
   const settings = getSettings(db, tenantId)
