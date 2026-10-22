@@ -82,7 +82,7 @@ export default function RepliesClient() {
     <main className="p-6 md:p-10 max-w-4xl">
       <h1 className="text-2xl font-semibold mb-1">Thread replies</h1>
       <p className="text-[#555] text-sm mb-6">
-        Fresh Reddit and X threads where someone asks a question your product answers, with a reply drafted on your own AI key.
+        Fresh Reddit and X threads that mention your searches and look like questions. Not every match is your buyer - review each one and decide. Replies are drafted on your own AI key.
         dazl never posts: you review the reply, edit it, then copy it and post it yourself from your own account.
       </p>
 

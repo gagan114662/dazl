@@ -80,14 +80,22 @@ test('refresh: keeps only fresh, on-topic question threads, dedupes by url, tena
   assert.equal(listThreads(d, 't2').length, 0)
 })
 
-test('relevance gate: the live-observed defect cases (2026-10-22)', () => {
-  // Real threads returned by worker search for "cold email software" that were shown as fits:
-  assert.equal(isRelevantToQuery('cold email software', 'Does GPA actually matter?', 'Hi guys. I am doing a bachelor of economics and I really cared about my GPA'), false)
-  assert.equal(isRelevantToQuery('cold email software', 'Long-shot 1987 cold case: Did someone you know in NY fly out to Washington State?', 'deep dive into the police files'), false)
-  assert.equal(isRelevantToQuery('cold email software', 'Looking for a few groups of playtesters.', 'I have created a tabletop card game'), false)
-  // And the genuinely relevant one that must survive:
-  assert.equal(isRelevantToQuery('cold email software', 'too many filters that automatically reject emails ?', 'supposed to be scaling the cold email program'), true)
-  assert.equal(isRelevantToQuery('cold email software', 'What cold email software do you use?', 'Comparing tools'), true)
+test('relevance gate: exact payloads retrieved live 2026-10-22 (defect cases + true positive)', () => {
+  // Verbatim titles/quotes as returned by the worker and displayed in production for the
+  // "cold email software" search (screenshots 160035/160107, quote text display-truncated).
+  assert.equal(isRelevantToQuery('cold email software',
+    'Does GPA actually matter?',
+    "Hi guys. I'm doing a bachelor of economics and in the beginning I really cared about my GPA. Then I had a bit of a slip last semester which significantly lowered my GPA (it's now 6.08). And I've applied for internships and I haven't had any luck. Hell, I didn't even manage to get a job at McDonald's"), false)
+  assert.equal(isRelevantToQuery('cold email software',
+    'Long-shot 1987 cold case: Did someone you know in NY fly out to Washington State in late summer 1987 and never return? (The "Boiler #9" John Doe)',
+    "Hey everyone. I've been doing a deep dive into the police files and case transcriptions for a 1987 John Doe found in the Boiler #9 stack at the Georgia-Pacific pulp mill in Bellingham, Washington [1]. I am bringing this to New York subreddits because the primary police lead indicates the victi"), false)
+  assert.equal(isRelevantToQuery('cold email software',
+    'Looking for a few groups of playtesters.',
+    'Hello, I have created a tabletop card game that has elements of RPG but has a more casual, party game feel. It requires lots of imagination and creativity. I describe it as a mix of DnD and apples to apples.'), false)
+  // The genuinely relevant thread, verbatim - must survive the gate.
+  assert.equal(isRelevantToQuery('cold email software',
+    'too many filters that automatically reject emails ?',
+    "how are you dealing with all the spam filters and other ones that filter out your email and make them dead on arrival? I've noticed a huge uptick in that over the last year and I'm supposed to be scaling the cold email program. Just really hard when our messaging has gotten more advanced, we've gott"), true)
   // Two-word queries need both words; phrase match always wins.
   assert.equal(isRelevantToQuery('outbound tool', 'Anyone use a tool for outbound?', ''), true)
   assert.equal(isRelevantToQuery('outbound tool', 'Best cold email software for a small team?', ''), false)
@@ -112,6 +120,24 @@ test('sequence step view: a sent step 1 is never labeled stopped (live mislabel 
   const active = sequenceStepsView(d, 't1', { id: 's1', message_id: 'm1', status: 'active' })
   assert.equal(active[0].status, 'sent')
   assert.equal(active[1].status, 'approved')
+})
+
+test('read-time re-qualification: threads stored before the gate stop presenting as fits', () => {
+  const d = db()
+  acceptConsent(d, 't1', 'advanced')
+  setQueries(d, 't1', ['cold email software'])
+  // Simulate rows stored before the gate existed (the live tenant held exactly these).
+  const ins = d.prepare("INSERT INTO reply_threads (id, tenant_id, platform, url, title, quote, query, date, login_walled) VALUES (?, 't1', 'reddit', ?, ?, ?, 'cold email software', '2026-10-22', 0)")
+  ins.run('old1', 'https://www.reddit.com/r/gradadmissions/comments/x1', 'Does GPA actually matter?', 'bachelor of economics, cared about my GPA')
+  ins.run('old2', 'https://www.reddit.com/r/sysadmin/comments/x2', 'too many filters that automatically reject emails ?', 'scaling the cold email program, deliverability got harder')
+  ins.run('old3', 'https://www.reddit.com/r/boardgames/comments/x3', 'Looking for a few groups of playtesters.', 'tabletop card game, casual party game feel')
+  let threads = listThreads(d, 't1')
+  assert.deepEqual(threads.map(t => t.id), ['old2'])
+  // A thread the tenant already drafted on stays visible even if the gate would drop it:
+  // their work is never hidden.
+  d.prepare("INSERT INTO reply_drafts (thread_id, tenant_id, draft, status) VALUES ('old3','t1','my reply text','draft')").run()
+  threads = listThreads(d, 't1')
+  assert.deepEqual(threads.map(t => t.id).sort(), ['old2', 'old3'])
 })
 
 test('refresh: worker error reported per platform, nothing stored', async () => {
