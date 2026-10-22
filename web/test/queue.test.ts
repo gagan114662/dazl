@@ -88,15 +88,19 @@ test('claim: kinds filter keeps other work queued', () => {
 })
 
 test('claim fencing: lease expiry re-queues, stale tokens are rejected', () => {
-  const q = new InProcessQueue()
+  const q = new InProcessQueue({ rng: noJitter })
   const { id } = q.enqueue({ tenantId: 'A', kind: 'scan', now: T0 })
   const c1 = q.claim({ now: T0, leaseSeconds: 100 })
   assert.equal(c1!.item.attempts, 1)
   assert.equal(c1!.leaseExpiresAt, T0 + 100)
   // not yet expired: a second claim finds nothing
   assert.equal(q.claim({ now: T0 + 99 }), null)
-  // expired: claim() reaps inline and hands the item to a new attempt
-  const c2 = q.claim({ now: T0 + 100 })
+  // expired at T0+100: claim() reaps inline, but the re-pend carries backoff
+  // (attempt 1 -> +30s), so the item is not claimable until T0+130
+  assert.equal(q.claim({ now: T0 + 100 }), null)
+  assert.equal(q.get(id)!.status, 'pending')
+  assert.equal(q.get(id)!.notBefore, T0 + 130)
+  const c2 = q.claim({ now: T0 + 130 })
   assert.equal(c2!.item.id, id)
   assert.equal(c2!.item.attempts, 2)
   assert.notEqual(c2!.token, c1!.token)
@@ -105,6 +109,27 @@ test('claim fencing: lease expiry re-queues, stale tokens are rejected', () => {
   assert.equal(q.fail(c1!.token), 'stale')
   assert.equal(q.complete(c2!.token), true)
   assert.equal(q.get(id)!.status, 'done')
+})
+
+test('reap backoff: a crash-looping job cannot spin through its attempts', () => {
+  const q = new InProcessQueue({ rng: noJitter })
+  const { id } = q.enqueue({ tenantId: 'A', kind: 'scan', now: T0 }) // maxAttempts 3
+  // attempt 1: lease 10s, reaped at T0+10 -> notBefore T0+40 (attempt 1 -> 30s)
+  q.claim({ now: T0, leaseSeconds: 10 })
+  assert.equal(q.reapExpired(T0 + 10), 1)
+  assert.equal(q.claim({ now: T0 + 39 }), null)
+  // attempt 2: reaped again -> notBefore +60s from reap time
+  const c2 = q.claim({ now: T0 + 40, leaseSeconds: 10 })
+  q.reapExpired(T0 + 51)
+  assert.equal(q.get(id)!.notBefore, T0 + 51 + 60)
+  // attempt 3: reaped once more -> attempts spent, failed as timeout
+  const c3 = q.claim({ now: T0 + 111, leaseSeconds: 10 })
+  assert.equal(c3!.item.attempts, 3)
+  q.reapExpired(T0 + 122)
+  const item = q.get(id)!
+  assert.equal(item.status, 'failed')
+  assert.equal(item.lastError, 'timeout')
+  assert.equal(q.claim({ now: T0 + 10_000 }), null)
 })
 
 test('reapExpired: past maxAttempts a timed-out attempt fails as timeout', () => {
