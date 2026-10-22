@@ -1,3 +1,4 @@
+import { tableExists } from './send-budget.ts'
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getAccessToken, type OAuthDeps } from '../gmail/oauth.ts'
@@ -9,10 +10,10 @@ import { suppress } from './service.ts'
 // Reading replies is its own consent and its own Gmail scope (gmail.readonly). dazl opens only threads it started,
 // by thread id. It never lists or searches the mailbox, stores only a 200-character excerpt of a reply, and
 // reads nothing when the user has not consented or has turned it off.
-export const READ_CONSENT_VERSION = '2026-10-20'
+export const READ_CONSENT_VERSION = '2026-10-21'
 export const READ_CONSENT_TEXT = [
   'dazl will read replies in the email threads it started for you, and delivery-failure notices for them. It will not read any other email.',
-  'It uses this to stop emailing people who unsubscribe or bounce, and to start follow-ups only for people who replied showing interest.',
+  'It uses this to stop emailing people who unsubscribe or bounce, to stop cold sequences on any human reply, and to start separately approved warm follow-ups for interested replies.',
   'dazl keeps the sender, the time, a short excerpt and the result. It does not keep full reply bodies.',
   'You can turn this off any time. Turning it off stops reading and follow-ups.',
 ]
@@ -92,7 +93,8 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
   try { token = await getAccessToken(db, tenantId, d) } catch { return { ...out, error: 'gmail_unavailable' } }
   const get = async (path: string) => { const r = await f(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) }); if (!r.ok) throw new Error(`gmail_${r.status}`); return r.json() }
 
-  const sent = db.prepare("SELECT id, lead_id, to_email, gmail_id, thread_id, sent_at FROM outreach_messages WHERE tenant_id = ? AND status = 'sent' AND gmail_id IS NOT NULL AND sent_at >= ? ORDER BY sent_at DESC LIMIT 100").all(tenantId, now - 120 * 86400) as { id: string; lead_id: string; to_email: string; gmail_id: string; thread_id: string | null; sent_at: number }[]
+  const seqPriority = tableExists(db, 'sequences') ? " OR id IN (SELECT message_id FROM sequences WHERE tenant_id = ? AND status IN ('approved','active'))" : ''
+  const sent = db.prepare(`SELECT id, lead_id, to_email, gmail_id, thread_id, sent_at FROM outreach_messages WHERE tenant_id = ? AND status = 'sent' AND gmail_id IS NOT NULL AND (sent_at >= ? ${seqPriority}) ORDER BY sent_at DESC`).all(tenantId, now - 120 * 86400,...(seqPriority ? [tenantId] : [])) as { id: string; lead_id: string; to_email: string; gmail_id: string; thread_id: string | null; sent_at: number }[]
   for (const m of sent) {
     try {
       let thread = m.thread_id
@@ -119,6 +121,7 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
         log(cls)
         if (cls === 'auto') continue
         out.replies++
+        if (tableExists(db,'sequences')) db.prepare("UPDATE sequences SET status = 'replied', stop_reason = 'reply' WHERE tenant_id = ? AND lead_id = ? AND status IN ('approved','active')").run(tenantId,m.lead_id)
         db.prepare('UPDATE followup_threads SET last_lead_reply_at = ? WHERE tenant_id = ? AND thread_id = ?').run(at, tenantId, thread)
         if (cls === 'opt_out' || cls === 'negative') {
           // An opt-out from anyone in the thread covers the person we wrote to. Nothing more goes to either address.
@@ -131,6 +134,7 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
         } else auditAt(db, tenantId, 'reply_for_review', cls, m.lead_id, m.id, now)
       }
     } catch (e) {
+      out.error = 'reply_sync_failed' // fail closed: the scheduler must not treat a partial sync as fresh
       auditAt(db, tenantId, 'sync_error', e instanceof Error ? e.message : 'error', m.lead_id, m.id, now)
     }
   }
@@ -156,7 +160,7 @@ export interface ThreadMsg { dir: 'out' | 'in'; kind: 'original' | 'followup' | 
 export function threadMessages(db: Database.Database, tenantId: string, threadId: string): ThreadMsg[] {
   const out: ThreadMsg[] = []
   const root = db.prepare(`SELECT m.subject, m.body, COALESCE(m.sent_at, m.created_at) AS at FROM followup_threads t
-                           JOIN outreach_messages m ON m.id = t.root_message_id AND m.tenant_id = t.tenant_id
+                           JOIN outreach_messages m ON m.lead_id = t.lead_id AND m.tenant_id = t.tenant_id
                            WHERE t.tenant_id = ? AND t.thread_id = ?`).get(tenantId, threadId) as { subject: string; body: string; at: number } | undefined
   if (!root) return [] // not this tenant's thread, or not an outreach thread at all
   out.push({ dir: 'out', kind: 'original', subject: root.subject, body: root.body, at: root.at, classification: null })

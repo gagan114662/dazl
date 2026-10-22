@@ -1,3 +1,4 @@
+import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend, tableExists } from './send-budget.ts'
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getMasterKey } from '../secrets.ts'
@@ -5,7 +6,7 @@ import { buildMime, EMAIL_RE, toBase64Url } from '../gmail/mime.ts'
 import { GmailError, GmailSendError, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { norm } from './store.ts'
 
-export const DAILY_CAP = Number(process.env.OUTREACH_DAILY_CAP || 30)
+export const DAILY_CAP = Math.min(ACCOUNT_SEND_CAP, Number(process.env.OUTREACH_DAILY_CAP || 20))
 export const SENDING_STALE_S = 10 * 60
 
 // Personal mailbox providers: a published address there is not a business contact.
@@ -44,6 +45,7 @@ export function suppress(db: Database.Database, tenantId: string, email: string,
     db.prepare('INSERT OR IGNORE INTO suppressions (tenant_id, email, reason) VALUES (?, ?, ?)').run(tenantId, norm(email), reason)
     // an opt-out ends every kind of automated contact with this address
     try { db.prepare('UPDATE consent_ledger SET revoked_at = CAST(strftime(\'%s\',\'now\') AS INTEGER), revoke_reason = ? WHERE tenant_id = ? AND contact = ? AND revoked_at IS NULL').run(reason, tenantId, norm(email)) } catch { /* ledger not created yet */ }
+    if (tableExists(db, 'sequences')) db.prepare("UPDATE sequences SET status = 'stopped', stop_reason = 'suppressed' WHERE tenant_id = ? AND to_email = ? AND status IN ('draft','approved','active')").run(tenantId,norm(email))
     // nothing waiting to go out to this address may go out
     db.prepare("UPDATE outreach_messages SET status = 'skipped', error = 'suppressed', approved_hash = NULL WHERE tenant_id = ? AND to_email = ? AND status IN ('draft','approved')").run(tenantId, norm(email))
   })()
@@ -145,6 +147,14 @@ export function editDraft(db: Database.Database, tenantId: string, id: string, e
   if (subject.length < 1 || subject.length > 150) throw new OutreachError('bad_subject')
   if (body.length < 20 || body.length > 3000) throw new OutreachError('bad_body')
   db.prepare("UPDATE outreach_messages SET subject = ?, body = ?, status = 'draft', approved_hash = NULL, error = NULL WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(subject, body, id, tenantId)
+  if (tableExists(db, 'sequences')) {
+    const seq = db.prepare('SELECT id FROM sequences WHERE tenant_id = ? AND message_id = ?').get(tenantId,id) as { id: string } | undefined
+    if (seq) {
+      db.prepare("UPDATE sequences SET status = 'draft' WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(seq.id,tenantId)
+      db.prepare("UPDATE sequence_steps SET approved_hash = NULL, status = 'draft' WHERE sequence_id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(seq.id,tenantId)
+      db.prepare('UPDATE sequence_steps SET subject = ?, body = ? WHERE sequence_id = ? AND tenant_id = ? AND step = 1').run(subject,body,seq.id,tenantId)
+    }
+  }
 }
 
 export function skip(db: Database.Database, tenantId: string, id: string): void {
@@ -152,7 +162,8 @@ export function skip(db: Database.Database, tenantId: string, id: string): void 
   if (r.changes !== 1) throw new OutreachError(getMsg(db, tenantId, id) ? 'not_skippable' : 'not_found')
 }
 
-export function approve(db: Database.Database, tenantId: string, id: string): void {
+export function approve(db: Database.Database, tenantId: string, id: string, sequenceSet = false): void {
+  if (!sequenceSet && tableExists(db, 'sequences') && db.prepare("SELECT 1 FROM sequences WHERE tenant_id = ? AND message_id = ? AND status NOT IN ('stopped','done')").get(tenantId, id)) throw new OutreachError('approve_sequence_set')
   const m = getMsg(db, tenantId, id)
   if (!m) throw new OutreachError('not_found')
   if (m.status !== 'draft') throw new OutreachError('not_a_draft')
@@ -192,6 +203,8 @@ export async function sendMessage(db: Database.Database, tenantId: string, id: s
   const pre = getMsg(db, tenantId, id)
   if (!pre) throw new OutreachError('not_found')
   if (pre.status === 'sent') return 'sent' // idempotent retry
+  if (anyUncertainSend(db, tenantId)) throw new OutreachError('already_uncertain')
+  if (tableExists(db, 'autopilot_settings') && (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as { paused: number } | undefined)?.paused) throw new OutreachError('paused')
   if (pre.status !== 'approved') throw new OutreachError(pre.status === 'sending' || pre.status === 'uncertain' ? `already_${pre.status}` : 'not_approved')
 
   const claim = db.prepare("UPDATE outreach_messages SET status = 'sending', attempts = attempts + 1, claimed_at = ?, error = NULL WHERE id = ? AND tenant_id = ? AND status = 'approved'").run(nowS(d), id, tenantId)
@@ -206,11 +219,19 @@ export async function sendMessage(db: Database.Database, tenantId: string, id: s
     throw new OutreachError('suppressed')
   }
   if (m.approved_hash !== hash(m.to_email, m.subject, m.body)) release('changed_since_approval')
+  if (tableExists(db, 'sequences')) {
+    const seq = db.prepare("SELECT id,status FROM sequences WHERE tenant_id = ? AND message_id = ?").get(tenantId,id) as { id: string; status: string } | undefined
+    if (seq && (seq.status !== 'approved' || db.prepare("SELECT 1 FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? AND (status <> 'approved' OR approved_hash IS NULL)").get(tenantId,seq.id))) release('approve_sequence_set')
+    if (seq) {
+      const steps = db.prepare('SELECT step,subject,body,approved_hash FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ?').all(tenantId,seq.id) as {step:number;subject:string;body:string;approved_hash:string}[]
+      if (steps.length !== 3 || steps.some(st => st.approved_hash !== hash(m.to_email,st.subject,st.body)) || !steps.some(st => st.step === 1 && st.subject === m.subject && st.body === m.body)) release('changed_since_approval')
+    }
+  }
   const settings = getSettings(db, tenantId)
   if (!settings) release('sender_identity_missing')
   const acct = db.prepare('SELECT email FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string } | undefined
   if (!acct) release('gmail_not_connected')
-  if (sentLast24h(db, tenantId, d) > DAILY_CAP) release('daily_cap') // this claim counts itself
+  if (accountSendCount(db, tenantId, nowS(d)) > DAILY_CAP) release('daily_cap') // this claim counts itself
 
   let token: string
   try {
@@ -219,6 +240,16 @@ export async function sendMessage(db: Database.Database, tenantId: string, id: s
     return release(e instanceof GmailError && e.kind === 'reconnect' ? 'gmail_reconnect_needed' : 'gmail_unavailable')
   }
 
+  // Token refresh is asynchronous. Recheck authorization and suppression after it,
+  // immediately before handing the immutable MIME bytes to Gmail.
+  if (isSuppressed(db,tenantId,m.to_email)) release('suppressed')
+  const final = getMsg(db,tenantId,id)!
+  if (final.approved_hash !== hash(final.to_email,final.subject,final.body) || final.body !== m.body || final.subject !== m.subject || final.to_email !== m.to_email) release('changed_since_approval')
+  if (tableExists(db,'sequences')) {
+    const set = db.prepare('SELECT status FROM sequences WHERE tenant_id = ? AND message_id = ?').get(tenantId,id) as {status:string} | undefined
+    if (set && set.status !== 'approved') release('approve_sequence_set')
+  }
+  if (tableExists(db,'autopilot_settings') && (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as {paused:number}|undefined)?.paused) release('paused')
   const master = d.master ?? getMasterKey()
   const unsubUrl = `${baseUrl(d)}/api/unsubscribe?t=${unsubToken(id, master)}`
   const raw = toBase64Url(buildMime({
@@ -241,6 +272,7 @@ export async function sendMessage(db: Database.Database, tenantId: string, id: s
     }
     // Network error, timeout or 5xx: the message may have gone out. Do not retry blindly.
     db.prepare("UPDATE outreach_messages SET status = 'uncertain', error = 'send_outcome_unknown' WHERE id = ? AND status = 'sending'").run(id)
+    if (tableExists(db,'autopilot_settings')) db.prepare("UPDATE autopilot_settings SET paused = 1, pause_reason = 'uncertain_send' WHERE tenant_id = ?").run(tenantId)
     return 'uncertain'
   }
 }

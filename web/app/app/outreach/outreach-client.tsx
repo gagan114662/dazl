@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import SequencesClient from './sequences-client'
 
 interface Msg { id: string; to_email: string; subject: string; body: string; status: string; error: string | null; sent_at: number | null }
 
@@ -18,13 +19,22 @@ const ERR: Record<string, string> = {
 export default function OutreachClient() {
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [edit, setEdit] = useState<Record<string, { subject: string; body: string }>>({})
+  const [sequenceMessages,setSequenceMessages] = useState<string[]>([])
+  const [creating,setCreating] = useState(false)
   const [note, setNote] = useState('')
 
   async function load() {
     const r = await fetch('/api/outreach')
     if (r.ok) setMsgs((await r.json()).messages)
+    const seq=await fetch('/api/outreach/sequences')
+    if(seq.ok) setSequenceMessages((await seq.json()).sequences.map((s:{message_id:string})=>s.message_id))
   }
-  useEffect(() => { void load() }, [])
+  useEffect(() => { void load(); const refresh=()=>void load(); window.addEventListener('sequences-updated',refresh); return ()=>window.removeEventListener('sequences-updated',refresh) }, [])
+
+  async function createSequence(id:string) {
+    setCreating(true);setNote('Drafting sequence steps...')
+    try {const r=await fetch('/api/outreach/sequences',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'create',message_id:id})});const j=await r.json(); if(!r.ok) setNote(`Could not create sequence (${j.error}).`); else {await load();window.location.reload()}} catch {setNote('Could not reach the server. Refresh before retrying.')} finally {setCreating(false)}
+  }
 
   async function act(id: string, action: string) {
     setNote('')
@@ -44,7 +54,7 @@ export default function OutreachClient() {
   return (
     <div className="p-8 max-w-3xl">
       <h1 className="text-2xl font-bold mb-1">Outreach</h1>
-      <p className="text-[#555] text-sm mb-6">Review each email, approve it, then send. Nothing goes out without your click. Every email gets your name, mailing address and an unsubscribe link added automatically.</p>
+      <p className="text-[#555] text-sm mb-6">Review each email, approve it, then send. Single emails send only after your click. A sequence sends its later steps only after you approve all three steps together. Every email gets your name, mailing address and an unsubscribe link added automatically.</p>
       {note && <p className="text-sm text-yellow-400 mb-4">{note}</p>}
       {msgs.length === 0 && <p className="text-[#666] text-sm">No emails yet. Open Leads and choose Draft email on a lead with a published address.</p>}
       <div className="flex flex-col gap-3">
@@ -65,7 +75,8 @@ export default function OutreachClient() {
                   <pre className="whitespace-pre-wrap text-[#333] font-sans mb-3">{m.body}</pre>
                   <div className="flex gap-2 flex-wrap">
                     {(m.status === 'draft' || m.status === 'approved') && <button className={btn} onClick={() => setEdit({ ...edit, [m.id]: { subject: m.subject, body: m.body } })}>Edit</button>}
-                    {m.status === 'draft' && <button className={btn} onClick={() => act(m.id, 'approve')}>Approve</button>}
+                    {m.status === 'draft' && !sequenceMessages.includes(m.id) && <button className={btn} onClick={() => act(m.id, 'approve')}>Approve</button>}
+                    {m.status === 'draft' && !sequenceMessages.includes(m.id) && <button className={btn} disabled={creating} onClick={()=>void createSequence(m.id)}>Create 3-step sequence</button>}
                     {m.status === 'approved' && <button className="btn-primary text-xs px-3 py-1.5" onClick={() => act(m.id, 'send')}>Send now</button>}
                     {(m.status === 'draft' || m.status === 'approved') && <button className={btn} onClick={() => act(m.id, 'skip')}>Skip</button>}
                     {m.status === 'uncertain' && <><button className={btn} onClick={() => act(m.id, 'mark_sent')}>It was sent</button><button className={btn} onClick={() => act(m.id, 'retry')}>It was not sent, allow retry</button></>}
@@ -76,6 +87,7 @@ export default function OutreachClient() {
           )
         })}
       </div>
+      <SequencesClient />
     </div>
   )
 }

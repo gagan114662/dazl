@@ -1,3 +1,4 @@
+import { migrateSequences } from '../outreach/sequences.ts'
 import { cookies } from 'next/headers'
 import { getAuthDb, getSessionUser } from '../auth-db'
 import { migrateScan } from './store.ts'
@@ -35,6 +36,7 @@ export function getScanDb() {
     migrateAutopilot(db)
     migrateLedger(db)
     migrateReplies(db)
+    migrateSequences(db)
     migrateTrial(db)
     migrateCompetitors(db)
     migrateSeo(db)

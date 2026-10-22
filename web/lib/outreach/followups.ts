@@ -1,3 +1,4 @@
+import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend, tableExists } from './send-budget.ts'
 import type Database from 'better-sqlite3'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
 import { getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
@@ -42,6 +43,7 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
   if (!followupsEnabled(db, tenantId)) return stop('followups_off')
   const settings = getSettings(db, tenantId)
   const acct = gmailStatus(db, tenantId)
+  if (anyUncertainSend(db, tenantId)) return stop('uncertain_send')
   if (!settings || acct?.status !== 'active') return stop('gmail_or_identity')
   if (db.prepare("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND status = 'uncertain'").get(tenantId) || db.prepare("SELECT 1 FROM followup_messages WHERE tenant_id = ? AND status IN ('uncertain','sending') AND created_at < ?").get(tenantId, now - 600)) { pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send') }
 
@@ -49,17 +51,19 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
   for (const t of threads) {
     const cur = getState(db, tenantId)
     if (cur.paused || !cur.enabled || !autopilotAvailable(flags) || !followupsEnabled(db, tenantId)) return stop('paused')
+    if (tableExists(db, 'sequences') && db.prepare("SELECT 1 FROM sequences WHERE tenant_id = ? AND lead_id = ?").get(tenantId,t.lead_id)) continue // sequence enrollment owns this thread; never layer warm automation on it
     const skip = (why: string) => { out.skipped++; auditAt(db, tenantId, 'followup_skipped', why, t.lead_id, undefined, now) }
     if (t.last_followup_at && t.last_lead_reply_at > t.last_followup_at) { db.prepare("UPDATE followup_threads SET stopped = 'replied_again' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, t.thread_id); skip('replied again, left for you'); continue }
     if (now - t.last_activity_at < GAPS_DAYS[t.followups_sent] * 86400) continue
     if (isSuppressed(db, tenantId, t.to_email)) { db.prepare("UPDATE followup_threads SET stopped = 'suppressed' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, t.thread_id); skip('suppressed'); continue }
     if (!hasConsent(db, tenantId, t.to_email, 'email', 'followup', now)) { skip('no valid consent'); continue }
     const sentToday = (db.prepare("SELECT count(*) AS n FROM autopilot_audit WHERE tenant_id = ? AND action IN ('sent','followup_sent') AND created_at >= ?").get(tenantId, now - 86400) as { n: number }).n
-    if (sentToday >= cur.daily_cap) return stop('daily_cap')
+    if (accountSendCount(db,tenantId,now) >= Math.min(ACCOUNT_SEND_CAP,cur.daily_cap)) return stop('daily_cap')
 
     // at most once: the claim row is unique per thread and step
     const claim = db.prepare("INSERT OR IGNORE INTO followup_messages (tenant_id, thread_id, step, status, created_at) VALUES (?, ?, ?, 'sending', ?)").run(tenantId, t.thread_id, t.followups_sent, now)
     if (claim.changes !== 1) { skip('already claimed'); continue }
+    if (accountSendCount(db,tenantId,now) > Math.min(ACCOUNT_SEND_CAP,cur.daily_cap)) { db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId,t.thread_id,t.followups_sent); return stop('daily_cap') }
     const lead = db.prepare('SELECT l.company, l.name, l.signal, l.source_url FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(t.lead_id, tenantId) as { company: string; name: string; signal: string; source_url: string } | undefined
     const orig = db.prepare('SELECT id, subject FROM outreach_messages WHERE tenant_id = ? AND lead_id = ?').get(tenantId, t.lead_id) as { id: string; subject: string } | undefined
     if (!lead || !orig) { db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId, t.thread_id, t.followups_sent); skip('lead missing'); continue }
