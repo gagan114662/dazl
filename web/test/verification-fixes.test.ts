@@ -31,7 +31,9 @@ test('emptyLeadsMessage: not done yet, and never shown over a non-empty list', (
 })
 
 test('scoreLabel: fit-0 lead is labelled not a fit instead of showing a high score', () => {
-  assert.equal(scoreLabel(95, 0), 'not a fit')
+  assert.equal(scoreLabel(95, 0, 3), 'not a fit')
+  assert.equal(scoreLabel(95, 0), 'scoring failed')
+  assert.equal(scoreLabel(95, 0, null), 'scoring failed')
 })
 
 test('scoreLabel: scoring keeps showing for any lead with fit left or not yet scored', () => {

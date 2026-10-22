@@ -126,7 +126,7 @@ test('end to end: counts, reasons and review leads are stored; review leads have
     openai: { research: async () => ({ text: '[]', citedUrls: [] }) },
   }
   const fetchPage: PageFetcher = async u => (u.endsWith('/js') ? { fail: 'js_required' } : page(`October 2026. ${QUOTE}.`))
-  await runJob(db, claimKeyedJob(db)!, { providers, master, now: NOW, fetchPage })
+  await runJob(db, claimKeyedJob(db)!, { providers, master, now: NOW, fetchPage, score: false }) // this test covers verification storage, not grading
   const j = getJob(db, 'A', id)!
   assert.equal(j.status, 'done')
   assert.deepEqual({ c: j.candidates, v: j.verified, r: j.needs_review, d: j.dropped }, { c: 3, v: 1, r: 1, d: 1 })

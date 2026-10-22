@@ -14,7 +14,7 @@ import type { AdvPlatform } from '../advanced/config.ts'
 import { buildSourcePrompt, collectEvidence, normalizeSources } from '../sources/index.ts'
 import { migrateTinyfish, parseQueries, queryPrompt, tfFetch, tfSearch, tinyfishEnabled, toEvidence } from '../search/tinyfish.ts'
 import { crawlJob } from '../connectors/sitecrawl.ts'
-import { applyEvidenceQualityGate, applyIcpGate, icpTextFor, scoreLeads } from './score.ts'
+import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads } from './score.ts'
 import { getMemory, isExcluded, memoryPromptBlock } from '../memory.ts'
 import { enrichJobSignals } from '../signals/index.ts'
 import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } from '../signals/competitor-reddit.ts'
@@ -586,7 +586,8 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       outcome.review = keptReview
     }
     // Quality stage: grade each verified lead for ICP fit, timing and actionability. One model call
-    // per scan; a scoring failure never fails the scan, the leads just stay unscored.
+    // per scan; a scoring failure never fails the scan - but it no longer passes the raw
+    // candidate score through as if it were a grade. Ungraded leads are held at fit 0.
     if (complete && outcome.leads.length > 0 && (deps.score !== false)) {
       const icpText = (icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`) + memoryPromptBlock(memory ?? null)
       const grades = await scoreLeads(providers_[vendor], key, icpText, outcome.leads, deps.fetchImpl)
@@ -595,6 +596,13 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         // to the hidden lane with the reason named. 'unknown' never gates.
         applyIcpGate(grades, icpForSources)
         outcome.leads.forEach((l, i) => { const g = grades[i]; if (g) { l.fit = g.fit; l.intent = g.intent; l.action = g.action; l.why = g.why; l.signals = JSON.stringify(g.signals); l.icp_match = JSON.stringify(g.match) } })
+        // Leads beyond the scored batch were never graded: hold them too.
+        const overflow = outcome.leads.slice(grades.length)
+        if (overflow.length > 0) holdUngraded(overflow, NOT_GRADED_WHY)
+      } else {
+        // Grading was attempted and failed (provider error or unparseable output). Fail closed:
+        // hold every lead at fit 0 with the reason named, instead of leaving raw scores looking graded.
+        holdUngraded(outcome.leads, GRADING_FAILED_WHY)
       }
     }
     // Evidence-quality gate: hiring signals without pain in the quoted evidence are not

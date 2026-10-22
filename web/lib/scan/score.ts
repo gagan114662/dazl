@@ -61,6 +61,16 @@ export const WHY_MAX = 600
 export const HIDE_FIT_AT = 1
 export const isHidden = (s: LeadScore | null): boolean => !!s && s.fit <= HIDE_FIT_AT
 
+// Fail-closed hold for a lead the model never graded (provider error, unparseable output,
+// or beyond the scored batch): it must not keep its raw candidate score as if that were a
+// verified grade. Fit is held at 0 (hidden lane) with the reason in why; intent/action stay
+// unset so the UI can tell "held, ungraded" apart from a real grade of 0.
+export const GRADING_FAILED_WHY = 'ICP grading failed (model error). Held at fit 0: the raw candidate score is not a verified fit. Re-run the scan to grade this lead.'
+export const NOT_GRADED_WHY = 'Not ICP-graded (beyond the scored batch). Held at fit 0: the raw candidate score is not a verified fit.'
+export function holdUngraded(leads: { fit?: number; why?: string }[], reason: string): void {
+  for (const l of leads) { l.fit = 0; l.why = reason.slice(0, WHY_MAX) }
+}
+
 export function scorePrompt(icpText: string, leads: { company: string; name: string; signal: string; excerpt: string | null }[]): string {
   return `You are grading sales leads for one seller. Their target profile (ICP):
 ${icpText}
