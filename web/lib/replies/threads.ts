@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto'
 import { audit, getEnabledCredential } from '../connectors/store.ts'
 import { hasConsent, httpWorker, type WorkerFetch } from '../advanced/index.ts'
 import { advFlags, connectorId, maxCallsPerHour, platformAllowed, scopeFor } from '../advanced/config.ts'
-import { getKey, keyStatus } from '../llm/key-store.ts'
+import { readKey, keyStatus } from '../llm/key-store.ts'
 import { getAuthDb, getSellerProfile } from '../auth-db.ts'
 import { providers, ProviderError } from '../llm/provider.ts'
 import type { Vendor } from '../llm/vendors.ts'
@@ -136,7 +136,8 @@ export async function gradeBuyerIntent(
 ): Promise<BuyerIntent | 'no' | null> {
   const vendor = (keyStatus(db, tenantId)[0]?.vendor ?? null) as Vendor | null
   if (!vendor) return null
-  const key = getKey(db, tenantId, vendor, deps.master)
+  // readKey, not getKey: an unreadable stored key must leave rows ungraded, never 500 the refresh.
+  const key = readKey(db, tenantId, vendor, deps.master).key
   if (!key) return null
   let out: string
   try {
@@ -276,14 +277,16 @@ The person you are writing for sells: ${sells || '(not specified)'}${website ? `
 Rules: answer the question first; do not invent features, prices, customers or statistics; mention the product only when it directly fits the question; at most one link; never claim to be a customer.
 Return only the reply text, 120 words maximum.`
 
-export type DraftResult = { draft: string; status: 'draft' } | { error: 'no_key' | 'not_found' | 'upstream' }
+export type DraftResult = { draft: string; status: 'draft' } | { error: 'no_key' | 'not_found' | 'upstream' | 'key_unreadable' }
 
 export async function draftReply(db: Database.Database, tenantId: string, threadId: string, profile: { sells: string; website: string }, deps: { fetchImpl?: typeof fetch; master?: Buffer; now?: number } = {}): Promise<DraftResult> {
   const t = getThread(db, tenantId, threadId)
   if (!t) return { error: 'not_found' }
   const vendor = (keyStatus(db, tenantId)[0]?.vendor ?? null) as Vendor | null
   if (!vendor) return { error: 'no_key' }
-  const key = getKey(db, tenantId, vendor, deps.master)
+  const read = readKey(db, tenantId, vendor, deps.master)
+  if (read.unreadable) return { error: 'key_unreadable' }
+  const key = read.key
   if (!key) return { error: 'no_key' }
   let draft: string
   try {

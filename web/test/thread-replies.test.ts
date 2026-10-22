@@ -218,3 +218,13 @@ test('effective step status: unsent steps of a terminal sequence read as stopped
   assert.equal(effectiveStepStatus('replied', 'sent'), 'sent')
   assert.equal(effectiveStepStatus('replied', 'uncertain'), 'uncertain')
 })
+test('draft: unreadable stored key returns key_unreadable, never throws a 500', async () => {
+  const d = db()
+  acceptConsent(d, 't1', 'advanced')
+  setQueries(d, 't1', ['outbound tool'])
+  await refreshReplies(d, 't1', { worker: async () => [item('https://www.reddit.com/r/sales/comments/a1', 'Anyone use a tool for outbound?', FRESH)], env: ENV_ON, now: NOW })
+  const thread = listThreads(d, 't1')[0]
+  saveKey(d, 't1', 'anthropic', 'sk-ant...1234', master)
+  d.prepare("UPDATE tenant_llm_keys SET ciphertext = 'not-valid-ciphertext' WHERE tenant_id = 't1'").run()
+  assert.deepEqual(await draftReply(d, 't1', thread.id, { sells: '', website: '' }, { master }), { error: 'key_unreadable' })
+})
