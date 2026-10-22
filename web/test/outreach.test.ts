@@ -4,6 +4,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
+import { migrateSequences, setTestAddresses } from '../lib/outreach/sequences.ts'
 import { completeOAuth, disconnectGmail, getAccessToken, gmailStatus, startOAuth, GmailSendError, type OAuthDeps } from '../lib/gmail/oauth.ts'
 import { buildMime } from '../lib/gmail/mime.ts'
 import { approve, createDraft, editDraft, isSuppressed, listMessages, OutreachError, readUnsubToken, resolveUncertain, saveSettings, sendMessage, skip, suppress, unsubToken, unsubscribeByToken, type Deps } from '../lib/outreach/service.ts'
@@ -228,4 +229,36 @@ test('mime: header injection is neutralised, non-ASCII is encoded, bad addresses
   assert.match(u, /^Subject: =\?UTF-8\?B\?/m)
   assert.throws(() => buildMime({ fromName: 'x', fromEmail: 'me@acme.example', to: 'a@b.example\r\nBcc: e@x.example', subject: 's', body: 'x', messageId: 'i@a.b', unsubscribeUrl: 'https://u.example' }), /bad_address/)
   void createHash
+})
+
+test('test mode: an allowlisted own-inbox consumer address drafts only with OUTREACH_TEST_MODE=1 and is labelled', () => {
+  const db = setup()
+  migrateSequences(db)
+  setTestAddresses(db, 'A', ['instinct114114@gmail.com'])
+  const lead = addLead(db, 'A', { contact: 'instinct114114@gmail.com' })
+  // Default (env unset): the consumer-recipient gate still rejects, allowlist or not.
+  delete process.env.OUTREACH_TEST_MODE
+  assert.throws(() => createDraft(db, 'A', lead, 'Acme'), /personal_email/)
+  // Operator test mode + tenant allowlist: the draft is allowed and marked as a test.
+  process.env.OUTREACH_TEST_MODE = '1'
+  try {
+    const id = createDraft(db, 'A', lead, 'Acme')
+    assert.equal((db.prepare('SELECT test FROM outreach_messages WHERE id = ?').get(id) as { test: number }).test, 1)
+    assert.equal((listMessages(db, 'A')[0] as { test: number }).test, 1)
+    // A consumer address NOT on the tenant's test list is still rejected.
+    assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { contact: 'someone@yahoo.com' }), 'Acme'), /personal_email/)
+  } finally {
+    delete process.env.OUTREACH_TEST_MODE
+  }
+  // A business-domain allowlisted address never needed the bypass; it is still labelled as a test recipient.
+  const biz = createDraft(db, 'A', addLead(db, 'A', { contact: 'founder@acme.example' }), 'Acme')
+  assert.equal((db.prepare('SELECT test FROM outreach_messages WHERE id = ?').get(biz) as { test: number }).test, 0)
+  process.env.OUTREACH_TEST_MODE = '1'
+  try {
+    setTestAddresses(db, 'A', ['instinct114114@gmail.com', 'founder@acme2.example'])
+    const id2 = createDraft(db, 'A', addLead(db, 'A', { contact: 'founder@acme2.example' }), 'Acme')
+    assert.equal((db.prepare('SELECT test FROM outreach_messages WHERE id = ?').get(id2) as { test: number }).test, 1)
+  } finally {
+    delete process.env.OUTREACH_TEST_MODE
+  }
 })

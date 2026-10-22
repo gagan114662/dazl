@@ -12,6 +12,19 @@ export const SENDING_STALE_S = 10 * 60
 // Personal mailbox providers: a published address there is not a business contact.
 const CONSUMER = new Set(['gmail.com', 'googlemail.com', 'yahoo.com', 'yahoo.ca', 'hotmail.com', 'outlook.com', 'live.com', 'msn.com', 'icloud.com', 'me.com', 'aol.com', 'proton.me', 'protonmail.com', 'gmx.com'])
 
+// Test mode (operator env OUTREACH_TEST_MODE=1, default OFF). The only thing it unlocks:
+// drafts addressed to a consumer mailbox that the tenant explicitly entered in their own
+// test-inbox allowlist. Real tenant sends to prospects are never affected - a prospect
+// address is not on the tenant's test list, and with the env unset nothing changes at all.
+export const testSendsEnabled = () => process.env.OUTREACH_TEST_MODE === '1'
+// Mirrors sequences.ts testAddresses (that module owns the allowlist; read directly here to
+// avoid a service -> sequences import cycle). Table may not exist on older databases.
+const isAllowlistedTestRecipient = (db: Database.Database, tenantId: string, email: string): boolean => {
+  if (!tableExists(db, 'sequence_settings')) return false
+  const r = db.prepare('SELECT test_addresses FROM sequence_settings WHERE tenant_id = ?').get(tenantId) as { test_addresses: string } | undefined
+  try { return (JSON.parse(r?.test_addresses ?? '[]') as string[]).map(norm).includes(norm(email)) } catch { return false }
+}
+
 export class OutreachError extends Error {
   code: string
   constructor(code: string) {
@@ -118,25 +131,26 @@ export function createDraft(db: Database.Database, tenantId: string, leadId: str
   }
   const to = norm(published)
   if (!EMAIL_RE.test(to)) throw new OutreachError('no_email_contact')
-  if (CONSUMER.has(to.split('@')[1])) throw new OutreachError('personal_email')
+  const test = isAllowlistedTestRecipient(db, tenantId, to) ? 1 : 0
+  if (CONSUMER.has(to.split('@')[1]) && !(test === 1 && testSendsEnabled())) throw new OutreachError('personal_email')
   if (isSuppressed(db, tenantId, to)) throw new OutreachError('suppressed')
   const t = draftTemplate(lead, businessName)
   const id = id24()
   try {
-    db.prepare('INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body) VALUES (?, ?, ?, ?, ?, ?)').run(id, tenantId, lead.id, to, t.subject, t.body)
+    db.prepare('INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, test) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, tenantId, lead.id, to, t.subject, t.body, test)
   } catch {
     throw new OutreachError('already_drafted')
   }
   return id
 }
 
-interface Msg { id: string; tenant_id: string; lead_id: string; to_email: string; subject: string; body: string; status: string; approved_hash: string | null; attempts: number; claimed_at: number | null; sent_at: number | null; error: string | null; created_at: number }
+interface Msg { id: string; tenant_id: string; lead_id: string; to_email: string; subject: string; body: string; status: string; approved_hash: string | null; attempts: number; claimed_at: number | null; sent_at: number | null; error: string | null; created_at: number; test: number }
 const getMsg = (db: Database.Database, tenantId: string, id: string) =>
   db.prepare('SELECT * FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(id, tenantId) as Msg | undefined
 
 export function listMessages(db: Database.Database, tenantId: string, d: Deps = {}) {
   reapSending(db, d)
-  return db.prepare('SELECT id, lead_id, to_email, subject, body, status, error, created_at, sent_at FROM outreach_messages WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 200').all(tenantId)
+  return db.prepare('SELECT id, lead_id, to_email, subject, body, status, error, created_at, sent_at, test FROM outreach_messages WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 200').all(tenantId)
 }
 
 const cleanLine = (s: string) => s.replace(/[\r\n\u0000]+/g, ' ').trim()
@@ -262,6 +276,7 @@ export async function sendMessage(db: Database.Database, tenantId: string, id: s
   }))
   try {
     const out = await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl)
+    if (m.test) console.log('outreach TEST MODE send', id, m.to_email)
     db.prepare("UPDATE outreach_messages SET status = 'sent', sent_at = ?, gmail_id = ?, thread_id = ?, error = NULL WHERE id = ? AND status = 'sending'").run(nowS(d), out.id, (out as { threadId?: string }).threadId ?? null, id)
     return 'sent'
   } catch (e) {

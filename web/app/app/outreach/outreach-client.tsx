@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react'
 import SequencesClient from './sequences-client'
 
-interface Msg { id: string; to_email: string; subject: string; body: string; status: string; error: string | null; sent_at: number | null }
+interface Msg { id: string; to_email: string; subject: string; body: string; status: string; error: string | null; sent_at: number | null; test?: number }
 
 const ERR: Record<string, string> = {
   sender_identity_missing: 'Add your name and mailing address in Settings first.',
@@ -62,7 +62,7 @@ export default function OutreachClient() {
           const e = edit[m.id]
           return (
             <div key={m.id} className="card p-4 text-sm">
-              <div className="flex justify-between text-[#555] text-xs mb-2"><span>To {m.to_email}</span><span>{m.status}{m.error && m.status !== 'sent' ? ` (${m.error})` : ''}</span></div>
+              <div className="flex justify-between text-[#555] text-xs mb-2"><span>To {m.to_email}{m.test ? <span className="ml-2 text-[10px] uppercase tracking-wide text-yellow-300 border border-yellow-300/40 px-1 py-0.5">test mode</span> : null}</span><span>{m.status}{m.error && m.status !== 'sent' ? ` (${m.error})` : ''}</span></div>
               {e ? (
                 <div className="flex flex-col gap-2">
                   <input className="bg-white border border-black/20 rounded px-3 py-2" value={e.subject} maxLength={150} onChange={x => setEdit({ ...edit, [m.id]: { ...e, subject: x.target.value } })} />
