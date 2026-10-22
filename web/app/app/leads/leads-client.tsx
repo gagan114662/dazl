@@ -226,15 +226,20 @@ export default function LeadsClient() {
 
   useEffect(() => {
     if (!jobId || status === 'done' || status === 'failed') return
-    const t = setInterval(async () => {
-      const r = await fetch(`/api/scan/status?job_id=${jobId}`)
-      if (!r.ok) return
+    let stop = false
+    const tick = async () => {
+      const r = await fetch(`/api/scan/status?job_id=${jobId}`).catch(() => null)
+      // An unknown or cross-account job 404s: say so and stop, never spin forever.
+      if (!r || !r.ok) { if (!stop) { setStatus('failed'); setJobError(r && r.status === 404 ? 'not_found' : 'status_unavailable') } return }
       const s = await r.json()
+      if (stop) return
       setStatus(s.status); setJobError(s.error ?? ''); setLeadsSoFar(s.lead_count ?? 0)
       setQuality(s.quality ?? null)
       if (s.icp) setIcp({ icp: s.icp, source: s.icp_source })
-    }, 5000)
-    return () => clearInterval(t)
+    }
+    void tick() // immediate first check: a done deep link must not flash "Scanning" for a full interval
+    const t = setInterval(tick, 5000)
+    return () => { stop = true; clearInterval(t) }
   }, [jobId, status])
 
   const loadLeads = async () => {
@@ -432,7 +437,7 @@ export default function LeadsClient() {
           </div>
         </div>
       )}
-      {jobId && status === 'failed' && <p className="text-gray-400 text-sm mb-4">{jobError === 'no_candidates' ? 'No candidates found for that search. Try rephrasing or broadening it - this scan did not count toward your monthly scans.' : jobError === 'trial_key_invalid' ? 'The scan service is having trouble right now. Try again later - this scan did not count toward your free scans.' : jobError === 'key_unreadable' ? KEY_UNREADABLE_COPY.replace(/\.$/, ', then run the scan again.') : 'Scan failed. Try again.'}</p>}
+      {jobId && status === 'failed' && <p className="text-gray-400 text-sm mb-4">{jobError === 'no_candidates' ? 'No candidates found for that search. Try rephrasing or broadening it - this scan did not count toward your monthly scans.' : jobError === 'trial_key_invalid' ? 'The scan service is having trouble right now. Try again later - this scan did not count toward your free scans.' : jobError === 'key_unreadable' ? KEY_UNREADABLE_COPY.replace(/\.$/, ', then run the scan again.') : jobError === 'not_found' ? 'That scan was not found in this account. Pick one from your past scans below.' : jobError === 'status_unavailable' ? 'Could not load the scan status. Refresh to try again.' : 'Scan failed. Try again.'}</p>}
       {watches.length > 0 && (
         <div className="card p-4 mb-4 text-sm">
           <h2 className="text-sm font-semibold mb-1">Weekly watches</h2>
