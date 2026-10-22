@@ -108,12 +108,14 @@ export class InProcessQueue implements QueueAdapter {
     if (inFlight >= maxInFlight) return null
 
     const kinds = opts.kinds ? new Set(opts.kinds) : null
+    const tenants = opts.tenants ? new Set(opts.tenants) : null
     // Best (oldest) eligible item per tenant, over tenants with capacity left.
     let best: WorkItem | null = null
     const headByTenant = new Map<string, WorkItem>()
     for (const it of this.items.values()) {
       if (it.status !== 'pending' || it.notBefore > now) continue
       if (kinds && !kinds.has(it.kind)) continue
+      if (tenants && !tenants.has(it.tenantId)) continue
       if ((tenantInFlight.get(it.tenantId) ?? 0) >= perTenant) continue
       const head = headByTenant.get(it.tenantId)
       if (!head || it.createdAt < head.createdAt || (it.createdAt === head.createdAt && it.id < head.id)) headByTenant.set(it.tenantId, it)
