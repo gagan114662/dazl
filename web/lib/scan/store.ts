@@ -107,6 +107,10 @@ function addColumns(db: Database.Database): void {
   add('leads', 'signals', 'TEXT CHECK (signals IS NULL OR length(signals) <= 1000)')
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS leads_dedup ON leads (scan_job_id, dedup_key) WHERE dedup_key IS NOT NULL')
   add('leads', 'seen_before', 'INTEGER NOT NULL DEFAULT 0')
+  // CSV bulk import: a job created from an uploaded domain list carries the domain it
+  // researches and the batch it belongs to. NULL on every manual/watch scan.
+  add('scan_jobs', 'csv_domain', 'TEXT CHECK (csv_domain IS NULL OR length(csv_domain) <= 253)')
+  add('scan_jobs', 'batch_id', 'TEXT')
 }
 
 export function createJob(db: Database.Database, userId: string, input: ScanInput): string {
@@ -155,7 +159,8 @@ export function getJob(db: Database.Database, userId: string, id: string) {
 }
 
 export function countActiveJobs(db: Database.Database, userId: string): number {
-  return (db.prepare("SELECT count(*) AS n FROM scan_jobs WHERE user_id = ? AND status IN ('pending','running')").get(userId) as { n: number }).n
+  // CSV import jobs do not count: a 50-domain batch must not lock the user out of manual scans.
+  return (db.prepare("SELECT count(*) AS n FROM scan_jobs WHERE user_id = ? AND status IN ('pending','running') AND csv_domain IS NULL").get(userId) as { n: number }).n
 }
 
 // Ranked: scored leads first by ICP fit, then intent, actionability and evidence confidence.

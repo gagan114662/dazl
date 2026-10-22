@@ -11,6 +11,7 @@ import { migrateOutreach } from '../outreach/store.ts'
 import { migrateAutopilot } from '../outreach/autopilot.ts'
 import { migrateLedger } from '../outreach/ledger.ts'
 import { migrateMonitors } from '../monitors.ts'
+import { migrateCsv } from './csv-import.ts'
 import { migrateReplies } from '../outreach/replies.ts'
 import { migrateTrial } from './trial.ts'
 import { migrateCompetitors } from '../signals/competitor-reddit.ts'
@@ -35,6 +36,7 @@ export function getScanDb() {
     migrateCompetitors(db)
     migrateSeo(db)
     migrateMonitors(db)
+    migrateCsv(db)
     ready = true
   }
   return db
