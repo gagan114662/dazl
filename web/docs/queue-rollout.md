@@ -48,13 +48,14 @@ separate explicit activation decision must satisfy.
 4. In-flight reconcile at cutover: before enabling for a tenant, verify zero
    running jobs for that tenant (or wait for drain); the bridge's fresh-row
    bind refusal protects a live claim, but cutover at idle removes the case.
-5. Canary scope is ONE tenant (the test tenant), not a policy: the bridge
-   claims queue work before the legacy loop on every kick, so under a
-   continuous queue-tenant backlog legacy tenants can starve. A per-tenant
-   slot policy (e.g. one tenant holds at most one slot) has been proposed but
-   is NOT designed or enforced - until it is, DAZL_QUEUE_TENANTS must list at
-   most the single canary tenant and any broader list is a separate reviewed
-   change, not an ops edit.
+5. Canary scope is ONE tenant (the test tenant), enforced twice in code:
+   (a) the bridge claims with perTenantInFlight: 1 pinned EXPLICITLY (not
+   inherited from the adapter default, which a future adapter edit could
+   change) - the queue tenant holds at most one of the shared slots, so a
+   continuous queue-tenant backlog cannot starve legacy tenants;
+   (b) queueTenants() fails closed to pure legacy when DAZL_QUEUE_TENANTS
+   lists more than one id. A broader tenant list is a separate reviewed
+   change with its own slot-policy decision, never an ops edit.
 6. Slot tails and recovery honesty: post-finish network work (contact crawl,
    enrichment) holds a run slot for seconds to minutes after the scan itself
    completes (bounded by per-request timeouts, worst case roughly 8 sites x
