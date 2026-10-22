@@ -170,7 +170,7 @@ export function importCommenters(db: Database.Database, userId: string, rows: Im
     db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, batch_id) VALUES (?, ?, 'Commenter import', '-', '-', 'running', ?)").run(jobId, userId, batchId)
     db.prepare('INSERT INTO commenter_batches (id, user_id, context, total, job_id) VALUES (?, ?, ?, ?, ?)').run(batchId, userId, signal, rows.length, jobId)
     const insRow = db.prepare('INSERT INTO commenter_rows (id, batch_id, profile_url, slug, name, name_source, title, company, lead_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    const insLead = db.prepare('INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score) VALUES (?, ?, ?, ?, NULL, ?, ?, 50)')
+    const insLead = db.prepare("INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, signal_kind, source_kind) VALUES (?, ?, ?, ?, NULL, ?, ?, 50, 'competitor_complaint', 'commenter')")
     for (const r of rows) {
       const leadId = randomBytes(12).toString('hex')
       const display = (r.title ? `${r.name} - ${r.title}` : r.name).slice(0, 150)
