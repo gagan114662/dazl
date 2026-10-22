@@ -39,6 +39,12 @@ export function deleteKey(db: Database.Database, tenantId: string, vendor: Vendo
   return db.prepare('DELETE FROM tenant_llm_keys WHERE tenant_id = ? AND vendor = ?').run(tenantId, vendor).changes === 1
 }
 
+// The tenant's most recently added vendor. Server-side only.
+export function defaultVendor(db: Database.Database, tenantId: string): Vendor | null {
+  const r = db.prepare('SELECT vendor FROM tenant_llm_keys WHERE tenant_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(tenantId) as { vendor: Vendor } | undefined
+  return r?.vendor ?? null
+}
+
 // Server-side only (the scan runner). Never return this from an API route.
 export function getKey(db: Database.Database, tenantId: string, vendor: Vendor, master?: Buffer): string | null {
   const r = db.prepare('SELECT ciphertext FROM tenant_llm_keys WHERE tenant_id = ? AND vendor = ?').get(tenantId, vendor) as { ciphertext: string } | undefined

@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { gmailStatus } from '../gmail/oauth.ts'
 import { createDraft, approve, getSettings, isSuppressed, OutreachError, sendMessage, suppress, type Deps } from './service.ts'
+import { polishDraft } from './draft-llm.ts'
 
 // Autopilot sends first-touch email to verified, business-published addresses through the user's own Gmail,
 // inside hard limits. It never sends follow-ups, never re-contacts, and never touches suppressed addresses.
@@ -127,7 +128,10 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     // re-read state each time so a pause or kill takes effect between sends
     if (getState(db, tenantId).paused || !autopilotAvailable(env) || !getState(db, tenantId).enabled) return stop('paused')
     let id: string
-    try { id = createDraft(db, tenantId, l.id, businessName) } catch (e) {
+    try {
+      id = createDraft(db, tenantId, l.id, businessName)
+      try { await polishDraft(db, tenantId, id, businessName, d) } catch { /* template stays */ }
+    } catch (e) {
       out.skipped++; audit(db, tenantId, 'skipped', e instanceof OutreachError ? e.code : 'error', l.id); continue
     }
     const to = (db.prepare('SELECT to_email FROM outreach_messages WHERE id = ?').get(id) as { to_email: string }).to_email
