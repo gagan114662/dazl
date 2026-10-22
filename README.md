@@ -1,162 +1,85 @@
-Update: April 27, 2026.
+# dazl
 
-Hi there! I'm Farza, the guy that made Clicky.
+Lead research, evidence checks, and reviewed outreach from your own Gmail account.
 
-The existing codebase remains open source. Tinker with it, make it yours, start a company out of it, do whatever you want I don't mind. But, for all the new stuff I'm hacking on, gonna keep it private. To get the latest Clicky, you can go [here](https://www.heyclicky.com/).
+Describe who you want to reach in plain language. dazl turns that request into an editable ideal customer profile, researches candidates, checks the cited evidence, and lets you review leads before drafting outreach. It is a web app, not the Clicky macOS app that originally occupied this repository.
 
-I also tweeted about this [here](https://x.com/FarzaTV/status/2043402737828962489).
+## Current state
 
-Go crazy with this repo!! It's an MIT license.
+Status as of October 22, 2026. Code and automated tests are not the same as a passing production check.
 
-# Hi, this is Clicky.
-It's an AI teacher that lives as a buddy next to your cursor. It can see your screen, talk to you, and even point at stuff. Kinda like having a real teacher next to you.
+| Area | Implemented | Verification and limits |
+| --- | --- | --- |
+| Research | Free-text scans, editable profiles, candidate research and evidence checks | Automated tests cover the pipeline; live scans have been exercised. Source coverage and yield are still being improved. |
+| Lead labels | Existing 24-type signal taxonomy, queryable primary signal type, and acquisition-mode labels | Migration and write paths tested. Acquisition mode is not collector identity. Per-collector yield and signal-to-reply attribution are not complete. |
+| Outreach | Review and approve exact words before sending from connected Gmail | Sent own-inbox test messages were checked in Gmail, including sender details and unsubscribe links. No real-prospect delivery claim is implied. |
+| Cold sequences | Approve a three-step set once; manually send step 1; later steps are due at 3 and 7 days | All three steps reached the test inbox in a shortened-delay test. Punctual unattended scheduling is not yet verified. Production sends still require the scheduler and reply-reading connection. |
+| Reply and opt-out stops | Reply reading, sequence stop rules, suppression and unsubscribe handlers | Automated coverage exists. Live reply-stop and unsubscribe checks remain pending: the production Outreach page currently has a JavaScript chunk-loading failure. |
+| Campaign counts | Sent, replies, permanent bounces and opt-outs | "No bounce reported" means sent minus recorded permanent bounces, not confirmed delivery. Opens and bookings are not tracked. |
+| Source workers | Separate optional connector services | Retained dependencies, not a claim that every connector has passed a live test. See each worker's documented coverage and platform restrictions. |
 
-Download it [here](https://www.clicky.so/) for free.
+### Send safeguards
 
-Here's the [original tweet](https://x.com/FarzaTV/status/2041314633978659092) that kinda blew up for a demo for more context.
+- The approved recipient, subject and body are checked before sending. Editing a sequence removes its approval.
+- Every message includes configured sender details and an unsubscribe link.
+- Reply, bounce and opt-out stop rules apply to later sequence steps.
+- A shared rolling 24-hour budget caps account sends at 20. In-flight and uncertain sends reserve capacity.
+- Short delays and fixture messages are limited to the designated test account and allowlisted test inbox. Ordinary recipients keep the normal delays.
+- No new words are generated after a sequence is approved.
 
-![Clicky — an ai buddy that lives on your mac](clicky-demo.gif)
+These are implemented safeguards. The pending live safety checks above are still required before describing the entire workflow as production-verified.
 
-This is the open-source version of Clicky for those that want to hack on it, build their own features, or just see how it works under the hood.
+## Repository layout
 
-## Get started with Claude Code
+| Directory | Purpose |
+| --- | --- |
+| `web/` | Next.js web app, SQLite storage, research pipeline, Gmail and outreach logic, and tests |
+| `worker/` | Optional advanced-connectors service and its tests |
+| `session-worker/` | Companion session-credential connector service and its tests |
+| `docs/` | dazl product, implementation and operator documentation |
+| `.github/` | CI configuration |
 
-The fastest way to get this running is with [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
+The web app calls configured workers over HTTP. Do not remove those services merely because they run separately. Connectors remain subject to their documented consent, platform-terms and access restrictions; their presence does not authorize automated use of a platform.
 
-Once you get Claude running, paste this:
+## Local development
 
-```
-Hi Claude.
+Use Node.js 22 or newer. Run the web app from `web/`:
 
-Clone https://github.com/farzaa/clicky.git into my current directory.
-
-Then read the CLAUDE.md. I want to get Clicky running locally on my Mac.
-
-Help me set up everything — the Cloudflare Worker with my own API keys, the proxy URLs, and getting it building in Xcode. Walk me through it.
-```
-
-That's it. It'll clone the repo, read the docs, and walk you through the whole setup. Once you're running you can just keep talking to it — build features, fix bugs, whatever. Go crazy.
-
-## Manual setup
-
-If you want to do it yourself, here's the deal.
-
-### Prerequisites
-
-- macOS 14.2+ (for ScreenCaptureKit)
-- Xcode 15+
-- Node.js 18+ (for the Cloudflare Worker)
-- A [Cloudflare](https://cloudflare.com) account (free tier works)
-- API keys for: [Anthropic](https://console.anthropic.com), [AssemblyAI](https://www.assemblyai.com), [ElevenLabs](https://elevenlabs.io)
-
-### 1. Set up the Cloudflare Worker
-
-The Worker is a tiny proxy that holds your API keys. The app talks to the Worker, the Worker talks to the APIs. This way your keys never ship in the app binary.
-
-```bash
-cd worker
-npm install
+```sh
+cd web
+npm ci
+npm run dev
 ```
 
-Now add your secrets. Wrangler will prompt you to paste each one:
+Open `http://localhost:3000`. Use a separate local database and local secrets, never production credentials or data.
 
-```bash
-npx wrangler secret put ANTHROPIC_API_KEY
-npx wrangler secret put ASSEMBLYAI_API_KEY
-npx wrangler secret put ELEVENLABS_API_KEY
+Server configuration is feature-dependent:
+
+- `DB_PATH`: SQLite file location. Choose an explicit local path for development.
+- `DAZL_MASTER_KEY`: base64-encoded 32-byte key for encrypting stored tenant secrets. Keep it stable for that database and out of Git.
+- Research uses the model-provider key configured for the account.
+- Gmail features require `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and the matching callback at `/api/gmail/callback`. `PUBLIC_BASE_URL` controls the callback origin.
+- Optional workers use `ADVANCED_WORKER_URL` and `ADVANCED_WORKER_TOKEN`; see their own READMEs before enabling them.
+
+This is a development entry point, not a complete production deployment guide. See [operator documentation](docs/AUTOPILOT.md) for the outreach background-work setup and safeguards.
+
+## Checks
+
+```sh
+cd web
+npm test
+npm run build
 ```
 
-For the ElevenLabs voice ID, open `wrangler.toml` and set it there (it's not sensitive):
+Worker tests run separately:
 
-```toml
-[vars]
-ELEVENLABS_VOICE_ID = "your-voice-id-here"
+```sh
+(cd worker && npm test)
+(cd session-worker && npm test)
 ```
 
-Deploy it:
+A passing build does not prove that the deployed server serves matching HTML and static chunks. Check the live UI after deployment, and use only an explicitly approved test inbox for send tests.
 
-```bash
-npx wrangler deploy
-```
+## License and notices
 
-It'll give you a URL like `https://your-worker-name.your-subdomain.workers.dev`. Copy that.
-
-### 2. Run the Worker locally (for development)
-
-If you want to test changes to the Worker without deploying:
-
-```bash
-cd worker
-npx wrangler dev
-```
-
-This starts a local server (usually `http://localhost:8787`) that behaves exactly like the deployed Worker. You'll need to create a `.dev.vars` file in the `worker/` directory with your keys:
-
-```
-ANTHROPIC_API_KEY=sk-ant-...
-ASSEMBLYAI_API_KEY=...
-ELEVENLABS_API_KEY=...
-ELEVENLABS_VOICE_ID=...
-```
-
-Then update the proxy URLs in the Swift code to point to `http://localhost:8787` instead of the deployed Worker URL while developing. Grep for `clicky-proxy` to find them all.
-
-### 3. Update the proxy URLs in the app
-
-The app has the Worker URL hardcoded in a few places. Search for `your-worker-name.your-subdomain.workers.dev` and replace it with your Worker URL:
-
-```bash
-grep -r "clicky-proxy" leanring-buddy/
-```
-
-You'll find it in:
-- `CompanionManager.swift` — Claude chat + ElevenLabs TTS
-- `AssemblyAIStreamingTranscriptionProvider.swift` — AssemblyAI token endpoint
-
-### 4. Open in Xcode and run
-
-```bash
-open leanring-buddy.xcodeproj
-```
-
-In Xcode:
-1. Select the `leanring-buddy` scheme (yes, the typo is intentional, long story)
-2. Set your signing team under Signing & Capabilities
-3. Hit **Cmd + R** to build and run
-
-The app will appear in your menu bar (not the dock). Click the icon to open the panel, grant the permissions it asks for, and you're good.
-
-### Permissions the app needs
-
-- **Microphone** — for push-to-talk voice capture
-- **Accessibility** — for the global keyboard shortcut (Control + Option)
-- **Screen Recording** — for taking screenshots when you use the hotkey
-- **Screen Content** — for ScreenCaptureKit access
-
-## Architecture
-
-If you want the full technical breakdown, read `CLAUDE.md`. But here's the short version:
-
-**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to AssemblyAI, sends the transcript + screenshot to Claude via streaming SSE, and plays the response through ElevenLabs TTS. Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. All three APIs are proxied through a Cloudflare Worker.
-
-## Project structure
-
-```
-leanring-buddy/          # Swift source (yes, the typo stays)
-  CompanionManager.swift    # Central state machine
-  CompanionPanelView.swift  # Menu bar panel UI
-  ClaudeAPI.swift           # Claude streaming client
-  ElevenLabsTTSClient.swift # Text-to-speech playback
-  OverlayWindow.swift       # Blue cursor overlay
-  AssemblyAI*.swift         # Real-time transcription
-  BuddyDictation*.swift     # Push-to-talk pipeline
-worker/                  # Cloudflare Worker proxy
-  src/index.ts              # Three routes: /chat, /tts, /transcribe-token
-CLAUDE.md                # Full architecture doc (agents read this)
-```
-
-## Contributing
-
-PRs welcome. If you're using Claude Code, it already knows the codebase — just tell it what you want to build and point it at `CLAUDE.md`.
-
-Got feedback? DM me on X [@farzatv](https://x.com/farzatv).
+See [LICENSE](LICENSE). Existing copyright attribution is retained. Third-party notices in [web/NOTICE](web/NOTICE) also apply.
