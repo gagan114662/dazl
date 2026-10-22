@@ -13,6 +13,7 @@ import { migrateLedger } from '../outreach/ledger.ts'
 import { migrateMonitors } from '../monitors.ts'
 import { migrateCsv } from './csv-import.ts'
 import { migrateMemory } from '../memory.ts'
+import { migrateReopen } from '../outreach/reopen.ts'
 import { migrateReplies } from '../outreach/replies.ts'
 import { migrateTrial } from './trial.ts'
 import { migrateCompetitors } from '../signals/competitor-reddit.ts'
@@ -39,6 +40,7 @@ export function getScanDb() {
     migrateMonitors(db)
     migrateCsv(db)
     migrateMemory(db)
+    migrateReopen(db)
     ready = true
   }
   return db

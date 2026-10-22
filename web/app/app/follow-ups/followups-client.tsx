@@ -5,6 +5,7 @@ import GmailGate from '../gmail-gate'
 interface Thread { thread_id: string; company: string; name: string; to_email: string; last_lead_reply_at: number | null; followups_sent: number; next_due_at: number | null; stopped: string | null }
 interface Sent { thread_id: string; company: string; to_email: string; step: number; status: string; created_at: number }
 interface Overview { enabled: boolean; account: string | null; threads: Thread[]; sent: Sent[] }
+interface Warm { thread_id: string; company: string; name: string; to_email: string; last_reply_at: number; reply_excerpt: string; reopen: { status: string; body: string } | null }
 
 const STOPPED: Record<string, string> = { replied: 'They replied again - the sequence stops for you to handle', bounced: 'The address bounced', unsubscribed: 'They unsubscribed', manual: 'Stopped by you' }
 const day = (t: number) => new Date(t * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
@@ -12,6 +13,18 @@ const day = (t: number) => new Date(t * 1000).toLocaleDateString(undefined, { mo
 export default function FollowupsClient() {
   const [data, setData] = useState<Overview | null>(null)
   const [error, setError] = useState('')
+  const [warm, setWarm] = useState<Warm[]>([])
+  const [reopens, setReopens] = useState<Warm[]>([])
+  const [warmMsg, setWarmMsg] = useState('')
+  const loadWarm = () => fetch('/api/outreach/reopen').then(r => r.ok ? r.json() : null).then(j => { if (j) { setWarm(j.warm); setReopens(j.reopens) } }).catch(() => {})
+  useEffect(() => { void loadWarm() }, [])
+  async function reopenAction(action: string, threadId: string, body?: string) {
+    setWarmMsg('')
+    const r = await fetch('/api/outreach/reopen', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action, thread_id: threadId, ...(body !== undefined ? { body } : {}) }) })
+    const j = await r.json().catch(() => ({}))
+    if (!r.ok) { setWarmMsg(j.error === 'suppressed' ? 'That address unsubscribed or bounced.' : j.error === 'already_created' ? 'A re-open already exists for this thread.' : j.error || 'Could not do that'); return }
+    setWarm(j.warm); setReopens(j.reopens)
+  }
   useEffect(() => {
     void fetch('/api/outreach/followups').then(async r => {
       if (!r.ok) { setError(r.status === 401 ? 'Sign in first.' : 'Could not load follow-ups'); return }
@@ -54,6 +67,28 @@ export default function FollowupsClient() {
               </div>
             ))}
           </div>
+          {(warm.length > 0 || reopens.length > 0) && (
+            <>
+              <h2 className="text-sm font-semibold mb-2">Warm again</h2>
+              <p className="text-[#777] text-xs mb-2">They replied with interest, then went quiet 30-90 days ago. Re-opens are drafts - nothing sends unless you review it and press send. One per thread, ever.</p>
+              <div className="card divide-y divide-black/5 mb-8">
+                {warm.map(t => (
+                  <div key={t.thread_id} className="p-4 text-sm flex items-center gap-4">
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium">{t.company || t.name || t.to_email}</div>
+                      <div className="text-[#777] text-xs">{t.to_email} · last replied {day(t.last_reply_at)}</div>
+                      {t.reply_excerpt && <div className="text-[#999] text-xs truncate">They wrote: &ldquo;{t.reply_excerpt}&rdquo;</div>}
+                    </div>
+                    <button onClick={() => void reopenAction('draft', t.thread_id)} className="font-mono text-xs uppercase border border-black px-2 py-1 hover:bg-black hover:text-white">Draft re-open</button>
+                  </div>
+                ))}
+                {reopens.filter(r => r.reopen).map(t => (
+                  <ReopenRow key={t.thread_id} t={t} onAction={reopenAction} />
+                ))}
+              </div>
+              {warmMsg && <p className="text-red-600 text-xs mb-4">{warmMsg}</p>}
+            </>
+          )}
           {data.sent.length > 0 && (
             <>
               <h2 className="text-sm font-semibold mb-2">Sent follow-ups</h2>
@@ -88,6 +123,23 @@ export default function FollowupsClient() {
           )}
         </>
       )}
+    </div>
+  )
+}
+
+function ReopenRow({ t, onAction }: { t: Warm; onAction: (action: string, threadId: string, body?: string) => void }) {
+  const [body, setBody] = useState(t.reopen?.body ?? '')
+  const st = t.reopen?.status ?? 'draft'
+  return (
+    <div className="p-4 text-sm">
+      <div className="flex items-center gap-3">
+        <div className="font-medium flex-1">{t.company || t.name || t.to_email} <span className="text-[#777] text-xs font-normal">{st === 'sent' ? ' - re-open sent' : st === 'skipped' ? ' - skipped' : '- draft, review before sending'}</span></div>
+        {st === 'draft' && <button onClick={() => onAction('send', t.thread_id, body)} className="font-mono text-xs uppercase border border-black px-2 py-1 hover:bg-black hover:text-white">Send this</button>}
+        {(st === 'draft') && <button onClick={() => onAction('skip', t.thread_id)} className="text-xs text-[#777] hover:text-black">Skip</button>}
+      </div>
+      {st === 'draft'
+        ? <textarea className="field w-full mt-2" rows={5} value={body} onChange={e => setBody(e.target.value)} onBlur={() => { if (body !== t.reopen?.body) void onAction('edit', t.thread_id, body) }} />
+        : <p className="text-[#777] text-xs mt-2 whitespace-pre-wrap">{t.reopen?.body}</p>}
     </div>
   )
 }
