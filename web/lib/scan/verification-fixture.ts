@@ -19,6 +19,7 @@ import { migrateOutreach } from '../outreach/store.ts'
 
 export const VERIFICATION_FIXTURE_JOB = 'dazl verification fixture (test only)'
 export const VERIFICATION_FIXTURE_LEAD = 'dazl verification fixture A (test only)'
+export const VERIFICATION_FIXTURE_REVIEW_LEAD = 'dazl verification fixture closed job (test only)'
 const SRC = 'https://dazl.ai/test-only-verification-fixture'
 const SIGNAL = 'Test-only fixture for verifying populated UI. Not a real company or person. dazl did not find, scrape or verify anything and claims no evidence.'
 
@@ -71,6 +72,10 @@ export function createVerificationFixture(db: Database.Database, tenantId: strin
       .run(tenantId, threadId, leadId, TEST_INBOX, omId, now - 9 * 86400, now - 9 * 86400)
     db.prepare("INSERT INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at) VALUES (?, ?, ?, ?, ?, ?, 'positive', ?)")
       .run(`dazl-test-in-${randomBytes(6).toString('hex')}`, tenantId, threadId, leadId, TEST_INBOX, FIXTURE_REPLY, now - 9 * 86400)
+    // Review-lane row proving the job_closed label renders: same test-only labelling,
+    // review_reason set directly, never in the lead list, never eligible for outreach.
+    db.prepare("INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, source_kind, review_reason, dedup_key, created_at) VALUES (?, ?, '', ?, NULL, ?, ?, 40, 'test', 'job_closed', ?, ?)")
+      .run(randomBytes(12).toString('hex'), jobId, VERIFICATION_FIXTURE_REVIEW_LEAD, SIGNAL, SRC, `review:dazl-fixture-closed-${jobId}`, now - 10 * 86400)
     db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(jobId)
   })()
   return { jobId, leadId, created: true }
@@ -93,6 +98,7 @@ export function deleteVerificationFixture(db: Database.Database, tenantId: strin
       db.prepare("DELETE FROM followup_threads WHERE tenant_id = ? AND thread_id LIKE 'dazl-test-thread-%'").run(tenantId)
       db.prepare("DELETE FROM outreach_messages WHERE tenant_id = ? AND id LIKE 'dazl-test-om-%'").run(tenantId)
       db.prepare('DELETE FROM leads WHERE id = ?').run(ids.leadId)
+      db.prepare('DELETE FROM leads WHERE scan_job_id = ? AND company = ?').run(ids.jobId, VERIFICATION_FIXTURE_REVIEW_LEAD)
     }
     db.prepare('DELETE FROM scan_source_runs WHERE job_id = ?').run(ids.jobId)
     db.prepare('DELETE FROM scan_jobs WHERE id = ? AND user_id = ?').run(ids.jobId, tenantId)

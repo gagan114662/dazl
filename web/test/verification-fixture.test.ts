@@ -67,11 +67,17 @@ test('fixture populates source metrics and warm paths, is idempotent, cleanup re
   assert.equal(w.first_degree.length, 1)
   assert.equal(w.manual_check.length, 1) // grace; alan has no linkedin URL
 
+  // #148 review-lane row: job_closed present, test-only, not in the visible lead list
+  const rev = d.prepare("SELECT company, review_reason FROM leads WHERE scan_job_id = ? AND review_reason IS NOT NULL").all(a.jobId) as { company: string; review_reason: string }[]
+  assert.deepEqual(rev, [{ company: 'dazl verification fixture closed job (test only)', review_reason: 'job_closed' }])
+  assert.ok(rev[0].company.includes('(test only)'))
+
   // cleanup removes the fixture, leaves the user's own import and unrelated rows
   const del = deleteVerificationFixture(d, TEST_TENANT)
   assert.equal(del.deleted, true)
   assert.equal(sourceMetrics(d, TEST_TENANT).rows.length, 0)
   assert.equal((d.prepare('SELECT COUNT(*) c FROM leads WHERE company = ?').get(VERIFICATION_FIXTURE_LEAD) as { c: number }).c, 0)
+  assert.equal((d.prepare("SELECT COUNT(*) c FROM leads WHERE review_reason = 'job_closed'").get() as { c: number }).c, 0)
   assert.equal(warmPathsForLead(d, TEST_TENANT, a.leadId).imported_connections, 1) // import untouched
   // cleanup removes the synthetic thread rows too
   for (const q of ["SELECT COUNT(*) c FROM inbound_messages WHERE gmail_id LIKE 'dazl-test-in-%'",
