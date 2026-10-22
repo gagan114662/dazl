@@ -224,3 +224,44 @@ test('funding revoked after mirror: run fails closed, queue item fails with the 
   assert.equal(syncPendingScansToQueue(db, q), 0, 'revoked tenant no longer mirrored')
   db.close(); rmSync(dir, { recursive: true, force: true })
 })
+
+test('sync mirror race: PK conflict from a racing process is verified, not thrown; identity mismatch rethrows', async () => {
+  const { db, dir } = fixture()
+  seedJob(db, 'j1', 'alice')
+  // Stub the adapter to replay the exact race: get misses (pre-race state),
+  // enqueue throws the PK error (winner landed), second get sees the winner.
+  let gets = 0
+  const racingQueue = {
+    get(id: string) {
+      gets++
+      if (gets === 1) return undefined // pre-race: not there
+      // post-error re-read: the winner's row, same job identity
+      return { id, tenantId: 'alice', kind: 'scan', status: 'pending' as const, attempts: 0, maxAttempts: 3, notBefore: 0, createdAt: 0, claimedAt: null, leaseExpiresAt: null, claimToken: null, lastError: null }
+    },
+    enqueue() { throw new Error('queue item id already exists: j1') },
+    retire() { throw new Error('must not retire here') },
+  }
+  const n = syncPendingScansToQueue(db, racingQueue as unknown as SqliteQueue)
+  assert.equal(n, 0, 'raced row skipped, not counted, not thrown')
+
+  // Identity mismatch (winner is a DIFFERENT job with the same id): rethrow.
+  gets = 0
+  const foreignQueue = {
+    get(id: string) {
+      gets++
+      if (gets === 1) return undefined
+      return { id, tenantId: 'mallory', kind: 'scan', status: 'pending' as const, attempts: 0, maxAttempts: 3, notBefore: 0, createdAt: 0, claimedAt: null, leaseExpiresAt: null, claimToken: null, lastError: null }
+    },
+    enqueue() { throw new Error('queue item id already exists: j1') },
+    retire() { throw new Error('must not retire here') },
+  }
+  assert.throws(() => syncPendingScansToQueue(db, foreignQueue as unknown as SqliteQueue), /already exists/)
+  // Non-race errors are never swallowed.
+  const brokenQueue = {
+    get() { return undefined },
+    enqueue() { throw new Error('disk I/O error') },
+    retire() { return false },
+  }
+  assert.throws(() => syncPendingScansToQueue(db, brokenQueue as unknown as SqliteQueue), /disk I\/O/)
+  db.close(); rmSync(dir, { recursive: true, force: true })
+})

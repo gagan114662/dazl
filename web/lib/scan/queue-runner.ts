@@ -42,9 +42,20 @@ export function syncPendingScansToQueue(db: Database.Database, q: SqliteQueue, l
   ).all(leaseSeconds) as { id: string; user_id: string }[]
   let n = 0
   for (const r of rows) {
-    const existing = q.get(r.id)
-    if (existing && (existing.status === 'pending' || existing.status === 'claimed')) continue
-    if (existing) {
+    if (mirrorRow(q, r)) n++
+  }
+  return n
+}
+
+// Mirror one domain row. The get->enqueue window can lose a race to another
+// PROCESS mirroring the same caller-supplied id; the PK error is then exact
+// proof the row exists. Catch ONLY that error and re-read to verify the
+// winner is the same job (same tenant+kind) - anything else is rethrown,
+// never blanket-suppressed.
+function mirrorRow(q: SqliteQueue, r: { id: string; user_id: string }): boolean {
+  const existing = q.get(r.id)
+  if (existing && (existing.status === 'pending' || existing.status === 'claimed')) return false
+  if (existing) {
       // Orphan reconcile: the domain row is pending again but the queue item
       // died terminal (e.g. bind refusals spent its attempts while another
       // attempt owned the row). Retire the dead row and re-enqueue a FRESH
@@ -53,11 +64,16 @@ export function syncPendingScansToQueue(db: Database.Database, q: SqliteQueue, l
       // scheduling epoch, domain attempts in scan_jobs keep counting.
       q.retire(r.id)
     }
-    q.enqueue({ id: r.id, tenantId: r.user_id, kind: 'scan' })
-    n++
+    try {
+      q.enqueue({ id: r.id, tenantId: r.user_id, kind: 'scan' })
+    } catch (e) {
+      if (!(e as Error).message.includes('already exists')) throw e
+      const winner = q.get(r.id)
+      if (!winner || winner.tenantId !== r.user_id || winner.kind !== 'scan') throw e
+      return false // another process mirrored it first - that is fine
+    }
+    return true
   }
-  return n
-}
 
 const MAX_CONCURRENT = Number(process.env.SCAN_MAX_CONCURRENT || 3)
 // One threshold source: the queue lease IS the store's stale-running window.
