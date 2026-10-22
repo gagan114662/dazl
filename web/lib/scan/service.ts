@@ -11,11 +11,8 @@ import { migrateOutreach } from '../outreach/store.ts'
 import { migrateAutopilot } from '../outreach/autopilot.ts'
 import { migrateLedger } from '../outreach/ledger.ts'
 import { migrateMonitors } from '../monitors.ts'
-<<<<<<< HEAD
 import { migrateCsv } from './csv-import.ts'
-=======
 import { migrateMemory } from '../memory.ts'
->>>>>>> 36396ab (feat: dazl Memory - seller context in Settings, injected into drafts, follow-ups and scoring (#102))
 import { migrateReplies } from '../outreach/replies.ts'
 import { migrateTrial } from './trial.ts'
 import { migrateCompetitors } from '../signals/competitor-reddit.ts'
@@ -40,11 +37,8 @@ export function getScanDb() {
     migrateCompetitors(db)
     migrateSeo(db)
     migrateMonitors(db)
-<<<<<<< HEAD
     migrateCsv(db)
-=======
     migrateMemory(db)
->>>>>>> 36396ab (feat: dazl Memory - seller context in Settings, injected into drafts, follow-ups and scoring (#102))
     ready = true
   }
   return db
