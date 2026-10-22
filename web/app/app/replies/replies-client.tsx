@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import ThreadMetrics from './thread-metrics'
 
 type Thread = {
   id: string; platform: 'reddit' | 'x'; url: string; title: string; quote: string; query: string
@@ -98,6 +99,7 @@ export default function RepliesClient() {
         <div className="card p-4 mb-6 text-sm text-[#555]">Reply drafts use your own AI key - add one in <a className="underline" href="/app/settings">Settings</a>.</div>
       )}
 
+      <ThreadMetrics />
       <div className="card p-6 mb-8">
         <h2 className="font-semibold mb-1">Searches</h2>
         <p className="text-[#555] text-sm mb-3">Up to 5 short searches for the questions your buyers ask, like &quot;outbound tool&quot; or &quot;cold email software&quot;.</p>
