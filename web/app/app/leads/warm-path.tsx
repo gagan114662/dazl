@@ -72,7 +72,7 @@ export function WarmPath({ leadId }: { leadId: string }) {
   const [mutual, setMutual] = useState<Record<string, string>>({})
   const [note, setNote] = useState('')
 
-  const load = () => fetch(`/api/leads/${leadId}/warm-path`).then(r => r.json()).then(setWarm).catch(() => {})
+  const load = () => fetch(`/api/leads/${leadId}/warm-path`).then(async r => { if (r.ok) setWarm(await r.json()); else setNote('Could not load warm paths.') }).catch(() => setNote('Could not load warm paths.'))
 
   async function add(contactUrl: string) {
     const name = (mutual[contactUrl] ?? '').trim()
