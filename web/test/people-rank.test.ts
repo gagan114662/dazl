@@ -48,3 +48,24 @@ test('contactsFromEnrichments splits name and title on the first dash only', () 
   assert.equal(ranked[1].title, null)
   assert.equal(ranked[1].linkedin, null)
 })
+
+test('single generic word is a weak match, two or more words is strong, zero is none', () => {
+  const ranked = rankPeople([
+    { name: 'Weak', title: 'VP Sales', linkedin: null, connector: 'Apollo' }, // only "sales"
+    { name: 'Strong', title: 'Head of Sales Operations', linkedin: null, connector: 'Apollo' }, // sales + operations
+    { name: 'None', title: 'Staff Software Engineer', linkedin: null, connector: 'Apollo' },
+  ], 'sales operations manager')
+  assert.equal(ranked[0].name, 'Strong')
+  assert.equal(ranked[0].tier, 'strong')
+  assert.equal(ranked[1].name, 'Weak')
+  assert.equal(ranked[1].tier, 'weak')
+  assert.equal(ranked[2].tier, 'none')
+})
+
+test('a title matching only the generic word manager is weak, never strong', () => {
+  const ranked = rankPeople([
+    { name: 'Mgr', title: 'Engineering Manager', linkedin: null, connector: 'Apollo' },
+  ], 'sales operations manager')
+  assert.equal(ranked[0].tier, 'weak')
+  assert.deepEqual(ranked[0].matched, ['manager'])
+})

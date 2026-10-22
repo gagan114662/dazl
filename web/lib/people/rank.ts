@@ -11,9 +11,15 @@ export interface PersonContact {
   connector: string
 }
 
+export type MatchTier = 'strong' | 'weak' | 'none'
+
 export interface RankedPerson extends PersonContact {
   score: number
   matched: string[]
+  // strong: 2+ ICP words matched - a real title signal. weak: exactly 1 word - a single
+  // generic word like "sales" or "manager" is weak evidence and must be labelled as such.
+  // none: no overlap - shown unordered after matches, never hidden, never implied a fit.
+  tier: MatchTier
 }
 
 const STOP = new Set([
@@ -31,9 +37,10 @@ export function rankPeople<T extends PersonContact>(contacts: T[], icpText: stri
   const icp = new Set(words(icpText))
   return contacts
     .map(c => {
-      if (!c.title || icp.size === 0) return { ...c, score: 0, matched: [] }
+      if (!c.title || icp.size === 0) return { ...c, score: 0, matched: [], tier: 'none' as MatchTier }
       const matched = [...new Set(words(c.title).filter(w => icp.has(w)))]
-      return { ...c, score: matched.length, matched }
+      const tier: MatchTier = matched.length >= 2 ? 'strong' : matched.length === 1 ? 'weak' : 'none'
+      return { ...c, score: matched.length, matched, tier }
     })
     .sort((a, b) => b.score - a.score)
 }
