@@ -212,6 +212,14 @@ export class SqliteQueue implements QueueAdapter {
     return n
   }
 
+  // Remove a terminal (done/failed) row so its domain id can be re-enqueued
+  // for a new scheduling epoch. Refuses live rows. Tokens are never reused
+  // (meta table), so a retired row's fencing history stays dead.
+  retire(id: string): boolean {
+    const ch = this.db.prepare(`DELETE FROM work_queue WHERE id=? AND status IN ('done','failed')`).run(id)
+    return ch.changes === 1
+  }
+
   get(id: string): WorkItem | undefined {
     const r = this.db.prepare(`SELECT * FROM work_queue WHERE id=?`).get(id) as Row | undefined
     return r ? toItem(r) : undefined

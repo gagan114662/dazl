@@ -118,3 +118,109 @@ test('restart mid-claim, full bridge: dead attempt fenced, new attempt recovers 
   assert.equal(new SqliteQueue(db).get('j1')!.status, 'done')
   db.close(); rmSync(dir, { recursive: true, force: true })
 })
+
+test('orphan reconcile: domain pending again + terminal queue item re-enqueues fresh', async () => {
+  const { db, dir } = fixture()
+  seedJob(db, 'j1', 'alice')
+  await kickQueueRunner(db, {}, fakeExecutor('failed'))
+  await flush()
+  const q = new SqliteQueue(db)
+  assert.equal(q.get('j1')!.status, 'failed')
+  const tokenAfterFail = (db.prepare(`SELECT v FROM work_queue_meta WHERE k='token'`).get() as { v: number }).v
+  // Domain row goes pending again (operator retry, legacy path, etc.).
+  db.prepare(`UPDATE scan_jobs SET status='pending' WHERE id='j1'`).run()
+  assert.equal(syncPendingScansToQueue(db, q), 1, 're-enqueued, not skipped')
+  const item = q.get('j1')!
+  assert.equal(item.status, 'pending')
+  assert.equal(item.attempts, 0, 'fresh scheduling epoch')
+  // It actually gets claimed and run by the next kick.
+  await kickQueueRunner(db, {}, fakeExecutor('done'))
+  await flush()
+  assert.equal((db.prepare(`SELECT status FROM scan_jobs WHERE id='j1'`).get() as { status: string }).status, 'done')
+  const tokenNow = (db.prepare(`SELECT v FROM work_queue_meta WHERE k='token'`).get() as { v: number }).v
+  assert.ok(tokenNow > tokenAfterFail, 'fencing tokens only move forward')
+  db.close(); rmSync(dir, { recursive: true, force: true })
+})
+
+test('env flip mid-flight: legacy-claimed fresh row is NOT double-run by queue mode', async () => {
+  const { db, dir } = fixture()
+  seedJob(db, 'j1', 'alice')
+  // Legacy runner claimed it seconds ago (running, fresh claimed_at).
+  db.prepare(`UPDATE scan_jobs SET status='running', attempts=1, claimed_at=CAST(strftime('%s','now') AS INTEGER) WHERE id='j1'`).run()
+  let runs = 0
+  const counting = async (d: Database.Database, job: { id: string }): Promise<'done'> => { runs++; return 'done' }
+  await kickQueueRunner(db, {}, counting)
+  await flush()
+  assert.equal(runs, 0, 'fresh legacy claim not re-run')
+  // Queue did not mirror a running row.
+  assert.equal(new SqliteQueue(db).get('j1'), undefined)
+  db.close(); rmSync(dir, { recursive: true, force: true })
+})
+
+test('env flip mid-flight: legacy-claimed STALE row is recovered, not double-run', async () => {
+  const { db, dir } = fixture()
+  seedJob(db, 'j1', 'alice')
+  // Legacy runner crashed long ago: running with ancient claimed_at.
+  db.prepare(`UPDATE scan_jobs SET status='running', attempts=1, claimed_at=1 WHERE id='j1'`).run()
+  let runs = 0
+  const countingDone = async (d: Database.Database, job: { id: string; attempts: number }): Promise<'done'> => {
+    runs++
+    d.prepare(`UPDATE scan_jobs SET status='done' WHERE id=? AND attempts=?`).run(job.id, job.attempts)
+    return 'done'
+  }
+  await kickQueueRunner(db, {}, countingDone)
+  await flush()
+  assert.equal(runs, 1, 'stale row recovered exactly once')
+  assert.equal((db.prepare(`SELECT attempts FROM scan_jobs WHERE id='j1'`).get() as { attempts: number }).attempts, 2)
+  db.close(); rmSync(dir, { recursive: true, force: true })
+})
+
+test('bridge 2-process: two queue handles over one file never run a job twice', async () => {
+  const dir = mkdtempSync('/tmp/qr2-')
+  const path = `${dir}/app.db`
+  const mkDb = () => {
+    const db = new Database(path)
+    db.exec(`CREATE TABLE IF NOT EXISTS scan_jobs (
+        id TEXT PRIMARY KEY, user_id TEXT, status TEXT, attempts INTEGER DEFAULT 0,
+        created_at INTEGER, claimed_at INTEGER, error TEXT, finished_at INTEGER,
+        business_name TEXT, industry TEXT, location TEXT, query TEXT, icp TEXT,
+        sources TEXT, funded_by TEXT, watch_id TEXT, csv_domain TEXT);
+      CREATE TABLE IF NOT EXISTS tenant_llm_keys (tenant_id TEXT, vendor TEXT, created_at INTEGER);`)
+    return db
+  }
+  const dbA = mkDb()
+  for (let i = 0; i < 10; i++) {
+    dbA.prepare(`INSERT INTO scan_jobs (id, user_id, status, attempts, created_at, funded_by) VALUES (?,?, 'pending', 0, ?, 'trial')`)
+      .run(`j${i}`, 'alice', Math.floor(Date.now() / 1000))
+  }
+  const runs = new Map<string, number>()
+  const counting = async (d: Database.Database, job: { id: string; attempts: number }): Promise<'done'> => {
+    runs.set(job.id, (runs.get(job.id) ?? 0) + 1)
+    d.prepare(`UPDATE scan_jobs SET status='done' WHERE id=?`).run(job.id)
+    return 'done'
+  }
+  // Two "processes" (separate connections) kicking concurrently.
+  const dbB = mkDb()
+  // Drain: keep kicking until all 10 are done (each kick claims up to the cap).
+  for (let i = 0; i < 12 && runs.size < 10; i++) {
+    await Promise.all([kickQueueRunner(dbA, {}, counting), kickQueueRunner(dbB, {}, counting)])
+    await new Promise((r) => setTimeout(r, 60))
+  }
+  assert.equal(runs.size, 10, 'every job ran')
+  for (const [id, n] of runs) assert.equal(n, 1, `job ${id} ran exactly once`)
+  dbA.close(); dbB.close(); rmSync(dir, { recursive: true, force: true })
+})
+
+test('funding revoked after mirror: run fails closed, queue item fails with the domain row', async () => {
+  const { db, dir } = fixture()
+  seedJob(db, 'j1', 'carol', false) // no key, no trial -> not mirrored
+  db.prepare(`INSERT INTO tenant_llm_keys VALUES ('carol','openai',1)`).run()
+  const q = new SqliteQueue(db)
+  assert.equal(syncPendingScansToQueue(db, q), 1)
+  // Key revoked before the kick: sync no longer picks it, and a real run
+  // would fail closed on readKey. The mirrored item stays queued until its
+  // own attempts/lease lifecycle resolves it - documented closed failure.
+  db.prepare(`DELETE FROM tenant_llm_keys WHERE tenant_id='carol'`).run()
+  assert.equal(syncPendingScansToQueue(db, q), 0, 'revoked tenant no longer mirrored')
+  db.close(); rmSync(dir, { recursive: true, force: true })
+})

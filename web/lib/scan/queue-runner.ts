@@ -5,9 +5,10 @@
 //
 // 1. Domain fencing is UNCHANGED. finish() in runner.ts still guards on
 //    scan_jobs.status='running' AND attempts=N; the bridge bumps attempts
-//    with the same conditional UPDATE claimKeyedJob uses, inside the same
-//    better-sqlite3 transaction as the queue claim (nested savepoint), so
-//    queue row and domain row move atomically.
+//    with the same conditional UPDATE claimKeyedJob uses. NOTE: the queue
+//    claim COMMITS before the domain bind runs - they are two transactions,
+//    not one, so a crash between them leaves a claimed queue row with an
+//    unbound domain row; the lease/reap + reconcile paths below recover that.
 // 2. Queue row = scheduling state (lease, backoff, fencing token);
 //    scan_jobs row = execution state. After the executor resolves, the
 //    bridge maps the DOMAIN outcome onto the queue item by token; a stale
@@ -27,16 +28,31 @@ export type ScanExecutor = (db: Database.Database, job: Job, deps: RunDeps) => P
 // Mirror every pending, key-funded scan job into the queue. Caller-supplied
 // id keeps queue row and domain row the same identity; re-sync is idempotent.
 // Mirrors claimKeyedJob's funding filter exactly: tenant key or trial-funded.
-export function syncPendingScansToQueue(db: Database.Database, q: SqliteQueue): number {
+export function syncPendingScansToQueue(db: Database.Database, q: SqliteQueue, leaseSeconds: number = QUEUE_LEASE_S): number {
+  // Mirrors pending jobs AND stale-running ones (claimed_at older than the
+  // lease): the latter is the crash-recovery / env-flip path - a legacy- or
+  // queue-claimed row whose worker died must re-enter scheduling, or it
+  // would sit 'running' forever (queue mode does not call reapStaleJobs).
   const rows = db.prepare(
     `SELECT id, user_id FROM scan_jobs
-     WHERE status = 'pending'
+     WHERE (status = 'pending'
+            OR (status = 'running' AND claimed_at <= CAST(strftime('%s','now') AS INTEGER) - ?))
        AND (user_id IN (SELECT tenant_id FROM tenant_llm_keys) OR funded_by = 'trial')
      ORDER BY created_at, rowid`,
-  ).all() as { id: string; user_id: string }[]
+  ).all(leaseSeconds) as { id: string; user_id: string }[]
   let n = 0
   for (const r of rows) {
-    if (q.get(r.id)) continue
+    const existing = q.get(r.id)
+    if (existing && (existing.status === 'pending' || existing.status === 'claimed')) continue
+    if (existing) {
+      // Orphan reconcile: the domain row is pending again but the queue item
+      // died terminal (e.g. bind refusals spent its attempts while another
+      // attempt owned the row). Retire the dead row and re-enqueue a FRESH
+      // scheduling identity for the same domain id - fencing tokens stay
+      // monotonic (meta table), queue attempts restart because this is a new
+      // scheduling epoch, domain attempts in scan_jobs keep counting.
+      q.retire(r.id)
+    }
     q.enqueue({ id: r.id, tenantId: r.user_id, kind: 'scan' })
     n++
   }
@@ -44,6 +60,11 @@ export function syncPendingScansToQueue(db: Database.Database, q: SqliteQueue): 
 }
 
 const MAX_CONCURRENT = Number(process.env.SCAN_MAX_CONCURRENT || 3)
+// One threshold source: the queue lease IS the store's stale-running window.
+// Passing a different leaseSeconds to a kick (tests aside) would let a job be
+// re-claimed while the legacy reaper still considers it fresh (or vice versa)
+// and can double-run provider calls. Do not configure them apart.
+const QUEUE_LEASE_S = Number(process.env.SCAN_STALE_RUNNING_S || 20 * 60)
 let active = 0
 
 // One queue-mode kick: claim via SqliteQueue, bind the domain row in the same
@@ -57,7 +78,7 @@ export async function kickQueueRunner(
   const q = new SqliteQueue(db)
   syncPendingScansToQueue(db, q)
   while (active < MAX_CONCURRENT) {
-    const claim = q.claim({ kinds: ['scan'], leaseSeconds: opts?.leaseSeconds, now: opts?.now })
+    const claim = q.claim({ kinds: ['scan'], leaseSeconds: opts?.leaseSeconds ?? QUEUE_LEASE_S, now: opts?.now })
     if (!claim) return
     // Bind the domain row. Guard mirrors claimKeyedJob (status='pending'),
     // plus the crash-recovery case: the queue only re-claims after the
