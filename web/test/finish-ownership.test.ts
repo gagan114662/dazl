@@ -33,10 +33,18 @@ test('owned attempt: leads land and post-finish side effects run (crawl attempte
   createJob(db, 'A', input)
   const job = claimKeyedJob(db)!
   let crawls = 0
-  const out = await runJob(db, job, { providers, master, fetchPage: page, crawlGet: async () => { crawls++; throw new Error('no net in test') } })
-  assert.equal(out, 'done')
-  assert.equal(listLeads(db, 'A', job.id).length, 1)
-  assert.ok(crawls > 0, 'owned run reaches the crawl side effect')
+  // The suite disables crawling globally; enable it for this test only.
+  const saved = process.env.SITECRAWL_ENABLED
+  process.env.SITECRAWL_ENABLED = '1'
+  try {
+    const out = await runJob(db, job, { providers, master, fetchPage: page, crawlGet: async () => { crawls++; throw new Error('no net in test') } })
+    assert.equal(out, 'done')
+    assert.equal(listLeads(db, 'A', job.id).length, 1)
+    assert.ok(crawls > 0, 'owned run reaches the crawl side effect')
+  } finally {
+    if (saved === undefined) delete process.env.SITECRAWL_ENABLED
+    else process.env.SITECRAWL_ENABLED = saved
+  }
 })
 
 test('stale attempt: finish no-ops AND zero post-finish side effects fire', async () => {
@@ -48,10 +56,17 @@ test('stale attempt: finish no-ops AND zero post-finish side effects fire', asyn
   const fresh = claimKeyedJob(db)!
   assert.equal(fresh.attempts, 2)
   let crawls = 0
-  const out = await runJob(db, stale, { providers, master, fetchPage: page, crawlGet: async () => { crawls++; throw new Error('no net in test') } })
-  assert.equal(out, 'done', 'stale run still reports done; the queue bridge token rejects the mapping')
-  assert.equal(listLeads(db, 'A', id).length, 0, 'stale finish wrote no leads')
-  assert.equal(crawls, 0, 'stale run never reaches crawl/enrich/autopilot side effects')
+  const saved = process.env.SITECRAWL_ENABLED
+  process.env.SITECRAWL_ENABLED = '1'
+  try {
+    const out = await runJob(db, stale, { providers, master, fetchPage: page, crawlGet: async () => { crawls++; throw new Error('no net in test') } })
+    assert.equal(out, 'done', 'stale run still reports done; the queue bridge token rejects the mapping')
+    assert.equal(listLeads(db, 'A', id).length, 0, 'stale finish wrote no leads')
+    assert.equal(crawls, 0, 'stale run never reaches crawl/enrich/autopilot side effects')
+  } finally {
+    if (saved === undefined) delete process.env.SITECRAWL_ENABLED
+    else process.env.SITECRAWL_ENABLED = saved
+  }
   // The fresh attempt is untouched: still running, owns the row.
   const row = db.prepare('SELECT status, attempts FROM scan_jobs WHERE id = ?').get(id) as { status: string; attempts: number }
   assert.deepEqual(row, { status: 'running', attempts: 2 })
