@@ -6,6 +6,7 @@
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { scanQuota } from '../plans.ts'
+import { getPublicSuffix } from 'tldts'
 
 export const MAX_DOMAINS = 50
 
@@ -51,6 +52,10 @@ export function normalizeDomain(raw: string): { domain: string } | { reason: str
   if (IPV4_RE.test(s) || s.includes(':')) return { reason: 'ip addresses are not allowed' }
   if (!HOST_RE.test(s)) return { reason: 'not a valid hostname' }
   if (INTERNAL_TLDS.has(s.split('.').pop()!)) return { reason: 'internal hosts are not allowed' }
+  // A bare public suffix (co.uk, uk.com, com, github.io) is not a company. Imported as a
+  // known domain it would also mis-scope every subordinate host as first-party evidence,
+  // so reject it here against the bundled Public Suffix List (offline, no runtime fetch).
+  if (getPublicSuffix(s, { allowPrivateDomains: true }) === s) return { reason: 'a public suffix is not a company domain' }
   return { domain: s }
 }
 
