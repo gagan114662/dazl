@@ -26,8 +26,11 @@ test('template uses only this tenant saved positioning, literally and without pr
     const id = createDraft(db, 'A', 'one', 'dazl')
     assert.match(body(db,id), /About dazl: Find leads from public signals, with source links and quotes\./)
     assert.doesNotMatch(body(db,id), /Unrelated tenant|consulting/)
-    assert.match(body(db,id), /I came across Buyer while researching businesses/)
+    assert.match(body(db,id), /contact address published on Buyer's page/)
     assert.match(body(db,id), /https:\/\/buyer.invalid\/careers/)
+    assert.doesNotMatch(body(db,id), /\(https?:/, 'source URL is on its own line, not parenthesised')
+    assert.match(body(db,id), /could you point me to the right one\?/)
+    assert.doesNotMatch(body(db,id), /researching businesses|pain|struggl|noticed|congrat/i, 'no stock research claim and no invented need')
     const row = db.prepare('SELECT status,approved_hash,sent_at FROM outreach_messages WHERE id=?').get(id) as {status:string;approved_hash:null;sent_at:null}
     assert.deepEqual(row, {status:'draft',approved_hash:null,sent_at:null})
     // Edits apply only to new drafts. Already prepared words never change silently.
@@ -82,4 +85,13 @@ test('blank seller name fails with no draft; no anonymous fallback',()=>{
   assert.throws(()=>createDraft(db,'A','one',name),/seller_context_required/)
   assert.equal((db.prepare('SELECT count(*) n FROM outreach_messages').get() as {n:number}).n,0)
  }
+})
+
+test('send preview footer is exactly what composeBody appends, and absent when sender identity is missing', async () => {
+  const { sendFooter, composeBody } = await import('../lib/outreach/service.ts')
+  const s = { sender_name: 'Sam Seller', postal_address: '1 Main St, Toronto ON M5V 1A1' }
+  const f = sendFooter('Hello body.\n', s)!
+  assert.match(f, /^--\nSam Seller\n1 Main St, Toronto ON M5V 1A1\n\nIf you would rather not get emails like this, unsubscribe here: \[your unsubscribe link/)
+  assert.equal(composeBody('Hello body.\n', s, 'URL').startsWith('Hello body.\n\n--\nSam Seller\n1 Main St'), true)
+  assert.equal(sendFooter('x', undefined), null)
 })

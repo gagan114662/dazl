@@ -104,7 +104,7 @@ test('template truth: the default draft is neutral and never interpolates the si
   const id = createDraft(db, 'A', 'l1', 'Dazl')
   const row = db.prepare('SELECT subject, body FROM outreach_messages WHERE id = ?').get(id) as { subject: string; body: string }
   assert.equal(row.subject, 'Quick question for Acme')
-  assert.match(row.body, /I came across Acme while researching businesses that might fit our work\./)
+  assert.match(row.body, /contact address published on Acme's page/)
   assert.doesNotMatch(row.body, /hiring AEs|I saw this reported/)
   assert.doesNotMatch(row.body, /congratulat/i)
 })

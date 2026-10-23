@@ -5,7 +5,7 @@ import type { OutreachProvenance } from '@/lib/outreach/provenance'
 import SequencesClient from './sequences-client'
 import SendReadiness from './send-readiness'
 
-interface Msg { currentness_held?: boolean; provenance?: OutreachProvenance | null; id: string; to_email: string; subject: string; body: string; status: string; error: string | null; sent_at: number | null; test?: number; evidence_state?: 'machine' | 'human' | 'unverified' }
+interface Msg { send_footer?: string | null; currentness_held?: boolean; provenance?: OutreachProvenance | null; id: string; to_email: string; subject: string; body: string; status: string; error: string | null; sent_at: number | null; test?: number; evidence_state?: 'machine' | 'human' | 'unverified' }
 
 const ERR: Record<string, string> = {
   not_sales_contact: 'The published address is for recruitment, support, privacy or another restricted purpose. Saved words remain unchanged; approval and sending are blocked.',
@@ -28,10 +28,10 @@ export default function OutreachClient() {
   const [sequenceMessages,setSequenceMessages] = useState<string[]>([])
   const [creating,setCreating] = useState(false)
   const [note, setNote] = useState('')
+  const [loaded, setLoaded] = useState(false)
 
   async function load() {
-    const r = await fetch('/api/outreach')
-    if (r.ok) setMsgs((await r.json()).messages)
+    try { const r = await fetch('/api/outreach'); if (r.ok) setMsgs((await r.json()).messages) } catch { setNote('Could not load your emails. Refresh to retry.') } finally { setLoaded(true) }
     const seq=await fetch('/api/outreach/sequences')
     if(seq.ok) setSequenceMessages((await seq.json()).sequences.map((s:{message_id:string})=>s.message_id))
   }
@@ -72,7 +72,8 @@ export default function OutreachClient() {
       <p className="text-[#555] text-sm mb-6">Review each email, approve it, then send. Manual emails send only after your click. If you turn on autopilot, it can send first emails on its own after you approve the first sends (its consent text is in Settings). A sequence sends its later steps only after you approve all three steps together. Every email gets your name, mailing address and an unsubscribe link added automatically.</p>
       <SendReadiness />
       {note && <p className="text-sm text-yellow-400 mb-4">{note}</p>}
-      {msgs.length === 0 && <p className="text-[#666] text-sm">No emails yet. Open Leads and choose Draft email on a lead with a published address.</p>}
+      {!loaded && <p className="text-[#666] text-sm" role="status">Loading your emails...</p>}
+      {loaded && msgs.length === 0 && <p className="text-[#666] text-sm">No emails yet. Open Leads and choose Draft email on a lead with a published address.</p>}
       <div className="flex flex-col gap-3">
         {msgs.map(m => {
           const e = edit[m.id]
@@ -93,6 +94,7 @@ export default function OutreachClient() {
                 <>
                   <div className="font-medium mb-1">{m.subject}</div>
                   <pre className="whitespace-pre-wrap text-[#333] font-sans mb-3">{m.body}</pre>
+                  {(m.status === 'draft' || m.status === 'approved') && (m.send_footer ? <pre className="whitespace-pre-wrap text-[#777] font-sans text-xs mb-3" aria-label="Added automatically when sent">{m.send_footer}</pre> : <p className="text-xs text-[#777] mb-3">Sending needs your name and mailing address - add them in Settings. They are appended automatically.</p>)}
                   <div className="flex gap-2 flex-wrap">
                     {(m.status === 'draft' || m.status === 'approved') && <button className={btn} onClick={() => setEdit({ ...edit, [m.id]: { subject: m.subject, body: m.body } })}>Edit</button>}
                     {!m.currentness_held && m.evidence_state !== 'unverified' && m.status === 'draft' && !sequenceMessages.includes(m.id) && <button className={btn} onClick={() => act(m.id, 'approve')}>Approve</button>}

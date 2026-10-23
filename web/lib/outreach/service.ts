@@ -144,11 +144,13 @@ export function draftTemplate(lead: Lead, businessName: string, positioning = ''
   const name=businessName.replace(/[\u0000-\u001f\u007f]/g,' ').replace(/\s+/g,' ').trim().slice(0,150)
   if(!name)throw new OutreachError('seller_context_required')
   if(!offer)throw new OutreachError('seller_offer_required')
-  const seller = `About ${name}: ${offer}\n\nWould it be useful to discuss whether this fits your team's work?`
+  const seller = `About ${name}: ${offer}`
   const who = lead.name ? lead.name.split(' ')[0] : 'there'
+  // Only facts the user already holds: the seller's own offer and the page the address came from.
+  // No guessed pain, no claimed buying need, no personal detail the page did not publish.
   return {
     subject: `Quick question for ${lead.company || lead.name}`.slice(0, 150),
-    body: `Hi ${who},\n\nI came across ${lead.company || 'your company'} while researching businesses that might fit our work.\n(${lead.source_url})\n\n${seller}\n\nThanks,`,
+    body: `Hi ${who},\n\nI'm writing to the contact address published on ${lead.company || 'your company'}'s page:\n${lead.source_url}\n\n${seller}\n\nWould a short conversation about whether this fits your team's work be useful? If I have the wrong person, could you point me to the right one?\n\nThanks,`,
   }
 }
 
@@ -219,7 +221,8 @@ export function listMessages(db: Database.Database, tenantId: string, d: Deps = 
   const rows = db.prepare('SELECT id, lead_id, to_email, subject, body, status, error, created_at, sent_at, test FROM outreach_messages WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 200').all(tenantId) as { id: string; lead_id: string; to_email: string; subject: string; body: string; status: string; error: string | null; created_at: number; sent_at: number | null; test: number }[]
   // The draft list carries the evidence basis so the approval UI can label a human
   // confirmation (never presented as dazl's verification) or a withdrawn one.
-  return rows.map(r => ({ ...r, evidence_state: leadEvidenceState(db, tenantId, r.lead_id), currentness_held: !testFixtureSend(db,tenantId,r) && currentnessHeld(db,tenantId,r.lead_id), provenance: messageProvenance(db,tenantId,r.lead_id,r.to_email) }))
+  const sender = getSettings(db, tenantId)
+  return rows.map(r => ({ ...r, send_footer: sendFooter(r.body, sender), evidence_state: leadEvidenceState(db, tenantId, r.lead_id), currentness_held: !testFixtureSend(db,tenantId,r) && currentnessHeld(db,tenantId,r.lead_id), provenance: messageProvenance(db,tenantId,r.lead_id,r.to_email) }))
 }
 
 const cleanLine = (s: string) => s.replace(/[\r\n\u0000]+/g, ' ').trim()
@@ -282,6 +285,13 @@ export function resolveUncertain(db: Database.Database, tenantId: string, id: st
 
 export function composeBody(body: string, s: Settings, unsubUrl: string): string {
   return `${body.trim()}\n\n--\n${s.sender_name}\n${s.postal_address}\n\nIf you would rather not get emails like this, unsubscribe here: ${unsubUrl}\n`
+}
+
+// What the send path appends after the saved words (same composeBody): name, mailing address, unsubscribe line.
+// The per-message link is minted at send, so the preview names it instead of showing a fake URL.
+export function sendFooter(body: string, s: Settings | undefined): string | null {
+  if (!s) return null
+  return composeBody(body, s, '[your unsubscribe link, added when sent]').slice(body.trim().length).trim()
 }
 
 export function sentLast24h(db: Database.Database, tenantId: string, d: Deps = {}): number {
