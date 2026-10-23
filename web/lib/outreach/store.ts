@@ -78,5 +78,14 @@ export function migrateOutreach(db: Database.Database): void {
   addCol('outreach_messages', 'thread_id', 'TEXT')
   addCol('outreach_messages', 'test', 'INTEGER NOT NULL DEFAULT 0') // 1 = addressed to a tenant-allowlisted test inbox
   addCol('outreach_settings', 'booking_url', 'TEXT')
+  // Idempotent upgrades for usage tables created before these columns existed.
+  // Column presence is checked against the live schema; a genuinely failing
+  // ALTER throws here at startup instead of being hidden by a broad catch.
+  {
+    const have = new Set((db.prepare('PRAGMA table_info(outreach_llm_usage)').all() as { name: string }[]).map(c => c.name))
+    if (!have.has('requested_model')) db.exec('ALTER TABLE outreach_llm_usage ADD COLUMN requested_model TEXT')
+    if (!have.has('cache_read_input_tokens')) db.exec('ALTER TABLE outreach_llm_usage ADD COLUMN cache_read_input_tokens INTEGER')
+    if (!have.has('cache_creation_input_tokens')) db.exec('ALTER TABLE outreach_llm_usage ADD COLUMN cache_creation_input_tokens INTEGER')
+  }
   migrateAttribution(db)
 }

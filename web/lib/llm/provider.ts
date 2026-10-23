@@ -20,8 +20,9 @@ export class ProviderError extends Error {
 export interface CompletionUsage { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
 // What a paid completion cost in provider terms. No secrets, no prompt or response
 // content - just the accounting fields a tenant needs to see what a call used.
-// model is the SERVED model from the response (falling back to the requested one).
-export interface DetailedCompletion { text: string; model: string; request_id?: string; usage?: CompletionUsage }
+// model is the SERVED model from the response, or null when the response omits it -
+// never the requested model mislabeled as what was actually served.
+export interface DetailedCompletion { text: string; model: string | null; request_id?: string; usage?: CompletionUsage }
 
 // Only fields the provider actually reported are present - missing stays absent,
 // never a fabricated zero.
@@ -104,7 +105,7 @@ export const anthropicProvider: Provider = {
     const num = (v: unknown) => (typeof v === 'number' ? v : undefined)
     return {
       text: arr(json.content).map(b => (b.type === 'text' && typeof b.text === 'string' ? b.text : '')).join(''),
-      model: typeof json.model === 'string' ? json.model : requested,
+      model: typeof json.model === 'string' ? json.model : null,
       request_id: typeof json.id === 'string' ? json.id : undefined,
       usage: usageOf({ input_tokens: num(u.input_tokens), output_tokens: num(u.output_tokens), cache_read_input_tokens: num(u.cache_read_input_tokens), cache_creation_input_tokens: num(u.cache_creation_input_tokens) }),
     }
@@ -148,7 +149,7 @@ export const openaiProvider: Provider = {
     const num = (v: unknown) => (typeof v === 'number' ? v : undefined)
     return {
       text,
-      model: typeof json.model === 'string' ? json.model : requested,
+      model: typeof json.model === 'string' ? json.model : null,
       request_id: typeof json.id === 'string' ? json.id : undefined,
       usage: usageOf({ input_tokens: num(u.input_tokens), output_tokens: num(u.output_tokens), cache_read_input_tokens: num(det.cached_tokens) }),
     }

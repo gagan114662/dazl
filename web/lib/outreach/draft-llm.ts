@@ -11,7 +11,7 @@ import { getMemory, memoryPromptBlock, type Memory } from '../memory.ts'
 
 export interface LlmDeps { fetchImpl?: typeof fetch; master?: Buffer; providers?: Record<string, Provider> }
 
-export interface PolishUsage { model: string; input_tokens?: number; output_tokens?: number }
+export interface PolishUsage { model: string | null; input_tokens?: number; output_tokens?: number }
 export type PolishResult =
   | { rewritten: true; vendor: Vendor; usage?: PolishUsage }
   | { rewritten: false; reason: 'no_key' | 'no_profile' | 'unusable' | 'blocked_claim' | 'error'; usage?: PolishUsage }
