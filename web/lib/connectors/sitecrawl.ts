@@ -31,7 +31,10 @@ export type Get = (url: string) => Promise<{ status: number; body: string; final
 // timeoutMs/lookup are injectable for tests only; production callers use the
 // defaults. Lookup defaults to the SSRF-guarded resolver (private IPs refused).
 export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup, signal?: AbortSignal): Promise<{ status: number; body: string; finalUrl: string } | null> {
-  return new Promise(resolve => {
+  return new Promise(resolveRaw => {
+    // Absolute per-request timer (the socket timeout below is inactivity-only: a slow drip never trips it).
+    let hard: NodeJS.Timeout | undefined
+    const resolve = (v: { status: number; body: string; finalUrl: string } | null | Promise<{ status: number; body: string; finalUrl: string } | null>) => { clearTimeout(hard); resolveRaw(v as never) }
     let u: URL
     try { u = new URL(rawUrl) } catch { return resolve(null) }
     if (u.protocol !== 'https:' || u.username || u.password || hops > 2) return resolve(null)
@@ -49,7 +52,9 @@ export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup:
       res.on('data', (c: Buffer) => { n += c.length; if (n > MAX_BYTES) { res.destroy(); resolve({ status, body: Buffer.concat(chunks).toString('utf8'), finalUrl: u.toString() }) } else chunks.push(c) })
       res.on('end', () => resolve({ status, body: Buffer.concat(chunks).toString('utf8'), finalUrl: u.toString() }))
       res.on('error', () => resolve(null))
+      res.on('close', () => resolve(null)) // no-op once already settled
     })
+    hard = setTimeout(() => { req.destroy(new Error('timeout')); resolve(null) }, timeoutMs)
     // Destroy WITH an error: relying on plain destroy() to surface an 'error'
     // event is observed Node behavior, not a documented guarantee - a silent
     // destroy would leave this promise pending forever, and the caller's

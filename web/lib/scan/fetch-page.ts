@@ -44,11 +44,17 @@ const MAX_BYTES = 1_500_000
 const MAX_REDIRECTS = 3
 const TIMEOUT_MS = Number(process.env.SCAN_PAGE_TIMEOUT_MS || 10_000)
 
-function once(url: URL): Promise<{ status: number; location?: string; type: string; body: string }> {
-  return new Promise((resolve, reject) => {
+// timeoutMs/lookup are injectable for tests only. The socket 'timeout' below is INACTIVITY-based, so a
+// slow-drip server that sends a byte every few seconds never trips it: the absolute timer is what bounds
+// the whole request (headers + body) and always settles the promise.
+export function once(url: URL, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup): Promise<{ status: number; location?: string; type: string; body: string }> {
+  return new Promise((resolveRaw, rejectRaw) => {
+    let hard: NodeJS.Timeout | undefined
+    const resolve = (v: { status: number; location?: string; type: string; body: string }) => { clearTimeout(hard); resolveRaw(v) }
+    const reject = (e: unknown) => { clearTimeout(hard); rejectRaw(e) }
     const req = https.request(
       url,
-      { method: 'GET', lookup: guardedLookup as never, timeout: TIMEOUT_MS, headers: { 'user-agent': 'dazl-evidence-check/1.0', accept: 'text/html,text/plain;q=0.9', 'accept-encoding': 'identity' } },
+      { method: 'GET', lookup: lookup as never, timeout: timeoutMs, headers: { 'user-agent': 'dazl-evidence-check/1.0', accept: 'text/html,text/plain;q=0.9', 'accept-encoding': 'identity' } },
       res => {
         const status = res.statusCode ?? 0
         const type = String(res.headers['content-type'] ?? '')
@@ -68,9 +74,11 @@ function once(url: URL): Promise<{ status: number; location?: string; type: stri
         })
         res.on('end', () => resolve({ status, type, body: Buffer.concat(chunks).toString('utf8') }))
         res.on('error', reject)
+        res.on('close', () => reject(new Error('aborted'))) // no-op once already settled
       },
     )
     req.on('timeout', () => req.destroy(new Error('timeout')))
+    hard = setTimeout(() => { req.destroy(new Error('timeout')); reject(new Error('timeout')) }, timeoutMs)
     req.on('error', reject)
     req.end()
   })

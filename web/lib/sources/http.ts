@@ -6,14 +6,17 @@ import type { HttpResult, SafeGet } from './types.ts'
 const MAX_BYTES = 1_000_000
 const TIMEOUT_MS = Number(process.env.SOURCES_TIMEOUT_MS || 10_000)
 
-export const safeGet: SafeGet = (rawUrl, opts = {}) =>
-  new Promise<HttpResult | null>(resolve => {
+// timeoutMs/lookup injectable for tests. Absolute timer: the socket timeout is inactivity-only.
+export const makeSafeGet = (timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup, testAnyPort = false): SafeGet => (rawUrl, opts = {}) =>
+  new Promise<HttpResult | null>(resolveRaw => {
+    let hard: NodeJS.Timeout | undefined
+    const resolve = (v: HttpResult | null) => { clearTimeout(hard); resolveRaw(v) }
     let url: URL
     try { url = new URL(rawUrl) } catch { return resolve(null) }
-    if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')) return resolve(null)
+    if (url.protocol !== 'https:' || url.username || url.password || (!testAnyPort && url.port && url.port !== '443')) return resolve(null)
     const req = https.request(
       url,
-      { method: 'GET', lookup: guardedLookup as never, timeout: TIMEOUT_MS, headers: { 'user-agent': 'dazl-sources/1.0 (+https://dazl.ai)', accept: opts.accept ?? '*/*', 'accept-encoding': 'identity', ...opts.headers } },
+      { method: 'GET', lookup: lookup as never, timeout: timeoutMs, headers: { 'user-agent': 'dazl-sources/1.0 (+https://dazl.ai)', accept: opts.accept ?? '*/*', 'accept-encoding': 'identity', ...opts.headers } },
       res => {
         const status = res.statusCode ?? 0
         if (status >= 300 && status < 400) { res.resume(); return resolve({ status, body: '' }) }
@@ -25,9 +28,13 @@ export const safeGet: SafeGet = (rawUrl, opts = {}) =>
         })
         res.on('end', () => resolve({ status, body: Buffer.concat(chunks).toString('utf8') }))
         res.on('error', () => resolve(null))
+        res.on('close', () => resolve(null)) // no-op once already settled
       },
     )
+    hard = setTimeout(() => { req.destroy(new Error('timeout')); resolve(null) }, timeoutMs)
     req.on('timeout', () => req.destroy(new Error('timeout')))
     req.on('error', () => resolve(null))
     req.end()
   })
+
+export const safeGet: SafeGet = makeSafeGet()
