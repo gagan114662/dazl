@@ -184,6 +184,16 @@ export function createDraft(db: Database.Database, tenantId: string, leadId: str
   // fabricated, and another tenant's context is never used.
   let positioning = ''
   if (tableExists(db, 'tenant_memory')) positioning = getMemory(db, tenantId)?.positioning ?? ''
+  // First-login onboarding is already stored in this same auth/scan database.
+  // Users should not need to discover a second Memory form to explain their offer.
+  // Website alone is not an offer and is never expanded into guessed claims.
+  if (!positioning.trim() && tableExists(db, 'users')) {
+    const columns = db.prepare('PRAGMA table_info(users)').all() as { name: string }[]
+    if (columns.some(c => c.name === 'sells')) {
+      const profile = db.prepare('SELECT sells FROM users WHERE id = ?').get(tenantId) as { sells: string | null } | undefined
+      positioning = profile?.sells ?? ''
+    }
+  }
   const t = draftTemplate(lead, businessName, positioning)
   const id = id24()
   try {

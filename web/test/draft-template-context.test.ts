@@ -46,3 +46,18 @@ test('missing, empty and older no-memory databases retain conservative template 
     } finally { db.close() }
   }
 })
+
+
+test('saved onboarding offer is fallback, never another user or website inference; Memory wins', () => {
+  const db=setup()
+  try {
+    db.exec('CREATE TABLE users(id TEXT PRIMARY KEY,sells TEXT,website TEXT)')
+    db.prepare('INSERT INTO users VALUES(?,?,?)').run('A','Public-source lead finding software.','https://seller.invalid')
+    db.prepare('INSERT INTO users VALUES(?,?,?)').run('B','Other user consulting.','https://other.invalid')
+    assert.match(body(db,createDraft(db,'A','one','dazl')), /About dazl: Public-source lead finding software/)
+    saveMemory(db,'A',{positioning:'Explicit Memory positioning.'})
+    const text=body(db,createDraft(db,'A','two','dazl'))
+    assert.match(text,/Explicit Memory positioning/)
+    assert.doesNotMatch(text,/Other user consulting|seller.invalid/)
+  } finally { db.close() }
+})
