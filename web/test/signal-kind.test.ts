@@ -46,12 +46,19 @@ test('migration backfills kinds for pre-existing rows and leaves unknowns NULL',
   assert.equal(l2.signal_kind, null)
 })
 
-test('fixture company rows backfill to source_kind test', () => {
+test('fixture company rows backfill to source_kind test by job-level fixture provenance, never by name', () => {
   const db = new Database(':memory:')
   migrateScan(db)
-  const job = createJob(db, 'u1', { business_name: 'b', industry: 'i', location: 'l' })
+  // The real fixture inserter (lib/outreach/test-fixture.ts) writes its job with
+  // industry/location 'test only'; the backfill keys on that job-level marker.
+  const job = createJob(db, 'u1', { business_name: 'dazl sequence test fixture (test only)', industry: 'test only', location: 'test only' })
   db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
   db.prepare("INSERT INTO leads (id, scan_job_id, company, signal, source_url) VALUES ('f1', ?, 'dazl sequence test fixture (test only)', 's', 'https://e.com')").run(job)
+  // The identical company name on a NORMAL job is a genuine row and stays real.
+  const normal = createJob(db, 'u1', { business_name: 'b', industry: 'i', location: 'l' })
+  db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(normal)
+  db.prepare("INSERT INTO leads (id, scan_job_id, company, signal, source_url) VALUES ('f2', ?, 'dazl sequence test fixture (test only)', 's', 'https://e.com')").run(normal)
   migrateScan(db)
   assert.equal((db.prepare('SELECT source_kind FROM leads WHERE id = ?').get('f1') as { source_kind: string }).source_kind, 'test')
+  assert.notEqual((db.prepare('SELECT source_kind FROM leads WHERE id = ?').get('f2') as { source_kind: string | null }).source_kind, 'test')
 })

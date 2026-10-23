@@ -112,3 +112,49 @@ test('LLM keys are invisible and unreadable across tenants', () => {
   assert.equal(getKey(db, B, 'anthropic', master), null)
   assert.equal(getKey(db, A, 'anthropic', master), 'sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
 })
+
+test('export defaults to real rows, fixture rows require the explicit opt-in, and nothing is deleted', () => {
+  const db = setup()
+  jobWithLead(db)
+  // A genuine business whose name happens to contain the fixture marker text: a
+  // normal job (real industry/location), so its rows are real and must survive.
+  const legitJob = createJob(db, A, { business_name: 'Legit (test only) Co', industry: 'saas', location: 'Toronto' })
+  db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(legitJob)
+  db.prepare(
+    "INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, confidence, fit, intent) VALUES (?, ?, 'Pat', 'Legit (test only) Co', null, 'Hiring AEs', 'https://news.com/legit', 80, 4, 4)",
+  ).run('eeeeeeeeeeeeeeeeeeeeeeee', legitJob)
+  db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(legitJob)
+  // A fixture job, using the fixture inserters' own job-level marker
+  // (industry/location 'test only'); new fixture rows carry source_kind 'test'.
+  const fixtureJob = createJob(db, A, { business_name: 'dazl verification fixture (test only)', industry: 'test only', location: 'test only' })
+  db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(fixtureJob)
+  db.prepare(
+    "INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, confidence, fit, intent, source_kind) VALUES (?, ?, 'Fixture A (test only)', 'dazl fixture', null, 'dazl found and verified nothing (test only)', 'https://example.invalid/fixture', 0, 4, 4, 'test')",
+  ).run('dddddddddddddddddddddddd', fixtureJob)
+  // An OLD fixture row, inserted before source_kind existed: untagged, and only
+  // the migration's job-level provenance backfill can classify it.
+  db.prepare(
+    "INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, confidence, fit, intent) VALUES (?, ?, 'Fixture B (test only)', 'dazl fixture old', null, 'old fixture row', 'https://example.invalid/old', 0, 4, 4)",
+  ).run('ffffffffffffffffffffffff', fixtureJob)
+  db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(fixtureJob)
+  migrateScan(db) // idempotent re-run: the backfill classifies the old row
+
+  const all = () => (db.prepare('SELECT count(*) AS n FROM leads').get() as { n: number }).n
+  assert.equal(all(), 4, 'every row exists')
+  assert.equal((db.prepare("SELECT source_kind FROM leads WHERE id = 'ffffffffffffffffffffffff'").get() as { source_kind: string }).source_kind, 'test', 'backfill marks the old fixture row by job provenance')
+
+  const real = exportLeads(db, A) as { company: string }[]
+  assert.deepEqual(real.map(r => r.company).sort(), ['Acme', 'Legit (test only) Co'], 'default export is real rows only - a genuine name containing the marker text is preserved')
+
+  const withFixtures = exportLeads(db, A, undefined, 5000, true) as { company: string }[]
+  assert.equal(withFixtures.length, 4, 'explicit opt-in includes the fixture rows')
+  assert.ok(withFixtures.some(r => r.company === 'dazl fixture'))
+  assert.ok(withFixtures.some(r => r.company === 'dazl fixture old'))
+
+  const fixtureOnly = exportLeads(db, A, fixtureJob) as { company: string }[]
+  assert.equal(fixtureOnly.length, 0, 'a fixture job id alone still defaults to real-only')
+  assert.equal((exportLeads(db, A, fixtureJob, 5000, true) as { company: string }[]).length, 2, 'opt-in works per job too')
+
+  assert.equal(all(), 4, 'every row is preserved - filtering is export-only, never deletion')
+  db.close()
+})
