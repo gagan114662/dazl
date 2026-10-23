@@ -27,7 +27,7 @@ import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-pa
 import { sourceCap } from './source-quality.ts'
 import { SourceRunLedger } from './source-runs.ts'
 
-export interface Job { id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string; seller?: string | null; watch_id?: string | null; csv_domain?: string | null }
+export interface Job { id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string; seller?: string | null; watch_id?: string | null; csv_domain?: string | null; run_budget?: string | null }
 export interface LeadDraft extends Candidate {}
 // The producing channel, known from the job row at write time. Monitor runs reuse query
 // jobs, so monitors stamp their kind when the run is recorded (see monitors.ts).
@@ -306,7 +306,7 @@ export function claimKeyedJob(db: Database.Database, jobId?: string, excludeTena
   return db.transaction(() => {
     const row = db
       .prepare(
-        `SELECT id, user_id, business_name, industry, location, attempts, query, icp, sources, funded_by, watch_id, csv_domain FROM scan_jobs
+        `SELECT id, user_id, business_name, industry, location, attempts, query, icp, sources, funded_by, watch_id, csv_domain, run_budget FROM scan_jobs
          WHERE status = 'pending' ${jobId ? 'AND id = ?' : ''}
            AND (user_id IN (SELECT tenant_id FROM tenant_llm_keys) OR funded_by = 'trial')
            ${excl}
@@ -435,6 +435,9 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
     }
     const fetchP = cachedFetcher(deps.fetchPage ?? fetchPageDetailed)
     if (!leads) {
+      // Per-run budget control: a run that disabled the paid fallback stops here
+      // honestly instead of spending on research/ground/judge calls.
+      if (deps.paidFallback === false) { finish(db, job, 'failed', 'no_candidates', null, 0, ledger); return 'failed' }
       ledger.record(`search:${vendor}`, 'started')
       const res = await provider.research(key, buildCompanyPrompt(domain, deps.now ?? new Date()), deps.fetchImpl)
       leads = parseLeads(res.text, res.citedUrls)
@@ -481,8 +484,32 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   return parseLeads(text, items.map(i => i.url)) ?? null
 }
 
+export interface RunBudget { paid_fallback?: boolean; credit_enrichment?: boolean; judge?: boolean }
+// Per-run explicit budget controls, stored on the job row by the CSV import route.
+// Absent or malformed JSON means current behavior - the control only ever NARROWS.
+export function parseRunBudget(raw: string | null | undefined): RunBudget | null {
+  if (!raw) return null
+  try {
+    const b = JSON.parse(raw) as Record<string, unknown>
+    const out: RunBudget = {}
+    if (b.paid_fallback === false) out.paid_fallback = false
+    if (b.credit_enrichment === false) out.credit_enrichment = false
+    if (b.judge === false) out.judge = false
+    return Object.keys(out).length ? out : null
+  } catch { return null }
+}
+function budgetDeps(deps: RunDeps, budget: RunBudget | null): RunDeps {
+  if (!budget) return deps
+  return {
+    ...deps,
+    ...(budget.paid_fallback === false ? { paidFallback: false } : {}),
+    ...(budget.credit_enrichment === false ? { creditEnrichment: false } : {}),
+    ...(budget.judge === false ? { judge: null } : {}),
+  }
+}
+
 export interface RunDeps {
-  score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null }
+  score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean }
 
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
   const ledger = new SourceRunLedger()
@@ -504,7 +531,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
   }
   try {
     const providers_ = deps.providers ?? providers
-    if (job.csv_domain) return await runCompanyJob(db, job, providers_[vendor], vendor, key, deps)
+    if (job.csv_domain) return await runCompanyJob(db, job, providers_[vendor], vendor, key, budgetDeps(deps, parseRunBudget(job.run_budget)))
     let prompt = buildPrompt(job)
     let icpForSources: Icp | null = null
     if (job.query) {
@@ -727,7 +754,7 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
     // Intent-signal enrichment (SEC Form D, public job boards). Bonus rows beside the
     // leads, never part of verification; failures are silent.
     const enrichFetch = (url: string, init?: RequestInit) => (deps.fetchImpl ?? fetch)(url, { ...init, signal: AbortSignal.any([init?.signal, postCtrl.signal].filter((x): x is AbortSignal => Boolean(x))) })
-    try { await enrichJobSignals(db, job.user_id, job.id, { fetchImpl: enrichFetch as typeof fetch }) } catch (e) { console.error('signal enrichment failed', e instanceof Error ? e.message : 'error') }
+    try { await enrichJobSignals(db, job.user_id, job.id, { fetchImpl: enrichFetch as typeof fetch, creditEnrichment: deps.creditEnrichment }) } catch (e) { console.error('signal enrichment failed', e instanceof Error ? e.message : 'error') }
   } finally {
     clearTimeout(postTimer)
   }

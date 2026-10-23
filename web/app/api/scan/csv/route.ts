@@ -27,8 +27,12 @@ export async function POST(req: NextRequest) {
 
   const parsed = parseDomains(text)
   if (parsed.valid.length === 0) return NextResponse.json({ error: 'No valid domains found', invalid: parsed.invalid }, { status: 400 })
+  // Optional per-run budget controls for an explicitly bounded run. Only 'false'
+  // values are honored - the control can only narrow a run, never widen it.
+  const b = body?.budget && typeof body.budget === 'object' ? body.budget as Record<string, unknown> : null
+  const runBudget = b ? JSON.stringify({ paid_fallback: b.paid_fallback === false ? false : undefined, credit_enrichment: b.credit_enrichment === false ? false : undefined, judge: b.judge === false ? false : undefined }) : null
   const batchId = createBatch(db, user.id, parsed.valid)
-  const { queued, quotaStop } = queuePendingRows(db, user.id, batchId)
+  const { queued, quotaStop } = queuePendingRows(db, user.id, batchId, runBudget)
   after(() => kickRunner(db))
   return NextResponse.json({
     batch_id: batchId,

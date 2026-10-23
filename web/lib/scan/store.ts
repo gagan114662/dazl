@@ -96,6 +96,7 @@ function addColumns(db: Database.Database): void {
   add('scan_jobs', 'candidates', 'INTEGER')
   add('scan_jobs', 'needs_review', 'INTEGER')
   add('scan_jobs', 'dropped', 'INTEGER')
+  add('scan_jobs', 'run_budget', 'TEXT') // per-run budget controls (CSV company imports); null = current behavior
   add('scan_jobs', 'drop_reasons', 'TEXT')
   add('scan_jobs', 'verified', 'INTEGER')
   add('scan_jobs', 'query', 'TEXT CHECK (query IS NULL OR length(query) <= 600)')

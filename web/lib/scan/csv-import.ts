@@ -95,7 +95,7 @@ export function createBatch(db: Database.Database, userId: string, domains: stri
 
 // Creates one scan job per pending row until the plan quota stops the batch. Rows left
 // without a job stay pending so a later resume (new month, upgraded plan) can pick them up.
-export function queuePendingRows(db: Database.Database, userId: string, batchId: string): { queued: number; quotaStop: boolean } {
+export function queuePendingRows(db: Database.Database, userId: string, batchId: string, runBudget: string | null = null): { queued: number; quotaStop: boolean } {
   const batch = db.prepare('SELECT id FROM csv_batches WHERE id = ? AND user_id = ?').get(batchId, userId)
   if (!batch) return { queued: 0, quotaStop: false }
   const rows = db.prepare("SELECT id, domain FROM csv_rows WHERE batch_id = ? AND state = 'pending' AND job_id IS NULL ORDER BY rowid").all(batchId) as { id: string; domain: string }[]
@@ -104,7 +104,7 @@ export function queuePendingRows(db: Database.Database, userId: string, batchId:
   for (const row of rows) {
     if (!scanQuota(db, userId).allowed) { quotaStop = true; break }
     const jobId = randomBytes(12).toString('hex')
-    db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, csv_domain, batch_id) VALUES (?, ?, ?, '-', '-', ?, ?)").run(jobId, userId, row.domain.slice(0, 150), row.domain, batchId)
+    db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, csv_domain, batch_id, run_budget) VALUES (?, ?, ?, '-', '-', ?, ?, ?)").run(jobId, userId, row.domain.slice(0, 150), row.domain, batchId, runBudget)
     db.prepare('UPDATE csv_rows SET job_id = ? WHERE id = ?').run(jobId, row.id)
     queued++
   }
