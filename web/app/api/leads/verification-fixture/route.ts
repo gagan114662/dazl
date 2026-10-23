@@ -3,6 +3,7 @@ import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { createVerificationFixture, deleteVerificationFixture, VERIFICATION_FIXTURE_JOB } from '@/lib/scan/verification-fixture'
+import { createReviewDraftFixture, deleteReviewDraftFixtures } from '@/lib/scan/review-draft-fixture'
 import { fixtureAvailable, FixtureError } from '@/lib/outreach/test-fixture'
 
 // Test-only verification fixture for the designated test tenant: one labelled fixture
@@ -25,7 +26,8 @@ export async function POST(req: NextRequest) {
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad origin' }, { status: 403 })
   if (!rateLimit(`verification-fixture:${user.id}`, 5, 60_000).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   try {
-    return NextResponse.json(createVerificationFixture(getScanDb(), user.id))
+    const body=await req.json().catch(()=>null)
+    return NextResponse.json(body?.action==='review_draft' ? createReviewDraftFixture(getScanDb(),user.id) : createVerificationFixture(getScanDb(), user.id))
   } catch (e) {
     if (e instanceof FixtureError) return NextResponse.json({ error: e.code }, { status: 403 })
     throw e
@@ -37,6 +39,8 @@ export async function DELETE(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad origin' }, { status: 403 })
   try {
+    if (!fixtureAvailable(getScanDb(),user.id)) throw new FixtureError('test_tenant_only')
+    deleteReviewDraftFixtures(getScanDb(),user.id)
     return NextResponse.json(deleteVerificationFixture(getScanDb(), user.id))
   } catch (e) {
     if (e instanceof FixtureError) return NextResponse.json({ error: e.code }, { status: 403 })
