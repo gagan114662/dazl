@@ -221,8 +221,8 @@ export function reapStaleJobs(db: Database.Database): void {
 export function getJob(db: Database.Database, userId: string, id: string) {
   reapStaleJobs(db)
   const job = db
-    .prepare('SELECT id, status, error, query, icp, icp_inferred, created_at, finished_at, candidates, verified, needs_review, dropped, drop_reasons, industry, location FROM scan_jobs WHERE id = ? AND user_id = ?')
-    .get(id, userId) as { id: string; status: string; error: string | null; query: string | null; icp: string | null; icp_inferred: number | null; created_at: number; finished_at: number | null; candidates: number | null; verified: number | null; needs_review: number | null; dropped: number | null; drop_reasons: string | null; industry: string | null; location: string | null } | undefined
+    .prepare('SELECT id, status, error, query, icp, icp_inferred, created_at, claimed_at, attempts, finished_at, candidates, verified, needs_review, dropped, drop_reasons, industry, location FROM scan_jobs WHERE id = ? AND user_id = ?')
+    .get(id, userId) as { id: string; status: string; error: string | null; query: string | null; icp: string | null; icp_inferred: number | null; created_at: number; claimed_at: number | null; attempts: number; finished_at: number | null; candidates: number | null; verified: number | null; needs_review: number | null; dropped: number | null; drop_reasons: string | null; industry: string | null; location: string | null } | undefined
   if (!job) return undefined
   const { n } = db.prepare('SELECT count(*) AS n FROM leads WHERE scan_job_id = ?').get(id) as { n: number }
   return { ...job, lead_count: n }
@@ -330,3 +330,23 @@ export function exportLeads(db: Database.Database, userId: string, jobId?: strin
     .all(...(jobId ? [userId, jobId, limit] : [userId, limit]))
 }
 
+
+export type CancelResult = { ok: true; was_running: boolean } | { ok: false; reason: 'not_found' | 'already_finished' | 'not_cancellable' }
+
+// Stop-requested, not provider-stopped. This only moves the job to its terminal failed
+// state ('cancelled'). Every later write by the runner is fenced on status='running' AND
+// attempts=?, so a late result is rejected and the stale reaper cannot re-claim it. An
+// already-awaited provider call is NOT interrupted and may still be billed.
+// No schema change: pending jobs take the legal pending->running->failed path in one transaction.
+export function cancelJob(db: Database.Database, userId: string, id: string): CancelResult {
+  return db.transaction((): CancelResult => {
+    const j = db.prepare('SELECT status, csv_domain FROM scan_jobs WHERE id = ? AND user_id = ?').get(id, userId) as { status: string; csv_domain: string | null } | undefined
+    if (!j) return { ok: false, reason: 'not_found' }
+    if (j.status === 'done' || j.status === 'failed') return { ok: false, reason: 'already_finished' }
+    if (j.csv_domain !== null) return { ok: false, reason: 'not_cancellable' }
+    const wasRunning = j.status === 'running'
+    if (!wasRunning) db.prepare("UPDATE scan_jobs SET status='running', attempts = attempts + 1, claimed_at = CAST(strftime('%s','now') AS INTEGER) WHERE id = ? AND status='pending'").run(id)
+    const r = db.prepare("UPDATE scan_jobs SET status='failed', error='cancelled', claimed_at=NULL, finished_at=CAST(strftime('%s','now') AS INTEGER) WHERE id = ? AND user_id = ? AND status='running'").run(id, userId)
+    return r.changes === 1 ? { ok: true, was_running: wasRunning } : { ok: false, reason: 'already_finished' }
+  })()
+}

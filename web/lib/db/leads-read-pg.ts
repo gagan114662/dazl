@@ -49,7 +49,7 @@ export function pgLeadsRead(pg: PgQueryable): LeadsReadDb {
         [MAX_ATTEMPTS, cutoff],
       )
       const { rows } = await pg.query(
-        'SELECT id, status, error, query, icp, icp_inferred, created_at, finished_at, candidates, verified, needs_review, dropped, drop_reasons, industry, location FROM scan_jobs WHERE id = $1 AND user_id = $2',
+        'SELECT id, status, error, query, icp, icp_inferred, created_at, claimed_at, attempts, finished_at, candidates, verified, needs_review, dropped, drop_reasons, industry, location FROM scan_jobs WHERE id = $1 AND user_id = $2',
         [id, userId],
       )
       const job = rows[0] as Record<string, unknown> | undefined
@@ -58,7 +58,7 @@ export function pgLeadsRead(pg: PgQueryable): LeadsReadDb {
       return {
         ...job,
         icp_inferred: num(job.icp_inferred),
-        created_at: numReq(job.created_at), finished_at: num(job.finished_at),
+        created_at: numReq(job.created_at), claimed_at: num(job.claimed_at), attempts: numReq(job.attempts), finished_at: num(job.finished_at),
         candidates: num(job.candidates), verified: num(job.verified),
         needs_review: num(job.needs_review), dropped: num(job.dropped),
         lead_count: numReq((c.rows[0] as { n: number | string }).n),
