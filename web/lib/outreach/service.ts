@@ -1,3 +1,4 @@
+import { messageProvenance } from './provenance.ts'
 import { snapshotSignalContext } from './attribution.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend, tableExists } from './send-budget.ts'
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
@@ -213,7 +214,7 @@ export function listMessages(db: Database.Database, tenantId: string, d: Deps = 
   const rows = db.prepare('SELECT id, lead_id, to_email, subject, body, status, error, created_at, sent_at, test FROM outreach_messages WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 200').all(tenantId) as { id: string; lead_id: string; to_email: string; subject: string; body: string; status: string; error: string | null; created_at: number; sent_at: number | null; test: number }[]
   // The draft list carries the evidence basis so the approval UI can label a human
   // confirmation (never presented as dazl's verification) or a withdrawn one.
-  return rows.map(r => ({ ...r, evidence_state: leadEvidenceState(db, tenantId, r.lead_id) }))
+  return rows.map(r => ({ ...r, evidence_state: leadEvidenceState(db, tenantId, r.lead_id), provenance: messageProvenance(db,tenantId,r.lead_id,r.to_email) }))
 }
 
 const cleanLine = (s: string) => s.replace(/[\r\n\u0000]+/g, ' ').trim()
