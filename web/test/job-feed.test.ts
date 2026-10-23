@@ -42,6 +42,8 @@ test('intake saves only postings whose page shows the posting line, as ungraded 
     fetchFeed: async () => XML, get, gapMs: 0, env: {}, now: 1800000000,
     fetchPage: async u => shown[u] ? { title: 'Remote Sales Development Representative at Acmeco', text: shown[u], retrievedAt: 1800000000 } : { title: 'Bigvendor', text: 'Some other text', retrievedAt: 1800000000 },
   })
+  assert.equal(r.leads.length, 1)
+  await r.crawl
   assert.equal(r.feed_items, 3); assert.equal(r.matched, 2); assert.equal(r.leads.length, 1); assert.equal(r.skipped.length, 1)
   assert.equal(r.skipped[0].company, 'Bigvendor')
   const l = db.prepare('SELECT company,signal,source_url,evidence_excerpt,confidence,review_reason,source_kind,date_status,event_date,human_confirmed_at,fit FROM leads').get() as Record<string, unknown>
@@ -54,6 +56,10 @@ test('intake saves only postings whose page shows the posting line, as ungraded 
   assert.deepEqual(db.prepare('SELECT status,verified,needs_review,candidates FROM scan_jobs').get(), { status: 'done', verified: 0, needs_review: 1, candidates: 1 })
   const emails = db.prepare("SELECT value FROM lead_enrichments WHERE kind='email' ORDER BY value").all()
   assert.deepEqual(emails, [{ value: 'hello@acmeco.example' }, { value: 'press@acmeco.example' }])
+  // A second click for the same company saves nothing new.
+  const again = await createHiringFeedIntake(db, 'A', 'sales-and-marketing', 'sales development', { fetchFeed: async () => XML, get, gapMs: 0, env: {}, fetchPage: async () => ({ title: 'Acmeco', text: 'Remote Sales Development Representative at Acmeco', retrievedAt: 1800000000 }) })
+  await again.crawl
+  assert.equal(again.job_id, null); assert.equal((db.prepare('SELECT count(*) c FROM leads').get() as { c: number }).c, 1)
   // Nothing here confirms the lead: a draft still needs the user's own review.
   const id = (db.prepare('SELECT id FROM leads').get() as { id: string }).id
   assert.throws(() => createDraft(db, 'A', id, 'Seller'), /lead_not_verified/)

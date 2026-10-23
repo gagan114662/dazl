@@ -15,7 +15,7 @@ export const FEEDS: Record<string, string> = {
   'customer-support': 'https://weworkremotely.com/categories/remote-customer-support-jobs.rss',
 }
 export const MAX_FEED_LEADS = 6
-export const CRAWL_DEADLINE_MS = 30_000
+export const CRAWL_DEADLINE_MS = 60_000
 export interface FeedItem { company: string; role: string; url: string; date: string | null; site: string | null }
 export class JobFeedError extends Error {}
 
@@ -65,13 +65,15 @@ export async function createHiringFeedIntake(db: Database.Database, tenant: stri
   if (!Object.hasOwn(FEEDS, feed)) throw new JobFeedError('Pick one of the listed feeds.')
   const words = parseRoleWords(rawWords)
   const xml = await (deps.fetchFeed ?? defaultFeed)(FEEDS[feed])
-  if (!xml) return { job_id: null as string | null, feed_items: 0, matched: 0, leads: [] as { lead_id: string; company: string; role: string; quote_match: boolean; fetch_status: string }[], skipped: [] as { company: string; role: string; fetch_status: string }[], note: 'The feed could not be read. Nothing was saved.' }
+  if (!xml) return { crawl: Promise.resolve(), job_id: null as string | null, feed_items: 0, matched: 0, leads: [] as { lead_id: string; company: string; role: string; quote_match: boolean; fetch_status: string }[], skipped: [] as { company: string; role: string; fetch_status: string }[], note: 'The feed could not be read. Nothing was saved.' }
   const items = parseFeedItems(xml)
   const matched = matchRoles(items, words)
-  const seen = new Set<string>(), picked: FeedItem[] = []
+  // A retry or a second click must not save the same company twice for this account.
+  const have = new Set((db.prepare("SELECT l.company FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ? AND l.source_kind = 'hiring_feed'").all(tenant) as { company: string }[]).map(r => companyKey(r.company)))
+  const seen = new Set<string>(have), picked: FeedItem[] = []
   // Postings that state the company's own site come first: the contact read can then start from a named site. Order inside each group is the feed's.
   for (const it of [...matched.filter(i => i.site), ...matched.filter(i => !i.site)]) { const k = companyKey(it.company); if (k.length < 2 || seen.has(k)) continue; seen.add(k); picked.push(it); if (picked.length >= MAX_FEED_LEADS) break }
-  if (!picked.length) return { job_id: null, feed_items: items.length, matched: matched.length, leads: [], skipped: [] as { company: string; role: string; fetch_status: string }[], note: 'No postings matched those role words. Nothing was saved.' }
+  if (!picked.length) return { crawl: Promise.resolve(), job_id: null, feed_items: items.length, matched: matched.length, leads: [], skipped: [] as { company: string; role: string; fetch_status: string }[], note: matched.length ? 'Those companies are already saved from an earlier check. Nothing new was saved.' : 'No postings matched those role words. Nothing was saved.' }
   migrateSourceReview(db)
   const fetchP = deps.fetchPage ?? ((u: string) => fetchPageDetailed(u, async () => null))
   const now = deps.now ?? Math.floor(Date.now() / 1000)
@@ -99,13 +101,14 @@ export async function createHiringFeedIntake(db: Database.Database, tenant: stri
     })
     rows.push({ lead_id: leadId, company: it.company, role: it.role, quote_match: true, fetch_status: status, source_url: it.url })
   }
-  if (!rows.length) return { job_id: null, feed_items: items.length, matched: matched.length, leads: [], skipped, note: 'The postings were found, but their pages did not show the posting line, so nothing was saved.' }
+  if (!rows.length) return { crawl: Promise.resolve(), job_id: null, feed_items: items.length, matched: matched.length, leads: [], skipped, note: 'The postings were found, but their pages did not show the posting line, so nothing was saved.' }
   db.transaction(() => {
     db.prepare("INSERT INTO scan_jobs(id,user_id,business_name,industry,location,status) VALUES(?,?,'Hiring feed intake','manual','manual','running')").run(jobId, tenant)
     for (const s of stmts) s()
     db.prepare("UPDATE scan_jobs SET status='done',finished_at=?,candidates=?,verified=0,needs_review=?,dropped=0 WHERE id=?").run(now, rows.length, rows.length, jobId)
   })()
   // Published contacts come from each company's own site (same robots/same-site/role rules as scans). Free HTTP only.
-  await crawlJob(db, tenant, jobId, { get: deps.get, gapMs: deps.gapMs, env: deps.env, signal: AbortSignal.timeout(CRAWL_DEADLINE_MS), leads: rows.map(r => ({ id: r.lead_id, company: r.company, source_url: r.source_url })) })
-  return { job_id: jobId, feed_items: items.length, matched: matched.length, leads: rows.map(({ source_url: _s, ...r }) => r), skipped, note: '' }
+  // The leads are already saved, so the answer does not wait on this slow read: it keeps running and fills in contacts later.
+  const crawl = crawlJob(db, tenant, jobId, { get: deps.get, gapMs: deps.gapMs, env: deps.env, signal: AbortSignal.timeout(CRAWL_DEADLINE_MS), leads: rows.map(r => ({ id: r.lead_id, company: r.company, source_url: r.source_url })) })
+  return { crawl, job_id: jobId, feed_items: items.length, matched: matched.length, leads: rows.map(({ source_url: _s, ...r }) => r), skipped, note: '' }
 }

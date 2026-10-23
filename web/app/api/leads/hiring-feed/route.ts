@@ -15,7 +15,8 @@ export async function POST(req:NextRequest){
  try{body=JSON.parse(raw)}catch{return NextResponse.json({error:'Bad request'},{status:400})}
  if(!body||typeof body!=='object'||typeof body.feed!=='string')return NextResponse.json({error:'Pick one of the listed feeds.'},{status:400})
  try{
- const result=await createHiringFeedIntake(getScanDb(),user.id,body.feed,body.words)
+ const {crawl,...result}=await createHiringFeedIntake(getScanDb(),user.id,body.feed,body.words)
+ void crawl
  return NextResponse.json(result,{status:result.job_id?201:200})
  }catch(e){if(e instanceof JobFeedError)return NextResponse.json({error:e.message},{status:400});throw e}
 }
