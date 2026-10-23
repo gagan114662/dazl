@@ -6,7 +6,8 @@ const ascii = (s: string) => /^[\x20-\x7e]*$/.test(s)
 const encWord = (s: string) => (ascii(s) ? s : `=?UTF-8?B?${Buffer.from(s, 'utf8').toString('base64')}?=`)
 const wrap76 = (b64: string) => b64.replace(/(.{76})/g, '$1\r\n')
 
-export const EMAIL_RE = /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/
+export { PUBLISHED_EMAIL_RE as EMAIL_RE } from '../outreach/published-email.ts'
+import { PUBLISHED_EMAIL_RE as EMAIL_RE } from '../outreach/published-email.ts'
 
 export interface MimeInput {
   fromName: string

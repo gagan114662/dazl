@@ -1,3 +1,6 @@
+export const PUBLISHED_EMAIL_RE = /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/
+const address = (value: string | null) => value?.trim().toLowerCase() ?? ''
+
 // The contact a sales draft may use: an address the company itself published -
 // on the cited page (lead.contact) or on its own contact/about page (sitecrawl).
 // A published address is not automatically a sales contact: press, support,
@@ -23,14 +26,17 @@ export function classifyPurpose(email: string): { purpose: ContactPurpose; hint:
 }
 
 export function publishedContact(lead: PublishedEmailLead): PublishedContact | null {
-  if (lead.contact && lead.contact.includes('@')) {
-    const c = classifyPurpose(lead.contact)
-    return { email: lead.contact, purpose: c.purpose, purposeHint: c.hint, source: 'lead' }
+  const primary = address(lead.contact)
+  if (PUBLISHED_EMAIL_RE.test(primary)) {
+    const c = classifyPurpose(primary)
+    return { email: primary, purpose: c.purpose, purposeHint: c.hint, source: 'lead' }
   }
-  const e = (lead.enrichments ?? []).find(x => x.connector === 'sitecrawl' && x.kind === 'email' && x.value.includes('@'))
+  const e = (lead.enrichments ?? []).find(x => x.connector === 'sitecrawl' && x.kind === 'email')
   if (!e) return null
-  const c = classifyPurpose(e.value)
-  return { email: e.value, purpose: c.purpose, purposeHint: c.hint, source: 'sitecrawl' }
+  const email = address(e.value)
+  if (!PUBLISHED_EMAIL_RE.test(email)) return null
+  const c = classifyPurpose(email)
+  return { email, purpose: c.purpose, purposeHint: c.hint, source: 'sitecrawl' }
 }
 
 // The only address a sales draft may target. Null means "no usable sales contact",

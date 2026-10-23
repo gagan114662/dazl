@@ -45,3 +45,13 @@ test('purpose applies to sitecrawl-published addresses exactly as to lead contac
   const info = { contact: null, enrichments: [{ connector: 'sitecrawl', kind: 'email', value: 'info@acme.com' }] }
   assert.equal(publishedEmail(info), 'info@acme.com')
 })
+
+
+test('malformed @ strings never offer an unsendable draft or hide a valid crawl address', () => {
+  for (const contact of ['bad@', 'Name <sales@acme.com>', 'sales@acme', 'two words@acme.com']) {
+    assert.equal(publishedEmail({contact}),null)
+    assert.equal(publishedEmail({contact,enrichments:[{connector:'sitecrawl',kind:'email',value:' INFO@ACME.COM '}]}),'info@acme.com')
+  }
+  assert.equal(publishedEmail({contact:' SALES@ACME.COM '}),'sales@acme.com')
+  assert.equal(publishedEmail({contact:null,enrichments:[{connector:'sitecrawl',kind:'email',value:'bad@'}]}),null)
+})
