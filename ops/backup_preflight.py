@@ -71,6 +71,9 @@ def run(args):
         raise LaunchError('existing_database_required')
     if not args.create_backup:return {'status':'env_preflight_ok','source_written':False}
     backup=Path(args.backup);restore=Path(args.restore_rehearsal)
+    protected=source.resolve().parent
+    if any(path.resolve().is_relative_to(protected) for path in [backup,restore]):
+        raise LaunchError('protected_output_directory_refused')
     if len({source.resolve(),backup.resolve(),restore.resolve()})!=3:
         raise LaunchError('distinct_paths_required')
     return make_backup(source,backup,restore)

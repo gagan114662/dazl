@@ -65,3 +65,13 @@ same executing uid/cwd/cgroup, refuses other supervisor/container/service facts,
 and repeats just before SIGTERM. No parent signal, arbitrary ancestor traversal
 or new supervisor installation. Real process facts can change; execution must
 revalidate, not reuse historical PIDs blindly.
+
+
+## Protected database directory boundary
+
+Original user handover protects dazl-data. No deployment takeover overrides it.
+Source DB readonly snapshot and restore rehearsal require a separate original
+user permission. Backup/rehearsal outputs must be outside the source directory
+and descendants; backup_preflight enforces this before creating files. No
+production DB restore, directory hygiene edits, rotation or8795 action follows
+from snapshot permission. Historical backup mode644 remains unchanged.

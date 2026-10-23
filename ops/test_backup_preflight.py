@@ -15,7 +15,8 @@ import backup_preflight as m
 
 class BackupTest(unittest.TestCase):
     def setup_files(self,root):
-        source=root/'source.db';env=root/'env'
+        (root/'protected').mkdir(exist_ok=True)
+        source=root/'protected/source.db';env=root/'env'
         with sqlite3.connect(source) as db:
             db.execute('CREATE TABLE synthetic(id INTEGER, value TEXT)')
             db.execute('INSERT INTO synthetic VALUES(1,?)',('SYNTHETIC_SECRET_456',))
@@ -48,7 +49,9 @@ class BackupTest(unittest.TestCase):
             with self.assertRaisesRegex(m.LaunchError,'database_identity_mismatch'):m.run(args)
         with tempfile.TemporaryDirectory() as d:
             args=self.setup_files(Path(d));args.create_backup=True;args.backup=args.source
-            with self.assertRaisesRegex(m.LaunchError,'distinct_paths_required'):m.run(args)
+            with self.assertRaisesRegex(m.LaunchError,'protected_output_directory_refused'):m.run(args)
+            args.backup=str(Path(args.source).parent/'newbackup.db')
+            with self.assertRaisesRegex(m.LaunchError,'protected_output_directory_refused'):m.run(args)
 
     def test_subprocess_no_secret_output_success_or_parse_failure(self):
         with tempfile.TemporaryDirectory() as d:
