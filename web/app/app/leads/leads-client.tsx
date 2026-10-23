@@ -597,7 +597,7 @@ export default function LeadsClient() {
                 <div className="text-gray-500 uppercase tracking-wide text-[10px]">Company history</div>
                 {l.events.map(ev => (
                   <div key={ev.id} className="text-gray-400">
-                    <span className="text-gray-500">{ev.event_type.replace(/_/g, ' ')}:</span> <span className="text-[#111]">{ev.summary}</span>{' '}
+                    <span className="text-gray-500">{/sec\.gov/.test(ev.source_url) ? 'SEC filing' : ev.event_type.replace(/_/g, ' ')}:</span> <span className="text-[#111]">{ev.summary}</span>{' '}
                     <span className="text-gray-500">{ev.source_published_at ? `dated ${ev.source_published_at}, ` : ''}seen {new Date(ev.last_seen_at * 1000).toISOString().slice(0, 10)}{ev.fresh ? '' : ' (older)'}{ev.entity_status === 'unconfirmed' ? ' - entity unconfirmed (name match only), not used for ranking' : ev.entity_status === 'heuristic' ? ' - name match (heuristic)' : ''}</span>{' '}
                     <a className="underline text-[#111]" href={ev.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
                   </div>

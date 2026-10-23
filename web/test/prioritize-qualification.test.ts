@@ -10,7 +10,7 @@ function dbWithEvent(ev: { companyName: string; eventType: 'funding_round' | 'se
   const db = new Database(':memory:')
   migrateEvents(db)
   recordCompanyEvent(db, TENANT, {
-    companyKey: companyKey(null, 'lead-vesta'), companyName: ev.companyName, scope: 'account', leadId: 'lead-vesta',
+    companyKey: companyKey(null, 'lead-vesta')!, companyName: ev.companyName, scope: 'account', leadId: 'lead-vesta',
     eventType: ev.eventType, summary: ev.summary, detail: ev.detail, sourceUrl: ev.url,
     sourcePublishedAt: ev.publishedAt, retrievedAt: Math.floor(Date.now() / 1000), confidence: 80,
   })
