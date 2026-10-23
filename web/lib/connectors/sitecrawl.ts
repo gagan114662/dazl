@@ -214,44 +214,79 @@ export function extractContacts(html: string, pageUrl: string, site: string): Fo
 
 // ---- named people the company itself lists (name + title, no address) ----
 // The company site is the only source. No email is built from a name, and a listed person is never an
-// address: this gives the user a real "who runs this" fact with its page, nothing the sender can mail.
-const PERSON_TITLE = /^(?:co-?\s?)?(founder|owner|ceo|president|principal|proprietor|managing director|general manager|director|partner|practice manager|office manager|broker|dentist|doctor)\b[a-z ,&/-]{0,40}$/i
-const NOT_NAME = new Set(['contact','our','team','about','us','meet','the','leadership','staff','careers','services','home','privacy','policy','terms','book','call','email','get','free','quote','welcome','locations','location','office','hours','read','more','learn','new','patients','patient','customer','customers'])
-const NAME_LINE = /^(?:(?:Dr|Mr|Ms|Mrs)\.?\s+)?[A-Z][a-z'\u2019-]{1,20}(?:\s+[A-Z]\.?)?\s+[A-Z][A-Za-z'\u2019-]{1,24}$/
-const plausibleName = (n: string) => NAME_LINE.test(n) && n.split(/\s+/).every(w => !NOT_NAME.has(w.toLowerCase().replace(/\.$/, '')))
+// address or a mailbox association: this gives the user a "who runs this" fact with its page, nothing the sender can mail.
+// Credibility rules (structure, not a growing blacklist):
+//  - the whole title must be a leadership title and nothing else ("Director, Other Corp" is rejected);
+//  - the page must be an about/team/leadership/contact page, and testimonial/review/quote blocks are cut out first;
+//  - the page needs real prose (15+ distinct lower-case words) or nothing is judged;
+//  - a name-shaped phrase is rejected when one of its words also appears in lower case in the page text
+//    (trade and service words such as "Roof Repair" do; surnames and first names almost never do) or is a link label;
+//  - JSON-LD Person counts only under employee/founder/member and never inside review/author/comment nodes.
+const T = '(?:founder|co-?founder|owner|co-?owner|ceo|president|principal|proprietor|managing director|general manager|director|managing partner|partner|practice manager|office manager|broker|dentist|doctor)'
+const TITLE_FULL = new RegExp(`^${T}(?: (?:&|and) ${T})?$`, 'i')
+const PEOPLE_PAGE = /(about|team|leadership|people|staff|our-story|who-we-are|meet|contact|company|owner|doctor|dentist)/i
+const NAME_LINE = /^(?:(?:Dr|Mr|Ms|Mrs)\.?\s+)?[A-Z][a-z'\u2019-]{1,20}(?:\s+[A-Z]\.?)?\s+[A-Z][A-Za-z'\u2019-]{2,24}$/ // both names 3+ letters: two-letter surnames (Li, Ng) are skipped on purpose, "Us" in "Contact Us" is not a surname
+// Remove balanced elements whose tag or class/id marks quoted third-party content.
+function cutBlocks(html: string): string {
+  let out = html.replace(/<(blockquote|cite|q)\b[\s\S]*?<\/\1>/gi, ' ')
+  const open = /<(div|section|article|ul|ol|li|aside|figure)\b[^>]*\b(?:class|id)\s*=\s*["'][^"']*(?:testimonial|review|quote|client|customer|partner|sponsor|press|award)[^"']*["'][^>]*>/i
+  for (let guard = 0; guard < 50; guard++) {
+    const m = open.exec(out); if (!m) break
+    const tag = m[1].toLowerCase(); const re = new RegExp(`<(/?)${tag}\\b[^>]*>`, 'gi'); re.lastIndex = m.index + m[0].length
+    let depth = 1, end = out.length, t: RegExpExecArray | null
+    while ((t = re.exec(out))) { depth += t[1] ? -1 : 1; if (depth === 0) { end = t.index + t[0].length; break } }
+    out = out.slice(0, m.index) + ' ' + out.slice(end)
+  }
+  return out
+}
 function jsonLdPeople(html: string): { name: string; title: string }[] {
   const out: { name: string; title: string }[] = []
   for (const m of html.matchAll(/<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
     let root: unknown; try { root = JSON.parse(m[1]) } catch { continue }
-    const stack = [root]
+    const stack: { node: unknown; ok: boolean }[] = [{ node: root, ok: false }]
     while (stack.length) {
-      const node = stack.pop()
+      const { node, ok } = stack.pop()!
       if (!node || typeof node !== 'object') continue
-      if (Array.isArray(node)) { stack.push(...node); continue }
+      if (Array.isArray(node)) { for (const n of node) stack.push({ node: n, ok }); continue }
       const rec = node as Record<string, unknown>
       const types = ([] as unknown[]).concat(rec['@type'] ?? []).map(String)
-      if (types.includes('Person') && typeof rec.name === 'string' && typeof rec.jobTitle === 'string') out.push({ name: rec.name.trim(), title: rec.jobTitle.trim() })
-      for (const v of Object.values(rec)) if (v && typeof v === 'object') stack.push(v)
+      if (types.includes('Person') && ok && typeof rec.name === 'string' && typeof rec.jobTitle === 'string') out.push({ name: rec.name.trim(), title: rec.jobTitle.trim() })
+      for (const [k, v] of Object.entries(rec)) {
+        if (!v || typeof v !== 'object') continue
+        if (/^(review|reviews|author|creator|comment|reviewRating|editor|contributor|publisher)$/i.test(k)) continue
+        stack.push({ node: v, ok: ok || /^(employee|employees|founder|founders|member|members)$/i.test(k) })
+      }
     }
   }
   return out
 }
 export function extractPeople(html: string, pageUrl: string): Found[] {
   const found = new Map<string, Found>()
-  const add = (name: string, title: string) => {
-    name = name.replace(/\s+/g, ' ').trim(); title = title.replace(/\s+/g, ' ').trim()
-    if (!plausibleName(name) || !PERSON_TITLE.test(title) || title.length > 60 || /\bat\b/i.test(title)) return
-    if (!found.has(name.toLowerCase())) found.set(name.toLowerCase(), { kind: 'person', value: `${name}, ${title}`.slice(0, 120), label: 'listed with this title on this company page, not verified as current staff', url: pageUrl })
-  }
-  for (const p of jsonLdPeople(html)) add(p.name, p.title)
-  const text = html.replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, ' ').replace(/<!--[\s\S]*?-->/g, ' ')
-    .replace(/<\/?(p|div|li|ul|ol|h[1-6]|br|section|article|tr|td|th|figure|figcaption|header|footer|span|strong|b|em)\b[^>]*>/gi, '\n').replace(/<[^>]+>/g, ' ')
+  let path = ''; try { path = new URL(pageUrl).pathname } catch { return [] }
+  const clean = cutBlocks(html)
+  const visible = clean.replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, ' ').replace(/<!--[\s\S]*?-->/g, ' ')
+  const linkText = new Set([...visible.matchAll(/<a\b[^>]*>([\s\S]*?)<\/a>/gi)].map(m => m[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()))
+  const text = visible.replace(/<\/?(p|div|li|ul|ol|h[1-6]|br|section|article|tr|td|th|figure|figcaption|header|footer|span|strong|b|em)\b[^>]*>/gi, '\n').replace(/<[^>]+>/g, ' ')
     .replace(/&amp;/g, '&').replace(/&#8217;|&rsquo;/g, "'").replace(/&nbsp;/g, ' ')
   const lines = text.split('\n').map(l => l.replace(/\s+/g, ' ').trim()).filter(Boolean)
+  const body = lines.join(' ')
+  const lowerWords = new Set(body.match(/\b[a-z][a-z'\u2019-]{1,}\b/g) ?? [])
+  const add = (name: string, title: string, viaJson = false) => {
+    name = name.replace(/\s+/g, ' ').trim(); title = title.replace(/\s+/g, ' ').trim()
+    if (!NAME_LINE.test(name) || !TITLE_FULL.test(title)) return
+    if (!viaJson) {
+      if (!PEOPLE_PAGE.test(path)) return
+      if (lowerWords.size < 15) return // no prose on the page: nothing to judge a name-shaped phrase against, fail closed
+      if (linkText.has(name.toLowerCase())) return
+      if (name.replace(/^(Dr|Mr|Ms|Mrs)\.?\s+/, '').split(/\s+/).some(w => lowerWords.has(w.toLowerCase().replace(/\.$/, '')))) return
+    }
+    if (!found.has(name.toLowerCase())) found.set(name.toLowerCase(), { kind: 'person', value: `${name}, ${title}`.slice(0, 120), label: 'listed with this title on this company page, not verified as current staff', url: pageUrl })
+  }
+  for (const p of jsonLdPeople(clean)) add(p.name, p.title, true)
   for (let i = 0; i < lines.length; i++) {
-    const same = /^(.{3,45}?)\s*(?:,|\u2013|\u2014|-|\|)\s*(.{3,60})$/.exec(lines[i])
+    const same = /^([^,\u2013\u2014|]{3,45}?)\s*(?:,|\u2013|\u2014|-|\|)\s*([^,\u2013\u2014|]{3,40})$/.exec(lines[i])
     if (same) add(same[1], same[2])
-    if (i + 1 < lines.length && lines[i].length < 45 && lines[i + 1].length < 62) add(lines[i], lines[i + 1])
+    if (i + 1 < lines.length && lines[i].length < 45 && lines[i + 1].length < 45) add(lines[i], lines[i + 1])
   }
   return [...found.values()].slice(0, 3)
 }
