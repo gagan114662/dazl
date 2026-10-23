@@ -5,6 +5,7 @@ import { emptyLeadsMessage, scoreLabel } from '@/lib/scan/leads-view'
 import { contactsFromEnrichments } from '@/lib/people/rank'
 import { publishedEmail, publishedContact, contactSearchNote } from '@/lib/outreach/published-email'
 import SourceReview from './source-review'
+import HiringFeed from './hiring-feed'
 import SourceMetrics from './source-metrics'
 import { WarmConnections, WarmPath } from './warm-path'
 import VerificationFixture from './verification-fixture'
@@ -358,6 +359,7 @@ export default function LeadsClient() {
         </div>
       </form>
       <SourceReview />
+      <HiringFeed />
       <details className="mb-4 text-sm">
         <summary className="cursor-pointer text-gray-400">Bulk import company domains (Pro)</summary>
         <div className="card p-4 mt-2">
