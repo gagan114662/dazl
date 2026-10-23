@@ -5,7 +5,7 @@ import { rateLimit } from '@/lib/rate-limit'
 import { getPlan } from '@/lib/plans'
 import { hasKey } from '@/lib/llm/key-store'
 import { kickRunner } from '@/lib/scan/runner'
-import { batchStatus, createBatch, MAX_DOMAINS, parseDomains, queuePendingRows } from '@/lib/scan/csv-import'
+import { batchStatus, createBatch, MAX_DOMAINS, normalizeRunBudget, parseDomains, queuePendingRows } from '@/lib/scan/csv-import'
 
 const MAX_UPLOAD = 100_000 // ~50 domains is the cap; a bigger paste is a mistake, not a use case
 
@@ -27,15 +27,17 @@ export async function POST(req: NextRequest) {
 
   const parsed = parseDomains(text)
   if (parsed.valid.length === 0) return NextResponse.json({ error: 'No valid domains found', invalid: parsed.invalid }, { status: 400 })
-  // Optional per-run budget controls for an explicitly bounded run. Only 'false'
-  // values are honored - the control can only narrow a run, never widen it.
-  const b = body?.budget && typeof body.budget === 'object' ? body.budget as Record<string, unknown> : null
-  const runBudget = b ? JSON.stringify({ paid_fallback: b.paid_fallback === false ? false : undefined, credit_enrichment: b.credit_enrichment === false ? false : undefined, judge: b.judge === false ? false : undefined }) : null
+  // Optional per-run budget controls for an explicitly bounded run. An explicitly
+  // supplied budget that is not strictly valid narrowing controls is rejected -
+  // never silently widened into an unrestricted run.
+  const nb = normalizeRunBudget(body?.budget)
+  if (!nb.ok) return NextResponse.json({ error: nb.error }, { status: 400 })
   const batchId = createBatch(db, user.id, parsed.valid)
-  const { queued, quotaStop } = queuePendingRows(db, user.id, batchId, runBudget)
+  const { queued, quotaStop } = queuePendingRows(db, user.id, batchId, nb.value)
   after(() => kickRunner(db))
   return NextResponse.json({
     batch_id: batchId,
+    budget: nb.value ? JSON.parse(nb.value) as Record<string, boolean> : null, // the actual saved per-run control, echoed for review
     accepted: parsed.valid.length,
     queued,
     max_domains: MAX_DOMAINS,

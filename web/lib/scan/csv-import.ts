@@ -95,6 +95,25 @@ export function createBatch(db: Database.Database, userId: string, domains: stri
 
 // Creates one scan job per pending row until the plan quota stops the batch. Rows left
 // without a job stay pending so a later resume (new month, upgraded plan) can pick them up.
+export const RUN_BUDGET_KEYS = ['paid_fallback', 'credit_enrichment', 'judge'] as const
+// Normalize an explicitly supplied per-run budget. Absent (undefined/null) means
+// current behavior. An explicitly supplied budget must be a plain object using
+// only the known narrowing keys, each === false; anything else is REJECTED so a
+// caller expecting a restricted run is never silently widened into a full run.
+export function normalizeRunBudget(raw: unknown): { ok: true; value: string | null } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true, value: null }
+  if (typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: 'budget must be an object' }
+  const keys = Object.keys(raw as Record<string, unknown>)
+  if (keys.length === 0) return { ok: false, error: 'budget names no controls' }
+  const out: Record<string, false> = {}
+  for (const k of keys) {
+    if (!(RUN_BUDGET_KEYS as readonly string[]).includes(k)) return { ok: false, error: `unknown budget control: ${k}` }
+    if ((raw as Record<string, unknown>)[k] !== false) return { ok: false, error: `budget.${k} accepts only false - the control can only narrow a run` }
+    out[k] = false
+  }
+  return { ok: true, value: JSON.stringify(out) }
+}
+
 export function queuePendingRows(db: Database.Database, userId: string, batchId: string, runBudget: string | null = null): { queued: number; quotaStop: boolean } {
   const batch = db.prepare('SELECT id FROM csv_batches WHERE id = ? AND user_id = ?').get(batchId, userId)
   if (!batch) return { queued: 0, quotaStop: false }

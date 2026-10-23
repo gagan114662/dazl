@@ -13,7 +13,7 @@ import { migrateConnectors, saveCredential } from '../lib/connectors/store.ts'
 import { migrateEvents } from '../lib/events/store.ts'
 import type { Provider } from '../lib/llm/provider.ts'
 import { claimKeyedJob, runJob, parseRunBudget, type Judge } from '../lib/scan/runner.ts'
-import { createBatch, queuePendingRows, migrateCsv } from '../lib/scan/csv-import.ts'
+import { createBatch, queuePendingRows, migrateCsv, normalizeRunBudget } from '../lib/scan/csv-import.ts'
 import { ENRICH_APOLLO } from '../lib/enrich/index.ts'
 
 const master = randomBytes(32)
@@ -51,6 +51,21 @@ test('parseRunBudget: absent or malformed means current behavior; only explicit 
   assert.equal(parseRunBudget('["paid_fallback"]'), null)
   assert.deepEqual(parseRunBudget('{"paid_fallback":false}'), { paid_fallback: false })
   assert.deepEqual(parseRunBudget('{"judge":false,"credit_enrichment":false,"judge_extra":"x"}'), { judge: false, credit_enrichment: false })
+})
+
+test('normalizeRunBudget: absent means current behavior; an explicitly supplied invalid budget is REJECTED, never widened', () => {
+  assert.deepEqual(normalizeRunBudget(undefined), { ok: true, value: null })
+  assert.deepEqual(normalizeRunBudget(null), { ok: true, value: null })
+  assert.equal(normalizeRunBudget('paid_fallback').ok, false)
+  assert.equal(normalizeRunBudget([]).ok, false)
+  assert.equal(normalizeRunBudget({}).ok, false) // explicit but empty: would silently widen
+  assert.equal(normalizeRunBudget({ paid_fallback: true }).ok, false) // only false narrows
+  assert.equal(normalizeRunBudget({ paid_fallback: 0 }).ok, false)
+  assert.equal(normalizeRunBudget({ unknown_control: false }).ok, false)
+  assert.deepEqual(normalizeRunBudget({ paid_fallback: false }), { ok: true, value: '{"paid_fallback":false}' })
+  const all = normalizeRunBudget({ paid_fallback: false, credit_enrichment: false, judge: false })
+  assert.equal(all.ok, true)
+  assert.deepEqual(JSON.parse((all as { value: string }).value), { paid_fallback: false, credit_enrichment: false, judge: false })
 })
 
 test('queuePendingRows stores the per-run budget on the job row and claim returns it', () => {
