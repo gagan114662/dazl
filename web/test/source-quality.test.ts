@@ -2,10 +2,10 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { classifySource, sourceCap } from '../lib/scan/source-quality.ts'
 
-test('first-party: company name in the hostname keeps full confidence', () => {
-  assert.equal(classifySource('https://www.asymptotelabs.ai/blog/seed', 'Asymptote Labs'), 'first_party')
-  assert.equal(classifySource('https://infino.ai/blog/seed-round/', 'Infino'), 'first_party')
-  assert.equal(sourceCap('https://infino.ai/blog/seed-round/', 'Infino'), 100)
+test('first-party: only a source-of-truth company domain (exact or subdomain) keeps full confidence', () => {
+  assert.equal(classifySource('https://www.asymptotelabs.ai/blog/seed', 'Asymptote Labs', 'asymptotelabs.ai'), 'first_party')
+  assert.equal(classifySource('https://infino.ai/blog/seed-round/', 'Infino', 'infino.ai'), 'first_party')
+  assert.equal(sourceCap('https://infino.ai/blog/seed-round/', 'Infino', 'infino.ai'), 100)
 })
 
 test('editorial: trade press and company-authored releases cap at 90', () => {
@@ -49,19 +49,26 @@ test('zero candidates: scan fails with no_candidates and does not burn monthly q
   assert.equal(scansThisMonth(db, 'u1'), 0)
 })
 
-test('lookalike hosts are not first-party: prefix spoof, subdomain spoof, nested lookalike', async () => {
+test('lookalike hosts are not first-party: name resemblance never qualifies', async () => {
   const { classifySource, sourceCap } = await import('../lib/scan/source-quality.ts')
-  // notacme.com is not Acme's domain even though the host string contains the slug
-  assert.equal(classifySource('https://notacme.com/careers', 'Acme'), 'aggregator') // /careers path -> jobs board class
+  // Without a known company domain, even the genuine-looking host is not first-party;
+  // the company's own pages classify like any third party until a domain is known.
+  assert.equal(classifySource('https://acme.com/about', 'Acme'), 'unknown')
+  assert.equal(classifySource('https://careers.acme.com/jobs/123', 'Acme'), 'aggregator') // jobs path rule
+  // Spoof shapes never qualify, with or without a known domain
   assert.equal(classifySource('https://notacme.com/about', 'Acme'), 'unknown')
-  // acme.com.evil-example.com is a subdomain of evil-example.com, not of acme.com
-  assert.equal(classifySource('https://acme.com.evil-example.com/careers', 'Acme'), 'aggregator')
-  assert.equal(classifySource('https://acme.com.evil-example.com/', 'Acme'), 'unknown')
-  // the spoof no longer earns the first-party confidence cap
-  assert.equal(sourceCap('https://acme.com.evil-example.com/', 'Acme'), 75)
-  // genuine first-party shapes still classify: own domain, own subdomain, suffix variant, ccTLD
-  assert.equal(classifySource('https://acme.com/careers', 'Acme'), 'first_party')
-  assert.equal(classifySource('https://careers.acme.com/jobs/123', 'Acme'), 'first_party')
-  assert.equal(classifySource('https://acmeinc.com/about', 'Acme Inc'), 'first_party')
-  assert.equal(classifySource('https://blog.acme.co.uk/post', 'Acme'), 'first_party')
+  assert.equal(classifySource('https://notacme.com/about', 'Acme', 'acme.com'), 'unknown')
+  assert.equal(classifySource('https://acme.com.evil-example.com/', 'Acme', 'acme.com'), 'unknown')
+  assert.equal(classifySource('https://acmefraud.com/', 'Acme', 'acme.com'), 'unknown')
+  assert.equal(classifySource('https://acme-sucks.com/', 'Acme', 'acme.com'), 'unknown')
+  // Spoofs no longer earn the first-party cap
+  assert.equal(sourceCap('https://acme.com.evil-example.com/', 'Acme', 'acme.com'), 75)
+  assert.equal(sourceCap('https://notacme.com/', 'Acme', 'acme.com'), 75)
+  // With a source-of-truth domain (the CSV-import job's domain), exact and subdomain qualify
+  assert.equal(classifySource('https://acme.com/about', 'Acme', 'acme.com'), 'first_party')
+  assert.equal(classifySource('https://careers.acme.com/jobs/123', 'Acme', 'acme.com'), 'first_party')
+  assert.equal(classifySource('https://blog.acme.co.uk/post', 'Acme', 'acme.co.uk'), 'first_party')
+  assert.equal(sourceCap('https://acme.com/about', 'Acme', 'acme.com'), 100)
+  // www prefix on either side still matches the same registrable host
+  assert.equal(classifySource('https://www.acme.com/', 'Acme', 'www.acme.com'), 'first_party')
 })

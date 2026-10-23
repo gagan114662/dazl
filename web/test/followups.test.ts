@@ -24,7 +24,7 @@ test('semantic check: a page that contains the quote but contradicts the claim i
   assert.equal(r1.dropped.contradicted, 1)
   const r2 = await verifyLeads([cand()], good, NOW, judge)
   assert.equal(r2.leads.length, 1)
-  assert.ok(r2.leads[0].confidence >= 85) // supports adds a little
+  assert.equal(r2.leads[0].confidence, 75) // supports adds a little, capped at 75: no grounded first-party domain
   assert.ok(seen[1].includes('first step of a restructure'))
 })
 
@@ -37,9 +37,9 @@ test('semantic check: unclear lowers confidence and can drop; an unavailable jud
   assert.equal(unclearDated.leads[0].confidence, 75)
   const down = await verifyLeads([cand()], good, NOW, async () => 'unavailable')
   assert.equal(down.leads.length, 1)
-  assert.equal(down.leads[0].confidence, 80)
+  assert.equal(down.leads[0].confidence, 75) // an unavailable judge never blocks, capped at 75
   const none = await verifyLeads([cand()], good, NOW) // no judge at all
-  assert.equal(none.leads[0].confidence, 85)
+  assert.equal(none.leads[0].confidence, 75) // capped at 75: no grounded first-party domain
 })
 
 test('judge prompt wraps the page text as data, strips delimiter tricks; only an exact first word counts', () => {
