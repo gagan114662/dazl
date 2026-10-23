@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { createDraft, listMessages, OutreachError } from '@/lib/outreach/service'
-import { polishDraft } from '@/lib/outreach/draft-llm'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 
@@ -31,8 +30,8 @@ export async function POST(req: NextRequest) {
   if (typeof body?.lead_id !== 'string' || !/^[a-f0-9]{24}$/.test(body.lead_id)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   try {
     const id = createDraft(getScanDb(), user.id, body.lead_id, user.business_name)
-    // Memory + the tenant's own key rewrite the template when available; failures keep it.
-    try { await polishDraft(getScanDb(), user.id, id, user.business_name) } catch { /* template stays */ }
+    // Drafts are template-only here: an LLM rewrite bills the tenant's provider key,
+    // so it happens only via an explicit click on POST /api/outreach/polish.
     return NextResponse.json({ id }, { status: 201 })
   } catch (e) {
     if (e instanceof OutreachError) { const [s, m] = MSG[e.code] ?? [400, 'Could not create the draft']; return NextResponse.json({ error: m, code: e.code }, { status: s }) }
