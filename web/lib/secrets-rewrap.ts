@@ -28,21 +28,32 @@ export const REWRAP_COLUMNS: readonly ColumnSpec[] = [
   { table: 'gmail_accounts', column: 'refresh_ct', pk: ['tenant_id'], ctx: r => `gmail-refresh:${r.tenant_id}` },
 ]
 
-export interface RewrapColumnResult { table: string; column: string; missing: boolean; rewrapped: number; skipped: number }
+export interface RewrapColumnResult { table: string; column: string; missing: boolean; rewrapped: number; skipped: number; corrupt: number }
 
 // Throws (fail closed) with a locator-only message on the first row that cannot
 // be rewrapped; committed earlier rows stay rewrapped and a re-run resumes them.
-export function rewrapMasterKey(db: Database.Database, oldMaster: Buffer, newMaster: Buffer, opts: { dryRun?: boolean } = {}): RewrapColumnResult[] {
+// opts.quarantineCorrupt: instead of aborting, count and skip rows that can be
+// rewrapped under NEITHER key (parse failure, unknown version, both unwraps fail)
+// so a rollback can still recover every other row. Rows that unwrap under the old
+// key but whose write fails (concurrent modification) ALWAYS abort - that is a
+// fencing problem, never corruption.
+export function rewrapMasterKey(db: Database.Database, oldMaster: Buffer, newMaster: Buffer, opts: { dryRun?: boolean; quarantineCorrupt?: boolean } = {}): RewrapColumnResult[] {
   if (oldMaster.equals(newMaster)) throw new Error('old and new master keys are identical')
   const results: RewrapColumnResult[] = []
   for (const spec of REWRAP_COLUMNS) {
     const exists = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(spec.table)
-    if (!exists) { results.push({ table: spec.table, column: spec.column, missing: true, rewrapped: 0, skipped: 0 }); continue }
+    if (!exists) { results.push({ table: spec.table, column: spec.column, missing: true, rewrapped: 0, skipped: 0, corrupt: 0 }); continue }
     const rows = db.prepare(`SELECT ${spec.pk.map(c => `"${c}"`).join(', ')}, "${spec.column}" AS blob FROM "${spec.table}"`).all() as Record<string, string>[]
-    let rewrapped = 0, skipped = 0
+    let rewrapped = 0, skipped = 0, corrupt = 0
     for (const row of rows) {
       const locator = `${spec.table}(${spec.pk.map(c => `${c}=...`).join(',')})` // pk values are tenant ids - locators only, still no blob
-      const { out, changed } = rewrapSecret(row.blob, spec.ctx(row), oldMaster, newMaster) // throws = fail closed
+      let out: string, changed: boolean
+      try {
+        ;({ out, changed } = rewrapSecret(row.blob, spec.ctx(row), oldMaster, newMaster))
+      } catch (e) {
+        if (opts.quarantineCorrupt) { corrupt++; continue } // reported in the result; row left untouched
+        throw e // fail closed
+      }
       if (!changed) { skipped++; continue }
       rewrapped++
       if (opts.dryRun) continue
@@ -55,7 +66,7 @@ export function rewrapMasterKey(db: Database.Database, oldMaster: Buffer, newMas
       })
       txn()
     }
-    results.push({ table: spec.table, column: spec.column, missing: false, rewrapped, skipped })
+    results.push({ table: spec.table, column: spec.column, missing: false, rewrapped, skipped, corrupt })
   }
   return results
 }

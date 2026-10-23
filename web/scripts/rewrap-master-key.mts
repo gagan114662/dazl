@@ -21,7 +21,7 @@ if (newMaster.length !== 32) { console.error('DAZL_MASTER_KEY_NEXT must be base6
 const db = new Database(dbPath)
 try {
   const results = rewrapMasterKey(db, oldMaster, newMaster, { dryRun })
-  for (const r of results) console.log(`${r.table}.${r.column}: ${r.missing ? 'table missing - nothing to do' : `${r.rewrapped} rewrapped, ${r.skipped} already current`}${dryRun ? ' (dry run - nothing written)' : ''}`)
+  for (const r of results) console.log(`${r.table}.${r.column}: ${r.missing ? 'table missing - nothing to do' : `${r.rewrapped} rewrapped, ${r.skipped} already current${r.corrupt ? `, ${r.corrupt} CORRUPT (skipped - need manual review)` : ''}`}${dryRun ? ' (dry run - nothing written)' : ''}`)
 } catch (e) {
   console.error(`rewrap ABORTED (fail closed): ${e instanceof Error ? e.message : 'error'}`)
   process.exit(1)

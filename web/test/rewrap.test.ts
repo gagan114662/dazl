@@ -114,6 +114,24 @@ test('dry run writes nothing', () => {
   assert.equal(decryptSecret(before, 'llm-key:t1:anthropic', OLD), 'fixture-llm-secret-1')
 })
 
+test('rollback recovers every already-migrated row even when corrupt rows can never be rewrapped', () => {
+  const db = fixtureDb()
+  // Partial forward run: llm keys migrated, then a corrupt connector row aborts it.
+  db.prepare("UPDATE tenant_connectors SET ciphertext = 'not json' WHERE tenant_id='t2'").run()
+  db.prepare("UPDATE gmail_accounts SET refresh_ct = ? WHERE tenant_id='t3'").run(JSON.stringify({ v: 2, iv: 'x', ct: 'x', tag: 'x', wiv: 'x', wct: 'x', wtag: 'x' }))
+  assert.throws(() => rewrapMasterKey(db, OLD, NEW), 'forward run fails closed on the corrupt row')
+  // llm rows are now under NEW; the corrupt rows can never unwrap under EITHER key.
+  // Rollback in quarantine mode must recover every recoverable row, not be blocked.
+  const back = rewrapMasterKey(db, NEW, OLD, { quarantineCorrupt: true })
+  assert.deepEqual(back.map(r => [r.rewrapped, r.skipped, r.corrupt]), [[2, 0, 0], [0, 0, 1], [0, 0, 1]], 'llm rows rolled back; both corrupt rows quarantined, none silently dropped')
+  assert.equal(decryptSecret((db.prepare("SELECT ciphertext c FROM tenant_llm_keys WHERE tenant_id='t1' AND vendor='anthropic'").get() as { c: string }).c, 'llm-key:t1:anthropic', OLD), 'fixture-llm-secret-1', 'recovered under the old key')
+  assert.equal(decryptSecret((db.prepare("SELECT ciphertext c FROM tenant_llm_keys WHERE tenant_id='t1' AND vendor='openai'").get() as { c: string }).c, 'llm-key:t1:openai', OLD), 'fixture-llm-secret-2')
+  // The corrupt rows are untouched and still loudly corrupt - a later fixed row migrates fine.
+  assert.equal((db.prepare("SELECT ciphertext c FROM tenant_connectors WHERE tenant_id='t2'").get() as { c: string }).c, 'not json')
+  // Default mode still fails closed in BOTH directions - quarantine is an explicit operator choice.
+  assert.throws(() => rewrapMasterKey(db, NEW, OLD), 'default rollback also fails closed')
+})
+
 test('registry is exactly the three known ciphertext columns (fail-closed allowlist)', () => {
   assert.deepEqual(REWRAP_COLUMNS.map(c => `${c.table}.${c.column}`).sort(), ['gmail_accounts.refresh_ct', 'tenant_connectors.ciphertext', 'tenant_llm_keys.ciphertext'])
   assert.equal(rewrapMasterKey(new Database(':memory:'), OLD, NEW).every(r => r.missing), true, 'a database without the tables is reported, not invented')
