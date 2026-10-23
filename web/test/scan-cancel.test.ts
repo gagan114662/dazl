@@ -59,11 +59,13 @@ test('leads page adopts a pending/running scan on load so a reload shows progres
   assert.match(src, /setJobId\(active\.id\)/)
 })
 
-test('status polling of an adopted job is passive: no runner kick', async () => {
+test('status poll is passive only for explicit ?passive=1 (adoption resumes the queue)', async () => {
   const fs = await import('node:fs')
   const route = fs.readFileSync(new URL('../app/api/scan/status/route.ts', import.meta.url), 'utf8')
   assert.match(route, /passive'\) !== '1'\) after\(/)
   const ui = fs.readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8')
   assert.match(ui, /passive=1/)
   assert.match(ui, /passiveJob\.current = false; setJobId\(j\.job_id\)/)
+  assert.doesNotMatch(ui, /passiveJob\.current = true/)
+  assert.match(ui, /get\('passive'\) === '1'/)
 })

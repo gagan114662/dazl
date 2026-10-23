@@ -5,7 +5,8 @@
 // the scan found nothing.
 export function emptyLeadsMessage(status: string, visibleCount: number, hiddenCount: number, needsReviewCount?: number | null): string | null {
   if (visibleCount > 0) return null
-  if (status === 'pending' || status === 'running') return 'This scan is still running. Leads appear here when it finishes.'
+  if (status === 'pending') return 'This scan is queued and has not started yet. Leads appear here after it runs.'
+  if (status === 'running') return 'This scan is still running. Leads appear here when it finishes.'
   if (status === 'loading') return 'Loading this scan...'
   if (status === 'failed') return 'This scan ended without leads. See the message above.'
   if (status !== 'done') return 'No leads yet. Run a scan.'

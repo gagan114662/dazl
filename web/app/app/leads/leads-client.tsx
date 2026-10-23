@@ -69,7 +69,7 @@ export default function LeadsClient() {
   const [jobError, setJobError] = useState('')
   const [statusError, setStatusError] = useState<'not_found' | 'unavailable' | null>(null)
   const statusFails = useRef(0)
-  // A scan adopted on load (reload, Home entry, deep link) is only observed: polling it must not kick the runner.
+  // Polling resumes a pending scan (a retry or a job reaped after a restart is only picked up by the status poll), so an adopted job is polled normally. ?passive=1 on the URL is the explicit read-only QA mode: observe, never kick the runner.
   const passiveJob = useRef(false)
   const [useGithub, setUseGithub] = useState(false)
   const [useYoutube, setUseYoutube] = useState(false)
@@ -285,7 +285,7 @@ export default function LeadsClient() {
   // Deep link: /app/leads?job_id=... (watch cards link here to show a past watch run).
   useEffect(() => {
     const id = new URLSearchParams(window.location.search).get('job_id')
-    if (id && /^[a-f0-9]{24}$/.test(id)) { passiveJob.current = true; setJobId(id); setStatus('loading') }
+    if (id && /^[a-f0-9]{24}$/.test(id)) { passiveJob.current = new URLSearchParams(window.location.search).get('passive') === '1'; setJobId(id); setStatus('loading') }
   }, [])
   const watchReq = async (body: Record<string, unknown>) => {
     setWatchNote('')
@@ -306,7 +306,7 @@ export default function LeadsClient() {
       // A scan that is still queued/running is the one exception to "nothing autoselects": a reload or a
       // return from Home must show its progress and Stop control, not an enabled Find leads button.
       const active = jobs.find(x => !x.csv_domain && (x.status === 'pending' || x.status === 'running'))
-      if (active) { passiveJob.current = true; setJobId(active.id); setStatus(active.status) }
+      if (active) { passiveJob.current = new URLSearchParams(window.location.search).get('passive') === '1'; setJobId(active.id); setStatus(active.status) }
     } }).catch(() => {})
   }, [jobId])
   // Restore the last profile so a reload never loses it (item: ICP persistence).
@@ -474,8 +474,8 @@ export default function LeadsClient() {
         <div className="card p-4 mb-4 flex items-center gap-3">
           <span className="inline-block h-4 w-4 rounded-full border-2 border-gray-500 border-t-white animate-spin" aria-hidden />
           <div className="text-sm">
-            <div>Scanning - this can take a few minutes.</div>
-            <div className="text-gray-400 text-xs">{leadsSoFar > 0 ? `${leadsSoFar} lead${leadsSoFar === 1 ? '' : 's'} so far` : 'Searching sources...'}{status === 'pending' ? (createdAt ? ` - queued ${Math.max(0, Math.floor((now - createdAt) / 60))} min ago` : '') : startedAt ? ` - running ${Math.max(0, Math.floor((now - startedAt) / 60))} min` : ''}{attempt ? ` - attempt ${attempt[0]} of ${attempt[1]}` : ''}</div>
+            <div>{status === 'pending' ? 'Queued - waiting to start.' : 'Scanning - this can take a few minutes.'}</div>
+            <div className="text-gray-400 text-xs">{leadsSoFar > 0 ? `${leadsSoFar} lead${leadsSoFar === 1 ? '' : 's'} so far` : status === 'pending' ? 'Not started' : 'Searching sources...'}{status === 'pending' ? (createdAt ? ` - queued ${Math.max(0, Math.floor((now - createdAt) / 60))} min ago` : '') : startedAt ? ` - running ${Math.max(0, Math.floor((now - startedAt) / 60))} min` : ''}{attempt ? ` - attempt ${attempt[0]} of ${attempt[1]}` : ''}</div>
             <div className="text-gray-400 text-xs">dazl cannot show a per-source count yet. A scan that stops responding is retried automatically, up to {attempt?.[1] ?? 3} attempts.</div>
             <button type="button" className="underline text-[#111] text-xs mt-1" onClick={async () => { const r = await fetch('/api/scan/cancel', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ job_id: jobId }) }); const j = await r.json().catch(() => ({})); setCancelNote(r.ok ? (j.note ?? 'Stop requested.') : 'Could not cancel: ' + (j.error ?? 'try again')); if (r.ok) setStatus('failed'); if (r.ok) setJobError('cancelled') }}>Stop this scan</button>
             {cancelNote && <div className="text-gray-400 text-xs">{cancelNote}</div>}
