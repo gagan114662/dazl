@@ -139,7 +139,12 @@ function backfillKindTags(db: Database.Database): void {
     WHERE scan_job_id IN (SELECT job_id FROM commenter_batches)`)
   if (hasTable('monitor_runs')) db.exec(`UPDATE leads SET source_kind = 'monitor'
     WHERE scan_job_id IN (SELECT job_id FROM monitor_runs)`)
-  db.exec(`UPDATE leads SET source_kind = 'test' WHERE company LIKE 'dazl % test fixture (test only)'`)
+  // Fixture rows, grounded in the fixture inserters' own job-level marker:
+  // test-fixture, verification-fixture and ranking-fixture all insert their jobs
+  // with industry/location 'test only' (and tag new leads source_kind 'test' at
+  // insert). Older fixture rows predate the column - mark them by the JOB marker
+  // so no business-name matching can ever hide a genuine company's row.
+  db.exec(`UPDATE leads SET source_kind = 'test' WHERE scan_job_id IN (SELECT id FROM scan_jobs WHERE industry = 'test only' AND location = 'test only')`)
   const rows = db.prepare('SELECT id, signals FROM leads WHERE signal_kind IS NULL AND signals IS NOT NULL').all() as { id: string; signals: string }[]
   const upd = db.prepare('UPDATE leads SET signal_kind = ? WHERE id = ?')
   for (const r of rows) { const k = primarySignalKind(r.signals); if (k) upd.run(k, r.id) }
@@ -275,6 +280,8 @@ export interface JobSummary {
   error: string | null
   query: string | null
   business_name: string
+  industry: string
+  location: string
   csv_domain: string | null
   created_at: number
   finished_at: number | null
@@ -287,7 +294,7 @@ export interface JobSummary {
 export function listJobs(db: Database.Database, userId: string, limit = 20): JobSummary[] {
   return db
     .prepare(
-      `SELECT j.id, j.status, j.error, j.query, j.business_name, j.csv_domain, j.created_at, j.finished_at,
+      `SELECT j.id, j.status, j.error, j.query, j.business_name, j.industry, j.location, j.csv_domain, j.created_at, j.finished_at,
               j.candidates, j.verified, j.needs_review, j.dropped,
               (SELECT count(*) FROM leads l WHERE l.scan_job_id = j.id) AS lead_count
        FROM scan_jobs j
@@ -299,8 +306,10 @@ export function listJobs(db: Database.Database, userId: string, limit = 20): Job
 
 // CSV export: every lead the tenant can see (hidden fit<=1 rows excluded unless
 // includeHidden), across one job or all of their jobs, newest first. Read-only.
-// Fixture provenance already exists on the job: fixture jobs are inserted with a
-// business name ending in '(test only)' (same marker the jobs API labels test_only).
+// Fixture provenance is the structured source_kind = 'test' classification: the
+// fixture inserters set it at insert and migrateScan backfills older rows via the
+// job-level 'test only' industry/location marker. No business-name matching, so a
+// genuine company whose name happens to contain '(test only)' is never hidden.
 // The export defaults to real rows only; includeFixtures is the explicit opt-in for
 // verification workflows. Nothing is deleted - every row stays in the database.
 export function exportLeads(db: Database.Database, userId: string, jobId?: string, limit = 5000, includeFixtures = false) {
@@ -311,7 +320,7 @@ export function exportLeads(db: Database.Database, userId: string, jobId?: strin
               l.evidence_excerpt, l.created_at
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
        WHERE j.user_id = ? ${jobId ? 'AND j.id = ?' : ''} AND (l.fit IS NULL OR l.fit > 1)
-       ${includeFixtures ? '' : "AND j.business_name NOT LIKE '%(test only)'"}
+       ${includeFixtures ? '' : "AND (l.source_kind IS NULL OR l.source_kind != 'test')"}
        ORDER BY l.created_at DESC LIMIT ?`,
     )
     .all(...(jobId ? [userId, jobId, limit] : [userId, limit]))

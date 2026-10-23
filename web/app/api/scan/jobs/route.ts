@@ -9,9 +9,10 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const jobs = listJobs(getScanDb(), user.id).map(j => ({
     ...j,
-    // Fixture jobs are inserted with a '(test only)' business name; label them so the
-    // history list never presents test rows as real scan results.
-    test_only: j.business_name.endsWith('(test only)'),
+    // Fixture jobs carry the inserters' own job-level marker (industry/location
+    // 'test only') - the same provenance the export filter uses - so a genuine
+    // business whose name contains '(test only)' is never mislabeled or hidden.
+    test_only: j.industry === 'test only' && j.location === 'test only',
   }))
   return NextResponse.json({ jobs })
 }
