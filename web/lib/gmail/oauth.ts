@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3'
 import { decryptSecret, encryptSecret } from '../secrets.ts'
 import { norm } from '../outreach/store.ts'
 
-// Least privilege: send only. dazl can never read the user's mailbox.
+// Least privilege: send is the required grant. Reading replies is a separate, optional gmail.readonly grant (below).
 export const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send'
 // Reading is a separate, optional grant. gmail.readonly is the narrowest scope that returns message bodies.
 // dazl only ever opens threads it started itself (by thread id) and never lists or searches the mailbox.

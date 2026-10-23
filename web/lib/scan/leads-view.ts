@@ -5,6 +5,9 @@
 // the scan found nothing.
 export function emptyLeadsMessage(status: string, visibleCount: number, hiddenCount: number, needsReviewCount?: number | null): string | null {
   if (visibleCount > 0) return null
+  if (status === 'pending' || status === 'running') return 'This scan is still running. Leads appear here when it finishes.'
+  if (status === 'loading') return 'Loading this scan...'
+  if (status === 'failed') return 'This scan ended without leads. See the message above.'
   if (status !== 'done') return 'No leads yet. Run a scan.'
   if (hiddenCount > 0) return `The scan found nothing above your fit bar - ${hiddenCount} lower-fit lead${hiddenCount === 1 ? ' is' : 's are'} hidden below.`
   // An all-review scan shows its cards below - 'no leads' would contradict them.

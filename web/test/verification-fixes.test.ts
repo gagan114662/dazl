@@ -30,11 +30,11 @@ test('emptyLeadsMessage: done scan whose leads all need review says so instead o
   assert.equal(emptyLeadsMessage('done', 0, 0, 2), 'No leads passed verification. 2 need your review below.')
   // Fit-hidden still wins when both apply - the hidden toggle sits right above.
   assert.equal(emptyLeadsMessage('done', 0, 2, 1), 'The scan found nothing above your fit bar - 2 lower-fit leads are hidden below.')
-  assert.equal(emptyLeadsMessage('running', 0, 0, 1), 'No leads yet. Run a scan.')
+  assert.equal(emptyLeadsMessage('running', 0, 0, 1), 'This scan is still running. Leads appear here when it finishes.')
 })
 
 test('emptyLeadsMessage: not done yet, and never shown over a non-empty list', () => {
-  assert.equal(emptyLeadsMessage('running', 0, 0), 'No leads yet. Run a scan.')
+  assert.equal(emptyLeadsMessage('running', 0, 0), 'This scan is still running. Leads appear here when it finishes.')
   assert.equal(emptyLeadsMessage('done', 3, 2), null)
 })
 
@@ -48,4 +48,10 @@ test('scoreLabel: scoring keeps showing for any lead with fit left or not yet sc
   assert.equal(scoreLabel(95, 1), 'score 95')
   assert.equal(scoreLabel(72, null), 'score 72')
   assert.equal(scoreLabel(40, 4), 'score 40')
+})
+
+test('emptyLeadsMessage: a running, loading or failed scan never says "No leads yet. Run a scan."', () => {
+  for (const st of ['pending', 'running', 'loading', 'failed']) assert.doesNotMatch(emptyLeadsMessage(st, 0, 0) ?? '', /Run a scan/)
+  assert.match(emptyLeadsMessage('running', 0, 0) ?? '', /still running/)
+  assert.equal(emptyLeadsMessage('', 0, 0), 'No leads yet. Run a scan.')
 })

@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { migrateScan, createJob, cancelJob, getJob, reapStaleJobs } from '../lib/scan/store.ts'
+import { migrateScan, createJob, cancelJob, countActiveJobs, getJob, reapStaleJobs } from '../lib/scan/store.ts'
 
 function setup() { const db = new Database(':memory:'); migrateScan(db); return db }
 const status = (db: Database.Database, id: string) => db.prepare('SELECT status,error,attempts,claimed_at FROM scan_jobs WHERE id=?').get(id) as { status: string; error: string | null; attempts: number; claimed_at: number | null }
@@ -34,4 +34,15 @@ test('tenant isolation, finished jobs, and double cancel', () => {
   const id2 = createJob(db, 'A', { business_name: 'y', industry: 'i', location: 'l' })
   assert.equal(cancelJob(db, 'A', id2).ok, true)
   assert.deepEqual(cancelJob(db, 'A', id2), { ok: false, reason: 'already_finished' })
+})
+
+test('a just-cancelled scan keeps its active slot for the hold window, then frees it', () => {
+  const db = setup(); const id = createJob(db, 'A', { business_name: 'x', industry: 'i', location: 'l' })
+  db.prepare("UPDATE scan_jobs SET status='running', attempts=1, claimed_at=1 WHERE id=?").run(id)
+  assert.equal(countActiveJobs(db, 'A'), 1)
+  cancelJob(db, 'A', id)
+  assert.equal(countActiveJobs(db, 'A'), 1, 'still held right after cancel')
+  db.prepare('UPDATE scan_jobs SET finished_at = finished_at - 400 WHERE id=?').run(id)
+  assert.equal(countActiveJobs(db, 'A'), 0)
+  assert.equal(countActiveJobs(db, 'B'), 0)
 })
