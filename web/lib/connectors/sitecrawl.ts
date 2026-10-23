@@ -221,28 +221,35 @@ export function extractContacts(html: string, pageUrl: string, site: string): Fo
 //  - the page needs real prose (15+ distinct lower-case words) or nothing is judged;
 //  - a name-shaped phrase is rejected when one of its words also appears in lower case in the page text
 //    (trade and service words such as "Roof Repair" do; surnames and first names almost never do) or is a link label;
-//  - JSON-LD Person counts only under employee/founder/member and never inside review/author/comment nodes.
+//  - JSON-LD Person counts only under employee/founder/member of a node typed as an organisation/business, never inside review/author/comment nodes;
+//  - a blockquote/cite/q or testimonial-marked element that never closes makes the whole page unjudged (fail closed).
 const T = '(?:founder|co-?founder|owner|co-?owner|ceo|president|principal|proprietor|managing director|general manager|director|managing partner|partner|practice manager|office manager|broker|dentist|doctor)'
 const TITLE_FULL = new RegExp(`^${T}(?: (?:&|and) ${T})?$`, 'i')
 const PEOPLE_PAGE = /(about|team|leadership|people|staff|our-story|who-we-are|meet|contact|company|owner|doctor|dentist)/i
 const NAME_LINE = /^(?:(?:Dr|Mr|Ms|Mrs)\.?\s+)?[A-Z][a-z'\u2019-]{1,20}(?:\s+[A-Z]\.?)?\s+[A-Z][A-Za-z'\u2019-]{2,24}$/ // both names 3+ letters: two-letter surnames (Li, Ng) are skipped on purpose, "Us" in "Contact Us" is not a surname
-// Remove balanced elements whose tag or class/id marks quoted third-party content.
-function cutBlocks(html: string): string {
-  let out = html.replace(/<(blockquote|cite|q)\b[\s\S]*?<\/\1>/gi, ' ')
-  const open = /<(div|section|article|ul|ol|li|aside|figure)\b[^>]*\b(?:class|id)\s*=\s*["'][^"']*(?:testimonial|review|quote|client|customer|partner|sponsor|press|award)[^"']*["'][^>]*>/i
-  for (let guard = 0; guard < 50; guard++) {
-    const m = open.exec(out); if (!m) break
-    const tag = m[1].toLowerCase(); const re = new RegExp(`<(/?)${tag}\\b[^>]*>`, 'gi'); re.lastIndex = m.index + m[0].length
-    let depth = 1, end = out.length, t: RegExpExecArray | null
+// Remove balanced elements whose tag (blockquote/cite/q) or class/id (any element) marks quoted third-party content.
+// Returns null when a marked region is malformed (never closed): the page is then not judged at all.
+const MARK = '(?:testimonial|review|quote|client|customer|partner|sponsor|press|award|feedback|rating)'
+function cutBlocks(html: string): string | null {
+  let out = html
+  const open = new RegExp(`<(blockquote|cite|q)\\b[^>]*>|<([a-z][a-z0-9]*)\\b[^>]*\\b(?:class|id)\\s*=\\s*["'][^"']*${MARK}[^"']*["'][^>]*>`, 'i')
+  for (let guard = 0; guard < 200; guard++) {
+    const m = open.exec(out); if (!m) return out
+    const tag = (m[1] ?? m[2]).toLowerCase()
+    if (/\/\s*>$/.test(m[0]) || /^(?:br|img|hr|input|meta|link)$/.test(tag)) { out = out.slice(0, m.index) + ' ' + out.slice(m.index + m[0].length); continue }
+    const re = new RegExp(`<(/?)${tag}\\b[^>]*>`, 'gi'); re.lastIndex = m.index + m[0].length
+    let depth = 1, end = -1, t: RegExpExecArray | null
     while ((t = re.exec(out))) { depth += t[1] ? -1 : 1; if (depth === 0) { end = t.index + t[0].length; break } }
+    if (end < 0) return null
     out = out.slice(0, m.index) + ' ' + out.slice(end)
   }
-  return out
+  return null
 }
 function jsonLdPeople(html: string): { name: string; title: string }[] {
   const out: { name: string; title: string }[] = []
   for (const m of html.matchAll(/<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
     let root: unknown; try { root = JSON.parse(m[1]) } catch { continue }
+    const ORG = /^(Organization|Corporation|LocalBusiness|Dentist|Physician|MedicalBusiness|ProfessionalService|LegalService|RealEstateAgent|Store|Restaurant|HomeAndConstructionBusiness|Attorney|Accountant|FinancialService)$/
     const stack: { node: unknown; ok: boolean }[] = [{ node: root, ok: false }]
     while (stack.length) {
       const { node, ok } = stack.pop()!
@@ -254,7 +261,7 @@ function jsonLdPeople(html: string): { name: string; title: string }[] {
       for (const [k, v] of Object.entries(rec)) {
         if (!v || typeof v !== 'object') continue
         if (/^(review|reviews|author|creator|comment|reviewRating|editor|contributor|publisher)$/i.test(k)) continue
-        stack.push({ node: v, ok: ok || /^(employee|employees|founder|founders|member|members)$/i.test(k) })
+        stack.push({ node: v, ok: ok || (/^(employee|employees|founder|founders|member|members)$/i.test(k) && types.some(t => ORG.test(t))) })
       }
     }
   }
@@ -264,6 +271,7 @@ export function extractPeople(html: string, pageUrl: string): Found[] {
   const found = new Map<string, Found>()
   let path = ''; try { path = new URL(pageUrl).pathname } catch { return [] }
   const clean = cutBlocks(html)
+  if (clean === null) return [] // a quoted/testimonial region that never closes cannot be separated from the page: fail closed
   const visible = clean.replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, ' ').replace(/<!--[\s\S]*?-->/g, ' ')
   const linkText = new Set([...visible.matchAll(/<a\b[^>]*>([\s\S]*?)<\/a>/gi)].map(m => m[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()))
   const text = visible.replace(/<\/?(p|div|li|ul|ol|h[1-6]|br|section|article|tr|td|th|figure|figcaption|header|footer|span|strong|b|em)\b[^>]*>/gi, '\n').replace(/<[^>]+>/g, ' ')

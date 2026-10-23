@@ -34,8 +34,27 @@ test('trade and service words that look like names are rejected by page evidence
 test('quoted third-party content is cut before extraction: blockquote, testimonial/review blocks, JSON-LD review author', () => {
   assert.deepEqual(vals('<blockquote><p>Sam Park</p><p>Director</p></blockquote>'), [])
   assert.deepEqual(vals('<div class="testimonials"><div class="t"><h4>Ann Cole</h4><p>Owner</p></div><div><h4>Raj Rao</h4><p>Partner</p></div></div><p>Footer text.</p>'), [])
-  assert.deepEqual(vals('<script type="application/ld+json">{"@type":"Review","author":{"@type":"Person","name":"Kim Ng","jobTitle":"Owner"}}</script>'), [])
-  assert.deepEqual(vals('<script type="application/ld+json">{"@type":"Person","name":"Kim Ng","jobTitle":"Owner"}</script>'), [], 'a bare Person with no employee/founder/member parent is not asserted as staff')
+  const ld = (j: string) => `<script type="application/ld+json">${j}</script>`
+  const KN = '{"@type":"Person","name":"Kim Nolan","jobTitle":"Owner"}'
+  // positive control: the same person IS extracted when attached as an employee of an organisation, so each negative below tests one gate
+  assert.deepEqual(vals(ld(`{"@type":"Organization","employee":${KN}}`)), ['Kim Nolan, Owner'])
+  assert.deepEqual(vals(ld(`{"@type":"Review","author":${KN}}`)), [], 'review author')
+  assert.deepEqual(vals(ld(`{"@type":"Organization","review":{"@type":"Review","author":${KN}}}`)), [], 'org review author')
+  assert.deepEqual(vals(ld(`{"@type":"Organization","employee":{"@type":"Person","name":"Sam Hart","jobTitle":"Owner","review":{"@type":"Review","author":${KN}}}}`)), ['Sam Hart, Owner'], 'a review author nested under a real employee is not added')
+  assert.deepEqual(vals(ld(KN)), [], 'bare Person')
+  assert.deepEqual(vals(ld(`{"@type":"Thing","employee":${KN}}`)), [], 'employee of a node with no organisation identity')
+})
+test('marked quoted regions on any element are cut, and a region that never closes fails the whole page closed', () => {
+  const card = '<h4>Kim Nolan</h4><p>Owner</p>'
+  assert.deepEqual(vals(`<div class="team">${card}</div>`), ['Kim Nolan, Owner'], 'positive control')
+  assert.deepEqual(vals(`<p class="testimonial">${card}</p>`), [])
+  assert.deepEqual(vals(`<span id="client-review">Kim Nolan</span><p>Owner</p>`), [])
+  assert.deepEqual(vals(`<section class="reviews"><p class="review-body">${card}</p></section>`), [])
+  assert.deepEqual(vals(`<blockquote>great<h4>Kim Nolan</h4><p>Owner</p>`), [], 'unclosed blockquote')
+  assert.deepEqual(vals(`<cite>${card}`), [], 'unclosed cite')
+  assert.deepEqual(vals(`<q>${card}`), [], 'unclosed q')
+  assert.deepEqual(vals(`<div class="testimonial">${card}`), [], 'unclosed marked div')
+  assert.deepEqual(vals(`<div class="team">${card}</div><div class="team2"><p>Priya Shah</p><p>Partner</p></div><blockquote>x`), [], 'fail closed even when real cards precede the bad region')
 })
 test('people are read only from about/team/leadership/contact style pages, never from home or blog pages', () => {
   const card = '<h3>Dana Lee</h3><p>Owner</p>'
