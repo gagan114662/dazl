@@ -12,13 +12,13 @@ test('one-token company does not match a same-named fund filing', () => {
 test('entity with fund markers never confirms an operating company without them', () => {
   assert.equal(classifyEntityMatch('Ambi', 'Ambi Ventures'), 'unconfirmed')
   // both sides fund-flavoured: allowed to compare tokens normally
-  assert.equal(classifyEntityMatch('Vesta Ventures', 'Vesta Ventures LP'), 'confirmed')
+  assert.equal(classifyEntityMatch('Vesta Ventures', 'Vesta Ventures LP'), 'heuristic')
 })
 
 test('exact name after suffix stripping confirms', () => {
-  assert.equal(classifyEntityMatch('Vesta', 'Vesta, Inc.'), 'confirmed')
-  assert.equal(classifyEntityMatch('Acme Robotics', 'Acme Robotics, Inc.'), 'confirmed')
-  assert.equal(classifyEntityMatch('Acme Robotics', 'ACME ROBOTICS CORPORATION'), 'confirmed')
+  assert.equal(classifyEntityMatch('Vesta', 'Vesta, Inc.'), 'heuristic')
+  assert.equal(classifyEntityMatch('Acme Robotics', 'Acme Robotics, Inc.'), 'heuristic')
+  assert.equal(classifyEntityMatch('Acme Robotics', 'ACME ROBOTICS CORPORATION'), 'heuristic')
 })
 
 test('extra distinctive tokens do not confirm, even when the name is contained', () => {
@@ -38,8 +38,8 @@ test('nameTokens strips legal-form words anywhere', () => {
 })
 
 test('board match confirms only when the slug came from the company domain', () => {
-  assert.equal(classifyBoardMatch('duvo.ai', 'https://api.ashbyhq.com/posting-api/job-board/duvo'), 'confirmed')
-  assert.equal(classifyBoardMatch('duvo.ai', 'https://boards-api.greenhouse.io/v1/boards/duvo/jobs?content=true'), 'confirmed')
+  assert.equal(classifyBoardMatch('duvo.ai', 'https://api.ashbyhq.com/posting-api/job-board/duvo'), 'heuristic')
+  assert.equal(classifyBoardMatch('duvo.ai', 'https://boards-api.greenhouse.io/v1/boards/duvo/jobs?content=true'), 'heuristic')
   // null domain: the slug can only have been name-derived - unconfirmed
   assert.equal(classifyBoardMatch(null, 'https://jobs.ashbyhq.com/vesta/fda6030d-5655-4077-8345-b3d5ee66527c'), 'unconfirmed')
   // domain slug absent from the board URL: the board was found under another slug
@@ -76,4 +76,19 @@ test('edgarFunding: stale filings are filtered client-side (startdt is not honou
   assert.notEqual(f.date, '2019-10-10')
   const f2 = await edgarFunding('Zymtrace', async () => ok({ hits: { hits: [HITS.hits.hits[0]] } }))
   assert.equal(f2, null) // only a years-old filing: no "recent funding" signal
+})
+
+test('qualifyEvent: SEC events need entity match and claim-window, boards need domain slugs, press stays heuristic', async () => {
+  const { qualifyEvent } = await import('../lib/signals/entity-match.ts')
+  // the original Vesta case: a same-named fund's filing
+  assert.equal(qualifyEvent('Vesta', null, { detail: 'Vesta Ventures Fund II, LP', source_url: 'https://www.sec.gov/Archives/edgar/data/2139575/000213957526000001/primary_doc.xml', source_published_at: '2026-07-01' }, '2026-10-14'), 'unconfirmed')
+  // right entity but months outside the claimed round window: not corroboration of the claim
+  assert.equal(qualifyEvent('Vesta', null, { detail: 'Vesta, Inc.', source_url: 'https://www.sec.gov/Archives/edgar/data/1/0001/primary_doc.xml', source_published_at: '2026-07-01' }, '2026-10-14'), 'unconfirmed')
+  // right entity within the window: a heuristic match, never proof of the round
+  assert.equal(qualifyEvent('Vesta', null, { detail: 'Vesta, Inc.', source_url: 'https://www.sec.gov/Archives/edgar/data/1/0001/primary_doc.xml', source_published_at: '2026-10-10' }, '2026-10-14'), 'heuristic')
+  // domain-derived board slug is a heuristic; bare-name slug is unconfirmed
+  assert.equal(qualifyEvent('Duvo', 'duvo.ai', { detail: null, source_url: 'https://jobs.ashbyhq.com/duvo/abc', source_published_at: null }), 'heuristic')
+  assert.equal(qualifyEvent('Vesta', null, { detail: null, source_url: 'https://jobs.ashbyhq.com/vesta/abc', source_published_at: null }), 'unconfirmed')
+  // name-matched press can be neither verified nor condemned: heuristic
+  assert.equal(qualifyEvent('Vesta', null, { detail: null, source_url: 'https://news.example.com/vesta-raises', source_published_at: '2026-10-10' }), 'heuristic')
 })

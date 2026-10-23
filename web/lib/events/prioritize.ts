@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import { eventsForLeads, FRESHNESS_DAYS, type CompanyEventRow, type EventType } from './store.ts'
+import { qualifyEvent } from '../signals/entity-match.ts'
 
 // Account prioritization from the company event store: "why this company, why now".
 // Every number here is an EXPLAINABLE PRODUCT HEURISTIC chosen for ranking convenience.
@@ -15,6 +16,7 @@ import { eventsForLeads, FRESHNESS_DAYS, type CompanyEventRow, type EventType } 
 
 export const EVENT_WEIGHT: Record<EventType, number> = {
   funding_round: 15,
+  sec_filing: 8,
   hiring_surge: 10,
   tech_stack: 5,
   competitor_mention: 5,
@@ -148,14 +150,15 @@ export interface LeadPriority extends EvidenceScore {
 export function leadPriorities(
   db: Database.Database,
   tenantId: string,
-  leads: { id: string; company_domain: string | null; fit: number | null; intent: number | null; action: number | null }[],
+  leads: { id: string; company?: string; company_domain: string | null; event_date?: string | null; fit: number | null; intent: number | null; action: number | null }[],
   opts: { now?: number } = {},
 ): Record<string, LeadPriority> {
   const now = opts.now ?? Math.floor(Date.now() / 1000)
   const events = eventsForLeads(db, tenantId, leads, { now })
   const out: Record<string, LeadPriority> = {}
   for (const l of leads) {
-    const rows = events[l.id] ?? []
+    // Entity-unconfirmed signal events (name collisions, off-window filings) never score.
+    const rows = (events[l.id] ?? []).filter(r => qualifyEvent(l.company ?? r.company_name ?? '', l.company_domain, r, l.event_date ?? null) !== 'unconfirmed')
     const scored = scoreEvidence(groupUnderlyingEvents(rows, now))
     out[l.id] = {
       graded: l.fit !== null && l.intent !== null && l.action !== null,

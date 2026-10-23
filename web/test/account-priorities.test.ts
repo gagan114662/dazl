@@ -8,7 +8,7 @@ const NOW = 1_800_000_000
 const setup = () => { const db = new Database(':memory:'); migrateEvents(db); return db }
 const ev = (over: Record<string, unknown> = {}) => ({
   companyKey: 'acme.example', companyName: 'Acme', scope: 'account' as const, leadId: 'l1',
-  eventType: 'funding_round' as const, summary: 'SEC Form D filed 2026-10-01', detail: null,
+  eventType: 'funding_round' as const, summary: 'SEC Form D filed 2026-10-01', detail: 'Acme, Inc.', // real EDGAR rows always carry the filing entity; entity-unconfirmed rows are excluded from ranking
   sourceUrl: 'https://www.sec.gov/Archives/edgar/data/1/2/x.htm', sourcePublishedAt: '2026-10-01' as string | null,
   retrievedAt: NOW, confidence: 80, ...over,
 })

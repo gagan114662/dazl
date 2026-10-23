@@ -8,7 +8,7 @@ import type Database from 'better-sqlite3'
 // Unknowns stay NULL - a missing published date or person is never guessed.
 // Company-level events only: no person rows, no visitor rows, no cross-tenant pooling.
 
-export const EVENT_TYPES = ['funding_round', 'hiring_surge', 'tech_stack', 'competitor_mention'] as const
+export const EVENT_TYPES = ['funding_round', 'sec_filing', 'hiring_surge', 'tech_stack', 'competitor_mention'] as const
 export type EventType = (typeof EVENT_TYPES)[number]
 export type EventScope = 'account' | 'market'
 
@@ -18,6 +18,7 @@ export type EventScope = 'account' | 'market'
 // verified external truth about how long any signal actually predicts anything.
 export const FRESHNESS_DAYS: Record<EventType, number> = {
   funding_round: 548, // a filed round stays relevant ~18 months
+  sec_filing: 548,
   hiring_surge: 30,
   tech_stack: 90,
   competitor_mention: 30,

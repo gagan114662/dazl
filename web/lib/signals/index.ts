@@ -9,7 +9,7 @@ import { randomBytes } from 'node:crypto'
 import { addEnrichment, audit } from '../connectors/store.ts'
 import { companyKey, recordCompanyEvent } from '../events/store.ts'
 import { listLeads } from '../scan/store.ts'
-import { classifyEntityMatch, domainSlug } from './entity-match.ts'
+import { classifyEntityMatch, domainSlug, withinEventWindow } from './entity-match.ts'
 
 const TIMEOUT = 8000
 const MAX_LEADS = 10
@@ -44,7 +44,7 @@ export async function edgarFunding(company: string, fetchImpl: typeof fetch = fe
       const cik = String(Number(src?.ciks?.[0] ?? '')) // strip leading zeros
       const file = h._id?.split(':')[1] ?? ''
       if (!entity || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !adsh || !cik || cik === 'NaN' || !file) continue
-      if (classifyEntityMatch(company, entity) !== 'confirmed') continue
+      if (classifyEntityMatch(company, entity) !== 'heuristic') continue
       if (!best || date > best.date) best = { date, entity, url: `https://www.sec.gov/Archives/edgar/data/${cik}/${adsh}/${file}` }
     }
     return best
@@ -77,14 +77,7 @@ export function topTitles<T>(jobs: T[], pick: (j: T) => string): string[] {
   return out
 }
 
-// A filing corroborates a claimed round only when both dates sit inside the same
-// window. Claims without a date accept any (already 18-month-bounded) filing.
-export function withinEventWindow(filingDate: string, eventDate: string | null, days = 45): boolean {
-  if (!eventDate) return true
-  const a = Date.parse(filingDate), b = Date.parse(eventDate)
-  if (Number.isNaN(a) || Number.isNaN(b)) return false
-  return Math.abs(a - b) <= days * 86400_000
-}
+export { withinEventWindow } from './entity-match.ts'
 
 const get = async (url: string, fetchImpl: typeof fetch) => {
   const res = await fetchImpl(url, { headers: { 'user-agent': 'dazl/1.0', accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(TIMEOUT) })
@@ -142,7 +135,7 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
     const f = f0 && withinEventWindow(f0.date, (lead as { event_date?: string | null }).event_date ?? null) ? f0 : null
     if (f) {
       addEnrichment(db, tenantId, lead.id, { connector: 'signals:sec-edgar', kind: 'funding', value: `SEC Form D filed ${f.date}`, label: f.entity.slice(0, 120), confidence: 80, source_url: f.url, source_date: f.date, retrieved_at: now })
-      if (ck) recordCompanyEvent(db, tenantId, { companyKey: ck, companyName: lead.company, scope: 'account', leadId: lead.id, eventType: 'funding_round', summary: `SEC Form D filed ${f.date}`, detail: f.entity.slice(0, 120), sourceUrl: f.url, sourcePublishedAt: f.date, retrievedAt: now, confidence: 80 })
+      if (ck) recordCompanyEvent(db, tenantId, { companyKey: ck, companyName: lead.company, scope: 'account', leadId: lead.id, eventType: 'sec_filing', summary: `SEC Form D filed ${f.date}`, detail: f.entity.slice(0, 120), sourceUrl: f.url, sourcePublishedAt: f.date, retrievedAt: now, confidence: 80 })
       funding++
     }
     if (h && h.via === 'domain') {
@@ -151,7 +144,7 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
       hiring++
     }
     const r = await fundingRoundFor(lead.company, news, { fetchImpl, jinaLeft }).catch(() => null)
-    if (r && classifyEntityMatch(lead.company, r.matched) === 'confirmed') {
+    if (r && classifyEntityMatch(lead.company, r.matched) === 'heuristic') {
       const what = [r.amount, r.stage].filter(Boolean).join(' ') || 'funding'
       addEnrichment(db, tenantId, lead.id, { connector: 'signals:funding-round', kind: 'funding', value: `Raised ${what} ${r.daysAgo} day${r.daysAgo === 1 ? '' : 's'} ago`.slice(0, 254), label: `reported ${r.date}`, confidence: 75, source_url: r.url, source_date: r.date, retrieved_at: now })
       if (ck) recordCompanyEvent(db, tenantId, { companyKey: ck, companyName: lead.company, scope: 'account', leadId: lead.id, eventType: 'funding_round', summary: `Raised ${what} ${r.daysAgo} day${r.daysAgo === 1 ? '' : 's'} ago`.slice(0, 300), detail: `reported ${r.date}`, sourceUrl: r.url, sourcePublishedAt: r.date, retrievedAt: now, confidence: 75 })
