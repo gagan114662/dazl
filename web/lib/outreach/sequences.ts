@@ -357,6 +357,13 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
         db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step)
         stopSequenceForThread(db,tenantId,s.lead_id,'stopped',leadHeld(db,tenantId,s.lead_id) ? 'lead_ungraded' : 'personal_email',now); out.skipped++; continue
       }
+      // Evidence re-checked again after the token await: a confirmation withdrawn during
+      // the await must release the claim (back to approved, claimed_at NULL) and stop the
+      // sequence honestly, never send.
+      if (!testFixtureSend(db,tenantId,{ to_email: s.to_email, test: s.msg_test }) && !leadEvidenceEligible(db,tenantId,s.lead_id)) {
+        db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step)
+        stopSequenceForThread(db,tenantId,s.lead_id,'stopped','evidence_withdrawn',now); out.skipped++; continue
+      }
       const current = getSeq(db,tenantId,s.id)
       const currentStep = db.prepare('SELECT body,subject,approved_hash FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? AND step = ?').get(tenantId,s.id,stepRow.step) as {body:string;subject:string;approved_hash:string}
       if (currentStep.body !== stepRow.body || currentStep.subject !== stepRow.subject || currentStep.approved_hash !== hash(s.to_email,currentStep.subject,currentStep.body)) {

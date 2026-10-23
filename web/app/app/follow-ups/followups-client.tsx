@@ -8,7 +8,7 @@ interface Sent { thread_id: string; company: string; to_email: string; step: num
 interface Overview { enabled: boolean; account: string | null; threads: Thread[]; sent: Sent[] }
 interface Warm { thread_id: string; company: string; name: string; to_email: string; last_reply_at: number; reply_excerpt: string; reopen: { status: string; body: string } | null }
 
-const STOPPED: Record<string, string> = { replied: 'They replied again - the sequence stops for you to handle', bounced: 'The address bounced', unsubscribed: 'They unsubscribed', manual: 'Stopped by you' }
+const STOPPED: Record<string, string> = { replied: 'They replied again - the sequence stops for you to handle', bounced: 'The address bounced', unsubscribed: 'They unsubscribed', manual: 'Stopped by you', evidence_withdrawn: 'Lead confirmation withdrawn - re-confirm the lead on the Leads page to contact them again' }
 const day = (t: number) => new Date(t * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 
 export default function FollowupsClient() {

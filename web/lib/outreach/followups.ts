@@ -4,7 +4,7 @@ import { buildMime, toBase64Url } from '../gmail/mime.ts'
 import { getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { auditAt, autopilotAvailable, getState, pause } from './autopilot.ts'
 import { hasConsent } from './ledger.ts'
-import { composeBody, getSettings, isSuppressed, leadHeld, recipientAllowed, unsubToken, type Deps } from './service.ts'
+import { composeBody, getSettings, isSuppressed, leadEvidenceEligible, leadHeld, recipientAllowed, unsubToken, type Deps } from './service.ts'
 import { llmFollowupText } from './draft-llm.ts'
 import { getMasterKey } from '../secrets.ts'
 
@@ -54,6 +54,9 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
     if (tableExists(db, 'sequences') && db.prepare("SELECT 1 FROM sequences WHERE tenant_id = ? AND lead_id = ?").get(tenantId,t.lead_id)) continue // sequence enrollment owns this thread; never layer warm automation on it
     const skip = (why: string) => { out.skipped++; auditAt(db, tenantId, 'followup_skipped', why, t.lead_id, undefined, now) }
     if (leadHeld(db,tenantId,t.lead_id) || !recipientAllowed(db,tenantId,t.to_email)) { skip(leadHeld(db,tenantId,t.lead_id) ? 'lead_ungraded' : 'personal_email'); continue }
+    // A withdrawn lead confirmation stops the thread for good before any warm follow-up
+    // quotes the revoked signal; re-confirming the lead does not resurrect a stopped thread.
+    if (!leadEvidenceEligible(db,tenantId,t.lead_id)) { db.prepare("UPDATE followup_threads SET stopped = 'evidence_withdrawn' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, t.thread_id); skip('evidence_withdrawn'); continue }
     if (t.last_followup_at && t.last_lead_reply_at > t.last_followup_at) { db.prepare("UPDATE followup_threads SET stopped = 'replied_again' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, t.thread_id); skip('replied again, left for you'); continue }
     if (now - t.last_activity_at < GAPS_DAYS[t.followups_sent] * 86400) continue
     if (isSuppressed(db, tenantId, t.to_email)) { db.prepare("UPDATE followup_threads SET stopped = 'suppressed' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, t.thread_id); skip('suppressed'); continue }
@@ -77,6 +80,13 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
       if (leadHeld(db,tenantId,t.lead_id) || !recipientAllowed(db,tenantId,t.to_email)) {
         db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId,t.thread_id,t.followups_sent)
         skip(leadHeld(db,tenantId,t.lead_id) ? 'lead_ungraded' : 'personal_email'); continue
+      }
+      // Re-checked after the token await: withdrawal during the await deletes the claim
+      // row (nothing stuck in 'sending') and stops the thread, never sends.
+      if (!leadEvidenceEligible(db,tenantId,t.lead_id)) {
+        db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId,t.thread_id,t.followups_sent)
+        db.prepare("UPDATE followup_threads SET stopped = 'evidence_withdrawn' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, t.thread_id)
+        skip('evidence_withdrawn'); continue
       }
       const r = await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, t.thread_id)
       db.prepare("UPDATE followup_messages SET status = 'sent', gmail_id = ? WHERE tenant_id = ? AND thread_id = ? AND step = ?").run(r.id, tenantId, t.thread_id, t.followups_sent)

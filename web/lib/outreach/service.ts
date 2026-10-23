@@ -14,7 +14,8 @@ export const SENDING_STALE_S = 10 * 60
 // Personal mailbox providers: a published address there is not a business contact.
 const CONSUMER = new Set(['gmail.com', 'googlemail.com', 'yahoo.com', 'yahoo.ca', 'hotmail.com', 'outlook.com', 'live.com', 'msn.com', 'icloud.com', 'me.com', 'aol.com', 'proton.me', 'protonmail.com', 'gmx.com'])
 
-// Off by default. Only this operator-selected test tenant and this exact inbox qualify.
+// Off by default. Only the env-designated test tenant (OUTREACH_TEST_TENANT_ID) and this exact
+// inbox qualify. This is a code gate only, not evidence of user permission.
 export const TEST_INBOX = 'instinct114114@gmail.com'
 export const testRecipientApproved = (db: Database.Database, tenantId: string, email: string): boolean =>
   !!process.env.OUTREACH_TEST_TENANT_ID && process.env.OUTREACH_TEST_TENANT_ID === tenantId &&
@@ -59,9 +60,10 @@ export function leadEvidenceEligible(db: Database.Database, tenantId: string, le
 }
 
 // Server-created test material (test = 1) addressed to the currently allowlisted,
-// operator-designated test inbox is exempt from the evidence gate: it is a labelled
-// demonstration to the operator's own inbox, never a real prospect. Like test timing,
-// the exemption is re-derived from the live allowlist at every action, never stored.
+// env-designated test inbox is exempt from the evidence gate: it is a labelled
+// demonstration to the operator's own inbox, never a real prospect. This exemption is a
+// code gate only, not evidence of user permission. Like test timing, it is re-derived
+// from the live allowlist at every action, never stored.
 export const testFixtureSend = (db: Database.Database, tenantId: string, m: { to_email: string; test: number }): boolean =>
   m.test === 1 && testRecipientApproved(db, tenantId, m.to_email)
 

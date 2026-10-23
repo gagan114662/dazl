@@ -4,9 +4,10 @@ import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
-import { migrateAutopilot } from '../lib/outreach/autopilot.ts'
-import { migrateLedger } from '../lib/outreach/ledger.ts'
+import { migrateAutopilot, enable, ATTESTATIONS, CONSENT_VERSION } from '../lib/outreach/autopilot.ts'
+import { migrateLedger, grantConsent } from '../lib/outreach/ledger.ts'
 import { migrateReplies, acceptReadConsent } from '../lib/outreach/replies.ts'
+import { runFollowups, setFollowups } from '../lib/outreach/followups.ts'
 import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
 import { saveSettings, approve, sendMessage, createDraft } from '../lib/outreach/service.ts'
 import { migrateSequences, createSequence, approveSequence, runSequences } from '../lib/outreach/sequences.ts'
@@ -149,4 +150,86 @@ test('withdraw stops an already-active sequence at its next due step', async () 
   assert.equal(r.sent, 0)
   assert.equal(m.calls.length, 1)
   assert.equal((db.prepare('SELECT stop_reason FROM sequences WHERE id = ?').get(seq) as { stop_reason: string | null }).stop_reason, 'evidence_withdrawn')
+})
+
+test('withdraw during a due sequence step token fetch: zero send, claim released, sequence stopped', async () => {
+  const db = await setup()
+  const { lead } = addReviewLead(db)
+  confirmLeadReview(db, 'A', lead)
+  const draftId = createDraft(db, 'A', lead, 'Acme')
+  const seq = createSequence(db, 'A', draftId)
+  const m = mock()
+  approveSequence(db, 'A', seq, id => approve(db, 'A', id, true), NOW)
+  assert.equal(await sendMessage(db, 'A', draftId, m), 'sent') // step 1 out while confirmed - never recalled
+  await runSequences(db, 'A', 'Acme', { ...m, now: NOW + 1 }) // activates while still confirmed
+  assert.equal((db.prepare('SELECT status FROM sequences WHERE id = ?').get(seq) as { status: string }).status, 'active')
+  // Withdrawal lands DURING the access-token await, after the loop-top and claim checks passed.
+  const withdrawFetch = (async (u: unknown) => {
+    const url = String(u)
+    if (url.includes('oauth2')) { unconfirmLeadReview(db, 'A', lead); return json({ access_token: 'at' }) }
+    if (url.includes('/threads/')) return json({ messages: [] })
+    return json({}, 404)
+  }) as typeof fetch
+  const r = await runSequences(db, 'A', 'Acme', { ...m, fetchImpl: withdrawFetch, now: NOW + 3 * DAY })
+  assert.equal(r.sent, 0)
+  assert.equal(m.calls.length, 1) // step 2 never went out
+  const s = db.prepare('SELECT status, stop_reason FROM sequences WHERE id = ?').get(seq) as { status: string; stop_reason: string | null }
+  assert.equal(s.status, 'stopped')
+  assert.equal(s.stop_reason, 'evidence_withdrawn')
+  const step2 = db.prepare("SELECT status, claimed_at FROM sequence_steps WHERE tenant_id = 'A' AND sequence_id = ? AND step = 2").get(seq) as { status: string; claimed_at: number | null }
+  assert.equal(step2.status, 'approved') // claim released, not stuck in sending
+  assert.equal(step2.claimed_at, null)
+})
+
+async function setupFollowups() {
+  const db = await setup()
+  enable(db, 'A', { version: CONSENT_VERSION, attestations: [...ATTESTATIONS], daily_cap: 5 })
+  setFollowups(db, 'A', true)
+  return db
+}
+
+function interestedReviewThread(db: Database.Database, email = 'lead@acme.example') {
+  const { lead } = addReviewLead(db, email)
+  confirmLeadReview(db, 'A', lead)
+  const mid = randomBytes(12).toString('hex'), thread = 't-' + mid
+  db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, claimed_at, gmail_id, thread_id) VALUES (?, 'A', ?, ?, 'Quick question', 'bodybodybodybodybodybody', 'sent', ?, ?, ?, ?)").run(mid, lead, email, NOW - 4 * DAY, NOW - 4 * DAY, 'g-' + mid, thread)
+  db.prepare("INSERT INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at, last_lead_reply_at, followups_sent, last_followup_at, stopped) VALUES ('A', ?, ?, ?, ?, ?, ?, 0, NULL, NULL)").run(thread, lead, email, 'root-' + mid, NOW - 4 * DAY, NOW - 4 * DAY)
+  grantConsent(db, 'A', email, { channel: 'email', scope: 'followup', basis: 'reply_interest', evidenceRef: 'gmail:1', now: NOW - 4 * DAY })
+  return { lead, thread }
+}
+
+const followupFlags = { AUTOPILOT_ENABLED: '1', SEQUENCES_ENABLED: '1' }
+
+test('withdraw stops a warm follow-up thread before send; re-confirm does not resurrect it', async () => {
+  const db = await setupFollowups()
+  const { lead, thread } = interestedReviewThread(db)
+  const m = mock()
+  assert.equal(unconfirmLeadReview(db, 'A', lead), true)
+  const r = await runFollowups(db, 'A', 'Acme', { ...m, flags: followupFlags })
+  assert.equal(r.sent, 0)
+  assert.equal(m.calls.length, 0)
+  assert.equal((db.prepare('SELECT stopped FROM followup_threads WHERE thread_id = ?').get(thread) as { stopped: string | null }).stopped, 'evidence_withdrawn')
+  // Re-confirming restores lead eligibility, but the stopped thread stays stopped.
+  assert.equal(confirmLeadReview(db, 'A', lead), true)
+  const r2 = await runFollowups(db, 'A', 'Acme', { ...m, flags: followupFlags, now: NOW + 10 * DAY })
+  assert.equal(r2.sent, 0)
+  assert.equal(m.calls.length, 0)
+  assert.equal((db.prepare('SELECT stopped FROM followup_threads WHERE thread_id = ?').get(thread) as { stopped: string | null }).stopped, 'evidence_withdrawn')
+})
+
+test('withdraw during a follow-up token fetch: zero send, claim row deleted, thread stopped', async () => {
+  const db = await setupFollowups()
+  const { lead, thread } = interestedReviewThread(db)
+  const m = mock()
+  const withdrawFetch = (async (u: unknown) => {
+    const url = String(u)
+    if (url.includes('oauth2')) { unconfirmLeadReview(db, 'A', lead); return json({ access_token: 'at' }) }
+    if (url.includes('/threads/')) return json({ messages: [] })
+    return json({}, 404)
+  }) as typeof fetch
+  const r = await runFollowups(db, 'A', 'Acme', { ...m, flags: followupFlags, fetchImpl: withdrawFetch })
+  assert.equal(r.sent, 0)
+  assert.equal(m.calls.length, 0)
+  assert.equal((db.prepare('SELECT stopped FROM followup_threads WHERE thread_id = ?').get(thread) as { stopped: string | null }).stopped, 'evidence_withdrawn')
+  assert.equal((db.prepare('SELECT count(*) AS n FROM followup_messages').get() as { n: number }).n, 0) // claim deleted, none stuck sending
 })
