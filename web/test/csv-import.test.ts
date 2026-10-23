@@ -20,6 +20,21 @@ function setup() {
   return db
 }
 
+test('normalizeDomain rejects bare public suffixes against the bundled PSL; registrable lookalikes still import', () => {
+  // the residual the source-quality review tracked: a suffix import would make every
+  // subordinate host first-party for that tenant's evidence caps
+  assert.equal('reason' in normalizeDomain('co.uk'), true)
+  assert.equal('reason' in normalizeDomain('uk.com'), true)
+  assert.equal('reason' in normalizeDomain('com'), true)
+  assert.equal('reason' in normalizeDomain('github.io'), true)
+  assert.equal('reason' in normalizeDomain('https://co.uk/'), true)
+  // genuine registrable domains under those suffixes still import
+  assert.deepEqual(normalizeDomain('example.co.uk'), { domain: 'example.co.uk' })
+  assert.deepEqual(normalizeDomain('acme.uk.com'), { domain: 'acme.uk.com' })
+  assert.deepEqual(normalizeDomain('www.Example.CO.UK'), { domain: 'example.co.uk' })
+  assert.deepEqual(normalizeDomain('myteam.github.io'), { domain: 'myteam.github.io' })
+})
+
 test('normalizeDomain strips protocol, credentials, port, path and www; rejects IPs and internal hosts', () => {
   assert.deepEqual(normalizeDomain('https://www.Acme.com/pricing?x=1'), { domain: 'acme.com' })
   assert.deepEqual(normalizeDomain('user@host.io:8443/path'), { domain: 'host.io' })
