@@ -489,7 +489,7 @@ export default function LeadsClient() {
       )}
       {quality && status === 'done' && (
         <p className="text-gray-400 text-sm mb-4">
-          {quality.candidates} found: {quality.passed ?? 0} source-checked, {quality.needs_review ?? 0} need your review, {quality.dropped ?? 0} dropped
+          {quality.candidates} found: {quality.passed ?? 0} source-checked, {quality.needs_review ?? 0} need{(quality.needs_review ?? 0) === 1 ? 's' : ''} your review, {quality.dropped ?? 0} dropped
           {Object.keys(quality.drop_reasons).length > 0 && <> ({Object.entries(quality.drop_reasons).map(([k, n]) => `${n} ${REASON[k] ?? k}`).join(', ')})</>}.
         </p>
       )}
@@ -511,7 +511,7 @@ export default function LeadsClient() {
               <div className="text-gray-500 text-xs mt-0.5">
                 {new Date(j.created_at * 1000).toLocaleDateString()} · {j.status === 'done'
                   ? (j.candidates !== null
-                      ? `${j.candidates} found: ${j.verified ?? 0} source-checked, ${j.needs_review ?? 0} need your review, ${j.dropped ?? 0} dropped`
+                      ? `${j.candidates} found: ${j.verified ?? 0} source-checked, ${j.needs_review ?? 0} need${(j.needs_review ?? 0) === 1 ? 's' : ''} your review, ${j.dropped ?? 0} dropped`
                       : `${j.lead_count} lead${j.lead_count === 1 ? '' : 's'}`)
                   : j.status === 'failed' ? 'failed'
                   : 'still running'}

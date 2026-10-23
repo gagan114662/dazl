@@ -26,7 +26,7 @@ test('emptyLeadsMessage: done scan with truly nothing keeps the honest line', ()
 })
 
 test('emptyLeadsMessage: done scan whose leads all need review says so instead of "no leads"', () => {
-  assert.equal(emptyLeadsMessage('done', 0, 0, 1), 'No leads passed verification. 1 need your review below.')
+  assert.equal(emptyLeadsMessage('done', 0, 0, 1), 'No leads passed verification. 1 needs your review below.')
   assert.equal(emptyLeadsMessage('done', 0, 0, 2), 'No leads passed verification. 2 need your review below.')
   // Fit-hidden still wins when both apply - the hidden toggle sits right above.
   assert.equal(emptyLeadsMessage('done', 0, 2, 1), 'The scan found nothing above your fit bar - 2 lower-fit leads are hidden below.')
