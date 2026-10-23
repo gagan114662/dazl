@@ -7,7 +7,7 @@ import { setScanDb } from './sequence-route-db.ts'
 import { migrateScan, createJob } from '../../lib/scan/store.ts'
 import { migrateOutreach } from '../../lib/outreach/store.ts'
 import { migrateSequences } from '../../lib/outreach/sequences.ts'
-import { migrateMemory } from '../../lib/memory.ts'
+import { migrateMemory, saveMemory } from '../../lib/memory.ts'
 import { migrateKeys, saveKey } from '../../lib/llm/key-store.ts'
 import { providers } from '../../lib/llm/provider.ts'
 import { confirmLeadReview, unconfirmLeadReview } from '../../lib/scan/review-confirm.ts'
@@ -32,6 +32,7 @@ test('review refusal -> explicit synthetic confirmation -> route draft -> route 
     migrateScan(db); migrateOutreach(db); migrateSequences(db); migrateMemory(db); migrateKeys(db)
     saveKey(db, 'A', 'anthropic', 'sk-ant-synthetic-test-key')
     setScanDb(db)
+    saveMemory(db, 'A', { positioning: 'Software to find leads with linked public evidence.' })
     const job = createJob(db, 'A', { business_name: 'Synthetic test company', industry: 'test', location: 'test' })
     db.prepare("UPDATE scan_jobs SET status='running' WHERE id=?").run(job)
     const lead = randomBytes(12).toString('hex')
@@ -51,6 +52,7 @@ test('review refusal -> explicit synthetic confirmation -> route draft -> route 
     assert.equal(message.status, 'draft'); assert.equal(message.approved_hash, null)
     assert.equal(message.sent_at, null); assert.equal(message.test, 0)
     assert.equal(message.to_email, 'fixture@dazl.invalid'); assert.ok(message.body.includes(signal))
+    assert.ok(message.body.includes('About Acme: Software to find leads with linked public evidence.'))
     const duplicate = await draftPOST(request('/api/outreach', { lead_id: lead }))
     assert.equal(duplicate.status, 409); assert.equal((await duplicate.json()).code, 'already_drafted')
 

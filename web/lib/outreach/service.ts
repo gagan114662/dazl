@@ -7,6 +7,7 @@ import { buildMime, EMAIL_RE, toBase64Url } from '../gmail/mime.ts'
 import { GmailError, GmailSendError, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { norm } from './store.ts'
 import { classifyPurpose } from './published-email.ts'
+import { getMemory } from '../memory.ts'
 
 export const DAILY_CAP = Math.min(ACCOUNT_SEND_CAP, Number(process.env.OUTREACH_DAILY_CAP || 20))
 export const SENDING_STALE_S = 10 * 60
@@ -134,11 +135,15 @@ const id24 = () => randomBytes(12).toString('hex')
 
 interface Lead { id: string; company: string; name: string; contact: string | null; signal: string; source_url: string; evidence_excerpt: string | null; confidence: number | null; fit: number | null; intent: number | null; human_confirmed_at: number | null }
 
-export function draftTemplate(lead: Lead, businessName: string): { subject: string; body: string } {
+export function draftTemplate(lead: Lead, businessName: string, positioning = ''): { subject: string; body: string } {
+  // Literal seller-authored context only: never infer an offer from a buyer signal.
+  // Keep this template-only, so a useful offer does not require paid AI polishing.
+  const offer = positioning.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 600)
+  const seller = offer ? `About ${businessName}: ${offer}\n\nWould it be useful to discuss whether this fits your team's work?` : `I run ${businessName}. If that is something you are working on, I'd be glad to share how we could help. Would a short call this week make sense?`
   const who = lead.name ? lead.name.split(' ')[0] : 'there'
   return {
     subject: `Quick question for ${lead.company || lead.name}`.slice(0, 150),
-    body: `Hi ${who},\n\nI saw this reported about ${lead.company || lead.name}: ${lead.signal}\n(${lead.source_url})\n\nI run ${businessName}. If that is something you are working on, I'd be glad to share how we could help. Would a short call this week make sense?\n\nThanks,`,
+    body: `Hi ${who},\n\nI saw this reported about ${lead.company || lead.name}: ${lead.signal}\n(${lead.source_url})\n\n${seller}\n\nThanks,`,
   }
 }
 
@@ -175,7 +180,11 @@ export function createDraft(db: Database.Database, tenantId: string, leadId: str
   const test = testRecipientApproved(db, tenantId, to) ? 1 : 0
   if (!recipientAllowed(db,tenantId,to)) throw new OutreachError('personal_email')
   if (isSuppressed(db, tenantId, to)) throw new OutreachError('suppressed')
-  const t = draftTemplate(lead, businessName)
+  // Older local databases may not have Memory yet. No default positioning is
+  // fabricated, and another tenant's context is never used.
+  let positioning = ''
+  if (tableExists(db, 'tenant_memory')) positioning = getMemory(db, tenantId)?.positioning ?? ''
+  const t = draftTemplate(lead, businessName, positioning)
   const id = id24()
   try {
     db.prepare('INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, test) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, tenantId, lead.id, to, t.subject, t.body, test)
