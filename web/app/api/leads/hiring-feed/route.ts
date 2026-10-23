@@ -2,18 +2,34 @@ import {NextRequest,NextResponse} from 'next/server'
 import {getScanDb,requireUser} from '@/lib/scan/service'
 import {sameOriginJson} from '@/lib/same-origin'
 import {rateLimit} from '@/lib/rate-limit'
-import {createHiringFeedIntake,JobFeedError} from '@/lib/scan/job-feed'
+import {createHiringFeedIntake,hiringFeedStatus,JobFeedError,retryHiringFeedContacts} from '@/lib/scan/job-feed'
+
+export async function GET(req:NextRequest){
+ const user=await requireUser()
+ if(!user)return NextResponse.json({error:'Not signed in'},{status:401})
+ const job=req.nextUrl.searchParams.get('job_id')||''
+ if(!/^[0-9a-f]{24}$/.test(job))return NextResponse.json({error:'Bad request'},{status:400})
+ return NextResponse.json({contacts:hiringFeedStatus(getScanDb(),user.id,job)})
+}
 
 export async function POST(req:NextRequest){
  const user=await requireUser()
  if(!user)return NextResponse.json({error:'Not signed in'},{status:401})
  if(!sameOriginJson(req))return NextResponse.json({error:'Bad request'},{status:400})
- if(!rateLimit(`hiring-feed:${user.id}`,3,60*60*1000).ok)return NextResponse.json({error:'Too many feed checks. Try again later.'},{status:429})
  const raw=await req.text()
  if(raw.length>2000)return NextResponse.json({error:'That request is too large.'},{status:400})
- let body:{feed?:unknown;words?:unknown}
+ let body:{feed?:unknown;words?:unknown;retry_job_id?:unknown}
  try{body=JSON.parse(raw)}catch{return NextResponse.json({error:'Bad request'},{status:400})}
- if(!body||typeof body!=='object'||typeof body.feed!=='string')return NextResponse.json({error:'Pick one of the listed feeds.'},{status:400})
+ if(!body||typeof body!=='object')return NextResponse.json({error:'Bad request'},{status:400})
+ if(body.retry_job_id!==undefined){
+ if(typeof body.retry_job_id!=='string'||!/^[0-9a-f]{24}$/.test(body.retry_job_id))return NextResponse.json({error:'Bad request'},{status:400})
+ if(!rateLimit(`hiring-feed-retry:${user.id}`,6,60*60*1000).ok)return NextResponse.json({error:'Too many retries. Try again later.'},{status:429})
+ const {crawl,...result}=await retryHiringFeedContacts(getScanDb(),user.id,body.retry_job_id)
+ void crawl
+ return NextResponse.json(result,{status:202})
+ }
+ if(typeof body.feed!=='string')return NextResponse.json({error:'Pick one of the listed feeds.'},{status:400})
+ if(!rateLimit(`hiring-feed:${user.id}`,3,60*60*1000).ok)return NextResponse.json({error:'Too many feed checks. Try again later.'},{status:429})
  try{
  const {crawl,...result}=await createHiringFeedIntake(getScanDb(),user.id,body.feed,body.words)
  void crawl

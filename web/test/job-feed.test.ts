@@ -5,7 +5,7 @@ import { migrateScan } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { createDraft } from '../lib/outreach/service.ts'
-import { createHiringFeedIntake, JobFeedError, matchRoles, parseFeedItems, parseRoleWords } from '../lib/scan/job-feed.ts'
+import { createHiringFeedIntake, hiringFeedStatus, JobFeedError, matchRoles, parseFeedItems, parseRoleWords, retryHiringFeedContacts } from '../lib/scan/job-feed.ts'
 import type { Get } from '../lib/connectors/sitecrawl.ts'
 
 const item = (title: string, guid: string, extra = '') => `<item><title>${title}</title><pubDate>Fri, 23 Oct 2026 09:48:36 +0000</pubDate><guid>${guid}</guid><description>&lt;p&gt;&lt;strong&gt;URL:&lt;/strong&gt; &lt;a href="https://acmeco.example"&gt;x&lt;/a&gt;&lt;/p&gt;${extra}</description></item>`
@@ -74,4 +74,78 @@ test('unreadable feed, no match and unshown posting lines save nothing', async (
   await assert.rejects(createHiringFeedIntake(db, 'A', 'https://evil.example/x.rss', 'sdr', { fetchFeed: async () => XML }), JobFeedError)
   assert.equal((db.prepare('SELECT count(*) c FROM leads').get() as { c: number }).c, 0)
   assert.equal((db.prepare('SELECT count(*) c FROM scan_jobs').get() as { c: number }).c, 0)
+})
+
+const SHOWN = (u: string) => ({ title: 'Remote Sales Development Representative at Acmeco', text: 'Remote Sales Development Representative at Acmeco', retrievedAt: 1800000000, u })
+const okPages: Record<string, string> = {
+  '/remote-jobs/acmeco-sdr': '<html><body>Acmeco is hiring <a href="https://acmeco.example/">Acmeco</a></body></html>',
+  '/robots.txt': 'User-agent: *\nAllow: /',
+  '/': '<html><body>Acmeco <a href="/contact">Contact</a></body></html>',
+  '/contact': '<html><body><a href="mailto:hello@acmeco.example">hello</a></body></html>',
+}
+const okGet: Get = async url => { const p = okPages[new URL(url).pathname]; return p !== undefined ? { status: 200, body: p, finalUrl: url } : { status: 404, body: '', finalUrl: url } }
+const mk = () => { const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateConnectors(db); return db }
+const run = (db: Database.Database, deps: object) => createHiringFeedIntake(db, 'A', 'sales-and-marketing', 'sales development', { fetchFeed: async () => XML, fetchPage: async u => SHOWN(u), gapMs: 0, env: {}, ...deps })
+
+test('per-company contact state is recorded: finished with address, and finished with none published is distinct from not finished', async () => {
+  const db = mk()
+  const r = await run(db, { get: okGet }); await r.crawl
+  assert.deepEqual(hiringFeedStatus(db, 'A', r.job_id!).map(x => [x.company, x.state, x.emails, x.site]), [['Acmeco', 'finished', 1, 'acmeco.example']])
+  assert.deepEqual(hiringFeedStatus(db, 'B', r.job_id!), [])
+  const db2 = mk(); const none: Get = async url => { const p = new URL(url).pathname; const m: Record<string, string> = { ...okPages, '/contact': '<html><body>No address here, use the form.</body></html>' }; return m[p] !== undefined ? { status: 200, body: m[p], finalUrl: url } : { status: 404, body: '', finalUrl: url } }
+  const r2 = await run(db2, { get: none }); await r2.crawl
+  assert.deepEqual(hiringFeedStatus(db2, 'A', r2.job_id!).map(x => [x.state, x.emails]), [['finished', 0]])
+})
+
+test('a read that throws or hits its deadline is marked not finished, and retry reads it again exactly once even when started twice', async () => {
+  const db = mk()
+  let boom = true
+  const flaky: Get = async url => { if (boom) throw new Error('down'); return okGet(url) }
+  const r = await run(db, { get: flaky }); await r.crawl
+  assert.equal(hiringFeedStatus(db, 'A', r.job_id!)[0].state, 'failed')
+  boom = false
+  const [a, b] = await Promise.all([retryHiringFeedContacts(db, 'A', r.job_id!, { get: flaky, gapMs: 0, env: {} }), retryHiringFeedContacts(db, 'A', r.job_id!, { get: flaky, gapMs: 0, env: {} })])
+  assert.equal(a.retrying + b.retrying, 1)
+  await Promise.all([a.crawl, b.crawl])
+  assert.deepEqual(hiringFeedStatus(db, 'A', r.job_id!).map(x => [x.state, x.emails]), [['finished', 1]])
+  assert.equal((await retryHiringFeedContacts(db, 'A', r.job_id!)).retrying, 0)
+  const db2 = mk(); const slow: Get = async url => { await new Promise(res => setTimeout(res, 120)); return okGet(url) }
+  const r2 = await run(db2, { get: slow, deadlineMs: 30 }); await r2.crawl
+  assert.equal(hiringFeedStatus(db2, 'A', r2.job_id!)[0].state, 'cut_off')
+})
+
+test('a stale reading row shows as interrupted, and running the same intake again re-reads it instead of stranding it behind the duplicate skip', async () => {
+  const db = mk()
+  const r = await run(db, { get: async () => null }); await r.crawl
+  db.prepare("UPDATE hiring_feed_crawl SET status = 'reading', started_at = 1000, finished_at = NULL").run()
+  assert.equal(hiringFeedStatus(db, 'A', r.job_id!, 1000 + 151)[0].state, 'interrupted')
+  assert.equal(hiringFeedStatus(db, 'A', r.job_id!, 1000 + 10)[0].state, 'reading')
+  const again = await run(db, { get: okGet }); await again.crawl
+  assert.equal(again.job_id, null); assert.match(again.note, /Reading contacts again for 1 saved company/)
+  assert.equal((db.prepare('SELECT count(*) c FROM leads').get() as { c: number }).c, 1)
+  assert.deepEqual(hiringFeedStatus(db, 'A', r.job_id!).map(x => [x.state, x.emails]), [['finished', 1]])
+})
+
+test('two overlapping intakes for the same company save it once', async () => {
+  const db = mk()
+  const [a, b] = await Promise.all([run(db, { get: okGet }), run(db, { get: okGet })])
+  await Promise.all([a.crawl, b.crawl])
+  assert.equal((db.prepare('SELECT count(*) c FROM leads').get() as { c: number }).c, 1)
+  assert.equal((db.prepare('SELECT count(*) c FROM hiring_feed_crawl').get() as { c: number }).c, 1)
+  assert.equal((db.prepare('SELECT count(*) c FROM scan_jobs').get() as { c: number }).c, 1)
+  assert.equal([a, b].filter(x => x.job_id).length, 1)
+})
+
+test('a posting page that never answers is skipped within the page-phase limit', async () => {
+  const db = mk()
+  const t = Date.now()
+  const r = await createHiringFeedIntake(db, 'A', 'sales-and-marketing', 'sales development', { fetchFeed: async () => XML, fetchPage: () => new Promise(() => {}), pagePhaseMs: 40 })
+  assert.ok(Date.now() - t < 2000); assert.equal(r.job_id, null); assert.equal(r.skipped.length, 1)
+})
+
+test('duplicates are refused by the database itself, not only by the application check', async () => {
+  const db = mk()
+  const r = await run(db, { get: okGet }); await r.crawl
+  assert.throws(() => db.prepare("INSERT INTO hiring_feed_crawl(lead_id,tenant_id,job_id,company_key,status,started_at) VALUES('x','A','j','acmeco','reading',1)").run(), /UNIQUE/)
+  db.prepare("INSERT INTO hiring_feed_crawl(lead_id,tenant_id,job_id,company_key,status,started_at) VALUES('y','B','j','acmeco','reading',1)").run()
 })
