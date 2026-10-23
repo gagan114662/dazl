@@ -113,7 +113,7 @@ export function draftTemplate(lead: Lead, businessName: string): { subject: stri
   const who = lead.name ? lead.name.split(' ')[0] : 'there'
   return {
     subject: `Quick question for ${lead.company || lead.name}`.slice(0, 150),
-    body: `Hi ${who},\n\nI came across this about ${lead.company || lead.name}: ${lead.signal}\n(${lead.source_url})\n\nI run ${businessName}. If that is something you are working on, I'd be glad to share how we could help. Would a short call this week make sense?\n\nThanks,`,
+    body: `Hi ${who},\n\nI saw this reported about ${lead.company || lead.name}: ${lead.signal}\n(${lead.source_url})\n\nI run ${businessName}. If that is something you are working on, I'd be glad to share how we could help. Would a short call this week make sense?\n\nThanks,`,
   }
 }
 

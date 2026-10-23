@@ -23,7 +23,7 @@ export async function POST(req: NextRequest) {
       blocked_claim: 'The rewrite asserted an unverified claim, so it was discarded - the original draft is unchanged.',
       error: 'The rewrite failed - the original draft is unchanged.',
     }[r.reason]
-    return NextResponse.json({ rewritten: false, reason: r.reason, note })
+    return NextResponse.json({ rewritten: false, reason: r.reason, note, usage: r.usage })
   }
-  return NextResponse.json({ rewritten: true, vendor: r.vendor })
+  return NextResponse.json({ rewritten: true, vendor: r.vendor, usage: r.usage })
 }

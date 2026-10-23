@@ -5,15 +5,51 @@
 import type Database from 'better-sqlite3'
 import { defaultVendor, getKey } from '../llm/key-store.ts'
 import type { Vendor } from '../llm/vendors.ts'
-import { providers, type Provider } from '../llm/provider.ts'
+import { providers, type Provider, type DetailedCompletion } from '../llm/provider.ts'
 import { getMasterKey } from '../secrets.ts'
 import { getMemory, memoryPromptBlock, type Memory } from '../memory.ts'
 
 export interface LlmDeps { fetchImpl?: typeof fetch; master?: Buffer; providers?: Record<string, Provider> }
 
+export interface PolishUsage { model: string | null; input_tokens?: number; output_tokens?: number }
 export type PolishResult =
-  | { rewritten: true; vendor: Vendor }
-  | { rewritten: false; reason: 'no_key' | 'no_profile' | 'unusable' | 'blocked_claim' | 'error' }
+  | { rewritten: true; vendor: Vendor; usage?: PolishUsage }
+  | { rewritten: false; reason: 'no_key' | 'no_profile' | 'unusable' | 'blocked_claim' | 'error'; usage?: PolishUsage }
+
+// Accounting only: vendor, requested + served model, bounded outcome code, token
+// counts, request id. Never secrets, never the prompt, never the output text,
+// never raw provider error text.
+type PolishOutcome = 'pending' | 'rewritten' | 'unusable' | 'blocked_claim' | 'error' | 'no_key' | 'no_profile' | 'superseded'
+
+// A durable PENDING attempt is written before any provider call. If it cannot be
+// recorded, the paid call is refused - no invisible spend. Null means "do not call".
+function beginAttempt(db: Database.Database, tenantId: string, messageId: string, vendor: Vendor, requestedModel: string | null): number | null {
+  try {
+    const r = db.prepare("INSERT INTO outreach_llm_usage (tenant_id, message_id, purpose, vendor, requested_model, outcome) VALUES (?, ?, 'polish', ?, ?, 'pending')")
+      .run(tenantId, messageId, vendor, requestedModel)
+    return Number(r.lastInsertRowid)
+  } catch {
+    return null
+  }
+}
+
+// Finalizes the pending row after the provider answers. If this write fails the row
+// honestly stays 'pending' (unknown, never missing) and the provider is NEVER
+// retried on account of an audit failure.
+function finishAttempt(db: Database.Database, attemptId: number, outcome: PolishOutcome, d?: DetailedCompletion): void {
+  try {
+    db.prepare('UPDATE outreach_llm_usage SET outcome = ?, model = ?, request_id = ?, input_tokens = ?, output_tokens = ?, cache_read_input_tokens = ?, cache_creation_input_tokens = ? WHERE id = ?')
+      .run(outcome, d?.model ?? null, d?.request_id ?? null, d?.usage?.input_tokens ?? null, d?.usage?.output_tokens ?? null, d?.usage?.cache_read_input_tokens ?? null, d?.usage?.cache_creation_input_tokens ?? null, attemptId)
+  } catch { /* pending row stays - honest unknown */ }
+}
+
+// Best-effort record for attempts refused before any provider call (no spend risk).
+function recordRefusal(db: Database.Database, tenantId: string, messageId: string, vendor: Vendor | null, outcome: PolishOutcome): void {
+  try {
+    db.prepare("INSERT INTO outreach_llm_usage (tenant_id, message_id, purpose, vendor, outcome) VALUES (?, ?, 'polish', ?, ?)")
+      .run(tenantId, messageId, vendor, outcome)
+  } catch { /* refusals carry no spend; a missing table must not mask the refusal */ }
+}
 
 function pickProvider(db: Database.Database, tenantId: string, deps: LlmDeps): { provider: Provider; key: string; vendor: Vendor } | null {
   let vendor: ReturnType<typeof defaultVendor> = null
@@ -22,7 +58,7 @@ function pickProvider(db: Database.Database, tenantId: string, deps: LlmDeps): {
   const key = getKey(db, tenantId, vendor, deps.master ?? getMasterKey())
   if (!key) return null
   const provider = (deps.providers ?? providers)[vendor]
-  return provider?.complete ? { provider, key, vendor } : null
+  return provider?.complete || provider?.completeDetailed ? { provider, key, vendor } : null
 }
 
 interface LeadCtx { company: string; name: string; signal: string; source_url: string; evidence_excerpt?: string | null }
@@ -67,19 +103,39 @@ const hasOffer = (m: Memory | null) => !!(m && typeof m.positioning === 'string'
 // so it refuses with 'no_profile' and the caller can point the tenant at Settings.
 export async function polishDraft(db: Database.Database, tenantId: string, messageId: string, businessName: string, deps: LlmDeps = {}): Promise<PolishResult> {
   const p = pickProvider(db, tenantId, deps)
-  if (!p) return { rewritten: false, reason: 'no_key' }
+  if (!p) { recordRefusal(db, tenantId, messageId, null, 'no_key'); return { rewritten: false, reason: 'no_key' } }
   const msg = db.prepare("SELECT m.id, m.lead_id, l.company, l.name, l.signal, l.source_url, l.evidence_excerpt FROM outreach_messages m JOIN leads l ON l.id = m.lead_id WHERE m.id = ? AND m.tenant_id = ? AND m.status = 'draft'").get(messageId, tenantId) as { lead_id: string } & LeadCtx & { id: string } | undefined
-  if (!msg) return { rewritten: false, reason: 'error' }
+  if (!msg) { recordRefusal(db, tenantId, messageId, p.vendor, 'superseded'); return { rewritten: false, reason: 'error' } }
   const memory = getMemory(db, tenantId)
-  if (!hasOffer(memory)) return { rewritten: false, reason: 'no_profile' }
+  if (!hasOffer(memory)) { recordRefusal(db, tenantId, messageId, p.vendor, 'no_profile'); return { rewritten: false, reason: 'no_profile' } }
+  const attemptId = beginAttempt(db, tenantId, messageId, p.vendor, p.provider.configuredModel?.() ?? null)
+  if (attemptId === null) return { rewritten: false, reason: 'error' } // audit unavailable: refuse the paid call
+  const finish = (outcome: PolishOutcome, d?: DetailedCompletion) => finishAttempt(db, attemptId, outcome, d)
+  // usage rides along only when the provider reported it - no undefined keys.
+  const result = (r: PolishResult): PolishResult => { if (r.usage === undefined) delete r.usage; return r }
   try {
-    const text = await p.provider.complete!(p.key, draftPrompt(businessName, msg, memoryPromptBlock(memory)), deps.fetchImpl, 600)
+    let text: string
+    let usage: PolishUsage | undefined
+    const prompt = draftPrompt(businessName, msg, memoryPromptBlock(memory))
+    let d: DetailedCompletion | undefined
+    if (p.provider.completeDetailed) {
+      d = await p.provider.completeDetailed(p.key, prompt, deps.fetchImpl, 600)
+      text = d.text
+      usage = { model: d.model, input_tokens: d.usage?.input_tokens, output_tokens: d.usage?.output_tokens }
+    } else {
+      text = await p.provider.complete!(p.key, prompt, deps.fetchImpl, 600)
+    }
     const parsed = parseDraftOutput(text)
-    if (!parsed) return { rewritten: false, reason: 'unusable' }
-    if (BLOCKED_CLAIM.test(parsed.subject) || BLOCKED_CLAIM.test(parsed.body)) return { rewritten: false, reason: 'blocked_claim' }
+    if (!parsed) { finish('unusable', d); return result({ rewritten: false, reason: 'unusable', usage }) }
+    if (BLOCKED_CLAIM.test(parsed.subject) || BLOCKED_CLAIM.test(parsed.body)) { finish('blocked_claim', d); return result({ rewritten: false, reason: 'blocked_claim', usage }) }
     const r = db.prepare("UPDATE outreach_messages SET subject = ?, body = ? WHERE id = ? AND tenant_id = ? AND status = 'draft'").run(parsed.subject, parsed.body, messageId, tenantId)
-    return r.changes === 1 ? { rewritten: true, vendor: p.vendor } : { rewritten: false, reason: 'error' }
+    // changes 0 means the draft left 'draft' state between our read and write: the
+    // tenant's own action won the race - that is superseded, not a provider error.
+    if (r.changes === 1) { finish('rewritten', d); return result({ rewritten: true, vendor: p.vendor, usage }) }
+    finish('superseded', d)
+    return result({ rewritten: false, reason: 'error', usage })
   } catch {
+    finish('error')
     return { rewritten: false, reason: 'error' }
   }
 }

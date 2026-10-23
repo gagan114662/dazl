@@ -40,7 +40,7 @@ export default function OutreachClient() {
     setNote('')
     const r = await fetch('/api/outreach/polish', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message_id: id }) })
     const j = await r.json()
-    if (r.ok && j.rewritten) setNote(`Rewritten with your ${j.vendor === 'openai' ? 'OpenAI' : 'Anthropic'} key. Review the new text below before anything is approved.`)
+    if (r.ok && j.rewritten) setNote(`Rewritten with your ${j.vendor === 'openai' ? 'OpenAI' : 'Anthropic'} key${j.usage?.model ? ` (${j.usage.model}${j.usage.input_tokens != null ? `, ${j.usage.input_tokens} in / ${j.usage.output_tokens} out tokens` : ''})` : ''}. Review the new text below before anything is approved.`)
     else setNote(j.note || j.error || 'The rewrite did not work - the original draft is unchanged.')
     void load()
   }

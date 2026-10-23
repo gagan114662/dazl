@@ -23,6 +23,22 @@ export function migrateOutreach(db: Database.Database): void {
       sender_name    TEXT NOT NULL CHECK (length(sender_name) BETWEEN 1 AND 100),
       postal_address TEXT NOT NULL CHECK (length(postal_address) BETWEEN 10 AND 300)
     );
+    CREATE TABLE IF NOT EXISTS outreach_llm_usage (
+      id            INTEGER PRIMARY KEY,
+      tenant_id     TEXT NOT NULL,
+      message_id    TEXT,
+      purpose       TEXT NOT NULL,
+      vendor        TEXT,
+      requested_model TEXT,
+      model         TEXT,
+      request_id    TEXT,
+      outcome       TEXT NOT NULL,
+      input_tokens  INTEGER,
+      output_tokens INTEGER,
+      cache_read_input_tokens INTEGER,
+      cache_creation_input_tokens INTEGER,
+      created_at    INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+    );
     CREATE TABLE IF NOT EXISTS suppressions (
       tenant_id  TEXT NOT NULL,
       email      TEXT NOT NULL,
@@ -62,5 +78,14 @@ export function migrateOutreach(db: Database.Database): void {
   addCol('outreach_messages', 'thread_id', 'TEXT')
   addCol('outreach_messages', 'test', 'INTEGER NOT NULL DEFAULT 0') // 1 = addressed to a tenant-allowlisted test inbox
   addCol('outreach_settings', 'booking_url', 'TEXT')
+  // Idempotent upgrades for usage tables created before these columns existed.
+  // Column presence is checked against the live schema; a genuinely failing
+  // ALTER throws here at startup instead of being hidden by a broad catch.
+  {
+    const have = new Set((db.prepare('PRAGMA table_info(outreach_llm_usage)').all() as { name: string }[]).map(c => c.name))
+    if (!have.has('requested_model')) db.exec('ALTER TABLE outreach_llm_usage ADD COLUMN requested_model TEXT')
+    if (!have.has('cache_read_input_tokens')) db.exec('ALTER TABLE outreach_llm_usage ADD COLUMN cache_read_input_tokens INTEGER')
+    if (!have.has('cache_creation_input_tokens')) db.exec('ALTER TABLE outreach_llm_usage ADD COLUMN cache_creation_input_tokens INTEGER')
+  }
   migrateAttribution(db)
 }

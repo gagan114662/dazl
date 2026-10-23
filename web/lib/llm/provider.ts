@@ -17,10 +17,31 @@ export class ProviderError extends Error {
   }
 }
 
+export interface CompletionUsage { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
+// What a paid completion cost in provider terms. No secrets, no prompt or response
+// content - just the accounting fields a tenant needs to see what a call used.
+// model is the SERVED model from the response, or null when the response omits it -
+// never the requested model mislabeled as what was actually served.
+export interface DetailedCompletion { text: string; model: string | null; request_id?: string; usage?: CompletionUsage }
+
+// Only fields the provider actually reported are present - missing stays absent,
+// never a fabricated zero.
+function usageOf(fields: Record<string, number | undefined>): CompletionUsage | undefined {
+  const out: CompletionUsage = {}
+  let any = false
+  for (const [k, v] of Object.entries(fields)) if (typeof v === 'number') { (out as Record<string, number>)[k] = v; any = true }
+  return any ? out : undefined
+}
+
 export interface Provider {
   research(apiKey: string, prompt: string, fetchImpl?: typeof fetch): Promise<ResearchResult>
   // Short plain answer with no tools (used for the contradiction check). Optional so test doubles can omit it.
   complete?(apiKey: string, prompt: string, fetchImpl?: typeof fetch, maxTokens?: number): Promise<string>
+  // Same call with the usage accounting kept. Optional so test doubles can omit it.
+  completeDetailed?(apiKey: string, prompt: string, fetchImpl?: typeof fetch, maxTokens?: number): Promise<DetailedCompletion>
+  // The model a completion request would ASK for (env override or default). The
+  // response's own model field is the served model - record both, never conflate.
+  configuredModel?(): string
 }
 
 const TIMEOUT_MS = Number(process.env.SCAN_LLM_TIMEOUT_MS || 150_000)
@@ -69,14 +90,28 @@ export const anthropicProvider: Provider = {
     }
     return { text, citedUrls: [...urls] }
   },
-  async complete(apiKey, prompt, fetchImpl = fetch, maxTokens = 10) {
+  configuredModel() {
+    return process.env.DAZL_ANTHROPIC_MODEL || 'claude-sonnet-4-5'
+  },
+  async completeDetailed(apiKey, prompt, fetchImpl = fetch, maxTokens = 10): Promise<DetailedCompletion> {
+    const requested = anthropicProvider.configuredModel!()
     const json = await post(
       'https://api.anthropic.com/v1/messages',
       { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-      { model: process.env.DAZL_ANTHROPIC_MODEL || 'claude-sonnet-4-5', max_tokens: maxTokens, messages: [{ role: 'user', content: prompt }] },
+      { model: requested, max_tokens: maxTokens, messages: [{ role: 'user', content: prompt }] },
       fetchImpl,
     )
-    return arr(json.content).map(b => (b.type === 'text' && typeof b.text === 'string' ? b.text : '')).join('')
+    const u = (json.usage ?? {}) as Obj
+    const num = (v: unknown) => (typeof v === 'number' ? v : undefined)
+    return {
+      text: arr(json.content).map(b => (b.type === 'text' && typeof b.text === 'string' ? b.text : '')).join(''),
+      model: typeof json.model === 'string' ? json.model : null,
+      request_id: typeof json.id === 'string' ? json.id : undefined,
+      usage: usageOf({ input_tokens: num(u.input_tokens), output_tokens: num(u.output_tokens), cache_read_input_tokens: num(u.cache_read_input_tokens), cache_creation_input_tokens: num(u.cache_creation_input_tokens) }),
+    }
+  },
+  async complete(apiKey, prompt, fetchImpl = fetch, maxTokens = 10) {
+    return (await anthropicProvider.completeDetailed!(apiKey, prompt, fetchImpl, maxTokens)).text
   },
 }
 
@@ -101,11 +136,26 @@ export const openaiProvider: Provider = {
     }
     return { text, citedUrls: [...urls] }
   },
-  async complete(apiKey, prompt, fetchImpl = fetch, maxTokens = 16) {
-    const json = await post('https://api.openai.com/v1/responses', { authorization: `Bearer ${apiKey}` }, { model: process.env.DAZL_OPENAI_MODEL || 'gpt-4.1', input: prompt, max_output_tokens: maxTokens }, fetchImpl)
+  configuredModel() {
+    return process.env.DAZL_OPENAI_MODEL || 'gpt-4.1'
+  },
+  async completeDetailed(apiKey, prompt, fetchImpl = fetch, maxTokens = 16): Promise<DetailedCompletion> {
+    const requested = openaiProvider.configuredModel!()
+    const json = await post('https://api.openai.com/v1/responses', { authorization: `Bearer ${apiKey}` }, { model: requested, input: prompt, max_output_tokens: maxTokens }, fetchImpl)
     let text = ''
     for (const item of arr(json.output)) if (item.type === 'message') for (const part of arr(item.content)) if (part.type === 'output_text' && typeof part.text === 'string') text += part.text
-    return text
+    const u = (json.usage ?? {}) as Obj
+    const det = (u.input_tokens_details ?? {}) as Obj
+    const num = (v: unknown) => (typeof v === 'number' ? v : undefined)
+    return {
+      text,
+      model: typeof json.model === 'string' ? json.model : null,
+      request_id: typeof json.id === 'string' ? json.id : undefined,
+      usage: usageOf({ input_tokens: num(u.input_tokens), output_tokens: num(u.output_tokens), cache_read_input_tokens: num(det.cached_tokens) }),
+    }
+  },
+  async complete(apiKey, prompt, fetchImpl = fetch, maxTokens = 16) {
+    return (await openaiProvider.completeDetailed!(apiKey, prompt, fetchImpl, maxTokens)).text
   },
 }
 
