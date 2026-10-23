@@ -25,10 +25,10 @@ test('scheduler flag reports configuration only, in precedence order kill > oper
   assert.equal(schedulerReadiness(db, 'A', { SEQUENCES_ENABLED: '1' }).scheduler, 'paused')
   assert.equal(schedulerReadiness(db, 'B', { SEQUENCES_ENABLED: '1' }).scheduler, 'configured_on', 'another tenant pause does not leak')
 })
-test('gates list unmet account prerequisites and keeps the system-level uncertain_send gate separate', () => {
+test('gates list unmet account prerequisites and lists all gates as account-scoped', () => {
   const db = fresh()
   let g = schedulerReadiness(db, 'A', { SEQUENCES_ENABLED: '1' }).gates
-  assert.deepEqual(g.map(x => [x.id, x.ok, x.scope]), [['gmail', false, 'account'], ['read_consent', false, 'account'], ['sender_identity', false, 'account'], ['uncertain_send', true, 'system']])
+  assert.deepEqual(g.map(x => [x.id, x.ok, x.scope]), [['gmail', false, 'account'], ['read_consent', false, 'account'], ['sender_identity', false, 'account'], ['uncertain_send', true, 'account']])
   saveSettings(db, 'A', { sender_name: 'Pat', postal_address: '1 King St W, Toronto ON M5H 1A1' })
   g = schedulerReadiness(db, 'A', {}).gates
   assert.equal(g.find(x => x.id === 'sender_identity')!.ok, true)
