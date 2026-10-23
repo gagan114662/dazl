@@ -48,3 +48,20 @@ test('zero candidates: scan fails with no_candidates and does not burn monthly q
   assert.equal((db.prepare('SELECT error FROM scan_jobs WHERE id = ?').get(id) as { error: string }).error, 'no_candidates')
   assert.equal(scansThisMonth(db, 'u1'), 0)
 })
+
+test('lookalike hosts are not first-party: prefix spoof, subdomain spoof, nested lookalike', async () => {
+  const { classifySource, sourceCap } = await import('../lib/scan/source-quality.ts')
+  // notacme.com is not Acme's domain even though the host string contains the slug
+  assert.equal(classifySource('https://notacme.com/careers', 'Acme'), 'aggregator') // /careers path -> jobs board class
+  assert.equal(classifySource('https://notacme.com/about', 'Acme'), 'unknown')
+  // acme.com.evil-example.com is a subdomain of evil-example.com, not of acme.com
+  assert.equal(classifySource('https://acme.com.evil-example.com/careers', 'Acme'), 'aggregator')
+  assert.equal(classifySource('https://acme.com.evil-example.com/', 'Acme'), 'unknown')
+  // the spoof no longer earns the first-party confidence cap
+  assert.equal(sourceCap('https://acme.com.evil-example.com/', 'Acme'), 75)
+  // genuine first-party shapes still classify: own domain, own subdomain, suffix variant, ccTLD
+  assert.equal(classifySource('https://acme.com/careers', 'Acme'), 'first_party')
+  assert.equal(classifySource('https://careers.acme.com/jobs/123', 'Acme'), 'first_party')
+  assert.equal(classifySource('https://acmeinc.com/about', 'Acme Inc'), 'first_party')
+  assert.equal(classifySource('https://blog.acme.co.uk/post', 'Acme'), 'first_party')
+})
