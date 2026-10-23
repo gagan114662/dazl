@@ -75,3 +75,12 @@ user permission. Backup/rehearsal outputs must be outside the source directory
 and descendants; backup_preflight enforces this before creating files. No
 production DB restore, directory hygiene edits, rotation or8795 action follows
 from snapshot permission. Historical backup mode644 remains unchanged.
+
+
+## Literal unquoted value compatibility
+
+Reviewed fixedcategory-only check established unquoted_multiword as existingenv
+rejection. Parser accepts quote-free values literally including spaces, matching
+known legacy Python split semantics. $/backticks/backslash/NUL remain refused;
+quoted values still strict single-token parsing. No shell, source, interpolation,
+secret output or env rewriting. Existing env content itself was never displayed.

@@ -42,6 +42,11 @@ def parse_env(text):
         # Reject shell-like interpolation rather than guessing what source meant.
         if any(c in raw for c in ['`', '$', '\\', '\x00']):
             raise LaunchError('env_expansion_unsupported')
+        # Legacy Python launcher assigned unquoted multiword values literally.
+        # No shell expansion is ever applied; quoted values remain strict.
+        if '"' not in raw and "'" not in raw:
+            result[name] = raw
+            continue
         try:
             words = shlex.split(raw, comments=False, posix=True)
         except ValueError:

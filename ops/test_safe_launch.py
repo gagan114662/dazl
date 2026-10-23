@@ -15,7 +15,8 @@ class SafeLaunchTest(unittest.TestCase):
     def test_parser_literal_and_fail_closed(self):
         self.assertEqual(m.parse_env('A=abc\nB="two words"\nexport C=abc#fragment\nD=\n# comment\n'),
                          {'A':'abc','B':'two words','C':'abc#fragment','D':''})
-        for text in ['A=$(command)', 'A=$HOME', 'A=`cmd`', 'A=two words', 'A="unterminated', 'A=x\nA=y', 'bad-name=value', r'A=abc\def']:
+        self.assertEqual(m.parse_env('ADDRESS=123 Example St, Unit 2\n'), {'ADDRESS':'123 Example St, Unit 2'})
+        for text in ['A=$(command)', 'A=$HOME', 'A=`cmd`', 'A="unterminated', 'A=x\nA=y', 'bad-name=value', r'A=abc\def']:
             with self.assertRaises(m.LaunchError): m.parse_env(text)
 
     def test_real_subprocess_never_outputs_synthetic_secret_on_errors(self):
