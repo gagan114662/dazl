@@ -27,7 +27,10 @@ export async function GET(req: NextRequest) {
   const jobId = req.nextUrl.searchParams.get('job_id') ?? ''
   const db = getScanDb()
   if (jobId && !/^[a-f0-9]{24}$/.test(jobId)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  const rows = exportLeads(db, user.id, jobId || undefined) as Record<string, unknown>[]
+  // Default export is real leads only; ?include_fixtures=1 is the explicit opt-in
+  // that keeps the verification fixture rows in the file.
+  const includeFixtures = req.nextUrl.searchParams.get('include_fixtures') === '1'
+  const rows = exportLeads(db, user.id, jobId || undefined, 5000, includeFixtures) as Record<string, unknown>[]
   const csv = toCsv(rows.map(r => ({ ...r, created_at: typeof r.created_at === 'number' ? new Date(r.created_at * 1000).toISOString() : r.created_at })), COLUMNS)
   return new NextResponse(csv, {
     headers: {

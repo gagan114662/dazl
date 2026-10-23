@@ -299,7 +299,11 @@ export function listJobs(db: Database.Database, userId: string, limit = 20): Job
 
 // CSV export: every lead the tenant can see (hidden fit<=1 rows excluded unless
 // includeHidden), across one job or all of their jobs, newest first. Read-only.
-export function exportLeads(db: Database.Database, userId: string, jobId?: string, limit = 5000) {
+// Fixture provenance already exists on the job: fixture jobs are inserted with a
+// business name ending in '(test only)' (same marker the jobs API labels test_only).
+// The export defaults to real rows only; includeFixtures is the explicit opt-in for
+// verification workflows. Nothing is deleted - every row stays in the database.
+export function exportLeads(db: Database.Database, userId: string, jobId?: string, limit = 5000, includeFixtures = false) {
   return db
     .prepare(
       `SELECT l.scan_job_id AS job_id, l.company, l.name, l.contact, l.signal, l.source_url,
@@ -307,6 +311,7 @@ export function exportLeads(db: Database.Database, userId: string, jobId?: strin
               l.evidence_excerpt, l.created_at
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
        WHERE j.user_id = ? ${jobId ? 'AND j.id = ?' : ''} AND (l.fit IS NULL OR l.fit > 1)
+       ${includeFixtures ? '' : "AND j.business_name NOT LIKE '%(test only)'"}
        ORDER BY l.created_at DESC LIMIT ?`,
     )
     .all(...(jobId ? [userId, jobId, limit] : [userId, limit]))

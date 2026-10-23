@@ -112,3 +112,34 @@ test('LLM keys are invisible and unreadable across tenants', () => {
   assert.equal(getKey(db, B, 'anthropic', master), null)
   assert.equal(getKey(db, A, 'anthropic', master), 'sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
 })
+
+test('export defaults to real rows, fixture rows require the explicit opt-in, and nothing is deleted', () => {
+  const db = setup()
+  jobWithLead(db)
+  // A fixture job, using the same '(test only)' business-name provenance the fixture
+  // inserter and the jobs API use.
+  const fixtureJob = createJob(db, A, { business_name: 'dazl verification fixture (test only)', industry: '-', location: '-' })
+  db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(fixtureJob)
+  db.prepare(
+    "INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, evidence_excerpt, confidence, fit, intent) VALUES (?, ?, 'Fixture A (test only)', 'dazl fixture', null, 'dazl found and verified nothing (test only)', 'https://example.invalid/fixture', 'no evidence (test only)', 0, 4, 4)",
+  ).run('dddddddddddddddddddddddd', fixtureJob)
+  db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(fixtureJob)
+
+  const all = () => (db.prepare('SELECT count(*) AS n FROM leads').get() as { n: number }).n
+  assert.equal(all(), 2, 'both rows exist')
+
+  const real = exportLeads(db, A) as { company: string }[]
+  assert.equal(real.length, 1, 'default export is real rows only')
+  assert.equal(real[0].company, 'Acme')
+
+  const withFixtures = exportLeads(db, A, undefined, 5000, true) as { company: string }[]
+  assert.equal(withFixtures.length, 2, 'explicit opt-in includes the fixture rows')
+  assert.ok(withFixtures.some(r => r.company === 'dazl fixture'))
+
+  const fixtureOnly = exportLeads(db, A, fixtureJob) as { company: string }[]
+  assert.equal(fixtureOnly.length, 0, 'a fixture job id alone still defaults to real-only')
+  assert.equal((exportLeads(db, A, fixtureJob, 5000, true) as { company: string }[]).length, 1, 'opt-in works per job too')
+
+  assert.equal(all(), 2, 'every row is preserved - filtering is export-only, never deletion')
+  db.close()
+})
