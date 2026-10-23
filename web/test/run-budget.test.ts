@@ -7,7 +7,8 @@ import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
-import { migrateScan, getJob } from '../lib/scan/store.ts'
+import { migrateScan, getJob, reapStaleJobs } from '../lib/scan/store.ts'
+import { ProviderError } from '../lib/llm/provider.ts'
 import { migratePlans } from '../lib/plans.ts'
 import { migrateConnectors, saveCredential } from '../lib/connectors/store.ts'
 import { migrateEvents } from '../lib/events/store.ts'
@@ -54,16 +55,18 @@ test('parseRunBudget: absent or malformed means current behavior; only explicit 
 })
 
 test('normalizeRunBudget: absent means current behavior; an explicitly supplied invalid budget is REJECTED, never widened', () => {
-  assert.deepEqual(normalizeRunBudget(undefined), { ok: true, value: null })
-  assert.deepEqual(normalizeRunBudget(null), { ok: true, value: null })
-  assert.equal(normalizeRunBudget('paid_fallback').ok, false)
-  assert.equal(normalizeRunBudget([]).ok, false)
-  assert.equal(normalizeRunBudget({}).ok, false) // explicit but empty: would silently widen
-  assert.equal(normalizeRunBudget({ paid_fallback: true }).ok, false) // only false narrows
-  assert.equal(normalizeRunBudget({ paid_fallback: 0 }).ok, false)
-  assert.equal(normalizeRunBudget({ unknown_control: false }).ok, false)
-  assert.deepEqual(normalizeRunBudget({ paid_fallback: false }), { ok: true, value: '{"paid_fallback":false}' })
-  const all = normalizeRunBudget({ paid_fallback: false, credit_enrichment: false, judge: false })
+  assert.deepEqual(normalizeRunBudget(undefined, false), { ok: true, value: null }) // field absent: legacy default
+  assert.deepEqual(normalizeRunBudget(null, false), { ok: true, value: null }) // not supplied, raw value irrelevant
+  assert.equal(normalizeRunBudget(null, true).ok, false) // explicit null never quietly widens
+  assert.equal(normalizeRunBudget(undefined, true).ok, false) // supplied-but-empty is a contract violation
+  assert.equal(normalizeRunBudget('paid_fallback', true).ok, false)
+  assert.equal(normalizeRunBudget([], true).ok, false)
+  assert.equal(normalizeRunBudget({}, true).ok, false) // explicit but empty: would silently widen
+  assert.equal(normalizeRunBudget({ paid_fallback: true }, true).ok, false) // only false narrows
+  assert.equal(normalizeRunBudget({ paid_fallback: 0 }, true).ok, false)
+  assert.equal(normalizeRunBudget({ unknown_control: false }, true).ok, false)
+  assert.deepEqual(normalizeRunBudget({ paid_fallback: false }, true), { ok: true, value: '{"paid_fallback":false}' })
+  const all = normalizeRunBudget({ paid_fallback: false, credit_enrichment: false, judge: false }, true)
   assert.equal(all.ok, true)
   assert.deepEqual(JSON.parse((all as { value: string }).value), { paid_fallback: false, credit_enrichment: false, judge: false })
 })
@@ -92,7 +95,7 @@ test('paid_fallback=false stops the run before the paid research call; no budget
   const calls = { n: 0 }
   assert.equal(await runJob(db, job, { providers: researchProvider(calls), master, fetchPage: page }), 'failed')
   assert.equal(calls.n, 0) // the paid fallback was never attempted
-  assert.equal(getJob(db, 'A', job.id)?.error, 'no_candidates')
+  assert.equal(getJob(db, 'A', job.id)?.error, 'budget_stopped')
 
   const db2 = setup()
   const b2 = createBatch(db2, 'A', ['acme.com'])
@@ -152,4 +155,113 @@ test('credit_enrichment=false skips the BYOK Apollo pass; default still runs it'
   const calls2 = { n: 0 }
   assert.equal(await runJob(db2, job2, { providers: researchProvider(calls2), master, fetchPage: page, fetchImpl: recordingFetch(urls2) }), 'done')
   assert.ok(urls2.some(u => u.includes('api.apollo.io'))) // control: the credit pass runs as today
+})
+
+// --- TinyFish-primary paid extraction path (enabled flags, stubbed transport) ---
+
+function tinyfishStubFetch(urls: string[]) {
+  return (async (url: string | URL) => {
+    const u = String(url)
+    urls.push(u)
+    if (u.startsWith('https://api.search.tinyfish.ai')) {
+      return new Response(JSON.stringify({ results: [{ url: 'https://news.com/acme', title: 'Acme news', snippet: QUOTE, date: recent }] }), { status: 200 })
+    }
+    if (u.startsWith('https://api.fetch.tinyfish.ai')) {
+      return new Response(JSON.stringify({ results: [{ url: 'https://news.com/acme', title: 'Acme news', text: `News ${recent.slice(0, 4)}. ${QUOTE}. More text.` }] }), { status: 200 })
+    }
+    return new Response('{}', { status: 200 })
+  }) as typeof fetch
+}
+
+function withTinyfishEnv(fn: () => Promise<void>) {
+  return async () => {
+    process.env.TINYFISH_API_KEY = 'test-tinyfish-key'
+    try { await fn() } finally { delete process.env.TINYFISH_API_KEY }
+  }
+}
+
+test('TinyFish-primary path makes exactly ONE paid extraction call (complete, maxTokens 3000); fallback and judge stay off under budget', withTinyfishEnv(async () => {
+  const db = setup()
+  const b = createBatch(db, 'A', ['acme.com'])
+  queuePendingRows(db, 'A', b, JSON.stringify({ paid_fallback: false, credit_enrichment: false, judge: false }))
+  const job = claimKeyedJob(db)!
+  const tfUrls: string[] = []
+  let researchCalls = 0
+  let completeCalls: { prompt: string; maxTokens?: number }[] = []
+  let judged = 0
+  const judge: Judge = async () => { judged++; return 'supports' }
+  const providers: Record<'anthropic' | 'openai', Provider> = {
+    anthropic: {
+      research: async () => { researchCalls++; return { text: '', citedUrls: [] } },
+      complete: async (_key: string, prompt: string, _f?: typeof fetch, maxTokens?: number) => { completeCalls.push({ prompt, maxTokens }); return 'Here: ' + JSON.stringify([lead]) },
+    },
+    openai: { research: async () => ({ text: '', citedUrls: [] }) },
+  }
+  assert.equal(await runJob(db, job, { providers, master, fetchPage: page, fetchImpl: tinyfishStubFetch(tfUrls), judge }), 'done')
+  assert.equal(completeCalls.length, 1, 'exactly one paid LLM call: the TinyFish evidence extraction')
+  assert.equal(completeCalls[0].maxTokens, 3000, 'extraction output is hard-capped')
+  assert.ok(completeCalls[0].prompt.length <= 40_000, 'extraction input is evidence-capped by code')
+  assert.equal(researchCalls, 0, 'paid_fallback=false: the paid research fallback never ran')
+  assert.equal(judged, 0, 'judge=false: no judge calls even though a judge was provided')
+  assert.ok(tfUrls.some(u => u.startsWith('https://api.search.tinyfish.ai')), 'TinyFish search used')
+  assert.ok(tfUrls.some(u => u.startsWith('https://api.fetch.tinyfish.ai')), 'TinyFish fetch used')
+  const leads = db.prepare('SELECT company FROM leads').all() as { company: string }[]
+  assert.equal(leads.length, 1)
+}))
+
+test('a retry re-runs the whole attempt including the paid extraction call, the budget persists across re-claims, and MAX_ATTEMPTS caps it at 3', withTinyfishEnv(async () => {
+  const db = setup()
+  const budget = JSON.stringify({ judge: false, credit_enrichment: false })
+  const b = createBatch(db, 'A', ['acme.com'])
+  queuePendingRows(db, 'A', b, budget)
+  const tfUrls: string[] = []
+  let completeCalls = 0
+  let researchCalls = 0
+  const providers: Record<'anthropic' | 'openai', Provider> = {
+    anthropic: {
+      research: async () => { researchCalls++; return { text: '', citedUrls: [] } },
+      complete: async () => { completeCalls++; throw new ProviderError('retry', 'boom') },
+    },
+    openai: { research: async () => ({ text: '', citedUrls: [] }) },
+  }
+  // Attempt 1 and 2 fail transiently and re-queue; attempt 3 fails terminally.
+  const j1 = claimKeyedJob(db)!
+  assert.equal(j1.attempts, 1)
+  assert.equal(j1.run_budget, budget, 'budget persisted on the claimed row')
+  assert.equal(await runJob(db, j1, { providers, master, fetchPage: page, fetchImpl: tinyfishStubFetch(tfUrls) }), 'retry')
+  const j2 = claimKeyedJob(db)!
+  assert.equal(j2.attempts, 2)
+  assert.equal(j2.run_budget, budget, 'budget survives the re-queue')
+  assert.equal(await runJob(db, j2, { providers, master, fetchPage: page, fetchImpl: tinyfishStubFetch(tfUrls) }), 'retry')
+  const j3 = claimKeyedJob(db)!
+  assert.equal(j3.attempts, 3)
+  assert.equal(await runJob(db, j3, { providers, master, fetchPage: page, fetchImpl: tinyfishStubFetch(tfUrls) }), 'failed')
+  // The thrown extraction call is swallowed into the paid fallback by design
+  // (TinyFish 'unavailable'), so each attempt runs BOTH paid surfaces before the
+  // empty fallback output re-pends the job as 'bad_output'.
+  assert.equal(getJob(db, 'A', j1.id)?.error, 'bad_output')
+  assert.equal(completeCalls, 3, 'the paid extraction call ran once per attempt - capped by MAX_ATTEMPTS')
+  assert.equal(researchCalls, 3, 'the paid research fallback also ran once per attempt - retries multiply paid calls')
+  assert.equal(claimKeyedJob(db), null, 'no fourth attempt exists')
+}))
+
+test('stale-claim recovery re-pends a crashed run below MAX_ATTEMPTS and fails it terminally at MAX_ATTEMPTS', () => {
+  const db = setup()
+  const b = createBatch(db, 'A', ['acme.com'])
+  queuePendingRows(db, 'A', b)
+  const claimed = claimKeyedJob(db)!
+  assert.equal(claimed.attempts, 1)
+  const old = Math.floor(Date.now() / 1000) - 21 * 60 // beyond STALE_RUNNING_S default (20m)
+  db.prepare("UPDATE scan_jobs SET claimed_at = ? WHERE id = ?").run(old, claimed.id)
+  reapStaleJobs(db)
+  assert.equal(getJob(db, 'A', claimed.id)?.status, 'pending', 'crashed attempt re-pends for one more claim')
+  const reclaimed = claimKeyedJob(db)!
+  assert.equal(reclaimed.attempts, 2, 'the re-run counts as another attempt (another paid call)')
+  // A job that already burned all attempts and then crashed reaps to failed.
+  db.prepare("UPDATE scan_jobs SET attempts = 3, status = 'running', claimed_at = ? WHERE id = ?").run(old, claimed.id)
+  reapStaleJobs(db)
+  const j = getJob(db, 'A', claimed.id)!
+  assert.equal(j.status, 'failed')
+  assert.equal(j.error, 'timeout')
+  assert.equal(claimKeyedJob(db), null, 'no resurrection past MAX_ATTEMPTS')
 })

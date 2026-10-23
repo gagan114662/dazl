@@ -96,12 +96,14 @@ export function createBatch(db: Database.Database, userId: string, domains: stri
 // Creates one scan job per pending row until the plan quota stops the batch. Rows left
 // without a job stay pending so a later resume (new month, upgraded plan) can pick them up.
 export const RUN_BUDGET_KEYS = ['paid_fallback', 'credit_enrichment', 'judge'] as const
-// Normalize an explicitly supplied per-run budget. Absent (undefined/null) means
-// current behavior. An explicitly supplied budget must be a plain object using
-// only the known narrowing keys, each === false; anything else is REJECTED so a
-// caller expecting a restricted run is never silently widened into a full run.
-export function normalizeRunBudget(raw: unknown): { ok: true; value: string | null } | { ok: false; error: string } {
-  if (raw === undefined || raw === null) return { ok: true, value: null }
+// Normalize a per-run budget. Absent (the field was not supplied) means current
+// behavior - the legacy default. An explicitly supplied budget must be a plain
+// object using only the known narrowing keys, each === false; anything else -
+// including an explicit null - is REJECTED so a caller expecting a restricted
+// run is never silently widened into a full run.
+export function normalizeRunBudget(raw: unknown, supplied: boolean): { ok: true; value: string | null } | { ok: false; error: string } {
+  if (!supplied) return { ok: true, value: null }
+  if (raw === undefined || raw === null) return { ok: false, error: 'budget was supplied but empty - name at least one narrowing control (paid_fallback, credit_enrichment, judge) set to false, or omit the field' }
   if (typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: 'budget must be an object' }
   const keys = Object.keys(raw as Record<string, unknown>)
   if (keys.length === 0) return { ok: false, error: 'budget names no controls' }

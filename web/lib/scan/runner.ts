@@ -398,13 +398,13 @@ async function tinyfishCompany(db: Database.Database, job: Job, domain: string, 
   ]
   const hits: import('../search/tinyfish.ts').SearchHit[] = []
   for (const { q, date } of queries) {
-    const r = await tfSearch(db, job.user_id, q, date ? { afterDate: after } : {}, spent)
+    const r = await tfSearch(db, job.user_id, q, date ? { afterDate: after } : {}, spent, fetchImpl ? { fetchImpl } : {})
     if (!r.ok) { if (hits.length === 0) return null; break }
     hits.push(...r.hits)
   }
   if (hits.length === 0) return null
   const urls = [...new Set(hits.map(h => h.url))].slice(0, 8)
-  const f = await tfFetch(db, job.user_id, urls, spent)
+  const f = await tfFetch(db, job.user_id, urls, spent, fetchImpl ? { fetchImpl } : {})
   const items = toEvidence(hits, f.ok ? f.pages : [])
   if (items.length === 0) return null
   const text = await complete.call(provider, key, buildSourcePrompt(`The company at https://${domain}`, { company_domain: domain }, items), fetchImpl, 3000)
@@ -436,8 +436,9 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
     const fetchP = cachedFetcher(deps.fetchPage ?? fetchPageDetailed)
     if (!leads) {
       // Per-run budget control: a run that disabled the paid fallback stops here
-      // honestly instead of spending on research/ground/judge calls.
-      if (deps.paidFallback === false) { finish(db, job, 'failed', 'no_candidates', null, 0, ledger); return 'failed' }
+      // honestly instead of spending on research/ground/judge calls. The distinct
+      // error keeps the UI truthful - this is a budget stop, not "nothing found".
+      if (deps.paidFallback === false) { finish(db, job, 'failed', 'budget_stopped', null, 0, ledger); return 'failed' }
       ledger.record(`search:${vendor}`, 'started')
       const res = await provider.research(key, buildCompanyPrompt(domain, deps.now ?? new Date()), deps.fetchImpl)
       leads = parseLeads(res.text, res.citedUrls)
@@ -487,6 +488,13 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
 export interface RunBudget { paid_fallback?: boolean; credit_enrichment?: boolean; judge?: boolean }
 // Per-run explicit budget controls, stored on the job row by the CSV import route.
 // Absent or malformed JSON means current behavior - the control only ever NARROWS.
+// PAID SURFACES, honestly: the TinyFish-primary path ends in ONE paid LLM call
+// (provider.complete, evidence-capped input, maxTokens 3000) per job ATTEMPT -
+// that extraction call is the intended paid surface and no flag narrows it.
+// paid_fallback=false narrows only the research/ground fallback; credit_enrichment
+// narrows the BYOK Apollo/PDL pass; judge narrows the verification judge. A runner
+// retry or stale-claim recovery re-runs the whole attempt (paid call included),
+// bounded by MAX_ATTEMPTS - these flags are scope controls, never a money cap.
 export function parseRunBudget(raw: string | null | undefined): RunBudget | null {
   if (!raw) return null
   try {
