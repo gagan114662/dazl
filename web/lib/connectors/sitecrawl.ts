@@ -162,7 +162,7 @@ const ROLE = /^(info|hello|hi|contact|contactus|enquiries|enquiry|inquiries|inqu
 const EMAIL = /\b([a-z0-9][a-z0-9._%+-]{0,63})@([a-z0-9][a-z0-9.-]{0,251}\.[a-z]{2,24})\b/gi
 const sameSite = (emailDomain: string, site: string) => { const a = emailDomain.toLowerCase(); return a === site || a.endsWith('.' + site) }
 
-export interface Found { kind: 'email' | 'phone'; value: string; label: string; url: string }
+export interface Found { kind: 'email' | 'phone' | 'person'; value: string; label: string; url: string }
 
 // JSON-LD blocks name contact emails in structured form (Organization/Person/contactPoint).
 // They live inside <script>, which the visible-text pass strips, so read them first.
@@ -212,6 +212,50 @@ export function extractContacts(html: string, pageUrl: string, site: string): Fo
   return [...out.values()].slice(0, 6)
 }
 
+// ---- named people the company itself lists (name + title, no address) ----
+// The company site is the only source. No email is built from a name, and a listed person is never an
+// address: this gives the user a real "who runs this" fact with its page, nothing the sender can mail.
+const PERSON_TITLE = /^(?:co-?\s?)?(founder|owner|ceo|president|principal|proprietor|managing director|general manager|director|partner|practice manager|office manager|broker|dentist|doctor)\b[a-z ,&/-]{0,40}$/i
+const NOT_NAME = new Set(['contact','our','team','about','us','meet','the','leadership','staff','careers','services','home','privacy','policy','terms','book','call','email','get','free','quote','welcome','locations','location','office','hours','read','more','learn','new','patients','patient','customer','customers'])
+const NAME_LINE = /^(?:(?:Dr|Mr|Ms|Mrs)\.?\s+)?[A-Z][a-z'\u2019-]{1,20}(?:\s+[A-Z]\.?)?\s+[A-Z][A-Za-z'\u2019-]{1,24}$/
+const plausibleName = (n: string) => NAME_LINE.test(n) && n.split(/\s+/).every(w => !NOT_NAME.has(w.toLowerCase().replace(/\.$/, '')))
+function jsonLdPeople(html: string): { name: string; title: string }[] {
+  const out: { name: string; title: string }[] = []
+  for (const m of html.matchAll(/<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
+    let root: unknown; try { root = JSON.parse(m[1]) } catch { continue }
+    const stack = [root]
+    while (stack.length) {
+      const node = stack.pop()
+      if (!node || typeof node !== 'object') continue
+      if (Array.isArray(node)) { stack.push(...node); continue }
+      const rec = node as Record<string, unknown>
+      const types = ([] as unknown[]).concat(rec['@type'] ?? []).map(String)
+      if (types.includes('Person') && typeof rec.name === 'string' && typeof rec.jobTitle === 'string') out.push({ name: rec.name.trim(), title: rec.jobTitle.trim() })
+      for (const v of Object.values(rec)) if (v && typeof v === 'object') stack.push(v)
+    }
+  }
+  return out
+}
+export function extractPeople(html: string, pageUrl: string): Found[] {
+  const found = new Map<string, Found>()
+  const add = (name: string, title: string) => {
+    name = name.replace(/\s+/g, ' ').trim(); title = title.replace(/\s+/g, ' ').trim()
+    if (!plausibleName(name) || !PERSON_TITLE.test(title) || title.length > 60 || /\bat\b/i.test(title)) return
+    if (!found.has(name.toLowerCase())) found.set(name.toLowerCase(), { kind: 'person', value: `${name}, ${title}`.slice(0, 120), label: 'listed with this title on this company page, not verified as current staff', url: pageUrl })
+  }
+  for (const p of jsonLdPeople(html)) add(p.name, p.title)
+  const text = html.replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, ' ').replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<\/?(p|div|li|ul|ol|h[1-6]|br|section|article|tr|td|th|figure|figcaption|header|footer|span|strong|b|em)\b[^>]*>/gi, '\n').replace(/<[^>]+>/g, ' ')
+    .replace(/&amp;/g, '&').replace(/&#8217;|&rsquo;/g, "'").replace(/&nbsp;/g, ' ')
+  const lines = text.split('\n').map(l => l.replace(/\s+/g, ' ').trim()).filter(Boolean)
+  for (let i = 0; i < lines.length; i++) {
+    const same = /^(.{3,45}?)\s*(?:,|\u2013|\u2014|-|\|)\s*(.{3,60})$/.exec(lines[i])
+    if (same) add(same[1], same[2])
+    if (i + 1 < lines.length && lines[i].length < 45 && lines[i + 1].length < 62) add(lines[i], lines[i + 1])
+  }
+  return [...found.values()].slice(0, 3)
+}
+
 const PAGE_HINT = /(contact|about|impressum|kontakt|contacto|contato|nous-contacter|contactez|chi-siamo|company|team|reach)/i
 export function contactPaths(homeHtml: string, home: URL): string[] {
   const set = new Set<string>(['/contact', '/contact-us', '/about'])
@@ -247,7 +291,7 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
   if (!home || home.status >= 400) return { found: [], reason: 'site_unreachable', pages: 0 }
   if (expectName && !norm(home.body.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ')).includes(norm(expectName))) return { found: [], reason: 'name_mismatch', pages: 1 }
   const found = new Map<string, Found>(); let pages = 1
-  for (const f of extractContacts(home.body, home.finalUrl, site)) found.set(f.kind + f.value, f)
+  for (const f of [...extractContacts(home.body, home.finalUrl, site), ...extractPeople(home.body, home.finalUrl)]) found.set(f.kind + f.value, f)
   for (const p of contactPaths(home.body, new URL(home.finalUrl))) {
     if (stopped()) break
     if (pages >= MAX_PAGES) break
@@ -255,7 +299,7 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
     const r = await polite(origin + p, robots.delayMs)
     if (!r || r.status >= 400) continue
     pages++
-    for (const f of extractContacts(r.body, r.finalUrl, site)) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
+    for (const f of [...extractContacts(r.body, r.finalUrl, site), ...extractPeople(r.body, r.finalUrl)]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
   }
   // Social bio adapter (flag SITECRAWL_SOCIAL=1). Same hard robots rule, per host. In practice x.com, facebook.com, linkedin.com and
   // instagram.com disallow our user agent, so this fetches nothing from them; it exists for smaller platforms that allow it.
@@ -273,7 +317,9 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
       for (const f of extractContacts(pg.body, pg.finalUrl, site)) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, { ...f, label: 'published on the company social profile' })
     }
   }
-  return { found: [...found.values()].slice(0, 6), reason: found.size ? 'ok' : 'none_published', pages, tech: detectTech(home.body) }
+  // Addresses and phones keep their cap; listed people ride separately so they never crowd an address out, and never turn 'none_published' into 'ok'.
+  const all = [...found.values()], contacts = all.filter(f => f.kind !== 'person'), people = all.filter(f => f.kind === 'person')
+  return { found: [...contacts.slice(0, 6), ...people.slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body) }
 }
 
 // Runs for one finished scan. Never throws, never touches the lead row, one audit row per site.
