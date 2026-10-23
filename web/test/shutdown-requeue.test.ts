@@ -54,12 +54,13 @@ test('requeue is a no-op for rows it does not own: finished, re-claimed, or at M
   assert.equal(requeueInFlightForShutdown(db), 0)
 })
 
-test('REAL SIGTERM: the registered instrumentation handler requeues only this process\'s own running attempts', async () => {
+test('REAL SIGTERM -> process.exit: the exit hook requeues only this process\'s own running attempts', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'shut-')); const dbPath = join(dir, 'app.db')
   const child = spawn(process.execPath, ['--experimental-strip-types', join(import.meta.dirname, 'helpers/shutdown-child.ts')], { env: { ...process.env, DB_PATH: dbPath, SCAN_MASTER_KEY: '', NODE_ENV: 'test' }, stdio: ['ignore', 'pipe', 'pipe'] })
   let out = '', err = ''
   child.stdout.on('data', d => { out += d }); child.stderr.on('data', d => { err += d })
   await new Promise<void>((res, rej) => { const t = setInterval(() => { if (out.includes('READY')) { clearInterval(t); res() } else if (child.exitCode !== null) { clearInterval(t); rej(new Error('child exited: ' + err)) } }, 50) })
+  assert.match(out, /LISTENERS_DELTA=0/, 'we add no SIGTERM listener, so default/Next termination behaviour is never swallowed')
   child.kill('SIGTERM')
   await new Promise(r => child.on('exit', r))
   const db = new Database(dbPath, { readonly: true })
