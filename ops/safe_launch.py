@@ -226,6 +226,7 @@ def run(args):
     # Recheck immediately before the one authorized signal, never kill by name.
     if pid_cwd(args.pid) != rollback or not owns_listener(args.pid, args.port):
         raise LaunchError('pid_changed')
+    check_process(args.pid)
     os.kill(args.pid, signal.SIGTERM)
     if not await_state(lambda: port_free(args.port), 15):
         return {'status': 'old_listener_did_not_stop', 'service_changed': True}

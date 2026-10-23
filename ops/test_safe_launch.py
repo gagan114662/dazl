@@ -118,6 +118,37 @@ class SafeLaunchTest(unittest.TestCase):
             with self.assertRaisesRegex(m.LaunchError,'env_permissions_refused'):m.read_env(link)
             self.assertEqual(m.read_env(env),{'A':'synthetic'})
 
+    def test_run_gate_failures_never_signal(self):
+        # Run orchestration must invoke each real gate, not merely unit-test helpers.
+        for gate, code in [('check_database_backup','backup_gate_sentinel'),('pin_executables','runtime_gate_sentinel'),('check_process','supervisor_gate_sentinel')]:
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(patch.object(m,'stage_path',side_effect=[Path('/new'),Path('/old')]))
+                stack.enter_context(patch.object(m,'read_env',return_value={'DB_PATH':'/db','DAZL_MASTER_KEY':'dummy','PUBLIC_BASE_URL':'https://example.invalid'}))
+                for name in ['check_database_backup','pin_executables','check_process']:
+                    stack.enter_context(patch.object(m,name,side_effect=m.LaunchError(code) if name==gate else None))
+                stack.enter_context(patch.object(m,'pid_cwd',return_value=Path('/old')))
+                stack.enter_context(patch.object(m,'owns_listener',return_value=True))
+                stack.enter_context(patch.object(m,'health',return_value='b'*40))
+                kill=stack.enter_context(patch.object(m.os,'kill'))
+                launch=stack.enter_context(patch.object(m,'launch'))
+                stack.enter_context(patch.object(m,'await_state',return_value=True))
+                with self.assertRaisesRegex(m.LaunchError,code):m.run(self.args())
+                kill.assert_not_called();launch.assert_not_called()
+
+    def test_supervisor_is_rechecked_immediately_before_signal(self):
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.object(m,'stage_path',side_effect=[Path('/new'),Path('/old')]))
+            stack.enter_context(patch.object(m,'read_env',return_value={'DB_PATH':'/db','DAZL_MASTER_KEY':'dummy','PUBLIC_BASE_URL':'https://example.invalid'}))
+            stack.enter_context(patch.object(m,'check_database_backup'))
+            stack.enter_context(patch.object(m,'pin_executables'))
+            stack.enter_context(patch.object(m,'check_process',side_effect=[None,m.LaunchError('supervisor_changed')]))
+            stack.enter_context(patch.object(m,'pid_cwd',return_value=Path('/old')))
+            stack.enter_context(patch.object(m,'owns_listener',return_value=True))
+            stack.enter_context(patch.object(m,'health',return_value='b'*40))
+            kill=stack.enter_context(patch.object(m.os,'kill'))
+            with self.assertRaisesRegex(m.LaunchError,'supervisor_changed'):m.run(self.args())
+            kill.assert_not_called()
+
     def test_wrong_listener_blocks_before_signal(self):
         with patch.object(m,'stage_path',side_effect=[Path('/new'),Path('/old')]), patch.object(m,'read_env',return_value={'DB_PATH':'/db','DAZL_MASTER_KEY':'dummy','PUBLIC_BASE_URL':'https://example.invalid'}), patch.object(m,'check_database_backup'), patch.object(m,'pin_executables'), patch.object(m,'check_process'), patch.object(m,'pid_cwd',return_value=Path('/old')), patch.object(m,'owns_listener',return_value=False), patch.object(m.os,'kill') as kill:
             with self.assertRaisesRegex(m.LaunchError,'pid_listener_mismatch'):m.run(self.args())
