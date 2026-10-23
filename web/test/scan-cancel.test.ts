@@ -104,7 +104,7 @@ test('profile save returns canonical stored values; business name round-trips; k
 
 test('contact search note states eligibility and stored facts only, never completion or absence', async () => {
   const { contactSearchNote } = await import('../lib/outreach/published-email.ts')
-  assert.match(contactSearchNote({ contact: null, confidence: null })!, /did not verify this lead/)
+  assert.match(contactSearchNote({ contact: null, confidence: null })!, /not machine-verified/)
   const d = contactSearchNote({ contact: null, confidence: 60, company_domain: 'pigment.com' })!
   assert.match(d, /website identified: pigment\.com/)
   assert.match(d, /does not prove no address exists/)

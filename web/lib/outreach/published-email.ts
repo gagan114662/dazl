@@ -59,7 +59,7 @@ export function publishedEmail(lead: PublishedEmailLead): string | null {
 export function contactSearchNote(lead: PublishedEmailLead & { confidence?: number | null; human_confirmed_at?: number | null; company_domain?: string | null }): string | null {
   if (publishedContact(lead)) return null
   if (lead.contact) return null
-  if (lead.confidence === null || lead.confidence === undefined) return 'No contact stored. Contact search only runs for leads dazl verified; dazl did not verify this lead.'
+  if (lead.confidence === null || lead.confidence === undefined) return 'No contact stored. Contact search only runs for machine-verified leads; this lead is not machine-verified.'
   if (lead.company_domain) return `No published contact stored. Company website identified: ${lead.company_domain}. This does not prove no address exists.`
   return 'No published contact stored. Company website not confirmed. This does not prove no address exists.'
 }
