@@ -495,6 +495,10 @@ export interface RunBudget { paid_fallback?: boolean; credit_enrichment?: boolea
 // narrows the BYOK Apollo/PDL pass; judge narrows the verification judge. A runner
 // retry or stale-claim recovery re-runs the whole attempt (paid call included),
 // bounded by MAX_ATTEMPTS - these flags are scope controls, never a money cap.
+// Fully restricted profile (all three false): a FAILED extraction ends the run
+// terminally as budget_stopped (the fallback that would re-pend is gated), so a
+// restricted job makes at most 1 paid call per attempt and only a post-extraction
+// crash/retry can produce further attempts - never a research call.
 export function parseRunBudget(raw: string | null | undefined): RunBudget | null {
   if (!raw) return null
   try {

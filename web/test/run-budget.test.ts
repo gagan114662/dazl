@@ -209,7 +209,32 @@ test('TinyFish-primary path makes exactly ONE paid extraction call (complete, ma
   assert.equal(leads.length, 1)
 }))
 
-test('a retry re-runs the whole attempt including the paid extraction call, the budget persists across re-claims, and MAX_ATTEMPTS caps it at 3', withTinyfishEnv(async () => {
+test('RESTRICTED flags: a failed extraction stops the run as budget_stopped - zero research calls, one paid attempt, no retry', withTinyfishEnv(async () => {
+  const db = setup()
+  const b = createBatch(db, 'A', ['acme.com'])
+  queuePendingRows(db, 'A', b, JSON.stringify({ paid_fallback: false, credit_enrichment: false, judge: false }))
+  const job = claimKeyedJob(db)!
+  const tfUrls: string[] = []
+  let completeCalls = 0
+  let researchCalls = 0
+  const providers: Record<'anthropic' | 'openai', Provider> = {
+    anthropic: {
+      research: async () => { researchCalls++; return { text: '', citedUrls: [] } },
+      complete: async () => { completeCalls++; throw new ProviderError('retry', 'boom') },
+    },
+    openai: { research: async () => ({ text: '', citedUrls: [] }) },
+  }
+  assert.equal(await runJob(db, job, { providers, master, fetchPage: page, fetchImpl: tinyfishStubFetch(tfUrls) }), 'failed')
+  assert.equal(getJob(db, 'A', job.id)?.error, 'budget_stopped')
+  assert.equal(completeCalls, 1, 'the failed extraction was the only paid call')
+  assert.equal(researchCalls, 0, 'paid_fallback=false: the failed extraction never widened into the paid research fallback')
+  assert.equal(claimKeyedJob(db), null, 'budget stop is terminal - no re-pend, no second attempt')
+}))
+
+test('DEFAULT budget state: a retry re-runs the whole attempt including both paid surfaces, the budget persists across re-claims, and MAX_ATTEMPTS caps it at 3', withTinyfishEnv(async () => {
+  // NOTE: this job intentionally leaves paid_fallback unrestricted - the legacy
+  // default. It documents that retries multiply paid calls when no budget narrows
+  // the run. The RESTRICTED profile used for a bounded run is tested next.
   const db = setup()
   const budget = JSON.stringify({ judge: false, credit_enrichment: false })
   const b = createBatch(db, 'A', ['acme.com'])
