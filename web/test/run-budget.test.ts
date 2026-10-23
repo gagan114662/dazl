@@ -291,39 +291,56 @@ test('stale-claim recovery re-pends a crashed run below MAX_ATTEMPTS and fails i
   assert.equal(claimKeyedJob(db), null, 'no resurrection past MAX_ATTEMPTS')
 })
 
-test('supported-signal extraction: paraphrased excerpt attaches a supporting verbatim window, verified, inside the restricted paid envelope (ONE complete call)', withTinyfishEnv(async () => {
+const OHM_ROLES_TEXT = 'Careers at Ohm. Help us reimagine how physical products are engineered. At Ohm we work on problems at the intersection of engineering, science, and artificial intelligence. Hiring update 2026. Founding Account Executive San Francisco, CA · Hybrid Apply Founding Account Executive, EMEA United Kingdom · Remote Apply Chief of Staff San Francisco, CA / Remote (London, UK) Apply Forward Deployed Engineer, Battery Engineering San Francisco, CA · Hybrid Apply'
+const OHM_TINYFISH_STUB = (async (url: string | URL) => {
+  const u = String(url)
+  if (u.startsWith('https://api.search.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: 'https://www.ohm.ai/careers', title: 'Careers | Ohm', snippet: 'Ohm is hiring', date: recent }] }), { status: 200 })
+  if (u.startsWith('https://api.fetch.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: 'https://www.ohm.ai/careers', title: 'Careers | Ohm', text: OHM_ROLES_TEXT }] }), { status: 200 })
+  return new Response('{}', { status: 200 })
+}) as typeof fetch
+const OHM_LIVE_PAGE = async () => ({ text: OHM_ROLES_TEXT, title: 'Careers | Ohm', retrievedAt: 1_700_000_000 })
+const ohmProviders = (calls: { complete: number; research: number }, signal: string): Record<'anthropic' | 'openai', Provider> => ({
+  anthropic: {
+    research: async () => { calls.research++; return { text: '', citedUrls: [] } },
+    complete: async () => { calls.complete++; return 'Here: ' + JSON.stringify([{ name: '', company: 'Ohm', contact: null, signal, source_url: 'https://www.ohm.ai/careers', score: 95, excerpt: 'Ohm is actively hiring for multiple senior go-to-market roles', event_date: recent }]) },
+  },
+  openai: { research: async () => ({ text: '', citedUrls: [] }) },
+})
+const RESTRICTED = JSON.stringify({ paid_fallback: false, credit_enrichment: false, judge: false })
+
+test('supported-signal extraction: gloss-free paraphrase attaches a supporting verbatim window, verified, inside the restricted paid envelope (ONE complete call)', withTinyfishEnv(async () => {
   const { resetTinyfishState } = await import('../lib/search/tinyfish.ts')
   resetTinyfishState() // process-wide rate stamps are shared across tests in this file
   const db = setup()
   const b = createBatch(db, 'A', ['ohm.ai'])
-  queuePendingRows(db, 'A', b, JSON.stringify({ paid_fallback: false, credit_enrichment: false, judge: false }))
+  queuePendingRows(db, 'A', b, RESTRICTED)
   const job = claimKeyedJob(db)!
-  const rolesText = 'Careers at Ohm. Help us reimagine how physical products are engineered. At Ohm we work on problems at the intersection of engineering, science, and artificial intelligence. Hiring update 2026. Founding Account Executive San Francisco, CA · Hybrid Apply Founding Account Executive, EMEA United Kingdom · Remote Apply Chief of Staff San Francisco, CA / Remote (London, UK) Apply Forward Deployed Engineer, Battery Engineering San Francisco, CA · Hybrid Apply'
-  const paraphraseLead = { name: '', company: 'Ohm', contact: null, signal: 'Ohm is actively hiring for multiple senior go-to-market roles including two Founding Account Executive positions and a Chief of Staff, indicating significant expansion and investment in sales capacity.', source_url: 'https://www.ohm.ai/careers', score: 95, excerpt: 'Ohm is actively hiring for multiple senior go-to-market roles', event_date: recent }
-  let completeCalls = 0
-  let researchCalls = 0
-  const providers: Record<'anthropic' | 'openai', Provider> = {
-    anthropic: {
-      research: async () => { researchCalls++; return { text: '', citedUrls: [] } },
-      complete: async () => { completeCalls++; return 'Here: ' + JSON.stringify([paraphraseLead]) },
-    },
-    openai: { research: async () => ({ text: '', citedUrls: [] }) },
-  }
-  const tfFetch = (async (url: string | URL) => {
-    const u = String(url)
-    if (u.startsWith('https://api.search.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: 'https://www.ohm.ai/careers', title: 'Careers | Ohm', snippet: 'Ohm is hiring', date: recent }] }), { status: 200 })
-    if (u.startsWith('https://api.fetch.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: 'https://www.ohm.ai/careers', title: 'Careers | Ohm', text: rolesText }] }), { status: 200 })
-    return new Response('{}', { status: 200 })
-  }) as typeof fetch
-  const livePage = async () => ({ text: rolesText, title: 'Careers | Ohm', retrievedAt: 1_700_000_000 })
-  assert.equal(await runJob(db, job, { providers, master, fetchPage: livePage, fetchImpl: tfFetch }), 'done')
-  assert.equal(completeCalls, 1, 'the extraction call was the only paid LLM call - no grounding pass added')
-  assert.equal(researchCalls, 0, 'paid_fallback=false: no research fallback')
-  const rows = db.prepare('SELECT evidence_excerpt, review_reason, date_status FROM leads').all() as { evidence_excerpt: string | null; review_reason: string | null; date_status: string | null }[]
+  const calls = { complete: 0, research: 0 }
+  const signal = 'Ohm is actively hiring for multiple senior go-to-market roles including two Founding Account Executive positions and a Chief of Staff.'
+  assert.equal(await runJob(db, job, { providers: ohmProviders(calls, signal), master, fetchPage: OHM_LIVE_PAGE, fetchImpl: OHM_TINYFISH_STUB }), 'done')
+  assert.equal(calls.complete, 1, 'the extraction call was the only paid LLM call - no grounding pass added')
+  assert.equal(calls.research, 0, 'paid_fallback=false: no research fallback')
+  const rows = db.prepare('SELECT evidence_excerpt, review_reason FROM leads').all() as { evidence_excerpt: string | null; review_reason: string | null }[]
   assert.equal(rows.length, 1)
   assert.equal(rows[0].review_reason, null, 'the real on-page signal passes instead of landing in review')
-  assert.ok(rows[0].evidence_excerpt && rolesText.includes(rows[0].evidence_excerpt!), 'attached evidence is verbatim page text')
+  assert.ok(rows[0].evidence_excerpt && OHM_ROLES_TEXT.includes(rows[0].evidence_excerpt!), 'attached evidence is verbatim page text')
   assert.ok(rows[0].evidence_excerpt!.includes('Founding Account Executive') && rows[0].evidence_excerpt!.includes('Chief of Staff'))
-  const j = getJob(db, 'A', job.id)!
-  assert.equal(j.error, null)
+}))
+
+test('supported-signal extraction: analyst gloss in the claim routes to review with the original excerpt preserved, still ONE complete call', withTinyfishEnv(async () => {
+  const { resetTinyfishState } = await import('../lib/search/tinyfish.ts')
+  resetTinyfishState()
+  const db = setup()
+  const b = createBatch(db, 'A', ['ohm.ai'])
+  queuePendingRows(db, 'A', b, RESTRICTED)
+  const job = claimKeyedJob(db)!
+  const calls = { complete: 0, research: 0 }
+  const signal = 'Ohm is actively hiring for multiple senior go-to-market roles including two Founding Account Executive positions and a Chief of Staff, indicating significant expansion and investment in sales capacity.'
+  assert.equal(await runJob(db, job, { providers: ohmProviders(calls, signal), master, fetchPage: OHM_LIVE_PAGE, fetchImpl: OHM_TINYFISH_STUB }), 'done')
+  assert.equal(calls.complete, 1, 'no extra paid calls on the review path either')
+  const rows = db.prepare('SELECT signal, evidence_excerpt, review_reason FROM leads').all() as { signal: string; evidence_excerpt: string | null; review_reason: string | null }[]
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].review_reason, 'quote_unconfirmed', 'gloss is never trimmed silently - the unresolved claim stays in review')
+  assert.equal(rows[0].signal, signal, 'the original claim text is preserved untouched')
+  assert.equal(rows[0].evidence_excerpt, 'Ohm is actively hiring for multiple senior go-to-market roles', "the model's original failed excerpt is preserved on the review row")
 }))

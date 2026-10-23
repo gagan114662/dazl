@@ -140,7 +140,8 @@ test('per-source cap: a single page yields at most 3 verified leads, strongest k
 
 // --- supportedEvidenceWindow: narrow supported-signal extraction (adversarial matrix) ---
 const OHM_TEXT = 'Careers at Ohm. Help us reimagine how physical products are engineered. At Ohm we work on problems at the intersection of engineering, science, and artificial intelligence. Founding Account Executive San Francisco, CA · Hybrid Apply Founding Account Executive, EMEA United Kingdom · Remote Apply Chief of Staff San Francisco, CA / Remote (London, UK) Apply Forward Deployed Engineer, Battery Engineering San Francisco, CA · Hybrid Apply'
-const OHM_CLAIM = { company: 'Ohm', signal: 'Ohm is actively hiring for multiple senior go-to-market roles including two Founding Account Executive positions and a Chief of Staff, indicating significant expansion and investment in sales capacity.', excerpt: 'Ohm is actively hiring for multiple senior go-to-market roles' }
+const OHM_SIGNAL = 'Ohm is actively hiring for multiple senior go-to-market roles including two Founding Account Executive positions and a Chief of Staff.'
+const OHM_CLAIM = { company: 'Ohm', signal: OHM_SIGNAL, excerpt: 'Ohm is actively hiring for multiple senior go-to-market roles' }
 
 test('supportedEvidenceWindow: Ohm-shaped paraphrase attaches the verbatim roles window', async () => {
   const { supportedEvidenceWindow } = await import('../lib/scan/evidence.ts')
@@ -153,31 +154,51 @@ test('supportedEvidenceWindow: Ohm-shaped paraphrase attaches the verbatim roles
   assert.equal(v.ok, true)
 })
 
-test('supportedEvidenceWindow: negation, closed vacancies, wrong entity, navigation, mixed pages, partial counts, analysis prose all refuse to attach', async () => {
+test('supportedEvidenceWindow: analyst gloss, negation, closed vacancies, wrong entity, navigation, partial counts, analysis prose all refuse to attach', async () => {
   const { supportedEvidenceWindow } = await import('../lib/scan/evidence.ts')
   const hiring = { company: 'Acme', signal: 'Acme is hiring two account executives.', excerpt: 'Acme is hiring two account executives right now' }
-  // negation
+  // analyst gloss anywhere in the claim routes to review - unsupported text is never trimmed silently
+  assert.equal(supportedEvidenceWindow({ ...OHM_CLAIM, signal: OHM_SIGNAL + ' Indicating significant expansion and investment in sales capacity.' }, { text: OHM_TEXT, title: 'Careers | Ohm' }), null)
+  // window-side negation
   assert.equal(supportedEvidenceWindow(hiring, { text: 'Acme news. We are not currently hiring for account executive roles this year. More text here.', title: 'Acme' }), null)
   // closed vacancy
   assert.equal(supportedEvidenceWindow(hiring, { text: 'Acme careers. This position has been filled: Account Executive, Toronto. More text here.', title: 'Acme careers' }), null)
-  // wrong entity: page about a rival, company named nowhere near the window nor in the title
+  // wrong entity: page about a rival, company named nowhere near the window
   assert.equal(supportedEvidenceWindow({ company: 'Northside Builders', signal: 'Northside Builders is hiring two account executives.', excerpt: 'hiring two account executives now' }, { text: 'Southside Roofing is hiring an Account Executive and another Account Executive for its Toronto office. ' + 'filler word '.repeat(40), title: 'Southside Roofing careers' }), null)
   // generic navigation only
   assert.equal(supportedEvidenceWindow(hiring, { text: 'Careers Jobs Apply Home About Contact Privacy Terms Acme Account Executive Account Executive', title: 'Acme' }), null)
-  // mixed page: funding claim, hiring-only evidence
-  assert.equal(supportedEvidenceWindow({ company: 'Acme', signal: 'Acme raised a Series A round.', excerpt: 'Acme raised a big Series A round' }, { text: 'Acme is hiring an account executive and a chief of staff. Apply today for these openings.', title: 'Acme' }), null)
   // partial role counts: claim wants two FAE + Chief of Staff, page lists one FAE only
   assert.equal(supportedEvidenceWindow(OHM_CLAIM, { text: 'At Ohm we build tools. Founding Account Executive San Francisco, CA · Hybrid Apply Forward Deployed Engineer San Francisco · Hybrid Apply', title: 'Careers | Ohm' }), null)
-  // unsupported expansion/investment analysis prose: no concrete hiring/funding event claimed
+  // unsupported expansion/investment analysis prose: no concrete hiring event claimed
   assert.equal(supportedEvidenceWindow({ company: 'Ohm', signal: 'Ohm shows significant expansion and investment in sales capacity.', excerpt: 'significant expansion and investment in sales capacity' }, { text: OHM_TEXT, title: 'Careers | Ohm' }), null)
   // quantity mismatch: claim says five, window lists one
   assert.equal(supportedEvidenceWindow({ company: 'Acme', signal: 'Acme is hiring five account executives.', excerpt: 'hiring five account executives' }, { text: 'Acme careers. Account Executive Toronto · Apply now. More text here for length.', title: 'Acme' }), null)
+  // vague hiring claim with no concrete role
+  assert.equal(supportedEvidenceWindow({ company: 'Acme', signal: 'Acme is hiring for its team.', excerpt: 'Acme is hiring right now' }, { text: 'Acme careers. We are hiring. Apply now and join the team building great things.', title: 'Acme' }), null)
 })
 
-test('supportedEvidenceWindow: already-verbatim excerpt is a no-op; funding claim attaches a funding window', async () => {
+test('supportedEvidenceWindow: adversarial battery ADV1-ADV8 from independent review all refuse to attach', async () => {
+  const { supportedEvidenceWindow } = await import('../lib/scan/evidence.ts')
+  // ADV1 claim-side negation: "not hiring" claim must not attach an active-hiring window
+  assert.equal(supportedEvidenceWindow({ company: 'Acme', signal: 'Acme is not currently hiring engineers.', excerpt: 'Acme is not currently hiring engineers at all' }, { text: 'Acme careers. We are hiring engineers in Toronto. Apply now and join the team building great things.', title: 'Acme careers' }), null)
+  // ADV2 rival funding with lead entity only in title - funding never attaches
+  assert.equal(supportedEvidenceWindow({ company: 'Acme', signal: 'Acme raised $10M in Series A funding.', excerpt: 'Acme raised a huge Series A round recently' }, { text: 'Acme news roundup. Rival Robotics raised $10M in Series A funding led by Big Capital to expand its team. The market reacts.', title: 'Acme news' }), null)
+  // ADV3 generic "series" token is not funding evidence
+  assert.equal(supportedEvidenceWindow({ company: 'Acme', signal: 'Acme raised Series A funding.', excerpt: 'Acme raised a big new Series A round' }, { text: 'Acme blog. Join us for a series of community events this summer in the park. Bring your friends and family along.', title: 'Acme blog' }), null)
+  // ADV4 wrong amount: claim $50M Series B, evidence $10M Series A - funding never attaches
+  assert.equal(supportedEvidenceWindow({ company: 'Acme', signal: 'Acme raised $50M in Series B funding.', excerpt: 'Acme raised a massive $50M Series B round' }, { text: 'Acme news. Acme raised $10M in Series A funding led by Example Capital to grow its Toronto team. The company declined to comment further.', title: 'Acme news' }), null)
+  // ADV5 a repeated identical posting is ONE opening, not two
+  assert.equal(supportedEvidenceWindow({ company: 'Acme', signal: 'Acme is hiring two account executives.', excerpt: 'Acme is hiring two account executives right now' }, { text: 'Acme careers. Account Executive Toronto Apply now for this opening. Account Executive Toronto Apply now for this opening. Footer text here.', title: 'Acme careers' }), null)
+  // ADV6 past tense: "hired last year" against a present opening
+  assert.equal(supportedEvidenceWindow({ company: 'Acme', signal: 'Acme hired engineers last year.', excerpt: 'Acme hired engineers last year for the platform team' }, { text: 'Acme careers. We are hiring engineers in Toronto. Apply now and join the team building great things.', title: 'Acme careers' }), null)
+  // ADV7 entity 300+ chars away, window about a rival
+  const pad = 'filler words here. '.repeat(15)
+  assert.equal(supportedEvidenceWindow({ company: 'Acme', signal: 'Acme is hiring two account executives.', excerpt: 'Acme is hiring two account executives right now' }, { text: `News daily. ${pad} Acme was mentioned in passing. ${pad} Rival Robotics is hiring an account executive and an account executive for its Toronto office.`, title: 'News daily' }), null)
+  // ADV8 stale 2019 funding, undated claim - funding never attaches
+  assert.equal(supportedEvidenceWindow({ company: 'Acme', signal: 'Acme raised seed funding.', excerpt: 'Acme raised a fresh seed round recently' }, { text: 'Acme news archive. Acme raised $4M in seed funding in 2019 led by Old Capital. The company has been quiet since then.', title: 'Acme news' }), null)
+})
+
+test('supportedEvidenceWindow: already-verbatim excerpt is a no-op', async () => {
   const { supportedEvidenceWindow } = await import('../lib/scan/evidence.ts')
   assert.equal(supportedEvidenceWindow({ company: 'Acme', signal: 'Hiring', excerpt: QUOTE }, { text: `News. ${QUOTE}.`, title: 'Acme' }), null)
-  const fundingPage = 'Acme news. Acme raised $10M in Series A funding led by Example Capital to grow its Toronto team. The company declined to comment further.'
-  const win = supportedEvidenceWindow({ company: 'Acme', signal: 'Acme raised a $10M Series A round.', excerpt: 'Acme raised a huge new funding round recently' }, { text: fundingPage, title: 'Acme news' })
-  assert.ok(win && fundingPage.includes(win) && /Series A/.test(win))
 })
