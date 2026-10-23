@@ -246,14 +246,13 @@ function cutBlocks(html: string): string | null {
   return null
 }
 function jsonLdPeople(html: string): { name: string; title: string }[] {
-  const out: { name: string; title: string }[] = []
   const ORG = /^(Organization|Corporation|LocalBusiness|Dentist|Physician|MedicalBusiness|ProfessionalService|LegalService|RealEstateAgent|Store|Restaurant|HomeAndConstructionBusiness|Attorney|Accountant|FinancialService)$/
   const typesOf = (n: Record<string, unknown>) => ([] as unknown[]).concat(n['@type'] ?? []).map(String)
   const flat = (v: unknown): Record<string, unknown>[] => Array.isArray(v) ? v.flatMap(flat) : v && typeof v === 'object' ? [v as Record<string, unknown>] : []
+  // The page's company: an organisation node at the top level of a block, in @graph, or the mainEntity of a non-organisation page node. An organisation reached through any other edge (worksFor, parentOrganization, subOrganization, member...) is another company and has no authority here.
+  const orgs: Record<string, unknown>[] = []
   for (const m of html.matchAll(/<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
     let root: unknown; try { root = JSON.parse(m[1]) } catch { continue }
-    // The page's own company: an organisation node at the top level, in @graph, or the mainEntity of a non-organisation page node. An organisation reached through any other edge (worksFor, parentOrganization, subOrganization, member...) is another company and has no authority here.
-    const orgs: Record<string, unknown>[] = []
     const seen = new Set<unknown>()
     const top = (v: unknown) => {
       for (const n of flat(v)) {
@@ -263,13 +262,17 @@ function jsonLdPeople(html: string): { name: string; title: string }[] {
       }
     }
     top(root)
-    if (orgs.length !== 1) continue // none, or several companies on one block: cannot tell which is this page's company, so list no one
-    const org = orgs[0]
-    for (const k of ['employee', 'employees', 'founder', 'founders', 'member', 'members']) {
-      for (const p of flat(org[k])) {
-        // only the person node itself; nothing nested under it (spouse, knows, worksFor...) is read
-        if (typesOf(p).includes('Person') && typeof p.name === 'string' && typeof p.jobTitle === 'string') out.push({ name: p.name.trim(), title: p.jobTitle.trim() })
-      }
+  }
+  // Page level: one organisation, or several that name themselves identically (the same company repeated across blocks). Anything else, including an organisation with no name, is conflicting or unknown, so no one is listed. No fuzzy matching.
+  if (orgs.length === 0) return []
+  const key = (o: Record<string, unknown>) => typeof o.name === 'string' && o.name.trim() ? 'n:' + o.name.trim().replace(/\s+/g, ' ').toLowerCase() : typeof o['@id'] === 'string' && o['@id'] ? 'i:' + o['@id'] : ''
+  if (orgs.length > 1) { const k0 = key(orgs[0]); const ids = new Set(orgs.map(o => typeof o['@id'] === 'string' ? o['@id'] : '').filter(Boolean)) // supplied identifiers that conflict outrank a shared name
+    if (!k0 || orgs.some(o => key(o) !== k0) || ids.size > 1) return [] }
+  const out: { name: string; title: string }[] = []
+  for (const org of orgs) for (const k of ['employee', 'employees', 'founder', 'founders', 'member', 'members']) {
+    for (const p of flat(org[k])) {
+      // only the person node itself; nothing nested under it (spouse, knows, worksFor...) is read
+      if (typesOf(p).includes('Person') && typeof p.name === 'string' && typeof p.jobTitle === 'string') out.push({ name: p.name.trim(), title: p.jobTitle.trim() })
     }
   }
   return out
