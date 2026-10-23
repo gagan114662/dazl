@@ -15,7 +15,7 @@ test('exact checks preserve supplied claims, stay needs-review and cannot create
  assert.equal(l.signal,input.signal);assert.equal(l.evidence_excerpt,input.excerpt);assert.equal(l.contact,input.contact);assert.equal(l.confidence,null);assert.equal(l.human_confirmed_at,null);assert.equal(l.fit,null);assert.equal(l.intent,null);assert.equal(l.date_status,'unverified');assert.equal(l.event_date,input.event_date);assert.equal(l.review_reason,'source_review_required')
  assert.throws(()=>createDraft(db,'A',r.lead_id,'Seller'),/lead_not_verified/)
  const j=db.prepare('SELECT status,verified,needs_review FROM scan_jobs WHERE id=?').get(r.job_id);assert.deepEqual(j,{status:'done',verified:0,needs_review:1})
- const raw=db.prepare('SELECT input_json FROM source_reviews').get() as {input_json:string};assert.deepEqual(JSON.parse(raw.input_json),input)
+ const raw=db.prepare('SELECT input_json FROM source_reviews').get() as {input_json:string};assert.deepEqual(JSON.parse(raw.input_json),{...input,contact_context:{excerpt:page.text,source_url:input.source_url}})
  assert.equal(sourceCheckForLead(db,'B',r.lead_id),null);assert.deepEqual(sourceCheckForLead(db,'A',r.lead_id),r.check)
 })
 test('blocked/failed source preserves all original claims but does not retain unchecked contact as eligible',async()=>{

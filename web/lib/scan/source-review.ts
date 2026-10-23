@@ -1,3 +1,4 @@
+import {contactContext} from '../outreach/contact-context.ts'
 import {randomBytes} from 'node:crypto'
 import type Database from 'better-sqlite3'
 import {fetchPageDetailed,isFail,type Page,type FetchFail} from './fetch-page.ts'
@@ -41,7 +42,7 @@ export async function createSourceReview(db:Database.Database,tenant:string,inpu
  db.prepare("INSERT INTO scan_jobs(id,user_id,business_name,industry,location,status) VALUES(?,?,'Source review intake','manual','manual','running')").run(jobId,tenant)
  // Never promote these literal checks to semantic verification or human consent.
  db.prepare("INSERT INTO leads(id,scan_job_id,company,signal,source_url,evidence_excerpt,contact,event_date,date_status,retrieved_at,confidence,review_reason,source_kind) VALUES(?,?,?,?,?,?,?,?,?,?,NULL,'source_review_required','manual_source')").run(leadId,jobId,input.company,input.signal,input.source_url,input.excerpt,check.contact_match?input.contact:null,input.event_date,input.event_date?'unverified':'undated',ok?page.retrievedAt:null)
- db.prepare('INSERT INTO source_reviews(id,tenant_id,job_id,lead_id,input_json,fetch_status,quote_match,company_named,contact_match,checked_at) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,tenant,jobId,leadId,JSON.stringify(input),check.fetch_status,+check.quote_match,+check.company_named,+check.contact_match,check.checked_at)
+ db.prepare('INSERT INTO source_reviews(id,tenant_id,job_id,lead_id,input_json,fetch_status,quote_match,company_named,contact_match,checked_at) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,tenant,jobId,leadId,JSON.stringify({...input,contact_context:ok&&input.contact?contactContext(page.text,input.contact,input.source_url):null}),check.fetch_status,+check.quote_match,+check.company_named,+check.contact_match,check.checked_at)
  db.prepare("UPDATE scan_jobs SET status='done',finished_at=?,candidates=1,verified=0,needs_review=1,dropped=0 WHERE id=?").run(now,jobId)
  })()
  return {job_id:jobId,lead_id:leadId,check}

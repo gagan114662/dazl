@@ -1,3 +1,4 @@
+import {contactContext,contextLabel} from '../outreach/contact-context.ts'
 import https from 'node:https'
 import type Database from 'better-sqlite3'
 import robotsParser from 'robots-parser'
@@ -197,7 +198,7 @@ export function extractContacts(html: string, pageUrl: string, site: string): Fo
     const m = /^([^@\s]+)@([^@\s]+)$/.exec(e.trim().toLowerCase()); if (!m) continue
     if (!sameSite(m[2], site) || !ROLE.test(m[1].replace(/[._-]/g, '')) ) continue
     if (/\.(png|jpe?g|gif|svg|webp)$/i.test(m[2])) continue
-    add({ kind: 'email', value: `${m[1]}@${m[2]}`, label: 'role address published on the company site', url: pageUrl })
+    add({ kind: 'email', value: `${m[1]}@${m[2]}`, label: contextLabel(contactContext(html, `${m[1]}@${m[2]}`,pageUrl)), url: pageUrl })
   }
   for (const m of body.matchAll(/href\s*=\s*["']tel:([^"'>\s]+)/gi)) {
     let v = ''; try { v = decodeURIComponent(m[1]) } catch { continue }

@@ -296,3 +296,16 @@ test('approval freezes lead signal context, preserving secondary signals and tes
   const row=db.prepare('SELECT signals_json,signal_kind,source_kind FROM outreach_signal_context WHERE message_id=?').get(id) as any
   assert.deepEqual(row,{signals_json:'["hiring","funding"]',signal_kind:'hiring',source_kind:'query'})
 })
+
+test('known recruitment context blocks approval and rechecks after token await without changing approved words',async()=>{
+ const db=setup();await connect(db,'A');ready(db)
+ const lead=addLead(db,'A'),draft=createDraft(db,'A',lead,'Seller')
+ db.prepare("UPDATE leads SET evidence_excerpt='Send your CV to info@northside.example' WHERE id=?").run(lead)
+ assert.throws(()=>approve(db,'A',draft),/not_sales_contact/)
+ db.prepare("UPDATE leads SET evidence_excerpt='Northside Builders is hiring five roofers' WHERE id=?").run(lead);approve(db,'A',draft)
+ const saved=db.prepare('SELECT subject,body,approved_hash FROM outreach_messages WHERE id=?').get(draft)
+ const sent=okSend();const fetchImpl=(async()=>{db.prepare("UPDATE leads SET evidence_excerpt='Send your CV to info@northside.example' WHERE id=?").run(lead);return json({access_token:'at'})}) as typeof fetch
+ await assert.rejects(sendMessage(db,'A',draft,deps({...sent,fetchImpl})),/not_sales_contact/)
+ assert.equal(sent.sent.length,0);assert.deepEqual(db.prepare('SELECT subject,body,approved_hash FROM outreach_messages WHERE id=?').get(draft),saved)
+ assert.equal((db.prepare('SELECT status FROM outreach_messages WHERE id=?').get(draft) as {status:string}).status,'approved')
+})

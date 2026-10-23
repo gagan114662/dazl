@@ -1,3 +1,4 @@
+import {contactPurposeRestricted} from './contact-purpose-db.ts'
 import {currentnessHeld} from './currentness.ts'
 import { messageProvenance } from './provenance.ts'
 import { snapshotSignalContext } from './attribution.ts'
@@ -8,7 +9,6 @@ import { getMasterKey } from '../secrets.ts'
 import { buildMime, EMAIL_RE, toBase64Url } from '../gmail/mime.ts'
 import { GmailError, GmailSendError, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { norm } from './store.ts'
-import { classifyPurpose } from './published-email.ts'
 import { getMemory } from '../memory.ts'
 
 export const DAILY_CAP = Math.min(ACCOUNT_SEND_CAP, Number(process.env.OUTREACH_DAILY_CAP || 20))
@@ -179,7 +179,7 @@ export function createDraft(db: Database.Database, tenantId: string, leadId: str
   // Published is not the same as sales-contactable: press, support, privacy,
   // careers and similar inboxes exist for another purpose. Never aim a sales
   // draft at them - the UI applies this same classification before offering a draft.
-  if (classifyPurpose(to).purpose === 'non-sales') throw new OutreachError('not_sales_contact')
+  if (contactPurposeRestricted(db,tenantId,leadId,to)) throw new OutreachError('not_sales_contact')
   const test = testRecipientApproved(db, tenantId, to) ? 1 : 0
   if (!recipientAllowed(db,tenantId,to)) throw new OutreachError('personal_email')
   if (isSuppressed(db, tenantId, to)) throw new OutreachError('suppressed')
@@ -254,6 +254,7 @@ export function approve(db: Database.Database, tenantId: string, id: string, seq
   if (!getSettings(db, tenantId)) throw new OutreachError('sender_identity_missing')
   if (gmailStatus(db, tenantId)?.status !== 'active') throw new OutreachError('gmail_not_connected')
   if (isSuppressed(db, tenantId, m.to_email)) throw new OutreachError('suppressed')
+  if (contactPurposeRestricted(db,tenantId,m.lead_id,m.to_email)) throw new OutreachError('not_sales_contact')
   if (!testFixtureSend(db,tenantId,m) && currentnessHeld(db,tenantId,m.lead_id)) throw new OutreachError('lead_currentness_unconfirmed')
   if (!testFixtureSend(db, tenantId, m) && !leadEvidenceEligible(db, tenantId, m.lead_id)) throw new OutreachError('lead_evidence_withdrawn')
   db.transaction(() => {
@@ -292,6 +293,7 @@ export async function sendMessage(db: Database.Database, tenantId: string, id: s
   const pre = getMsg(db, tenantId, id)
   if (!pre) throw new OutreachError('not_found')
   if (pre.status === 'sent') return 'sent' // idempotent retry
+  if (contactPurposeRestricted(db,tenantId,pre.lead_id,pre.to_email)) throw new OutreachError('not_sales_contact')
   if (!recipientAllowed(db,tenantId,pre.to_email)) throw new OutreachError('personal_email')
   if (leadHeld(db, tenantId, pre.lead_id)) throw new OutreachError('lead_ungraded')
   if (!testFixtureSend(db,tenantId,pre) && currentnessHeld(db,tenantId,pre.lead_id)) throw new OutreachError('lead_currentness_unconfirmed')
@@ -339,6 +341,7 @@ export async function sendMessage(db: Database.Database, tenantId: string, id: s
 
   // Token refresh is asynchronous. Recheck authorization and suppression after it,
   // immediately before handing the immutable MIME bytes to Gmail.
+  if (contactPurposeRestricted(db,tenantId,m.lead_id,m.to_email)) release('not_sales_contact')
   if (!recipientAllowed(db,tenantId,m.to_email)) release('personal_email')
   if (leadHeld(db,tenantId,m.lead_id)) release('lead_ungraded')
   if (!testFixtureSend(db,tenantId,m) && currentnessHeld(db,tenantId,m.lead_id)) release('lead_currentness_unconfirmed')

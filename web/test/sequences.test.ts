@@ -215,3 +215,23 @@ test('removing test grant blocks an already approved consumer sequence',async()=
   assert.equal((db.prepare('SELECT stop_reason FROM sequences WHERE id=?').get(s.seq) as {stop_reason:string}).stop_reason,'personal_email')
  } finally { delete process.env.OUTREACH_TEST_TENANT_ID }
 })
+
+test('known recruitment context holds sequence approval/execution without cancel or history rewrite',async()=>{
+ const db=await setup(),s=add(db),m=mock()
+ db.prepare("UPDATE leads SET evidence_excerpt='Send your CV to lead@acme.example' WHERE id=?").run(s.lead)
+ assert.throws(()=>approval(db,s),/not_sales_contact/)
+ db.prepare("UPDATE leads SET evidence_excerpt='Hiring roofers' WHERE id=?").run(s.lead);await start(db,s,m)
+ await runSequences(db,'A','',{...m,now:NOW+1})
+ const original=db.prepare('SELECT subject,body,status,approved_hash FROM sequence_steps ORDER BY step').all()
+ db.prepare("UPDATE leads SET evidence_excerpt='Send your CV to lead@acme.example' WHERE id=?").run(s.lead)
+ assert.equal((await runSequences(db,'A','',{...m,now:NOW+3*DAY})).sent,0)
+ assert.equal(m.calls.length,1);assert.deepEqual(db.prepare('SELECT subject,body,status,approved_hash FROM sequence_steps ORDER BY step').all(),original)
+ assert.equal(sequenceStatusByLead(db,'A').get(s.lead)?.status,'active')
+})
+
+test('sequence context restriction appearing during token await releases step without send',async()=>{
+ const db=await setup(),s=add(db),m=mock();await start(db,s,m);await runSequences(db,'A','',{...m,now:NOW+1})
+ const fetchImpl=(async(u:unknown)=>{if(String(u).includes('oauth2')){db.prepare("UPDATE leads SET evidence_excerpt='Send your CV to lead@acme.example' WHERE id=?").run(s.lead);return json({access_token:'at'})}return json({messages:[]})}) as typeof fetch
+ assert.equal((await runSequences(db,'A','',{...m,fetchImpl,now:NOW+3*DAY})).sent,0)
+ assert.equal(m.calls.length,1);assert.deepEqual(db.prepare('SELECT status,claimed_at FROM sequence_steps WHERE step=2').get(),{status:'approved',claimed_at:null})
+})
