@@ -14,8 +14,10 @@ export async function POST(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   if (!rateLimit(`profile:${user.id}`, 20, 60_000).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   const body = await req.json().catch(() => null)
-  const sells = typeof body?.sells === 'string' ? body.sells.trim().slice(0, 150) : ''
-  let website = typeof body?.website === 'string' ? body.website.trim().slice(0, 200) : ''
+  const cur = getSellerProfile(getAuthDb(), user.id)
+  // Fields the caller omits keep their stored value (a name-only save must not wipe sells/website).
+  const sells = typeof body?.sells === 'string' ? body.sells.trim().slice(0, 150) : cur.sells
+  const website = typeof body?.website === 'string' ? body.website.trim().slice(0, 200) : cur.website
   if (website && !/^https:\/\/[\w.-]+\.[a-z]{2,}([/?#]\S*)?$/i.test(website)) return NextResponse.json({ error: 'Website must be a full https URL, like https://acme.com' }, { status: 400 })
   setSellerProfile(getAuthDb(), user.id, sells, website)
   // Optional: the name used in drafts. Only changed when the caller sends it; blank clears it (drafts then refuse).
