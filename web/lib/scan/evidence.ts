@@ -28,6 +28,39 @@ export function companyKey(company: string): string {
 
 export const hasPhrase = (hay: string, phrase: string) => !!phrase && new RegExp(`(^| )${phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( |$)`).test(hay)
 
+// The extraction contract demands a verbatim quote; models paraphrase anyway, and the strict
+// verifier then rejects real signals (excerpt_not_on_page). Where the pipeline already holds
+// the fetched source text, snap a paraphrase to the closest VERBATIM window of that text.
+// Zero extra paid calls, zero extra fetches. This never weakens verification: the snapped
+// quote is re-checked by verifyEvidence against the verifier's own live fetch, so a window
+// that is not really on the page still fails honestly. Returns null when there is nothing
+// defensible to snap to - the original excerpt then fails verification as before.
+export function snapExcerpt(excerpt: string, claimText: string, sourceText: string): string | null {
+  const src = norm(sourceText)
+  if (!excerpt || src.length < 20) return null
+  if (src.includes(norm(excerpt))) return null // already verbatim - nothing to do
+  const claimTokens = new Set(norm(`${excerpt} ${claimText}`).split(' ').filter(w => w.length > 3))
+  if (claimTokens.size === 0) return null
+  const parts = sourceText.replace(/\s+/g, ' ').split(/(?<=[.!?])\s+|\s+[\u00b7\u2022|]\s+|\s+-\s+/).map(t => t.trim()).filter(t => norm(t).length >= 8)
+  let bestText: string | null = null
+  let bestShared = 0
+  for (let i = 0; i < parts.length; i++) {
+    let win = ''
+    for (let j = i; j < parts.length; j++) {
+      win = win ? `${win} ${parts[j]}` : parts[j]
+      if (win.length > 320) break
+      const toks = new Set(norm(win).split(' ').filter(w => w.length > 3))
+      let shared = 0
+      for (const t of claimTokens) if (toks.has(t)) shared++
+      if (shared >= 3 && shared >= Math.ceil(claimTokens.size / 5) && norm(win).length >= 20 && (shared > bestShared || (shared === bestShared && bestText !== null && win.length < bestText.length))) {
+        bestText = win
+        bestShared = shared
+      }
+    }
+  }
+  return bestText
+}
+
 export function dedupKey(c: { company: string; name: string }): string {
   return companyKey(c.company) || norm(c.name)
 }

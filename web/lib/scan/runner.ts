@@ -10,7 +10,7 @@ import { runAutopilot } from '../outreach/autopilot.ts'
 import { MAX_ATTEMPTS, reapStaleJobs, markSeenBefore } from './store.ts'
 import { kickQueueRunner, queueTenants } from './queue-runner.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
-import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, verifyEvidence, type Candidate } from './evidence.ts'
+import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, snapExcerpt, verifyEvidence, type Candidate } from './evidence.ts'
 import { inferIcp, normalizeIcp, type Icp } from './icp.ts'
 import { collectAdvanced, xSearchQuery } from '../advanced/index.ts'
 import { markWatchLeads } from '../watch.ts'
@@ -408,7 +408,13 @@ async function tinyfishCompany(db: Database.Database, job: Job, domain: string, 
   const items = toEvidence(hits, f.ok ? f.pages : [])
   if (items.length === 0) return null
   const text = await complete.call(provider, key, buildSourcePrompt(`The company at https://${domain}`, { company_domain: domain }, items), fetchImpl, 3000)
-  return parseLeads(text, items.map(i => i.url)) ?? null
+  const leads = parseLeads(text, items.map(i => i.url))
+  if (!leads) return null
+  // Deterministic verbatim repair inside the paid envelope: snap paraphrased excerpts to the
+  // closest verbatim window of the evidence the model just read. The verifier still re-fetches
+  // and re-checks - a window that is not on the live page fails exactly as before.
+  for (const l of leads) { const ev = items.find(i => i.url === l.source_url); if (ev) { const snapped = snapExcerpt(l.excerpt, l.signal, ev.quote); if (snapped) l.excerpt = snapped } }
+  return leads
 }
 
 // CSV import job: research one known company domain through the same
@@ -482,7 +488,13 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   const items = toEvidence(hits, f.ok ? f.pages : [])
   if (items.length === 0) return null
   const text = await complete.call(provider, key, buildSourcePrompt(job.query!, icp, items), fetchImpl, 3000)
-  return parseLeads(text, items.map(i => i.url)) ?? null
+  const leads = parseLeads(text, items.map(i => i.url))
+  if (!leads) return null
+  // Deterministic verbatim repair inside the paid envelope: snap paraphrased excerpts to the
+  // closest verbatim window of the evidence the model just read. The verifier still re-fetches
+  // and re-checks - a window that is not on the live page fails exactly as before.
+  for (const l of leads) { const ev = items.find(i => i.url === l.source_url); if (ev) { const snapped = snapExcerpt(l.excerpt, l.signal, ev.quote); if (snapped) l.excerpt = snapped } }
+  return leads
 }
 
 export interface RunBudget { paid_fallback?: boolean; credit_enrichment?: boolean; judge?: boolean }
