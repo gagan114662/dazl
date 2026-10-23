@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react'
 
 type Step = { step: number; subject: string; body: string; status: string }
-type Sequence = { id: string; message_id: string; lead_id: string; to_email: string; status: string; stop_reason: string | null; steps: Step[] }
+type Sequence = { id: string; message_id: string; lead_id: string; to_email: string; status: string; stop_reason: string | null; evidence_state?: 'machine' | 'human' | 'unverified'; steps: Step[] }
 type Analytics = { sent: number; delivered: number; replied: number; bounced: number; optOuts: number }
 type Data = { sequences: Sequence[]; test_addresses: string[]; test_fixture_available?: boolean; status: Record<string,{status:string;step:number;next_due_at:number|null}>; campaigns: { id: string; query: string; analytics: Analytics }[] }
 const COPY: Record<string,string> = {
@@ -15,6 +15,7 @@ const COPY: Record<string,string> = {
   not_a_draft:'This sequence is no longer a draft. Refresh the page.',
   test_tenant_only:'The sequence test fixture is only available on the operator-designated test account.',
   test_inbox_not_allowlisted:'Add the test inbox to the allowlist above first.',
+  lead_evidence_withdrawn:'The lead confirmation behind this sequence was withdrawn. Re-confirm the lead on the Leads page - dazl has not verified it.',
 }
 export default function SequencesClient() {
   const [data,setData]=useState<Data|null>(null)
@@ -63,7 +64,9 @@ export default function SequencesClient() {
       const state=data.status[s.lead_id]
       const label=s.status==='active'?`Step ${state?.step??1} sent / awaiting step ${(state?.step??1)+1}`:s.status
       return <article key={s.id} className="card p-4 mt-4 text-sm">
-        <div className="font-medium">{s.to_email}{data?.test_addresses.map(a=>a.toLowerCase()).includes(s.to_email.toLowerCase()) ? <span className="ml-2 text-[10px] uppercase tracking-wide text-yellow-300 border border-yellow-300/40 px-1 py-0.5">test mode</span> : null}</div><div className="text-xs text-[#555] mt-1">{label}{s.stop_reason?` (${s.stop_reason})`:''}{state?.next_due_at?` - due ${new Date(state.next_due_at*1000).toLocaleString()}`:''}</div>
+        <div className="font-medium">{s.to_email}{data?.test_addresses.map(a=>a.toLowerCase()).includes(s.to_email.toLowerCase()) ? <span className="ml-2 text-[10px] uppercase tracking-wide text-yellow-300 border border-yellow-300/40 px-1 py-0.5">test mode</span> : null}</div><div className="text-xs text-[#555] mt-1">{label}{s.stop_reason?` (${s.stop_reason==='evidence_withdrawn'?'lead confirmation withdrawn':s.stop_reason})`:''}{state?.next_due_at?` - due ${new Date(state.next_due_at*1000).toLocaleString()}`:''}</div>
+        {s.evidence_state==='human'&&['draft','approved'].includes(s.status)&&<p className="text-xs text-yellow-300/90 mt-2">Lead confirmed by you - dazl did not verify the quote. Approving this set approves your own confirmation, not a dazl verification; withdrawing it stops unsent steps.</p>}
+        {s.evidence_state==='unverified'&&['draft','approved'].includes(s.status)&&<p className="text-xs text-red-400 mt-2">Lead confirmation withdrawn - this set cannot be approved or send further steps unless you re-confirm the lead or dazl verifies it.</p>}
         {s.steps.map(st=><div key={st.step} className="mt-4 border-t border-black/10 pt-3">
           <h3 className="font-medium">Step {st.step}{st.step>1?` - ${st.step===2?'3':'7'} days after step 1`:''} ({st.status})</h3>
           {edit?.id===s.id&&edit.step===st.step?<div className="mt-2">

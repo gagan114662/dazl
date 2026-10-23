@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react'
 import SequencesClient from './sequences-client'
 
-interface Msg { id: string; to_email: string; subject: string; body: string; status: string; error: string | null; sent_at: number | null; test?: number }
+interface Msg { id: string; to_email: string; subject: string; body: string; status: string; error: string | null; sent_at: number | null; test?: number; evidence_state?: 'machine' | 'human' | 'unverified' }
 
 const ERR: Record<string, string> = {
   sender_identity_missing: 'Add your name and mailing address in Settings first.',
@@ -12,6 +12,7 @@ const ERR: Record<string, string> = {
   daily_cap: 'Daily sending limit reached. Try again tomorrow.',
   gmail_rate_limited: 'Gmail is rate limiting you. Try again later.',
   changed_since_approval: 'The message changed after approval. Approve it again.',
+  lead_evidence_withdrawn: 'The lead confirmation behind this draft was withdrawn. Re-confirm the lead on the Leads page - dazl has not verified it.',
   already_sending: 'This message is already being sent.',
   already_uncertain: 'We could not confirm whether this was sent. Check your Gmail Sent folder, then choose below.',
 }
@@ -72,6 +73,8 @@ export default function OutreachClient() {
           return (
             <div key={m.id} className="card p-4 text-sm">
               <div className="flex justify-between text-[#555] text-xs mb-2"><span>To {m.to_email}{m.test ? <span className="ml-2 text-[10px] uppercase tracking-wide text-yellow-300 border border-yellow-300/40 px-1 py-0.5">test mode</span> : null}</span><span>{m.status}{m.error && m.status !== 'sent' ? ` (${m.error})` : ''}</span></div>
+              {m.evidence_state === 'human' && ['draft','approved'].includes(m.status) && <p className="text-xs text-yellow-300/90 mb-2">Lead confirmed by you - dazl did not verify the quote. Withdrawing your confirmation on the Leads page blocks approval and sending.</p>}
+              {m.evidence_state === 'unverified' && ['draft','approved'].includes(m.status) && <p className="text-xs text-red-400 mb-2">Lead confirmation withdrawn - this can no longer be approved or sent unless you re-confirm the lead or dazl verifies it.</p>}
               {e ? (
                 <div className="flex flex-col gap-2">
                   <input className="bg-white border border-black/20 rounded px-3 py-2" value={e.subject} maxLength={150} onChange={x => setEdit({ ...edit, [m.id]: { ...e, subject: x.target.value } })} />
