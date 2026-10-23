@@ -34,6 +34,8 @@ const jobWithLead = (db: Database.Database) => {
   db.prepare(
     "INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, evidence_excerpt, confidence, fit, intent) VALUES (?, ?, 'Pat', 'Acme', 'pat@acme-corp.com', 'hiring', 'https://acme-corp.com/jobs', 'we are hiring', 80, 4, 4)",
   ).run('cccccccccccccccccccccccc', jobId)
+  // Test baseline is explicitly human-reviewed; no machine timing inference.
+  db.prepare("UPDATE leads SET human_confirmed_at=1800000000, human_confirmed_from='test_review' WHERE confidence IS NOT NULL AND evidence_excerpt IS NOT NULL").run()
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(jobId)
   return jobId
 }
@@ -123,6 +125,8 @@ test('export defaults to real rows, fixture rows require the explicit opt-in, an
   db.prepare(
     "INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, confidence, fit, intent) VALUES (?, ?, 'Pat', 'Legit (test only) Co', null, 'Hiring AEs', 'https://news.com/legit', 80, 4, 4)",
   ).run('eeeeeeeeeeeeeeeeeeeeeeee', legitJob)
+  // Test baseline is explicitly human-reviewed; no machine timing inference.
+  db.prepare("UPDATE leads SET human_confirmed_at=1800000000, human_confirmed_from='test_review' WHERE confidence IS NOT NULL AND evidence_excerpt IS NOT NULL").run()
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(legitJob)
   // A fixture job, using the fixture inserters' own job-level marker
   // (industry/location 'test only'); new fixture rows carry source_kind 'test'.
@@ -131,11 +135,15 @@ test('export defaults to real rows, fixture rows require the explicit opt-in, an
   db.prepare(
     "INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, confidence, fit, intent, source_kind) VALUES (?, ?, 'Fixture A (test only)', 'dazl fixture', null, 'dazl found and verified nothing (test only)', 'https://example.invalid/fixture', 0, 4, 4, 'test')",
   ).run('dddddddddddddddddddddddd', fixtureJob)
+  // Test baseline is explicitly human-reviewed; no machine timing inference.
+  db.prepare("UPDATE leads SET human_confirmed_at=1800000000, human_confirmed_from='test_review' WHERE confidence IS NOT NULL AND evidence_excerpt IS NOT NULL").run()
   // An OLD fixture row, inserted before source_kind existed: untagged, and only
   // the migration's job-level provenance backfill can classify it.
   db.prepare(
     "INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, confidence, fit, intent) VALUES (?, ?, 'Fixture B (test only)', 'dazl fixture old', null, 'old fixture row', 'https://example.invalid/old', 0, 4, 4)",
   ).run('ffffffffffffffffffffffff', fixtureJob)
+  // Test baseline is explicitly human-reviewed; no machine timing inference.
+  db.prepare("UPDATE leads SET human_confirmed_at=1800000000, human_confirmed_from='test_review' WHERE confidence IS NOT NULL AND evidence_excerpt IS NOT NULL").run()
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(fixtureJob)
   migrateScan(db) // idempotent re-run: the backfill classifies the old row
 

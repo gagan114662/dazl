@@ -11,7 +11,7 @@ const COLUMNS = [
   { key: 'signal', label: 'Signal' },
   { key: 'human_confirmed_from', label: 'Confirmed By User (reason dazl could not verify)' },
   { key: 'fit', label: 'Fit (0-5)' },
-  { key: 'intent', label: 'Intent (0-5)' },
+  { key: 'intent', label: 'Saved Intent (historical, not current need proof)' },
   { key: 'action', label: 'Action (0-5)' },
   { key: 'score', label: 'Score (0-100)' },
   { key: 'confidence', label: 'Confidence' },

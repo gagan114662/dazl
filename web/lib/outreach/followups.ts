@@ -1,3 +1,4 @@
+import {currentnessHeld} from './currentness.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend, tableExists } from './send-budget.ts'
 import type Database from 'better-sqlite3'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
@@ -56,6 +57,7 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
     if (leadHeld(db,tenantId,t.lead_id) || !recipientAllowed(db,tenantId,t.to_email)) { skip(leadHeld(db,tenantId,t.lead_id) ? 'lead_ungraded' : 'personal_email'); continue }
     // A withdrawn lead confirmation stops the thread for good before any warm follow-up
     // quotes the revoked signal; re-confirming the lead does not resurrect a stopped thread.
+    if (currentnessHeld(db,tenantId,t.lead_id)) { skip('lead_currentness_unconfirmed'); continue }
     if (!leadEvidenceEligible(db,tenantId,t.lead_id)) { db.prepare("UPDATE followup_threads SET stopped = 'evidence_withdrawn' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, t.thread_id); skip('evidence_withdrawn'); continue }
     if (t.last_followup_at && t.last_lead_reply_at > t.last_followup_at) { db.prepare("UPDATE followup_threads SET stopped = 'replied_again' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, t.thread_id); skip('replied again, left for you'); continue }
     if (now - t.last_activity_at < GAPS_DAYS[t.followups_sent] * 86400) continue
@@ -83,6 +85,10 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
       }
       // Re-checked after the token await: withdrawal during the await deletes the claim
       // row (nothing stuck in 'sending') and stops the thread, never sends.
+      if (currentnessHeld(db,tenantId,t.lead_id)) {
+        db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId,t.thread_id,t.followups_sent)
+        skip('lead_currentness_unconfirmed'); continue
+      }
       if (!leadEvidenceEligible(db,tenantId,t.lead_id)) {
         db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId,t.thread_id,t.followups_sent)
         db.prepare("UPDATE followup_threads SET stopped = 'evidence_withdrawn' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, t.thread_id)

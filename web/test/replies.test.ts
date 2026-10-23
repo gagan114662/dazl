@@ -33,6 +33,8 @@ function sentLead(db: Database.Database, to: string, sentAt = NOW - 4 * DAY) {
   db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
   const lead = randomBytes(12).toString('hex'), mid = randomBytes(12).toString('hex')
   db.prepare('INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(lead, job, 'Northside', to, 'Hiring roofers', 'https://n.example/a', 'Northside is hiring', 90)
+  // Test baseline is explicitly human-reviewed; no machine timing inference.
+  db.prepare("UPDATE leads SET human_confirmed_at=1800000000, human_confirmed_from='test_review' WHERE confidence IS NOT NULL AND evidence_excerpt IS NOT NULL").run()
   db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, claimed_at, gmail_id, thread_id) VALUES (?, 'A', ?, ?, 'Quick question', 'bodybodybodybodybodybody', 'sent', ?, ?, ?, ?)").run(mid, lead, to, sentAt, sentAt, 'g-' + mid, 't-' + mid)
   return { lead, mid, thread: 't-' + mid }
 }
@@ -157,6 +159,8 @@ test('inboxRows: joins lead company and follow-up state, newest first, tenant-sc
   const jobId = createJob(db, 'A', { business_name: 'B', industry: 'I', location: 'L' })
   db.prepare("UPDATE scan_jobs SET status='running' WHERE id = ?").run(jobId)
   db.prepare("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url) VALUES ('lead1', ?, 'Ada', 'Acme Co', 'hiring', 'https://x.com/1')").run(jobId)
+  // Test baseline is explicitly human-reviewed; no machine timing inference.
+  db.prepare("UPDATE leads SET human_confirmed_at=1800000000, human_confirmed_from='test_review' WHERE confidence IS NOT NULL AND evidence_excerpt IS NOT NULL").run()
   const ins = "INSERT INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at) VALUES (?, 'A', 't1', 'lead1', 'ada@acme.example', ?, ?, ?)"
   db.prepare(ins).run('g1', 'yes, tell me more about pricing', 'positive', NOW - 100)
   db.prepare(ins).run('g2', 'not interested, thanks', 'negative', NOW - 50)

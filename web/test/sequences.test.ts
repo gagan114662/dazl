@@ -30,6 +30,8 @@ function add(db: Database.Database, email = 'lead@acme.example') {
   db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
   const lead = randomBytes(12).toString('hex'), mid = randomBytes(12).toString('hex')
   db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence) VALUES (?,?,?,?,?,?,?,?)').run(lead,job,'Acme',email,'Hiring roofers','https://acme.example/jobs','Hiring roofers',90)
+  // Test baseline is explicitly human-reviewed; no machine timing inference.
+  db.prepare("UPDATE leads SET human_confirmed_at=1800000000, human_confirmed_from='test_review' WHERE confidence IS NOT NULL AND evidence_excerpt IS NOT NULL").run()
   db.prepare("INSERT INTO outreach_messages (id,tenant_id,lead_id,to_email,subject,body) VALUES (?,'A',?,?,'A quick question','This is a draft message for review.')").run(mid,lead,email)
   const seq = createSequence(db,'A',mid)
   return {job,lead,mid,seq,email}

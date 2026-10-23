@@ -13,8 +13,8 @@ const owns = "scan_job_id IN (SELECT id FROM scan_jobs WHERE user_id = ?)"
 // not in review, or already confirmed - the caller reports "nothing changed".
 export function confirmLeadReview(db: Database.Database, userId: string, leadId: string): boolean {
   const r = db.prepare(
-    `UPDATE leads SET human_confirmed_at = CAST(strftime('%s','now') AS INTEGER), human_confirmed_from = review_reason, review_reason = NULL
-     WHERE id = ? AND ${owns} AND review_reason IS NOT NULL AND human_confirmed_at IS NULL`,
+    `UPDATE leads SET human_confirmed_at = CAST(strftime('%s','now') AS INTEGER), human_confirmed_from = COALESCE(review_reason, 'legacy_currentness_review'), review_reason = NULL
+     WHERE id = ? AND ${owns} AND (review_reason IS NOT NULL OR confidence IS NOT NULL) AND human_confirmed_at IS NULL`,
   ).run(leadId, userId)
   return r.changes === 1
 }
@@ -22,7 +22,7 @@ export function confirmLeadReview(db: Database.Database, userId: string, leadId:
 // Returns true when the confirmation was withdrawn and the original review reason restored.
 export function unconfirmLeadReview(db: Database.Database, userId: string, leadId: string): boolean {
   const r = db.prepare(
-    `UPDATE leads SET review_reason = human_confirmed_from, human_confirmed_at = NULL, human_confirmed_from = NULL
+    `UPDATE leads SET review_reason = CASE WHEN human_confirmed_from='legacy_currentness_review' THEN NULL ELSE human_confirmed_from END, human_confirmed_at = NULL, human_confirmed_from = NULL
      WHERE id = ? AND ${owns} AND human_confirmed_at IS NOT NULL`,
   ).run(leadId, userId)
   return r.changes === 1

@@ -26,6 +26,8 @@ function addLead(db: Database.Database, tenant: string, o: Partial<{ contact: st
     id, job, 'Northside Builders', 'contact' in o ? o.contact : 'info@northside.example', 'Hiring five roofers', 'https://news.example/a',
     'evidence' in o ? o.evidence : 'Northside Builders is hiring five roofers', 'confidence' in o ? o.confidence : 85,
     'fit' in o ? o.fit : null, 'intent' in o ? o.intent : null)
+  // Explicit human review is the eligible baseline for unrelated send tests.
+  db.prepare("UPDATE leads SET human_confirmed_at=1800000000, human_confirmed_from='test_review' WHERE id=? AND confidence IS NOT NULL AND evidence_excerpt IS NOT NULL").run(id)
   return id
 }
 const idToken = (email: string, verified = true) => 'x.' + Buffer.from(JSON.stringify({ email, email_verified: verified })).toString('base64url') + '.y'

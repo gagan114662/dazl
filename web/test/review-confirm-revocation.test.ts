@@ -94,15 +94,13 @@ test('re-confirming restores eligibility: the same draft approves and sends', as
   assert.equal(m.calls.length, 1)
 })
 
-test('machine-verified leads are unaffected by the revocation gate', async () => {
+test('legacy quote and confidence alone cannot create a new draft', async () => {
   const db = await setup()
   const job = createJob(db, 'A', { business_name: 'Acme', industry: 'x', location: 'y' })
   db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
   const lead = randomBytes(12).toString('hex')
   db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence) VALUES (?,?,?,?,?,?,?,?)').run(lead, job, 'Acme', 'lead@acme.example', 'Hiring roofers', 'https://acme.example/jobs', 'Hiring roofers', 90)
-  const draftId = createDraft(db, 'A', lead, 'Acme')
-  approve(db, 'A', draftId) // no human confirmation involved at all
-  assert.equal(await sendMessage(db, 'A', draftId, mock()), 'sent')
+  assert.throws(()=>createDraft(db,'A',lead,'Acme'),/lead_currentness_unconfirmed/)
 })
 
 test('withdraw blocks sequence set approval', async () => {
@@ -232,4 +230,58 @@ test('withdraw during a follow-up token fetch: zero send, claim row deleted, thr
   assert.equal(m.calls.length, 0)
   assert.equal((db.prepare('SELECT stopped FROM followup_threads WHERE thread_id = ?').get(thread) as { stopped: string | null }).stopped, 'evidence_withdrawn')
   assert.equal((db.prepare('SELECT count(*) AS n FROM followup_messages').get() as { n: number }).n, 0) // claim deleted, none stuck sending
+})
+
+test('legacy currentness hold preserves approved words and sent history; blocks approval/send and new draft', async()=>{
+ const db=await setup(),{lead}=addReviewLead(db)
+ confirmLeadReview(db,'A',lead)
+ const draft=createDraft(db,'A',lead,'Acme');approve(db,'A',draft)
+ const original=db.prepare('SELECT subject,body,status,approved_hash FROM outreach_messages WHERE id=?').get(draft)
+ db.prepare('UPDATE leads SET human_confirmed_at=NULL,human_confirmed_from=NULL,confidence=85,review_reason=NULL WHERE id=?').run(lead)
+ const m=mock()
+ await assert.rejects(sendMessage(db,'A',draft,m),/lead_currentness_unconfirmed/)
+ assert.equal(m.calls.length,0)
+ assert.deepEqual(db.prepare('SELECT subject,body,status,approved_hash FROM outreach_messages WHERE id=?').get(draft),original)
+ db.prepare("UPDATE outreach_messages SET status='draft' WHERE id=?").run(draft)
+ assert.throws(()=>approve(db,'A',draft),/lead_currentness_unconfirmed/)
+ assert.throws(()=>createDraft(db,'A',lead,'Acme'),/lead_currentness_unconfirmed/)
+ assert.equal((db.prepare('SELECT human_confirmed_at FROM leads WHERE id=?').get(lead) as {human_confirmed_at:null}).human_confirmed_at,null)
+})
+test('legacy hold skips active sequence without cancelling or rewriting its approval',async()=>{
+ const db=await setup(),{lead}=addReviewLead(db)
+ confirmLeadReview(db,'A',lead)
+ const draft=createDraft(db,'A',lead,'Acme'),seq=createSequence(db,'A',draft),m=mock()
+ approveSequence(db,'A',seq,id=>approve(db,'A',id,true),NOW)
+ await sendMessage(db,'A',draft,m)
+ await runSequences(db,'A','Acme',{...m,now:NOW+1})
+ const before=db.prepare('SELECT status,stop_reason FROM sequences WHERE id=?').get(seq)
+ const words=db.prepare('SELECT step,subject,body,approved_hash,status FROM sequence_steps WHERE sequence_id=? ORDER BY step').all(seq)
+ db.prepare('UPDATE leads SET human_confirmed_at=NULL,human_confirmed_from=NULL,confidence=85 WHERE id=?').run(lead)
+ const out=await runSequences(db,'A','Acme',{...m,now:NOW+4*DAY})
+ assert.equal(out.sent,0);assert.equal(m.calls.length,1)
+ assert.deepEqual(db.prepare('SELECT status,stop_reason FROM sequences WHERE id=?').get(seq),before)
+ assert.deepEqual(db.prepare('SELECT step,subject,body,approved_hash,status FROM sequence_steps WHERE sequence_id=? ORDER BY step').all(seq),words)
+ assert.equal((db.prepare('SELECT status FROM outreach_messages WHERE id=?').get(draft) as {status:string}).status,'sent')
+})
+test('legacy hold appears during send token await and releases claim without send',async()=>{
+ const db=await setup(),{lead}=addReviewLead(db);confirmLeadReview(db,'A',lead)
+ const draft=createDraft(db,'A',lead,'Acme');approve(db,'A',draft)
+ const m=mock(),fetchImpl=(async(u:unknown)=>{
+  if(String(u).includes('oauth2')){db.prepare('UPDATE leads SET human_confirmed_at=NULL,human_confirmed_from=NULL,confidence=85 WHERE id=?').run(lead);return json({access_token:'at'})}
+  return json({},404)
+ }) as typeof fetch
+ await assert.rejects(sendMessage(db,'A',draft,{...m,fetchImpl}),/lead_currentness_unconfirmed/)
+ assert.equal(m.calls.length,0)
+ assert.equal((db.prepare('SELECT status FROM outreach_messages WHERE id=?').get(draft) as {status:string}).status,'approved')
+})
+test('explicit review restores a legacy lead without replacing its historical verdict; withdrawal restores the hold',async()=>{
+ const db=await setup(),{lead}=addReviewLead(db)
+ db.prepare('UPDATE leads SET review_reason=NULL,confidence=85 WHERE id=?').run(lead)
+ const original=db.prepare('SELECT signal,event_date,date_status,confidence FROM leads WHERE id=?').get(lead)
+ assert.equal(confirmLeadReview(db,'A',lead),true)
+ const draft=createDraft(db,'A',lead,'Acme');assert.ok(draft)
+ assert.deepEqual(db.prepare('SELECT signal,event_date,date_status,confidence FROM leads WHERE id=?').get(lead),original)
+ assert.equal(unconfirmLeadReview(db,'A',lead),true)
+ assert.equal((db.prepare('SELECT review_reason FROM leads WHERE id=?').get(lead) as {review_reason:null}).review_reason,null)
+ assert.throws(()=>approve(db,'A',draft),/lead_currentness_unconfirmed/)
 })

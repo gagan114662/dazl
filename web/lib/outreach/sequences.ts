@@ -1,3 +1,4 @@
+import {currentnessHeld} from './currentness.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend } from './send-budget.ts'
 import { hasReadConsent, syncReplies } from './replies.ts'
 import { randomBytes, createHash } from 'node:crypto'
@@ -217,6 +218,7 @@ export function approveSequence(db: Database.Database, tenantId: string, sequenc
   // stand at this moment. A withdrawn human confirmation revokes it (step-1 approval via
   // approveStep1 re-checks the same gate).
   const rootTest = db.prepare('SELECT test FROM outreach_messages WHERE tenant_id = ? AND id = ?').get(tenantId, s.message_id) as { test: number } | undefined
+  if (!(rootTest && testFixtureSend(db,tenantId,{to_email:s.to_email,test:rootTest.test})) && currentnessHeld(db,tenantId,s.lead_id)) throw new SequenceError('lead_currentness_unconfirmed')
   if (!(rootTest && testFixtureSend(db, tenantId, { to_email: s.to_email, test: rootTest.test })) && !leadEvidenceEligible(db, tenantId, s.lead_id)) throw new SequenceError('lead_evidence_withdrawn')
   db.transaction(() => {
   const first = steps.find(st => st.step === 1)!
@@ -302,6 +304,7 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
                               WHERE s.tenant_id = ? AND s.status = 'approved' AND m.status = 'sent'`).all(tenantId) as { id: string; lead_id: string; message_id: string; to_email: string; sent_at: number; gmail_id: string | null; thread_id: string | null; msg_test: number }[]
   for (const r of toStart) {
     if (db.prepare("SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND lead_id = ? AND classification NOT IN ('auto','soft_bounce')").get(tenantId,r.lead_id)) { stopSequenceForThread(db,tenantId,r.lead_id,'replied','existing_reply',now); continue }
+    if (!testFixtureSend(db,tenantId,{to_email:r.to_email,test:r.msg_test}) && currentnessHeld(db,tenantId,r.lead_id)) { out.skipped++; continue }
     if (!testFixtureSend(db,tenantId,{ to_email: r.to_email, test: r.msg_test }) && !leadEvidenceEligible(db,tenantId,r.lead_id)) { stopSequenceForThread(db,tenantId,r.lead_id,'stopped','evidence_withdrawn',now); out.skipped++; continue }
     db.prepare("UPDATE sequence_steps SET status = 'sent', sent_at = ?, gmail_id = ? WHERE tenant_id = ? AND sequence_id = ? AND step = 1 AND status = 'approved'").run(r.sent_at, r.gmail_id, tenantId, r.id)
     db.prepare("UPDATE sequences SET status = 'active' WHERE tenant_id = ? AND id = ? AND status = 'approved'").run(tenantId, r.id)
@@ -319,6 +322,7 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
     if (leadHeld(db,tenantId,s.lead_id) || !recipientAllowed(db,tenantId,s.to_email)) { stopSequenceForThread(db,tenantId,s.lead_id,'stopped',leadHeld(db,tenantId,s.lead_id) ? 'lead_ungraded' : 'personal_email',now); out.skipped++; continue }
     // Evidence re-checked at execution: a withdrawn confirmation stops the sequence
     // honestly before any unsent step goes out. Already-sent mail is never recalled.
+    if (!testFixtureSend(db,tenantId,{to_email:s.to_email,test:s.msg_test}) && currentnessHeld(db,tenantId,s.lead_id)) { out.skipped++; continue }
     if (!testFixtureSend(db,tenantId,{ to_email: s.to_email, test: s.msg_test }) && !leadEvidenceEligible(db,tenantId,s.lead_id)) { stopSequenceForThread(db,tenantId,s.lead_id,'stopped','evidence_withdrawn',now); out.skipped++; continue }
     if (!s.thread_id) { out.skipped++; continue } // never send a bump without a readable original thread
     if (!s.step1_sent) continue // activation lags one tick
@@ -360,6 +364,10 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
       // Evidence re-checked again after the token await: a confirmation withdrawn during
       // the await must release the claim (back to approved, claimed_at NULL) and stop the
       // sequence honestly, never send.
+      if (!testFixtureSend(db,tenantId,{to_email:s.to_email,test:s.msg_test}) && currentnessHeld(db,tenantId,s.lead_id)) {
+        db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step)
+        out.skipped++; continue
+      }
       if (!testFixtureSend(db,tenantId,{ to_email: s.to_email, test: s.msg_test }) && !leadEvidenceEligible(db,tenantId,s.lead_id)) {
         db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step)
         stopSequenceForThread(db,tenantId,s.lead_id,'stopped','evidence_withdrawn',now); out.skipped++; continue

@@ -24,8 +24,14 @@ function setup() {
   saveMemory(db, 'A', { positioning: 'software that ramps new sales hires' })
   db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES ('j1', 'A', 'b', 'i', 'l', 'running')").run()
   db.prepare("INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, evidence_excerpt, confidence) VALUES ('l1', 'j1', 'Pat', 'Acme', 'pat@acme.com', 'hiring AEs', 'https://n.com/a', 'quote', 80)").run()
+  // Test baseline is explicitly human-reviewed; no machine timing inference.
+  db.prepare("UPDATE leads SET human_confirmed_at=1800000000, human_confirmed_from='test_review' WHERE confidence IS NOT NULL AND evidence_excerpt IS NOT NULL").run()
   db.prepare("INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, evidence_excerpt, confidence) VALUES ('l2', 'j1', 'Pat', 'Acme', 'pat@acme.com', 'hiring AEs', 'https://n.com/a', 'quote', 80)").run()
+  // Test baseline is explicitly human-reviewed; no machine timing inference.
+  db.prepare("UPDATE leads SET human_confirmed_at=1800000000, human_confirmed_from='test_review' WHERE confidence IS NOT NULL AND evidence_excerpt IS NOT NULL").run()
   db.prepare("INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, evidence_excerpt, confidence) VALUES ('l3', 'j1', 'Pat', 'Acme', 'pat@acme.com', 'hiring AEs', 'https://n.com/a', 'quote', 80)").run()
+  // Test baseline is explicitly human-reviewed; no machine timing inference.
+  db.prepare("UPDATE leads SET human_confirmed_at=1800000000, human_confirmed_from='test_review' WHERE confidence IS NOT NULL AND evidence_excerpt IS NOT NULL").run()
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = 'j1'").run()
   return db
 }
@@ -81,6 +87,8 @@ test('polish records an attempt row per outcome: rewritten, blocked_claim, error
   saveMemory(db, 'A', {})
   db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES ('j2', 'A', 'b', 'i', 'l', 'running')").run()
   db.prepare("INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, evidence_excerpt, confidence) VALUES ('l4', 'j2', 'Pat', 'Acme', 'pat@acme.com', 's', 'https://n.com/a', 'q', 80)").run()
+  // Test baseline is explicitly human-reviewed; no machine timing inference.
+  db.prepare("UPDATE leads SET human_confirmed_at=1800000000, human_confirmed_from='test_review' WHERE confidence IS NOT NULL AND evidence_excerpt IS NOT NULL").run()
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = 'j2'").run()
   const id4 = createDraft(db, 'A', 'l4', 'Dazl')
   assert.deepEqual(await polishDraft(db, 'A', id4, 'Dazl', { master, providers: detailed('x') as never }), { rewritten: false, reason: 'no_profile' })
@@ -200,6 +208,8 @@ test('migrating a pre-accountability usage table adds the columns and polish kee
   saveMemory(db, 'A', { positioning: 'software that ramps new sales hires' })
   db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES ('j1', 'A', 'b', 'i', 'l', 'running')").run()
   db.prepare("INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, evidence_excerpt, confidence) VALUES ('l1', 'j1', 'Pat', 'Acme', 'pat@acme.com', 'hiring AEs', 'https://n.com/a', 'quote', 80)").run()
+  // Test baseline is explicitly human-reviewed; no machine timing inference.
+  db.prepare("UPDATE leads SET human_confirmed_at=1800000000, human_confirmed_from='test_review' WHERE confidence IS NOT NULL AND evidence_excerpt IS NOT NULL").run()
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = 'j1'").run()
   const cols = (db.prepare('PRAGMA table_info(outreach_llm_usage)').all() as { name: string }[]).map(c => c.name)
   for (const c of ['requested_model', 'cache_read_input_tokens', 'cache_creation_input_tokens']) assert.ok(cols.includes(c), `migrated column ${c}`)

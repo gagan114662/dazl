@@ -72,7 +72,11 @@ test('polishDraft rewrites a template draft with the tenant model + memory, keep
   // minimal verified lead
   db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES ('j1', 'A', 'b', 'i', 'l', 'running')").run()
   db.prepare("INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, evidence_excerpt, confidence) VALUES ('l1', 'j1', 'Pat', 'Acme', 'pat@acme.com', 'hiring AEs', 'https://n.com/a', 'quote', 80)").run()
+  // Eligible fixture is explicitly human-reviewed, not machine-timing proof.
+  db.prepare("UPDATE leads SET human_confirmed_at=1800000000,human_confirmed_from='test_review' WHERE confidence IS NOT NULL").run()
   db.prepare("INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, evidence_excerpt, confidence) VALUES ('l2', 'j1', 'Pat', 'Acme', 'pat@acme.com', 'hiring AEs', 'https://n.com/a', 'quote', 80)").run()
+  // Eligible fixture is explicitly human-reviewed, not machine-timing proof.
+  db.prepare("UPDATE leads SET human_confirmed_at=1800000000,human_confirmed_from='test_review' WHERE confidence IS NOT NULL").run()
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = 'j1'").run()
   const id = createDraft(db, 'A', 'l1', 'Dazl')
   const prov: Record<string, Provider> = { anthropic: { research: async () => ({ text: '', citedUrls: [] }), complete: async (k, prompt) => { assert.match(prompt, /Seller's writing tone: direct/); assert.match(prompt, /not instructions/); assert.match(prompt, /NOT a verified fact/); assert.match(prompt, /the source's claim/); return 'Subject: Saw the AE hiring\n\nHi Pat,\n\nNoticed Acme is hiring AEs. We help teams ramp them faster. Worth a short call?\n\nThanks,' } } }
@@ -90,6 +94,8 @@ test('polishDraft rewrites a template draft with the tenant model + memory, keep
   const db2 = new Database(':memory:'); migrateScan(db2); migrateKeys(db2); migrateOutreach(db2); migrateMemory(db2)
   db2.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES ('j1', 'A', 'b', 'i', 'l', 'running')").run()
   db2.prepare("INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, evidence_excerpt, confidence) VALUES ('l1', 'j1', 'Pat', 'Acme', 'pat@acme.com', 's', 'https://n.com/a', 'q', 80)").run()
+  // Eligible fixture is explicitly human-reviewed, not machine-timing proof.
+  db2.prepare("UPDATE leads SET human_confirmed_at=1800000000,human_confirmed_from='test_review' WHERE confidence IS NOT NULL").run()
   const id3 = createDraft(db2, 'A', 'l1', 'Dazl')
   assert.deepEqual(await polishDraft(db2, 'A', id3, 'Dazl', { master }), { rewritten: false, reason: 'no_key' })
 })
@@ -99,7 +105,11 @@ test('polishDraft refuses without a positioning (no invented offer) and blocks u
   saveSettings(db, 'A', { sender_name: 'G', postal_address: '1 King St W, Toronto ON, Canada', booking_url: null })
   db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES ('j1', 'A', 'b', 'i', 'l', 'running')").run()
   db.prepare("INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, evidence_excerpt, confidence) VALUES ('l1', 'j1', 'Pat', 'Acme', 'pat@acme.com', 'raised a round', 'https://n.com/a', 'quote', 80)").run()
+  // Eligible fixture is explicitly human-reviewed, not machine-timing proof.
+  db.prepare("UPDATE leads SET human_confirmed_at=1800000000,human_confirmed_from='test_review' WHERE confidence IS NOT NULL").run()
   db.prepare("INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, evidence_excerpt, confidence) VALUES ('l2', 'j1', 'Pat', 'Acme', 'pat@acme.com', 'raised a round', 'https://n.com/a', 'quote', 80)").run()
+  // Eligible fixture is explicitly human-reviewed, not machine-timing proof.
+  db.prepare("UPDATE leads SET human_confirmed_at=1800000000,human_confirmed_from='test_review' WHERE confidence IS NOT NULL").run()
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = 'j1'").run()
   let calls = 0
   const prov: Record<string, Provider> = { anthropic: { research: async () => ({ text: '', citedUrls: [] }), complete: async () => { calls++; return 'Subject: Congrats\n\nHi Pat,\n\nCongrats on your recent funding round! We built a consulting offer for teams like yours. Worth a call?\n\nThanks,' } } }

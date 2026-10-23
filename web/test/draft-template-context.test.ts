@@ -12,6 +12,8 @@ function setup(memory = true) {
   if (memory) migrateMemory(db)
   db.prepare("INSERT INTO scan_jobs(id,user_id,business_name,industry,location,status) VALUES('job','A','Request','test','test','running')").run()
   for (const id of ['one','two']) db.prepare("INSERT INTO leads(id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence) VALUES(?,'job','Buyer','sales@buyer.invalid','Buyer is hiring an SDR','https://buyer.invalid/careers','Buyer is hiring an SDR',70)").run(id)
+  // Test baseline is explicitly human-reviewed; no machine timing inference.
+  db.prepare("UPDATE leads SET human_confirmed_at=1800000000, human_confirmed_from='test_review' WHERE confidence IS NOT NULL AND evidence_excerpt IS NOT NULL").run()
   return db
 }
 const body = (db: Database.Database, id: string) => (db.prepare('SELECT body FROM outreach_messages WHERE id=?').get(id) as {body:string}).body

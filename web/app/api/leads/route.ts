@@ -1,3 +1,4 @@
+import {currentnessHeld} from '@/lib/outreach/currentness'
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sourceCheckForLead } from '@/lib/scan/source-review'
@@ -19,7 +20,14 @@ export async function GET(req: NextRequest) {
   const evts = await db.eventsForLeads(user.id, leads)
   const pri = await db.leadPriorities(user.id, leads)
   const look = await db.lookalikeSignals(user.id, leads.map(l => ({ id: l.id, signal: l.signal, industry: job.industry, location: job.location })))
-  const ranked = rankLeads(leads, pri)
+  // Read-time only: preserve stored grade/rationale for inspection, but never
+  // rank legacy unsupported timing as a live need. No history is rewritten.
+  const safeLeads = leads.map(l => ({...l, stored_intent:l.intent, intent:0,
+    stored_why:(l as typeof l & {why?:string|null}).why ?? null,
+    why:'Event timing and current need are unconfirmed. Saved grades are historical, not a currentness verdict.',
+    currentness_held:currentnessHeld(getScanDb(),user.id,l.id)}))
+  for (const p of Object.values(pri)) if (p) p.intent=0
+  const ranked = rankLeads(safeLeads, pri)
   return NextResponse.json({ job_id: job.id, status: job.status, hidden_count: includeHidden ? 0 : await db.countHiddenLeads(user.id, job.id), leads: ranked.map(l => ({ ...l, source_check: sourceCheckForLead(getScanDb(), user.id, l.id), sequence: sequences.get(l.id) ?? null, enrichments: (enr[l.id] ?? []).map(e => ({ ...e, entity_status:
           e.connector === 'signals:sec-edgar'
             ? (() => { const base = classifyEntityMatch(l.company, e.label ?? '')

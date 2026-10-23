@@ -1,8 +1,9 @@
+import {currentnessHeld} from '@/lib/outreach/currentness'
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
-import { approve, leadEvidenceState, OutreachError } from '@/lib/outreach/service'
+import { approve, leadEvidenceState, testFixtureSend, OutreachError } from '@/lib/outreach/service'
 import { createSequence, editSequenceStep, approveSequence, sequenceAnalytics, sequenceStatusByLead, sequenceStepsView, testAddresses, setTestAddresses, SequenceError, resolveSequenceUncertain, resumeSequences } from '@/lib/outreach/sequences'
 import { createSequenceTestFixture, createReplyStopTestFixture, fixtureAvailable, FixtureError } from '@/lib/outreach/test-fixture'
 
@@ -11,7 +12,7 @@ export async function GET(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Sign in first.' }, { status: 401 })
   const db = getScanDb()
   const rows = db.prepare('SELECT id, message_id, lead_id, to_email, status, stop_reason FROM sequences WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 200').all(user.id) as { id: string; status: string; lead_id: string; message_id: string }[]
-  const sequences = rows.map(s => ({ ...s, evidence_state: leadEvidenceState(db, user.id, s.lead_id), steps: sequenceStepsView(db, user.id, s as { id: string; message_id: string; status: string }) }))
+  const sequences = rows.map(s => ({ ...s, evidence_state: leadEvidenceState(db, user.id, s.lead_id), currentness_held: (()=>{const m=db.prepare('SELECT to_email,test FROM outreach_messages WHERE id=? AND tenant_id=?').get(s.message_id,user.id) as {to_email:string;test:number}|undefined;return !(m&&testFixtureSend(db,user.id,m))&&currentnessHeld(db,user.id,s.lead_id)})(), steps: sequenceStepsView(db, user.id, s as { id: string; message_id: string; status: string }) }))
   const campaigns = db.prepare('SELECT DISTINCT j.id,j.query FROM scan_jobs j JOIN leads l ON l.scan_job_id = j.id JOIN outreach_messages m ON m.lead_id = l.id AND m.tenant_id = j.user_id WHERE j.user_id = ? ORDER BY j.created_at DESC LIMIT 50').all(user.id) as { id: string; query: string }[]
   return NextResponse.json({ sequences, test_addresses: testAddresses(db,user.id), test_fixture_available: fixtureAvailable(db,user.id), status: Object.fromEntries(sequenceStatusByLead(db,user.id)), campaigns: campaigns.map(c => ({ ...c, analytics: sequenceAnalytics(db,user.id,(db.prepare('SELECT id FROM leads WHERE scan_job_id = ?').all(c.id) as { id: string }[]).map(l => l.id)) })) })
 }
