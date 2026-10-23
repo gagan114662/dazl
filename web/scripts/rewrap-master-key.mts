@@ -5,9 +5,9 @@
 //   node --experimental-strip-types scripts/rewrap-master-key.mts --db /path/to.db [--dry-run] [--verify] [--quarantine-corrupt]
 // Reverse direction (rollback) = the same tool with the two env values swapped.
 // --dry-run and --verify open the database READ-ONLY (no sidecar writes).
-// A real run exits 0 ONLY when the post-run gate passes: every row decrypts
-// under the new key (bad = 0) AND a read-only re-check shows 0 rows would
-// change and 0 corrupt. Corrupt rows (quarantine mode) ALWAYS fail the gate:
+// A real run exits 0 ONLY when the post-run gate passes: every row is
+// wrap-verified under the new key (bad = 0) AND a read-only re-check shows 0
+// rows would change and 0 corrupt. Corrupt rows (quarantine mode) ALWAYS fail the gate:
 // they are unknown-affected tenants needing loud manual review, never "ready".
 import Database from 'better-sqlite3'
 import { getMasterKey } from '../lib/secrets.ts'
@@ -26,9 +26,9 @@ try {
   if (verifyOnly) {
     const results = verifyMasterKey(db, oldMaster)
     let bad = 0
-    for (const r of results) { bad += r.bad; console.log(`${r.table}.${r.column}: ${r.missing ? 'table missing' : `${r.ok}/${r.total} rows decrypt under DAZL_MASTER_KEY${r.bad ? `, ${r.bad} DO NOT` : ''}`}`) }
-    if (bad > 0) { console.error(`verify FAILED: ${bad} row(s) unreadable under the given key - unknown-affected tenants, manual review required`); process.exit(1) }
-    console.log('verify OK: every row decrypts under DAZL_MASTER_KEY')
+    for (const r of results) { bad += r.bad; console.log(`${r.table}.${r.column}: ${r.missing ? 'table missing' : `${r.ok}/${r.total} wraps open under DAZL_MASTER_KEY${r.bad ? `, ${r.bad} DO NOT` : ''}`}`) }
+    if (bad > 0) { console.error(`verify FAILED: ${bad} wrap(s) do not open under the given key - unknown-affected tenants, manual review required`); process.exit(1) }
+    console.log('verify OK: every row is wrap-verified under DAZL_MASTER_KEY (wrap-only check - bodies never decrypted)')
     process.exit(0)
   }
   const rawNext = process.env.DAZL_MASTER_KEY_NEXT
@@ -39,12 +39,13 @@ try {
   const results = rewrapMasterKey(db, oldMaster, newMaster, { dryRun, quarantineCorrupt: quarantine })
   for (const r of results) console.log(`${r.table}.${r.column}: ${r.missing ? 'table missing - nothing to do' : `${r.rewrapped} rewrapped, ${r.skipped} already current${r.corrupt ? `, ${r.corrupt} CORRUPT (unknown-affected - manual review)` : ''}`}${dryRun ? ' (dry run - nothing written)' : ''}`)
   if (dryRun) process.exit(0)
-  // Post-run gate: all rows must decrypt under the new key AND a read-only
-  // re-check must show 0 would-change and 0 corrupt. Any failure exits 1.
+  // Post-run gate: every row's wrap must open under the new key AND a
+  // read-only re-check must show 0 would-change and 0 corrupt. Any failure
+  // exits 1. Wrap-only: bodies are never decrypted in the audit path.
   const verify = verifyMasterKey(db, newMaster)
   const bad = verify.reduce((n, r) => n + r.bad, 0)
   const total = verify.reduce((n, r) => n + r.total, 0)
-  if (bad > 0) { console.error(`post-run gate FAILED: ${bad}/${total} row(s) do not decrypt under the new key - do NOT swap env; unknown-affected tenants need manual review`); process.exit(1) }
+  if (bad > 0) { console.error(`post-run gate FAILED: ${bad}/${total} wrap(s) do not open under the new key - do NOT swap env; unknown-affected tenants need manual review`); process.exit(1) }
   let wouldChange = 0, corrupt = 0
   try {
     const recheck = rewrapMasterKey(db, oldMaster, newMaster, { dryRun: true })
@@ -52,7 +53,7 @@ try {
     corrupt = recheck.reduce((n, r) => n + r.corrupt, 0)
   } catch { console.error('post-run gate FAILED: read-only re-check hit unrewrappable rows - do NOT swap env'); process.exit(1) }
   if (wouldChange > 0 || corrupt > 0) { console.error(`post-run gate FAILED: ${wouldChange} row(s) would still change, ${corrupt} corrupt - do NOT swap env`); process.exit(1) }
-  console.log(`post-run gate PASSED: ${total} row(s) decrypt under the new key, 0 would change, 0 corrupt - env swap gate cleared (operator decision remains)`)
+  console.log(`post-run gate PASSED: ${total} row(s) wrap-verified under the new key (bodies untouched), 0 would change, 0 corrupt - env swap gate cleared (operator decision remains)`)
 } catch (e) {
   console.error(`rewrap ABORTED (fail closed): ${e instanceof Error ? e.message : 'error'}`)
   process.exit(1)
