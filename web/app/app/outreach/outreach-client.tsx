@@ -33,7 +33,7 @@ export default function OutreachClient() {
   useEffect(() => { void load(); const refresh=()=>void load(); window.addEventListener('sequences-updated',refresh); return ()=>window.removeEventListener('sequences-updated',refresh) }, [])
 
   async function createSequence(id:string) {
-    setCreating(true);setNote('Drafting sequence steps...')
+    setCreating(true);setNote('Preparing template sequence...')
     try {const r=await fetch('/api/outreach/sequences',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'create',message_id:id})});const j=await r.json(); if(!r.ok) setNote(`Could not create sequence (${j.error}).`); else {await load();window.location.reload()}} catch {setNote('Could not reach the server. Refresh before retrying.')} finally {setCreating(false)}
   }
 
@@ -89,7 +89,7 @@ export default function OutreachClient() {
                     {(m.status === 'draft' || m.status === 'approved') && <button className={btn} onClick={() => setEdit({ ...edit, [m.id]: { subject: m.subject, body: m.body } })}>Edit</button>}
                     {m.status === 'draft' && !sequenceMessages.includes(m.id) && <button className={btn} onClick={() => act(m.id, 'approve')}>Approve</button>}
                     {m.status === 'draft' && <button className={btn} title="Rewrites this draft with your own AI key - your provider bills you for the call" onClick={() => void polish(m.id)}>Rewrite with AI (uses your key)</button>}
-                    {m.status === 'draft' && !sequenceMessages.includes(m.id) && <button className={btn} disabled={creating} onClick={()=>void createSequence(m.id)}>Create 3-step sequence</button>}
+                    {m.status === 'draft' && !sequenceMessages.includes(m.id) && <button className={btn} disabled={creating} onClick={()=>void createSequence(m.id)} title="Creates editable templates without an AI call or provider charge">Create 3-step sequence (templates)</button>}
                     {m.status === 'approved' && <button className="btn-primary text-xs px-3 py-1.5" onClick={() => act(m.id, 'send')}>Send now</button>}
                     {(m.status === 'draft' || m.status === 'approved') && <button className={btn} onClick={() => act(m.id, 'skip')}>Skip</button>}
                     {m.status === 'uncertain' && <><button className={btn} onClick={() => act(m.id, 'mark_sent')}>It was sent</button><button className={btn} onClick={() => act(m.id, 'retry')}>It was not sent, allow retry</button></>}

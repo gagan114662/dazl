@@ -3,7 +3,7 @@ import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { approve, leadEvidenceState, OutreachError } from '@/lib/outreach/service'
-import { createSequence, draftSequenceSteps, editSequenceStep, approveSequence, sequenceAnalytics, sequenceStatusByLead, sequenceStepsView, testAddresses, setTestAddresses, SequenceError, resolveSequenceUncertain, resumeSequences } from '@/lib/outreach/sequences'
+import { createSequence, editSequenceStep, approveSequence, sequenceAnalytics, sequenceStatusByLead, sequenceStepsView, testAddresses, setTestAddresses, SequenceError, resolveSequenceUncertain, resumeSequences } from '@/lib/outreach/sequences'
 import { createSequenceTestFixture, createReplyStopTestFixture, fixtureAvailable, FixtureError } from '@/lib/outreach/test-fixture'
 
 export async function GET(req: NextRequest) {
@@ -26,7 +26,8 @@ export async function POST(req: NextRequest) {
     if (b?.action === 'test_addresses' && Array.isArray(b.addresses) && b.addresses.every((v: unknown) => typeof v === 'string')) return NextResponse.json({ addresses: setTestAddresses(db,user.id,b.addresses) })
     if (b?.action === 'create' && typeof b.message_id === 'string') {
       const id = createSequence(db,user.id,b.message_id,{ businessName: user.business_name })
-      await draftSequenceSteps(db,user.id,id,user.business_name)
+      // Template-only preparation. Creating a sequence never bills a provider key.
+      // AI rewriting must be a separate, explicitly priced user action.
       return NextResponse.json({ id })
     }
     if (b?.action === 'create_test_fixture') return NextResponse.json(createSequenceTestFixture(db,user.id))
