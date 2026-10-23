@@ -69,7 +69,7 @@ export default function OutreachClient() {
   return (
     <div className="p-8 max-w-3xl">
       <h1 className="text-2xl font-bold mb-1">Outreach</h1>
-      <p className="text-[#555] text-sm mb-6">Review each email, approve it, then send. Single emails send only after your click. A sequence sends its later steps only after you approve all three steps together. Every email gets your name, mailing address and an unsubscribe link added automatically.</p>
+      <p className="text-[#555] text-sm mb-6">Review each email, approve it, then send. Manual emails send only after your click. If you turn on autopilot, it can send first emails on its own after you approve the first sends (see its consent text below). A sequence sends its later steps only after you approve all three steps together. Every email gets your name, mailing address and an unsubscribe link added automatically.</p>
       <SendReadiness />
       {note && <p className="text-sm text-yellow-400 mb-4">{note}</p>}
       {msgs.length === 0 && <p className="text-[#666] text-sm">No emails yet. Open Leads and choose Draft email on a lead with a published address.</p>}
