@@ -336,21 +336,26 @@ export function pickVendor(db: Database.Database, tenantId: string): Vendor | nu
 // A stop request (or a reaped/re-claimed attempt) must not start NEW provider or network work.
 // It cannot interrupt a call already awaited; that call may finish and be billed, but its result is discarded.
 class ScanStopped extends Error { constructor() { super('scan_stopped') } }
-// Cooperative whole-scan budget, checked only where a NEW phase would start (never mid-call, so no work is left
-// running behind a freed slot). A scan past it fails once with 'scan_timeout' and is not retried: a retry would
-// repeat the same provider spend. Candidates are in memory until finish(), so nothing partial is saved or shown.
+// Optional whole-scan budget: an ADMISSION guard, not a wall-clock maximum. It is checked only in assertOwned,
+// i.e. before a NEW phase starts, after the previous await has already returned. It cannot end an awaited call: a
+// provider/fetch call that never settles is bounded only by its own transport abort (SCAN_LLM_TIMEOUT_MS 150 s,
+// page 10 s, TinyFish 20 s, collectors 25 s) and, past that, by the 20 min lease reaper. OFF unless
+// SCAN_JOB_BUDGET_MS is set, so default behavior (retries, quota, UI) is unchanged. Discovery scans only: CSV
+// company jobs are not cancellable and never get a deadline. A scan past it fails once as 'scan_timeout' (a
+// retry would repeat the same provider spend). Candidates are in memory until finish(): nothing partial is saved.
 class ScanTimedOut extends Error { constructor() { super('scan_timeout') } }
-const jobDeadlines = new WeakMap<Job, number>()
-export function scanJobBudgetMs(env: Record<string, string | undefined> = process.env): number {
+const jobDeadlines = new WeakMap<Job, { at: number; now: () => number }>()
+export function scanJobBudgetMs(env: Record<string, string | undefined> = process.env): number | null {
   const raw = env.SCAN_JOB_BUDGET_MS
-  if (raw === undefined) return 15 * 60_000
+  if (raw === undefined || raw === '') return null
   const n = Number(raw)
-  return Number.isFinite(n) && n > 0 ? n : 15 * 60_000
+  if (!Number.isFinite(n) || n <= 0) { console.error('SCAN_JOB_BUDGET_MS invalid (need finite positive ms) - budget off'); return null }
+  return n
 }
 function assertOwned(db: Database.Database, job: Job): void {
   if (!db.prepare("SELECT 1 FROM scan_jobs WHERE id = ? AND status = 'running' AND attempts = ?").get(job.id, job.attempts)) throw new ScanStopped()
   const d = jobDeadlines.get(job)
-  if (d !== undefined && Date.now() > d) throw new ScanTimedOut()
+  if (d && d.now() > d.at) throw new ScanTimedOut()
 }
 
 // Writes only if this attempt still owns the job (a reaped and re-claimed job
@@ -555,11 +560,12 @@ function budgetDeps(deps: RunDeps, budget: RunBudget | null): RunDeps {
 }
 
 export interface RunDeps {
-  score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; jobBudgetMs?: number }
+  score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; jobBudgetMs?: number; clock?: () => number }
 
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
   const ledger = new SourceRunLedger()
-  jobDeadlines.set(job, Date.now() + (deps.jobBudgetMs ?? scanJobBudgetMs()))
+  const budget = job.csv_domain ? null : deps.jobBudgetMs ?? scanJobBudgetMs()
+  if (budget) { const now = deps.clock ?? Date.now; jobDeadlines.set(job, { at: now() + budget, now }) }
   // Trial-funded jobs run on the shared operator key from the server environment; everything
   // else runs on the job owner's own key. The operator key is never read from the tenant DB.
   const op = job.funded_by === 'trial' ? operatorKey() : null
