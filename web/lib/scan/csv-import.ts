@@ -95,7 +95,28 @@ export function createBatch(db: Database.Database, userId: string, domains: stri
 
 // Creates one scan job per pending row until the plan quota stops the batch. Rows left
 // without a job stay pending so a later resume (new month, upgraded plan) can pick them up.
-export function queuePendingRows(db: Database.Database, userId: string, batchId: string): { queued: number; quotaStop: boolean } {
+export const RUN_BUDGET_KEYS = ['paid_fallback', 'credit_enrichment', 'judge'] as const
+// Normalize a per-run budget. Absent (the field was not supplied) means current
+// behavior - the legacy default. An explicitly supplied budget must be a plain
+// object using only the known narrowing keys, each === false; anything else -
+// including an explicit null - is REJECTED so a caller expecting a restricted
+// run is never silently widened into a full run.
+export function normalizeRunBudget(raw: unknown, supplied: boolean): { ok: true; value: string | null } | { ok: false; error: string } {
+  if (!supplied) return { ok: true, value: null }
+  if (raw === undefined || raw === null) return { ok: false, error: 'budget was supplied but empty - name at least one narrowing control (paid_fallback, credit_enrichment, judge) set to false, or omit the field' }
+  if (typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: 'budget must be an object' }
+  const keys = Object.keys(raw as Record<string, unknown>)
+  if (keys.length === 0) return { ok: false, error: 'budget names no controls' }
+  const out: Record<string, false> = {}
+  for (const k of keys) {
+    if (!(RUN_BUDGET_KEYS as readonly string[]).includes(k)) return { ok: false, error: `unknown budget control: ${k}` }
+    if ((raw as Record<string, unknown>)[k] !== false) return { ok: false, error: `budget.${k} accepts only false - the control can only narrow a run` }
+    out[k] = false
+  }
+  return { ok: true, value: JSON.stringify(out) }
+}
+
+export function queuePendingRows(db: Database.Database, userId: string, batchId: string, runBudget: string | null = null): { queued: number; quotaStop: boolean } {
   const batch = db.prepare('SELECT id FROM csv_batches WHERE id = ? AND user_id = ?').get(batchId, userId)
   if (!batch) return { queued: 0, quotaStop: false }
   const rows = db.prepare("SELECT id, domain FROM csv_rows WHERE batch_id = ? AND state = 'pending' AND job_id IS NULL ORDER BY rowid").all(batchId) as { id: string; domain: string }[]
@@ -104,7 +125,7 @@ export function queuePendingRows(db: Database.Database, userId: string, batchId:
   for (const row of rows) {
     if (!scanQuota(db, userId).allowed) { quotaStop = true; break }
     const jobId = randomBytes(12).toString('hex')
-    db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, csv_domain, batch_id) VALUES (?, ?, ?, '-', '-', ?, ?)").run(jobId, userId, row.domain.slice(0, 150), row.domain, batchId)
+    db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, csv_domain, batch_id, run_budget) VALUES (?, ?, ?, '-', '-', ?, ?, ?)").run(jobId, userId, row.domain.slice(0, 150), row.domain, batchId, runBudget)
     db.prepare('UPDATE csv_rows SET job_id = ? WHERE id = ?').run(jobId, row.id)
     queued++
   }

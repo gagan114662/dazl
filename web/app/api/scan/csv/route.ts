@@ -5,7 +5,7 @@ import { rateLimit } from '@/lib/rate-limit'
 import { getPlan } from '@/lib/plans'
 import { hasKey } from '@/lib/llm/key-store'
 import { kickRunner } from '@/lib/scan/runner'
-import { batchStatus, createBatch, MAX_DOMAINS, parseDomains, queuePendingRows } from '@/lib/scan/csv-import'
+import { batchStatus, createBatch, MAX_DOMAINS, normalizeRunBudget, parseDomains, queuePendingRows } from '@/lib/scan/csv-import'
 
 const MAX_UPLOAD = 100_000 // ~50 domains is the cap; a bigger paste is a mistake, not a use case
 
@@ -27,11 +27,21 @@ export async function POST(req: NextRequest) {
 
   const parsed = parseDomains(text)
   if (parsed.valid.length === 0) return NextResponse.json({ error: 'No valid domains found', invalid: parsed.invalid }, { status: 400 })
+  // Optional per-run budget controls for an explicitly bounded run. An explicitly
+  // supplied budget that is not strictly valid narrowing controls - including an
+  // explicit null - is rejected, never silently widened into an unrestricted run.
+  const budgetSupplied = body !== null && typeof body === 'object' && 'budget' in body
+  const nb = normalizeRunBudget(budgetSupplied ? body.budget : undefined, budgetSupplied)
+  if (!nb.ok) return NextResponse.json({ error: nb.error }, { status: 400 })
   const batchId = createBatch(db, user.id, parsed.valid)
-  const { queued, quotaStop } = queuePendingRows(db, user.id, batchId)
+  const { queued, quotaStop } = queuePendingRows(db, user.id, batchId, nb.value)
   after(() => kickRunner(db))
   return NextResponse.json({
     batch_id: batchId,
+    // Post-commit confirmation of the actual saved per-run control: the batch is
+    // already created and the runner already kicked, so this echo is confirmation
+    // of what was persisted, NOT a review/approval gate before execution.
+    budget: nb.value ? JSON.parse(nb.value) as Record<string, boolean> : null,
     accepted: parsed.valid.length,
     queued,
     max_domains: MAX_DOMAINS,
