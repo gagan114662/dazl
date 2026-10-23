@@ -21,7 +21,8 @@ export default function HomeSteps() {
   // The key step shows only once the trial is used up (or the trial is off). While free scans
   // remain, the first-run path starts at "Say who you want".
   const onTrial = state && !state.hasKey && state.remaining > 0
-  const steps: Step[] = [...(state === null || state.hasKey || onTrial ? (onTrial ? REST : [KEY_STEP, ...REST]) : [
+  // A saved key means the key step is done: never ask for it again. Until usage loads, show only the steps that do not depend on it.
+  const steps: Step[] = [...(state === null || state.hasKey ? REST : onTrial ? REST : [
     { ...KEY_STEP, d: `Your 3 free scans are used up. Add your own Anthropic or OpenAI key to keep scanning.` }, ...REST,
   ])]
   if (gmailOk === false) steps.push({ n: String(steps.length + 1), t: 'Connect Gmail to send', d: 'Signing in with Google does not connect Gmail. Connect it in Settings so dazl can send from your own Gmail. Emails go out after you approve them, unless you turn on autopilot in Settings. Reply reading is optional.', href: '/app/settings', cta: 'Open Settings' })

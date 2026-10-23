@@ -9,14 +9,19 @@ export default function SellerCard() {
   const [website, setWebsite] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [saved, setSaved] = useState('')
+  const [editing, setEditing] = useState(false)
   useEffect(() => {
     void fetch('/api/settings/profile').then(r => r.ok ? r.json() : null).then(j => {
       if (!j) return
-      if (j.sells) return
+      if (j.sells) { setSaved(String(j.sells)); return }
       setShow(true)
     }).catch(() => {})
   }, [])
-  if (!show) return null
+  if (saved && !editing) return (
+    <p className="text-sm text-[#555] mb-6">What you sell: <span className="text-[#111]">{saved}</span> <button type="button" onClick={() => { setSells(saved); setEditing(true) }} className="underline underline-offset-4 ml-1">Edit</button></p>
+  )
+  if (!show && !editing) return null
   async function save(e: React.FormEvent) {
     e.preventDefault()
     setError(''); setBusy(true)
@@ -24,7 +29,7 @@ export default function SellerCard() {
     const j = await r.json().catch(() => ({}))
     setBusy(false)
     if (!r.ok) return setError(j.error || 'Could not save')
-    setShow(false)
+    setShow(false); setSaved(sells.trim()); setEditing(false)
   }
   return (
     <form onSubmit={save} className="card p-4 mb-8 text-sm">
@@ -35,7 +40,7 @@ export default function SellerCard() {
       {error && <p className="text-red-400 text-xs mb-2">{error}</p>}
       <div className="flex gap-3 items-center">
         <button disabled={busy || sells.trim().length < 3} className="btn-primary">{busy ? 'Saving...' : 'Save and continue'}</button>
-        <button type="button" onClick={() => setShow(false)} className="text-gray-400 hover:text-white text-xs">Skip for now</button>
+        <button type="button" onClick={() => { setShow(false); setEditing(false) }} className="text-gray-400 hover:text-white text-xs">Skip for now</button>
       </div>
     </form>
   )

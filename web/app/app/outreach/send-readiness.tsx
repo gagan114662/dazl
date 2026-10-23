@@ -11,7 +11,7 @@ export default function SendReadiness() {
   if (!s) return null
   const gmailOk = s.gmail?.status === 'active'
   const senderOk = !!s.sender?.sender_name && !!s.sender?.postal_address
-  if (gmailOk && senderOk) return <p className="text-xs text-[#666] mb-4">Ready to send from {s.gmail!.email}. Every email still needs your approval. Reply reading is {s.gmail!.read_granted ? 'on' : 'off (optional)'}.</p>
+  if (gmailOk && senderOk) return <p className="text-xs text-[#666] mb-4">Ready to send from {s.gmail!.email}. Manual emails send only after your click; autopilot, if you turn it on in Settings, can send first emails on its own. Reply reading is {s.gmail!.read_granted ? 'on' : 'off (optional)'}.</p>
   return (
     <div className="card p-4 mb-4 text-sm">
       <p className="font-medium mb-1">Not ready to send yet</p>

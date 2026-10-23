@@ -69,3 +69,14 @@ test('status poll is passive only for explicit ?passive=1 (adoption resumes the 
   assert.doesNotMatch(ui, /passiveJob\.current = true/)
   assert.match(ui, /get\('passive'\) === '1'/)
 })
+
+test('Home never asks for an AI key once one is saved; seller profile stays visible; banner and sign-up copy are mode-accurate', async () => {
+  const fs = await import('node:fs')
+  const rd = (p: string) => fs.readFileSync(new URL(p, import.meta.url), 'utf8')
+  const steps = rd('../app/app/home-steps.tsx')
+  assert.match(steps, /state === null \|\| state\.hasKey \? REST/)
+  assert.doesNotMatch(steps, /\[KEY_STEP, \.\.\.REST\]/)
+  assert.match(rd('../app/app/seller-card.tsx'), /What you sell:/)
+  assert.doesNotMatch(rd('../app/app/outreach/send-readiness.tsx'), /Every email still needs your approval/)
+  assert.match(rd('../app/sign-up/page.tsx'), /with your own AI key/)
+})
