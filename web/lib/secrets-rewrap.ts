@@ -5,15 +5,27 @@
 // column added to the schema later cannot be silently half-migrated - the tool
 // must be extended deliberately.
 //
-// Failure semantics: each row is rewrapped in its own transaction with a
-// compare-and-swap on the original blob, so a crash or a concurrent writer
-// leaves a consistent, resumable state - re-running is safe (already-rewrapped
-// rows are skipped). Any row that cannot be unwrapped with the old key, has an
-// unknown format, or was concurrently modified ABORTS the run (fail closed).
+// Design: PREFLIGHT BEFORE WRITE. Phase 1 reads and validates EVERY row and
+// computes its rewrapped form in memory; in the default mode a single
+// unrewrappable row aborts the run BEFORE any write, so a corrupt row can never
+// create a partial migration that later blocks rollback. Phase 2 writes the
+// pre-computed rows in per-row transactions with a compare-and-swapon the
+// preflight blob. Partial state is therefore possible ONLY from a crash or a
+// fence violation mid-write; both directions are idempotent so a re-run resumes
+// and a key-swapped run rolls back.
+//
+// Honesty boundaries: the CAS is defense-in-depth against a writer that slips
+// the fence between preflight and write. It is NOT a proven multi-connection
+// concurrency fence (no live-second-writer test exists) - the procedure REQUIRES
+// a verified single-writer maintenance window. opts.quarantineCorrupt is a
+// recovery mode only: rows unrewrappable under NEITHER key are counted and
+// skipped so other rows can migrate or roll back, but a quarantined row means an
+// UNKNOWN-AFFECTED TENANT whose credential may be unreadable - the count is
+// reported precisely and never claimed as healthy.
 // Logs and errors carry counts and row locators only - never blob or key
 // material.
 import type Database from 'better-sqlite3'
-import { rewrapSecret } from './secrets.ts'
+import { decryptSecret, rewrapSecret } from './secrets.ts'
 
 interface ColumnSpec {
   table: string
@@ -30,43 +42,71 @@ export const REWRAP_COLUMNS: readonly ColumnSpec[] = [
 
 export interface RewrapColumnResult { table: string; column: string; missing: boolean; rewrapped: number; skipped: number; corrupt: number }
 
-// Throws (fail closed) with a locator-only message on the first row that cannot
-// be rewrapped; committed earlier rows stay rewrapped and a re-run resumes them.
-// opts.quarantineCorrupt: instead of aborting, count and skip rows that can be
-// rewrapped under NEITHER key (parse failure, unknown version, both unwraps fail)
-// so a rollback can still recover every other row. Rows that unwrap under the old
-// key but whose write fails (concurrent modification) ALWAYS abort - that is a
-// fencing problem, never corruption.
+interface PlannedRow { spec: ColumnSpec; pks: string[]; original: string; out: string }
+
+const tableExists = (db: Database.Database, table: string) =>
+  !!db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)
+
+const locatorOf = (spec: ColumnSpec) => `${spec.table}(${spec.pk.map(c => `${c}=...`).join(',')})` // pk values are tenant ids - shape only, never values or blobs
+
 export function rewrapMasterKey(db: Database.Database, oldMaster: Buffer, newMaster: Buffer, opts: { dryRun?: boolean; quarantineCorrupt?: boolean } = {}): RewrapColumnResult[] {
   if (oldMaster.equals(newMaster)) throw new Error('old and new master keys are identical')
   const results: RewrapColumnResult[] = []
+  const planned: PlannedRow[] = []
+  const failedLocators: string[] = []
+  // Phase 1 - preflight: read-only validation of every row, outputs in memory.
   for (const spec of REWRAP_COLUMNS) {
-    const exists = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(spec.table)
-    if (!exists) { results.push({ table: spec.table, column: spec.column, missing: true, rewrapped: 0, skipped: 0, corrupt: 0 }); continue }
+    if (!tableExists(db, spec.table)) { results.push({ table: spec.table, column: spec.column, missing: true, rewrapped: 0, skipped: 0, corrupt: 0 }); continue }
     const rows = db.prepare(`SELECT ${spec.pk.map(c => `"${c}"`).join(', ')}, "${spec.column}" AS blob FROM "${spec.table}"`).all() as Record<string, string>[]
     let rewrapped = 0, skipped = 0, corrupt = 0
     for (const row of rows) {
-      const locator = `${spec.table}(${spec.pk.map(c => `${c}=...`).join(',')})` // pk values are tenant ids - locators only, still no blob
       let out: string, changed: boolean
       try {
         ;({ out, changed } = rewrapSecret(row.blob, spec.ctx(row), oldMaster, newMaster))
-      } catch (e) {
-        if (opts.quarantineCorrupt) { corrupt++; continue } // reported in the result; row left untouched
-        throw e // fail closed
+      } catch {
+        if (opts.quarantineCorrupt) { corrupt++; continue } // recovery mode: counted, left untouched, reported as unknown-affected
+        failedLocators.push(locatorOf(spec)); continue
       }
       if (!changed) { skipped++; continue }
+      planned.push({ spec, pks: spec.pk.map(c => row[c]), original: row.blob, out })
       rewrapped++
-      if (opts.dryRun) continue
-      const where = spec.pk.map(c => `"${c}" = ?`).join(' AND ')
-      const txn = db.transaction(() => {
-        // Compare-and-swap on the original blob: a concurrent writer changing the
-        // row between read and write makes this affect 0 rows -> fail closed.
-        const ch = db.prepare(`UPDATE "${spec.table}" SET "${spec.column}" = ? WHERE ${where} AND "${spec.column}" = ?`).run(out, ...spec.pk.map(c => row[c]), row.blob)
-        if (ch.changes !== 1) throw new Error(`concurrent modification detected at ${locator} - aborting; re-run after writers are fenced`)
-      })
-      txn()
     }
     results.push({ table: spec.table, column: spec.column, missing: false, rewrapped, skipped, corrupt })
+  }
+  if (failedLocators.length) {
+    const shown = failedLocators.slice(0, 5).join(', ')
+    throw new Error(`preflight failed: ${failedLocators.length} row(s) cannot be rewrapped under the old key - NO rows were written. Fix the rows or re-run with quarantine (recovery mode). Locators: ${shown}${failedLocators.length > 5 ? ', ...' : ''}`)
+  }
+  if (opts.dryRun) return results
+  // Phase 2 - write: per-row transaction, compare-and-swap on the preflight blob.
+  for (const p of planned) {
+    const where = p.spec.pk.map(c => `"${c}" = ?`).join(' AND ')
+    const txn = db.transaction(() => {
+      const ch = db.prepare(`UPDATE "${p.spec.table}" SET "${p.spec.column}" = ? WHERE ${where} AND "${p.spec.column}" = ?`).run(p.out, ...p.pks, p.original)
+      if (ch.changes !== 1) throw new Error(`row changed since preflight at ${locatorOf(p.spec)} - aborting; re-run after writers are fenced (committed rows stay valid; re-run resumes)`)
+    })
+    txn()
+  }
+  return results
+}
+
+export interface VerifyColumnResult { table: string; column: string; missing: boolean; total: number; ok: number; bad: number }
+
+// Read-only audit: which rows decrypt under the given master key. Never throws
+// on bad rows - it counts them. This is the explicit post-run gate: after a
+// forward run, verifyMasterKey(db, NEW) must show bad = 0 across every column
+// before the env swap. bad > 0 means unknown-affected tenants, reported, not
+// claimed healthy.
+export function verifyMasterKey(db: Database.Database, master: Buffer): VerifyColumnResult[] {
+  const results: VerifyColumnResult[] = []
+  for (const spec of REWRAP_COLUMNS) {
+    if (!tableExists(db, spec.table)) { results.push({ table: spec.table, column: spec.column, missing: true, total: 0, ok: 0, bad: 0 }); continue }
+    const rows = db.prepare(`SELECT ${spec.pk.map(c => `"${c}"`).join(', ')}, "${spec.column}" AS blob FROM "${spec.table}"`).all() as Record<string, string>[]
+    let ok = 0, bad = 0
+    for (const row of rows) {
+      try { decryptSecret(row.blob, spec.ctx(row), master); ok++ } catch { bad++ }
+    }
+    results.push({ table: spec.table, column: spec.column, missing: false, total: rows.length, ok, bad })
   }
   return results
 }
