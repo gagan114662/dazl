@@ -524,7 +524,7 @@ export default function LeadsClient() {
         {visibleLeads.length === 0 ? (
           // Loading, failed and status-error states have their own truthful copy above.
           status === 'loading' || status === 'failed' || statusError ? null
-            : <p className="p-10 text-center text-gray-500 text-sm">{emptyLeadsMessage(status, 0, hiddenCount) ?? ''}</p>
+            : <p className="p-10 text-center text-gray-500 text-sm">{emptyLeadsMessage(status, 0, hiddenCount, quality?.needs_review) ?? ''}</p>
         ) : visibleLeads.map(l => (
           <div key={l.id} className="p-4 text-sm">
             {l.sequence && <p className="text-xs text-[#555] mb-2">Sequence: {l.sequence.status} / {l.sequence.step} steps sent{l.sequence.next_due_at ? ` / next due ${new Date(l.sequence.next_due_at * 1000).toLocaleString()}` : ''}{l.sequence.stop_reason ? ` (${l.sequence.stop_reason})` : ''}</p>}
@@ -647,6 +647,9 @@ export default function LeadsClient() {
                 <div className="text-gray-400">{claimFromSource(l) ? `Source claims: ${l.signal}` : l.signal}</div>
                 <span className="text-yellow-500 text-xs mr-3">{REVIEW[l.review_reason ?? ''] ?? 'Not verified'}</span>
                 <a className="underline text-[#111] text-xs" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
+                {l.review_reason === 'quote_unconfirmed' && l.evidence_excerpt && (
+                  <div className="text-xs text-gray-500 mt-1">Unconfirmed quote: "{l.evidence_excerpt}"</div>
+                )}
               </div>
             ))}
           </div>

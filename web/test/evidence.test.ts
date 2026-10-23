@@ -94,6 +94,24 @@ test('end to end: only verified leads are stored with evidence, per tenant; coun
   assert.equal(listLeads(db, 'B', id).length, 0)
 })
 
+test('end to end: an unconfirmable quote is stored on the needs-review row, not thrown away', async () => {
+  const master = randomBytes(32)
+  const db = new Database(':memory:')
+  migrateScan(db); migrateKeys(db)
+  saveKey(db, 'A', 'anthropic', 'sk-ant-api03-' + 'A'.repeat(40), master)
+  const id = createJob(db, 'A', { business_name: 'Acme', industry: 'roofing', location: 'Toronto' })
+  const paraphrase = 'a summary sentence the model wrote that never appears on the page'
+  const text = JSON.stringify([cand({ excerpt: paraphrase, event_date: null })])
+  const providers = { anthropic: { research: async () => ({ text, citedUrls: ['https://northsidebuilders.example/a'] }) }, openai: { research: async () => ({ text: '[]', citedUrls: [] }) } }
+  await runJob(db, claimKeyedJob(db)!, { providers, master, now: NOW, fetchPage: async () => good })
+  const rows = listLeads(db, 'A', id) as { evidence_excerpt: string | null; review_reason: string | null }[]
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].review_reason, 'quote_unconfirmed')
+  assert.equal(rows[0].evidence_excerpt, paraphrase)
+  const j = db.prepare('SELECT candidates, verified, needs_review FROM scan_jobs WHERE id = ?').get(id) as { candidates: number; verified: number; needs_review: number }
+  assert.deepEqual({ ...j }, { candidates: 1, verified: 0, needs_review: 1 })
+})
+
 test('SSRF guard: private, loopback, metadata and non-https URLs are never fetched', async () => {
   for (const ip of ['127.0.0.1', '10.1.2.3', '172.16.0.1', '172.31.255.1', '192.168.1.1', '169.254.169.254', '100.64.0.1', '0.0.0.0', '::1', 'fd00::1', 'fe80::1', '::ffff:10.0.0.1']) assert.equal(isPublicIp(ip), false, ip)
   for (const ip of ['8.8.8.8', '1.1.1.1', '172.32.0.1', '2606:4700:4700::1111']) assert.equal(isPublicIp(ip), true, ip)
