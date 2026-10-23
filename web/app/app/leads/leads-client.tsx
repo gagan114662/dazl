@@ -16,7 +16,7 @@ const claimFromSource = (l: { source_url: string; company_domain: string | null 
   } catch { return true }
 }
 
-interface Lead { sequence?: { status: string; step: number; next_due_at: number | null; stop_reason: string | null } | null; id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; watch_new?: number; seen_before?: number; stage?: string | null; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string; entity_status?: 'heuristic' | 'unconfirmed' | null }[]; events?: { id: string; event_type: string; summary: string; source_url: string; source_published_at: string | null; last_seen_at: number; fresh: boolean; entity_status?: 'heuristic' | 'unconfirmed' | null }[]; priority?: { graded: boolean; fit: number | null; intent: number | null; action: number | null; evidence_score: number; reasons: string[]; uncounted: string[] } | null; lookalike?: { state: 'insufficient' | 'scored'; cohort_size: number; matches: number; matched_on: string[] } | null }
+interface Lead { sequence?: { status: string; step: number; next_due_at: number | null; stop_reason: string | null } | null; id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; human_confirmed_at: number | null; human_confirmed_from: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; watch_new?: number; seen_before?: number; stage?: string | null; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string; entity_status?: 'heuristic' | 'unconfirmed' | null }[]; events?: { id: string; event_type: string; summary: string; source_url: string; source_published_at: string | null; last_seen_at: number; fresh: boolean; entity_status?: 'heuristic' | 'unconfirmed' | null }[]; priority?: { graded: boolean; fit: number | null; intent: number | null; action: number | null; evidence_score: number; reasons: string[]; uncounted: string[] } | null; lookalike?: { state: 'insufficient' | 'scored'; cohort_size: number; matches: number; matched_on: string[] } | null }
 interface Icp { summary: string; who: string[]; industries: string[]; sizes: string[]; where: string[]; signals: string[]; exclude: string[] }
 interface JobSummary { id: string; status: string; error: string | null; query: string | null; business_name: string; csv_domain: string | null; created_at: number; finished_at: number | null; candidates: number | null; verified: number | null; needs_review: number | null; dropped: number | null; lead_count: number; test_only: boolean }
 interface Watch { id: string; query: string; active: boolean; next_run_at: number | null; last_run_at: number | null; paused_reason: string | null; last_job_id: string | null; last_status: string | null; new_leads: number }
@@ -173,6 +173,14 @@ export default function LeadsClient() {
     const r = await fetch('/api/crm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'push', lead_id: leadId }) })
     const j = await r.json().catch(() => ({}))
     setPushed(d => ({ ...d, [leadId]: r.ok ? (j.message || 'Pushed to CRM') : j.error || 'Push failed' }))
+  }
+  async function confirmReview(leadId: string) {
+    const r = await fetch(`/api/leads/${leadId}/confirm`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+    if (r.ok) setLeads(ls => ls.map(l => l.id === leadId ? { ...l, human_confirmed_at: Math.floor(Date.now() / 1000), human_confirmed_from: l.review_reason, review_reason: null } : l))
+  }
+  async function withdrawConfirm(leadId: string) {
+    const r = await fetch(`/api/leads/${leadId}/confirm`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: '{}' })
+    if (r.ok) setLeads(ls => ls.map(l => l.id === leadId ? { ...l, review_reason: l.human_confirmed_from, human_confirmed_at: null, human_confirmed_from: null } : l))
   }
   async function makeDraft(leadId: string) {
     const r = await fetch('/api/outreach', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lead_id: leadId }) })
@@ -605,7 +613,10 @@ export default function LeadsClient() {
               </div>
             )}
             {l.evidence_excerpt && <blockquote className="text-gray-500 text-xs border-l border-white/10 pl-3 my-1">&ldquo;{l.evidence_excerpt}&rdquo;</blockquote>}
-            <span className="text-gray-500 text-xs mr-3">{l.confidence === null ? 'not verified' : `confidence ${l.confidence}`}{l.event_date ? `, ${l.event_date}${l.date_status === 'unverified' ? ' (date not confirmed on page)' : ''}` : ''}</span>
+            <span className="text-gray-500 text-xs mr-3">{l.confidence === null ? (l.human_confirmed_at ? 'confirmed by you - dazl did not verify the quote' : 'not verified') : `confidence ${l.confidence}`}{l.event_date ? `, ${l.event_date}${l.date_status === 'unverified' ? ' (date not confirmed on page)' : ''}` : ''}</span>
+            {l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && (
+              <button onClick={() => withdrawConfirm(l.id)} className="text-gray-600 hover:text-red-400 text-xs mr-3" title={l.human_confirmed_from ? `Was in review: ${REVIEW[l.human_confirmed_from] ?? l.human_confirmed_from}` : undefined}>withdraw confirmation</button>
+            )}
             <a className="underline text-[#111] text-xs" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
             {(() => {
               const pc = publishedContact(l)
@@ -614,7 +625,7 @@ export default function LeadsClient() {
                 {pc && pc.purpose === 'sales' && <span className="text-gray-500 text-xs ml-3">{pc.email}</span>}
                 {pc && pc.purpose === 'non-sales' && <span className="text-gray-500 text-xs ml-3">{pc.email} - published {pc.purposeHint} inbox, not a sales contact</span>}
                 {!pc && l.contact && <span className="text-gray-500 text-xs ml-3">{l.contact}</span>}
-                {draftTo && l.confidence !== null && !(l.fit === 0 && l.intent === null) && (
+                {draftTo && (l.confidence !== null || l.human_confirmed_at !== null) && !(l.fit === 0 && l.intent === null) && (
                   drafted[l.id]
                     ? <span className="text-gray-400 text-xs ml-3">{drafted[l.id]}</span>
                     : <button onClick={() => makeDraft(l.id)} className="font-mono text-xs uppercase border border-black px-2 py-1 ml-3 hover:bg-black hover:text-white">Draft email</button>)}
@@ -639,7 +650,7 @@ export default function LeadsClient() {
       {leads.some(l => l.review_reason) && (
         <>
           <h2 className="text-sm font-semibold mt-8 mb-2">Needs your review</h2>
-          <p className="text-gray-500 text-xs mb-3">dazl could not confirm these leads, so they will not be emailed. Open the source and check them yourself.</p>
+          <p className="text-gray-500 text-xs mb-3">dazl could not confirm these leads, so they will not be emailed. Open the source and check them yourself - if a lead checks out, confirm it and it moves into your list as confirmed by you, never as source-checked.</p>
           <div className="card divide-y divide-white/5">
             {leads.filter(l => l.review_reason).map(l => (
               <div key={l.id} className="p-4 text-sm">
@@ -647,6 +658,7 @@ export default function LeadsClient() {
                 <div className="text-gray-400">{claimFromSource(l) ? `Source claims: ${l.signal}` : l.signal}</div>
                 <span className="text-yellow-500 text-xs mr-3">{REVIEW[l.review_reason ?? ''] ?? 'Not verified'}</span>
                 <a className="underline text-[#111] text-xs" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
+                <button onClick={() => confirmReview(l.id)} className="font-mono text-xs uppercase border border-black px-2 py-1 ml-3 hover:bg-black hover:text-white">I checked this - use it</button>
                 {l.review_reason === 'quote_unconfirmed' && l.evidence_excerpt && (
                   <div className="text-xs text-gray-500 mt-1">Unconfirmed quote: "{l.evidence_excerpt}"</div>
                 )}

@@ -69,6 +69,7 @@ export function pgLeadsRead(pg: PgQueryable): LeadsReadDb {
       const { rows } = await pg.query(
         `SELECT l.id, l.scan_job_id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.created_at,
 l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
+l.human_confirmed_at, l.human_confirmed_from,
            l.fit, l.intent, l.action, l.why, l.signals, l.icp_match, l.watch_new, l.seen_before, l.stage
          FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
          WHERE j.id = $1 AND j.user_id = $2 ${includeHidden ? '' : 'AND (l.fit IS NULL OR l.fit > 1)'}
@@ -79,7 +80,7 @@ l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l
         ...r,
         score: numReq(r.score), created_at: numReq(r.created_at), retrieved_at: num(r.retrieved_at),
         confidence: num(r.confidence), fit: num(r.fit), intent: num(r.intent), action: num(r.action),
-        watch_new: num(r.watch_new), seen_before: num(r.seen_before),
+        watch_new: num(r.watch_new), seen_before: num(r.seen_before), human_confirmed_at: num(r.human_confirmed_at),
       })) as never
     },
 
