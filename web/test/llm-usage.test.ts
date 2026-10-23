@@ -90,6 +90,7 @@ test('polish records an attempt row per outcome: rewritten, blocked_claim, error
   // Test baseline is explicitly human-reviewed; no machine timing inference.
   db.prepare("UPDATE leads SET human_confirmed_at=1800000000, human_confirmed_from='test_review' WHERE confidence IS NOT NULL AND evidence_excerpt IS NOT NULL").run()
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = 'j2'").run()
+  db.exec('CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,sells TEXT,website TEXT)'); db.prepare('INSERT OR REPLACE INTO users VALUES(?,?,?)').run('A','Synthetic onboarding offer for fixtures.',null)
   const id4 = createDraft(db, 'A', 'l4', 'Dazl')
   assert.deepEqual(await polishDraft(db, 'A', id4, 'Dazl', { master, providers: detailed('x') as never }), { rewritten: false, reason: 'no_profile' })
   const rows2 = usageRows(db)

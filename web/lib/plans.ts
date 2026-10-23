@@ -33,7 +33,7 @@ export function monthStartS(now = new Date()): number {
 
 // Scans started this UTC month. Failed scans do not count: the user gets the slot back.
 export function scansThisMonth(db: Database.Database, tenantId: string, now = new Date()): number {
-  const r = db.prepare("SELECT count(*) AS n FROM scan_jobs WHERE user_id = ? AND created_at >= ? AND status != 'failed' AND funded_by != 'trial'").get(tenantId, monthStartS(now)) as { n: number }
+  const r = db.prepare("SELECT count(*) AS n FROM scan_jobs WHERE user_id = ? AND created_at >= ? AND (status != 'failed' OR error = 'cancelled') AND funded_by != 'trial'").get(tenantId, monthStartS(now)) as { n: number }
   return r.n
 }
 

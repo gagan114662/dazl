@@ -9,6 +9,7 @@ import { migrateMemory } from '../../lib/memory.ts'
 import { migrateSequences, sequenceStepText, draftSequenceSteps } from '../../lib/outreach/sequences.ts'
 import { migrateKeys, saveKey } from '../../lib/llm/key-store.ts'
 import { providers } from '../../lib/llm/provider.ts'
+import { saveMemory } from '../../lib/memory.ts'
 import { createDraft } from '../../lib/outreach/service.ts'
 import { confirmLeadReview } from '../../lib/scan/review-confirm.ts'
 import { NextRequest } from 'next/server'
@@ -29,7 +30,7 @@ globalThis.fetch = (async (u: unknown, i?: RequestInit) => { fetchCalls.push(Str
 
 test('route create action bills no provider and stores draft templates', async () => {
   const db = new Database(':memory:')
-  migrateScan(db); migrateOutreach(db); migrateSequences(db); migrateKeys(db); migrateMemory(db)
+  migrateScan(db); migrateOutreach(db); migrateSequences(db); migrateKeys(db); migrateMemory(db); saveMemory(db, 'A', { positioning: 'Synthetic fixture offer.' })
   const job = createJob(db, 'A', { business_name: 'Acme', industry: 'roofing', location: 'Toronto' })
   db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
   const lead = randomBytes(12).toString('hex')

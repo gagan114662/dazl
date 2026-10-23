@@ -96,6 +96,7 @@ test('polishDraft rewrites a template draft with the tenant model + memory, keep
   db2.prepare("INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, evidence_excerpt, confidence) VALUES ('l1', 'j1', 'Pat', 'Acme', 'pat@acme.com', 's', 'https://n.com/a', 'q', 80)").run()
   // Eligible fixture is explicitly human-reviewed, not machine-timing proof.
   db2.prepare("UPDATE leads SET human_confirmed_at=1800000000,human_confirmed_from='test_review' WHERE confidence IS NOT NULL").run()
+  saveMemory(db2, 'A', { positioning: 'Synthetic fixture offer.' })
   const id3 = createDraft(db2, 'A', 'l1', 'Dazl')
   assert.deepEqual(await polishDraft(db2, 'A', id3, 'Dazl', { master }), { rewritten: false, reason: 'no_key' })
 })
@@ -115,6 +116,7 @@ test('polishDraft refuses without a positioning (no invented offer) and blocks u
   const prov: Record<string, Provider> = { anthropic: { research: async () => ({ text: '', citedUrls: [] }), complete: async () => { calls++; return 'Subject: Congrats\n\nHi Pat,\n\nCongrats on your recent funding round! We built a consulting offer for teams like yours. Worth a call?\n\nThanks,' } } }
   // tone-only memory: no positioning -> no provider call at all, template stays
   saveMemory(db, 'A', { tone: 'direct' })
+  db.exec('CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,sells TEXT,website TEXT)'); db.prepare('INSERT OR REPLACE INTO users VALUES(?,?,?)').run('A','Synthetic onboarding offer for fixtures.',null)
   const id = createDraft(db, 'A', 'l1', 'Dazl')
   assert.deepEqual(await polishDraft(db, 'A', id, 'Dazl', { master, providers: prov as never }), { rewritten: false, reason: 'no_profile' })
   assert.equal(calls, 0)

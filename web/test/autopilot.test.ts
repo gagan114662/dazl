@@ -1,3 +1,4 @@
+import { seedOffers } from './helpers/seed-offer.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
@@ -17,7 +18,7 @@ const idToken = (email: string) => 'x.' + Buffer.from(JSON.stringify({ email, em
 const tokenOk = (async (url: string) => (String(url).includes('token') ? json({ access_token: 'at' }) : json({}, 404))) as unknown as typeof fetch
 
 async function setup() {
-  const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateAutopilot(db)
+  const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateAutopilot(db); seedOffers(db)
   const state = new URL(startOAuth(db, 'A', { env: genv, now: NOW })).searchParams.get('state')!
   await completeOAuth(db, 'A', 'c', state, { env: genv, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'rt', scope: 'https://www.googleapis.com/auth/gmail.send', id_token: idToken('me@acme.example') })) as unknown as typeof fetch })
   saveSettings(db, 'A', { sender_name: 'Pat', postal_address: '1 King St W, Toronto ON M5H 1A1' })
@@ -110,4 +111,14 @@ test('an uncertain send pauses autopilot and nothing else goes out', async () =>
   const r = await runAutopilot(db, 'A', 'Acme', d)
   assert.equal(r.stopped, 'uncertain_send'); assert.equal(getState(db, 'A').paused, true)
   assert.equal(status(db).filter(m => m.status === 'uncertain').length, 1)
+})
+
+test('autopilot skips with no draft, no send and an audited reason when the seller offer is missing', async () => {
+  const db = await setup(); ok(db); const { sent, d } = sends()
+  db.prepare("DELETE FROM tenant_memory WHERE tenant_id='A'").run()
+  lead(db, 'a@one.example')
+  const r = await runAutopilot(db, 'A', 'Acme', d)
+  assert.equal(r.skipped, 1); assert.equal(r.sent, 0); assert.equal(sent.length, 0)
+  assert.equal(status(db).length, 0)
+  assert.ok(recentAutopilotAudit(db, 'A').some(a => a.action === 'skipped' && a.detail === 'seller_offer_required'))
 })

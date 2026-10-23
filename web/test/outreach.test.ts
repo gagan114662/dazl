@@ -1,3 +1,4 @@
+import { seedOffers } from './helpers/seed-offer.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash, randomBytes } from 'node:crypto'
@@ -15,7 +16,7 @@ const NOW = 1_800_000_000
 
 function setup() {
   const db = new Database(':memory:')
-  migrateScan(db); migrateOutreach(db)
+  migrateScan(db); migrateOutreach(db); seedOffers(db)
   return db
 }
 function addLead(db: Database.Database, tenant: string, o: Partial<{ contact: string | null; evidence: string | null; confidence: number | null; fit: number | null; intent: number | null }> = {}) {

@@ -2,6 +2,7 @@
 // port or a new store module) cannot silently drop a tenant filter. Every assertion
 // here passes on the audited commit; a failure means tenant A can see or touch
 // tenant B's data. See docs/security/tenant-isolation-assessment.md.
+import { seedOffers } from './helpers/seed-offer.ts'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
@@ -21,7 +22,7 @@ const setup = () => {
   const db = new Database(':memory:')
   migrateScan(db)
   migratePlans(db)
-  migrateOutreach(db)
+  migrateOutreach(db); seedOffers(db, [A, B])
   migrateMonitors(db)
   migrateKeys(db)
   return db

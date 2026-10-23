@@ -332,6 +332,14 @@ export function pickVendor(db: Database.Database, tenantId: string): Vendor | nu
   return rows[0]?.vendor ?? null
 }
 
+
+// A stop request (or a reaped/re-claimed attempt) must not start NEW provider or network work.
+// It cannot interrupt a call already awaited; that call may finish and be billed, but its result is discarded.
+class ScanStopped extends Error { constructor() { super('scan_stopped') } }
+function assertOwned(db: Database.Database, job: Job): void {
+  if (!db.prepare("SELECT 1 FROM scan_jobs WHERE id = ? AND status = 'running' AND attempts = ?").get(job.id, job.attempts)) throw new ScanStopped()
+}
+
 // Writes only if this attempt still owns the job (a reaped and re-claimed job
 // has a higher attempts number), so a slow old run cannot clobber a newer one.
 function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pending', error: string | null, out: VerifyOutcome | null = null, candidates: number | null = null, ledger?: SourceRunLedger): boolean {
@@ -361,7 +369,8 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
 
 // Shared failure handling: a rejected key fails the job outright; anything else retries
 // until MAX_ATTEMPTS, then fails. Returns the run outcome.
-function failOrRetry(db: Database.Database, job: Job, e: unknown, ledger?: SourceRunLedger): 'failed' | 'retry' {
+function failOrRetry(db: Database.Database, job: Job, e: unknown, ledger?: SourceRunLedger): 'done' | 'failed' | 'retry' {
+  if (e instanceof ScanStopped) return 'done' // nothing to retry or fail: the stop/re-claim owns the row; queue completion or a stale token is a no-op
   const err = e instanceof ProviderError ? e : new ProviderError('retry', 'internal_error')
   if (err.kind === 'auth') {
     finish(db, job, 'failed', 'key_rejected', null, null, ledger)
@@ -430,6 +439,7 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
     if (complete && tinyfishEnabled()) {
       try {
         ledger.record('search:tinyfish', 'started')
+        assertOwned(db, job)
         leads = await tinyfishCompany(db, job, domain, provider, key, deps.fetchImpl)
         ledger.record('search:tinyfish', leads === null ? 'unavailable' : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:tinyfish', leads)
@@ -446,6 +456,7 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
       // error keeps the UI truthful - this is a budget stop, not "nothing found".
       if (deps.paidFallback === false) { finish(db, job, 'failed', 'budget_stopped', null, 0, ledger); return 'failed' }
       ledger.record(`search:${vendor}`, 'started')
+      assertOwned(db, job)
       const res = await provider.research(key, buildCompanyPrompt(domain, deps.now ?? new Date()), deps.fetchImpl)
       leads = parseLeads(res.text, res.citedUrls)
       if (leads && leads.length > 0 && complete && deps.ground !== false) {
@@ -457,6 +468,7 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
     if (ledger.has(`search:${vendor}`)) { ledger.record(`search:${vendor}`, leads.length ? 'ok' : 'empty'); ledger.candidates(`search:${vendor}`, leads) }
     if (leads.length === 0) { finish(db, job, 'failed', 'no_candidates', null, 0, ledger); return 'failed' }
     const judge = deps.judge === undefined ? makeJudge(provider, key, deps.fetchImpl) : deps.judge ?? undefined
+    assertOwned(db, job)
     const outcome = await verifyLeads(leads, fetchP, deps.now, judge, job.csv_domain ?? null)
     try { applyEvidenceQualityGate(outcome.leads) } catch { /* gate only, never fails the job */ }
     const owned = finish(db, job, 'done', null, outcome, leads.length, ledger)
@@ -555,6 +567,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     if (job.query) {
       let icp = job.icp ? normalizeIcp(safeJson(job.icp)) : null
       if (!icp) {
+        assertOwned(db, job)
         const r = await inferIcp(providers_[vendor], key, job.query, deps.fetchImpl, job.seller ?? undefined)
         icp = r.icp
         db.prepare("UPDATE scan_jobs SET icp = ?, icp_inferred = ? WHERE id = ? AND status = 'running' AND attempts = ?").run(JSON.stringify(icp), r.inferred ? 1 : 2, job.id, job.attempts)
@@ -569,6 +582,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     if (job.query && icpForSources && complete && tinyfishEnabled()) {
       try {
         ledger.record('search:tinyfish', 'started')
+        assertOwned(db, job)
         leads = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl)
         ledger.record('search:tinyfish', leads === null ? 'unavailable' : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:tinyfish', leads)
@@ -581,9 +595,11 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     const fetchP = cachedFetcher(deps.fetchPage ?? fetchPageDetailed)
     if (!leads) {
       ledger.record(`search:${vendor}`, 'started')
+      assertOwned(db, job)
       const res = await providers_[vendor].research(key, prompt, deps.fetchImpl)
       leads = parseLeads(res.text, res.citedUrls)
       if (leads && leads.length > 0 && complete && deps.ground !== false) {
+        assertOwned(db, job)
         const g = await groundLeads(providers_[vendor], key, job.query ?? `${job.business_name} ${job.industry} ${job.location}`, leads, fetchP, deps.fetchImpl)
         if (g) leads = g
       }
@@ -597,6 +613,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     let complaints: ComplaintItem[] = []
     if (sel && icpForSources && complete) {
       try {
+        assertOwned(db, job)
         const collected = await collectEvidenceReport(sel, job.query!)
         const items = collected.items
         for (const run of collected.runs) ledger.record(run.collector, run.status, run.evidence)
@@ -649,6 +666,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // so the user gets the slot back instead of a silent empty result.
     if (leads.length === 0 && walledLeads.length === 0) { finish(db, job, 'failed', 'no_candidates', null, 0, ledger); return 'failed' }
     const judge = deps.judge === undefined ? makeJudge(providers_[vendor], key, deps.fetchImpl) : deps.judge ?? undefined
+    assertOwned(db, job)
     let outcome = await verifyLeads(leads, fetchP, deps.now, judge)
     // First-scan killer: the model's stale memory returns only old news and the verifier
     // honestly drops all of it. One bounded retry with the date spelled out a second time
@@ -657,6 +675,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       try {
         const now = deps.now ?? new Date()
         const month = now.toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' })
+        assertOwned(db, job)
         const res2 = await providers_[vendor].research(key, `${prompt}\n\nREMINDER: today is ${now.toISOString().slice(0, 10)}. Every prospect's signal must be from the last 90 days. Include "${month}" in your search queries.`, deps.fetchImpl)
         let more = parseLeads(res2.text, res2.citedUrls)
         if (more && more.length > 0 && complete && deps.ground !== false) {
@@ -695,6 +714,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // candidate score through as if it were a grade. Ungraded leads are held at fit 0.
     if (complete && outcome.leads.length > 0 && (deps.score !== false)) {
       const icpText = (icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`) + memoryPromptBlock(memory ?? null)
+      assertOwned(db, job)
       const grades = await scoreLeads(providers_[vendor], key, icpText, outcome.leads, deps.fetchImpl)
       if (grades) {
         // ICP match gate: a mismatch on a criterion the ICP specifies moves the lead

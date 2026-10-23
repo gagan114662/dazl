@@ -37,18 +37,16 @@ test('template uses only this tenant saved positioning, literally and without pr
   } finally { db.close() }
 })
 
-test('missing offer keeps the conservative named-seller template, never invents one', () => {
+test('missing saved offer or seller name rejects: manual path inserts nothing',()=>{
   for (const memory of [true,false]) {
     const db=setup(memory)
     try {
       if (memory) saveMemory(db,'B',{positioning:'Other tenant offer'})
-      const text=body(db,createDraft(db,'A','one','dazl'))
-      assert.match(text,/I run dazl\./)
-      assert.doesNotMatch(text,/About dazl:|Other tenant offer/)
+      assert.throws(()=>createDraft(db,'A','one','dazl'),/seller_offer_required/)
+      assert.equal((db.prepare('SELECT count(*) n FROM outreach_messages').get() as {n:number}).n,0)
     } finally { db.close() }
   }
 })
-
 
 test('saved onboarding offer is fallback, never another user or website inference; Memory wins', () => {
   const db=setup()

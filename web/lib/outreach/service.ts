@@ -143,7 +143,8 @@ export function draftTemplate(lead: Lead, businessName: string, positioning = ''
   const offer = positioning.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 600)
   const name=businessName.replace(/[\u0000-\u001f\u007f]/g,' ').replace(/\s+/g,' ').trim().slice(0,150)
   if(!name)throw new OutreachError('seller_context_required')
-  const seller = offer ? `About ${name}: ${offer}\n\nWould it be useful to discuss whether this fits your team's work?` : `I run ${name}. Would it be useful to discuss whether our work is relevant to your team?`
+  if(!offer)throw new OutreachError('seller_offer_required')
+  const seller = `About ${name}: ${offer}\n\nWould it be useful to discuss whether this fits your team's work?`
   const who = lead.name ? lead.name.split(' ')[0] : 'there'
   return {
     subject: `Quick question for ${lead.company || lead.name}`.slice(0, 150),

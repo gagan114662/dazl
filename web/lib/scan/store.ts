@@ -337,7 +337,8 @@ export type CancelResult = { ok: true; was_running: boolean } | { ok: false; rea
 // state ('cancelled'). Every later write by the runner is fenced on status='running' AND
 // attempts=?, so a late result is rejected and the stale reaper cannot re-claim it. An
 // already-awaited provider call is NOT interrupted and may still be billed.
-// No schema change: pending jobs take the legal pending->running->failed path in one transaction.
+// Quota: a cancelled job keeps its monthly/trial charge (plans.ts and trial.ts only refund genuine failures),
+// because provider work may already have been billed. No schema change: pending jobs take the legal pending->running->failed path in one transaction.
 export function cancelJob(db: Database.Database, userId: string, id: string): CancelResult {
   return db.transaction((): CancelResult => {
     const j = db.prepare('SELECT status, csv_domain FROM scan_jobs WHERE id = ? AND user_id = ?').get(id, userId) as { status: string; csv_domain: string | null } | undefined

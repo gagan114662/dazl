@@ -44,7 +44,7 @@ export function trialStatus(db: Database.Database, tenantId: string, ip: string,
   // does not burn one of the three.
   const used = (db.prepare(
     `SELECT count(*) AS n FROM trial_scans t JOIN scan_jobs j ON j.id = t.job_id
-     WHERE t.tenant_id = ? AND j.status != 'failed'`,
+     WHERE t.tenant_id = ? AND (j.status != 'failed' OR j.error = 'cancelled')`,
   ).get(tenantId) as { n: number }).n
   if (used >= TRIAL_SCANS_PER_ACCOUNT) return { funded: false, reason: 'account_cap', used, remaining: 0 }
   const dayStart = Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) / 1000)

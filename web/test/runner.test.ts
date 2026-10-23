@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { anthropicProvider, openaiProvider, ProviderError, type Provider } from '../lib/llm/provider.ts'
-import { migrateScan, createJob, createQueryJob, getJob, listLeads, reapStaleJobs } from '../lib/scan/store.ts'
+import { cancelJob, migrateScan, createJob, createQueryJob, getJob, listLeads, reapStaleJobs } from '../lib/scan/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateAdvanced, acceptConsent } from '../lib/advanced/index.ts'
 import { migrateCompetitors, setCompetitors, COMPLAINT_CONNECTOR } from '../lib/signals/competitor-reddit.ts'
@@ -262,4 +262,37 @@ test('successful scoring still grades leads normally', async () => {
   assert.equal(leads[0].fit, 4)
   assert.equal(leads[0].intent, 0)
   assert.match(leads[0].why ?? '', /timing is unconfirmed/)
+})
+
+
+test('a stop request before research starts no provider call and leaves the job cancelled, not retried', async () => {
+  const db = setup()
+  const id = createJob(db, 'A', input)
+  const job = claimKeyedJob(db)!
+  cancelJob(db, 'A', id)
+  let calls = 0
+  const out = await runJob(db, job, { providers: fake(async () => { calls++; return { text: '[]', citedUrls: [] } }), master, fetchPage: page })
+  assert.equal(out, 'done'); assert.equal(calls, 0)
+  const row = db.prepare('SELECT status,error,attempts FROM scan_jobs WHERE id=?').get(id) as { status: string; error: string; attempts: number }
+  assert.deepEqual(row, { status: 'failed', error: 'cancelled', attempts: 1 })
+  assert.equal(listLeads(db, 'A', id).length, 0)
+})
+
+test('a stop during an in-flight research call discards its result and starts no later phase', async () => {
+  const db = setup()
+  const id = createJob(db, 'A', input)
+  const job = claimKeyedJob(db)!
+  let calls = 0
+  const out = await runJob(db, job, { providers: fake(async () => { calls++; cancelJob(db, 'A', id); return { text: 'Here: ' + JSON.stringify([lead('https://a.com')]), citedUrls: ['https://a.com'] } }), master, fetchPage: page })
+  assert.equal(out, 'done'); assert.equal(calls, 1, 'the awaited call itself still completed')
+  assert.equal(listLeads(db, 'A', id).length, 0)
+  assert.equal(getJob(db, 'A', id)?.error, 'cancelled')
+})
+
+test('cancelled scans keep their monthly quota charge; genuine failures still refund', async () => {
+  const { scansThisMonth } = await import('../lib/plans.ts')
+  const db = setup(); 
+  const a = createJob(db, 'A', input); cancelJob(db, 'A', a)
+  const b = createJob(db, 'A', input); db.prepare("UPDATE scan_jobs SET status='running' WHERE id=?").run(b); db.prepare("UPDATE scan_jobs SET status='failed', error='no_candidates' WHERE id=?").run(b)
+  assert.equal(scansThisMonth(db, 'A'), 1)
 })
