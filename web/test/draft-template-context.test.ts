@@ -26,7 +26,7 @@ test('template uses only this tenant saved positioning, literally and without pr
     const id = createDraft(db, 'A', 'one', 'dazl')
     assert.match(body(db,id), /About dazl: Find leads from public signals, with source links and quotes\./)
     assert.doesNotMatch(body(db,id), /Unrelated tenant|consulting/)
-    assert.match(body(db,id), /I saw this reported about Buyer: Buyer is hiring an SDR/)
+    assert.match(body(db,id), /I came across Buyer while researching businesses/)
     assert.match(body(db,id), /https:\/\/buyer.invalid\/careers/)
     const row = db.prepare('SELECT status,approved_hash,sent_at FROM outreach_messages WHERE id=?').get(id) as {status:string;approved_hash:null;sent_at:null}
     assert.deepEqual(row, {status:'draft',approved_hash:null,sent_at:null})
@@ -37,7 +37,7 @@ test('template uses only this tenant saved positioning, literally and without pr
   } finally { db.close() }
 })
 
-test('missing, empty and older no-memory databases retain conservative template with no invented offer', () => {
+test('missing offer keeps the conservative named-seller template, never invents one', () => {
   for (const memory of [true,false]) {
     const db=setup(memory)
     try {
@@ -62,4 +62,26 @@ test('saved onboarding offer is fallback, never another user or website inferenc
     assert.match(text,/Explicit Memory positioning/)
     assert.doesNotMatch(text,/Other user consulting|seller.invalid/)
   } finally { db.close() }
+})
+
+
+test('internal QA signal and fabricated event claims cannot enter initial draft',()=>{
+ const db=setup();saveMemory(db,'A',{positioning:'Sales prospecting software for B2B sales teams'})
+ db.prepare("UPDATE leads SET signal='OPERATOR QA ONLY - recently raised $10M. No outreach authorized.'").run()
+ const text=body(db,createDraft(db,'A','one','dazl'))
+ assert.match(text,/About dazl: Sales prospecting software for B2B sales teams/)
+ assert.doesNotMatch(text,/OPERATOR QA|raised|No outreach|About :|We offer|hiring/)
+ assert.equal((db.prepare('SELECT signal FROM leads WHERE id=?').get('one') as {signal:string}).signal,'OPERATOR QA ONLY - recently raised $10M. No outreach authorized.')
+})
+test('no seller context fails before saving words and never fabricates an offer',()=>{
+ const db=setup();assert.throws(()=>createDraft(db,'A','one','  '),/seller_context_required/)
+ assert.equal((db.prepare('SELECT count(*) n FROM outreach_messages').get() as {n:number}).n,0)
+})
+
+test('blank seller name fails with no draft; no anonymous fallback',()=>{
+ for (const name of ['','  ']){
+  const db=setup(); saveMemory(db,'A',{positioning:'Real offer'})
+  assert.throws(()=>createDraft(db,'A','one',name),/seller_context_required/)
+  assert.equal((db.prepare('SELECT count(*) n FROM outreach_messages').get() as {n:number}).n,0)
+ }
 })

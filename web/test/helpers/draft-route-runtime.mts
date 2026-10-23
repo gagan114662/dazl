@@ -51,7 +51,7 @@ test('review refusal -> explicit synthetic confirmation -> route draft -> route 
     const message = db.prepare('SELECT status,approved_hash,sent_at,test,body,to_email FROM outreach_messages WHERE id=?').get(id) as {status:string;approved_hash:null;sent_at:null;test:number;body:string;to_email:string}
     assert.equal(message.status, 'draft'); assert.equal(message.approved_hash, null)
     assert.equal(message.sent_at, null); assert.equal(message.test, 0)
-    assert.equal(message.to_email, 'fixture@dazl.invalid'); assert.ok(message.body.includes(signal))
+    assert.equal(message.to_email, 'fixture@dazl.invalid'); assert.ok(!message.body.includes(signal)); assert.ok(message.body.includes('https://dazl.invalid/test-only'))
     assert.ok(message.body.includes('About Acme: Software to find leads with linked public evidence.'))
     const duplicate = await draftPOST(request('/api/outreach', { lead_id: lead }))
     assert.equal(duplicate.status, 409); assert.equal((await duplicate.json()).code, 'already_drafted')

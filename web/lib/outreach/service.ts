@@ -141,11 +141,13 @@ export function draftTemplate(lead: Lead, businessName: string, positioning = ''
   // Literal seller-authored context only: never infer an offer from a buyer signal.
   // Keep this template-only, so a useful offer does not require paid AI polishing.
   const offer = positioning.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 600)
-  const seller = offer ? `About ${businessName}: ${offer}\n\nWould it be useful to discuss whether this fits your team's work?` : `I run ${businessName}. If that is something you are working on, I'd be glad to share how we could help. Would a short call this week make sense?`
+  const name=businessName.replace(/[\u0000-\u001f\u007f]/g,' ').replace(/\s+/g,' ').trim().slice(0,150)
+  if(!name)throw new OutreachError('seller_context_required')
+  const seller = offer ? `About ${name}: ${offer}\n\nWould it be useful to discuss whether this fits your team's work?` : `I run ${name}. Would it be useful to discuss whether our work is relevant to your team?`
   const who = lead.name ? lead.name.split(' ')[0] : 'there'
   return {
     subject: `Quick question for ${lead.company || lead.name}`.slice(0, 150),
-    body: `Hi ${who},\n\nI saw this reported about ${lead.company || lead.name}: ${lead.signal}\n(${lead.source_url})\n\n${seller}\n\nThanks,`,
+    body: `Hi ${who},\n\nI came across ${lead.company || 'your company'} while researching businesses that might fit our work.\n(${lead.source_url})\n\n${seller}\n\nThanks,`,
   }
 }
 

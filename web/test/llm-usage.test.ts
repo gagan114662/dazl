@@ -98,13 +98,13 @@ test('polish records an attempt row per outcome: rewritten, blocked_claim, error
   assert.equal(rows2[3].model, null)
 })
 
-test('template truth: the default draft attributes the signal to the source, no invented certainty', () => {
+test('template truth: the default draft is neutral and never interpolates the signal', () => {
   const db = setup()
   const id = createDraft(db, 'A', 'l1', 'Dazl')
   const row = db.prepare('SELECT subject, body FROM outreach_messages WHERE id = ?').get(id) as { subject: string; body: string }
   assert.equal(row.subject, 'Quick question for Acme')
-  assert.match(row.body, /I saw this reported about Acme: hiring AEs/)
-  assert.doesNotMatch(row.body, /I came across this/)
+  assert.match(row.body, /I came across Acme while researching businesses that might fit our work\./)
+  assert.doesNotMatch(row.body, /hiring AEs|I saw this reported/)
   assert.doesNotMatch(row.body, /congratulat/i)
 })
 
