@@ -1,4 +1,5 @@
 import type { Page } from './fetch-page.ts'
+import { classifySource } from './source-quality.ts'
 
 export interface Candidate {
   name: string
@@ -30,26 +31,25 @@ export const hasPhrase = (hay: string, phrase: string) => !!phrase && new RegExp
 
 // The extraction contract demands a verbatim quote; models paraphrase anyway, and the strict
 // verifier then rejects real signals (excerpt_not_on_page). Where the pipeline already holds the
-// fetched source text, this extractor may attach a VERBATIM window - but only for directly
-// supported, active, concrete hiring assertions. Adversarial review killed the wider version:
-// occurrence is not support, and every unresolved facet must route to review, never attach.
-// Gates (all deterministic, no paid calls, no fetches):
-//   claim hygiene - claim-side negation ("not hiring"), past/completed tense ("hired last
-//              year"), and any analyst gloss marker ("indicating/suggesting...") REJECT the
-//              candidate to review. Unsupported text is never trimmed silently.
-//   event    - hiring claims only. Funding/expansion/launch claims have no attachable kind
-//              and stay on the review path (generic tokens like "series" launder too easily).
-//   role     - the claim must name at least one concrete role; every named role must appear
-//              in the window. Vague "is hiring" claims do not attach.
-//   quantity - an explicit count tied to a role must equal the number of DISTINCT listing
-//              segments naming it - a repeated identical posting is one opening, not two.
-//   entity   - the company is named in the window or within +/-300 chars of it (same spirit
-//              as the verifier's excerpt-or-title rule; a rival's story never attaches).
-//   negation - closed/filled/not-hiring markers in the window reject it.
-//   boilerplate - navigation-dominated windows reject.
-// Any unresolved facet -> null -> the candidate follows the unchanged honest needs_review
-// path with the model's original text preserved. The verifier is untouched and re-checks
-// any attached window against its own live fetch. The claim text is never rewritten.
+// fetched source text, this extractor may attach a VERBATIM window - but only for a claim that
+// parses a NARROW AFFIRMATIVE grammar and whose window binds the company as the hiring subject.
+// Two adversarial rounds killed the wider versions; the rule is now affirmative, not a denylist:
+// any clause, modal, negation, gloss or tense outside the grammar routes to review, and no
+// amount of extra phrase exclusions is attempted.
+//   grammar  - the claim must be exactly "<company> is/are [currently/actively] hiring <object>"
+//              where every object token is a role word, a count, or a closed connector set.
+//              Negation, modals, future/past tense, extra clauses and gloss markers all fail
+//              this by construction - no denylist to slip past.
+//   role     - at least one concrete role named in the claim; every named role must appear
+//              in the window (distinct listing segments; a repeated identical posting is one).
+//   quantity - an explicit count tied to a role equals the number of DISTINCT segments naming it.
+//   entity   - the company is named in the window or within +/-300 chars of it.
+//   subject  - no role segment may carry a hiring/join subject clause naming a DIFFERENT
+//              capitalized entity ("Acme rival Rival Robotics is hiring" attaches nothing).
+//   window   - closed/filled/not-hiring markers and boilerplate-dominated windows reject.
+// Any unresolved facet -> null -> the unchanged honest needs_review path, original text
+// preserved. The verifier is untouched and re-checks any attached window against its own
+// live fetch. The claim text is never rewritten.
 const ROLE_LEXICON = [
   'account executive', 'chief of staff', 'sales development representative', 'business development representative',
   'account manager', 'customer success manager', 'sales manager', 'sales operations manager', 'crm administrator',
@@ -58,24 +58,33 @@ const ROLE_LEXICON = [
   'full stack engineer', 'software engineer', 'data scientist', 'data engineer', 'designer', 'developer',
   'recruiter', 'operations manager', 'marketing manager', 'gtm intern', 'intern', 'analyst', 'engineer',
 ]
-// Hiring only: funding/expansion/launch tokens launder too easily ("a series of community
-// events" is not a Series A), so those claims stay on the review path.
-const KIND_TOKENS: Record<string, string[]> = {
-  hiring: ['hiring', 'hire', 'hires', 'recruiting', 'recruit', 'recruits', 'opening', 'openings', 'vacancy', 'vacancies', 'apply', 'careers'],
-}
-// Claim-side hygiene: negation, past/completed tense, and analyst gloss all route to review.
-const CLAIM_REJECT = /\b(?:not currently hiring|is not hiring|isn't hiring|are not hiring|aren't hiring|no longer hiring|hired|was hiring|were hiring|has hired|have hired|last (?:year|month|quarter)|indicating|suggesting|signalling|signaling|pointing to|which suggests?)\b/i
-const CLOSED_OR_NEGATED = /\b(?:no longer accepting applications|this (?:job|position|role) is no longer (?:available|open)|this (?:job|position|role) has (?:closed|expired|been filled)|applications for this (?:job|position|role) are closed|not currently hiring|is not hiring|are not hiring|no longer hiring)\b/i
+const CLOSED_OR_NEGATED = /\b(?:no longer accepting applications|this (?:job|position|role) is no longer (?:available|open)|this (?:job|position|role) has (?:closed|expired|been filled)|applications for this (?:job|position|role) are closed|not currently hiring|is not hiring|isn't hiring|are not hiring|aren't hiring|no longer hiring|not planning to hire|no plans to hire|hiring freeze)\b/i
 const BOILER = new Set(['careers', 'jobs', 'apply', 'home', 'about', 'contact', 'menu', 'search', 'login', 'sign', 'copyright', 'privacy', 'terms', 'cookie', 'cookies', 'subscribe', 'follow', 'share', 'blog', 'press'])
 const NUM_WORDS: Record<string, number> = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 }
+const CONNECTOR = new Set([
+  'a', 'an', 'and', 'or', 'for', 'in', 'of', 'the', 'its', 'their', 'our', 'to', 'across', 'with', 'plus', 'including',
+  'new', 'role', 'roles', 'position', 'positions', 'opening', 'openings', 'team', 'teams', 'vacancy', 'vacancies',
+  'remote', 'hybrid', 'onsite', 'full', 'time', 'part', 'contract', 'based', 'go', 'market', 'gtm',
+  'multiple', 'several', 'founding', 'senior', 'junior', 'staff', 'principal', 'lead', 'head', 'vp', 'director', 'chief',
+])
+const ALLOWED = new Set([...CONNECTOR, ...ROLE_LEXICON.flatMap(r => r.split(' ')), ...Object.keys(NUM_WORDS)])
 
 const rolePattern = (role: string) => new RegExp(`\\b${role.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:s|es)?\\b`, 'g')
+const escapeRe = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+// The whole claim must parse as one affirmative present-tense hiring assertion. Anything
+// extra - a second clause, a modal, a gloss, a time shift - fails closed to review.
+function claimGrammarOk(claimText: string, key: string): boolean {
+  const m = norm(claimText).match(new RegExp(`^${escapeRe(key)} (?:is|are) (?:currently |actively )?hiring\\b(.*)$`))
+  if (!m) return false
+  const rest = m[1].trim().split(' ').filter(Boolean)
+  if (rest.length === 0) return false
+  // norm keeps '.', so strip trailing sentence punctuation before the whitelist check.
+  return rest.every(t => { const w = t.replace(/\.+$/, ''); return ALLOWED.has(w) || /^\d+$/.test(w) || (w.endsWith('s') && ALLOWED.has(w.slice(0, -1))) })
+}
 
 function claimFacets(claimText: string) {
   const concrete = norm(claimText)
-  const kinds = new Set<string>()
-  const toks = new Set(concrete.split(' '))
-  for (const [kind, words] of Object.entries(KIND_TOKENS)) for (const w of words) if (toks.has(w)) { kinds.add(kind); break }
   const roles: { role: string; want: number | null }[] = []
   for (const role of ROLE_LEXICON) {
     const re = rolePattern(role)
@@ -96,8 +105,27 @@ function claimFacets(claimText: string) {
   const multi = /\b(?:multiple|several)\b.{0,40}\b(?:role|position|opening|hire)s?\b/.test(concrete)
   // Sub-role dedupe: 'engineer' inside 'software engineer' is one mention, not two.
   const deduped = roles.filter(({ role }) => !roles.some(({ role: other }) => other !== role && other.includes(role)))
-  return { kinds, roles: deduped, multi }
+  return { roles: deduped, multi }
 }
+
+// A hiring/join clause whose capitalized subject is not the company. Pronoun "we/our" is the
+// first-party voice and binds the page owner, so it is not flagged foreign.
+const SUBJECT_CLAUSE = /([A-Z][A-Za-z0-9&.'-]*(?: [A-Z][A-Za-z0-9&.'-]*){0,3}) (?:is|are|was|were|has been|will be) (?:currently |actively |now )?(?:hiring|recruiting|looking to hire)/g
+const JOIN_CLAUSE = /[Jj]oin(?:ing)? ([A-Z][A-Za-z0-9&.'-]*(?: [A-Z][A-Za-z0-9&.'-]*){0,3})/g
+function foreignSubject(rawSegment: string, key: string): boolean {
+  for (const re of [SUBJECT_CLAUSE, JOIN_CLAUSE]) {
+    re.lastIndex = 0
+    let m: RegExpExecArray | null
+    while ((m = re.exec(rawSegment))) {
+      const subj = norm(m[1])
+      if (['we', 'our', 'us'].includes(subj)) continue
+      if (!subj.startsWith(key) && !key.startsWith(subj)) return true
+    }
+  }
+  return false
+}
+
+const SEG_SPLIT = /(?<=[.!?])\s+|\s+[\u00b7\u2022|]\s+|\s+-\s+/
 
 function windowSupports(win: string, pageText: string, company: string, facets: ReturnType<typeof claimFacets>): boolean {
   const w = norm(win)
@@ -114,24 +142,20 @@ function windowSupports(win: string, pageText: string, company: string, facets: 
   const wtoks = w.split(' ')
   const boiler = wtoks.filter(t => BOILER.has(t)).length
   if (wtoks.length > 0 && boiler / wtoks.length > 0.4) return false
-  const wset = new Set(wtoks)
-  for (const kind of facets.kinds) {
-    // A role listing on a careers page is itself hiring evidence.
-    const tokenHit = KIND_TOKENS[kind].some(t => wset.has(t))
-    const roleHit = kind === 'hiring' && facets.roles.length > 0
-    if (!tokenHit && !roleHit) return false
-  }
-  // Count DISTINCT listing segments naming the role: a repeated identical posting
-  // is one opening, not two.
-  const segments = [...new Set(win.split(/(?<=[.!?])\s+|\s+[\u00b7\u2022|]\s+|\s+-\s+/).map(t => norm(t)).filter(t => t.length >= 8))]
+  // Count DISTINCT listing segments naming the role: a repeated identical posting is one
+  // opening, not two. Any segment binding a foreign hiring subject rejects the window.
+  const rawSegs = win.split(SEG_SPLIT).map(t => t.trim()).filter(t => norm(t).length >= 8)
+  const segNorms = [...new Set(rawSegs.map(t => norm(t)))]
   for (const { role, want } of facets.roles) {
     const re = rolePattern(role)
-    const inSegments = segments.filter(seg => { re.lastIndex = 0; return re.test(seg) }).length
-    if (inSegments === 0) return false
-    if (want !== null && inSegments !== want) return false
+    const containing = rawSegs.filter(seg => { re.lastIndex = 0; return re.test(norm(seg)) })
+    const distinct = new Set(containing.map(seg => norm(seg))).size
+    if (distinct === 0) return false
+    if (containing.some(seg => foreignSubject(seg, key))) return false
+    if (want !== null && distinct !== want) return false
   }
   if (facets.multi) {
-    const distinct = facets.roles.filter(({ role }) => { const re = rolePattern(role); return segments.some(seg => { re.lastIndex = 0; return re.test(seg) }) }).length
+    const distinct = facets.roles.filter(({ role }) => { const re = rolePattern(role); return segNorms.some(seg => { re.lastIndex = 0; return re.test(seg) }) }).length
     if (distinct < 2) return false
   }
   return true
@@ -139,14 +163,22 @@ function windowSupports(win: string, pageText: string, company: string, facets: 
 
 // Returns the shortest verbatim window of the page that supports every material facet of
 // the claim, or null. When the model's excerpt is already verbatim, returns null (no-op).
-export function supportedEvidenceWindow(claim: { company: string; signal: string; excerpt: string }, page: { text: string; title?: string }): string | null {
+export function supportedEvidenceWindow(claim: { company: string; signal: string; excerpt: string }, page: { text: string; title?: string; url: string }): string | null {
   const text = page.text ?? ''
+  // Repair only ever attaches the company's OWN page: a paraphrased excerpt is repaired
+  // against genuinely first-party text with exact host/entity grounding. Editorial,
+  // aggregator and unknown sources stay on the review path even when every other gate
+  // would pass - first-party hosting never proves the subject by itself (the subject
+  // gate below still applies), but it is a necessary condition for trusting the repair.
+  if (classifySource(page.url, claim.company) !== 'first_party') return null
   const src = norm(text)
   if (!claim.excerpt || src.length < 20) return null
   if (src.includes(norm(claim.excerpt))) return null
-  if (CLAIM_REJECT.test(`${claim.signal} ${claim.excerpt}`)) return null // negation, past tense or gloss: review, never attach
+  const key = companyKey(claim.company)
+  if (key.length < 2) return null
+  // Both the displayed claim and the model's excerpt must parse the affirmative grammar.
+  if (!claimGrammarOk(claim.signal, key) || !claimGrammarOk(claim.excerpt, key)) return null
   const facets = claimFacets(`${claim.signal} ${claim.excerpt}`)
-  if (facets.kinds.size === 0) return null // no concrete attachable event claimed
   if (facets.roles.length === 0) return null // no concrete role named: nothing to support directly
   // Keep separators in the pieces so a chosen window stays a raw substring of the
   // whitespace-flattened page - verbatim for display, not only after normalization.

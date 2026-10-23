@@ -414,7 +414,7 @@ async function tinyfishCompany(db: Database.Database, job: Job, domain: string, 
   // window only when it supports every material facet of the claim (entity/event/role/
   // quantity; negation and boilerplate rejected). Otherwise the excerpt stays the model's
   // and fails verification honestly. The verifier still re-fetches and re-checks.
-  for (const l of leads) { const ev = items.find(i => i.url === l.source_url); if (ev) { const win = supportedEvidenceWindow({ company: l.company, signal: l.signal, excerpt: l.excerpt }, { text: ev.quote, title: ev.title }); if (win) l.excerpt = win } }
+  for (const l of leads) { const ev = items.find(i => i.url === l.source_url); if (ev) { const win = supportedEvidenceWindow({ company: l.company, signal: l.signal, excerpt: l.excerpt }, { text: ev.quote, title: ev.title, url: ev.url }); if (win) l.excerpt = win } }
   return leads
 }
 
@@ -495,7 +495,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   // window only when it supports every material facet of the claim (entity/event/role/
   // quantity; negation and boilerplate rejected). Otherwise the excerpt stays the model's
   // and fails verification honestly. The verifier still re-fetches and re-checks.
-  for (const l of leads) { const ev = items.find(i => i.url === l.source_url); if (ev) { const win = supportedEvidenceWindow({ company: l.company, signal: l.signal, excerpt: l.excerpt }, { text: ev.quote, title: ev.title }); if (win) l.excerpt = win } }
+  for (const l of leads) { const ev = items.find(i => i.url === l.source_url); if (ev) { const win = supportedEvidenceWindow({ company: l.company, signal: l.signal, excerpt: l.excerpt }, { text: ev.quote, title: ev.title, url: ev.url }); if (win) l.excerpt = win } }
   return leads
 }
 
