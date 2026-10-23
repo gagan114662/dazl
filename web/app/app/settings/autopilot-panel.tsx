@@ -22,7 +22,7 @@ export default function AutopilotPanel() {
   return (
     <div className="card p-6 mb-4">
       <h2 className="font-semibold mb-1">Autopilot (email)</h2>
-      <p className="text-[#555] text-sm mb-3">dazl emails verified leads for you from your own Gmail, within daily limits. Off by default. Your first {i.warmup} sends still need your approval. Calls and social messages are not part of this.</p>
+      <p className="text-[#555] text-sm mb-3">dazl emails leads that passed its checks for you from your own Gmail, within daily limits. Off by default. Your first {i.warmup} sends still need your approval. Calls and social messages are not part of this.</p>
       {s.enabled ? (
         <div className="text-sm space-y-3">
           <div>{s.paused ? `Paused${s.pause_reason ? ` (${s.pause_reason.replace(/_/g, ' ')})` : ''}` : 'On'}. Up to {s.daily_cap} emails a day, one per company per week.</div>

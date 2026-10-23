@@ -69,6 +69,8 @@ export default function LeadsClient() {
   const [jobError, setJobError] = useState('')
   const [statusError, setStatusError] = useState<'not_found' | 'unavailable' | null>(null)
   const statusFails = useRef(0)
+  // A scan adopted on load (reload, Home entry, deep link) is only observed: polling it must not kick the runner.
+  const passiveJob = useRef(false)
   const [useGithub, setUseGithub] = useState(false)
   const [useYoutube, setUseYoutube] = useState(false)
   const [useV2ex, setUseV2ex] = useState(false)
@@ -233,7 +235,7 @@ export default function LeadsClient() {
       const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(useGithub || useYoutube || useV2ex || feedText.trim() || pageText.trim() || advPick.length ? { sources: { adapters: [...(useGithub ? ['github'] : []), ...(useYoutube ? ['youtube'] : []), ...(useV2ex ? ['v2ex'] : []), ...(feedText.trim() ? ['rss'] : []), ...(pageText.trim() ? ['web'] : [])], feeds: lines(feedText), pages: lines(pageText), advanced: advPick } } : {}) }) })
       const j = await r.json().catch(() => ({}))
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : j.error === 'trial_exhausted' ? 'Your 3 free scans are used up. Add your own AI key in Settings to keep scanning.' : j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')); return }
-      setJobId(j.job_id); setStatus('pending'); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0
+      passiveJob.current = false; setJobId(j.job_id); setStatus('pending'); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0
     } catch {
       // A rejected fetch (offline, aborted) used to fail silently - the click looked dead.
       setError('Could not reach the server. Check your connection and try again.')
@@ -246,7 +248,7 @@ export default function LeadsClient() {
     if (!jobId || status === 'done' || status === 'failed' || statusError) return
     let stop = false
     const tick = async () => {
-      const r = await fetch(`/api/scan/status?job_id=${jobId}`).catch(() => null)
+      const r = await fetch(`/api/scan/status?job_id=${jobId}${passiveJob.current ? '&passive=1' : ''}`).catch(() => null)
       if (stop) return
       // 404: this account cannot see that scan - terminal, say so and stop.
       if (r && r.status === 404) { setStatusError('not_found'); return }
@@ -283,7 +285,7 @@ export default function LeadsClient() {
   // Deep link: /app/leads?job_id=... (watch cards link here to show a past watch run).
   useEffect(() => {
     const id = new URLSearchParams(window.location.search).get('job_id')
-    if (id && /^[a-f0-9]{24}$/.test(id)) { setJobId(id); setStatus('loading') }
+    if (id && /^[a-f0-9]{24}$/.test(id)) { passiveJob.current = true; setJobId(id); setStatus('loading') }
   }, [])
   const watchReq = async (body: Record<string, unknown>) => {
     setWatchNote('')
@@ -304,7 +306,7 @@ export default function LeadsClient() {
       // A scan that is still queued/running is the one exception to "nothing autoselects": a reload or a
       // return from Home must show its progress and Stop control, not an enabled Find leads button.
       const active = jobs.find(x => !x.csv_domain && (x.status === 'pending' || x.status === 'running'))
-      if (active) { setJobId(active.id); setStatus(active.status) }
+      if (active) { passiveJob.current = true; setJobId(active.id); setStatus(active.status) }
     } }).catch(() => {})
   }, [jobId])
   // Restore the last profile so a reload never loses it (item: ICP persistence).
