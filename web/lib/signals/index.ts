@@ -146,8 +146,8 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
     const r = await fundingRoundFor(lead.company, news, { fetchImpl, jinaLeft }).catch(() => null)
     if (r && classifyEntityMatch(lead.company, r.matched) === 'heuristic') {
       const what = [r.amount, r.stage].filter(Boolean).join(' ') || 'funding'
-      addEnrichment(db, tenantId, lead.id, { connector: 'signals:funding-round', kind: 'funding', value: `Raised ${what} ${r.daysAgo} day${r.daysAgo === 1 ? '' : 's'} ago`.slice(0, 254), label: `reported ${r.date}`, confidence: 75, source_url: r.url, source_date: r.date, retrieved_at: now })
-      if (ck) recordCompanyEvent(db, tenantId, { companyKey: ck, companyName: lead.company, scope: 'account', leadId: lead.id, eventType: 'funding_round', summary: `Raised ${what} ${r.daysAgo} day${r.daysAgo === 1 ? '' : 's'} ago`.slice(0, 300), detail: `reported ${r.date}`, sourceUrl: r.url, sourcePublishedAt: r.date, retrievedAt: now, confidence: 75 })
+      addEnrichment(db, tenantId, lead.id, { connector: 'signals:funding-round', kind: 'funding', value: `Raised ${what} ${r.daysAgo} day${r.daysAgo === 1 ? '' : 's'} ago`.slice(0, 254), label: `${r.matched} (reported ${r.date})`.slice(0, 200), confidence: 75, source_url: r.url, source_date: r.date, retrieved_at: now })
+      if (ck) recordCompanyEvent(db, tenantId, { companyKey: ck, companyName: lead.company, scope: 'account', leadId: lead.id, eventType: 'funding_round', summary: `Raised ${what} ${r.daysAgo} day${r.daysAgo === 1 ? '' : 's'} ago`.slice(0, 300), detail: r.matched.slice(0, 120), sourceUrl: r.url, sourcePublishedAt: r.date, retrievedAt: now, confidence: 75 })
       rounds++
     }
   }

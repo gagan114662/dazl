@@ -24,6 +24,16 @@ export const FRESHNESS_DAYS: Record<EventType, number> = {
   competitor_mention: 30,
 }
 
+const SEC_HOST_RE = /(^|\.)sec\.gov$/
+
+// Read-time semantics for legacy rows: a funding_round event sourced from the SEC is a
+// filing (sec_filing weight/freshness), never a concluded round. Stored rows are not
+// rewritten - the type is normalized wherever events are grouped, scored or displayed.
+export function effectiveEventType(t: EventType, sourceUrl: string): EventType {
+  if (t !== 'funding_round') return t
+  try { return SEC_HOST_RE.test(new URL(sourceUrl).hostname) ? 'sec_filing' : t } catch { return t }
+}
+
 export function migrateEvents(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS company_events (

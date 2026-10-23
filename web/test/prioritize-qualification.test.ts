@@ -37,3 +37,17 @@ test('entity-matched in-window filings still count as heuristic evidence, never 
   const pri = leadPriorities(db, TENANT, [LEAD])
   assert.ok(pri['lead-vesta'].evidence_score > 0)
 })
+
+test('a stale-dated filing re-seen today does not score: freshness is the event date, not the re-crawl', () => {
+  const db = dbWithEvent({ companyName: 'Vesta', eventType: 'sec_filing', summary: 'SEC Form D filed 2019-10-10', detail: 'Vesta, Inc.', url: 'https://www.sec.gov/Archives/edgar/data/1/0001/primary_doc.xml', publishedAt: '2019-10-10' })
+  const pri = leadPriorities(db, TENANT, [{ ...LEAD, event_date: null }])
+  assert.equal(pri['lead-vesta'].evidence_score, 0)
+  assert.ok(pri['lead-vesta'].uncounted.some(u => u.includes('older than')))
+})
+
+test('legacy funding_round rows sourced from the SEC score at filing weight, not round weight', () => {
+  const db = dbWithEvent({ companyName: 'Vesta', eventType: 'funding_round', summary: 'SEC Form D filed 2026-10-10', detail: 'Vesta, Inc.', url: 'https://www.sec.gov/Archives/edgar/data/1/0001/primary_doc.xml', publishedAt: '2026-10-10' })
+  const pri = leadPriorities(db, TENANT, [LEAD])
+  assert.equal(pri['lead-vesta'].evidence_score, 8)
+  assert.ok(pri['lead-vesta'].reasons.join(' ').includes('sec_filing'))
+})

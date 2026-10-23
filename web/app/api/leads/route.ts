@@ -24,6 +24,8 @@ export async function GET(req: NextRequest) {
             ? (() => { const base = classifyEntityMatch(l.company, e.label ?? '')
                 return base === 'heuristic' && l.event_date && e.source_date && !withinEventWindow(e.source_date, l.event_date) ? 'unconfirmed' : base })()
           : ['signals:ashby', 'signals:greenhouse', 'signals:lever'].includes(e.connector) ? classifyBoardMatch(l.company_domain, e.source_url ?? '')
-          : e.connector === 'signals:funding-round' ? 'unconfirmed'
+          : e.connector === 'signals:funding-round'
+            ? (() => { const m = /^(.*) \(reported \d{4}-\d{2}-\d{2}\)$/.exec(e.label ?? '')
+                return m ? classifyEntityMatch(l.company, m[1]) : 'unconfirmed' })()
           : null })), events: (evts[l.id] ?? []).map(ev => ({ ...ev, entity_status: qualifyEvent(l.company, l.company_domain, ev, l.event_date ?? null) })), priority: pri[l.id] ?? null, lookalike: look.get(l.id) ?? null })) })
 }
