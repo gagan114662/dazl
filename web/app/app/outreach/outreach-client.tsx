@@ -29,11 +29,11 @@ export default function OutreachClient() {
   const [creating,setCreating] = useState(false)
   const [note, setNote] = useState('')
   const [loaded, setLoaded] = useState(false)
+  const [loadFailed, setLoadFailed] = useState(false)
 
   async function load() {
-    try { const r = await fetch('/api/outreach'); if (r.ok) setMsgs((await r.json()).messages) } catch { setNote('Could not load your emails. Refresh to retry.') } finally { setLoaded(true) }
-    const seq=await fetch('/api/outreach/sequences')
-    if(seq.ok) setSequenceMessages((await seq.json()).sequences.map((s:{message_id:string})=>s.message_id))
+    try { const r = await fetch('/api/outreach'); if (r.ok) { setMsgs((await r.json()).messages); setLoadFailed(false) } else setLoadFailed(true) } catch { setLoadFailed(true) } finally { setLoaded(true) }
+    try { const seq=await fetch('/api/outreach/sequences'); if(seq.ok) setSequenceMessages((await seq.json()).sequences.map((s:{message_id:string})=>s.message_id)) } catch { /* sequence markers are optional; the email list above still stands */ }
   }
   useEffect(() => { void load(); const refresh=()=>void load(); window.addEventListener('sequences-updated',refresh); return ()=>window.removeEventListener('sequences-updated',refresh) }, [])
 
@@ -73,7 +73,8 @@ export default function OutreachClient() {
       <SendReadiness />
       {note && <p className="text-sm text-yellow-400 mb-4">{note}</p>}
       {!loaded && <p className="text-[#666] text-sm" role="status">Loading your emails...</p>}
-      {loaded && msgs.length === 0 && <p className="text-[#666] text-sm">No emails yet. Open Leads and choose Draft email on a lead with a published address.</p>}
+      {loaded && loadFailed && <p className="text-sm text-yellow-400 mb-4" role="alert">Could not load your emails. Refresh to retry.</p>}
+      {loaded && !loadFailed && msgs.length === 0 && <p className="text-[#666] text-sm">No emails yet. Open Leads and choose Draft email on a lead with a published address.</p>}
       <div className="flex flex-col gap-3">
         {msgs.map(m => {
           const e = edit[m.id]
@@ -94,7 +95,7 @@ export default function OutreachClient() {
                 <>
                   <div className="font-medium mb-1">{m.subject}</div>
                   <pre className="whitespace-pre-wrap text-[#333] font-sans mb-3">{m.body}</pre>
-                  {(m.status === 'draft' || m.status === 'approved') && (m.send_footer ? <pre className="whitespace-pre-wrap text-[#777] font-sans text-xs mb-3" aria-label="Added automatically when sent">{m.send_footer}</pre> : <p className="text-xs text-[#777] mb-3">Sending needs your name and mailing address - add them in Settings. They are appended automatically.</p>)}
+                  {(m.status === 'draft' || m.status === 'approved') && (m.send_footer ? <div className="mb-3"><pre className="whitespace-pre-wrap text-[#777] font-sans text-xs" aria-label="Added automatically when sent">{m.send_footer}</pre><p className="text-[11px] text-[#999] mt-1">Added when sent, from your current Settings. Edit your name or address there before sending if it is wrong.</p></div> : <p className="text-xs text-[#777] mb-3">Sending needs your name and mailing address - add them in Settings. They are appended automatically.</p>)}
                   <div className="flex gap-2 flex-wrap">
                     {(m.status === 'draft' || m.status === 'approved') && <button className={btn} onClick={() => setEdit({ ...edit, [m.id]: { subject: m.subject, body: m.body } })}>Edit</button>}
                     {!m.currentness_held && m.evidence_state !== 'unverified' && m.status === 'draft' && !sequenceMessages.includes(m.id) && <button className={btn} onClick={() => act(m.id, 'approve')}>Approve</button>}

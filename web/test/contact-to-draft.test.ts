@@ -44,6 +44,8 @@ test('fixture site -> crawl stores role mailbox plus listed person with sources 
   const m = db.prepare('SELECT to_email, subject, body, status FROM outreach_messages WHERE id = ?').get(id) as { to_email: string; subject: string; body: string; status: string }
   assert.equal(m.to_email, 'hello@brightsidedental.com')
   assert.equal(m.status, 'draft')
+  assert.ok(m.body.includes('https://brightsidedental.com/contact'), 'the draft cites the company contact page that actually shows the address')
+  assert.ok(!m.body.includes('news.example.test'), 'the signal/news URL is never claimed as the address source')
   assert.ok(m.body.includes('Hi there,') && !m.body.includes('Dana'), 'a listed person is never auto-associated with the role mailbox or added to the greeting')
   assert.equal(contactSearchNote({ ...lead, confidence: 90, company_domain: 'x' }), null)
 })

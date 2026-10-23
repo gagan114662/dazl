@@ -137,7 +137,7 @@ const id24 = () => randomBytes(12).toString('hex')
 
 interface Lead { id: string; company: string; name: string; contact: string | null; signal: string; source_url: string; evidence_excerpt: string | null; confidence: number | null; fit: number | null; intent: number | null; human_confirmed_at: number | null }
 
-export function draftTemplate(lead: Lead, businessName: string, positioning = ''): { subject: string; body: string } {
+export function draftTemplate(lead: Lead, businessName: string, positioning = '', addressUrl: string = lead.source_url): { subject: string; body: string } {
   // Literal seller-authored context only: never infer an offer from a buyer signal.
   // Keep this template-only, so a useful offer does not require paid AI polishing.
   const offer = positioning.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 600)
@@ -150,7 +150,7 @@ export function draftTemplate(lead: Lead, businessName: string, positioning = ''
   // No guessed pain, no claimed buying need, no personal detail the page did not publish.
   return {
     subject: `Quick question for ${lead.company || lead.name}`.slice(0, 150),
-    body: `Hi ${who},\n\nI'm writing to the contact address published on ${lead.company || 'your company'}'s page:\n${lead.source_url}\n\n${seller}\n\nWould a short conversation about whether this fits your team's work be useful? If I have the wrong person, could you point me to the right one?\n\nThanks,`,
+    body: `Hi ${who},\n\nI'm writing to the contact address published on ${lead.company || 'your company'}'s page:\n${addressUrl}\n\n${seller}\n\nWould a short conversation about whether this fits your team's work be useful? If I have the wrong person, could you point me to the right one?\n\nThanks,`,
   }
 }
 
@@ -173,10 +173,13 @@ export function createDraft(db: Database.Database, tenantId: string, leadId: str
   if (lead.fit === 0 && lead.intent === null) throw new OutreachError('lead_ungraded')
   // The address must be published: on the cited page (lead.contact) or on the company's own contact page (sitecrawl, with its source URL).
   let published = lead.contact ?? ''
+  // The page that actually shows the address: the cited page for a direct contact, the company's own
+  // contact page (its stored source URL) for a sitecrawl address. Never the signal/news URL for a crawled address.
+  let addressUrl = lead.source_url
   if (!EMAIL_RE.test(norm(published))) {
     try {
-      const r = db.prepare("SELECT value FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'sitecrawl' AND kind = 'email' ORDER BY retrieved_at DESC LIMIT 1").get(lead.id, tenantId) as { value: string } | undefined
-      if (r) published = r.value
+      const r = db.prepare("SELECT value, source_url FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'sitecrawl' AND kind = 'email' ORDER BY retrieved_at DESC LIMIT 1").get(lead.id, tenantId) as { value: string; source_url: string } | undefined
+      if (r) { published = r.value; addressUrl = r.source_url }
     } catch { /* enrichment table not present */ }
   }
   const to = norm(published)
@@ -202,7 +205,7 @@ export function createDraft(db: Database.Database, tenantId: string, leadId: str
       positioning = profile?.sells ?? ''
     }
   }
-  const t = draftTemplate(lead, businessName, positioning)
+  const t = draftTemplate(lead, businessName, positioning, addressUrl)
   const id = id24()
   try {
     db.prepare('INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, test) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, tenantId, lead.id, to, t.subject, t.body, test)
