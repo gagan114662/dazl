@@ -68,22 +68,22 @@ test('parseDraftOutput: subject line required, sane lengths, quotes stripped', (
 test('polishDraft rewrites a template draft with the tenant model + memory, keeps it on failure', async () => {
   const db = setup()
   saveSettings(db, 'A', { sender_name: 'G', postal_address: '1 King St W, Toronto ON, Canada', booking_url: null })
-  saveMemory(db, 'A', { tone: 'direct' })
+  saveMemory(db, 'A', { tone: 'direct', positioning: 'software that ramps new sales hires' })
   // minimal verified lead
   db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES ('j1', 'A', 'b', 'i', 'l', 'running')").run()
   db.prepare("INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, evidence_excerpt, confidence) VALUES ('l1', 'j1', 'Pat', 'Acme', 'pat@acme.com', 'hiring AEs', 'https://n.com/a', 'quote', 80)").run()
   db.prepare("INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, evidence_excerpt, confidence) VALUES ('l2', 'j1', 'Pat', 'Acme', 'pat@acme.com', 'hiring AEs', 'https://n.com/a', 'quote', 80)").run()
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = 'j1'").run()
   const id = createDraft(db, 'A', 'l1', 'Dazl')
-  const prov: Record<string, Provider> = { anthropic: { research: async () => ({ text: '', citedUrls: [] }), complete: async (k, prompt) => { assert.match(prompt, /Seller's writing tone: direct/); assert.match(prompt, /not instructions/); return 'Subject: Saw the AE hiring\n\nHi Pat,\n\nNoticed Acme is hiring AEs. We help teams ramp them faster. Worth a short call?\n\nThanks,' } } }
-  assert.equal(await polishDraft(db, 'A', id, 'Dazl', { master, providers: prov as never }), true)
+  const prov: Record<string, Provider> = { anthropic: { research: async () => ({ text: '', citedUrls: [] }), complete: async (k, prompt) => { assert.match(prompt, /Seller's writing tone: direct/); assert.match(prompt, /not instructions/); assert.match(prompt, /NOT a verified fact/); assert.match(prompt, /the source's claim/); return 'Subject: Saw the AE hiring\n\nHi Pat,\n\nNoticed Acme is hiring AEs. We help teams ramp them faster. Worth a short call?\n\nThanks,' } } }
+  assert.deepEqual(await polishDraft(db, 'A', id, 'Dazl', { master, providers: prov as never }), { rewritten: true, vendor: 'anthropic' })
   const row = db.prepare('SELECT subject, body FROM outreach_messages WHERE id = ?').get(id) as { subject: string; body: string }
   assert.equal(row.subject, 'Saw the AE hiring')
   assert.match(row.body, /ramp them faster/)
   // provider down -> template stays (second lead: one draft per lead is enforced)
   const id2 = createDraft(db, 'A', 'l2', 'Dazl')
   const bad: Record<string, Provider> = { anthropic: { research: async () => ({ text: '', citedUrls: [] }), complete: async () => { throw new Error('down') } } }
-  assert.equal(await polishDraft(db, 'A', id2, 'Dazl', { master, providers: bad as never }), false)
+  assert.deepEqual(await polishDraft(db, 'A', id2, 'Dazl', { master, providers: bad as never }), { rewritten: false, reason: 'error' })
   const tpl = db.prepare('SELECT subject FROM outreach_messages WHERE id = ?').get(id2) as { subject: string }
   assert.equal(tpl.subject, 'Quick question for Acme')
   // no key at all -> false, template stays
@@ -91,7 +91,30 @@ test('polishDraft rewrites a template draft with the tenant model + memory, keep
   db2.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES ('j1', 'A', 'b', 'i', 'l', 'running')").run()
   db2.prepare("INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, evidence_excerpt, confidence) VALUES ('l1', 'j1', 'Pat', 'Acme', 'pat@acme.com', 's', 'https://n.com/a', 'q', 80)").run()
   const id3 = createDraft(db2, 'A', 'l1', 'Dazl')
-  assert.equal(await polishDraft(db2, 'A', id3, 'Dazl', { master }), false)
+  assert.deepEqual(await polishDraft(db2, 'A', id3, 'Dazl', { master }), { rewritten: false, reason: 'no_key' })
+})
+
+test('polishDraft refuses without a positioning (no invented offer) and blocks unverified funding claims', async () => {
+  const db = setup()
+  saveSettings(db, 'A', { sender_name: 'G', postal_address: '1 King St W, Toronto ON, Canada', booking_url: null })
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES ('j1', 'A', 'b', 'i', 'l', 'running')").run()
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, evidence_excerpt, confidence) VALUES ('l1', 'j1', 'Pat', 'Acme', 'pat@acme.com', 'raised a round', 'https://n.com/a', 'quote', 80)").run()
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, evidence_excerpt, confidence) VALUES ('l2', 'j1', 'Pat', 'Acme', 'pat@acme.com', 'raised a round', 'https://n.com/a', 'quote', 80)").run()
+  db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = 'j1'").run()
+  let calls = 0
+  const prov: Record<string, Provider> = { anthropic: { research: async () => ({ text: '', citedUrls: [] }), complete: async () => { calls++; return 'Subject: Congrats\n\nHi Pat,\n\nCongrats on your recent funding round! We built a consulting offer for teams like yours. Worth a call?\n\nThanks,' } } }
+  // tone-only memory: no positioning -> no provider call at all, template stays
+  saveMemory(db, 'A', { tone: 'direct' })
+  const id = createDraft(db, 'A', 'l1', 'Dazl')
+  assert.deepEqual(await polishDraft(db, 'A', id, 'Dazl', { master, providers: prov as never }), { rewritten: false, reason: 'no_profile' })
+  assert.equal(calls, 0)
+  // with positioning the provider runs, but an unverified funding congrats is rejected and the template stays
+  saveMemory(db, 'A', { tone: 'direct', positioning: 'software that ramps new sales hires' })
+  const id2 = createDraft(db, 'A', 'l2', 'Dazl')
+  assert.deepEqual(await polishDraft(db, 'A', id2, 'Dazl', { master, providers: prov as never }), { rewritten: false, reason: 'blocked_claim' })
+  assert.equal(calls, 1)
+  const tpl = db.prepare('SELECT subject FROM outreach_messages WHERE id = ?').get(id2) as { subject: string }
+  assert.equal(tpl.subject, 'Quick question for Acme')
 })
 
 test('llmFollowupText: body only, drops output with a subject line, requires the booking link kept', async () => {

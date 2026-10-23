@@ -177,7 +177,7 @@ export default function LeadsClient() {
   async function makeDraft(leadId: string) {
     const r = await fetch('/api/outreach', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lead_id: leadId }) })
     const j = await r.json()
-    setDrafted(d => ({ ...d, [leadId]: r.ok ? 'Draft created. Review it in Outreach.' : j.error || 'Could not create the draft' }))
+    setDrafted(d => ({ ...d, [leadId]: r.ok ? 'Draft created from the free template. Review it in Outreach - the AI rewrite there is a separate click that uses your key.' : j.error || 'Could not create the draft' }))
   }
 
   async function preview(e: React.FormEvent) {
