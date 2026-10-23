@@ -52,3 +52,9 @@ test('watch scheduler uses the shared active count (cancel hold + csv exclusion)
   assert.match(src, /countActiveJobs\(db, w\.user_id\)/)
   assert.doesNotMatch(src, /FROM scan_jobs WHERE user_id = \? AND \(status IN/)
 })
+
+test('leads page adopts a pending/running scan on load so a reload shows progress and disables Find leads', async () => {
+  const src = (await import('node:fs')).readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8')
+  assert.match(src, /x\.status === 'pending' \|\| x\.status === 'running'/)
+  assert.match(src, /setJobId\(active\.id\)/)
+})

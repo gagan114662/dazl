@@ -298,7 +298,14 @@ export default function LeadsClient() {
   // older job or a test fixture can never silently become the default view.
   useEffect(() => {
     if (jobId) return
-    void fetch('/api/scan/jobs').then(r => r.ok ? r.json() : null).then(j => { if (j) setPastJobs(j.jobs ?? []) }).catch(() => {})
+    void fetch('/api/scan/jobs').then(r => r.ok ? r.json() : null).then(j => { if (j) {
+      const jobs: JobSummary[] = j.jobs ?? []
+      setPastJobs(jobs)
+      // A scan that is still queued/running is the one exception to "nothing autoselects": a reload or a
+      // return from Home must show its progress and Stop control, not an enabled Find leads button.
+      const active = jobs.find(x => !x.csv_domain && (x.status === 'pending' || x.status === 'running'))
+      if (active) { setJobId(active.id); setStatus(active.status) }
+    } }).catch(() => {})
   }, [jobId])
   // Restore the last profile so a reload never loses it (item: ICP persistence).
   useEffect(() => {
