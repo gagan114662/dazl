@@ -29,11 +29,14 @@ export function migrateOutreach(db: Database.Database): void {
       message_id    TEXT,
       purpose       TEXT NOT NULL,
       vendor        TEXT,
+      requested_model TEXT,
       model         TEXT,
       request_id    TEXT,
       outcome       TEXT NOT NULL,
       input_tokens  INTEGER,
       output_tokens INTEGER,
+      cache_read_input_tokens INTEGER,
+      cache_creation_input_tokens INTEGER,
       created_at    INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
     );
     CREATE TABLE IF NOT EXISTS suppressions (
