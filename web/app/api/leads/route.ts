@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
+import { sourceCheckForLead } from '@/lib/scan/source-review'
 import { sqliteLeadsRead } from '@/lib/db/leads-read'
 import { rankLeads } from '@/lib/events/prioritize'
 import { classifyEntityMatch, classifyBoardMatch, qualifyEvent, withinEventWindow } from '@/lib/signals/entity-match'
@@ -19,7 +20,7 @@ export async function GET(req: NextRequest) {
   const pri = await db.leadPriorities(user.id, leads)
   const look = await db.lookalikeSignals(user.id, leads.map(l => ({ id: l.id, signal: l.signal, industry: job.industry, location: job.location })))
   const ranked = rankLeads(leads, pri)
-  return NextResponse.json({ job_id: job.id, status: job.status, hidden_count: includeHidden ? 0 : await db.countHiddenLeads(user.id, job.id), leads: ranked.map(l => ({ ...l, sequence: sequences.get(l.id) ?? null, enrichments: (enr[l.id] ?? []).map(e => ({ ...e, entity_status:
+  return NextResponse.json({ job_id: job.id, status: job.status, hidden_count: includeHidden ? 0 : await db.countHiddenLeads(user.id, job.id), leads: ranked.map(l => ({ ...l, source_check: sourceCheckForLead(getScanDb(), user.id, l.id), sequence: sequences.get(l.id) ?? null, enrichments: (enr[l.id] ?? []).map(e => ({ ...e, entity_status:
           e.connector === 'signals:sec-edgar'
             ? (() => { const base = classifyEntityMatch(l.company, e.label ?? '')
                 return base === 'heuristic' && l.event_date && e.source_date && !withinEventWindow(e.source_date, l.event_date) ? 'unconfirmed' : base })()

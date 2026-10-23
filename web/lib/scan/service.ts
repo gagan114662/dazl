@@ -1,3 +1,4 @@
+import { migrateSourceReview } from './source-review.ts'
 import { migrateSequences } from '../outreach/sequences.ts'
 import { cookies } from 'next/headers'
 import { getAuthDb, getSessionUser } from '../auth-db'
@@ -29,6 +30,7 @@ export function getScanDb() {
   const db = getAuthDb()
   if (!ready) {
     migrateScan(db)
+    migrateSourceReview(db)
     migrateWatch(db)
     migrateKeys(db)
     migratePlans(db)

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { emptyLeadsMessage, scoreLabel } from '@/lib/scan/leads-view'
 import { contactsFromEnrichments } from '@/lib/people/rank'
 import { publishedEmail, publishedContact } from '@/lib/outreach/published-email'
+import SourceReview from './source-review'
 import SourceMetrics from './source-metrics'
 import { WarmConnections, WarmPath } from './warm-path'
 import VerificationFixture from './verification-fixture'
@@ -17,7 +18,7 @@ const claimFromSource = (l: { source_url: string; company_domain: string | null 
   } catch { return true }
 }
 
-interface Lead { sequence?: { status: string; step: number; next_due_at: number | null; stop_reason: string | null } | null; id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; human_confirmed_at: number | null; human_confirmed_from: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; watch_new?: number; seen_before?: number; stage?: string | null; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string; entity_status?: 'heuristic' | 'unconfirmed' | null }[]; events?: { id: string; event_type: string; summary: string; source_url: string; source_published_at: string | null; last_seen_at: number; fresh: boolean; entity_status?: 'heuristic' | 'unconfirmed' | null }[]; priority?: { graded: boolean; fit: number | null; intent: number | null; action: number | null; evidence_score: number; reasons: string[]; uncounted: string[] } | null; lookalike?: { state: 'insufficient' | 'scored'; cohort_size: number; matches: number; matched_on: string[] } | null }
+interface Lead { source_check?: {fetch_status:string;quote_match:boolean;company_named:boolean;contact_match:boolean;checked_at:number} | null; sequence?: { status: string; step: number; next_due_at: number | null; stop_reason: string | null } | null; id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; human_confirmed_at: number | null; human_confirmed_from: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; watch_new?: number; seen_before?: number; stage?: string | null; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string; entity_status?: 'heuristic' | 'unconfirmed' | null }[]; events?: { id: string; event_type: string; summary: string; source_url: string; source_published_at: string | null; last_seen_at: number; fresh: boolean; entity_status?: 'heuristic' | 'unconfirmed' | null }[]; priority?: { graded: boolean; fit: number | null; intent: number | null; action: number | null; evidence_score: number; reasons: string[]; uncounted: string[] } | null; lookalike?: { state: 'insufficient' | 'scored'; cohort_size: number; matches: number; matched_on: string[] } | null }
 interface Icp { summary: string; who: string[]; industries: string[]; sizes: string[]; where: string[]; signals: string[]; exclude: string[] }
 interface JobSummary { id: string; status: string; error: string | null; query: string | null; business_name: string; csv_domain: string | null; created_at: number; finished_at: number | null; candidates: number | null; verified: number | null; needs_review: number | null; dropped: number | null; lead_count: number; test_only: boolean }
 interface Watch { id: string; query: string; active: boolean; next_run_at: number | null; last_run_at: number | null; paused_reason: string | null; last_job_id: string | null; last_status: string | null; new_leads: number }
@@ -41,7 +42,7 @@ const REASON: Record<string, string> = {
   source_cap: 'over the 3-per-page cap',
   url_refused: 'unsafe or unsupported address', duplicate: 'duplicate company',
 }
-const REVIEW: Record<string, string> = { counterparty_signal: 'Names this company as someone else\'s customer - not evidence of its own buying intent', job_closed: 'Source says applications are closed - historical hiring evidence, not an active opening', quote_unconfirmed: 'The saved quote could not be confirmed on the source', login_required: 'Source requires sign-in - evidence unknown', blocked_by_site: 'The site blocked our check', needs_javascript: 'The page needs JavaScript to show its content' }
+const REVIEW: Record<string, string> = { source_review_required: 'Manually supplied claim - literal source checks do not verify its meaning, date, buying need or consent', counterparty_signal: 'Names this company as someone else\'s customer - not evidence of its own buying intent', job_closed: 'Source says applications are closed - historical hiring evidence, not an active opening', quote_unconfirmed: 'The saved quote could not be confirmed on the source', login_required: 'Source requires sign-in - evidence unknown', blocked_by_site: 'The site blocked our check', needs_javascript: 'The page needs JavaScript to show its content' }
 
 // Enrichment labels join example titles with '; ' - older rows can repeat one
 // title per posting. Show each distinct title once; the count stays untouched.
@@ -349,6 +350,7 @@ export default function LeadsClient() {
           <button type="button" disabled={query.trim().length < 3 || starting} onClick={() => run(null)} className="text-gray-400 hover:text-white text-sm px-3 disabled:opacity-40">{starting ? 'Starting...' : 'Skip review, just run'}</button>
         </div>
       </form>
+      <SourceReview />
       <details className="mb-4 text-sm">
         <summary className="cursor-pointer text-gray-400">Bulk import company domains (Pro)</summary>
         <div className="card p-4 mt-2">
@@ -657,10 +659,14 @@ export default function LeadsClient() {
               <div key={l.id} className="p-4 text-sm">
                 <div className="font-medium">{l.company || l.name}</div>
                 <div className="text-gray-400">{claimFromSource(l) ? `Source claims: ${l.signal}` : l.signal}</div>
-                <span className="text-yellow-500 text-xs mr-3">{REVIEW[l.review_reason ?? ''] ?? 'Not verified'}</span>
+                <span className="text-[#333] text-xs mr-3">{REVIEW[l.review_reason ?? ''] ?? 'Not verified'}</span>
                 <a className="underline text-[#111] text-xs" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
+                {l.source_check && <div className="text-xs text-[#333] border-l-2 border-black/30 pl-3 my-2">
+                  <p>Literal page check: {l.source_check.fetch_status}, checked {new Date(l.source_check.checked_at*1000).toISOString()}. Exact quote: {l.source_check.quote_match?'found':'not found'}. Company named with matching quote: {l.source_check.company_named?'yes':'no'}. Supplied email: {l.source_check.contact_match?'found on page':'not found or not supplied'}.</p>
+                  <p>{eventDateCopy(l.event_date,l.date_status)}. No semantic signal verification, fit grade, named buyer, current need or consent.</p>
+                </div>}
                 <button onClick={() => confirmReview(l.id)} className="font-mono text-xs uppercase border border-black px-2 py-1 ml-3 hover:bg-black hover:text-white">I checked this - use it</button>
-                {l.review_reason === 'quote_unconfirmed' && l.evidence_excerpt && (
+                {['quote_unconfirmed','source_review_required'].includes(l.review_reason ?? '') && l.evidence_excerpt && (
                   <div className="text-xs text-gray-500 mt-1">Unconfirmed quote: "{l.evidence_excerpt}"</div>
                 )}
               </div>
