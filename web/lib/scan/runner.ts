@@ -336,8 +336,21 @@ export function pickVendor(db: Database.Database, tenantId: string): Vendor | nu
 // A stop request (or a reaped/re-claimed attempt) must not start NEW provider or network work.
 // It cannot interrupt a call already awaited; that call may finish and be billed, but its result is discarded.
 class ScanStopped extends Error { constructor() { super('scan_stopped') } }
+// Cooperative whole-scan budget, checked only where a NEW phase would start (never mid-call, so no work is left
+// running behind a freed slot). A scan past it fails once with 'scan_timeout' and is not retried: a retry would
+// repeat the same provider spend. Candidates are in memory until finish(), so nothing partial is saved or shown.
+class ScanTimedOut extends Error { constructor() { super('scan_timeout') } }
+const jobDeadlines = new WeakMap<Job, number>()
+export function scanJobBudgetMs(env: Record<string, string | undefined> = process.env): number {
+  const raw = env.SCAN_JOB_BUDGET_MS
+  if (raw === undefined) return 15 * 60_000
+  const n = Number(raw)
+  return Number.isFinite(n) && n > 0 ? n : 15 * 60_000
+}
 function assertOwned(db: Database.Database, job: Job): void {
   if (!db.prepare("SELECT 1 FROM scan_jobs WHERE id = ? AND status = 'running' AND attempts = ?").get(job.id, job.attempts)) throw new ScanStopped()
+  const d = jobDeadlines.get(job)
+  if (d !== undefined && Date.now() > d) throw new ScanTimedOut()
 }
 
 // Writes only if this attempt still owns the job (a reaped and re-claimed job
@@ -370,6 +383,7 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
 // Shared failure handling: a rejected key fails the job outright; anything else retries
 // until MAX_ATTEMPTS, then fails. Returns the run outcome.
 function failOrRetry(db: Database.Database, job: Job, e: unknown, ledger?: SourceRunLedger): 'done' | 'failed' | 'retry' {
+  if (e instanceof ScanTimedOut) { finish(db, job, 'failed', 'scan_timeout', null, null, ledger); return 'failed' }
   if (e instanceof ScanStopped) return 'done' // nothing to retry or fail: the stop/re-claim owns the row; queue completion or a stale token is a no-op
   const err = e instanceof ProviderError ? e : new ProviderError('retry', 'internal_error')
   if (err.kind === 'auth') {
@@ -444,7 +458,7 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
         ledger.record('search:tinyfish', leads === null ? 'unavailable' : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:tinyfish', leads)
       } catch (e) {
-        if (e instanceof ScanStopped) throw e
+        if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e
         leads = null
       }
@@ -541,10 +555,11 @@ function budgetDeps(deps: RunDeps, budget: RunBudget | null): RunDeps {
 }
 
 export interface RunDeps {
-  score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean }
+  score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; jobBudgetMs?: number }
 
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
   const ledger = new SourceRunLedger()
+  jobDeadlines.set(job, Date.now() + (deps.jobBudgetMs ?? scanJobBudgetMs()))
   // Trial-funded jobs run on the shared operator key from the server environment; everything
   // else runs on the job owner's own key. The operator key is never read from the tenant DB.
   const op = job.funded_by === 'trial' ? operatorKey() : null
@@ -589,7 +604,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         ledger.record('search:tinyfish', leads === null ? 'unavailable' : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:tinyfish', leads)
       } catch (e) {
-        if (e instanceof ScanStopped) throw e
+        if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e
         leads = null
       }
@@ -643,7 +658,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
           }
         }
       } catch (e) {
-        if (e instanceof ScanStopped) throw e
+        if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e // a rejected key still fails the scan
         // any other source failure only means no extra candidates
       }
@@ -667,7 +682,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
           for (const l of extra) (walled.has(l.source_url) ? walledLeads : leads).push(l)
         }
       } catch (e) {
-        if (e instanceof ScanStopped) throw e
+        if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e // a rejected key still fails the scan
         // any other complaint-search failure only means no extra candidates
       }
@@ -706,7 +721,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
           for (const [r, n] of Object.entries(o2.dropped)) outcome.dropped[r] = (outcome.dropped[r] ?? 0) + n
         }
       } catch (e) {
-        if (e instanceof ScanStopped) throw e
+        if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e
       }
     }
