@@ -73,7 +73,7 @@ export default function OutreachClient() {
       <SendReadiness />
       {note && <p className="text-sm text-yellow-400 mb-4">{note}</p>}
       {!loaded && <p className="text-[#666] text-sm" role="status">Loading your emails...</p>}
-      {loaded && loadFailed && <p className="text-sm text-yellow-400 mb-4" role="alert">Could not load your emails. Refresh to retry.</p>}
+      {loaded && loadFailed && <p className="text-sm text-[#111] border-l-2 border-black pl-3 mb-4" role="alert">Could not load your emails. Refresh to retry.</p>}
       {loaded && !loadFailed && msgs.length === 0 && <p className="text-[#666] text-sm">No emails yet. Open Leads and choose Draft email on a lead with a published address.</p>}
       <div className="flex flex-col gap-3">
         {msgs.map(m => {

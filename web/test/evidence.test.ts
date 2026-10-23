@@ -139,3 +139,31 @@ test('per-source cap: a single page yields at most 3 verified leads, strongest k
   assert.equal(dropped['source_cap'], 2)
   assert.deepEqual(leads.map(l => l.company).sort(), ['Acme Alpha', 'Acme Beta', 'Acme Gamma'])
 })
+
+test('a quote cut short with a leading or trailing ellipsis verifies on the words that remain', () => {
+  const cut = QUOTE.slice(0, 60)
+  for (const q of [`${cut} ...`, `${cut}...`, `${cut} \u2026`, `... ${QUOTE}`, `\u2026${QUOTE}\u2026`, `${QUOTE}. ....`]) {
+    const v = verifyEvidence(cand({ excerpt: q }), good, NOW)
+    assert.equal(v.ok, true, q)
+  }
+})
+
+test('ellipsis does not loosen evidence: skipped words, short remainder and absent text still fail', () => {
+  const skipped = `${QUOTE.slice(0, 40)} ... ${QUOTE.slice(60)}`
+  assert.deepEqual(verifyEvidence(cand({ excerpt: skipped }), good, NOW), { ok: false, reason: 'excerpt_not_on_page' })
+  assert.deepEqual(verifyEvidence(cand({ excerpt: 'Northside Builders ...' }), good, NOW), { ok: false, reason: 'no_excerpt' })
+  assert.deepEqual(verifyEvidence(cand({ excerpt: 'Northside Builders just raised a huge funding round last week ...' }), good, NOW), { ok: false, reason: 'excerpt_not_on_page' })
+  // The company must still be named in the quoted text or page title after the cut.
+  const other = page(`Intro. ${QUOTE.slice(20)}`)
+  assert.equal(verifyEvidence(cand({ excerpt: `... ${QUOTE.slice(20)}` }), other, NOW).ok, false)
+})
+
+test('an ellipsis-cut quote earns exactly the confidence of the full quote - text match only, no meaning, date or need', () => {
+  const full = verifyEvidence(cand(), good, NOW)
+  const cutV = verifyEvidence(cand({ excerpt: `${QUOTE.slice(0, 60)} ...` }), good, NOW)
+  assert.equal(full.ok && cutV.ok, true)
+  if (full.ok && cutV.ok) { assert.equal(cutV.confidence, full.confidence); assert.equal(cutV.dateStatus, full.dateStatus) }
+  // Same words in a page that negates them still match text-wise: the verdict never claims meaning, so it must stay needs-review at the human step.
+  const negated = page(`Rumor check: it is false that ${QUOTE}. Not hiring.`)
+  assert.equal(verifyEvidence(cand({ excerpt: `${QUOTE.slice(0, 60)} ...` }), negated, NOW).ok, verifyEvidence(cand(), negated, NOW).ok)
+})

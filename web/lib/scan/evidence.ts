@@ -40,7 +40,9 @@ function parseDay(s: string | null): Date | null {
 
 export function verifyEvidence(c: Candidate, page: Page, now = new Date()): Verdict {
   const text = norm(page.text)
-  const excerpt = norm(c.excerpt)
+  // A leading or trailing ellipsis only marks that the quote was cut short. The words that remain must still
+  // appear contiguously on the page. An ellipsis inside the quote (words skipped) still fails, and the saved quote is never rewritten.
+  const excerpt = norm(c.excerpt.replace(/^\s*(?:\.{3,}|\u2026)+\s*/, '').replace(/\s*(?:\.{3,}|\u2026)+\s*$/, ''))
   if (excerpt.length < 20 || c.excerpt.length > 400) return { ok: false, reason: 'no_excerpt' }
   const at = text.indexOf(excerpt)
   if (at < 0) return { ok: false, reason: 'excerpt_not_on_page' }
