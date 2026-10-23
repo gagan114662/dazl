@@ -4,7 +4,7 @@ import { approve, editDraft, OutreachError, resolveUncertain, sendMessage, skip 
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 
-const STATUS: Record<string, number> = { lead_ungraded: 409, not_found: 404, already_sending: 409, already_uncertain: 409, not_approved: 409, not_a_draft: 409, not_editable: 409, not_skippable: 409, not_uncertain: 409, suppressed: 409, daily_cap: 429, gmail_rate_limited: 429 }
+const STATUS: Record<string, number> = { lead_ungraded: 409, lead_evidence_withdrawn: 409, not_found: 404, already_sending: 409, already_uncertain: 409, not_approved: 409, not_a_draft: 409, not_editable: 409, not_skippable: 409, not_uncertain: 409, suppressed: 409, daily_cap: 429, gmail_rate_limited: 429 }
 
 async function guard(req: NextRequest, id: string) {
   const user = await requireUser()

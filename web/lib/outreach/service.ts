@@ -14,7 +14,8 @@ export const SENDING_STALE_S = 10 * 60
 // Personal mailbox providers: a published address there is not a business contact.
 const CONSUMER = new Set(['gmail.com', 'googlemail.com', 'yahoo.com', 'yahoo.ca', 'hotmail.com', 'outlook.com', 'live.com', 'msn.com', 'icloud.com', 'me.com', 'aol.com', 'proton.me', 'protonmail.com', 'gmx.com'])
 
-// Off by default. Only this operator-selected test tenant and this exact inbox qualify.
+// Off by default. Only the env-designated test tenant (OUTREACH_TEST_TENANT_ID) and this exact
+// inbox qualify. This is a code gate only, not evidence of user permission.
 export const TEST_INBOX = 'instinct114114@gmail.com'
 export const testRecipientApproved = (db: Database.Database, tenantId: string, email: string): boolean =>
   !!process.env.OUTREACH_TEST_TENANT_ID && process.env.OUTREACH_TEST_TENANT_ID === tenantId &&
@@ -41,6 +42,30 @@ export class OutreachError extends Error {
 export function leadHeld(db: Database.Database, tenantId: string, leadId: string): boolean {
   return !!db.prepare('SELECT 1 FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ? AND l.fit = 0 AND l.intent IS NULL').get(leadId, tenantId)
 }
+
+// Evidence eligibility, re-checked at every approval and every send. A draft or sequence
+// created under a human confirmation is approvable/sendable only while that confirmation
+// (or dazl's own verification) still stands: withdrawing the confirmation revokes the
+// eligibility that backed it, and an exact-word approval hash is not a substitute.
+// Machine-verified leads are unaffected. Tenant-scoped like every other lead read.
+export type EvidenceState = 'machine' | 'human' | 'unverified'
+export function leadEvidenceState(db: Database.Database, tenantId: string, leadId: string): EvidenceState {
+  const l = db.prepare('SELECT l.evidence_excerpt, l.confidence, l.human_confirmed_at FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as { evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null } | undefined
+  if (l && l.evidence_excerpt && l.confidence !== null) return 'machine'
+  if (l && l.human_confirmed_at !== null) return 'human'
+  return 'unverified'
+}
+export function leadEvidenceEligible(db: Database.Database, tenantId: string, leadId: string): boolean {
+  return leadEvidenceState(db, tenantId, leadId) !== 'unverified'
+}
+
+// Server-created test material (test = 1) addressed to the currently allowlisted,
+// env-designated test inbox is exempt from the evidence gate: it is a labelled
+// demonstration to the operator's own inbox, never a real prospect. This exemption is a
+// code gate only, not evidence of user permission. Like test timing, it is re-derived
+// from the live allowlist at every action, never stored.
+export const testFixtureSend = (db: Database.Database, tenantId: string, m: { to_email: string; test: number }): boolean =>
+  m.test === 1 && testRecipientApproved(db, tenantId, m.to_email)
 
 export interface Deps extends OAuthDeps { baseUrl?: string; sendFn?: typeof gmailSend }
 const nowS = (d: Deps) => d.now ?? Math.floor(Date.now() / 1000)
@@ -107,7 +132,7 @@ export const getSettings = (db: Database.Database, tenantId: string) =>
 const hash = (to: string, subject: string, body: string) => createHash('sha256').update(JSON.stringify([to, subject, body])).digest('hex')
 const id24 = () => randomBytes(12).toString('hex')
 
-interface Lead { id: string; company: string; name: string; contact: string | null; signal: string; source_url: string; evidence_excerpt: string | null; confidence: number | null; fit: number | null; intent: number | null }
+interface Lead { id: string; company: string; name: string; contact: string | null; signal: string; source_url: string; evidence_excerpt: string | null; confidence: number | null; fit: number | null; intent: number | null; human_confirmed_at: number | null }
 
 export function draftTemplate(lead: Lead, businessName: string): { subject: string; body: string } {
   const who = lead.name ? lead.name.split(' ')[0] : 'there'
@@ -121,11 +146,14 @@ export function draftTemplate(lead: Lead, businessName: string): { subject: stri
 // on that page), a business email address, and no suppression.
 export function createDraft(db: Database.Database, tenantId: string, leadId: string, businessName: string): string {
   const lead = db.prepare(
-    `SELECT l.id, l.company, l.name, l.contact, l.signal, l.source_url, l.evidence_excerpt, l.confidence, l.fit, l.intent
+    `SELECT l.id, l.company, l.name, l.contact, l.signal, l.source_url, l.evidence_excerpt, l.confidence, l.fit, l.intent, l.human_confirmed_at
      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`,
   ).get(leadId, tenantId) as Lead | undefined
   if (!lead) throw new OutreachError('not_found')
-  if (!lead.evidence_excerpt || lead.confidence === null) throw new OutreachError('lead_not_verified')
+  // Verified by dazl (quote confirmed on the cited page) OR confirmed by the user
+  // themselves from the needs-review list. A human confirmation is the user's own
+  // checked decision, labelled as such in the UI; it never rewrites the machine verdict.
+  if ((!lead.evidence_excerpt || lead.confidence === null) && lead.human_confirmed_at === null) throw new OutreachError('lead_not_verified')
   // Held lead: ICP grading failed, so it sits at fit 0 with intent unset. That hold is not a
   // grade, and the lead must not be emailed until a rescan grades it successfully. A real
   // grade of 0 (intent set) and never-scored leads (fit unset) are not affected.
@@ -163,7 +191,10 @@ const getMsg = (db: Database.Database, tenantId: string, id: string) =>
 
 export function listMessages(db: Database.Database, tenantId: string, d: Deps = {}) {
   reapSending(db, d)
-  return db.prepare('SELECT id, lead_id, to_email, subject, body, status, error, created_at, sent_at, test FROM outreach_messages WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 200').all(tenantId)
+  const rows = db.prepare('SELECT id, lead_id, to_email, subject, body, status, error, created_at, sent_at, test FROM outreach_messages WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 200').all(tenantId) as { id: string; lead_id: string; to_email: string; subject: string; body: string; status: string; error: string | null; created_at: number; sent_at: number | null; test: number }[]
+  // The draft list carries the evidence basis so the approval UI can label a human
+  // confirmation (never presented as dazl's verification) or a withdrawn one.
+  return rows.map(r => ({ ...r, evidence_state: leadEvidenceState(db, tenantId, r.lead_id) }))
 }
 
 const cleanLine = (s: string) => s.replace(/[\r\n\u0000]+/g, ' ').trim()
@@ -201,6 +232,7 @@ export function approve(db: Database.Database, tenantId: string, id: string, seq
   if (!getSettings(db, tenantId)) throw new OutreachError('sender_identity_missing')
   if (gmailStatus(db, tenantId)?.status !== 'active') throw new OutreachError('gmail_not_connected')
   if (isSuppressed(db, tenantId, m.to_email)) throw new OutreachError('suppressed')
+  if (!testFixtureSend(db, tenantId, m) && !leadEvidenceEligible(db, tenantId, m.lead_id)) throw new OutreachError('lead_evidence_withdrawn')
   db.transaction(() => {
     snapshotSignalContext(db, tenantId, id)
     db.prepare("UPDATE outreach_messages SET status = 'approved', approved_hash = ? WHERE id = ? AND tenant_id = ? AND status = 'draft'").run(hash(m.to_email, m.subject, m.body), id, tenantId)
@@ -239,6 +271,7 @@ export async function sendMessage(db: Database.Database, tenantId: string, id: s
   if (pre.status === 'sent') return 'sent' // idempotent retry
   if (!recipientAllowed(db,tenantId,pre.to_email)) throw new OutreachError('personal_email')
   if (leadHeld(db, tenantId, pre.lead_id)) throw new OutreachError('lead_ungraded')
+  if (!testFixtureSend(db, tenantId, pre) && !leadEvidenceEligible(db, tenantId, pre.lead_id)) throw new OutreachError('lead_evidence_withdrawn')
   if (anyUncertainSend(db, tenantId)) throw new OutreachError('already_uncertain')
   if (tableExists(db, 'autopilot_settings') && (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as { paused: number } | undefined)?.paused) throw new OutreachError('paused')
   if (pre.status !== 'approved') throw new OutreachError(pre.status === 'sending' || pre.status === 'uncertain' ? `already_${pre.status}` : 'not_approved')
@@ -284,6 +317,7 @@ export async function sendMessage(db: Database.Database, tenantId: string, id: s
   // immediately before handing the immutable MIME bytes to Gmail.
   if (!recipientAllowed(db,tenantId,m.to_email)) release('personal_email')
   if (leadHeld(db,tenantId,m.lead_id)) release('lead_ungraded')
+  if (!testFixtureSend(db,tenantId,m) && !leadEvidenceEligible(db,tenantId,m.lead_id)) release('lead_evidence_withdrawn')
   if (isSuppressed(db,tenantId,m.to_email)) release('suppressed')
   const final = getMsg(db,tenantId,id)!
   if (final.approved_hash !== hash(final.to_email,final.subject,final.body) || final.body !== m.body || final.subject !== m.subject || final.to_email !== m.to_email) release('changed_since_approval')

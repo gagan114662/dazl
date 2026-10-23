@@ -6,7 +6,7 @@ import { buildMime, toBase64Url } from '../gmail/mime.ts'
 import { getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { auditAt, getState, pause } from './autopilot.ts'
 import { grantConsent } from './ledger.ts'
-import { composeBody, getSettings, isSuppressed, leadHeld, recipientAllowed, testRecipientApproved, unsubToken, type Deps } from './service.ts'
+import { composeBody, getSettings, isSuppressed, leadEvidenceEligible, leadHeld, recipientAllowed, testFixtureSend, testRecipientApproved, unsubToken, type Deps } from './service.ts'
 import { getMasterKey } from '../secrets.ts'
 import { readKey } from '../llm/key-store.ts'
 import { providers } from '../llm/provider.ts'
@@ -213,6 +213,11 @@ export function approveSequence(db: Database.Database, tenantId: string, sequenc
   const shortTestSet = testRecipientApproved(db, tenantId, s.to_email) && rootMsg?.test === 1
   if ((steps.length !== MAX_STEPS && !shortTestSet) || steps.length < 2 || steps.some(st => st.body.length < 20)) throw new SequenceError('steps_missing')
   if (isSuppressed(db, tenantId, s.to_email)) throw new SequenceError('suppressed')
+  // Approving the set is an approval of every step: the lead's evidence basis must still
+  // stand at this moment. A withdrawn human confirmation revokes it (step-1 approval via
+  // approveStep1 re-checks the same gate).
+  const rootTest = db.prepare('SELECT test FROM outreach_messages WHERE tenant_id = ? AND id = ?').get(tenantId, s.message_id) as { test: number } | undefined
+  if (!(rootTest && testFixtureSend(db, tenantId, { to_email: s.to_email, test: rootTest.test })) && !leadEvidenceEligible(db, tenantId, s.lead_id)) throw new SequenceError('lead_evidence_withdrawn')
   db.transaction(() => {
   const first = steps.find(st => st.step === 1)!
   db.prepare("UPDATE outreach_messages SET subject = ?, body = ?, status = 'draft', approved_hash = NULL WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(first.subject, first.body, s.message_id, tenantId)
@@ -292,11 +297,12 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
 
   // Activate approved sequences whose step-1 email has gone out (step 1 keeps the normal
   // manual send path). Step-1 facts are mirrored onto its sequence_steps row here.
-  const toStart = db.prepare(`SELECT s.id, s.lead_id, s.message_id, m.sent_at, m.gmail_id, m.thread_id FROM sequences s
+  const toStart = db.prepare(`SELECT s.id, s.lead_id, s.message_id, s.to_email, m.sent_at, m.gmail_id, m.thread_id, m.test AS msg_test FROM sequences s
                               JOIN outreach_messages m ON m.id = s.message_id
-                              WHERE s.tenant_id = ? AND s.status = 'approved' AND m.status = 'sent'`).all(tenantId) as { id: string; lead_id: string; message_id: string; sent_at: number; gmail_id: string | null; thread_id: string | null }[]
+                              WHERE s.tenant_id = ? AND s.status = 'approved' AND m.status = 'sent'`).all(tenantId) as { id: string; lead_id: string; message_id: string; to_email: string; sent_at: number; gmail_id: string | null; thread_id: string | null; msg_test: number }[]
   for (const r of toStart) {
     if (db.prepare("SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND lead_id = ? AND classification NOT IN ('auto','soft_bounce')").get(tenantId,r.lead_id)) { stopSequenceForThread(db,tenantId,r.lead_id,'replied','existing_reply',now); continue }
+    if (!testFixtureSend(db,tenantId,{ to_email: r.to_email, test: r.msg_test }) && !leadEvidenceEligible(db,tenantId,r.lead_id)) { stopSequenceForThread(db,tenantId,r.lead_id,'stopped','evidence_withdrawn',now); out.skipped++; continue }
     db.prepare("UPDATE sequence_steps SET status = 'sent', sent_at = ?, gmail_id = ? WHERE tenant_id = ? AND sequence_id = ? AND step = 1 AND status = 'approved'").run(r.sent_at, r.gmail_id, tenantId, r.id)
     db.prepare("UPDATE sequences SET status = 'active' WHERE tenant_id = ? AND id = ? AND status = 'approved'").run(tenantId, r.id)
     auditAt(db, tenantId, 'sequence_started', 'step 1 sent', r.lead_id, r.message_id, now)
@@ -306,11 +312,14 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
   const dailyCap = Math.min(ACCOUNT_SEND_CAP, st.daily_cap)
   const sentShared24h = () => accountSendCount(db,tenantId,now)
 
-  const active = db.prepare(`SELECT s.id, s.lead_id, s.message_id, s.to_email, m.subject AS msg_subject, m.sent_at AS step1_sent, m.thread_id
+  const active = db.prepare(`SELECT s.id, s.lead_id, s.message_id, s.to_email, m.subject AS msg_subject, m.sent_at AS step1_sent, m.thread_id, m.test AS msg_test
                              FROM sequences s JOIN outreach_messages m ON m.id = s.message_id
-                             WHERE s.tenant_id = ? AND s.status = 'active'`).all(tenantId) as { id: string; lead_id: string; message_id: string; to_email: string; msg_subject: string; step1_sent: number | null; thread_id: string | null }[]
+                             WHERE s.tenant_id = ? AND s.status = 'active'`).all(tenantId) as { id: string; lead_id: string; message_id: string; to_email: string; msg_subject: string; step1_sent: number | null; thread_id: string | null; msg_test: number }[]
   for (const s of active) {
     if (leadHeld(db,tenantId,s.lead_id) || !recipientAllowed(db,tenantId,s.to_email)) { stopSequenceForThread(db,tenantId,s.lead_id,'stopped',leadHeld(db,tenantId,s.lead_id) ? 'lead_ungraded' : 'personal_email',now); out.skipped++; continue }
+    // Evidence re-checked at execution: a withdrawn confirmation stops the sequence
+    // honestly before any unsent step goes out. Already-sent mail is never recalled.
+    if (!testFixtureSend(db,tenantId,{ to_email: s.to_email, test: s.msg_test }) && !leadEvidenceEligible(db,tenantId,s.lead_id)) { stopSequenceForThread(db,tenantId,s.lead_id,'stopped','evidence_withdrawn',now); out.skipped++; continue }
     if (!s.thread_id) { out.skipped++; continue } // never send a bump without a readable original thread
     if (!s.step1_sent) continue // activation lags one tick
     if (db.prepare("SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND lead_id = ? AND classification NOT IN ('auto','soft_bounce')").get(tenantId,s.lead_id)) { stopSequenceForThread(db,tenantId,s.lead_id,'replied','existing_reply',now); continue }
@@ -347,6 +356,13 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
       if (leadHeld(db,tenantId,s.lead_id) || !recipientAllowed(db,tenantId,s.to_email)) {
         db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step)
         stopSequenceForThread(db,tenantId,s.lead_id,'stopped',leadHeld(db,tenantId,s.lead_id) ? 'lead_ungraded' : 'personal_email',now); out.skipped++; continue
+      }
+      // Evidence re-checked again after the token await: a confirmation withdrawn during
+      // the await must release the claim (back to approved, claimed_at NULL) and stop the
+      // sequence honestly, never send.
+      if (!testFixtureSend(db,tenantId,{ to_email: s.to_email, test: s.msg_test }) && !leadEvidenceEligible(db,tenantId,s.lead_id)) {
+        db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step)
+        stopSequenceForThread(db,tenantId,s.lead_id,'stopped','evidence_withdrawn',now); out.skipped++; continue
       }
       const current = getSeq(db,tenantId,s.id)
       const currentStep = db.prepare('SELECT body,subject,approved_hash FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? AND step = ?').get(tenantId,s.id,stepRow.step) as {body:string;subject:string;approved_hash:string}

@@ -253,10 +253,11 @@ test('shorter sets are rejected outside the exact test-fixture boundary', async 
   assert.throws(() => withTenant(() => approveSequence(db, 'A', notFixture.sequenceId, id => approve(db, 'A', id, true), NOW)), stepsMissing)
 
   // 4. Send path defense-in-depth: a hand-raised approved 2-step set with test = 0 cannot send
-  // even with the grant and allowlist in place.
+  // even with the grant and allowlist in place. With no evidence basis it is stopped at the
+  // evidence gate, before the changed-since-approval comparison is even reached.
   const direct = mkSet(0)
   db.prepare("UPDATE outreach_messages SET status = 'approved', approved_hash = 'x' WHERE id = ?").run(direct.messageId)
   db.prepare("UPDATE sequence_steps SET status = 'approved', approved_hash = 'x' WHERE sequence_id = ?").run(direct.sequenceId)
   db.prepare("UPDATE sequences SET status = 'approved' WHERE id = ?").run(direct.sequenceId)
-  await assert.rejects(() => withTenantAsync(() => sendMessage(db, 'A', direct.messageId, mock())), (e: unknown) => e instanceof OutreachError && (e as OutreachError).code === 'changed_since_approval')
+  await assert.rejects(() => withTenantAsync(() => sendMessage(db, 'A', direct.messageId, mock())), (e: unknown) => e instanceof OutreachError && (e as OutreachError).code === 'lead_evidence_withdrawn')
 })

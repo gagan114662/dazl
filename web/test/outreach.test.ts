@@ -132,7 +132,7 @@ test('approve needs sender identity and a connected Gmail; editing after approva
   assert.throws(() => skip(db, 'B', id), /not_found/)
   approve(db, 'A', id)
   editDraft(db, 'A', id, { subject: 'New subject', body: 'A different body that is long enough to pass.' })
-  const m = (listMessages(db, 'A', deps()) as { status: string }[])[0]
+  const m = (listMessages(db, 'A', deps()) as { status: string; evidence_state: string }[])[0]
   assert.equal(m.status, 'draft')
   assert.throws(() => editDraft(db, 'A', id, { subject: 'x', body: 'short' }), /bad_body/)
   const { sent, sendFn } = okSend()
