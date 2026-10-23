@@ -40,8 +40,9 @@ export interface TrialState { funded: boolean; reason?: TrialDeny; used: number;
 
 export function trialStatus(db: Database.Database, tenantId: string, ip: string, now = new Date()): TrialState {
   if (!operatorKey()) return { funded: false, reason: 'not_configured', used: 0, remaining: 0 }
-  // Failed scans refund the slot, same as the monthly quota: a scan that produced nothing
-  // does not burn one of the three.
+  // Genuinely failed scans refund the slot, same as the monthly quota: a scan that produced nothing
+  // does not burn one of the three. A user-cancelled scan (error='cancelled') keeps its slot: provider
+  // work may already have run and been billed to the operator key.
   const used = (db.prepare(
     `SELECT count(*) AS n FROM trial_scans t JOIN scan_jobs j ON j.id = t.job_id
      WHERE t.tenant_id = ? AND (j.status != 'failed' OR j.error = 'cancelled')`,

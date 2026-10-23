@@ -11,17 +11,20 @@ const REST: Step[] = [
 
 export default function HomeSteps() {
   const [state, setState] = useState<{ hasKey: boolean; remaining: number } | null>(null)
+  const [gmailOk, setGmailOk] = useState<boolean | null>(null)
   useEffect(() => {
     void fetch('/api/usage').then(r => r.ok ? r.json() : null).then(j => {
       if (j) setState({ hasKey: !!j.has_key, remaining: j.trial?.remaining ?? 0 })
     }).catch(() => {})
   }, [])
+  useEffect(() => { void fetch('/api/outreach/settings').then(r => r.ok ? r.json() : null).then(j => { if (j) setGmailOk(j.gmail?.status === 'active') }).catch(() => {}) }, [])
   // The key step shows only once the trial is used up (or the trial is off). While free scans
   // remain, the first-run path starts at "Say who you want".
   const onTrial = state && !state.hasKey && state.remaining > 0
-  const steps = state === null || state.hasKey || onTrial ? (onTrial ? REST : [KEY_STEP, ...REST]) : [
+  const steps: Step[] = [...(state === null || state.hasKey || onTrial ? (onTrial ? REST : [KEY_STEP, ...REST]) : [
     { ...KEY_STEP, d: `Your 3 free scans are used up. Add your own Anthropic or OpenAI key to keep scanning.` }, ...REST,
-  ]
+  ])]
+  if (gmailOk === false) steps.push({ n: String(steps.length + 1), t: 'Connect Gmail to send', d: 'Signing in with Google does not connect Gmail. Connect it in Settings so dazl can send only the emails you approve, from your own Gmail. Reply reading is optional.', href: '/app/settings', cta: 'Open Settings' })
   return (
     <>
       {onTrial && (

@@ -4,6 +4,7 @@
 // - max 3 active watches per user
 // - "new" = the lead's company domain (or normalized name) was not seen by this watch before
 // - results surface in-app only
+import { countActiveJobs } from './scan/store.ts'
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { createQueryJob } from './scan/store.ts'
@@ -92,7 +93,7 @@ export function runDueWatches(db: Database.Database, now = Math.floor(Date.now()
     const pause = (reason: string) => { db.prepare('UPDATE watches SET active = 0, paused_reason = ? WHERE id = ?').run(reason, w.id); paused++ }
     if (!hasKey(db, w.user_id)) { pause('no_api_key'); continue }
     if (!scanQuota(db, w.user_id).allowed) { pause('quota_exceeded'); continue }
-    const activeJobs = (db.prepare("SELECT count(*) AS n FROM scan_jobs WHERE user_id = ? AND status IN ('pending','running')").get(w.user_id) as { n: number }).n
+    const activeJobs = countActiveJobs(db, w.user_id)
     if (activeJobs > 0) continue // a scan is already going; the next tick picks this watch up
     const jobId = createQueryJob(db, w.user_id, { query: w.query, icp: w.icp, watchId: w.id })
     db.prepare('UPDATE watches SET last_run_at = ?, next_run_at = ? WHERE id = ?').run(now, now + WEEK_S, w.id)

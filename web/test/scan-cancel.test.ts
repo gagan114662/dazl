@@ -46,3 +46,9 @@ test('a just-cancelled scan keeps its active slot for the hold window, then free
   assert.equal(countActiveJobs(db, 'A'), 0)
   assert.equal(countActiveJobs(db, 'B'), 0)
 })
+
+test('watch scheduler uses the shared active count (cancel hold + csv exclusion)', async () => {
+  const src = (await import('node:fs')).readFileSync(new URL('../lib/watch.ts', import.meta.url), 'utf8')
+  assert.match(src, /countActiveJobs\(db, w\.user_id\)/)
+  assert.doesNotMatch(src, /FROM scan_jobs WHERE user_id = \? AND \(status IN/)
+})

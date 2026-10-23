@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import Provenance from './provenance'
 import type { OutreachProvenance } from '@/lib/outreach/provenance'
 import SequencesClient from './sequences-client'
+import SendReadiness from './send-readiness'
 
 interface Msg { currentness_held?: boolean; provenance?: OutreachProvenance | null; id: string; to_email: string; subject: string; body: string; status: string; error: string | null; sent_at: number | null; test?: number; evidence_state?: 'machine' | 'human' | 'unverified' }
 
@@ -69,6 +70,7 @@ export default function OutreachClient() {
     <div className="p-8 max-w-3xl">
       <h1 className="text-2xl font-bold mb-1">Outreach</h1>
       <p className="text-[#555] text-sm mb-6">Review each email, approve it, then send. Single emails send only after your click. A sequence sends its later steps only after you approve all three steps together. Every email gets your name, mailing address and an unsubscribe link added automatically.</p>
+      <SendReadiness />
       {note && <p className="text-sm text-yellow-400 mb-4">{note}</p>}
       {msgs.length === 0 && <p className="text-[#666] text-sm">No emails yet. Open Leads and choose Draft email on a lead with a published address.</p>}
       <div className="flex flex-col gap-3">

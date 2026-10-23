@@ -296,3 +296,22 @@ test('cancelled scans keep their monthly quota charge; genuine failures still re
   const b = createJob(db, 'A', input); db.prepare("UPDATE scan_jobs SET status='running' WHERE id=?").run(b); db.prepare("UPDATE scan_jobs SET status='failed', error='no_candidates' WHERE id=?").run(b)
   assert.equal(scansThisMonth(db, 'A'), 1)
 })
+
+
+test('a stop during research starts no complaint-source, grounding or later provider work even with competitors configured', async () => {
+  const db = setup()
+  migrateConnectors(db); migrateAdvanced(db); migrateCompetitors(db)
+  acceptConsent(db, 'A', 'advanced'); setCompetitors(db, 'A', ['Salesforce'])
+  const savedEnv = { ...process.env }
+  Object.assign(process.env, { ADVANCED_CONNECTORS: '1', ADVANCED_WORKER_URL: 'http://w', ADVANCED_WORKER_TOKEN: 't' })
+  try {
+    const id = createQueryJob(db, 'A', { query: 'teams unhappy with their crm', icp: JSON.stringify({ summary: 'x', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] }) } as never)
+    let workerCalls = 0, completeCalls = 0, researchCalls = 0
+    const worker = async () => { workerCalls++; return [] }
+    const prov = fake(async () => { researchCalls++; cancelJob(db, 'A', id); return { text: 'Here: ' + JSON.stringify([lead('https://a.com')]), citedUrls: ['https://a.com'] } })
+    prov.anthropic.complete = async () => { completeCalls++; return 'supports' }
+    assert.equal(await runJob(db, claimKeyedJob(db, id)!, { providers: prov, master, fetchPage: page, advancedWorker: worker }), 'done')
+    assert.deepEqual([researchCalls, workerCalls, completeCalls], [1, 0, 0])
+    assert.equal(listLeads(db, 'A', id).length, 0)
+  } finally { for (const k of Object.keys(process.env)) if (!(k in savedEnv)) delete process.env[k]; Object.assign(process.env, savedEnv) }
+})

@@ -444,6 +444,7 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
         ledger.record('search:tinyfish', leads === null ? 'unavailable' : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:tinyfish', leads)
       } catch (e) {
+        if (e instanceof ScanStopped) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e
         leads = null
       }
@@ -460,6 +461,7 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
       const res = await provider.research(key, buildCompanyPrompt(domain, deps.now ?? new Date()), deps.fetchImpl)
       leads = parseLeads(res.text, res.citedUrls)
       if (leads && leads.length > 0 && complete && deps.ground !== false) {
+        assertOwned(db, job)
         const g = await groundLeads(provider, key, request, leads, fetchP, deps.fetchImpl)
         if (g) leads = g
       }
@@ -587,6 +589,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         ledger.record('search:tinyfish', leads === null ? 'unavailable' : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:tinyfish', leads)
       } catch (e) {
+        if (e instanceof ScanStopped) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e
         leads = null
       }
@@ -618,6 +621,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         const items = collected.items
         for (const run of collected.runs) ledger.record(run.collector, run.status, run.evidence)
         if (items.length > 0) {
+          assertOwned(db, job)
           const text = await complete.call(providers_[vendor], key, buildSourcePrompt(job.query!, icpForSources, items), deps.fetchImpl, 3000)
           const extra = parseLeads(text, items.map(i => i.url)) ?? []
           ledger.evidenceCandidates(items.map(i => ({ ...i, source: `adapter:${i.source}` })), extra)
@@ -626,9 +630,11 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         // Advanced connectors (opt-in tier, own flag, consent and session). A page behind a login is never
         // verified by us: it goes to "needs review" as is, shown to the user and never emailed.
         if (sel.advanced?.length) {
+          assertOwned(db, job)
           const adv = await collectAdvanced(db, job.user_id, job.id, sel.advanced as AdvPlatform[], job.query!, { master: deps.master, worker: deps.advancedWorker, xQuery: xSearchQuery(icpForSources) || undefined })
           for (const collector of new Set(adv.map(i => i.source))) ledger.record(collector, 'ok', adv.filter(i => i.source === collector).length)
           if (adv.length > 0) {
+            assertOwned(db, job)
             const text = await complete.call(providers_[vendor], key, buildSourcePrompt(job.query!, icpForSources, adv), deps.fetchImpl, 3000)
             const walled = new Set(adv.filter(i => i.login_walled).map(i => i.url))
             const extra = parseLeads(text, adv.map(i => i.url)) ?? []
@@ -637,6 +643,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
           }
         }
       } catch (e) {
+        if (e instanceof ScanStopped) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e // a rejected key still fails the scan
         // any other source failure only means no extra candidates
       }
@@ -648,9 +655,11 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // and keep their competitor tag so the badge can be applied after verification.
     if (complaints.length === 0 && job.query && icpForSources && complete) {
       try {
+        assertOwned(db, job)
         complaints = await collectCompetitorComplaints(db, job.user_id, job.id, { master: deps.master, worker: deps.advancedWorker })
         if (complaints.length > 0) {
           for (const collector of new Set(complaints.map(i => i.source))) ledger.record(collector, 'ok', complaints.filter(i => i.source === collector).length)
+          assertOwned(db, job)
           const text = await complete.call(providers_[vendor], key, buildSourcePrompt(job.query!, icpForSources, complaints), deps.fetchImpl, 3000)
           const walled = new Set(complaints.filter(i => i.login_walled).map(i => i.url))
           const extra = parseLeads(text, complaints.map(i => i.url)) ?? []
@@ -658,6 +667,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
           for (const l of extra) (walled.has(l.source_url) ? walledLeads : leads).push(l)
         }
       } catch (e) {
+        if (e instanceof ScanStopped) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e // a rejected key still fails the scan
         // any other complaint-search failure only means no extra candidates
       }
@@ -679,6 +689,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         const res2 = await providers_[vendor].research(key, `${prompt}\n\nREMINDER: today is ${now.toISOString().slice(0, 10)}. Every prospect's signal must be from the last 90 days. Include "${month}" in your search queries.`, deps.fetchImpl)
         let more = parseLeads(res2.text, res2.citedUrls)
         if (more && more.length > 0 && complete && deps.ground !== false) {
+          assertOwned(db, job)
           const g = await groundLeads(providers_[vendor], key, job.query ?? `${job.business_name} ${job.industry} ${job.location}`, more, fetchP, deps.fetchImpl)
           if (g) more = g
         }
@@ -686,6 +697,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         const seen = new Set(leads.map(l => `${l.source_url}|${companyKey(l.company)}`))
         const fresh = (more ?? []).filter(l => !seen.has(`${l.source_url}|${companyKey(l.company)}`))
         if (fresh.length > 0) {
+          assertOwned(db, job)
           const o2 = await verifyLeads(fresh, fetchP, deps.now, judge)
           const seenKeys = new Set(outcome.leads.map(dedupKey))
           for (const l of o2.leads) { const k = dedupKey(l); if (!seenKeys.has(k)) { seenKeys.add(k); outcome.leads.push(l) } }
@@ -694,6 +706,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
           for (const [r, n] of Object.entries(o2.dropped)) outcome.dropped[r] = (outcome.dropped[r] ?? 0) + n
         }
       } catch (e) {
+        if (e instanceof ScanStopped) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e
       }
     }

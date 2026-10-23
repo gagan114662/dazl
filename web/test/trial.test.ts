@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateTrial, trialStatus, recordTrialScan, operatorKey, TRIAL_SCANS_PER_ACCOUNT, TRIAL_SCANS_PER_IP_PER_DAY } from '../lib/scan/trial.ts'
-import { migrateScan, createJob } from '../lib/scan/store.ts'
+import { migrateScan, createJob, cancelJob } from '../lib/scan/store.ts'
 import { migrateKeys } from '../lib/llm/key-store.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import type { Provider } from '../lib/llm/provider.ts'
@@ -108,4 +108,17 @@ test('keyless non-trial jobs are still never claimed', () => {
   migrateScan(db); migrateKeys(db); migrateTrial(db)
   createJob(db, 'keyless', { business_name: 'B', industry: 'i', location: 'l' }) // funded_by defaults to 'user'
   assert.equal(claimKeyedJob(db), null)
+})
+
+test('cancelled trial scans keep their operator-funded slot; genuine failures still refund', () => {
+  process.env.DAZL_TRIAL_ANTHROPIC_KEY = 'sk-ant-test'
+  try {
+    const db = setup()
+    for (let i = 0; i < TRIAL_SCANS_PER_ACCOUNT; i++) { const id = job(db, 't1'); recordTrialScan(db, 't1', id, `9.9.9.${i}`); cancelJob(db, 't1', id) }
+    const t = trialStatus(db, 't1', '1.2.3.4')
+    assert.equal(t.funded, false); assert.equal(t.reason, 'account_cap')
+    const db2 = setup()
+    const id = job(db2, 't1'); recordTrialScan(db2, 't1', id, '1.2.3.4'); setStatus(db2, id, 'failed')
+    assert.equal(trialStatus(db2, 't1', '1.2.3.4').remaining, TRIAL_SCANS_PER_ACCOUNT)
+  } finally { delete process.env.DAZL_TRIAL_ANTHROPIC_KEY }
 })
