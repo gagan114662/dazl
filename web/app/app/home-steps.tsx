@@ -11,11 +11,12 @@ const REST: Step[] = [
 
 export default function HomeSteps() {
   const [state, setState] = useState<{ hasKey: boolean; remaining: number } | null>(null)
+  const [usageFailed, setUsageFailed] = useState(false)
   const [gmailOk, setGmailOk] = useState<boolean | null>(null)
   useEffect(() => {
     void fetch('/api/usage').then(r => r.ok ? r.json() : null).then(j => {
-      if (j) setState({ hasKey: !!j.has_key, remaining: j.trial?.remaining ?? 0 })
-    }).catch(() => {})
+      if (j) setState({ hasKey: !!j.has_key, remaining: j.trial?.remaining ?? 0 }); else setUsageFailed(true)
+    }).catch(() => setUsageFailed(true))
   }, [])
   useEffect(() => { void fetch('/api/outreach/settings').then(r => r.ok ? r.json() : null).then(j => { if (j) setGmailOk(j.gmail?.status === 'active') }).catch(() => {}) }, [])
   // The key step shows only once the trial is used up (or the trial is off). While free scans
@@ -23,11 +24,14 @@ export default function HomeSteps() {
   const onTrial = state && !state.hasKey && state.remaining > 0
   // A saved key means the key step is done: never ask for it again. Until usage loads, show only the steps that do not depend on it.
   const steps: Step[] = [...(state === null || state.hasKey ? REST : onTrial ? REST : [
-    { ...KEY_STEP, d: `Your 3 free scans are used up. Add your own Anthropic or OpenAI key to keep scanning.` }, ...REST,
+    { ...KEY_STEP, d: 'Scans run on your own Anthropic or OpenAI key. Add one to start scanning.' }, ...REST,
   ])]
   if (gmailOk === false) steps.push({ n: String(steps.length + 1), t: 'Connect Gmail to send', d: 'Signing in with Google does not connect Gmail. Connect it in Settings so dazl can send from your own Gmail. Emails go out after you approve them, unless you turn on autopilot in Settings. Reply reading is optional.', href: '/app/settings', cta: 'Open Settings' })
   return (
     <>
+      {state === null && usageFailed && (
+        <p className="text-sm text-[#555] mb-4">Could not check your AI key status, so key setup is not shown. Reload to retry.</p>
+      )}
       {onTrial && (
         <p className="text-sm text-[#555] mb-4 border border-black/10 rounded-lg px-4 py-3 bg-[#fafafa]">
           Your first {state!.remaining} scan{state!.remaining === 1 ? '' : 's'} are on us - no AI key needed yet. Add your own key in Settings when they run out.

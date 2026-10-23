@@ -53,6 +53,15 @@ export function getSellerProfile(db: Database.Database, userId: string): { sells
   return { sells: r?.sells ?? '', website: r?.website ?? '' }
 }
 
+export function getBusinessName(db: Database.Database, userId: string): string {
+  const r = db.prepare('SELECT business_name FROM users WHERE id = ?').get(userId) as { business_name: string | null } | undefined
+  return r?.business_name ?? ''
+}
+
+export function setBusinessName(db: Database.Database, userId: string, name: string): void {
+  db.prepare('UPDATE users SET business_name = ? WHERE id = ?').run(name.replace(/\s+/g, ' ').trim().slice(0, 150), userId)
+}
+
 export function sellerProfile(db: Database.Database, userId: string): string {
   const p = getSellerProfile(db, userId)
   return [p.sells, p.website].filter(Boolean).join(' - ').slice(0, 300)

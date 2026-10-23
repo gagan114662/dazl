@@ -10,31 +10,36 @@ export default function SellerCard() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [saved, setSaved] = useState('')
+  const [bizName, setBizName] = useState('')
+  const [savedBiz, setSavedBiz] = useState('')
   const [editing, setEditing] = useState(false)
   useEffect(() => {
     void fetch('/api/settings/profile').then(r => r.ok ? r.json() : null).then(j => {
       if (!j) return
-      if (j.sells) { setSaved(String(j.sells)); return }
+      setSavedBiz(String(j.business_name ?? '')); setBizName(String(j.business_name ?? ''))
+      if (j.sells) { setSaved(String(j.sells)); setWebsite(String(j.website ?? '')); return }
       setShow(true)
     }).catch(() => {})
   }, [])
   if (saved && !editing) return (
-    <p className="text-sm text-[#555] mb-6">What you sell: <span className="text-[#111]">{saved}</span> <button type="button" onClick={() => { setSells(saved); setEditing(true) }} className="underline underline-offset-4 ml-1">Edit</button></p>
+    <p className="text-sm text-[#555] mb-6">What you sell: <span className="text-[#111]">{saved}</span>. Business name: <span className="text-[#111]">{savedBiz || 'not set (needed to create drafts)'}</span> <button type="button" onClick={() => { setSells(saved); setBizName(savedBiz); setEditing(true) }} className="underline underline-offset-4 ml-1">Edit</button></p>
   )
   if (!show && !editing) return null
   async function save(e: React.FormEvent) {
     e.preventDefault()
     setError(''); setBusy(true)
-    const r = await fetch('/api/settings/profile', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sells, website }) })
+    const r = await fetch('/api/settings/profile', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sells, website, business_name: bizName }) })
     const j = await r.json().catch(() => ({}))
     setBusy(false)
     if (!r.ok) return setError(j.error || 'Could not save')
-    setShow(false); setSaved(sells.trim()); setEditing(false)
+    // Show what the server actually stored (it trims), not what was typed.
+    setSaved(String(j.sells ?? sells.trim())); setSavedBiz(String(j.business_name ?? '')); setShow(false); setEditing(false)
   }
   return (
     <form onSubmit={save} className="card p-4 mb-8 text-sm">
       <p className="font-medium mb-1">First: what does your company sell?</p>
       <p className="text-gray-400 text-xs mb-3">dazl uses this to work out who your buyers are. One line is enough.</p>
+      <input className="field w-full mb-2" maxLength={150} value={bizName} onChange={e => setBizName(e.target.value)} placeholder="Your business name (used in email drafts)" />
       <input className="field w-full mb-2" required maxLength={150} value={sells} onChange={e => setSells(e.target.value)} placeholder="e.g. Sales prospecting software for recruiting agencies" />
       <input className="field w-full mb-2" maxLength={200} value={website} onChange={e => setWebsite(e.target.value)} placeholder="Your website (optional, e.g. https://acme.com) - helps dazl learn what you sell" />
       {error && <p className="text-red-400 text-xs mb-2">{error}</p>}

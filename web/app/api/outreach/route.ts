@@ -5,7 +5,7 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 
 const MSG: Record<string, [number, string]> = {
-  seller_context_required: [422, 'Add your business name in Settings before creating a draft.'],
+  seller_context_required: [422, 'Add your business name on the Home page ("What you sell") before creating a draft.'],
   seller_offer_required: [422, 'Add a short description of what you offer (Memory or onboarding) before creating a draft. dazl will not invent one.'],
   lead_currentness_unconfirmed: [409, 'This is quote-backed research with unknown event timing. Review the source on Leads before using it for drafting; that is not a freshness or consent verdict.'],
   not_found: [404, 'Lead not found'],
