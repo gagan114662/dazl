@@ -271,12 +271,6 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
   passed.forEach(({ c, v }, i) => {
     const j = verdicts[i]
     if (j === 'contradicts') { drop('contradicted'); return }
-    if (v.dateStatus !== 'verified') {
-      const k = dedupKey(c)
-      if (!review.has(k)) review.set(k, { ...c, contact: null, review_reason: 'event_timing_unconfirmed' })
-      else drop('duplicate')
-      return
-    }
     // Cap by source class: a content farm that copied the quote never outranks the company's own page.
     const confidence = Math.max(0, Math.min(sourceCap(c.source_url, c.company, knownDomain), Math.min(100, v.confidence + (j ? JUDGE_DELTA[j] : 0))))
     if (confidence < MIN_CONFIDENCE) { drop(j === 'unclear' ? 'claim_unclear' : 'low_confidence'); return }
