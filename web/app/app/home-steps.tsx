@@ -24,7 +24,7 @@ export default function HomeSteps() {
   const steps: Step[] = [...(state === null || state.hasKey || onTrial ? (onTrial ? REST : [KEY_STEP, ...REST]) : [
     { ...KEY_STEP, d: `Your 3 free scans are used up. Add your own Anthropic or OpenAI key to keep scanning.` }, ...REST,
   ])]
-  if (gmailOk === false) steps.push({ n: String(steps.length + 1), t: 'Connect Gmail to send', d: 'Signing in with Google does not connect Gmail. Connect it in Settings so dazl can send only the emails you approve, from your own Gmail. Reply reading is optional.', href: '/app/settings', cta: 'Open Settings' })
+  if (gmailOk === false) steps.push({ n: String(steps.length + 1), t: 'Connect Gmail to send', d: 'Signing in with Google does not connect Gmail. Connect it in Settings so dazl can send from your own Gmail. Emails go out after you approve them, unless you turn on autopilot in Settings. Reply reading is optional.', href: '/app/settings', cta: 'Open Settings' })
   return (
     <>
       {onTrial && (

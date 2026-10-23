@@ -41,7 +41,7 @@ export default function GmailPanel() {
   return (
     <div className="card p-6 mb-4">
       <h2 className="font-semibold mb-1">Email sending (Gmail)</h2>
-      <p className="text-[#555] text-sm mb-4">Emails go out from your own Gmail, one at a time, only after you approve each one. Connecting also asks for read access, limited to replies in the threads dazl started for you and delivery-failure notices for them - dazl never lists, searches, or reads anything else in your mailbox. On Google&apos;s consent screen you can untick the read access and still connect send-only.</p>
+      <p className="text-[#555] text-sm mb-4">Emails go out from your own Gmail. By default each one is sent after you approve it; if you turn on autopilot below, it can send first emails on its own within the limits you set. Connecting also asks for read access, limited to replies in the threads dazl started for you and delivery-failure notices for them - dazl never lists, searches, or reads anything else in your mailbox. On Google&apos;s consent screen you can untick the read access and still connect send-only.</p>
       {s?.gmail ? (
         <div className="text-sm mb-4">
           <div className="flex items-center justify-between">
