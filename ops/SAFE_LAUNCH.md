@@ -37,3 +37,21 @@ Tests: python3 -m unittest discover -s ops -p 'test_safe_launch.py'. Synthetic
 parser inputs, subprocess non-output of sentinel secret on errors, argv/output
 handling, dry-run no signal, exact listener refusal, success/rollback ordering,
 old-listener timeout. Mocked lifecycle tests are not real host proof.
+
+## Revision safety gates
+
+Requires nonempty DB_PATH, DAZL_MASTER_KEY, PUBLIC_BASE_URL; DB_PATH must name an
+existing nonempty absolute database. Caller must supply exact verified backup
+path, backup-db identity matching DB_PATH and backup-verified attestation; helper
+also independently checks read-only SQLite backup integrity. Backup recency and
+correspondence to live DB still need separately grounded main coordination.
+Requires env regular-file ownership by executing uid, private mode and no symlink
+in file/parent path. Rejects backslashes rather than silently unescaping values.
+Rejects env PATH/NODE_OPTIONS/NODE_PATH/LD preload/library and npm shell/prefix
+overrides; resolves and pins root-owned non-group/world-writable npm/node before
+stop. No shell lookup of npm after stop. Health redirects disabled. Reusable-port
+probe handles TIME_WAIT. /proc PPid/cgroup metadata refuses supervised/unrecognised
+process trees; direct-orphan PPid1 only. This intentionally will NOT support the
+previously observed npm/sh/next chain without a separately reviewed reconciliation.
+Never bypass that refusal by guessing a parent PID or stopping a supervisor.
+Remaining PID recheck has a small TOCTOU window; no pidfd implementation claimed.

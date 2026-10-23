@@ -15,7 +15,7 @@ class SafeLaunchTest(unittest.TestCase):
     def test_parser_literal_and_fail_closed(self):
         self.assertEqual(m.parse_env('A=abc\nB="two words"\nexport C=abc#fragment\nD=\n# comment\n'),
                          {'A':'abc','B':'two words','C':'abc#fragment','D':''})
-        for text in ['A=$(command)', 'A=$HOME', 'A=`cmd`', 'A=two words', 'A="unterminated', 'A=x\nA=y', 'bad-name=value']:
+        for text in ['A=$(command)', 'A=$HOME', 'A=`cmd`', 'A=two words', 'A="unterminated', 'A=x\nA=y', 'bad-name=value', r'A=abc\def']:
             with self.assertRaises(m.LaunchError): m.parse_env(text)
 
     def test_real_subprocess_never_outputs_synthetic_secret_on_errors(self):
@@ -30,7 +30,7 @@ class SafeLaunchTest(unittest.TestCase):
             for content in [f'TOKEN={marker}\n', f'TOKEN="{marker}\n', f'TOKEN=${marker}\n']:
                 env.write_text(content);env.chmod(0o600)
                 proc=subprocess.run([sys.executable,str(Path(m.__file__)), '--stage',str(stage),'--commit','a'*40,
-                    '--rollback-stage',str(old),'--rollback-commit','b'*40,'--env-file',str(env),'--pid','99999999'],capture_output=True,text=True)
+                    '--rollback-stage',str(old),'--rollback-commit','b'*40,'--env-file',str(env),'--pid','99999999','--backup',str(root/'backup'),'--backup-db',str(root/'db')],capture_output=True,text=True)
                 self.assertNotIn(marker,proc.stdout+proc.stderr)
                 self.assertNotIn('Traceback',proc.stdout+proc.stderr)
                 self.assertNotEqual(proc.returncode,0)
@@ -39,10 +39,10 @@ class SafeLaunchTest(unittest.TestCase):
         return argparse.Namespace(stage='/new',commit='a'*40,rollback_stage='/old',rollback_commit='b'*40,env_file='/env',pid=987654,port=3100,execute=execute)
 
     def test_launch_uses_no_shell_no_env_argv_and_no_output(self):
-        with patch.object(m.subprocess,'Popen') as popen:
+        with patch.object(m,'RUNTIME',['/usr/bin/node','/usr/lib/npm-cli.js']), patch.object(m.subprocess,'Popen') as popen:
             m.launch(Path('/new'),{'TOKEN':'synthetic'},3100)
             args,kwargs=popen.call_args
-            self.assertEqual(args,(['npm','start'],))
+            self.assertEqual(args,(['/usr/bin/node','/usr/lib/npm-cli.js','start'],))
             self.assertNotIn('synthetic',str(args))
             self.assertEqual(kwargs['stdout'],subprocess.DEVNULL)
             self.assertEqual(kwargs['stderr'],subprocess.DEVNULL)
@@ -53,11 +53,14 @@ class SafeLaunchTest(unittest.TestCase):
     def run_case(self, execute, waits):
         stack=contextlib.ExitStack()
         stack.enter_context(patch.object(m,'stage_path',side_effect=[Path('/new'),Path('/old')]))
-        stack.enter_context(patch.object(m,'read_env',return_value={'TOKEN':'synthetic'}))
+        stack.enter_context(patch.object(m,'read_env',return_value={'TOKEN':'synthetic','DB_PATH':'/db','DAZL_MASTER_KEY':'dummy','PUBLIC_BASE_URL':'https://example.invalid'}))
         stack.enter_context(patch.object(m,'pid_cwd',return_value=Path('/old')))
         stack.enter_context(patch.object(m,'owns_listener',return_value=True))
         stack.enter_context(patch.object(m,'health',return_value='b'*40))
         stack.enter_context(patch.object(m,'await_state',side_effect=waits))
+        stack.enter_context(patch.object(m,'check_database_backup'))
+        stack.enter_context(patch.object(m,'pin_executables',return_value=['/usr/bin/node','/usr/lib/npm-cli.js']))
+        stack.enter_context(patch.object(m,'check_process'))
         kill=stack.enter_context(patch.object(m.os,'kill'))
         killpg=stack.enter_context(patch.object(m.os,'killpg'))
         launch=stack.enter_context(patch.object(m,'launch',side_effect=[Mock(pid=111),Mock(pid=222)]))
@@ -81,8 +84,42 @@ class SafeLaunchTest(unittest.TestCase):
         result,_,_,launch=self.run_case(True,[False])
         self.assertEqual(result['status'],'old_listener_did_not_stop');launch.assert_not_called()
 
+    def test_missing_env_and_path_override_fail_before_signal(self):
+        for env, expected in [({},'required_env_missing_DB_PATH'), ({'DB_PATH':'/db','DAZL_MASTER_KEY':'dummy','PUBLIC_BASE_URL':'https://example.invalid','PATH':'/evil'},'runtime_env_override_refused')]:
+            with patch.object(m,'stage_path',side_effect=[Path('/new'),Path('/old')]), patch.object(m,'read_env',return_value=env), patch.object(m.os,'kill') as kill:
+                with self.assertRaisesRegex(m.LaunchError,expected):m.run(self.args())
+                kill.assert_not_called()
+
+    def test_wrong_database_or_missing_verified_backup_refused(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as d:
+            db=Path(d)/'db'; backup=Path(d)/'backup'
+            for p in [db,backup]:
+                with sqlite3.connect(p) as conn:conn.execute('CREATE TABLE x(id INTEGER)')
+            args=argparse.Namespace(backup=str(backup),backup_db=str(db),backup_verified=True)
+            m.check_database_backup({'DB_PATH':str(db)},args)
+            for bad in ['',str(Path(d)/'missing')]:
+                with self.assertRaises(m.LaunchError):m.check_database_backup({'DB_PATH':bad},args)
+            args.backup_verified=False
+            with self.assertRaisesRegex(m.LaunchError,'backup_verification_required'):m.check_database_backup({'DB_PATH':str(db)},args)
+
+    def test_supervised_process_refused(self):
+        with patch.object(Path,'read_text',side_effect=['PPid: 99\n','0::/system.slice/app.service']):
+            with self.assertRaisesRegex(m.LaunchError,'supervised_process_refused'):m.check_process(123)
+
+    def test_redirect_handler_never_redirects(self):
+        self.assertIsNone(m.NoRedirect().redirect_request(None,None,302,'redirect',{},'http://evil.invalid'))
+
+    def test_env_owner_symlink_and_permissions_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            env=Path(d)/'env';env.write_text('A=synthetic');env.chmod(0o644)
+            with self.assertRaisesRegex(m.LaunchError,'env_permissions_refused'):m.read_env(env)
+            env.chmod(0o600);link=Path(d)/'link';link.symlink_to(env)
+            with self.assertRaisesRegex(m.LaunchError,'env_permissions_refused'):m.read_env(link)
+            self.assertEqual(m.read_env(env),{'A':'synthetic'})
+
     def test_wrong_listener_blocks_before_signal(self):
-        with patch.object(m,'stage_path',side_effect=[Path('/new'),Path('/old')]), patch.object(m,'read_env',return_value={}), patch.object(m,'pid_cwd',return_value=Path('/old')), patch.object(m,'owns_listener',return_value=False), patch.object(m.os,'kill') as kill:
+        with patch.object(m,'stage_path',side_effect=[Path('/new'),Path('/old')]), patch.object(m,'read_env',return_value={'DB_PATH':'/db','DAZL_MASTER_KEY':'dummy','PUBLIC_BASE_URL':'https://example.invalid'}), patch.object(m,'check_database_backup'), patch.object(m,'pin_executables'), patch.object(m,'check_process'), patch.object(m,'pid_cwd',return_value=Path('/old')), patch.object(m,'owns_listener',return_value=False), patch.object(m.os,'kill') as kill:
             with self.assertRaisesRegex(m.LaunchError,'pid_listener_mismatch'):m.run(self.args())
             kill.assert_not_called()
 
