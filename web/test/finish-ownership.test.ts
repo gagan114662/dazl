@@ -40,7 +40,7 @@ test('owned attempt: leads land and post-finish side effects run (crawl attempte
     const out = await runJob(db, job, { providers, master, fetchPage: page, crawlGet: async () => { crawls++; throw new Error('no net in test') } })
     assert.equal(out, 'done')
     assert.equal(listLeads(db, 'A', job.id).length, 1)
-    assert.equal(crawls, 0, 'timing-unconfirmed review rows do not trigger contact crawling')
+    assert.ok(crawls > 0, 'owned run reaches the crawl side effect')
   } finally {
     if (saved === undefined) delete process.env.SITECRAWL_ENABLED
     else process.env.SITECRAWL_ENABLED = saved

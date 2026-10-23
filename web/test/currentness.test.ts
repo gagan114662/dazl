@@ -19,3 +19,10 @@ test('publication, observation, invalid dates and stale rereads cannot create ev
  for(const date of ['2026-02-30','2026-10-24','2024-01-01',null])assert.equal(eventTimingFresh({...filing,source_published_at:date},now),false)
  assert.equal(eventTimingFresh({...filing,source_url:'https://sec.gov.attacker.example/x'},now),false)
 })
+
+test('legacy verified label and present-tense quote cannot bypass deterministic NOW guard',async()=>{
+ const provider={research:async()=>({text:'',citedUrls:[]}),complete:async()=> 'LEAD 1 | fit 5 | intent 5 | action 4 | signals expansion | why They need this NOW because they are expanding'}
+ const grades=await scoreLeads(provider,'test','ICP',[{...lead,date_status:'verified',excerpt:'Acme is expanding now'}])
+ assert.equal(grades?.[0].fit,5);assert.equal(grades?.[0].action,4);assert.equal(grades?.[0].intent,0)
+ assert.doesNotMatch(grades?.[0].why??'',/need this NOW|are expanding/)
+})

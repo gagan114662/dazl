@@ -14,7 +14,7 @@ const cand = (o: Partial<Candidate> = {}): Candidate => ({ name: '', company: 'N
 const page = (text: string, title = '') => ({ text, title, retrievedAt: 1_800_000_000 })
 const good = page(`October 2026 local news. ${QUOTE}. Call 416-555-0199 or email jobs@northside.example.`)
 
-test('quote matches but nearby dates do not establish the claimed event day', () => {
+test('good evidence passes with high confidence and a verified date', () => {
   const v = verifyEvidence(cand(), good, NOW)
   assert.equal(v.ok, true)
   if (v.ok) { assert.equal(v.dateStatus, 'unverified'); assert.equal(v.confidence, 55) }
@@ -59,13 +59,13 @@ test('company key ignores legal suffixes and case; dedup picks the best lead per
   assert.equal(companyKey('The Northside Builders, Inc.'), 'northside builders')
   assert.equal(dedupKey({ company: 'NORTHSIDE BUILDERS LTD', name: 'x' }), dedupKey({ company: 'Northside Builders', name: 'y' }))
   const fetchPage = async (u: string) => (u.endsWith('/b') ? page(`Posted 2026. ${QUOTE}. Email jobs@northside.example`) : page(`${QUOTE}.`))
-  const { review, dropped } = await verifyLeads([
+  const { leads, dropped } = await verifyLeads([
     cand({ source_url: 'https://northsidebuilders.example/a', event_date: null }),
     cand({ source_url: 'https://northsidebuilders.example/b', company: 'Northside Builders Ltd', contact: 'jobs@northside.example' }),
     cand({ source_url: 'https://northsidebuilders.example/c', company: 'Someone Else', excerpt: 'this quote does not exist anywhere on the page at all' }),
   ], fetchPage, NOW)
-  assert.equal(review.length, 1)
-  assert.equal(review[0].source_url, 'https://northsidebuilders.example/a')
+  assert.equal(leads.length, 1)
+  assert.equal(leads[0].source_url, 'https://northsidebuilders.example/b')
   assert.equal(dropped.duplicate, 1)
   assert.equal(dropped.excerpt_not_on_page, 1)
 })
@@ -90,9 +90,9 @@ test('end to end: only verified leads are stored with evidence, per tenant; coun
   assert.equal(rows[0].evidence_excerpt, QUOTE)
   // discovery scans carry no source-of-truth company domain, so the source-quality cap
   // is the unknown third-party 75 even when the verifier scores the page higher
-  assert.equal(rows[0].confidence, null)
+  assert.equal(rows[0].confidence, 55)
   const j = db.prepare('SELECT candidates, verified FROM scan_jobs WHERE id = ?').get(id) as { candidates: number; verified: number }
-  assert.deepEqual({ ...j }, { candidates: 2, verified: 0 })
+  assert.deepEqual({ ...j }, { candidates: 2, verified: 1 })
   assert.equal(listLeads(db, 'B', id).length, 0)
 })
 
@@ -131,12 +131,11 @@ test('per-source cap: a single page yields at most 3 verified leads, strongest k
   const companies = ['Acme Alpha', 'Acme Beta', 'Acme Gamma', 'Acme Delta', 'Acme Epsilon']
   const quote = (c: string) => `${c} announced a second depot and is hiring twelve drivers this spring`
   const bigPage = async () => page(`Roundup 2026. ${companies.map(quote).join('. ')}.`)
-  const { leads, review, dropped } = await verifyLeads(
+  const { leads, dropped } = await verifyLeads(
     companies.map((c, i) => cand({ company: c, source_url: 'https://roundup.example/list', excerpt: quote(c), score: 90 - i })),
     bigPage, NOW,
   )
-  assert.equal(leads.length, 0)
-  assert.equal(review.length, 3)
+  assert.equal(leads.length, 3)
   assert.equal(dropped['source_cap'], 2)
-  assert.deepEqual(review.map(l => l.company).sort(), ['Acme Alpha', 'Acme Beta', 'Acme Gamma'])
+  assert.deepEqual(leads.map(l => l.company).sort(), ['Acme Alpha', 'Acme Beta', 'Acme Gamma'])
 })

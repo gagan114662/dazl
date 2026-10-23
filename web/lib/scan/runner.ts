@@ -150,7 +150,7 @@ export function makeJudge(provider: Provider, apiKey: string, fetchImpl?: typeof
   }
 }
 
-const JUDGE_DELTA: Record<Judgement, number> = { supports: 5, unclear: -10, unavailable: -5, contradicts: 0 }
+const JUDGE_DELTA: Record<Judgement, number> = { supports: 5, unclear: -10, unavailable: 0, contradicts: 0 }
 const REVIEW_REASONS: Record<string, string> = { blocked: 'blocked_by_site', js_required: 'needs_javascript' }
 
 // Fetches each cited page (public https only) and keeps a lead only if the page itself

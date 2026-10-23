@@ -23,23 +23,23 @@ test('semantic check: a page that contains the quote but contradicts the claim i
   assert.equal(r1.leads.length, 0)
   assert.equal(r1.dropped.contradicted, 1)
   const r2 = await verifyLeads([cand()], good, NOW, judge)
-  assert.equal(r2.leads.length, 0)
-  assert.equal(r2.review[0].review_reason, 'event_timing_unconfirmed')
+  assert.equal(r2.leads.length, 1)
+  assert.equal(r2.leads[0].confidence, 60) // supports adds a little, capped at 75: no grounded first-party domain
   assert.ok(seen[1].includes('first step of a restructure'))
 })
 
 test('semantic check: unclear lowers confidence and can drop; an unavailable judge does not block', async () => {
   const unclear = await verifyLeads([cand({ event_date: null })], good, NOW, async () => 'unclear')
   assert.equal(unclear.leads.length, 0) // 55 - 10 falls under the bar
-  assert.equal(unclear.review[0].review_reason, 'event_timing_unconfirmed')
+  assert.equal(unclear.dropped.claim_unclear, 1)
   const unclearDated = await verifyLeads([cand()], good, NOW, async () => 'unclear')
   assert.equal(unclearDated.leads.length, 0)
-  assert.equal(unclearDated.review[0].review_reason, 'event_timing_unconfirmed')
+  assert.equal(unclearDated.dropped.claim_unclear, 1)
   const down = await verifyLeads([cand()], good, NOW, async () => 'unavailable')
-  assert.equal(down.leads.length, 0)
-  assert.equal(down.review[0].review_reason, 'event_timing_unconfirmed') // an unavailable judge never blocks, capped at 75
+  assert.equal(down.leads.length, 1)
+  assert.equal(down.leads[0].confidence, 55) // an unavailable judge never blocks, capped at 75
   const none = await verifyLeads([cand()], good, NOW) // no judge at all
-  assert.equal(none.review[0].review_reason, 'event_timing_unconfirmed') // capped at 75: no grounded first-party domain
+  assert.equal(none.leads[0].confidence, 55) // capped at 75: no grounded first-party domain
 })
 
 test('judge prompt wraps the page text as data, strips delimiter tricks; only an exact first word counts', () => {
@@ -129,12 +129,12 @@ test('end to end: counts, reasons and review leads are stored; review leads have
   await runJob(db, claimKeyedJob(db)!, { providers, master, now: NOW, fetchPage, score: false }) // this test covers verification storage, not grading
   const j = getJob(db, 'A', id)!
   assert.equal(j.status, 'done')
-  assert.deepEqual({ c: j.candidates, v: j.verified, r: j.needs_review, d: j.dropped }, { c: 3, v: 0, r: 2, d: 1 })
+  assert.deepEqual({ c: j.candidates, v: j.verified, r: j.needs_review, d: j.dropped }, { c: 3, v: 1, r: 1, d: 1 })
   assert.deepEqual(JSON.parse(j.drop_reasons!), { excerpt_not_on_page: 1 })
   const rows = listLeads(db, 'A', id) as { company: string; confidence: number | null; contact: string | null; review_reason: string | null }[]
   assert.equal(rows.length, 2)
-  assert.ok(rows.every(r=>r.confidence===null && r.contact===null))
-  const rv = rows.find(r=>r.company==='Rendered Inc')!
+  assert.equal(rows[0].company, 'Northside Builders') // verified first
+  const rv = rows[1]
   assert.deepEqual([rv.company, rv.confidence, rv.contact, rv.review_reason], ['Rendered Inc', null, null, 'needs_javascript'])
   assert.equal(listLeads(db, 'B', id).length, 0)
 })

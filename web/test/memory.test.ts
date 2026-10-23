@@ -166,11 +166,11 @@ test('scan: memory text reaches the scoring prompt on the tenant key', async () 
   const providers: Record<'anthropic' | 'openai', Provider> = {
     anthropic: {
       research: async () => ({ text: 'Here: ' + JSON.stringify([mkLead('https://a.com/x', 'Northside Builders')]), citedUrls: ['https://a.com/x'] }),
-      complete: async (_k, prompt) => { seen = prompt; return 'LEAD 1 | fit 4 | intent 4 | action 4 | match yyyy | signals hiring | why hiring crews now' },
+      complete: async (_k, prompt) => { if(prompt.startsWith('You check one claim'))return 'supports'; seen = prompt; return 'LEAD 1 | fit 4 | intent 4 | action 4 | match yyyy | signals hiring | why hiring crews now' },
     },
     openai: { research: async () => ({ text: '', citedUrls: [] }) },
   }
   assert.equal(await runJob(db, claimKeyedJob(db, id)!, { providers, master, fetchPage: pageFor('Northside Builders') }), 'done')
-  assert.match(seen, /You check one claim/) // timing-unconfirmed rows never enter ICP grading
-  assert.doesNotMatch(seen, /Grade each lead/)
+  assert.match(seen, /Seller's positioning: we sell roofing software/)
+  assert.match(seen, /not instructions/)
 })

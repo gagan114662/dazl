@@ -64,7 +64,7 @@ test('competitor complaints run even when the scan selected no sources, and the 
   const worker = async () => [{ url: complaintUrl, title: 'Salesforce is terrible, alternatives?', quote: QUOTE, date: new Date().toISOString().slice(0, 10), login_walled: false }]
   const cLead = () => lead(complaintUrl, { signal: "complained about Salesforce" })
   const prov = fake(ok([cLead()], [complaintUrl]))
-  prov.anthropic.complete = async () => "Here: " + JSON.stringify([cLead()])
+  prov.anthropic.complete = async (_k,prompt) => prompt.startsWith('You check one claim') ? 'supports' : "Here: " + JSON.stringify([cLead()])
   assert.equal(await runJob(db, claimKeyedJob(db, id)!, { providers: prov, master, fetchPage: page, advancedWorker: worker, score: false }), 'done')
   const leads = listLeads(db, 'A', id)
   assert.equal(leads.length, 1)
@@ -209,8 +209,8 @@ test('stale-heavy first round triggers one freshness retry and merges the fresh 
       : { text: `Old news from 2024. ${QUOTE}.`, title: 'Northside Builders archive', retrievedAt: 1_700_000_000 }
   const r = await runJob(db, claimKeyedJob(db)!, { providers: prov, master, fetchPage, ground: false })
   assert.equal(r, 'done')
-  assert.equal(calls, 1) // stale claims remain reviewable, no unrequested retry
-  assert.equal(listLeads(db, 'A', id).length, 2) // historical rows retained in review, not silently lost
+  assert.equal(calls, 1) // stale claims remain reviewable without extra retry
+  assert.equal(listLeads(db, 'A', id).length, 2) // two historical claims remain in review
 })
 
 test('no stale retry when the first round already produced leads', async () => {
@@ -230,12 +230,12 @@ test('scoring failure holds leads at fit 0; the raw candidate score is not passe
   const prov = fake(ok([lead('https://a.com', { signal: 'Announced expansion into Toronto' })], ['https://a.com']))
   prov.anthropic.complete = async () => { throw new Error('model down') }
   assert.equal(await runJob(db, claimKeyedJob(db)!, { providers: prov, master, fetchPage: page, ground: false }), 'done')
-  assert.equal(listLeads(db, 'A', id).length, 1) // timing-unconfirmed work remains reviewable
+  assert.equal(listLeads(db, 'A', id).length, 0) // held leads leave the default lane
   const leads = listLeads(db, 'A', id, 200, true) as { fit: number | null; intent: number | null; why: string | null; score: number }[]
   assert.equal(leads.length, 1)
-  assert.equal(leads[0].fit, null)
+  assert.equal(leads[0].fit, 0)
   assert.equal(leads[0].intent, null)
-  assert.equal(leads[0].why, null)
+  assert.match(leads[0].why ?? '', /grading failed/i)
   assert.equal(leads[0].score, 80) // raw candidate score preserved, but held out of the graded lanes
 })
 
@@ -243,23 +243,23 @@ test('unparseable scoring output also fails closed (all-or-nothing parse)', asyn
   const db = setup()
   const id = createJob(db, 'A', input)
   const prov = fake(ok([lead('https://a.com')], ['https://a.com']))
-  prov.anthropic.complete = async () => 'sorry, I cannot grade these leads'
+  prov.anthropic.complete = async (_k,prompt) => prompt.startsWith('You check one claim') ? 'supports' : 'sorry, I cannot grade these leads'
   assert.equal(await runJob(db, claimKeyedJob(db)!, { providers: prov, master, fetchPage: page, ground: false }), 'done')
   const leads = listLeads(db, 'A', id, 200, true) as { fit: number | null; intent: number | null; why: string | null; score: number }[]
   assert.equal(leads.length, 1)
-  assert.equal(leads[0].fit, null)
-  assert.equal(leads[0].why, null)
+  assert.equal(leads[0].fit, 0)
+  assert.match(leads[0].why ?? '', /grading failed/i)
 })
 
 test('successful scoring still grades leads normally', async () => {
   const db = setup()
   const id = createJob(db, 'A', input)
   const prov = fake(ok([lead('https://a.com', { signal: 'Raised a Series B to expand the sales team' })], ['https://a.com']))
-  prov.anthropic.complete = async () => 'LEAD 1 | fit 4 | intent 3 | action 4 | match yyyy | signals raised_funding | why fresh funding, exact ICP'
+  prov.anthropic.complete = async (_k,prompt) => prompt.startsWith('You check one claim') ? 'supports' : 'LEAD 1 | fit 4 | intent 3 | action 4 | match yyyy | signals raised_funding | why fresh funding, exact ICP'
   assert.equal(await runJob(db, claimKeyedJob(db)!, { providers: prov, master, fetchPage: page, ground: false }), 'done')
   const leads = listLeads(db, 'A', id) as { fit: number | null; intent: number | null; why: string | null }[]
   assert.equal(leads.length, 1)
-  assert.equal(leads[0].fit, null)
-  assert.equal(leads[0].intent, null)
-  assert.equal(leads[0].why, null)
+  assert.equal(leads[0].fit, 4)
+  assert.equal(leads[0].intent, 0)
+  assert.match(leads[0].why ?? '', /timing is unconfirmed/)
 })

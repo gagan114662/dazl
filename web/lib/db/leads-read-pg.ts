@@ -73,7 +73,7 @@ l.human_confirmed_at, l.human_confirmed_from,
            l.fit, l.intent, l.action, l.why, l.signals, l.icp_match, l.watch_new, l.seen_before, l.stage
          FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
          WHERE j.id = $1 AND j.user_id = $2 ${includeHidden ? '' : 'AND (l.fit IS NULL OR l.fit > 1)'}
-         ORDER BY (l.fit IS NULL), l.fit DESC, l.intent DESC, l.action DESC, (l.confidence IS NULL), l.confidence DESC, l.score DESC, l.created_at DESC LIMIT $3`,
+         ORDER BY (l.fit IS NULL), l.fit DESC, l.action DESC, (l.confidence IS NULL), l.confidence DESC, l.score DESC, l.created_at DESC LIMIT $3`,
         [jobId, userId, Math.min(limit, 500)],
       )
       return (rows as Record<string, unknown>[]).map(r => ({

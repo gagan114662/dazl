@@ -153,11 +153,10 @@ export async function scoreLeads(provider: Provider, apiKey: string, icpText: st
     const text = await provider.complete(apiKey, scorePrompt(icpText, leads.slice(0, 40)), fetchImpl, 2500)
     const parsed = parseScores(text, Math.min(leads.length, 40))
     if (!parsed) console.error('lead scoring: could not parse model output', text.slice(0, 300))
-    if (parsed) parsed.forEach((g, i) => {
-      if (!leads[i].event_date || leads[i].date_status !== 'verified') {
-        g.intent = 0
-        g.why = 'Event timing is unconfirmed. Review the source before treating this as a current buying need.'
-      }
+    if (parsed) parsed.forEach(g => {
+      // No generic candidate carries structured event-association proof.
+      g.intent = 0
+      g.why = 'Event timing is unconfirmed. Review the source before treating this as a current buying need.'
     })
     return parsed
   } catch (e) {
