@@ -6,6 +6,7 @@ type Sequence = { currentness_held?: boolean; id: string; message_id: string; le
 type Analytics = { sent: number; delivered: number; replied: number; bounced: number; optOuts: number }
 type Data = { sequences: Sequence[]; test_addresses: string[]; test_fixture_available?: boolean; status: Record<string,{status:string;step:number;next_due_at:number|null}>; campaigns: { id: string; query: string; analytics: Analytics }[] }
 const COPY: Record<string,string> = {
+  not_sales_contact: 'The published address is for recruitment, support, privacy or another restricted purpose. Saved words remain unchanged; approval and sending are blocked.',
   reading_not_enabled:'Enable reply reading in Settings before approving a sequence. Without it, sequences cannot stop on replies.',
   sender_identity_missing:'Add your sender name and mailing address in Settings.',
   gmail_not_connected:'Connect Gmail in Settings.',

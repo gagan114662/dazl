@@ -38,3 +38,7 @@ test('source context persists and human review never upgrades recruitment to sal
  const original=db.prepare('SELECT * FROM outreach_messages').get()
  await assert.rejects(sendMessage(db,'A',msg),/not_sales_contact/);assert.deepEqual(db.prepare('SELECT * FROM outreach_messages').get(),original)
 })
+
+test('accented resume and c.v. application wording restrict even sales-localpart',()=>{
+ for(const term of ['resumé','résumé','c.v.','CV','resume'])assert.equal(classifyPurpose('sales@acme.example',{excerpt:'Send your '+term+' to sales@acme.example',source_url:'https://acme.example/contact'}).purpose,'non-sales')
+})

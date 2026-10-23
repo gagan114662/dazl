@@ -9,7 +9,7 @@ export function contactContext(text: string, email: string, source_url: string):
 export function contextRestriction(c?: ContactContext | null): string | null {
  if(!c)return null
  if(c.restriction)return c.restriction
- const s=c.excerpt
+ const s=c.excerpt.normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/\bc\s*\.\s*v\s*\./gi,'cv')
  if(/\b(send|submit|email)\b.{0,65}\b(cv|resum[eé]|application|cover letter)\b|\b(cv|resum[eé]|application|cover letter)\b.{0,65}\b(send|submit|email|to)\b/i.test(s))return 'recruitment context'
  if(/\b(privacy|data subject|personal data|opt.out|press inquiries|media inquiries|technical support|support requests)\b/i.test(s))return 'restricted-purpose context'
  return null

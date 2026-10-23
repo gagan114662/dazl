@@ -7,6 +7,7 @@ import SequencesClient from './sequences-client'
 interface Msg { currentness_held?: boolean; provenance?: OutreachProvenance | null; id: string; to_email: string; subject: string; body: string; status: string; error: string | null; sent_at: number | null; test?: number; evidence_state?: 'machine' | 'human' | 'unverified' }
 
 const ERR: Record<string, string> = {
+  not_sales_contact: 'The published address is for recruitment, support, privacy or another restricted purpose. Saved words remain unchanged; approval and sending are blocked.',
   sender_identity_missing: 'Add your name and mailing address in Settings first.',
   gmail_not_connected: 'Connect Gmail in Settings first.',
   gmail_reconnect_needed: 'Gmail needs to be reconnected in Settings.',

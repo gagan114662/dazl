@@ -9,7 +9,7 @@ const MSG: Record<string, [number, string]> = {
   not_found: [404, 'Lead not found'],
   lead_not_verified: [422, 'Only leads verified by dazl can be emailed'],
   no_email_contact: [422, 'This lead has no published email address'],
-  not_sales_contact: [422, 'The only published address is a press, support or similar inbox - not a sales contact'],
+  not_sales_contact: [422, 'The only published address is a recruitment, press, support, privacy or other restricted-purpose inbox - not a sales contact'],
   personal_email: [422, 'This is a personal email address (Gmail, Yahoo, etc.), so dazl will not email it'],
   lead_ungraded: [422, 'This lead could not be ICP-graded (scoring failed), so it cannot be emailed. Re-run the scan to grade it.'],
   suppressed: [409, 'This address unsubscribed or is on your suppression list'],
