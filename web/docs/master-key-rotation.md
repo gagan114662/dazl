@@ -27,16 +27,25 @@ envelope carries no epoch marker, so the runbook direction is the only record.
    VERIFY the drain (no in-flight transactions). A homepage health check does
    not prove this.
 2. Take a consistent backup via the sqlite backup API (never cp of .db+WAL).
-3. Rehearse on a read-only clone of the backup first; only then touch live.
-4. Dry run (read-only, no sidecar writes):
-   `rewrap-master-key.mts --db <path> --dry-run` with DAZL_MASTER_KEY=current,
-   DAZL_MASTER_KEY_NEXT=new. Expect "would rewrap" counts and zero corrupt.
-   Zero-corrupt is a hard gate: any corrupt row stops the procedure here.
-5. Real run: same command without --dry-run. The tool exits non-zero unless
-   the post-run gate passes: every row decrypts under the new key, a read-only
-   re-check shows 0 would-change and 0 corrupt.
+3. Rehearse on a WRITABLE copy restored from the backup (never the backup
+   itself, never live): run the REAL command plus the post-run gate there and
+   record actual durations - no production estimate exists before this.
+   Read-only probes (`--dry-run`, `--verify`) are safe on the live file; the
+   real run is not rehearsed on live until approved.
+4. Dry run against the live file (opens read-only, no sidecar writes):
+   `node --experimental-strip-types scripts/rewrap-master-key.mts --db <live-path> --dry-run`
+   with DAZL_MASTER_KEY=current, DAZL_MASTER_KEY_NEXT=new. Expect "would
+   rewrap" counts and zero corrupt. Zero-corrupt is a hard gate: any corrupt
+   row stops the procedure here.
+5. Real run (only after approval): the same invocation without --dry-run. The
+   tool exits non-zero unless the post-run gate passes: every row's wrap opens
+   under the new key (wrap-only check - bodies are never decrypted), a
+   read-only re-check shows 0 would-change and 0 corrupt. Guarantee boundary:
+   the gate proves WRAP VERIFIED + BODY UNTOUCHED, not full decryptability.
 6. Only after the gate passes: swap the env value and restart the process.
-7. Re-run `--verify` (read-only) against the new key after restart.
+7. Re-run the read-only wrap audit against the new key after restart:
+   `node --experimental-strip-types scripts/rewrap-master-key.mts --db <live-path> --verify`
+   (DAZL_MASTER_KEY=new). Must print verify OK.
 8. Retain the old key (secured) until step: backups rekeyed or retired per the
    verified retention inventory. Then revoke/destroy it deliberately.
 

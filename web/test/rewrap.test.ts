@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
-import { encryptSecret, decryptSecret, rewrapSecret } from '../lib/secrets.ts'
+import { encryptSecret, decryptSecret, rewrapSecret, verifyWrap } from '../lib/secrets.ts'
 import { rewrapMasterKey, verifyMasterKey, REWRAP_COLUMNS } from '../lib/secrets-rewrap.ts'
 
 const OLD = randomBytes(32)
@@ -145,6 +145,22 @@ test('verifyMasterKey: after a clean migration every row verifies under the new 
   const vOld = verifyMasterKey(db, OLD)
   assert.ok(vOld.every(r => r.ok === 0 && r.bad === r.total), 'old key fully retired from live rows')
   assert.equal(rewrapMasterKey(db, OLD, NEW).every(r => r.rewrapped === 0 && r.corrupt === 0), true, 're-check: 0 would change, 0 corrupt')
+})
+
+test('verification never decrypts the body: an intact wrap over a corrupt body still verifies, full decrypt fails', () => {
+  const db = fixtureDb()
+  // Corrupt ONLY the body bytes of one row, leaving the wrap (wiv/wct/wtag) intact.
+  const blob = llmBlob(db)
+  const o = JSON.parse(blob)
+  const ct = Buffer.from(o.ct, 'base64'); ct[0] ^= 0xff; o.ct = ct.toString('base64')
+  db.prepare("UPDATE tenant_llm_keys SET ciphertext = ? WHERE tenant_id='t1' AND vendor='anthropic'").run(JSON.stringify(o))
+  // The wrap opens: verification counts the row OK without ever touching the body.
+  assert.doesNotThrow(() => verifyWrap(JSON.stringify(o), 'llm-key:t1:anthropic', OLD))
+  const v = verifyMasterKey(db, OLD)
+  assert.deepEqual(v.map(r => [r.ok, r.bad]), [[2, 0], [1, 0], [1, 0]], 'wrap verification passes - no body decryption happened (a decrypting check would count it bad)')
+  // Full decryption DOES authenticate the body and fails - the honest distinction:
+  // verifyMasterKey proves WRAP VERIFIED + BODY UNTOUCHED, not full decryptability.
+  assert.throws(() => decryptSecret(JSON.stringify(o), 'llm-key:t1:anthropic', OLD), 'body corruption is caught at real decrypt time, not by the wrap audit')
 })
 
 test('registry is exactly the three known ciphertext columns (fail-closed allowlist)', () => {

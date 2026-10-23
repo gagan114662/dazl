@@ -25,7 +25,7 @@
 // Logs and errors carry counts and row locators only - never blob or key
 // material.
 import type Database from 'better-sqlite3'
-import { decryptSecret, rewrapSecret } from './secrets.ts'
+import { rewrapSecret, verifyWrap } from './secrets.ts'
 
 interface ColumnSpec {
   table: string
@@ -92,11 +92,17 @@ export function rewrapMasterKey(db: Database.Database, oldMaster: Buffer, newMas
 
 export interface VerifyColumnResult { table: string; column: string; missing: boolean; total: number; ok: number; bad: number }
 
-// Read-only audit: which rows decrypt under the given master key. Never throws
-// on bad rows - it counts them. This is the explicit post-run gate: after a
+// Read-only WRAP audit: which rows' wrapped data keys open under the given
+// master key, via verifyWrap - the secret body is NEVER decrypted and no
+// plaintext is materialized anywhere in the verification path. Never throws on
+// bad rows - it counts them. This is the explicit post-run gate: after a
 // forward run, verifyMasterKey(db, NEW) must show bad = 0 across every column
 // before the env swap. bad > 0 means unknown-affected tenants, reported, not
 // claimed healthy.
+// Guarantee boundary (deliberate, for reviewer judgment): this proves WRAP
+// VERIFIED + BODY UNTOUCHED (byte-identity from rewrapSecret), not full secret
+// decryptability - a row whose body was already corrupt before rotation but
+// whose wrap is intact would pass. Rotation neither causes nor repairs that.
 export function verifyMasterKey(db: Database.Database, master: Buffer): VerifyColumnResult[] {
   const results: VerifyColumnResult[] = []
   for (const spec of REWRAP_COLUMNS) {
@@ -104,7 +110,7 @@ export function verifyMasterKey(db: Database.Database, master: Buffer): VerifyCo
     const rows = db.prepare(`SELECT ${spec.pk.map(c => `"${c}"`).join(', ')}, "${spec.column}" AS blob FROM "${spec.table}"`).all() as Record<string, string>[]
     let ok = 0, bad = 0
     for (const row of rows) {
-      try { decryptSecret(row.blob, spec.ctx(row), master); ok++ } catch { bad++ }
+      try { verifyWrap(row.blob, spec.ctx(row), master); ok++ } catch { bad++ }
     }
     results.push({ table: spec.table, column: spec.column, missing: false, total: rows.length, ok, bad })
   }

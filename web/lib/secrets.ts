@@ -67,6 +67,21 @@ export function rewrapSecret(blob: string, context: string, oldMaster: Buffer, n
   } finally { dataKey.fill(0) }
 }
 
+// Wrap-only verification for rotation audits: opens the wrapped data key with
+// the master key and the row's context, then zeroes it immediately. The secret
+// BODY (iv/ct/tag) is NEVER decrypted - no plaintext is materialized. Proves
+// only that the wrap opens under this master key + context; combined with
+// rewrapSecret's byte-identity guarantee, the body is byte-identical to the
+// originally sealed body. It does NOT prove full decryptability: a row with an
+// intact wrap but a previously corrupted body passes verification - deliberate.
+export function verifyWrap(blob: string, context: string, master: Buffer): void {
+  let o: Record<string, unknown>
+  try { o = JSON.parse(blob) as Record<string, unknown> } catch { throw new Error('secret blob is not parseable') }
+  if (o?.v !== 1 || ['iv', 'ct', 'tag', 'wiv', 'wct', 'wtag'].some(k => typeof o[k] !== 'string')) throw new Error('unsupported secret format version')
+  const dataKey = open(master, Buffer.from(o.wiv as string, 'base64'), Buffer.from(o.wct as string, 'base64'), Buffer.from(o.wtag as string, 'base64'), Buffer.from(context))
+  dataKey.fill(0)
+}
+
 export function decryptSecret(blob: string, context: string, master = getMasterKey()): string {
   const o = JSON.parse(blob)
   if (o?.v !== 1) throw new Error('unsupported secret format')
