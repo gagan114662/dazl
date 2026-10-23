@@ -39,6 +39,7 @@ export async function edgarFunding(company: string, fetchImpl: typeof fetch = fe
       const src = h._source
       const entity = (src?.display_names?.[0] ?? '').replace(/\s*\(CIK[^)]*\)\s*$/, '').trim()
       const date = src?.file_date ?? ''
+      if (date && date < start) continue // startdt is not reliably honoured server-side
       const adsh = src?.adsh?.replace(/-/g, '') ?? ''
       const cik = String(Number(src?.ciks?.[0] ?? '')) // strip leading zeros
       const file = h._id?.split(':')[1] ?? ''
@@ -74,6 +75,15 @@ export function topTitles<T>(jobs: T[], pick: (j: T) => string): string[] {
     if (out.length === 3) break
   }
   return out
+}
+
+// A filing corroborates a claimed round only when both dates sit inside the same
+// window. Claims without a date accept any (already 18-month-bounded) filing.
+export function withinEventWindow(filingDate: string, eventDate: string | null, days = 45): boolean {
+  if (!eventDate) return true
+  const a = Date.parse(filingDate), b = Date.parse(eventDate)
+  if (Number.isNaN(a) || Number.isNaN(b)) return false
+  return Math.abs(a - b) <= days * 86400_000
 }
 
 const get = async (url: string, fetchImpl: typeof fetch) => {
@@ -123,10 +133,13 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
     // Company event write-through: the same fact, stored once per company for account-level
     // history. Skipped when no reliable company key exists - never guessed.
     const ck = companyKey(lead.company_domain, lead.id)
-    const [f, h] = await Promise.all([
+    const [f0, h] = await Promise.all([
       edgarFunding(lead.company, fetchImpl).catch(() => null),
       atsHiring(lead.company, lead.company_domain, fetchImpl).catch(() => null),
     ])
+    // A filing far from the claimed round date is a real fact about the entity but not
+    // corroboration of THIS raise (fund filings and stale filings both collide here).
+    const f = f0 && withinEventWindow(f0.date, (lead as { event_date?: string | null }).event_date ?? null) ? f0 : null
     if (f) {
       addEnrichment(db, tenantId, lead.id, { connector: 'signals:sec-edgar', kind: 'funding', value: `SEC Form D filed ${f.date}`, label: f.entity.slice(0, 120), confidence: 80, source_url: f.url, source_date: f.date, retrieved_at: now })
       if (ck) recordCompanyEvent(db, tenantId, { companyKey: ck, companyName: lead.company, scope: 'account', leadId: lead.id, eventType: 'funding_round', summary: `SEC Form D filed ${f.date}`, detail: f.entity.slice(0, 120), sourceUrl: f.url, sourcePublishedAt: f.date, retrievedAt: now, confidence: 80 })
