@@ -88,7 +88,9 @@ test('end to end: only verified leads are stored with evidence, per tenant; coun
   const rows = listLeads(db, 'A', id) as { evidence_excerpt: string; confidence: number; event_date: string }[]
   assert.equal(rows.length, 1)
   assert.equal(rows[0].evidence_excerpt, QUOTE)
-  assert.ok(rows[0].confidence >= 80)
+  // discovery scans carry no source-of-truth company domain, so the source-quality cap
+  // is the unknown third-party 75 even when the verifier scores the page higher
+  assert.equal(rows[0].confidence, 75)
   const j = db.prepare('SELECT candidates, verified FROM scan_jobs WHERE id = ?').get(id) as { candidates: number; verified: number }
   assert.deepEqual({ ...j }, { candidates: 2, verified: 1 })
   assert.equal(listLeads(db, 'B', id).length, 0)

@@ -208,7 +208,7 @@ export async function groundLeads(provider: Provider, apiKey: string, query: str
 }
 
 // (shown to the user, never emailed) instead of vanishing. Dedup by company keeps the best.
-export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetcher = fetchPageDetailed, now = new Date(), judge?: Judge): Promise<VerifyOutcome> {
+export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetcher = fetchPageDetailed, now = new Date(), judge?: Judge, knownDomain: string | null = null): Promise<VerifyOutcome> {
   const cache = new Map<string, Promise<Page | FetchFail | null>>()
   const get = (u: string) => { if (!cache.has(u)) cache.set(u, fetchPage(u).catch(() => null)); return cache.get(u)! }
   const dropped: Record<string, number> = {}
@@ -266,7 +266,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     const j = verdicts[i]
     if (j === 'contradicts') { drop('contradicted'); return }
     // Cap by source class: a content farm that copied the quote never outranks the company's own page.
-    const confidence = Math.max(0, Math.min(sourceCap(c.source_url, c.company), Math.min(100, v.confidence + (j ? JUDGE_DELTA[j] : 0))))
+    const confidence = Math.max(0, Math.min(sourceCap(c.source_url, c.company, knownDomain), Math.min(100, v.confidence + (j ? JUDGE_DELTA[j] : 0))))
     if (confidence < MIN_CONFIDENCE) { drop(j === 'unclear' ? 'claim_unclear' : 'low_confidence'); return }
     const lead: VerifiedLead = { ...c, contact: v.contact, confidence, date_status: v.dateStatus, retrieved_at: v.retrievedAt }
     const key = dedupKey(c)
@@ -451,7 +451,7 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
     if (ledger.has(`search:${vendor}`)) { ledger.record(`search:${vendor}`, leads.length ? 'ok' : 'empty'); ledger.candidates(`search:${vendor}`, leads) }
     if (leads.length === 0) { finish(db, job, 'failed', 'no_candidates', null, 0, ledger); return 'failed' }
     const judge = deps.judge === undefined ? makeJudge(provider, key, deps.fetchImpl) : deps.judge ?? undefined
-    const outcome = await verifyLeads(leads, fetchP, deps.now, judge)
+    const outcome = await verifyLeads(leads, fetchP, deps.now, judge, job.csv_domain ?? null)
     try { applyEvidenceQualityGate(outcome.leads) } catch { /* gate only, never fails the job */ }
     const owned = finish(db, job, 'done', null, outcome, leads.length, ledger)
     // Same stale-attempt gate as the main path: no side effects for a job

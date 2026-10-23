@@ -19,18 +19,21 @@ const AGGREGATOR = [
 ]
 
 const host = (url: string): string => { try { return new URL(url).hostname.replace(/^www\./, '').toLowerCase() } catch { return '' } }
-const SUFFIXES = new Set(['inc', 'incorporated', 'ltd', 'limited', 'llc', 'corp', 'corporation', 'co', 'company', 'the', 'plc', 'llp', 'lp'])
-const companySlug = (company: string): string =>
-  company.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').split(' ').filter(w => w && !SUFFIXES.has(w)).join('')
 
 const pathOf = (url: string): string => { try { return new URL(url).pathname.toLowerCase() } catch { return '' } }
 
-export function classifySource(url: string, company: string): SourceClass {
+// First-party is grounded ONLY in a source-of-truth domain for the company (today the
+// CSV-import job's own domain). An exact host or a subdomain of that domain qualifies.
+// Name resemblance never qualifies: notacme.com, acmefraud.com, acme-sucks.com and
+// acme.com.evil-example.com are not the company's domain, however close they look.
+// Without a known domain the company's own pages classify like any other third party -
+// conservative by design: the cap they lose is a label, not evidence.
+export function classifySource(url: string, company: string, knownDomain?: string | null): SourceClass {
+  void company // retained for call-site compatibility; identity comes from knownDomain only
   const h = host(url)
   if (!h) return 'unknown'
-  const slug = companySlug(company)
-  // The company's own site: its name (minus spaces/punct) appears in the hostname.
-  if (slug.length >= 3 && h.replace(/[^a-z0-9]+/g, '').includes(slug)) return 'first_party'
+  const d = (knownDomain ?? '').toLowerCase().replace(/^www\./, '').trim()
+  if (d.length >= 4 && (h === d || h.endsWith('.' + d))) return 'first_party'
   if (AGGREGATOR.some(d => h === d || h.endsWith('.' + d))) return 'aggregator'
   if (EDITORIAL.some(d => h === d || h.endsWith('.' + d))) return 'editorial'
   if (h.includes('jobs')) return 'aggregator'
@@ -43,6 +46,6 @@ export function classifySource(url: string, company: string): SourceClass {
 // company-authored releases cap at 90; unknown third parties at 75; aggregators and content
 // farms at 60 - visible, but never mistaken for strong evidence.
 export const SOURCE_CAP: Record<SourceClass, number> = { first_party: 100, editorial: 90, unknown: 75, aggregator: 60 }
-export function sourceCap(url: string, company: string): number {
-  return SOURCE_CAP[classifySource(url, company)]
+export function sourceCap(url: string, company: string, knownDomain?: string | null): number {
+  return SOURCE_CAP[classifySource(url, company, knownDomain)]
 }
