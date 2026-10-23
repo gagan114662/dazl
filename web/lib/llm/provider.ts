@@ -17,10 +17,17 @@ export class ProviderError extends Error {
   }
 }
 
+export interface CompletionUsage { input_tokens?: number; output_tokens?: number }
+// What a paid completion cost in provider terms. No secrets, no prompt or response
+// content - just the accounting fields a tenant needs to see what a call used.
+export interface DetailedCompletion { text: string; model: string; request_id?: string; usage?: CompletionUsage }
+
 export interface Provider {
   research(apiKey: string, prompt: string, fetchImpl?: typeof fetch): Promise<ResearchResult>
   // Short plain answer with no tools (used for the contradiction check). Optional so test doubles can omit it.
   complete?(apiKey: string, prompt: string, fetchImpl?: typeof fetch, maxTokens?: number): Promise<string>
+  // Same call with the usage accounting kept. Optional so test doubles can omit it.
+  completeDetailed?(apiKey: string, prompt: string, fetchImpl?: typeof fetch, maxTokens?: number): Promise<DetailedCompletion>
 }
 
 const TIMEOUT_MS = Number(process.env.SCAN_LLM_TIMEOUT_MS || 150_000)
@@ -69,14 +76,24 @@ export const anthropicProvider: Provider = {
     }
     return { text, citedUrls: [...urls] }
   },
-  async complete(apiKey, prompt, fetchImpl = fetch, maxTokens = 10) {
+  async completeDetailed(apiKey, prompt, fetchImpl = fetch, maxTokens = 10): Promise<DetailedCompletion> {
+    const model = process.env.DAZL_ANTHROPIC_MODEL || 'claude-sonnet-4-5'
     const json = await post(
       'https://api.anthropic.com/v1/messages',
       { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-      { model: process.env.DAZL_ANTHROPIC_MODEL || 'claude-sonnet-4-5', max_tokens: maxTokens, messages: [{ role: 'user', content: prompt }] },
+      { model, max_tokens: maxTokens, messages: [{ role: 'user', content: prompt }] },
       fetchImpl,
     )
-    return arr(json.content).map(b => (b.type === 'text' && typeof b.text === 'string' ? b.text : '')).join('')
+    const u = (json.usage ?? {}) as Obj
+    return {
+      text: arr(json.content).map(b => (b.type === 'text' && typeof b.text === 'string' ? b.text : '')).join(''),
+      model,
+      request_id: typeof json.id === 'string' ? json.id : undefined,
+      usage: { input_tokens: typeof u.input_tokens === 'number' ? u.input_tokens : undefined, output_tokens: typeof u.output_tokens === 'number' ? u.output_tokens : undefined },
+    }
+  },
+  async complete(apiKey, prompt, fetchImpl = fetch, maxTokens = 10) {
+    return (await anthropicProvider.completeDetailed!(apiKey, prompt, fetchImpl, maxTokens)).text
   },
 }
 
@@ -101,11 +118,21 @@ export const openaiProvider: Provider = {
     }
     return { text, citedUrls: [...urls] }
   },
-  async complete(apiKey, prompt, fetchImpl = fetch, maxTokens = 16) {
-    const json = await post('https://api.openai.com/v1/responses', { authorization: `Bearer ${apiKey}` }, { model: process.env.DAZL_OPENAI_MODEL || 'gpt-4.1', input: prompt, max_output_tokens: maxTokens }, fetchImpl)
+  async completeDetailed(apiKey, prompt, fetchImpl = fetch, maxTokens = 16): Promise<DetailedCompletion> {
+    const model = process.env.DAZL_OPENAI_MODEL || 'gpt-4.1'
+    const json = await post('https://api.openai.com/v1/responses', { authorization: `Bearer ${apiKey}` }, { model, input: prompt, max_output_tokens: maxTokens }, fetchImpl)
     let text = ''
     for (const item of arr(json.output)) if (item.type === 'message') for (const part of arr(item.content)) if (part.type === 'output_text' && typeof part.text === 'string') text += part.text
-    return text
+    const u = (json.usage ?? {}) as Obj
+    return {
+      text,
+      model,
+      request_id: typeof json.id === 'string' ? json.id : undefined,
+      usage: { input_tokens: typeof u.input_tokens === 'number' ? u.input_tokens : undefined, output_tokens: typeof u.output_tokens === 'number' ? u.output_tokens : undefined },
+    }
+  },
+  async complete(apiKey, prompt, fetchImpl = fetch, maxTokens = 16) {
+    return (await openaiProvider.completeDetailed!(apiKey, prompt, fetchImpl, maxTokens)).text
   },
 }
 

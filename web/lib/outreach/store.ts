@@ -23,6 +23,19 @@ export function migrateOutreach(db: Database.Database): void {
       sender_name    TEXT NOT NULL CHECK (length(sender_name) BETWEEN 1 AND 100),
       postal_address TEXT NOT NULL CHECK (length(postal_address) BETWEEN 10 AND 300)
     );
+    CREATE TABLE IF NOT EXISTS outreach_llm_usage (
+      id            INTEGER PRIMARY KEY,
+      tenant_id     TEXT NOT NULL,
+      message_id    TEXT,
+      purpose       TEXT NOT NULL,
+      vendor        TEXT,
+      model         TEXT,
+      request_id    TEXT,
+      outcome       TEXT NOT NULL,
+      input_tokens  INTEGER,
+      output_tokens INTEGER,
+      created_at    INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+    );
     CREATE TABLE IF NOT EXISTS suppressions (
       tenant_id  TEXT NOT NULL,
       email      TEXT NOT NULL,
