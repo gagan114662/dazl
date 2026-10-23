@@ -55,3 +55,13 @@ process trees; direct-orphan PPid1 only. This intentionally will NOT support the
 previously observed npm/sh/next chain without a separately reviewed reconciliation.
 Never bypass that refusal by guessing a parent PID or stopping a supervisor.
 Remaining PID recheck has a small TOCTOU window; no pidfd implementation claimed.
+
+## Observed-ancestry revision
+
+The earlier PPid1-only guard is superseded. Metadata-only inspection established
+listener next-server -> sh -> npm start -> PID1, all same stage cwd and scope,
+not .service/container. check_process now accepts only that bounded chain with
+same executing uid/cwd/cgroup, refuses other supervisor/container/service facts,
+and repeats just before SIGTERM. No parent signal, arbitrary ancestor traversal
+or new supervisor installation. Real process facts can change; execution must
+revalidate, not reuse historical PIDs blindly.
