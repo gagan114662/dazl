@@ -7,6 +7,7 @@ import { publishedEmail, publishedContact } from '@/lib/outreach/published-email
 import SourceMetrics from './source-metrics'
 import { WarmConnections, WarmPath } from './warm-path'
 import VerificationFixture from './verification-fixture'
+import { eventDateCopy } from '@/lib/scan/date-copy'
 
 const claimFromSource = (l: { source_url: string; company_domain: string | null }): boolean => {
   try {
@@ -613,7 +614,7 @@ export default function LeadsClient() {
               </div>
             )}
             {l.evidence_excerpt && <blockquote className="text-gray-500 text-xs border-l border-white/10 pl-3 my-1">{l.human_confirmed_at ? 'Unconfirmed quote: ' : ''}&ldquo;{l.evidence_excerpt}&rdquo;</blockquote>}
-            <span className="text-gray-500 text-xs mr-3">{l.confidence === null ? (l.human_confirmed_at ? 'confirmed by you - dazl did not verify the quote' : 'not verified') : `confidence ${l.confidence}`}{l.event_date ? `, ${l.event_date}${l.date_status === 'unverified' ? ' (date not confirmed on page)' : ''}` : ''}</span>
+            <span className="text-gray-500 text-xs mr-3">{l.confidence === null ? (l.human_confirmed_at ? 'confirmed by you - dazl did not verify the quote' : 'not verified') : `confidence ${l.confidence}`}{`, ${eventDateCopy(l.event_date, l.date_status)}`}</span>
             {l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && (
               <button onClick={() => withdrawConfirm(l.id)} className="text-gray-600 hover:text-red-400 text-xs mr-3" title={l.human_confirmed_from ? `Was in review: ${REVIEW[l.human_confirmed_from] ?? l.human_confirmed_from}` : undefined}>withdraw confirmation</button>
             )}
