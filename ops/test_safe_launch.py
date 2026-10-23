@@ -103,9 +103,17 @@ class SafeLaunchTest(unittest.TestCase):
             args.backup_verified=False
             with self.assertRaisesRegex(m.LaunchError,'backup_verification_required'):m.check_database_backup({'DB_PATH':str(db)},args)
 
-    def test_supervised_process_refused(self):
-        with patch.object(Path,'read_text',side_effect=['PPid: 99\n','0::/system.slice/app.service']):
-            with self.assertRaisesRegex(m.LaunchError,'supervised_process_refused'):m.check_process(123)
+    def test_observed_ancestry_only_and_identity_failures(self):
+        def rows():
+            return [dict(pid=10,ppid=11,comm='next-server (v1',uid=os.getuid(),cwd=Path('/old'),cgroup='0::/user.slice/session.scope'),
+                    dict(pid=11,ppid=12,comm='sh',uid=os.getuid(),cwd=Path('/old'),cgroup='0::/user.slice/session.scope'),
+                    dict(pid=12,ppid=1,comm='npm start',uid=os.getuid(),cwd=Path('/old'),cgroup='0::/user.slice/session.scope')]
+        with patch.object(m,'process_identity',side_effect=rows()):m.check_process(10)
+        for field,value in [('comm','supervisor'),('uid',999999),('cwd',Path('/other')),('cgroup','0::/system/app.service')]:
+            bad=rows();bad[1][field]=value
+            with patch.object(m,'process_identity',side_effect=bad), self.assertRaises(m.LaunchError):m.check_process(10)
+        bad=rows();bad[2]['ppid']=99
+        with patch.object(m,'process_identity',side_effect=bad), self.assertRaises(m.LaunchError):m.check_process(10)
 
     def test_redirect_handler_never_redirects(self):
         self.assertIsNone(m.NoRedirect().redirect_request(None,None,302,'redirect',{},'http://evil.invalid'))

@@ -134,19 +134,35 @@ def await_state(check, seconds):
     return False
 
 
-def check_process(pid):
+def process_identity(pid):
     try:
-        # Only a direct orphan process tree is supported. Any supervisor or
-        # unrecognised npm/sh chain requires separate grounded coordination.
-        status = Path(f'/proc/{pid}/status').read_text()
-        ppid = int(re.search(r'^PPid:\s+(\d+)', status, re.M)[1])
-        cgroup = Path(f'/proc/{pid}/cgroup').read_text()
-        if ppid != 1 or any(x in cgroup for x in ['.service', 'supervisor', 'docker', 'container']):
-            raise LaunchError('supervised_process_refused')
-    except LaunchError:
-        raise
+        base = Path('/proc') / str(pid)
+        status = (base / 'status').read_text()
+        return {'pid': pid, 'ppid': int(re.search(r'^PPid:\s+(\d+)', status, re.M)[1]),
+                'uid': base.stat().st_uid, 'comm': (base / 'comm').read_text().strip(),
+                'cwd': (base / 'cwd').resolve(strict=True),
+                'cgroup': (base / 'cgroup').read_text()}
     except Exception:
         raise LaunchError('supervisor_unverifiable') from None
+
+
+def check_process(pid):
+    listener = process_identity(pid)
+    chain = [listener]
+    for expected in ['sh', 'npm start']:
+        parent = process_identity(chain[-1]['ppid'])
+        if parent['comm'] != expected:
+            raise LaunchError('unexpected_process_ancestry')
+        chain.append(parent)
+    if not listener['comm'].startswith('next-server') or chain[-1]['ppid'] != 1:
+        raise LaunchError('unexpected_process_ancestry')
+    for row in chain:
+        if row['uid'] != os.getuid() or row['cwd'] != listener['cwd'] or row['cgroup'] != listener['cgroup']:
+            raise LaunchError('process_identity_mismatch')
+        if any(x in row['cgroup'] for x in ['.service', 'supervisor', 'docker', 'container', 'kubepods']):
+            raise LaunchError('supervised_process_refused')
+    # cgroup scope is expected for the observed orphan npm tree, not a service.
+    # Never signal sh/npm parents; only exact socket-owning listener is eligible.
 
 
 def pin_executables():
