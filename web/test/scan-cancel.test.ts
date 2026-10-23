@@ -102,11 +102,36 @@ test('profile save returns canonical stored values; business name round-trips; k
   assert.match(steps, /Could not check your AI key status/)
 })
 
-test('contact search note separates not-searched, searched-none and no-result; never claims a guess', async () => {
+test('contact search note states eligibility and stored facts only, never completion or absence', async () => {
   const { contactSearchNote } = await import('../lib/outreach/published-email.ts')
-  assert.match(contactSearchNote({ contact: null, confidence: null })!, /not run/)
-  assert.match(contactSearchNote({ contact: null, confidence: 60, company_domain: 'pigment.com' })!, /read pigment\.com contact pages/)
-  assert.match(contactSearchNote({ contact: null, confidence: 60, company_domain: null })!, /not proof/)
+  assert.match(contactSearchNote({ contact: null, confidence: null })!, /did not verify this lead/)
+  const d = contactSearchNote({ contact: null, confidence: 60, company_domain: 'pigment.com' })!
+  assert.match(d, /website identified: pigment\.com/)
+  assert.match(d, /does not prove no address exists/)
+  assert.doesNotMatch(d, /read .*pages|no role address/)
+  assert.match(contactSearchNote({ contact: null, confidence: 60, company_domain: null })!, /website not confirmed/)
   assert.equal(contactSearchNote({ contact: 'a@b.com', confidence: 60 }), null)
   assert.equal(contactSearchNote({ contact: null, confidence: 60, enrichments: [{ connector: 'sitecrawl', kind: 'email', value: 'info@x.com', label: '', source_url: 'https://x.com/contact' }] }), null)
+})
+
+test('crawlJob records nothing when the deadline fires mid-crawl (no domain, no audit, no enrichment)', async () => {
+  const { crawlJob } = await import('../lib/connectors/sitecrawl.ts')
+  const { migrateConnectors } = await import('../lib/connectors/store.ts')
+  const db = new Database(':memory:'); migrateConnectors(db)
+  db.exec("CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT)")
+  db.prepare("INSERT INTO leads VALUES ('l1','j1','Stabyl','https://stabyl.com/a',NULL,90,80,NULL)").run()
+  const ctrl = new AbortController()
+  const get = async (url: string) => {
+    const path = new URL(url).pathname
+    if (path === '/contact') ctrl.abort() // deadline fires while the first contact page is requested
+    if (path === '/robots.txt') return { status: 200, body: '', finalUrl: url }
+    if (path === '/a') return { status: 200, body: '<a href="https://stabyl.com">s</a>', finalUrl: url }
+    if (path === '/') return { status: 200, body: '<html>Stabyl home</html>', finalUrl: url }
+    return { status: 200, body: '<html>hello@stabyl.com</html>', finalUrl: url }
+  }
+  await crawlJob(db, 't1', 'j1', { get, gapMs: 0, env: {}, signal: ctrl.signal })
+  assert.equal(ctrl.signal.aborted, true)
+  assert.equal((db.prepare("SELECT company_domain AS d FROM leads WHERE id = 'l1'").get() as { d: string | null }).d, null)
+  assert.equal((db.prepare('SELECT count(*) AS n FROM connector_audit').get() as { n: number }).n, 0)
+  assert.equal((db.prepare('SELECT count(*) AS n FROM lead_enrichments').get() as { n: number }).n, 0)
 })

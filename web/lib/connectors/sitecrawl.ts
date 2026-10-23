@@ -308,6 +308,8 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         if (r.reason !== 'name_mismatch' && r.reason !== 'site_unreachable') break
         audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: r.reason, results: 0 })
       }
+      // A deadline that fired during this crawl leaves a partial read: record nothing (no domain, tech, contacts or audit row) rather than a result that looks complete.
+      if (deps.signal?.aborted) return
       if (r.reason === 'name_mismatch' || r.reason === 'site_unreachable') continue
       // The homepage named the company: the domain is confirmed as the company's own site, whether
       // or not it publishes contacts. Record it so leads link out and later runs skip the search.
