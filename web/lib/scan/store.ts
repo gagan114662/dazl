@@ -320,7 +320,7 @@ export function exportLeads(db: Database.Database, userId: string, jobId?: strin
   return db
     .prepare(
       `SELECT l.scan_job_id AS job_id, l.company, l.name, l.contact, l.signal, l.source_url,
-              l.fit, l.intent, l.action, l.score, l.confidence, l.event_date, l.review_reason,
+              l.fit, l.intent, l.action, l.score, l.confidence, l.event_date, l.date_status, l.review_reason,
               l.human_confirmed_from, l.evidence_excerpt, l.created_at
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
        WHERE j.user_id = ? ${jobId ? 'AND j.id = ?' : ''} AND (l.fit IS NULL OR l.fit > 1)
