@@ -101,3 +101,12 @@ test('profile save returns canonical stored values; business name round-trips; k
   assert.doesNotMatch(steps, /free scans are used up/)
   assert.match(steps, /Could not check your AI key status/)
 })
+
+test('contact search note separates not-searched, searched-none and no-result; never claims a guess', async () => {
+  const { contactSearchNote } = await import('../lib/outreach/published-email.ts')
+  assert.match(contactSearchNote({ contact: null, confidence: null })!, /not run/)
+  assert.match(contactSearchNote({ contact: null, confidence: 60, company_domain: 'pigment.com' })!, /read pigment\.com contact pages/)
+  assert.match(contactSearchNote({ contact: null, confidence: 60, company_domain: null })!, /not proof/)
+  assert.equal(contactSearchNote({ contact: 'a@b.com', confidence: 60 }), null)
+  assert.equal(contactSearchNote({ contact: null, confidence: 60, enrichments: [{ connector: 'sitecrawl', kind: 'email', value: 'info@x.com', label: '', source_url: 'https://x.com/contact' }] }), null)
+})

@@ -52,3 +52,17 @@ export function publishedEmail(lead: PublishedEmailLead): string | null {
   const c = publishedContact(lead)
   return c && c.purpose !== 'non-sales' ? c.email : null
 }
+
+// Why a lead shows no contact. "Not searched" and "searched, nothing published" are different
+// facts and must not look alike. Derived only from stored fields: sitecrawl records company_domain
+// only after the company's own homepage was fetched and named the company, so a set domain with
+// no email means those contact pages were read and no role address of the company was published.
+export function contactSearchNote(lead: PublishedEmailLead & { confidence?: number | null; human_confirmed_at?: number | null; company_domain?: string | null }): string | null {
+  if (publishedContact(lead)) return null
+  if (lead.contact) return null
+  if (lead.confidence === null || lead.confidence === undefined) {
+    return lead.human_confirmed_at ? 'No contact found. Contact search only runs for leads dazl verified, so it was not run for this one.' : 'No contact found. Contact search only runs for leads dazl verified, so it was not run.'
+  }
+  if (lead.company_domain) return `No contact published. dazl read ${lead.company_domain} contact pages and found no role address (info@, sales@) on the company's own domain. It never guesses addresses.`
+  return 'No contact result recorded. dazl did not confirm the company website, or the contact search did not reach it. That is not proof that no address exists.'
+}

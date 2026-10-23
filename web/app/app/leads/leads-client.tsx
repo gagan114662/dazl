@@ -3,7 +3,7 @@ import { KEY_UNREADABLE_COPY, knownErrorCopy } from '@/lib/error-copy'
 import { useEffect, useRef, useState } from 'react'
 import { emptyLeadsMessage, scoreLabel } from '@/lib/scan/leads-view'
 import { contactsFromEnrichments } from '@/lib/people/rank'
-import { publishedEmail, publishedContact } from '@/lib/outreach/published-email'
+import { publishedEmail, publishedContact, contactSearchNote } from '@/lib/outreach/published-email'
 import SourceReview from './source-review'
 import SourceMetrics from './source-metrics'
 import { WarmConnections, WarmPath } from './warm-path'
@@ -639,6 +639,7 @@ export default function LeadsClient() {
               return <>
                 {pc && pc.purpose !== 'non-sales' && <span className="text-gray-500 text-xs ml-3">{pc.email}{pc.purpose==='unknown'?' - published address; purpose and buyer relevance unknown':' - business inquiry context, not consent'}</span>}
                 {pc && pc.purpose === 'non-sales' && <span className="text-gray-500 text-xs ml-3">{pc.email} - published {pc.purposeHint} inbox, not a sales contact</span>}
+                {(() => { const n = contactSearchNote(l); return n ? <span className="text-gray-500 text-xs ml-3 block mt-1">{n}</span> : null })()}
                 {!pc && l.contact && <span className="text-gray-500 text-xs ml-3">{l.contact}</span>}
                 {draftTo && (l.confidence !== null || l.human_confirmed_at !== null) && !(l.fit === 0 && l.intent === null) && (
                   drafted[l.id]
