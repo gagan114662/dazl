@@ -8,7 +8,7 @@ import type Database from 'better-sqlite3'
 // Unknowns stay NULL - a missing published date or person is never guessed.
 // Company-level events only: no person rows, no visitor rows, no cross-tenant pooling.
 
-export const EVENT_TYPES = ['funding_round', 'hiring_surge', 'tech_stack', 'competitor_mention'] as const
+export const EVENT_TYPES = ['funding_round', 'sec_filing', 'hiring_surge', 'tech_stack', 'competitor_mention'] as const
 export type EventType = (typeof EVENT_TYPES)[number]
 export type EventScope = 'account' | 'market'
 
@@ -18,9 +18,20 @@ export type EventScope = 'account' | 'market'
 // verified external truth about how long any signal actually predicts anything.
 export const FRESHNESS_DAYS: Record<EventType, number> = {
   funding_round: 548, // a filed round stays relevant ~18 months
+  sec_filing: 548,
   hiring_surge: 30,
   tech_stack: 90,
   competitor_mention: 30,
+}
+
+const SEC_HOST_RE = /(^|\.)sec\.gov$/
+
+// Read-time semantics for legacy rows: a funding_round event sourced from the SEC is a
+// filing (sec_filing weight/freshness), never a concluded round. Stored rows are not
+// rewritten - the type is normalized wherever events are grouped, scored or displayed.
+export function effectiveEventType(t: EventType, sourceUrl: string): EventType {
+  if (t !== 'funding_round') return t
+  try { return SEC_HOST_RE.test(new URL(sourceUrl).hostname) ? 'sec_filing' : t } catch { return t }
 }
 
 export function migrateEvents(db: Database.Database): void {

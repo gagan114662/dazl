@@ -83,7 +83,7 @@ test('enrichJobSignals: writes enrichment rows with source url+date and audits; 
   migrateScan(db); migrateConnectors(db); migrateEvents(db)
   const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
   db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(jobId)
-  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url) VALUES ('lead1', ?, '', 'Zymtrace', 'raised seed', 'https://x.com/1')").run(jobId)
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url) VALUES ('lead1', ?, '', 'Zymtrace', 'zymtrace.com', 'raised seed', 'https://x.com/1')").run(jobId)
   const fetchImpl = async (url: RequestInfo | URL) => {
     const u = String(url)
     if (u.includes('efts.sec.gov')) return ok(EDGAR_HIT)
@@ -100,4 +100,23 @@ test('enrichJobSignals: writes enrichment rows with source url+date and audits; 
   assert.ok(st.includes('signals:sec-edgar:ok') && st.includes('signals:ats:ok'))
   // total failure: no rows, no throw
   await enrichJobSignals(db, 'u1', jobId, { fetchImpl: (async () => notFound()) as never })
+})
+
+test('enrichJobSignals: name-only board match (null domain) is not attached as corroboration', async () => {
+  const db = new Database(':memory:')
+  migrateScan(db); migrateConnectors(db); migrateEvents(db)
+  const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
+  db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(jobId)
+  // one-token company, no resolved domain: a same-named board/fund must not attach
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url) VALUES ('lead9', ?, '', 'Vesta', NULL, 'raised seed', 'https://x.com/9')").run(jobId)
+  const EDGAR_FUND = { hits: { hits: [{ _id: '0002139575-26-000001:primary_doc.xml', _source: { display_names: ['Vesta Ventures Fund II, LP  (CIK 0002139575)'], file_date: '2026-07-01', adsh: '0002139575-26-000001', ciks: ['0002139575'], form: 'D' } }] } }
+  const fetchImpl = async (url: RequestInfo | URL) => {
+    const u = String(url)
+    if (u.includes('efts.sec.gov')) return ok(EDGAR_FUND)
+    if (u.includes('ashby')) return ok({ jobs: [{ title: 'Product Manager', jobUrl: 'https://jobs.ashbyhq.com/vesta/abc' }] })
+    return notFound()
+  }
+  await enrichJobSignals(db, 'u1', jobId, { fetchImpl: fetchImpl as never })
+  const rows = db.prepare('SELECT connector FROM lead_enrichments WHERE lead_id = ?').all('lead9')
+  assert.deepEqual(rows, [])
 })
