@@ -79,3 +79,27 @@ test('crawlSite keeps people separate: a person-only site stays none_published a
   assert.equal(only.reason, 'none_published')
   assert.equal(only.found.every(f => f.kind === 'person'), true)
 })
+
+// JSON-LD authority is scoped to the page's own company. Nothing reached through a person (spouse, knows, worksFor) or through another organisation counts.
+{
+  const ldp = (o: unknown) => extractPeople(`<script type="application/ld+json">${JSON.stringify(o)}</script>`, 'https://x.example/about').map(p => p.value)
+  test('JSON-LD own company: employee array, founder, member, @graph and WebPage.mainEntity are listed', () => {
+    assert.deepEqual(ldp({ '@type': 'Organization', employee: [{ '@type': 'Person', name: 'Dana Lee', jobTitle: 'Owner' }, { '@type': 'Person', name: 'Ravi Shah', jobTitle: 'Director' }] }), ['Dana Lee, Owner', 'Ravi Shah, Director'])
+    assert.deepEqual(ldp({ '@type': 'LocalBusiness', founder: { '@type': 'Person', name: 'Ana Gomez', jobTitle: 'Founder' } }), ['Ana Gomez, Founder'])
+    assert.deepEqual(ldp({ '@type': 'Dentist', member: { '@type': 'Person', name: 'Kim Park', jobTitle: 'Dentist' } }), ['Kim Park, Dentist'])
+    assert.deepEqual(ldp({ '@graph': [{ '@type': 'WebSite', name: 'x' }, { '@type': 'Organization', employee: { '@type': 'Person', name: 'Dana Lee', jobTitle: 'Owner' } }] }), ['Dana Lee, Owner'])
+    assert.deepEqual(ldp({ '@type': 'AboutPage', mainEntity: { '@type': 'Organization', founder: { '@type': 'Person', name: 'Dana Lee', jobTitle: 'Founder' } } }), ['Dana Lee, Founder'])
+  })
+  test('JSON-LD root-array organisation is the page company; department/brand edges do not regrant authority', () => {
+    assert.deepEqual(ldp([{ '@type': 'Organization', employee: { '@type': 'Person', name: 'Dana Lee', jobTitle: 'Owner' } }]), ['Dana Lee, Owner'])
+    assert.deepEqual(ldp({ '@type': 'Organization', employee: { '@type': 'Person', name: 'Dana Lee', jobTitle: 'Owner' }, department: { '@type': 'Organization', employee: { '@type': 'Person', name: 'Zed Ng', jobTitle: 'Director' } }, brand: { '@type': 'Organization', founder: { '@type': 'Person', name: 'Eve Stone', jobTitle: 'Founder' } } }), ['Dana Lee, Owner'])
+  })
+  test('JSON-LD negatives: spouse/knows under an employee, another company via worksFor/parent/sub-organisation, two companies in one block', () => {
+    const dana = { '@type': 'Person', name: 'Dana Lee', jobTitle: 'Owner' }
+    assert.deepEqual(ldp({ '@type': 'Organization', employee: { ...dana, spouse: { '@type': 'Person', name: 'Sam Rivers', jobTitle: 'Director' }, knows: [{ '@type': 'Person', name: 'Pat Moore', jobTitle: 'CEO' }] } }), ['Dana Lee, Owner'])
+    assert.deepEqual(ldp({ '@type': 'Organization', employee: { ...dana, worksFor: { '@type': 'Organization', name: 'Other Co', founder: { '@type': 'Person', name: 'Eve Stone', jobTitle: 'Founder' } } } }), ['Dana Lee, Owner'])
+    assert.deepEqual(ldp({ '@type': 'Organization', parentOrganization: { '@type': 'Organization', name: 'Parent', founder: { '@type': 'Person', name: 'Eve Stone', jobTitle: 'Founder' } }, subOrganization: { '@type': 'Organization', employee: { '@type': 'Person', name: 'Zed Ng', jobTitle: 'Director' } } }), [])
+    assert.deepEqual(ldp({ '@graph': [{ '@type': 'Organization', name: 'A', founder: { '@type': 'Person', name: 'Dana Lee', jobTitle: 'Founder' } }, { '@type': 'Organization', name: 'B', founder: { '@type': 'Person', name: 'Eve Stone', jobTitle: 'Founder' } }] }), [])
+    assert.deepEqual(ldp({ '@type': 'Person', name: 'Dana Lee', jobTitle: 'Owner', worksFor: { '@type': 'Organization', employee: dana } }), [])
+  })
+}

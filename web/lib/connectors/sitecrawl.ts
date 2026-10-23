@@ -247,21 +247,28 @@ function cutBlocks(html: string): string | null {
 }
 function jsonLdPeople(html: string): { name: string; title: string }[] {
   const out: { name: string; title: string }[] = []
+  const ORG = /^(Organization|Corporation|LocalBusiness|Dentist|Physician|MedicalBusiness|ProfessionalService|LegalService|RealEstateAgent|Store|Restaurant|HomeAndConstructionBusiness|Attorney|Accountant|FinancialService)$/
+  const typesOf = (n: Record<string, unknown>) => ([] as unknown[]).concat(n['@type'] ?? []).map(String)
+  const flat = (v: unknown): Record<string, unknown>[] => Array.isArray(v) ? v.flatMap(flat) : v && typeof v === 'object' ? [v as Record<string, unknown>] : []
   for (const m of html.matchAll(/<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
     let root: unknown; try { root = JSON.parse(m[1]) } catch { continue }
-    const ORG = /^(Organization|Corporation|LocalBusiness|Dentist|Physician|MedicalBusiness|ProfessionalService|LegalService|RealEstateAgent|Store|Restaurant|HomeAndConstructionBusiness|Attorney|Accountant|FinancialService)$/
-    const stack: { node: unknown; ok: boolean }[] = [{ node: root, ok: false }]
-    while (stack.length) {
-      const { node, ok } = stack.pop()!
-      if (!node || typeof node !== 'object') continue
-      if (Array.isArray(node)) { for (const n of node) stack.push({ node: n, ok }); continue }
-      const rec = node as Record<string, unknown>
-      const types = ([] as unknown[]).concat(rec['@type'] ?? []).map(String)
-      if (types.includes('Person') && ok && typeof rec.name === 'string' && typeof rec.jobTitle === 'string') out.push({ name: rec.name.trim(), title: rec.jobTitle.trim() })
-      for (const [k, v] of Object.entries(rec)) {
-        if (!v || typeof v !== 'object') continue
-        if (/^(review|reviews|author|creator|comment|reviewRating|editor|contributor|publisher)$/i.test(k)) continue
-        stack.push({ node: v, ok: ok || (/^(employee|employees|founder|founders|member|members)$/i.test(k) && types.some(t => ORG.test(t))) })
+    // The page's own company: an organisation node at the top level, in @graph, or the mainEntity of a non-organisation page node. An organisation reached through any other edge (worksFor, parentOrganization, subOrganization, member...) is another company and has no authority here.
+    const orgs: Record<string, unknown>[] = []
+    const seen = new Set<unknown>()
+    const top = (v: unknown) => {
+      for (const n of flat(v)) {
+        if (seen.has(n)) continue; seen.add(n)
+        if (typesOf(n).some(t => ORG.test(t))) orgs.push(n)
+        else { if (n['@graph']) top(n['@graph']); if (n.mainEntity) top(n.mainEntity) }
+      }
+    }
+    top(root)
+    if (orgs.length !== 1) continue // none, or several companies on one block: cannot tell which is this page's company, so list no one
+    const org = orgs[0]
+    for (const k of ['employee', 'employees', 'founder', 'founders', 'member', 'members']) {
+      for (const p of flat(org[k])) {
+        // only the person node itself; nothing nested under it (spouse, knows, worksFor...) is read
+        if (typesOf(p).includes('Person') && typeof p.name === 'string' && typeof p.jobTitle === 'string') out.push({ name: p.name.trim(), title: p.jobTitle.trim() })
       }
     }
   }
