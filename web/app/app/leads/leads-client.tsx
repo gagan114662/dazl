@@ -10,14 +10,6 @@ import { WarmConnections, WarmPath } from './warm-path'
 import VerificationFixture from './verification-fixture'
 import { eventDateCopy } from '@/lib/scan/date-copy'
 
-const claimFromSource = (l: { source_url: string; company_domain: string | null }): boolean => {
-  try {
-    const h = new URL(l.source_url).hostname.toLowerCase()
-    const d = (l.company_domain ?? '').toLowerCase()
-    return !(d && (h === d || h.endsWith('.' + d)))
-  } catch { return true }
-}
-
 interface Lead { currentness_held?: boolean; stored_intent?: number | null; stored_why?: string | null; source_check?: {fetch_status:string;quote_match:boolean;company_named:boolean;contact_match:boolean;checked_at:number} | null; sequence?: { status: string; step: number; next_due_at: number | null; stop_reason: string | null } | null; id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; human_confirmed_at: number | null; human_confirmed_from: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; watch_new?: number; seen_before?: number; stage?: string | null; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string; entity_status?: 'heuristic' | 'unconfirmed' | null }[]; events?: { id: string; event_type: string; summary: string; source_url: string; source_published_at: string | null; last_seen_at: number; fresh: boolean; entity_status?: 'heuristic' | 'unconfirmed' | null }[]; priority?: { graded: boolean; fit: number | null; intent: number | null; action: number | null; evidence_score: number; reasons: string[]; uncounted: string[] } | null; lookalike?: { state: 'insufficient' | 'scored'; cohort_size: number; matches: number; matched_on: string[] } | null }
 interface Icp { summary: string; who: string[]; industries: string[]; sizes: string[]; where: string[]; signals: string[]; exclude: string[] }
 interface JobSummary { id: string; status: string; error: string | null; query: string | null; business_name: string; csv_domain: string | null; created_at: number; finished_at: number | null; candidates: number | null; verified: number | null; needs_review: number | null; dropped: number | null; lead_count: number; test_only: boolean }
@@ -42,7 +34,7 @@ const REASON: Record<string, string> = {
   source_cap: 'over the 3-per-page cap',
   url_refused: 'unsafe or unsupported address', duplicate: 'duplicate company',
 }
-const REVIEW: Record<string, string> = { event_timing_unconfirmed: 'The quote was found, but its event timing and current need are unconfirmed', event_date_bad_date: 'The claimed event date is invalid - review the source', event_date_stale: 'The claimed event date is outside the freshness window - historical evidence only', event_date_future_date: 'The claimed event date is in the future - current need unconfirmed',  source_review_required: 'Manually supplied claim - literal source checks do not verify its meaning, date, buying need or consent', counterparty_signal: 'Names this company as someone else\'s customer - not evidence of its own buying intent', job_closed: 'Source says applications are closed - historical hiring evidence, not an active opening', quote_unconfirmed: 'The saved quote could not be confirmed on the source', login_required: 'Source requires sign-in - evidence unknown', blocked_by_site: 'The site blocked our check', needs_javascript: 'The page needs JavaScript to show its content' }
+const REVIEW: Record<string, string> = { legacy_currentness_review: 'Legacy research reviewed by you for drafting, not verified current need or consent', event_timing_unconfirmed: 'The quote was found, but its event timing and current need are unconfirmed', event_date_bad_date: 'The claimed event date is invalid - review the source', event_date_stale: 'The claimed event date is outside the freshness window - historical evidence only', event_date_future_date: 'The claimed event date is in the future - current need unconfirmed',  source_review_required: 'Manually supplied claim - literal source checks do not verify its meaning, date, buying need or consent', counterparty_signal: 'Names this company as someone else\'s customer - not evidence of its own buying intent', job_closed: 'Source says applications are closed - historical hiring evidence, not an active opening', quote_unconfirmed: 'The saved quote could not be confirmed on the source', login_required: 'Source requires sign-in - evidence unknown', blocked_by_site: 'The site blocked our check', needs_javascript: 'The page needs JavaScript to show its content' }
 
 // Enrichment labels join example titles with '; ' - older rows can repeat one
 // title per posting. Show each distinct title once; the count stays untouched.
@@ -552,7 +544,7 @@ export default function LeadsClient() {
               })()}
             </div>
             <div className="text-gray-400">{`Saved signal claim: ${l.signal}`}</div>
-            {l.why && <div className="text-xs text-gray-300 mt-1">Why now: {l.why}</div>}
+            {l.why && <div className="text-xs text-gray-300 mt-1">Research rationale: {l.why}</div>}
             {parseSignals(l.signals).length > 0 && (
               <div className="flex flex-wrap gap-1 mt-1">{parseSignals(l.signals).map(sg => <span key={sg} className="text-[10px] uppercase tracking-wide text-gray-500 border border-white/10 px-1 py-0.5">{sg.replace(/_/g, ' ')}</span>)}</div>
             )}
