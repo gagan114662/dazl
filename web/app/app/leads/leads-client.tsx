@@ -551,7 +551,7 @@ export default function LeadsClient() {
                 return <span className="ml-1 inline-flex gap-0.5 align-middle">{chip('role', m.role)}{chip('industry', m.industry)}{chip('size', m.size)}{chip('location', m.location)}</span>
               })()}
             </div>
-            <div className="text-gray-400">{claimFromSource(l) ? `Source claims: ${l.signal}` : l.signal}</div>
+            <div className="text-gray-400">{`Saved signal claim: ${l.signal}`}</div>
             {l.why && <div className="text-xs text-gray-300 mt-1">Why now: {l.why}</div>}
             {parseSignals(l.signals).length > 0 && (
               <div className="flex flex-wrap gap-1 mt-1">{parseSignals(l.signals).map(sg => <span key={sg} className="text-[10px] uppercase tracking-wide text-gray-500 border border-white/10 px-1 py-0.5">{sg.replace(/_/g, ' ')}</span>)}</div>
@@ -660,7 +660,7 @@ export default function LeadsClient() {
             {leads.filter(l => l.review_reason).map(l => (
               <div key={l.id} className="p-4 text-sm">
                 <div className="font-medium">{l.company || l.name}</div>
-                <div className="text-gray-400">{claimFromSource(l) ? `Source claims: ${l.signal}` : l.signal}</div>
+                <div className="text-gray-400">{`Saved signal claim: ${l.signal}`}</div>
                 <span className="text-[#333] text-xs mr-3">{REVIEW[l.review_reason ?? ''] ?? 'Not verified'}</span>
                 <a className="underline text-[#111] text-xs" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
                 {l.source_check && <div className="text-xs text-[#333] border-l-2 border-black/30 pl-3 my-2">

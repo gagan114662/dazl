@@ -5,6 +5,7 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 
 const MSG: Record<string, [number, string]> = {
+  lead_currentness_unconfirmed: [409, 'This is quote-backed research with unknown event timing. Review the source on Leads before using it for drafting; that is not a freshness or consent verdict.'],
   not_found: [404, 'Lead not found'],
   lead_not_verified: [422, 'Only leads verified by dazl can be emailed'],
   no_email_contact: [422, 'This lead has no published email address'],

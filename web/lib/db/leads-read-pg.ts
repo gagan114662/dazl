@@ -6,7 +6,7 @@
 import type { LeadsReadDb } from './leads-read.ts'
 import { STALE_RUNNING_S, MAX_ATTEMPTS } from '../scan/store.ts'
 import { GAPS_S, TEST_GAPS_S, MAX_STEPS } from '../outreach/sequences.ts'
-import { FRESHNESS_DAYS } from '../events/store.ts'
+import { eventTimingFresh } from '../events/store.ts'
 import type { CompanyEventRow, EventScope, EventType } from '../events/store.ts'
 import { groupUnderlyingEvents, scoreEvidence } from '../events/prioritize.ts'
 import type { LeadPriority } from '../events/prioritize.ts'
@@ -152,7 +152,7 @@ l.human_confirmed_at, l.human_confirmed_from,
             retrieved_at: numReq(r.retrieved_at), first_seen_at: numReq(r.first_seen_at),
             last_seen_at: numReq(r.last_seen_at), confidence: num(r.confidence),
           }
-          return { ...coerced, fresh: coerced.last_seen_at >= now - FRESHNESS_DAYS[coerced.event_type as EventType] * 86400 }
+          return { ...coerced, fresh: eventTimingFresh(coerced, now) }
         })
       }
       const out: Record<string, CompanyEventRow[]> = {}
