@@ -46,7 +46,6 @@ class BackupTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             args=self.setup_files(Path(d));args.source=str(Path(d)/'wrong')
             with self.assertRaisesRegex(m.LaunchError,'database_identity_mismatch'):m.run(args)
-            args=self.setup_files(Path(d)/'missing') if False else args
         with tempfile.TemporaryDirectory() as d:
             args=self.setup_files(Path(d));args.create_backup=True;args.backup=args.source
             with self.assertRaisesRegex(m.LaunchError,'distinct_paths_required'):m.run(args)
