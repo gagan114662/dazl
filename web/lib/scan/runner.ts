@@ -835,6 +835,33 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
 // In-process scheduler (one Node process). The concurrency budget is shared
 // with the queue bridge via run-slots.ts - see that file for why.
 
+// Graceful-shutdown handoff. A restart used to leave a running scan 'running' until the 20 min stale lease
+// expired, with no progress and nothing visible to the user. This process records the attempts it is
+// executing; on SIGTERM it returns exactly those rows to 'pending' (same attempts counter, so MAX_ATTEMPTS
+// still bounds retries) and the next process claims them at once. Ownership is unchanged: the UPDATE is
+// conditional on status='running' AND the attempt number, so a row already reaped, re-claimed or finished
+// is untouched, and this process's old attempt then fails assertOwned/finish and stops starting new work.
+// It does not stop an in-flight provider call (that still ends at its transport timeout or with the process),
+// does not cover SIGKILL/crash (the lease still applies), and a requeued scan restarts from the beginning, so
+// provider work already done by the interrupted attempt may be repeated and billed again - same as any retry.
+// Legacy runner only; queue-mode (DAZL_QUEUE_TENANTS) jobs are not tracked. The Set lives on globalThis because
+// Next bundles instrumentation and route handlers as separate module instances.
+const IN_FLIGHT_KEY = Symbol.for('dazl.scan.inflight')
+function inFlightSet(): Set<Job> {
+  const g = globalThis as unknown as Record<symbol, Set<Job> | undefined>
+  return (g[IN_FLIGHT_KEY] ??= new Set<Job>())
+}
+export function trackInFlight(job: Job): () => void { const set = inFlightSet(); set.add(job); return () => { set.delete(job) } }
+export function hasInFlight(): boolean { return inFlightSet().size > 0 }
+export function requeueInFlightForShutdown(db: Database.Database): number {
+  let n = 0
+  const upd = db.prepare("UPDATE scan_jobs SET status = 'pending', claimed_at = NULL WHERE id = ? AND status = 'running' AND attempts = ? AND attempts < ?")
+  for (const job of inFlightSet()) {
+    try { n += upd.run(job.id, job.attempts, MAX_ATTEMPTS).changes } catch { /* shutting down: the lease reaper is the fallback */ }
+  }
+  return n
+}
+
 export async function kickRunner(db: Database.Database, deps: RunDeps = {}): Promise<void> {
   // Tenant-scoped queue gate (default OFF): listed tenants are claimed by the
   // queue bridge, the legacy claimer skips exactly those tenants - every
@@ -849,9 +876,11 @@ export async function kickRunner(db: Database.Database, deps: RunDeps = {}): Pro
     const job = claimKeyedJob(db, undefined, qt ?? undefined)
     if (!job) return
     acquireSlot()
+    const untrack = trackInFlight(job)
     void runJob(db, job, deps)
       .catch(e => console.error('scan run crashed', job.id, e))
       .finally(() => {
+        untrack()
         releaseSlot()
         // a retry may have gone back to pending; the next kick or status poll picks it up
       })
