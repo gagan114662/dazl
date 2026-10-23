@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3'
-import { eventsForLeads, effectiveEventType, FRESHNESS_DAYS, type CompanyEventRow, type EventType } from './store.ts'
+import { eventsForLeads, effectiveEventType, eventTimingFresh, FRESHNESS_DAYS, type CompanyEventRow, type EventType } from './store.ts'
 import { qualifyEvent } from '../signals/entity-match.ts'
 
 // Account prioritization from the company event store: "why this company, why now".
@@ -77,12 +77,7 @@ export function groupUnderlyingEvents(rows: CompanyEventRow[], now: number = Mat
   }
   const all = [...dated.values(), ...undated]
   for (const g of all) {
-    const lastSeen = Math.max(...g.sources.map(s => s.last_seen_at))
-    // Freshness is the EVENT's age, not the last re-crawl: a 2019 filing re-seen today is
-    // still a 2019 event. Undated rows fall back to last_seen - their age is unknowable.
-    const eventMs = g.date ? Date.parse(g.date) : NaN
-    const eventFresh = Number.isNaN(eventMs) ? true : eventMs >= (now - FRESHNESS_DAYS[g.event_type] * 86400) * 1000
-    g.fresh = lastSeen >= now - FRESHNESS_DAYS[g.event_type] * 86400 && eventFresh
+    g.fresh = g.sources.some(sr => eventTimingFresh({event_type:g.event_type,source_url:sr.url,source_published_at:sr.source_published_at,last_seen_at:sr.last_seen_at}, now))
   }
   return all
 }
@@ -107,7 +102,7 @@ export function scoreEvidence(groups: UnderlyingEvent[]): EvidenceScore {
     byType.set(g.event_type, arr)
   }
   // Press + SEC filing of the same dated claim are not independent evidence of it.
-  const roundDates = new Set((byType.get('funding_round') ?? []).filter(g => g.date).map(g => g.date))
+  const roundDates = new Set((byType.get('funding_round') ?? []).filter(g => g.date && g.fresh).map(g => g.date))
   const filings = byType.get('sec_filing') ?? []
   const stacked = filings.filter(g => g.date && roundDates.has(g.date))
   if (stacked.length) {
@@ -126,7 +121,7 @@ export function scoreEvidence(groups: UnderlyingEvent[]): EvidenceScore {
   for (const [fam, gs] of byFam) {
     const fresh = gs.filter(g => g.fresh)
     const stale = gs.length - fresh.length
-    if (stale > 0) uncounted.push(`${stale} ${fam} report(s) older than the ${FRESHNESS_DAYS[fam]}-day freshness window`)
+    if (stale > 0) uncounted.push(`${stale} ${fam} report(s) without confirmed event timing or older than the ${FRESHNESS_DAYS[fam]}-day freshness window`)
     const datedFresh = fresh.filter(g => g.date).sort((a, b) => (b.date! < a.date! ? -1 : 1))
     const undatedFresh = fresh.filter(g => !g.date)
     let units = datedFresh.slice(0, MAX_DATED_UNITS_PER_TYPE)

@@ -42,7 +42,7 @@ const REASON: Record<string, string> = {
   source_cap: 'over the 3-per-page cap',
   url_refused: 'unsafe or unsupported address', duplicate: 'duplicate company',
 }
-const REVIEW: Record<string, string> = { source_review_required: 'Manually supplied claim - literal source checks do not verify its meaning, date, buying need or consent', counterparty_signal: 'Names this company as someone else\'s customer - not evidence of its own buying intent', job_closed: 'Source says applications are closed - historical hiring evidence, not an active opening', quote_unconfirmed: 'The saved quote could not be confirmed on the source', login_required: 'Source requires sign-in - evidence unknown', blocked_by_site: 'The site blocked our check', needs_javascript: 'The page needs JavaScript to show its content' }
+const REVIEW: Record<string, string> = { event_timing_unconfirmed: 'The quote was found, but its event timing and current need are unconfirmed', event_date_bad_date: 'The claimed event date is invalid - review the source', event_date_stale: 'The claimed event date is outside the freshness window - historical evidence only', event_date_future_date: 'The claimed event date is in the future - current need unconfirmed',  source_review_required: 'Manually supplied claim - literal source checks do not verify its meaning, date, buying need or consent', counterparty_signal: 'Names this company as someone else\'s customer - not evidence of its own buying intent', job_closed: 'Source says applications are closed - historical hiring evidence, not an active opening', quote_unconfirmed: 'The saved quote could not be confirmed on the source', login_required: 'Source requires sign-in - evidence unknown', blocked_by_site: 'The site blocked our check', needs_javascript: 'The page needs JavaScript to show its content' }
 
 // Enrichment labels join example titles with '; ' - older rows can repeat one
 // title per posting. Show each distinct title once; the count stays untouched.
@@ -609,7 +609,7 @@ export default function LeadsClient() {
                 {l.events.map(ev => (
                   <div key={ev.id} className="text-gray-400">
                     <span className="text-gray-500">{/sec\.gov/.test(ev.source_url) ? 'SEC filing' : ev.event_type.replace(/_/g, ' ')}:</span> <span className="text-[#111]">{ev.summary}</span>{' '}
-                    <span className="text-gray-500">{ev.source_published_at ? `dated ${ev.source_published_at}, ` : ''}seen {new Date(ev.last_seen_at * 1000).toISOString().slice(0, 10)}{ev.fresh ? '' : ' (older)'}{ev.entity_status === 'unconfirmed' ? ' - entity unconfirmed (name match only), not used for ranking' : ev.entity_status === 'heuristic' ? ' - name match (heuristic)' : ''}</span>{' '}
+                    <span className="text-gray-500">{ev.source_published_at ? `dated ${ev.source_published_at}, ` : ''}seen {new Date(ev.last_seen_at * 1000).toISOString().slice(0, 10)}{ev.fresh ? ' (dated filing, not buying need)' : ' (event timing unconfirmed or older)'}{ev.entity_status === 'unconfirmed' ? ' - entity unconfirmed (name match only), not used for ranking' : ev.entity_status === 'heuristic' ? ' - name match (heuristic)' : ''}</span>{' '}
                     <a className="underline text-[#111]" href={ev.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
                   </div>
                 ))}
@@ -666,7 +666,7 @@ export default function LeadsClient() {
                   <p>{eventDateCopy(l.event_date,l.date_status)}. No semantic signal verification, fit grade, named buyer, current need or consent.</p>
                 </div>}
                 <button onClick={() => confirmReview(l.id)} className="font-mono text-xs uppercase border border-black px-2 py-1 ml-3 hover:bg-black hover:text-white">I checked this - use it</button>
-                {['quote_unconfirmed','source_review_required'].includes(l.review_reason ?? '') && l.evidence_excerpt && (
+                {['quote_unconfirmed','source_review_required','event_timing_unconfirmed','event_date_bad_date','event_date_stale','event_date_future_date'].includes(l.review_reason ?? '') && l.evidence_excerpt && (
                   <div className="text-xs text-gray-500 mt-1">Unconfirmed quote: "{l.evidence_excerpt}"</div>
                 )}
               </div>

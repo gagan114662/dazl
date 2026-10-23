@@ -34,6 +34,18 @@ export function effectiveEventType(t: EventType, sourceUrl: string): EventType {
   try { return SEC_HOST_RE.test(new URL(sourceUrl).hostname) ? 'sec_filing' : t } catch { return t }
 }
 
+// Publication/observation days are not event-day proof. The current collectors
+// establish a dated occurrence only for SEC filings, never a concluded raise.
+export function eventTimingFresh(r: {event_type: EventType; source_url: string; source_published_at: string | null; last_seen_at: number}, now: number): boolean {
+  if (effectiveEventType(r.event_type, r.source_url) !== 'sec_filing') return false
+  try { if (!SEC_HOST_RE.test(new URL(r.source_url).hostname)) return false } catch { return false }
+  const day = r.source_published_at
+  if (!day || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return false
+  const ms = Date.parse(`${day}T00:00:00Z`)
+  if (!Number.isFinite(ms) || new Date(ms).toISOString().slice(0,10) !== day) return false
+  return ms <= now * 1000 && ms >= (now - FRESHNESS_DAYS.sec_filing * 86400) * 1000 && r.last_seen_at <= now && r.last_seen_at >= now - FRESHNESS_DAYS.sec_filing * 86400
+}
+
 export function migrateEvents(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS company_events (
@@ -127,7 +139,7 @@ export function listCompanyEvents(db: Database.Database, tenantId: string, opts:
      ORDER BY last_seen_at DESC LIMIT ?`,
   ).all(tenantId, opts.companyKey ?? null, opts.companyKey ?? null, opts.scope ?? null, opts.scope ?? null, opts.limit ?? 200) as Omit<CompanyEventRow, 'fresh'>[]
   return rows
-    .map(r => ({ ...r, fresh: r.last_seen_at >= now - FRESHNESS_DAYS[r.event_type] * 86400 }))
+    .map(r => ({ ...r, fresh: eventTimingFresh(r, now) }))
     .filter(r => !opts.freshOnly || r.fresh)
 }
 

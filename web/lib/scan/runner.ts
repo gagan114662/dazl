@@ -238,6 +238,12 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
       // The model's quote does not match the fetched text (paraphrase, or snippet-vs-page
       // drift), but when the page really is about this company the signal may still be real.
       // Show it as needs-review - labeled unconfirmed, never emailed - instead of vanishing.
+      if (['bad_date', 'stale', 'future_date'].includes(v.reason)) {
+        const k = dedupKey(c)
+        if (!review.has(k)) review.set(k, { ...c, contact: null, review_reason: `event_date_${v.reason}` })
+        else drop('duplicate')
+        continue
+      }
       if (v.reason === 'excerpt_not_on_page') {
         const key = companyKey(c.company)
         const hay = `${norm(page.title)} ${norm(page.text).slice(0, 4000)}`
@@ -265,6 +271,12 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
   passed.forEach(({ c, v }, i) => {
     const j = verdicts[i]
     if (j === 'contradicts') { drop('contradicted'); return }
+    if (v.dateStatus !== 'verified') {
+      const k = dedupKey(c)
+      if (!review.has(k)) review.set(k, { ...c, contact: null, review_reason: 'event_timing_unconfirmed' })
+      else drop('duplicate')
+      return
+    }
     // Cap by source class: a content farm that copied the quote never outranks the company's own page.
     const confidence = Math.max(0, Math.min(sourceCap(c.source_url, c.company, knownDomain), Math.min(100, v.confidence + (j ? JUDGE_DELTA[j] : 0))))
     if (confidence < MIN_CONFIDENCE) { drop(j === 'unclear' ? 'claim_unclear' : 'low_confidence'); return }
@@ -341,9 +353,9 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
     const insertedKeys = new Set<string>()
     for (const l of leads) { const result = ins.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, dedupKey(l), l.fit ?? null, l.intent ?? null, l.action ?? null, l.why ?? null, l.signals ?? null, l.icp_match ?? null, primarySignalKind(l.signals), sourceKind(job)); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
     const insReview = db.prepare(
-      'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, review_reason, source_kind) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?)',
+      'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, review_reason, source_kind) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)',
     )
-    for (const l of review) { const result = insReview.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.signal, l.source_url, l.score, l.excerpt, `review:${dedupKey(l)}`, l.review_reason, sourceKind(job)); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
+    for (const l of review) { const result = insReview.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.event_date ? 'unverified' : 'undated', `review:${dedupKey(l)}`, l.review_reason, sourceKind(job)); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
     ledger?.write(db, job.id, job.attempts, out ? leads : null, out ? review : null, insertedKeys)
     db.prepare(
       `UPDATE scan_jobs SET status = ?, error = ?, claimed_at = NULL, candidates = ?, verified = ?, needs_review = ?, dropped = ?, drop_reasons = ?,

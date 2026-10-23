@@ -85,7 +85,7 @@ export function holdUngraded(leads: { fit?: number; why?: string }[], reason: st
   for (const l of leads) { l.fit = 0; l.why = reason.slice(0, WHY_MAX) }
 }
 
-export function scorePrompt(icpText: string, leads: { company: string; name: string; signal: string; excerpt: string | null }[]): string {
+export function scorePrompt(icpText: string, leads: { company: string; name: string; signal: string; excerpt: string | null; event_date?: string | null; date_status?: string | null }[]): string {
   return `You are grading sales leads for one seller. Their target profile (ICP):
 ${icpText}
 
@@ -95,6 +95,7 @@ Grade each lead below on three axes, 0-5 each:
 - action: can the seller act on it (0 = anonymous or unreachable giant, 5 = identifiable, right-sized, contactable)
 
 Rules:
+- Event date is a claim unless event association is verified. Publication, copyright and retrieval dates never prove a live trigger. Unknown timing means intent 0 and no NOW assertion.
 - Grade ONLY from the evidence shown. If the evidence does not show timing, intent is low. A true quote about the wrong company is still fit 0.
 - Announcements, listicles and news about a company are not the same as that company being a buyer; grade fit on who the company is, intent on what just happened to them.
 - why: 2-3 sentences, "why this lead, why now": the live trigger from the evidence, why this company fits the ICP, and what to say first. Ground every claim in the quoted evidence - if the evidence does not show it, do not say it. No flattery.
@@ -108,7 +109,7 @@ Rules:
 Reply with one line per lead, exactly this format, no preamble:
 LEAD <n> | fit <0-5> | intent <0-5> | action <0-5> | match <4 letters like yy?n> | signals <comma list or none> | why <sentence>[ | mism <words>]
 
-${leads.map((l, i) => `LEAD ${i + 1}: company=${l.company || '?'} name=${l.name || '?'}\nsignal: ${l.signal}\nevidence: ${l.excerpt ?? '(none)'}`).join('\n\n')}`
+${leads.map((l, i) => `LEAD ${i + 1}: company=${l.company || '?'} name=${l.name || '?'}\ndate claim: ${l.event_date ?? "unknown"}; event association: ${l.date_status ?? "unknown"}\nsignal: ${l.signal}\nevidence: ${l.excerpt ?? '(none)'}`).join('\n\n')}`
 }
 
 const clamp5 = (n: number) => Math.max(0, Math.min(5, Math.round(n)))
@@ -146,12 +147,18 @@ export function parseScores(text: string, count: number): LeadScore[] | null {
 
 // One model call per scan (not per lead). Returns null when the model cannot score - the scan
 // then completes unscored rather than failing.
-export async function scoreLeads(provider: Provider, apiKey: string, icpText: string, leads: { company: string; name: string; signal: string; excerpt: string | null }[], fetchImpl?: typeof fetch): Promise<LeadScore[] | null> {
+export async function scoreLeads(provider: Provider, apiKey: string, icpText: string, leads: { company: string; name: string; signal: string; excerpt: string | null; event_date?: string | null; date_status?: string | null }[], fetchImpl?: typeof fetch): Promise<LeadScore[] | null> {
   if (!provider.complete || leads.length === 0) return null
   try {
     const text = await provider.complete(apiKey, scorePrompt(icpText, leads.slice(0, 40)), fetchImpl, 2500)
     const parsed = parseScores(text, Math.min(leads.length, 40))
     if (!parsed) console.error('lead scoring: could not parse model output', text.slice(0, 300))
+    if (parsed) parsed.forEach((g, i) => {
+      if (!leads[i].event_date || leads[i].date_status !== 'verified') {
+        g.intent = 0
+        g.why = 'Event timing is unconfirmed. Review the source before treating this as a current buying need.'
+      }
+    })
     return parsed
   } catch (e) {
     console.error('lead scoring failed', e instanceof Error ? e.message : 'error')

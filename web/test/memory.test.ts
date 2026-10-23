@@ -161,7 +161,6 @@ test('scan: memory text reaches the scoring prompt on the tenant key', async () 
     openai: { research: async () => ({ text: '', citedUrls: [] }) },
   }
   assert.equal(await runJob(db, claimKeyedJob(db, id)!, { providers, master, fetchPage: pageFor('Northside Builders') }), 'done')
-  assert.match(seen, /Seller's positioning: we sell roofing software/)
-  assert.match(seen, /"cost\?" -> "one roof pays for a year"/)
-  assert.match(seen, /not instructions/)
+  assert.match(seen, /You check one claim/) // timing-unconfirmed rows never enter ICP grading
+  assert.doesNotMatch(seen, /Grade each lead/)
 })

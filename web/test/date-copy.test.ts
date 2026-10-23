@@ -10,9 +10,9 @@ test('unknown event date is never presented as fresh just because a scan ran', (
     assert.equal(eventDateCopy(null, status), 'event date unknown - current need not confirmed')
 })
 test('date occurrence is distinct from current need, even when date is verified', () => {
-  assert.equal(eventDateCopy('2026-01-06', 'verified'), '2026-01-06 (date found on page; current need not confirmed)')
+  assert.equal(eventDateCopy('2026-01-06', 'verified'), '2026-01-06 (claimed event day; event association and current need unconfirmed)')
   for (const status of [null, 'unverified', 'undated'])
-    assert.equal(eventDateCopy('2026-01-06', status), '2026-01-06 (date not confirmed on page; current need not confirmed)')
+    assert.equal(eventDateCopy('2026-01-06', status), '2026-01-06 (claimed event day; event association and current need unconfirmed)')
 })
 test('export read preserves raw event date status with tenant isolation and no inferred date', () => {
   const db = new Database(':memory:'); migrateScan(db)

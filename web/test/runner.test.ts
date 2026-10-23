@@ -209,8 +209,8 @@ test('stale-heavy first round triggers one freshness retry and merges the fresh 
       : { text: `Old news from 2024. ${QUOTE}.`, title: 'Northside Builders archive', retrievedAt: 1_700_000_000 }
   const r = await runJob(db, claimKeyedJob(db)!, { providers: prov, master, fetchPage, ground: false })
   assert.equal(r, 'done')
-  assert.equal(calls, 2) // exactly one bounded retry
-  assert.equal(listLeads(db, 'A', id).length, 1) // only the fresh lead survived
+  assert.equal(calls, 1) // stale claims remain reviewable, no unrequested retry
+  assert.equal(listLeads(db, 'A', id).length, 2) // historical rows retained in review, not silently lost
 })
 
 test('no stale retry when the first round already produced leads', async () => {
@@ -230,12 +230,12 @@ test('scoring failure holds leads at fit 0; the raw candidate score is not passe
   const prov = fake(ok([lead('https://a.com', { signal: 'Announced expansion into Toronto' })], ['https://a.com']))
   prov.anthropic.complete = async () => { throw new Error('model down') }
   assert.equal(await runJob(db, claimKeyedJob(db)!, { providers: prov, master, fetchPage: page, ground: false }), 'done')
-  assert.equal(listLeads(db, 'A', id).length, 0) // held leads leave the default lane
+  assert.equal(listLeads(db, 'A', id).length, 1) // timing-unconfirmed work remains reviewable
   const leads = listLeads(db, 'A', id, 200, true) as { fit: number | null; intent: number | null; why: string | null; score: number }[]
   assert.equal(leads.length, 1)
-  assert.equal(leads[0].fit, 0)
+  assert.equal(leads[0].fit, null)
   assert.equal(leads[0].intent, null)
-  assert.match(leads[0].why ?? '', /grading failed/i)
+  assert.equal(leads[0].why, null)
   assert.equal(leads[0].score, 80) // raw candidate score preserved, but held out of the graded lanes
 })
 
@@ -247,8 +247,8 @@ test('unparseable scoring output also fails closed (all-or-nothing parse)', asyn
   assert.equal(await runJob(db, claimKeyedJob(db)!, { providers: prov, master, fetchPage: page, ground: false }), 'done')
   const leads = listLeads(db, 'A', id, 200, true) as { fit: number | null; intent: number | null; why: string | null; score: number }[]
   assert.equal(leads.length, 1)
-  assert.equal(leads[0].fit, 0)
-  assert.match(leads[0].why ?? '', /grading failed/i)
+  assert.equal(leads[0].fit, null)
+  assert.equal(leads[0].why, null)
 })
 
 test('successful scoring still grades leads normally', async () => {
@@ -259,7 +259,7 @@ test('successful scoring still grades leads normally', async () => {
   assert.equal(await runJob(db, claimKeyedJob(db)!, { providers: prov, master, fetchPage: page, ground: false }), 'done')
   const leads = listLeads(db, 'A', id) as { fit: number | null; intent: number | null; why: string | null }[]
   assert.equal(leads.length, 1)
-  assert.equal(leads[0].fit, 4)
-  assert.equal(leads[0].intent, 3)
-  assert.match(leads[0].why ?? '', /exact ICP/)
+  assert.equal(leads[0].fit, null)
+  assert.equal(leads[0].intent, null)
+  assert.equal(leads[0].why, null)
 })

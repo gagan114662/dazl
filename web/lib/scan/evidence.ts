@@ -60,13 +60,9 @@ export function verifyEvidence(c: Candidate, page: Page, now = new Date()): Verd
     const ageDays = (now.getTime() - day.getTime()) / 86_400_000
     if (ageDays > MAX_AGE_DAYS) return { ok: false, reason: 'stale' }
     if (ageDays < -1) return { ok: false, reason: 'future_date' }
-    // Years mentioned near the quote: the claimed year must not contradict the page.
-    const near = text.slice(Math.max(0, at - 300), at + excerpt.length + 300)
-    const years = [...near.matchAll(/\b(19|20)\d{2}\b/g)].map(m => Number(m[0]))
-    const claimed = day.getUTCFullYear()
-    if (years.includes(claimed)) { dateStatus = 'verified'; confidence += 15 }
-    else if (years.length > 0 && Math.max(...years) < claimed) return { ok: false, reason: 'date_conflict' }
-    else { dateStatus = 'unverified'; confidence -= 15 }
+    // A nearby year or publication day does not bind this claimed event to a day.
+    dateStatus = 'unverified'
+    confidence -= 15
   } else {
     confidence -= 15
   }

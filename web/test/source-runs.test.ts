@@ -64,7 +64,7 @@ test('runner records actual provider candidate counts and stored-lead attributio
   assert.equal(await runJob(db,job,{master,providers:{anthropic:provider,openai:provider},judge:null,fetchPage:async()=>({text:candidate.excerpt,title:'Acme news',retrievedAt:1791000000}),now:new Date('2026-10-22')}),'done')
   const row = sourceRuns(db,'A',id)[0] as any
   assert.equal(row.collector,'search:anthropic'); assert.equal(row.candidate_count,1)
-  assert.equal(row.verified_count,1); assert.equal(row.inserted_count,1); assert.equal(row.evidence_count,null)
+  assert.equal(row.verified_count,0); assert.equal(row.review_count,1); assert.equal(row.inserted_count,1); assert.equal(row.evidence_count,null)
   const lead = db.prepare('SELECT id FROM leads WHERE scan_job_id=?').get(id) as {id:string}
   assert.deepEqual(sourcesForLead(db,'A',lead.id),[{collector:'search:anthropic',attempt:1}])
 })

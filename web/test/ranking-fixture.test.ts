@@ -58,7 +58,7 @@ test('fixture creates 3 labelled leads + 2 events, and the live ranking order ma
     'dazl ranking fixture C (test only)',
   ])
   const b = ranked[1]
-  assert.equal((pri[b.id].evidence_score > 0), true)
+  assert.equal(pri[b.id].evidence_score, 0) // synthetic publication days are not event-time proof
   assert.equal(pri[ranked[0].id].evidence_score, 0)
   // no outreach rows created
   assert.equal((d.prepare('SELECT COUNT(*) n FROM outreach_messages').get() as { n: number }).n, 0)

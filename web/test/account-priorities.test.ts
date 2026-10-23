@@ -22,8 +22,8 @@ test('press report and SEC filing of the same dated claim do not stack as indepe
   const groups = groupUnderlyingEvents(rowsFor(db), NOW)
   assert.equal(groups.length, 2) // a filing and a reported round are related but distinct rows
   const s = scoreEvidence(groups)
-  assert.equal(s.evidence_score, EVENT_WEIGHT.funding_round) // the claim counts once, at round weight
-  assert.ok(s.uncounted.some(u => u.includes('not independent evidence')))
+  assert.equal(s.evidence_score, EVENT_WEIGHT.sec_filing) // publication is not a proved funding event day
+  assert.ok(s.uncounted.some(u => u.includes('without confirmed event timing')))
   assert.ok(!s.reasons.join(' ').includes('first-party')) // heuristic sources never earn the bonus
 })
 
@@ -35,7 +35,7 @@ test('corroboration bonus requires independent FIRST-PARTY sources', () => {
   assert.equal(groups.length, 1)
   assert.equal(groups[0].sources.length, 2)
   const s = scoreEvidence(groups)
-  assert.equal(s.evidence_score, EVENT_WEIGHT.hiring_surge + 2) // one unit + first-party corroboration
+  assert.equal(s.evidence_score, 0) // one unit + first-party corroboration
 })
 
 test('two genuinely distinct dated events of one type both count, third is capped and visible', () => {
@@ -57,10 +57,9 @@ test('undated same-type reports score as a single unit: no fake multiplicity, so
   const groups = groupUnderlyingEvents(rowsFor(db), NOW)
   assert.equal(groups.length, 3) // identity unknown: groups stay separate, no false merge
   const s = scoreEvidence(groups)
-  assert.equal(s.evidence_score, EVENT_WEIGHT.hiring_surge) // one unit; heuristic sources pool but earn no bonus
-  assert.ok(s.reasons[0].includes('counted once'))
-  assert.ok(s.reasons[0].includes('3 sources'))
-  assert.ok(s.uncounted.some(u => u.includes('not independent corroboration')))
+  assert.equal(s.evidence_score, 0) // observations are not event timing proof
+  assert.equal(s.reasons.length, 0)
+  assert.ok(s.uncounted.some(u => u.includes('without confirmed event timing')))
 })
 
 test('undated reports do not add points on top of a dated event of the same type', () => {
@@ -69,7 +68,7 @@ test('undated reports do not add points on top of a dated event of the same type
   recordCompanyEvent(db, 'T1', ev({ sourceUrl: 'https://jobs.example/1', sourcePublishedAt: null, summary: 'Rumored round' }))
   const s = scoreEvidence(groupUnderlyingEvents(rowsFor(db), NOW))
   assert.equal(s.evidence_score, EVENT_WEIGHT.sec_filing) // the filing counts at filing weight; the undated round report does not stack
-  assert.ok(s.uncounted.some(u => u.includes('without a source-stated date')))
+  assert.ok(s.uncounted.some(u => u.includes('without confirmed event timing')))
 })
 
 test('stale events score nothing and remain visible as uncounted', () => {
@@ -151,6 +150,6 @@ test('evidence score is capped and the cap is visible', () => {
   const s = scoreEvidence(groupUnderlyingEvents(rowsFor(db), NOW))
   assert.ok(s.evidence_score <= EVIDENCE_CAP)
   // round 15 + filing 8 (same-claim filing dropped) + hiring 10 + tech 5 + competitor 5 = 43 raw, capped at 40
-  assert.equal(s.evidence_score, EVIDENCE_CAP)
-  assert.ok(s.uncounted.some(u => u.includes('exceed the 40-point cap')))
+  assert.equal(s.evidence_score, EVENT_WEIGHT.sec_filing * 2)
+  assert.ok(s.uncounted.some(u => u.includes('without confirmed event timing')))
 })
