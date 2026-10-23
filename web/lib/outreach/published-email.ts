@@ -31,7 +31,7 @@ export function publishedContact(lead: PublishedEmailLead): PublishedContact | n
     const c = classifyPurpose(primary)
     return { email: primary, purpose: c.purpose, purposeHint: c.hint, source: 'lead' }
   }
-  const e = (lead.enrichments ?? []).find(x => x.connector === 'sitecrawl' && x.kind === 'email')
+  const e = (lead.enrichments ?? []).find(x => x.connector === 'sitecrawl' && x.kind === 'email' && PUBLISHED_EMAIL_RE.test(address(x.value)))
   if (!e) return null
   const email = address(e.value)
   if (!PUBLISHED_EMAIL_RE.test(email)) return null

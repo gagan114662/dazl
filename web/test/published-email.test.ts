@@ -55,3 +55,15 @@ test('malformed @ strings never offer an unsendable draft or hide a valid crawl 
   assert.equal(publishedEmail({contact:' SALES@ACME.COM '}),'sales@acme.com')
   assert.equal(publishedEmail({contact:null,enrichments:[{connector:'sitecrawl',kind:'email',value:'bad@'}]}),null)
 })
+
+
+test('first valid sitecrawl address wins without malformed entries hiding it', () => {
+  const enrichments = [
+    {connector:'sitecrawl',kind:'email',value:'not an address'},
+    {connector:'sitecrawl',kind:'email',value:'bad@'},
+    {connector:'sitecrawl',kind:'email',value:' INFO@ACME.COM '},
+    {connector:'sitecrawl',kind:'email',value:'second@acme.com'},
+  ]
+  assert.equal(publishedEmail({contact:'broken@',enrichments}),'info@acme.com')
+  assert.equal(publishedEmail({contact:null,enrichments:enrichments.slice(0,2)}),null)
+})
