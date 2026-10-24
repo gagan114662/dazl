@@ -1,4 +1,5 @@
 import type { Evidence, SourceAdapter, SafeGet } from './types.ts'
+import { decodeText } from './rss.ts'
 
 // Public job-board JSON (Greenhouse, Ashby). Evidence only: a posting says a company is hiring a role in a state.
 // It is not proof of a need; the normal verifier still checks every lead against the cited page.
@@ -19,6 +20,15 @@ export function locationInState(state: string, ...locs: (string | undefined)[]):
   const abbr = Object.keys(STATES).find(k => STATES[k] === state)!
   return locs.some(l => !!l && (new RegExp(`\\b${state}\\b`, 'i').test(l) || new RegExp(`,\\s*${abbr}\\b`).test(l)))
 }
+// The quote is a sentence of the posting's own body text as the API returns it (never title + location joined: a
+// real posting page shows those in separate elements). No usable body text means no evidence, nothing is invented.
+export function bodyQuote(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null
+  const text = decodeText(decodeText(raw)) // Greenhouse returns escaped HTML: unescape, then strip tags
+  const first = text.match(/^(.{20,300}?[.!?])(\s|$)/)?.[1]
+  const q = first ?? (text.length >= 20 ? text.slice(0, 300).replace(/\s+\S*$/, '') : '')
+  return q.length >= 20 ? q : null
+}
 const day = (v: unknown): string | null => {
   if (typeof v !== 'string') return null
   const t = Date.parse(v)
@@ -33,7 +43,7 @@ const json = async (http: SafeGet, url: string): Promise<any> => {
 function board(feed: string): { kind: 'gh' | 'ashby'; token: string } | null {
   let u: URL
   try { u = new URL(feed) } catch { return null }
-  if (u.protocol !== 'https:' || u.search || u.hash) return null
+  if (u.protocol !== 'https:' || u.search || u.hash || u.port || u.username || u.password) return null
   const parts = u.pathname.split('/').filter(Boolean)
   if (parts.length < 1 || !TOKEN.test(parts[0]) || /%/.test(u.pathname)) return null
   if (u.hostname === 'boards.greenhouse.io' || u.hostname === 'job-boards.greenhouse.io') return { kind: 'gh', token: parts[0] }
@@ -67,7 +77,9 @@ export const jobBoardsAdapter: SourceAdapter = {
           if (!roleOk(j.title) || !locationInState(state, j.location, j.address?.postalAddress?.addressRegion)) continue
           const date = day(j.publishedAt)
           if (!fresh(date)) continue
-          out.push({ source: 'jobboards', url: j.jobUrl, title: `${j.title} (${j.location ?? state})`.slice(0, 200), quote: `${j.title} ${j.location ?? ''}`.trim().slice(0, 300), date })
+          const quote = bodyQuote(j.descriptionPlain)
+          if (!quote) continue
+          out.push({ source: 'jobboards', url: j.jobUrl, title: `${j.title} (${j.location ?? state})`.slice(0, 200), quote, date })
         }
       } else {
         const d = await json(http, `https://boards-api.greenhouse.io/v1/boards/${b.token}/jobs`)
@@ -80,7 +92,9 @@ export const jobBoardsAdapter: SourceAdapter = {
           const date = day(det?.first_published)
           const url = typeof det?.absolute_url === 'string' ? det.absolute_url : ''
           if (!fresh(date) || !url.startsWith('https://')) continue
-          out.push({ source: 'jobboards', url, title: `${det.title} (${det.location?.name ?? state})`.slice(0, 200), quote: `${det.title} ${det.location?.name ?? ''}`.trim().slice(0, 300), date, updated: day(det.updated_at) })
+          const quote = bodyQuote(det.content)
+          if (!quote) continue
+          out.push({ source: 'jobboards', url, title: `${det.title} (${det.location?.name ?? state})`.slice(0, 200), quote, date, updated: day(det.updated_at) })
         }
       }
     }
