@@ -2,6 +2,8 @@
 import { KEY_UNREADABLE_COPY, knownErrorCopy } from '@/lib/error-copy'
 import { useEffect, useRef, useState } from 'react'
 import { emptyLeadsMessage, scoreLabel, quoteNote } from '@/lib/scan/leads-view'
+import { eventTypeLabel } from '@/lib/events/labels'
+import { companySearchEligible } from '@/lib/scan/find-contact-eligible'
 import { contactsFromEnrichments } from '@/lib/people/rank'
 import { publishedEmail, publishedContact, contactSearchNote } from '@/lib/outreach/published-email'
 import SourceReview from './source-review'
@@ -186,6 +188,18 @@ export default function LeadsClient() {
   async function withdrawConfirm(leadId: string) {
     const r = await fetch(`/api/leads/${leadId}/confirm`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: '{}' })
     if (r.ok) setLeads(ls => ls.map(l => l.id === leadId ? { ...l, review_reason: l.human_confirmed_from === 'legacy_currentness_review' ? null : l.human_confirmed_from, human_confirmed_at: null, human_confirmed_from: null, currentness_held: l.confidence !== null } : l))
+  }
+  const [contactMsg, setContactMsg] = useState<Record<string, string>>({})
+  async function findContact(leadId: string) {
+    setContactMsg(m => ({ ...m, [leadId]: 'Searching the company website...' }))
+    let msg = 'Could not run the contact search'
+    try {
+      const r = await fetch(`/api/leads/${leadId}/find-contact`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+      const j = await r.json().catch(() => ({}))
+      if (r.ok) { msg = j.found > 0 ? `Found ${j.found} published contact${j.found === 1 ? '' : 's'} on the company's own pages.` : 'No published contact found on the pages checked. This does not prove none exists.'; await loadLeads() }
+      else if (j?.error) msg = String(j.error)
+    } catch { /* keep the generic message */ }
+    setContactMsg(m => ({ ...m, [leadId]: msg }))
   }
   async function makeDraft(leadId: string) {
     // Network failure or a non-JSON body (proxy page, server error) must still show a message, never an unhandled rejection.
@@ -629,7 +643,7 @@ export default function LeadsClient() {
                 <div className="text-gray-500 uppercase tracking-wide text-[10px]">Company history</div>
                 {l.events.map(ev => (
                   <div key={ev.id} className="text-gray-400">
-                    <span className="text-gray-500">{/sec\.gov/.test(ev.source_url) ? 'SEC filing' : ev.event_type.replace(/_/g, ' ')}:</span> <span className="text-[#111]">{ev.summary}</span>{' '}
+                    <span className="text-gray-500">{/sec\.gov/.test(ev.source_url) ? 'SEC filing' : eventTypeLabel(ev.event_type)}:</span> <span className="text-[#111]">{ev.summary}</span>{' '}
                     <span className="text-gray-500">{ev.source_published_at ? `dated ${ev.source_published_at}, ` : ''}seen {new Date(ev.last_seen_at * 1000).toISOString().slice(0, 10)}{ev.fresh ? ' (dated filing, not buying need)' : ' (event timing unconfirmed or older)'}{ev.entity_status === 'unconfirmed' ? ' - entity unconfirmed (name match only), not used for ranking' : ev.entity_status === 'heuristic' ? ' - name match (heuristic)' : ''}</span>{' '}
                     <a className="underline text-[#111]" href={ev.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
                   </div>
@@ -650,7 +664,10 @@ export default function LeadsClient() {
               return <>
                 {pc && pc.purpose !== 'non-sales' && <span className="text-gray-500 text-xs ml-3">{pc.email}{pc.purpose==='unknown'?' - published address; purpose and buyer relevance unknown':' - business inquiry context, not consent'}</span>}
                 {pc && pc.purpose === 'non-sales' && <span className="text-gray-500 text-xs ml-3">{pc.email} - published {pc.purposeHint} inbox, not a sales contact</span>}
-                {(() => { const n = contactSearchNote(l); return n ? <span className="text-gray-500 text-xs ml-3 block mt-1">{n}</span> : null })()}
+                {(() => { const n = companySearchEligible(l) ? contactSearchNote(l) : (publishedContact(l) || l.contact ? null : 'No contact stored. This row does not identify a verified company website for contact search.'); return n ? <span className="text-gray-500 text-xs ml-3 block mt-1">{n}</span> : null })()}
+                {!pc && !l.contact && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && companySearchEligible(l) && (
+                  <span className="text-xs ml-3 block mt-1"><button onClick={() => findContact(l.id)} className="underline text-[#111]">Look for a published contact on the company website</button>{contactMsg[l.id] ? <span className="text-gray-500 ml-2">{contactMsg[l.id]}</span> : null}</span>
+                )}
                 {!pc && l.contact && <span className="text-gray-500 text-xs ml-3">{l.contact}</span>}
                 {draftTo && (l.confidence !== null || l.human_confirmed_at !== null) && !(l.fit === 0 && l.intent === null) && (
                   drafted[l.id]

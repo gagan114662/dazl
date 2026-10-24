@@ -34,6 +34,8 @@ export function effectiveEventType(t: EventType, sourceUrl: string): EventType {
   try { return SEC_HOST_RE.test(new URL(sourceUrl).hostname) ? 'sec_filing' : t } catch { return t }
 }
 
+export { eventTypeLabel } from './labels.ts'
+
 // Publication/observation days are not event-day proof. The current collectors
 // establish a dated occurrence only for SEC filings, never a concluded raise.
 export function eventTimingFresh(r: {event_type: EventType; source_url: string; source_published_at: string | null; last_seen_at: number}, now: number): boolean {

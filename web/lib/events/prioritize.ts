@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import { eventTypeLabel } from './labels.ts'
 import { eventsForLeads, effectiveEventType, eventTimingFresh, FRESHNESS_DAYS, type CompanyEventRow, type EventType } from './store.ts'
 import { qualifyEvent } from '../signals/entity-match.ts'
 
@@ -121,7 +122,7 @@ export function scoreEvidence(groups: UnderlyingEvent[]): EvidenceScore {
   for (const [fam, gs] of byFam) {
     const fresh = gs.filter(g => g.fresh)
     const stale = gs.length - fresh.length
-    if (stale > 0) uncounted.push(`${stale} ${fam} report(s) without confirmed event timing or older than the ${FRESHNESS_DAYS[fam]}-day freshness window`)
+    if (stale > 0) uncounted.push(`${stale} ${eventTypeLabel(fam)} report(s) without confirmed event timing or older than the ${FRESHNESS_DAYS[fam]}-day freshness window`)
     const datedFresh = fresh.filter(g => g.date).sort((a, b) => (b.date! < a.date! ? -1 : 1))
     const undatedFresh = fresh.filter(g => !g.date)
     let units = datedFresh.slice(0, MAX_DATED_UNITS_PER_TYPE)
@@ -133,11 +134,11 @@ export function scoreEvidence(groups: UnderlyingEvent[]): EvidenceScore {
       countedUndatedOnce = true
     }
     for (const extra of datedFresh.slice(MAX_DATED_UNITS_PER_TYPE)) {
-      uncounted.push(`${fam} dated ${extra.date}: beyond the ${MAX_DATED_UNITS_PER_TYPE}-event per-type scoring cap`)
+      uncounted.push(`${eventTypeLabel(fam)} dated ${extra.date}: beyond the ${MAX_DATED_UNITS_PER_TYPE}-event per-type scoring cap`)
     }
     if (!countedUndatedOnce) {
       for (const u of undatedFresh) {
-        uncounted.push(`${fam} without a source-stated date (${u.sources.length} report(s)): not scored separately - a dated ${fam} event already counts and distinct identity cannot be established`)
+        uncounted.push(`${eventTypeLabel(fam)} without a source-stated date (${u.sources.length} report(s)): not scored separately - a dated ${eventTypeLabel(fam)} event already counts and distinct identity cannot be established`)
       }
     }
     for (const u of units) {

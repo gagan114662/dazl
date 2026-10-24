@@ -85,6 +85,9 @@ const get = async (url: string, fetchImpl: typeof fetch) => {
   try { return await res.json() } catch { return null }
 }
 
+// The source url of an N-role count is the BOARD page that lists all N roles. It is never one
+// arbitrary posting (jobs[0]): that would attribute a different job's page to the aggregate. A
+// single-role board links that role.
 // Public job boards. Board slug guessed from the company domain (then name): a 404
 // just means "no board under that slug" - no signal is recorded, nothing is faked.
 export async function atsHiring(company: string, domain: string | null, fetchImpl: typeof fetch = fetch): Promise<HiringSignal | null> {
@@ -94,17 +97,17 @@ export async function atsHiring(company: string, domain: string | null, fetchImp
     const gh = await get(`https://boards-api.greenhouse.io/v1/boards/${slug}/jobs`, fetchImpl)
     if (Array.isArray(gh?.jobs) && gh.jobs.length > 0) {
       const jobs = gh.jobs.filter((j: { title?: string }) => typeof j?.title === 'string')
-      if (jobs.length) return { board: 'greenhouse', openRoles: jobs.length, titles: topTitles(jobs, (j: { title: string }) => j.title), url: jobs[0].absolute_url || `https://boards.greenhouse.io/${slug}`, via }
+      if (jobs.length) return { board: 'greenhouse', openRoles: jobs.length, titles: topTitles(jobs, (j: { title: string }) => j.title), url: jobs.length === 1 && jobs[0].absolute_url ? jobs[0].absolute_url : `https://boards.greenhouse.io/${slug}`, via }
     }
     const lever = await get(`https://api.lever.co/v0/postings/${slug}?mode=json`, fetchImpl)
     if (Array.isArray(lever) && lever.length > 0) {
       const jobs = lever.filter((j: { text?: string }) => typeof j?.text === 'string')
-      if (jobs.length) return { board: 'lever', openRoles: jobs.length, titles: topTitles(jobs, (j: { text: string }) => j.text), url: jobs[0].hostedUrl || `https://jobs.lever.co/${slug}`, via }
+      if (jobs.length) return { board: 'lever', openRoles: jobs.length, titles: topTitles(jobs, (j: { text: string }) => j.text), url: jobs.length === 1 && jobs[0].hostedUrl ? jobs[0].hostedUrl : `https://jobs.lever.co/${slug}`, via }
     }
     const ashby = await get(`https://api.ashbyhq.com/posting-api/job-board/${slug}`, fetchImpl)
     if (Array.isArray(ashby?.jobs) && ashby.jobs.length > 0) {
       const jobs = ashby.jobs.filter((j: { title?: string }) => typeof j?.title === 'string')
-      if (jobs.length) return { board: 'ashby', openRoles: jobs.length, titles: topTitles(jobs, (j: { title: string }) => j.title), url: jobs[0].jobUrl || `https://api.ashbyhq.com/posting-api/job-board/${slug}`, via }
+      if (jobs.length) return { board: 'ashby', openRoles: jobs.length, titles: topTitles(jobs, (j: { title: string }) => j.title), url: jobs.length === 1 && jobs[0].jobUrl ? jobs[0].jobUrl : `https://jobs.ashbyhq.com/${slug}`, via }
     }
   }
   return null

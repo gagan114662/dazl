@@ -43,12 +43,13 @@ test('atsHiring: greenhouse hit returns roles and titles; 404s fall through', as
   assert.equal(h.board, 'greenhouse')
   assert.equal(h.openRoles, 2)
   assert.deepEqual(h.titles, ['Founding Engineer', 'Head of Sales'])
-  assert.equal(h.url, 'https://careers.acme.com/positions/1')
+  assert.equal(h.url, 'https://boards.greenhouse.io/acme', 'a 2-role count cites the board page, not the first posting')
 })
 
 test('atsHiring: lever array and ashby jobs parse; nothing found yields null', async () => {
   const lever = await atsHiring('Acme', 'acme.com', async (url) => String(url).includes('lever') ? ok([{ text: 'AE', hostedUrl: 'https://jobs.lever.co/acme/1' }]) : notFound())
   assert.equal(lever?.board, 'lever')
+  assert.equal(lever?.url, 'https://jobs.lever.co/acme/1', 'a single-role board links that role')
   const ashby = await atsHiring('Acme', 'acme.com', async (url) => String(url).includes('ashby') ? ok({ jobs: [{ title: 'AE', jobUrl: 'https://jobs.ashbyhq.com/acme/1' }] }) : notFound())
   assert.equal(ashby?.board, 'ashby')
   assert.equal(await atsHiring('Acme', 'acme.com', async () => notFound()), null)
@@ -119,4 +120,18 @@ test('enrichJobSignals: name-only board match (null domain) is not attached as c
   await enrichJobSignals(db, 'u1', jobId, { fetchImpl: fetchImpl as never })
   const rows = db.prepare('SELECT connector FROM lead_enrichments WHERE lead_id = ?').all('lead9')
   assert.deepEqual(rows, [])
+})
+
+test('atsHiring: a multi-role lever or ashby count never cites one arbitrary posting', async () => {
+  const lever = await atsHiring('Acme', 'acme.com', async (url) => String(url).includes('lever') ? ok([{ text: 'AE', hostedUrl: 'https://jobs.lever.co/acme/1' }, { text: 'SDR', hostedUrl: 'https://jobs.lever.co/acme/2' }]) : notFound())
+  assert.equal(lever?.openRoles, 2)
+  assert.equal(lever?.url, 'https://jobs.lever.co/acme')
+  const ashby = await atsHiring('Acme', 'acme.com', async (url) => String(url).includes('ashby') ? ok({ jobs: [{ title: 'AE', jobUrl: 'https://jobs.ashbyhq.com/acme/1' }, { title: 'SDR', jobUrl: 'https://jobs.ashbyhq.com/acme/2' }] }) : notFound())
+  assert.equal(ashby?.url, 'https://jobs.ashbyhq.com/acme')
+})
+
+test('atsHiring: a single role with no posting url falls back to the board page', async () => {
+  const gh = await atsHiring('Acme', 'acme.com', async (url) => String(url).includes('greenhouse') ? ok({ jobs: [{ title: 'Head of Sales' }] }) : notFound())
+  assert.equal(gh?.openRoles, 1)
+  assert.equal(gh?.url, 'https://boards.greenhouse.io/acme')
 })
