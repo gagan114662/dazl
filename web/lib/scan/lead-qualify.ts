@@ -9,7 +9,16 @@ import type { Provider } from '@/lib/llm/provider'
 export type FitVerdict = 'yes' | 'no' | 'unknown'
 export type BuyVerdict = 'stated' | 'none_seen' | 'unknown'
 export type PageRole = 'posting' | 'company_home'
-export interface Judgment<V> { verdict: V; quote: string | null; quote_url: string | null; quote_role: PageRole | null; note: string }
+// Why a model verdict was dropped. Only conditions the guard itself checked: no semantic reason is guessed.
+export type RejectReason = 'quote_missing' | 'too_short' | 'url_not_sent' | 'not_on_page'
+export interface Rejection {
+  reason: RejectReason
+  model_verdict: string          // the verdict the model returned, shown as unverified
+  quote_chars: number            // length of the normalised quote; the quote itself is never stored
+  named_page_truncated: boolean | null // whether the page the model named was cut off; null when no sent page was named
+  model_note: string             // model-authored, untrusted, bounded; never evidence
+}
+export interface Judgment<V> { verdict: V; quote: string | null; quote_url: string | null; quote_role: PageRole | null; note: string; rejected?: Rejection }
 export interface EvidenceScope { pages_included: { url: string; role?: PageRole; chars_sent: number; chars_available: number; truncated: boolean }[]; pages_omitted: string[]; any_truncated: boolean }
 export interface Qualification {
   company_fit: Judgment<FitVerdict>
@@ -89,6 +98,12 @@ const NONE_SCOPE = (scope: EvidenceScope, why: string): Qualification => {
   const u = <V extends string>(v: V): Judgment<V> => ({ verdict: v, quote: null, quote_url: null, quote_role: null, note: why })
   return { company_fit: u('unknown'), use_case: u('unknown'), buying_evidence: u('unknown'), evidence_scope: scope, caveat: LITERAL_CAVEAT }
 }
+const REJECT_NOTE: Record<RejectReason, string> = {
+  quote_missing: 'dropped: the model gave a verdict with no quote',
+  too_short: 'dropped: the quote was too short to check (under 8 characters)',
+  url_not_sent: 'dropped: the quote named a page that was not among the pages sent',
+  not_on_page: 'dropped: the quote was not found on the page it named among the pages sent',
+}
 function norm(s: string) { return s.replace(/\s+/g, ' ').trim() }
 
 // Parse, then keep a verdict only if its quote is verbatim inside ONE page that was actually sent, and
@@ -108,7 +123,11 @@ export function parseQualification(raw: string, included: { url: string; text: s
     const needsQuote = v !== none && (v as string) !== 'none_seen'
     if (!needsQuote) return { verdict: v, quote: null, quote_url: null, quote_role: null, note: v === ('none_seen' as string) ? `${note} (scope: only the ${included.length} page(s) sent${scope.any_truncated ? ', some cut off' : ''})`.trim() : note }
     const page = pages.find(p => p.url === url)
-    if (q.length < 8 || !page || !page.hay.includes(q)) return { verdict: none, quote: null, quote_url: null, quote_role: null, note: 'dropped: the quote was not found on the page it named among the pages sent' }
+    const reason: RejectReason | null = q.length === 0 ? 'quote_missing' : q.length < 8 ? 'too_short' : !page ? 'url_not_sent' : !page.hay.includes(q) ? 'not_on_page' : null
+    if (reason || !page) {
+      const sentPage = scope.pages_included.find(x => x.url === url)
+      return { verdict: none, quote: null, quote_url: null, quote_role: null, note: REJECT_NOTE[reason ?? 'url_not_sent'], rejected: { reason: reason ?? 'url_not_sent', model_verdict: String(v), quote_chars: q.length, named_page_truncated: sentPage ? sentPage.truncated : null, model_note: note } }
+    }
     return { verdict: v, quote: q, quote_url: page.url, quote_role: included.find(x => x.url === page.url)?.role ?? null, note }
   }
   return {

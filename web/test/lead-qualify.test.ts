@@ -89,3 +89,39 @@ test('all prompt fields are capped and unreadable output becomes unknown', () =>
   assert.deepEqual([q.company_fit.verdict, q.use_case.verdict, q.buying_evidence.verdict], ['unknown', 'unknown', 'unknown'])
   assert.match(q.caveat, /Literal match only/)
 })
+test('each dropped verdict records which guard condition fired, without storing the quote', () => {
+  const prep = preparePrompt(input)
+  const sentText = input.pages[0].text
+  const run = (j: object) => parseQualification(JSON.stringify({ company_fit: j }), prep.included, prep.scope).company_fit
+  const good = run({ verdict: 'yes', quote: 'x'.repeat(20), quote_url: A, note: 'n'.repeat(900) })
+  assert.equal(good.verdict, 'unknown')
+  assert.equal(good.rejected?.reason, 'not_on_page')
+  assert.equal(good.rejected?.quote_chars, 20)
+  assert.equal(good.rejected?.model_verdict, 'yes')
+  assert.equal(good.rejected?.named_page_truncated, false)
+  assert.ok((good.rejected?.model_note.length ?? 0) <= 300)
+  assert.equal(good.quote, null)
+  assert.ok(!JSON.stringify(good).includes('x'.repeat(20)))
+  assert.equal(run({ verdict: 'yes', quote: 'short', quote_url: A }).rejected?.reason, 'too_short')
+  assert.equal(run({ verdict: 'yes', quote: '   ', quote_url: A }).rejected?.reason, 'quote_missing')
+  const nu = run({ verdict: 'no', quote: sentText.slice(0, 20), quote_url: 'https://elsewhere.test/' })
+  assert.equal(nu.rejected?.reason, 'url_not_sent')
+  assert.equal(nu.rejected?.named_page_truncated, null)
+  assert.equal(nu.verdict, 'unknown')
+})
+test('near-misses stay rejected: guard is not loosened', () => {
+  const prep = preparePrompt({ ...input, pages: [{ url: A, text: 'We said "grow pipeline" fast - really… and more text here' }] })
+  const run = (quote: string, url = A) => parseQualification(JSON.stringify({ company_fit: { verdict: 'yes', quote, quote_url: url } }), prep.included, prep.scope).company_fit
+  assert.equal(run('We said “grow pipeline” fast').rejected?.reason, 'not_on_page')   // curly quotes
+  assert.equal(run('We said "grow pipeline" fast - really...').rejected?.reason, 'not_on_page') // ellipsis form
+  assert.equal(run('WE SAID "grow pipeline" fast').rejected?.reason, 'not_on_page')    // case
+  assert.equal(run('We said "grow pipeline" fast', A + '/').rejected?.reason, 'url_not_sent') // trailing slash
+  assert.equal(run('We said  "grow\n pipeline"  fast').verdict, 'yes')                  // whitespace only is normalised
+  assert.equal(run('We said "grow pipeline" fast').rejected, undefined)
+})
+test('none_seen and unknown verdicts carry no rejection record', () => {
+  const prep = preparePrompt(input)
+  const q = parseQualification(JSON.stringify({ buying_evidence: { verdict: 'none_seen', note: 'x' }, use_case: { verdict: 'unknown' } }), prep.included, prep.scope)
+  assert.equal(q.buying_evidence.rejected, undefined)
+  assert.equal(q.use_case.rejected, undefined)
+})
