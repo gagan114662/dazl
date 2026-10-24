@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
   // rank legacy unsupported timing as a live need. No history is rewritten.
   const safeLeads = leads.map(l => ({...l, stored_intent:l.intent, intent:0,
     stored_why:(l as typeof l & {why?:string|null}).why ?? null,
-    why:'Event timing and current need are unconfirmed. Saved grades are historical, not a currentness verdict.',
+    why:(l as typeof l & {why?:string|null}).why ? 'Event timing and current need are unconfirmed. Saved grades are historical, not a currentness verdict.' : 'This lead has no saved grade. Event timing and current need are unconfirmed.',
     currentness_held:currentnessHeld(getScanDb(),user.id,l.id)}))
   for (const p of Object.values(pri)) if (p) p.intent=0
   const ranked = rankLeads(safeLeads, pri)
