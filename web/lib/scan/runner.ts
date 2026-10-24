@@ -16,7 +16,8 @@ import { collectAdvanced, xSearchQuery } from '../advanced/index.ts'
 import { markWatchLeads } from '../watch.ts'
 import type { AdvPlatform } from '../advanced/config.ts'
 import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, selfDescribedUrls } from '../sources/index.ts'
-import { migrateTinyfish, parseQueries, queryPrompt, tfFetch, tfSearch, tinyfishEnabled, toEvidence, withGeography } from '../search/tinyfish.ts'
+import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '../search/trace.ts'
+import { migrateTinyfish, queryPlan, queryPrompt, tfFetch, tfSearch, tinyfishEnabled, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { crawlJob } from '../connectors/sitecrawl.ts'
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
 import { getMemory, isExcluded, memoryPromptBlock } from '../memory.ts'
@@ -512,21 +513,27 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
   }
 }
 
-async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider: Provider, key: string, fetchImpl?: typeof fetch): Promise<LeadDraft[] | null> {
+// diag (optional) receives what this collector really did: every query sent, per-call outcomes, hit and page counts.
+async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider: Provider, key: string, fetchImpl?: typeof fetch, diag?: { trace: SearchTrace; info: Partial<SourceStats> }): Promise<LeadDraft[] | null> {
   migrateTinyfish(db)
   const complete = provider.complete!
   const spent = { searches: 0, fetches: 0 }
-  const q = withGeography(parseQueries(await complete.call(provider, key, queryPrompt(job.query!, icp, 3), fetchImpl, 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, 3), icp.where)
+  const plan = queryPlan(await complete.call(provider, key, queryPrompt(job.query!, icp, 3), fetchImpl, 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, 3)
+  if (diag) diag.info.query_source = plan.source
+  const q = withGeography(plan.queries, icp.where)
   const after = new Date(Date.now() - 365 * 86400_000).toISOString().slice(0, 10)
   const hits: Awaited<ReturnType<typeof tfSearch>> extends infer R ? (R extends { ok: true; hits: infer H } ? H : never) : never = []
-  for (const query of q) { const r = await tfSearch(db, job.user_id, query, { afterDate: after }, spent); if (!r.ok) { if (hits.length === 0) return null; break } hits.push(...r.hits) }
+  for (const query of q) { const r = await tfSearch(db, job.user_id, query, { afterDate: after }, spent, diag ? { trace: diag.trace } : {}); if (!r.ok) { if (hits.length === 0) return null; break } hits.push(...r.hits) }
   if (hits.length === 0) return null
   const urls = [...new Set(hits.map(h => h.url))].slice(0, 8)
-  const f = await tfFetch(db, job.user_id, urls, spent)
+  const f = await tfFetch(db, job.user_id, urls, spent, diag ? { trace: diag.trace } : {})
   const items = toEvidence(hits, f.ok ? f.pages : [])
+  if (diag) Object.assign(diag.info, evidenceSplit(items, f.ok ? f.pages : []))
   if (items.length === 0) return null
   const text = await complete.call(provider, key, buildSourcePrompt(job.query!, icp, items), fetchImpl, 3000)
-  return parseLeads(text, items.map(i => i.url)) ?? null
+  const parsed = parseLeads(text, items.map(i => i.url)) ?? null
+  if (diag) diag.info.extracted_candidates = parsed ? parsed.length : null // null = the model reply was unusable, not zero
+  return parsed
 }
 
 export interface RunBudget { paid_fallback?: boolean; credit_enrichment?: boolean; judge?: boolean }
@@ -607,11 +614,12 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // Primary backend when the operator set TINYFISH_API_KEY: TinyFish search and fetch, the user's own model reads the
     // pages. If TinyFish is off, capped, failing or finds nothing, fall back to the provider's built-in web search.
     let leads: LeadDraft[] | null = null
+    const diag = { trace: new SearchTrace(), info: {} as Partial<SourceStats> }
     if (job.query && icpForSources && complete && tinyfishEnabled()) {
       try {
         ledger.record('search:tinyfish', 'started')
         assertOwned(db, job)
-        leads = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl)
+        leads = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl, diag)
         ledger.record('search:tinyfish', leads === null ? 'unavailable' : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:tinyfish', leads)
       } catch (e) {
@@ -620,6 +628,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         leads = null
       }
       if (leads && leads.length === 0) leads = null
+      if (diag.trace.events.length > 0 || diag.info.query_source) ledger.stats('search:tinyfish', { ...summarizeTrace(diag.trace), ...diag.info })
     }
     const fetchP = cachedFetcher(deps.fetchPage ?? fetchPageDetailed)
     if (!leads) {

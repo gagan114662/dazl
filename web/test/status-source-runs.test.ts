@@ -13,6 +13,6 @@ test('status route returns the owner\'s recorded per-source rows: nulls stay nul
   ], { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 60000 })
   assert.equal(result.error, undefined)
   assert.equal(result.status, 0, result.stdout + result.stderr)
-  assert.match(result.stdout, /# pass 1/)
+  assert.match(result.stdout, /# pass 2/)
   assert.match(result.stdout, /# fail 0/)
 })
