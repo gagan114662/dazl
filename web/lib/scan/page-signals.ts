@@ -1,79 +1,71 @@
-// Free, read-only reading of a saved lead's own pages for outbound-sales-prospecting context. No model, no spend.
-// It sorts literal sentences into separate kinds and keeps each one as a quote taken verbatim from the page:
-//   team_task        - the posting describes work its own team or role does (a duty cue plus a topic term)
-//   named_stack      - the page names a sales tool in a sentence about the company's own work or setup
-//   stated_problem   - the company says it is evaluating, replacing or struggling with sales tooling or prospecting
-//   candidate_requirement - a skill asked of a job applicant. Shown apart; it is not evidence the team has a need
-// Excluded from evidence and only counted: vendor_pitch (the company is selling in this topic, so it may be a
-// competitor, not a buyer) and advice (guide or tips text). A sentence with a topic term but no clear subject is
-// counted as unclear, never shown as evidence. There is no score, no ranking and no fit verdict: finding nothing
-// is a real result. The topic list is fixed and named below, so the reader sees exactly what was looked for.
+// Free, read-only reading of a saved lead's own pages. No model, no spend.
+// It finds passages that contain topic words (outbound sales prospecting terms or named sales tools) and copies each one
+// verbatim. It does NOT decide who a passage is about, whether it is negated, or whether it shows a need: a passage can
+// be a duty, a requirement for an applicant, a vendor's own pitch, an advice line, a customer's story or a negation, and
+// regexes cannot tell these apart reliably. So every passage is shown for a person to read, with the literal phrases
+// found inside it listed as plain facts (e.g. the words "you will", "experience with", "not"). Nothing is counted as
+// evidence, scored, ranked or labelled as the company's own task, need or problem. Finding nothing is a real result.
 export const TOPIC = 'outbound sales prospecting'
 // The word list is written for ONE kind of seller: someone selling outbound sales prospecting tools (the current test offer).
 // It is not adapted to the account's offer and says nothing about any other kind of seller.
 export const APPLIES_TO = 'a seller of outbound sales prospecting tools'
 export const TASK_TERMS = ['outbound', 'cold call', 'cold calling', 'cold email', 'cold outreach', 'prospecting', 'prospect list', 'lead generation', 'lead gen', 'pipeline generation', 'sales development', 'appointment setting']
-export const STACK_NAMES = ['salesforce', 'hubspot', 'salesloft', 'outreach.io', 'apollo.io', 'zoominfo', 'gong.io', 'sales navigator', 'lusha', 'seamless.ai', 'clay.com', 'instantly.ai', 'lemlist', '6sense']
-export type SignalKind = 'team_task' | 'named_stack' | 'stated_problem' | 'candidate_requirement'
-export interface PageSignal { kind: SignalKind; term: string; quote: string }
-export interface PageReading {
-  chars_read: number
-  sentences: number
-  signals: PageSignal[]
-  vendor_pitch: number
-  advice: number
-  unclear: number
+export const STACK_NAMES = ['salesforce', 'hubspot', 'salesloft', 'outreach.io', 'apollo.io', 'gong.io', 'zoominfo', 'sales navigator', 'lusha', 'seamless.ai', 'clay.com', 'instantly.ai', 'lemlist', '6sense']
+export interface PhraseFlags { duty: string | null; requirement: string | null; self_description: string | null; evaluation: string | null; negation: string | null }
+export interface Passage { terms: string[]; quote: string; phrases: PhraseFlags }
+export interface PageReading { chars_read: number; passages: Passage[]; passages_total: number }
+
+const PATTERNS: Record<keyof PhraseFlags, RegExp> = {
+  duty: /\b(you will|you'll|responsible for|responsibilities|your role|you own|own the|we are hiring|our team)\b/i,
+  requirement: /\b(experience (with|in|using|of)|proficien\w*|familiar\w*|knowledge of|\d+\+? years?|you have|you've|must have|requirements?|qualifications?|ideal candidate|nice to have|preferred)\b/i,
+  self_description: /\b(our (platform|software|product|solution|tool|app)s?|we help|helps? (sales|teams|companies|you|reps)|book a demo|free trial|pricing|trusted by|our customers)\b/i,
+  evaluation: /\b(evaluat\w+|replac\w+|migrat\w+|switch\w*|struggl\w+|looking for (a|an|new)|researching|shortlist\w*|rfp)\b/i,
+  negation: /\b(not|no|never|without|neither|nor|none|n't|cannot|won't|don't|doesn't|isn't|aren't)\b|n't\b/i,
 }
+export const PHRASE_LABEL: Record<keyof PhraseFlags, string> = { duty: 'a duty-style phrase', requirement: 'a requirement-style phrase', self_description: 'a phrase about the company\'s own product', evaluation: 'an evaluation-style word', negation: 'a negation word' }
+const flags = (q: string): PhraseFlags => {
+  const f = {} as PhraseFlags
+  for (const k of Object.keys(PATTERNS) as (keyof PhraseFlags)[]) f[k] = PATTERNS[k].exec(q)?.[0] ?? null
+  return f
+}
+const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
-const REQUIREMENT = /\b(experience (with|in|using|of)|proficien\w*|familiar\w*|knowledge of|\d+\+? years?|you have|you've|must have|requirements?|qualifications?|ideal candidate|nice to have|preferred|skills?:?|track record|comfortable (with|using))\b/i
-const PITCH = /\b(our (platform|software|product|solution|tool|app)s?|we help|helps? (sales|teams|companies|you|reps)|book a demo|request a demo|free trial|start (your )?free|get started|pricing|trusted by|customers? (use|love))\b/i
-const ADVICE = /\b(tips?|how to|best practices?|you should|guide to|ways to|steps to|why you)\b/i
-const DUTY = /\b(you will|you'll|you are responsible|responsible for|responsibilities|your role|own (the|our|and)|building (the|our|out)|build (the|our|out)|run (the|our)|running (the|our)|drive|generate|source|manage|execut\w+|conduct\w*|perform\w*|handl\w+|identify\w*|lead (the|our)|our (sales|sdr|bdr|revenue|growth) team|we (run|use|are building|are scaling|are hiring))\b/i
-const PROBLEM = /\b(evaluat\w+|replac\w+|migrat\w+|switch\w*|struggl\w+|looking for (a|an|new)|researching|vendor selection|shortlist\w*|rfp|need (a|an|better))\b/i
-
-const has = (hay: string, term: string) => new RegExp(`(^|[^a-z0-9])${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^a-z0-9])`, 'i').test(hay)
-
-// Windows over the ORIGINAL text, one per topic hit, so every quote is a verbatim slice of the page. Pages often
-// arrive with headings glued to the next line and few full stops, so the window is bounded by the nearest sentence
-// mark within 170 characters on each side, else it is cut at a word boundary.
+// One window per cluster of hits, cut from the ORIGINAL text so each quote is a verbatim slice of the page. Pages often
+// arrive with headings glued to the next line and few full stops, so a window is bounded by the nearest sentence mark or
+// line break within 170 characters of the hit, else cut at a word boundary. Every term found inside a window is listed.
 const MAX_SIDE = 170
-export function hitWindows(text: string, terms: string[]): { term: string; quote: string }[] {
-  const out: { term: string; quote: string; a: number; b: number }[] = []
+export function hitWindows(text: string, terms: string[]): { terms: string[]; quote: string }[] {
+  const raw: { term: string; a: number; b: number }[] = []
   for (const term of terms) {
-    const re = new RegExp(`(^|[^a-z0-9])(${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})(?=$|[^a-z0-9])`, 'gi')
+    const re = new RegExp(`(^|[^a-z0-9])(${esc(term)})(?=$|[^a-z0-9])`, 'gi')
     for (const m of text.matchAll(re)) {
       const i = (m.index ?? 0) + m[1].length, j = i + term.length
       let a = Math.max(0, i - MAX_SIDE), b = Math.min(text.length, j + MAX_SIDE)
-      const before = text.slice(a, i), cut = Math.max(before.lastIndexOf('. '), before.lastIndexOf('! '), before.lastIndexOf('? '), before.lastIndexOf('\n'))
-      if (cut >= 0) a = a + cut + 2
+      const before = text.slice(a, i)
+      const stop = Math.max(before.lastIndexOf('. ') >= 0 ? before.lastIndexOf('. ') + 2 : -1, before.lastIndexOf('! ') >= 0 ? before.lastIndexOf('! ') + 2 : -1, before.lastIndexOf('? ') >= 0 ? before.lastIndexOf('? ') + 2 : -1, before.lastIndexOf('\n') >= 0 ? before.lastIndexOf('\n') + 1 : -1)
+      if (stop >= 0) a += stop
       else if (a > 0) { const sp = text.indexOf(' ', a); if (sp >= 0 && sp < i) a = sp + 1 }
-      const after = text.slice(j, b), ends = [after.search(/[.!?](\s|$)/), after.indexOf('\n')].filter(x => x >= 0)
-      if (ends.length) b = j + Math.min(...ends) + 1
+      const after = text.slice(j, b), mk = after.search(/[.!?](\s|$)/), nl = after.indexOf('\n')
+      const ends = [mk >= 0 ? mk + 1 : -1, nl].filter(x => x >= 0)
+      if (ends.length) b = j + Math.min(...ends)
       else if (b < text.length) { const sp = text.lastIndexOf(' ', b); if (sp > j) b = sp }
-      const quote = text.slice(a, b).trim()
-      if (quote.length >= 12 && !out.some(o => a < o.b && b > o.a)) out.push({ term, quote, a, b })
+      raw.push({ term, a, b })
     }
   }
-  return out.sort((x, y) => x.a - y.a).map(({ term, quote }) => ({ term, quote }))
+  raw.sort((x, y) => x.a - y.a || x.b - y.b)
+  const merged: { terms: Set<string>; a: number; b: number }[] = []
+  for (const w of raw) {
+    const last = merged[merged.length - 1]
+    if (last && w.a < last.b) { last.terms.add(w.term); last.b = Math.max(last.b, w.b) } else merged.push({ terms: new Set([w.term]), a: w.a, b: w.b })
+  }
+  return merged.map(m => ({ terms: [...m.terms], quote: text.slice(m.a, m.b).trim() })).filter(w => w.quote.length >= 12)
 }
 
-export function readPage(text: string, role: 'posting' | 'company_home', cap = 60_000): PageReading {
+export function readPage(text: string, cap = 60_000, show = 12): PageReading {
   const body = text.slice(0, cap)
   const wins = hitWindows(body, [...TASK_TERMS, ...STACK_NAMES])
-  const r: PageReading = { chars_read: body.length, sentences: wins.length, signals: [], vendor_pitch: 0, advice: 0, unclear: 0 }
-  for (const { term, quote } of wins) {
-    const isStack = STACK_NAMES.includes(term)
-    const problemish = PROBLEM.test(quote) && (!isStack || true)
-    if (PITCH.test(quote)) { r.vendor_pitch++; continue }
-    if (ADVICE.test(quote)) { r.advice++; continue }
-    if (REQUIREMENT.test(quote)) { if (role === 'posting') r.signals.push({ kind: 'candidate_requirement', term, quote }); else r.unclear++; continue }
-    if (problemish && /\b(we|our)\b/i.test(quote)) { r.signals.push({ kind: 'stated_problem', term, quote }); continue }
-    // A company home page describes the company's offer, not its own team's work: only a stated problem counts there.
-    if (role === 'posting' && DUTY.test(quote)) { r.signals.push({ kind: isStack ? 'named_stack' : 'team_task', term, quote }); continue }
-    r.unclear++
-  }
-  r.signals = r.signals.slice(0, 12)
-  return r
+  const passages = wins.slice(0, show).map(w => ({ terms: w.terms, quote: w.quote.length > 420 ? w.quote.slice(0, 420) : w.quote, phrases: flags(w.quote) }))
+  return { chars_read: body.length, passages, passages_total: wins.length }
 }
 
 import type Database from 'better-sqlite3'
@@ -94,7 +86,7 @@ export async function leadSignals(db: Database.Database, userId: string, leadId:
     const r = await fetchPage(t.url).catch(() => ({ fail: 'error' }) as FetchFail)
     if (!r || isFail(r)) return { url: t.url, role: t.role, status: 'failed', why: (r as FetchFail | null)?.fail ?? 'error' }
     if (t.role === 'posting' && !nameOk(r.text)) return { url: t.url, role: t.role, status: 'not_used', why: 'the posting page does not name the company' }
-    return { url: t.url, role: t.role, status: 'read', reading: readPage(r.text, t.role) }
+    return { url: t.url, role: t.role, status: 'read', reading: readPage(r.text) }
   }))
   return { lead_id: lead.id, company: lead.company, topic: TOPIC, applies_to: APPLIES_TO, looked_for: { task_terms: TASK_TERMS, stack_names: STACK_NAMES }, pages, model_call: false }
 }
