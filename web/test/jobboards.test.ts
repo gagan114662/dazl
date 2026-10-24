@@ -83,3 +83,14 @@ test('board tokens are validated: a token with path or query characters is never
   await collectEvidence(sel(['https://boards.greenhouse.io/ac%2Fme', 'https://boards.greenhouse.io/acme?x=1/../..', 'https://jobs.ashbyhq.com/z ed']), Q, http, 5000)
   assert.deepEqual(seen.filter(u => !u.endsWith('/acme/jobs')), [])
 })
+
+test('discovery: boards are derived from hit/page URLs (job posting links), deduped with feeds, lookalikes ignored', async () => {
+  const { http, seen } = stub()
+  const s = { adapters: ['jobboards'], feeds: ['https://boards.greenhouse.io/acme'], pages: [
+    'https://boards.greenhouse.io/acme/jobs/1', 'https://jobs.ashbyhq.com/zed/1', 'https://boards.greenhouse.io.evil.example/ghost/jobs/9', 'https://example.com/boards.greenhouse.io/ghost/jobs/9',
+  ] }
+  const ev = await collectEvidence(s, 'ohio hiring payroll generalist', http, 5000)
+  assert.deepEqual(ev.map(e => e.url).sort(), ['https://boards.greenhouse.io/acme/jobs/1', 'https://jobs.ashbyhq.com/zed/1'])
+  assert.equal(seen.filter(u => u === 'https://boards-api.greenhouse.io/v1/boards/acme/jobs').length, 1) // acme requested once
+  assert.ok(!seen.some(u => u.includes('ghost')))
+})
