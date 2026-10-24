@@ -7,6 +7,7 @@ import { publishedEmail, publishedContact, contactSearchNote } from '@/lib/outre
 import SourceReview from './source-review'
 import HiringFeed from './hiring-feed'
 import QualifyPreview from './qualify-preview'
+import PageSignals from './page-signals'
 import SourceMetrics from './source-metrics'
 import { WarmConnections, WarmPath } from './warm-path'
 import VerificationFixture from './verification-fixture'
@@ -681,6 +682,7 @@ export default function LeadsClient() {
                   <p>Literal page check: {l.source_check.fetch_status}, checked {new Date(l.source_check.checked_at*1000).toISOString()}. Exact quote: {l.source_check.quote_match?'found':'not found'}. Company named with matching quote: {l.source_check.company_named?'yes':'no'}. Supplied email: {l.source_check.contact_match?'found on page':'not found or not supplied'}.</p>
                   <p>{eventDateCopy(l.event_date,l.date_status)}. No semantic signal verification, fit grade, named buyer, current need or consent.</p>
                 </div>}
+                {l.source_kind === 'hiring_feed' && <PageSignals leadId={l.id} />}
                 {l.source_kind === 'hiring_feed' && <QualifyPreview leadId={l.id} />}
                 <button onClick={() => confirmReview(l.id)} className="font-mono text-xs uppercase border border-black px-2 py-1 ml-3 hover:bg-black hover:text-white">I checked this - use it</button>
                 {['quote_unconfirmed','source_review_required','event_timing_unconfirmed','event_date_bad_date','event_date_stale','event_date_future_date'].includes(l.review_reason ?? '') && l.evidence_excerpt && (
