@@ -142,7 +142,7 @@ export async function qualifyLead(provider: Provider, apiKey: string, input: Qua
   if (JSON.stringify(a.limits) !== JSON.stringify(limits)) return { status: 'blocked', reason: 'limits_mismatch', cost }
   // The exact prompt, evidence text included, is what was shown. If a page changed, the hash differs and the call is refused.
   if (a.prompt_sha256 !== prep.prompt_sha256) return { status: 'blocked', reason: 'content_mismatch', cost }
-  if (cost.usd_estimate_max > a.max_usd_estimate) return { status: 'blocked', reason: 'over_estimate', cost }
+  if (!Number.isFinite(a.max_usd_estimate) || a.max_usd_estimate < 0 || cost.usd_estimate_max > a.max_usd_estimate) return { status: 'blocked', reason: 'over_estimate', cost }
   if (!provider.completeDetailed) return { status: 'blocked', reason: 'no_provider', cost }
   const r = await provider.completeDetailed(apiKey, prep.prompt, opts.fetchImpl, limits.max_output_tokens)
   return { status: 'done', qualification: parseQualification(r.text, prep.included, prep.scope), cost, usage: r.usage, served_model: r.model }

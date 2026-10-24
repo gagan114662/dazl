@@ -36,6 +36,7 @@ test('approval must match the model, the pages actually sent and the estimate', 
   const changed = { ...input, pages: [{ ...input.pages[0], text: input.pages[0].text + ' (page changed)' }, input.pages[1]] }
   assert.equal(((await qualifyLead(s.p, 'k', changed, { vendor: V, approval: approval() })) as { reason: string }).reason, 'content_mismatch')
   assert.equal(((await qualifyLead(s.p, 'k', input, { vendor: V, approval: approval({ max_usd_estimate: 0.000001 }) })) as { reason: string }).reason, 'over_estimate')
+  for (const bad of [NaN, -1, Infinity]) assert.equal(((await qualifyLead(s.p, 'k', input, { vendor: V, approval: approval({ max_usd_estimate: bad }) })) as { reason: string }).reason, 'over_estimate')
   assert.equal(((await qualifyLead(s.p, 'k', input, { vendor: V, approval: approval({ approved_by_user: false }) })) as { reason: string }).reason, 'no_approval')
   assert.equal(((await qualifyLead(s.p, 'k', { ...input, pages: [{ url: A, text: ' ' }] }, { vendor: V, approval: approval() })) as { reason: string }).reason, 'no_pages')
   assert.equal(s.calls(), 0)
