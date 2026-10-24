@@ -23,7 +23,7 @@ const QUOTE = 'Harbor Freight Supply of Columbus Ohio is hiring a payroll specia
 const REQUEST = 'Find Ohio companies with 10 to 100 employees that recently posted a payroll, HR or office manager job'
 const ICP = { summary: 'Ohio SMBs hiring payroll', who: ['Controller'], industries: [], sizes: ['10-100 employees'], where: ['Ohio'], signals: ['payroll job'], exclude: [] }
 
-function run(modelQueries: string[] | string, searchStatus = 200) {
+function run(modelQueries: string[] | string, searchStatus = 200, extraHits: { url: string; title: string; snippet: string; date: string }[] = []) {
   const db = new Database(':memory:')
   migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
   saveKey(db, 'A', 'anthropic', KEY, master)
@@ -33,7 +33,7 @@ function run(modelQueries: string[] | string, searchStatus = 200) {
   const fetchImpl = (async (u: string) => {
     if (u.startsWith('https://api.search.tinyfish.ai')) {
       searched.push(new URL(u).searchParams.get('query') ?? '')
-      return new Response(JSON.stringify({ results: [{ url: 'https://jobs.example/hf', title: 'Payroll specialist', snippet: QUOTE, date: recent }] }), { status: searchStatus })
+      return new Response(JSON.stringify({ results: [{ url: 'https://jobs.example/hf', title: 'Payroll specialist', snippet: QUOTE, date: recent }, ...extraHits] }), { status: searchStatus })
     }
     if (u.startsWith('https://api.fetch.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: 'https://jobs.example/hf', title: 'Payroll specialist', text: `Posted ${recent}. ${QUOTE}. Apply now.` }] }), { status: 200 })
     return new Response('{}', { status: 200 })
@@ -101,4 +101,13 @@ test('full funnel row: per-query hits, extracted candidates, hosts and unfetched
   const pq = JSON.parse(row.per_query as string)
   assert.equal(pq.length, searched.length); assert.equal(pq[0].new_urls, 1); assert.equal(pq[1].new_urls, 0, 'same url from the second query is not new')
   assert.equal(row.extracted_candidates, 1); assert.equal(row.distinct_hosts, 1); assert.equal(row.urls_not_fetched, 0)
+})
+
+test('fetch width: several pages of one site cost one fetch slot; distinct sites each get one (same scan, stats row proves it)', async () => {
+  const mk = (host: string, n: number) => ({ url: `https://${host}/p${n}`, title: 'T', snippet: 'Hiring a payroll specialist in Ohio, ' + 'x'.repeat(40), date: recent })
+  const extra = [mk('a.example', 1), mk('a.example', 2), mk('a.example', 3), mk('b.example', 1), mk('b.example', 2), mk('boards.greenhouse.io/acme', 1), mk('boards.greenhouse.io/beta', 1)]
+  const { db } = await withEnv(true, () => run(MODEL_Q, 200, extra))
+  const row = db.prepare('SELECT hits_unique_urls, distinct_hosts, fetch_requested, urls_not_fetched FROM scan_source_stats').get() as Record<string, number>
+  assert.equal(row.hits_unique_urls, 8)
+  assert.equal(row.fetch_requested, 5, 'jobs.example, a.example, b.example, greenhouse acme, greenhouse beta: 8 urls but 5 sites')
 })

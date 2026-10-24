@@ -17,7 +17,7 @@ import { markWatchLeads } from '../watch.ts'
 import type { AdvPlatform } from '../advanced/config.ts'
 import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, selfDescribedUrls } from '../sources/index.ts'
 import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '../search/trace.ts'
-import { migrateTinyfish, queryPlan, queryPrompt, tfFetch, tfSearch, tinyfishEnabled, toEvidence, withGeography } from '../search/tinyfish.ts'
+import { limits as tfLimits, migrateTinyfish, pickFetchUrls, queryPlan, queryPrompt, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { crawlJob } from '../connectors/sitecrawl.ts'
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
 import { getMemory, isExcluded, memoryPromptBlock } from '../memory.ts'
@@ -525,8 +525,8 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   const hits: Awaited<ReturnType<typeof tfSearch>> extends infer R ? (R extends { ok: true; hits: infer H } ? H : never) : never = []
   for (const query of q) { const r = await tfSearch(db, job.user_id, query, { afterDate: after }, spent, diag ? { trace: diag.trace } : {}); if (!r.ok) { if (hits.length === 0) return null; break } hits.push(...r.hits) }
   if (hits.length === 0) return null
-  const urls = [...new Set(hits.map(h => h.url))].slice(0, 8)
-  const f = await tfFetch(db, job.user_id, urls, spent, diag ? { trace: diag.trace } : {})
+  const urls = pickFetchUrls([...new Set(hits.map(h => h.url))], tfLimits().fetchesPerScan) // one page per site/employer, before the fetch cap
+  const f = await tfFetchMany(db, job.user_id, urls, spent, diag ? { trace: diag.trace } : {})
   const items = toEvidence(hits, f.ok ? f.pages : [])
   if (diag) Object.assign(diag.info, evidenceSplit(items, f.ok ? f.pages : []))
   if (items.length === 0) return null
