@@ -91,3 +91,17 @@ test('issued TinyFish queries of an Ohio scan carry no login-walled site: target
     for (const q of searched) { assert.doesNotMatch(q, /site:(?:[\w-]+\.)*(linkedin|indeed|glassdoor)\.com/i, q); assert.doesNotMatch(q, /\b2024\b/, q); assert.match(q, /ohio/i, q) }
   } finally { delete process.env.TINYFISH_API_KEY }
 })
+
+// Review edges (each written before the fix).
+test('a negated site: operator is a legitimate exclusion: never stripped, never leaves a dangling minus', () => {
+  assert.deepEqual(sanitizeQueries(['payroll -site:linkedin.com Ohio', 'payroll Ohio -site:indeed.com -site:glassdoor.com'], REQUEST, NOW), ['payroll -site:linkedin.com Ohio', 'payroll Ohio -site:indeed.com -site:glassdoor.com'])
+})
+test('host match is exact on the label boundary: lookalike hosts are untouched, a walled subdomain and a walled path are removed whole', () => {
+  assert.deepEqual(sanitizeQueries(['payroll Ohio site:linkedin.com.evil.com', 'payroll Ohio site:notlinkedin.com', 'payroll Ohio site:linkedin.company.org'], REQUEST, NOW), ['payroll Ohio site:linkedin.com.evil.com', 'payroll Ohio site:notlinkedin.com', 'payroll Ohio site:linkedin.company.org'])
+  assert.deepEqual(sanitizeQueries(['payroll Ohio site:www.linkedin.com/jobs', 'payroll Ohio site:uk.indeed.com/viewjob hiring'], REQUEST, NOW), ['payroll Ohio', 'payroll Ohio hiring'])
+})
+test('years: a fully stale range goes, a range reaching the window stays, counts and money that look like years stay', () => {
+  assert.deepEqual(sanitizeQueries(['payroll Ohio 2023-2024', 'payroll Ohio 2023 to 2024 complaints', 'payroll Ohio 2024-2026', 'payroll Ohio 2000 employees', 'payroll Ohio $2024 budget', 'payroll Ohio 10-100 employees'], REQUEST, NOW),
+    ['payroll Ohio', 'payroll Ohio complaints', 'payroll Ohio 2024-2026', 'payroll Ohio 2000 employees', 'payroll Ohio $2024 budget', 'payroll Ohio 10-100 employees'])
+  assert.deepEqual(sanitizeQueries(['payroll Ohio 2023-2024'], 'Find Ohio payroll complaints from 2023', NOW), ['payroll Ohio 2023-2024'], 'the user named a year in the range')
+})

@@ -131,13 +131,17 @@ export function sanitizeQueries(queries: string[], request: string, now: Date = 
   const req = request.toLowerCase()
   const windowStartYear = new Date(now.getTime() - 365 * 86400_000).getUTCFullYear()
   const walled = WALLED.filter(h => !req.includes(h))
+  const YEAR = '(?:19|20)\\d\\d'
   return queries.map(q => {
     let out = q
     for (const h of walled) {
       const host = h.replace('.', '\\.')
-      out = out.replace(new RegExp(`(?:\\bOR\\s+)?\\(?\\bsite:(?:[a-z0-9-]+\\.)*${host}\\b\\)?(?:\\s+OR\\b)?`, 'gi'), ' ')
+      // Not negated (-site: is a legitimate exclusion), exact host on a label boundary (linkedin.com.evil.com is another host), optional path.
+      out = out.replace(new RegExp(`(?:\\bOR\\s+)?\\(?(?<![-\\w])site:(?:[a-z0-9-]+\\.)*${host}(?![a-z0-9-]|\\.[a-z0-9])(?:/\\S*)?\\)?(?:\\s+OR\\b)?`, 'gi'), ' ')
     }
-    out = out.replace(/(?<![\w-])(19|20)\d\d(?![\w-])/g, y => (!req.includes(y) && Number(y) < windowStartYear ? ' ' : y))
+    // A range is dropped only when it ends before the window; then single stale years. Counts ("2000 employees") and money ($2024) are not years.
+    out = out.replace(new RegExp(`(?<![$\\w-])(${YEAR})\\s*(?:-|\u2013|to)\\s*(${YEAR})(?![\\w-])`, 'gi'), (m, y1, y2) => (!req.includes(y1) && !req.includes(y2) && Number(y2) < windowStartYear ? ' ' : m))
+    out = out.replace(new RegExp(`(?<![$\\w-])${YEAR}(?![\\w-])(?!\\s*(?:employees|staff|people|workers|\\+))`, 'g'), y => (!req.includes(y) && Number(y) < windowStartYear ? ' ' : y))
     out = out.replace(/\s+/g, ' ').trim().replace(/^OR\s+|\s+OR$/gi, '').trim()
     return out.length >= 8 ? out : q
   })
