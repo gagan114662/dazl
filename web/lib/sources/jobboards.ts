@@ -7,7 +7,8 @@ import { decodeText } from './rss.ts'
 // Only the two documented API hosts are ever requested, and only for board tokens that pass a strict pattern.
 const STATES: Record<string, string> = { AL: 'Alabama', AK: 'Alaska', AZ: 'Arizona', AR: 'Arkansas', CA: 'California', CO: 'Colorado', CT: 'Connecticut', DE: 'Delaware', FL: 'Florida', GA: 'Georgia', HI: 'Hawaii', ID: 'Idaho', IL: 'Illinois', IN: 'Indiana', IA: 'Iowa', KS: 'Kansas', KY: 'Kentucky', LA: 'Louisiana', ME: 'Maine', MD: 'Maryland', MA: 'Massachusetts', MI: 'Michigan', MN: 'Minnesota', MS: 'Mississippi', MO: 'Missouri', MT: 'Montana', NE: 'Nebraska', NV: 'Nevada', NH: 'New Hampshire', NJ: 'New Jersey', NM: 'New Mexico', NY: 'New York', NC: 'North Carolina', ND: 'North Dakota', OH: 'Ohio', OK: 'Oklahoma', OR: 'Oregon', PA: 'Pennsylvania', RI: 'Rhode Island', SC: 'South Carolina', SD: 'South Dakota', TN: 'Tennessee', TX: 'Texas', UT: 'Utah', VT: 'Vermont', VA: 'Virginia', WA: 'Washington', WV: 'West Virginia', WI: 'Wisconsin', WY: 'Wyoming' }
 const WINDOW_DAYS = 90
-const MAX_DETAIL = 5
+const MAX_DETAIL = 3 // per Greenhouse board
+const MAX_BOARDS = 10
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 const GENERIC = new Set(['hiring', 'roles', 'role', 'jobs', 'job', 'open', 'openings', 'positions', 'position', 'team', 'remote'])
 
@@ -18,7 +19,7 @@ export function stateIn(query: string): string | null {
 }
 export function locationInState(state: string, ...locs: (string | undefined)[]): boolean {
   const abbr = Object.keys(STATES).find(k => STATES[k] === state)!
-  return locs.some(l => !!l && (new RegExp(`\\b${state}\\b`, 'i').test(l) || new RegExp(`,\\s*${abbr}\\b`).test(l)))
+  return locs.some(l => !!l && (new RegExp(`\\b${state}\\b`, 'i').test(l) || new RegExp(`,\\s*${abbr}\\b`).test(l) || l.trim() === abbr))
 }
 // The quote is a sentence of the posting's own body text as the API returns it (never title + location joined: a
 // real posting page shows those in separate elements). No usable body text means no evidence, nothing is invented.
@@ -55,17 +56,33 @@ const unesc = (t: string) => t.replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fro
 const LINK = /https:\/\/(?:boards|job-boards)\.greenhouse\.io\/[A-Za-z0-9_-]+|https:\/\/jobs\.ashbyhq\.com\/[A-Za-z0-9_-]+/g
 // Board links from the newest monthly Hacker News "Who is hiring" thread (public Algolia API: one story lookup, one comments page).
 // Only comments that name the state contribute boards. A link in a comment is a lead for where to look, never evidence.
+const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december']
+// Current month only: the title month and the creation time must both be the current UTC month. Older or future threads give nothing.
+function currentThread(hits: unknown[]): string | null {
+  const now = new Date()
+  for (const h of hits as any[]) {
+    const m = typeof h?.title === 'string' ? h.title.match(/^Ask HN: Who is hiring\? \(([A-Za-z]+) (\d{4})\)$/i) : null
+    if (!m || !/^\d+$/.test(String(h.objectID)) || !Number.isFinite(h.created_at_i)) continue
+    const c = new Date(h.created_at_i * 1000)
+    if (MONTHS[now.getUTCMonth()] === m[1].toLowerCase() && now.getUTCFullYear() === Number(m[2]) && c.getUTCMonth() === now.getUTCMonth() && c.getUTCFullYear() === now.getUTCFullYear()) return String(h.objectID)
+  }
+  return null
+}
+// Board links from this month's Hacker News "Who is hiring" thread (public Algolia API, no key: one story lookup, two comment pages = 3 requests).
+// Only top-level comments that name the state contribute boards. A link is where to look, never evidence: state, role and date are checked on the posting itself.
 export async function hnBoards(http: SafeGet, state: string): Promise<string[]> {
   const st = await json(http, 'https://hn.algolia.com/api/v1/search_by_date?tags=story,author_whoishiring&hitsPerPage=3')
-  const story = (Array.isArray(st?.hits) ? st.hits : []).find((h: any) => typeof h?.title === 'string' && /^Ask HN: Who is hiring\?/i.test(h.title) && /^\d+$/.test(String(h.objectID)))
-  if (!story) return []
-  const cm = await json(http, `https://hn.algolia.com/api/v1/search?tags=comment,story_${story.objectID}&hitsPerPage=200`)
+  const id = currentThread(Array.isArray(st?.hits) ? st.hits : [])
+  if (!id) return []
   const out: string[] = []
-  for (const h of Array.isArray(cm?.hits) ? cm.hits : []) {
-    if (typeof h?.comment_text !== 'string') continue
-    const text = unesc(h.comment_text)
-    if (!locationInState(state, text.replace(/<[^>]*>/g, ' '))) continue
-    out.push(...(text.match(LINK) ?? []))
+  for (const page of [0, 1]) {
+    const cm = await json(http, `https://hn.algolia.com/api/v1/search?tags=comment,story_${id}&hitsPerPage=200&page=${page}`)
+    for (const h of Array.isArray(cm?.hits) ? cm.hits : []) {
+      if (typeof h?.comment_text !== 'string' || String(h.parent_id) !== id) continue
+      const text = unesc(h.comment_text)
+      if (!locationInState(state, text.replace(/<[^>]*>/g, ' '))) continue
+      out.push(...(text.match(LINK) ?? []))
+    }
   }
   return [...new Set(out)]
 }
@@ -94,7 +111,7 @@ export const jobBoardsAdapter: SourceAdapter = {
       seenBoards.add(`${b.kind}:${b.token}`)
       boards.push(b)
     }
-    for (const b of boards.slice(0, 20)) {
+    for (const b of boards.slice(0, MAX_BOARDS)) {
       if (b.kind === 'ashby') {
         const d = await json(http, `https://api.ashbyhq.com/posting-api/job-board/${b.token}`)
         for (const j of Array.isArray(d?.jobs) ? d.jobs : []) {

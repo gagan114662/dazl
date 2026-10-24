@@ -13,6 +13,7 @@ import { migrateEvents } from '../lib/events/store.ts'
 import type { Provider } from '../lib/llm/provider.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
+import { resetTinyfishState } from '../lib/search/tinyfish.ts'
 
 const master = randomBytes(32)
 process.env.DAZL_MASTER_KEY = master.toString('base64')
@@ -27,18 +28,23 @@ const BODY: Record<string, string> = {
   delta: 'Delta Tools in Austin is hiring a payroll analyst for its Texas plant.',
 }
 const requested: string[] = []
-function boardHttp(hnComments: { text: string }[], hnOn = true): SafeGet {
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+const now = new Date()
+const monthTitle = (offset: number) => { const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + offset, 2)); return { title: `Ask HN: Who is hiring? (${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()})`, created_at_i: Math.floor(d.getTime() / 1000) } }
+let stories = [monthTitle(0), monthTitle(-1)]
+const commentPages: string[] = []
+function boardHttp(hnComments: { text: string; reply?: boolean }[], hnOn = true): SafeGet {
   return async url => {
     requested.push(url)
     const u = new URL(url); const j = (o: unknown) => ({ status: 200, body: JSON.stringify(o) })
     if (u.hostname === 'hn.algolia.com') {
       if (!hnOn) return null
-      if (u.pathname === '/api/v1/search_by_date') return j({ hits: [{ objectID: '111', title: 'Ask HN: Who is hiring? (October 2026)', created_at_i: 1 }, { objectID: '99', title: 'Ask HN: Who is hiring? (September 2026)', created_at_i: 0 }] })
-      if (u.pathname === '/api/v1/search') return j({ hits: hnComments.map((c, i) => ({ objectID: `c${i}`, comment_text: c.text })) })
+      if (u.pathname === '/api/v1/search_by_date') return j({ hits: [{ objectID: '49922568', title: stories[0].title.replace('is hiring', 'wants to be hired'), created_at_i: stories[0].created_at_i }, ...stories.map((t, i) => ({ objectID: `111${i}`, ...t }))] })
+      if (u.pathname === '/api/v1/search') { commentPages.push(u.searchParams.get('page') ?? '0'); return j({ hits: (u.searchParams.get('page') ?? '0') === '0' ? hnComments.map((c, i) => ({ objectID: `c${i}`, comment_text: c.text, story_id: 1110, parent_id: c.reply ? 5 : 1110 })) : [] }) }
       return null
     }
     const list = url.match(/^https:\/\/boards-api\.greenhouse\.io\/v1\/boards\/(\w+)\/jobs$/)
-    if (list) return j({ jobs: [{ id: 7, title: 'Payroll Specialist', location: { name: list[1] === 'delta' ? 'Austin, TX' : 'Dayton, OH' } }] })
+    if (list) return j({ jobs: [{ id: 7, title: 'Payroll Specialist', location: { name: list[1] === 'delta' || list[1] === 'epsilon' ? 'Austin, TX' : 'Dayton, OH' } }] })
     const det = url.match(/^https:\/\/boards-api\.greenhouse\.io\/v1\/boards\/(\w+)\/jobs\/7$/)
     if (det) return j({ id: 7, title: 'Payroll Specialist', first_published: day(6), content: `&lt;p&gt;${BODY[det[1]]}&lt;/p&gt;`, location: { name: 'Dayton, OH' }, absolute_url: `https://boards.greenhouse.io/${det[1]}/jobs/7` })
     return null
@@ -46,6 +52,7 @@ function boardHttp(hnComments: { text: string }[], hnOn = true): SafeGet {
 }
 async function run(extraHitUrls: string[], sourceHttp: SafeGet, sources: unknown = { adapters: ['jobboards'], feeds: [] }) {
   requested.length = 0
+  resetTinyfishState() // the TinyFish rate limiter is process-wide; each run starts clean
   const db = new Database(':memory:')
   migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
   saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
@@ -91,6 +98,62 @@ test('HN Who-is-hiring: only comments that name the state contribute boards; the
   assert.ok(requested.some(u => u.includes('/boards/gamma/jobs')))
   const hnReq = requested.filter(u => new URL(u).hostname === 'hn.algolia.com')
   assert.ok(hnReq.length >= 2 && hnReq.length <= 3, String(hnReq.length)) // story lookup + one comments page, bounded
+})
+
+test('HN: only the CURRENT month thread is used: an older month or a future month contributes nothing', async () => {
+  const hn = [{ text: 'Gamma Dental | Columbus, Ohio | https:&#x2F;&#x2F;boards.greenhouse.io&#x2F;gamma' }]
+  for (const bad of [[monthTitle(-1)], [monthTitle(1)]]) {
+    stories = bad
+    const { rows } = await run([], boardHttp(hn))
+    assert.ok(!verified(rows).includes('gamma'), JSON.stringify(bad))
+    assert.ok(!requested.some(u => u.includes('/boards/gamma/')))
+  }
+  stories = [monthTitle(0), monthTitle(-1)]
+})
+
+test('HN: a title naming this month but a creation time in another month is rejected (date and title must agree)', async () => {
+  stories = [{ ...monthTitle(0), created_at_i: monthTitle(-1).created_at_i }]
+  const { rows } = await run([], boardHttp([{ text: 'Gamma Dental | Ohio | https:&#x2F;&#x2F;boards.greenhouse.io&#x2F;gamma' }]))
+  assert.ok(!verified(rows).includes('gamma'))
+  stories = [monthTitle(0), monthTitle(-1)]
+})
+
+test('HN: replies are ignored, only top-level comments (parent is the thread) contribute boards', async () => {
+  await run([], boardHttp([{ text: 'Reply: we are in Ohio too https:&#x2F;&#x2F;boards.greenhouse.io&#x2F;gamma', reply: true }]))
+  assert.ok(!requested.some(u => u.includes('/boards/gamma/')))
+})
+
+test('HN: a comment that names the state but whose posting is in another state never becomes a lead (state is verified on the posting)', async () => {
+  const { rows } = await run([], boardHttp([{ text: 'Epsilon Corp | HQ near Ohio, jobs in Austin | https:&#x2F;&#x2F;boards.greenhouse.io&#x2F;epsilon' }]))
+  assert.ok(requested.some(u => u.includes('/boards/epsilon/jobs')))
+  assert.ok(!requested.some(u => u.includes('/boards/epsilon/jobs/7')))
+  assert.ok(!rows.some(r => r.company === 'epsilon'))
+})
+
+test('HN: two comment pages are requested (the thread is larger than one page), total HN requests are exactly 3', async () => {
+  await run([], boardHttp([{ text: 'x | Ohio | https:&#x2F;&#x2F;boards.greenhouse.io&#x2F;gamma' }]))
+  commentPages.length = 0
+  await run([], boardHttp([{ text: 'x | Ohio | https:&#x2F;&#x2F;boards.greenhouse.io&#x2F;gamma' }]))
+  assert.deepEqual(commentPages, ['0', '1'])
+  assert.equal(requested.filter(u => new URL(u).hostname === 'hn.algolia.com').length, 3)
+})
+
+test('network cap: with 30 board links in the thread the adapter makes at most 3 HN + 10 board lists + 3 details per board', async () => {
+  const links = Array.from({ length: 30 }, (_, i) => `https:&#x2F;&#x2F;boards.greenhouse.io&#x2F;b${i}`).join(' ')
+  await run([], boardHttp([{ text: `Many | Ohio | ${links}` }]))
+  const lists = requested.filter(u => /\/jobs$/.test(u)).length
+  assert.ok(lists <= 10, String(lists))
+  assert.ok(requested.length <= 3 + 10 * (1 + 3), String(requested.length))
+})
+
+test('raw-hit discovery does not depend on the stats flag: stats on gives the same verified set as stats off', async () => {
+  const off = await run(['https://boards.greenhouse.io/beta/jobs/3'], boardHttp([], false))
+  process.env.DAZL_SOURCE_STATS = '1'; process.env.DAZL_SOURCE_STATS_USERS = 'A'
+  try {
+    const on = await run(['https://boards.greenhouse.io/beta/jobs/3'], boardHttp([], false))
+    assert.deepEqual(verified(on.rows), verified(off.rows))
+    assert.ok(verified(on.rows).includes('beta'))
+  } finally { delete process.env.DAZL_SOURCE_STATS; delete process.env.DAZL_SOURCE_STATS_USERS }
 })
 
 test('without the jobboards source selected, no HN or board request is made', async () => {
