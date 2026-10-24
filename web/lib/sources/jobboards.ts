@@ -10,7 +10,7 @@ const STATES: Record<string, string> = { AL: 'Alabama', AK: 'Alaska', AZ: 'Arizo
 const WINDOW_DAYS = 90
 const MAX_DETAIL = 3 // per Greenhouse board
 const MAX_BOARDS = 10
-export const jobBoardsLimits = { budgetMs: 12_000 } // stop STARTING requests after this; each request is hard-bounded at 10 s, so 12 + 10 < the 25 s adapter deadline
+export const jobBoardsLimits = { budgetMs: 12_000, pageMs: 8_000 } // stop STARTING requests after this; each request is hard-bounded at 10 s, so 12 + 10 < the 25 s adapter deadline
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 const GENERIC = new Set(['hiring', 'roles', 'role', 'jobs', 'job', 'open', 'openings', 'positions', 'position', 'team', 'remote'])
 
@@ -117,7 +117,10 @@ export const jobBoardsAdapter: SourceAdapter = {
       const cands = bodyQuotes(body)
       if (!page || cands.length === 0) return cands[0] ?? null
       if (Date.now() - t0 > jobBoardsLimits.budgetMs) { cut = true; return cands[0] }
-      const text = await page(url)
+      // One page fetch can take far longer than its parts (3 redirects x 10 s, plus a render service), so it is cut here.
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const text = await Promise.race([page(url).catch(() => null), new Promise<null>(res => { timer = setTimeout(() => res(null), jobBoardsLimits.pageMs) })])
+      clearTimeout(timer)
       if (text === null) { note?.('page_unreachable'); return cands[0] }
       return cands.find(q => onPage(text, q)) ?? null
     }
