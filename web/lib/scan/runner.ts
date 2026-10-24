@@ -17,7 +17,7 @@ import { markWatchLeads } from '../watch.ts'
 import type { AdvPlatform } from '../advanced/config.ts'
 import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, selfDescribedUrls } from '../sources/index.ts'
 import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '../search/trace.ts'
-import { migrateTinyfish, queryPlan, queryPrompt, tfFetch, tfSearch, tinyfishEnabled, toEvidence, withGeography } from '../search/tinyfish.ts'
+import { migrateTinyfish, queryPlan, queryPrompt, tfFetch, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { crawlJob } from '../connectors/sitecrawl.ts'
 import { anthropicCountTokens, guardProvider, ownerPool, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
@@ -539,7 +539,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   }
   const plan = queryPlan(await ask(queryPrompt(job.query!, icp, 3), 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, 3)
   if (diag) diag.info.query_source = plan.source
-  const q = withGeography(plan.queries, icp.where)
+  const q = withGeography(sanitizeQueries(plan.queries, job.query!), icp.where)
   const after = new Date(Date.now() - 365 * 86400_000).toISOString().slice(0, 10)
   const hits: Awaited<ReturnType<typeof tfSearch>> extends infer R ? (R extends { ok: true; hits: infer H } ? H : never) : never = []
   for (const query of q) { const r = await tfSearch(db, job.user_id, query, { afterDate: after }, spent, diag ? { trace: diag.trace } : {}); if (!r.ok) { if (hits.length === 0) return null; break } hits.push(...r.hits) }
