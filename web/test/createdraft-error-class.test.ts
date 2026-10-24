@@ -44,3 +44,20 @@ test('a locked database is not reported as already_drafted and leaves no row', (
   assert.ok(createDraft(f.db, 'A', 'L1', 'Seller'))
   f.done()
 })
+
+import { draftFailure } from '../lib/outreach/draft-error.ts'
+test('draftFailure gives fixed JSON bodies and never leaks error text', () => {
+  const busy = Object.assign(new Error('database is locked: INSERT INTO outreach_messages secret-sql'), { code: 'SQLITE_BUSY_SNAPSHOT' })
+  assert.deepEqual(draftFailure(busy), { status: 503, body: { error: 'Busy right now. Try again in a moment.', code: 'busy' } })
+  const check = Object.assign(new Error('CHECK constraint failed: length(body) provider-body-text'), { code: 'SQLITE_CONSTRAINT_CHECK' })
+  const f = draftFailure(check)
+  assert.equal(f.status, 500); assert.equal(f.body.code, 'error')
+  assert.ok(!JSON.stringify(f).includes('provider-body-text') && !JSON.stringify(draftFailure(busy)).includes('secret-sql'))
+  assert.equal(draftFailure(null).status, 500)
+})
+test('the create route uses draftFailure and no longer rethrows unknown errors', async () => {
+  const { readFileSync } = await import('node:fs')
+  const route = readFileSync(new URL('../app/api/outreach/route.ts', import.meta.url), 'utf8')
+  assert.match(route, /draftFailure\(e\)/)
+  assert.ok(!/\n\s*throw e\n/.test(route))
+})
