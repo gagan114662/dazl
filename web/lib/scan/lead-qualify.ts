@@ -7,11 +7,14 @@ import type { Provider } from '@/lib/llm/provider'
 
 export type FitVerdict = 'yes' | 'no' | 'unknown'
 export type BuyVerdict = 'stated' | 'none_seen' | 'unknown'
-export interface Judgment<V> { verdict: V; quote: string | null; note: string }
+export interface Judgment<V> { verdict: V; quote: string | null; quote_url: string | null; note: string }
+export interface EvidenceScope { pages_included: { url: string; chars_sent: number; chars_available: number; truncated: boolean }[]; pages_omitted: string[]; any_truncated: boolean }
 export interface Qualification {
   company_fit: Judgment<FitVerdict>
   use_case: Judgment<FitVerdict>
   buying_evidence: Judgment<BuyVerdict>
+  // none_seen and unknown only describe these pages as sent. They never claim the company shows nothing elsewhere.
+  evidence_scope: EvidenceScope
 }
 export interface QualifyInput {
   seller_offer: string
@@ -20,86 +23,118 @@ export interface QualifyInput {
   signal: string
   pages: { url: string; text: string }[]
 }
-export interface QualifyLimits { max_input_chars: number; max_output_tokens: number }
-export const DEFAULT_LIMITS: QualifyLimits = { max_input_chars: 12000, max_output_tokens: 600 }
-// Estimates only. Provider price list for the default model as read on 2026-10-23; the served model can differ.
-export const PRICE_ESTIMATE = { input_per_mtok: 3, output_per_mtok: 15, source: 'https://platform.claude.com/docs/en/about-claude/pricing' }
+export interface QualifyLimits { max_input_chars: number; max_page_chars: number; max_output_tokens: number }
+export const DEFAULT_LIMITS: QualifyLimits = { max_input_chars: 12000, max_page_chars: 4000, max_output_tokens: 600 }
+// Fixed caps on the non-page fields so the whole prompt is bounded, not just the pages.
+export const FIELD_CAPS = { seller_offer: 300, seller_icp: 1200, company: 150, signal: 400 }
+// Estimates only, per exact model id, as read on 2026-10-23. A model not listed has no price here and no estimate.
+export const PRICE_TABLE: Record<string, { input_per_mtok: number; output_per_mtok: number; source: string }> = {
+  'claude-sonnet-4-5': { input_per_mtok: 3, output_per_mtok: 15, source: 'https://platform.claude.com/docs/en/about-claude/pricing' },
+}
 
-export function buildQualifyPrompt(i: QualifyInput, limits: QualifyLimits = DEFAULT_LIMITS): string {
+export interface Prepared { prompt: string; scope: EvidenceScope; included: { url: string; text: string }[] }
+
+export function preparePrompt(i: QualifyInput, limits: QualifyLimits = DEFAULT_LIMITS): Prepared {
   let budget = Math.max(0, limits.max_input_chars)
-  const pages = i.pages.map(p => { const t = p.text.slice(0, Math.max(0, Math.min(budget, 4000))); budget -= t.length; return { url: p.url, text: t } }).filter(p => p.text.length > 0)
-  return `You judge whether ONE company could use a seller's product, using ONLY the page text below.
-Seller offer: ${i.seller_offer}
-Seller target profile: ${i.seller_icp}
-Company: ${i.company}
-Why it was saved: ${i.signal} (a hiring signal only; it is not buying intent or fit)
+  const included: { url: string; text: string }[] = []
+  const scope: EvidenceScope = { pages_included: [], pages_omitted: [], any_truncated: false }
+  for (const p of i.pages) {
+    const take = Math.min(budget, Math.max(0, limits.max_page_chars), p.text.length)
+    if (take <= 0) { scope.pages_omitted.push(p.url); if (p.text.length > 0) scope.any_truncated = true; continue }
+    const text = p.text.slice(0, take); budget -= take
+    const truncated = take < p.text.length
+    if (truncated) scope.any_truncated = true
+    included.push({ url: p.url, text })
+    scope.pages_included.push({ url: p.url, chars_sent: take, chars_available: p.text.length, truncated })
+  }
+  const f = (v: string, n: number) => v.slice(0, n)
+  const prompt = `You judge whether ONE company could use a seller's product, using ONLY the page text below.
+Seller offer: ${f(i.seller_offer, FIELD_CAPS.seller_offer)}
+Seller target profile: ${f(i.seller_icp, FIELD_CAPS.seller_icp)}
+Company: ${f(i.company, FIELD_CAPS.company)}
+Why it was saved: ${f(i.signal, FIELD_CAPS.signal)} (a hiring signal only; it is not buying intent or fit)
 
 Judge three things separately. "unknown" is a correct answer whenever the text does not show it.
 1. company_fit (yes/no/unknown): does the text show the company matches the seller's target profile? Do not assume anything the profile leaves open.
 2. use_case (yes/no/unknown): does the text show a way this company's OWN team could use the seller's offer? The company's customers do not count.
-3. buying_evidence (stated/none_seen/unknown): does the text explicitly show the company is looking for or evaluating this kind of product? A job posting does not count. Use none_seen only when the text covers the topic and says nothing.
-Every verdict other than unknown/none_seen needs a quote copied exactly from the text.
+3. buying_evidence (stated/none_seen/unknown): does the text explicitly show the company is looking for or evaluating this kind of product? A job posting does not count. none_seen means only that these pages, as shown, do not say so; it is not a claim about the company elsewhere.
+Every verdict other than unknown/none_seen needs a quote copied exactly from ONE page, plus that page's URL as quote_url.
 
 Reply with one JSON object and nothing else:
-{"company_fit":{"verdict":"","quote":"","note":""},"use_case":{"verdict":"","quote":"","note":""},"buying_evidence":{"verdict":"","quote":"","note":""}}
+{"company_fit":{"verdict":"","quote":"","quote_url":"","note":""},"use_case":{"verdict":"","quote":"","quote_url":"","note":""},"buying_evidence":{"verdict":"","quote":"","quote_url":"","note":""}}
 
-PAGE TEXT
-${pages.map(p => `--- ${p.url}\n${p.text}`).join('\n')}`
+PAGE TEXT${scope.any_truncated ? ' (some text was cut off or left out to fit the limit)' : ''}
+${included.map(p => `--- ${p.url}\n${p.text}`).join('\n')}`
+  return { prompt, scope, included }
 }
 
-export function estimateCost(prompt: string, limits: QualifyLimits = DEFAULT_LIMITS) {
+export function estimateCost(prompt: string, model: string | null, limits: QualifyLimits = DEFAULT_LIMITS) {
   const bytes = Buffer.byteLength(prompt, 'utf8')
-  // Estimate: bytes is a loose ceiling on tokens under byte-level tokenizers; not provider-confirmed.
-  const input_tokens_estimate_max = bytes
-  const usd = (input_tokens_estimate_max * PRICE_ESTIMATE.input_per_mtok + limits.max_output_tokens * PRICE_ESTIMATE.output_per_mtok) / 1e6
-  return { chars: prompt.length, bytes, input_tokens_estimate_max, output_tokens_max: limits.max_output_tokens, usd_estimate_max: Math.round(usd * 1e6) / 1e6, is_guaranteed_cap: false as const, price_source: PRICE_ESTIMATE.source }
+  const price = model ? PRICE_TABLE[model] ?? null : null
+  // Estimate: UTF-8 bytes as a loose ceiling on input tokens (an assumption, not provider-confirmed).
+  const usd = price ? (bytes * price.input_per_mtok + limits.max_output_tokens * price.output_per_mtok) / 1e6 : null
+  return { model, chars: prompt.length, bytes, input_tokens_estimate_max: bytes, output_tokens_max: limits.max_output_tokens, limits, field_caps: FIELD_CAPS,
+    usd_estimate_max: usd === null ? null : Math.round(usd * 1e6) / 1e6, price_source: price?.source ?? null,
+    priced: price !== null, is_guaranteed_cap: false as const }
 }
 
-const UNKNOWN = (why: string): Qualification => ({
-  company_fit: { verdict: 'unknown', quote: null, note: why }, use_case: { verdict: 'unknown', quote: null, note: why }, buying_evidence: { verdict: 'unknown', quote: null, note: why } })
-
+const NONE_SCOPE = (scope: EvidenceScope, why: string): Qualification => {
+  const u = <V extends string>(v: V): Judgment<V> => ({ verdict: v, quote: null, quote_url: null, note: why })
+  return { company_fit: u('unknown'), use_case: u('unknown'), buying_evidence: u('unknown'), evidence_scope: scope }
+}
 function norm(s: string) { return s.replace(/\s+/g, ' ').trim() }
 
-// Parse, then drop any verdict whose quote is not verbatim in the supplied text.
-export function parseQualification(raw: string, pages: { text: string }[]): Qualification {
+// Parse, then keep a verdict only if its quote is verbatim inside ONE page that was actually sent, and
+// quote_url names that page. Literal presence only: it does not prove the quote means what the verdict says.
+export function parseQualification(raw: string, included: { url: string; text: string }[], scope: EvidenceScope): Qualification {
   const m = /\{[\s\S]*\}/.exec(raw)
-  if (!m) return UNKNOWN('model output was not readable')
-  let j: Record<string, { verdict?: unknown; quote?: unknown; note?: unknown }>
-  try { j = JSON.parse(m[0]) } catch { return UNKNOWN('model output was not readable') }
-  const hay = norm(pages.map(p => p.text).join(' \n '))
+  if (!m) return NONE_SCOPE(scope, 'model output was not readable')
+  let j: Record<string, { verdict?: unknown; quote?: unknown; quote_url?: unknown; note?: unknown }>
+  try { j = JSON.parse(m[0]) } catch { return NONE_SCOPE(scope, 'model output was not readable') }
+  const pages = included.map(p => ({ url: p.url, hay: norm(p.text) }))
   const one = <V extends string>(k: string, ok: readonly V[], none: V): Judgment<V> => {
     const x = j[k] ?? {}
     const v = typeof x.verdict === 'string' && (ok as readonly string[]).includes(x.verdict) ? (x.verdict as V) : none
     const q = typeof x.quote === 'string' ? norm(x.quote) : ''
+    const url = typeof x.quote_url === 'string' ? x.quote_url : ''
     const note = typeof x.note === 'string' ? x.note.slice(0, 300) : ''
-    const needsQuote = v !== none && v !== ('none_seen' as string)
-    if (needsQuote && (q.length < 8 || !hay.includes(q))) return { verdict: none, quote: null, note: 'dropped: the quoted text was not found in the supplied pages' }
-    return { verdict: v, quote: needsQuote ? q : null, note }
+    const needsQuote = v !== none && (v as string) !== 'none_seen'
+    if (!needsQuote) return { verdict: v, quote: null, quote_url: null, note: v === ('none_seen' as string) ? `${note} (scope: only the ${included.length} page(s) sent${scope.any_truncated ? ', some cut off' : ''})`.trim() : note }
+    const page = pages.find(p => p.url === url)
+    if (q.length < 8 || !page || !page.hay.includes(q)) return { verdict: none, quote: null, quote_url: null, note: 'dropped: the quote was not found on the page it named among the pages sent' }
+    return { verdict: v, quote: q, quote_url: page.url, note }
   }
   return {
     company_fit: one<FitVerdict>('company_fit', ['yes', 'no', 'unknown'], 'unknown'),
     use_case: one<FitVerdict>('use_case', ['yes', 'no', 'unknown'], 'unknown'),
     buying_evidence: one<BuyVerdict>('buying_evidence', ['stated', 'none_seen', 'unknown'], 'unknown'),
+    evidence_scope: scope,
   }
 }
 
-export interface PaidApproval { approved_by_user: true; max_usd_estimate: number }
+// Approval must name the exact model and the estimate it was shown. Booleans alone are not accepted.
+export interface PaidApproval { approved_by_user: true; model: string; max_usd_estimate: number; page_urls: string[] }
 export type QualifyResult =
-  | { status: 'dry_run'; cost: ReturnType<typeof estimateCost> }
-  | { status: 'blocked'; reason: 'no_approval' | 'over_estimate' | 'no_pages' | 'no_provider'; cost?: ReturnType<typeof estimateCost> }
+  | { status: 'dry_run'; cost: ReturnType<typeof estimateCost>; scope: EvidenceScope }
+  | { status: 'blocked'; reason: 'no_approval' | 'model_mismatch' | 'unpriced_model' | 'over_estimate' | 'pages_mismatch' | 'no_pages' | 'no_provider'; cost?: ReturnType<typeof estimateCost> }
   | { status: 'done'; qualification: Qualification; cost: ReturnType<typeof estimateCost>; usage?: unknown; served_model: string | null }
 
 // Exactly one provider request. No retry. Without `approval` it only reports the estimate.
 export async function qualifyLead(provider: Provider, apiKey: string, input: QualifyInput, opts: { limits?: QualifyLimits; approval?: PaidApproval; fetchImpl?: typeof fetch } = {}): Promise<QualifyResult> {
   const limits = opts.limits ?? DEFAULT_LIMITS
   if (!input.pages.some(p => p.text.trim().length > 0)) return { status: 'blocked', reason: 'no_pages' }
-  const prompt = buildQualifyPrompt(input, limits)
-  const cost = estimateCost(prompt, limits)
-  if (!opts.approval) return { status: 'dry_run', cost }
-  if (opts.approval.approved_by_user !== true) return { status: 'blocked', reason: 'no_approval', cost }
-  if (cost.usd_estimate_max > opts.approval.max_usd_estimate) return { status: 'blocked', reason: 'over_estimate', cost }
+  const prep = preparePrompt(input, limits)
+  const model = provider.configuredModel ? provider.configuredModel() : null
+  const cost = estimateCost(prep.prompt, model, limits)
+  if (!opts.approval) return { status: 'dry_run', cost, scope: prep.scope }
+  const a = opts.approval
+  if (a.approved_by_user !== true) return { status: 'blocked', reason: 'no_approval', cost }
+  if (!cost.priced || cost.usd_estimate_max === null) return { status: 'blocked', reason: 'unpriced_model', cost }
+  if (a.model !== model) return { status: 'blocked', reason: 'model_mismatch', cost }
+  const sent = prep.scope.pages_included.map(p => p.url).sort().join('\n')
+  if ([...a.page_urls].sort().join('\n') !== sent) return { status: 'blocked', reason: 'pages_mismatch', cost }
+  if (cost.usd_estimate_max > a.max_usd_estimate) return { status: 'blocked', reason: 'over_estimate', cost }
   if (!provider.completeDetailed) return { status: 'blocked', reason: 'no_provider', cost }
-  const used = input.pages.map(p => ({ text: p.text.slice(0, 4000) }))
-  const r = await provider.completeDetailed(apiKey, prompt, opts.fetchImpl, limits.max_output_tokens)
-  return { status: 'done', qualification: parseQualification(r.text, used), cost, usage: r.usage, served_model: r.model }
+  const r = await provider.completeDetailed(apiKey, prep.prompt, opts.fetchImpl, limits.max_output_tokens)
+  return { status: 'done', qualification: parseQualification(r.text, prep.included, prep.scope), cost, usage: r.usage, served_model: r.model }
 }
