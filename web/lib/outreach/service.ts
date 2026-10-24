@@ -277,7 +277,7 @@ export function approve(db: Database.Database, tenantId: string, id: string, seq
   db.transaction(() => {
     snapshotSignalContext(db, tenantId, id)
     db.prepare("UPDATE outreach_messages SET status = 'approved', approved_hash = ? WHERE id = ? AND tenant_id = ? AND status = 'draft'").run(hash(m.to_email, m.subject, m.body), id, tenantId)
-  })()
+  }).immediate()
 }
 
 // A claim that never finished may or may not have reached Gmail. It is never resent
