@@ -336,7 +336,7 @@ const sleepAbort = (ms: number, signal?: AbortSignal) => new Promise<boolean>((r
 })
 const lastHit = new Map<string, number>()
 
-export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[] }> {
+export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeNorm?: string }> {
   const origin = `https://${site}`
   const stopped = () => signal?.aborted ?? false
   const polite = async (url: string, delay: number) => { const h = new URL(url).hostname; const wait = (lastHit.get(h) ?? 0) + Math.max(gapMs, delay) - Date.now(); if (wait > 0 && !(await sleepAbort(wait, signal))) return null; lastHit.set(h, Date.now()); return get(url) }
@@ -348,7 +348,9 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
   if (!robots.allows('/')) return { found: [], reason: 'robots_disallow', pages: 0 }
   const home = await polite(`${origin}/`, robots.delayMs)
   if (!home || home.status >= 400) return { found: [], reason: 'site_unreachable', pages: 0 }
-  if (expectName && !norm(home.body.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ')).includes(norm(expectName))) return { found: [], reason: 'name_mismatch', pages: 1 }
+  // The normalised homepage text is returned so a later lead on the same domain is checked against it without a second fetch.
+  const homeNorm = norm(home.body.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' '))
+  if (expectName && !homeNorm.includes(norm(expectName))) return { found: [], reason: 'name_mismatch', pages: 1, homeNorm }
   const found = new Map<string, Found>(); let pages = 1
   for (const f of [...extractContacts(home.body, home.finalUrl, site), ...extractPeople(home.body, home.finalUrl)]) found.set(f.kind + f.value, f)
   for (const p of contactPaths(home.body, new URL(home.finalUrl))) {
@@ -378,7 +380,7 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
   }
   // Addresses and phones keep their cap; listed people ride separately so they never crowd an address out, and never turn 'none_published' into 'ok'.
   const all = [...found.values()], contacts = all.filter(f => f.kind !== 'person'), people = all.filter(f => f.kind === 'person')
-  return { found: [...contacts.slice(0, 6), ...people.slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body) }
+  return { found: [...contacts.slice(0, 6), ...people.slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeNorm }
 }
 
 // Runs for one finished scan. Never throws, never touches the lead row, one audit row per site.
@@ -396,7 +398,23 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       : defaultGet(deps.env))
     const leads = deps.leads ?? db.prepare("SELECT id, company, source_url FROM leads WHERE scan_job_id = ? AND review_reason IS NULL AND confidence IS NOT NULL AND company <> '' ORDER BY score DESC LIMIT ?").all(jobId, MAX_SITES_PER_SCAN) as { id: string; company: string; source_url: string }[]
     const today = new Date((deps.now ?? Date.now())).toISOString().slice(0, 10)
-    const done = new Set<string>()
+    // One crawl per site per run. Another lead on the same domain is NOT skipped: its own identity check runs against the cached homepage
+    // text (same name test, per lead), and it reuses the pages already read, so no extra fetch and no extra budget. Only when the first lead's
+    // name was absent from the homepage but this lead's name is present is the site read once more, because the earlier read stopped at the
+    // identity check. Site-level outcomes (robots, unreachable) are the same for every lead and are reused as they are.
+    type Crawled = Awaited<ReturnType<typeof crawlSite>>
+    const siteRead = new Map<string, Crawled>()
+    const readSite = async (cand: string, company: string): Promise<Crawled> => {
+      const c = siteRead.get(cand)
+      if (c) {
+        if (c.homeNorm === undefined) return c
+        if (!c.homeNorm.includes(norm(company))) return { found: [], reason: 'name_mismatch', pages: 0 }
+        if (c.reason !== 'name_mismatch') return c
+      }
+      const r = await crawlSite(cand, get, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal)
+      siteRead.set(cand, r)
+      return r
+    }
     let probed = 0
     for (const l of leads) {
       if (deps.signal?.aborted) return // post-processing deadline: stop starting new sites
@@ -409,15 +427,14 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         // are rejected by the homepage name check inside crawlSite.
         if (probed >= MAX_PROBES_PER_SCAN) { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 }); continue }
         probed++
-        sites = probeDomains(l.company).filter(d => !done.has(d))
+        sites = probeDomains(l.company)
         for (const d of sites) basisOf.set(d, 'name_probe')
         if (sites.length === 0) { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 }); continue }
       }
       let r: Awaited<ReturnType<typeof crawlSite>> = { found: [], reason: 'name_mismatch', pages: 0 }; let site = sites[0]
       for (const cand of sites) {
-        if (done.has(cand)) continue
-        done.add(cand); site = cand
-        r = await crawlSite(cand, get, deps.gapMs, l.company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal)
+        site = cand
+        r = await readSite(cand, l.company)
         if (r.reason !== 'name_mismatch' && r.reason !== 'site_unreachable') break
         audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: r.reason, results: 0 })
       }

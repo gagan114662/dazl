@@ -18,7 +18,7 @@ import { POST as REVIEW } from '../../app/api/leads/[lead]/domain-review/route.t
 // Real route + real crawler + real stores. Only the https transport is mapped to a loopback fixture server.
 const html = (b: string) => `<html><body>${b}</body></html>`
 const t = await installFixtureTransport({
-  'jobboard.test': { '/a': html('<a href="https://acmeroofing.test/">site</a>'), '/b': html('<a href="https://otherco.test/">site</a>'), '/c': html('<a href="https://blockedco.test/">site</a>') },
+  'jobboard.test': { '/a': html('<a href="https://acmeroofing.test/">site</a>'), '/b': html('<a href="https://otherco.test/">site</a>'), '/c': html('<a href="https://blockedco.test/">site</a>'), '/d': html('<a href="https://acmeroofing.test/">site</a>') },
   'acmeroofing.test': { '/robots.txt': 'User-agent: *\nAllow: /', '/': html('Acme Roofing <a href="/contact">Contact</a>'), '/contact': html('<a href="mailto:hello@acmeroofing.test">hello</a>') },
   'otherco.test': { '/robots.txt': '', '/': html('Totally Different Company Ltd'), '/contact': html('info@otherco.test') },
   'blockedco.test': { '/robots.txt': 'User-agent: *\nDisallow: /', '/': html('Blocked Co'), '/contact': html('hello@blockedco.test') },
@@ -92,6 +92,36 @@ test('click path: confirmed company row -> own-domain mailbox stored with its pa
   const m = db.prepare('SELECT to_email, status, test FROM outreach_messages WHERE id = ?').get(id) as { to_email: string; status: string; test: number }
   assert.deepEqual({ ...m }, { to_email: 'hello@acmeroofing.test', status: 'draft', test: 0 })
   assert.equal((db.prepare("SELECT count(*) AS n FROM outreach_messages WHERE status <> 'draft'").get() as { n: number }).n, 0, 'nothing was sent or approved')
+})
+
+test('shared domain, whole workflow: a scan with two leads on one company site -> one read of the site, both leads get rows, each needs its own identity review before its own draft', async () => {
+  const { crawlJob } = await import('../../lib/connectors/sitecrawl.ts')
+  const job2 = createJob(db, 'A', { business_name: 'Seller', industry: 'x', location: 'y' })
+  db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job2)
+  const ins2 = db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score,human_confirmed_at,human_confirmed_from) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+  ins2.run(ID(7), job2, 'Acme Roofing', null, 'Acme Roofing is hiring a rep', 'https://jobboard.test/d', 'Acme Roofing is hiring a rep', 90, 60, 1800000000, 'test_review')
+  ins2.run(ID(8), job2, 'Acme Roofing', null, 'Acme Roofing is hiring a closer', 'https://jobboard.test/d', 'Acme Roofing is hiring a closer', 90, 50, 1800000000, 'test_review')
+  const before = t.hits.length
+  await crawlJob(db, 'A', job2, { gapMs: 0, env: {}, now: Date.parse('2026-10-24T12:00:00Z') })
+  const mine = t.hits.slice(before)
+  assert.equal(mine.filter(h => h === 'acmeroofing.test/contact').length, 1, 'the company contact page is read once for the whole scan')
+  assert.equal(mine.filter(h => h === 'acmeroofing.test/').length, 1, 'and so is the homepage')
+  for (const n of [7, 8]) {
+    const e = db.prepare('SELECT kind, value, label, source_url FROM lead_enrichments WHERE lead_id = ? AND kind IN (\'email\', \'domain\') ORDER BY kind').all(ID(n)) as { kind: string; value: string; label: string | null; source_url: string }[]
+    assert.deepEqual(e.map(x => [x.kind, x.value]), [['domain', 'acmeroofing.test|evidence_link_domain_label'], ['email', 'hello@acmeroofing.test']], `lead ${n} has its own rows`)
+    assert.equal(e[0].source_url, 'https://jobboard.test/d')
+  }
+  const bindOf = (n: number) => domainReviewFor({ id: ID(n), contact: null }, db.prepare('SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ?').all(ID(n)) as never).binding!
+  assert.notEqual(bindOf(7), bindOf(8), 'the binding is per lead')
+  const rv = (n: number) => REVIEW(new NextRequest(`http://localhost/api/leads/${ID(n)}/domain-review`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'confirm', binding: bindOf(n) }) }), { params: Promise.resolve({ lead: ID(n) }) })
+  assert.throws(() => createDraft(db, 'A', ID(7), 'Seller'), /domain_unconfirmed/)
+  assert.throws(() => createDraft(db, 'A', ID(8), 'Seller'), /domain_unconfirmed/)
+  assert.equal((await rv(7)).status, 200)
+  assert.ok(createDraft(db, 'A', ID(7), 'Seller'), 'reviewed lead drafts')
+  assert.throws(() => createDraft(db, 'A', ID(8), 'Seller'), /domain_unconfirmed/, 'the other lead on the same domain does not inherit that review')
+  assert.equal((await rv(8)).status, 200)
+  assert.ok(createDraft(db, 'A', ID(8), 'Seller'))
+  assert.equal((db.prepare("SELECT count(*) AS n FROM outreach_messages WHERE status <> 'draft'").get() as { n: number }).n, 0, 'nothing sent or approved')
 })
 
 test('domain identity and robots: a homepage naming another company or disallowing the crawl stores nothing', async () => {

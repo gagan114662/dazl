@@ -53,7 +53,7 @@ test('crawl obeys robots: disallowed contact page is never requested; unreachabl
   assert.equal((await crawlSite('acme.com', site({ '/robots.txt': { status: 503, body: '' } }).get, 0)).reason, 'robots_error')
 })
 
-test('crawlJob stores each contact with its source page and date, once per site', async () => {
+test('crawlJob stores each contact with its source page and date; the site is read once and every lead on it gets its own rows', async () => {
   const db = new Database(':memory:'); migrateConnectors(db)
   db.exec("CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT)")
   db.prepare("INSERT INTO leads VALUES ('l1','j1','Stabyl','https://news.example/a',NULL,90,80,NULL),('l2','j1','Stabyl','https://news.example/b',NULL,90,70,NULL),('l3','j1','NoSite Ltd','https://news.example/c',NULL,90,60,NULL)").run()
@@ -61,10 +61,13 @@ test('crawlJob stores each contact with its source page and date, once per site'
     '/a': { body: html('<a href="https://stabyl.com">s</a>') }, '/b': { body: html('<a href="https://stabyl.com">s</a>') }, '/c': { body: html('nothing') },
     '/robots.txt': { body: '' }, '/': { body: html('Stabyl home <a href="/contact-us">c</a>') }, '/contact-us': { body: html('Email: hello@stabyl.com') },
   }
-  const get: Get = async url => { const u = new URL(url); const p = pages[u.pathname]; return p ? { status: 200, body: p.body, finalUrl: url } : { status: 404, body: '', finalUrl: url } }
+  const reads: string[] = []
+  const get: Get = async url => { const u = new URL(url); reads.push(u.hostname + u.pathname); const p = pages[u.pathname]; return p ? { status: 200, body: p.body, finalUrl: url } : { status: 404, body: '', finalUrl: url } }
   await crawlJob(db, 't1', 'j1', { get, gapMs: 0, env: {}, now: Date.parse('2026-10-20T12:00:00Z') })
-  const rows = db.prepare("SELECT lead_id, kind, value, source_url, source_date, connector FROM lead_enrichments WHERE kind <> 'domain'").all()
-  assert.deepEqual(rows, [{ lead_id: 'l1', kind: 'email', value: 'hello@stabyl.com', source_url: 'https://stabyl.com/contact-us', source_date: '2026-10-20', connector: 'sitecrawl' }])
+  const rows = db.prepare("SELECT lead_id, kind, value, source_url, source_date, connector FROM lead_enrichments WHERE kind <> 'domain' ORDER BY lead_id").all()
+  const em = (id: string) => ({ lead_id: id, kind: 'email', value: 'hello@stabyl.com', source_url: 'https://stabyl.com/contact-us', source_date: '2026-10-20', connector: 'sitecrawl' })
+  assert.deepEqual(rows, [em('l1'), em('l2')], 'a second lead naming the same company on the same domain gets its own rows')
+  assert.equal(reads.filter(r => r === 'stabyl.com/contact-us').length, 1, 'but the contact page is read once')
   const a = db.prepare("SELECT lookup, status, results FROM connector_audit ORDER BY rowid").all()
   // l3's evidence links nothing, so its name-derived probes were tried; the mock's shared home page
   // names a different company, so every probe is rejected by the homepage name check.
@@ -214,4 +217,51 @@ test('domain provenance: each accepted domain records how it was chosen and the 
   assert.equal(domainBasisFor('info@x.example', []).kind, 'unrecorded')
   // a contact printed on the cited page itself is not a crawled address
   assert.equal(publishedContact({ contact: 'a@b.example', source_url: 'https://b.example/p' } as never)!.domainBasis, 'cited_page')
+})
+
+test('two leads on one domain: each gets its own identity check, domain row and contact rows from one read of the site', async () => {
+  const db = new Database(':memory:'); migrateConnectors(db)
+  db.exec("CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT)")
+  // l1 and l2 both name Acme (suffix variants collapse in the name test); l3 links the same domain but the homepage never names Gloom Labs.
+  db.prepare("INSERT INTO leads VALUES ('l1','j1','Acme Roofing LLC','https://board.test/1',NULL,90,90,NULL),('l2','j1','Acme Roofing','https://board.test/2',NULL,90,80,NULL),('l3','j1','Gloom Labs','https://board.test/3',NULL,90,70,NULL)").run()
+  const hits: string[] = []
+  const get: Get = async url => {
+    const u = new URL(url); hits.push(u.hostname + u.pathname)
+    if (u.pathname === '/robots.txt') return { status: 200, body: '', finalUrl: url }
+    if (u.hostname === 'board.test') return { status: 200, body: html('<a href="https://acmeroofing.test/">site</a>'), finalUrl: url }
+    if (u.hostname === 'acmeroofing.test' && u.pathname === '/') return { status: 200, body: html('Acme Roofing LLC home <a href="/contact">Contact</a>'), finalUrl: url }
+    if (u.hostname === 'acmeroofing.test' && u.pathname === '/contact') return { status: 200, body: html('<a href="mailto:info@acmeroofing.test">mail</a>'), finalUrl: url }
+    return { status: 404, body: '', finalUrl: url }
+  }
+  // l3's evidence page links acmeroofing.test via its own label, which is "Gloom Labs" - so use text that names it.
+  const get2: Get = async url => (new URL(url).pathname === '/3' && new URL(url).hostname === 'board.test') ? { status: 200, body: html('<a href="https://acmeroofing.test/">Gloom Labs</a>'), finalUrl: url } : get(url)
+  await crawlJob(db, 't1', 'j1', { get: get2, gapMs: 0, env: {}, now: Date.parse('2026-10-20T12:00:00Z') })
+  const rows = (id: string, kind: string) => db.prepare('SELECT value FROM lead_enrichments WHERE lead_id = ? AND kind = ?').all(id, kind).map(r => (r as { value: string }).value)
+  assert.deepEqual(rows('l1', 'email'), ['info@acmeroofing.test'])
+  assert.deepEqual(rows('l2', 'email'), ['info@acmeroofing.test'], 'the second lead on the same domain is not skipped')
+  assert.equal(rows('l2', 'domain').length, 1)
+  assert.deepEqual(rows('l3', 'email'), [], 'the homepage never names Gloom Labs: no rows for it')
+  assert.deepEqual(rows('l3', 'domain'), [])
+  assert.equal(hits.filter(h => h === 'acmeroofing.test/').length, 1, 'one homepage read for the whole run')
+  assert.equal(hits.filter(h => h === 'acmeroofing.test/contact').length, 1, 'one contact page read for the whole run')
+  assert.equal(hits.filter(h => h === 'acmeroofing.test/robots.txt').length, 1)
+})
+
+test('a lead whose name the homepage does not show cannot reuse a crawl; a later lead whose name it does show reads the site once more', async () => {
+  const db = new Database(':memory:'); migrateConnectors(db)
+  db.exec("CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT)")
+  db.prepare("INSERT INTO leads VALUES ('a','j1','Gloom Labs','https://board.test/1',NULL,90,90,NULL),('b','j1','Acme Roofing','https://board.test/2',NULL,90,80,NULL)").run()
+  const hits: string[] = []
+  const get: Get = async url => {
+    const u = new URL(url); hits.push(u.hostname + u.pathname)
+    if (u.pathname === '/robots.txt') return { status: 200, body: '', finalUrl: url }
+    if (u.hostname === 'board.test') return { status: 200, body: html('<a href="https://acmeroofing.test/">Gloom Labs and Acme Roofing</a>'), finalUrl: url }
+    if (u.hostname === 'acmeroofing.test' && u.pathname === '/') return { status: 200, body: html('Acme Roofing home <a href="/contact">Contact</a>'), finalUrl: url }
+    if (u.hostname === 'acmeroofing.test' && u.pathname === '/contact') return { status: 200, body: html('<a href="mailto:info@acmeroofing.test">mail</a>'), finalUrl: url }
+    return { status: 404, body: '', finalUrl: url }
+  }
+  await crawlJob(db, 't1', 'j1', { get, gapMs: 0, env: {}, now: Date.parse('2026-10-20T12:00:00Z') })
+  const emails = (id: string) => db.prepare("SELECT value FROM lead_enrichments WHERE lead_id = ? AND kind = 'email'").all(id).length
+  assert.deepEqual([emails('a'), emails('b')], [0, 1])
+  assert.equal(hits.filter(h => h === 'acmeroofing.test/').length, 2, 'the first read stopped at the identity check, so exactly one more read for the lead whose name matches')
 })
