@@ -675,7 +675,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     if (sel && icpForSources && complete) {
       try {
         assertOwned(db, job)
-        const collected = await collectEvidenceReport(sel, job.query!, deps.sourceHttp, undefined, sel.adapters.includes('jobboards') ? [...diag.hitUrls, ...leads.map(l => l.source_url)] : [])
+        const collected = await collectEvidenceReport(sel, job.query!, deps.sourceHttp, undefined, sel.adapters.includes('jobboards') ? [...diag.hitUrls, ...leads.map(l => l.source_url)] : [], async url => { try { const r = await fetchP(url); return r && 'text' in r && typeof r.text === 'string' ? r.text : null } catch { return null } })
         const items = collected.items
         for (const run of collected.runs) ledger.record(run.collector, run.status, run.evidence)
         if (items.length > 0) {
