@@ -14,6 +14,7 @@ export function migrateQualify(db: Database.Database): void {
     vendor TEXT, model TEXT, served_model TEXT, result TEXT, usage TEXT, error TEXT, evidence TEXT,
     created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
     UNIQUE (tenant_id, lead_id, prompt_sha256))`)
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS lead_qualifications_one_per_lead ON lead_qualifications (tenant_id, lead_id)')
   if (!(db.prepare("PRAGMA table_info(lead_qualifications)").all() as { name: string }[]).some(c => c.name === 'evidence')) db.exec('ALTER TABLE lead_qualifications ADD COLUMN evidence TEXT')
 }
 
@@ -51,7 +52,7 @@ export async function runQualification(db: Database.Database, userId: string, le
   if (existing) return { status: 'exists', stored: existing }
   // Claim before the request. A second caller hits the unique key and gets 'exists'.
   const claim = db.prepare("INSERT OR IGNORE INTO lead_qualifications (tenant_id, lead_id, prompt_sha256, status, vendor, model, evidence) VALUES (?, ?, ?, 'running', ?, ?, ?)").run(userId, leadId, prev.prompt_sha256 ?? '', d.vendor, model, JSON.stringify({ scope: prev.scope, pages: prev.pages, cost: prev.cost, limits: DEFAULT_LIMITS, approval: { max_usd_estimate: approval.max_usd_estimate } }))
-  if (claim.changes === 0) { const s = storedQualifications(db, userId, leadId).find(x => x.prompt_sha256 === prev.prompt_sha256); return s ? { status: 'exists', stored: s } : { status: 'blocked', reason: 'claim_lost' } }
+  if (claim.changes === 0) { const s = storedQualifications(db, userId, leadId)[0]; return s ? { status: 'exists', stored: s } : { status: 'blocked', reason: 'claim_lost' } }
   try {
     const r = await qualifyLead(d.provider, d.apiKey, prev.input, { vendor: d.vendor, approval, limits: DEFAULT_LIMITS, fetchImpl: d.fetchImpl })
     if (r.status !== 'done') { db.prepare("DELETE FROM lead_qualifications WHERE tenant_id=? AND lead_id=? AND prompt_sha256=? AND status='running'").run(userId, leadId, prev.prompt_sha256 ?? ''); return { status: 'blocked', reason: r.status === 'blocked' ? r.reason : r.status } }

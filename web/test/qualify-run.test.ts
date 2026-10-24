@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateScan, createQueryJob } from '../lib/scan/store.ts'
-import { runQualification, storedQualifications } from '../lib/scan/qualify-run.ts'
+import { runQualification, storedQualifications, migrateQualify } from '../lib/scan/qualify-run.ts'
 import { preparePrompt, DEFAULT_LIMITS } from '../lib/scan/lead-qualify.ts'
 import { qualifyPreview } from '../lib/scan/qualify-preview.ts'
 
@@ -77,4 +77,10 @@ test('a failed row also blocks a changed-content request', async () => {
   const pv2 = await qualifyPreview(db, 'u1', L, 'Sales prospecting software', fetch2, 'anthropic', MODEL)
   assert.equal((await runQualification(db, 'u1', L, { ...a, prompt_sha256: pv2!.prompt_sha256!, max_usd_estimate: pv2!.cost!.usd_estimate_max! }, deps(p, { fetchPage: fetch2 }))).status, 'exists')
   assert.equal(calls, 1)
+})
+
+test('the table itself allows only one claim per lead, across different hashes', () => {
+  const db = setup(); migrateQualify(db)
+  const ins = (h: string) => db.prepare("INSERT OR IGNORE INTO lead_qualifications (tenant_id, lead_id, prompt_sha256, status) VALUES ('u1', ?, ?, 'running')").run(L, h).changes
+  assert.deepEqual([ins('1'.repeat(64)), ins('2'.repeat(64))], [1, 0])
 })
