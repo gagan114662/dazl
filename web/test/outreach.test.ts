@@ -110,6 +110,9 @@ test('draft rules: needs a verified lead, a business email, no suppression; one 
     assert.throws(() => createDraft(db2, 'A', leadId, 'Acme'), /not_sales_contact/)
     const leadId2 = addLead(db2, 'A', { contact: null })
     db2.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', 'email', 'info@northside.example', 'https://northside.example/contact', '2026-10-22', 1)").run(leadId2)
+    // An unrecorded crawled website needs the user's identity review first (see test/domain-review.test.ts); the same address on a domain the cited page itself is on does not.
+    assert.throws(() => createDraft(db2, 'A', leadId2, 'Acme'), /domain_unconfirmed/)
+    db2.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', 'domain', 'northside.example|evidence_own_domain', 'domain-basis-v1:evidence_own_domain', 'https://northside.example/careers/1', '2026-10-22', 1)").run(leadId2)
     assert.ok(createDraft(db2, 'A', leadId2, 'Acme'))
   }
   // Held by failed grading (fit 0, intent unset): not draftable until a rescan grades it.

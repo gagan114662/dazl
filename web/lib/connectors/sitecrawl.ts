@@ -115,25 +115,31 @@ const labelMatches = (label: string, want: string) => label.length >= 4 && (labe
 // Candidate company websites, strongest first. All come from evidence we already hold, never from guessing:
 // (1) the evidence page is itself on the company's domain; (2) a link on it whose domain name matches the company;
 // (3) a link whose visible text names the company. The crawl then checks the homepage really names the company.
-export function findCompanySites(company: string, evidenceHtml: string, evidenceUrl: string): string[] {
+export type DomainBasis = 'evidence_own_domain' | 'evidence_link_domain_label' | 'evidence_link_text' | 'name_probe'
+export function findCompanySitesWithBasis(company: string, evidenceHtml: string, evidenceUrl: string): { site: string; basis: DomainBasis }[] {
   const want = norm(company); if (want.length < 4) return []
   let base: URL; try { base = new URL(evidenceUrl) } catch { return [] }
   const own = registrable(base.hostname)
-  const out: string[] = []
-  const push = (h: string) => { if (!out.includes(h)) out.push(h) }
-  if (!SOCIAL.test(own) && labelMatches(nameLabel(base.hostname), want)) push(own)
+  const out: { site: string; basis: DomainBasis }[] = []
+  const push = (site: string, basis: DomainBasis) => { if (!out.some(o => o.site === site)) out.push({ site, basis }) }
+  if (!SOCIAL.test(own) && labelMatches(nameLabel(base.hostname), want)) push(own, 'evidence_own_domain')
   const byText: string[] = []
   for (const m of evidenceHtml.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"'#]+)["'][^>]*>([\s\S]{0,200}?)<\/a>/gi)) {
     let u: URL; try { u = new URL(m[1].replace(/&amp;/g, '&'), base) } catch { continue }
     if (u.protocol !== 'https:' && u.protocol !== 'http:') continue
     const host = registrable(u.hostname)
     if (host === own || SOCIAL.test(host)) continue
-    if (labelMatches(nameLabel(host), want)) push(host)
+    if (labelMatches(nameLabel(host), want)) push(host, 'evidence_link_domain_label')
     else if (norm(m[2].replace(/<[^>]+>/g, ' ')).includes(want) && want.length >= 5) byText.push(host)
   }
-  for (const h of byText) push(h)
+  for (const h of byText) push(h, 'evidence_link_text')
   return out.slice(0, 2)
 }
+// Stable machine token stored in the label. Trust decisions read only this token (never display text).
+export const DOMAIN_BASIS_TOKEN = 'domain-basis-v1:'
+export const DOMAIN_BASES: DomainBasis[] = ['name_probe', 'evidence_link_text', 'evidence_link_domain_label', 'evidence_own_domain']
+export const domainBasisToken = (b: DomainBasis) => DOMAIN_BASIS_TOKEN + b
+export const findCompanySites = (company: string, evidenceHtml: string, evidenceUrl: string): string[] => findCompanySitesWithBasis(company, evidenceHtml, evidenceUrl).map(o => o.site)
 export const findCompanySite = (company: string, html: string, url: string) => findCompanySites(company, html, url)[0] ?? null
 
 // When the evidence page does not link the company's site (aggregator/news evidence), probe the
@@ -395,13 +401,16 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     for (const l of leads) {
       if (deps.signal?.aborted) return // post-processing deadline: stop starting new sites
       const ev = deps.skipEvidenceFetch ? null : await get(l.source_url)
-      let sites = ev ? findCompanySites(l.company, ev.body, ev.finalUrl) : []
+      const basisOf = new Map<string, DomainBasis>()
+      let sites: string[] = []
+      if (ev) for (const o of findCompanySitesWithBasis(l.company, ev.body, ev.finalUrl)) { sites.push(o.site); basisOf.set(o.site, o.basis) }
       if (sites.length === 0) {
         // Evidence page does not link the company site: probe name-derived domains. Wrong guesses
         // are rejected by the homepage name check inside crawlSite.
         if (probed >= MAX_PROBES_PER_SCAN) { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 }); continue }
         probed++
         sites = probeDomains(l.company).filter(d => !done.has(d))
+        for (const d of sites) basisOf.set(d, 'name_probe')
         if (sites.length === 0) { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 }); continue }
       }
       let r: Awaited<ReturnType<typeof crawlSite>> = { found: [], reason: 'name_mismatch', pages: 0 }; let site = sites[0]
@@ -419,6 +428,15 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // or not it publishes contacts. Record it so leads link out and later runs skip the search.
       if (r.reason === 'ok' || r.reason === 'none_published') db.prepare('UPDATE leads SET company_domain = ? WHERE id = ?').run(site, l.id)
       let n = 0
+      // Provenance of the domain choice. One row per (domain, basis), so a later scan that reaches the same domain a weaker way adds a row
+      // instead of being swallowed by the first. For link bases source_url is the cited page holding the link; for name_probe it is only the
+      // homepage the crawl read, which did not produce the domain. Not counted in n: a domain row is not a contact.
+      // The homepage name check is the only
+      // identity test, so a probed or link-selected domain is recorded as such and never as verified ownership.
+      if (r.reason === 'ok' || r.reason === 'none_published') {
+        const basis = basisOf.get(site) ?? 'name_probe'
+        addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'domain', value: `${site}|${basis}`, label: domainBasisToken(basis), confidence: null, source_url: basis === 'name_probe' ? `https://${site}/` : (ev?.finalUrl ?? l.source_url).slice(0, 500), source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) })
+      }
       for (const t of r.tech ?? []) {
         const e: Enrichment = { connector: 'sitecrawl', kind: 'tech', value: t.name.slice(0, 254), label: `seen on the company website (${t.where})`.slice(0, 200), confidence: null, source_url: `https://${site}/`, source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) }
         addEnrichment(db, tenantId, l.id, e); n++

@@ -1,3 +1,5 @@
+import { domainReviewFor } from '../lib/outreach/domain-review.ts'
+import { setDomainReview } from '../lib/scan/domain-review-action.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
@@ -29,17 +31,20 @@ test('fixture site -> crawl stores role mailbox plus listed person with sources 
   }
   const get: Get = async url => { const p = pages[new URL(url).pathname]; return p !== undefined ? { status: 200, body: p, finalUrl: url } : { status: 404, body: '', finalUrl: url } }
   await crawlJob(db, 'A', job, { get, gapMs: 0, env: {}, now: Date.parse('2026-10-23T12:00:00Z') })
-  const rows = db.prepare('SELECT kind, value, source_url, source_date FROM lead_enrichments ORDER BY kind').all()
+  const rows = db.prepare("SELECT kind, value, source_url, source_date FROM lead_enrichments WHERE kind <> 'domain' ORDER BY kind").all()
   assert.deepEqual(rows, [
     { kind: 'email', value: 'hello@brightsidedental.com', source_url: 'https://brightsidedental.com/contact', source_date: '2026-10-23' },
     { kind: 'person', value: 'Dana Lee, Owner', source_url: 'https://brightsidedental.com/about', source_date: '2026-10-23' },
   ])
-  const enr = db.prepare('SELECT connector, kind, value, label, source_url FROM lead_enrichments').all() as never[]
+  const enr = db.prepare("SELECT connector, kind, value, label, source_url FROM lead_enrichments WHERE kind <> 'domain'").all() as never[]
   const lead = { contact: null, enrichments: enr }
   assert.equal(publishedContact(lead)!.email, 'hello@brightsidedental.com')
   // The currentness gate is real: without a confirmed event date createDraft refuses. The fixture uses the same human-review baseline as sequences.test.ts.
   assert.throws(() => createDraft(db, 'A', 'L1', 'Seller'), /lead_currentness_unconfirmed/)
   db.prepare("UPDATE leads SET human_confirmed_at=1800000000, human_confirmed_from='test_review' WHERE id='L1'").run()
+  // The website was only linked from the cited page, which is not ownership proof: the draft waits for the user's identity review.
+  assert.throws(() => createDraft(db, 'A', 'L1', 'Seller'), /domain_unconfirmed/)
+  assert.deepEqual(setDomainReview(db, 'A', 'L1', 'confirm', domainReviewFor({ id: 'L1', contact: null }, db.prepare("SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = 'L1'").all() as never).binding!, Date.parse('2026-10-23T12:00:00Z')), { status: 'confirmed', domain: 'brightsidedental.com' })
   const id = createDraft(db, 'A', 'L1', 'Seller')
   const m = db.prepare('SELECT to_email, subject, body, status FROM outreach_messages WHERE id = ?').get(id) as { to_email: string; subject: string; body: string; status: string }
   assert.equal(m.to_email, 'hello@brightsidedental.com')

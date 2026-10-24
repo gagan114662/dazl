@@ -9,6 +9,8 @@ import { getMasterKey } from '../secrets.ts'
 import { buildMime, EMAIL_RE, toBase64Url } from '../gmail/mime.ts'
 import { GmailError, GmailSendError, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { norm } from './store.ts'
+import { domainReviewFor } from './domain-review.ts'
+import { pickCrawledEmail } from './published-email.ts'
 import { getMemory } from '../memory.ts'
 
 export const DAILY_CAP = Math.min(ACCOUNT_SEND_CAP, Number(process.env.OUTREACH_DAILY_CAP || 20))
@@ -164,7 +166,14 @@ export function draftTemplate(lead: Lead, businessName: string, positioning = ''
 
 // A draft needs a lead that dazl verified (quote on the cited page, contact published
 // on that page), a business email address, and no suppression.
+// One IMMEDIATE transaction around the gate reads and the insert (all synchronous, no network or model call inside): the write lock is
+// taken before the lead, enrichment and identity-review rows are read, so a concurrent confirm, withdraw or crawl write on the same
+// SQLite file cannot land between the identity gate and the draft insert. A thrown OutreachError rolls back nothing, since nothing was written yet.
 export function createDraft(db: Database.Database, tenantId: string, leadId: string, businessName: string): string {
+  return db.transaction(() => createDraftInner(db, tenantId, leadId, businessName)).immediate()
+}
+
+function createDraftInner(db: Database.Database, tenantId: string, leadId: string, businessName: string): string {
   const lead = db.prepare(
     `SELECT l.id, l.company, l.name, l.contact, l.signal, l.source_url, l.evidence_excerpt, l.confidence, l.fit, l.intent, l.human_confirmed_at
      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`,
@@ -181,13 +190,15 @@ export function createDraft(db: Database.Database, tenantId: string, leadId: str
   if (lead.fit === 0 && lead.intent === null) throw new OutreachError('lead_ungraded')
   // The address must be published: on the cited page (lead.contact) or on the company's own contact page (sitecrawl, with its source URL).
   let published = lead.contact ?? ''
+  let crawled: NonNullable<Parameters<typeof domainReviewFor>[1]> = []
   // The page that actually shows the address: the cited page for a direct contact, the company's own
   // contact page (its stored source URL) for a sitecrawl address. Never the signal/news URL for a crawled address.
   let addressUrl = lead.source_url
   if (!EMAIL_RE.test(norm(published))) {
     try {
-      const r = db.prepare("SELECT value, source_url FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'sitecrawl' AND kind = 'email' ORDER BY retrieved_at DESC LIMIT 1").get(lead.id, tenantId) as { value: string; source_url: string } | undefined
-      if (r) { published = r.value; addressUrl = r.source_url }
+      crawled = db.prepare("SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND ((connector = 'sitecrawl' AND kind IN ('email','domain')) OR (connector = 'user' AND kind = 'domain_review'))").all(lead.id, tenantId) as NonNullable<Parameters<typeof domainReviewFor>[1]>
+      const r = pickCrawledEmail(crawled)
+      if (r) { published = r.value; addressUrl = r.source_url ?? lead.source_url }
     } catch { /* enrichment table not present */ }
   }
   const to = norm(published)
@@ -196,6 +207,9 @@ export function createDraft(db: Database.Database, tenantId: string, leadId: str
   // careers and similar inboxes exist for another purpose. Never aim a sales
   // draft at them - the UI applies this same classification before offering a draft.
   if (contactPurposeRestricted(db,tenantId,leadId,to)) throw new OutreachError('not_sales_contact')
+  // A crawled address whose website rests only on a name match or a link needs the user's identity review first (see domain-review.ts).
+  // This is the single draft entry for the API and for autopilot, so neither can skip it. An address printed on the cited page is unaffected.
+  if (!EMAIL_RE.test(norm(lead.contact ?? '')) && domainReviewFor({ id: lead.id, contact: lead.contact }, crawled).state === 'required') throw new OutreachError('domain_unconfirmed')
   const test = testRecipientApproved(db, tenantId, to) ? 1 : 0
   if (!recipientAllowed(db,tenantId,to)) throw new OutreachError('personal_email')
   if (isSuppressed(db, tenantId, to)) throw new OutreachError('suppressed')

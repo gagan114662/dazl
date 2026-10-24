@@ -23,7 +23,7 @@ test('a confirmed lead gets a published own-domain mailbox stored with its page 
   const db = fixture(1700000000)
   const r = await findContactForConfirmedLead(db, 'u1', 'l1', { get, gapMs: 0, env: {} })
   assert.deepEqual(r, { status: 'done', contacts: 1 })
-  const row = db.prepare("SELECT kind, value, source_url, connector FROM lead_enrichments WHERE lead_id = 'l1'").get()
+  const row = db.prepare("SELECT kind, value, source_url, connector FROM lead_enrichments WHERE lead_id = 'l1' AND kind <> 'domain'").get()
   assert.deepEqual(row, { kind: 'email', value: 'hello@stabyl.com', source_url: 'https://stabyl.com/contact-us', connector: 'sitecrawl' })
   // the confirmation and review state are untouched
   const l = db.prepare("SELECT review_reason, human_confirmed_at, confidence FROM leads WHERE id = 'l1'").get()

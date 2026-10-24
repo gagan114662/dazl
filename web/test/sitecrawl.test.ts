@@ -63,7 +63,7 @@ test('crawlJob stores each contact with its source page and date, once per site'
   }
   const get: Get = async url => { const u = new URL(url); const p = pages[u.pathname]; return p ? { status: 200, body: p.body, finalUrl: url } : { status: 404, body: '', finalUrl: url } }
   await crawlJob(db, 't1', 'j1', { get, gapMs: 0, env: {}, now: Date.parse('2026-10-20T12:00:00Z') })
-  const rows = db.prepare('SELECT lead_id, kind, value, source_url, source_date, connector FROM lead_enrichments').all()
+  const rows = db.prepare("SELECT lead_id, kind, value, source_url, source_date, connector FROM lead_enrichments WHERE kind <> 'domain'").all()
   assert.deepEqual(rows, [{ lead_id: 'l1', kind: 'email', value: 'hello@stabyl.com', source_url: 'https://stabyl.com/contact-us', source_date: '2026-10-20', connector: 'sitecrawl' }])
   const a = db.prepare("SELECT lookup, status, results FROM connector_audit ORDER BY rowid").all()
   // l3's evidence links nothing, so its name-derived probes were tried; the mock's shared home page
@@ -134,7 +134,7 @@ test('crawlJob probes name-derived domains when evidence links nothing, verifies
   }
   await crawlJob(db, 't1', 'j1', { get, gapMs: 0, env: {}, now: Date.parse('2026-10-20T12:00:00Z') })
   assert.equal((db.prepare("SELECT company_domain FROM leads WHERE id = 'l1'").get() as { company_domain: string }).company_domain, 'acmerobotics.com')
-  assert.equal((db.prepare("SELECT value FROM lead_enrichments WHERE lead_id = 'l1'").get() as { value: string }).value, 'hello@acmerobotics.com')
+  assert.equal((db.prepare("SELECT value FROM lead_enrichments WHERE lead_id = 'l1' AND kind = 'email'").get() as { value: string }).value, 'hello@acmerobotics.com')
   // Wrong-domain probe rejected by the homepage name check: no domain recorded, mismatch audited.
   assert.equal((db.prepare("SELECT company_domain FROM leads WHERE id = 'l2'").get() as { company_domain: string | null }).company_domain, null)
   const a = db.prepare("SELECT status FROM connector_audit").all() as { status: string }[]
@@ -165,4 +165,53 @@ test('deobfuscation resolves multi-part subdomains to the full domain', () => {
   const html = `<p>Write to info at mail.acme dot com for details.</p>`
   const found = extractContacts(html, 'https://acme.com/contact', 'acme.com')
   assert.deepEqual(found.map(f => f.value), ['info@mail.acme.com'])
+})
+
+test('domain provenance: each accepted domain records how it was chosen and the exact page behind it; legacy rows are unrecorded', async () => {
+  const { domainBasisFor, publishedContact, domainBasisNote, domainBasisUnconfirmed } = await import('../lib/outreach/published-email.ts')
+  const db = new Database(':memory:'); migrateConnectors(db)
+  db.exec("CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT)")
+  db.prepare("INSERT INTO leads VALUES ('own','j1','Acme Robotics','https://acmerobotics.com/careers/1',NULL,90,90,NULL),('lab','j1','Beta Works','https://news.example/b',NULL,90,80,NULL),('txt','j1','Gamma Labs','https://news.example/c',NULL,90,70,NULL),('prb','j1','Stable','https://news.example/d',NULL,90,60,NULL)").run()
+  const get: Get = async url => {
+    const u = new URL(url)
+    if (u.pathname === '/robots.txt') return { status: 200, body: '', finalUrl: url }
+    if (u.hostname === 'acmerobotics.com') return { status: 200, body: html(u.pathname === '/' ? 'Acme Robotics home hello@acmerobotics.com' : 'job'), finalUrl: url }
+    if (u.hostname === 'news.example' && u.pathname === '/b') return { status: 200, body: html('<a href="https://betaworks.io">x</a>'), finalUrl: url }
+    if (u.hostname === 'news.example' && u.pathname === '/c') return { status: 200, body: html('<a href="https://somewhere.test/x">Gamma Labs profile</a>'), finalUrl: url }
+    if (u.hostname === 'news.example') return { status: 200, body: html('no links'), finalUrl: url }
+    if (u.hostname === 'betaworks.io' && u.pathname === '/') return { status: 200, body: html('Beta Works home info@betaworks.io'), finalUrl: url }
+    // a different company that happens to say "stable": the homepage name check alone accepts it, so the basis must say name_probe
+    if (u.hostname === 'stable.com' && u.pathname === '/') return { status: 200, body: html('Our horses are stable and calm. sales@stable.com'), finalUrl: url }
+    if (u.hostname === 'somewhere.test' && u.pathname === '/') return { status: 200, body: html('Gamma Labs is listed here. info@somewhere.test'), finalUrl: url }
+    return { status: 404, body: '', finalUrl: url }
+  }
+  await crawlJob(db, 't1', 'j1', { get, gapMs: 0, env: {}, now: Date.parse('2026-10-20T12:00:00Z') })
+  const d = db.prepare("SELECT lead_id, value, source_url, label FROM lead_enrichments WHERE kind = 'domain' ORDER BY lead_id").all() as { lead_id: string; value: string; source_url: string; label: string }[]
+  assert.deepEqual(d.map(x => [x.lead_id, x.value, x.label, x.source_url]), [
+    ['lab', 'betaworks.io|evidence_link_domain_label', 'domain-basis-v1:evidence_link_domain_label', 'https://news.example/b'],
+    ['own', 'acmerobotics.com|evidence_own_domain', 'domain-basis-v1:evidence_own_domain', 'https://acmerobotics.com/careers/1'],
+    ['prb', 'stable.com|name_probe', 'domain-basis-v1:name_probe', 'https://stable.com/'],
+    ['txt', 'somewhere.test|evidence_link_text', 'domain-basis-v1:evidence_link_text', 'https://news.example/c'],
+  ])
+  // a domain-only crawl is not a found contact: audit results count only real rows (tech/contacts), never the domain row
+  assert.equal((db.prepare("SELECT results FROM connector_audit WHERE lookup = 'stable.com'").get() as { results: number }).results, 1, 'one email, and the domain row is not counted')
+  const enrOf = (id: string) => db.prepare('SELECT connector, kind, value, label, source_url FROM lead_enrichments WHERE lead_id = ?').all(id) as never[]
+  const basis = (id: string) => publishedContact({ contact: null, enrichments: enrOf(id) } as never)!
+  assert.equal(basis('own').domainBasis, 'own_domain')
+  assert.equal(basis('lab').domainBasis, 'linked')
+  assert.equal(basis('txt').domainBasis, 'link_text_only')
+  assert.equal(basis('prb').domainBasis, 'name_probe')
+  assert.equal(domainBasisUnconfirmed(basis('prb').domainBasis) && domainBasisUnconfirmed(basis('txt').domainBasis), true)
+  assert.equal(domainBasisUnconfirmed(basis('own').domainBasis) || domainBasisUnconfirmed(basis('lab').domainBasis), false)
+  assert.match(String(domainBasisNote(basis('prb'))), /guessed from the company name/)
+  assert.match(String(domainBasisNote(basis('txt'))), /link text only/)
+  assert.ok(!/guessed/.test(String(domainBasisNote(basis('txt')))), 'a link-text site is never described as guessed')
+  assert.equal(domainBasisNote(basis('own')), null)
+  // a row crawled before provenance was recorded: no domain row, so 'unrecorded' (not trusted, not refused)
+  const legacy = publishedContact({ contact: null, enrichments: [{ connector: 'sitecrawl', kind: 'email', value: 'info@old.example', label: null, source_url: 'https://old.example/contact' }] } as never)!
+  assert.equal(legacy.domainBasis, 'unrecorded')
+  assert.match(String(domainBasisNote(legacy)), /not recorded/)
+  assert.equal(domainBasisFor('info@x.example', []).kind, 'unrecorded')
+  // a contact printed on the cited page itself is not a crawled address
+  assert.equal(publishedContact({ contact: 'a@b.example', source_url: 'https://b.example/p' } as never)!.domainBasis, 'cited_page')
 })

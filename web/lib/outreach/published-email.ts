@@ -13,7 +13,7 @@ export interface PublishedEmailLead {
   source_url?: string
   evidence_excerpt?: string | null
   contact_context?: ContactContext | null
-  enrichments?: { connector: string; kind: string; value: string; label?: string|null; source_url?:string|null }[]
+  enrichments?: { connector: string; kind: string; value: string; label?: string|null; source_url?:string|null; retrieved_at?: number|null }[]
 }
 
 // Inboxes whose purpose is not receiving sales outreach, however public they are.
@@ -21,7 +21,58 @@ const NON_SALES = new Set(['press', 'media', 'support', 'help', 'privacy', 'secu
 
 export type ContactPurpose = 'sales' | 'non-sales' | 'unknown'
 
-export interface PublishedContact { email: string; purpose: ContactPurpose; purposeHint: string | null; source: 'lead' | 'sitecrawl' }
+export type DomainBasisKind = 'cited_page' | 'own_domain' | 'linked' | 'link_text_only' | 'name_probe' | 'unrecorded'
+export interface PublishedContact { email: string; purpose: ContactPurpose; purposeHint: string | null; source: 'lead' | 'sitecrawl'; domainBasis: DomainBasisKind; domainBasisSourceUrl: string | null }
+
+// How the company website behind a crawled address was chosen (recorded by the crawler as a 'domain' enrichment
+// with the page that produced it). Rows crawled before this was recorded have no such row: 'unrecorded', which is
+// neither trusted nor refused here. 'name_probe' and 'link_text_only' mean the homepage merely named the company.
+// Strength order, weakest first. The weakest recorded basis for a domain governs: a later stronger row never upgrades it.
+const BASIS_RANK: { [token: string]: { kind: DomainBasisKind; rank: number } } = {
+  name_probe: { kind: 'name_probe', rank: 1 },
+  evidence_link_text: { kind: 'link_text_only', rank: 2 },
+  evidence_link_domain_label: { kind: 'linked', rank: 3 },
+  evidence_own_domain: { kind: 'own_domain', rank: 4 },
+}
+const parseDomainRow = (x: { value: string; label?: string | null }) => {
+  const [domain, token = ''] = x.value.toLowerCase().split('|')
+  const t = (x.label ?? '').startsWith('domain-basis-v1:') ? (x.label ?? '').slice('domain-basis-v1:'.length) : ''
+  return { domain, basis: t === token ? BASIS_RANK[t] : undefined }
+}
+export function domainBasisFor(email: string, enrichments: PublishedEmailLead['enrichments']): { kind: DomainBasisKind; url: string | null; domain: string } {
+  const host = (email.split('@')[1] ?? '').toLowerCase()
+  const rows = (enrichments ?? [])
+    .filter(x => x.connector === 'sitecrawl' && x.kind === 'domain')
+    .map(x => ({ x, ...parseDomainRow(x) }))
+    .filter(r => !!r.domain && (host === r.domain || host.endsWith('.' + r.domain)))
+  if (rows.length === 0) return { kind: 'unrecorded', url: null, domain: host }
+  const best = Math.max(...rows.map(r => r.domain.length))
+  const rs = rows.filter(r => r.domain.length === best)
+  // An unreadable token counts as unrecorded and beats every readable one (weakest governs).
+  const unknown = rs.find(r => !r.basis)
+  if (unknown) return { kind: 'unrecorded', url: unknown.x.source_url ?? null, domain: unknown.domain }
+  const w = rs.reduce((m, r) => (r.basis!.rank < m.basis!.rank ? r : m))
+  return { kind: w.basis!.kind, url: w.x.source_url ?? null, domain: w.domain }
+}
+// The crawled address a draft would use. One rule for the UI and for createDraft: newest retrieved first.
+export function pickCrawledEmail<T extends { connector: string; kind: string; value: string; retrieved_at?: number | null }>(enrichments: T[] | undefined): T | null {
+  const c = (enrichments ?? []).filter(x => x.connector === 'sitecrawl' && x.kind === 'email' && PUBLISHED_EMAIL_RE.test(address(x.value)))
+  return c.map((x, i) => ({ x, i })).sort((p, q) => (q.x.retrieved_at ?? 0) - (p.x.retrieved_at ?? 0) || p.i - q.i)[0]?.x ?? null
+}
+export function domainBasisText(e: { value: string; label?: string | null }): string {
+  const b = parseDomainRow(e).basis?.kind
+  return b === 'name_probe' ? 'website guessed from the company name; the homepage read names the company' : b === 'link_text_only' ? 'linked from the cited page by link text only; homepage names the company' : b === 'linked' ? 'linked from the cited page, domain name matches; homepage names the company' : b === 'own_domain' ? 'the cited page is on this domain; homepage names the company' : 'how this website was chosen was not recorded'
+}
+export const domainBasisUnconfirmed = (k: DomainBasisKind) => k === 'name_probe' || k === 'link_text_only'
+export function domainBasisNote(c: PublishedContact): string | null {
+  switch (c.domainBasis) {
+    case 'name_probe': return 'Website guessed from the company name; the homepage that was read names the company.'
+    case 'link_text_only': return 'Website linked from the cited page by link text only; its homepage names the company.'
+    case 'linked': return 'Website linked from the cited page, domain name matches the company; this is not proof the site is theirs.'
+    case 'unrecorded': return c.source === 'sitecrawl' ? 'How this website was chosen was not recorded.' : null
+    default: return null
+  }
+}
 
 export function classifyPurpose(email: string, context?: ContactContext | null): { purpose: ContactPurpose; hint: string | null } {
   const local = (email.split('@')[0] ?? '').toLowerCase()
@@ -36,14 +87,15 @@ export function publishedContact(lead: PublishedEmailLead): PublishedContact | n
   const primary = address(lead.contact)
   if (PUBLISHED_EMAIL_RE.test(primary)) {
     const c = classifyPurpose(primary, lead.contact_context ?? {excerpt:lead.evidence_excerpt??'',source_url:lead.source_url??''})
-    return { email: primary, purpose: c.purpose, purposeHint: c.hint, source: 'lead' }
+    return { email: primary, purpose: c.purpose, purposeHint: c.hint, source: 'lead', domainBasis: 'cited_page', domainBasisSourceUrl: lead.source_url ?? null }
   }
-  const e = (lead.enrichments ?? []).find(x => x.connector === 'sitecrawl' && x.kind === 'email' && PUBLISHED_EMAIL_RE.test(address(x.value)))
+  const e = pickCrawledEmail(lead.enrichments)
   if (!e) return null
   const email = address(e.value)
   if (!PUBLISHED_EMAIL_RE.test(email)) return null
   const c = classifyPurpose(email, readContextLabel(e.label,e.source_url??''))
-  return { email, purpose: c.purpose, purposeHint: c.hint, source: 'sitecrawl' }
+  const b = domainBasisFor(email, lead.enrichments)
+  return { email, purpose: c.purpose, purposeHint: c.hint, source: 'sitecrawl', domainBasis: b.kind, domainBasisSourceUrl: b.url }
 }
 
 // The only address a sales draft may target. Null means "no usable sales contact",

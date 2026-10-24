@@ -9,9 +9,11 @@ import { migrateOutreach } from '../../lib/outreach/store.ts'
 import { migrateConnectors } from '../../lib/connectors/store.ts'
 import { migrateMemory, saveMemory } from '../../lib/memory.ts'
 import { createDraft } from '../../lib/outreach/service.ts'
+import { domainReviewFor } from '../../lib/outreach/domain-review.ts'
 import { publishedContact } from '../../lib/outreach/published-email.ts'
 import { confirmLeadReview } from '../../lib/scan/review-confirm.ts'
 import { POST } from '../../app/api/leads/[lead]/find-contact/route.ts'
+import { POST as REVIEW } from '../../app/api/leads/[lead]/domain-review/route.ts'
 
 // Real route + real crawler + real stores. Only the https transport is mapped to a loopback fixture server.
 const html = (b: string) => `<html><body>${b}</body></html>`
@@ -63,10 +65,28 @@ test('click path: confirmed company row -> own-domain mailbox stored with its pa
   const res = await post(ID(1))
   assert.equal(res.status, 200)
   assert.deepEqual(await res.json(), { searched: true, found: 1 })
-  assert.deepEqual(enr(ID(1)), [{ connector: 'sitecrawl', kind: 'email', value: 'hello@acmeroofing.test', source_url: 'https://acmeroofing.test/contact' }])
+  assert.deepEqual(enr(ID(1)), [
+    { connector: 'sitecrawl', kind: 'domain', value: 'acmeroofing.test|evidence_link_domain_label', source_url: 'https://jobboard.test/a' },
+    { connector: 'sitecrawl', kind: 'email', value: 'hello@acmeroofing.test', source_url: 'https://acmeroofing.test/contact' },
+  ])
   const e = db.prepare('SELECT connector, kind, value, label, source_url FROM lead_enrichments WHERE lead_id = ?').all(ID(1)) as never[]
-  assert.equal(publishedContact({ contact: null, enrichments: e } as never)!.email, 'hello@acmeroofing.test')
+  const pcl = publishedContact({ contact: null, enrichments: e } as never)!
+  assert.equal(pcl.email, 'hello@acmeroofing.test')
+  assert.deepEqual({ basis: pcl.domainBasis, url: pcl.domainBasisSourceUrl }, { basis: 'linked', url: 'https://jobboard.test/a' })
   assert.ok(t.hits.every(h => /\.test\//.test(h) || /\.test$/.test(h.split('/')[0])))
+  // The site was only linked from the cited page: the draft waits for the user's identity review, through the real route.
+  assert.throws(() => createDraft(db, 'A', ID(1), 'Seller'), /domain_unconfirmed/)
+  const bind = () => domainReviewFor({ id: ID(1), contact: null }, db.prepare("SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ?").all(ID(1)) as never).binding!
+  const review = (id: string, action: string, headers: Record<string, string> = { 'content-type': 'application/json' }, binding: string | null = bind()) =>
+    REVIEW(new NextRequest(`http://localhost/api/leads/${id}/domain-review`, { method: 'POST', headers, body: JSON.stringify({ action, binding }) }), { params: Promise.resolve({ lead: id }) })
+  assert.equal((await review(ID(1), 'confirm', { 'content-type': 'text/plain' })).status, 403)
+  assert.equal((await review(ID(4), 'confirm')).status, 404, 'another user\'s lead')
+  assert.equal((await review(ID(1), 'bogus')).status, 400)
+  assert.equal((await review(ID(1), 'confirm', undefined, null)).status, 400, 'confirm without the binding the user saw')
+  const stale = await review(ID(1), 'confirm', undefined, 'e'.repeat(64))
+  assert.deepEqual([stale.status, (await stale.json()).stale], [409, true])
+  assert.equal((db.prepare("SELECT count(*) n FROM lead_enrichments WHERE kind = 'domain_review'").get() as { n: number }).n, 0)
+  assert.deepEqual(await (await review(ID(1), 'confirm')).json(), { status: 'confirmed', domain: 'acmeroofing.test' })
   // createDraft's own gates decide: an address recorded by the crawl is used, nothing else is bypassed.
   const id = createDraft(db, 'A', ID(1), 'Seller')
   const m = db.prepare('SELECT to_email, status, test FROM outreach_messages WHERE id = ?').get(id) as { to_email: string; status: string; test: number }

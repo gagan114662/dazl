@@ -5,7 +5,8 @@ import { emptyLeadsMessage, scoreLabel, quoteNote } from '@/lib/scan/leads-view'
 import { eventTypeLabel } from '@/lib/events/labels'
 import { companySearchEligible } from '@/lib/scan/find-contact-eligible'
 import { contactsFromEnrichments } from '@/lib/people/rank'
-import { publishedEmail, publishedContact, contactSearchNote } from '@/lib/outreach/published-email'
+import { publishedEmail, publishedContact, contactSearchNote, domainBasisNote, domainBasisText } from '@/lib/outreach/published-email'
+import { domainReviewFor } from '@/lib/outreach/domain-review'
 import SourceReview from './source-review'
 import HiringFeed from './hiring-feed'
 import QualifyPreview from './qualify-preview'
@@ -200,6 +201,16 @@ export default function LeadsClient() {
       else if (j?.error) msg = String(j.error)
     } catch { /* keep the generic message */ }
     setContactMsg(m => ({ ...m, [leadId]: msg }))
+  }
+  const [reviewMsg, setReviewMsg] = useState<Record<string, string>>({})
+  async function domainReview(leadId: string, action: 'confirm' | 'withdraw', binding?: string | null) {
+    let msg = 'Could not save that check'
+    try {
+      const r = await fetch(`/api/leads/${leadId}/domain-review`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action, binding }) })
+      const j = await r.json().catch(() => ({}))
+      if (r.ok) { msg = ''; await loadLeads() } else { if (j?.stale) await loadLeads(); if (j?.error) msg = String(j.error) }
+    } catch { /* keep the generic message */ }
+    setReviewMsg(m => ({ ...m, [leadId]: msg }))
   }
   async function makeDraft(leadId: string) {
     // Network failure or a non-JSON body (proxy page, server error) must still show a message, never an unhandled rejection.
@@ -608,11 +619,11 @@ export default function LeadsClient() {
               )
             })()}
             <WarmPath leadId={l.id} company={l.company} signal={l.signal} />
-            {l.enrichments && l.enrichments.some(e => e.kind !== 'contact') && (
+            {l.enrichments && l.enrichments.some(e => e.kind !== 'contact' && e.kind !== 'domain_review') && (
               <div className="text-xs mt-1 space-y-0.5">
-                {l.enrichments.filter(e => e.kind !== 'contact').map(e => (
+                {l.enrichments.filter(e => e.kind !== 'contact' && e.kind !== 'domain_review').map(e => (
                   <div key={e.kind + e.value} className="text-gray-400">
-                    <span className="text-[#111]">{e.value}</span>{e.label && !e.label.startsWith('contact-context-v1:') ? ` (${dedupeLabel(e.label)})` : ''} <span className="text-gray-500">{e.kind === 'tech' ? 'seen on the company website' : e.connector === 'sitecrawl' ? 'from a company website page' : e.connector === 'hunter' ? 'via Hunter (earlier)' : `via ${e.connector}`}{e.confidence !== null && !e.connector.startsWith('signals:') ? `, ${e.confidence}% confidence` : ''}{e.entity_status === 'unconfirmed' ? ' - entity unconfirmed (name match only), check the source before relying on this' : e.entity_status === 'heuristic' ? ' - entity matched by name only (heuristic, not independently confirmed)' : ''}, seen {e.source_date}</span>{' '}
+                    <span className="text-[#111]">{e.kind === 'domain' ? e.value.split('|')[0] : e.value}</span>{e.kind === 'domain' ? ` (${domainBasisText(e)})` : e.label && !e.label.startsWith('contact-context-v1:') ? ` (${dedupeLabel(e.label)})` : ''} <span className="text-gray-500">{e.kind === 'tech' ? 'seen on the company website' : e.connector === 'sitecrawl' ? 'from a company website page' : e.connector === 'hunter' ? 'via Hunter (earlier)' : `via ${e.connector}`}{e.confidence !== null && !e.connector.startsWith('signals:') ? `, ${e.confidence}% confidence` : ''}{e.entity_status === 'unconfirmed' ? ' - entity unconfirmed (name match only), check the source before relying on this' : e.entity_status === 'heuristic' ? ' - entity matched by name only (heuristic, not independently confirmed)' : ''}, seen {e.source_date}</span>{' '}
                     <a className="underline text-[#111]" href={e.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
                   </div>
                 ))}
@@ -663,13 +674,20 @@ export default function LeadsClient() {
               const draftTo = publishedEmail(l)
               return <>
                 {pc && pc.purpose !== 'non-sales' && <span className="text-gray-500 text-xs ml-3">{pc.email}{pc.purpose==='unknown'?' - published address; purpose and buyer relevance unknown':' - business inquiry context, not consent'}</span>}
+                {pc && pc.source === 'sitecrawl' && (() => { const rv = domainReviewFor(l, l.enrichments); const note = domainBasisNote(pc) ?? (rv.state === 'not_required' ? null : 'More than one website is recorded for this company.'); if (!note && rv.state !== 'confirmed') return null
+                  return <span className="text-xs ml-3 block mt-1 border border-black px-2 py-1 text-[#111]">
+                    {note}{pc.domainBasisSourceUrl && pc.domainBasis !== 'unrecorded' ? <> <a className="underline" href={pc.domainBasisSourceUrl} target="_blank" rel="noopener noreferrer nofollow">{pc.domainBasis === 'name_probe' ? 'homepage read' : 'page with the link'}</a>.</> : null}
+                    {rv.state === 'required' && <> A draft needs your check first. <button onClick={() => domainReview(l.id, 'confirm', rv.binding)} className="underline">This website is the right company</button> <span className="text-gray-500">(not need, consent or a send approval)</span></>}
+                    {rv.state === 'confirmed' && <> You checked that {rv.domain} is the right company. <button onClick={() => domainReview(l.id, 'withdraw')} className="underline">withdraw</button></>}
+                    {reviewMsg[l.id] ? <span className="text-gray-500 ml-2">{reviewMsg[l.id]}</span> : null}
+                  </span> })()}
                 {pc && pc.purpose === 'non-sales' && <span className="text-gray-500 text-xs ml-3">{pc.email} - published {pc.purposeHint} inbox, not a sales contact</span>}
                 {(() => { const n = companySearchEligible(l) ? contactSearchNote(l) : (publishedContact(l) || l.contact ? null : 'No contact stored. This row does not identify a verified company website for contact search.'); return n ? <span className="text-gray-500 text-xs ml-3 block mt-1">{n}</span> : null })()}
                 {!pc && !l.contact && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && companySearchEligible(l) && (
                   <span className="text-xs ml-3 block mt-1"><button onClick={() => findContact(l.id)} className="underline text-[#111]">Look for a published contact on the company website</button>{contactMsg[l.id] ? <span className="text-gray-500 ml-2">{contactMsg[l.id]}</span> : null}</span>
                 )}
                 {!pc && l.contact && <span className="text-gray-500 text-xs ml-3">{l.contact}</span>}
-                {draftTo && (l.confidence !== null || l.human_confirmed_at !== null) && !(l.fit === 0 && l.intent === null) && (
+                {draftTo && domainReviewFor(l, l.enrichments).state !== 'required' && (l.confidence !== null || l.human_confirmed_at !== null) && !(l.fit === 0 && l.intent === null) && (
                   drafted[l.id]
                     ? <span className="text-gray-400 text-xs ml-3">{drafted[l.id]}</span>
                     : l.currentness_held ? <button onClick={()=>confirmReview(l.id)} className="font-mono text-xs border border-black px-2 py-1">I reviewed the source - use for drafting (not consent)</button> : <button onClick={() => makeDraft(l.id)} className="font-mono text-xs uppercase border border-black px-2 py-1 ml-3 hover:bg-black hover:text-white">Draft email</button>)}

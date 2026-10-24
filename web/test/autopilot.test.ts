@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
+import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { completeOAuth, startOAuth } from '../lib/gmail/oauth.ts'
 import { saveSettings, suppress, isSuppressed, type Deps } from '../lib/outreach/service.ts'
@@ -121,4 +122,14 @@ test('autopilot skips with no draft, no send and an audited reason when the sell
   assert.equal(r.skipped, 1); assert.equal(r.sent, 0); assert.equal(sent.length, 0)
   assert.equal(status(db).length, 0)
   assert.ok(recentAutopilotAudit(db, 'A').some(a => a.action === 'skipped' && a.detail === 'seller_offer_required'))
+})
+
+test('a crawled address whose website the user has not checked is never drafted or sent by autopilot', async () => {
+  const db = await setup(); migrateConnectors(db); ok(db); const { sent, d } = sends()
+  db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, claimed_at) VALUES ('s1a2b3c4d5e6f7a8b9c0d1e2','A','x1','o1@z.example','s','bodybodybodybodybodybody','sent',1,1)").run()
+  const id = lead(db, null)
+  db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', 'email', 'info@guess.example', NULL, 'https://guess.example/contact', '2026-10-22', 1)").run(id)
+  const r = await runAutopilot(db, 'A', 'Acme', d)
+  assert.equal(r.sent, 0); assert.equal(sent.length, 0)
+  assert.equal(status(db).filter(m => m.to_email === 'info@guess.example').length, 0, 'autopilot only drafts for lead.contact; the crawled-address path is also closed inside createDraft')
 })
