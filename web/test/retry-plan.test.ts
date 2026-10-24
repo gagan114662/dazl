@@ -66,11 +66,42 @@ test('host forms are normalised: www, m, mobile and a trailing dot map to one ap
   assert.deepEqual(planRetry(QUERY, ICP, a).excludeHosts, ['facebook.com', 'facebook.com.evil.example', 'notfacebook.com'])
 })
 
-test('a host the USER asked for is never excluded by the planner: it is reported as a conflict for the owner, no silent intent flip', () => {
+test('a host the USER asked for is never excluded and the planner does not retry past it: retry false with owner_decision_required, no silent intent flip', () => {
   const p = planRetry('Find Ohio payroll complaints on facebook.com', ICP, BASE)
-  assert.equal(p.retry, true, p.why)
+  assert.equal(p.retry, false, 'a caller that blindly acts on retry must not run a round the user may not want')
+  assert.match(p.why, /owner_decision_required/)
+  assert.deepEqual(p.queries, [])
   assert.deepEqual(p.excludeHosts, [])
   assert.deepEqual(p.conflicts, ['facebook.com'])
-  assert.ok(p.queries.every(q => !/-site:facebook/.test(q)))
   assert.deepEqual(planRetry(QUERY, ICP, BASE).conflicts, [])
+})
+
+test('cap: every planned query is <= 300 chars WITH the profile geography intact; a signal that cannot fit is skipped, never chopped', () => {
+  const long = 'Recently posted payroll manager role ' + 'with very long extra description about the day to day duties '.repeat(5) // > 300 chars alone
+  assert.ok(long.length > 300)
+  const icp = { signals: [long, 'Negative reviews of payroll tools', 'Recent hire in payroll or HR department'], where: ['Ohio'] }
+  const manyHosts: RetryAttempt = { ...BASE, review: ['a', 'b', 'c', 'd'].map(h => ({ reason: 'blocked_by_site', url: `https://${h.repeat(20)}.example.com/p` })) }
+  for (const att of [BASE, manyHosts]) {
+    const p = planRetry(QUERY, icp, att)
+    assert.equal(p.retry, true, p.why)
+    assert.ok(p.queries.length >= 1)
+    for (const q of p.queries) { assert.ok(q.length <= 300, `over cap (${q.length}): ${q.slice(0, 60)}`); assert.match(q, /\bohio\b/i, `geography lost: ${q.slice(0, 80)}`); assert.ok(!q.includes('very long extra'), 'the over-long signal was chopped instead of skipped') }
+  }
+  assert.deepEqual(planRetry(QUERY, { signals: [long], where: ['Ohio'] }, BASE).retry, false, 'only an unfittable signal: no retry')
+})
+
+test('shared hosting suffixes are not collapsed: an ATS subdomain stays its own entry; only known www/mobile prefixes fold', () => {
+  const a: RetryAttempt = { ...BASE, review: [{ reason: 'blocked_by_site', url: 'https://boards.greenhouse.io/acme/jobs/1' }, { reason: 'blocked_by_site', url: 'https://acme.co.uk/x' }, { reason: 'blocked_by_site', url: 'https://www.acme.co.uk/y' }] }
+  assert.deepEqual(planRetry(QUERY, ICP, a).excludeHosts, ['boards.greenhouse.io', 'acme.co.uk'])
+})
+
+test('a user-named host in any www/mobile form is a conflict: no retry, owner decides', () => {
+  for (const asked of ['Find Ohio payroll complaints on www.facebook.com', 'Ohio payroll posts from m.facebook.com', 'Ohio payroll facebook.com groups']) {
+    const p = planRetry(asked, ICP, BASE)
+    assert.equal(p.retry, false, asked); assert.match(p.why, /owner_decision_required/, asked); assert.deepEqual(p.conflicts, ['facebook.com'], asked)
+  }
+})
+
+test('the plan says its choice is literal word overlap, not semantic novelty', () => {
+  assert.match(planRetry(QUERY, ICP, BASE).why, /word overlap/)
 })

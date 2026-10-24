@@ -3,7 +3,7 @@
 // skips the verifier, and a retried round would still pass every existing gate. Queries come from the profile's own
 // signals that the first round did not already use (never invented text, never a quote/date/company claim), and hosts
 // whose pages the first round could not read (login or block) are excluded rather than asked for again.
-import { sanitizeQueries, withGeography, QUERY_CAP } from '../search/tinyfish.ts'
+import { sanitizeQueries, withGeography, namesPlace, QUERY_CAP } from '../search/tinyfish.ts'
 
 export interface RetryAttempt { index: number; verified: number; queries: string[]; hitsUniqueUrls: number | null; dropReasons: Record<string, number>; review: { reason: string; url: string }[] }
 export interface RetryPlan { retry: boolean; why: string; queries: string[]; excludeHosts: string[]; conflicts: string[] } // conflicts: hosts the user asked for that round one could not read; never excluded, left for the owner
@@ -32,11 +32,20 @@ export function planRetry(query: string, icp: { signals: string[]; where: string
   const userNamed = (h: string) => new RegExp(`(?<![a-z0-9.-])(?:[a-z0-9-]+\\.)*${h.replace(/\./g, '\\.')}(?![a-z0-9-])`).test(req)
   const conflicts = blocked.filter(userNamed)
   const excludeHosts = blocked.filter(h => !userNamed(h))
+  if (conflicts.length > 0) return { retry: false, why: `owner_decision_required: the request names ${conflicts.join(', ')} but round one could not read it`, queries: [], excludeHosts: [], conflicts }
   const prior = new Set(a.queries.map(norm))
-  const excl = excludeHosts.map(h => `-site:${h}`).join(' ')
-  const queries = withGeography(sanitizeQueries(fresh.slice(0, MAX_RETRY_QUERIES).map(s => `${s} ${excl}`.trim()), query, now), icp.where)
-    .map(q => q.length > QUERY_CAP ? q.slice(0, QUERY_CAP) : q)
-    .filter(q => !prior.has(norm(q)))
+  // The cap applies to the FINAL query (after geography): a signal is used whole or skipped, never chopped, and every
+  // profile place (first 3, as withGeography) must be named. Exclusions are added one host at a time while they still fit.
+  const places = [...new Set(icp.where.map(w => w.replace(/[\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim()).filter(w => w.length >= 2 && w.length <= 60))].slice(0, 3)
+  const finalize = (q: string) => { const out = withGeography(sanitizeQueries([q], query, now), icp.where)[0]; return out.length <= QUERY_CAP && places.every(pl => namesPlace(out, pl)) ? out : null }
+  const queries: string[] = []
+  for (const sig of fresh) {
+    if (queries.length >= MAX_RETRY_QUERIES) break
+    let cur = finalize(sig); if (cur === null) continue
+    let draft = sig
+    for (const h of excludeHosts) { const t = finalize(`${draft} -site:${h}`); if (t !== null) { draft = `${draft} -site:${h}`; cur = t } }
+    if (!prior.has(norm(cur))) queries.push(cur)
+  }
   if (queries.length === 0) return no('no_new_queries')
-  return { retry: true, why: 'fewer_than_5_verified', queries, excludeHosts, conflicts }
+  return { retry: true, why: 'fewer_than_5_verified; signals chosen by literal word overlap with round one, not semantic novelty', queries, excludeHosts, conflicts }
 }
