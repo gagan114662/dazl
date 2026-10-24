@@ -70,12 +70,12 @@ export function migrateHiringFeed(db: Database.Database): void {
   migrateSourceReview(db)
   // One row per saved company, and unique per account and company, so a duplicate is refused by the database itself. It records whether its contact read is running, finished, cut off or failed. A 'reading' row older than READING_STALE_S means the server stopped mid-read.
   db.exec(`CREATE TABLE IF NOT EXISTS hiring_feed_crawl (
-    lead_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, job_id TEXT NOT NULL, company_key TEXT NOT NULL, status TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER
+    lead_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, job_id TEXT NOT NULL, company_key TEXT NOT NULL, status TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER, claim TEXT
   ); CREATE UNIQUE INDEX IF NOT EXISTS hiring_feed_crawl_company ON hiring_feed_crawl(tenant_id, company_key);
   CREATE INDEX IF NOT EXISTS hiring_feed_crawl_job ON hiring_feed_crawl(tenant_id, job_id)`)
 }
 
-interface CrawlTarget { id: string; company: string; source_url: string; job_id: string }
+interface CrawlTarget { id: string; company: string; source_url: string; job_id: string; claim: string }
 const auditCount = (db: Database.Database, jobId: string) => (db.prepare('SELECT count(*) c FROM connector_audit WHERE scan_job_id = ?').get(jobId) as { c: number }).c
 
 // Reads each company's own site one at a time, each with its own deadline. The outcome is recorded per company:
@@ -89,7 +89,8 @@ async function runCrawls(db: Database.Database, tenant: string, targets: CrawlTa
       await crawlJob(db, tenant, t.job_id, { get: deps.get ?? (url => rawGet(url, 0, 10_000, guardedLookup, signal)), gapMs: deps.gapMs, env: deps.env, signal, leads: [{ id: t.id, company: t.company, source_url: t.source_url }] })
       status = signal.aborted ? 'cut_off' : auditCount(db, t.job_id) > before ? 'finished' : 'failed'
     } catch { status = 'failed' }
-    db.prepare('UPDATE hiring_feed_crawl SET status = ?, finished_at = ? WHERE lead_id = ? AND tenant_id = ?').run(status, Math.floor(Date.now() / 1000), t.id, tenant)
+    // Only the read that still holds this company's claim may record its outcome. A stale worker finishing after a retry took over changes nothing.
+    db.prepare("UPDATE hiring_feed_crawl SET status = ?, finished_at = ? WHERE lead_id = ? AND tenant_id = ? AND status = 'reading' AND claim = ?").run(status, Math.floor(Date.now() / 1000), t.id, tenant, t.claim)
   }
 }
 
@@ -129,7 +130,8 @@ export async function createHiringFeedIntake(db: Database.Database, tenant: stri
   })
   if (!checked.length) return none({ feed_items: items.length, matched: matched.length, skipped, note: 'The postings were found, but their pages did not show the posting line, so nothing was saved.' })
   const jobId = randomBytes(12).toString('hex')
-  const rows: { lead_id: string; company: string; role: string; quote_match: boolean; fetch_status: string; source_url: string }[] = []
+  const rows: { lead_id: string; company: string; role: string; quote_match: boolean; fetch_status: string; source_url: string; claim: string }[] = []
+  const claimOf = new Map<string, string>()
   // Re-check for already-saved companies inside the same synchronous transaction as the writes, so two overlapping requests cannot both save one company.
   db.transaction(() => {
     const have = savedKeys()
@@ -140,21 +142,21 @@ export async function createHiringFeedIntake(db: Database.Database, tenant: stri
       const key = k, leadId = randomBytes(12).toString('hex')
       const named = key.length >= 2 && (hasPhrase(norm(quote), key) || hasPhrase(norm(page.title), key))
       const signal = `Posted a role titled "${it.role}" (hiring signal only: not buying intent, fit or current need)`
-      if (db.prepare("INSERT OR IGNORE INTO hiring_feed_crawl(lead_id,tenant_id,job_id,company_key,status,started_at) VALUES(?,?,?,?,'reading',?)").run(leadId, tenant, jobId, k, now).changes !== 1) continue
+      if (db.prepare("INSERT OR IGNORE INTO hiring_feed_crawl(lead_id,tenant_id,job_id,company_key,status,started_at,claim) VALUES(?,?,?,?,'reading',?,?)").run(leadId, tenant, jobId, k, now, claimOf.get(leadId) ?? (claimOf.set(leadId, randomBytes(8).toString('hex')), claimOf.get(leadId)!)).changes !== 1) continue
       if (!rows.length) db.prepare("INSERT INTO scan_jobs(id,user_id,business_name,industry,location,status) VALUES(?,?,'Hiring feed intake','manual','manual','running')").run(jobId, tenant)
       // The date is the feed's posting date, kept as an unverified claim; it is not a current-need date.
       db.prepare("INSERT INTO leads(id,scan_job_id,company,signal,source_url,evidence_excerpt,contact,event_date,date_status,retrieved_at,confidence,review_reason,source_kind) VALUES(?,?,?,?,?,?,NULL,?,?,?,NULL,'source_review_required','hiring_feed')")
         .run(leadId, jobId, it.company, signal, it.url, quote, it.date, it.date ? 'unverified' : 'undated', page.retrievedAt)
       db.prepare('INSERT INTO source_reviews(id,tenant_id,job_id,lead_id,input_json,fetch_status,quote_match,company_named,contact_match,checked_at) VALUES(?,?,?,?,?,?,1,?,0,?)')
         .run(randomBytes(12).toString('hex'), tenant, jobId, leadId, JSON.stringify({ company: it.company, signal, source_url: it.url, excerpt: quote, contact: null, event_date: it.date, feed }), 'fetched', +named, page.retrievedAt)
-      rows.push({ lead_id: leadId, company: it.company, role: it.role, quote_match: true, fetch_status: 'fetched', source_url: it.url })
+      rows.push({ lead_id: leadId, company: it.company, role: it.role, quote_match: true, fetch_status: 'fetched', source_url: it.url, claim: claimOf.get(leadId)! })
     }
     if (rows.length) db.prepare("UPDATE scan_jobs SET status='done',finished_at=?,candidates=?,verified=0,needs_review=?,dropped=0 WHERE id=?").run(now, rows.length, rows.length, jobId)
   })()
   if (!rows.length) return none({ feed_items: items.length, matched: matched.length, skipped, note: 'Those companies were saved by another request a moment ago. Nothing new was saved.' })
   // The leads are saved, so the answer does not wait on the slow contact reads. They run on while the server stays up; their per-company state is recorded and readable.
-  const crawl = runCrawls(db, tenant, rows.map(r => ({ id: r.lead_id, company: r.company, source_url: r.source_url, job_id: jobId })), deps)
-  return { crawl, job_id: jobId as string | null, feed_items: items.length, matched: matched.length, leads: rows.map(({ source_url: _s, ...r }) => r), skipped, note: '' }
+  const crawl = runCrawls(db, tenant, rows.map(r => ({ id: r.lead_id, company: r.company, source_url: r.source_url, job_id: jobId, claim: r.claim })), deps)
+  return { crawl, job_id: jobId as string | null, feed_items: items.length, matched: matched.length, leads: rows.map(({ source_url: _s, claim: _c, ...r }) => r), skipped, note: '' }
 }
 
 export type CrawlState = 'reading' | 'finished' | 'cut_off' | 'failed' | 'interrupted'
@@ -173,11 +175,12 @@ function claimUnfinished(db: Database.Database, tenant: string, now: number, whe
   const claimed: CrawlTarget[] = []
   db.transaction(() => {
     const rows = db.prepare(`SELECT c.lead_id AS id, l.company, l.source_url, c.job_id FROM hiring_feed_crawl c JOIN leads l ON l.id = c.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = c.tenant_id
-      WHERE c.tenant_id = ? AND (? IS NULL OR c.job_id = ?) AND (c.status IN ('cut_off','failed') OR (c.status = 'reading' AND ? - c.started_at > ?))`).all(tenant, where.jobId ?? null, where.jobId ?? null, now, READING_STALE_S) as CrawlTarget[]
+      WHERE c.tenant_id = ? AND (? IS NULL OR c.job_id = ?) AND (c.status IN ('cut_off','failed') OR (c.status = 'reading' AND ? - c.started_at > ?))`).all(tenant, where.jobId ?? null, where.jobId ?? null, now, READING_STALE_S) as Omit<CrawlTarget, 'claim'>[]
     for (const r of rows) {
       if (where.keys && !where.keys.has(companyKey(r.company))) continue
-      const u = db.prepare("UPDATE hiring_feed_crawl SET status = 'reading', started_at = ?, finished_at = NULL WHERE lead_id = ? AND tenant_id = ? AND (status IN ('cut_off','failed') OR (status = 'reading' AND ? - started_at > ?))").run(now, r.id, tenant, now, READING_STALE_S)
-      if (u.changes === 1) claimed.push(r)
+      const claim = randomBytes(8).toString('hex')
+      const u = db.prepare("UPDATE hiring_feed_crawl SET status = 'reading', started_at = ?, finished_at = NULL, claim = ? WHERE lead_id = ? AND tenant_id = ? AND (status IN ('cut_off','failed') OR (status = 'reading' AND ? - started_at > ?))").run(now, claim, r.id, tenant, now, READING_STALE_S)
+      if (u.changes === 1) claimed.push({ ...r, claim })
     }
   })()
   return claimed
@@ -186,4 +189,10 @@ export async function retryHiringFeedContacts(db: Database.Database, tenant: str
   migrateHiringFeed(db)
   const claimed = claimUnfinished(db, tenant, deps.now ?? Math.floor(Date.now() / 1000), { jobId })
   return { retrying: claimed.length, crawl: claimed.length ? runCrawls(db, tenant, claimed, deps) : Promise.resolve() }
+}
+
+// The caller's most recent hiring-feed check, so the state stays visible after a page reload.
+export function latestHiringFeedJob(db: Database.Database, tenant: string): string | null {
+  migrateHiringFeed(db)
+  return (db.prepare('SELECT job_id FROM hiring_feed_crawl WHERE tenant_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1').get(tenant) as { job_id: string } | undefined)?.job_id ?? null
 }

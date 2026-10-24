@@ -5,7 +5,7 @@ import { migrateScan } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { createDraft } from '../lib/outreach/service.ts'
-import { createHiringFeedIntake, hiringFeedStatus, JobFeedError, matchRoles, parseFeedItems, parseRoleWords, retryHiringFeedContacts } from '../lib/scan/job-feed.ts'
+import { createHiringFeedIntake, hiringFeedStatus, JobFeedError, latestHiringFeedJob, matchRoles, parseFeedItems, parseRoleWords, retryHiringFeedContacts } from '../lib/scan/job-feed.ts'
 import type { Get } from '../lib/connectors/sitecrawl.ts'
 
 const item = (title: string, guid: string, extra = '') => `<item><title>${title}</title><pubDate>Fri, 23 Oct 2026 09:48:36 +0000</pubDate><guid>${guid}</guid><description>&lt;p&gt;&lt;strong&gt;URL:&lt;/strong&gt; &lt;a href="https://acmeco.example"&gt;x&lt;/a&gt;&lt;/p&gt;${extra}</description></item>`
@@ -148,4 +148,25 @@ test('duplicates are refused by the database itself, not only by the application
   const r = await run(db, { get: okGet }); await r.crawl
   assert.throws(() => db.prepare("INSERT INTO hiring_feed_crawl(lead_id,tenant_id,job_id,company_key,status,started_at) VALUES('x','A','j','acmeco','reading',1)").run(), /UNIQUE/)
   db.prepare("INSERT INTO hiring_feed_crawl(lead_id,tenant_id,job_id,company_key,status,started_at) VALUES('y','B','j','acmeco','reading',1)").run()
+})
+
+test('a stale worker finishing after a retry took over cannot overwrite the retry outcome', async () => {
+  const db = mk()
+  const slow: Get = async url => { await new Promise(res => setTimeout(res, 150)); return okGet(url) }
+  const r = await run(db, { get: slow, deadlineMs: 30 })
+  // While the first read is still running, it is treated as stale and a retry takes over and finishes.
+  db.prepare("UPDATE hiring_feed_crawl SET started_at = 1").run()
+  const retry = await retryHiringFeedContacts(db, 'A', r.job_id!, { get: okGet, gapMs: 0, env: {} })
+  assert.equal(retry.retrying, 1)
+  await retry.crawl
+  assert.deepEqual(hiringFeedStatus(db, 'A', r.job_id!).map(x => [x.state, x.emails]), [['finished', 1]])
+  await r.crawl // the first read now ends as cut_off, but it no longer holds the claim
+  assert.deepEqual(hiringFeedStatus(db, 'A', r.job_id!).map(x => [x.state, x.emails]), [['finished', 1]])
+})
+
+test('the last check is findable for the page after a reload', async () => {
+  const db = mk()
+  assert.equal(latestHiringFeedJob(db, 'A'), null)
+  const r = await run(db, { get: okGet }); await r.crawl
+  assert.equal(latestHiringFeedJob(db, 'A'), r.job_id); assert.equal(latestHiringFeedJob(db, 'B'), null)
 })

@@ -2,14 +2,16 @@ import {NextRequest,NextResponse} from 'next/server'
 import {getScanDb,requireUser} from '@/lib/scan/service'
 import {sameOriginJson} from '@/lib/same-origin'
 import {rateLimit} from '@/lib/rate-limit'
-import {createHiringFeedIntake,hiringFeedStatus,JobFeedError,retryHiringFeedContacts} from '@/lib/scan/job-feed'
+import {createHiringFeedIntake,hiringFeedStatus,JobFeedError,latestHiringFeedJob,retryHiringFeedContacts} from '@/lib/scan/job-feed'
 
 export async function GET(req:NextRequest){
  const user=await requireUser()
  if(!user)return NextResponse.json({error:'Not signed in'},{status:401})
- const job=req.nextUrl.searchParams.get('job_id')||''
+ const q=req.nextUrl.searchParams.get('job_id')
+ const job=q===null?latestHiringFeedJob(getScanDb(),user.id):q
+ if(job===null)return NextResponse.json({job_id:null,contacts:[]})
  if(!/^[0-9a-f]{24}$/.test(job))return NextResponse.json({error:'Bad request'},{status:400})
- return NextResponse.json({contacts:hiringFeedStatus(getScanDb(),user.id,job)})
+ return NextResponse.json({job_id:job,contacts:hiringFeedStatus(getScanDb(),user.id,job)})
 }
 
 export async function POST(req:NextRequest){
