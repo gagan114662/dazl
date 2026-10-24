@@ -68,6 +68,7 @@ test('lead reading: own tenant only, posting must name the company, failed pages
   assert.equal(await leadSignals(db, 'u2', 'a'.repeat(24), fetcher), null)
   const s = await leadSignals(db, 'u1', 'a'.repeat(24), fetcher)
   assert.equal(s?.model_call, false)
+  assert.match(s?.applies_to ?? '', /outbound sales prospecting/)
   assert.deepEqual(s?.pages.map(p => [p.role, p.status]), [['posting', 'read'], ['company_home', 'failed']])
   assert.equal(s?.pages[0].reading?.signals[0].kind, 'team_task')
   const other = await leadSignals(db, 'u1', 'b'.repeat(24), async () => ({ text: 'A different company runs outbound prospecting.', title: 't', retrievedAt: 1 }))

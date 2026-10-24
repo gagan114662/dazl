@@ -9,6 +9,9 @@
 // counted as unclear, never shown as evidence. There is no score, no ranking and no fit verdict: finding nothing
 // is a real result. The topic list is fixed and named below, so the reader sees exactly what was looked for.
 export const TOPIC = 'outbound sales prospecting'
+// The word list is written for ONE kind of seller: someone selling outbound sales prospecting tools (the current test offer).
+// It is not adapted to the account's offer and says nothing about any other kind of seller.
+export const APPLIES_TO = 'a seller of outbound sales prospecting tools'
 export const TASK_TERMS = ['outbound', 'cold call', 'cold calling', 'cold email', 'cold outreach', 'prospecting', 'prospect list', 'lead generation', 'lead gen', 'pipeline generation', 'sales development', 'appointment setting']
 export const STACK_NAMES = ['salesforce', 'hubspot', 'salesloft', 'outreach.io', 'apollo.io', 'zoominfo', 'gong.io', 'sales navigator', 'lusha', 'seamless.ai', 'clay.com', 'instantly.ai', 'lemlist', '6sense']
 export type SignalKind = 'team_task' | 'named_stack' | 'stated_problem' | 'candidate_requirement'
@@ -76,7 +79,7 @@ export function readPage(text: string, role: 'posting' | 'company_home', cap = 6
 import type Database from 'better-sqlite3'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
 export interface LeadPageReading { url: string; role: 'posting' | 'company_home'; status: 'read' | 'failed' | 'not_used'; why?: string; reading?: PageReading }
-export interface LeadSignals { lead_id: string; company: string; topic: string; looked_for: { task_terms: string[]; stack_names: string[] }; pages: LeadPageReading[]; model_call: false }
+export interface LeadSignals { lead_id: string; company: string; topic: string; applies_to: string; looked_for: { task_terms: string[]; stack_names: string[] }; pages: LeadPageReading[]; model_call: false }
 
 // Reads the lead's own saved posting page, and its home page only when the lead already has a confirmed site.
 // A posting page is used only if it names the company. Public pages only; no model, no spend, nothing stored.
@@ -93,5 +96,5 @@ export async function leadSignals(db: Database.Database, userId: string, leadId:
     if (t.role === 'posting' && !nameOk(r.text)) return { url: t.url, role: t.role, status: 'not_used', why: 'the posting page does not name the company' }
     return { url: t.url, role: t.role, status: 'read', reading: readPage(r.text, t.role) }
   }))
-  return { lead_id: lead.id, company: lead.company, topic: TOPIC, looked_for: { task_terms: TASK_TERMS, stack_names: STACK_NAMES }, pages, model_call: false }
+  return { lead_id: lead.id, company: lead.company, topic: TOPIC, applies_to: APPLIES_TO, looked_for: { task_terms: TASK_TERMS, stack_names: STACK_NAMES }, pages, model_call: false }
 }
