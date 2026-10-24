@@ -107,3 +107,18 @@ test('subdomain pin: x.boards.greenhouse.io and x.jobs.ashbyhq.com are never req
   await collectEvidence(sel(['https://x.boards.greenhouse.io/acme', 'https://x.jobs.ashbyhq.com/zed', 'https://boards.greenhouse.io:8443/acme']), Q, http, 5000)
   assert.deepEqual(seen, [])
 })
+
+test('real Ashby shape: address region is the state abbreviation alone (as the live API returns it), location has no state text', async () => {
+  const body = { jobs: [{ title: 'HR Generalist', location: 'Global HQ', isListed: true, descriptionPlain: ABODY, publishedAt: day(5), address: { postalAddress: { addressRegion: 'OH', addressCountry: 'USA' } }, jobUrl: 'https://jobs.ashbyhq.com/zed/9' }] }
+  const http: SafeGet = async url => url === 'https://api.ashbyhq.com/posting-api/job-board/zed' ? { status: 200, body: JSON.stringify(body) } : null
+  const ev = await collectEvidence(sel(['https://jobs.ashbyhq.com/zed']), QA, http, 5000)
+  assert.deepEqual(ev.map(e => e.url), ['https://jobs.ashbyhq.com/zed/9'])
+})
+
+test('a region abbreviation of another state does not match, and neither does an abbreviation embedded in a word', async () => {
+  const mk = (region: string) => ({ jobs: [{ title: 'HR Generalist', location: 'HQ', isListed: true, descriptionPlain: ABODY, publishedAt: day(5), address: { postalAddress: { addressRegion: region } }, jobUrl: 'https://jobs.ashbyhq.com/zed/9' }] })
+  for (const region of ['NY', 'Ohiopyle', 'OHX']) {
+    const http: SafeGet = async () => ({ status: 200, body: JSON.stringify(mk(region)) })
+    assert.deepEqual(await collectEvidence(sel(['https://jobs.ashbyhq.com/zed']), QA, http, 5000), [], region)
+  }
+})
