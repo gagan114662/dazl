@@ -137,3 +137,15 @@ test('funnel width: distinct hosts of unique urls, and urls left unfetched by th
   assert.equal(s.hits_unique_urls, 5); assert.equal(s.distinct_hosts, 4)
   assert.equal(s.urls_not_fetched, 2, '5 unique urls, 3 requested from the provider')
 })
+
+// CHARACTERIZATION, green from the start (it pins existing behavior, it did not drive a change): turning the flag off
+// stops new writes only. Rows already written stay in the table and stay readable; nothing is deleted or hidden.
+test('flag turned off later: earlier rows remain readable, new scans write no row', () => {
+  const db = new Database(':memory:'); db.exec('PRAGMA foreign_keys=ON; CREATE TABLE scan_jobs (id TEXT PRIMARY KEY, user_id TEXT)')
+  db.prepare('INSERT INTO scan_jobs VALUES (?,?)').run('j1', 'o'); db.prepare('INSERT INTO scan_jobs VALUES (?,?)').run('j2', 'o')
+  const t = new SearchTrace(); t.search({ query: 'kept query text', attempted: true, outcome: 'ok', hits: ['https://a.example/x'] })
+  assert.equal(writeSourceStats(db, 'j1', 1, 'search:tinyfish', summarizeTrace(t), { DAZL_SOURCE_STATS: '1' }), true)
+  assert.equal(writeSourceStats(db, 'j2', 1, 'search:tinyfish', summarizeTrace(t), {}), false)
+  assert.deepEqual(sourceStats(db, 'o', 'j1')!.map(r => r.queries), [['kept query text']])
+  assert.deepEqual(sourceStats(db, 'o', 'j2'), [])
+})

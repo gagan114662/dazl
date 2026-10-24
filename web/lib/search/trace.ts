@@ -35,6 +35,11 @@ export interface SourceStats {
   distinct_hosts?: number | null
   urls_not_fetched?: number | null
   extracted_candidates?: number | null
+  model_requested?: string | null
+  model_served?: string | null
+  model_calls?: number | null
+  input_tokens?: number | null
+  output_tokens?: number | null
   evidence_items?: number | null
   evidence_with_page_text?: number | null
   evidence_snippet_only?: number | null
@@ -99,6 +104,11 @@ export function migrateSourceStats(db: Database.Database): void {
     distinct_hosts INTEGER,
     urls_not_fetched INTEGER,
     extracted_candidates INTEGER,
+    model_requested TEXT CHECK (model_requested IS NULL OR length(model_requested) <= 100),
+    model_served TEXT CHECK (model_served IS NULL OR length(model_served) <= 100),
+    model_calls INTEGER,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
     evidence_items INTEGER,
     evidence_with_page_text INTEGER,
     evidence_snippet_only INTEGER,
@@ -112,8 +122,8 @@ export function writeSourceStats(db: Database.Database, jobId: string, attempt: 
   try {
     migrateSourceStats(db)
     const q = JSON.stringify(s.queries); const pq = JSON.stringify(s.per_query ?? []); const j = (o: Record<string, number>) => JSON.stringify(o)
-    db.prepare(`INSERT OR REPLACE INTO scan_source_stats (job_id,attempt,collector,queries,query_source,searches_attempted,searches_ok,searches_failed,searches_not_attempted,hits_raw,hits_unique_urls,fetch_requested,fetch_outcome,fetch_pages_with_text,per_query,distinct_hosts,urls_not_fetched,extracted_candidates,evidence_items,evidence_with_page_text,evidence_snippet_only)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(jobId, attempt, collector, q.length <= 2000 ? q : null, s.query_source ?? null, s.searches_attempted, s.searches_ok, j(s.searches_failed), j(s.searches_not_attempted), s.hits_raw, s.hits_unique_urls, s.fetch_requested, s.fetch_outcome, s.fetch_pages_with_text, pq.length <= 4000 ? pq : null, s.distinct_hosts ?? null, s.urls_not_fetched ?? null, s.extracted_candidates ?? null, s.evidence_items ?? null, s.evidence_with_page_text ?? null, s.evidence_snippet_only ?? null)
+    db.prepare(`INSERT OR REPLACE INTO scan_source_stats (job_id,attempt,collector,queries,query_source,searches_attempted,searches_ok,searches_failed,searches_not_attempted,hits_raw,hits_unique_urls,fetch_requested,fetch_outcome,fetch_pages_with_text,per_query,distinct_hosts,urls_not_fetched,extracted_candidates,model_requested,model_served,model_calls,input_tokens,output_tokens,evidence_items,evidence_with_page_text,evidence_snippet_only)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(jobId, attempt, collector, q.length <= 2000 ? q : null, s.query_source ?? null, s.searches_attempted, s.searches_ok, j(s.searches_failed), j(s.searches_not_attempted), s.hits_raw, s.hits_unique_urls, s.fetch_requested, s.fetch_outcome, s.fetch_pages_with_text, pq.length <= 4000 ? pq : null, s.distinct_hosts ?? null, s.urls_not_fetched ?? null, s.extracted_candidates ?? null, s.model_requested?.slice(0, 100) ?? null, s.model_served?.slice(0, 100) ?? null, s.model_calls ?? null, s.input_tokens ?? null, s.output_tokens ?? null, s.evidence_items ?? null, s.evidence_with_page_text ?? null, s.evidence_snippet_only ?? null)
     return true
   } catch { return false }
 }

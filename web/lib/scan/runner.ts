@@ -518,7 +518,24 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   migrateTinyfish(db)
   const complete = provider.complete!
   const spent = { searches: 0, fetches: 0 }
-  const plan = queryPlan(await complete.call(provider, key, queryPrompt(job.query!, icp, 3), fetchImpl, 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, 3)
+  // The same request as provider.complete (complete is completeDetailed().text), with the model and usage the provider reported kept.
+  const u = { calls: 0, served: null as string | null, inTok: 0, outTok: 0, inKnown: true, outKnown: true }
+  const ask = async (prompt: string, maxTokens: number): Promise<string> => {
+    if (!diag || !provider.completeDetailed) return complete.call(provider, key, prompt, fetchImpl, maxTokens)
+    u.calls++
+    diag.info.model_requested = provider.configuredModel?.() ?? null
+    try {
+      const d = await provider.completeDetailed(key, prompt, fetchImpl, maxTokens)
+      if (d.model) u.served = d.model
+      if (typeof d.usage?.input_tokens === 'number') u.inTok += d.usage.input_tokens; else u.inKnown = false
+      if (typeof d.usage?.output_tokens === 'number') u.outTok += d.usage.output_tokens; else u.outKnown = false
+      return d.text
+    } catch (e) { u.inKnown = false; u.outKnown = false; throw e } finally {
+      diag.info.model_calls = u.calls; diag.info.model_served = u.served
+      diag.info.input_tokens = u.inKnown ? u.inTok : null; diag.info.output_tokens = u.outKnown ? u.outTok : null
+    }
+  }
+  const plan = queryPlan(await ask(queryPrompt(job.query!, icp, 3), 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, 3)
   if (diag) diag.info.query_source = plan.source
   const q = withGeography(plan.queries, icp.where)
   const after = new Date(Date.now() - 365 * 86400_000).toISOString().slice(0, 10)
@@ -530,7 +547,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   const items = toEvidence(hits, f.ok ? f.pages : [])
   if (diag) Object.assign(diag.info, evidenceSplit(items, f.ok ? f.pages : []))
   if (items.length === 0) return null
-  const text = await complete.call(provider, key, buildSourcePrompt(job.query!, icp, items), fetchImpl, 3000)
+  const text = await ask(buildSourcePrompt(job.query!, icp, items), 3000)
   const parsed = parseLeads(text, items.map(i => i.url)) ?? null
   if (diag) diag.info.extracted_candidates = parsed ? parsed.length : null // null = the model reply was unusable, not zero
   return parsed
