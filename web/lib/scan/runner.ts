@@ -17,7 +17,7 @@ import { markWatchLeads } from '../watch.ts'
 import type { AdvPlatform } from '../advanced/config.ts'
 import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, selfDescribedUrls } from '../sources/index.ts'
 import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '../search/trace.ts'
-import { migrateTinyfish, queryPlan, queryPrompt, tfFetch, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
+import { limits as tfLimits, migrateTinyfish, pickFetchUrls, queryPlan, queryPrompt, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { crawlJob } from '../connectors/sitecrawl.ts'
 import { anthropicCountTokens, guardProvider, ownerPool, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
@@ -548,8 +548,8 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
     if (diag && summarizeTrace(diag.trace).hits_complete === true) Object.assign(diag.info, { evidence_items: 0, evidence_with_page_text: 0, evidence_snippet_only: 0 })
     return null
   }
-  const urls = [...new Set(hits.map(h => h.url))].slice(0, 8)
-  const f = await tfFetch(db, job.user_id, urls, spent, diag ? { trace: diag.trace } : {})
+  const urls = pickFetchUrls(hits.map(h => h.url), tfLimits().fetchesPerScan) // exact duplicates removed, breadth first by host, nothing excluded
+  const f = await tfFetchMany(db, job.user_id, urls, spent, diag ? { trace: diag.trace } : {})
   const items = toEvidence(hits, f.ok ? f.pages : [])
   if (diag) Object.assign(diag.info, evidenceSplit(items, f.ok ? f.pages : []))
   if (items.length === 0) return null
