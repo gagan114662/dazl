@@ -32,7 +32,7 @@ export function keywordsFor(query: string): string[] {
   return [...new Set(query.toLowerCase().split(/[^a-z0-9+#.-]+/).filter(w => w.length >= 4 && !STOP.has(w)))].slice(0, 6)
 }
 
-// Runs the chosen adapters in parallel with an overall time limit. Failures give no evidence, never an error.
+// Runs the chosen adapters in parallel with an overall time limit. A failed or slow source gives no evidence and never drops the others.
 export interface AdapterRun { collector: string; status: 'ok' | 'empty' | 'error' | 'timeout'; evidence: number | null }
 export async function collectEvidenceReport(sel: SourceSelection, query: string, http = safeGet, timeoutMs = 25_000): Promise<{ items: Evidence[]; runs: AdapterRun[] }> {
   const input: AdapterInput = { query, keywords: keywordsFor(query), feeds: sel.feeds, pages: sel.pages ?? [], http }
@@ -48,9 +48,9 @@ export async function collectEvidenceReport(sel: SourceSelection, query: string,
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<void>(res => { timer = setTimeout(res, timeoutMs); timer.unref?.() })
   await Promise.race([run, timeout]); settled = true; clearTimeout(timer)
-  // Preserve the prior all-or-nothing timeout behavior. Late results never mutate the report.
-  const timedOut = sel.adapters.some(id => !runs.has(id))
-  return { items: timedOut ? [] : sel.adapters.flatMap(id => results.get(id) ?? []).slice(0, 40),
+  // A source that did not finish by the deadline is reported as 'timeout'; sources that finished keep their items.
+  // Late results never mutate the report (settled gate above).
+  return { items: sel.adapters.flatMap(id => runs.has(id) && runs.get(id)!.status !== 'error' ? results.get(id) ?? [] : []).slice(0, 40),
     runs: sel.adapters.map(id => runs.get(id) ?? { collector: `adapter:${id}`, status: 'timeout', evidence: null }) }
 }
 export async function collectEvidence(sel: SourceSelection, query: string, http = safeGet, timeoutMs = 25_000): Promise<Evidence[]> {

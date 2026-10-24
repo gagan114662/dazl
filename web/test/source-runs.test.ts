@@ -94,3 +94,18 @@ test('review attribution is retained without being counted as verified', () => {
   const row = sourceRuns(db,'A',id)[0] as any
   assert.equal(row.review_count,1); assert.equal(row.verified_count,0)
 })
+
+test('one slow source does not drop the evidence of sources that finished (items, runs and late results agree)', async () => {
+  const ev = (source: string, n: number) => Array.from({ length: n }, (_, i) => ({ source, url: `https://x.example/${source}/${i}`, title: 't', quote: 'q', date: null })) as never
+  ADAPTERS.iso_fast_a = { id: 'iso_fast_a', label: 'test', collect: async () => ev('iso_fast_a', 2) }
+  ADAPTERS.iso_fast_b = { id: 'iso_fast_b', label: 'test', collect: async () => ev('iso_fast_b', 1) }
+  ADAPTERS.iso_slow = { id: 'iso_slow', label: 'test', collect: async () => { await new Promise(r => setTimeout(r, 30)); return ev('iso_slow', 5) } }
+  try {
+    const result = await collectEvidenceReport({ adapters: ['iso_fast_a', 'iso_slow', 'iso_fast_b'], feeds: [] }, 'test', async () => null, 5)
+    assert.deepEqual(result.runs.map(r => [r.collector, r.status, r.evidence]), [['adapter:iso_fast_a', 'ok', 2], ['adapter:iso_slow', 'timeout', null], ['adapter:iso_fast_b', 'ok', 1]])
+    assert.deepEqual(result.items.map(i => i.source), ['iso_fast_a', 'iso_fast_a', 'iso_fast_b'], 'finished sources keep their items, in selection order')
+    await new Promise(r => setTimeout(r, 40))
+    assert.equal(result.items.length, 3, 'the late result never enters the report')
+    assert.equal(result.runs[1].status, 'timeout')
+  } finally { delete ADAPTERS.iso_fast_a; delete ADAPTERS.iso_fast_b; delete ADAPTERS.iso_slow }
+})
