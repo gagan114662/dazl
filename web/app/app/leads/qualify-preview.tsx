@@ -8,7 +8,7 @@ type Stored={prompt_sha256:string;status:'running'|'done'|'failed';qualification
 type Prev={company:string;vendor:string|null;model:string|null;pages:Page[];scope:{pages_included:Sent[]}|null;cost:{priced:boolean;usd_estimate_max:number|null;output_tokens_max:number}|null;ready:boolean;notes:string[];prompt_sha256:string|null;enabled:boolean;stored:Stored[]}
 const ROLE={posting:'the saved posting page',company_home:"the company's own home page"}
 const NAME={company_fit:'Company fit',use_case:'Use case for their own team',buying_evidence:'Buying evidence'} as const
-const WORD:Record<string,string>={yes:'shown on the page',no:'the page shows it does not match',unknown:'not shown',stated:'stated on the page',none_seen:'not seen on the pages sent'}
+const WORD:Record<string,string>={yes:'model assessment: yes',no:'model assessment: no',unknown:'model assessment: unknown (the model could not tell from the pages sent)',stated:'model assessment: stated',none_seen:'model assessment: none seen in the pages sent (this does not mean the company shows none elsewhere)'}
 export default function QualifyPreview({leadId}:{leadId:string}){
  const [p,setP]=useState<Prev|null>(null),[busy,setBusy]=useState(false),[err,setErr]=useState('')
  async function go(){setBusy(true);setErr('')
@@ -21,14 +21,14 @@ export default function QualifyPreview({leadId}:{leadId:string}){
  <button type="button" onClick={()=>void go()} disabled={busy} className="underline">{busy?'Looking...':'What a fit check would read (free, no AI call)'}</button>
  {err&&<span className="ml-2">{err}</span>}
  {p&&<div className="border-l-2 border-black/30 pl-3 mt-2 space-y-1">
- <p>Nothing was sent to an AI service. These are the pages a fit check would read for {p.company}:</p>
+ <p>{p.stored.some(s=>s.status!=='failed')?`A completed fit check is shown below; it sent the pages listed here to an AI service. These are the pages a fit check reads for ${p.company}:`:`Nothing was sent to an AI service. These are the pages a fit check would read for ${p.company}:`}</p>
  {p.pages.map(x=>{const s=sent(x.url);return <p key={x.url}>{ROLE[x.role]}: {x.status==='failed'?`could not be read (${x.fail??'error'})`:!x.used?`read but not used: ${x.not_used_reason}`:s?`${s.chars_sent} of ${s.chars_available} characters would be sent${s.truncated?' (the rest is cut off and would not be read)':''}`:`${x.chars} characters`}</p>})}
  <p>{p.cost&&p.cost.priced&&p.cost.usd_estimate_max!==null?`Estimated cost on your ${p.vendor} key: about $${p.cost.usd_estimate_max.toFixed(4)}. This is an estimate, not a guaranteed cap.`:'No price estimate is available: '+(p.vendor?`there is no verified price for ${p.vendor}${p.model?' '+p.model:''}.`:'no AI key is saved.')}</p>
  {shown.map(n=><p key={n}>{n}</p>)}
- {p.enabled&&p.ready&&!p.stored.some(s=>s.status!=='failed')?<p><button type="button" onClick={()=>void run()} disabled={busy} className="font-mono uppercase border border-black px-2 py-1">Run fit check - estimated cost ${p.cost?.usd_estimate_max?.toFixed(4)}</button></p>:<p>{p.enabled?'':'Running the check is not available yet. '}A match would only show that a quote appears on a page. It would not prove fit or a buying need.</p>}
+ {p.enabled&&p.ready&&!p.stored.some(s=>s.status!=='failed')?<p><button type="button" onClick={()=>void run()} disabled={busy} className="font-mono uppercase border border-black px-2 py-1">Run fit check - estimated cost ${p.cost?.usd_estimate_max?.toFixed(4)}</button></p>:<p>{p.enabled?'':'Running the check is not available yet. '}A quote match would only show that the words appear on a page. It would not prove fit or a buying need.</p>}
  {p.stored.map(s=><div key={s.prompt_sha256} className="mt-2 space-y-1">
  {s.status==='failed'&&<p>A check was started and failed ({s.error}). It will not run again by itself, because it may have been billed.</p>}
- {s.qualification&&(Object.keys(NAME) as (keyof typeof NAME)[]).map(k=>{const j=s.qualification![k];return <p key={k}>{NAME[k]}: {WORD[j.verdict]??j.verdict}{j.quote&&<> - "{j.quote}" (on {j.quote_url})</>}{j.note?` ${j.note}`:''}</p>})}
+ {s.qualification&&(Object.keys(NAME) as (keyof typeof NAME)[]).map(k=>{const j=s.qualification![k];return <p key={k}>{NAME[k]}: {WORD[j.verdict]??j.verdict}{j.quote&&<> - supporting quote "{j.quote}" (found on {j.quote_url}; the model's reading of it is not verified)</>}{j.note?` ${j.note}`:''}</p>})}
  {s.qualification&&<p>{s.qualification.caveat}{s.qualification.evidence_scope.any_truncated?' Some page text was cut off or left out, so "not shown" only covers the text that was sent.':''}</p>}
  </div>)}
  </div>}
