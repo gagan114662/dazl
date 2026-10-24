@@ -41,6 +41,7 @@ import { GET as followupsGET } from '../../app/api/outreach/followups/route.ts'
 import { GET as keyGET } from '../../app/api/settings/llm-key/route.ts'
 import { GET as memoryGET } from '../../app/api/settings/memory/route.ts'
 import { GET as monitorsGET } from '../../app/api/monitors/route.ts'
+import { GET as conversionGET } from '../../app/api/outreach/conversion/route.ts'
 
 // Local synthetic fixture: two tenants with unique per-tenant markers, the real GET handlers, session switched per call.
 // Keys are fixture literals only; no vault, no network (fetch throws).
@@ -49,10 +50,10 @@ globalThis.fetch = (async (u: unknown) => { fetchCalls.push(String(u)); throw ne
 const A = { id: 'A', business_name: 'Acme' }, B = { id: 'B', business_name: 'Beta' }
 const get = (path: string) => new NextRequest(`http://localhost${path}`, { method: 'GET' })
 const hex = () => randomBytes(12).toString('hex')
-const MA = { co: 'AMARKERCOMPANY9f3k', email: 'amarker9f3k@a.invalid', subj: 'AMARKERSUBJECT9f3k', mon: 'AMARKERQUERY9f3k', mem: 'AMARKERPOSITIONING9f3k', biz: 'AMARKERBIZ9f3k', q: 'AMARKERJOBQUERY9f3k', key: 'sk-ant-FIXTUREAKEY-AAAAAAAAAAAAAAAAAAAAQ9ZK', thread: 'AMARKERTHREAD9f3k' }
-const MB = { thread: 'BMARKERTHREAD7h2m', co: 'BMARKERCOMPANY7h2m', biz: 'BMARKERBIZ7h2m', q: 'BMARKERJOBQUERY7h2m', mon: 'BMARKERQUERY7h2m', mem: 'BMARKERPOSITIONING7h2m', subj: 'BMARKERSUBJECT7h2m', key: 'sk-ant-FIXTUREBKEY-BBBBBBBBBBBBBBBBBBBBW4XJ' }
-const AMARKS = [MA.co, MA.email, MA.subj, MA.mon, MA.mem, MA.biz, MA.q, MA.thread, 'Q9ZK', 'FIXTUREAKEY']
-const BMARKS = [MB.thread, MB.co, MB.biz, MB.q, MB.mon, MB.mem, MB.subj, 'W4XJ']
+const MA = { sig: 'AMARKERSIGNAL9f3k', co: 'AMARKERCOMPANY9f3k', email: 'amarker9f3k@a.invalid', subj: 'AMARKERSUBJECT9f3k', mon: 'AMARKERQUERY9f3k', mem: 'AMARKERPOSITIONING9f3k', biz: 'AMARKERBIZ9f3k', q: 'AMARKERJOBQUERY9f3k', key: 'sk-ant-FIXTUREAKEY-AAAAAAAAAAAAAAAAAAAAQ9ZK', thread: 'AMARKERTHREAD9f3k' }
+const MB = { sig: 'BMARKERSIGNAL7h2m', thread: 'BMARKERTHREAD7h2m', co: 'BMARKERCOMPANY7h2m', biz: 'BMARKERBIZ7h2m', q: 'BMARKERJOBQUERY7h2m', mon: 'BMARKERQUERY7h2m', mem: 'BMARKERPOSITIONING7h2m', subj: 'BMARKERSUBJECT7h2m', key: 'sk-ant-FIXTUREBKEY-BBBBBBBBBBBBBBBBBBBBW4XJ' }
+const AMARKS = [MA.sig, MA.co, MA.email, MA.subj, MA.mon, MA.mem, MA.biz, MA.q, MA.thread, 'Q9ZK', 'FIXTUREAKEY']
+const BMARKS = [MB.sig, MB.thread, MB.co, MB.biz, MB.q, MB.mon, MB.mem, MB.subj, 'W4XJ']
 
 async function build() {
   const db = new Database(':memory:')
@@ -71,6 +72,8 @@ async function build() {
     saveKey(db, t, 'anthropic', m.key, master)
     if (thread) db.prepare("INSERT INTO followup_threads(tenant_id,thread_id,lead_id,to_email,root_message_id,last_activity_at,last_lead_reply_at,followups_sent) VALUES(?,?,?,?,'r@x',?,?,0)").run(t, thread, lead, email, now, now)
     if (thread) db.prepare("INSERT INTO inbound_messages(gmail_id,tenant_id,thread_id,lead_id,from_email,excerpt,classification,received_at) VALUES (?,?,?,?,?,?,'positive',?)").run(hex(), t, thread, lead, email, `${thread} excerpt`, now)
+    db.prepare("UPDATE outreach_messages SET status='sent', sent_at=? WHERE tenant_id=? AND lead_id=?").run(now, t, lead)
+    db.prepare("INSERT INTO outreach_signal_context(message_id,tenant_id,lead_id,scan_job_id,signal_kind,source_kind,captured_at) SELECT id,tenant_id,lead_id,?,?,'query',? FROM outreach_messages WHERE tenant_id=? AND lead_id=?").run(job, m.sig, now, t, lead)
     if (thread) db.prepare("INSERT INTO followup_messages(tenant_id,thread_id,step,status,created_at) VALUES(?,?,0,'sent',?)").run(t, thread, now)
     return { job, lead }
   }
@@ -99,6 +102,7 @@ test('all 11 read routes: A and B each get their own content, never the other te
     { name: 'GET /api/outreach/followups', call: () => followupsGET(), own: { A: [MA.co, MA.thread], B: [MB.co, MB.thread] } },
     { name: 'GET /api/settings/llm-key', call: () => keyGET(), own: { A: ['Q9ZK'], B: ['W4XJ'] } },
     { name: 'GET /api/settings/memory', call: () => memoryGET(), own: { A: [MA.mem], B: [MB.mem] } },
+    { name: 'GET /api/outreach/conversion', call: () => conversionGET(), own: { A: [MA.sig], B: [MB.sig] } },
     { name: 'GET /api/monitors', call: () => monitorsGET(), own: { A: [MA.mon], B: [MB.mon] } },
   ]
   const U = { A, B }

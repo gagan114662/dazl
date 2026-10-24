@@ -1,6 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import GmailGate from '../gmail-gate'
+import ConversionPanel from './conversion-panel'
 
 interface Row { gmail_id: string; thread_id: string; from_email: string; excerpt: string; classification: string; received_at: number; company: string | null; lead_name: string | null; followups_sent: number | null; stopped: string | null }
 interface Info { available: boolean; consent_accepted: boolean; read_granted: boolean; account: string | null; rows: Row[]; booking_url: string | null }
@@ -31,6 +32,7 @@ export default function InboxClient() {
     <div className="p-8 max-w-4xl">
       <h1 className="text-2xl font-bold tracking-tight mb-1">Inbox</h1>
       <p className="text-[#555] text-sm mb-6">Replies to the email threads dazl started for you. Nothing else in your mailbox is read.</p>
+      <ConversionPanel readGranted={i.read_granted} />
       {i.read_granted && i.account && (
         <p className="text-xs text-[#555] mb-4">Reading replies to your outreach as <span className="font-medium">{i.account}</span>. Nothing else in the mailbox is read.</p>
       )}
