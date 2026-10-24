@@ -1,3 +1,4 @@
+import { jobBoardsAdapter } from './jobboards.ts'
 import type { AdapterInput, Evidence, SourceAdapter } from './types.ts'
 import { githubAdapter } from './github.ts'
 import { rssAdapter } from './rss.ts'
@@ -7,7 +8,7 @@ import { youtubeAdapter } from './youtube.ts'
 import { safeGet } from './http.ts'
 import { isAdvPlatform } from '../advanced/config.ts'
 
-export const ADAPTERS: Record<string, SourceAdapter> = { rss: rssAdapter, github: githubAdapter, web: jinaAdapter, v2ex: v2exAdapter, youtube: youtubeAdapter }
+export const ADAPTERS: Record<string, SourceAdapter> = { rss: rssAdapter, github: githubAdapter, web: jinaAdapter, v2ex: v2exAdapter, youtube: youtubeAdapter, jobboards: jobBoardsAdapter }
 export const isAdapterId = (v: unknown): v is string => typeof v === 'string' && Object.hasOwn(ADAPTERS, v)
 
 export interface SourceSelection { adapters: string[]; feeds: string[]; pages?: string[]; advanced?: string[] }
