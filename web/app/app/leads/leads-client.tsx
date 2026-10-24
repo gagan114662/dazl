@@ -674,11 +674,18 @@ export default function LeadsClient() {
               const draftTo = publishedEmail(l)
               return <>
                 {pc && pc.purpose !== 'non-sales' && <span className="text-gray-500 text-xs ml-3">{pc.email}{pc.purpose==='unknown'?' - published address; purpose and buyer relevance unknown':' - business inquiry context, not consent'}</span>}
-                {pc && pc.source === 'sitecrawl' && (() => { const rv = domainReviewFor(l, l.enrichments); const note = domainBasisNote(pc) ?? (rv.state === 'not_required' ? null : 'More than one website is recorded for this company.'); if (!note && rv.state !== 'confirmed') return null
+                {pc && (() => { const rv = domainReviewFor(l, l.enrichments)
+                  // A contact email that is also the address the crawl recorded is reviewed like a crawled address: equality does not show a cited-page origin.
+                  const lc = pc.source === 'lead' && rv.state !== 'not_required'
+                  if (pc.source !== 'sitecrawl' && !lc) return null
+                  const bpc = lc ? { ...pc, source: 'sitecrawl' as const, domainBasis: rv.basis ?? 'unrecorded' as const, domainBasisSourceUrl: rv.basisSourceUrl } : pc
+                  const note = domainBasisNote(bpc) ?? (rv.state === 'not_required' ? null : lc ? 'This address is also the one found by the website crawl.' : 'More than one website is recorded for this company.'); if (!note && rv.state !== 'confirmed') return null
+                  const cv = rv.covered
                   return <span className="text-xs ml-3 block mt-1 border border-black px-2 py-1 text-[#111]">
-                    {note}{pc.domainBasisSourceUrl && pc.domainBasis !== 'unrecorded' ? <> <a className="underline" href={pc.domainBasisSourceUrl} target="_blank" rel="noopener noreferrer nofollow">{pc.domainBasis === 'name_probe' ? 'homepage read' : 'page with the link'}</a>.</> : null}
-                    {rv.state === 'required' && <> A draft needs your check first. <button onClick={() => domainReview(l.id, 'confirm', rv.binding)} className="underline">This website is the right company</button> <span className="text-gray-500">(not need, consent or a send approval)</span></>}
-                    {rv.state === 'confirmed' && <> You checked that {rv.domain} is the right company. <button onClick={() => domainReview(l.id, 'withdraw')} className="underline">withdraw</button></>}
+                    {note}{bpc.domainBasisSourceUrl && bpc.domainBasis !== 'unrecorded' ? <> <a className="underline" href={bpc.domainBasisSourceUrl} target="_blank" rel="noopener noreferrer nofollow">{bpc.domainBasis === 'name_probe' ? 'homepage read' : 'page with the link'}</a>.</> : null}
+                    {rv.multi && cv && rv.state !== 'not_required' && <span className="block mt-1">One check covers all of these, not only the first: {cv.domains.length} {cv.domains.length === 1 ? 'website' : 'websites'} ({cv.domains.map((d, i) => <span key={'d' + i}>{i ? ', ' : ''}{d.domain}{d.source_url ? <> (<a className="underline" href={d.source_url} target="_blank" rel="noopener noreferrer nofollow">page</a>)</> : null}</span>)}) and {cv.addresses.length} {cv.addresses.length === 1 ? 'address' : 'addresses'} ({cv.addresses.map((a, i) => <span key={'a' + i}>{i ? ', ' : ''}{a.email}{a.source_url ? <> (<a className="underline" href={a.source_url} target="_blank" rel="noopener noreferrer nofollow">page</a>)</> : null}</span>)}).</span>}
+                    {rv.state === 'required' && <> A draft needs your check first. <button onClick={() => domainReview(l.id, 'confirm', rv.binding)} className="underline">{rv.multi ? 'These websites are the right company' : 'This website is the right company'}</button> <span className="text-gray-500">(not need, consent or a send approval)</span></>}
+                    {rv.state === 'confirmed' && <> You checked that {rv.multi && cv ? `these ${cv.domains.length} websites and ${cv.addresses.length} addresses are` : `${rv.domain} is`} the right company. <button onClick={() => domainReview(l.id, 'withdraw')} className="underline">withdraw</button></>}
                     {reviewMsg[l.id] ? <span className="text-gray-500 ml-2">{reviewMsg[l.id]}</span> : null}
                   </span> })()}
                 {pc && pc.purpose === 'non-sales' && <span className="text-gray-500 text-xs ml-3">{pc.email} - published {pc.purposeHint} inbox, not a sales contact</span>}

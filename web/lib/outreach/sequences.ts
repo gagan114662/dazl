@@ -8,7 +8,7 @@ import { buildMime, toBase64Url } from '../gmail/mime.ts'
 import { getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { auditAt, getState, pause } from './autopilot.ts'
 import { grantConsent } from './ledger.ts'
-import { composeBody, getSettings, isSuppressed, leadEvidenceEligible, leadHeld, recipientAllowed, testFixtureSend, testRecipientApproved, unsubToken, type Deps } from './service.ts'
+import { composeBody, getSettings, isSuppressed, domainReviewHeld, domainHoldCode, domainReviewStatus, leadEvidenceEligible, leadHeld, recipientAllowed, testFixtureSend, testRecipientApproved, unsubToken, type Deps } from './service.ts'
 import { getMasterKey } from '../secrets.ts'
 import { readKey } from '../llm/key-store.ts'
 import { providers } from '../llm/provider.ts'
@@ -222,6 +222,7 @@ export function approveSequence(db: Database.Database, tenantId: string, sequenc
   const rootTest = db.prepare('SELECT test FROM outreach_messages WHERE tenant_id = ? AND id = ?').get(tenantId, s.message_id) as { test: number } | undefined
   if (!(rootTest && testFixtureSend(db,tenantId,{to_email:s.to_email,test:rootTest.test})) && currentnessHeld(db,tenantId,s.lead_id)) throw new SequenceError('lead_currentness_unconfirmed')
   if (!(rootTest && testFixtureSend(db, tenantId, { to_email: s.to_email, test: rootTest.test })) && !leadEvidenceEligible(db, tenantId, s.lead_id)) throw new SequenceError('lead_evidence_withdrawn')
+  if (!(rootTest && testFixtureSend(db, tenantId, { to_email: s.to_email, test: rootTest.test })) && domainReviewHeld(db, tenantId, s.lead_id, s.to_email)) throw new SequenceError(domainHoldCode(db, tenantId, s.lead_id, s.to_email))
   db.transaction(() => {
   const first = steps.find(st => st.step === 1)!
   db.prepare("UPDATE outreach_messages SET subject = ?, body = ?, status = 'draft', approved_hash = NULL WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(first.subject, first.body, s.message_id, tenantId)
@@ -328,6 +329,7 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
     if (contactPurposeRestricted(db,tenantId,s.lead_id,s.to_email)) { out.skipped++; continue }
     if (!testFixtureSend(db,tenantId,{to_email:s.to_email,test:s.msg_test}) && currentnessHeld(db,tenantId,s.lead_id)) { out.skipped++; continue }
     if (!testFixtureSend(db,tenantId,{ to_email: s.to_email, test: s.msg_test }) && !leadEvidenceEligible(db,tenantId,s.lead_id)) { stopSequenceForThread(db,tenantId,s.lead_id,'stopped','evidence_withdrawn',now); out.skipped++; continue }
+    if (!testFixtureSend(db,tenantId,{ to_email: s.to_email, test: s.msg_test })) { const st = domainReviewStatus(db,tenantId,s.lead_id,s.to_email); if (st !== 'ok') { if (st === 'required') stopSequenceForThread(db,tenantId,s.lead_id,'stopped','domain_unconfirmed',now); out.skipped++; continue } }
     if (!s.thread_id) { out.skipped++; continue } // never send a bump without a readable original thread
     if (!s.step1_sent) continue // activation lags one tick
     if (db.prepare("SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND lead_id = ? AND classification NOT IN ('auto','soft_bounce')").get(tenantId,s.lead_id)) { stopSequenceForThread(db,tenantId,s.lead_id,'replied','existing_reply',now); continue }
@@ -379,6 +381,12 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
       if (!testFixtureSend(db,tenantId,{ to_email: s.to_email, test: s.msg_test }) && !leadEvidenceEligible(db,tenantId,s.lead_id)) {
         db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step)
         stopSequenceForThread(db,tenantId,s.lead_id,'stopped','evidence_withdrawn',now); out.skipped++; continue
+      }
+      const stAfter = testFixtureSend(db,tenantId,{ to_email: s.to_email, test: s.msg_test }) ? 'ok' : domainReviewStatus(db,tenantId,s.lead_id,s.to_email)
+      if (stAfter !== 'ok') {
+        db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step)
+        if (stAfter === 'required') stopSequenceForThread(db,tenantId,s.lead_id,'stopped','domain_unconfirmed',now)
+        out.skipped++; continue
       }
       const current = getSeq(db,tenantId,s.id)
       const currentStep = db.prepare('SELECT body,subject,approved_hash FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? AND step = ?').get(tenantId,s.id,stepRow.step) as {body:string;subject:string;approved_hash:string}

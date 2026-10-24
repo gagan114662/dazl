@@ -11,7 +11,7 @@ import { getMasterKey } from '../secrets.ts'
 import { contactPurposeRestricted } from './contact-purpose-db.ts'
 import { currentnessHeld } from './currentness.ts'
 import { accountSendCount, anyUncertainSend, tableExists } from './send-budget.ts'
-import { composeBody, getSettings, isSuppressed, leadHeld, recipientAllowed, leadEvidenceEligible, OutreachError, unsubToken, DAILY_CAP, SENDING_STALE_S, type Deps } from './service.ts'
+import { composeBody, getSettings, isSuppressed, leadHeld, recipientAllowed, leadEvidenceEligible, domainReviewHeld, domainHoldCode, OutreachError, unsubToken, DAILY_CAP, SENDING_STALE_S, type Deps } from './service.ts'
 
 export const WARM_MIN_DAYS = 30
 export const WARM_MAX_DAYS = 90
@@ -131,6 +131,7 @@ function leadGates(db: Database.Database, tenantId: string, r: { lead_id: string
   if (contactPurposeRestricted(db, tenantId, r.lead_id, r.to_email)) throw new OutreachError('not_sales_contact')
   if (currentnessHeld(db, tenantId, r.lead_id)) throw new OutreachError('lead_currentness_unconfirmed')
   if (!leadEvidenceEligible(db, tenantId, r.lead_id)) throw new OutreachError('lead_evidence_withdrawn')
+  if (domainReviewHeld(db, tenantId, r.lead_id, r.to_email)) throw new OutreachError(domainHoldCode(db, tenantId, r.lead_id, r.to_email))
 }
 export async function sendReopen(db: Database.Database, tenantId: string, threadId: string, d: Deps & { now?: number } = {}): Promise<void> {
   const r = getReopen(db, tenantId, threadId)
@@ -166,7 +167,8 @@ export async function sendReopen(db: Database.Database, tenantId: string, thread
   // At-most-once: claim the draft atomically right before the send. No await sits between the last check and
   // this claim, so a second click, tab or process cannot also pass it. The body is re-read after the claim so the
   // send uses exactly the row it claimed.
-  const claimed = db.prepare("UPDATE reopen_messages SET status = 'approved', sent_at = ? WHERE tenant_id = ? AND thread_id = ? AND status = 'draft'").run(now, tenantId, threadId)
+  // The lead gates and the claim are one write transaction (the lock the identity review action takes): a withdraw cannot land between them.
+  const claimed = db.transaction(() => { leadGates(db, tenantId, r); return db.prepare("UPDATE reopen_messages SET status = 'approved', sent_at = ? WHERE tenant_id = ? AND thread_id = ? AND status = 'draft'").run(now, tenantId, threadId) }).immediate()
   if (claimed.changes !== 1) throw new OutreachError(getReopen(db, tenantId, threadId)?.status === 'sent' ? 'already_sent' : 'send_uncertain')
   // Same shared 24h cap as the other send paths; this claim counts itself. Over the cap: nothing was sent, so hand
   // the draft back (the user can send it later) rather than leaving an unresolved claim.

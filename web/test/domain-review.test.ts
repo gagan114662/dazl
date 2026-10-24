@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -133,4 +134,36 @@ test('createDraft reads the identity state under the write lock: a concurrent wr
   assert.throws(() => createDraft(b, 'A', id, 'Seller'), /domain_unconfirmed/, 'withdraw committed before the draft: no draft')
   assert.equal((a.prepare('SELECT count(*) n FROM outreach_messages').get() as { n: number }).n, 0)
   a.close(); b.close(); rmSync(dir, { recursive: true })
+})
+
+test('a contact email that is also the crawled address is reviewed; a different contact email is not; the offered binding is the same', () => {
+  const rows = (extra: unknown[] = []) => [
+    { connector: 'sitecrawl', kind: 'email', value: 'info@acme.test', label: null, source_url: 'https://acme.test/contact', retrieved_at: 10 },
+    { connector: 'sitecrawl', kind: 'domain', value: 'acme.test|name_probe', label: 'domain-basis-v1:name_probe', source_url: 'https://acme.test/', retrieved_at: 10 }, ...extra] as never
+  assert.equal(domainReviewFor({ id: 'L', contact: 'info@acme.test' }, rows()).state, 'required')
+  assert.equal(domainReviewFor({ id: 'L', contact: 'INFO@acme.test ' }, rows()).state, 'required')
+  assert.equal(domainReviewFor({ id: 'L', contact: 'other@cited.test' }, rows()).state, 'not_required')
+  assert.equal(domainReviewFor({ id: 'L', contact: 'info@acme.test' }, rows()).binding, domainReviewFor({ id: 'L', contact: null }, rows()).binding)
+})
+
+test('one website with one address keeps the version 1 binding; more than one website or address changes it and discloses the full covered set', () => {
+  const base = [
+    { connector: 'sitecrawl', kind: 'email', value: 'info@acme.test', label: null, source_url: 'https://acme.test/contact', retrieved_at: 10 },
+    { connector: 'sitecrawl', kind: 'domain', value: 'acme.test|name_probe', label: 'domain-basis-v1:name_probe', source_url: 'https://acme.test/', retrieved_at: 10 }] as never
+  const single = domainReviewFor({ id: 'L', contact: null }, base)
+  const v1 = createHash('sha256').update(JSON.stringify(['v1', 'L', 'acme.test', 'name_probe', 'https://acme.test/', 'info@acme.test', 'https://acme.test/contact', ['acme.test|name_probe@https://acme.test/']])).digest('hex')
+  assert.equal(single.binding, v1, 'an earlier single-website review of exactly this scope still matches')
+  assert.equal(single.multi, false)
+  // A second recorded website: a review made against the old binding no longer applies, and the covered set lists both.
+  const two = [...(base as never as object[]), { connector: 'sitecrawl', kind: 'domain', value: 'acme-group.test|name_probe', label: 'domain-basis-v1:name_probe', source_url: 'https://acme-group.test/', retrieved_at: 10 }, { connector: 'sitecrawl', kind: 'email', value: 'sales@acme-group.test', label: null, source_url: 'https://acme-group.test/c', retrieved_at: 9 }] as never
+  const oldReview = { connector: 'user', kind: 'domain_review', value: 'acme.test', label: 'domain-review-v1:' + v1, source_url: 'https://acme.test/', retrieved_at: 11 }
+  const d = domainReviewFor({ id: 'L', contact: null }, [...(two as never as object[]), oldReview] as never)
+  assert.equal(d.state, 'required'); assert.equal(d.multi, true)
+  assert.deepEqual(d.covered!.domains.map(x => x.domain), ['acme-group.test', 'acme.test'])
+  assert.deepEqual(d.covered!.addresses.map(x => x.email), ['info@acme.test', 'sales@acme-group.test'])
+  const confirmed = domainReviewFor({ id: 'L', contact: null }, [...(two as never as object[]), { ...oldReview, label: 'domain-review-v1:' + d.binding }] as never)
+  assert.equal(confirmed.state, 'confirmed')
+  // Drift in the covered set invalidates again.
+  const drift = [...(two as never as object[]), { connector: 'sitecrawl', kind: 'email', value: 'new@acme-group.test', label: null, source_url: 'https://acme-group.test/d', retrieved_at: 8 }, { ...oldReview, label: 'domain-review-v1:' + d.binding }] as never
+  assert.equal(domainReviewFor({ id: 'L', contact: null }, drift).state, 'required')
 })

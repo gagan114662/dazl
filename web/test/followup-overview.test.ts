@@ -1,3 +1,4 @@
+import { migrateConnectors } from '../lib/connectors/store.ts'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
@@ -8,7 +9,7 @@ import { migrateOutreach } from '../lib/outreach/store.ts'
 
 const setup = () => {
   const db = new Database(':memory:')
-  migrateAutopilot(db); migrateReplies(db); migrateOutreach(db)
+  migrateAutopilot(db); migrateReplies(db); migrateOutreach(db); migrateConnectors(db)
   db.exec("CREATE TABLE leads (id TEXT PRIMARY KEY, company TEXT, name TEXT)")
   db.prepare("INSERT INTO leads VALUES ('l1', 'Acme Robotics', 'Pat Lee')").run()
   db.prepare("INSERT INTO autopilot_settings (tenant_id, enabled, followups_enabled) VALUES ('t1', 1, 1)").run()

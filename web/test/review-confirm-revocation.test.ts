@@ -12,6 +12,9 @@ import { runFollowups, setFollowups } from '../lib/outreach/followups.ts'
 import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
 import { saveSettings, approve, sendMessage, createDraft } from '../lib/outreach/service.ts'
 import { migrateSequences, createSequence, approveSequence, runSequences } from '../lib/outreach/sequences.ts'
+import { migrateConnectors } from '../lib/connectors/store.ts'
+import { domainReviewFor } from '../lib/outreach/domain-review.ts'
+import { setDomainReview } from '../lib/scan/domain-review-action.ts'
 import { confirmLeadReview, unconfirmLeadReview } from '../lib/scan/review-confirm.ts'
 
 // Revocation safety: withdrawing a human confirmation must block approval and sending of
@@ -27,7 +30,7 @@ const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { sta
 
 async function setup() {
   const db = new Database(':memory:')
-  migrateScan(db); migrateOutreach(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db); migrateSequences(db); seedOffers(db)
+  migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db); migrateSequences(db); seedOffers(db)
   const state = new URL(startOAuth(db, 'A', { env, now: NOW, withRead: true })).searchParams.get('state')!
   await completeOAuth(db, 'A', 'c', state, { env, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'test-token', scope: `https://www.googleapis.com/auth/gmail.send ${GMAIL_READ_SCOPE}`, id_token: 'x.' + Buffer.from(JSON.stringify({ email: 'me@acme.example', email_verified: true })).toString('base64url') + '.y' })) as typeof fetch })
   saveSettings(db, 'A', { sender_name: 'Pat', postal_address: '1 King St W, Toronto ON M5H 1A1' })
@@ -285,4 +288,137 @@ test('explicit review restores a legacy lead without replacing its historical ve
  assert.equal(unconfirmLeadReview(db,'A',lead),true)
  assert.equal((db.prepare('SELECT review_reason FROM leads WHERE id=?').get(lead) as {review_reason:null}).review_reason,null)
  assert.throws(()=>approve(db,'A',draft),/lead_currentness_unconfirmed/)
+})
+
+test('a withdrawn website confirmation stops a warm follow-up before the claim and after the token await; re-confirming does not restart it', async () => {
+  const mk = async () => {
+    const db = await setupFollowups(); migrateConnectors(db)
+    const { lead, thread } = interestedReviewThread(db)
+    db.prepare('UPDATE leads SET contact = NULL WHERE id = ?').run(lead)
+    const ins = db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', ?, ?, ?, ?, '2026-10-24', 10)")
+    ins.run(lead, 'email', 'lead@acme.example', null, 'https://acme.example/contact'); ins.run(lead, 'domain', 'acme.example|name_probe', 'domain-basis-v1:name_probe', 'https://acme.example/')
+    const bind = domainReviewFor({ id: lead, contact: null }, db.prepare('SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ?').all(lead) as never).binding!
+    setDomainReview(db, 'A', lead, 'confirm', bind)
+    return { db, lead, thread, bind }
+  }
+  const stoppedOf = (db: Database.Database, t: string) => (db.prepare('SELECT stopped FROM followup_threads WHERE thread_id = ?').get(t) as { stopped: string | null }).stopped
+  // Before the claim.
+  { const { db, lead, thread, bind } = await mk(); const m = mock()
+    setDomainReview(db, 'A', lead, 'withdraw')
+    const r = await runFollowups(db, 'A', 'Acme', { ...m, flags: followupFlags })
+    assert.equal(r.sent, 0); assert.equal(m.calls.length, 0)
+    assert.equal(stoppedOf(db, thread), 'domain_unconfirmed')
+    assert.equal((db.prepare('SELECT count(*) AS n FROM followup_messages').get() as { n: number }).n, 0)
+    setDomainReview(db, 'A', lead, 'confirm', bind)
+    await runFollowups(db, 'A', 'Acme', { ...m, flags: followupFlags, now: NOW + 10 * DAY })
+    assert.equal(m.calls.length, 0, 're-confirming does not restart a stopped thread'); assert.equal(stoppedOf(db, thread), 'domain_unconfirmed') }
+  // During the token await: claim row removed, nothing sent.
+  { const { db, lead, thread } = await mk(); const m = mock()
+    const f = (async (u: unknown) => { const url = String(u); if (url.includes('oauth2')) { setDomainReview(db, 'A', lead, 'withdraw'); return json({ access_token: 'at' }) }; if (url.includes('/threads/')) return json({ messages: [] }); return json({}, 404) }) as typeof fetch
+    const r = await runFollowups(db, 'A', 'Acme', { ...m, flags: followupFlags, fetchImpl: f })
+    assert.equal(r.sent, 0); assert.equal(m.calls.length, 0)
+    assert.equal(stoppedOf(db, thread), 'domain_unconfirmed')
+    assert.equal((db.prepare('SELECT count(*) AS n FROM followup_messages').get() as { n: number }).n, 0) }
+})
+
+async function crawlSeq() {
+  const db = await setup(); migrateConnectors(db)
+  const { lead } = addReviewLead(db)
+  db.prepare('UPDATE leads SET contact = NULL WHERE id = ?').run(lead)
+  confirmLeadReview(db, 'A', lead)
+  const ins = db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', ?, ?, ?, ?, '2026-10-24', 10)")
+  ins.run(lead, 'email', 'lead@acme.example', null, 'https://acme.example/contact'); ins.run(lead, 'domain', 'acme.example|name_probe', 'domain-basis-v1:name_probe', 'https://acme.example/')
+  const bind = domainReviewFor({ id: lead, contact: null }, db.prepare('SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ?').all(lead) as never).binding!
+  setDomainReview(db, 'A', lead, 'confirm', bind)
+  const draftId = createDraft(db, 'A', lead, 'Acme')
+  return { db, lead, draftId, seq: createSequence(db, 'A', draftId) }
+}
+
+test('withdrawn website confirmation blocks sequence set approval', async () => {
+  const { db, lead, draftId, seq } = await crawlSeq()
+  setDomainReview(db, 'A', lead, 'withdraw')
+  assert.throws(() => approveSequence(db, 'A', seq, id => approve(db, 'A', id, true), NOW), /domain_unconfirmed/)
+  assert.equal((db.prepare('SELECT status FROM sequences WHERE id = ?').get(seq) as { status: string }).status, 'draft')
+  assert.equal((db.prepare('SELECT status FROM outreach_messages WHERE id = ?').get(draftId) as { status: string }).status, 'draft')
+})
+
+test('withdrawn website confirmation stops an approved sequence before step 2 and re-confirming does not restart it', async () => {
+  const { db, lead, draftId, seq } = await crawlSeq(); const m = mock()
+  approveSequence(db, 'A', seq, id => approve(db, 'A', id, true), NOW)
+  assert.equal(await sendMessage(db, 'A', draftId, m), 'sent')
+  setDomainReview(db, 'A', lead, 'withdraw')
+  const r = await runSequences(db, 'A', 'Acme', { ...m, now: NOW + 3 * DAY })
+  assert.equal(r.sent, 0); assert.equal(m.calls.length, 1)
+  const s = db.prepare('SELECT status, stop_reason FROM sequences WHERE id = ?').get(seq) as { status: string; stop_reason: string | null }
+  assert.deepEqual(s, { status: 'stopped', stop_reason: 'domain_unconfirmed' })
+  const rows = db.prepare('SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ?').all(lead) as never
+  setDomainReview(db, 'A', lead, 'confirm', domainReviewFor({ id: lead, contact: null }, rows).binding!)
+  await runSequences(db, 'A', 'Acme', { ...m, now: NOW + 6 * DAY })
+  assert.equal(m.calls.length, 1)
+})
+
+test('withdrawn website confirmation during the step token await releases the claim and sends nothing', async () => {
+  const { db, lead, draftId, seq } = await crawlSeq(); const m = mock()
+  approveSequence(db, 'A', seq, id => approve(db, 'A', id, true), NOW)
+  await sendMessage(db, 'A', draftId, m)
+  await runSequences(db, 'A', 'Acme', { ...m, now: NOW + 1 })
+  const f = (async (u: unknown) => { const url = String(u); if (url.includes('oauth2')) { setDomainReview(db, 'A', lead, 'withdraw'); return json({ access_token: 'at' }) }; if (url.includes('/threads/')) return json({ messages: [] }); return json({}, 404) }) as typeof fetch
+  const r = await runSequences(db, 'A', 'Acme', { ...m, fetchImpl: f, now: NOW + 3 * DAY })
+  assert.equal(r.sent, 0); assert.equal(m.calls.length, 1)
+  assert.equal((db.prepare('SELECT stop_reason FROM sequences WHERE id = ?').get(seq) as { stop_reason: string }).stop_reason, 'domain_unconfirmed')
+  assert.equal((db.prepare("SELECT count(*) AS n FROM sequence_steps WHERE status = 'sending'").get() as { n: number }).n, 0)
+})
+
+test('unreadable website state: approved send is refused with exactly review_unreadable, nothing sent, status unchanged; recovery sends under the existing confirmation', async () => {
+  const db = await setup(); migrateConnectors(db)
+  const { lead } = addReviewLead(db); confirmLeadReview(db, 'A', lead)
+  db.prepare('UPDATE leads SET contact = NULL WHERE id = ?').run(lead)
+  const ins = db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', ?, ?, ?, ?, '2026-10-24', 10)")
+  ins.run(lead, 'email', 'lead@acme.example', null, 'https://acme.example/contact'); ins.run(lead, 'domain', 'acme.example|name_probe', 'domain-basis-v1:name_probe', 'https://acme.example/')
+  const bind = domainReviewFor({ id: lead, contact: null }, db.prepare('SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ?').all(lead) as never).binding!
+  setDomainReview(db, 'A', lead, 'confirm', bind)
+  const draftId = createDraft(db, 'A', lead, 'Acme'); approve(db, 'A', draftId)
+  const status = () => (db.prepare('SELECT status FROM outreach_messages WHERE id = ?').get(draftId) as { status: string }).status
+  assert.equal(status(), 'approved')
+  const m = mock()
+  db.exec('ALTER TABLE lead_enrichments RENAME TO le_bak')
+  await assert.rejects(sendMessage(db, 'A', draftId, m), (e: Error) => e.message === 'review_unreadable')
+  assert.equal(m.calls.length, 0); assert.equal(status(), 'approved')
+  db.exec('ALTER TABLE le_bak RENAME TO lead_enrichments')
+  assert.equal(await sendMessage(db, 'A', draftId, m), 'sent'); assert.equal(m.calls.length, 1)
+})
+
+test('unreadable website state: follow-up round skips with no call, no stop and no leaked claim; recovery continues under the existing confirmation', async () => {
+  const db = await setupFollowups(); migrateConnectors(db)
+  const { lead, thread } = interestedReviewThread(db)
+  db.prepare('UPDATE leads SET contact = NULL WHERE id = ?').run(lead)
+  const ins = db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', ?, ?, ?, ?, '2026-10-24', 10)")
+  ins.run(lead, 'email', 'lead@acme.example', null, 'https://acme.example/contact'); ins.run(lead, 'domain', 'acme.example|name_probe', 'domain-basis-v1:name_probe', 'https://acme.example/')
+  setDomainReview(db, 'A', lead, 'confirm', domainReviewFor({ id: lead, contact: null }, db.prepare('SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ?').all(lead) as never).binding!)
+  const m = mock()
+  const stopped = () => (db.prepare('SELECT stopped FROM followup_threads WHERE thread_id = ?').get(thread) as { stopped: string | null }).stopped
+  db.exec('ALTER TABLE lead_enrichments RENAME TO le_bak')
+  const r = await runFollowups(db, 'A', 'Acme', { ...m, flags: followupFlags })
+  assert.equal(r.sent, 0); assert.equal(m.calls.length, 0); assert.equal(stopped(), null)
+  assert.equal((db.prepare('SELECT count(*) AS n FROM followup_messages').get() as { n: number }).n, 0, 'no leaked claim row')
+  db.exec('ALTER TABLE le_bak RENAME TO lead_enrichments')
+  const r2 = await runFollowups(db, 'A', 'Acme', { ...m, flags: followupFlags })
+  assert.equal(r2.sent, 1); assert.equal(m.calls.length, 1); assert.equal(stopped(), null)
+})
+
+test('unreadable website state: due sequence step skips with no call and no stop; recovery sends step 2 under the existing approval', async () => {
+  const { db, lead, draftId, seq } = await crawlSeq(); const m = mock()
+  approveSequence(db, 'A', seq, id => approve(db, 'A', id, true), NOW)
+  assert.equal(await sendMessage(db, 'A', draftId, m), 'sent')
+  db.exec('ALTER TABLE lead_enrichments RENAME TO le_bak')
+  const r = await runSequences(db, 'A', 'Acme', { ...m, now: NOW + 3 * DAY })
+  assert.equal(r.sent, 0); assert.equal(m.calls.length, 1)
+  const s = db.prepare('SELECT status, stop_reason FROM sequences WHERE id = ?').get(seq) as { status: string; stop_reason: string | null }
+  assert.notEqual(s.status, 'stopped'); assert.equal(s.stop_reason, null)
+  const claims = db.prepare("SELECT count(*) AS n FROM outreach_messages WHERE status = 'sending'").get() as { n: number }
+  assert.equal(claims.n, 0, 'no leaked sending claim')
+  db.exec('ALTER TABLE le_bak RENAME TO lead_enrichments')
+  void lead
+  await runSequences(db, 'A', 'Acme', { ...m, now: NOW + 3 * DAY + 1 })
+  assert.equal(m.calls.length, 2)
 })

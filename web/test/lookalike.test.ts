@@ -1,3 +1,4 @@
+import { migrateConnectors } from '../lib/connectors/store.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
@@ -11,7 +12,7 @@ const OTHER = 'tenant-b'
 
 function db() {
   const d = new Database(':memory:')
-  migrateScan(d); migrateOutreach(d); migrateReplies(d)
+  migrateScan(d); migrateOutreach(d); migrateConnectors(d); migrateReplies(d)
   return d
 }
 

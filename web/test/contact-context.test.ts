@@ -1,3 +1,4 @@
+import { migrateConnectors } from '../lib/connectors/store.ts'
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
 import {contactContext,contextLabel,readContextLabel} from '../lib/outreach/contact-context.ts'
@@ -28,7 +29,7 @@ test('context is preserved in crawl label; ambiguous business address stays unkn
  const c={excerpt:'"'.repeat(240),source_url:'https://acme.example/contact'};assert.ok(contextLabel(c).length<=200);assert.ok(readContextLabel(contextLabel(c),c.source_url))
 })
 test('source context persists and human review never upgrades recruitment to sales; tenant isolation',async()=>{
- const db=new Database(':memory:');migrateScan(db);migrateOutreach(db);migrateSourceReview(db)
+ const db=new Database(':memory:');migrateScan(db);migrateOutreach(db); migrateConnectors(db);migrateSourceReview(db)
  const email='sales@acme.example',source_url='https://acme.example/contact',excerpt='Acme is hiring an outbound sales representative.'
  const r=await createSourceReview(db,'A',{company:'Acme',signal:'A supplied hiring claim',excerpt,contact:email,source_url,event_date:null},async()=>({title:'Acme',text:excerpt+' Send your CV to '+email,retrievedAt:1800000000}))
  assert.equal(contactPurposeRestricted(db,'A',r.lead_id,email),true);assert.equal(contactPurposeRestricted(db,'B',r.lead_id,email),false)

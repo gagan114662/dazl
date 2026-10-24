@@ -1,3 +1,4 @@
+import { migrateConnectors } from '../lib/connectors/store.ts'
 import { seedOffers } from './helpers/seed-offer.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -15,7 +16,7 @@ import { createDraft } from '../lib/outreach/service.ts'
 
 function setup() {
   const db = new Database(':memory:')
-  migrateScan(db); migrateOutreach(db); seedOffers(db)
+  migrateScan(db); migrateOutreach(db); migrateConnectors(db); seedOffers(db)
   return db
 }
 function addReviewLead(db: Database.Database, tenant: string, o: { contact?: string | null; reason?: string } = {}) {

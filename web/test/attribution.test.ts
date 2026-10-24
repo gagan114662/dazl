@@ -1,3 +1,4 @@
+import { migrateConnectors } from '../lib/connectors/store.ts'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
@@ -6,7 +7,7 @@ import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateReplies } from '../lib/outreach/replies.ts'
 import { snapshotSignalContext,messageSignalContext,replySignalContexts } from '../lib/outreach/attribution.ts'
 function setup() {
-  const db=new Database(':memory:');migrateScan(db);migrateOutreach(db);migrateReplies(db)
+  const db=new Database(':memory:');migrateScan(db);migrateOutreach(db); migrateConnectors(db);migrateReplies(db)
   const job=createJob(db,'A',{business_name:'Seller',industry:'software',location:'Toronto'})
   db.prepare("UPDATE scan_jobs SET status='running' WHERE id=?").run(job)
   db.prepare(`INSERT INTO leads (id,scan_job_id,company,signal,source_url,signals,signal_kind,source_kind)
@@ -45,6 +46,6 @@ test('snapshot refuses mismatched owner and reapproval updates only same-tenant 
   db.prepare("UPDATE leads SET signal='Latest approved signal' WHERE id='l'").run()
   snapshotSignalContext(db,'A','m',200)
   assert.equal((messageSignalContext(db,'A','m') as any).signal,'Latest approved signal')
-  migrateOutreach(db);migrateReplies(db)
+  migrateOutreach(db); migrateConnectors(db);migrateReplies(db)
   assert.equal((messageSignalContext(db,'A','m') as any).captured_at,200)
 })

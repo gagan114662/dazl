@@ -169,6 +169,37 @@ export function draftTemplate(lead: Lead, businessName: string, positioning = ''
 // One IMMEDIATE transaction around the gate reads and the insert (all synchronous, no network or model call inside): the write lock is
 // taken before the lead, enrichment and identity-review rows are read, so a concurrent confirm, withdraw or crawl write on the same
 // SQLite file cannot land between the identity gate and the draft insert. A thrown OutreachError rolls back nothing, since nothing was written yet.
+type CrawledRows = NonNullable<Parameters<typeof domainReviewFor>[1]>
+// The crawled address and domain evidence plus the user's domain review for one lead. Shared by the draft entry and the
+// approve and send checks so all three read the same rows.
+function readCrawledRows(db: Database.Database, tenantId: string, leadId: string): CrawledRows {
+  return db.prepare("SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND ((connector = 'sitecrawl' AND kind IN ('email','domain')) OR (connector = 'user' AND kind = 'domain_review'))").all(leadId, tenantId) as CrawledRows
+}
+// True when the lead's address came from a crawl whose website still needs the user's identity review (never recorded, or withdrawn
+// after the draft was made). A draft made before this check existed, or whose confirmation was later withdrawn, cannot be approved or sent.
+export type DomainReviewStatus = 'ok' | 'required' | 'unreadable'
+export function domainReviewStatus(db: Database.Database, tenantId: string, leadId: string, recipient: string): DomainReviewStatus {
+  const lead = db.prepare('SELECT l.id, l.contact FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as { id: string; contact: string | null } | undefined
+  if (!lead) return 'ok'
+  let rows: CrawledRows
+  // If the crawl state cannot be read (table missing or a read error) where the address came from is unknowable: held, for every lead.
+  // This is a retryable fault, not something the user can fix by confirming a website.
+  try { rows = readCrawledRows(db, tenantId, leadId) } catch { return 'unreadable' }
+  if (EMAIL_RE.test(norm(lead.contact ?? ''))) {
+    // The recipient is judged only when the lead's own crawl recorded it. A recipient with no crawl record has another source
+    // (the cited page) and stays outside this gate. The message's recipient and words are never rewritten. Equality with the
+    // lead's contact is not treated as proof of a cited-page origin: when the crawl also recorded the address, the review applies.
+    const crawled = rows.some(r => r.connector === 'sitecrawl' && r.kind === 'email' && norm(r.value) === norm(recipient))
+    if (!crawled) return 'ok'
+    return domainReviewFor({ id: lead.id, contact: null }, rows).state === 'required' ? 'required' : 'ok'
+  }
+  return domainReviewFor({ id: lead.id, contact: lead.contact }, rows).state === 'required' ? 'required' : 'ok'
+}
+export const domainReviewHeld = (db: Database.Database, tenantId: string, leadId: string, recipient: string): boolean => domainReviewStatus(db, tenantId, leadId, recipient) !== 'ok'
+// The error code for a held message: a missing review is something the user can act on, an unreadable state is a retry.
+export const domainHoldCode = (db: Database.Database, tenantId: string, leadId: string, recipient: string): 'domain_unconfirmed' | 'review_unreadable' =>
+  domainReviewStatus(db, tenantId, leadId, recipient) === 'unreadable' ? 'review_unreadable' : 'domain_unconfirmed'
+
 export function createDraft(db: Database.Database, tenantId: string, leadId: string, businessName: string): string {
   return db.transaction(() => createDraftInner(db, tenantId, leadId, businessName)).immediate()
 }
@@ -196,7 +227,7 @@ function createDraftInner(db: Database.Database, tenantId: string, leadId: strin
   let addressUrl = lead.source_url
   if (!EMAIL_RE.test(norm(published))) {
     try {
-      crawled = db.prepare("SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND ((connector = 'sitecrawl' AND kind IN ('email','domain')) OR (connector = 'user' AND kind = 'domain_review'))").all(lead.id, tenantId) as NonNullable<Parameters<typeof domainReviewFor>[1]>
+      crawled = readCrawledRows(db, tenantId, lead.id)
       const r = pickCrawledEmail(crawled)
       if (r) { published = r.value; addressUrl = r.source_url ?? lead.source_url }
     } catch { /* enrichment table not present */ }
@@ -209,7 +240,7 @@ function createDraftInner(db: Database.Database, tenantId: string, leadId: strin
   if (contactPurposeRestricted(db,tenantId,leadId,to)) throw new OutreachError('not_sales_contact')
   // A crawled address whose website rests only on a name match or a link needs the user's identity review first (see domain-review.ts).
   // This is the single draft entry for the API and for autopilot, so neither can skip it. An address printed on the cited page is unaffected.
-  if (!EMAIL_RE.test(norm(lead.contact ?? '')) && domainReviewFor({ id: lead.id, contact: lead.contact }, crawled).state === 'required') throw new OutreachError('domain_unconfirmed')
+  if (domainReviewFor({ id: lead.id, contact: lead.contact }, crawled).state === 'required') throw new OutreachError('domain_unconfirmed')
   const test = testRecipientApproved(db, tenantId, to) ? 1 : 0
   if (!recipientAllowed(db,tenantId,to)) throw new OutreachError('personal_email')
   if (isSuppressed(db, tenantId, to)) throw new OutreachError('suppressed')
@@ -293,6 +324,8 @@ export function approve(db: Database.Database, tenantId: string, id: string, seq
   if (!testFixtureSend(db,tenantId,m) && currentnessHeld(db,tenantId,m.lead_id)) throw new OutreachError('lead_currentness_unconfirmed')
   if (!testFixtureSend(db, tenantId, m) && !leadEvidenceEligible(db, tenantId, m.lead_id)) throw new OutreachError('lead_evidence_withdrawn')
   db.transaction(() => {
+    // Read under the write lock, the same lock the identity review action takes, so a withdraw cannot slip in between this check and the update.
+    if (!testFixtureSend(db, tenantId, m) && domainReviewHeld(db, tenantId, m.lead_id, m.to_email)) throw new OutreachError(domainHoldCode(db, tenantId, m.lead_id, m.to_email))
     snapshotSignalContext(db, tenantId, id)
     db.prepare("UPDATE outreach_messages SET status = 'approved', approved_hash = ? WHERE id = ? AND tenant_id = ? AND status = 'draft'").run(hash(m.to_email, m.subject, m.body), id, tenantId)
   }).immediate()
@@ -340,11 +373,16 @@ export async function sendMessage(db: Database.Database, tenantId: string, id: s
   if (leadHeld(db, tenantId, pre.lead_id)) throw new OutreachError('lead_ungraded')
   if (!testFixtureSend(db,tenantId,pre) && currentnessHeld(db,tenantId,pre.lead_id)) throw new OutreachError('lead_currentness_unconfirmed')
   if (!testFixtureSend(db, tenantId, pre) && !leadEvidenceEligible(db, tenantId, pre.lead_id)) throw new OutreachError('lead_evidence_withdrawn')
+  if (!testFixtureSend(db, tenantId, pre) && domainReviewHeld(db, tenantId, pre.lead_id, pre.to_email)) throw new OutreachError(domainHoldCode(db, tenantId, pre.lead_id, pre.to_email))
   if (anyUncertainSend(db, tenantId)) throw new OutreachError('already_uncertain')
   if (tableExists(db, 'autopilot_settings') && (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as { paused: number } | undefined)?.paused) throw new OutreachError('paused')
   if (pre.status !== 'approved') throw new OutreachError(pre.status === 'sending' || pre.status === 'uncertain' ? `already_${pre.status}` : 'not_approved')
 
-  const claim = db.prepare("UPDATE outreach_messages SET status = 'sending', attempts = attempts + 1, claimed_at = ?, error = NULL WHERE id = ? AND tenant_id = ? AND status = 'approved'").run(nowS(d), id, tenantId)
+  // The identity check and the claim are one write transaction (the same lock the review action takes), so a withdraw cannot land between them.
+  const claim = db.transaction(() => {
+    if (!testFixtureSend(db, tenantId, pre) && domainReviewHeld(db, tenantId, pre.lead_id, pre.to_email)) throw new OutreachError(domainHoldCode(db, tenantId, pre.lead_id, pre.to_email))
+    return db.prepare("UPDATE outreach_messages SET status = 'sending', attempts = attempts + 1, claimed_at = ?, error = NULL WHERE id = ? AND tenant_id = ? AND status = 'approved'").run(nowS(d), id, tenantId)
+  }).immediate()
   if (claim.changes !== 1) throw new OutreachError('already_sending')
   const release = (code: string): never => {
     db.prepare("UPDATE outreach_messages SET status = 'approved', claimed_at = NULL, error = ? WHERE id = ? AND status = 'sending'").run(code, id)
@@ -388,6 +426,7 @@ export async function sendMessage(db: Database.Database, tenantId: string, id: s
   if (leadHeld(db,tenantId,m.lead_id)) release('lead_ungraded')
   if (!testFixtureSend(db,tenantId,m) && currentnessHeld(db,tenantId,m.lead_id)) release('lead_currentness_unconfirmed')
   if (!testFixtureSend(db,tenantId,m) && !leadEvidenceEligible(db,tenantId,m.lead_id)) release('lead_evidence_withdrawn')
+  if (!testFixtureSend(db,tenantId,m) && domainReviewHeld(db,tenantId,m.lead_id,m.to_email)) release(domainHoldCode(db,tenantId,m.lead_id,m.to_email))
   if (isSuppressed(db,tenantId,m.to_email)) release('suppressed')
   const final = getMsg(db,tenantId,id)!
   if (final.approved_hash !== hash(final.to_email,final.subject,final.body) || final.body !== m.body || final.subject !== m.subject || final.to_email !== m.to_email) release('changed_since_approval')

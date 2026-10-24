@@ -8,7 +8,8 @@ interface Sent { thread_id: string; company: string; to_email: string; step: num
 interface Overview { enabled: boolean; account: string | null; threads: Thread[]; sent: Sent[] }
 interface Warm { thread_id: string; company: string; name: string; to_email: string; last_reply_at: number; reply_excerpt: string; reopen: { status: string; body: string } | null }
 
-const STOPPED: Record<string, string> = { replied: 'They replied again - the sequence stops for you to handle', bounced: 'The address bounced', unsubscribed: 'They unsubscribed', manual: 'Stopped by you', evidence_withdrawn: 'Lead confirmation withdrawn - re-confirm the lead on the Leads page to contact them again' }
+const STOPPED: Record<string, string> = { replied: 'They replied again - the sequence stops for you to handle', bounced: 'The address bounced', unsubscribed: 'They unsubscribed', manual: 'Stopped by you', domain_unconfirmed: 'The website is not confirmed as the right company. This thread is stopped and confirming it later does not restart it. Check the lead on the Leads page and start a new draft if you still want to write',
+ evidence_withdrawn: 'Lead confirmation withdrawn - re-confirm the lead on the Leads page to contact them again' }
 const day = (t: number) => new Date(t * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 
 export default function FollowupsClient() {
@@ -35,6 +36,8 @@ export default function FollowupsClient() {
         daily_cap: 'Daily sending limit reached. Nothing was sent; the draft is kept for later.',
         not_sales_contact: 'The published address is for recruitment, support, privacy or another restricted purpose. Saved words remain unchanged; sending is blocked.',
         lead_currentness_unconfirmed: 'Event timing is unconfirmed. This draft is preserved for inspection but cannot be sent.',
+        review_unreadable: 'The website check could not be read just now. Nothing was sent and nothing was changed. Try again in a minute.',
+        domain_unconfirmed: 'The website behind this draft is not confirmed as the right company. Confirm it on the Leads page ("This website is the right company"). That check is not need or consent. If the lead shows no check there, skip this draft and create a new one from the lead.',
         lead_evidence_withdrawn: 'The lead confirmation behind this draft was withdrawn. Re-confirm the lead on the Leads page - dazl has not verified it.',
         paused: 'Sending is paused. Resume it in Settings, then try again. Nothing was sent.',
         send_in_progress: 'This send is still in progress. Wait a few minutes, then check your Gmail Sent folder.',
@@ -64,7 +67,7 @@ export default function FollowupsClient() {
         {data && !data.enabled && ' They are off right now.'}
       </p>
       {data?.account && <p className="text-xs text-[#555] -mt-4 mb-6">Gmail connected as <span className="font-medium">{data.account}</span>.</p>}
-      {error && <p className="text-red-600 text-sm">{error}</p>}
+      {error && <p className="text-[#111] text-sm border-l-2 border-[#111] pl-3" role="status">{error}</p>}
       {data && followupAsk(data) === 'connect' && (
         <div className="mb-6">
           <GmailGate intro="Connect Gmail to unlock Inbox and Follow-ups. Follow-ups start only after Gmail is connected and the follow-ups switch is on in Settings." />
@@ -113,7 +116,7 @@ export default function FollowupsClient() {
                   <ReopenRow key={t.thread_id} t={t} onAction={reopenAction} />
                 ))}
               </div>
-              {warmMsg && <p className="text-red-600 text-xs mb-4">{warmMsg}</p>}
+              {warmMsg && <p className="text-[#111] text-xs mb-4 border-l-2 border-[#111] pl-3" role="status">{warmMsg}</p>}
             </>
           )}
           {data.sent.length > 0 && (

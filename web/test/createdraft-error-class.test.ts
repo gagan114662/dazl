@@ -1,3 +1,4 @@
+import { migrateConnectors } from '../lib/connectors/store.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
@@ -15,7 +16,7 @@ function fixture() {
   const path = join(dir, 't.db')
   const db = new Database(path, { timeout: 0 })
   db.pragma('journal_mode = WAL')
-  migrateScan(db); migrateOutreach(db); migrateMemory(db)
+  migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateMemory(db)
   saveMemory(db, 'A', { positioning: 'Synthetic fixture offer for wiring checks.' })
   const job = createJob(db, 'A', { business_name: 'Seller', industry: 'x', location: 'y' })
   db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)

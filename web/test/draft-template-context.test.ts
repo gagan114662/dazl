@@ -1,3 +1,4 @@
+import { migrateConnectors } from '../lib/connectors/store.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
@@ -8,7 +9,7 @@ import { migrateMemory, saveMemory } from '../lib/memory.ts'
 
 function setup(memory = true) {
   const db = new Database(':memory:')
-  migrateScan(db); migrateOutreach(db)
+  migrateScan(db); migrateOutreach(db); migrateConnectors(db)
   if (memory) migrateMemory(db)
   db.prepare("INSERT INTO scan_jobs(id,user_id,business_name,industry,location,status) VALUES('job','A','Request','test','test','running')").run()
   for (const id of ['one','two']) db.prepare("INSERT INTO leads(id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence) VALUES(?,'job','Buyer','sales@buyer.invalid','Buyer is hiring an SDR','https://buyer.invalid/careers','Buyer is hiring an SDR',70)").run(id)

@@ -13,6 +13,7 @@ const { migrateAutopilot } = await import(WEB + '/lib/outreach/autopilot.ts')
 const { migrateLedger } = await import(WEB + '/lib/outreach/ledger.ts')
 const { migrateReplies, acceptReadConsent } = await import(WEB + '/lib/outreach/replies.ts')
 const { migrateSequences, createSequence, approveSequence } = await import(WEB + '/lib/outreach/sequences.ts')
+const { migrateConnectors } = await import(WEB + '/lib/connectors/store.ts')
 const { approve, saveSettings } = await import(WEB + '/lib/outreach/service.ts')
 
 if (process.argv[2] === 'hold') {
@@ -27,7 +28,7 @@ const NOW = 1800000000
 function setup(path: string, timeout?: number) {
   const db = new Database(path, timeout === undefined ? {} : { timeout })
   db.pragma('journal_mode = WAL')
-  migrateScan(db); migrateOutreach(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db); migrateSequences(db)
+  migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db); migrateSequences(db)
   db.prepare("INSERT INTO gmail_accounts (tenant_id, email, refresh_ct, status, read_granted) VALUES ('A','bench@example.invalid','not-a-credential','active',1)").run()
   saveSettings(db, 'A', { sender_name: 'Pat', postal_address: '1 King St W, Toronto ON M5H 1A1' })
   acceptReadConsent(db, 'A')

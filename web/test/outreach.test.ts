@@ -3,11 +3,17 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash, randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateSequences, setTestAddresses } from '../lib/outreach/sequences.ts'
 import { completeOAuth, disconnectGmail, getAccessToken, gmailStatus, startOAuth, GmailSendError, type OAuthDeps } from '../lib/gmail/oauth.ts'
 import { buildMime } from '../lib/gmail/mime.ts'
+import { migrateConnectors } from '../lib/connectors/store.ts'
+import { domainReviewFor } from '../lib/outreach/domain-review.ts'
+import { setDomainReview } from '../lib/scan/domain-review-action.ts'
 import { approve, createDraft, editDraft, isSuppressed, listMessages, OutreachError, readUnsubToken, resolveUncertain, saveSettings, sendMessage, skip, suppress, unsubToken, unsubscribeByToken, type Deps } from '../lib/outreach/service.ts'
 
 const master = randomBytes(32)
@@ -16,7 +22,7 @@ const NOW = 1_800_000_000
 
 function setup() {
   const db = new Database(':memory:')
-  migrateScan(db); migrateOutreach(db); seedOffers(db)
+  migrateScan(db); migrateOutreach(db); seedOffers(db); migrateConnectors(db)
   return db
 }
 function addLead(db: Database.Database, tenant: string, o: Partial<{ contact: string | null; evidence: string | null; confidence: number | null; fit: number | null; intent: number | null }> = {}) {
@@ -312,4 +318,126 @@ test('known recruitment context blocks approval and rechecks after token await w
  await assert.rejects(sendMessage(db,'A',draft,deps({...sent,fetchImpl})),/not_sales_contact/)
  assert.equal(sent.sent.length,0);assert.deepEqual(db.prepare('SELECT subject,body,approved_hash FROM outreach_messages WHERE id=?').get(draft),saved)
  assert.equal((db.prepare('SELECT status FROM outreach_messages WHERE id=?').get(draft) as {status:string}).status,'approved')
+})
+
+
+test('a crawled address needs the user identity review at approve and at send, not only at draft: a draft made before the gate, or whose confirmation is withdrawn, cannot go out', async () => {
+  const db = setup(); migrateConnectors(db); await connect(db, 'A'); ready(db)
+  const lead = addLead(db, 'A', { contact: null })
+  const ins = db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', ?, ?, ?, ?, '2026-10-24', 10)")
+  ins.run(lead, 'email', 'info@northside.example', null, 'https://northside.example/contact'); ins.run(lead, 'domain', 'northside.example|name_probe', 'domain-basis-v1:name_probe', 'https://northside.example/')
+  const rows = () => db.prepare('SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ?').all(lead) as never
+  // A draft that already exists with no review on record (made before the gate): it is held at approve.
+  db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, test) VALUES ('legacy1','A',?,?,?,?,0)").run(lead, 'info@northside.example', 'Subject here', 'A body that is long enough to pass the checks.')
+  assert.throws(() => approve(db, 'A', 'legacy1'), /domain_unconfirmed/)
+  assert.equal((db.prepare("SELECT status FROM outreach_messages WHERE id = 'legacy1'").get() as { status: string }).status, 'draft')
+  // Confirm with the binding the user saw: approve and send work.
+  setDomainReview(db, 'A', lead, 'confirm', domainReviewFor({ id: lead, contact: null }, rows()).binding!)
+  approve(db, 'A', 'legacy1')
+  // Withdraw after approval: the approved message is refused at send and never reaches Gmail.
+  setDomainReview(db, 'A', lead, 'withdraw')
+  const { sent, sendFn } = okSend()
+  await assert.rejects(sendMessage(db, 'A', 'legacy1', deps({ sendFn })), /domain_unconfirmed/)
+  assert.equal(sent.length, 0)
+  assert.equal((db.prepare("SELECT status FROM outreach_messages WHERE id = 'legacy1'").get() as { status: string }).status, 'approved', 'refused before the claim: not sending, not skipped')
+  // Confirmed again: it sends once.
+  setDomainReview(db, 'A', lead, 'confirm', domainReviewFor({ id: lead, contact: null }, rows()).binding!)
+  assert.equal(await sendMessage(db, 'A', 'legacy1', deps({ sendFn })), 'sent')
+  assert.equal(sent.length, 1)
+  // An address printed on the cited page is unaffected.
+  const own = addLead(db, 'A')
+  const id2 = createDraft(db, 'A', own, 'Acme'); approve(db, 'A', id2)
+})
+
+test('unreadable crawl state holds a non-email lead (fail closed), and the review check shares the write lock of approve and of the send claim', async () => {
+  // No lead_enrichments table at all: a lead with no email contact cannot have its address's identity verified, so it is held.
+  const db0 = setup(); db0.exec('DROP TABLE lead_enrichments'); await connect(db0, 'A'); ready(db0)
+  const l0 = addLead(db0, 'A', { contact: null })
+  db0.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, test) VALUES ('m0','A',?,?,?,?,0)").run(l0, 'info@northside.example', 'Subject here', 'A body that is long enough to pass the guard')
+  assert.throws(() => approve(db0, 'A', 'm0'), /review_unreadable/)
+  // Same-file second writer: approve and the send claim take the write lock before reading the review state.
+  const dir = mkdtempSync(join(tmpdir(), 'ds-')); const f = join(dir, 'a.db')
+  const a = new Database(f); migrateScan(a); migrateOutreach(a); seedOffers(a); migrateConnectors(a); await connect(a, 'A'); ready(a)
+  const lead = addLead(a, 'A', { contact: null })
+  const ins = a.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', ?, ?, ?, ?, '2026-10-24', 10)")
+  ins.run(lead, 'email', 'info@northside.example', null, 'https://northside.example/contact'); ins.run(lead, 'domain', 'northside.example|name_probe', 'domain-basis-v1:name_probe', 'https://northside.example/')
+  a.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, test) VALUES ('m1','A',?,?,?,?,0)").run(lead, 'info@northside.example', 'Subject here', 'A body that is long enough to pass the guard')
+  const bind = domainReviewFor({ id: lead, contact: null }, a.prepare('SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ?').all(lead) as never).binding!
+  setDomainReview(a, 'A', lead, 'confirm', bind)
+  const b = new Database(f, { timeout: 0 })
+  a.exec('BEGIN IMMEDIATE')
+  assert.throws(() => approve(b, 'A', 'm1'), /locked|busy/i, 'approve waits for the write lock, it does not read a stale review state')
+  a.exec('COMMIT')
+  approve(b, 'A', 'm1')
+  const { sent, sendFn } = okSend()
+  a.exec('BEGIN IMMEDIATE')
+  await assert.rejects(sendMessage(b, 'A', 'm1', deps({ sendFn })), /locked|busy/i, 'the claim takes the write lock before checking')
+  a.exec('COMMIT')
+  assert.equal(sent.length, 0)
+  assert.equal((a.prepare("SELECT status FROM outreach_messages WHERE id = 'm1'").get() as { status: string }).status, 'approved')
+})
+
+test('a test=1 message to an address that is not on the test allowlist gets no domain-review bypass at approve or send', async () => {
+  const db = setup(); migrateConnectors(db); await connect(db, 'A'); ready(db)
+  const lead = addLead(db, 'A', { contact: null })
+  const ins = db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', ?, ?, ?, ?, '2026-10-24', 10)")
+  ins.run(lead, 'email', 'info@northside.example', null, 'https://northside.example/contact'); ins.run(lead, 'domain', 'northside.example|name_probe', 'domain-basis-v1:name_probe', 'https://northside.example/')
+  db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, test) VALUES ('t1','A',?,?,?,?,1)").run(lead, 'info@northside.example', 'Subject here', 'A body that is long enough to pass the guard')
+  assert.throws(() => approve(db, 'A', 't1'), /domain_unconfirmed/)
+  assert.equal((db.prepare("SELECT status FROM outreach_messages WHERE id = 't1'").get() as { status: string }).status, 'draft')
+  const { sent, sendFn } = okSend()
+  db.prepare("UPDATE outreach_messages SET status = 'approved' WHERE id = 't1'").run()
+  await assert.rejects(sendMessage(db, 'A', 't1', deps({ sendFn })), /domain_unconfirmed/)
+  assert.equal(sent.length, 0)
+})
+
+test('a rescan that later sets lead.contact to an email does not exempt an older crawl-address draft; a recipient with no crawl record is outside the gate', async () => {
+  const db = setup(); migrateConnectors(db); await connect(db, 'A'); ready(db)
+  const lead = addLead(db, 'A', { contact: null })
+  const ins = db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', ?, ?, ?, ?, '2026-10-24', 10)")
+  ins.run(lead, 'email', 'info@northside.example', null, 'https://northside.example/contact'); ins.run(lead, 'domain', 'northside.example|name_probe', 'domain-basis-v1:name_probe', 'https://northside.example/')
+  const add = (id: string, l: string, to: string) => db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, test) VALUES (?,'A',?,?,?,?,0)").run(id, l, to, 'Subject here', 'A body that is long enough to pass the guard')
+  const lead2 = addLead(db, 'A', { contact: 'else@cited2.example' })
+  add('old1', lead, 'info@northside.example'); add('cited1', lead2, 'hello@cited.example')
+  db.prepare('UPDATE leads SET contact = ? WHERE id = ?').run('someone@elsewhere.example', lead) // rescan changed the contact to a different email
+  assert.throws(() => approve(db, 'A', 'old1'), /domain_unconfirmed/)
+  assert.equal((db.prepare("SELECT to_email FROM outreach_messages WHERE id = 'old1'").get() as { to_email: string }).to_email, 'info@northside.example', 'recipient never rewritten')
+  approve(db, 'A', 'cited1') // boundary: no crawl record for this recipient, not judged by the domain review
+  db.prepare('UPDATE leads SET contact = ? WHERE id = ?').run('info@northside.example', lead) // contact now equals the recipient, but the crawl recorded it too
+  assert.throws(() => approve(db, 'A', 'old1'), /domain_unconfirmed/, 'equality with the contact does not prove a cited-page origin')
+  const rows = () => db.prepare('SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ?').all(lead) as never
+  const offered = domainReviewFor({ id: lead, contact: 'info@northside.example' }, rows())
+  assert.equal(offered.state, 'required'); assert.equal(offered.binding, domainReviewFor({ id: lead, contact: null }, rows()).binding, 'the binding the Leads page offers is the one the gate judges')
+  assert.deepEqual(setDomainReview(db, 'A', lead, 'confirm', offered.binding!), { status: 'confirmed', domain: 'northside.example' })
+  approve(db, 'A', 'old1')
+  const m = db.prepare("SELECT to_email, subject, body FROM outreach_messages WHERE id = 'old1'").get() as { to_email: string; subject: string; body: string }
+  assert.deepEqual(m, { to_email: 'info@northside.example', subject: 'Subject here', body: 'A body that is long enough to pass the guard' }, 'confirming changed neither recipient nor words')
+  setDomainReview(db, 'A', lead, 'withdraw')
+  const { sent, sendFn } = okSend()
+  await assert.rejects(sendMessage(db, 'A', 'old1', deps({ sendFn })), /domain_unconfirmed/)
+  assert.equal(sent.length, 0)
+})
+
+test('sendMessage: a website confirmation withdrawn during the token fetch releases the claim and sends nothing', async () => {
+  const db = setup(); migrateConnectors(db); await connect(db, 'A'); ready(db)
+  const lead = addLead(db, 'A', { contact: null })
+  const ins = db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', ?, ?, ?, ?, '2026-10-24', 10)")
+  ins.run(lead, 'email', 'info@northside.example', null, 'https://northside.example/contact'); ins.run(lead, 'domain', 'northside.example|name_probe', 'domain-basis-v1:name_probe', 'https://northside.example/')
+  db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, test) VALUES ('w1','A',?,?,?,?,0)").run(lead, 'info@northside.example', 'Subject here', 'A body that is long enough to pass the guard')
+  const rows = () => db.prepare('SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ?').all(lead) as never
+  setDomainReview(db, 'A', lead, 'confirm', domainReviewFor({ id: lead, contact: null }, rows()).binding!)
+  approve(db, 'A', 'w1')
+  const { sent, sendFn } = okSend()
+  const fetchImpl = (async () => { setDomainReview(db, 'A', lead, 'withdraw'); return json({ access_token: 'at' }) }) as typeof fetch
+  await assert.rejects(sendMessage(db, 'A', 'w1', deps({ sendFn, fetchImpl })), /domain_unconfirmed/)
+  assert.equal(sent.length, 0)
+  assert.equal((db.prepare("SELECT status FROM outreach_messages WHERE id = 'w1'").get() as { status: string }).status, 'approved', 'claim released back to approved')
+})
+
+test('current email contact + unreadable crawl table is held with review_unreadable at approve (origin unknowable, fail closed)', async () => {
+  const db = setup(); await connect(db, 'A'); ready(db)
+  const lead = addLead(db, 'A', { contact: 'info@northside.example' })
+  db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, test) VALUES ('mu','A',?,?,?,?,1)").run(lead, 'info@northside.example', 'Subject here', 'A body that is long enough to pass the length check for this fixture message.')
+  db.exec('DROP TABLE lead_enrichments')
+  assert.throws(() => approve(db, 'A', 'mu'), /review_unreadable/)
 })

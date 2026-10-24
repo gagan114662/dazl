@@ -1,3 +1,4 @@
+import { migrateConnectors } from '../lib/connectors/store.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
@@ -16,7 +17,7 @@ const idToken = (email: string) => 'x.' + Buffer.from(JSON.stringify({ email, em
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status })
 function mk() {
   const db = new Database(':memory:')
-  migrateScan(db); migrateOutreach(db); migrateReplies(db); migrateLedger(db); migrateReopen(db)
+  migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateReplies(db); migrateLedger(db); migrateReopen(db)
   saveSettings(db, 'A', { sender_name: 'G', postal_address: '1 King St W, Toronto ON, Canada', booking_url: null })
   return db
 }

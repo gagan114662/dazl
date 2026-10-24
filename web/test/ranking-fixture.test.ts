@@ -1,3 +1,4 @@
+import { migrateConnectors } from '../lib/connectors/store.ts'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
@@ -13,7 +14,7 @@ const TENANT = 'test-tenant-ranking'
 
 function db() {
   const d = new Database(':memory:')
-  migrateScan(d); migrateEvents(d); migrateOutreach(d); migrateSequences(d)
+  migrateScan(d); migrateEvents(d); migrateOutreach(d); migrateConnectors(d); migrateSequences(d)
   d.prepare("INSERT INTO sequence_settings (tenant_id, test_addresses) VALUES (?, ?)").run(TENANT, JSON.stringify([TEST_INBOX]))
   return d
 }

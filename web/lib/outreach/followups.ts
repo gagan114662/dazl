@@ -6,7 +6,7 @@ import { buildMime, toBase64Url } from '../gmail/mime.ts'
 import { getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { auditAt, autopilotAvailable, getState, pause } from './autopilot.ts'
 import { hasConsent } from './ledger.ts'
-import { composeBody, getSettings, isSuppressed, leadEvidenceEligible, leadHeld, recipientAllowed, unsubToken, type Deps } from './service.ts'
+import { composeBody, getSettings, isSuppressed, domainReviewStatus, leadEvidenceEligible, leadHeld, recipientAllowed, unsubToken, type Deps } from './service.ts'
 import { llmFollowupText } from './draft-llm.ts'
 import { getMasterKey } from '../secrets.ts'
 
@@ -69,7 +69,16 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
     if (accountSendCount(db,tenantId,now) >= Math.min(ACCOUNT_SEND_CAP,cur.daily_cap)) return stop('daily_cap')
 
     // at most once: the claim row is unique per thread and step
-    const claim = db.prepare("INSERT OR IGNORE INTO followup_messages (tenant_id, thread_id, step, status, created_at) VALUES (?, ?, ?, 'sending', ?)").run(tenantId, t.thread_id, t.followups_sent, now)
+    // The identity check and the claim are one write transaction (the lock the review action takes). A held thread is stopped for good,
+    // like a withdrawn lead confirmation: re-confirming the website does not restart it.
+    // An unreadable review state is a retryable fault: skip this round without stopping the thread.
+    const claim = db.transaction((): { changes: number } | 'required' | 'unreadable' => {
+      const st = domainReviewStatus(db, tenantId, t.lead_id, t.to_email)
+      if (st !== 'ok') return st
+      return db.prepare("INSERT OR IGNORE INTO followup_messages (tenant_id, thread_id, step, status, created_at) VALUES (?, ?, ?, 'sending', ?)").run(tenantId, t.thread_id, t.followups_sent, now)
+    }).immediate()
+    if (claim === 'unreadable') { skip('review_unreadable'); continue }
+    if (claim === 'required') { db.prepare("UPDATE followup_threads SET stopped = 'domain_unconfirmed' WHERE tenant_id = ? AND thread_id = ? AND stopped IS NULL").run(tenantId, t.thread_id); skip('domain_unconfirmed'); continue }
     if (claim.changes !== 1) { skip('already claimed'); continue }
     if (accountSendCount(db,tenantId,now) > Math.min(ACCOUNT_SEND_CAP,cur.daily_cap)) { db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId,t.thread_id,t.followups_sent); return stop('daily_cap') }
     const lead = db.prepare('SELECT l.company, l.name, l.signal, l.source_url FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(t.lead_id, tenantId) as { company: string; name: string; signal: string; source_url: string } | undefined
@@ -99,6 +108,12 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
         db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId,t.thread_id,t.followups_sent)
         db.prepare("UPDATE followup_threads SET stopped = 'evidence_withdrawn' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, t.thread_id)
         skip('evidence_withdrawn'); continue
+      }
+      const stAfter = domainReviewStatus(db,tenantId,t.lead_id,t.to_email)
+      if (stAfter !== 'ok') {
+        db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId,t.thread_id,t.followups_sent)
+        if (stAfter === 'required') db.prepare("UPDATE followup_threads SET stopped = 'domain_unconfirmed' WHERE tenant_id = ? AND thread_id = ? AND stopped IS NULL").run(tenantId, t.thread_id)
+        skip(stAfter === 'required' ? 'domain_unconfirmed' : 'review_unreadable'); continue
       }
       const r = await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, t.thread_id)
       db.prepare("UPDATE followup_messages SET status = 'sent', gmail_id = ? WHERE tenant_id = ? AND thread_id = ? AND step = ?").run(r.id, tenantId, t.thread_id, t.followups_sent)

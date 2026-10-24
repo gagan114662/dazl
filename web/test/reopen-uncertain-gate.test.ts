@@ -1,3 +1,4 @@
+import { migrateConnectors } from '../lib/connectors/store.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
@@ -17,7 +18,7 @@ const NOW = 1_800_000_000
 const idToken = (e: string) => 'x.' + Buffer.from(JSON.stringify({ email: e, email_verified: true })).toString('base64url') + '.y'
 const json = (o: unknown) => new Response(JSON.stringify(o), { status: 200 })
 async function seed(db: Database.Database) {
-  migrateScan(db); migrateOutreach(db); migrateReplies(db); migrateLedger(db); migrateReopen(db); migrateAutopilot(db); migrateSequences(db)
+  migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateReplies(db); migrateLedger(db); migrateReopen(db); migrateAutopilot(db); migrateSequences(db)
   saveSettings(db, 'A', { sender_name: 'G', postal_address: '1 King St W, Toronto ON, Canada', booking_url: null })
   const state = new URL(startOAuth(db, 'A', { env, now: NOW })).searchParams.get('state')!
   await completeOAuth(db, 'A', 'code', state, { env, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'rt', scope: 'openid email https://www.googleapis.com/auth/gmail.send', id_token: idToken('me@acme.example') })) as unknown as typeof fetch })
@@ -85,7 +86,7 @@ test('a draft, skipped or sent re-open is not an unresolved send; sent re-opens 
   assert.equal(accountSendCount(db, 'B', NOW), 0)
 })
 test('reads are safe when the re-open table does not exist yet and create nothing', () => {
-  const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db)
+  const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateConnectors(db)
   assert.equal(anyUncertainSend(db, 'A'), false)
   assert.equal(accountSendCount(db, 'A', NOW), 0)
   assert.equal(db.prepare("SELECT 1 FROM sqlite_master WHERE name='reopen_messages'").get(), undefined)

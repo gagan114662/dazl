@@ -10,6 +10,12 @@ import { migrateSequences } from '../lib/outreach/sequences.ts'
 import { migrateAutopilot } from '../lib/outreach/autopilot.ts'
 import { saveSettings } from '../lib/outreach/service.ts'
 import { completeOAuth, startOAuth } from '../lib/gmail/oauth.ts'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { domainReviewFor } from '../lib/outreach/domain-review.ts'
+import { setDomainReview } from '../lib/scan/domain-review-action.ts'
+import { migrateConnectors } from '../lib/connectors/store.ts'
 import { createReopenDraft, migrateReopen, sendReopen } from '../lib/outreach/reopen.ts'
 
 const master = randomBytes(32)
@@ -18,7 +24,7 @@ const NOW = 1_800_000_000
 const idToken = (e: string) => 'x.' + Buffer.from(JSON.stringify({ email: e, email_verified: true })).toString('base64url') + '.y'
 const json = (o: unknown) => new Response(JSON.stringify(o), { status: 200 })
 async function seed(db: Database.Database) {
-  migrateScan(db); migrateOutreach(db); migrateReplies(db); migrateLedger(db); migrateReopen(db); migrateAutopilot(db); migrateSequences(db)
+  migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateReplies(db); migrateLedger(db); migrateReopen(db); migrateAutopilot(db); migrateSequences(db)
   saveSettings(db, 'A', { sender_name: 'G', postal_address: '1 King St W, Toronto ON, Canada', booking_url: null })
   const state = new URL(startOAuth(db, 'A', { env, now: NOW })).searchParams.get('state')!
   await completeOAuth(db, 'A', 'code', state, { env, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'rt', scope: 'openid email https://www.googleapis.com/auth/gmail.send', id_token: idToken('me@acme.example') })) as unknown as typeof fetch })
@@ -62,4 +68,38 @@ test('evidence withdrawn while the token is being fetched still holds the send (
   const slowTf = (async () => { db.prepare("UPDATE leads SET human_confirmed_at=NULL WHERE id='lead-x'").run(); return { ok: true, json: async () => ({ access_token: 'x' }) } }) as never
   try { await sendReopen(db, 'A', 't1', { env, now: NOW, master, sendFn: (async () => { sends++; return { id: 'g' } }) as never, fetchImpl: slowTf }) } catch (e) { err = (e as Error).message }
   assert.equal(sends, 0); assert.match(err, /lead_evidence_withdrawn/); assert.equal(draft(db), 'draft')
+})
+
+test('a crawl-sourced address whose website confirmation is missing or withdrawn stops a re-open send (0 sends, draft kept)', async () => {
+  const db = new Database(':memory:'); await seed(db); migrateConnectors(db)
+  db.prepare("UPDATE leads SET contact = NULL WHERE id = 'lead-x'").run()
+  const ins = db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', 'lead-x', 'sitecrawl', ?, ?, ?, ?, '2026-10-24', 10)")
+  ins.run('email', 'pat@acme.com', null, 'https://acme.com/contact'); ins.run('domain', 'acme.com|name_probe', 'domain-basis-v1:name_probe', 'https://acme.com/')
+  const r = await attempt(db); assert.equal(r.sends, 0); assert.match(r.err, /domain_unconfirmed/); assert.equal(draft(db), 'draft')
+})
+
+function crawlLead(db: Database.Database) {
+  migrateConnectors(db)
+  db.prepare("UPDATE leads SET contact = NULL WHERE id = 'lead-x'").run()
+  const ins = db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', 'lead-x', 'sitecrawl', ?, ?, ?, ?, '2026-10-24', 10)")
+  ins.run('email', 'pat@acme.com', null, 'https://acme.com/contact'); ins.run('domain', 'acme.com|name_probe', 'domain-basis-v1:name_probe', 'https://acme.com/')
+  const rows = () => db.prepare('SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ?').all('lead-x') as never
+  setDomainReview(db, 'A', 'lead-x', 'confirm', domainReviewFor({ id: 'lead-x', contact: null }, rows()).binding!)
+}
+test('reopen: a website confirmation withdrawn during the token fetch holds the send (0 sends, draft kept)', async () => {
+  const db = new Database(':memory:'); await seed(db); crawlLead(db)
+  let sends = 0, err = ''
+  const tfw = (async () => { setDomainReview(db, 'A', 'lead-x', 'withdraw'); return { ok: true, json: async () => ({ access_token: 'x' }) } }) as never
+  try { await sendReopen(db, 'A', 't1', { env, now: NOW, master, sendFn: (async () => { sends++; return { id: 'g' } }) as never, fetchImpl: tfw }) } catch (e) { err = (e as Error).message }
+  assert.equal(sends, 0); assert.match(err, /domain_unconfirmed/); assert.equal(draft(db), 'draft')
+})
+test('reopen: the lead gates and the claim share the write lock (a second connection holding it blocks the claim, nothing sends)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ro-')); const f = join(dir, 'a.db')
+  const a = new Database(f); await seed(a); crawlLead(a)
+  const b = new Database(f, { timeout: 0 })
+  let sends = 0, err = ''
+  const tfLock = (async () => { a.exec('BEGIN IMMEDIATE'); return { ok: true, json: async () => ({ access_token: 'x' }) } }) as never
+  try { await sendReopen(b, 'A', 't1', { env, now: NOW, master, sendFn: (async () => { sends++; return { id: 'g' } }) as never, fetchImpl: tfLock }) } catch (e) { err = (e as Error).message }
+  a.exec('COMMIT')
+  assert.equal(sends, 0); assert.match(err, /locked|busy/i); assert.equal(draft(a), 'draft')
 })

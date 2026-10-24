@@ -17,6 +17,8 @@ const ERR: Record<string, string> = {
   gmail_rate_limited: 'Gmail is rate limiting you. Try again later.',
   changed_since_approval: 'The message changed after approval. Approve it again.',
   lead_currentness_unconfirmed: 'Event timing is unconfirmed. This draft is preserved for inspection but cannot be approved or sent.',
+  review_unreadable: 'The website check could not be read just now. Nothing was sent and nothing was changed. Try again in a minute.',
+  domain_unconfirmed: 'The website behind this draft is not confirmed as the right company. Confirm it on the Leads page ("This website is the right company"). That check is not need or consent. If the lead shows no check there, skip this draft and create a new one from the lead.',
   lead_evidence_withdrawn: 'The lead confirmation behind this draft was withdrawn. Re-confirm the lead on the Leads page - dazl has not verified it.',
   already_sending: 'This message is already being sent.',
   already_uncertain: 'We could not confirm whether this was sent. Check your Gmail Sent folder, then choose below.',
@@ -71,7 +73,7 @@ export default function OutreachClient() {
       <h1 className="text-2xl font-bold mb-1">Outreach</h1>
       <p className="text-[#555] text-sm mb-6">Review each email, approve it, then send. Manual emails send only after your click. If you turn on autopilot, it can send first emails on its own after you approve the first sends (its consent text is in Settings). A sequence sends its later steps only after you approve all three steps together. Every email gets your name, mailing address and an unsubscribe link added automatically.</p>
       <SendReadiness />
-      {note && <p className="text-sm text-yellow-400 mb-4">{note}</p>}
+      {note && <p className="text-sm text-[#111] border-l-2 border-[#111] pl-3 mb-4" role="status">{note}</p>}
       {!loaded && <p className="text-[#666] text-sm" role="status">Loading your emails...</p>}
       {loaded && loadFailed && <p className="text-sm text-[#111] border-l-2 border-black pl-3 mb-4" role="alert">Could not load your emails. Refresh to retry.</p>}
       {loaded && !loadFailed && msgs.length === 0 && <p className="text-[#666] text-sm">No emails yet. Open Leads and choose Draft email on a lead with a published address.</p>}
@@ -80,7 +82,7 @@ export default function OutreachClient() {
           const e = edit[m.id]
           return (
             <div key={m.id} className="card p-4 text-sm">
-              <div className="flex justify-between text-[#555] text-xs mb-2"><span>To {m.to_email}{m.test ? <span className="ml-2 text-[10px] uppercase tracking-wide text-yellow-300 border border-yellow-300/40 px-1 py-0.5">test mode</span> : null}</span><span>{m.status}{m.error && m.status !== 'sent' ? ` (${m.error})` : ''}</span></div>
+              <div className="flex justify-between text-[#555] text-xs mb-2"><span>To {m.to_email}{m.test ? <span className="ml-2 text-[10px] uppercase tracking-wide text-[#111] border border-[#999] px-1 py-0.5">test mode</span> : null}</span><span>{m.status}{m.error && m.status !== 'sent' ? ` (${m.error})` : ''}</span></div>
               {m.currentness_held && ['draft','approved'].includes(m.status) && <p className="text-xs border-l-2 border-black pl-3 mb-2">Held: event timing and current need are unconfirmed. Original draft preserved, approval and sending blocked.</p>}
               {m.evidence_state === 'human' && ['draft','approved'].includes(m.status) && <p className="text-xs text-[#333] border-l-2 border-[#111] pl-3 mb-2">Lead confirmed by you - dazl did not verify the quote. Withdrawing your confirmation on the Leads page blocks approval and sending.</p>}
               {m.evidence_state === 'unverified' && ['draft','approved'].includes(m.status) && <p className="text-xs text-[#111] font-medium border-l-2 border-[#111] pl-3 mb-2">Lead confirmation withdrawn - this can no longer be approved or sent unless you re-confirm the lead or dazl verifies it.</p>}

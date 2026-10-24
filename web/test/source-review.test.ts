@@ -1,3 +1,4 @@
+import { migrateConnectors } from '../lib/connectors/store.ts'
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
@@ -7,7 +8,7 @@ import {createDraft} from '../lib/outreach/service.ts'
 import {createSourceReview,migrateSourceReview,parseSourceReview,sourceCheckForLead} from '../lib/scan/source-review.ts'
 const input={company:'Acme',signal:'Acme needs a sales tool (supplied claim)',source_url:'https://acme.example/jobs',excerpt:'Acme is hiring an outbound sales representative.',contact:'hello@acme.example',event_date:'2026-10-01'}
 const page={title:'Acme careers',text:input.excerpt+' Contact hello@acme.example',retrievedAt:1800000000}
-function setup(){const db=new Database(':memory:');migrateScan(db);migrateOutreach(db);migrateSourceReview(db);return db}
+function setup(){const db=new Database(':memory:');migrateScan(db);migrateOutreach(db); migrateConnectors(db);migrateSourceReview(db);return db}
 test('exact checks preserve supplied claims, stay needs-review and cannot create draft',async()=>{
  const db=setup();let calls=0;const r=await createSourceReview(db,'A',input,async u=>{calls++;assert.equal(u,input.source_url);return page})
  assert.equal(calls,1);assert.deepEqual(r.check,{fetch_status:'fetched',quote_match:true,company_named:true,contact_match:true,checked_at:page.retrievedAt})

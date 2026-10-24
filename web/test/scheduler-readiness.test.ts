@@ -1,3 +1,4 @@
+import { migrateConnectors } from '../lib/connectors/store.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
@@ -12,7 +13,7 @@ import { schedulerReadiness } from '../lib/outreach/scheduler-readiness.ts'
 
 function fresh() {
   const db = new Database(':memory:')
-  migrateScan(db); migrateOutreach(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db); migrateSequences(db)
+  migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db); migrateSequences(db)
   return db
 }
 test('scheduler flag reports configuration only, in precedence order kill > operator_off > paused > configured_on', () => {

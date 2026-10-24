@@ -1,3 +1,4 @@
+import { migrateConnectors } from '../lib/connectors/store.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
@@ -20,7 +21,7 @@ const idToken = (email: string) => 'x.' + Buffer.from(JSON.stringify({ email, em
 const SEND = 'https://www.googleapis.com/auth/gmail.send'
 
 async function setup(withRead = true) {
-  const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db)
+  const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db)
   const state = new URL(startOAuth(db, 'A', { env: genv, now: NOW, withRead })).searchParams.get('state')!
   await completeOAuth(db, 'A', 'c', state, { env: genv, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'rt', scope: `${SEND}${withRead ? ' ' + GMAIL_READ_SCOPE : ''}`, id_token: idToken('me@acme.example') })) as unknown as typeof fetch })
   saveSettings(db, 'A', { sender_name: 'Pat', postal_address: '1 King St W, Toronto ON M5H 1A1' })
@@ -59,7 +60,7 @@ test('classification: opt-out and negative beat positive; unsure grants nothing;
 })
 
 test('consent ledger: grant, expiry, revoke-all, and suppression revokes', () => {
-  const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateLedger(db)
+  const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateLedger(db)
   grantConsent(db, 'A', 'X@Co.example', { channel: 'email', scope: 'followup', basis: 'reply_interest', evidenceRef: 'gmail:1', now: NOW })
   assert.equal(hasConsent(db, 'A', 'x@co.example', 'email', 'followup', NOW + DAY), true)
   assert.equal(hasConsent(db, 'A', 'x@co.example', 'email', 'followup', NOW + 181 * DAY), false)
@@ -155,7 +156,7 @@ test('an uncertain follow-up send pauses autopilot', async () => {
 })
 
 test('inboxRows: joins lead company and follow-up state, newest first, tenant-scoped', () => {
-  const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db)
+  const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db)
   const jobId = createJob(db, 'A', { business_name: 'B', industry: 'I', location: 'L' })
   db.prepare("UPDATE scan_jobs SET status='running' WHERE id = ?").run(jobId)
   db.prepare("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url) VALUES ('lead1', ?, 'Ada', 'Acme Co', 'hiring', 'https://x.com/1')").run(jobId)
@@ -204,7 +205,7 @@ test('booking link: https-only, stored on sender settings, lands in follow-up te
   assert.equal(getSettings(db, 'A')?.booking_url, null) // cleared
 })
 test('granular consent: read requested but unticked on Google\'s screen connects send-only, no error', async () => {
-  const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db)
+  const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db)
   // The connect always requests read now (withRead: true), but the granted scope lacks it.
   const state = new URL(startOAuth(db, 'A', { env: genv, now: NOW, withRead: true })).searchParams.get('state')!
   const r = await completeOAuth(db, 'A', 'c', state, { env: genv, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'rt', scope: SEND, id_token: idToken('me@acme.example') })) as unknown as typeof fetch })

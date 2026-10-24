@@ -19,7 +19,7 @@ const idToken = (email: string) => 'x.' + Buffer.from(JSON.stringify({ email, em
 const tokenOk = (async (url: string) => (String(url).includes('token') ? json({ access_token: 'at' }) : json({}, 404))) as unknown as typeof fetch
 
 async function setup() {
-  const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateAutopilot(db); seedOffers(db)
+  const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); seedOffers(db)
   const state = new URL(startOAuth(db, 'A', { env: genv, now: NOW })).searchParams.get('state')!
   await completeOAuth(db, 'A', 'c', state, { env: genv, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'rt', scope: 'https://www.googleapis.com/auth/gmail.send', id_token: idToken('me@acme.example') })) as unknown as typeof fetch })
   saveSettings(db, 'A', { sender_name: 'Pat', postal_address: '1 King St W, Toronto ON M5H 1A1' })
@@ -43,7 +43,7 @@ test('off by default; enabling needs current consent, all attestations, sender i
   assert.equal((await runAutopilot(db, 'A', 'Acme', d)).stopped, 'off')
   assert.throws(() => enable(db, 'A', { version: 'old', attestations: [...ATTESTATIONS] }), /consent_required/)
   assert.throws(() => enable(db, 'A', { version: CONSENT_VERSION, attestations: ['business_published'] }), /consent_required/)
-  const bare = new Database(':memory:'); migrateScan(bare); migrateOutreach(bare); migrateAutopilot(bare)
+  const bare = new Database(':memory:'); migrateScan(bare); migrateOutreach(bare); migrateConnectors(bare); migrateAutopilot(bare)
   assert.throws(() => enable(bare, 'A', { version: CONSENT_VERSION, attestations: [...ATTESTATIONS] }), /sender_identity_missing/)
   assert.equal(sent.length, 0)
 })
