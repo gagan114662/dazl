@@ -24,7 +24,9 @@ const AB = { apiVersion: '1', jobs: [
 
 function stub() {
   const seen: string[] = []
+  const hn: string[] = [] // Hacker News discovery requests, asserted separately (stub serves nothing)
   const http: SafeGet = async url => {
+    if (new URL(url).hostname === 'hn.algolia.com') { hn.push(url); return null }
     seen.push(url)
     const j = (o: unknown) => ({ status: 200, body: JSON.stringify(o) })
     if (url === 'https://boards-api.greenhouse.io/v1/boards/acme/jobs') return j(GH_LIST)
@@ -33,7 +35,7 @@ function stub() {
     if (url === 'https://api.ashbyhq.com/posting-api/job-board/zed') return j(AB)
     return null
   }
-  return { http, seen }
+  return { http, seen, hn }
 }
 const sel = (feeds: string[]) => ({ adapters: ['jobboards'], feeds, pages: [] })
 const Q = 'ohio hiring payroll'
@@ -72,13 +74,14 @@ test('no state in the profile means no evidence (never every state)', async () =
 })
 
 test('only the two job-board API hosts are ever requested; blocked sources and lookalike hosts are never requested', async () => {
-  const { http, seen } = stub()
+  const { http, seen, hn } = stub()
   await collectEvidence(sel([
     'https://www.reddit.com/r/ohio/.json', 'https://opencorporates.com/companies/us_oh/1', 'https://businesssearch.ohiosos.gov/x',
     'https://index.commoncrawl.org/CC-MAIN-1', 'https://boards.greenhouse.io.evil.example/acme', 'https://boards.greenhouse.io/../etc',
     'https://boards.greenhouse.io/acme', 'https://jobs.ashbyhq.com/zed',
   ]), 'ohio hiring payroll generalist', http, 5000)
   assert.ok(seen.length >= 2)
+  assert.ok(hn.length >= 1 && hn.every(u => new URL(u).hostname === 'hn.algolia.com'))
   for (const u of seen) assert.ok(['boards-api.greenhouse.io', 'api.ashbyhq.com'].includes(new URL(u).hostname), u)
 })
 

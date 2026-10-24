@@ -35,8 +35,8 @@ export function keywordsFor(query: string): string[] {
 
 // Runs the chosen adapters in parallel with an overall time limit. A failed or slow source gives no evidence and never drops the others.
 export interface AdapterRun { collector: string; status: 'ok' | 'empty' | 'error' | 'timeout'; evidence: number | null }
-export async function collectEvidenceReport(sel: SourceSelection, query: string, http = safeGet, timeoutMs = 25_000): Promise<{ items: Evidence[]; runs: AdapterRun[] }> {
-  const input: AdapterInput = { query, keywords: keywordsFor(query), feeds: sel.feeds, pages: sel.pages ?? [], http }
+export async function collectEvidenceReport(sel: SourceSelection, query: string, http = safeGet, timeoutMs = 25_000, discovered: string[] = []): Promise<{ items: Evidence[]; runs: AdapterRun[] }> {
+  const input: AdapterInput = { query, keywords: keywordsFor(query), feeds: sel.feeds, pages: sel.pages ?? [], discovered, http }
   const results = new Map<string, Evidence[]>()
   const runs = new Map<string, AdapterRun>()
   let settled = false
