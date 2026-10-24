@@ -18,6 +18,7 @@ const { approve, saveSettings } = await import(WEB + '/lib/outreach/service.ts')
 if (process.argv[2] === 'hold') {
   const db = new Database(process.argv[3]); db.pragma('journal_mode = WAL')
   db.prepare('BEGIN IMMEDIATE').run(); db.prepare('CREATE TABLE IF NOT EXISTS holdmark (v INTEGER)').run()
+  process.send?.('locked') // explicit handshake: the parent must not start until this lock is really held
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.argv[4]))
   db.prepare('COMMIT').run(); process.exit(0)
 }
@@ -85,8 +86,13 @@ rmSync(path); rmSync(path + '-wal', { force: true }); rmSync(path + '-shm', { fo
 // 4. contention, default timeout vs 1.5s child-process hold: does the deferred write-first txn wait?
 {
   const { db, seq } = setup(path)
-  const child = fork(process.argv[1], ['hold', path, '1500'], { stdio: 'ignore' })
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 600)
+  const child = fork(process.argv[1], ['hold', path, '1500'], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] })
+  // Wait for the child to report it holds the write lock (no fixed sleep). Fail loudly if it never does.
+  await new Promise<void>((res, rej) => {
+    const t = setTimeout(() => rej(new Error('child never reported holding the lock')), 30_000)
+    child.once('message', m => { if (m === 'locked') { clearTimeout(t); res() } })
+    child.once('exit', () => { clearTimeout(t); rej(new Error('child exited before holding the lock')) })
+  })
   const t0 = Date.now()
   let outcome = 'ok'
   try { approveSequence(db, 'A', seq, (id: string) => approve(db, 'A', id, true), NOW) } catch (e) { outcome = (e as { code?: string }).code ?? String(e) }
