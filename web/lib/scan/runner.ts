@@ -19,6 +19,7 @@ import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, s
 import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '../search/trace.ts'
 import { migrateTinyfish, queryPlan, queryPrompt, tfFetch, tfSearch, tinyfishEnabled, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { crawlJob } from '../connectors/sitecrawl.ts'
+import { anthropicCountTokens, guardProvider, ownerPool, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
 import { getMemory, isExcluded, memoryPromptBlock } from '../memory.ts'
 import { enrichJobSignals } from '../signals/index.ts'
@@ -396,6 +397,7 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
 function failOrRetry(db: Database.Database, job: Job, e: unknown, ledger?: SourceRunLedger): 'done' | 'failed' | 'retry' {
   if (e instanceof ScanTimedOut) { finish(db, job, 'failed', 'scan_timeout', null, null, ledger); return 'failed' }
   if (e instanceof ScanStopped) return 'done' // nothing to retry or fail: the stop/re-claim owns the row; queue completion or a stale token is a no-op
+  if (e instanceof SpendRefused) { finish(db, job, 'failed', 'budget_stopped', null, null, ledger); return 'failed' } // a refused call is never retried: attempts must not multiply spend
   const err = e instanceof ProviderError ? e : new ProviderError('retry', 'internal_error')
   if (err.kind === 'auth') {
     finish(db, job, 'failed', 'key_rejected', null, null, ledger)
@@ -557,7 +559,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   return parsed
 }
 
-export interface RunBudget { paid_fallback?: boolean; credit_enrichment?: boolean; judge?: boolean }
+export interface RunBudget { paid_fallback?: boolean; credit_enrichment?: boolean; judge?: boolean; max_usd?: number }
 // Per-run explicit budget controls, stored on the job row by the CSV import route.
 // Absent or malformed JSON means current behavior - the control only ever NARROWS.
 // PAID SURFACES, honestly: the TinyFish-primary path ends in ONE paid LLM call
@@ -571,6 +573,16 @@ export interface RunBudget { paid_fallback?: boolean; credit_enrichment?: boolea
 // terminally as budget_stopped (the fallback that would re-pend is gated), so a
 // restricted job makes at most 1 paid call per attempt and only a post-extraction
 // crash/retry can produce further attempts - never a research call.
+// Operator setting DAZL_RUN_MAX_USD_USERS="<owner id>:<usd>,..." bounds every query job of the named owners (exact id match,
+// no schema). A malformed entry is ignored for that entry. The tighter of this and the job's own max_usd applies.
+export function ownerMaxUsd(userId: string, env: Record<string, string | undefined> = process.env): number | null {
+  for (const part of (env.DAZL_RUN_MAX_USD_USERS ?? '').split(',')) {
+    const i = part.lastIndexOf(':'); if (i < 0) continue
+    if (part.slice(0, i).trim() !== userId) continue
+    const n = Number(part.slice(i + 1).trim()); return Number.isFinite(n) && n > 0 ? n : null
+  }
+  return null
+}
 export function parseRunBudget(raw: string | null | undefined): RunBudget | null {
   if (!raw) return null
   try {
@@ -579,6 +591,7 @@ export function parseRunBudget(raw: string | null | undefined): RunBudget | null
     if (b.paid_fallback === false) out.paid_fallback = false
     if (b.credit_enrichment === false) out.credit_enrichment = false
     if (b.judge === false) out.judge = false
+    if (typeof b.max_usd === 'number' && Number.isFinite(b.max_usd) && b.max_usd > 0) out.max_usd = b.max_usd
     return Object.keys(out).length ? out : null
   } catch { return null }
 }
@@ -616,7 +629,13 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     return 'failed'
   }
   try {
-    const providers_ = deps.providers ?? providers
+    const jobMax = job.csv_domain ? null : parseRunBudget(job.run_budget)?.max_usd ?? null
+    const ownerMax = job.csv_domain ? null : ownerMaxUsd(job.user_id)
+    const spendGuards = [...(jobMax !== null ? [new SpendGuard(jobMax)] : []), ...(ownerMax !== null ? [ownerPool(job.user_id, ownerMax)] : [])]
+    const spendLimit = spendGuards.length ? 1 : null
+    const baseProviders = deps.providers ?? providers
+    const providers_ = spendLimit === null ? baseProviders : { ...baseProviders, [vendor]: guardProvider(baseProviders[vendor], spendGuards, vendor === 'anthropic' ? anthropicCountTokens : undefined) }
+    if (spendLimit !== null) deps = { ...deps, creditEnrichment: false } // a budgeted run adds no other paid enrichment
     if (job.csv_domain) return await runCompanyJob(db, job, providers_[vendor], vendor, key, budgetDeps(deps, parseRunBudget(job.run_budget)))
     let prompt = buildPrompt(job)
     let icpForSources: Icp | null = null
