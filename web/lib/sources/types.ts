@@ -23,6 +23,7 @@ export interface AdapterInput {
   keywords: string[]
   feeds: string[]
   pages?: string[] // page URLs the user asked to read; only the web (Jina) adapter uses it
+  discovered?: string[] // URLs this scan's own search returned (raw hits and candidates); only the job-board adapter derives boards from them
   http: SafeGet
   credential?: string // reserved for future user-approved connectors; no adapter below uses it
 }

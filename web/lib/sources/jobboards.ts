@@ -51,10 +51,29 @@ function board(feed: string): { kind: 'gh' | 'ashby'; token: string } | null {
   return null
 }
 
+const unesc = (t: string) => t.replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16))).replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n))).replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+const LINK = /https:\/\/(?:boards|job-boards)\.greenhouse\.io\/[A-Za-z0-9_-]+|https:\/\/jobs\.ashbyhq\.com\/[A-Za-z0-9_-]+/g
+// Board links from the newest monthly Hacker News "Who is hiring" thread (public Algolia API: one story lookup, one comments page).
+// Only comments that name the state contribute boards. A link in a comment is a lead for where to look, never evidence.
+export async function hnBoards(http: SafeGet, state: string): Promise<string[]> {
+  const st = await json(http, 'https://hn.algolia.com/api/v1/search_by_date?tags=story,author_whoishiring&hitsPerPage=3')
+  const story = (Array.isArray(st?.hits) ? st.hits : []).find((h: any) => typeof h?.title === 'string' && /^Ask HN: Who is hiring\?/i.test(h.title) && /^\d+$/.test(String(h.objectID)))
+  if (!story) return []
+  const cm = await json(http, `https://hn.algolia.com/api/v1/search?tags=comment,story_${story.objectID}&hitsPerPage=200`)
+  const out: string[] = []
+  for (const h of Array.isArray(cm?.hits) ? cm.hits : []) {
+    if (typeof h?.comment_text !== 'string') continue
+    const text = unesc(h.comment_text)
+    if (!locationInState(state, text.replace(/<[^>]*>/g, ' '))) continue
+    out.push(...(text.match(LINK) ?? []))
+  }
+  return [...new Set(out)]
+}
+
 export const jobBoardsAdapter: SourceAdapter = {
   id: 'jobboards',
   label: 'Greenhouse and Ashby public job boards',
-  async collect({ query, keywords, feeds, pages, http }) {
+  async collect({ query, keywords, feeds, pages, discovered, http }) {
     const state = stateIn(query)
     const roles = keywords.filter(k => !GENERIC.has(k) && !(state && state.toLowerCase().split(' ').includes(k)))
     if (!state || roles.length === 0) return [] // never every state, never every role
@@ -63,13 +82,19 @@ export const jobBoardsAdapter: SourceAdapter = {
     // Boards come from the given feeds and from discovered page/hit URLs (posting links). Deduped; a lookalike host never yields a board.
     const seenBoards = new Set<string>()
     const boards: { kind: 'gh' | 'ashby'; token: string }[] = []
-    for (const u of [...feeds, ...(pages ?? [])]) {
+    for (const u of [...feeds, ...(pages ?? []), ...(discovered ?? [])]) {
       const b = board(u)
       if (!b || seenBoards.has(`${b.kind}:${b.token}`)) continue
       seenBoards.add(`${b.kind}:${b.token}`)
       boards.push(b)
     }
-    for (const b of boards.slice(0, 10)) {
+    for (const u of await hnBoards(http, state)) {
+      const b = board(u)
+      if (!b || seenBoards.has(`${b.kind}:${b.token}`)) continue
+      seenBoards.add(`${b.kind}:${b.token}`)
+      boards.push(b)
+    }
+    for (const b of boards.slice(0, 20)) {
       if (b.kind === 'ashby') {
         const d = await json(http, `https://api.ashbyhq.com/posting-api/job-board/${b.token}`)
         for (const j of Array.isArray(d?.jobs) ? d.jobs : []) {

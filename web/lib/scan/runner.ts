@@ -514,7 +514,7 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
 }
 
 // diag (optional) receives what this collector really did: every query sent, per-call outcomes, hit and page counts.
-async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider: Provider, key: string, fetchImpl?: typeof fetch, diag?: { trace: SearchTrace; info: Partial<SourceStats> }): Promise<LeadDraft[] | null> {
+async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider: Provider, key: string, fetchImpl?: typeof fetch, diag?: { trace: SearchTrace; info: Partial<SourceStats>; hitUrls: string[] }): Promise<LeadDraft[] | null> {
   migrateTinyfish(db)
   const complete = provider.complete!
   const spent = { searches: 0, fetches: 0 }
@@ -546,6 +546,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
     if (diag && summarizeTrace(diag.trace).hits_complete === true) Object.assign(diag.info, { evidence_items: 0, evidence_with_page_text: 0, evidence_snippet_only: 0 })
     return null
   }
+  if (diag) diag.hitUrls.push(...new Set(hits.map(h => h.url)))
   const urls = [...new Set(hits.map(h => h.url))].slice(0, 8)
   const f = await tfFetch(db, job.user_id, urls, spent, diag ? { trace: diag.trace } : {})
   const items = toEvidence(hits, f.ok ? f.pages : [])
@@ -635,7 +636,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // Primary backend when the operator set TINYFISH_API_KEY: TinyFish search and fetch, the user's own model reads the
     // pages. If TinyFish is off, capped, failing or finds nothing, fall back to the provider's built-in web search.
     let leads: LeadDraft[] | null = null
-    const diag = { trace: new SearchTrace(), info: {} as Partial<SourceStats> }
+    const diag = { trace: new SearchTrace(), info: {} as Partial<SourceStats>, hitUrls: [] as string[] }
     if (job.query && icpForSources && complete && tinyfishEnabled()) {
       try {
         ledger.record('search:tinyfish', 'started')
@@ -674,7 +675,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     if (sel && icpForSources && complete) {
       try {
         assertOwned(db, job)
-        const collected = await collectEvidenceReport(sel, job.query!, deps.sourceHttp)
+        const collected = await collectEvidenceReport(sel, job.query!, deps.sourceHttp, undefined, sel.adapters.includes('jobboards') ? [...diag.hitUrls, ...leads.map(l => l.source_url)] : [])
         const items = collected.items
         for (const run of collected.runs) ledger.record(run.collector, run.status, run.evidence)
         if (items.length > 0) {

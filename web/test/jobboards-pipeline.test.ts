@@ -19,6 +19,7 @@ const T5 = 'Acme Foods is looking for a Payroll Specialist to run bi-weekly payr
 const requested: string[] = []
 const http: SafeGet = async url => {
   requested.push(url)
+  if (url.startsWith('https://hn.algolia.com/')) return null
   const j = (o: unknown) => ({ status: 200, body: JSON.stringify(o) })
   if (url === 'https://boards-api.greenhouse.io/v1/boards/acme/jobs') return j({ jobs: [
     { id: 1, title: 'Payroll Clerk', location: { name: 'Columbus, OH' } },
@@ -54,7 +55,7 @@ test('a selected board is read through the real pipeline; the Ohio posting lands
   assert.equal(five!.event_date, ago(11))
   assert.ok(requested.includes('https://boards-api.greenhouse.io/v1/boards/acme/jobs'))
   assert.ok(!requested.some(u => u.endsWith('/jobs/6')))
-  for (const u of requested) assert.equal(new URL(u).hostname, 'boards-api.greenhouse.io')
+  for (const u of requested) assert.ok(['boards-api.greenhouse.io', 'hn.algolia.com'].includes(new URL(u).hostname), u)
 })
 
 test('a quote that is not on the posting page is dropped by the verifier, never verified', async () => {
@@ -84,5 +85,5 @@ test('the same employer is not counted twice: a search lead and a board posting 
 test('with no board selected the adapter requests nothing', async () => {
   const { rows } = await run([], () => [], [])
   assert.equal(rows.length, 0)
-  assert.deepEqual(requested, [])
+  assert.deepEqual(requested.filter(u => !u.startsWith('https://hn.algolia.com/')), []) // only the HN lookup, no board
 })
