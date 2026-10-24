@@ -23,22 +23,45 @@ export class SpendGuard {
   calls = 0
   limitUsd: number
   constructor(limitUsd: number) { this.limitUsd = limitUsd }
-  reserve(model: string | undefined, promptBytes: number, maxOut: number): void {
+  private cost(model: string | undefined, promptBytes: number, maxOut: number): number {
     const p = model ? PRICES_USD_PER_M[model] : undefined
     if (!p) throw new SpendRefused('model_unpriced')
-    const cost = ((promptBytes + INPUT_MARGIN_TOKENS) * p.in + maxOut * p.out) / 1e6
-    if (!(this.reservedUsd + cost <= this.limitUsd)) throw new SpendRefused('over_limit')
-    this.reservedUsd += cost; this.calls++
+    return ((promptBytes + INPUT_MARGIN_TOKENS) * p.in + maxOut * p.out) / 1e6
+  }
+  check(model: string | undefined, promptBytes: number, maxOut: number): void {
+    if (!(this.reservedUsd + this.cost(model, promptBytes, maxOut) <= this.limitUsd)) throw new SpendRefused('over_limit')
+  }
+  reserve(model: string | undefined, promptBytes: number, maxOut: number): void {
+    this.check(model, promptBytes, maxOut)
+    this.reservedUsd += this.cost(model, promptBytes, maxOut); this.calls++
   }
 }
 
-export function guardProvider(p: Provider, g: SpendGuard): Provider {
+// One pool per owner for the life of the process: every job of that owner draws on the same limit, so a second job, a
+// retry or a re-claimed attempt cannot spend it again. A process restart starts a new pool, so do not restart during a
+// budgeted test.
+const pools = new Map<string, SpendGuard>()
+export function ownerPool(owner: string, limitUsd: number): SpendGuard {
+  const g = pools.get(owner)
+  if (g) { g.limitUsd = Math.min(g.limitUsd, limitUsd); return g }
+  const n = new SpendGuard(limitUsd); pools.set(owner, n); return n
+}
+export function resetSpendPools(): void { pools.clear() }
+
+export function reserveAll(guards: SpendGuard[], model: string | undefined, promptBytes: number, maxOut: number): void {
+  // check every guard before committing to any, so a refusal leaves no partial reservation
+  for (const g of guards) g.check(model, promptBytes, maxOut)
+  for (const g of guards) g.reserve(model, promptBytes, maxOut)
+}
+
+export function guardProvider(p: Provider, gs: SpendGuard | SpendGuard[]): Provider {
+  const g = Array.isArray(gs) ? gs : [gs]
   const model = () => { try { return p.configuredModel?.() } catch { return undefined } }
   const out: Provider = {
     research: async () => { throw new SpendRefused('research_unbounded') },
     ...(p.configuredModel ? { configuredModel: () => p.configuredModel!() } : {}),
   }
-  if (p.complete) out.complete = async (k, prompt, f, max = 10) => { g.reserve(model(), Buffer.byteLength(prompt), max); return p.complete!(k, prompt, f, max) }
-  if (p.completeDetailed) out.completeDetailed = async (k, prompt, f, max = 10) => { g.reserve(model(), Buffer.byteLength(prompt), max); return p.completeDetailed!(k, prompt, f, max) }
+  if (p.complete) out.complete = async (k, prompt, f, max = 10) => { reserveAll(g, model(), Buffer.byteLength(prompt), max); return p.complete!(k, prompt, f, max) }
+  if (p.completeDetailed) out.completeDetailed = async (k, prompt, f, max = 10) => { reserveAll(g, model(), Buffer.byteLength(prompt), max); return p.completeDetailed!(k, prompt, f, max) }
   return out
 }

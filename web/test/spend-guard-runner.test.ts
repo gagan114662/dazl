@@ -14,6 +14,7 @@ import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateEvents } from '../lib/events/store.ts'
 import { ProviderError, type Provider } from '../lib/llm/provider.ts'
 import { resetTinyfishState } from '../lib/search/tinyfish.ts'
+import { resetSpendPools } from '../lib/llm/spend-guard.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 
 const master = randomBytes(32)
@@ -26,8 +27,9 @@ const ICP = { summary: 'Ohio SMBs hiring payroll', who: ['Controller'], industri
 
 
 type Calls = { complete: number; research: number; maxTokens: number[]; promptBytes: number }
-function run(budgetJson: string | null, model: string | undefined, tinyfishHits = true, failExtraction = false, noIcp = false) {
+function run(budgetJson: string | null, model: string | undefined, tinyfishHits = true, failExtraction = false, noIcp = false, keepPools = false) {
   resetTinyfishState()
+  if (!keepPools) resetSpendPools()
   const calls: Calls = { complete: 0, research: 0, maxTokens: [], promptBytes: 0 }
   const db = new Database(':memory:')
   migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
@@ -136,4 +138,15 @@ test('reservation arithmetic: (prompt bytes + 1000 margin) * $3/M + max output *
   assert.throws(() => g.reserve('claude-sonnet-4-5', 0, 0), SpendRefused) // 0.0030 more would pass 0.0049
   const big = new SpendGuard(0.0049)
   assert.throws(() => big.reserve('claude-sonnet-4-5', 100_000, 100), SpendRefused) // same output, large prompt: input bytes count
+})
+
+test('the owner limit is ONE pool across all of that owner jobs in the process: a second job cannot spend the same limit again', async () => {
+  process.env.DAZL_RUN_MAX_USD_USERS = 'A:0.1' // covers one scan's worst case (about 0.07) but not two
+  try {
+    const first = await run(null, 'claude-sonnet-4-5')
+    assert.ok(first.calls.complete >= 2); assert.notEqual(first.err, 'budget_stopped')
+    const second = await run(null, 'claude-sonnet-4-5', true, false, false, true)
+    assert.equal(second.err, 'budget_stopped')
+    assert.ok(second.calls.complete < first.calls.complete)
+  } finally { delete process.env.DAZL_RUN_MAX_USD_USERS }
 })

@@ -19,7 +19,7 @@ import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, s
 import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '../search/trace.ts'
 import { migrateTinyfish, queryPlan, queryPrompt, tfFetch, tfSearch, tinyfishEnabled, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { crawlJob } from '../connectors/sitecrawl.ts'
-import { guardProvider, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
+import { guardProvider, ownerPool, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
 import { getMemory, isExcluded, memoryPromptBlock } from '../memory.ts'
 import { enrichJobSignals } from '../signals/index.ts'
@@ -583,7 +583,6 @@ export function ownerMaxUsd(userId: string, env: Record<string, string | undefin
   }
   return null
 }
-const tighter = (a: number | null | undefined, b: number | null | undefined): number | null => a == null ? b ?? null : b == null ? a : Math.min(a, b)
 export function parseRunBudget(raw: string | null | undefined): RunBudget | null {
   if (!raw) return null
   try {
@@ -630,9 +629,12 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     return 'failed'
   }
   try {
-    const spendLimit = job.csv_domain ? null : tighter(parseRunBudget(job.run_budget)?.max_usd, ownerMaxUsd(job.user_id))
+    const jobMax = job.csv_domain ? null : parseRunBudget(job.run_budget)?.max_usd ?? null
+    const ownerMax = job.csv_domain ? null : ownerMaxUsd(job.user_id)
+    const spendGuards = [...(jobMax !== null ? [new SpendGuard(jobMax)] : []), ...(ownerMax !== null ? [ownerPool(job.user_id, ownerMax)] : [])]
+    const spendLimit = spendGuards.length ? 1 : null
     const baseProviders = deps.providers ?? providers
-    const providers_ = spendLimit === null ? baseProviders : { ...baseProviders, [vendor]: guardProvider(baseProviders[vendor], new SpendGuard(spendLimit)) }
+    const providers_ = spendLimit === null ? baseProviders : { ...baseProviders, [vendor]: guardProvider(baseProviders[vendor], spendGuards) }
     if (spendLimit !== null) deps = { ...deps, creditEnrichment: false } // a budgeted run adds no other paid enrichment
     if (job.csv_domain) return await runCompanyJob(db, job, providers_[vendor], vendor, key, budgetDeps(deps, parseRunBudget(job.run_budget)))
     let prompt = buildPrompt(job)
