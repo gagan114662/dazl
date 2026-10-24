@@ -1,5 +1,6 @@
 import type { Evidence, SourceAdapter, SafeGet } from './types.ts'
 import { decodeText } from './rss.ts'
+import { norm } from '../scan/evidence.ts'
 
 // Public job-board JSON (Greenhouse, Ashby). Evidence only: a posting says a company is hiring a role in a state.
 // It is not proof of a need; the normal verifier still checks every lead against the cited page.
@@ -24,19 +25,24 @@ export function locationInState(state: string, ...locs: (string | undefined)[]):
 }
 // The quote is a sentence of the posting's own body text as the API returns it (never title + location joined: a
 // real posting page shows those in separate elements). No usable body text means no evidence, nothing is invented.
-export function bodyQuote(raw: unknown): string | null {
-  if (typeof raw !== 'string') return null
+// Up to 5 candidate quotes, one per body paragraph (first sentence of each), in page order.
+export function bodyQuotes(raw: unknown): string[] {
+  if (typeof raw !== 'string') return []
   // Greenhouse returns escaped HTML: unescape once, split into block elements so a quote never joins a heading to a
   // paragraph, then strip inline tags and decode what remains per block. Ashby plain text splits on line breaks.
+  const out: string[] = []
   for (const block of unesc(raw).split(/<\/?(?:p|li|h[1-6]|br|div|ul|ol|tr|td|table|section)\b[^>]*>|\n+/i)) {
     const t = decodeText(block)
     if (t.length < 40) continue
     const first = t.match(/^(.{20,300}?[.!?])(\s|$)/)?.[1]
     const q = first ?? t.slice(0, 300).replace(/\s+\S*$/, '')
-    if (q.length >= 20) return q
+    if (q.length >= 20) out.push(q)
+    if (out.length >= 5) break
   }
-  return null
+  return out
 }
+export const bodyQuote = (raw: unknown): string | null => bodyQuotes(raw)[0] ?? null
+const onPage = (pageText: string, q: string) => norm(pageText).includes(norm(q))
 const day = (v: unknown): string | null => {
   if (typeof v !== 'string') return null
   const t = Date.parse(v)
@@ -101,10 +107,20 @@ export async function hnBoards(http: SafeGet, state: string, note?: Note): Promi
 export const jobBoardsAdapter: SourceAdapter = {
   id: 'jobboards',
   label: 'Greenhouse and Ashby public job boards',
-  async collect({ query, keywords, feeds, pages, discovered, http: rawHttp, note }) {
+  async collect({ query, keywords, feeds, pages, discovered, http: rawHttp, page, note }) {
     const t0 = Date.now()
     let cut = false
     const http: SafeGet = async (url, o) => { if (Date.now() - t0 > jobBoardsLimits.budgetMs) { cut = true; return { status: 0, body: '' } } return rawHttp(url, o) }
+    // With a page fetcher the quote must be a paragraph that is really on the posting page; none on the page means no evidence.
+    // A page that cannot be fetched keeps the API paragraph for the verifier to decide, and is reported as partial.
+    const quoteFor = async (url: string, body: unknown): Promise<string | null> => {
+      const cands = bodyQuotes(body)
+      if (!page || cands.length === 0) return cands[0] ?? null
+      if (Date.now() - t0 > jobBoardsLimits.budgetMs) { cut = true; return cands[0] }
+      const text = await page(url)
+      if (text === null) { note?.('page_unreachable'); return cands[0] }
+      return cands.find(q => onPage(text, q)) ?? null
+    }
     const state = stateIn(query)
     const roles = keywords.filter(k => !GENERIC.has(k) && !(state && state.toLowerCase().split(' ').includes(k)))
     if (!state || roles.length === 0) return [] // never every state, never every role
@@ -133,7 +149,7 @@ export const jobBoardsAdapter: SourceAdapter = {
           if (!roleOk(j.title) || !locationInState(state, j.location, j.address?.postalAddress?.addressRegion)) continue
           const date = day(j.publishedAt)
           if (!fresh(date)) continue
-          const quote = bodyQuote(j.descriptionPlain)
+          const quote = await quoteFor(j.jobUrl, j.descriptionPlain)
           if (!quote) continue
           out.push({ source: 'jobboards', url: j.jobUrl, title: `${j.title} (${j.location ?? state})`.slice(0, 200), quote, date })
         }
@@ -148,7 +164,7 @@ export const jobBoardsAdapter: SourceAdapter = {
           const date = day(det?.first_published)
           const url = typeof det?.absolute_url === 'string' ? det.absolute_url : ''
           if (!fresh(date) || !url.startsWith('https://')) continue
-          const quote = bodyQuote(det.content)
+          const quote = await quoteFor(url, det.content)
           if (!quote) continue
           out.push({ source: 'jobboards', url, title: `${det.title} (${det.location?.name ?? state})`.slice(0, 200), quote, date, updated: day(det.updated_at) })
         }

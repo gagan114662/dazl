@@ -23,6 +23,7 @@ export interface AdapterInput {
   keywords: string[]
   feeds: string[]
   pages?: string[] // page URLs the user asked to read; only the web (Jina) adapter uses it
+  page?: (url: string) => Promise<string | null> // the posting page's text via the scan's own page fetcher; null when it could not be fetched
   note?: (code: string) => void // an adapter reports a partial result (oversize, unparseable, unreachable, budget); a healthy empty reports nothing
   discovered?: string[] // URLs this scan's own search returned (raw hits and candidates); only the job-board adapter derives boards from them
   http: SafeGet
