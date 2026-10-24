@@ -150,8 +150,12 @@ export function draftTemplate(lead: Lead, businessName: string, positioning = ''
   // No guessed pain, no claimed buying need, no personal detail the page did not publish.
   // Separate source context (never address provenance): the saved source quote and its page, only when that page is not
   // the address page already cited. It says where the quote was seen, never what it means (no need, intent or fit claim).
-  const quote = (lead.evidence_excerpt ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160)
-  const seen = quote && lead.source_url && lead.source_url !== addressUrl ? `\n\nSeparately, this public page says: "${quote}"\n${lead.source_url}` : ''
+  const full = (lead.evidence_excerpt ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim()
+  // Cut at a word boundary and say so, so a quoted prefix is never presented as the whole excerpt.
+  const cutAt = full.lastIndexOf(' ', 160)
+  const quote = full.length <= 160 ? full : `${full.slice(0, cutAt > 80 ? cutAt : 160).trimEnd()}...`
+  // Saved text: nothing is refetched at draft time, so the label says so.
+  const seen = quote && lead.source_url && lead.source_url !== addressUrl ? `\n\nSaved excerpt from this public page: "${quote}"\n${lead.source_url}` : ''
   return {
     subject: `Quick question for ${lead.company || lead.name}`.slice(0, 150),
     body: `Hi ${who},\n\nI'm writing to the contact address published on ${lead.company || 'your company'}'s page:\n${addressUrl}${seen}\n\n${seller}\n\nWould a short conversation about whether this fits your team's work be useful? If I have the wrong person, could you point me to the right one?\n\nThanks,`,

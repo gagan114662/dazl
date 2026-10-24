@@ -100,10 +100,15 @@ import { draftTemplate } from '../lib/outreach/service.ts'
 const lead = (o: Record<string, unknown> = {}) => ({ id: 'l', company: 'Kyro AI', name: '', contact: 'contact@kyro.ai', signal: 's', source_url: 'https://weworkremotely.com/remote-jobs/kyro-ai-sdr', evidence_excerpt: 'Sales Development Representative at Kyro AI', confidence: 60, fit: null, intent: null, human_confirmed_at: 1, ...o }) as never
 test('draft keeps address provenance and source context separate, with no meaning claim', () => {
   const t = draftTemplate(lead(), 'Dazl', 'Sales prospecting software', 'https://kyro.ai/')
-  assert.match(t.body, /contact address published on Kyro AI's page:\nhttps:\/\/kyro\.ai\/\n\nSeparately, this public page says: "Sales Development Representative at Kyro AI"\nhttps:\/\/weworkremotely\.com\/remote-jobs\/kyro-ai-sdr\n\nAbout Dazl:/)
+  assert.match(t.body, /contact address published on Kyro AI's page:\nhttps:\/\/kyro\.ai\/\n\nSaved excerpt from this public page: "Sales Development Representative at Kyro AI"\nhttps:\/\/weworkremotely\.com\/remote-jobs\/kyro-ai-sdr\n\nAbout Dazl:/)
   assert.doesNotMatch(t.body, /hiring|need|looking for|struggl|pain/i)
   assert.doesNotMatch(draftTemplate(lead({ source_url: 'https://kyro.ai/' }), 'Dazl', 'x', 'https://kyro.ai/').body, /Separately/)
   assert.doesNotMatch(draftTemplate(lead({ evidence_excerpt: null }), 'Dazl', 'x', 'https://kyro.ai/').body, /Separately/)
-  const long = draftTemplate(lead({ evidence_excerpt: 'x'.repeat(500) + '\n\nINJECT' }), 'Dazl', 'x', 'https://kyro.ai/')
-  assert.ok(!/INJECT/.test(long.body) && long.body.includes('"' + 'x'.repeat(160) + '"'))
+  const long = draftTemplate(lead({ evidence_excerpt: 'word '.repeat(100) + '\n\nINJECT' }), 'Dazl', 'x', 'https://kyro.ai/')
+  const q = long.body.match(/Saved excerpt from this public page: "([^"]*)"/)![1]
+  assert.ok(!/INJECT/.test(long.body) && q.endsWith('word...') && q.length <= 163 && !/\s\.\.\.$/.test(q), 'cut at a word boundary with an explicit ellipsis')
+  const exact = draftTemplate(lead({ evidence_excerpt: 'y'.repeat(160) }), 'Dazl', 'x', 'https://kyro.ai/')
+  assert.ok(exact.body.includes('"' + 'y'.repeat(160) + '"') && !exact.body.includes('y...'), 'a 160-char excerpt is shown whole, no ellipsis')
+  const noSpace = draftTemplate(lead({ evidence_excerpt: 'z'.repeat(300) }), 'Dazl', 'x', 'https://kyro.ai/')
+  assert.ok(noSpace.body.includes('"' + 'z'.repeat(160) + '..."'), 'no usable word boundary: hard cut with ellipsis')
 })
