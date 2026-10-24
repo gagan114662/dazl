@@ -149,3 +149,35 @@ test('flag turned off later: earlier rows remain readable, new scans write no ro
   assert.deepEqual(sourceStats(db, 'o', 'j1')!.map(r => r.queries), [['kept query text']])
   assert.deepEqual(sourceStats(db, 'o', 'j2'), [])
 })
+
+test('completeness: a mix of ok and failed searches is a lower bound and says so; all ok is complete', async () => {
+  const db = mk(); const trace = new SearchTrace(); const spent = { searches: 0 }
+  await tfSearch(db, 't1', 'ohio payroll hiring one', {}, spent, { env, fetchImpl: res({ results: [hit(1), hit(2)] }), now: NOW, trace })
+  let s = summarizeTrace(trace)
+  assert.equal(s.hits_complete, true); assert.equal(s.hits_raw, 2)
+  await tfSearch(db, 't1', 'ohio payroll hiring two', {}, spent, { env, fetchImpl: res({}, 500), now: NOW, trace })
+  s = summarizeTrace(trace)
+  assert.equal(s.hits_raw, 2, 'the known subtotal from the call that answered'); assert.equal(s.hits_complete, false, 'one call failed, so 2 is a lower bound, not the total')
+  assert.equal(s.hits_unique_urls, 2)
+})
+
+test('completeness: no successful search leaves it unknown (null), not false', () => {
+  const t = new SearchTrace(); t.search({ query: 'ohio payroll hiring one', attempted: true, outcome: 'unavailable', hits: null })
+  assert.equal(summarizeTrace(t).hits_complete, null); assert.equal(summarizeTrace(new SearchTrace()).hits_complete, null)
+})
+
+test('completeness: a search refused locally after an ok one also makes the total a lower bound (the query never ran)', () => {
+  const t = new SearchTrace()
+  t.search({ query: 'ohio payroll hiring one', attempted: true, outcome: 'ok', hits: ['https://a.example/x'] })
+  t.search({ query: 'ohio payroll hiring two', attempted: false, outcome: 'cap', hits: null })
+  const s = summarizeTrace(t); assert.equal(s.hits_raw, 1); assert.equal(s.hits_complete, false)
+})
+
+test('fetch completeness: a failed later batch makes the page count a lower bound', () => {
+  const t = new SearchTrace()
+  t.search({ query: 'ohio payroll hiring one', attempted: true, outcome: 'ok', hits: ['https://a.example/x'] })
+  t.fetch({ requested: 10, attempted: true, outcome: 'ok', pages: 7 }); t.fetch({ requested: 10, attempted: true, outcome: 'unavailable', pages: null })
+  const s = summarizeTrace(t); assert.equal(s.fetch_pages_with_text, 7); assert.equal(s.fetch_complete, false)
+  const u = new SearchTrace(); u.fetch({ requested: 10, attempted: true, outcome: 'ok', pages: 7 })
+  assert.equal(summarizeTrace(u).fetch_complete, true)
+})

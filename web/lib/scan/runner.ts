@@ -541,7 +541,11 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   const after = new Date(Date.now() - 365 * 86400_000).toISOString().slice(0, 10)
   const hits: Awaited<ReturnType<typeof tfSearch>> extends infer R ? (R extends { ok: true; hits: infer H } ? H : never) : never = []
   for (const query of q) { const r = await tfSearch(db, job.user_id, query, { afterDate: after }, spent, diag ? { trace: diag.trace } : {}); if (!r.ok) { if (hits.length === 0) return null; break } hits.push(...r.hits) }
-  if (hits.length === 0) return null
+  if (hits.length === 0) {
+    // Every search answered and none returned a result: the evidence really is 0. If any search failed it stays unknown (null).
+    if (diag && summarizeTrace(diag.trace).hits_complete === true) Object.assign(diag.info, { evidence_items: 0, evidence_with_page_text: 0, evidence_snippet_only: 0 })
+    return null
+  }
   const urls = [...new Set(hits.map(h => h.url))].slice(0, 8)
   const f = await tfFetch(db, job.user_id, urls, spent, diag ? { trace: diag.trace } : {})
   const items = toEvidence(hits, f.ok ? f.pages : [])

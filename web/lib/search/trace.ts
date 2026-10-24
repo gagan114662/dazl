@@ -28,6 +28,10 @@ export interface SourceStats {
   searches_not_attempted: Record<string, number>
   hits_raw: number | null
   hits_unique_urls: number | null
+  // true: every search ran and answered, so hits_raw / hits_unique_urls are totals. false: some search failed or never
+  // ran, so they are lower bounds (known subtotals). null: no search answered, nothing to bound.
+  hits_complete: boolean | null
+  fetch_complete: boolean | null
   fetch_requested: number | null
   fetch_outcome: string | null
   fetch_pages_with_text: number | null
@@ -49,8 +53,8 @@ const bump = (m: Record<string, number>, k: string) => { m[k] = (m[k] ?? 0) + 1 
 const norm = (u: string) => u.replace(/\/$/, '')
 
 export function summarizeTrace(t: SearchTrace): SourceStats {
-  const s: SourceStats = { queries: [], query_source: null, searches_attempted: 0, searches_ok: 0, searches_failed: {}, searches_not_attempted: {}, hits_raw: null, hits_unique_urls: null, fetch_requested: null, fetch_outcome: null, fetch_pages_with_text: null, per_query: [], distinct_hosts: null, urls_not_fetched: null }
-  const urls = new Set<string>(); let raw = 0
+  const s: SourceStats = { queries: [], query_source: null, searches_attempted: 0, searches_ok: 0, searches_failed: {}, searches_not_attempted: {}, hits_raw: null, hits_unique_urls: null, hits_complete: null, fetch_complete: null, fetch_requested: null, fetch_outcome: null, fetch_pages_with_text: null, per_query: [], distinct_hosts: null, urls_not_fetched: null }
+  const urls = new Set<string>(); let raw = 0; let fetchBad = false; let fetchOk = false
   for (const e of t.events) {
     if (e.kind === 'search') {
       s.queries.push(e.query)
@@ -59,16 +63,18 @@ export function summarizeTrace(t: SearchTrace): SourceStats {
       if (e.outcome === 'ok' && e.hits) { s.searches_ok++; raw += e.hits.length; const before = urls.size; for (const u of e.hits) urls.add(norm(u)); s.per_query!.push({ query: e.query, outcome: 'ok', hits: e.hits.length, new_urls: urls.size - before }) } else { bump(s.searches_failed, e.outcome); s.per_query!.push({ query: e.query, outcome: e.outcome, hits: null, new_urls: null }) }
     } else {
       s.fetch_requested = (s.fetch_requested ?? 0) + e.requested
-      if (!e.attempted) { s.fetch_outcome = s.fetch_outcome ?? e.outcome; continue }
+      if (!e.attempted) { s.fetch_outcome = s.fetch_outcome ?? e.outcome; fetchBad = true; continue }
       s.fetch_outcome = e.outcome
-      if (e.outcome === 'ok' && e.pages !== null) s.fetch_pages_with_text = (s.fetch_pages_with_text ?? 0) + e.pages
+      if (e.outcome === 'ok' && e.pages !== null) { s.fetch_pages_with_text = (s.fetch_pages_with_text ?? 0) + e.pages; fetchOk = true } else fetchBad = true
     }
   }
   if (s.searches_ok > 0) {
     s.hits_raw = raw; s.hits_unique_urls = urls.size
+    s.hits_complete = Object.keys(s.searches_failed).length === 0 && Object.keys(s.searches_not_attempted).length === 0
     s.distinct_hosts = new Set([...urls].map(u => { try { return new URL(u).hostname.toLowerCase() } catch { return u } })).size
     if (s.fetch_requested !== null) s.urls_not_fetched = Math.max(0, urls.size - s.fetch_requested)
   }
+  if (fetchOk) s.fetch_complete = !fetchBad
   return s
 }
 
@@ -97,6 +103,8 @@ export function migrateSourceStats(db: Database.Database): void {
     searches_not_attempted TEXT CHECK (searches_not_attempted IS NULL OR length(searches_not_attempted) <= 200),
     hits_raw INTEGER,
     hits_unique_urls INTEGER,
+    hits_complete INTEGER CHECK (hits_complete IS NULL OR hits_complete IN (0,1)),
+    fetch_complete INTEGER CHECK (fetch_complete IS NULL OR fetch_complete IN (0,1)),
     fetch_requested INTEGER,
     fetch_outcome TEXT CHECK (fetch_outcome IS NULL OR length(fetch_outcome) <= 40),
     fetch_pages_with_text INTEGER,
@@ -122,8 +130,8 @@ export function writeSourceStats(db: Database.Database, jobId: string, attempt: 
   try {
     migrateSourceStats(db)
     const q = JSON.stringify(s.queries); const pq = JSON.stringify(s.per_query ?? []); const j = (o: Record<string, number>) => JSON.stringify(o)
-    db.prepare(`INSERT OR REPLACE INTO scan_source_stats (job_id,attempt,collector,queries,query_source,searches_attempted,searches_ok,searches_failed,searches_not_attempted,hits_raw,hits_unique_urls,fetch_requested,fetch_outcome,fetch_pages_with_text,per_query,distinct_hosts,urls_not_fetched,extracted_candidates,model_requested,model_served,model_calls,input_tokens,output_tokens,evidence_items,evidence_with_page_text,evidence_snippet_only)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(jobId, attempt, collector, q.length <= 2000 ? q : null, s.query_source ?? null, s.searches_attempted, s.searches_ok, j(s.searches_failed), j(s.searches_not_attempted), s.hits_raw, s.hits_unique_urls, s.fetch_requested, s.fetch_outcome, s.fetch_pages_with_text, pq.length <= 4000 ? pq : null, s.distinct_hosts ?? null, s.urls_not_fetched ?? null, s.extracted_candidates ?? null, s.model_requested?.slice(0, 100) ?? null, s.model_served?.slice(0, 100) ?? null, s.model_calls ?? null, s.input_tokens ?? null, s.output_tokens ?? null, s.evidence_items ?? null, s.evidence_with_page_text ?? null, s.evidence_snippet_only ?? null)
+    db.prepare(`INSERT OR REPLACE INTO scan_source_stats (job_id,attempt,collector,queries,query_source,searches_attempted,searches_ok,searches_failed,searches_not_attempted,hits_raw,hits_unique_urls,hits_complete,fetch_complete,fetch_requested,fetch_outcome,fetch_pages_with_text,per_query,distinct_hosts,urls_not_fetched,extracted_candidates,model_requested,model_served,model_calls,input_tokens,output_tokens,evidence_items,evidence_with_page_text,evidence_snippet_only)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(jobId, attempt, collector, q.length <= 2000 ? q : null, s.query_source ?? null, s.searches_attempted, s.searches_ok, j(s.searches_failed), j(s.searches_not_attempted), s.hits_raw, s.hits_unique_urls, s.hits_complete === null ? null : s.hits_complete ? 1 : 0, s.fetch_complete === null ? null : s.fetch_complete ? 1 : 0, s.fetch_requested, s.fetch_outcome, s.fetch_pages_with_text, pq.length <= 4000 ? pq : null, s.distinct_hosts ?? null, s.urls_not_fetched ?? null, s.extracted_candidates ?? null, s.model_requested?.slice(0, 100) ?? null, s.model_served?.slice(0, 100) ?? null, s.model_calls ?? null, s.input_tokens ?? null, s.output_tokens ?? null, s.evidence_items ?? null, s.evidence_with_page_text ?? null, s.evidence_snippet_only ?? null)
     return true
   } catch { return false }
 }

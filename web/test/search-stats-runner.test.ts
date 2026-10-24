@@ -23,7 +23,8 @@ const QUOTE = 'Harbor Freight Supply of Columbus Ohio is hiring a payroll specia
 const REQUEST = 'Find Ohio companies with 10 to 100 employees that recently posted a payroll, HR or office manager job'
 const ICP = { summary: 'Ohio SMBs hiring payroll', who: ['Controller'], industries: [], sizes: ['10-100 employees'], where: ['Ohio'], signals: ['payroll job'], exclude: [] }
 
-function run(modelQueries: string[] | string, searchStatus = 200) {
+function run(modelQueries: string[] | string, searchStatus = 200, _hits: unknown[] = [], mode: true | 'first-empty-then-fail' | false = false) {
+  let searchCalls = 0
   const db = new Database(':memory:')
   migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
   saveKey(db, 'A', 'anthropic', KEY, master)
@@ -33,6 +34,9 @@ function run(modelQueries: string[] | string, searchStatus = 200) {
   const fetchImpl = (async (u: string) => {
     if (u.startsWith('https://api.search.tinyfish.ai')) {
       searched.push(new URL(u).searchParams.get('query') ?? '')
+      searchCalls++
+      if (mode === true) return new Response(JSON.stringify({ results: [] }), { status: 200 })
+      if (mode === 'first-empty-then-fail') return searchCalls === 1 ? new Response(JSON.stringify({ results: [] }), { status: 200 }) : new Response('{}', { status: 500 })
       return new Response(JSON.stringify({ results: [{ url: 'https://jobs.example/hf', title: 'Payroll specialist', snippet: QUOTE, date: recent }] }), { status: searchStatus })
     }
     if (u.startsWith('https://api.fetch.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: 'https://jobs.example/hf', title: 'Payroll specialist', text: `Posted ${recent}. ${QUOTE}. Apply now.` }] }), { status: 200 })
@@ -101,4 +105,22 @@ test('full funnel row: per-query hits, extracted candidates, hosts and unfetched
   const pq = JSON.parse(row.per_query as string)
   assert.equal(pq.length, searched.length); assert.equal(pq[0].new_urls, 1); assert.equal(pq[1].new_urls, 0, 'same url from the second query is not new')
   assert.equal(row.extracted_candidates, 1); assert.equal(row.distinct_hosts, 1); assert.equal(row.urls_not_fetched, 0)
+})
+
+test('every search ok but empty: evidence_items is an actual 0 (not unknown), completeness true, no fetch and no extraction recorded', async () => {
+  const { db } = await withEnv(true, () => run(MODEL_Q, 200, [], true))
+  const row = db.prepare('SELECT searches_ok, hits_raw, hits_complete, evidence_items, evidence_with_page_text, evidence_snippet_only, fetch_requested, extracted_candidates FROM scan_source_stats').get() as Record<string, unknown>
+  assert.deepEqual(row, { searches_ok: 2, hits_raw: 0, hits_complete: 1, evidence_items: 0, evidence_with_page_text: 0, evidence_snippet_only: 0, fetch_requested: null, extracted_candidates: null })
+})
+
+test('searches failed: evidence_items stays unknown (null), not 0', async () => {
+  const { db } = await withEnv(true, () => run(MODEL_Q, 500))
+  const row = db.prepare('SELECT hits_complete, evidence_items FROM scan_source_stats').get() as Record<string, unknown>
+  assert.deepEqual(row, { hits_complete: null, evidence_items: null })
+})
+
+test('one query answered empty and one failed: evidence_items unknown, hits a lower bound of 0', async () => {
+  const { db } = await withEnv(true, () => run(MODEL_Q, 200, [], 'first-empty-then-fail'))
+  const row = db.prepare('SELECT searches_ok, hits_raw, hits_complete, evidence_items FROM scan_source_stats').get() as Record<string, unknown>
+  assert.deepEqual(row, { searches_ok: 1, hits_raw: 0, hits_complete: 0, evidence_items: null })
 })
