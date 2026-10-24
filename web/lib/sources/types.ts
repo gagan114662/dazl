@@ -15,7 +15,7 @@ export interface Evidence {
   origin?: 'owner_self_description' // text the item's owner wrote about their own project/product: evidence of what they build, not of a need
 }
 
-export interface HttpResult { status: number; body: string }
+export interface HttpResult { status: number; body: string; truncated?: boolean } // truncated: the body hit the byte cap and was cut
 export type SafeGet = (url: string, opts?: { accept?: string; headers?: Record<string, string> }) => Promise<HttpResult | null>
 
 export interface AdapterInput {
@@ -23,6 +23,7 @@ export interface AdapterInput {
   keywords: string[]
   feeds: string[]
   pages?: string[] // page URLs the user asked to read; only the web (Jina) adapter uses it
+  note?: (code: string) => void // an adapter reports a partial result (oversize, unparseable, unreachable, budget); a healthy empty reports nothing
   discovered?: string[] // URLs this scan's own search returned (raw hits and candidates); only the job-board adapter derives boards from them
   http: SafeGet
   credential?: string // reserved for future user-approved connectors; no adapter below uses it

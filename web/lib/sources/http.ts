@@ -24,7 +24,7 @@ export const makeSafeGet = (timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup
         let n = 0
         res.on('data', (c: Buffer) => {
           n += c.length
-          if (n > MAX_BYTES) { res.destroy(); resolve({ status, body: Buffer.concat(chunks).toString('utf8') }) } else chunks.push(c)
+          if (n > MAX_BYTES) { res.destroy(); resolve({ status, body: Buffer.concat(chunks).toString('utf8'), truncated: true }) } else chunks.push(c)
         })
         res.on('end', () => resolve({ status, body: Buffer.concat(chunks).toString('utf8') }))
         res.on('error', () => resolve(null))
