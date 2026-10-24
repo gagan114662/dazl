@@ -9,6 +9,7 @@ const STATES: Record<string, string> = { AL: 'Alabama', AK: 'Alaska', AZ: 'Arizo
 const WINDOW_DAYS = 90
 const MAX_DETAIL = 3 // per Greenhouse board
 const MAX_BOARDS = 10
+export const jobBoardsLimits = { budgetMs: 12_000 } // stop STARTING requests after this; each request is hard-bounded at 10 s, so 12 + 10 < the 25 s adapter deadline
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 const GENERIC = new Set(['hiring', 'roles', 'role', 'jobs', 'job', 'open', 'openings', 'positions', 'position', 'team', 'remote'])
 
@@ -25,10 +26,16 @@ export function locationInState(state: string, ...locs: (string | undefined)[]):
 // real posting page shows those in separate elements). No usable body text means no evidence, nothing is invented.
 export function bodyQuote(raw: unknown): string | null {
   if (typeof raw !== 'string') return null
-  const text = decodeText(decodeText(raw)) // Greenhouse returns escaped HTML: unescape, then strip tags
-  const first = text.match(/^(.{20,300}?[.!?])(\s|$)/)?.[1]
-  const q = first ?? (text.length >= 20 ? text.slice(0, 300).replace(/\s+\S*$/, '') : '')
-  return q.length >= 20 ? q : null
+  // Greenhouse returns escaped HTML: unescape once, split into block elements so a quote never joins a heading to a
+  // paragraph, then strip inline tags and decode what remains per block. Ashby plain text splits on line breaks.
+  for (const block of unesc(raw).split(/<\/?(?:p|li|h[1-6]|br|div|ul|ol|tr|td|table|section)\b[^>]*>|\n+/i)) {
+    const t = decodeText(block)
+    if (t.length < 40) continue
+    const first = t.match(/^(.{20,300}?[.!?])(\s|$)/)?.[1]
+    const q = first ?? t.slice(0, 300).replace(/\s+\S*$/, '')
+    if (q.length >= 20) return q
+  }
+  return null
 }
 const day = (v: unknown): string | null => {
   if (typeof v !== 'string') return null
@@ -36,10 +43,13 @@ const day = (v: unknown): string | null => {
   return Number.isNaN(t) ? null : new Date(t).toISOString().slice(0, 10)
 }
 const fresh = (d: string | null) => !!d && Date.now() - Date.parse(d) <= WINDOW_DAYS * 86_400_000 && Date.parse(d) <= Date.now() + 86_400_000
-const json = async (http: SafeGet, url: string): Promise<any> => {
+type Note = (code: string) => void
+const json = async (http: SafeGet, url: string, note?: Note): Promise<any> => {
   const r = await http(url, { accept: 'application/json' })
-  if (!r || r.status !== 200) return null
-  try { return JSON.parse(r.body) } catch { return null }
+  if (!r) { note?.('unreachable'); return null }
+  if (r.status !== 200) return null // a missing or private board is normal, not a partial result
+  if (r.truncated) { note?.('oversize'); return null } // cut at the shared byte cap: never parse a prefix
+  try { return JSON.parse(r.body) } catch { note?.('unparseable'); return null }
 }
 function board(feed: string): { kind: 'gh' | 'ashby'; token: string } | null {
   let u: URL
@@ -52,7 +62,8 @@ function board(feed: string): { kind: 'gh' | 'ashby'; token: string } | null {
   return null
 }
 
-const unesc = (t: string) => t.replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16))).replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n))).replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+const cp = (n: number) => (Number.isInteger(n) && n >= 0 && n <= 0x10ffff && !(n >= 0xd800 && n <= 0xdfff) ? String.fromCodePoint(n) : ' ') // a malformed entity becomes a space, never an exception
+const unesc = (t: string) => t.replace(/&#x([0-9a-f]+);/gi, (_, h) => cp(parseInt(h, 16))).replace(/&#(\d+);/g, (_, n) => cp(Number(n))).replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
 const LINK = /https:\/\/(?:boards|job-boards)\.greenhouse\.io\/[A-Za-z0-9_-]+|https:\/\/jobs\.ashbyhq\.com\/[A-Za-z0-9_-]+/g
 // Board links from the newest monthly Hacker News "Who is hiring" thread (public Algolia API: one story lookup, one comments page).
 // Only comments that name the state contribute boards. A link in a comment is a lead for where to look, never evidence.
@@ -70,13 +81,13 @@ function currentThread(hits: unknown[]): string | null {
 }
 // Board links from this month's Hacker News "Who is hiring" thread (public Algolia API, no key: one story lookup, two comment pages = 3 requests).
 // Only top-level comments that name the state contribute boards. A link is where to look, never evidence: state, role and date are checked on the posting itself.
-export async function hnBoards(http: SafeGet, state: string): Promise<string[]> {
-  const st = await json(http, 'https://hn.algolia.com/api/v1/search_by_date?tags=story,author_whoishiring&hitsPerPage=3')
+export async function hnBoards(http: SafeGet, state: string, note?: Note): Promise<string[]> {
+  const st = await json(http, 'https://hn.algolia.com/api/v1/search_by_date?tags=story,author_whoishiring&hitsPerPage=3', note)
   const id = currentThread(Array.isArray(st?.hits) ? st.hits : [])
   if (!id) return []
   const out: string[] = []
   for (const page of [0, 1]) {
-    const cm = await json(http, `https://hn.algolia.com/api/v1/search?tags=comment,story_${id}&hitsPerPage=200&page=${page}`)
+    const cm = await json(http, `https://hn.algolia.com/api/v1/search?tags=comment,story_${id}&hitsPerPage=200&page=${page}`, note)
     for (const h of Array.isArray(cm?.hits) ? cm.hits : []) {
       if (typeof h?.comment_text !== 'string' || String(h.parent_id) !== id) continue
       const text = unesc(h.comment_text)
@@ -90,7 +101,10 @@ export async function hnBoards(http: SafeGet, state: string): Promise<string[]> 
 export const jobBoardsAdapter: SourceAdapter = {
   id: 'jobboards',
   label: 'Greenhouse and Ashby public job boards',
-  async collect({ query, keywords, feeds, pages, discovered, http }) {
+  async collect({ query, keywords, feeds, pages, discovered, http: rawHttp, note }) {
+    const t0 = Date.now()
+    let cut = false
+    const http: SafeGet = async (url, o) => { if (Date.now() - t0 > jobBoardsLimits.budgetMs) { cut = true; return { status: 0, body: '' } } return rawHttp(url, o) }
     const state = stateIn(query)
     const roles = keywords.filter(k => !GENERIC.has(k) && !(state && state.toLowerCase().split(' ').includes(k)))
     if (!state || roles.length === 0) return [] // never every state, never every role
@@ -105,7 +119,7 @@ export const jobBoardsAdapter: SourceAdapter = {
       seenBoards.add(`${b.kind}:${b.token}`)
       boards.push(b)
     }
-    for (const u of await hnBoards(http, state)) {
+    for (const u of await hnBoards(http, state, note)) {
       const b = board(u)
       if (!b || seenBoards.has(`${b.kind}:${b.token}`)) continue
       seenBoards.add(`${b.kind}:${b.token}`)
@@ -113,7 +127,7 @@ export const jobBoardsAdapter: SourceAdapter = {
     }
     for (const b of boards.slice(0, MAX_BOARDS)) {
       if (b.kind === 'ashby') {
-        const d = await json(http, `https://api.ashbyhq.com/posting-api/job-board/${b.token}`)
+        const d = await json(http, `https://api.ashbyhq.com/posting-api/job-board/${b.token}`, note)
         for (const j of Array.isArray(d?.jobs) ? d.jobs : []) {
           if (j?.isListed !== true || typeof j.title !== 'string' || typeof j.jobUrl !== 'string' || !j.jobUrl.startsWith('https://')) continue
           if (!roleOk(j.title) || !locationInState(state, j.location, j.address?.postalAddress?.addressRegion)) continue
@@ -124,13 +138,13 @@ export const jobBoardsAdapter: SourceAdapter = {
           out.push({ source: 'jobboards', url: j.jobUrl, title: `${j.title} (${j.location ?? state})`.slice(0, 200), quote, date })
         }
       } else {
-        const d = await json(http, `https://boards-api.greenhouse.io/v1/boards/${b.token}/jobs`)
+        const d = await json(http, `https://boards-api.greenhouse.io/v1/boards/${b.token}/jobs`, note)
         let n = 0
         for (const j of Array.isArray(d?.jobs) ? d.jobs : []) {
           if (n >= MAX_DETAIL) break
           if (!Number.isInteger(j?.id) || typeof j.title !== 'string' || !roleOk(j.title) || !locationInState(state, j.location?.name)) continue
           n++
-          const det = await json(http, `https://boards-api.greenhouse.io/v1/boards/${b.token}/jobs/${j.id}`)
+          const det = await json(http, `https://boards-api.greenhouse.io/v1/boards/${b.token}/jobs/${j.id}`, note)
           const date = day(det?.first_published)
           const url = typeof det?.absolute_url === 'string' ? det.absolute_url : ''
           if (!fresh(date) || !url.startsWith('https://')) continue
@@ -140,6 +154,7 @@ export const jobBoardsAdapter: SourceAdapter = {
         }
       }
     }
+    if (cut) note?.('budget')
     return out.slice(0, 30)
   },
 }
