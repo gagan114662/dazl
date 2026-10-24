@@ -109,3 +109,25 @@ test('one slow source does not drop the evidence of sources that finished (items
     assert.equal(result.runs[1].status, 'timeout')
   } finally { delete ADAPTERS.iso_fast_a; delete ADAPTERS.iso_fast_b; delete ADAPTERS.iso_slow }
 })
+
+test('an erroring source keeps its siblings evidence; all-timeout and all-error give no items and exact run statuses', async () => {
+  const ev = (source: string, n: number) => Array.from({ length: n }, (_, i) => ({ source, url: `https://x.example/${source}/${i}`, title: 't', quote: 'q', date: null })) as never
+  ADAPTERS.iso_ok = { id: 'iso_ok', label: 'test', collect: async () => ev('iso_ok', 2) }
+  ADAPTERS.iso_err = { id: 'iso_err', label: 'test', collect: async () => { throw Error('boom') } }
+  ADAPTERS.iso_slow1 = { id: 'iso_slow1', label: 'test', collect: async () => { await new Promise(r => setTimeout(r, 30)); return ev('iso_slow1', 3) } }
+  ADAPTERS.iso_slow2 = { id: 'iso_slow2', label: 'test', collect: async () => { await new Promise(r => setTimeout(r, 30)); return ev('iso_slow2', 4) } }
+  const run = (adapters: string[], t: number) => collectEvidenceReport({ adapters, feeds: [] }, 'test', async () => null, t)
+  try {
+    const mixed = await run(['iso_err', 'iso_ok'], 50)
+    assert.deepEqual(mixed.runs.map(r => [r.collector, r.status, r.evidence]), [['adapter:iso_err', 'error', null], ['adapter:iso_ok', 'ok', 2]])
+    assert.deepEqual(mixed.items.map(i => i.source), ['iso_ok', 'iso_ok'])
+    const allTimeout = await run(['iso_slow1', 'iso_slow2'], 5)
+    assert.deepEqual(allTimeout.runs.map(r => [r.status, r.evidence]), [['timeout', null], ['timeout', null]])
+    assert.equal(allTimeout.items.length, 0)
+    await new Promise(r => setTimeout(r, 40))
+    assert.equal(allTimeout.items.length, 0, 'late results never enter an all-timeout report')
+    assert.deepEqual(allTimeout.runs.map(r => r.status), ['timeout', 'timeout'])
+    const allErr = await run(['iso_err'], 50)
+    assert.deepEqual(allErr.runs.map(r => [r.status, r.evidence]), [['error', null]]); assert.equal(allErr.items.length, 0)
+  } finally { for (const k of ['iso_ok', 'iso_err', 'iso_slow1', 'iso_slow2']) delete ADAPTERS[k] }
+})
