@@ -15,7 +15,7 @@ function setup() {
   return db
 }
 const seen: string[] = []
-const fetcher = async (url: string) => { seen.push(url); return url.includes('fail') ? { fail: 'blocked' as const } : { text: 'We run outbound sales with five SDRs.', title: 't', retrievedAt: 1 } }
+const fetcher = async (url: string) => { seen.push(url); return url.includes('fail') ? { fail: 'blocked' as const } : { text: 'Acme runs outbound sales with five SDRs.', title: 't', retrievedAt: 1 } }
 
 test('preview lists exactly the pages it would use and an estimate flagged as not a cap, with no model', async () => {
   const db = setup(); seen.length = 0
@@ -23,14 +23,24 @@ test('preview lists exactly the pages it would use and an estimate flagged as no
   assert.ok(p)
   assert.deepEqual(p.pages.map(x => [x.role, x.status]), [['posting', 'fetched'], ['company_home', 'fetched']])
   assert.deepEqual(seen, ['https://weworkremotely.com/remote-jobs/acme-sdr', 'https://acme.example/'])
-  assert.equal(p.ready, true); assert.equal(p.cost?.is_guaranteed_cap, false); assert.equal(p.cost?.priced, false); assert.equal(p.scope?.pages_included.length, 2)
-  const q = await qualifyPreview(db, 'u1', 'a'.repeat(24), 'x', fetcher, 'claude-sonnet-4-5'); assert.equal(q?.cost?.priced, true)
+  assert.equal(p.ready, false); assert.equal(p.cost?.is_guaranteed_cap, false); assert.equal(p.cost?.priced, false); assert.equal(p.scope?.pages_included.length, 2)
+  const q = await qualifyPreview(db, 'u1', 'a'.repeat(24), 'x', fetcher, 'anthropic', 'claude-sonnet-4-5'); assert.equal(q?.cost?.priced, true); assert.equal(q?.ready, true); assert.match(q?.prompt_sha256 ?? '', /^[0-9a-f]{64}$/)
+  const o = await qualifyPreview(db, 'u1', 'a'.repeat(24), 'x', fetcher, 'openai', 'gpt-4.1'); assert.equal(o?.ready, false); assert.ok(o?.notes.some(n => /No verified price for openai/.test(n)))
+  const n = await qualifyPreview(db, 'u1', 'a'.repeat(24), 'x', fetcher, null, null); assert.ok(n?.notes.some(x => /No AI key/.test(x)))
 })
 test('no confirmed site means posting only, and it says so; no seller profile is not ready', async () => {
   const db = setup()
   const p = await qualifyPreview(db, 'u1', 'b'.repeat(24), '', fetcher)
   assert.ok(p); assert.equal(p.pages.length, 1); assert.equal(p.ready, false)
   assert.ok(p.notes.some(n => /No confirmed company site/.test(n))); assert.ok(p.notes.some(n => /No seller profile/.test(n)))
+})
+test('a posting page that does not name the company is fetched but not used as evidence', async () => {
+  const db = setup()
+  const p = await qualifyPreview(db, 'u1', 'a'.repeat(24), 'x', async (u: string) => ({ text: u.includes('weworkremotely') ? 'A page about something else entirely.' : 'Acme runs outbound.', title: 't', retrievedAt: 1 }), 'anthropic', 'claude-sonnet-4-5')
+  assert.ok(p)
+  assert.deepEqual(p.pages.map(x => [x.role, x.used]), [['posting', false], ['company_home', true]])
+  assert.ok(p.notes.some(n => /does not name the company/.test(n)))
+  assert.deepEqual(p.scope?.pages_included.map(x => x.role), ['company_home'])
 })
 test('another tenant gets nothing, and a failed fetch is reported not hidden', async () => {
   const db = setup()
