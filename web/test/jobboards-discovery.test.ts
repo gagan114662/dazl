@@ -160,3 +160,17 @@ test('without the jobboards source selected, no HN or board request is made', as
   await run(['https://boards.greenhouse.io/beta/jobs/3'], boardHttp([]), { adapters: ['rss'], feeds: [] })
   assert.deepEqual(requested.filter(u => /algolia|greenhouse/.test(u)), [])
 })
+
+// Pin (passes today: not a red test): job boards and the HN thread are requested ONLY when the scan's own source
+// selection names jobboards. A default scan (no sources) and a scan that selected other sources make no board/HN request.
+test('no job-board or HN request unless the scan selected jobboards', async () => {
+  const BOARD_HOSTS = /boards-api\.greenhouse\.io|api\.ashbyhq\.com|hn\.algolia\.com/
+  for (const sources of [null, { adapters: ['github'], feeds: [] }, { adapters: [], feeds: [], advanced: [] }]) {
+    const { r } = await run(['https://boards.greenhouse.io/beta/jobs/3'], boardHttp([{ text: 'Gamma Dental | Columbus, Ohio | payroll<p>https:&#x2F;&#x2F;boards.greenhouse.io&#x2F;gamma' }], true), sources)
+    assert.equal(r, 'done')
+    assert.deepEqual(requested.filter(u => BOARD_HOSTS.test(u)), [], `unexpected board/HN request for sources=${JSON.stringify(sources)}: ${requested.join(' ')}`)
+  }
+  const { r } = await run(['https://boards.greenhouse.io/beta/jobs/3'], boardHttp([], false))
+  assert.equal(r, 'done')
+  assert.ok(requested.some(u => BOARD_HOSTS.test(u)), 'control: when jobboards IS selected the boards are requested')
+})
