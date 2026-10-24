@@ -217,8 +217,12 @@ export function createDraft(db: Database.Database, tenantId: string, leadId: str
   const id = id24()
   try {
     db.prepare('INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, test) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, tenantId, lead.id, to, t.subject, t.body, test)
-  } catch {
-    throw new OutreachError('already_drafted')
+  } catch (e) {
+    // Only the (tenant_id, lead_id) uniqueness means "already drafted". Any other failure (SQLITE_BUSY under a second
+    // writer, a CHECK or other constraint) is not a duplicate and must not be reported as one.
+    const code = (e as { code?: string }).code
+    if (code === 'SQLITE_CONSTRAINT_UNIQUE' && /outreach_messages\.lead_id/.test(String((e as Error).message))) throw new OutreachError('already_drafted')
+    throw e
   }
   return id
 }
