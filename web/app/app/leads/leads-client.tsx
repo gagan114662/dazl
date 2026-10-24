@@ -1,6 +1,7 @@
 'use client'
 import { KEY_UNREADABLE_COPY, knownErrorCopy } from '@/lib/error-copy'
 import { useEffect, useRef, useState } from 'react'
+import { buildSources } from '@/lib/sources/ui-sources'
 import { emptyLeadsMessage, scoreLabel, quoteNote } from '@/lib/scan/leads-view'
 import { eventTypeLabel } from '@/lib/events/labels'
 import { companySearchEligible } from '@/lib/scan/find-contact-eligible'
@@ -80,6 +81,7 @@ export default function LeadsClient() {
   const [useGithub, setUseGithub] = useState(false)
   const [useYoutube, setUseYoutube] = useState(false)
   const [useV2ex, setUseV2ex] = useState(false)
+  const [useJobboards, setUseJobboards] = useState(false)
   const [feedText, setFeedText] = useState('')
   const [pageText, setPageText] = useState('')
 
@@ -266,8 +268,9 @@ export default function LeadsClient() {
 
   async function run(withIcp: Icp | null) {
     setError(''); setStarting(true)
+    const srcBody = buildSources({ github: useGithub, youtube: useYoutube, v2ex: useV2ex, jobboards: useJobboards, feedText, pageText, advPick })
     try {
-      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(useGithub || useYoutube || useV2ex || feedText.trim() || pageText.trim() || advPick.length ? { sources: { adapters: [...(useGithub ? ['github'] : []), ...(useYoutube ? ['youtube'] : []), ...(useV2ex ? ['v2ex'] : []), ...(feedText.trim() ? ['rss'] : []), ...(pageText.trim() ? ['web'] : [])], feeds: lines(feedText), pages: lines(pageText), advanced: advPick } } : {}) }) })
+      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(srcBody ? { sources: srcBody } : {}) }) })
       const j = await r.json().catch(() => ({}))
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : j.error === 'trial_exhausted' ? 'Your 3 free scans are used up. Add your own AI key in Settings to keep scanning.' : j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')); return }
       passiveJob.current = false; setJobId(j.job_id); setStatus('pending'); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0
@@ -375,6 +378,7 @@ export default function LeadsClient() {
             <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useGithub} onChange={e => setUseGithub(e.target.checked)} /> Also search public GitHub repositories</label>
             <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useYoutube} onChange={e => setUseYoutube(e.target.checked)} /> Also search public YouTube videos</label>
             <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useV2ex} onChange={e => setUseV2ex(e.target.checked)} /> Also search public V2EX topics</label>
+            <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useJobboards} onChange={e => setUseJobboards(e.target.checked)} /> Also read public job postings (Greenhouse, Ashby, Lever) for a US state in your request</label>
             <label className="block text-xs text-gray-500">Web page URLs to read (https only, one per line, up to 3). Pages are read through Jina Reader, a third-party service: the URLs are sent to it, and it rate limits requests without a key.</label>
             <textarea className={`${input} w-full`} rows={2} value={pageText} onChange={e => setPageText(e.target.value)} placeholder="https://example.com/blog/post" />
             <label className="block text-xs text-gray-500">RSS or Atom feed URLs to include (https only, one per line, up to 5)</label>
