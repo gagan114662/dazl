@@ -5,6 +5,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { planRetry, type RetryAttempt } from '../lib/scan/retry-plan.ts'
+import { withGeography } from '../lib/search/tinyfish.ts'
 
 const QUERY = 'Find Ohio companies with 10 to 100 employees that recently posted a payroll, HR or office manager job, or publicly complain about their payroll software'
 // The real stored profile signals of the baseline (8).
@@ -104,4 +105,20 @@ test('a user-named host in any www/mobile form is a conflict: no retry, owner de
 
 test('the plan says its choice is literal word overlap, not semantic novelty', () => {
   assert.match(planRetry(QUERY, ICP, BASE).why, /word overlap/)
+})
+
+// Characterization (green on current code, not a red-first fix): the geography assertion in the planner is load-bearing.
+// A 296-char signal fits under the 300 cap alone, but " Ohio" would make it 301, so withGeography leaves the query
+// WITHOUT Ohio and returns a string that is still <= 300. The planner must refuse it: no query without geography is emitted.
+test('a signal that fits the cap alone but cannot take the geography is never emitted (withGeography skips the place silently)', () => {
+  const sig = ('Negative reviews ' + 'turnover '.repeat(40)).slice(0, 295) + 'x'
+  assert.equal(sig.length, 296, 'fixture length')
+  const out = withGeography([sig], ['Ohio'])[0]
+  assert.ok(out.length <= 300 && !/ohio/i.test(out), 'fixture premise: still under the cap and without Ohio')
+  const p = planRetry(QUERY, { signals: [sig], where: ['Ohio'] }, BASE)
+  assert.equal(p.retry, false, p.why)
+  assert.deepEqual(p.queries, [])
+  const p2 = planRetry(QUERY, { signals: [sig, 'Recent hire in payroll or HR department'], where: ['Ohio'] }, BASE)
+  assert.equal(p2.retry, true)
+  assert.ok(p2.queries.every(q => /\bohio\b/i.test(q)), p2.queries.join(' | '))
 })
