@@ -1,21 +1,36 @@
 'use client'
 import {useState} from 'react'
 type Page={url:string;role:'posting'|'company_home';status:'fetched'|'failed';chars:number;fail?:string;used:boolean;not_used_reason?:string}
-type Prev={company:string;vendor:string|null;model:string|null;seller_offer_present:boolean;pages:Page[];cost:{priced:boolean;usd_estimate_max:number|null;bytes:number;output_tokens_max:number}|null;ready:boolean;notes:string[]}
+type Sent={url:string;chars_sent:number;chars_available:number;truncated:boolean}
+type Judg={verdict:string;quote:string|null;quote_url:string|null;note:string}
+type Qual={company_fit:Judg;use_case:Judg;buying_evidence:Judg;caveat:string;evidence_scope:{pages_omitted:string[];any_truncated:boolean}}
+type Stored={prompt_sha256:string;status:'running'|'done'|'failed';qualification:Qual|null;error:string|null}
+type Prev={company:string;vendor:string|null;model:string|null;pages:Page[];scope:{pages_included:Sent[]}|null;cost:{priced:boolean;usd_estimate_max:number|null;output_tokens_max:number}|null;ready:boolean;notes:string[];prompt_sha256:string|null;enabled:boolean;stored:Stored[]}
 const ROLE={posting:'the saved posting page',company_home:"the company's own home page"}
+const NAME={company_fit:'Company fit',use_case:'Use case for their own team',buying_evidence:'Buying evidence'} as const
+const WORD:Record<string,string>={yes:'shown on the page',no:'the page shows it does not match',unknown:'not shown',stated:'stated on the page',none_seen:'not seen on the pages sent'}
 export default function QualifyPreview({leadId}:{leadId:string}){
  const [p,setP]=useState<Prev|null>(null),[busy,setBusy]=useState(false),[err,setErr]=useState('')
  async function go(){setBusy(true);setErr('')
  try{const r=await fetch(`/api/leads/qualify-preview?lead_id=${leadId}`);const b=await r.json();if(!r.ok){setErr(b.error||'Could not check.');return}setP(b)}catch{setErr('Could not check.')}finally{setBusy(false)}}
- return <div className="text-xs text-[#333] mt-2">
+ async function run(){if(!p||!p.cost||!p.prompt_sha256||!p.vendor||!p.model||p.cost.usd_estimate_max===null)return;setBusy(true);setErr('')
+ try{const r=await fetch('/api/leads/qualify',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({lead_id:leadId,approval:{approved_by_user:true,vendor:p.vendor,model:p.model,max_usd_estimate:p.cost.usd_estimate_max,prompt_sha256:p.prompt_sha256,limits:{max_input_chars:12000,max_page_chars:4000,max_output_tokens:p.cost.output_tokens_max}}})});const b=await r.json();if(!r.ok&&r.status!==409){setErr(b.error||'The check did not run.');return}if(r.status===409){setErr('The check did not run: '+(b.reason||'blocked'));return}await go()}catch{setErr('The check did not run.')}finally{setBusy(false)}}
+ const sent=(u:string)=>p?.scope?.pages_included.find(x=>x.url===u)
+ const shown=p?.notes.filter(n=>!/^No verified price|^No AI key/.test(n))??[]
+ return <div className="text-xs text-[#333] mt-2 mb-3">
  <button type="button" onClick={()=>void go()} disabled={busy} className="underline">{busy?'Looking...':'What a fit check would read (free, no AI call)'}</button>
  {err&&<span className="ml-2">{err}</span>}
  {p&&<div className="border-l-2 border-black/30 pl-3 mt-2 space-y-1">
  <p>Nothing was sent to an AI service. These are the pages a fit check would read for {p.company}:</p>
- {p.pages.map(x=><p key={x.url}>{ROLE[x.role]}: {x.status==='failed'?`could not be read (${x.fail??'error'})`:x.used?`will be read (${x.chars} characters, cut to fit a limit)`:`read but not used: ${x.not_used_reason}`}</p>)}
- <p>{p.cost&&p.cost.priced&&p.cost.usd_estimate_max!==null?`Estimated most it could cost on your ${p.vendor} key: about $${p.cost.usd_estimate_max.toFixed(4)}. This is an estimate, not a guaranteed cap.`:'No price estimate is available: '+(p.vendor?`there is no verified price for ${p.vendor}${p.model?' '+p.model:''}.`:'no AI key is saved.')}</p>
- {p.notes.map(n=><p key={n}>{n}</p>)}
- <p>Checking is not available from this page yet. A match would only show that a quote appears on a page. It would not prove fit or a buying need.</p>
+ {p.pages.map(x=>{const s=sent(x.url);return <p key={x.url}>{ROLE[x.role]}: {x.status==='failed'?`could not be read (${x.fail??'error'})`:!x.used?`read but not used: ${x.not_used_reason}`:s?`${s.chars_sent} of ${s.chars_available} characters would be sent${s.truncated?' (the rest is cut off and would not be read)':''}`:`${x.chars} characters`}</p>})}
+ <p>{p.cost&&p.cost.priced&&p.cost.usd_estimate_max!==null?`Estimated cost on your ${p.vendor} key: about $${p.cost.usd_estimate_max.toFixed(4)}. This is an estimate, not a guaranteed cap.`:'No price estimate is available: '+(p.vendor?`there is no verified price for ${p.vendor}${p.model?' '+p.model:''}.`:'no AI key is saved.')}</p>
+ {shown.map(n=><p key={n}>{n}</p>)}
+ {p.enabled&&p.ready&&!p.stored.some(s=>s.status!=='failed')?<p><button type="button" onClick={()=>void run()} disabled={busy} className="font-mono uppercase border border-black px-2 py-1">Run fit check - estimated cost ${p.cost?.usd_estimate_max?.toFixed(4)}</button></p>:<p>{p.enabled?'':'Running the check is not available yet. '}A match would only show that a quote appears on a page. It would not prove fit or a buying need.</p>}
+ {p.stored.map(s=><div key={s.prompt_sha256} className="mt-2 space-y-1">
+ {s.status==='failed'&&<p>A check was started and failed ({s.error}). It will not run again by itself, because it may have been billed.</p>}
+ {s.qualification&&(Object.keys(NAME) as (keyof typeof NAME)[]).map(k=>{const j=s.qualification![k];return <p key={k}>{NAME[k]}: {WORD[j.verdict]??j.verdict}{j.quote&&<> - "{j.quote}" (on {j.quote_url})</>}{j.note?` ${j.note}`:''}</p>})}
+ {s.qualification&&<p>{s.qualification.caveat}{s.qualification.evidence_scope.any_truncated?' Some page text was cut off or left out, so "not shown" only covers the text that was sent.':''}</p>}
+ </div>)}
  </div>}
  </div>
 }

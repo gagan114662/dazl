@@ -3,6 +3,7 @@ import {getScanDb,requireUser} from '@/lib/scan/service'
 import {getAuthDb,sellerProfile} from '@/lib/auth-db'
 import {rateLimit} from '@/lib/rate-limit'
 import {qualifyPreview} from '@/lib/scan/qualify-preview'
+import {storedQualifications} from '@/lib/scan/qualify-run'
 import {fetchPageDetailed} from '@/lib/scan/fetch-page'
 import {providers} from '@/lib/llm/provider'
 import {pickVendor} from '@/lib/scan/runner'
@@ -17,5 +18,6 @@ export async function GET(req:NextRequest){
  const vendor=pickVendor(getScanDb(),user.id)
  const p=await qualifyPreview(getScanDb(),user.id,id,sellerProfile(getAuthDb(),user.id),fetchPageDetailed,vendor,vendor?providers[vendor].configuredModel?.()??null:null)
  if(!p)return NextResponse.json({error:'Not found'},{status:404})
- return NextResponse.json({...p,model_call:false})
+ const {input,...pub}=p;void input
+ return NextResponse.json({...pub,model_call:false,enabled:process.env.DAZL_QUALIFY_ENABLED==='1',stored:storedQualifications(getScanDb(),user.id,id)})
 }

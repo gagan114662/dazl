@@ -15,8 +15,9 @@ export interface QualifyPreview {
   cost: ReturnType<typeof estimateCost> | null; scope: EvidenceScope | null
   ready: boolean; notes: string[]
 }
+export type QualifyPreviewFull = QualifyPreview & { input: QualifyInput | null }
 
-export async function qualifyPreview(db: Database.Database, userId: string, leadId: string, sellerText: string, fetchPage: PageFetcher = fetchPageDetailed, vendor: string | null = null, model: string | null = null): Promise<QualifyPreview | null> {
+export async function qualifyPreview(db: Database.Database, userId: string, leadId: string, sellerText: string, fetchPage: PageFetcher = fetchPageDetailed, vendor: string | null = null, model: string | null = null): Promise<QualifyPreviewFull | null> {
   const lead = db.prepare(`SELECT l.id, l.company, l.signal, l.source_url, l.company_domain, j.icp, j.query
     FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`).get(leadId, userId) as
     { id: string; company: string; signal: string; source_url: string; company_domain: string | null; icp: string | null; query: string | null } | undefined
@@ -46,5 +47,5 @@ export async function qualifyPreview(db: Database.Database, userId: string, lead
   const cost = prep ? estimateCost(prep.prompt, vendor, model, DEFAULT_LIMITS) : null
   if (!vendor) notes.push('No AI key is saved for this account, so no check can run and no price applies.')
   else if (cost && !cost.priced) notes.push(`No verified price for ${vendor}${model ? ':' + model : ''}, so no dollar estimate is given and this is not ready for a spending request.`)
-  return { lead_id: lead.id, company: lead.company, seller_offer_present: sellerOk, pages, cost, ready: sellerOk && ok.length > 0 && !!cost?.priced, notes, scope: prep?.scope ?? null, vendor, model, prompt_sha256: prep?.prompt_sha256 ?? null }
+  return { lead_id: lead.id, company: lead.company, seller_offer_present: sellerOk, pages, cost, ready: sellerOk && ok.length > 0 && !!cost?.priced, notes, scope: prep?.scope ?? null, vendor, model, prompt_sha256: prep?.prompt_sha256 ?? null, input: ok.length ? input : null }
 }
