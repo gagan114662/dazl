@@ -8,9 +8,9 @@ interface Info { available: boolean; consent_accepted: boolean; read_granted: bo
 interface ThreadMsg { dir: 'out' | 'in'; kind: 'original' | 'followup' | 'reply'; subject: string | null; body: string; at: number; classification: string | null }
 
 const BADGE: Record<string, string> = {
-  positive: 'text-green-700 border-green-600/40',
-  negative: 'text-red-700 border-red-600/40',
-  opt_out: 'text-red-700 border-red-600/40',
+  positive: 'text-black border-black font-medium',
+  negative: 'text-[#333] border-black/40',
+  opt_out: 'text-[#333] border-black/40',
   auto: 'text-gray-400 border-black/10',
   other: 'text-gray-500 border-black/10',
 }
@@ -32,7 +32,7 @@ export default function InboxClient() {
     <div className="p-8 max-w-4xl">
       <h1 className="text-2xl font-bold tracking-tight mb-1">Inbox</h1>
       <p className="text-[#555] text-sm mb-6">Replies to the email threads dazl started for you. Nothing else in your mailbox is read.</p>
-      <ConversionPanel readGranted={i.read_granted} />
+      <ConversionPanel />
       {i.read_granted && i.account && (
         <p className="text-xs text-[#555] mb-4">Reading replies to your outreach as <span className="font-medium">{i.account}</span>. Nothing else in the mailbox is read.</p>
       )}

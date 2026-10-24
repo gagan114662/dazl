@@ -7,7 +7,9 @@ import type Database from 'better-sqlite3'
 //   replied    = a sent message with at least one inbound reply that is not auto, bounce or soft_bounce
 //   interested = a sent message with at least one reply the rules classified 'positive' (rule-classified, not human-confirmed)
 //   booked     = a Cal.com booking matched to this message's lead (calcom_bookings.lead_id, matched by a unique contact email)
-//                and recorded at or after the message's sent_at. It is a booking, not a held meeting, and not causal credit.
+//                and received by dazl at or after the message's sent_at (created_at is dazl's webhook receipt time, not the Cal.com booking
+//                or meeting time). Only BOOKING_CREATED is recorded: cancellations and reschedules are not tracked, so a cancelled booking
+//                still counts. It is a booking notice, not a held meeting, and not causal credit.
 //                Needs the calcom_bookings table and a sent_at; otherwise 0. One message per lead (UNIQUE tenant, lead), so a lead is never counted twice.
 // A lead with several stored signals is counted once, under its primary signal_kind from the approval snapshot.
 // Association is by the reply's explicit outreach_message_id; replies without one are not attributed.
@@ -38,4 +40,31 @@ export function conversionBySignal(db: Database.Database, tenantId: string): Con
   return rows
     .map(r => ({ ...r, replied: r.replied ?? 0, interested: r.interested ?? 0, booked: r.booked ?? 0, reply_rate: (r.replied ?? 0) / r.sent }))
     .sort((a, b) => Number(a.signal_kind === null) - Number(b.signal_kind === null) || b.reply_rate - a.reply_rate || b.sent - a.sent)
+}
+
+// Coverage-aware report. Reply data exists only while Gmail reply reading is on. When it is off, an
+// absent reply is unobserved, not zero: replied, interested and the rate are null (unknown), the counts
+// seen while reading was on stay visible as observed_*, and rows rank by sent only.
+export interface ConversionReportRow {
+  signal_kind: string | null
+  source_kind: string | null
+  sent: number
+  booked: number
+  replied: number | null
+  interested: number | null
+  reply_rate: number | null
+  observed_replied: number
+  observed_interested: number
+}
+export interface ConversionReport { reply_reading: boolean; rows: ConversionReportRow[] }
+
+export function conversionReport(db: Database.Database, tenantId: string, replyReading: boolean): ConversionReport {
+  const rows = conversionBySignal(db, tenantId)
+  if (replyReading) return { reply_reading: true, rows: rows.map(r => ({ ...r, observed_replied: r.replied, observed_interested: r.interested })) }
+  return {
+    reply_reading: false,
+    rows: rows
+      .map(r => ({ signal_kind: r.signal_kind, source_kind: r.source_kind, sent: r.sent, booked: r.booked, replied: null, interested: null, reply_rate: null, observed_replied: r.replied, observed_interested: r.interested }))
+      .sort((a, b) => Number(a.signal_kind === null) - Number(b.signal_kind === null) || b.sent - a.sent),
+  }
 }

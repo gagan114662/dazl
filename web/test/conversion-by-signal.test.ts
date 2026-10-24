@@ -7,7 +7,7 @@ import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateReplies } from '../lib/outreach/replies.ts'
 import { snapshotSignalContext } from '../lib/outreach/attribution.ts'
 import { migrateCalcom } from '../lib/calcom/index.ts'
-import { conversionBySignal } from '../lib/outreach/conversion.ts'
+import { conversionBySignal, conversionReport } from '../lib/outreach/conversion.ts'
 
 // Local synthetic fixture (throwaway :memory: DB). Not live data, not a measurement of any real tenant.
 function setup() {
@@ -134,4 +134,18 @@ test('the unknown bucket always ranks last, even with a higher rate on fewer sen
   const u = msg(db, 'A', lead(db, 'A', 'hiring', 'query'), 'sent', false); reply(db, 'A', u, 'positive')
   msg(db, 'A', lead(db, 'A', 'funding', 'rss'), 'sent')
   assert.deepEqual(conversionBySignal(db, 'A').map(r => r.signal_kind), ['funding', null])
+})
+
+test('reply reading off: replied, interested and rate are unknown (null), observed counts are kept, rows rank by sent; on: real values with real zeros', () => {
+  const db = setup()
+  const a = msg(db, 'A', lead(db, 'A', 'hiring', 'query'), 'sent'); reply(db, 'A', a, 'positive')
+  msg(db, 'A', lead(db, 'A', 'hiring', 'query'), 'sent')
+  for (let i = 0; i < 3; i++) msg(db, 'A', lead(db, 'A', 'funding', 'rss'), 'sent')
+  const off = conversionReport(db, 'A', false)
+  assert.equal(off.reply_reading, false)
+  assert.deepEqual(off.rows.map(r => r.signal_kind), ['funding', 'hiring'])
+  for (const r of off.rows) assert.deepEqual([r.replied, r.interested, r.reply_rate], [null, null, null])
+  assert.deepEqual(off.rows.map(r => [r.sent, r.observed_replied, r.observed_interested]), [[3, 0, 0], [2, 1, 1]])
+  const on = conversionReport(db, 'A', true)
+  assert.deepEqual(on.rows.map(r => [r.signal_kind, r.replied, r.reply_rate]), [['hiring', 1, 0.5], ['funding', 0, 0]])
 })
