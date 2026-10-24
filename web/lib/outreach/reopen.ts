@@ -8,7 +8,10 @@ import { randomBytes } from 'node:crypto'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
 import { getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { getMasterKey } from '../secrets.ts'
-import { composeBody, getSettings, isSuppressed, leadHeld, recipientAllowed, OutreachError, unsubToken, type Deps } from './service.ts'
+import { contactPurposeRestricted } from './contact-purpose-db.ts'
+import { currentnessHeld } from './currentness.ts'
+import { accountSendCount, anyUncertainSend, tableExists } from './send-budget.ts'
+import { composeBody, getSettings, isSuppressed, leadHeld, recipientAllowed, leadEvidenceEligible, OutreachError, unsubToken, DAILY_CAP, SENDING_STALE_S, type Deps } from './service.ts'
 
 export const WARM_MIN_DAYS = 30
 export const WARM_MAX_DAYS = 90
@@ -100,17 +103,35 @@ export function editReopen(db: Database.Database, tenantId: string, threadId: st
   if (r.status !== 'draft') throw new OutreachError('not_editable')
   const b = body.trim()
   if (b.length < 20 || b.length > 3000) throw new OutreachError('bad_body')
-  db.prepare('UPDATE reopen_messages SET body = ? WHERE tenant_id = ? AND thread_id = ?').run(b, tenantId, threadId)
+  // Guarded write: a claim taken by a send (here or in another process) after the read above must win.
+  const w = db.prepare("UPDATE reopen_messages SET body = ? WHERE tenant_id = ? AND thread_id = ? AND status = 'draft'").run(b, tenantId, threadId)
+  if (w.changes !== 1) throw new OutreachError('not_editable')
 }
 
 export function skipReopen(db: Database.Database, tenantId: string, threadId: string): void {
   const r = getReopen(db, tenantId, threadId)
   if (!r) throw new OutreachError('not_found')
   if (r.status === 'sent' || r.status === 'skipped') throw new OutreachError('final')
-  db.prepare("UPDATE reopen_messages SET status = 'skipped' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, threadId)
+  if (r.status === 'approved') throw new OutreachError('send_uncertain')
+  const w = db.prepare("UPDATE reopen_messages SET status = 'skipped' WHERE tenant_id = ? AND thread_id = ? AND status = 'draft'").run(tenantId, threadId)
+  if (w.changes !== 1) {
+    const now = getReopen(db, tenantId, threadId)?.status
+    throw new OutreachError(now === 'approved' ? 'send_uncertain' : 'final')
+  }
 }
 
 // The user reviewed the draft in the UI and pressed send. Suppression is re-checked here.
+// Same stop as sendMessage: any autopilot pause (paused_by_user, bounces, uncertain_send, gmail_*) holds every send.
+function accountPaused(db: Database.Database, tenantId: string): boolean {
+  return tableExists(db, 'autopilot_settings') && !!(db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as { paused: number } | undefined)?.paused
+}
+// The same lead-level gates as the first-email send (sendMessage) and the follow-up sender. A re-open has no
+// test-fixture exemption. Checked before any Gmail work and again after the token await, before the claim.
+function leadGates(db: Database.Database, tenantId: string, r: { lead_id: string; to_email: string }): void {
+  if (contactPurposeRestricted(db, tenantId, r.lead_id, r.to_email)) throw new OutreachError('not_sales_contact')
+  if (currentnessHeld(db, tenantId, r.lead_id)) throw new OutreachError('lead_currentness_unconfirmed')
+  if (!leadEvidenceEligible(db, tenantId, r.lead_id)) throw new OutreachError('lead_evidence_withdrawn')
+}
 export async function sendReopen(db: Database.Database, tenantId: string, threadId: string, d: Deps & { now?: number } = {}): Promise<void> {
   const r = getReopen(db, tenantId, threadId)
   if (!r) throw new OutreachError('not_found')
@@ -118,7 +139,14 @@ export async function sendReopen(db: Database.Database, tenantId: string, thread
   if (leadHeld(db,tenantId,r.lead_id)) throw new OutreachError('lead_ungraded')
   if (r.status === 'sent') throw new OutreachError('already_sent')
   if (r.status === 'skipped') throw new OutreachError('final')
+  // 'approved' is the in-flight claim: a send started and its outcome was never recorded.
+  if (r.status === 'approved') throw new OutreachError('send_uncertain')
   if (isSuppressed(db, tenantId, r.to_email)) throw new OutreachError('suppressed')
+  // Same account-level stop as the first-email, follow-up and sequence sends: while any send's outcome is unknown
+  // (uncertain), nothing else goes out for this tenant until the user resolves it.
+  if (anyUncertainSend(db, tenantId)) throw new OutreachError('already_uncertain')
+  if (accountPaused(db, tenantId)) throw new OutreachError('paused')
+  leadGates(db, tenantId, r)
   const settings = getSettings(db, tenantId)
   const acct = gmailStatus(db, tenantId)
   if (!settings || acct?.status !== 'active') throw new OutreachError('gmail_not_connected')
@@ -132,8 +160,59 @@ export async function sendReopen(db: Database.Database, tenantId: string, thread
   try { token = await getAccessToken(db, tenantId, d as OAuthDeps) } catch { throw new OutreachError('gmail_reconnect_needed') }
   if (!recipientAllowed(db,tenantId,r.to_email)) throw new OutreachError('personal_email')
   if (leadHeld(db,tenantId,r.lead_id)) throw new OutreachError('lead_ungraded')
-  const raw = toBase64Url(buildMime({ fromName: settings.sender_name, fromEmail: acct.email, to: r.to_email, subject: orig.subject.startsWith('Re:') ? orig.subject : `Re: ${orig.subject}`, body: composeBody(r.body, settings, unsubUrl), messageId: `dazl.reopen.${orig.id}@${acct.email.split('@')[1]}`, unsubscribeUrl: unsubUrl, date: new Date(now * 1000), inReplyTo: t.root_message_id }))
-  const res = await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, threadId)
-  db.prepare("UPDATE reopen_messages SET status = 'sent', gmail_id = ?, sent_at = ? WHERE tenant_id = ? AND thread_id = ?").run(res.id, now, tenantId, threadId)
+  if (isSuppressed(db, tenantId, r.to_email)) throw new OutreachError('suppressed')
+  leadGates(db, tenantId, r)
+  if (accountPaused(db, tenantId)) throw new OutreachError('paused') // a pause during the token await still holds this send
+  // At-most-once: claim the draft atomically right before the send. No await sits between the last check and
+  // this claim, so a second click, tab or process cannot also pass it. The body is re-read after the claim so the
+  // send uses exactly the row it claimed.
+  const claimed = db.prepare("UPDATE reopen_messages SET status = 'approved', sent_at = ? WHERE tenant_id = ? AND thread_id = ? AND status = 'draft'").run(now, tenantId, threadId)
+  if (claimed.changes !== 1) throw new OutreachError(getReopen(db, tenantId, threadId)?.status === 'sent' ? 'already_sent' : 'send_uncertain')
+  // Same shared 24h cap as the other send paths; this claim counts itself. Over the cap: nothing was sent, so hand
+  // the draft back (the user can send it later) rather than leaving an unresolved claim.
+  if (accountSendCount(db, tenantId, now) > DAILY_CAP) {
+    db.prepare("UPDATE reopen_messages SET status = 'draft', sent_at = NULL WHERE tenant_id = ? AND thread_id = ? AND status = 'approved'").run(tenantId, threadId)
+    throw new OutreachError('daily_cap')
+  }
+  const r2 = getReopen(db, tenantId, threadId)!
+  const raw = toBase64Url(buildMime({ fromName: settings.sender_name, fromEmail: acct.email, to: r2.to_email, subject: orig.subject.startsWith('Re:') ? orig.subject : `Re: ${orig.subject}`, body: composeBody(r2.body, settings, unsubUrl), messageId: `dazl.reopen.${orig.id}@${acct.email.split('@')[1]}`, unsubscribeUrl: unsubUrl, date: new Date(now * 1000), inReplyTo: t.root_message_id }))
+  // A throw here may still mean the mail was delivered. Leave the claim in place (never resend) and report it.
+  // gmailSend aborts after 20s and the token fetch (before this claim) after 15s, so a real send cannot outlive the
+  // 10 minute lease; the in-process set below also refuses a resolve while this call is still running here.
+  const opKey = `${tenantId}|${threadId}`
+  inFlight.add(opKey)
+  let res: { id: string }
+  try { res = await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, threadId) } catch { throw new OutreachError('send_uncertain') } finally { inFlight.delete(opKey) }
+  // Operation identity is the claim time: only the claim this call made may be completed by it. A newer claim, a
+  // resolve or a skip is never overwritten. If the user reset the row to a draft meanwhile (no newer claim exists),
+  // the mail did go out, so the draft is closed as sent rather than left to be sent again.
+  const done = db.prepare("UPDATE reopen_messages SET status = 'sent', gmail_id = ?, sent_at = ? WHERE tenant_id = ? AND thread_id = ? AND ((status = 'approved' AND sent_at = ?) OR (status = 'draft' AND sent_at IS NULL))").run(res.id, now, tenantId, threadId, now)
+  if (done.changes !== 1) throw new OutreachError('send_uncertain') // delivered, but the row moved on: do not touch it, tell the user
   db.prepare("UPDATE followup_threads SET stopped = 'reopened', last_activity_at = ? WHERE tenant_id = ? AND thread_id = ?").run(now, tenantId, threadId)
+}
+
+// No schema change: while a re-open is 'approved', sent_at holds the CLAIM time (the lease start); a successful send
+// overwrites it with the delivery time and a return to draft clears it. 'approved' is therefore either
+//   active    - claimed less than SENDING_STALE_S ago: the Gmail call may still be running, or
+//   uncertain - older: the process died or the call never reported back; it may or may not have been delivered.
+// Only an uncertain claim can be resolved. Resolving never sends, and an active claim is never touched.
+// Re-opens whose Gmail call is running in this process right now. Never resolvable, whatever the clock says.
+const inFlight = new Set<string>()
+export function reopenClaimState(r: { status: string; sent_at: number | null }, now: number): 'active' | 'uncertain' | null {
+  if (r.status !== 'approved') return null
+  return r.sent_at !== null && now - r.sent_at < SENDING_STALE_S ? 'active' : 'uncertain'
+}
+// The user checked Gmail Sent. 'sent' records it as delivered (their word, no Gmail id; the claim time stays as the
+// best known time). 'retry' puts the draft back for review; it still needs a fresh press of Send.
+export function resolveReopen(db: Database.Database, tenantId: string, threadId: string, as: 'sent' | 'retry', now = Math.floor(Date.now() / 1000)): void {
+  const r = db.prepare('SELECT status, sent_at FROM reopen_messages WHERE tenant_id = ? AND thread_id = ?').get(tenantId, threadId) as { status: string; sent_at: number | null } | undefined
+  if (!r) throw new OutreachError('not_found')
+  const st = inFlight.has(`${tenantId}|${threadId}`) ? 'active' : reopenClaimState(r, now)
+  if (st === null) throw new OutreachError('not_uncertain')
+  if (st === 'active') throw new OutreachError('send_in_progress')
+  const stale = now - SENDING_STALE_S
+  const res = as === 'sent'
+    ? db.prepare("UPDATE reopen_messages SET status = 'sent', sent_at = COALESCE(sent_at, ?) WHERE tenant_id = ? AND thread_id = ? AND status = 'approved' AND (sent_at IS NULL OR sent_at <= ?)").run(now, tenantId, threadId, stale)
+    : db.prepare("UPDATE reopen_messages SET status = 'draft', sent_at = NULL WHERE tenant_id = ? AND thread_id = ? AND status = 'approved' AND (sent_at IS NULL OR sent_at <= ?)").run(tenantId, threadId, stale)
+  if (res.changes !== 1) throw new OutreachError('not_uncertain')
 }

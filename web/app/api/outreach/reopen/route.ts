@@ -2,10 +2,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
-import { createReopenDraft, editReopen, listReopens, sendReopen, skipReopen, warmAgain } from '@/lib/outreach/reopen'
+import { createReopenDraft, editReopen, listReopens, resolveReopen, sendReopen, skipReopen, warmAgain } from '@/lib/outreach/reopen'
 import { OutreachError } from '@/lib/outreach/service'
 
-const STATUS: Record<string, number> = { not_found: 404, already_created: 409, already_sent: 409, final: 409, not_editable: 409, bad_body: 400, suppressed: 409, lead_missing: 404, root_missing: 404, gmail_not_connected: 400, gmail_reconnect_needed: 400 }
+const STATUS: Record<string, number> = { not_found: 404, already_created: 409, paused: 409, not_sales_contact: 409, lead_currentness_unconfirmed: 409, lead_evidence_withdrawn: 409, already_sent: 409, send_uncertain: 409, already_uncertain: 409, not_uncertain: 409, send_in_progress: 409, daily_cap: 409, final: 409, not_editable: 409, bad_body: 400, suppressed: 409, lead_missing: 404, root_missing: 404, gmail_not_connected: 400, gmail_reconnect_needed: 400 }
 
 export async function GET() {
   const user = await requireUser()
@@ -15,7 +15,8 @@ export async function GET() {
 }
 
 // Actions: {action:'draft', thread_id} | {action:'edit', thread_id, body} |
-// {action:'skip', thread_id} | {action:'send', thread_id}
+// {action:'skip', thread_id} | {action:'send', thread_id} |
+// {action:'mark_sent'|'retry', thread_id} (resolve a send whose outcome is unknown; the user checked Gmail Sent)
 // 'send' is the approval: the UI shows the exact body next to the button.
 export async function POST(req: NextRequest) {
   const user = await requireUser()
@@ -31,6 +32,7 @@ export async function POST(req: NextRequest) {
     if (action === 'draft') createReopenDraft(db, user.id, threadId, user.business_name)
     else if (action === 'edit') editReopen(db, user.id, threadId, typeof body?.body === 'string' ? body.body : '')
     else if (action === 'skip') skipReopen(db, user.id, threadId)
+    else if (action === 'mark_sent' || action === 'retry') resolveReopen(db, user.id, threadId, action === 'mark_sent' ? 'sent' : 'retry')
     else if (action === 'send') {
       // The button sends what was on screen: apply the editor's body first when one came along.
       if (typeof body?.body === 'string') {

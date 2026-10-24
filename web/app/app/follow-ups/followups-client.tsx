@@ -21,9 +21,30 @@ export default function FollowupsClient() {
   useEffect(() => { void loadWarm() }, [])
   async function reopenAction(action: string, threadId: string, body?: string) {
     setWarmMsg('')
-    const r = await fetch('/api/outreach/reopen', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action, thread_id: threadId, ...(body !== undefined ? { body } : {}) }) })
+    let r: Response
+    try { r = await fetch('/api/outreach/reopen', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action, thread_id: threadId, ...(body !== undefined ? { body } : {}) }) }) } catch { setWarmMsg('Could not reach the server. Reload before trying again.'); return }
     const j = await r.json().catch(() => ({}))
-    if (!r.ok) { setWarmMsg(j.error === 'suppressed' ? 'That address unsubscribed or bounced.' : j.error === 'already_created' ? 'A re-open already exists for this thread.' : j.error || 'Could not do that'); return }
+    if (!r.ok) {
+      const known: Record<string, string> = {
+        suppressed: 'That address unsubscribed or bounced.',
+        already_created: 'A re-open already exists for this thread.',
+        send_uncertain: 'This send may already have gone out. Check your Gmail Sent folder before doing anything else.',
+        already_sent: 'This re-open was already sent.',
+        final: 'This re-open was already handled.',
+        not_editable: 'This re-open can no longer be edited.',
+        daily_cap: 'Daily sending limit reached. Nothing was sent; the draft is kept for later.',
+        not_sales_contact: 'The published address is for recruitment, support, privacy or another restricted purpose. Saved words remain unchanged; sending is blocked.',
+        lead_currentness_unconfirmed: 'Event timing is unconfirmed. This draft is preserved for inspection but cannot be sent.',
+        lead_evidence_withdrawn: 'The lead confirmation behind this draft was withdrawn. Re-confirm the lead on the Leads page - dazl has not verified it.',
+        paused: 'Sending is paused. Resume it in Settings, then try again. Nothing was sent.',
+        send_in_progress: 'This send is still in progress. Wait a few minutes, then check your Gmail Sent folder.',
+        not_uncertain: 'This re-open is no longer waiting on a result.',
+        already_uncertain: 'An earlier send has an unknown result. Check your Gmail Sent folder first.',
+      }
+      setWarmMsg(typeof j.error === 'string' && known[j.error] ? known[j.error] : 'Could not do that')
+      void loadWarm() // the row may have changed under this page: drop stale controls
+      return
+    }
     setWarm(j.warm); setReopens(j.reopens)
   }
   useEffect(() => {
@@ -139,10 +160,13 @@ function ReopenRow({ t, onAction }: { t: Warm; onAction: (action: string, thread
   return (
     <div className="p-4 text-sm">
       <div className="flex items-center gap-3">
-        <div className="font-medium flex-1">{t.company || t.name || t.to_email} <span className="text-[#777] text-xs font-normal">{st === 'sent' ? ' - re-open sent' : st === 'skipped' ? ' - skipped' : '- draft, review before sending'}</span></div>
+        <div className="font-medium flex-1">{t.company || t.name || t.to_email} <span className="text-[#777] text-xs font-normal">{st === 'sent' ? ' - re-open sent' : st === 'skipped' ? ' - skipped' : st === 'approved' ? ' - send started, outcome not confirmed. Check your Gmail Sent folder before doing anything else' : '- draft, review before sending'}</span></div>
         {st === 'draft' && <button onClick={() => onAction('send', t.thread_id, body)} className="font-mono text-xs uppercase border border-black px-2 py-1 hover:bg-black hover:text-white">Send this</button>}
         {(st === 'draft') && <button onClick={() => onAction('skip', t.thread_id)} className="text-xs text-[#777] hover:text-black">Skip</button>}
+        {st === 'approved' && <button onClick={() => onAction('mark_sent', t.thread_id)} className="font-mono text-xs uppercase border border-black px-2 py-1 hover:bg-black hover:text-white">It was sent</button>}
+        {st === 'approved' && <button onClick={() => onAction('retry', t.thread_id)} className="text-xs text-[#777] hover:text-black">Not in Sent after 10+ minutes - back to draft</button>}
       </div>
+      {st === 'approved' && <p className="text-[#b45309] text-xs mt-2">Only choose &ldquo;back to draft&rdquo; after you have waited at least 10 minutes and found nothing in your Gmail Sent folder. A delayed delivery can still arrive, and sending again could email them twice. &ldquo;It was sent&rdquo; sends nothing.</p>}
       {st === 'draft'
         ? <textarea className="field w-full mt-2" rows={5} value={body} onChange={e => setBody(e.target.value)} onBlur={() => { if (body !== t.reopen?.body) void onAction('edit', t.thread_id, body) }} />
         : <p className="text-[#777] text-xs mt-2 whitespace-pre-wrap">{t.reopen?.body}</p>}

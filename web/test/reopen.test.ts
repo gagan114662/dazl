@@ -41,6 +41,7 @@ function thread(db: Database.Database, opts: { replyAge?: number; stopped?: stri
   db.prepare('INSERT INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at, last_lead_reply_at, followups_sent, stopped) VALUES (?, ?, ?, ?, ?, ?, ?, 2, ?)').run('A', tid, lid, email, 'root@x', NOW - days(age), NOW - days(age), opts.stopped ?? null)
   if (opts.cls) db.prepare('INSERT INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(randomBytes(8).toString('hex'), 'A', tid, lid, 'pat@acme.com', 'sounds interesting, not right now', opts.cls, NOW - days(age))
   if (opts.suppressed) suppress(db, 'A', email, 'unsubscribe')
+  db.prepare('UPDATE leads SET human_confirmed_at = 1 WHERE id = ?').run(lid) // the lead-level send gates need a confirmed lead
   return { tid, lid }
 }
 
