@@ -58,8 +58,8 @@ function run(modelQueries: string[] | string, searchStatus = 200, _hits: unknown
 
 const snapRows = (db: Database.Database) => JSON.stringify({ leads: db.prepare('SELECT company, source_url FROM leads ORDER BY rowid').all(), runs: db.prepare('SELECT collector,status,candidate_count,verified_count,inserted_count FROM scan_source_runs ORDER BY collector').all(), job: db.prepare('SELECT status, candidates, verified, needs_review, dropped FROM scan_jobs').get() })
 const withEnv = async <T>(stats: boolean, f: () => Promise<T>) => {
-  process.env.TINYFISH_API_KEY = 'test-tinyfish-key'; if (stats) process.env.DAZL_SOURCE_STATS = '1'
-  try { return await f() } finally { delete process.env.TINYFISH_API_KEY; delete process.env.DAZL_SOURCE_STATS }
+  process.env.TINYFISH_API_KEY = 'test-tinyfish-key'; if (stats) process.env.DAZL_SOURCE_STATS = '1'; process.env.DAZL_SOURCE_STATS_USERS = 'A'
+  try { return await f() } finally { delete process.env.TINYFISH_API_KEY; delete process.env.DAZL_SOURCE_STATS; delete process.env.DAZL_SOURCE_STATS_USERS }
 }
 const MODEL_Q = ['small company hiring payroll specialist', 'complaints about payroll software small business']
 

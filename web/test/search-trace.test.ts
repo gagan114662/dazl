@@ -85,7 +85,7 @@ test('queryPlan tells model queries from the fallback to the raw request', () =>
 })
 
 test('persistence is off unless DAZL_SOURCE_STATS=1: no table is created, nothing is written', () => {
-  assert.equal(sourceStatsEnabled({}), false); assert.equal(sourceStatsEnabled({ DAZL_SOURCE_STATS: '0' }), false); assert.equal(sourceStatsEnabled({ DAZL_SOURCE_STATS: '1' }), true)
+  assert.equal(sourceStatsEnabled({}), false); assert.equal(sourceStatsEnabled({ DAZL_SOURCE_STATS: '0' }), false); assert.equal(sourceStatsEnabled({ DAZL_SOURCE_STATS: '1', DAZL_SOURCE_STATS_USERS: 'o' }), true)
   const db = new Database(':memory:'); db.exec('CREATE TABLE scan_jobs (id TEXT PRIMARY KEY, user_id TEXT)')
   const wrote = writeSourceStats(db, 'j1', 1, 'search:tinyfish', summarizeTrace(new SearchTrace()), {})
   assert.equal(wrote, false)
@@ -96,7 +96,7 @@ test('enabled: stats round-trip, owner-scoped read, absent table reads as null',
   const db = new Database(':memory:'); db.exec('PRAGMA foreign_keys=ON; CREATE TABLE scan_jobs (id TEXT PRIMARY KEY, user_id TEXT)')
   db.prepare('INSERT INTO scan_jobs VALUES (?,?)').run('j1', 'owner'); db.prepare('INSERT INTO scan_jobs VALUES (?,?)').run('j2', 'other')
   assert.equal(sourceStats(db, 'owner', 'j1'), null) // table absent: "not recorded"
-  const e = { SOURCE: 'x', DAZL_SOURCE_STATS: '1' }
+  const e = { SOURCE: 'x', DAZL_SOURCE_STATS: '1', DAZL_SOURCE_STATS_USERS: 'owner,o' }
   const t = mk(); const trace = new SearchTrace()
   await tfSearch(t, 'owner', 'ohio payroll hiring one', {}, { searches: 0 }, { env, fetchImpl: res({ results: [hit(1), hit(2)] }), now: NOW, trace })
   assert.equal(writeSourceStats(db, 'j1', 1, 'search:tinyfish', { ...summarizeTrace(trace), query_source: 'model' }, e), true)
@@ -144,7 +144,7 @@ test('flag turned off later: earlier rows remain readable, new scans write no ro
   const db = new Database(':memory:'); db.exec('PRAGMA foreign_keys=ON; CREATE TABLE scan_jobs (id TEXT PRIMARY KEY, user_id TEXT)')
   db.prepare('INSERT INTO scan_jobs VALUES (?,?)').run('j1', 'o'); db.prepare('INSERT INTO scan_jobs VALUES (?,?)').run('j2', 'o')
   const t = new SearchTrace(); t.search({ query: 'kept query text', attempted: true, outcome: 'ok', hits: ['https://a.example/x'] })
-  assert.equal(writeSourceStats(db, 'j1', 1, 'search:tinyfish', summarizeTrace(t), { DAZL_SOURCE_STATS: '1' }), true)
+  assert.equal(writeSourceStats(db, 'j1', 1, 'search:tinyfish', summarizeTrace(t), { DAZL_SOURCE_STATS: '1', DAZL_SOURCE_STATS_USERS: 'o' }), true)
   assert.equal(writeSourceStats(db, 'j2', 1, 'search:tinyfish', summarizeTrace(t), {}), false)
   assert.deepEqual(sourceStats(db, 'o', 'j1')!.map(r => r.queries), [['kept query text']])
   assert.deepEqual(sourceStats(db, 'o', 'j2'), [])

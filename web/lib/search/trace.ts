@@ -85,7 +85,7 @@ export function evidenceSplit(items: Evidence[], pages: { url: string }[]): { ev
   return { evidence_items: items.length, evidence_with_page_text: withPage, evidence_snippet_only: items.length - withPage }
 }
 
-// Persistence is OFF unless the operator sets DAZL_SOURCE_STATS=1. Off means: no table is created, nothing is
+// Persistence is OFF unless the operator sets DAZL_SOURCE_STATS=1 AND names owners in DAZL_SOURCE_STATS_USERS. Off means: no table is created, nothing is
 // written, no behaviour changes. Turning it on creates one new table (CREATE TABLE IF NOT EXISTS, all columns
 // nullable, no change to existing tables).
 export const sourceStatsEnabled = (env: Record<string, string | undefined> = process.env) => env.DAZL_SOURCE_STATS === '1'
@@ -127,7 +127,12 @@ export function migrateSourceStats(db: Database.Database): void {
 // Best effort: a failure here must never fail or change the scan. Returns whether a row was written.
 export function writeSourceStats(db: Database.Database, jobId: string, attempt: number, collector: string, s: SourceStats, env: Record<string, string | undefined> = process.env): boolean {
   if (!sourceStatsEnabled(env)) return false
+  // The global flag alone records nobody. Only owners named (exact ids, comma separated) in DAZL_SOURCE_STATS_USERS are recorded.
+  const allowed = (env.DAZL_SOURCE_STATS_USERS ?? '').split(',').map(x => x.trim()).filter(Boolean)
+  if (allowed.length === 0) return false
   try {
+    const owner = (db.prepare('SELECT user_id FROM scan_jobs WHERE id=?').get(jobId) as { user_id: string } | undefined)?.user_id
+    if (owner === undefined || !allowed.includes(owner)) return false
     migrateSourceStats(db)
     const q = JSON.stringify(s.queries); const pq = JSON.stringify(s.per_query ?? []); const j = (o: Record<string, number>) => JSON.stringify(o)
     db.prepare(`INSERT OR REPLACE INTO scan_source_stats (job_id,attempt,collector,queries,query_source,searches_attempted,searches_ok,searches_failed,searches_not_attempted,hits_raw,hits_unique_urls,hits_complete,fetch_complete,fetch_requested,fetch_outcome,fetch_pages_with_text,per_query,distinct_hosts,urls_not_fetched,extracted_candidates,model_requested,model_served,model_calls,input_tokens,output_tokens,evidence_items,evidence_with_page_text,evidence_snippet_only)

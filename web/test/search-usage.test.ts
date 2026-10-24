@@ -54,8 +54,8 @@ function run(modelQueries: string[] | string, searchStatus = 200, _unused: unkno
 }
 
 const withEnv = async <T>(f: () => Promise<T>) => {
-  process.env.TINYFISH_API_KEY = 'test-tinyfish-key'; process.env.DAZL_SOURCE_STATS = '1'
-  try { return await f() } finally { delete process.env.TINYFISH_API_KEY; delete process.env.DAZL_SOURCE_STATS }
+  process.env.TINYFISH_API_KEY = 'test-tinyfish-key'; process.env.DAZL_SOURCE_STATS = '1'; process.env.DAZL_SOURCE_STATS_USERS = 'A'
+  try { return await f() } finally { delete process.env.TINYFISH_API_KEY; delete process.env.DAZL_SOURCE_STATS; delete process.env.DAZL_SOURCE_STATS_USERS }
 }
 const MODEL_Q = ['small company hiring payroll specialist', 'complaints about payroll software small business']
 const lead = { name: '', company: 'Harbor Freight Supply', contact: null, signal: 'Hiring a payroll specialist', source_url: 'https://jobs.example/hf', score: 80, excerpt: QUOTE, event_date: recent }
