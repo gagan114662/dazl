@@ -11,20 +11,21 @@ export function migrateQualify(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS lead_qualifications (
     tenant_id TEXT NOT NULL, lead_id TEXT NOT NULL, prompt_sha256 TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('running','done','failed')),
-    vendor TEXT, model TEXT, served_model TEXT, result TEXT, usage TEXT, error TEXT,
+    vendor TEXT, model TEXT, served_model TEXT, result TEXT, usage TEXT, error TEXT, evidence TEXT,
     created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
     UNIQUE (tenant_id, lead_id, prompt_sha256))`)
+  if (!(db.prepare("PRAGMA table_info(lead_qualifications)").all() as { name: string }[]).some(c => c.name === 'evidence')) db.exec('ALTER TABLE lead_qualifications ADD COLUMN evidence TEXT')
 }
 
-export interface StoredQualification { prompt_sha256: string; status: 'running' | 'done' | 'failed'; vendor: string | null; model: string | null; qualification: Qualification | null; usage: unknown; error: string | null; created_at: number }
+export interface StoredQualification { prompt_sha256: string; status: 'running' | 'done' | 'failed'; vendor: string | null; model: string | null; qualification: Qualification | null; usage: unknown; error: string | null; created_at: number; evidence: unknown }
 
 export function storedQualifications(db: Database.Database, userId: string, leadId: string): StoredQualification[] {
   migrateQualify(db)
-  const rows = db.prepare(`SELECT q.prompt_sha256, q.status, q.vendor, q.model, q.result, q.usage, q.error, q.created_at
+  const rows = db.prepare(`SELECT q.prompt_sha256, q.status, q.vendor, q.model, q.result, q.usage, q.error, q.created_at, q.evidence
     FROM lead_qualifications q JOIN leads l ON l.id = q.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id
     WHERE q.lead_id = ? AND q.tenant_id = ? AND j.user_id = ? ORDER BY q.created_at DESC`).all(leadId, userId, userId) as
-    { prompt_sha256: string; status: StoredQualification['status']; vendor: string | null; model: string | null; result: string | null; usage: string | null; error: string | null; created_at: number }[]
-  return rows.map(r => ({ prompt_sha256: r.prompt_sha256, status: r.status, vendor: r.vendor, model: r.model, qualification: r.result ? JSON.parse(r.result) as Qualification : null, usage: r.usage ? JSON.parse(r.usage) : null, error: r.error, created_at: r.created_at }))
+    { prompt_sha256: string; status: StoredQualification['status']; vendor: string | null; model: string | null; result: string | null; usage: string | null; error: string | null; created_at: number; evidence: string | null }[]
+  return rows.map(r => ({ prompt_sha256: r.prompt_sha256, status: r.status, vendor: r.vendor, model: r.model, qualification: r.result ? JSON.parse(r.result) as Qualification : null, usage: r.usage ? JSON.parse(r.usage) : null, error: r.error, created_at: r.created_at, evidence: r.evidence ? JSON.parse(r.evidence) : null }))
 }
 
 export type RunResult =
@@ -44,10 +45,12 @@ export async function runQualification(db: Database.Database, userId: string, le
   const prev = await qualifyPreview(db, userId, leadId, d.sellerText, d.fetchPage ?? fetchPageDetailed, d.vendor, model)
   if (!prev || !prev.input) return { status: 'blocked', reason: prev ? 'no_evidence' : 'not_found' }
   if (!prev.ready) return { status: 'blocked', reason: 'not_ready' }
-  const existing = storedQualifications(db, userId, leadId).find(s => s.prompt_sha256 === approval.prompt_sha256)
+  // Any earlier claim for this lead (running, done or failed, whatever page content it was made on) blocks a new paid
+  // request: changed page text produces a new hash, and that must not quietly buy a second call.
+  const existing = storedQualifications(db, userId, leadId)[0]
   if (existing) return { status: 'exists', stored: existing }
   // Claim before the request. A second caller hits the unique key and gets 'exists'.
-  const claim = db.prepare("INSERT OR IGNORE INTO lead_qualifications (tenant_id, lead_id, prompt_sha256, status, vendor, model) VALUES (?, ?, ?, 'running', ?, ?)").run(userId, leadId, prev.prompt_sha256 ?? '', d.vendor, model)
+  const claim = db.prepare("INSERT OR IGNORE INTO lead_qualifications (tenant_id, lead_id, prompt_sha256, status, vendor, model, evidence) VALUES (?, ?, ?, 'running', ?, ?, ?)").run(userId, leadId, prev.prompt_sha256 ?? '', d.vendor, model, JSON.stringify({ scope: prev.scope, pages: prev.pages, cost: prev.cost, limits: DEFAULT_LIMITS, approval: { max_usd_estimate: approval.max_usd_estimate } }))
   if (claim.changes === 0) { const s = storedQualifications(db, userId, leadId).find(x => x.prompt_sha256 === prev.prompt_sha256); return s ? { status: 'exists', stored: s } : { status: 'blocked', reason: 'claim_lost' } }
   try {
     const r = await qualifyLead(d.provider, d.apiKey, prev.input, { vendor: d.vendor, approval, limits: DEFAULT_LIMITS, fetchImpl: d.fetchImpl })

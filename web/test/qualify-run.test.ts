@@ -56,3 +56,25 @@ test('a provider error keeps a failed row so nothing repeats the possibly billed
   assert.equal((await runQualification(db, 'u1', L, a, deps(p))).status, 'exists')
   assert.equal(calls, 1); void preparePrompt
 })
+
+test('changed page text does not allow a second paid request, and the row keeps the evidence scope used', async () => {
+  const db = setup(), s = prov(), a = await approvalFor(db)
+  assert.equal((await runQualification(db, 'u1', L, a, deps(s.p))).status, 'done')
+  const fetch2 = async (url: string) => ({ text: `Acme changed its page entirely and now sells widgets. (${url})`, title: 't', retrievedAt: 2 })
+  const pv2 = await qualifyPreview(db, 'u1', L, 'Sales prospecting software', fetch2, 'anthropic', MODEL)
+  assert.notEqual(pv2!.prompt_sha256, a.prompt_sha256)
+  const r = await runQualification(db, 'u1', L, { ...a, prompt_sha256: pv2!.prompt_sha256!, max_usd_estimate: pv2!.cost!.usd_estimate_max! }, deps(s.p, { fetchPage: fetch2 }))
+  assert.equal(r.status, 'exists'); assert.equal(s.calls(), 1)
+  const st = storedQualifications(db, 'u1', L); assert.equal(st.length, 1)
+  const ev = st[0].evidence as { scope: { pages_included: { chars_sent: number }[] }; pages: unknown[] }
+  assert.ok(ev.scope.pages_included.length > 0 && ev.scope.pages_included[0].chars_sent > 0); assert.equal(ev.pages.length, 2)
+})
+test('a failed row also blocks a changed-content request', async () => {
+  const db = setup(), a = await approvalFor(db); let calls = 0
+  const p = { research: async () => ({ text: '', citedUrls: [] }), configuredModel: () => MODEL, completeDetailed: async () => { calls++; throw new Error('x') } } as never
+  assert.equal((await runQualification(db, 'u1', L, a, deps(p))).status, 'failed')
+  const fetch2 = async (url: string) => ({ text: `Acme new text (${url})`, title: 't', retrievedAt: 2 })
+  const pv2 = await qualifyPreview(db, 'u1', L, 'Sales prospecting software', fetch2, 'anthropic', MODEL)
+  assert.equal((await runQualification(db, 'u1', L, { ...a, prompt_sha256: pv2!.prompt_sha256!, max_usd_estimate: pv2!.cost!.usd_estimate_max! }, deps(p, { fetchPage: fetch2 }))).status, 'exists')
+  assert.equal(calls, 1)
+})
