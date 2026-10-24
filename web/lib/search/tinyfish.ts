@@ -127,12 +127,16 @@ export function canonicalUrl(raw: string): string | null {
 // each distinct host goes before the second page of any host, and so on. With room for everything, every distinct page
 // is fetched. Known cost: under a tight cap, a shared host that serves several employers can lose pages of some of them
 // to other hosts' first pages.
+// A shared applicant-tracking host serves many employers; for the ATS hosts whose first path segment is the employer, the
+// employer is the unit of breadth. Every other host is its own unit (no taxonomy beyond these documented URL shapes).
+const ATS_EMPLOYER_HOSTS = /^(boards|job-boards)(\.eu)?\.greenhouse\.io$|^jobs\.(ashbyhq\.com|lever\.co)$|^apply\.workable\.com$/
+const employerKey = (u: URL): string => { const seg = u.pathname.split('/')[1]; return ATS_EMPLOYER_HOSTS.test(u.hostname) && seg ? `${u.hostname}/${seg.toLowerCase()}` : u.hostname }
 export function pickFetchUrls(urls: string[], max: number): string[] {
   const seen = new Set<string>(); const byHost = new Map<string, string[]>()
   for (const url of urls) {
     const c = canonicalUrl(url); if (c === null || seen.has(c)) continue
     seen.add(c)
-    const host = new URL(c).hostname
+    const host = employerKey(new URL(c))
     if (!byHost.has(host)) byHost.set(host, [])
     byHost.get(host)!.push(url)
   }

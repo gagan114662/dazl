@@ -17,6 +17,7 @@ import { markWatchLeads } from '../watch.ts'
 import type { AdvPlatform } from '../advanced/config.ts'
 import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, selfDescribedUrls } from '../sources/index.ts'
 import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '../search/trace.ts'
+import { directQueries } from '../search/direct-queries.ts'
 import { limits as tfLimits, migrateTinyfish, pickFetchUrls, queryPlan, queryPrompt, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { crawlJob } from '../connectors/sitecrawl.ts'
 import { anthropicCountTokens, guardProvider, ownerPool, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
@@ -537,9 +538,10 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
       diag.info.input_tokens = u.inKnown ? u.inTok : null; diag.info.output_tokens = u.outKnown ? u.outTok : null
     }
   }
-  const plan = queryPlan(await ask(queryPrompt(job.query!, icp, 3), 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, 3)
+  const direct = directQueries(job.query!, icp.signals, icp.where) // reserved first, so the search cap never starves them
+  const plan = queryPlan(await ask(queryPrompt(job.query!, icp, 3 - Math.min(direct.length, 1)), 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, 3 - Math.min(direct.length, 1))
   if (diag) diag.info.query_source = plan.source
-  const q = withGeography(sanitizeQueries(plan.queries, job.query!), icp.where)
+  const q = withGeography([...direct, ...sanitizeQueries(plan.queries, job.query!)], icp.where).slice(0, tfLimits().searchesPerScan)
   const after = new Date(Date.now() - 365 * 86400_000).toISOString().slice(0, 10)
   const hits: Awaited<ReturnType<typeof tfSearch>> extends infer R ? (R extends { ok: true; hits: infer H } ? H : never) : never = []
   for (const query of q) { const r = await tfSearch(db, job.user_id, query, { afterDate: after }, spent, diag ? { trace: diag.trace } : {}); if (!r.ok) { if (hits.length === 0) return null; break } hits.push(...r.hits) }

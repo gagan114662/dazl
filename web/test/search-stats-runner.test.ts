@@ -92,7 +92,7 @@ test('stats off (default): same scan, byte-identical outcome, no stats table exi
 test('unusable model queries are recorded as fallback, not model', async () => {
   const { db } = await withEnv(true, () => run('I cannot help with that'))
   const row = db.prepare('SELECT query_source, queries FROM scan_source_stats').get() as { query_source: string; queries: string }
-  assert.equal(row.query_source, 'fallback'); assert.match(JSON.parse(row.queries)[0], /Find Ohio companies/)
+  assert.equal(row.query_source, 'fallback'); assert.ok(JSON.parse(row.queries).some((q: string) => /Find Ohio companies/.test(q)), 'the original request is still searched after the two direct queries')
 })
 
 test('provider search failure: recorded as an attempted failure, hit and page counts null, never zero', async () => {
@@ -114,7 +114,7 @@ test('full funnel row: per-query hits, extracted candidates, hosts and unfetched
 test('every search ok but empty: evidence_items is an actual 0 (not unknown), completeness true, no fetch and no extraction recorded', async () => {
   const { db } = await withEnv(true, () => run(MODEL_Q, 200, [], true))
   const row = db.prepare('SELECT searches_ok, hits_raw, hits_complete, evidence_items, evidence_with_page_text, evidence_snippet_only, fetch_requested, extracted_candidates FROM scan_source_stats').get() as Record<string, unknown>
-  assert.deepEqual(row, { searches_ok: 2, hits_raw: 0, hits_complete: 1, evidence_items: 0, evidence_with_page_text: 0, evidence_snippet_only: 0, fetch_requested: null, extracted_candidates: null })
+  assert.deepEqual(row, { searches_ok: 4, hits_raw: 0, hits_complete: 1, evidence_items: 0, evidence_with_page_text: 0, evidence_snippet_only: 0, fetch_requested: null, extracted_candidates: null })
 })
 
 test('searches failed: evidence_items stays unknown (null), not 0', async () => {
@@ -144,5 +144,31 @@ test('fetch selection under a tight cap is breadth first: distinct hosts before 
     const { db, fetched } = await withEnv(true, () => run(MODEL_Q, 200, EXTRA))
     assert.deepEqual(fetched, ['https://jobs.example/hf', 'https://a.example/p1', 'https://b.example/p1'])
     assert.equal((db.prepare('SELECT fetch_requested FROM scan_source_stats').get() as Record<string, number>).fetch_requested, 3)
+  } finally { delete process.env.TINYFISH_FETCHES_PER_SCAN }
+})
+
+// ---- direct per-signal queries (fixture tests, not live proof) ----
+// Observed: three model-written free-text queries gave 2 hits in all. A hiring request now gets deterministic ATS
+// queries FIRST (they are never starved by the search cap), then the model's queries fill what is left.
+test('hiring request: two deterministic ATS queries come first, each with a parenthesised OR group, the role words and Ohio; the model fills the remaining slots; total stays at the 4-search cap', async () => {
+  const { searched } = await withEnv(true, () => run(['m1 hiring payroll', 'm2 payroll complaints', 'm3 extra']))
+  assert.equal(searched.length, 4)
+  assert.equal(searched[0], '(site:boards.greenhouse.io OR site:job-boards.greenhouse.io) (payroll OR hr OR office OR manager) Ohio')
+  assert.equal(searched[1], 'site:jobs.ashbyhq.com (payroll OR hr OR office OR manager) Ohio')
+  assert.ok(/m1/.test(searched[2]) && /m2/.test(searched[3]) && searched.every(q => /ohio/i.test(q)))
+})
+
+test('hiring request, unusable model reply: the direct queries still run (never LLM-only)', async () => {
+  const { searched, db } = await withEnv(true, () => run('I cannot help with that'))
+  assert.ok(searched[0].startsWith('(site:boards.greenhouse.io OR') && searched[1].startsWith('site:jobs.ashbyhq.com'))
+  assert.equal((db.prepare('SELECT query_source FROM scan_source_stats').get() as { query_source: string }).query_source, 'fallback')
+})
+
+test('fetch selection is per employer on a shared ATS host: two Greenhouse and two Ashby employers all survive a tight cap, ahead of second pages of other hosts', async () => {
+  process.env.TINYFISH_FETCHES_PER_SCAN = '4'
+  try {
+    const hits = [mkHit('a.example', 1), mkHit('a.example', 2), mkHit('boards.greenhouse.io/acme', 1), mkHit('boards.greenhouse.io/beta', 1), mkHit('jobs.ashbyhq.com/gamma', 1), mkHit('jobs.ashbyhq.com/delta', 1)]
+    const { fetched } = await withEnv(true, () => run(MODEL_Q, 200, hits))
+    assert.deepEqual(fetched, ['https://jobs.example/hf', 'https://a.example/p1', 'https://boards.greenhouse.io/acme/p1', 'https://boards.greenhouse.io/beta/p1'])
   } finally { delete process.env.TINYFISH_FETCHES_PER_SCAN }
 })

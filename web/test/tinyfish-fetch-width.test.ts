@@ -37,10 +37,11 @@ test('pickFetchUrls: breadth first. When the cap bites, first pages of distinct 
   assert.deepEqual(pickFetchUrls(urls, 5), ['https://a.example/1', 'https://b.example/1', 'https://c.example/1', 'https://a.example/2', 'https://b.example/2'])
 })
 
-test('pickFetchUrls: a shared host that outranks everyone does not crowd out other hosts when the cap bites', () => {
+test('pickFetchUrls: on a known ATS host each employer (first path segment) is its own unit of breadth; other hosts stay one unit per host', () => {
   const urls = ['https://boards.greenhouse.io/a/1', 'https://boards.greenhouse.io/b/1', 'https://boards.greenhouse.io/c/1', 'https://solo.example/1', 'https://other.example/1']
-  assert.deepEqual(pickFetchUrls(urls, 3), ['https://boards.greenhouse.io/a/1', 'https://solo.example/1', 'https://other.example/1'])
-  // The price of not having a host list is stated, not hidden: under a tight cap a shared host can lose pages of distinct employers.
+  assert.deepEqual(pickFetchUrls(urls, 3), ['https://boards.greenhouse.io/a/1', 'https://boards.greenhouse.io/b/1', 'https://boards.greenhouse.io/c/1'], 'three employers, not one host')
+  assert.deepEqual(pickFetchUrls(urls, 5), urls)
+  // Not an ATS shape: a host serving several employers (any other platform) still counts as one unit, as before.
 })
 
 test('pickFetchUrls: exact order within a host and host order by first rank are preserved; unparseable urls dropped; max 0 gives none', () => {
