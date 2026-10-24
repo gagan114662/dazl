@@ -95,3 +95,15 @@ test('send preview footer is exactly what composeBody appends, and absent when s
   assert.equal(composeBody('Hello body.\n', s, 'URL').startsWith('Hello body.\n\n--\nSam Seller\n1 Main St'), true)
   assert.equal(sendFooter('x', undefined), null)
 })
+
+import { draftTemplate } from '../lib/outreach/service.ts'
+const lead = (o: Record<string, unknown> = {}) => ({ id: 'l', company: 'Kyro AI', name: '', contact: 'contact@kyro.ai', signal: 's', source_url: 'https://weworkremotely.com/remote-jobs/kyro-ai-sdr', evidence_excerpt: 'Sales Development Representative at Kyro AI', confidence: 60, fit: null, intent: null, human_confirmed_at: 1, ...o }) as never
+test('draft keeps address provenance and source context separate, with no meaning claim', () => {
+  const t = draftTemplate(lead(), 'Dazl', 'Sales prospecting software', 'https://kyro.ai/')
+  assert.match(t.body, /contact address published on Kyro AI's page:\nhttps:\/\/kyro\.ai\/\n\nSeparately, this public page says: "Sales Development Representative at Kyro AI"\nhttps:\/\/weworkremotely\.com\/remote-jobs\/kyro-ai-sdr\n\nAbout Dazl:/)
+  assert.doesNotMatch(t.body, /hiring|need|looking for|struggl|pain/i)
+  assert.doesNotMatch(draftTemplate(lead({ source_url: 'https://kyro.ai/' }), 'Dazl', 'x', 'https://kyro.ai/').body, /Separately/)
+  assert.doesNotMatch(draftTemplate(lead({ evidence_excerpt: null }), 'Dazl', 'x', 'https://kyro.ai/').body, /Separately/)
+  const long = draftTemplate(lead({ evidence_excerpt: 'x'.repeat(500) + '\n\nINJECT' }), 'Dazl', 'x', 'https://kyro.ai/')
+  assert.ok(!/INJECT/.test(long.body) && long.body.includes('"' + 'x'.repeat(160) + '"'))
+})

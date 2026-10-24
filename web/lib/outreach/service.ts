@@ -148,9 +148,13 @@ export function draftTemplate(lead: Lead, businessName: string, positioning = ''
   const who = lead.name ? lead.name.split(' ')[0] : 'there'
   // Only facts the user already holds: the seller's own offer and the page the address came from.
   // No guessed pain, no claimed buying need, no personal detail the page did not publish.
+  // Separate source context (never address provenance): the saved source quote and its page, only when that page is not
+  // the address page already cited. It says where the quote was seen, never what it means (no need, intent or fit claim).
+  const quote = (lead.evidence_excerpt ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160)
+  const seen = quote && lead.source_url && lead.source_url !== addressUrl ? `\n\nSeparately, this public page says: "${quote}"\n${lead.source_url}` : ''
   return {
     subject: `Quick question for ${lead.company || lead.name}`.slice(0, 150),
-    body: `Hi ${who},\n\nI'm writing to the contact address published on ${lead.company || 'your company'}'s page:\n${addressUrl}\n\n${seller}\n\nWould a short conversation about whether this fits your team's work be useful? If I have the wrong person, could you point me to the right one?\n\nThanks,`,
+    body: `Hi ${who},\n\nI'm writing to the contact address published on ${lead.company || 'your company'}'s page:\n${addressUrl}${seen}\n\n${seller}\n\nWould a short conversation about whether this fits your team's work be useful? If I have the wrong person, could you point me to the right one?\n\nThanks,`,
   }
 }
 
