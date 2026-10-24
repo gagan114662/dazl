@@ -44,15 +44,22 @@ function board(feed: string): { kind: 'gh' | 'ashby'; token: string } | null {
 export const jobBoardsAdapter: SourceAdapter = {
   id: 'jobboards',
   label: 'Greenhouse and Ashby public job boards',
-  async collect({ query, keywords, feeds, http }) {
+  async collect({ query, keywords, feeds, pages, http }) {
     const state = stateIn(query)
     const roles = keywords.filter(k => !GENERIC.has(k) && !(state && state.toLowerCase().split(' ').includes(k)))
     if (!state || roles.length === 0) return [] // never every state, never every role
     const out: Evidence[] = []
     const roleOk = (t: string) => roles.some(k => t.toLowerCase().includes(k))
-    for (const feed of feeds.slice(0, 10)) {
-      const b = board(feed)
-      if (!b) continue
+    // Boards come from the given feeds and from discovered page/hit URLs (posting links). Deduped; a lookalike host never yields a board.
+    const seenBoards = new Set<string>()
+    const boards: { kind: 'gh' | 'ashby'; token: string }[] = []
+    for (const u of [...feeds, ...(pages ?? [])]) {
+      const b = board(u)
+      if (!b || seenBoards.has(`${b.kind}:${b.token}`)) continue
+      seenBoards.add(`${b.kind}:${b.token}`)
+      boards.push(b)
+    }
+    for (const b of boards.slice(0, 10)) {
       if (b.kind === 'ashby') {
         const d = await json(http, `https://api.ashbyhq.com/posting-api/job-board/${b.token}`)
         for (const j of Array.isArray(d?.jobs) ? d.jobs : []) {
