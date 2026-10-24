@@ -13,6 +13,7 @@ import { migratePlans } from '../lib/plans.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateEvents } from '../lib/events/store.ts'
 import type { Provider } from '../lib/llm/provider.ts'
+import { resetTinyfishState } from '../lib/search/tinyfish.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 
 const master = randomBytes(32)
@@ -23,22 +24,25 @@ const QUOTE = 'Harbor Freight Supply of Columbus Ohio is hiring a payroll specia
 const REQUEST = 'Find Ohio companies with 10 to 100 employees that recently posted a payroll, HR or office manager job'
 const ICP = { summary: 'Ohio SMBs hiring payroll', who: ['Controller'], industries: [], sizes: ['10-100 employees'], where: ['Ohio'], signals: ['payroll job'], exclude: [] }
 
-function run(modelQueries: string[] | string, searchStatus = 200, _hits: unknown[] = [], mode: true | 'first-empty-then-fail' | false = false) {
+function run(modelQueries: string[] | string, searchStatus = 200, extraHits: { url: string; title: string; snippet: string; date: string }[] = [], mode: true | 'first-empty-then-fail' | false = false) {
   let searchCalls = 0
+  resetTinyfishState() // the per-minute window is process-wide; every scenario starts clean
   const db = new Database(':memory:')
   migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
   saveKey(db, 'A', 'anthropic', KEY, master)
   createQueryJob(db, 'A', { query: REQUEST, icp: JSON.stringify(ICP) })
   const job = claimKeyedJob(db)!
   const searched: string[] = []
-  const fetchImpl = (async (u: string) => {
+  const fetched: string[] = []
+  const fetchImpl = (async (u: string, init?: RequestInit) => {
     if (u.startsWith('https://api.search.tinyfish.ai')) {
       searched.push(new URL(u).searchParams.get('query') ?? '')
       searchCalls++
       if (mode === true) return new Response(JSON.stringify({ results: [] }), { status: 200 })
       if (mode === 'first-empty-then-fail') return searchCalls === 1 ? new Response(JSON.stringify({ results: [] }), { status: 200 }) : new Response('{}', { status: 500 })
-      return new Response(JSON.stringify({ results: [{ url: 'https://jobs.example/hf', title: 'Payroll specialist', snippet: QUOTE, date: recent }] }), { status: searchStatus })
+      return new Response(JSON.stringify({ results: [{ url: 'https://jobs.example/hf', title: 'Payroll specialist', snippet: QUOTE, date: recent }, ...extraHits] }), { status: searchStatus })
     }
+    if (u.startsWith('https://api.fetch.tinyfish.ai')) fetched.push(...(JSON.parse(String(init?.body ?? '{}')) as { urls?: string[] }).urls ?? [])
     if (u.startsWith('https://api.fetch.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: 'https://jobs.example/hf', title: 'Payroll specialist', text: `Posted ${recent}. ${QUOTE}. Apply now.` }] }), { status: 200 })
     return new Response('{}', { status: 200 })
   }) as typeof fetch
@@ -53,7 +57,7 @@ function run(modelQueries: string[] | string, searchStatus = 200, _hits: unknown
   const page = async () => ({ text: `Posted ${recent}. ${QUOTE}. Apply now.`, title: 'Payroll specialist', retrievedAt: 1_700_000_000 })
   const realFetch = globalThis.fetch
   globalThis.fetch = fetchImpl // the TinyFish helpers take the global fetch; restored below
-  return runJob(db, job, { providers, master, fetchPage: page, fetchImpl, score: false, judge: null }).then(r => ({ r, searched, db })).finally(() => { globalThis.fetch = realFetch })
+  return runJob(db, job, { providers, master, fetchPage: page, fetchImpl, score: false, judge: null }).then(r => ({ r, searched, db, fetched })).finally(() => { globalThis.fetch = realFetch })
 }
 
 const snapRows = (db: Database.Database) => JSON.stringify({ leads: db.prepare('SELECT company, source_url FROM leads ORDER BY rowid').all(), runs: db.prepare('SELECT collector,status,candidate_count,verified_count,inserted_count FROM scan_source_runs ORDER BY collector').all(), job: db.prepare('SELECT status, candidates, verified, needs_review, dropped FROM scan_jobs').get() })
@@ -123,4 +127,22 @@ test('one query answered empty and one failed: evidence_items unknown, hits a lo
   const { db } = await withEnv(true, () => run(MODEL_Q, 200, [], 'first-empty-then-fail'))
   const row = db.prepare('SELECT searches_ok, hits_raw, hits_complete, evidence_items FROM scan_source_stats').get() as Record<string, unknown>
   assert.deepEqual(row, { searches_ok: 1, hits_raw: 0, hits_complete: 0, evidence_items: null })
+})
+
+const mkHit = (host: string, n: number) => ({ url: `https://${host}/p${n}`, title: 'T', snippet: 'Hiring a payroll specialist in Ohio, ' + 'x'.repeat(40), date: recent })
+const EXTRA = [mkHit('a.example', 1), mkHit('a.example', 2), mkHit('a.example', 3), mkHit('b.example', 1), mkHit('b.example', 2), mkHit('boards.greenhouse.io/acme', 1), mkHit('boards.greenhouse.io/beta', 1)]
+
+test('fetch selection with room: nothing is excluded for sharing a host (8 unique urls, cap 8, all 8 requested)', async () => {
+  const { db } = await withEnv(true, () => run(MODEL_Q, 200, EXTRA))
+  const row = db.prepare('SELECT hits_unique_urls, fetch_requested FROM scan_source_stats').get() as Record<string, number>
+  assert.deepEqual(row, { hits_unique_urls: 8, fetch_requested: 8 })
+})
+
+test('fetch selection under a tight cap is breadth first: distinct hosts before second pages (cap 3 -> jobs.example, a.example, b.example)', async () => {
+  process.env.TINYFISH_FETCHES_PER_SCAN = '3'
+  try {
+    const { db, fetched } = await withEnv(true, () => run(MODEL_Q, 200, EXTRA))
+    assert.deepEqual(fetched, ['https://jobs.example/hf', 'https://a.example/p1', 'https://b.example/p1'])
+    assert.equal((db.prepare('SELECT fetch_requested FROM scan_source_stats').get() as Record<string, number>).fetch_requested, 3)
+  } finally { delete process.env.TINYFISH_FETCHES_PER_SCAN }
 })
