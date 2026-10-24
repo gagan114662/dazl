@@ -12,7 +12,7 @@ export default function ConversionPanel() {
   return (
     <section className="mb-8" aria-label="Reply rate by signal">
       <h2 className="text-lg font-bold tracking-tight mb-1">Reply rate by signal</h2>
-      <p className="text-xs text-[#555] mb-3">Sent emails only. Replied excludes auto-replies and bounces. Interested means the reply was classified as positive by rules, not confirmed by a person. Booked counts Cal.com booking notices received after the send and matched to that lead by email. Cancellations and reschedules are not tracked and a booking is not a held meeting. Each lead gets one email, so one lead is never counted twice.</p>
+      <p className="text-xs text-[#555] mb-3">Sent emails only. Rates are observed among the replies dazl recorded: periods when reply reading was off or interrupted are not known, so this is not complete conversion data. Replied excludes auto-replies and bounces. Interested means the reply was classified as positive by rules, not confirmed by a person. Booked counts Cal.com booking notices received after the send and matched to that lead by email. Cancellations and reschedules are not tracked and a booking is not a held meeting. Each lead gets one email, so one lead is never counted twice.</p>
       {!rep.reply_reading && rep.rows.length > 0 && (
         <p className="text-sm font-medium border border-black p-2 mb-3">Gmail reply reading is not connected, so replies cannot be detected. Reply rates are unknown, not zero, and rows are ordered by emails sent.</p>
       )}
