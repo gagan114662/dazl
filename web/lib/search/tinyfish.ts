@@ -119,6 +119,22 @@ export function parseQueries(text: string, fallback: string, max: number): strin
   return [fallback.slice(0, 150)]
 }
 
+// TinyFish's location option takes a country code only, so a state or city in the profile ("Ohio") can reach the
+// search only through the query text, and the model writes those queries freely. Every query must name each place the
+// profile asks for; missing places are appended. Only adds words, never removes them, and the result stays within the
+// 150-character query limit (the original text gives way, not the place).
+export function withGeography(queries: string[], where: string[]): string[] {
+  const places = [...new Set(where.map(w => w.replace(/[\u0000-\u001f]/g, ' ').trim()).filter(w => w.length >= 2 && w.length <= 60))].slice(0, 3)
+  if (places.length === 0) return queries
+  return queries.map(q => {
+    const hay = q.toLowerCase()
+    const missing = places.filter(p => !hay.includes(p.toLowerCase()))
+    if (missing.length === 0) return q
+    const tail = ' ' + missing.join(' ')
+    return q.slice(0, Math.max(0, 150 - tail.length)).trimEnd() + tail
+  })
+}
+
 // Turns search hits and fetched page text into Evidence for the user's model. The existing verifier still
 // re-fetches every cited URL and checks quote, company, date and contact before a lead is kept.
 export function toEvidence(hits: SearchHit[], pages: { url: string; text: string; title: string }[]): Evidence[] {
