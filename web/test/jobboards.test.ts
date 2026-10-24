@@ -11,9 +11,12 @@ const GH_LIST = { jobs: [
   { id: 3, title: 'Software Engineer', updated_at: day(1), location: { name: 'Columbus, Ohio' }, absolute_url: 'https://boards.greenhouse.io/acme/jobs/3' },
   { id: 4, title: 'Payroll Manager', updated_at: day(1), location: { name: 'Cohoes, NY' }, absolute_url: 'https://boards.greenhouse.io/acme/jobs/4' },
 ] }
-const GH_DETAIL: Record<string, unknown> = { '1': { id: 1, title: 'Payroll Specialist', first_published: day(9), updated_at: day(1), location: { name: 'Columbus, OH' }, absolute_url: 'https://boards.greenhouse.io/acme/jobs/1' } }
+const BODY = 'Acme runs payroll for four hundred hourly staff and needs a specialist to own it.'
+const ghDetail = (withDate = true): Record<string, unknown> => ({ '1': { id: 1, title: 'Payroll Specialist', ...(withDate ? { first_published: day(9) } : {}), updated_at: day(1), content: `&lt;p&gt;${BODY}&lt;/p&gt;`, location: { name: 'Columbus, OH' }, absolute_url: 'https://boards.greenhouse.io/acme/jobs/1' } })
+let GH_DETAIL = ghDetail()
+const ABODY = 'Zed Corp is hiring an HR generalist to run onboarding for its Cleveland office.'
 const AB = { apiVersion: '1', jobs: [
-  { title: 'HR Generalist', location: 'Cleveland, OH', isListed: true, publishedAt: day(12), address: { postalAddress: { addressRegion: 'Ohio' } }, jobUrl: 'https://jobs.ashbyhq.com/zed/1' },
+  { title: 'HR Generalist', location: 'Cleveland, OH', isListed: true, descriptionPlain: ABODY, publishedAt: day(12), address: { postalAddress: { addressRegion: 'Ohio' } }, jobUrl: 'https://jobs.ashbyhq.com/zed/1' },
   { title: 'HR Generalist', location: 'Cleveland, OH', isListed: false, publishedAt: day(12), address: { postalAddress: { addressRegion: 'Ohio' } }, jobUrl: 'https://jobs.ashbyhq.com/zed/2' },
   { title: 'HR Generalist', location: 'Cleveland, OH', isListed: true, publishedAt: day(200), address: { postalAddress: { addressRegion: 'Ohio' } }, jobUrl: 'https://jobs.ashbyhq.com/zed/3' },
   { title: 'HR Generalist', location: 'Remote', isListed: true, publishedAt: day(3), jobUrl: 'https://jobs.ashbyhq.com/zed/4' },
@@ -40,25 +43,26 @@ test('Greenhouse: state and role filter on the list, the posting date comes from
   const { http, seen } = stub()
   const ev = await collectEvidence(sel(['https://boards.greenhouse.io/acme']), Q, http, 5000)
   assert.deepEqual(ev.map(e => e.url), ['https://boards.greenhouse.io/acme/jobs/1'])
-  assert.equal(ev[0].source, 'jobboards'); assert.equal(ev[0].date, day(9).slice(0, 10))
+  assert.equal(ev[0].source, 'jobboards'); assert.equal(ev[0].date, day(9).slice(0, 10)); assert.equal(ev[0].quote, BODY)
   assert.equal(ev[0].updated, day(1).slice(0, 10)) // context only
   // a detail request only for the one job that matched state and role
   assert.deepEqual(seen.filter(u => /jobs\/\d+$/.test(u)), ['https://boards-api.greenhouse.io/v1/boards/acme/jobs/1'])
 })
 
 test('Greenhouse: a matching job whose detail has no first_published is dropped, never dated from updated_at', async () => {
-  GH_DETAIL['1'] = { id: 1, title: 'Payroll Specialist', updated_at: day(1), location: { name: 'Columbus, OH' }, absolute_url: 'https://boards.greenhouse.io/acme/jobs/1' }
-  const { http } = stub()
-  const ev = await collectEvidence(sel(['https://boards.greenhouse.io/acme']), Q, http, 5000)
-  assert.deepEqual(ev, [])
-  GH_DETAIL['1'] = { id: 1, title: 'Payroll Specialist', first_published: day(9), updated_at: day(1), location: { name: 'Columbus, OH' }, absolute_url: 'https://boards.greenhouse.io/acme/jobs/1' }
+  GH_DETAIL = ghDetail(false)
+  try {
+    const { http } = stub()
+    const ev = await collectEvidence(sel(['https://boards.greenhouse.io/acme']), Q, http, 5000)
+    assert.deepEqual(ev, [])
+  } finally { GH_DETAIL = ghDetail() }
 })
 
 test('Ashby: listed only, state by region or ", OH", publishedAt within the window, remote without a state never matches', async () => {
   const { http } = stub()
   const ev = await collectEvidence(sel(['https://jobs.ashbyhq.com/zed']), QA, http, 5000)
   assert.deepEqual(ev.map(e => e.url), ['https://jobs.ashbyhq.com/zed/1'])
-  assert.equal(ev[0].date, day(12).slice(0, 10))
+  assert.equal(ev[0].date, day(12).slice(0, 10)); assert.equal(ev[0].quote, ABODY)
 })
 
 test('no state in the profile means no evidence (never every state)', async () => {
@@ -93,4 +97,10 @@ test('discovery: boards are derived from hit/page URLs (job posting links), dedu
   assert.deepEqual(ev.map(e => e.url).sort(), ['https://boards.greenhouse.io/acme/jobs/1', 'https://jobs.ashbyhq.com/zed/1'])
   assert.equal(seen.filter(u => u === 'https://boards-api.greenhouse.io/v1/boards/acme/jobs').length, 1) // acme requested once
   assert.ok(!seen.some(u => u.includes('ghost')))
+})
+
+test('subdomain pin: x.boards.greenhouse.io and x.jobs.ashbyhq.com are never requested', async () => {
+  const { http, seen } = stub()
+  await collectEvidence(sel(['https://x.boards.greenhouse.io/acme', 'https://x.jobs.ashbyhq.com/zed', 'https://boards.greenhouse.io:8443/acme']), Q, http, 5000)
+  assert.deepEqual(seen, [])
 })
