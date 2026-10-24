@@ -228,3 +228,17 @@ test('draft: unreadable stored key returns key_unreadable, never throws a 500', 
   d.prepare("UPDATE tenant_llm_keys SET ciphertext = 'not-valid-ciphertext' WHERE tenant_id = 't1'").run()
   assert.deepEqual(await draftReply(d, 't1', thread.id, { sells: '', website: '' }, { master }), { error: 'key_unreadable' })
 })
+
+test('draft: a key the provider rejects (401) returns key_rejected instead of throwing out of the route', async () => {
+  const d = db()
+  acceptConsent(d, 't1', 'advanced')
+  setQueries(d, 't1', ['outbound tool'])
+  await refreshReplies(d, 't1', { worker: async () => [item('https://www.reddit.com/r/sales/comments/a2', 'Anyone use a tool for outbound?', FRESH)], env: ENV_ON, now: NOW })
+  const thread = listThreads(d, 't1')[0]
+  saveKey(d, 't1', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
+  let calls = 0
+  const fetchImpl = (async () => { calls++; return new Response('{}', { status: 401 }) }) as unknown as typeof fetch
+  assert.deepEqual(await draftReply(d, 't1', thread.id, { sells: '', website: '' }, { master, fetchImpl }), { error: 'key_rejected' })
+  assert.equal(calls, 1)
+  assert.equal((d.prepare('SELECT count(*) c FROM reply_drafts').get() as { c: number }).c, 0)
+})

@@ -277,7 +277,7 @@ The person you are writing for sells: ${sells || '(not specified)'}${website ? `
 Rules: answer the question first; do not invent features, prices, customers or statistics; mention the product only when it directly fits the question; at most one link; never claim to be a customer.
 Return only the reply text, 120 words maximum.`
 
-export type DraftResult = { draft: string; status: 'draft' } | { error: 'no_key' | 'not_found' | 'upstream' | 'key_unreadable' }
+export type DraftResult = { draft: string; status: 'draft' } | { error: 'no_key' | 'not_found' | 'upstream' | 'key_unreadable' | 'key_rejected' }
 
 export async function draftReply(db: Database.Database, tenantId: string, threadId: string, profile: { sells: string; website: string }, deps: { fetchImpl?: typeof fetch; master?: Buffer; now?: number } = {}): Promise<DraftResult> {
   const t = getThread(db, tenantId, threadId)
@@ -292,7 +292,7 @@ export async function draftReply(db: Database.Database, tenantId: string, thread
   try {
     draft = (await providers[vendor].complete!(key, PROMPT(t.platform, t, profile.sells, profile.website), deps.fetchImpl ?? fetch, 800)).trim()
   } catch (e) {
-    if (e instanceof ProviderError && e.kind === 'auth') throw e
+    if (e instanceof ProviderError && e.kind === 'auth') return { error: 'key_rejected' }
     return { error: 'upstream' }
   }
   if (draft.length < 20) return { error: 'upstream' }

@@ -4,7 +4,7 @@ import { getAuthDb, getSellerProfile } from '@/lib/auth-db'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { draftReply, markDraft, migrateThreadReplies, saveDraft } from '@/lib/replies/threads'
-import { KEY_UNREADABLE_COPY } from '@/lib/error-copy'
+import { KEY_UNREADABLE_COPY, knownErrorCopy } from '@/lib/error-copy'
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const user = await requireUser()
@@ -20,8 +20,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (body?.action === 'draft') {
     const r = await draftReply(db, user.id, id, getSellerProfile(getAuthDb(), user.id))
     if ('error' in r) {
-      const msg = r.error === 'key_unreadable' ? KEY_UNREADABLE_COPY : r.error === 'no_key' ? 'Add your own AI key in Settings first' : r.error === 'not_found' ? 'Not found' : 'The AI provider failed - try again'
-      return NextResponse.json({ error: msg }, { status: r.error === 'not_found' ? 404 : r.error === 'no_key' || r.error === 'key_unreadable' ? 400 : 502 })
+      const msg = r.error === 'key_unreadable' ? KEY_UNREADABLE_COPY : r.error === 'key_rejected' ? knownErrorCopy('key_rejected')! : r.error === 'no_key' ? 'Add your own AI key in Settings first' : r.error === 'not_found' ? 'Not found' : 'The AI provider failed - try again'
+      return NextResponse.json({ error: msg }, { status: r.error === 'not_found' ? 404 : r.error === 'no_key' || r.error === 'key_unreadable' || r.error === 'key_rejected' ? 400 : 502 })
     }
     return NextResponse.json(r)
   }
