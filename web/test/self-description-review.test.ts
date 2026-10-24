@@ -9,6 +9,8 @@ import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { migrateScan, createQueryJob, listLeads } from '../lib/scan/store.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
+import { confirmLeadReview } from '../lib/scan/review-confirm.ts'
+import { createDraft, OutreachError } from '../lib/outreach/service.ts'
 
 const master = randomBytes(32)
 const KA = 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
@@ -35,7 +37,7 @@ async function run(urlVariant: (u: string) => string) {
   const out = JSON.stringify([lead('Pulseforge', urlVariant(REPO), DESC), lead('Northside Builders', NEWSURL, NEWS)])
   const prov = { anthropic: { research: async () => ({ text: '[]', citedUrls: [] }), complete: async (_k: string, p: string) => p.startsWith('You check one claim') ? 'supports' : out }, openai: { research: async () => ({ text: '[]', citedUrls: [] }) } }
   const res = await runJob(db, claimKeyedJob(db, id)!, { providers: prov as never, master, fetchPage: page as never, sourceHttp: http, score: false, now: new Date() })
-  return { res, rows: listLeads(db, 'A', id) as unknown as { company: string; review_reason: string | null; contact: string | null }[] }
+  return { res, db, rows: listLeads(db, 'A', id) as unknown as { company: string; review_reason: string | null; contact: string | null }[] }
 }
 
 test('owner self-description lands in review as self_description; the other source verifies normally', async () => {
@@ -45,6 +47,14 @@ test('owner self-description lands in review as self_description; the other sour
   assert.equal(byCo['Pulseforge'].review_reason, 'self_description')
   assert.equal(byCo['Pulseforge'].contact, null)
   assert.equal(byCo['Northside Builders'].review_reason, null)
+})
+
+test('after the user confirms a self_description row, a draft still needs a published email and is refused', async () => {
+  const { db, rows } = await run(u => u)
+  const lead = (db.prepare("SELECT id FROM leads WHERE company = 'Pulseforge'").get() as { id: string })
+  assert.equal(confirmLeadReview(db, 'A', lead.id), true)
+  assert.throws(() => createDraft(db, 'A', lead.id, 'Test Co'), (e: unknown) => e instanceof OutreachError && e.code === 'no_email_contact')
+  assert.ok(rows.length >= 1)
 })
 
 test('a trailing slash on the model-returned URL does not bypass the routing', async () => {
