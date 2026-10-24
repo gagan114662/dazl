@@ -326,7 +326,7 @@ export function claimKeyedJob(db: Database.Database, jobId?: string, excludeTena
     if (!row) return null
     const ch = db.prepare("UPDATE scan_jobs SET status='running', attempts = attempts + 1, claimed_at = CAST(strftime('%s','now') AS INTEGER) WHERE id = ? AND status='pending'").run(row.id)
     return ch.changes === 1 ? { ...row, attempts: row.attempts + 1 } : null
-  })()
+  }).immediate()
 }
 
 function safeJson(t: string): unknown { try { return JSON.parse(t) } catch { return null } }
@@ -368,6 +368,7 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
   const leads = out?.leads ?? []
   const review = out?.review ?? []
   const dropped = out ? Object.values(out.dropped).reduce((a, b) => a + b, 0) : null
+  // IMMEDIATE: the ownership read then the writes in one deferred transaction fail at once with SQLITE_BUSY (snapshot upgrade, busy_timeout does not apply) if another process committed in between.
   return db.transaction((): boolean => {
     const own = db.prepare("SELECT 1 FROM scan_jobs WHERE id = ? AND status = 'running' AND attempts = ?").get(job.id, job.attempts)
     if (!own) return false
@@ -386,7 +387,7 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
          finished_at = CASE WHEN ? = 'pending' THEN NULL ELSE CAST(strftime('%s','now') AS INTEGER) END WHERE id = ?`,
     ).run(status, error, candidates, status === 'done' ? leads.length : null, status === 'done' ? review.length : null, dropped, out ? JSON.stringify(out.dropped) : null, status, job.id)
     return true
-  })()
+  }).immediate()
 }
 
 // Shared failure handling: a rejected key fails the job outright; anything else retries

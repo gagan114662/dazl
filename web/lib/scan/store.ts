@@ -353,5 +353,5 @@ export function cancelJob(db: Database.Database, userId: string, id: string): Ca
     if (!wasRunning) db.prepare("UPDATE scan_jobs SET status='running', attempts = attempts + 1, claimed_at = CAST(strftime('%s','now') AS INTEGER) WHERE id = ? AND status='pending'").run(id)
     const r = db.prepare("UPDATE scan_jobs SET status='failed', error='cancelled', claimed_at=NULL, finished_at=CAST(strftime('%s','now') AS INTEGER) WHERE id = ? AND user_id = ? AND status='running'").run(id, userId)
     return r.changes === 1 ? { ok: true, was_running: wasRunning } : { ok: false, reason: 'already_finished' }
-  })()
+  }).immediate()
 }
