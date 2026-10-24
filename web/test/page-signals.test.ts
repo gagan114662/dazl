@@ -11,7 +11,7 @@ test('every shown passage is a verbatim slice of the page and carries no verdict
   for (const p of r.passages) assert.ok(page.includes(p.quote), p.quote)
   assert.equal(r.passages.length, 3)
   assert.deepEqual(Object.keys(r).sort(), ['chars_read', 'passages', 'passages_total'])
-  assert.deepEqual(Object.keys(r.passages[0]).sort(), ['phrases', 'quote', 'terms'])
+  assert.deepEqual(Object.keys(r.passages[0]).sort(), ['phrases', 'quote', 'terms', 'truncated'])
 })
 test('negation, customer stories and vendor pitch are flagged as literal phrases, never turned into a claim about the company', () => {
   const neg = q('We are not evaluating any new cold email tools this year.')[0]
@@ -59,6 +59,17 @@ test('glued text with no full stops still gives a bounded verbatim passage; outp
   const d = readPage(dense)
   assert.equal(d.passages.length, 12)
   assert.equal(d.passages_total, 40)
+})
+test('a long passage is cut at a word boundary, marked cut, and its flags and terms come only from the shown text', () => {
+  const page = 'start ' + 'outbound ' + ('filler '.repeat(20) + 'outbound ').repeat(8) + 'filler '.repeat(20) + 'but we are not evaluating Salesforce at all'
+  const r = readPage(page)
+  const p = r.passages[0]
+  assert.equal(p.truncated, true)
+  assert.ok(p.quote.length <= 420 && page.startsWith(p.quote) && !p.quote.endsWith('fill'))
+  assert.equal(p.phrases.negation, null)
+  assert.equal(p.phrases.evaluation, null)
+  assert.ok(!p.terms.includes('salesforce'))
+  assert.equal(readPage('You will do outbound.').passages[0].truncated, false)
 })
 test('the actual word and tool lists are exported for the UI to show', () => {
   assert.ok(TASK_TERMS.includes('outbound') && STACK_NAMES.includes('salesforce'))

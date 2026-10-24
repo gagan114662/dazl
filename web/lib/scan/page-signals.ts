@@ -12,7 +12,7 @@ export const APPLIES_TO = 'a seller of outbound sales prospecting tools'
 export const TASK_TERMS = ['outbound', 'cold call', 'cold calling', 'cold email', 'cold outreach', 'prospecting', 'prospect list', 'lead generation', 'lead gen', 'pipeline generation', 'sales development', 'appointment setting']
 export const STACK_NAMES = ['salesforce', 'hubspot', 'salesloft', 'outreach.io', 'apollo.io', 'gong.io', 'zoominfo', 'sales navigator', 'lusha', 'seamless.ai', 'clay.com', 'instantly.ai', 'lemlist', '6sense']
 export interface PhraseFlags { duty: string | null; requirement: string | null; self_description: string | null; evaluation: string | null; negation: string | null }
-export interface Passage { terms: string[]; quote: string; phrases: PhraseFlags }
+export interface Passage { terms: string[]; quote: string; truncated: boolean; phrases: PhraseFlags }
 export interface PageReading { chars_read: number; passages: Passage[]; passages_total: number }
 
 const PATTERNS: Record<keyof PhraseFlags, RegExp> = {
@@ -64,7 +64,14 @@ export function hitWindows(text: string, terms: string[]): { terms: string[]; qu
 export function readPage(text: string, cap = 60_000, show = 12): PageReading {
   const body = text.slice(0, cap)
   const wins = hitWindows(body, [...TASK_TERMS, ...STACK_NAMES])
-  const passages = wins.slice(0, show).map(w => ({ terms: w.terms, quote: w.quote.length > 420 ? w.quote.slice(0, 420) : w.quote, phrases: flags(w.quote) }))
+  // What is shown is what was checked: a long passage is cut at a word boundary, flagged as cut, and its phrase flags and
+  // term list are computed on the shown text only, so nothing invisible can be cited.
+  const passages = wins.slice(0, show).map((w): Passage => {
+    let quote = w.quote, truncated = false
+    if (quote.length > 420) { const sp = quote.lastIndexOf(' ', 420); quote = quote.slice(0, sp > 0 ? sp : 420).trim(); truncated = true }
+    const terms = w.terms.filter(t => new RegExp(`(^|[^a-z0-9])${esc(t)}($|[^a-z0-9])`, 'i').test(quote))
+    return { terms, quote, truncated, phrases: flags(quote) }
+  })
   return { chars_read: body.length, passages, passages_total: wins.length }
 }
 
