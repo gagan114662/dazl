@@ -154,13 +154,13 @@ test('hiring request: two deterministic ATS queries come first, each with a pare
   const { searched } = await withEnv(true, () => run(['m1 hiring payroll', 'm2 payroll complaints', 'm3 extra']))
   assert.equal(searched.length, 4)
   assert.equal(searched[0], '(site:boards.greenhouse.io OR site:job-boards.greenhouse.io) (payroll OR hr OR office OR manager) Ohio')
-  assert.equal(searched[1], 'site:jobs.ashbyhq.com (payroll OR hr OR office OR manager) Ohio')
+  assert.equal(searched[1], '(site:jobs.ashbyhq.com OR site:jobs.lever.co) (payroll OR hr OR office OR manager) Ohio')
   assert.ok(/m1/.test(searched[2]) && /m2/.test(searched[3]) && searched.every(q => /ohio/i.test(q)))
 })
 
 test('hiring request, unusable model reply: the direct queries still run (never LLM-only)', async () => {
   const { searched, db } = await withEnv(true, () => run('I cannot help with that'))
-  assert.ok(searched[0].startsWith('(site:boards.greenhouse.io OR') && searched[1].startsWith('site:jobs.ashbyhq.com'))
+  assert.ok(searched[0].startsWith('(site:boards.greenhouse.io OR') && searched[1].startsWith('(site:jobs.ashbyhq.com OR site:jobs.lever.co)'))
   assert.equal((db.prepare('SELECT query_source FROM scan_source_stats').get() as { query_source: string }).query_source, 'fallback')
 })
 
