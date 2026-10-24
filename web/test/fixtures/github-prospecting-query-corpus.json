@@ -1,0 +1,97 @@
+{
+  "captured_at": "2026-10-24T12:45:47Z",
+  "request": "GET /search/repositories?q=actively sales prospecting lead in:description,readme&sort=updated&order=desc&per_page=15 (api.github.com, unauthenticated; the exact query dazl built from: B2B companies actively looking for a sales prospecting or lead generation tool)",
+  "note": "Real public repo metadata captured 2026-10-24 for a measured retrieval check. Descriptions are written by each repo owner about their own project. pushed_at is last-update time, not an event date. No model output, no judgment of need.",
+  "items": [
+    {
+      "full_name": "pulseforgeatmns-ops/pulseforge-leadgen",
+      "html_url": "https://github.com/pulseforgeatmns-ops/pulseforge-leadgen",
+      "description": "Modular AI platform for workflow automation, multi-agent orchestration, knowledge management, and human-governed decision support.",
+      "pushed_at": "2026-10-24T12:45:22Z"
+    },
+    {
+      "full_name": "BSAVCI1/Boss",
+      "html_url": "https://github.com/BSAVCI1/Boss",
+      "description": null,
+      "pushed_at": "2026-10-24T12:41:28Z"
+    },
+    {
+      "full_name": "Ambaks/ominin",
+      "html_url": "https://github.com/Ambaks/ominin",
+      "description": "AI solutions for restaurants, decreasing their operating costs and facilitating their operations.",
+      "pushed_at": "2026-10-24T12:32:50Z"
+    },
+    {
+      "full_name": "leadita/tech-stack-datasets",
+      "html_url": "https://github.com/leadita/tech-stack-datasets",
+      "description": "Open datasets of companies & websites grouped by technologies they use (CSV & JSON). Discover who uses Shopify, Stripe, Woocommerce, HubSpot, and more.",
+      "pushed_at": "2026-10-24T12:31:51Z"
+    },
+    {
+      "full_name": "bittuman977-source/harvey-groq-free",
+      "html_url": "https://github.com/bittuman977-source/harvey-groq-free",
+      "description": "Harvey autonomous sales agent with a 100% free Groq API brain — no Claude/ChatGPT subscription needed",
+      "pushed_at": "2026-10-24T12:31:03Z"
+    },
+    {
+      "full_name": "tejinder-cloud/tgl-growth-os",
+      "html_url": "https://github.com/tejinder-cloud/tgl-growth-os",
+      "description": "The Growth Lab AEO ",
+      "pushed_at": "2026-10-24T12:30:11Z"
+    },
+    {
+      "full_name": "hamdi0712/spine-scale-crm",
+      "html_url": "https://github.com/hamdi0712/spine-scale-crm",
+      "description": null,
+      "pushed_at": "2026-10-24T12:20:09Z"
+    },
+    {
+      "full_name": "pavantvba-git/sipatech-lead-discovery-agent",
+      "html_url": "https://github.com/pavantvba-git/sipatech-lead-discovery-agent",
+      "description": "sipatech-lead-discovery-agent",
+      "pushed_at": "2026-10-24T12:18:04Z"
+    },
+    {
+      "full_name": "angelmtenor/ai-circus-framework",
+      "html_url": "https://github.com/angelmtenor/ai-circus-framework",
+      "description": "An open-source microservices platform for prototyping state-of-the-art ML and GenAI products and scenarios, with multi-tenancy and the AG-UI protocol",
+      "pushed_at": "2026-10-24T12:20:32Z"
+    },
+    {
+      "full_name": "daftAI2026/awesome-jev",
+      "html_url": "https://github.com/daftAI2026/awesome-jev",
+      "description": "Curated TypeSafe Jev / System One GitHub projects, open-source alternatives, and Jev news",
+      "pushed_at": "2026-10-24T12:10:01Z"
+    },
+    {
+      "full_name": "RishabhSinghla/ipropy-crm",
+      "html_url": "https://github.com/RishabhSinghla/ipropy-crm",
+      "description": "AI-native, metadata-driven CRM for Indian real estate. Modules, fields, layouts, views, workflows and dashboards are data, not code — an admin reshapes the product at runtime with no deploy and no migration.",
+      "pushed_at": "2026-10-24T12:09:05Z"
+    },
+    {
+      "full_name": "lassya2507/lassya2507",
+      "html_url": "https://github.com/lassya2507/lassya2507",
+      "description": "yoooo",
+      "pushed_at": "2026-10-24T12:07:23Z"
+    },
+    {
+      "full_name": "shamanic-technologies/brand-service",
+      "html_url": "https://github.com/shamanic-technologies/brand-service",
+      "description": "Open-source service to provide brands information",
+      "pushed_at": "2026-10-24T12:10:26Z"
+    },
+    {
+      "full_name": "abhijieetp-wq/FirstRepo",
+      "html_url": "https://github.com/abhijieetp-wq/FirstRepo",
+      "description": "Used for training and demo practices",
+      "pushed_at": "2026-10-24T12:05:49Z"
+    },
+    {
+      "full_name": "KikikJourney/Kikik-Journey",
+      "html_url": "https://github.com/KikikJourney/Kikik-Journey",
+      "description": null,
+      "pushed_at": "2026-10-24T11:57:09Z"
+    }
+  ]
+}

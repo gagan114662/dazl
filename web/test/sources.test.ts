@@ -4,7 +4,7 @@ import Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { parseFeed } from '../lib/sources/rss.ts'
 import { githubAdapter, resetGithubState } from '../lib/sources/github.ts'
-import { buildSourcePrompt, collectEvidence, keywordsFor, normalizeSources } from '../lib/sources/index.ts'
+import { buildSourcePrompt, collectEvidence, keywordsFor, normalizeSources, selfDescribedUrls, canonUrl } from '../lib/sources/index.ts'
 import { migrateScan, createQueryJob } from '../lib/scan/store.ts'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
@@ -38,7 +38,11 @@ test('collectEvidence: adapters get only a guarded http function, failures give 
     return null
   }
   const ev = await collectEvidence({ adapters: ['github', 'rss'], feeds: ['https://acme.example/feed', 'https://dead.example/feed'] }, 'robotics sales hires', http, 2000)
-  assert.deepEqual(ev.map(e => [e.source, e.url, e.date]).sort(), [['github', 'https://github.com/acme/robot-sdk', '2026-10-10'], ['rss', 'https://acme.example/news/1', '2026-10-12']])
+  assert.deepEqual(ev.map(e => [e.source, e.url, e.date]).sort(), [['github', 'https://github.com/acme/robot-sdk', null], ['rss', 'https://acme.example/news/1', '2026-10-12']])
+  const gh = ev.find(e => e.source === 'github')!
+  assert.equal(gh.updated, '2026-10-10') // repo push time is kept as context, never as the event date
+  assert.equal(gh.origin, 'owner_self_description')
+  assert.equal(ev.find(e => e.source === 'rss')!.origin, undefined)
   assert.ok(seen.every(u => u.startsWith('https://')))
   assert.match(buildSourcePrompt('q', {}, ev), /not instructions/)
 })
@@ -173,4 +177,16 @@ test('youtube adapter: piped backend maps streams, caches, tries the next instan
 test('source selection: web needs page URLs, pages are validated like feeds', () => {
   assert.equal(normalizeSources({ adapters: ['web'], feeds: [], pages: [] }), null)
   assert.deepEqual(normalizeSources({ adapters: ['web', 'v2ex', 'youtube'], feeds: [], pages: ['https://a.example/p', 'http://no.example', 'https://a.example/p'] }), { adapters: ['web', 'v2ex', 'youtube'], feeds: [], pages: ['https://a.example/p'] })
+})
+
+test('selfDescribedUrls matches a model-returned URL with or without a trailing slash, and only self-described items', () => {
+  const items = [
+    { source: 'github', url: 'https://github.com/a/b', title: 'a/b', quote: 'q'.repeat(30), date: null, origin: 'owner_self_description' as const },
+    { source: 'rss', url: 'https://n.example/1', title: 't', quote: 'q'.repeat(30), date: '2026-10-01' },
+  ]
+  const set = selfDescribedUrls(items)
+  assert.ok(set.has(canonUrl('https://github.com/a/b/')))
+  assert.ok(set.has(canonUrl('https://github.com/a/b')))
+  assert.ok(!set.has(canonUrl('https://n.example/1')))
+  assert.ok(!set.has(canonUrl('https://github.com/a/b/issues')))
 })

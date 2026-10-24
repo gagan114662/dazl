@@ -10,7 +10,9 @@ export interface Evidence {
   url: string // public https page
   title: string
   quote: string // text expected to appear on that page, 20-300 chars
-  date: string | null // YYYY-MM-DD
+  date: string | null // YYYY-MM-DD: the date the SOURCE states for the event/post itself. Never a crawl, push or update time.
+  updated?: string | null // YYYY-MM-DD: when the source was last changed (e.g. repo push). Context only, not an event date.
+  origin?: 'owner_self_description' // text the item's owner wrote about their own project/product: evidence of what they build, not of a need
 }
 
 export interface HttpResult { status: number; body: string }

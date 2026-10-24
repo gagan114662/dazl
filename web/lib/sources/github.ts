@@ -31,9 +31,10 @@ export const githubAdapter: SourceAdapter = {
     for (const it of json.items ?? []) {
       const desc = typeof it.description === 'string' ? it.description.replace(/\s+/g, ' ').trim() : ''
       const url = typeof it.html_url === 'string' ? it.html_url : ''
+      // pushed_at is when the repo was last updated, not when anything relevant happened: it is kept as `updated`, never as the event date.
       const pushed = typeof it.pushed_at === 'string' ? it.pushed_at.slice(0, 10) : null
       if (desc.length < 20 || !/^https:\/\/github\.com\//.test(url)) continue
-      out.push({ source: 'github', url, title: String(it.full_name ?? '').slice(0, 200), quote: desc.slice(0, 300), date: pushed && /^\d{4}-\d{2}-\d{2}$/.test(pushed) ? pushed : null })
+      out.push({ source: 'github', url, title: String(it.full_name ?? '').slice(0, 200), quote: desc.slice(0, 300), date: null, updated: pushed && /^\d{4}-\d{2}-\d{2}$/.test(pushed) ? pushed : null, origin: 'owner_self_description' })
     }
     cache.set(q, { at: now, items: out })
     return out

@@ -69,3 +69,11 @@ Pick only items that show a company or person matching the profile with a recent
 Reply with ONLY a JSON array, no prose. Each item: {"name": person or "", "company": string, "contact": null, "signal": one sentence on why they are a lead, "source_url": the exact url of the item, "excerpt": the item's text copied VERBATIM, "event_date": the item's date as YYYY-MM-DD or null, "score": 0-100 fit}.
 The excerpt must name the company. Return [] if nothing fits.`
 }
+
+// Canonical form used to match a model-returned source_url back to a collected item (same rule as parseLeads).
+export const canonUrl = (u: string) => u.replace(/\/$/, '')
+// URLs whose evidence is an owner's description of their own artifact. If ANY collected item for a URL is
+// self-description, a lead citing that URL is routed to review: the text shows what they build, not a need.
+export function selfDescribedUrls(items: Evidence[]): Set<string> {
+  return new Set(items.filter(i => i.origin === 'owner_self_description').map(i => canonUrl(i.url)))
+}

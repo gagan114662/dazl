@@ -15,7 +15,7 @@ import { inferIcp, normalizeIcp, type Icp } from './icp.ts'
 import { collectAdvanced, xSearchQuery } from '../advanced/index.ts'
 import { markWatchLeads } from '../watch.ts'
 import type { AdvPlatform } from '../advanced/config.ts'
-import { buildSourcePrompt, collectEvidenceReport, normalizeSources } from '../sources/index.ts'
+import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, selfDescribedUrls } from '../sources/index.ts'
 import { migrateTinyfish, parseQueries, queryPrompt, tfFetch, tfSearch, tinyfishEnabled, toEvidence } from '../search/tinyfish.ts'
 import { crawlJob } from '../connectors/sitecrawl.ts'
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
@@ -565,7 +565,7 @@ function budgetDeps(deps: RunDeps, budget: RunBudget | null): RunDeps {
 }
 
 export interface RunDeps {
-  score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; jobBudgetMs?: number; clock?: () => number }
+  sourceHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; jobBudgetMs?: number; clock?: () => number }
 
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
   const ledger = new SourceRunLedger()
@@ -639,11 +639,12 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // turns it into candidates. They go through the same verifier as web-search leads.
     const sel = job.query && job.sources ? normalizeSources(safeJson(job.sources)) : null
     const walledLeads: LeadDraft[] = []
+    const selfDescribedLeads: LeadDraft[] = []
     let complaints: ComplaintItem[] = []
     if (sel && icpForSources && complete) {
       try {
         assertOwned(db, job)
-        const collected = await collectEvidenceReport(sel, job.query!)
+        const collected = await collectEvidenceReport(sel, job.query!, deps.sourceHttp)
         const items = collected.items
         for (const run of collected.runs) ledger.record(run.collector, run.status, run.evidence)
         if (items.length > 0) {
@@ -651,7 +652,8 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
           const text = await complete.call(providers_[vendor], key, buildSourcePrompt(job.query!, icpForSources, items), deps.fetchImpl, 3000)
           const extra = parseLeads(text, items.map(i => i.url)) ?? []
           ledger.evidenceCandidates(items.map(i => ({ ...i, source: `adapter:${i.source}` })), extra)
-          leads.push(...extra)
+          const selfDesc = selfDescribedUrls(items)
+          for (const l of extra) (selfDesc.has(canonUrl(l.source_url)) ? selfDescribedLeads : leads).push(l)
         }
         // Advanced connectors (opt-in tier, own flag, consent and session). A page behind a login is never
         // verified by us: it goes to "needs review" as is, shown to the user and never emailed.
@@ -700,7 +702,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     }
     // Nothing to verify at all: fail honestly. Failed scans do not count toward the monthly quota,
     // so the user gets the slot back instead of a silent empty result.
-    if (leads.length === 0 && walledLeads.length === 0) { finish(db, job, 'failed', 'no_candidates', null, 0, ledger); return 'failed' }
+    if (leads.length === 0 && walledLeads.length === 0 && selfDescribedLeads.length === 0) { finish(db, job, 'failed', 'no_candidates', null, 0, ledger); return 'failed' }
     const judge = deps.judge === undefined ? makeJudge(providers_[vendor], key, deps.fetchImpl) : deps.judge ?? undefined
     assertOwned(db, job)
     let outcome = await verifyLeads(leads, fetchP, deps.now, judge)
@@ -775,11 +777,13 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     const seen = new Set(outcome.review.map(r => dedupKey(r)))
     const walledRows: typeof outcome.review = []
     for (const l of walledLeads) { const k = dedupKey(l); if (!seen.has(k)) { seen.add(k); walledRows.push({ ...l, contact: null, review_reason: 'login_required' }) } }
+    // Owner self-descriptions (e.g. a repo description) show what someone builds, not a need or fit: review lane only, never verified or emailed.
+    for (const l of selfDescribedLeads) { const k = dedupKey(l); if (!seen.has(k)) { seen.add(k); walledRows.push({ ...l, contact: null, review_reason: 'self_description' }) } }
     // Login-walled items keep their candidate-level score; the same gate applies to them -
     // a walled hiring post with no pain in its snippet is capped below 50 like any job ad.
     try { applyEvidenceQualityGate(walledRows) } catch { /* gate only */ }
     outcome.review.push(...walledRows)
-    const owned = finish(db, job, 'done', null, outcome, leads.length + walledLeads.length, ledger)
+    const owned = finish(db, job, 'done', null, outcome, leads.length + walledLeads.length + selfDescribedLeads.length, ledger)
     // Stale attempt: finish() wrote nothing, so every post-finish side effect
     // must be skipped too - a re-claimed job belongs to the newer attempt.
     if (!owned) return 'done'
