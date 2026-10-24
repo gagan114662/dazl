@@ -165,6 +165,16 @@ export async function scoreLeads(provider: Provider, apiKey: string, icpText: st
   }
 }
 
+// The grading prompt used to see only the ICP text, never what the seller sells, so a company selling the SAME kind of
+// product could grade as an exact fit. When the seller's own offer is known it is added, with a rule that a competitor
+// is judged only from the lead's own evidence and is never inferred from the company name or industry.
+export const OFFER_MAX = 300
+export function sellerOfferBlock(sells: string | null | undefined): string {
+  const o = (sells ?? '').replace(/\s+/g, ' ').trim().slice(0, OFFER_MAX)
+  if (!o) return ''
+  return `\nWhat the seller sells (their own words): ${o}\nFit means: would this company plausibly buy THIS offer, not only match the ICP. If a lead's own evidence shows it sells a product that does the same job, mark it as a possible competitor: start why with "Possible competitor (uncertain):" followed by the words in the evidence that show it, give fit no higher than 3 (a competitor may still buy tools, so do not treat it as a certain non-buyer), and keep intent about evidence of a current need only. Use only the evidence shown. Never infer a competitor from the company name, size or industry alone; if the evidence does not say what the company sells, do not apply this rule.`
+}
+
 export function icpTextFor(icp: Icp | null, fallback: string): string {
   if (!icp) return fallback
   return [icp.summary, icp.who.length ? `buyers: ${icp.who.join('; ')}` : '', icp.industries.length ? `industries: ${icp.industries.join('; ')}` : '', icp.sizes.length ? `sizes: ${icp.sizes.join('; ')}` : '', icp.where.length ? `where: ${icp.where.join('; ')}` : '', icp.signals.length ? `intent signals: ${icp.signals.join('; ')}` : '', icp.exclude.length ? `exclude: ${icp.exclude.join('; ')}` : ''].filter(Boolean).join('\n')

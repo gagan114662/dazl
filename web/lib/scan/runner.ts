@@ -18,7 +18,7 @@ import type { AdvPlatform } from '../advanced/config.ts'
 import { buildSourcePrompt, collectEvidenceReport, normalizeSources } from '../sources/index.ts'
 import { migrateTinyfish, parseQueries, queryPrompt, tfFetch, tfSearch, tinyfishEnabled, toEvidence } from '../search/tinyfish.ts'
 import { crawlJob } from '../connectors/sitecrawl.ts'
-import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads } from './score.ts'
+import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
 import { getMemory, isExcluded, memoryPromptBlock } from '../memory.ts'
 import { enrichJobSignals } from '../signals/index.ts'
 import { primarySignalKind } from './score.ts'
@@ -117,6 +117,10 @@ export type Judge = (c: LeadDraft, passage: string) => Promise<Judgement>
 export type PageFetcher = (url: string) => Promise<Page | FetchFail | null>
 
 export interface ReviewLead extends LeadDraft { review_reason: string }
+// The seller's own offer text, read from the same account row the profile page writes. A missing column or row means no block.
+export function offerBlockFor(db: Database.Database, userId: string): string {
+  try { return sellerOfferBlock((db.prepare('SELECT sells FROM users WHERE id = ?').get(userId) as { sells?: string } | undefined)?.sells) } catch { return '' }
+}
 export interface VerifyOutcome { leads: VerifiedLead[]; review: ReviewLead[]; dropped: Record<string, number> }
 
 export function judgePrompt(c: Pick<LeadDraft, 'company' | 'signal'>, passage: string): string {
@@ -747,7 +751,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // per scan; a scoring failure never fails the scan - but it no longer passes the raw
     // candidate score through as if it were a grade. Ungraded leads are held at fit 0.
     if (complete && outcome.leads.length > 0 && (deps.score !== false)) {
-      const icpText = (icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`) + memoryPromptBlock(memory ?? null)
+      const icpText = (icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`) + memoryPromptBlock(memory ?? null) + offerBlockFor(db, job.user_id)
       assertOwned(db, job)
       const grades = await scoreLeads(providers_[vendor], key, icpText, outcome.leads, deps.fetchImpl)
       if (grades) {

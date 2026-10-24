@@ -174,3 +174,35 @@ test('holdUngraded: holds fit at 0 with the reason, leaves intent/action unset',
   holdUngraded(leads, NOT_GRADED_WHY)
   assert.match(leads[0].why ?? '', /not icp-graded/i)
 })
+
+import Database from 'better-sqlite3'
+import { sellerOfferBlock, OFFER_MAX } from '../lib/scan/score.ts'
+import { offerBlockFor } from '../lib/scan/runner.ts'
+test('grading prompt: the seller offer and an evidence-bound competitor rule are added only when an offer exists', () => {
+  assert.equal(sellerOfferBlock(''), '')
+  assert.equal(sellerOfferBlock(null), '')
+  assert.equal(sellerOfferBlock('   '), '')
+  const b = sellerOfferBlock('Sales prospecting software for B2B sales teams')
+  assert.match(b, /What the seller sells \(their own words\): Sales prospecting software for B2B sales teams/)
+  assert.match(b, /Possible competitor \(uncertain\):/)
+  assert.match(b, /no higher than 3/)
+  assert.match(b, /may still buy tools/)
+  assert.match(b, /Use only the evidence shown/)
+  assert.match(b, /Never infer a competitor from the company name, size or industry alone/)
+  assert.match(b, /if the evidence does not say what the company sells, do not apply this rule/)
+  const long = sellerOfferBlock('x'.repeat(2000))
+  assert.ok(long.split('their own words): ')[1].split('\n')[0].length <= OFFER_MAX)
+  const p = scorePrompt('ICP: companies hiring sales ops' + b, [{ company: 'Outreach', name: '', signal: 's', excerpt: 'only complete agentic AI platform for revenue teams' }])
+  assert.match(p, /ICP: companies hiring sales ops\nWhat the seller sells/)
+})
+test('runner reads the seller offer from the account row and falls back to no block on any failure', () => {
+  const db = new Database(':memory:')
+  assert.equal(offerBlockFor(db, 'u1'), '')
+  db.exec('CREATE TABLE users (id TEXT PRIMARY KEY, sells TEXT)')
+  assert.equal(offerBlockFor(db, 'u1'), '')
+  db.prepare('INSERT INTO users VALUES (?, ?)').run('u1', 'Sales prospecting software for B2B sales teams')
+  db.prepare('INSERT INTO users VALUES (?, ?)').run('u2', '')
+  assert.match(offerBlockFor(db, 'u1'), /Sales prospecting software/)
+  assert.equal(offerBlockFor(db, 'u2'), '')
+  assert.equal(offerBlockFor(db, 'nobody'), '')
+})
