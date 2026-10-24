@@ -56,3 +56,10 @@ test('emptyLeadsMessage: a running, loading or failed scan never says "No leads 
   assert.match(emptyLeadsMessage('running', 0, 0) ?? '', /still running/)
   assert.equal(emptyLeadsMessage('', 0, 0), 'No leads yet. Run a scan.')
 })
+
+test('scoreLabel: hand-saved and job-feed leads are not graded, not given the column default', () => {
+  assert.equal(scoreLabel(50, null, null, 'hiring_feed'), 'not graded')
+  assert.equal(scoreLabel(50, null, null, 'manual_source'), 'not graded')
+  assert.equal(scoreLabel(50, null, null, null), 'score 50')
+  assert.equal(scoreLabel(80, 4, 3, 'hiring_feed'), 'score 80')
+})

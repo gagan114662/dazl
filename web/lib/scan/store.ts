@@ -244,7 +244,7 @@ export function listLeads(db: Database.Database, userId: string, jobId: string, 
     .prepare(
       `SELECT l.id, l.scan_job_id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.created_at,
 l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
-l.human_confirmed_at, l.human_confirmed_from,
+l.human_confirmed_at, l.human_confirmed_from, l.source_kind,
          l.fit, l.intent, l.action, l.why, l.signals, l.icp_match, l.watch_new, l.seen_before, l.stage
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
        WHERE j.id = ? AND j.user_id = ? ${includeHidden ? '' : 'AND (l.fit IS NULL OR l.fit > 1)'}
