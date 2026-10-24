@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import type { Evidence } from '../sources/types.ts'
+import type { SearchTrace } from './trace.ts'
 
 // TinyFish Search + Fetch as the scan search backend (https://docs.tinyfish.ai/search-api, /fetch-api).
 // The key is the OPERATOR's (TINYFISH_API_KEY). It is read from the environment on the server only, sent only in the
@@ -48,7 +49,7 @@ function allow(now: number, perMinute: number): boolean {
 }
 
 export type Fail = 'disabled' | 'cap' | 'rate' | 'auth' | 'quota' | 'unavailable'
-export interface TfDeps { env?: Env; fetchImpl?: typeof fetch; now?: number }
+export interface TfDeps { env?: Env; fetchImpl?: typeof fetch; now?: number; trace?: SearchTrace }
 export interface SearchHit { url: string; title: string; snippet: string; date: string | null }
 
 async function call(url: string, init: RequestInit, key: string, f: typeof fetch, now: number): Promise<{ ok: true; json: unknown } | { ok: false; reason: Fail }> {
@@ -66,14 +67,14 @@ async function call(url: string, init: RequestInit, key: string, f: typeof fetch
 
 export async function tfSearch(db: Database.Database, tenant: string, query: string, opts: { afterDate?: string; location?: string }, spent: { searches: number }, d: TfDeps = {}): Promise<{ ok: true; hits: SearchHit[] } | { ok: false; reason: Fail }> {
   const env = d.env ?? process.env; const now = d.now ?? Math.floor(Date.now() / 1000); const L = limits(env)
-  if (!tinyfishEnabled(env)) return { ok: false, reason: 'disabled' }
+  if (!tinyfishEnabled(env)) { d.trace?.search({ query, attempted: false, outcome: 'disabled', hits: null }); return { ok: false, reason: 'disabled' } }
   const day = dayOf(now)
-  if (spent.searches >= L.searchesPerScan || used(db, day, tenant, 'search') >= L.tenantDaily || used(db, day, null, 'search') >= L.globalSearchDaily) return { ok: false, reason: 'cap' }
-  if (!allow(now, L.perMinute)) return { ok: false, reason: 'rate' }
+  if (spent.searches >= L.searchesPerScan || used(db, day, tenant, 'search') >= L.tenantDaily || used(db, day, null, 'search') >= L.globalSearchDaily) { d.trace?.search({ query, attempted: false, outcome: 'cap', hits: null }); return { ok: false, reason: 'cap' } }
+  if (!allow(now, L.perMinute)) { d.trace?.search({ query, attempted: false, outcome: 'rate', hits: null }); return { ok: false, reason: 'rate' } }
   spent.searches++; bump(db, day, tenant, 'search', 1)
   const q = new URLSearchParams({ query: query.slice(0, QUERY_CAP), ...(opts.afterDate ? { after_date: opts.afterDate } : {}), ...(opts.location ? { location: opts.location } : {}) })
   const r = await call(`${SEARCH_URL}?${q}`, { method: 'GET' }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
-  if (!r.ok) return r
+  if (!r.ok) { d.trace?.search({ query, attempted: true, outcome: r.reason, hits: null }); return r }
   const arr = (r.json as { results?: unknown })?.results
   const hits: SearchHit[] = []
   for (const x of Array.isArray(arr) ? arr.slice(0, 10) : []) {
@@ -81,26 +82,28 @@ export async function tfSearch(db: Database.Database, tenant: string, query: str
     if (typeof o?.url !== 'string' || !/^https:\/\/[^\s]{4,480}$/.test(o.url) || typeof o.title !== 'string') continue
     hits.push({ url: o.url, title: o.title.slice(0, 200), snippet: typeof o.snippet === 'string' ? o.snippet.slice(0, 400) : '', date: typeof o.date === 'string' && /^\d{4}-\d{2}-\d{2}/.test(o.date) ? o.date.slice(0, 10) : null })
   }
+  d.trace?.search({ query, attempted: true, outcome: 'ok', hits: hits.map(h => h.url) })
   return { ok: true, hits }
 }
 
 export async function tfFetch(db: Database.Database, tenant: string, urls: string[], spent: { fetches: number }, d: TfDeps = {}): Promise<{ ok: true; pages: { url: string; title: string; text: string }[] } | { ok: false; reason: Fail }> {
   const env = d.env ?? process.env; const now = d.now ?? Math.floor(Date.now() / 1000); const L = limits(env)
-  if (!tinyfishEnabled(env)) return { ok: false, reason: 'disabled' }
+  if (!tinyfishEnabled(env)) { d.trace?.fetch({ requested: urls.length, attempted: false, outcome: 'disabled', pages: null }); return { ok: false, reason: 'disabled' } }
   const day = dayOf(now)
   const room = Math.min(10, L.fetchesPerScan - spent.fetches, L.tenantDaily - used(db, day, tenant, 'search'), L.globalFetchDaily - used(db, day, null, 'fetch'))
   const batch = urls.slice(0, Math.max(0, room))
-  if (batch.length === 0) return { ok: false, reason: 'cap' }
-  if (!allow(now, L.perMinute)) return { ok: false, reason: 'rate' }
+  if (batch.length === 0) { d.trace?.fetch({ requested: urls.length, attempted: false, outcome: 'cap', pages: null }); return { ok: false, reason: 'cap' } }
+  if (!allow(now, L.perMinute)) { d.trace?.fetch({ requested: batch.length, attempted: false, outcome: 'rate', pages: null }); return { ok: false, reason: 'rate' } }
   spent.fetches += batch.length; bump(db, day, tenant, 'fetch', batch.length)
   const r = await call(FETCH_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ urls: batch, format: 'markdown' }) }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
-  if (!r.ok) return r
+  if (!r.ok) { d.trace?.fetch({ requested: batch.length, attempted: true, outcome: r.reason, pages: null }); return r }
   const arr = (r.json as { results?: unknown })?.results
   const pages: { url: string; title: string; text: string }[] = []
   for (const x of Array.isArray(arr) ? arr : []) {
     const o = x as Record<string, unknown>
     if (typeof o?.url === 'string' && typeof o.text === 'string' && o.text.length > 40) pages.push({ url: o.url, title: typeof o.title === 'string' ? o.title.slice(0, 200) : '', text: o.text })
   }
+  d.trace?.fetch({ requested: batch.length, attempted: true, outcome: 'ok', pages: pages.length })
   return { ok: true, pages }
 }
 
@@ -110,14 +113,15 @@ Request: ${JSON.stringify(query)}
 Profile: ${JSON.stringify(icp)}
 Reply with ONLY a JSON array of strings, each under 120 characters.`
 
-export function parseQueries(text: string, fallback: string, max: number): string[] {
+export function queryPlan(text: string, fallback: string, max: number): { queries: string[]; source: 'model' | 'fallback' } {
   try {
     const a = JSON.parse(text.slice(text.indexOf('['), text.lastIndexOf(']') + 1)) as unknown
     const qs = (Array.isArray(a) ? a : []).filter((x): x is string => typeof x === 'string').map(x => x.replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, 150)).filter(x => x.length >= 8)
-    if (qs.length) return [...new Set(qs)].slice(0, max)
+    if (qs.length) return { queries: [...new Set(qs)].slice(0, max), source: 'model' }
   } catch { /* use the request itself */ }
-  return [fallback.slice(0, 150)]
+  return { queries: [fallback.slice(0, 150)], source: 'fallback' }
 }
+export const parseQueries = (text: string, fallback: string, max: number): string[] => queryPlan(text, fallback, max).queries
 
 // TinyFish's location option takes a country code only, so a state or city in the profile ("Ohio") can reach the
 // search only through the query text, and the model writes those queries freely. Each query must name each place the

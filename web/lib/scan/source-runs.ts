@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3'
 import { dedupKey } from './evidence.ts'
 import type { Candidate } from './evidence.ts'
+import { writeSourceStats, type SourceStats } from '../search/trace.ts'
 
 // Discovery-stage provenance, not URL-domain classification. Counters are per
 // collector and may overlap: one candidate can be credited to several collectors.
@@ -35,7 +36,9 @@ type Run = { status: string; evidence: number | null; candidates: Set<string>; o
 export class SourceRunLedger {
   private runs = new Map<string, Run>()
   private credits = new Map<string, Set<string>>()
+  private diag = new Map<string, SourceStats>()
   has(collector: string): boolean { return this.runs.has(collector) }
+  stats(collector: string, s: SourceStats): void { this.diag.set(collector, s) }
   record(collector: string, status: string, evidence: number | null = null): void {
     const old = this.runs.get(collector)
     this.runs.set(collector, { status, evidence, candidates: old?.candidates ?? new Set(), observed: old?.observed ?? false })
@@ -70,6 +73,7 @@ export class SourceRunLedger {
       const count = (keys: Set<string>) => [...run.candidates].filter(k => keys.has(k)).length
       ins.run(jobId, attempt, collector, run.status === 'started' ? 'error' : run.status, run.evidence, run.observed || run.evidence === 0 ? run.candidates.size : null, verified && (run.observed || run.evidence === 0) ? count(verifiedKeys) : null, review && (run.observed || run.evidence === 0) ? count(reviewKeys) : null, [...run.candidates].filter(k => insertedKeys.has(k)).length)
     }
+    for (const [collector, s] of this.diag) writeSourceStats(db, jobId, attempt, collector, s) // off unless DAZL_SOURCE_STATS=1; never throws
     const link = db.prepare('INSERT OR IGNORE INTO lead_sources (lead_id,collector,attempt) VALUES (?,?,?)')
     for (const l of stored) for (const collector of this.credits.get(evidenceKey(l)) ?? []) link.run(l.id, collector, attempt)
   }
