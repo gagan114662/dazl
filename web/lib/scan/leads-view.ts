@@ -26,3 +26,10 @@ export function scoreLabel(score: number, fit: number | null, intent?: number | 
   if (fit === 0) return intent == null ? 'scoring failed' : 'not a fit'
   return `score ${score}`
 }
+
+// A literal page check that found the quote is a real stored fact; only its meaning, date and need stay unverified.
+export function quoteNote(literalFound: boolean | undefined): { prefix: string; confirmed: string } {
+  return literalFound
+    ? { prefix: 'Quote found on the page by a literal check (its meaning, date and need are not verified): ', confirmed: 'confirmed by you - the quote was found on the page by a literal check; dazl did not verify its meaning, date or need' }
+    : { prefix: 'Unconfirmed quote: ', confirmed: 'confirmed by you - dazl did not verify the quote' }
+}

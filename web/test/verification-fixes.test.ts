@@ -63,3 +63,11 @@ test('scoreLabel: hand-saved and job-feed leads are not graded, not given the co
   assert.equal(scoreLabel(50, null, null, null), 'score 50')
   assert.equal(scoreLabel(80, 4, 3, 'hiring_feed'), 'score 80')
 })
+
+test('quoteNote: a found literal check is not erased by blanket unverified wording', async () => {
+  const { quoteNote } = await import('../lib/scan/leads-view.ts')
+  assert.match(quoteNote(true).prefix, /found on the page by a literal check/)
+  assert.match(quoteNote(true).confirmed, /literal check/)
+  assert.equal(quoteNote(false).prefix, 'Unconfirmed quote: ')
+  assert.equal(quoteNote(undefined).confirmed, 'confirmed by you - dazl did not verify the quote')
+})

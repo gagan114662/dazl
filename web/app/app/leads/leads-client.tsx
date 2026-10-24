@@ -1,7 +1,7 @@
 'use client'
 import { KEY_UNREADABLE_COPY, knownErrorCopy } from '@/lib/error-copy'
 import { useEffect, useRef, useState } from 'react'
-import { emptyLeadsMessage, scoreLabel } from '@/lib/scan/leads-view'
+import { emptyLeadsMessage, scoreLabel, quoteNote } from '@/lib/scan/leads-view'
 import { contactsFromEnrichments } from '@/lib/people/rank'
 import { publishedEmail, publishedContact, contactSearchNote } from '@/lib/outreach/published-email'
 import SourceReview from './source-review'
@@ -627,10 +627,10 @@ export default function LeadsClient() {
                 ))}
               </div>
             )}
-            {l.evidence_excerpt && <blockquote className="text-gray-500 text-xs border-l border-white/10 pl-3 my-1">{l.human_confirmed_at ? 'Unconfirmed quote: ' : ''}&ldquo;{l.evidence_excerpt}&rdquo;</blockquote>}
+            {l.evidence_excerpt && <blockquote className="text-gray-500 text-xs border-l border-white/10 pl-3 my-1">{l.human_confirmed_at ? quoteNote(l.source_check?.quote_match).prefix : ''}&ldquo;{l.evidence_excerpt}&rdquo;</blockquote>}
             {l.stored_why && <details className="text-xs my-2"><summary>Saved historical grade (not a currentness verdict)</summary><p>Saved intent: {l.stored_intent ?? 'unknown'}. {l.stored_why}</p></details>}
             {l.currentness_held && <p className="text-xs border-l-2 border-black pl-3 my-2">Quote-backed research only - event timing unknown. Fit and contact research can be useful, but no current buying need was verified. Drafting requires your source review.</p>}
-            <span className="text-gray-500 text-xs mr-3">{l.confidence === null ? (l.human_confirmed_at ? 'confirmed by you - dazl did not verify the quote' : 'not verified') : `confidence ${l.confidence}`}{`, ${eventDateCopy(l.event_date, l.date_status)}`}</span>
+            <span className="text-gray-500 text-xs mr-3">{l.confidence === null ? (l.human_confirmed_at ? quoteNote(l.source_check?.quote_match).confirmed : 'not verified') : `confidence ${l.confidence}`}{`, ${eventDateCopy(l.event_date, l.date_status)}`}</span>
             {l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && (
               <button onClick={() => withdrawConfirm(l.id)} className="text-gray-600 hover:text-red-400 text-xs mr-3" title={l.human_confirmed_from ? `Was in review: ${REVIEW[l.human_confirmed_from] ?? l.human_confirmed_from}` : undefined}>withdraw confirmation</button>
             )}
@@ -682,7 +682,7 @@ export default function LeadsClient() {
                 </div>}
                 <button onClick={() => confirmReview(l.id)} className="font-mono text-xs uppercase border border-black px-2 py-1 ml-3 hover:bg-black hover:text-white">I checked this - use it</button>
                 {['quote_unconfirmed','source_review_required','event_timing_unconfirmed','event_date_bad_date','event_date_stale','event_date_future_date'].includes(l.review_reason ?? '') && l.evidence_excerpt && (
-                  <div className="text-xs text-gray-500 mt-1">Unconfirmed quote: "{l.evidence_excerpt}"</div>
+                  <div className="text-xs text-gray-500 mt-1">{quoteNote(l.source_check?.quote_match).prefix}"{l.evidence_excerpt}"</div>
                 )}
               </div>
             ))}
