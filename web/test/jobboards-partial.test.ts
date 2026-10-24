@@ -98,3 +98,21 @@ test('quote: the first real paragraph of the posting body, not headings joined t
 test('quote: Ashby plain text takes the first paragraph with real length, skipping a short heading line', () => {
   assert.equal(bodyQuote('ABOUT RAMP\n\nRamp is building the smart infrastructure for finance teams. We automate spend.'), 'Ramp is building the smart infrastructure for finance teams.')
 })
+
+test('a page fetch that never answers cannot stall the adapter: it is cut at the per-page limit, the API paragraph is kept and the run is partial', async () => {
+  const saved = jobBoardsLimits.pageMs; jobBoardsLimits.pageMs = 40
+  try {
+    const http: SafeGet = async url => url.startsWith('https://hn.algolia.com/') ? { status: 200, body: '{"hits":[]}' } : { status: 200, body: JSON.stringify({ jobs: [okJob(1), okJob(2)] }) }
+    const hang = () => new Promise<string | null>(() => {}) // never settles
+    const t0 = Date.now()
+    const r = await collectEvidenceReport(sel(['https://jobs.ashbyhq.com/zed']), Q, http, 5000, [], hang)
+    assert.ok(Date.now() - t0 < 1000, 'returned long before the 5 s deadline')
+    assert.equal(r.runs[0].status, 'partial')
+    assert.equal(r.runs[0].notes?.page_unreachable, 2)
+    assert.equal(r.items.length, 2)
+  } finally { jobBoardsLimits.pageMs = saved }
+})
+
+test('worst case adapter time is under the 25 s deadline: start budget + per-page limit', () => {
+  assert.ok(jobBoardsLimits.budgetMs + jobBoardsLimits.pageMs < 25_000)
+})
