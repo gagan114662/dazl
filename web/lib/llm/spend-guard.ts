@@ -54,14 +54,41 @@ export function reserveAll(guards: SpendGuard[], model: string | undefined, prom
   for (const g of guards) g.reserve(model, promptBytes, maxOut)
 }
 
-export function guardProvider(p: Provider, gs: SpendGuard | SpendGuard[]): Provider {
+// Anthropic's free token-count request (https://docs.anthropic.com/en/docs/build-with-claude/token-counting): no inference,
+// own rate limit. The page calls the result an estimate that can differ "by a small amount", so the reservation uses
+// COUNT_FACTOR on top of it. That factor is a chosen assumption, not a documented bound. Any failure refuses the call.
+export const COUNT_FACTOR = 1.2
+export type TokenCounter = (apiKey: string, model: string, prompt: string, fetchImpl?: typeof fetch) => Promise<number>
+export const anthropicCountTokens: TokenCounter = async (apiKey, model, prompt, fetchImpl = fetch) => {
+  let res: Response
+  try {
+    res = await fetchImpl('https://api.anthropic.com/v1/messages/count_tokens', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }] }), signal: AbortSignal.timeout(20_000),
+    })
+  } catch { throw new SpendRefused('count_failed') }
+  if (!res.ok) throw new SpendRefused('count_failed')
+  try {
+    const n = ((await res.json()) as { input_tokens?: unknown }).input_tokens
+    if (typeof n === 'number' && Number.isFinite(n) && n >= 0) return n
+  } catch { /* falls through */ }
+  throw new SpendRefused('count_failed')
+}
+
+export function guardProvider(p: Provider, gs: SpendGuard | SpendGuard[], count?: TokenCounter): Provider {
   const g = Array.isArray(gs) ? gs : [gs]
+  const inputTokens = async (k: string, prompt: string, f?: typeof fetch) => {
+    if (!count) return Buffer.byteLength(prompt)
+    const m = (() => { try { return p.configuredModel?.() } catch { return undefined } })()
+    if (!m) throw new SpendRefused('model_unpriced')
+    return Math.ceil((await count(k, m, prompt, f)) * COUNT_FACTOR)
+  }
   const model = () => { try { return p.configuredModel?.() } catch { return undefined } }
   const out: Provider = {
     research: async () => { throw new SpendRefused('research_unbounded') },
     ...(p.configuredModel ? { configuredModel: () => p.configuredModel!() } : {}),
   }
-  if (p.complete) out.complete = async (k, prompt, f, max = 10) => { reserveAll(g, model(), Buffer.byteLength(prompt), max); return p.complete!(k, prompt, f, max) }
-  if (p.completeDetailed) out.completeDetailed = async (k, prompt, f, max = 10) => { reserveAll(g, model(), Buffer.byteLength(prompt), max); return p.completeDetailed!(k, prompt, f, max) }
+  if (p.complete) out.complete = async (k, prompt, f, max = 10) => { reserveAll(g, model(), await inputTokens(k, prompt, f), max); return p.complete!(k, prompt, f, max) }
+  if (p.completeDetailed) out.completeDetailed = async (k, prompt, f, max = 10) => { reserveAll(g, model(), await inputTokens(k, prompt, f), max); return p.completeDetailed!(k, prompt, f, max) }
   return out
 }

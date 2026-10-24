@@ -19,7 +19,7 @@ import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, s
 import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '../search/trace.ts'
 import { migrateTinyfish, queryPlan, queryPrompt, tfFetch, tfSearch, tinyfishEnabled, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { crawlJob } from '../connectors/sitecrawl.ts'
-import { guardProvider, ownerPool, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
+import { anthropicCountTokens, guardProvider, ownerPool, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
 import { getMemory, isExcluded, memoryPromptBlock } from '../memory.ts'
 import { enrichJobSignals } from '../signals/index.ts'
@@ -634,7 +634,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     const spendGuards = [...(jobMax !== null ? [new SpendGuard(jobMax)] : []), ...(ownerMax !== null ? [ownerPool(job.user_id, ownerMax)] : [])]
     const spendLimit = spendGuards.length ? 1 : null
     const baseProviders = deps.providers ?? providers
-    const providers_ = spendLimit === null ? baseProviders : { ...baseProviders, [vendor]: guardProvider(baseProviders[vendor], spendGuards) }
+    const providers_ = spendLimit === null ? baseProviders : { ...baseProviders, [vendor]: guardProvider(baseProviders[vendor], spendGuards, vendor === 'anthropic' ? anthropicCountTokens : undefined) }
     if (spendLimit !== null) deps = { ...deps, creditEnrichment: false } // a budgeted run adds no other paid enrichment
     if (job.csv_domain) return await runCompanyJob(db, job, providers_[vendor], vendor, key, budgetDeps(deps, parseRunBudget(job.run_budget)))
     let prompt = buildPrompt(job)

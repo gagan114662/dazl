@@ -27,7 +27,8 @@ const ICP = { summary: 'Ohio SMBs hiring payroll', who: ['Controller'], industri
 
 
 type Calls = { complete: number; research: number; maxTokens: number[]; promptBytes: number }
-function run(budgetJson: string | null, model: string | undefined, tinyfishHits = true, failExtraction = false, noIcp = false, keepPools = false) {
+function run(budgetJson: string | null, model: string | undefined, tinyfishHits = true, failExtraction = false, noIcp = false, keepPools = false, countMode: 'ok' | 'huge' | 'fail' = 'ok') {
+  const counts: { model: string; content: string }[] = []
   resetTinyfishState()
   if (!keepPools) resetSpendPools()
   const calls: Calls = { complete: 0, research: 0, maxTokens: [], promptBytes: 0 }
@@ -38,9 +39,15 @@ function run(budgetJson: string | null, model: string | undefined, tinyfishHits 
   if (budgetJson) db.prepare('UPDATE scan_jobs SET run_budget = ?').run(budgetJson)
   const job = claimKeyedJob(db)!
   const lead = { company: 'Harbor Freight Supply', name: 'Pat Lee', signal: 'Hiring a payroll specialist', excerpt: QUOTE, source_url: 'https://jobs.example/hf', event_date: recent }
-  const fetchImpl = (async (u: string) => {
+  const fetchImpl = (async (u: string, init?: RequestInit) => {
     if (u.startsWith('https://api.search.tinyfish.ai')) return new Response(JSON.stringify({ results: tinyfishHits ? [{ url: 'https://jobs.example/hf', title: 'Payroll specialist', snippet: QUOTE, date: recent }] : [] }), { status: 200 })
     if (u.startsWith('https://api.fetch.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: 'https://jobs.example/hf', title: 'Payroll specialist', text: `Posted ${recent}. ${QUOTE}. Apply now.` }] }), { status: 200 })
+    if (u === 'https://api.anthropic.com/v1/messages/count_tokens') {
+      const b = JSON.parse(String(init?.body ?? '{}')) as { model: string; messages: { content: string }[] }
+      counts.push({ model: b.model, content: b.messages[0].content })
+      if (countMode === 'fail') return new Response('{}', { status: 500 })
+      return new Response(JSON.stringify({ input_tokens: countMode === 'huge' ? 5_000_000 : 1000 }), { status: 200 })
+    }
     return new Response('{}', { status: 404 })
   }) as unknown as typeof fetch
   const anth: Provider = {
@@ -54,7 +61,7 @@ function run(budgetJson: string | null, model: string | undefined, tinyfishHits 
   globalThis.fetch = fetchImpl
   process.env.TINYFISH_API_KEY = 'test-tinyfish-key'
   return runJob(db, job, { providers, master, fetchPage: page, fetchImpl, score: false, judge: null })
-    .then(r => ({ r, calls, db, err: (db.prepare('SELECT error FROM scan_jobs').get() as { error: string | null }).error }))
+    .then(r => ({ r, calls, counts, db, err: (db.prepare('SELECT error FROM scan_jobs').get() as { error: string | null }).error }))
     .finally(() => { globalThis.fetch = realFetch; delete process.env.TINYFISH_API_KEY })
 }
 
@@ -149,4 +156,21 @@ test('the owner limit is ONE pool across all of that owner jobs in the process: 
     assert.equal(second.err, 'budget_stopped')
     assert.ok(second.calls.complete < first.calls.complete)
   } finally { delete process.env.DAZL_RUN_MAX_USD_USERS }
+})
+
+test('count_tokens preflight: every paid call is preceded by a free token count of the exact prompt and model', async () => {
+  const x = await run('{"max_usd":5}', 'claude-sonnet-4-5')
+  assert.equal(x.counts.length, x.calls.complete)
+  assert.ok(x.counts.length >= 2)
+  assert.ok(x.counts.every(c => c.model === 'claude-sonnet-4-5' && c.content.length > 0))
+})
+
+test('count_tokens preflight: a counted size that does not fit the limit refuses the call, even if the byte estimate would have fit', async () => {
+  const x = await run('{"max_usd":5}', 'claude-sonnet-4-5', true, false, false, false, 'huge')
+  assert.equal(x.calls.complete, 0); assert.equal(x.err, 'budget_stopped')
+})
+
+test('count_tokens preflight: a failed or rate-limited count refuses the paid call (fail closed)', async () => {
+  const x = await run('{"max_usd":5}', 'claude-sonnet-4-5', true, false, false, false, 'fail')
+  assert.equal(x.calls.complete, 0); assert.equal(x.err, 'budget_stopped')
 })
