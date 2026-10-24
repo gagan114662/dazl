@@ -14,7 +14,7 @@ import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateEvents } from '../lib/events/store.ts'
 import type { Provider } from '../lib/llm/provider.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
-import { withGeography } from '../lib/search/tinyfish.ts'
+import { withGeography, QUERY_CAP } from '../lib/search/tinyfish.ts'
 
 const master = randomBytes(32)
 process.env.DAZL_MASTER_KEY = master.toString('base64')
@@ -53,12 +53,39 @@ function run(modelQueries: string[]) {
   return runJob(db, job, { providers, master, fetchPage: page, fetchImpl, score: false, judge: null }).then(r => ({ r, searched })).finally(() => { globalThis.fetch = realFetch })
 }
 
-test('withGeography: adds missing place terms, leaves queries that already name them, never empty', () => {
+test('withGeography: adds missing places after the model words, leaves queries that already name them (case-insensitive)', () => {
   assert.deepEqual(withGeography(['payroll manager job posting small company'], ['Ohio']), ['payroll manager job posting small company Ohio'])
   assert.deepEqual(withGeography(['payroll manager job Ohio small company', 'office manager hiring OHIO'], ['Ohio']), ['payroll manager job Ohio small company', 'office manager hiring OHIO'])
   assert.deepEqual(withGeography(['payroll job posting'], []), ['payroll job posting'])
-  assert.deepEqual(withGeography(['x'.repeat(149)], ['Ohio']).map(q => q.length <= 150), [true])
   assert.deepEqual(withGeography(['a payroll query here'], ['Ohio', 'Cleveland']), ['a payroll query here Ohio Cleveland'])
+  assert.deepEqual(withGeography(['payroll jobs near Cleveland'], ['Ohio', 'Cleveland']), ['payroll jobs near Cleveland Ohio'], 'only the missing place is added')
+  assert.deepEqual(withGeography(['payroll hiring in New  York small firms'], ['New York']), ['payroll hiring in New  York small firms'], 'multi-word place matches across whitespace')
+})
+
+test('withGeography: places match as whole words, not substrings (GA is not garden or again)', () => {
+  assert.deepEqual(withGeography(['garden centre hiring again payroll'], ['GA']), ['garden centre hiring again payroll GA'])
+  assert.deepEqual(withGeography(['payroll jobs in GA small firms'], ['GA']), ['payroll jobs in GA small firms'])
+  assert.deepEqual(withGeography(["Ohio's small payroll teams"], ['Ohio']), ["Ohio's small payroll teams"], 'possessive still names the place')
+  assert.deepEqual(withGeography(['Columbus Ohio payroll'], ['Ohio (state)']), ['Columbus Ohio payroll Ohio (state)'], 'punctuation in a place is matched literally, not as regex')
+  assert.deepEqual(withGeography(['payroll .* jobs'], ['.*']), ['payroll .* jobs'], 'regex characters in a place are escaped')
+})
+
+test('withGeography: never cuts or rewords the model query; a place that does not fit the 300-character search cap is skipped', () => {
+  assert.equal(QUERY_CAP, 300)
+  const long = 'x'.repeat(149)
+  const out150 = withGeography([long], ['Ohio'])[0]
+  assert.equal(out150, `${long} Ohio`, '150-character parse convention is not a limit: the place still fits under 300')
+  const q290 = 'payroll '.repeat(37) + 'j' // 297 chars: adding ' Ohio' would be 302
+  assert.equal(q290.length, 297)
+  assert.deepEqual(withGeography([q290], ['Ohio']), [q290], 'no room: query untouched, never truncated')
+  const places = ['A'.repeat(60), 'B'.repeat(60), 'C'.repeat(60)]
+  const q150 = 'y'.repeat(150)
+  const out = withGeography([q150], places)[0]
+  assert.ok(out.startsWith(q150), 'original is a full prefix')
+  assert.ok(out.length <= QUERY_CAP, 'never past the cap')
+  assert.equal(out, `${q150} ${places[0]} ${places[1]}`, 'places added in profile order while they fit; the third (60 chars, 333 total) is skipped')
+  assert.deepEqual(withGeography(['ab'], ['Ohio']), ['ab Ohio'])
+  assert.deepEqual(withGeography(['payroll job'], ['x', 'Z'.repeat(61), '  ']), ['payroll job'], 'too-short, too-long and blank places are ignored')
 })
 
 test('every TinyFish query of an Ohio-profile scan names Ohio even when the model wrote queries without it', async () => {

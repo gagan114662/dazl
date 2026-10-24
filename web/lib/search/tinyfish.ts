@@ -71,7 +71,7 @@ export async function tfSearch(db: Database.Database, tenant: string, query: str
   if (spent.searches >= L.searchesPerScan || used(db, day, tenant, 'search') >= L.tenantDaily || used(db, day, null, 'search') >= L.globalSearchDaily) return { ok: false, reason: 'cap' }
   if (!allow(now, L.perMinute)) return { ok: false, reason: 'rate' }
   spent.searches++; bump(db, day, tenant, 'search', 1)
-  const q = new URLSearchParams({ query: query.slice(0, 300), ...(opts.afterDate ? { after_date: opts.afterDate } : {}), ...(opts.location ? { location: opts.location } : {}) })
+  const q = new URLSearchParams({ query: query.slice(0, QUERY_CAP), ...(opts.afterDate ? { after_date: opts.afterDate } : {}), ...(opts.location ? { location: opts.location } : {}) })
   const r = await call(`${SEARCH_URL}?${q}`, { method: 'GET' }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
   if (!r.ok) return r
   const arr = (r.json as { results?: unknown })?.results
@@ -120,18 +120,25 @@ export function parseQueries(text: string, fallback: string, max: number): strin
 }
 
 // TinyFish's location option takes a country code only, so a state or city in the profile ("Ohio") can reach the
-// search only through the query text, and the model writes those queries freely. Every query must name each place the
-// profile asks for; missing places are appended. Only adds words, never removes them, and the result stays within the
-// 150-character query limit (the original text gives way, not the place).
+// search only through the query text, and the model writes those queries freely. Each query must name each place the
+// profile asks for as a whole word or phrase ("GA" does not match "garden"). Missing places are appended after the
+// model's own words; the original query is NEVER cut or reworded. A place that would push the query past tfSearch's
+// own 300-character cap is skipped for that query (the model's intent wins over geography), and the query is left as
+// the model wrote it. Places are tried in profile order, at most 3, each at most 60 characters.
+export const QUERY_CAP = 300 // tfSearch slices the query to this length
+const escapeRe = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+export const namesPlace = (query: string, place: string): boolean =>
+  new RegExp(`(?<![\\p{L}\\p{N}])${place.split(/\s+/).map(escapeRe).join('\\s+')}(?![\\p{L}\\p{N}])`, 'iu').test(query)
 export function withGeography(queries: string[], where: string[]): string[] {
-  const places = [...new Set(where.map(w => w.replace(/[\u0000-\u001f]/g, ' ').trim()).filter(w => w.length >= 2 && w.length <= 60))].slice(0, 3)
+  const places = [...new Set(where.map(w => w.replace(/[\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim()).filter(w => w.length >= 2 && w.length <= 60))].slice(0, 3)
   if (places.length === 0) return queries
   return queries.map(q => {
-    const hay = q.toLowerCase()
-    const missing = places.filter(p => !hay.includes(p.toLowerCase()))
-    if (missing.length === 0) return q
-    const tail = ' ' + missing.join(' ')
-    return q.slice(0, Math.max(0, 150 - tail.length)).trimEnd() + tail
+    let out = q
+    for (const place of places) {
+      if (namesPlace(out, place)) continue
+      if (out.length + 1 + place.length <= QUERY_CAP) out += ' ' + place
+    }
+    return out
   })
 }
 
