@@ -2,10 +2,10 @@ import type { Evidence, SourceAdapter, SafeGet } from './types.ts'
 import { decodeText } from './rss.ts'
 import { norm } from '../scan/evidence.ts'
 
-// Public job-board JSON (Greenhouse, Ashby). Evidence only: a posting says a company is hiring a role in a state.
+// Public job-board JSON (Greenhouse, Ashby, Lever). Evidence only: a posting says a company is hiring a role in a state.
 // It is not proof of a need; the normal verifier still checks every lead against the cited page.
-// Dates: Greenhouse `first_published` and Ashby `publishedAt` only. `updated_at` is never used as the posting date.
-// Only the two documented API hosts are ever requested, and only for board tokens that pass a strict pattern.
+// Dates: Greenhouse `first_published`, Ashby `publishedAt` and Lever `createdAt` only. `updated_at` is never used as the posting date.
+// Only the documented API hosts (Greenhouse, Ashby, Lever, plus the Hacker News Algolia host for discovery) are ever requested, and only for board tokens that pass a strict pattern.
 const STATES: Record<string, string> = { AL: 'Alabama', AK: 'Alaska', AZ: 'Arizona', AR: 'Arkansas', CA: 'California', CO: 'Colorado', CT: 'Connecticut', DE: 'Delaware', FL: 'Florida', GA: 'Georgia', HI: 'Hawaii', ID: 'Idaho', IL: 'Illinois', IN: 'Indiana', IA: 'Iowa', KS: 'Kansas', KY: 'Kentucky', LA: 'Louisiana', ME: 'Maine', MD: 'Maryland', MA: 'Massachusetts', MI: 'Michigan', MN: 'Minnesota', MS: 'Mississippi', MO: 'Missouri', MT: 'Montana', NE: 'Nebraska', NV: 'Nevada', NH: 'New Hampshire', NJ: 'New Jersey', NM: 'New Mexico', NY: 'New York', NC: 'North Carolina', ND: 'North Dakota', OH: 'Ohio', OK: 'Oklahoma', OR: 'Oregon', PA: 'Pennsylvania', RI: 'Rhode Island', SC: 'South Carolina', SD: 'South Dakota', TN: 'Tennessee', TX: 'Texas', UT: 'Utah', VT: 'Vermont', VA: 'Virginia', WA: 'Washington', WV: 'West Virginia', WI: 'Wisconsin', WY: 'Wyoming' }
 const WINDOW_DAYS = 90
 const MAX_DETAIL = 3 // per Greenhouse board
@@ -57,7 +57,7 @@ const json = async (http: SafeGet, url: string, note?: Note): Promise<any> => {
   if (r.truncated) { note?.('oversize'); return null } // cut at the shared byte cap: never parse a prefix
   try { return JSON.parse(r.body) } catch { note?.('unparseable'); return null }
 }
-function board(feed: string): { kind: 'gh' | 'ashby'; token: string } | null {
+function board(feed: string): { kind: 'gh' | 'ashby' | 'lever'; token: string } | null {
   let u: URL
   try { u = new URL(feed) } catch { return null }
   if (u.protocol !== 'https:' || u.search || u.hash || u.port || u.username || u.password) return null
@@ -65,12 +65,13 @@ function board(feed: string): { kind: 'gh' | 'ashby'; token: string } | null {
   if (parts.length < 1 || !TOKEN.test(parts[0]) || /%/.test(u.pathname)) return null
   if (u.hostname === 'boards.greenhouse.io' || u.hostname === 'job-boards.greenhouse.io') return { kind: 'gh', token: parts[0] }
   if (u.hostname === 'jobs.ashbyhq.com') return { kind: 'ashby', token: parts[0] }
+  if (u.hostname === 'jobs.lever.co') return { kind: 'lever', token: parts[0] }
   return null
 }
 
 const cp = (n: number) => (Number.isInteger(n) && n >= 0 && n <= 0x10ffff && !(n >= 0xd800 && n <= 0xdfff) ? String.fromCodePoint(n) : ' ') // a malformed entity becomes a space, never an exception
 const unesc = (t: string) => t.replace(/&#x([0-9a-f]+);/gi, (_, h) => cp(parseInt(h, 16))).replace(/&#(\d+);/g, (_, n) => cp(Number(n))).replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
-const LINK = /https:\/\/(?:boards|job-boards)\.greenhouse\.io\/[A-Za-z0-9_-]+|https:\/\/jobs\.ashbyhq\.com\/[A-Za-z0-9_-]+/g
+const LINK = /https:\/\/(?:boards|job-boards)\.greenhouse\.io\/[A-Za-z0-9_-]+|https:\/\/jobs\.(?:ashbyhq\.com|lever\.co)\/[A-Za-z0-9_-]+/g
 // Board links from the newest monthly Hacker News "Who is hiring" thread (public Algolia API: one story lookup, one comments page).
 // Only comments that name the state contribute boards. A link in a comment is a lead for where to look, never evidence.
 const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december']
@@ -131,7 +132,7 @@ export const jobBoardsAdapter: SourceAdapter = {
     const roleOk = (t: string) => roles.some(k => t.toLowerCase().includes(k))
     // Boards come from the given feeds and from discovered page/hit URLs (posting links). Deduped; a lookalike host never yields a board.
     const seenBoards = new Set<string>()
-    const boards: { kind: 'gh' | 'ashby'; token: string }[] = []
+    const boards: { kind: 'gh' | 'ashby' | 'lever'; token: string }[] = []
     for (const u of [...feeds, ...(pages ?? []), ...(discovered ?? [])]) {
       const b = board(u)
       if (!b || seenBoards.has(`${b.kind}:${b.token}`)) continue
@@ -145,7 +146,21 @@ export const jobBoardsAdapter: SourceAdapter = {
       boards.push(b)
     }
     for (const b of boards.slice(0, MAX_BOARDS)) {
-      if (b.kind === 'ashby') {
+      if (b.kind === 'lever') {
+        // Lever's public postings JSON: createdAt (epoch milliseconds) is the only date and is used as the posting date.
+        // A missing or non-numeric createdAt means no date and no evidence.
+        const d = await json(http, `https://api.lever.co/v0/postings/${b.token}?mode=json`, note)
+        for (const j of Array.isArray(d) ? d : []) {
+          const url = typeof j?.hostedUrl === 'string' ? j.hostedUrl : ''
+          const loc = typeof j?.categories?.location === 'string' ? j.categories.location : undefined
+          if (typeof j?.text !== 'string' || !url.startsWith('https://') || !roleOk(j.text) || !locationInState(state, loc, ...(Array.isArray(j?.categories?.allLocations) ? j.categories.allLocations.filter((x: unknown) => typeof x === 'string') : []))) continue
+          const date = typeof j.createdAt === 'number' && Number.isFinite(j.createdAt) ? new Date(j.createdAt).toISOString().slice(0, 10) : null
+          if (!fresh(date)) continue
+          const quote = await quoteFor(url, j.descriptionPlain)
+          if (!quote) continue
+          out.push({ source: 'jobboards', url, title: `${j.text} (${loc ?? state})`.slice(0, 200), quote, date })
+        }
+      } else if (b.kind === 'ashby') {
         const d = await json(http, `https://api.ashbyhq.com/posting-api/job-board/${b.token}`, note)
         for (const j of Array.isArray(d?.jobs) ? d.jobs : []) {
           if (j?.isListed !== true || typeof j.title !== 'string' || typeof j.jobUrl !== 'string' || !j.jobUrl.startsWith('https://')) continue
