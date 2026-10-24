@@ -188,9 +188,16 @@ export default function LeadsClient() {
     if (r.ok) setLeads(ls => ls.map(l => l.id === leadId ? { ...l, review_reason: l.human_confirmed_from === 'legacy_currentness_review' ? null : l.human_confirmed_from, human_confirmed_at: null, human_confirmed_from: null, currentness_held: l.confidence !== null } : l))
   }
   async function makeDraft(leadId: string) {
-    const r = await fetch('/api/outreach', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lead_id: leadId }) })
-    const j = await r.json()
-    setDrafted(d => ({ ...d, [leadId]: r.ok ? 'Draft created from the free template. Review it in Outreach - the AI rewrite there is a separate click that uses your key.' : j.error || 'Could not create the draft' }))
+    // Network failure or a non-JSON body (proxy page, server error) must still show a message, never an unhandled rejection.
+    let ok = false
+    let message = 'Could not create the draft'
+    try {
+      const r = await fetch('/api/outreach', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lead_id: leadId }) })
+      ok = r.ok
+      const j = await r.json().catch(() => null) as { error?: unknown } | null
+      if (!ok && typeof j?.error === 'string' && j.error) message = j.error
+    } catch { /* offline or aborted: keep the fixed message */ }
+    setDrafted(d => ({ ...d, [leadId]: ok ? 'Draft created from the free template. Review it in Outreach - the AI rewrite there is a separate click that uses your key.' : message }))
   }
 
   async function preview(e: React.FormEvent) {
