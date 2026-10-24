@@ -16,7 +16,7 @@ import { collectAdvanced, xSearchQuery } from '../advanced/index.ts'
 import { markWatchLeads } from '../watch.ts'
 import type { AdvPlatform } from '../advanced/config.ts'
 import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, selfDescribedUrls } from '../sources/index.ts'
-import { migrateTinyfish, parseQueries, queryPrompt, tfFetch, tfSearch, tinyfishEnabled, toEvidence } from '../search/tinyfish.ts'
+import { migrateTinyfish, parseQueries, queryPrompt, tfFetch, tfSearch, tinyfishEnabled, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { crawlJob } from '../connectors/sitecrawl.ts'
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
 import { getMemory, isExcluded, memoryPromptBlock } from '../memory.ts'
@@ -516,7 +516,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   migrateTinyfish(db)
   const complete = provider.complete!
   const spent = { searches: 0, fetches: 0 }
-  const q = parseQueries(await complete.call(provider, key, queryPrompt(job.query!, icp, 3), fetchImpl, 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, 3)
+  const q = withGeography(parseQueries(await complete.call(provider, key, queryPrompt(job.query!, icp, 3), fetchImpl, 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, 3), icp.where)
   const after = new Date(Date.now() - 365 * 86400_000).toISOString().slice(0, 10)
   const hits: Awaited<ReturnType<typeof tfSearch>> extends infer R ? (R extends { ok: true; hits: infer H } ? H : never) : never = []
   for (const query of q) { const r = await tfSearch(db, job.user_id, query, { afterDate: after }, spent); if (!r.ok) { if (hits.length === 0) return null; break } hits.push(...r.hits) }
