@@ -150,12 +150,20 @@ test('fetch selection under a tight cap is breadth first: distinct hosts before 
 // ---- direct per-signal queries (fixture tests, not live proof) ----
 // Observed: three model-written free-text queries gave 2 hits in all. A hiring request now gets deterministic ATS
 // queries FIRST (they are never starved by the search cap), then the model's queries fill what is left.
-test('hiring request: two deterministic ATS queries come first, each with a parenthesised OR group, the role words and Ohio; the model fills the remaining slots; total stays at the 4-search cap', async () => {
+test('hiring request: two deterministic ATS queries come first, each with a parenthesised group of quoted role phrases and Ohio; the model fills the remaining slots within the search cap', async () => {
   const { searched } = await withEnv(true, () => run(['m1 hiring payroll', 'm2 payroll complaints', 'm3 extra']))
-  assert.equal(searched.length, 4)
-  assert.equal(searched[0], '(site:boards.greenhouse.io OR site:job-boards.greenhouse.io) (payroll OR hr OR office OR manager) Ohio')
-  assert.equal(searched[1], '(site:jobs.ashbyhq.com OR site:jobs.lever.co) (payroll OR hr OR office OR manager) Ohio')
-  assert.ok(/m1/.test(searched[2]) && /m2/.test(searched[3]) && searched.every(q => /ohio/i.test(q)))
+  assert.equal(searched.length, 5) // 2 direct + all 3 model queries: the default cap (8) no longer cuts the model's
+  assert.equal(searched[0], '(site:boards.greenhouse.io OR site:job-boards.greenhouse.io) ("payroll" OR "hr" OR "office manager") Ohio')
+  assert.equal(searched[1], '(site:jobs.ashbyhq.com OR site:jobs.lever.co) ("payroll" OR "hr" OR "office manager") Ohio')
+  assert.ok(/m1/.test(searched[2]) && /m2/.test(searched[3]) && /m3/.test(searched[4]) && searched.every(q => /ohio/i.test(q)))
+})
+
+test('the search cap still binds: with TINYFISH_SEARCHES_PER_SCAN=4 a hiring request sends exactly 4', async () => {
+  process.env.TINYFISH_SEARCHES_PER_SCAN = '4'
+  try {
+    const { searched } = await withEnv(true, () => run(['m1 hiring payroll', 'm2 payroll complaints', 'm3 extra']))
+    assert.equal(searched.length, 4)
+  } finally { delete process.env.TINYFISH_SEARCHES_PER_SCAN }
 })
 
 test('hiring request, unusable model reply: the direct queries still run (never LLM-only)', async () => {
