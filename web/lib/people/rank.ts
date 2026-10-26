@@ -62,6 +62,9 @@ export interface ContactEnrichment {
   connector?: string
 }
 
+// Where a listed person came from, in words (leads page and CSV export). Unknown connectors show their id.
+export const PEOPLE_SOURCE: Record<string, string> = { sitecrawl: 'the company website (listed with this title)', 'search:people': 'a public LinkedIn search result (not verified as current)', 'adv:linkedin': 'LinkedIn, through your session', 'enrich:apollo': 'Apollo', 'enrich:pdl': 'People Data Labs' }
+
 // People dazl finds itself are 'person' rows valued "Name, Title" (company-site crawl, public profile search). They
 // belong in the same "right people" list as paid-enrichment contacts, not in the generic enrichment list. Their
 // profile link is source_url only when it IS a public profile; a company page stays a plain source link.
