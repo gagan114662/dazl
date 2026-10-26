@@ -21,6 +21,7 @@ import { directQueries } from '../search/direct-queries.ts'
 import { limits as tfLimits, migrateTinyfish, pickFetchUrls, queryPlan, queryPrompt, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { crawlJob } from '../connectors/sitecrawl.ts'
 import { anthropicCountTokens, guardProvider, ownerPool, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
+import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './verify-provenance.ts'
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
 import { getMemory, isExcluded, memoryPromptBlock } from '../memory.ts'
 import { enrichJobSignals } from '../signals/index.ts'
@@ -521,7 +522,7 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
 }
 
 // diag (optional) receives what this collector really did: every query sent, per-call outcomes, hit and page counts.
-async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider: Provider, key: string, fetchImpl?: typeof fetch, diag?: { trace: SearchTrace; info: Partial<SourceStats>; hitUrls: string[] }): Promise<LeadDraft[] | null> {
+async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider: Provider, key: string, fetchImpl?: typeof fetch, diag?: { trace: SearchTrace; info: Partial<SourceStats>; hitUrls: string[]; tfTextUrls?: string[] }): Promise<LeadDraft[] | null> {
   migrateTinyfish(db)
   const complete = provider.complete!
   const spent = { searches: 0, fetches: 0 }
@@ -560,6 +561,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   if (diag) diag.hitUrls.push(...new Set(hits.map(h => h.url)))
   const urls = pickFetchUrls(hits.map(h => h.url), tfLimits().fetchesPerScan) // exact duplicates removed, breadth first by host, nothing excluded
   const f = await tfFetchMany(db, job.user_id, urls, spent, diag ? { trace: diag.trace } : {})
+  if (diag?.tfTextUrls && f.ok) diag.tfTextUrls.push(...f.pages.map(p => p.url)) // verify_provenance: pages TinyFish had text for
   const items = toEvidence(hits, f.ok ? f.pages : [])
   if (diag) Object.assign(diag.info, evidenceSplit(items, f.ok ? f.pages : []))
   if (items.length === 0) return null
@@ -674,7 +676,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // Primary backend when the operator set TINYFISH_API_KEY: TinyFish search and fetch, the user's own model reads the
     // pages. If TinyFish is off, capped, failing or finds nothing, fall back to the provider's built-in web search.
     let leads: LeadDraft[] | null = null
-    const diag = { trace: new SearchTrace(), info: {} as Partial<SourceStats>, hitUrls: [] as string[] }
+    const diag = { trace: new SearchTrace(), info: {} as Partial<SourceStats>, hitUrls: [] as string[], tfTextUrls: [] as string[] }
     if (job.query && icpForSources && complete && tinyfishEnabled()) {
       try {
         ledger.record('search:tinyfish', 'started')
@@ -690,7 +692,8 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       if (leads && leads.length === 0) leads = null
       if (diag.trace.events.length > 0 || diag.info.query_source) ledger.stats('search:tinyfish', { ...summarizeTrace(diag.trace), ...diag.info })
     }
-    const fetchP = cachedFetcher(deps.fetchPage ?? fetchPageDetailed)
+    const verifierFetch = new Map<string, FetchOutcome>() // verify_provenance (diagnostic only)
+    const fetchP = cachedFetcher(recordingFetcher(deps.fetchPage ?? fetchPageDetailed, verifierFetch))
     if (!leads) {
       ledger.record(`search:${vendor}`, 'started')
       assertOwned(db, job)
@@ -775,6 +778,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     const judge = deps.judge === undefined ? makeJudge(providers_[vendor], key, deps.fetchImpl) : deps.judge ?? undefined
     assertOwned(db, job)
     let outcome = await verifyLeads(leads, fetchP, deps.now, judge)
+    const verifiedUrls = leads.map(l => l.source_url) // verify_provenance: every URL the verifier was asked about, retry included
     // First-scan killer: the model's stale memory returns only old news and the verifier
     // honestly drops all of it. One bounded retry with the date spelled out a second time
     // and an explicit freshness instruction; a failed retry never fails the scan.
@@ -795,6 +799,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         const fresh = (more ?? []).filter(l => !seen.has(`${l.source_url}|${companyKey(l.company)}`))
         if (fresh.length > 0) {
           assertOwned(db, job)
+          verifiedUrls.push(...fresh.map(l => l.source_url))
           const o2 = await verifyLeads(fresh, fetchP, deps.now, judge)
           const seenKeys = new Set(outcome.leads.map(dedupKey))
           for (const l of o2.leads) { const k = dedupKey(l); if (!seenKeys.has(k)) { seenKeys.add(k); outcome.leads.push(l) } }
@@ -807,6 +812,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         if (e instanceof ProviderError && e.kind === 'auth') throw e
       }
     }
+    try { console.error(JSON.stringify({ verify_provenance: { job: job.id, tinyfish: tinyfishEnabled(), ...summarizeProvenance(verifiedUrls, new Set(diag.tfTextUrls), verifierFetch) } })) } catch { /* diagnostic only */ }
     // Memory exclusions are enforced in code, not the prompt: matching leads never reach
     // scoring, the UI or outreach. Counted in dropped like every other gate.
     let memory = deps.memory === undefined ? null : deps.memory
@@ -819,12 +825,13 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       outcome.dropped['excluded'] += outcome.review.length - keptReview.length
       outcome.review = keptReview
     }
-    // The user's recency window (#198): a lead whose known event date is older than the window goes to the review lane
-    // with a dated reason; it is never returned as a scored lead. Undated leads are unchanged.
+    // The user's recency window (#198): with an explicit window only a valid, in-window event date is a scored lead.
+    // Stale, undated, invalid and future dates go to the review lane with their own reason (same rule as the outreach
+    // gate), so verified / qualified counts never include a lead the gate would hold. Stored, not dropped.
     if (icpForSources?.window_days) {
-      const { inside, outside } = splitByWindow(outcome.leads, icpForSources.window_days, deps.now ?? new Date())
+      const { inside, outside, outsideReasons } = splitByWindow(outcome.leads, icpForSources.window_days, deps.now ?? new Date())
       outcome.leads = inside
-      for (const l of outside) outcome.review.push({ ...l, contact: null, review_reason: 'outside_window' })
+      outside.forEach((l, i) => outcome.review.push({ ...l, contact: null, review_reason: outsideReasons[i] }))
     }
     // Quality stage: grade each verified lead for ICP fit, timing and actionability. One model call
     // per scan; a scoring failure never fails the scan - but it no longer passes the raw

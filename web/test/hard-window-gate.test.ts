@@ -29,8 +29,8 @@ test('date-only, inclusive boundary agrees with recencyAnchor', () => {
   assert.equal(windowStatus(null, 90, NOW), 'undated')
   assert.equal(windowStatus('2020-01-01', null, NOW), 'inside', 'no window: this gate does not apply')
   const { inside, outside } = splitByWindow([{ event_date: '2026-07-28' }, { event_date: '2026-04-01' }, { event_date: null }], 90, NOW)
-  assert.deepEqual(inside.map(l => l.event_date), ['2026-07-28', null])
-  assert.deepEqual(outside.map(l => l.event_date), ['2026-04-01'])
+  assert.deepEqual(inside.map(l => l.event_date), ['2026-07-28'])
+  assert.deepEqual(outside.map(l => l.event_date), ['2026-04-01', null])
 })
 
 const day = (offset: number) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10)
