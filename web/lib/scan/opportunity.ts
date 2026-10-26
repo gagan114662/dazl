@@ -4,17 +4,23 @@
 //   who               - the person to approach first, with how the company site was identified
 //   angle             - the grading's own "why"
 //   facts / assumptions / missing - certainty split, so an opening is never presented as proof of buyer intent
-//   next              - one recommended next action
+//   next              - one recommended next action, never ahead of the outreach gates
 // Pure: built only from what the lead already stores. Nothing here is fetched, guessed or invented; anything unknown
-// is listed under missing.
+// is listed under missing. Identity reuses the outreach provenance rules (weakest recorded basis governs, the user's
+// own website review, several websites = conflict), so the card never claims more than the send gate accepts.
 import { rankPeople, type PersonContact } from '../people/rank.ts'
+import { domainBasisFor, classifyPurpose, PUBLISHED_EMAIL_RE, type DomainBasisKind } from '../outreach/published-email.ts'
+import { domainReviewFor } from '../outreach/domain-review.ts'
 
 export interface CardLead {
+  id?: string
   company: string; signal: string; source_url: string; evidence_excerpt: string | null
   event_date: string | null; date_status: string | null; review_reason: string | null
   fit: number | null; intent: number | null; why: string | null; icp_match: string | null
   company_domain: string | null; contact: string | null; quarantined_at?: number | null
-  enrichments?: { connector: string; kind: string; value: string; label: string | null; source_url: string }[]
+  confidence?: number | null; human_confirmed_at?: number | null
+  currentness_held?: boolean; window_held?: boolean
+  enrichments?: { connector: string; kind: string; value: string; label: string | null; source_url: string; retrieved_at?: number | null }[]
 }
 export interface OpportunityCard {
   whyThisBusiness: string
@@ -30,16 +36,27 @@ export interface OpportunityCard {
 const CRITERIA: [keyof Match, string][] = [['role', 'buyer role'], ['industry', 'industry'], ['size', 'company size'], ['location', 'location']]
 type Match = { role: string; industry: string; size: string; location: string; note?: string }
 const parseMatch = (s: string | null): Match | null => { try { const m = s ? JSON.parse(s) : null; return m && typeof m === 'object' ? m as Match : null } catch { return null } }
-const EMAIL_OR_PHONE = /[^\s@]+@[^\s@]+\.[a-z]{2,}|\+?\d[\d\s().-]{6,}\d/i
+const PHONE = /\+?\d[\d\s().-]{6,}\d/
 
-function identityOf(rows: NonNullable<CardLead['enrichments']>): { text: string; confirmed: boolean } | null {
-  const d = rows.find(r => r.kind === 'domain' && r.connector === 'sitecrawl')
-  if (!d) return null
-  const [site, basis] = d.value.split('|')
-  if (basis === 'own_domain') return { text: `${site}: the cited page is on this site`, confirmed: true }
-  if (basis === 'evidence_link_domain_label') return { text: `${site}: linked from the cited page`, confirmed: true }
-  if (basis === 'evidence_link_text') return { text: `${site}: linked from the cited page by link text only`, confirmed: false }
-  return { text: `${site}: found by name search (name and location matched), not linked from the source`, confirmed: false }
+const BASIS_TEXT: Record<DomainBasisKind, string> = {
+  own_domain: 'the cited page is on this site',
+  linked: 'linked from the cited page and the name matches; not proof the site is theirs',
+  link_text_only: 'linked from the cited page by link text only',
+  name_probe: 'found by name search, not linked from the source',
+  unrecorded: 'how this site was chosen was not recorded',
+  cited_page: 'the cited page',
+}
+type Identity = { text: string; state: 'fact' | 'user_confirmed' | 'unconfirmed' | 'conflict'; site: string | null }
+function identityOf(l: CardLead, rows: NonNullable<CardLead['enrichments']>): Identity | null {
+  const sites = [...new Set(rows.filter(r => r.connector === 'sitecrawl' && r.kind === 'domain').map(r => r.value.toLowerCase().split('|')[0]).filter(Boolean))]
+  if (sites.length === 0) return null
+  if (sites.length > 1) return { text: `several websites recorded (${sites.join(', ')}); which one is theirs is not settled`, state: 'conflict', site: null }
+  const site = sites[0]
+  const b = domainBasisFor(`x@${site}`, rows)
+  const reviewed = l.id ? domainReviewFor({ id: l.id, contact: l.contact }, rows).state === 'confirmed' : false
+  if (b.kind === 'own_domain') return { text: `${site}: ${BASIS_TEXT.own_domain}`, state: 'fact', site }
+  if (reviewed) return { text: `${site}: you confirmed this is their site (${BASIS_TEXT[b.kind]})`, state: 'user_confirmed', site }
+  return { text: `${site}: ${BASIS_TEXT[b.kind]}`, state: 'unconfirmed', site }
 }
 
 export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Date()): OpportunityCard {
@@ -58,30 +75,46 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
     return { name: (i < 0 ? r.value : r.value.slice(0, i)).trim(), title: i < 0 ? null : r.value.slice(i + sep.length).trim(), linkedin: r.source_url || null, connector: r.connector }
   })
   const top = rankPeople(people, buyerRoles)[0]
-  const ident = identityOf(rows)
-  const who = top ? { name: top.name, title: top.title, link: top.linkedin, identity: ident ? ident.text : 'company site not identified' } : null
+  const ident = identityOf(l, rows)
+  const citedEmail = PUBLISHED_EMAIL_RE.test((l.contact ?? '').trim().toLowerCase())
+  const who = top ? { name: top.name, title: top.title, link: top.linkedin, identity: citedEmail ? 'address printed on the cited page' : ident ? ident.text : 'company site not identified' } : null
 
+  // Channels, only as far as the contact evidence supports them: a sales-purpose-unknown or sales email can be drafted to;
+  // a press/support/careers style inbox cannot; a phone number is a phone number, not an email draft.
+  const emails = [...(citedEmail ? [(l.contact ?? '').trim().toLowerCase()] : []), ...rows.filter(r => r.connector === 'sitecrawl' && r.kind === 'email' && PUBLISHED_EMAIL_RE.test(r.value.trim().toLowerCase())).map(r => r.value.trim().toLowerCase())]
+  const draftable = emails.some(e => classifyPurpose(e).purpose !== 'non-sales')
+  const phone = PHONE.test(l.contact ?? '') || rows.some(r => r.kind === 'phone' && r.value)
+
+  const machineQuote = !l.review_reason && !!l.evidence_excerpt && l.confidence != null
+  const humanQuote = !machineQuote && !!l.evidence_excerpt && l.human_confirmed_at != null
   const facts: string[] = []; const assumptions: string[] = []; const missing: string[] = []
-  if (!l.review_reason && l.evidence_excerpt) facts.push('The quoted text is on the cited page (checked when the scan ran).')
+  if (machineQuote) facts.push('The quoted text was found on the cited page when the scan ran.')
   if (l.event_date && l.date_status === 'verified') facts.push(`The event date ${l.event_date} appears on the page.`)
-  if (ident?.confirmed) facts.push(`Company site ${ident.text}.`)
+  if (ident?.state === 'fact') facts.push(`Company site ${ident.text}.`)
+  if (humanQuote) assumptions.push('You reviewed the quote yourself; dazl did not confirm it on the page.')
   if (l.fit != null) assumptions.push('Fit is the model\'s grade of the evidence, not something the company confirmed.')
   assumptions.push('The event is a reason to look closer, not proof they want to buy.')
   if (l.intent === 0) assumptions.push('No live buying trigger was confirmed.')
   if (top) assumptions.push(`${top.name} is listed with this title; current role not verified.`)
-  if (ident && !ident.confirmed) assumptions.push(`Company site ${ident.text}.`)
+  if (ident && ident.state !== 'fact') assumptions.push(`Company site ${ident.text}.`)
   if (!l.event_date) missing.push('event date')
   if (!top) missing.push('a named person to approach')
-  const reachable = EMAIL_OR_PHONE.test(l.contact ?? '') || rows.some(r => (r.kind === 'email' || r.kind === 'phone') && r.value)
-  if (!reachable) missing.push('an email or phone')
+  if (!ident && !citedEmail) missing.push('the company\'s own website')
+  if (!draftable && !phone) missing.push('an email or phone')
   for (const u of unknown) missing.push(`${u} (not shown in the evidence)`)
 
+  // Next action never runs ahead of the gates: quarantine, the user's time window, unconfirmed timing, source review,
+  // identity, then the channel the evidence actually supports. A research event is context, not a confirmed need.
+  const identityOpen = !citedEmail && (!ident || ident.state === 'unconfirmed' || ident.state === 'conflict')
   const next = l.quarantined_at ? 'None: quarantined.'
+    : l.window_held ? 'None: outside the time window you asked for, or undated. Research only.'
     : l.review_reason ? 'Check the source yourself before using this lead.'
+    : l.currentness_held ? 'Review the source to confirm the timing before any outreach.'
     : !top ? 'Find the decision-maker before reaching out.'
-    : !reachable ? `Find a way to reach ${top.name}.`
-    : ident && !ident.confirmed ? `Confirm ${ident.text.split(':')[0]} is their site, then draft a first message about: ${l.signal}`
-    : `Draft a first message to ${top.name} about: ${l.signal}`
+    : identityOpen ? (ident?.state === 'conflict' ? 'Settle which website is theirs before reaching out.' : ident ? `Confirm ${ident.site} is their site before reaching out.` : 'Identify the company\'s own website before reaching out.')
+    : draftable ? `Draft a first message to ${top.name} introducing your offer; mention the event only as context.`
+    : phone ? `Call using the published number; there is no usable email to draft to.`
+    : `Find a way to reach ${top.name}.`
 
   return { whyThisBusiness, whyNow: { claim: l.signal, date: l.event_date, dateNote, source: l.source_url, quote: l.evidence_excerpt }, who, angle: l.why, facts, assumptions, missing, next }
 }
