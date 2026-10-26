@@ -191,7 +191,7 @@ test('exclusion: "exclude Series A" keeps Series A only inside exclusions; a mod
   const wrong = keepStatedFundingStage(q, { ...base, summary: 'Series A companies in London', signals: ['Series A funding'] })
   assert.equal(wrong.summary, q); assert.deepEqual(wrong.signals, [])
   const mixed = keepStatedFundingStage(q, { ...base, summary: 'Seed-funded London companies, excluding Series A', signals: ['raised seed funding', 'Series B round'], exclude: ['Series A'] })
-  assert.equal(mixed.summary, 'Seed-funded London companies, excluding Series A'); assert.deepEqual(mixed.signals, ['raised seed funding']); assert.deepEqual(mixed.exclude, ['Series A'])
+  assert.equal(mixed.summary, 'Seed-funded London companies, excluding Series A'); assert.deepEqual(mixed.signals, ['raised seed funding']); assert.deepEqual(mixed.exclude, ['Series A', 'Series A or later'], 'the model excluded only A; the request said "or later", so the range is added')
   const onlyExclusion = keepStatedFundingStage('London companies, not Series A, that raised funding', { ...base, summary: 'London companies that raised Series A funding' })
   assert.equal(onlyExclusion.summary, 'London companies, not Series A, that raised funding', 'exclusion-only request: asking FOR the excluded stage falls back')
 })
@@ -229,13 +229,36 @@ test('omitted stage: a seed request whose profile says only "London startups" / 
 test('omitted exclusion: "exclude Series A" is added to the exclusions when the model dropped it; wrong stage still falls back', () => {
   const q = 'Find seed funded companies in London, exclude Series A or later'
   const dropped = keepStatedFundingStage(q, { ...base, summary: 'Seed-funded London companies', signals: ['raised seed funding'], exclude: ['agencies'] })
-  assert.deepEqual(dropped.exclude, ['agencies', 'Series A']); assert.equal(dropped.summary, 'Seed-funded London companies')
+  assert.deepEqual(dropped.exclude, ['agencies', 'Series A or later']); assert.equal(dropped.summary, 'Seed-funded London companies')
   const full = { ...base, exclude: ['a', 'b', 'c', 'd', 'e', 'f'], summary: 'Seed-funded London companies', signals: ['raised seed funding'] }
   assert.equal(keepStatedFundingStage(q, full).summary, q, 'no room to keep the exclusion: original request')
   // exclusion-only request, nothing positive stated: omitted exclusion is added, profile otherwise kept
   const only = keepStatedFundingStage('London companies that raised funding, not Series A', { ...base, summary: 'London companies that raised funding' })
   assert.deepEqual(only.exclude, ['Series A']); assert.equal(only.summary, 'London companies that raised funding')
   // stage mentioned only as excluded in the summary counts as kept
-  const sum = { ...base, summary: 'Seed-funded London companies, excluding Series A', signals: ['raised seed funding'] }
+  const sum = { ...base, summary: 'Seed-funded London companies, excluding Series A or later', signals: ['raised seed funding'] }
   assert.deepEqual(keepStatedFundingStage(q, sum), sum)
+  // excluding only "Series A" in the summary does not cover the stated range: the range is added to the exclusions
+  const partial = keepStatedFundingStage(q, { ...sum, summary: 'Seed-funded London companies, excluding Series A' })
+  assert.deepEqual(partial.exclude, ['Series A or later'])
+})
+
+// Instinct #213 recheck 2: "exclude Series A or later" is a RANGE (A, B, C, D, E). Exclusion-only requests: a profile aimed
+// at a later stage inside the range is the excluded stage becoming the target, so the original request is used.
+test('excluded range: a profile about Series B under "exclude Series A or later" falls back; exclusion-only, no seed stated', () => {
+  const q = 'London companies with recent funding, exclude Series A or later'
+  const b = keepStatedFundingStage(q, { ...base, summary: 'London Series B companies with funding', signals: ['Series B funding'], exclude: [], country: 'GB' })
+  assert.equal(b.summary, q); assert.deepEqual(b.signals, []); assert.equal(b.country, 'GB')
+  for (const st of ['Series C', 'Series D', 'Series E', 'Series A']) assert.equal(keepStatedFundingStage(q, { ...base, summary: `London ${st} companies`, exclude: [] }).summary, q, st)
+  // a profile that keeps the stages out and carries the range is untouched; one that omits the range gets it added
+  const ok = { ...base, summary: 'London companies with recent funding', signals: ['raised funding recently'], exclude: ['Series A or later'] }
+  assert.deepEqual(keepStatedFundingStage(q, ok), ok)
+  assert.deepEqual(keepStatedFundingStage(q, { ...ok, exclude: [] }).exclude, ['Series A or later'])
+  // an exclusion of ONLY Series A does not cover the range, so the range is added; "Series B or later" excludes B..E but not A
+  assert.deepEqual(keepStatedFundingStage(q, { ...ok, exclude: ['Series A'] }).exclude, ['Series A', 'Series A or later'])
+  const q2 = 'London companies with recent funding, exclude Series B or later'
+  assert.deepEqual(keepStatedFundingStage(q2, { ...base, summary: 'London Series A companies with funding', signals: ['Series A round'], exclude: [] }).exclude, ['Series B or later'], 'A is allowed under "B or later": kept, range exclusion added')
+  assert.equal(keepStatedFundingStage(q2, { ...base, summary: 'London Series C companies', exclude: [] }).summary, q2)
+  // "Series A+" and "and above" forms
+  for (const form of ['exclude Series A+', 'without Series A and above', 'not Series A onwards']) assert.equal(keepStatedFundingStage(`London companies that raised funding, ${form}`, { ...base, summary: 'London Series C companies' }).summary, `London companies that raised funding, ${form}`, form)
 })

@@ -89,14 +89,20 @@ const STAGE_RE = /\b(?:(pre[-\s]?seed)|(seed)|series[-\s]*([a-e]))\b/gi
 const FUNDING_CUE = /\b(?:fund(?:ing|ed|s)?|rais(?:e|ed|es|ing)|round|invest(?:ed|ment|ors?)|backed|venture|capital|startup)\b/i
 const EXCLUDE_CUE = /\b(?:exclud(?:e|es|ed|ing)|except|excepting|without|not|no|never|skip|avoid|ignore|other than|rule out|ruling out)\b/i
 const stageOf = (m: RegExpExecArray): Stage => (m[1] ? 'preseed' : m[2] ? 'seed' : (m[3].toLowerCase() as Stage))
-interface Mention { stage: Stage; start: number; end: number; excluded: boolean }
+// "Series A or later" / "Series A+" is a RANGE: the mention covers every stage from A up. Without this, excluding "A or
+// later" accepted a profile about Series B (Instinct #213 recheck).
+const ORDER: Stage[] = ['preseed', 'seed', 'a', 'b', 'c', 'd', 'e']
+const LATER = /^\s*(?:,\s*)?(?:(?:or|and)\s+(?:later|above|beyond|after|higher|newer)\b|\+|onwards?\b)/i
+const span = (st: Stage, later: boolean): Stage[] => (later ? ORDER.slice(ORDER.indexOf(st)) : [st])
+interface Mention { stage: Stage; start: number; end: number; excluded: boolean; later: boolean }
 function mentions(text: string): Mention[] {
   const out: Mention[] = []
   for (const clause of text.split(/(?<=[.;!?])\s+|\bbut\b|\n/i)) {
     const base = text.indexOf(clause)
     for (const m of clause.matchAll(STAGE_RE)) {
       const before = clause.slice(0, m.index)
-      out.push({ stage: stageOf(m as unknown as RegExpExecArray), start: base + (m.index ?? 0), end: base + (m.index ?? 0) + m[0].length, excluded: EXCLUDE_CUE.test(before.slice(-60)) })
+      const after = clause.slice((m.index ?? 0) + m[0].length)
+      out.push({ stage: stageOf(m as unknown as RegExpExecArray), start: base + (m.index ?? 0), end: base + (m.index ?? 0) + m[0].length, excluded: EXCLUDE_CUE.test(before.slice(-60)), later: LATER.test(after) })
     }
   }
   return out
@@ -106,7 +112,7 @@ export function keepStatedFundingStage(query: string, icp: Icp): Icp {
   // "seed or later" / "Series A+": later stages are requested, so there is nothing to protect from widening.
   if (query.split(/(?<=[.;!?])\s+|\bbut\b|\n/i).some(c => /\b(?:or|and)\s+(?:later|above|beyond|after)\b|\b(?:seed|series[-\s]*[a-e])\s*\+/i.test(c) && !EXCLUDE_CUE.test(c))) return icp
   const q = mentions(query)
-  const want = new Set(q.filter(m => !m.excluded).map(m => m.stage)); const notWant = new Set(q.filter(m => m.excluded).map(m => m.stage))
+  const want = new Set(q.filter(m => !m.excluded).map(m => m.stage)); const notWant = new Set(q.filter(m => m.excluded).flatMap(m => span(m.stage, m.later)))
   if (want.size === 0 && notWant.size === 0) return icp // the request names no stage: nothing to protect, nothing to change
   const bad = (m: Mention) => !m.excluded && (notWant.has(m.stage) || (want.size > 0 && !want.has(m.stage)))
   const fallback = (): Icp => { const f = fallbackIcp(query); return { ...f, ...(icp.country ? { country: icp.country } : {}), ...(icp.language ? { language: icp.language } : {}), ...(icp.window_days ? { window_days: icp.window_days } : {}) } }
@@ -146,11 +152,14 @@ export function keepStatedFundingStage(query: string, icp: Icp): Icp {
   if (want.size > 0 && !searchText.some(mentionsWanted)) return fallback()
   // An excluded stage must stay excluded: add it to the exclusions when the model left it out (mechanical, nothing invented).
   const label = (st: Stage) => (st === 'preseed' ? 'pre-seed' : st === 'seed' ? 'seed' : `Series ${st.toUpperCase()}`)
-  const excludedKept = (st: Stage) => out.exclude.some(x => mentions(x).some(m => m.stage === st)) || [out.summary, ...out.signals].some(t => mentions(t).some(m => m.excluded && m.stage === st))
-  for (const st of notWant) {
-    if (excludedKept(st)) continue
+  // An exclusion item or an "excluding ..." phrase covers a stage when its own span (with "or later") includes it.
+  const covers = (m: Mention, st: Stage) => span(m.stage, m.later).includes(st)
+  const excludedKept = (st: Stage) => out.exclude.some(x => mentions(x).some(m => covers(m, st))) || [out.summary, ...out.signals].some(t => mentions(t).some(m => m.excluded && covers(m, st)))
+  // Add the exclusion once per stated range (not once per stage inside it), in the request's own words.
+  for (const m of q.filter(m => m.excluded)) {
+    if (span(m.stage, m.later).every(excludedKept)) continue
     if (out.exclude.length >= caps.exclude) return fallback()
-    out.exclude = [...out.exclude, label(st)]
+    out.exclude = [...out.exclude, label(m.stage) + (m.later ? ' or later' : '')]
   }
   return out
 }
