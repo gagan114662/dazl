@@ -22,7 +22,7 @@ const FEATURES = [
   { title: 'No region locks', desc: 'Works from public sources worldwide.' },
   { title: 'Proof on every lead', desc: 'Source link, exact quote, event date and a confidence score. Leads that cannot be verified never reach your list, and you see how many were dropped and why.' },
   { title: 'Your key, your cost', desc: 'Bring your own Anthropic or OpenAI key. Usage is billed by the provider at cost, and your key is encrypted at rest.' },
-  { title: 'You approve every send', desc: 'Email goes from your own Gmail, one message at a time, after you approve the exact text. Unsubscribe links are built in and honored right away.' },
+  { title: 'You approve before anything sends', desc: 'Email goes from your own Gmail after you approve the exact text. Autopilot is off unless you turn it on and set its limits. Unsubscribe links are built in and honored right away.' },
 ]
 
 export default function Home() {
@@ -45,7 +45,7 @@ export default function Home() {
 
       <div className="rails relative max-w-6xl mx-auto w-full">
         <section className="px-6 md:px-12 pt-14 md:pt-20 pb-10">
-          <h1 className="text-[40px] md:text-[52px] font-semibold leading-[1.08] tracking-[-0.02em] max-w-3xl">Where buyers get found, and proven.</h1>
+          <h1 className="text-[40px] md:text-[52px] font-semibold leading-[1.08] tracking-[-0.02em] max-w-3xl">Where buyers get found, with the evidence.</h1>
           <p className="text-lg md:text-[20px] text-[#555] mt-5 max-w-[700px] leading-[1.45]">Find warm leads from live buying signals (hiring, funding, complaints, expansions), each with the proof quoted and linked.</p>
           <div className="flex flex-wrap gap-3 mt-8">
             <Link href="/sign-up" className="btn-primary">Start for free</Link>
@@ -110,7 +110,7 @@ export default function Home() {
           <div className="card p-8 max-w-xs w-full text-left !border-black/50 ">
             <div className="text-sm text-[#111] mb-1">Pro</div>
             <div className="text-4xl font-medium mb-1">$49/mo</div>
-            <p className="text-[#555] text-sm mb-6">Unlimited scans. One flat price. No credits, no overages, no per-lead fees.</p>
+            <p className="text-[#555] text-sm mb-6">One flat price. No credits, no overages, no per-lead fees. Fair-use limits apply.</p>
             <Link href="/sign-up" className="btn-primary w-full">Start free, upgrade any time</Link>
           </div>
         </div>
@@ -121,7 +121,7 @@ export default function Home() {
         {[
           ['Which AI key do I need?', 'An Anthropic or OpenAI API key. Add it in Settings. Scans run on your key and the provider bills you directly.'],
           ['How are leads checked?', 'dazl opens the cited page, confirms the quote is on it, that it names the company, and that the date is recent. Leads that fail are dropped, and you see the counts and reasons.'],
-          ['Does dazl send email for me?', 'Not by itself. Sending is off in this release. When it is available, each email goes from your own Gmail after you approve the exact text.'],
+          ['Does dazl send email for me?', 'Only what you approve, by default: each email goes from your own Gmail after you approve the exact text. If you turn on autopilot, it can send first emails on its own within the limits you set. It is off until you turn it on.'],
         ].map(([q, a]) => (
           <details key={q} className="border-b border-black/10 py-4 group">
             <summary className="cursor-pointer text-[#222] list-none flex justify-between">{q}<span className="text-[#666] group-open:rotate-45 transition">+</span></summary>

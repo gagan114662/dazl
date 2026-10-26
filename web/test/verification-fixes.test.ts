@@ -45,10 +45,11 @@ test('scoreLabel: fit-0 lead is labelled not a fit instead of showing a high sco
   assert.equal(scoreLabel(95, 0, null), 'scoring failed')
 })
 
-test('scoreLabel: scoring keeps showing for any lead with fit left or not yet scored', () => {
-  assert.equal(scoreLabel(95, 1), 'score 95')
-  assert.equal(scoreLabel(72, null), 'score 72')
-  assert.equal(scoreLabel(40, 4), 'score 40')
+test('scoreLabel (#198): a graded lead shows its grade, never the discovery score; ungraded shows relevance labelled as such', () => {
+  assert.equal(scoreLabel(85, 4, 0), 'fit 4/5, no live trigger confirmed') // the #198 case: displayed 85 with intent 0
+  assert.equal(scoreLabel(95, 1), 'fit 1/5')
+  assert.equal(scoreLabel(40, 5, 3), 'fit 5/5, timing 3/5')
+  assert.equal(scoreLabel(72, null), 'relevance 72 (not graded)')
 })
 
 test('emptyLeadsMessage: a running, loading or failed scan never says "No leads yet. Run a scan."', () => {
@@ -60,8 +61,8 @@ test('emptyLeadsMessage: a running, loading or failed scan never says "No leads 
 test('scoreLabel: hand-saved and job-feed leads are not graded, not given the column default', () => {
   assert.equal(scoreLabel(50, null, null, 'hiring_feed'), 'not graded')
   assert.equal(scoreLabel(50, null, null, 'manual_source'), 'not graded')
-  assert.equal(scoreLabel(50, null, null, null), 'score 50')
-  assert.equal(scoreLabel(80, 4, 3, 'hiring_feed'), 'score 80')
+  assert.equal(scoreLabel(50, null, null, null), 'relevance 50 (not graded)')
+  assert.equal(scoreLabel(80, 4, 3, 'hiring_feed'), 'fit 4/5, timing 3/5') // #198: a graded lead shows its grade
 })
 
 test('quoteNote: a found literal check is not erased by blanket unverified wording', async () => {
