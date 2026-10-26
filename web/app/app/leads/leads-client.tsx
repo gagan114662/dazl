@@ -6,6 +6,7 @@ import { emptyLeadsMessage, scoreLabel, quoteNote } from '@/lib/scan/leads-view'
 import { eventTypeLabel } from '@/lib/events/labels'
 import { companySearchEligible } from '@/lib/scan/find-contact-eligible'
 import { contactsFromEnrichments } from '@/lib/people/rank'
+import { OpportunityCardView } from './opportunity-card'
 import { publishedEmail, publishedContact, contactSearchNote, domainBasisNote, domainBasisText } from '@/lib/outreach/published-email'
 import { domainReviewFor } from '@/lib/outreach/domain-review'
 import SourceReview from './source-review'
@@ -610,6 +611,7 @@ export default function LeadsClient() {
                 return <span className="ml-1 inline-flex gap-0.5 align-middle">{chip('role', m.role)}{chip('industry', m.industry)}{chip('size', m.size)}{chip('location', m.location)}</span>
               })()}
             </div>
+            <OpportunityCardView lead={l} buyerRoles={icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : ''} />
             <div className="text-gray-400">{`Saved signal claim: ${l.signal}`}</div>
             {l.why && <div className="text-xs text-gray-300 mt-1">Research rationale: {l.why}</div>}
             {parseSignals(l.signals).length > 0 && (
