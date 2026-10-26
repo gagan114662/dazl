@@ -119,7 +119,7 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
 
   const leads = db.prepare(
     `SELECT l.id, l.contact FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
-     WHERE j.user_id = ? AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND l.contact IS NOT NULL
+     WHERE j.user_id = ? AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND l.contact IS NOT NULL AND l.quarantined_at IS NULL
        AND NOT EXISTS (SELECT 1 FROM outreach_messages m WHERE m.tenant_id = ? AND m.lead_id = l.id)
      ORDER BY l.score DESC LIMIT 25`,
   ).all(tenantId, MIN_CONFIDENCE, tenantId) as { id: string; contact: string }[]
