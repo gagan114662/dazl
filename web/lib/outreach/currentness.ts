@@ -18,11 +18,22 @@ export function leadWindowHeld(db: Database.Database, tenant: string, lead: stri
  return !!row && windowHeld(row, now)
 }
 
+// Same range normalizeIcp accepts. Anything else stored (0, negative, fraction, string, object, NaN) is corrupt data,
+// never a waiver of the user's window.
+const validStoredWindow = (w: unknown): w is number => typeof w === 'number' && Number.isInteger(w) && w >= 1 && w <= 365
+
 function windowHeld(row: { event_date: string | null; icp: string | null; query: string | null }, now: Date): boolean {
  let days: number | null = null
+ let corrupt = false
  if (row.icp) {
-  try { const w = (JSON.parse(row.icp) as { window_days?: unknown })?.window_days; if (typeof w === 'number') days = w } catch { return true }
+  try {
+   const w = (JSON.parse(row.icp) as { window_days?: unknown } | null)?.window_days
+   if (validStoredWindow(w)) days = w
+   else if (w !== undefined && w !== null) corrupt = true // a window was saved but is unusable
+  } catch { return true }
  }
+ // Invalid saved window: recover the constraint from the original request text; if that has none, hold (fail closed).
  days ??= parseWindowDays(row.query ?? '')
+ if (days === null && corrupt) return true
  return windowStatus(row.event_date, days, now) !== 'inside'
 }
