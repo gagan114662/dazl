@@ -12,6 +12,7 @@ import { norm } from './store.ts'
 import { domainReviewFor } from './domain-review.ts'
 import { pickCrawledEmail } from './published-email.ts'
 import { getMemory } from '../memory.ts'
+import { isQuarantined } from '../scan/quarantine.ts'
 
 export const DAILY_CAP = Math.min(ACCOUNT_SEND_CAP, Number(process.env.OUTREACH_DAILY_CAP || 20))
 export const SENDING_STALE_S = 10 * 60
@@ -177,10 +178,13 @@ function readCrawledRows(db: Database.Database, tenantId: string, leadId: string
 }
 // True when the lead's address came from a crawl whose website still needs the user's identity review (never recorded, or withdrawn
 // after the draft was made). A draft made before this check existed, or whose confirmation was later withdrawn, cannot be approved or sent.
-export type DomainReviewStatus = 'ok' | 'required' | 'unreadable'
+export type DomainReviewStatus = 'ok' | 'required' | 'unreadable' | 'quarantined'
 export function domainReviewStatus(db: Database.Database, tenantId: string, leadId: string, recipient: string): DomainReviewStatus {
   const lead = db.prepare('SELECT l.id, l.contact FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as { id: string; contact: string | null } | undefined
   if (!lead) return 'ok'
+  // A quarantined lead (scan/quarantine.ts) is held at every send path that passes through this gate. An unreadable
+  // quarantine state (older schema, read error) is held too: never sent on an unknown.
+  try { if (isQuarantined(db, leadId)) return 'quarantined' } catch { return 'unreadable' }
   let rows: CrawledRows
   // If the crawl state cannot be read (table missing or a read error) where the address came from is unknowable: held, for every lead.
   // This is a retryable fault, not something the user can fix by confirming a website.
@@ -197,8 +201,10 @@ export function domainReviewStatus(db: Database.Database, tenantId: string, lead
 }
 export const domainReviewHeld = (db: Database.Database, tenantId: string, leadId: string, recipient: string): boolean => domainReviewStatus(db, tenantId, leadId, recipient) !== 'ok'
 // The error code for a held message: a missing review is something the user can act on, an unreadable state is a retry.
-export const domainHoldCode = (db: Database.Database, tenantId: string, leadId: string, recipient: string): 'domain_unconfirmed' | 'review_unreadable' =>
-  domainReviewStatus(db, tenantId, leadId, recipient) === 'unreadable' ? 'review_unreadable' : 'domain_unconfirmed'
+export const domainHoldCode = (db: Database.Database, tenantId: string, leadId: string, recipient: string): 'domain_unconfirmed' | 'review_unreadable' | 'lead_quarantined' => {
+  const s = domainReviewStatus(db, tenantId, leadId, recipient)
+  return s === 'quarantined' ? 'lead_quarantined' : s === 'unreadable' ? 'review_unreadable' : 'domain_unconfirmed'
+}
 
 export function createDraft(db: Database.Database, tenantId: string, leadId: string, businessName: string): string {
   return db.transaction(() => createDraftInner(db, tenantId, leadId, businessName)).immediate()
@@ -210,6 +216,7 @@ function createDraftInner(db: Database.Database, tenantId: string, leadId: strin
      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`,
   ).get(leadId, tenantId) as Lead | undefined
   if (!lead) throw new OutreachError('not_found')
+  if (isQuarantined(db, leadId)) throw new OutreachError('lead_quarantined')
   if (currentnessHeld(db,tenantId,leadId)) throw new OutreachError('lead_currentness_unconfirmed')
   // Verified by dazl (quote confirmed on the cited page) OR confirmed by the user
   // themselves from the needs-review list. A human confirmation is the user's own

@@ -8,6 +8,7 @@ import { lookup as dnsLookup } from 'node:dns/promises'
 import { guardedLookup, isPublicIp } from '../scan/fetch-page.ts'
 import { audit, addEnrichment, type Enrichment } from './store.ts'
 import { detectTech, type TechHit } from './techstack.ts'
+import { emailGuessEnabled, personalLocals, recordEmailGuesses } from '../people/email-pattern.ts'
 
 // Contact-page crawl. No key. For a verified lead it finds the company's own website, reads a handful of
 // contact/about pages and keeps only business contacts the company itself published there.
@@ -164,9 +165,9 @@ export function probeDomains(company: string): string[] {
 export const MAX_PROBES_PER_SCAN = 8
 
 // ---- extraction ----
-const ROLE = /^(info|hello|hi|contact|contactus|enquiries|enquiry|inquiries|inquiry|sales|business|office|admin|general|mail|team|support|help|press|media|partnerships|partners|bookings|booking|reservations|hola|contacto|kontakt|bonjour|ciao|ola|connect)$/i
+export const ROLE = /^(info|hello|hi|contact|contactus|enquiries|enquiry|inquiries|inquiry|sales|business|office|admin|general|mail|team|support|help|press|media|partnerships|partners|bookings|booking|reservations|hola|contacto|kontakt|bonjour|ciao|ola|connect)$/i
 const EMAIL = /\b([a-z0-9][a-z0-9._%+-]{0,63})@([a-z0-9][a-z0-9.-]{0,251}\.[a-z]{2,24})\b/gi
-const sameSite = (emailDomain: string, site: string) => { const a = emailDomain.toLowerCase(); return a === site || a.endsWith('.' + site) }
+export const sameSite = (emailDomain: string, site: string) => { const a = emailDomain.toLowerCase(); return a === site || a.endsWith('.' + site) }
 
 export interface Found { kind: 'email' | 'phone' | 'person'; value: string; label: string; url: string }
 
@@ -297,7 +298,9 @@ export function extractPeople(html: string, pageUrl: string): Found[] {
   const text = visible.replace(/<\/?(p|div|li|ul|ol|h[1-6]|br|section|article|tr|td|th|figure|figcaption|header|footer|span|strong|b|em)\b[^>]*>/gi, '\n').replace(/<[^>]+>/g, ' ')
     .replace(/&amp;/g, '&').replace(/&#8217;|&rsquo;/g, "'").replace(/&nbsp;/g, ' ')
   const lines = text.split('\n').map(l => l.replace(/\s+/g, ' ').trim()).filter(Boolean)
-  const body = lines.join(' ')
+  // Email addresses are not prose: their lower-case local parts (dana.lee@...) would otherwise reject the very person
+  // listed beside them, so they are removed before the lower-case word test.
+  const body = lines.join(' ').replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, ' ')
   const lowerWords = new Set(body.match(/\b[a-z][a-z'\u2019-]{1,}\b/g) ?? [])
   const add = (name: string, title: string, viaJson = false) => {
     name = name.replace(/\s+/g, ' ').trim(); title = title.replace(/\s+/g, ' ').trim()
@@ -351,7 +354,8 @@ const sleepAbort = (ms: number, signal?: AbortSignal) => new Promise<boolean>((r
 })
 const lastHit = new Map<string, number>()
 
-export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeNorm?: string }> {
+// onPage (optional) sees the raw HTML of every own-site page read; used only by the email finder (EMAIL_GUESS_ENABLED).
+export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string) => void): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeNorm?: string }> {
   const origin = `https://${site}`
   const stopped = () => signal?.aborted ?? false
   const polite = async (url: string, delay: number) => { const h = new URL(url).hostname; const wait = (lastHit.get(h) ?? 0) + Math.max(gapMs, delay) - Date.now(); if (wait > 0 && !(await sleepAbort(wait, signal))) return null; lastHit.set(h, Date.now()); return get(url) }
@@ -367,6 +371,7 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
   const homeNorm = norm(home.body.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' '))
   if (expectName && !homeNorm.includes(norm(expectName))) return { found: [], reason: 'name_mismatch', pages: 1, homeNorm }
   const found = new Map<string, Found>(); let pages = 1
+  onPage?.(home.body)
   for (const f of [...extractContacts(home.body, home.finalUrl, site), ...extractPeople(home.body, home.finalUrl)]) found.set(f.kind + f.value, f)
   for (const p of contactPaths(home.body, new URL(home.finalUrl))) {
     if (stopped()) break
@@ -375,6 +380,7 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
     const r = await polite(origin + p, robots.delayMs)
     if (!r || r.status >= 400) continue
     pages++
+    onPage?.(r.body)
     for (const f of [...extractContacts(r.body, r.finalUrl, site), ...extractPeople(r.body, r.finalUrl)]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
   }
   // Social bio adapter (flag SITECRAWL_SOCIAL=1). Same hard robots rule, per host. In practice x.com, facebook.com, linkedin.com and
@@ -403,7 +409,29 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
 // confidence); deps.skipEvidenceFetch skips fetching the lead's source_url (commenter
 // import again: the URL is stored provenance that must never be fetched - the crawl
 // goes straight to name-derived domain probing, confirmed by the homepage name check).
-export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal } = {}): Promise<void> {
+
+// Location consistency for GUESSED (name_probe) domains (issue #197): a same-name business in another city passed the
+// homepage name check ("Smile Avenue Dental" is inside "Smile Avenue Dental Group", Pico Rivera CA, for a lead in
+// Sunnyside NY) and its phones and people were attached. A guessed domain now also needs its homepage to name a place
+// the lead is about: a place from the scan's own geography (ICP "where"), or a place the lead's evidence names after
+// "in/at/on" (and the same prepositions in other languages). No known place, or no match: the domain is refused.
+// Nothing here is a fixed list of places; the places come from the scan and the evidence.
+const PLACE_SUFFIX = /\s+(city|metro|metropolitan area|area|region|county|state|province|district)$/i
+const PLACE_AFTER = /\b(?:in|at|on|em|en|no|na|à|au|bei|im|nel|nella|op|w|в)\s+((?:[A-Z][\p{L}'’.-]+)(?:\s+[A-Z][\p{L}'’.-]+){0,2})/gu
+export function placeTerms(where: string[], evidenceText: string): string[] {
+  const out = new Set<string>()
+  const add = (s: string) => { const t = norm(s); if (t.length >= 4) out.add(t) }
+  for (const w of where) {
+    const clean = w.replace(/[()"]/g, ' ').replace(/\s+/g, ' ').trim()
+    add(clean); add(clean.replace(PLACE_SUFFIX, ''))
+    for (const part of clean.split(',')) { add(part); add(part.trim().replace(PLACE_SUFFIX, '')) }
+  }
+  for (const m of evidenceText.slice(0, 6000).matchAll(PLACE_AFTER)) add(m[1])
+  return [...out]
+}
+export const placeConsistent = (homeNorm: string | undefined, places: string[]) => !!homeNorm && places.some(p => homeNorm.includes(p))
+
+export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal } = {}): Promise<void> {
   try {
     if (!sitecrawlEnabled(deps.env)) return
     // Signal threads only into the rawGet path; a crawl4ai backend keeps its
@@ -411,7 +439,12 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     const get = deps.get ?? (deps.signal && !deps.env?.CRAWL4AI_URL && !process.env.CRAWL4AI_URL
       ? (url: string) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, deps.signal)
       : defaultGet(deps.env))
-    const leads = deps.leads ?? db.prepare("SELECT id, company, source_url FROM leads WHERE scan_job_id = ? AND review_reason IS NULL AND confidence IS NOT NULL AND company <> '' ORDER BY score DESC LIMIT ?").all(jobId, MAX_SITES_PER_SCAN) as { id: string; company: string; source_url: string }[]
+    // signal and evidence_excerpt feed the location check; a leads table without them (older schema) still crawls.
+    const pick = (cols: string) => db.prepare(`SELECT ${cols} FROM leads WHERE scan_job_id = ? AND review_reason IS NULL AND confidence IS NOT NULL AND company <> '' ORDER BY score DESC LIMIT ?`).all(jobId, MAX_SITES_PER_SCAN)
+    const leads = (deps.leads ?? (() => { try { return pick('id, company, source_url, signal, evidence_excerpt') } catch { return pick('id, company, source_url') } })()) as { id: string; company: string; source_url: string; signal?: string | null; evidence_excerpt?: string | null }[]
+    // The scan's geography, for the location check on guessed domains.
+    let where: string[] = []
+    try { const j = db.prepare('SELECT icp FROM scan_jobs WHERE id = ?').get(jobId) as { icp: string | null } | undefined; const w = j?.icp ? (JSON.parse(j.icp) as { where?: unknown }).where : null; if (Array.isArray(w)) where = w.filter((x): x is string => typeof x === 'string') } catch { /* no ICP: evidence places only */ }
     const today = new Date((deps.now ?? Date.now())).toISOString().slice(0, 10)
     // One crawl per site per run. Another lead on the same domain is NOT skipped: its own identity check runs against the cached homepage
     // text (same name test, per lead), and it reuses the pages already read, so no extra fetch and no extra budget. Only when the first lead's
@@ -419,6 +452,9 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     // identity check. Site-level outcomes (robots, unreachable) are the same for every lead and are reused as they are.
     type Crawled = Awaited<ReturnType<typeof crawlSite>>
     const siteRead = new Map<string, Crawled>()
+    // Email finder part 1 (off by default): personal local parts published on each confirmed site, never shown or sent.
+    const guessing = emailGuessEnabled(deps.env ?? process.env)
+    const localsBySite = new Map<string, Set<string>>()
     const readSite = async (cand: string, company: string): Promise<Crawled> => {
       const c = siteRead.get(cand)
       if (c) {
@@ -426,7 +462,8 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         if (!c.homeNorm.includes(norm(company))) return { found: [], reason: 'name_mismatch', pages: 0 }
         if (c.reason !== 'name_mismatch') return c
       }
-      const r = await crawlSite(cand, get, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal)
+      const locals = new Set<string>(); localsBySite.set(cand, locals)
+      const r = await crawlSite(cand, get, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, guessing ? html => { for (const l of personalLocals(html, cand)) locals.add(l) } : undefined)
       siteRead.set(cand, r)
       return r
     }
@@ -447,9 +484,17 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         if (sites.length === 0) { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 }); continue }
       }
       let r: Awaited<ReturnType<typeof crawlSite>> = { found: [], reason: 'name_mismatch', pages: 0 }; let site = sites[0]
+      // Places this lead is about: the scan geography plus places its own evidence names (signal, quote, cited page).
+      const places = placeTerms(where, [l.signal ?? '', l.evidence_excerpt ?? '', ev?.body ? ev.body.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ') : ''].join(' '))
       for (const cand of sites) {
         site = cand
         r = await readSite(cand, l.company)
+        if (r.reason !== 'name_mismatch' && r.reason !== 'site_unreachable' && basisOf.get(cand) === 'name_probe' && !placeConsistent(r.homeNorm, places)) {
+          // Same name, but the homepage names none of the lead's places (or no place is known): not this company.
+          audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: places.length ? 'geo_mismatch' : 'geo_unknown', results: 0 })
+          r = { found: [], reason: 'name_mismatch', pages: 0 }
+          continue
+        }
         if (r.reason !== 'name_mismatch' && r.reason !== 'site_unreachable') break
         audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: r.reason, results: 0 })
       }
@@ -459,6 +504,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // The homepage named the company: the domain is confirmed as the company's own site, whether
       // or not it publishes contacts. Record it so leads link out and later runs skip the search.
       if (r.reason === 'ok' || r.reason === 'none_published') db.prepare('UPDATE leads SET company_domain = ? WHERE id = ?').run(site, l.id)
+      if (guessing && (r.reason === 'ok' || r.reason === 'none_published')) { try { recordEmailGuesses(db, tenantId, l.id, site, [...(localsBySite.get(site) ?? [])], r.found.filter(f => f.kind === 'person').map(f => f.value)) } catch { /* never affects the crawl */ } }
       let n = 0
       // Provenance of the domain choice. One row per (domain, basis), so a later scan that reaches the same domain a weaker way adds a row
       // instead of being swallowed by the first. For link bases source_url is the cited page holding the link; for name_probe it is only the
@@ -473,8 +519,11 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         const e: Enrichment = { connector: 'sitecrawl', kind: 'tech', value: t.name.slice(0, 254), label: `seen on the company website (${t.where})`.slice(0, 200), confidence: null, source_url: `https://${site}/`, source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) }
         addEnrichment(db, tenantId, l.id, e); n++
       }
+      // A guessed site passed the name AND location checks, but the evidence never linked it: say so on every contact.
+      const guessed = (basisOf.get(site) ?? 'name_probe') === 'name_probe'
       for (const f of r.found) {
-        const e: Enrichment = { connector: 'sitecrawl', kind: f.kind, value: f.value.slice(0, 254), label: f.label, confidence: null, source_url: f.url.slice(0, 500), source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) }
+        const label = guessed ? `${f.label}; site found by name search and location match, not linked from the source` : f.label
+        const e: Enrichment = { connector: 'sitecrawl', kind: f.kind, value: f.value.slice(0, 254), label: label.slice(0, 200), confidence: null, source_url: f.url.slice(0, 500), source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) }
         addEnrichment(db, tenantId, l.id, e); n++
       }
       audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: site, status: r.reason, results: n })
