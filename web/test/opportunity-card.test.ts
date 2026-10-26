@@ -102,3 +102,28 @@ test('nobody found and ungraded/undated are said plainly', () => {
   assert.ok(c.missing.includes('event date') && c.missing.includes('a named person to approach') && c.missing.includes('buyer role (not shown in the evidence)'))
   assert.equal(c.next, 'Find the decision-maker before reaching out.')
 })
+
+// Instinct #207 recheck (d8c2a5fe): contact equal to a crawled address from an unconfirmed name_probe domain is NOT
+// "printed on the cited page", and the channel must be one createDraft accepts (context label counts, not just local part).
+test('contact equal to a crawled name_probe address: identity needs review, no draft advice, not "printed on cited page"', () => {
+  const rival: Row = { connector: 'sitecrawl', kind: 'email', value: 'hello@rival.example', label: null, source_url: 'https://rival.example/contact' }
+  const c = card({ contact: 'hello@rival.example', enrichments: [dom('rival.example', 'name_probe', 'https://rival.example/'), person, rival] })
+  assert.notEqual(c.who?.identity, 'address printed on the cited page')
+  assert.match(c.who!.identity, /found by name search/)
+  assert.match(c.next, /^Confirm rival\.example is their site/)
+  assert.ok(!c.next.startsWith('Draft'))
+})
+
+test('a plain cited-page contact (no crawl record of it) is still printed on the cited page and draftable', () => {
+  const c = card({ contact: 'owner@brightteeth.example', enrichments: [person] })
+  assert.equal(c.who?.identity, 'address printed on the cited page')
+  assert.match(c.next, /^Draft a first message/)
+})
+
+test('crawled address whose context label is restricted (privacy/support) is not a draft channel even with a "hello" local part', () => {
+  const ctx = 'contact-context-v1:' + JSON.stringify({ excerpt: 'For privacy requests and data subject questions email hello@brightteeth.example', restriction: 'restricted-purpose context' })
+  const e: Row = { ...email, label: ctx }
+  const c = card({ enrichments: [dom('brightteeth.example', 'evidence_own_domain', 'https://brightteeth.example/news'), person, e] })
+  assert.ok(!c.next.startsWith('Draft'))
+  assert.ok(c.missing.includes('an email or phone'))
+})

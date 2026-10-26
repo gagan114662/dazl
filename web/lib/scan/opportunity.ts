@@ -9,7 +9,7 @@
 // is listed under missing. Identity reuses the outreach provenance rules (weakest recorded basis governs, the user's
 // own website review, several websites = conflict), so the card never claims more than the send gate accepts.
 import { rankPeople, type PersonContact } from '../people/rank.ts'
-import { domainBasisFor, classifyPurpose, PUBLISHED_EMAIL_RE, type DomainBasisKind } from '../outreach/published-email.ts'
+import { domainBasisFor, publishedContact, PUBLISHED_EMAIL_RE, type DomainBasisKind } from '../outreach/published-email.ts'
 import { domainReviewFor } from '../outreach/domain-review.ts'
 
 export interface CardLead {
@@ -76,13 +76,19 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
   })
   const top = rankPeople(people, buyerRoles)[0]
   const ident = identityOf(l, rows)
-  const citedEmail = PUBLISHED_EMAIL_RE.test((l.contact ?? '').trim().toLowerCase())
+  // The SAME two rules createDraft enforces, not email syntax: publishedContact picks the address and classifies its
+  // purpose from its own context label (support/privacy usage is rejected even when the local part is "hello");
+  // domainReviewFor says whether the address's origin needs the user's website review. A contact that equals the address
+  // the crawler recorded is NOT proof the cited page printed it, so "printed on the cited page" needs both: the contact
+  // is an email and no review is required for it.
+  const pc = publishedContact({ contact: l.contact, source_url: l.source_url, evidence_excerpt: l.evidence_excerpt, enrichments: rows })
+  const review = domainReviewFor({ id: l.id ?? '', contact: l.contact }, rows)
+  const citedEmail = PUBLISHED_EMAIL_RE.test((l.contact ?? '').trim().toLowerCase()) && pc?.source === 'lead' && review.state !== 'required'
   const who = top ? { name: top.name, title: top.title, link: top.linkedin, identity: citedEmail ? 'address printed on the cited page' : ident ? ident.text : 'company site not identified' } : null
 
-  // Channels, only as far as the contact evidence supports them: a sales-purpose-unknown or sales email can be drafted to;
-  // a press/support/careers style inbox cannot; a phone number is a phone number, not an email draft.
-  const emails = [...(citedEmail ? [(l.contact ?? '').trim().toLowerCase()] : []), ...rows.filter(r => r.connector === 'sitecrawl' && r.kind === 'email' && PUBLISHED_EMAIL_RE.test(r.value.trim().toLowerCase())).map(r => r.value.trim().toLowerCase())]
-  const draftable = emails.some(e => classifyPurpose(e).purpose !== 'non-sales')
+  // Channels, only as far as the contact evidence supports them: what createDraft would accept (a press/support/careers
+  // style inbox or context label cannot be drafted to); a phone number is a phone number, not an email draft.
+  const draftable = !!pc && pc.purpose !== 'non-sales'
   const phone = PHONE.test(l.contact ?? '') || rows.some(r => r.kind === 'phone' && r.value)
 
   const machineQuote = !l.review_reason && !!l.evidence_excerpt && l.confidence != null
@@ -105,7 +111,7 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
 
   // Next action never runs ahead of the gates: quarantine, the user's time window, unconfirmed timing, source review,
   // identity, then the channel the evidence actually supports. A research event is context, not a confirmed need.
-  const identityOpen = !citedEmail && (!ident || ident.state === 'unconfirmed' || ident.state === 'conflict')
+  const identityOpen = !citedEmail && (review.state === 'required' || !ident || ident.state === 'unconfirmed' || ident.state === 'conflict')
   const next = l.quarantined_at ? 'None: quarantined.'
     : l.window_held ? 'None: outside the time window you asked for, or undated. Research only.'
     : l.review_reason ? 'Check the source yourself before using this lead.'
