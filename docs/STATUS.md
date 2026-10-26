@@ -35,15 +35,11 @@ Updated by the builder on every branch. Newest first.
 
 - Blocked-source verification: waits for #188 data from a live run.
 
-## Next (in order, for the scheduled builder)
+## Next (in order, for the scheduled builder; nothing business- or place-specific)
 
-1. Decision-maker finder, part 2 (after #185): officers from SEC filings, GitHub org members, rank by the
-   ICP's "who" roles at crawl time (lib/people/rank.ts exists).
-2. Email finder, PART 1 ONLY (see docs/design/email-finder.md, PR "DESIGN: email finder"): keep published personal
-   addresses as pattern evidence (never shown or sent), infer the pattern, generate candidates for named people, all
-   behind EMAIL_GUESS_ENABLED=0. Parts 2-3 (mailbox verification, display) are "needs design" until the owner answers
-   the open questions in that note.
-3. New intent signal: people engaging with competitor GitHub repos (stargazers, issues) when the ICP names
+1. Decision-maker sources beyond the company site: officers named in SEC Form D filings (US), GitHub org members for
+   software companies. Stored as person enrichments with the source URL; ranked by the scan ICP roles (rank.ts).
+2. New intent signal: people opening issues on or starring competitor GitHub repos when the tenant lists
    competitors; public GitHub API only.
-4. Self-hosted SearXNG as a second free search backend (behind an env flag, off by default).
-5. Production: Outreach page chunk-load failure (README "Current state").
+3. Self-hosted SearXNG as a third free search backend (env flag, off by default), same shape as lib/search/news.ts.
+4. Production: Outreach page chunk-load failure (README "Current state").
