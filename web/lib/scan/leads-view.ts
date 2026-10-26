@@ -37,3 +37,11 @@ export function quoteNote(literalFound: boolean | undefined): { prefix: string; 
     ? { prefix: 'Quote found on the page by a literal check (its meaning, date and need are not verified): ', confirmed: 'confirmed by you - the quote was found on the page by a literal check; dazl did not verify its meaning, date or need' }
     : { prefix: 'Unconfirmed quote: ', confirmed: 'confirmed by you - dazl did not verify the quote' }
 }
+
+// Read-time copy for the saved rationale (leads API). "No saved grade" must not be shown next to a saved fit/intent/action
+// grade: a grade can exist without a written rationale (#198 live acceptance finding).
+export function savedGradeWhy(l: { why?: string | null; fit?: number | null; intent?: number | null; action?: number | null }): string {
+  if (l.why) return 'Event timing and current need are unconfirmed. Saved grades are historical, not a currentness verdict.'
+  const parts = [['fit', l.fit], ['intent', l.intent], ['action', l.action]].filter(([, v]) => v != null).map(([k, v]) => `${k} ${v}`)
+  return parts.length ? `A saved grade exists (${parts.join(', ')}) but no written rationale was saved. Event timing and current need are unconfirmed.` : 'This lead has no saved grade. Event timing and current need are unconfirmed.'
+}

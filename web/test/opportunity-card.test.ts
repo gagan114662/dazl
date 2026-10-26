@@ -25,7 +25,7 @@ const card = (over: Partial<CardLead>, roles = 'Practice owner') => opportunityC
 test('real evidence_own_domain: identity is a fact; draft is about the offer, the event only as context', () => {
   const c = card({})
   assert.equal(c.whyThisBusiness, 'Fits your profile (5/5): matches buyer role, industry, location.')
-  assert.equal(c.whyNow.dateNote, 'dated 2026-10-10 (16 days ago), date confirmed on the page')
+  assert.equal(c.whyNow.dateNote, '2026-10-10 (claimed event day; event association and current need unconfirmed), 16 days ago')
   assert.deepEqual(c.who, { name: 'Dana Lee', title: 'Practice Owner', link: 'https://brightteeth.example/team', identity: 'brightteeth.example: the cited page is on this site' })
   assert.ok(c.facts.includes('Company site brightteeth.example: the cited page is on this site.'))
   assert.ok(c.facts.includes('The quoted text was found on the cited page when the scan ran.'))
@@ -126,4 +126,16 @@ test('crawled address whose context label is restricted (privacy/support) is not
   const c = card({ enrichments: [dom('brightteeth.example', 'evidence_own_domain', 'https://brightteeth.example/news'), person, e] })
   assert.ok(!c.next.startsWith('Draft'))
   assert.ok(c.missing.includes('an email or phone'))
+})
+
+// #198 live acceptance: a legacy date_status 'verified' (nearby-year verdict) must never read as the event date being
+// confirmed on the page, whatever the status string is.
+test('legacy verified date status is a claimed event day, never "confirmed on the page"', () => {
+  for (const date_status of ['verified', 'unverified', null]) {
+    const c = card({ date_status, currentness_held: true })
+    assert.doesNotMatch(c.whyNow.dateNote, /confirmed on the page/)
+    assert.match(c.whyNow.dateNote, /claimed event day/)
+    assert.ok(!c.facts.some(f => /event date .* appears on the page/.test(f)))
+    assert.ok(c.assumptions.some(a => /event day as claimed/.test(a)))
+  }
 })
