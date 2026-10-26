@@ -46,9 +46,12 @@ test('no ICP (or no who roles): seniority only, as before', async () => {
   }
 })
 
-test('department buyer titles are whole titles; other-company and generic titles still rejected', async () => {
+test('buyer titles come from the scan ICP roles, not a fixed list: any business, any language; other employers still rejected', async () => {
   const { extractPeople } = await import('../lib/connectors/sitecrawl.ts')
-  const one = (t: string) => extractPeople(html(`${PROSE}<h3>Eli Novak</h3><p>${t}</p>`), 'https://a.example/team').map(f => f.value)
-  for (const t of ['HR Manager', 'Payroll Manager', 'Head of Human Resources', 'IT Director', 'Marketing Lead']) assert.deepEqual(one(t), [`Eli Novak, ${t}`], t)
-  for (const t of ['Store Manager', 'Head of Sales at Rival Inc', 'Director, Other Corp']) assert.deepEqual(one(t), [], t)
+  const one = (t: string, roles?: string) => extractPeople(html(`${PROSE}<h3>Eli Novak</h3><p>${t}</p>`), 'https://a.example/team', roles).map(f => f.value)
+  for (const [t, roles] of [['Practice Manager', 'practice owner; practice manager'], ['Store Manager', 'store manager'], ['Gerente de Vendas', 'gerente de vendas'], ['HR Manager', 'HR manager; head of people']]) assert.deepEqual(one(t, roles), [`Eli Novak, ${t}`], t)
+  assert.deepEqual(one('HR Manager'), [], 'no ICP roles: only generic executive titles')
+  assert.deepEqual(one('Payroll Manager', 'HR manager'), [], 'one shared generic word is not enough')
+  assert.deepEqual(one('Store Manager at Rival Inc', 'store manager'), [], 'another employer named')
+  assert.deepEqual(one('Head of Human Resources'), ['Eli Novak, Head of Human Resources'], 'two-word Head of is a generic title')
 })

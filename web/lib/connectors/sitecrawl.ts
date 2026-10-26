@@ -234,10 +234,9 @@ export function extractContacts(html: string, pageUrl: string, site: string): Fo
 // B2B decision-maker titles join the owner-style ones: the person who buys a sales/ops/engineering tool is rarely "owner". Each
 // addition is a WHOLE title with no free text after it ("Director, Other Corp" still fails): C-suite, "Chief X Officer", and
 // "VP/Head/Director of <1-2 words>". Names still pass every name-shape and prose check below, so a wider title list admits no new kind of name.
-// Department managers are buyers for many offers (payroll, HR, finance, IT, marketing), so "<department> manager" is a
-// whole title too, for a fixed list of departments only. "Head/Director of" takes up to two words ("Human Resources").
-const DEPT = '(?:hr|human resources|people|payroll|finance|accounting|it|operations|marketing|sales|procurement|purchasing|facilities|recruiting|talent)'
-const EXEC = `c[a-z]o|chief [a-z]+ officer|(?:vp|svp|evp|vice president|head|director) of [a-z]+(?: [a-z]+)?(?: (?:&|and) [a-z]+)?|(?:vp|svp|evp|vice president) [a-z]+|${DEPT} (?:manager|director|lead)`
+// "Head/Director/VP of" takes up to two words ("Human Resources"). Titles specific to the seller's buyers are not listed
+// here: they come from each scan's own ICP roles (buyerTitle), so this works for any business and any language.
+const EXEC = `c[a-z]o|chief [a-z]+ officer|(?:vp|svp|evp|vice president|head|director) of [a-z]+(?: [a-z]+)?(?: (?:&|and) [a-z]+)?|(?:vp|svp|evp|vice president) [a-z]+`
 export const PAGE_PEOPLE = 8
 const T = `(?:founder|co-?founder|owner|co-?owner|ceo|president|principal|proprietor|managing director|general manager|director|managing partner|partner|practice manager|office manager|broker|dentist|doctor|${EXEC})`
 const TITLE_FULL = new RegExp(`^${T}(?: (?:&|and) ${T})?$`, 'i')
@@ -293,7 +292,18 @@ function jsonLdPeople(html: string): { name: string; title: string }[] {
   }
   return out
 }
-export function extractPeople(html: string, pageUrl: string): Found[] {
+// A title that is one of the scan's own buyer roles ("Practice Manager", "Gerente de Vendas") counts as a whole title even
+// when it is not a generic executive title: it contains a full ICP role, or shares 2+ of its words. Same guards as
+// before: short, no comma, and nothing naming another employer ("at", "@", "for").
+// Word-preserving, any alphabet (this file's norm() drops spaces and company words, which suits domains, not titles).
+const titleNorm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/\p{M}/gu, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+export function buyerTitle(title: string, buyerRoles?: string): boolean {
+  if (!buyerRoles || title.length > 60 || title.split(/\s+/).length > 6 || /,|\s(?:at|@|for|bei|chez|em|en|presso)\s/i.test(title)) return false
+  const t = titleNorm(title)
+  if (buyerRoles.split(';').map(titleNorm).some(r => r.length >= 3 && (` ${t} `).includes(` ${r} `))) return true
+  return titleMatches(title, buyerRoles).length >= 2
+}
+export function extractPeople(html: string, pageUrl: string, buyerRoles?: string): Found[] {
   const found = new Map<string, Found>()
   let path = ''; try { path = new URL(pageUrl).pathname } catch { return [] }
   const clean = cutBlocks(html)
@@ -309,7 +319,7 @@ export function extractPeople(html: string, pageUrl: string): Found[] {
   const lowerWords = new Set(body.match(/\b[a-z][a-z'\u2019-]{1,}\b/g) ?? [])
   const add = (name: string, title: string, viaJson = false) => {
     name = name.replace(/\s+/g, ' ').trim(); title = title.replace(/\s+/g, ' ').trim()
-    if (!NAME_LINE.test(name) || !TITLE_FULL.test(title)) return
+    if (!NAME_LINE.test(name) || !(TITLE_FULL.test(title) || buyerTitle(title, buyerRoles))) return
     if (!viaJson) {
       if (!PEOPLE_PAGE.test(path)) return
       if (lowerWords.size < 15) return // no prose on the page: nothing to judge a name-shaped phrase against, fail closed
@@ -382,7 +392,7 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
   if (expectName && !homeNorm.includes(norm(expectName))) return { found: [], reason: 'name_mismatch', pages: 1, homeNorm }
   const found = new Map<string, Found>(); let pages = 1
   onPage?.(home.body)
-  for (const f of [...extractContacts(home.body, home.finalUrl, site), ...extractPeople(home.body, home.finalUrl)]) found.set(f.kind + f.value, f)
+  for (const f of [...extractContacts(home.body, home.finalUrl, site), ...extractPeople(home.body, home.finalUrl, buyerRoles)]) found.set(f.kind + f.value, f)
   for (const p of contactPaths(home.body, new URL(home.finalUrl))) {
     if (stopped()) break
     if (pages >= MAX_PAGES) break
@@ -391,7 +401,7 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
     if (!r || r.status >= 400) continue
     pages++
     onPage?.(r.body)
-    for (const f of [...extractContacts(r.body, r.finalUrl, site), ...extractPeople(r.body, r.finalUrl)]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
+    for (const f of [...extractContacts(r.body, r.finalUrl, site), ...extractPeople(r.body, r.finalUrl, buyerRoles)]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
   }
   // Social bio adapter (flag SITECRAWL_SOCIAL=1). Same hard robots rule, per host. In practice x.com, facebook.com, linkedin.com and
   // instagram.com disallow our user agent, so this fetches nothing from them; it exists for smaller platforms that allow it.
