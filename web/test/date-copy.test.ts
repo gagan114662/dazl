@@ -31,3 +31,11 @@ test('lead UI and CSV both expose date context alongside raw date fields', () =>
   assert.match(route, /key: 'date_status'/); assert.match(route, /key: 'date_context'/)
   assert.match(route, /date_context: eventDateCopy/)
 })
+import { savedGradeWhy } from '../lib/scan/leads-view.ts'
+test('saved-grade copy never says "no saved grade" next to a saved fit/intent/action', () => {
+  assert.match(savedGradeWhy({ why: 'x', fit: 4 }), /historical/)
+  const g = savedGradeWhy({ why: null, fit: 4, intent: 0, action: 2 })
+  assert.match(g, /saved grade exists \(fit 4, intent 0, action 2\) but no written rationale/i); assert.doesNotMatch(g, /no saved grade/)
+  assert.match(savedGradeWhy({ why: null, fit: null, intent: null, action: null }), /no saved grade/)
+  assert.match(savedGradeWhy({ why: null, fit: null, intent: 0, action: null }), /intent 0/)
+})
