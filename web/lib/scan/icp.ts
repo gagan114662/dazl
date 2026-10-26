@@ -28,13 +28,25 @@ function list(v: unknown, n: number): string[] {
   return v.map(x => clean(x, caps.item)).filter(Boolean).slice(0, n)
 }
 
+// The country code goes to the search provider as its market. Models often write "UK" for the United Kingdom, which is
+// not an ISO 3166-1 code (GB is): a London scan then searched a market that does not exist. Common aliases are mapped;
+// anything that is not a real ISO 3166-1 alpha-2 code is dropped (no market sent) rather than passed through.
+const ISO_3166_1 = new Set('AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW'.split(' '))
+const COUNTRY_ALIAS: Record<string, string> = { UK: 'GB', EL: 'GR' }
+export function isoCountry(v: unknown): string | null {
+  if (typeof v !== 'string') return null
+  const c = v.trim().toUpperCase()
+  const code = COUNTRY_ALIAS[c] ?? c
+  return ISO_3166_1.has(code) ? code : null
+}
+
 // Validates anything that claims to be an ICP (model output or a user edit).
 export function normalizeIcp(raw: unknown): Icp | null {
   if (!raw || typeof raw !== 'object') return null
   const r = raw as Record<string, unknown>
   const summary = clean(r.summary, caps.summary)
   if (!summary) return null
-  const country = typeof r.country === 'string' && /^[A-Za-z]{2}$/.test(r.country.trim()) ? r.country.trim().toUpperCase() : null
+  const country = isoCountry(r.country)
   const language = typeof r.language === 'string' && /^[A-Za-z]{2}$/.test(r.language.trim()) ? r.language.trim().toLowerCase() : null
   return { summary, who: list(r.who, caps.who), industries: list(r.industries, caps.industries), sizes: list(r.sizes, caps.sizes), where: list(r.where, caps.where), signals: list(r.signals, caps.signals), exclude: list(r.exclude, caps.exclude), ...(country ? { country } : {}), ...(language ? { language } : {}) }
 }
