@@ -325,7 +325,7 @@ export function listJobs(db: Database.Database, userId: string, limit = 20): Job
 export function exportLeads(db: Database.Database, userId: string, jobId?: string, limit = 5000, includeFixtures = false) {
   return db
     .prepare(
-      `SELECT l.id AS lead_id, l.scan_job_id AS job_id, l.company, l.name, l.contact, l.signal, l.source_url,
+      `SELECT l.id AS lead_id, l.scan_job_id AS job_id, l.company, l.name, l.contact, l.signal, l.why, l.source_url,
               l.fit, l.intent, l.action, l.score, l.confidence, l.event_date, l.date_status, l.review_reason,
               l.human_confirmed_from, l.evidence_excerpt, l.created_at
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id

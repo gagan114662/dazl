@@ -33,6 +33,7 @@ import { SourceRunLedger } from './source-runs.ts'
 import { newsEnabled, newsSearch, NEWS_PER_SCAN, NEWS_SOURCE } from '../search/news.ts'
 import { safeGet } from '../sources/http.ts'
 import type { SafeGet } from '../sources/types.ts'
+import { findPeople } from '../people/people-search.ts'
 import { parseWindowDays, splitByWindow } from './window.ts'
 import { applyBuyerFitGate } from './buyer-fit.ts'
 
@@ -922,6 +923,9 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     try { markSeenBefore(db, job.user_id, job.id, companyKey) } catch { /* flag only, never affects the scan */ }
     // Bounded post-processing: see runPostFinishBounded.
     await runPostFinishBounded(db, job, deps)
+    // People search (person-first): the right people at each lead's company from public profile SEARCH RESULTS, for
+    // companies whose own site lists nobody. Never throws; never an address; kill switch PEOPLE_SEARCH_ENABLED=0.
+    await findPeople(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl })
     // Buyer-fit gate (after the crawl, which confirms each company's own site): a hiring lead keeps fit >= 4 only when
     // its own home page shows it fits, quoted verbatim. Fail closed; never fails the scan.
     if (complete && deps.score !== false) {
