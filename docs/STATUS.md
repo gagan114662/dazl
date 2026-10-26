@@ -26,6 +26,9 @@ Updated by the builder on every branch. Newest first.
 
 ## In progress (interactive Claude session, do not duplicate)
 
+- #188 `b/verify-provenance`: diagnostic log line answering whether TinyFish had text for pages the verifier could
+  not read. The blocked-source fix waits for that data.
+
 - Blocked-source verification (design item): waiting for Instinct's data on whether TinyFish fetched the cited
   pages that the verifier found blocked. Do not start this without it.
 
@@ -33,8 +36,10 @@ Updated by the builder on every branch. Newest first.
 
 1. Decision-maker finder, part 2 (after #185): officers from SEC filings, GitHub org members, rank by the
    ICP's "who" roles at crawl time (lib/people/rank.ts exists).
-2. Email finder (US only, verified only, see DECISIONS.md): infer the company's address pattern from addresses it
-   publishes, build candidates for the person from item 1, mailbox check, catch-all domains never verified.
+2. Email finder, PART 1 ONLY (see docs/design/email-finder.md, PR "DESIGN: email finder"): keep published personal
+   addresses as pattern evidence (never shown or sent), infer the pattern, generate candidates for named people, all
+   behind EMAIL_GUESS_ENABLED=0. Parts 2-3 (mailbox verification, display) are "needs design" until the owner answers
+   the open questions in that note.
 3. New intent signal: people engaging with competitor GitHub repos (stargazers, issues) when the ICP names
    competitors; public GitHub API only.
 4. Self-hosted SearXNG as a second free search backend (behind an env flag, off by default).
