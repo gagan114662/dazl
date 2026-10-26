@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "SITECRAWL_ENABLED=0 node --experimental-strip-types --import ./test/helpers/net-fence.ts --test test/*.test.ts",
+    "test": "SITECRAWL_ENABLED=0 NEWS_SEARCH_ENABLED=0 node --experimental-strip-types --import ./test/helpers/net-fence.ts --test test/*.test.ts",
     "prebuild": "git rev-parse HEAD > .build-commit 2>/dev/null || rm -f .build-commit"
   },
   "dependencies": {
