@@ -240,6 +240,13 @@ function createDraftInner(db: Database.Database, tenantId: string, leadId: strin
     crawled = readCrawledRows(db, tenantId, lead.id)
     const r = pickCrawledEmail(crawled)
     if (r && !contactIsEmail) { published = r.value; addressUrl = r.source_url ?? lead.source_url }
+    // A contact that equals a crawled address is not proof the cited page printed it: cite the page the crawler actually
+    // saved for that address (the table keeps one record per address), never the signal/news URL. The recipient and the
+    // identity rules are unchanged. A contact the crawl never recorded keeps the cited page.
+    if (contactIsEmail) {
+      const same = crawled.find(x => x.connector === 'sitecrawl' && x.kind === 'email' && norm(x.value) === norm(published) && x.source_url)
+      if (same?.source_url) addressUrl = same.source_url
+    }
   } catch { /* enrichment table not present */ }
   const to = norm(published)
   if (!EMAIL_RE.test(to)) throw new OutreachError('no_email_contact')

@@ -97,3 +97,38 @@ test('control: the strongest scenario is actually draftable by both (the propert
   assert.ok(opportunityCard(lead, 'Practice owner', NOW).next.startsWith('Draft'))
   assert.doesNotThrow(() => createDraft(db, 'A', id, 'Acme'))
 })
+
+// Instinct #210 recheck: a contact equal to a crawled address must be cited at the page the crawler saved it from
+// (/contact), not at the signal/news URL; the saved signal excerpt stays separate; a true cited-page-only contact still
+// cites the signal page. The recipient is unchanged.
+import { setDomainReview } from '../lib/scan/domain-review-action.ts'
+import { domainReviewFor } from '../lib/outreach/domain-review.ts'
+function body(db: Database.Database, id: string): { to_email: string; body: string } {
+  return db.prepare('SELECT to_email, body FROM outreach_messages WHERE lead_id = ?').get(id) as { to_email: string; body: string }
+}
+const CONTACT_URL = 'https://x.example/contact'
+test('draft source URL: contact equal to a crawled own-domain address cites /contact; the news excerpt is separate', () => {
+  const { db, id } = build({ name: 'eq own', contact: 'owner@x.example', date: day(-10), rows: [dom('x.example', 'evidence_own_domain'), mail('owner@x.example'), person] })
+  createDraft(db, 'A', id, 'Acme')
+  const m = body(db, id)
+  assert.equal(m.to_email, 'owner@x.example')
+  assert.ok(m.body.includes(`published on X Dental's page:\n${CONTACT_URL}\n`), m.body)
+  assert.ok(m.body.includes(`Saved excerpt from this public page: "X Dental opened a clinic"\n${S}`), 'the signal excerpt keeps its own URL')
+  assert.ok(!m.body.includes(`page:\n${S}`), 'the address is not attributed to the news page')
+})
+test('draft source URL: a website-reviewed name_probe address that equals the contact also cites /contact', () => {
+  const { db, id } = build({ name: 'eq probe reviewed', contact: 'owner@x.example', date: day(-10), rows: [dom('x.example', 'name_probe'), mail('owner@x.example'), person] })
+  assert.throws(() => createDraft(db, 'A', id, 'Acme'), /domain_unconfirmed/)
+  const rows = db.prepare('SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ?').all(id) as Parameters<typeof domainReviewFor>[1] & object
+  const binding = domainReviewFor({ id, contact: 'owner@x.example' }, rows).binding!
+  assert.equal(setDomainReview(db, 'A', id, 'confirm', binding).status, 'confirmed')
+  createDraft(db, 'A', id, 'Acme')
+  const m = body(db, id)
+  assert.equal(m.to_email, 'owner@x.example'); assert.ok(m.body.includes(`page:\n${CONTACT_URL}\n`), m.body); assert.ok(!m.body.includes(`page:\n${S}`))
+})
+test('draft source URL: cited-page-only contact (no crawl record) still cites the signal page, with no duplicate excerpt block', () => {
+  const { db, id } = build({ name: 'cited only', contact: 'owner@x.example', date: day(-10), rows: [person] })
+  createDraft(db, 'A', id, 'Acme')
+  const m = body(db, id)
+  assert.ok(m.body.includes(`page:\n${S}\n`), m.body); assert.ok(!m.body.includes('Saved excerpt'))
+})
