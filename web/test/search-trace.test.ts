@@ -84,10 +84,11 @@ test('queryPlan tells model queries from the fallback to the raw request', () =>
   assert.deepEqual(queryPlan('', 'the whole request text', 3).source, 'fallback')
 })
 
-test('persistence is off unless DAZL_SOURCE_STATS=1: no table is created, nothing is written', () => {
-  assert.equal(sourceStatsEnabled({}), false); assert.equal(sourceStatsEnabled({ DAZL_SOURCE_STATS: '0' }), false); assert.equal(sourceStatsEnabled({ DAZL_SOURCE_STATS: '1', DAZL_SOURCE_STATS_USERS: 'o' }), true)
+test('persistence is ON by default and off only with DAZL_SOURCE_STATS=0: no table is created, nothing is written when off', () => {
+  assert.equal(sourceStatsEnabled({}), true); assert.equal(sourceStatsEnabled({ DAZL_SOURCE_STATS: '0' }), false); assert.equal(sourceStatsEnabled({ DAZL_SOURCE_STATS: '1', DAZL_SOURCE_STATS_USERS: 'o' }), true)
   const db = new Database(':memory:'); db.exec('CREATE TABLE scan_jobs (id TEXT PRIMARY KEY, user_id TEXT)')
-  const wrote = writeSourceStats(db, 'j1', 1, 'search:tinyfish', summarizeTrace(new SearchTrace()), {})
+  db.prepare('INSERT INTO scan_jobs VALUES (?,?)').run('j1', 'o')
+  const wrote = writeSourceStats(db, 'j1', 1, 'search:tinyfish', summarizeTrace(new SearchTrace()), { DAZL_SOURCE_STATS: '0' })
   assert.equal(wrote, false)
   assert.equal(db.prepare("SELECT count(*) n FROM sqlite_master WHERE name='scan_source_stats'").get()!['n' as never], 0)
 })
@@ -145,7 +146,7 @@ test('flag turned off later: earlier rows remain readable, new scans write no ro
   db.prepare('INSERT INTO scan_jobs VALUES (?,?)').run('j1', 'o'); db.prepare('INSERT INTO scan_jobs VALUES (?,?)').run('j2', 'o')
   const t = new SearchTrace(); t.search({ query: 'kept query text', attempted: true, outcome: 'ok', hits: ['https://a.example/x'] })
   assert.equal(writeSourceStats(db, 'j1', 1, 'search:tinyfish', summarizeTrace(t), { DAZL_SOURCE_STATS: '1', DAZL_SOURCE_STATS_USERS: 'o' }), true)
-  assert.equal(writeSourceStats(db, 'j2', 1, 'search:tinyfish', summarizeTrace(t), {}), false)
+  assert.equal(writeSourceStats(db, 'j2', 1, 'search:tinyfish', summarizeTrace(t), { DAZL_SOURCE_STATS: '0' }), false)
   assert.deepEqual(sourceStats(db, 'o', 'j1')!.map(r => r.queries), [['kept query text']])
   assert.deepEqual(sourceStats(db, 'o', 'j2'), [])
 })

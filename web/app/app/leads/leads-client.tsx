@@ -58,6 +58,9 @@ function dedupeLabel(label: string): string {
 
 export default function LeadsClient() {
   const [query, setQuery] = useState('')
+  // The request text of the job being VIEWED (history / deep link): the input must not keep the last typed or restored query
+  // of another scan while showing this scan's profile and results (live acceptance run: NYC results under the London query).
+  const queryShownFor = useRef<string | null>(null)
   const [draft, setDraft] = useState<Icp | null>(null)
   const [draftNote, setDraftNote] = useState('')
   const [busy, setBusy] = useState(false)
@@ -309,6 +312,7 @@ export default function LeadsClient() {
       setStatus(s.status); setJobError(s.error ?? ''); setLeadsSoFar(s.lead_count ?? 0); setStartedAt(s.claimed_at ?? null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
       setQuality(s.quality ?? null)
       if (s.icp) setIcp({ icp: s.icp, source: s.icp_source })
+      if (typeof s.query === 'string' && s.query && queryShownFor.current !== jobId) { queryShownFor.current = jobId; setQuery(s.query) }
     }
     void tick() // immediate first check: a done deep link must not sit on a loading state for a full interval
     const t = setInterval(tick, 5000)
