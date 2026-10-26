@@ -34,7 +34,7 @@ function run(modelQueries: string[]) {
   const searched: string[] = []
   const fetchImpl = (async (u: string) => {
     if (u.startsWith('https://api.search.tinyfish.ai')) {
-      searched.push(new URL(u).searchParams.get('query') ?? '')
+      { const q = new URL(u).searchParams.get('query') ?? ''; if (!q.startsWith('site:linkedin.com/in ')) searched.push(q) } // discovery queries only: the post-scan people search (lib/people/people-search.ts) is pinned in its own tests
       return new Response(JSON.stringify({ results: [{ url: 'https://jobs.example/hf', title: 'Payroll specialist', snippet: QUOTE, date: recent }] }), { status: 200 })
     }
     if (u.startsWith('https://api.fetch.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: 'https://jobs.example/hf', title: 'Payroll specialist', text: `Posted ${recent}. ${QUOTE}. Apply now.` }] }), { status: 200 })
