@@ -69,3 +69,14 @@ test('a title matching only the generic word manager is weak, never strong', () 
   assert.equal(ranked[0].tier, 'weak')
   assert.deepEqual(ranked[0].matched, ['manager'])
 })
+
+test('person rows (company site, public profile search) join the right-people list; profile links only for profiles', () => {
+  const ranked = contactsFromEnrichments([
+    { kind: 'person', value: 'Jane Doe, Head of HR', label: 'x', source_url: 'https://www.linkedin.com/in/jane-doe-1', connector: 'search:people' },
+    { kind: 'person', value: 'Dana Lee, CEO', label: 'x', source_url: 'https://acme.com/team', connector: 'sitecrawl' },
+    { kind: 'email', value: 'hello@acme.com', label: null, source_url: 'https://acme.com/contact', connector: 'sitecrawl' },
+  ], 'HR manager; Head of People')
+  assert.equal(ranked.length, 2)
+  assert.deepEqual([ranked[0].name, ranked[0].title, ranked[0].linkedin], ['Jane Doe', 'Head of HR', 'https://www.linkedin.com/in/jane-doe-1'])
+  assert.deepEqual([ranked[1].name, ranked[1].linkedin, ranked[1].source], ['Dana Lee', null, 'https://acme.com/team'])
+})
