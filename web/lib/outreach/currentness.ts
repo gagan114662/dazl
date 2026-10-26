@@ -12,6 +12,12 @@ export function currentnessHeld(db: Database.Database, tenant: string, lead: str
  return row.human_confirmed_at===null && row.confidence!==null
 }
 
+// Read alone for the page: a window hold survives the user's own review, so the page must not clear it optimistically.
+export function leadWindowHeld(db: Database.Database, tenant: string, lead: string, now: Date = new Date()): boolean {
+ const row=db.prepare('SELECT l.event_date,j.icp,j.query FROM leads l JOIN scan_jobs j ON j.id=l.scan_job_id WHERE l.id=? AND j.user_id=?').get(lead,tenant) as {event_date:string|null;icp:string|null;query:string|null}|undefined
+ return !!row && windowHeld(row, now)
+}
+
 function windowHeld(row: { event_date: string | null; icp: string | null; query: string | null }, now: Date): boolean {
  let days: number | null = null
  if (row.icp) {

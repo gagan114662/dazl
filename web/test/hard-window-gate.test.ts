@@ -7,7 +7,7 @@ import { migrateScan, createQueryJob } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { createDraft } from '../lib/outreach/service.ts'
-import { currentnessHeld } from '../lib/outreach/currentness.ts'
+import { currentnessHeld, leadWindowHeld } from '../lib/outreach/currentness.ts'
 import { confirmLeadReview } from '../lib/scan/review-confirm.ts'
 import { windowStatus, splitByWindow, windowCutoff } from '../lib/scan/window.ts'
 import { recencyAnchor } from '../lib/scan/runner.ts'
@@ -59,6 +59,7 @@ const draftError = (db: Database.Database, lead: string): string | null => { try
 test('control: an inside-window lead the user reviewed can be drafted (the gate is what blocks the others)', () => {
   const db = setup(); const lead = addLead(db, day(-10))
   assert.equal(confirmLeadReview(db, 'A', lead), true)
+  assert.equal(leadWindowHeld(db, 'A', lead), false)
   assert.equal(draftError(db, lead), null)
 })
 
@@ -68,6 +69,7 @@ for (const [name, date] of [['stale (Instinct repro: 2026-04-01 style, older tha
     assert.equal(currentnessHeld(db, 'A', lead), true)
     assert.equal(confirmLeadReview(db, 'A', lead), true, 'ordinary source review still succeeds')
     assert.equal(currentnessHeld(db, 'A', lead), true, 'and is not a window waiver')
+    assert.equal(leadWindowHeld(db, 'A', lead), true, 'the page is told the hold survives review')
     assert.equal(draftError(db, lead), 'lead_currentness_unconfirmed')
     assert.equal((db.prepare('SELECT count(*) n FROM outreach_messages').get() as { n: number }).n, 0)
   })
