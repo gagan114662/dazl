@@ -14,10 +14,9 @@ const n = (v: string | undefined, d: number) => (Number.isFinite(Number(v)) && N
 export interface Limits { searchesPerScan: number; fetchesPerScan: number; tenantDaily: number; globalSearchDaily: number; globalFetchDaily: number; perMinute: number }
 export const limits = (env: Env = process.env): Limits => ({
   // A live Ohio scan at 4 searches / 8 fetches produced 2 hits and 0 verified leads: too narrow to find anything.
-  // 8 + 16 is 24 units a scan, ~8 scans per tenant per day, still far inside the free search tier.
   searchesPerScan: n(env.TINYFISH_SEARCHES_PER_SCAN, 8),
   fetchesPerScan: n(env.TINYFISH_FETCHES_PER_SCAN, 16), // URLs
-  tenantDaily: n(env.TINYFISH_TENANT_DAILY, 200), // search calls + fetched URLs per tenant per UTC day
+  tenantDaily: n(env.TINYFISH_TENANT_DAILY, 60), // search calls + fetched URLs per tenant per UTC day
   globalSearchDaily: n(env.TINYFISH_GLOBAL_SEARCH_DAILY, 3000), // docs: Search is free to 12,000/day
   globalFetchDaily: n(env.TINYFISH_GLOBAL_FETCH_DAILY, 400), // docs: Fetch is free to 1,000 URLs/day
   perMinute: n(env.TINYFISH_PER_MINUTE, 20), // docs: 30 requests/minute default on Search
