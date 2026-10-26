@@ -6,9 +6,7 @@ import { buildSources } from '@/lib/sources/ui-sources'
 import { emptyLeadsMessage, scoreLabel, quoteNote } from '@/lib/scan/leads-view'
 import { eventTypeLabel } from '@/lib/events/labels'
 import { companySearchEligible } from '@/lib/scan/find-contact-eligible'
-import { contactsFromEnrichments } from '@/lib/people/rank'
-// Where a listed person came from, in words. Unknown connectors show their id.
-const PEOPLE_SOURCE: Record<string, string> = { sitecrawl: 'the company website (listed with this title)', 'search:people': 'a public LinkedIn search result (not verified as current)', 'adv:linkedin': 'LinkedIn, through your session', 'enrich:apollo': 'Apollo', 'enrich:pdl': 'People Data Labs' }
+import { contactsFromEnrichments, PEOPLE_SOURCE } from '@/lib/people/rank'
 import { OpportunityCardView } from './opportunity-card'
 import { publishedEmail, publishedContact, contactSearchNote, domainBasisNote, domainBasisText } from '@/lib/outreach/published-email'
 import { domainReviewFor } from '@/lib/outreach/domain-review'
