@@ -26,6 +26,10 @@ Updated by the builder on every branch. Newest first.
 
 ## In progress (interactive Claude session, do not duplicate)
 
+- #190 `b/email-pattern`: email finder part 1 (Next item 2 part 1). Done, in review.
+- #191 `b/dm-icp-rank`: decision-maker finder part 2, buyer-role ranking + department titles (Next item 1, ICP
+  ranking part). Done, in review. Still open from item 1: SEC officers, GitHub org members.
+
 - #188 `b/verify-provenance`: diagnostic log line answering whether TinyFish had text for pages the verifier could
   not read. The blocked-source fix waits for that data.
 
