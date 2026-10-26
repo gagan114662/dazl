@@ -57,8 +57,9 @@ test('withGeography: adds missing places after the model words, leaves queries t
   assert.deepEqual(withGeography(['payroll manager job posting small company'], ['Ohio']), ['payroll manager job posting small company Ohio'])
   assert.deepEqual(withGeography(['payroll manager job Ohio small company', 'office manager hiring OHIO'], ['Ohio']), ['payroll manager job Ohio small company', 'office manager hiring OHIO'])
   assert.deepEqual(withGeography(['payroll job posting'], []), ['payroll job posting'])
-  assert.deepEqual(withGeography(['a payroll query here'], ['Ohio', 'Cleveland']), ['a payroll query here Ohio Cleveland'])
-  assert.deepEqual(withGeography(['payroll jobs near Cleveland'], ['Ohio', 'Cleveland']), ['payroll jobs near Cleveland Ohio'], 'only the missing place is added')
+  assert.deepEqual(withGeography(['a payroll query here'], ['Ohio', 'Cleveland']), ['a payroll query here Ohio'], 'one place per query, never all appended')
+  assert.deepEqual(withGeography(['payroll jobs near Cleveland'], ['Ohio', 'Cleveland']), ['payroll jobs near Cleveland'], 'a query naming one requested place is left as written')
+  assert.deepEqual(withGeography(['sales manager vacancy', 'head of sales hiring', 'sales director role'], ['Lisbon', 'Porto']), ['sales manager vacancy Lisbon', 'head of sales hiring Porto', 'sales director role Lisbon'], 'alternative places rotate across queries')
   assert.deepEqual(withGeography(['payroll hiring in New  York small firms'], ['New York']), ['payroll hiring in New  York small firms'], 'multi-word place matches across whitespace')
 })
 
@@ -83,7 +84,8 @@ test('withGeography: never cuts or rewords the model query; a place that does no
   const out = withGeography([q150], places)[0]
   assert.ok(out.startsWith(q150), 'original is a full prefix')
   assert.ok(out.length <= QUERY_CAP, 'never past the cap')
-  assert.equal(out, `${q150} ${places[0]} ${places[1]}`, 'places added in profile order while they fit; the third (60 chars, 333 total) is skipped')
+  assert.equal(out, `${q150} ${places[0]}`, 'one place added, the first in profile order that fits')
+  assert.equal(withGeography(['z'.repeat(250)], ['A'.repeat(60), 'Ohio'])[0], `${'z'.repeat(250)} Ohio`, 'a place that does not fit is skipped for the next one')
   assert.deepEqual(withGeography(['ab'], ['Ohio']), ['ab Ohio'])
   assert.deepEqual(withGeography(['payroll job'], ['x', 'Z'.repeat(61), '  ']), ['payroll job'], 'too-short, too-long and blank places are ignored')
 })
