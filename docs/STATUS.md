@@ -31,6 +31,12 @@ Updated by the builder on every branch. Newest first.
 - #195 b/news-search: free Bing News RSS beside TinyFish and before paid research.
 - integration/all-open: all of the above merged, for one scoreboard run (not for merging).
 
+## In review (code fixes only)
+
+- b/window-counts (#211): with an explicit window only a valid in-window date is counted in `verified`; stale, undated,
+  invalid and future dates are stored under needs_review with a reason each. verified + needs_review is unchanged.
+  Existing scans are not backfilled. Fixture tests only; no live run.
+
 ## In progress (interactive Claude session, do not duplicate)
 
 - Blocked-source verification: waits for #188 data from a live run.
