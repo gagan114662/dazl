@@ -39,3 +39,10 @@ process here. Any agent (new, restarted, or scheduled) reads these three files f
 
 Builder runs on Sonnet for code, Haiku for small chores; Opus only on request. A scheduled cloud builder runs every
 4 hours as a backstop and exits early if its last branch still has unresolved review findings.
+
+## Design items (not built by the scheduled builder)
+
+Changes to the evidence verifier, grading/scoring rules, product policy, spend guards or privacy are design items.
+The scheduled builder (Sonnet) writes a design note in `docs/design/<topic>.md`, opens a "DESIGN:" PR, marks the item
+"needs design" in STATUS.md and moves on. An interactive session (Opus) or the owner decides and implements;
+Instinct reviews as usual.
