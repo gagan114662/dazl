@@ -4,6 +4,7 @@ import { getJob, MAX_ATTEMPTS } from '@/lib/scan/store'
 import { kickRunner } from '@/lib/scan/runner'
 import { sourceRuns } from '@/lib/scan/source-runs'
 import { sourceStats } from '@/lib/search/trace'
+import { modelUsage } from '@/lib/scan/model-usage'
 
 // What a scan never stored, so a reader cannot mistake absence for a zero. Fixed list, not derived from data.
 const NOT_RECORDED = ['search_queries', 'raw_search_hits', 'fetched_pages']
@@ -26,5 +27,8 @@ export async function GET(req: NextRequest) {
   // null = the table was never created (stats recording is off or this scan predates it): "not recorded". [] = table exists, nothing for this job.
   const source_stats = sourceStats(getScanDb(), user.id, job.id)
   const recorded = !!source_stats && source_stats.length > 0
-  return NextResponse.json({ job_id: job.id, status: job.status, created_at: job.created_at, claimed_at: job.claimed_at, attempts: job.attempts, max_attempts: MAX_ATTEMPTS, lead_count: job.lead_count, quality: job.candidates === null ? null : { candidates: job.candidates, passed: job.verified, needs_review: job.needs_review, dropped: job.dropped, drop_reasons: job.drop_reasons ? JSON.parse(job.drop_reasons) : {} }, error: job.error === 'key_rejected' && (job as { funded_by?: string }).funded_by === 'trial' ? 'trial_key_invalid' : job.error, source_runs, source_stats, not_recorded: recorded ? NOT_RECORDED_WITH_STATS : NOT_RECORDED, query: job.query, icp: job.icp ? JSON.parse(job.icp) : null, icp_source: job.icp_inferred === 1 ? 'inferred' : job.icp_inferred === 2 ? 'request_only' : job.icp_inferred === 0 ? 'user' : null })
+  // Owner-scoped model request/token totals; recorded:false (all null) when nothing was stored. Never a fabricated zero.
+  const model_usage = modelUsage(getScanDb(), user.id, job.id)
+  const notRecorded = (recorded ? NOT_RECORDED_WITH_STATS : NOT_RECORDED).filter(x => !(x === 'model_token_usage' && model_usage.recorded))
+  return NextResponse.json({ job_id: job.id, status: job.status, created_at: job.created_at, claimed_at: job.claimed_at, attempts: job.attempts, max_attempts: MAX_ATTEMPTS, lead_count: job.lead_count, quality: job.candidates === null ? null : { candidates: job.candidates, passed: job.verified, needs_review: job.needs_review, dropped: job.dropped, drop_reasons: job.drop_reasons ? JSON.parse(job.drop_reasons) : {} }, error: job.error === 'key_rejected' && (job as { funded_by?: string }).funded_by === 'trial' ? 'trial_key_invalid' : job.error, source_runs, source_stats, model_usage, not_recorded: notRecorded, query: job.query, icp: job.icp ? JSON.parse(job.icp) : null, icp_source: job.icp_inferred === 1 ? 'inferred' : job.icp_inferred === 2 ? 'request_only' : job.icp_inferred === 0 ? 'user' : null })
 }
