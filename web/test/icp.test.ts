@@ -163,18 +163,54 @@ test('latestQueryJob returns the most recent query job with its stored profile',
 })
 
 // Live London acceptance run: "seed funding within 90 days" came back as "seed / Series A" in the editable profile.
+// Instinct #213 review: the guard must act only on a STATED stage, respect exclusions, and fall back to the request.
 import { keepStatedFundingStage } from '../lib/scan/icp.ts'
-test('a stated funding stage is never widened by the inferred profile (seed stays seed)', async () => {
-  const q = '10-50 employee London companies that raised seed funding in the past 90 days and are hiring sales'
-  const widened = { summary: 'London startups with seed / Series A funding hiring sales', who: ['Founder'], industries: [], sizes: ['10-50 employees'], where: ['London'], signals: ['raised seed or Series A funding', 'Series A announcement', 'hiring sales reps'], exclude: ['agencies'] }
-  const r = keepStatedFundingStage(q, widened)
+const base = { summary: 's', who: ['Founder'], industries: [], sizes: ['10-50 employees'], where: ['London'], signals: [] as string[], exclude: [] as string[] }
+const Q_SEED = '10-50 employee London companies that raised seed funding in the past 90 days and are hiring sales'
+test('seed request: "seed / Series A" is trimmed to seed; signals about Series A are dropped; other fields kept', () => {
+  const r = keepStatedFundingStage(Q_SEED, { ...base, summary: 'London startups with seed / Series A funding hiring sales', signals: ['raised seed or Series A funding', 'Series A announcement', 'hiring sales reps'], exclude: ['agencies'] })
   assert.equal(r.summary, 'London startups with seed funding hiring sales')
   assert.deepEqual(r.signals, ['raised seed funding', 'hiring sales reps'])
   assert.deepEqual(r.sizes, ['10-50 employees']); assert.deepEqual(r.exclude, ['agencies'])
-  // end to end through inferIcp with a stub model that widens
-  const out = await inferIcp({ research: async () => ({ text: '', citedUrls: [] }), complete: async () => JSON.stringify(widened) }, KA, q)
-  assert.ok(!out.icp.signals.some(x => /series/i.test(x))); assert.doesNotMatch(out.icp.summary, /series/i)
-  // the request itself asks for Series A: nothing removed
-  assert.deepEqual(keepStatedFundingStage('seed or Series A startups in London', widened), widened)
-  assert.match(icpPrompt(q), /NEVER widen/)
+})
+test('seed request, model returns ONLY the wrong stage: no Series A-only summary survives; the original request is the profile', () => {
+  const r = keepStatedFundingStage(Q_SEED, { ...base, summary: 'Series A companies in London', signals: ['Series A funding'], country: 'GB', language: 'en', window_days: 90 })
+  assert.equal(r.summary, Q_SEED); assert.deepEqual(r.signals, []); assert.deepEqual(r.who, [])
+  assert.deepEqual([r.country, r.language, r.window_days], ['GB', 'en', 90], 'market fields are kept')
+})
+test('request that names no funding stage is returned unchanged, even if the model mentions Series A', () => {
+  const icp = { ...base, summary: 'Series A companies in London that are hiring', signals: ['Series A funding', 'hiring sales'] }
+  assert.deepEqual(keepStatedFundingStage('London companies hiring sales in the past 90 days', icp), icp)
+  assert.deepEqual(keepStatedFundingStage('London companies that raised funding recently', icp), icp, 'funding but no stage named')
+  assert.deepEqual(keepStatedFundingStage('seed oil producers in Ohio', { ...base, summary: 'seed suppliers' }), { ...base, summary: 'seed suppliers' }, '"seed" without a funding cue is not a stage')
+})
+test('exclusion: "exclude Series A" keeps Series A only inside exclusions; a model that asks FOR Series A is replaced by the request', () => {
+  const q = 'Find seed funded companies in London, exclude Series A or later'
+  const ok = { ...base, summary: 'Seed-funded London companies', signals: ['raised seed funding'], exclude: ['Series A or later'] }
+  assert.deepEqual(keepStatedFundingStage(q, ok), ok, 'a correct profile is untouched')
+  const wrong = keepStatedFundingStage(q, { ...base, summary: 'Series A companies in London', signals: ['Series A funding'] })
+  assert.equal(wrong.summary, q); assert.deepEqual(wrong.signals, [])
+  const mixed = keepStatedFundingStage(q, { ...base, summary: 'Seed-funded London companies, excluding Series A', signals: ['raised seed funding', 'Series B round'], exclude: ['Series A'] })
+  assert.equal(mixed.summary, 'Seed-funded London companies, excluding Series A'); assert.deepEqual(mixed.signals, ['raised seed funding']); assert.deepEqual(mixed.exclude, ['Series A'])
+  const onlyExclusion = keepStatedFundingStage('London companies, not Series A, that raised funding', { ...base, summary: 'London companies that raised Series A funding' })
+  assert.equal(onlyExclusion.summary, 'London companies, not Series A, that raised funding', 'exclusion-only request: asking FOR the excluded stage falls back')
+})
+test('the request itself asks for several stages: all are kept', () => {
+  const q = 'London startups that raised seed or Series A funding'
+  const icp = { ...base, summary: 'London startups with seed or Series A funding', signals: ['raised Series A'] }
+  assert.deepEqual(keepStatedFundingStage(q, icp), icp)
+})
+test('end to end through inferIcp with a stub model that widens; the prompt carries the rule', async () => {
+  const widened = { ...base, summary: 'London startups with seed / Series A funding hiring sales', signals: ['Series A announcement', 'hiring sales reps'] }
+  const out = await inferIcp({ research: async () => ({ text: '', citedUrls: [] }), complete: async () => JSON.stringify(widened) }, KA, Q_SEED)
+  assert.doesNotMatch(out.icp.summary, /series/i); assert.ok(!out.icp.signals.some(x => /series/i.test(x)))
+  assert.match(icpPrompt(Q_SEED), /NEVER widen/)
+})
+test('funding guard edge cases: hyphenated "series-a", "seed or later" requests, pre-seed vs seed', () => {
+  const widened = { ...base, summary: 'London startups with seed and Series A funding', signals: ['Series A round'] }
+  assert.deepEqual(keepStatedFundingStage('London startups that raised seed funding or later, hiring sales', widened), widened, 'later stages requested')
+  assert.deepEqual(keepStatedFundingStage('London startups with seed+ funding', widened), widened)
+  assert.equal(keepStatedFundingStage(Q_SEED, { ...base, summary: 'London startups with seed / series-a funding' }).summary, 'London startups with seed funding', 'series-a spelling')
+  const pre = keepStatedFundingStage('London startups that raised pre-seed funding', { ...base, summary: 'London startups with seed funding' })
+  assert.equal(pre.summary, 'London startups that raised pre-seed funding', 'seed is not pre-seed: fall back to the request')
 })

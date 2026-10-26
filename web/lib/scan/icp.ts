@@ -74,20 +74,71 @@ export function parseIcp(text: string): Icp | null {
   }
 }
 
-// The profile is shown to the user as the search that will run. A model that "helpfully" widened a stated funding stage
-// (live London acceptance run: a seed-only request came back as "seed / Series A") changes which companies qualify, so
-// a later-stage term the request never used is removed from the inferred profile. Only the model's additions are touched:
-// when the request itself says "series", nothing is removed; user edits are never passed through this function.
-const LATER_STAGE = /\bseries\s*[a-e]\b/i
+// The profile is shown to the user as the search that will run. A model that "helpfully" changes a stated funding stage
+// (live London run: a seed-only request came back as "seed / Series A") changes which companies qualify. This guard acts
+// ONLY when the request states a funding stage (a stage word AND a funding cue, so "seed oil" is untouched):
+//   - positive stages the request names ("seed") are the only stages the profile may ask for;
+//   - stages the request EXCLUDES ("exclude Series A or later") may appear only inside an exclusion;
+//   - a request that names no stage is returned unchanged;
+// An offending mention is trimmed from a longer phrase ("seed / Series A" -> "seed") or its list item is dropped. When the
+// constraint cannot be preserved that way (the summary is only about the wrong stage, or loses the stated stage), the
+// ORIGINAL REQUEST is the profile instead (fallbackIcp, keeping only the market fields: country, language, window).
+// Only inferred profiles pass through here; user edits never do.
+type Stage = 'preseed' | 'seed' | 'a' | 'b' | 'c' | 'd' | 'e'
+const STAGE_RE = /\b(?:(pre[-\s]?seed)|(seed)|series[-\s]*([a-e]))\b/gi
+const FUNDING_CUE = /\b(?:fund(?:ing|ed|s)?|rais(?:e|ed|es|ing)|round|invest(?:ed|ment|ors?)|backed|venture|capital|startup)\b/i
+const EXCLUDE_CUE = /\b(?:exclud(?:e|es|ed|ing)|except|excepting|without|not|no|never|skip|avoid|ignore|other than|rule out|ruling out)\b/i
+const stageOf = (m: RegExpExecArray): Stage => (m[1] ? 'preseed' : m[2] ? 'seed' : (m[3].toLowerCase() as Stage))
+interface Mention { stage: Stage; start: number; end: number; excluded: boolean }
+function mentions(text: string): Mention[] {
+  const out: Mention[] = []
+  for (const clause of text.split(/(?<=[.;!?])\s+|\bbut\b|\n/i)) {
+    const base = text.indexOf(clause)
+    for (const m of clause.matchAll(STAGE_RE)) {
+      const before = clause.slice(0, m.index)
+      out.push({ stage: stageOf(m as unknown as RegExpExecArray), start: base + (m.index ?? 0), end: base + (m.index ?? 0) + m[0].length, excluded: EXCLUDE_CUE.test(before.slice(-60)) })
+    }
+  }
+  return out
+}
 export function keepStatedFundingStage(query: string, icp: Icp): Icp {
-  if (/\bseries\b/i.test(query)) return icp
-  const keep = (xs: string[]) => xs.filter(x => !LATER_STAGE.test(x))
-  // a phrase that merely adds the later stage is trimmed; an item that is ABOUT the later stage is dropped
-  const text = (t: string) => t
-    .replace(/\s*(?:\/|,|;|\bor\b|\band\b|\bto\b|-)\s*series\s*[a-e]\b(?:\s*(?:\/|,|\bor\b|\band\b|\bto\b|-)\s*series\s*[a-e]\b)*/gi, '')
-    .replace(/\bseries\s*[a-e]\b\s*(?:\/|,|\bor\b|\band\b)\s*/gi, '')
-    .replace(/\s{2,}/g, ' ').trim()
-  const out: Icp = { ...icp, summary: text(icp.summary) || icp.summary, who: keep(icp.who), industries: keep(icp.industries), sizes: keep(icp.sizes), where: keep(icp.where), signals: keep(icp.signals.map(text)), exclude: icp.exclude }
+  if (!FUNDING_CUE.test(query)) return icp
+  // "seed or later" / "Series A+": later stages are requested, so there is nothing to protect from widening.
+  if (query.split(/(?<=[.;!?])\s+|\bbut\b|\n/i).some(c => /\b(?:or|and)\s+(?:later|above|beyond|after)\b|\b(?:seed|series[-\s]*[a-e])\s*\+/i.test(c) && !EXCLUDE_CUE.test(c))) return icp
+  const q = mentions(query)
+  const want = new Set(q.filter(m => !m.excluded).map(m => m.stage)); const notWant = new Set(q.filter(m => m.excluded).map(m => m.stage))
+  if (want.size === 0 && notWant.size === 0) return icp // the request names no stage: nothing to protect, nothing to change
+  const bad = (m: Mention) => !m.excluded && (notWant.has(m.stage) || (want.size > 0 && !want.has(m.stage)))
+  const fallback = (): Icp => { const f = fallbackIcp(query); return { ...f, ...(icp.country ? { country: icp.country } : {}), ...(icp.language ? { language: icp.language } : {}), ...(icp.window_days ? { window_days: icp.window_days } : {}) } }
+  // Remove offending mentions plus the separator that joined them ("seed / Series A", "seed or Series A, Series B").
+  const trim = (t: string): string => {
+    let out = t
+    for (const m of mentions(t).filter(bad).reverse()) {
+      const head = out.slice(0, m.start).replace(/\s*(?:\/|,|;|&|\bor\b|\band\b|\bto\b|-)\s*$/i, '')
+      out = (head + (head === out.slice(0, m.start) ? '' : ' ') + out.slice(m.end).replace(/^\s*(?:\/|,|;|&|\bor\b|\band\b)\s*(?=\S)/i, '')).replace(/\s{2,}/g, ' ').trim()
+    }
+    return out
+  }
+  const touched = (t: string) => mentions(t).some(bad)
+  const mentionsWanted = (t: string) => mentions(t).some(m => !m.excluded && want.has(m.stage))
+  // The summary is what the user reads as "the search". Offending, and nothing safe to keep => the original request.
+  let summary = icp.summary
+  if (touched(summary)) {
+    summary = trim(summary)
+    const ok = summary.length >= 10 && (want.size === 0 ? false : mentionsWanted(summary))
+    if (!ok) return fallback()
+  } else if (want.size > 0 && !mentionsWanted(summary) && mentions(summary).some(m => !m.excluded)) {
+    return fallback() // names some other stage and not the stated one
+  }
+  // A list item with an offending mention is trimmed only when it still names a STATED stage afterwards ("raised seed or
+  // Series A funding" -> "raised seed funding"); an item that is about the wrong stage ("Series A announcement") is dropped
+  // whole, never left as a meaningless fragment.
+  const list = (xs: string[]) => xs.flatMap(x => {
+    if (!touched(x)) return [x]
+    const t = trim(x)
+    return t.length >= 3 && !touched(t) && mentionsWanted(t) ? [t] : []
+  })
+  const out: Icp = { ...icp, summary, who: list(icp.who), industries: list(icp.industries), sizes: list(icp.sizes), where: list(icp.where), signals: list(icp.signals), exclude: icp.exclude }
   return out
 }
 
