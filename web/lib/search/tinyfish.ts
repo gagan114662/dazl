@@ -247,7 +247,8 @@ export function withGeography(queries: string[], where: string[]): string[] {
 
 // TinyFish returns pages as markdown. The verifier later reads the same page as plain text, so markdown syntax in an
 // excerpt can never match: "[Apply now](https://...)" is "Apply now" on the page. Links keep their text; images, bare
-// URLs and emphasis/heading/bullet/table marks go. Wording is untouched, so a sentence copied from here is on the page.
+// URLs and emphasis/heading/bullet/table marks go. Removing a bare URL does change the text, so this output is extraction
+// input only: a quote taken from it is kept only if the verifier finds it on the actual fetched page.
 export function markdownToText(md: string): string {
   return md
     .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
@@ -257,7 +258,7 @@ export function markdownToText(md: string): string {
     .replace(/^\s{0,3}#{1,6}\s+/gm, '')
     .replace(/^\s*[-*+]\s+/gm, '')
     .replace(/^\s*\|?\s*:?-{3,}.*$/gm, ' ')
-    .replace(/(\*{1,3})([^*\n]+)\1/g, '$2')
+    .replace(/(?<![A-Za-z0-9*])(\*{1,3})(?=\S)([^*\n]+?)(?<=\S)\1(?![A-Za-z0-9*])/g, '$2') // *emphasis* only; 3*4*5 and a*b keep their asterisks
     .replace(/(?<![A-Za-z0-9])(_{1,3})([^_\n]+)\1(?![A-Za-z0-9])/g, '$2') // _emphasis_ only; snake_case words keep their underscores
     .replace(/`{1,3}/g, '')
     .replace(/\|/g, ' ')

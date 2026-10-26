@@ -62,7 +62,7 @@ test('queries parse with fallback; evidence prefers fetched text over snippet', 
   assert.equal(ev.length, 1); assert.ok(ev[0].quote.startsWith('Full page'))
 })
 
-test('markdown is reduced to the words the verifier will see on the page; wording itself is never changed', async () => {
+test('markdown marks are reduced to the words the verifier will see; removed bare URLs are the one wording change', async () => {
   const { markdownToText } = await import('../lib/search/tinyfish.ts')
   const out = markdownToText('# Payroll Specialist\n\n**Acme Logistics** is hiring a [Payroll Specialist](https://boards.greenhouse.io/acme/jobs/1) in Columbus, Ohio.\n![logo](https://x/y.png) See https://acme.com/jobs for more.\n- Process payroll for _200_ staff\n|---|---|\nsnake_case_name and 3*4 stay').replace(/\s+/g, ' ').trim()
   assert.equal(out, 'Payroll Specialist Acme Logistics is hiring a Payroll Specialist in Columbus, Ohio. See for more. Process payroll for 200 staff snake_case_name and 3*4 stay')
@@ -72,4 +72,30 @@ test('page evidence is markdown-free; snippet-only evidence is unchanged', () =>
   const ev = toEvidence([{ url: 'https://a.example/x', title: 'T', snippet: 'snippet text that is long enough', date: null }, { url: 'https://b.example/y', title: 'U', snippet: 'Beta Corp [opens] a new office in Lisbon', date: null }], [{ url: 'https://a.example/x', title: 'Full', text: '**Acme** is hiring a [sales lead](https://a.example/jobs/1) in Ohio.' }])
   assert.equal(ev[0].quote, 'Acme is hiring a sales lead in Ohio.')
   assert.equal(ev[1].quote, 'Beta Corp [opens] a new office in Lisbon')
+})
+
+test('code, maths and identifiers keep their characters; only real emphasis marks go', async () => {
+  const { markdownToText } = await import('../lib/search/tinyfish.ts')
+  assert.equal(markdownToText('area is 3*4*5 units'), 'area is 3*4*5 units')
+  assert.equal(markdownToText('a*b and c*d'), 'a*b and c*d')
+  assert.equal(markdownToText('Price: $5 * 2 = $10'), 'Price: $5 * 2 = $10')
+  assert.equal(markdownToText('f(x) = x_1 + x_2, mail a_b@c.example'), 'f(x) = x_1 + x_2, mail a_b@c.example')
+  assert.equal(markdownToText('**Acme** and *new* and ***both***'), 'Acme and new and both')
+  assert.equal(markdownToText('run `npm ci` now'), 'run npm ci now')
+})
+
+// Instinct (#194): the transformed text is extraction input only. A quote that exists only in the transformed text (here
+// because a bare URL was removed) is not on the real page, so the existing verifier must not keep it as a lead.
+test('a quote that only exists after the markdown transform is not verified against the real page', async () => {
+  const { markdownToText } = await import('../lib/search/tinyfish.ts')
+  const { verifyLeads } = await import('../lib/scan/runner.ts')
+  const realPage = { title: 'Payroll Specialist at Acme Logistics', text: 'Acme Logistics is hiring a Payroll Specialist in Columbus, Ohio. See https://acme-logistics.example/jobs for more details today.', retrievedAt: 1792696500 }
+  const transformed = markdownToText('**Acme Logistics** is hiring a Payroll Specialist in Columbus, Ohio. See https://acme-logistics.example/jobs for more details today.').replace(/\s+/g, ' ').trim()
+  assert.equal(transformed, 'Acme Logistics is hiring a Payroll Specialist in Columbus, Ohio. See for more details today.')
+  const lead = (excerpt: string) => ({ name: '', company: 'Acme Logistics', contact: null, signal: 'Hiring a Payroll Specialist', source_url: 'https://acme-logistics.example/jobs/1', score: 80, excerpt, event_date: null })
+  const judge = async () => 'supports' as const
+  const altered = await verifyLeads([lead('Ohio. See for more details today')], async () => realPage, new Date('2026-10-26T00:00:00Z'), judge)
+  assert.equal(altered.leads.length, 0, 'transformed-only wording is never a verified lead')
+  const literal = await verifyLeads([lead('Acme Logistics is hiring a Payroll Specialist in Columbus, Ohio')], async () => realPage, new Date('2026-10-26T00:00:00Z'), judge)
+  assert.equal(literal.leads.length, 1, 'control: the same page verifies a quote that is literally on it')
 })
