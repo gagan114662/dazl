@@ -525,7 +525,7 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
 }
 
 // diag (optional) receives what this collector really did: every query sent, per-call outcomes, hit and page counts.
-async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider: Provider, key: string, fetchImpl?: typeof fetch, diag?: { trace: SearchTrace; info: Partial<SourceStats>; hitUrls: string[]; tfTextUrls?: string[] }, newsHttp?: SafeGet): Promise<LeadDraft[] | null> {
+async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider: Provider, key: string, fetchImpl?: typeof fetch, diag?: { trace: SearchTrace; info: Partial<SourceStats>; hitUrls: string[]; tfTextUrls?: string[]; newsUrls?: string[] }, newsHttp?: SafeGet): Promise<LeadDraft[] | null> {
   migrateTinyfish(db)
   const complete = provider.complete!
   const spent = { searches: 0, fetches: 0 }
@@ -557,7 +557,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   const geo = { ...(icp.country ? { location: icp.country } : {}), ...(icp.language ? { language: icp.language } : {}) }
   for (const query of q) { const r = await tfSearch(db, job.user_id, query, { afterDate: after, ...geo }, spent, diag ? { trace: diag.trace } : {}); if (!r.ok) { if (hits.length === 0) return null; break } hits.push(...r.hits) }
   // Free news search beside TinyFish (lib/search/news.ts): the same queries minus site: restrictions, the ICP's market.
-  if (newsHttp && hits.length > 0) { const seen = new Set(hits.map(h => h.url)); for (const h of await newsSearch(newsHttp, q.filter(x => !/site:/i.test(x)), icp.language)) if (!seen.has(h.url)) { seen.add(h.url); hits.push(h) } }
+  if (newsHttp && hits.length > 0) { const seen = new Set(hits.map(h => h.url)); for (const h of await newsSearch(newsHttp, q.filter(x => !/site:/i.test(x)), icp.language)) if (!seen.has(h.url)) { seen.add(h.url); hits.push(h); diag?.newsUrls?.push(h.url) } }
   if (hits.length === 0) {
     // Every search answered and none returned a result: the evidence really is 0. If any search failed it stays unknown (null).
     if (diag && summarizeTrace(diag.trace).hits_complete === true) Object.assign(diag.info, { evidence_items: 0, evidence_with_page_text: 0, evidence_snippet_only: 0 })
@@ -703,7 +703,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // Free news search: on unless NEWS_SEARCH_ENABLED=0 (npm test sets it, like SITECRAWL_ENABLED); an injected
     // deps.newsHttp always turns it on, so tests that exercise news do so explicitly.
     const newsOn = !!deps.newsHttp || newsEnabled()
-    const diag = { trace: new SearchTrace(), info: {} as Partial<SourceStats>, hitUrls: [] as string[], tfTextUrls: [] as string[] }
+    const diag = { trace: new SearchTrace(), info: {} as Partial<SourceStats>, hitUrls: [] as string[], tfTextUrls: [] as string[], newsUrls: [] as string[] }
     if (job.query && icpForSources && complete && tinyfishEnabled()) {
       try {
         ledger.record('search:tinyfish', 'started')
@@ -711,6 +711,8 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         leads = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl, diag, newsOn ? deps.newsHttp ?? safeGet : undefined)
         ledger.record('search:tinyfish', leads === null ? 'unavailable' : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:tinyfish', leads)
+        // Leads whose page GDELT surfaced carry the GDELT attribution (its terms require citation and a link).
+        if (leads && diag.newsUrls.length) ledger.candidates(NEWS_SOURCE, leads.filter(l => diag.newsUrls.includes(l.source_url)))
       } catch (e) {
         if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e
@@ -730,7 +732,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         assertOwned(db, job)
         leads = await newsLeads(job, icpForSources, providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl)
         ledger.record('search:news', leads === null ? 'unavailable' : leads.length ? 'ok' : 'empty')
-        if (leads) ledger.candidates('search:news', leads)
+        if (leads) { ledger.candidates('search:news', leads); ledger.candidates(NEWS_SOURCE, leads) }
       } catch (e) {
         if (e instanceof ScanStopped || e instanceof ScanTimedOut || e instanceof SpendRefused) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e

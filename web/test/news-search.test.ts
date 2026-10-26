@@ -1,3 +1,6 @@
+import { gdeltAttribution } from '../lib/search/news-attribution.ts'
+import { toEvidence } from '../lib/search/tinyfish.ts'
+import { exportLeads } from '../lib/scan/store.ts'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
@@ -23,9 +26,9 @@ test('language filter from the ICP; unknown codes mean no filter; url carries qu
   assert.equal(new URL(newsUrl('x', null)).searchParams.get('query'), 'x')
 })
 
-test('articles become dated hits with the publisher url; tokenized titles are tidied; bad rows and bad JSON dropped', () => {
+test('articles become hits with the publisher url and GDELT\'s observed date kept apart from the event date; tokenized titles are tidied; bad rows and bad JSON dropped', () => {
   const hits = parseGdelt(gdelt([{ url: 'https://news.example.com/acme', title: 'Acme Dental raises $1 . 5 million , opens ( second ) clinic' }, { url: 'http://insecure.example.com/x', title: 'x' }]))
-  assert.deepEqual(hits, [{ url: 'https://news.example.com/acme', title: 'Acme Dental raises $1. 5 million, opens (second) clinic', snippet: '', date: recent.toISOString().slice(0, 10) }])
+  assert.deepEqual(hits, [{ url: 'https://news.example.com/acme', title: 'Acme Dental raises $1. 5 million, opens (second) clinic', snippet: '', date: null, observed: recent.toISOString().slice(0, 10), via: 'gdelt' }])
   assert.deepEqual(parseGdelt('Please limit requests to one every 5 seconds'), [])
   assert.deepEqual(parseGdelt('{}'), [])
 })
@@ -71,4 +74,57 @@ test('TinyFish off: a scan finds and verifies a lead from news, quoting the fetc
   assert.equal(research, 0)
   assert.ok(extractionPrompt.includes('will add six chairs'), 'the model read the fetched article text, not only the headline')
   assert.ok(requested.every(u => new URL(u).searchParams.get('query')!.endsWith(' sourcelang:english')))
+  // Instinct #195: GDELT's seendate is when it OBSERVED the article, never an asserted event date in the extraction input.
+  const items = JSON.parse(extractionPrompt.slice(extractionPrompt.indexOf('Items (index, source, url, title, text, date): ') + 'Items (index, source, url, title, text, date): '.length).split('\n')[0])
+  assert.equal(items.length, 1); assert.equal(items[0].source, 'news:gdelt'); assert.equal(items[0].date, null)
+  assert.ok(!JSON.stringify(items).includes(recent.toISOString().slice(0, 10)), 'the observed date is not in the items the model sees')
+  // Attribution is persisted per lead (lead_sources) and shown with the link GDELT's terms require; tenant-scoped.
+  const leadId = (leads as unknown as { id: string }[])[0].id
+  const via = gdeltAttribution(db, 'A', [leadId])
+  assert.deepEqual(via.get(leadId), { text: 'Found through the GDELT Project', link: 'https://www.gdeltproject.org/' })
+  assert.equal(gdeltAttribution(db, 'B', [leadId]).size, 0)
+  assert.equal(((exportLeads(db, 'A') as { lead_id: string }[])[0]).lead_id, leadId)
+})
+
+test('TinyFish-supplement path: a GDELT hit becomes news:gdelt evidence with date null and the observed date as context only; a TinyFish hit is unchanged', () => {
+  const hits = [
+    { url: 'https://news.example.com/a', title: 'A', snippet: '', date: null, observed: '2026-10-20', via: 'gdelt' as const },
+    { url: 'https://t.example.com/b', title: 'B', snippet: 'a long enough snippet for the evidence text here', date: '2026-10-01' },
+  ]
+  const pages = [{ url: 'https://news.example.com/a', title: 'A', text: 'Acme Dental opens a second clinic in Toronto next month, the company said.' }]
+  const ev = toEvidence(hits, pages)
+  assert.deepEqual(ev.map(e => [e.source, e.date, e.updated ?? null]), [['news:gdelt', null, '2026-10-20'], ['tinyfish', '2026-10-01', null]])
+})
+
+// TinyFish-supplement path: only the lead whose page GDELT surfaced is credited to news:gdelt (attribution is per lead).
+import { migratePlans } from '../lib/plans.ts'
+import { migrateConnectors } from '../lib/connectors/store.ts'
+import { migrateEvents } from '../lib/events/store.ts'
+test('supplement path: the GDELT-surfaced lead carries the attribution, the TinyFish-surfaced lead does not', async () => {
+  resetNewsQueue()
+  const master = randomBytes(32); process.env.DAZL_MASTER_KEY = master.toString('base64')
+  process.env.TINYFISH_API_KEY = 'tf-test-key'
+  const day = recent.toISOString().slice(0, 10)
+  const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
+  saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
+  const icp = { summary: 'Dental clinics in Toronto expanding', who: ['Practice owner'], industries: [], sizes: [], where: ['Toronto'], signals: [], exclude: [], country: 'CA', language: 'en' }
+  const id = createQueryJob(db, 'A', { query: 'Dental clinics in Toronto opening a new location', icp: JSON.stringify(icp) } as never)
+  const QA = 'Alpha Dental announced it will open a second clinic in Toronto next month'; const QB = 'Beta Dental said it is opening a new Toronto location this spring'
+  const tfFetch = (async (u: string) => {
+    if (u.startsWith('https://api.search.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: 'https://tf.example.com/alpha', title: 'Alpha', snippet: QA, date: day }] }), { status: 200 })
+    if (u.startsWith('https://api.fetch.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: 'https://tf.example.com/alpha', title: 'Alpha', text: `${QA}. More text so this page is long enough to be a real article body.` }, { url: 'https://news.example.com/beta', title: 'Beta', text: `${QB}. More text so this page is long enough to be a real article body.` }] }), { status: 200 })
+    return new Response('{}', { status: 200 })
+  }) as typeof fetch
+  const http: SafeGet = async () => ({ status: 200, body: gdelt([{ url: 'https://news.example.com/beta', title: 'Beta Dental opens' }]) })
+  const lead = (company: string, url: string, excerpt: string) => ({ name: '', company, contact: null, signal: 'Opening a Toronto clinic', source_url: url, excerpt, event_date: day, score: 80 })
+  const prov: Record<'anthropic' | 'openai', Provider> = {
+    anthropic: { research: async () => ({ text: '[]', citedUrls: [] }), complete: async (_k, p) => p.startsWith('Write up to') ? '["dental clinic second location Toronto"]' : JSON.stringify([lead('Alpha Dental', 'https://tf.example.com/alpha', QA), lead('Beta Dental', 'https://news.example.com/beta', QB)]) },
+    openai: { research: async () => ({ text: '', citedUrls: [] }) },
+  }
+  const page = async (u: string) => ({ text: u.includes('beta') ? `${QB}. More text so this page is long enough to be a real article body.` : `${QA}. More text so this page is long enough to be a real article body.`, title: 't', retrievedAt: 1 })
+  const realFetch = globalThis.fetch; globalThis.fetch = tfFetch
+  try { await runJob(db, claimKeyedJob(db, id)!, { providers: prov, master, fetchPage: page, fetchImpl: tfFetch, newsHttp: http, judge: null, score: false }) } finally { globalThis.fetch = realFetch; delete process.env.TINYFISH_API_KEY }
+  const leads = listLeads(db, 'A', id) as { id: string; company: string }[]
+  const via = gdeltAttribution(db, 'A', leads.map(l => l.id))
+  assert.deepEqual(leads.map(l => [l.company, via.has(l.id)]).sort(), [['Alpha Dental', false], ['Beta Dental', true]])
 })

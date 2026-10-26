@@ -5,14 +5,20 @@
 // (Bing News RSS was tried first and dropped: its feed terms forbid commercial use.)
 //
 // Nothing here is business- or place-specific: the queries are the scan's own (already carrying the buyer's place),
-// the language filter is the ICP's. GDELT asks for at most one request every 5 seconds, so every request in this
-// process goes through one shared queue.
+// the language filter is the ICP's. The GDELT API documentation asks for modest request rates; the 5.1 s spacing used here is a conservative choice of
+// this code, NOT a verified published limit (the primary documentation was not found to state one). Every request in
+// this process goes through one shared queue.
 import type { SafeGet } from '../sources/types.ts'
 import type { SearchHit } from './tinyfish.ts'
 
 export const newsEnabled = (env: Record<string, string | undefined> = process.env) => env.NEWS_SEARCH_ENABLED !== '0'
 export const NEWS_PER_SCAN = 3
 export const NEWS_SOURCE = 'news:gdelt'
+// GDELT's terms (https://www.gdeltproject.org/about.html) allow commercial use but require a citation AND a link to
+// https://www.gdeltproject.org/ for any use or redistribution. Shown beside every lead GDELT surfaced (leads page, CSV).
+// The publisher's article URL is a different attribution and does not replace it.
+export const GDELT_URL = 'https://www.gdeltproject.org/'
+export const GDELT_ATTRIBUTION = 'Found through the GDELT Project'
 const GAP_MS = 5_100
 
 // ISO 639-1 -> GDELT sourcelang name. Unknown codes mean no language filter (never a guess).
@@ -26,7 +32,9 @@ export function newsUrl(query: string, lang: string | null, timespan = '1month')
   return `https://api.gdeltproject.org/api/v2/doc/doc?${p}`
 }
 
-// seendate is "20261021T061500Z". Titles come tokenized ("$1 . 5 million"); they are labels, never quoted as evidence.
+// seendate is "20261021T061500Z" and is when GDELT OBSERVED the article, not when the business event happened: it is kept
+// as `observed` (context only) and `date` stays null, so the model must take event timing from the fetched page text or
+// leave it unknown. Titles come tokenized ("$1 . 5 million"); they are labels, never quoted as evidence.
 export function parseGdelt(body: string, max = 15): SearchHit[] {
   let j: unknown
   try { j = JSON.parse(body) } catch { return [] }
@@ -36,13 +44,13 @@ export function parseGdelt(body: string, max = 15): SearchHit[] {
     const o = a as Record<string, unknown>
     if (typeof o.url !== 'string' || !/^https:\/\/[^\s]{4,480}$/.test(o.url) || typeof o.title !== 'string') continue
     const d = typeof o.seendate === 'string' ? o.seendate.match(/^(\d{4})(\d{2})(\d{2})T/) : null
-    out.push({ url: o.url, title: o.title.replace(/\s+([.,:;!?%)])/g, '$1').replace(/([($])\s+/g, '$1').slice(0, 200), snippet: '', date: d ? `${d[1]}-${d[2]}-${d[3]}` : null })
+    out.push({ url: o.url, title: o.title.replace(/\s+([.,:;!?%)])/g, '$1').replace(/([($])\s+/g, '$1').slice(0, 200), snippet: '', date: null, observed: d ? `${d[1]}-${d[2]}-${d[3]}` : null, via: 'gdelt' })
     if (out.length >= max) break
   }
   return out
 }
 
-// One request at a time for the whole process, at least GAP_MS apart (GDELT's published limit).
+// One request at a time for the whole process, at least GAP_MS apart (conservative spacing, not a published limit).
 let last = 0
 let chain: Promise<unknown> = Promise.resolve()
 export const resetNewsQueue = () => { last = 0; chain = Promise.resolve() }
