@@ -5,6 +5,7 @@ import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sourceCheckForLead } from '@/lib/scan/source-review'
 import { sqliteLeadsRead } from '@/lib/db/leads-read'
 import { rankLeads } from '@/lib/events/prioritize'
+import { savedGradeWhy } from '@/lib/scan/leads-view'
 import { classifyEntityMatch, classifyBoardMatch, qualifyEvent, withinEventWindow } from '@/lib/signals/entity-match'
 
 export async function GET(req: NextRequest) {
@@ -25,7 +26,7 @@ export async function GET(req: NextRequest) {
   // rank legacy unsupported timing as a live need. No history is rewritten.
   const safeLeads = leads.map(l => ({...l, stored_intent:l.intent, intent:0,
     stored_why:(l as typeof l & {why?:string|null}).why ?? null,
-    why:(l as typeof l & {why?:string|null}).why ? 'Event timing and current need are unconfirmed. Saved grades are historical, not a currentness verdict.' : 'This lead has no saved grade. Event timing and current need are unconfirmed.',
+    why:savedGradeWhy(l as typeof l & {why?:string|null}),
     currentness_held:currentnessHeld(getScanDb(),user.id,l.id), window_held:leadWindowHeld(getScanDb(),user.id,l.id)}))
   for (const p of Object.values(pri)) if (p) p.intent=0
   const ranked = rankLeads(safeLeads, pri)
