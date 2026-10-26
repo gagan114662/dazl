@@ -775,7 +775,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     const judge = deps.judge === undefined ? makeJudge(providers_[vendor], key, deps.fetchImpl) : deps.judge ?? undefined
     assertOwned(db, job)
     let outcome = await verifyLeads(leads, fetchP, deps.now, judge)
-    try { console.error(JSON.stringify({ verify_provenance: { job: job.id, tinyfish: tinyfishEnabled(), ...summarizeProvenance(leads.map(l => l.source_url), new Set(diag.tfTextUrls), verifierFetch) } })) } catch { /* diagnostic only */ }
+    const verifiedUrls = leads.map(l => l.source_url) // verify_provenance: every URL the verifier was asked about, retry included
     // First-scan killer: the model's stale memory returns only old news and the verifier
     // honestly drops all of it. One bounded retry with the date spelled out a second time
     // and an explicit freshness instruction; a failed retry never fails the scan.
@@ -796,6 +796,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         const fresh = (more ?? []).filter(l => !seen.has(`${l.source_url}|${companyKey(l.company)}`))
         if (fresh.length > 0) {
           assertOwned(db, job)
+          verifiedUrls.push(...fresh.map(l => l.source_url))
           const o2 = await verifyLeads(fresh, fetchP, deps.now, judge)
           const seenKeys = new Set(outcome.leads.map(dedupKey))
           for (const l of o2.leads) { const k = dedupKey(l); if (!seenKeys.has(k)) { seenKeys.add(k); outcome.leads.push(l) } }
@@ -808,6 +809,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         if (e instanceof ProviderError && e.kind === 'auth') throw e
       }
     }
+    try { console.error(JSON.stringify({ verify_provenance: { job: job.id, tinyfish: tinyfishEnabled(), ...summarizeProvenance(verifiedUrls, new Set(diag.tfTextUrls), verifierFetch) } })) } catch { /* diagnostic only */ }
     // Memory exclusions are enforced in code, not the prompt: matching leads never reach
     // scoring, the UI or outreach. Counted in dropped like every other gate.
     let memory = deps.memory === undefined ? null : deps.memory
