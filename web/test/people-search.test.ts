@@ -58,3 +58,54 @@ test('off without TinyFish, with the kill switch, or with no buyer roles: no sea
   }
   assert.equal(calls, 0)
 })
+
+test('parse: past roles and a contradictory current employer are refused (Instinct #193 review)', () => {
+  const u = 'https://www.linkedin.com/in/jane-doe'
+  // current Rival employee whose snippet only mentions Acme as history
+  assert.equal(parseProfileHit(hit(u, 'Jane Doe - HR Manager - Rival Corp | LinkedIn', 'Previously at Acme Logistics'), 'Acme Logistics'), null)
+  assert.equal(parseProfileHit(hit(u, 'Jane Doe - Former HR Manager at Acme Logistics | LinkedIn'), 'Acme Logistics'), null)
+  assert.equal(parseProfileHit(hit(u, 'Jane Doe - Ex-Head of HR - Acme Logistics | LinkedIn'), 'Acme Logistics'), null)
+  assert.equal(parseProfileHit(hit(u, 'Jane Doe - HR Manager - Acme Logistics (previously Rival) | LinkedIn'), 'Acme Logistics'), null)
+  assert.deepEqual(parseProfileHit(hit(u, 'Jane Doe - HR Manager - Acme Logistics | LinkedIn'), 'Acme Logistics'), { name: 'Jane Doe', title: 'HR Manager' })
+})
+
+const okFetch = (async () => new Response(JSON.stringify({ results: [{ url: 'https://www.linkedin.com/in/jane-doe-1', title: 'Jane Doe - Head of HR - Acme Logistics | LinkedIn', snippet: '' }] }))) as unknown as typeof fetch
+
+test('tenant: another tenant job id stores nothing and searches nothing', async () => {
+  const { db, job } = setup(ICP)
+  let calls = 0
+  const f = (async () => { calls++; return okFetch('' as never) }) as unknown as typeof fetch
+  assert.equal(await findPeople(db, 'B', job, { env, fetchImpl: f }), 0)
+  assert.equal(calls, 0); assert.equal((db.prepare('SELECT COUNT(*) n FROM lead_enrichments').get() as { n: number }).n, 0)
+})
+
+test('quarantined leads are never researched', async () => {
+  const { db, job } = setup(ICP)
+  db.prepare("UPDATE leads SET quarantined_at = 1 WHERE id = 'L1'").run()
+  let calls = 0
+  const f = (async () => { calls++; return okFetch('' as never) }) as unknown as typeof fetch
+  assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: f }), 0); assert.equal(calls, 0)
+})
+
+test('caps: company budget is 5 searches; the tenant daily cap stops the pass', async () => {
+  const { db, job } = setup(ICP)
+  for (let i = 2; i <= 8; i++) db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score) VALUES (?,?,?,?,?,?,?,?,?)').run(`L${i}`, job, `Company ${i} Ltd`, null, 's', 'https://x.example.test/', 'e', 90, 50)
+  let calls = 0
+  const f = (async () => { calls++; return new Response('{"results":[]}') }) as unknown as typeof fetch
+  await findPeople(db, 'A', job, { env: { ...env, TINYFISH_TENANT_DAILY: '50' }, fetchImpl: f })
+  assert.equal(calls, 5)
+  calls = 0
+  // tenant daily cap of 2 (already 5 used above would exceed it): a fresh db with cap 2 allows exactly 2 searches
+  const capped = setup(ICP)
+  for (let i = 2; i <= 8; i++) capped.db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score) VALUES (?,?,?,?,?,?,?,?,?)').run(`L${i}`, capped.job, `Company ${i} Ltd`, null, 's', 'https://x.example.test/', 'e', 90, 50)
+  await findPeople(capped.db, 'A', capped.job, { env: { ...env, TINYFISH_TENANT_DAILY: '2' }, fetchImpl: f })
+  assert.equal(calls, 2)
+})
+
+test('deadline: a hung search is abandoned and the pass returns', async () => {
+  const { db, job } = setup(ICP)
+  const hang = (() => new Promise(() => {})) as unknown as typeof fetch
+  const t0 = Date.now()
+  assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: hang, deadlineMs: 50 }), 0)
+  assert.ok(Date.now() - t0 < 2000)
+})
