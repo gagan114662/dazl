@@ -17,24 +17,23 @@ Updated by the builder on every branch. Newest first.
   tenant daily 200 (Instinct reviewed and merged 2026-10-26). Not yet deployed.
 - #184 process docs + scoreboard (Instinct reviewed and merged 2026-10-26).
 
-## In review
+## In review (owner goal: better than Gojiberry/Pancake at finding leads for any business, any geography)
 
-- #185 merged: decision-maker finder (scheduled builder): B2B titles, /team and /leadership pages; still keeps 3
-  people per site, now most senior first (the PR said "up to 5": inaccurate, Instinct caught it).
-- #186 `b/buyer-fit-gate` (Instinct finding 3): hiring leads keep fit >= 4 only with home-page fit evidence.
-- #187 `docs/process-instinct-merges`: PROCESS says Instinct merges; design items are flagged, not built.
+- #186 b/buyer-fit-gate: a job posting alone is not a qualified lead (home-page fit evidence, multilingual hiring).
+- #187 docs/process-instinct-merges: PROCESS (Instinct merges, design items), this STATUS.
+- #188 b/verify-provenance: diagnostic, did TinyFish have text for pages the verifier could not read.
+- #189 b/design-email-finder: DESIGN note, needs owner answers (verification server, US rule details).
+- #190 b/email-pattern: email format inference, unverified candidates in own tables, off by default.
+- #191 b/dm-icp-rank (on #190): buyer roles first per site; buyer titles derived from the scan ICP (no fixed list).
+- #192 b/linkedin-people: LinkedIn engagers + people search via the tenant session (owner decision), not live-tested.
+- #193 b/people-search (on #191): right people from public profile search results; Right people UI shows them.
+- #194 b/extraction-yield: markdown-free evidence, one verbatim passage per company.
+- #195 b/news-search: free Bing News RSS beside TinyFish and before paid research.
+- integration/all-open: all of the above merged, for one scoreboard run (not for merging).
 
 ## In progress (interactive Claude session, do not duplicate)
 
-- #190 `b/email-pattern`: email finder part 1 (Next item 2 part 1). Done, in review.
-- #191 `b/dm-icp-rank`: decision-maker finder part 2, buyer-role ranking + department titles (Next item 1, ICP
-  ranking part). Done, in review. Still open from item 1: SEC officers, GitHub org members.
-
-- #188 `b/verify-provenance`: diagnostic log line answering whether TinyFish had text for pages the verifier could
-  not read. The blocked-source fix waits for that data.
-
-- Blocked-source verification (design item): waiting for Instinct's data on whether TinyFish fetched the cited
-  pages that the verifier found blocked. Do not start this without it.
+- Blocked-source verification: waits for #188 data from a live run.
 
 ## Next (in order, for the scheduled builder)
 
