@@ -62,7 +62,7 @@ function run(modelQueries: string[] | string, searchStatus = 200, extraHits: { u
 
 const snapRows = (db: Database.Database) => JSON.stringify({ leads: db.prepare('SELECT company, source_url FROM leads ORDER BY rowid').all(), runs: db.prepare('SELECT collector,status,candidate_count,verified_count,inserted_count FROM scan_source_runs ORDER BY collector').all(), job: db.prepare('SELECT status, candidates, verified, needs_review, dropped FROM scan_jobs').get() })
 const withEnv = async <T>(stats: boolean, f: () => Promise<T>) => {
-  process.env.TINYFISH_API_KEY = 'test-tinyfish-key'; if (stats) process.env.DAZL_SOURCE_STATS = '1'; process.env.DAZL_SOURCE_STATS_USERS = 'A'
+  process.env.TINYFISH_API_KEY = 'test-tinyfish-key'; process.env.DAZL_SOURCE_STATS = stats ? '1' : '0'; process.env.DAZL_SOURCE_STATS_USERS = 'A'
   try { return await f() } finally { delete process.env.TINYFISH_API_KEY; delete process.env.DAZL_SOURCE_STATS; delete process.env.DAZL_SOURCE_STATS_USERS }
 }
 const MODEL_Q = ['small company hiring payroll specialist', 'complaints about payroll software small business']
@@ -82,7 +82,7 @@ test('stats on: a scan writes exactly one stats row with the queries actually se
   assert.equal(row.evidence_items, 1); assert.equal(row.evidence_with_page_text, 1); assert.equal(row.evidence_snippet_only, 0)
 })
 
-test('stats off (default): same scan, byte-identical outcome, no stats table exists', async () => {
+test('stats off (DAZL_SOURCE_STATS=0): same scan, byte-identical outcome, no stats table exists', async () => {
   const on = await withEnv(true, () => run(MODEL_Q)); const off = await withEnv(false, () => run(MODEL_Q))
   assert.equal(snapRows(on.db), snapRows(off.db), 'recording changes nothing about the scan result')
   assert.equal(on.searched.length, off.searched.length)

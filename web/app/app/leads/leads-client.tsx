@@ -59,12 +59,19 @@ function dedupeLabel(label: string): string {
 
 export default function LeadsClient() {
   const [query, setQuery] = useState('')
+  // The request text of the job being VIEWED (history / deep link): the input must not keep the last typed or restored query
+  // of another scan while showing this scan's profile and results (live acceptance run: NYC results under the London query).
+  const queryShownFor = useRef<string | null>(null)
+  // The job being viewed, readable from async callbacks: a slow "restore the last profile" response must never replace the
+  // query or profile of a scan the user is looking at (whichever response arrives first). Synced on every render.
+  const viewedJob = useRef('')
   const [draft, setDraft] = useState<Icp | null>(null)
   const [draftNote, setDraftNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [starting, setStarting] = useState(false)
   const [icp, setIcp] = useState<{ icp: Icp; source: string } | null>(null)
   const [jobId, setJobId] = useState<string | null>(null)
+  viewedJob.current = jobId ?? ''
   const [status, setStatus] = useState<string>('')
   const [leadsSoFar, setLeadsSoFar] = useState(0)
   const [startedAt, setStartedAt] = useState<number | null>(null)
@@ -310,6 +317,7 @@ export default function LeadsClient() {
       setStatus(s.status); setJobError(s.error ?? ''); setLeadsSoFar(s.lead_count ?? 0); setStartedAt(s.claimed_at ?? null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
       setQuality(s.quality ?? null)
       if (s.icp) setIcp({ icp: s.icp, source: s.icp_source })
+      if (typeof s.query === 'string' && s.query && queryShownFor.current !== jobId) { queryShownFor.current = jobId; setQuery(s.query) }
     }
     void tick() // immediate first check: a done deep link must not sit on a loading state for a full interval
     const t = setInterval(tick, 5000)
@@ -360,6 +368,8 @@ export default function LeadsClient() {
     if (jobId) return
     void fetch('/api/scan/latest').then(r => r.ok ? r.json() : null).then(j => {
       if (!j) return
+      // Either order of responses: a job is being viewed (adopted, or named by the URL) => keep ITS query and profile.
+      if (viewedJob.current || /^[a-f0-9]{24}$/.test(new URLSearchParams(window.location.search).get('job_id') ?? '')) return
       if (j.query && !query) setQuery(j.query)
       if (j.icp) setIcp({ icp: j.icp, source: j.icp_source ?? 'user' })
     }).catch(() => {})

@@ -30,6 +30,7 @@ import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } 
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
 import { sourceCap } from './source-quality.ts'
 import { SourceRunLedger } from './source-runs.ts'
+import { meterProvider, writeModelCalls, type ModelCall } from './model-usage.ts'
 import { findPeople } from '../people/people-search.ts'
 import { parseWindowDays, splitByWindow } from './window.ts'
 import { applyBuyerFitGate } from './buyer-fit.ts'
@@ -463,8 +464,7 @@ async function tinyfishCompany(db: Database.Database, job: Job, domain: string, 
 // CSV import job: research one known company domain through the same
 // research/ground/verify/enrich stages as a discovery scan. No ICP scoring (there is no
 // profile to fit against) and no autopilot: an uploaded account list never triggers outreach.
-async function runCompanyJob(db: Database.Database, job: Job, provider: Provider, vendor: Vendor, key: string, deps: RunDeps): Promise<'done' | 'failed' | 'retry'> {
-  const ledger = new SourceRunLedger()
+async function runCompanyJob(db: Database.Database, job: Job, provider: Provider, vendor: Vendor, key: string, deps: RunDeps, ledger: SourceRunLedger = new SourceRunLedger()): Promise<'done' | 'failed' | 'retry'> {
   const domain = job.csv_domain!
   const request = `The company at https://${domain}`
   try {
@@ -646,10 +646,13 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     const ownerMax = job.csv_domain ? null : ownerMaxUsd(job.user_id)
     const spendGuards = [...(jobMax !== null ? [new SpendGuard(jobMax)] : []), ...(ownerMax !== null ? [ownerPool(job.user_id, ownerMax)] : [])]
     const spendLimit = spendGuards.length ? 1 : null
-    const baseProviders = deps.providers ?? providers
+    // Every model request of this run is counted at the provider boundary (model-usage.ts), inside the spend guard so a
+    // refused request is not recorded as sent. Behaviour is unchanged: same calls, same text, same errors.
+    const rawProviders = deps.providers ?? providers
+    const baseProviders = { ...rawProviders, [vendor]: meterProvider(rawProviders[vendor], c => ledger.model(c)) } as Record<Vendor, Provider>
     const providers_ = spendLimit === null ? baseProviders : { ...baseProviders, [vendor]: guardProvider(baseProviders[vendor], spendGuards, vendor === 'anthropic' ? anthropicCountTokens : undefined) }
     if (spendLimit !== null) deps = { ...deps, creditEnrichment: false } // a budgeted run adds no other paid enrichment
-    if (job.csv_domain) return await runCompanyJob(db, job, providers_[vendor], vendor, key, budgetDeps(deps, parseRunBudget(job.run_budget)))
+    if (job.csv_domain) return await runCompanyJob(db, job, providers_[vendor], vendor, key, budgetDeps(deps, parseRunBudget(job.run_budget)), ledger)
     let prompt = buildPrompt(job)
     let icpForSources: Icp | null = null
     if (job.query) {
@@ -868,6 +871,8 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // Stale attempt: finish() wrote nothing, so every post-finish side effect
     // must be skipped too - a re-claimed job belongs to the newer attempt.
     if (!owned) return 'done'
+    // Everything below may make more model calls (buyer-fit): they are flushed to the usage record however this block ends.
+    try {
     if (complaints.length > 0) { try { badgeComplaintLeads(db, job.id, complaints) } catch { /* badge only */ } }
     // Watch run: flag the leads this watch has never surfaced, remember the rest.
     if (job.watch_id) { try { markWatchLeads(db, job.watch_id, job.id) } catch { /* bonus only */ } }
@@ -888,6 +893,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.
     try { await runAutopilot(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
     return 'done'
+    } finally { ledger.flushModelCalls(db, job.id, job.attempts) }
   } catch (e) {
     return failOrRetry(db, job, e, ledger)
   }
@@ -994,6 +1000,13 @@ export async function previewIcp(db: Database.Database, tenantId: string, query:
   let vendor = pickVendor(db, tenantId)
   const read = vendor ? readKey(db, tenantId, vendor, deps.master) : { key: null, unreadable: false }
   let key = read.key
+  // Profile generation happens before any job exists: its model request is recorded by tenant (job_id null), including a
+  // failed one, so the first paid step of a customer run is not invisible. Same call, same result.
+  const metered = async (v: Vendor, q: string) => {
+    const calls: ModelCall[] = []
+    try { return await inferIcp(meterProvider((deps.providers ?? providers)[v], c => calls.push(c)), key!, q, deps.fetchImpl) }
+    finally { writeModelCalls(db, tenantId, null, 0, calls) }
+  }
   if ((!vendor || !key) && ip !== undefined && trialStatus(db, tenantId, ip).funded) {
     // A preview is cheap and does not consume one of the account's trial scans; only starting
     // the scan does. It still needs the trial to be live and the account under its caps.
@@ -1002,7 +1015,7 @@ export async function previewIcp(db: Database.Database, tenantId: string, query:
     key = op?.key ?? null
     if (!vendor || !key) return { error: 'no_api_key' }
     try {
-      return await inferIcp((deps.providers ?? providers)[vendor], key, query, deps.fetchImpl)
+      return await metered(vendor, query)
     } catch {
       // A trial user has no key of their own - never blame them for the server's key failing.
       return { error: 'trial_key_invalid' }
@@ -1013,7 +1026,7 @@ export async function previewIcp(db: Database.Database, tenantId: string, query:
   if (read.unreadable) return { error: 'key_unreadable' }
   if (!vendor || !key) return { error: 'no_api_key' }
   try {
-    return await inferIcp((deps.providers ?? providers)[vendor], key, query, deps.fetchImpl)
+    return await metered(vendor, query)
   } catch (e) {
     console.error('icp preview failed:', e instanceof Error ? e.message : e)
     return { error: 'key_rejected' }
