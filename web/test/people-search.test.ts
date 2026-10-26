@@ -109,3 +109,16 @@ test('deadline: a hung search is abandoned and the pass returns', async () => {
   assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: hang, deadlineMs: 50 }), 0)
   assert.ok(Date.now() - t0 < 2000)
 })
+
+test('parse: one role, one employer; trailing mentions of the company never attach a different current employer (Instinct #193 recheck)', () => {
+  const u = 'https://www.linkedin.com/in/jane-doe'
+  for (const t of [
+    'Jane Doe - HR Manager at Rival Corp - Advisor to Acme Logistics | LinkedIn',
+    'Jane Doe - HR Manager - Rival Corp - Acme Logistics customer | LinkedIn',
+    'Jane Doe - HR Manager at Acme Logistics - Rival Corp | LinkedIn', // two employers: ambiguous
+    'Jane Doe - HR Manager - Acme Logistics Partners | LinkedIn',      // different company containing the words
+    'Jane Doe - Acme Logistics | LinkedIn',                              // no role
+  ]) assert.equal(parseProfileHit(hit(u, t), 'Acme Logistics'), null, t)
+  assert.deepEqual(parseProfileHit(hit(u, 'Jane Doe - HR Manager - Acme Logistics Inc. | LinkedIn'), 'Acme Logistics'), { name: 'Jane Doe', title: 'HR Manager' })
+  assert.deepEqual(parseProfileHit(hit(u, 'Jane Doe - HR Manager at Acme Logistics | LinkedIn'), 'Acme Logistics'), { name: 'Jane Doe', title: 'HR Manager' })
+})

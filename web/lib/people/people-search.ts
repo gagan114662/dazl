@@ -42,15 +42,19 @@ export function parseProfileHit(h: SearchHit, company: string): { name: string; 
   if (parts.length < 2) return null
   const name = parts[0].trim()
   if (!NAME.test(name)) return null
-  let title = parts[1].trim(); let where = parts.slice(2).join(' ')
-  const at = /^(.*?)\s+(?:at|@|bei|chez|en|em|presso)\s+(.+)$/i.exec(title)
-  if (at) { title = at[1].trim(); where = `${at[2]} ${where}` }
-  // Past role marked on the title line: refuse (instinct review #193: "Former HR Manager at Acme" is not a current buyer).
+  // Exactly one role with exactly one employer attached to it (Instinct #193 recheck). Two shapes only:
+  //   "Name - Title at Employer"   (2 parts)    and    "Name - Title - Employer"   (3 parts)
+  // Any extra fragment ("... - Advisor to Acme", "... - Acme customer") makes the association ambiguous, so it drops: a
+  // current Rival Corp employee must not attach to Acme because Acme is mentioned somewhere else on the line.
+  // Past role marked on the line: refuse ("Former HR Manager at Acme" is not a current buyer).
   if (PAST.test(parts.slice(1).join(' '))) return null
+  let title = parts[1].trim(); let employer = ''
+  const at = /^(.*?)\s+(?:at|@|bei|chez|en|em|presso)\s+(.+)$/i.exec(title)
+  if (at) { if (parts.length !== 2) return null; title = at[1].trim(); employer = at[2] }
+  else { if (parts.length !== 3) return null; employer = parts[2] }
   const key = companyKey(company)
-  // The TITLE LINE must name the company. The snippet used to count too, which let a current Rival Corp employee whose
-  // snippet says "Previously at Acme" attach to Acme; the title line carries the current employer, so only it decides.
-  if (key.length < 3 || !` ${norm(where)} `.includes(` ${key} `)) return null
+  // The employer attached to the role must BE the lead's company (legal suffixes ignored), not merely contain its words.
+  if (key.length < 3 || companyKey(employer) !== key) return null
   if (title.length < 2 || title.length > 80) return null
   return { name, title }
 }
