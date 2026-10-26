@@ -3,6 +3,16 @@
 Decisions made by the owner (gagan). Agents read this before changing the behaviour it covers.
 Newest first. A decision changes only when the owner says so.
 
+## 2026-10-26: LinkedIn is allowed for lead discovery
+
+Owner decision: "LinkedIn should be allowed", build it like Gojiberry. dazl may read LinkedIn to find people:
+public profile search results (no login), and through each tenant's own LinkedIn session in the session worker:
+people search, and the people who comment on or react to posts about the tenant's competitors.
+Conditions: the tenant's own session only (saved by them, after the LinkedIn consent notice, which states that
+LinkedIn's terms forbid automation and the account can be restricted); the per-tenant hourly LinkedIn cap stays;
+results are labelled as LinkedIn-sourced and stay in the review lane because dazl cannot re-read a LinkedIn page.
+Not decided yet (ask the owner first): automated LinkedIn actions (connection requests, messages, posting).
+
 ## 2026-10-26: guessed email addresses (US only, verified only)
 
 Contacts may include a pattern-guessed business address (for example first.last@company.com) only when all of these hold:
