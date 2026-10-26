@@ -4,7 +4,7 @@ import Database from 'better-sqlite3'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { crawlJob, type Get } from '../lib/connectors/sitecrawl.ts'
-import { titleMatches, roleContradicted, rankPeople } from '../lib/people/rank.ts'
+import { titleMatches, roleContradicted, rankPeople, recommendedPerson } from '../lib/people/rank.ts'
 
 // Decision-maker finder part 2: of the people listed on a company site, keep the ones the seller wants to reach
 // (the scan ICP's "who" roles) before falling back to seniority. TEST-ONLY fixture, no network.
@@ -86,4 +86,12 @@ test('rank path (card, previously stored rows): contradicted titles score zero a
   const r = rankPeople(people, 'HR Manager')
   assert.equal(r[0].name, 'Eli')
   for (const x of r.slice(1)) assert.equal(x.tier, 'none', x.title ?? '')
+})
+
+test('recommendedPerson: null when every stored person is contradicted; first non-contradicted otherwise; untitled rows are not contradicted', () => {
+  const p = (name: string, title: string | null) => ({ name, title, linkedin: null, connector: 'sitecrawl' })
+  assert.equal(recommendedPerson([p('A', 'Former HR Manager'), p('B', 'Not HR Manager'), p('C', 'Assistant to HR Manager')], 'HR Manager'), null)
+  assert.equal(recommendedPerson([p('A', 'Former HR Manager'), p('B', 'HR Manager')], 'HR Manager')?.name, 'B')
+  assert.equal(recommendedPerson([p('A', null)], 'HR Manager')?.name, 'A')
+  assert.equal(recommendedPerson([], 'HR Manager'), null)
 })

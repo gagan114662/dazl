@@ -68,6 +68,15 @@ export function rankPeople<T extends PersonContact>(contacts: T[], icpText: stri
     .sort((a, b) => b.score - a.score)
 }
 
+// The ONE place a person is RECOMMENDED (opportunity card "who", CSV Best Person). A stored person whose title explicitly
+// contradicts the buyer role (past/retired/negated/assistant-to) is never recommended, however it scores, and when every
+// stored person is contradicted nobody is recommended (null). Raw rows stay visible in the people list; only the
+// recommendation refuses them. Same rule whichever connector stored the row and with or without an ICP: explicit
+// contradiction is not a matter of ICP fit. A row with no title is not contradicted (it ranks last, as before).
+export function recommendedPerson<T extends PersonContact>(contacts: T[], icpText: string): (T & RankedPerson) | null {
+  return rankPeople(contacts, icpText).find(c => !c.title || !roleContradicted(c.title, icpText)) ?? null
+}
+
 // Stored enrichment rows carry a contact as value "Name - Title" (title optional),
 // connector = source connector, source_url = profile link. Split on the FIRST " - " only.
 export interface ContactEnrichment {
