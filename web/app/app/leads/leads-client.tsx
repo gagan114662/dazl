@@ -1,4 +1,5 @@
 'use client'
+import { windowNotice } from '@/lib/scan/window-notice'
 import { KEY_UNREADABLE_COPY, knownErrorCopy } from '@/lib/error-copy'
 import { useEffect, useRef, useState } from 'react'
 import { buildSources } from '@/lib/sources/ui-sources'
@@ -485,6 +486,7 @@ export default function LeadsClient() {
             <p className="text-gray-400">{draftNote}</p>
             <button onClick={() => run(draft)} disabled={starting} className="btn-primary shrink-0 disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
           </div>
+          {draft.window_days ? <p className="text-xs text-[#555] mb-2" data-testid="draft-window">Time window for this run: the last {draft.window_days} days</p> : null}
           <label className="block text-xs text-gray-500 mb-1">Who you want</label>
           <textarea className={`${input} w-full mb-2`} rows={2} maxLength={300} value={draft.summary} onChange={e => setDraft({ ...draft, summary: e.target.value })} />
           {([['who', 'Roles or kinds of buyer (one per line)'], ['industries', 'Industries (one per line, empty means any)'], ['sizes', 'Company sizes (one per line, empty means any)'], ['where', 'Where (one per line, empty means anywhere)'], ['signals', 'Buying signals to look for (one per line)'], ['exclude', 'Skip these (one per line)']] as const).map(([k, label]) => (
@@ -496,7 +498,19 @@ export default function LeadsClient() {
           <button onClick={() => run(draft)} disabled={starting} className="btn-primary disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
         </div>
       )}
-      {icp && !draft && (
+      {/* Outside the collapsed profile details: a closed <details> hid the notice and its button (found by the rendered check, test/ui/window-edit.ui.mjs). */}
+      {icp && !draft && (<>
+        {/* Owner direction (#204): when the user's own constraint excluded results, say so and offer to widen it explicitly - never relax it quietly. */}
+        {(() => {
+          const wn = windowNotice(leads, icp.icp.window_days)
+          if (!wn) return null
+          return (
+            <p className="text-xs text-[#555] mb-2">
+              {wn.text}{' '}
+              {wn.editTo && <button className="underline text-[#111]" onClick={() => { setDraft({ ...icp.icp, window_days: wn.editTo! }); setDraftNote(wn.editNote!) }}>{wn.editLabel}</button>}
+            </p>
+          )
+        })()}
         <details className="text-sm text-gray-400 mb-4">
           <summary className="cursor-pointer">Profile used: {icp.icp.summary} <span className="text-gray-600">({icp.source === 'inferred' ? 'worked out by dazl' : icp.source === 'user' ? 'reviewed by you' : 'your words as written'})</span></summary>
           <ul className="mt-2 ml-4 list-disc text-xs">
@@ -512,7 +526,7 @@ export default function LeadsClient() {
           </div>
           {watchNote && <p className="text-xs text-gray-500 mt-1">{watchNote}</p>}
         </details>
-      )}
+      </>)}
       {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
       {jobId && status === 'loading' && !statusError && (
         <div className="card p-4 mb-4 flex items-center gap-3">
