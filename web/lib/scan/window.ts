@@ -49,12 +49,19 @@ export function windowStatus(eventDate: string | null | undefined, windowDays: n
   return eventDate < windowCutoff(windowDays, now) ? 'stale' : 'inside'
 }
 
-// Leads whose known event date is older than the window: moved to the review lane with a dated reason, never returned
-// as a scored lead. Undated, invalid and future dates stay listed here (the date label says so) but are held from
-// outreach by the hard window gate (outreach/currentness.ts), which no ordinary review can clear.
-export function splitByWindow<T extends { event_date?: string | null }>(leads: T[], windowDays: number | null | undefined, now: Date = new Date()): { inside: T[]; outside: T[] } {
-  if (!windowDays) return { inside: leads, outside: [] }
-  const inside: T[] = []; const outside: T[] = []
-  for (const l of leads) (windowStatus(l.event_date, windowDays, now) === 'stale' ? outside : inside).push(l)
-  return { inside, outside }
+// With an explicit window, ONLY a lead whose event date is valid and inside it is actionable. Stale, undated, invalid
+// and future dates all leave the scored lane for the review lane with their own reason, so the verified / qualified
+// counts never include a lead the hard window gate (outreach/currentness.ts) would hold. Uses windowStatus, the same
+// rule as that gate. Nothing is dropped: every moved lead is still stored and counted under needs_review.
+export const WINDOW_REVIEW_REASON: Record<Exclude<WindowStatus, 'inside'>, string> = {
+  stale: 'outside_window', undated: 'outside_window_undated', invalid: 'event_date_bad_date', future: 'event_date_future_date',
+}
+export function splitByWindow<T extends { event_date?: string | null }>(leads: T[], windowDays: number | null | undefined, now: Date = new Date()): { inside: T[]; outside: T[]; outsideReasons: string[] } {
+  if (!windowDays) return { inside: leads, outside: [], outsideReasons: [] }
+  const inside: T[] = []; const outside: T[] = []; const outsideReasons: string[] = []
+  for (const l of leads) {
+    const st = windowStatus(l.event_date, windowDays, now)
+    if (st === 'inside') inside.push(l); else { outside.push(l); outsideReasons.push(WINDOW_REVIEW_REASON[st]) }
+  }
+  return { inside, outside, outsideReasons }
 }

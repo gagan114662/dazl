@@ -816,12 +816,13 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       outcome.dropped['excluded'] += outcome.review.length - keptReview.length
       outcome.review = keptReview
     }
-    // The user's recency window (#198): a lead whose known event date is older than the window goes to the review lane
-    // with a dated reason; it is never returned as a scored lead. Undated leads are unchanged.
+    // The user's recency window (#198): with an explicit window only a valid, in-window event date is a scored lead.
+    // Stale, undated, invalid and future dates go to the review lane with their own reason (same rule as the outreach
+    // gate), so verified / qualified counts never include a lead the gate would hold. Stored, not dropped.
     if (icpForSources?.window_days) {
-      const { inside, outside } = splitByWindow(outcome.leads, icpForSources.window_days, deps.now ?? new Date())
+      const { inside, outside, outsideReasons } = splitByWindow(outcome.leads, icpForSources.window_days, deps.now ?? new Date())
       outcome.leads = inside
-      for (const l of outside) outcome.review.push({ ...l, contact: null, review_reason: 'outside_window' })
+      outside.forEach((l, i) => outcome.review.push({ ...l, contact: null, review_reason: outsideReasons[i] }))
     }
     // Quality stage: grade each verified lead for ICP fit, timing and actionability. One model call
     // per scan; a scoring failure never fails the scan - but it no longer passes the raw
