@@ -2,7 +2,7 @@
 // as the page: contactsFromEnrichments ordered by the scan ICP's buyer roles. Nothing is invented: a lead with no
 // found person gets empty fields.
 import type Database from 'better-sqlite3'
-import { contactsFromEnrichments, PEOPLE_SOURCE } from './rank.ts'
+import { contactsFromEnrichments, PEOPLE_SOURCE, roleContradicted } from './rank.ts'
 
 export interface BestPerson { best_person: string; best_person_title: string; best_person_link: string; best_person_found_via: string }
 const EMPTY: BestPerson = { best_person: '', best_person_title: '', best_person_link: '', best_person_found_via: '' }
@@ -15,9 +15,10 @@ function buyerRoles(db: Database.Database, jobId: string): string {
   } catch { return '' }
 }
 
-// A title that says the role is over ("Former HR Manager", "Previously CEO") is never a person to reach first.
-// Only the title text is checked here; a contradictory CURRENT employer is #193's parser job, not detectable here.
-const FORMER = /\b(former|formerly|previous|previously|past|ex|retired|emeritus)\b/i
+// Recommendation, not scoring: a person whose title explicitly contradicts the buyer role (past, retired, negated,
+// assistant-to; roleContradicted, the same rule as the opportunity card's recommendedPerson) is never Best Person, for any
+// connector, with or without an ICP. If every stored person is contradicted the export fields are empty. A contradictory
+// CURRENT employer is the people-search parser's job, not detectable here.
 
 // Tenant-scoped on both sides: the enrichment row must carry the tenant AND its lead must belong to a job that tenant
 // owns and not be quarantined, so a malformed/cross-tenant row is never selected. The table is checked before
@@ -34,7 +35,7 @@ export function bestPeople(db: Database.Database, tenantId: string, rows: { lead
     if (!rolesByJob.has(r.job_id)) rolesByJob.set(r.job_id, buyerRoles(db, r.job_id))
     let enr: { kind: string; value: string; label: string | null; source_url: string; connector: string }[] = []
     if (q) enr = q.all(r.lead_id, tenantId, tenantId) as typeof enr
-    const top = contactsFromEnrichments(enr, rolesByJob.get(r.job_id)!).find(c => !FORMER.test(c.title ?? ''))
+    const top = contactsFromEnrichments(enr, rolesByJob.get(r.job_id)!).find(c => !c.title || !roleContradicted(c.title, rolesByJob.get(r.job_id)!))
     out.set(r.lead_id, top ? { best_person: top.name, best_person_title: top.title ?? '', best_person_link: top.linkedin ?? top.source ?? '', best_person_found_via: PEOPLE_SOURCE[top.connector] ?? top.connector } : EMPTY)
   }
   return out

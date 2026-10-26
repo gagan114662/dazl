@@ -69,3 +69,45 @@ test('CSV neutralises formulas in every person/title/link/source/why field', () 
   const body = csv.split('\r\n')[1]
   assert.ok(!/(^|,)"?[=+@-]/.test(body), body)
 })
+
+// Instinct #196 review: the same STORED lead must give the same answer in the card and the CSV. A sole Former / Not /
+// Assistant-to row is not Best Person and not the card's who, for stored rows of every connector.
+import { recommendedPerson, contactsFromEnrichments } from '../lib/people/rank.ts'
+function oneLead(who: string[], people: [string, string, string][]) {
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
+  const job = createJob(db, 'A', { business_name: 'S', industry: 'x', location: 'y' })
+  db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(who.length ? JSON.stringify({ summary: 's', who }) : null, job)
+  db.prepare('INSERT INTO leads (id,scan_job_id,company,signal,source_url,score,fit) VALUES (?,?,?,?,?,?,?)').run('L1', job, 'Acme', 's', 'https://n.example/a', 80, 5)
+  for (const [connector, value, url] of people) addEnrichment(db, 'A', 'L1', { connector, kind: 'person', value, label: 'x', confidence: null, source_url: url, source_date: '2026-10-26', retrieved_at: 1 })
+  const rows = [{ lead_id: 'L1', job_id: job }]
+  const enr = (db.prepare("SELECT kind, value, label, source_url, connector FROM lead_enrichments WHERE lead_id = 'L1'").all()) as Parameters<typeof contactsFromEnrichments>[0]
+  const roles = who.join('; ')
+  const card = recommendedPerson(contactsFromEnrichments(enr, roles), roles)
+  return { csv: bestPeople(db, 'A', rows).get('L1')!, card, db, rows }
+}
+test('card and CSV agree: a sole contradicted stored person (any connector) is nobody; valid-role controls', () => {
+  for (const connector of ['sitecrawl', 'search:people', 'enrich:apollo', 'adv:linkedin']) {
+    for (const t of ['Not Practice Manager', 'Assistant to Practice Manager', 'Former Practice Manager', 'Retired Practice Manager']) {
+      const { csv, card } = oneLead(['Practice manager'], [[connector, `Eli Novak, ${t}`, 'https://acme.example/team']])
+      assert.equal(csv.best_person, '', `${connector} ${t}`); assert.equal(card, null, `${connector} ${t}`)
+    }
+    const ok = oneLead(['Practice manager'], [[connector, 'Eli Novak, Practice Manager', 'https://acme.example/team']])
+    assert.equal(ok.csv.best_person, 'Eli Novak'); assert.equal(ok.card?.name, 'Eli Novak')
+  }
+})
+test('card and CSV agree when a valid row sits beside contradicted ones, with no ICP, and when assistants are requested', () => {
+  const mixed = oneLead(['Practice manager'], [['sitecrawl', 'Eli Novak, Not Practice Manager', 'https://a.example/t'], ['search:people', 'Dana Lee, Practice Manager', 'https://www.linkedin.com/in/dana-lee'], ['enrich:apollo', 'Bo Ray, Assistant to Practice Manager', 'https://a.example/t']])
+  assert.equal(mixed.csv.best_person, 'Dana Lee'); assert.equal(mixed.card?.name, 'Dana Lee')
+  const noIcp = oneLead([], [['sitecrawl', 'Eli Novak, Former CEO', 'https://a.example/t']])
+  assert.equal(noIcp.csv.best_person, ''); assert.equal(noIcp.card, null)
+  const noIcpOk = oneLead([], [['sitecrawl', 'Eli Novak, Former CEO', 'https://a.example/t'], ['sitecrawl', 'Dana Lee, CEO', 'https://a.example/t']])
+  assert.equal(noIcpOk.csv.best_person, 'Dana Lee'); assert.equal(noIcpOk.card?.name, 'Dana Lee')
+  const asst = oneLead(['Office assistant'], [['sitecrawl', 'Pat Kim, Office Assistant', 'https://a.example/t'], ['sitecrawl', 'Al Roe, Assistant to the Office Assistant', 'https://a.example/t']])
+  assert.equal(asst.csv.best_person, 'Pat Kim'); assert.equal(asst.card?.name, 'Pat Kim')
+})
+test('tenant and quarantine controls still hold with contradicted rows present', () => {
+  const { db, rows } = oneLead(['Practice manager'], [['sitecrawl', 'Dana Lee, Practice Manager', 'https://a.example/t'], ['sitecrawl', 'Eli Novak, Former Practice Manager', 'https://a.example/t']])
+  assert.equal(bestPeople(db, 'B', rows).get('L1')!.best_person, '')
+  db.prepare("UPDATE leads SET quarantined_at = 1 WHERE id = 'L1'").run()
+  assert.equal(bestPeople(db, 'A', rows).get('L1')!.best_person, '')
+})
