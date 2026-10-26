@@ -232,13 +232,15 @@ function createDraftInner(db: Database.Database, tenantId: string, leadId: strin
   // The page that actually shows the address: the cited page for a direct contact, the company's own
   // contact page (its stored source URL) for a sitecrawl address. Never the signal/news URL for a crawled address.
   let addressUrl = lead.source_url
-  if (!EMAIL_RE.test(norm(published))) {
-    try {
-      crawled = readCrawledRows(db, tenantId, lead.id)
-      const r = pickCrawledEmail(crawled)
-      if (r) { published = r.value; addressUrl = r.source_url ?? lead.source_url }
-    } catch { /* enrichment table not present */ }
-  }
+  // The crawled rows are read even when the contact is already an email: equality with the contact does not prove the
+  // cited page printed it, and domainReviewFor must see the crawl record of that address (approve/send already do via
+  // domainReviewStatus; draft used to skip it, found by the card-vs-gate consistency test).
+  const contactIsEmail = EMAIL_RE.test(norm(published))
+  try {
+    crawled = readCrawledRows(db, tenantId, lead.id)
+    const r = pickCrawledEmail(crawled)
+    if (r && !contactIsEmail) { published = r.value; addressUrl = r.source_url ?? lead.source_url }
+  } catch { /* enrichment table not present */ }
   const to = norm(published)
   if (!EMAIL_RE.test(to)) throw new OutreachError('no_email_contact')
   // Published is not the same as sales-contactable: press, support, privacy,
