@@ -6,6 +6,8 @@ import { emptyLeadsMessage, scoreLabel, quoteNote } from '@/lib/scan/leads-view'
 import { eventTypeLabel } from '@/lib/events/labels'
 import { companySearchEligible } from '@/lib/scan/find-contact-eligible'
 import { contactsFromEnrichments } from '@/lib/people/rank'
+// Where a listed person came from, in words. Unknown connectors show their id.
+const PEOPLE_SOURCE: Record<string, string> = { sitecrawl: 'the company website (listed with this title)', 'search:people': 'a public LinkedIn search result (not verified as current)', 'adv:linkedin': 'LinkedIn, through your session', 'enrich:apollo': 'Apollo', 'enrich:pdl': 'People Data Labs' }
 import { publishedEmail, publishedContact, contactSearchNote, domainBasisNote, domainBasisText } from '@/lib/outreach/published-email'
 import { domainReviewFor } from '@/lib/outreach/domain-review'
 import SourceReview from './source-review'
@@ -606,7 +608,7 @@ export default function LeadsClient() {
             {parseSignals(l.signals).length > 0 && (
               <div className="flex flex-wrap gap-1 mt-1">{parseSignals(l.signals).map(sg => <span key={sg} className="text-[10px] uppercase tracking-wide text-gray-500 border border-white/10 px-1 py-0.5">{sg.replace(/_/g, ' ')}</span>)}</div>
             )}
-            {l.enrichments && l.enrichments.some(e => e.kind === 'contact') && (() => {
+            {l.enrichments && l.enrichments.some(e => e.kind === 'contact' || e.kind === 'person') && (() => {
               const people = contactsFromEnrichments(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')
               return (
                 <div className="text-xs mt-1 space-y-0.5">
@@ -614,8 +616,9 @@ export default function LeadsClient() {
                   {people.map(p => (
                     <div key={p.name + (p.title ?? '')} className="text-gray-400">
                       <span className="text-[#111]">{p.name}</span>{p.title ? ` - ${p.title}` : ''}{' '}
-                      <span className="text-gray-500">via {p.connector}{p.tier === 'strong' ? `, title matches: ${p.matched.join(', ')}` : p.tier === 'weak' ? `, weak title match: ${p.matched.join(', ')}` : ', no title match'}</span>{' '}
+                      <span className="text-gray-500">via {PEOPLE_SOURCE[p.connector] ?? p.connector}{p.tier === 'strong' ? `, title matches: ${p.matched.join(', ')}` : p.tier === 'weak' ? `, weak title match: ${p.matched.join(', ')}` : ', no title match'}</span>{' '}
                       {p.linkedin && <a className="underline text-[#111]" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow">profile</a>}
+                      {!p.linkedin && p.source && <a className="underline text-[#111]" href={p.source} target="_blank" rel="noopener noreferrer nofollow">source</a>}
                     </div>
                   ))}
                   <div className="text-gray-500">{icp && icp.icp.who.length > 0 ? 'Ordered by title match to your profile - a heuristic. A match is not a verified decision maker or current employee; verify the person before reaching out.' : 'People found for this company - verify the person before reaching out.'}</div>
@@ -623,9 +626,9 @@ export default function LeadsClient() {
               )
             })()}
             <WarmPath leadId={l.id} company={l.company} signal={l.signal} />
-            {l.enrichments && l.enrichments.some(e => e.kind !== 'contact' && e.kind !== 'domain_review') && (
+            {l.enrichments && l.enrichments.some(e => e.kind !== 'contact' && e.kind !== 'person' && e.kind !== 'domain_review') && (
               <div className="text-xs mt-1 space-y-0.5">
-                {l.enrichments.filter(e => e.kind !== 'contact' && e.kind !== 'domain_review').map(e => (
+                {l.enrichments.filter(e => e.kind !== 'contact' && e.kind !== 'person' && e.kind !== 'domain_review').map(e => (
                   <div key={e.kind + e.value} className="text-gray-400">
                     <span className="text-[#111]">{e.kind === 'domain' ? e.value.split('|')[0] : e.value}</span>{e.kind === 'domain' ? ` (${domainBasisText(e)})` : e.label && !e.label.startsWith('contact-context-v1:') ? ` (${dedupeLabel(e.label)})` : ''} <span className="text-gray-500">{e.kind === 'tech' ? 'seen on the company website' : e.connector === 'sitecrawl' ? 'from a company website page' : e.connector === 'hunter' ? 'via Hunter (earlier)' : `via ${e.connector}`}{e.confidence !== null && !e.connector.startsWith('signals:') ? `, ${e.confidence}% confidence` : ''}{e.entity_status === 'unconfirmed' ? ' - entity unconfirmed (name match only), check the source before relying on this' : e.entity_status === 'heuristic' ? ' - entity matched by name only (heuristic, not independently confirmed)' : ''}, seen {e.source_date}</span>{' '}
                     <a className="underline text-[#111]" href={e.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>

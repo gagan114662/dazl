@@ -9,6 +9,7 @@ export interface PersonContact {
   title: string | null
   linkedin: string | null
   connector: string
+  source?: string // page the person was found on, when it is not a profile
 }
 
 export type MatchTier = 'strong' | 'weak' | 'none'
@@ -61,16 +62,22 @@ export interface ContactEnrichment {
   connector?: string
 }
 
+// People dazl finds itself are 'person' rows valued "Name, Title" (company-site crawl, public profile search). They
+// belong in the same "right people" list as paid-enrichment contacts, not in the generic enrichment list. Their
+// profile link is source_url only when it IS a public profile; a company page stays a plain source link.
+const PROFILE_URL = /^https:\/\/([a-z]{2,3}\.)?(www\.)?linkedin\.com\/in\//
 export function contactsFromEnrichments(rows: ContactEnrichment[], icpText: string): RankedPerson[] {
   const contacts: PersonContact[] = rows
-    .filter(r => r.kind === 'contact')
+    .filter(r => r.kind === 'contact' || r.kind === 'person')
     .map(r => {
-      const i = r.value.indexOf(' - ')
+      const sep = r.kind === 'person' ? ', ' : ' - '
+      const i = r.value.indexOf(sep)
       return {
         name: (i === -1 ? r.value : r.value.slice(0, i)).trim(),
-        title: i === -1 ? null : r.value.slice(i + 3).trim(),
-        linkedin: r.source_url || null,
+        title: i === -1 ? null : r.value.slice(i + sep.length).trim(),
+        linkedin: r.kind === 'contact' ? r.source_url || null : PROFILE_URL.test(r.source_url) ? r.source_url : null,
         connector: r.connector ?? r.label ?? 'enrichment',
+        ...(r.kind === 'person' && !PROFILE_URL.test(r.source_url) ? { source: r.source_url } : {}),
       }
     })
   return rankPeople(contacts, icpText)
