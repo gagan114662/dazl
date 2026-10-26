@@ -139,3 +139,29 @@ test('legacy verified date status is a claimed event day, never "confirmed on th
     assert.ok(c.assumptions.some(a => /event day as claimed/.test(a)))
   }
 })
+
+// Instinct #191/#196 review: recommendation selection, not only scoring. A sole Former / Not / Assistant-to row must not
+// become the card's "who", whichever connector stored it.
+const row = (connector: string, name: string, title: string): Row => ({ connector, kind: 'person', value: `${name}, ${title}`, label: 'x', source_url: 'https://x.example/team' })
+const whoOf = (rows: Row[], roles: string) => card({ enrichments: [dom('brightteeth.example', 'evidence_own_domain', 'https://brightteeth.example/news'), email, ...rows] }, roles)
+test('card: a sole contradicted stored person is never the recommended who, for every connector; the row is not erased', () => {
+  for (const connector of ['sitecrawl', 'search:people', 'enrich:apollo', 'adv:linkedin']) {
+    for (const t of ['Former Practice Manager', 'Not Practice Manager', 'Assistant to Practice Manager', 'Retired Practice Manager', 'Ex-Practice Manager']) {
+      const c = whoOf([row(connector, 'Eli Novak', t)], 'Practice manager')
+      assert.equal(c.who, null, `${connector}: ${t}`)
+      assert.match(c.next, /^Find the decision-maker/)
+      assert.ok(c.missing.some(m => /every listed person has a past, negated or assistant-to title/.test(m)))
+    }
+  }
+})
+test('card: a contradicted person never beats a valid one; valid role controls; no-ICP and assistant-requested policies', () => {
+  const bad = row('sitecrawl', 'Eli Novak', 'Former Practice Manager'); const good = row('search:people', 'Dana Lee', 'Practice Manager')
+  for (const rows of [[bad, good], [good, bad]]) assert.equal(whoOf(rows, 'Practice manager').who?.name, 'Dana Lee')
+  assert.equal(whoOf([good], 'Practice manager').who?.name, 'Dana Lee')
+  // no ICP roles at all: explicit contradiction is still refused; an ordinary current row is recommended
+  assert.equal(whoOf([bad], '').who, null)
+  assert.equal(whoOf([bad, good], '').who?.name, 'Dana Lee')
+  // the scan itself asks for assistants: an assistant is recommended, an assistant TO that role is not
+  assert.equal(whoOf([row('sitecrawl', 'Pat Kim', 'Office Assistant')], 'Office assistant').who?.name, 'Pat Kim')
+  assert.equal(whoOf([row('sitecrawl', 'Pat Kim', 'Assistant to the Office Assistant')], 'Office assistant').who, null)
+})

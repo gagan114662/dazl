@@ -18,8 +18,9 @@ test('titles with trailing free text or a different company are still rejected',
 test('when a page lists many people the most senior three are kept, not the first three', () => {
   const cards = [['Ann Bell', 'Practice Manager'], ['Bob Cole', 'Office Manager'], ['Cy Dunn', 'Director of Marketing'], ['Di Eng', 'Founder'], ['Ed Fox', 'CEO']]
     .map(([n, t]) => `<h3>${n}</h3><p>${t}</p>`).join('')
-  const v = vals(cards)
-  assert.equal(v.length, 3)
+  // The page returns up to PAGE_PEOPLE most-senior-first; the site-level cap of 3 is applied by crawlSite.
+  const v = vals(cards).slice(0, 3)
+  assert.equal(vals(cards).length, 5)
   assert.ok(v.includes('Di Eng, Founder') && v.includes('Ed Fox, CEO'))
   assert.ok(!v.includes('Ann Bell, Practice Manager'))
 })

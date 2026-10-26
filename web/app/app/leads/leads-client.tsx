@@ -1,11 +1,12 @@
 'use client'
+import { windowNotice } from '@/lib/scan/window-notice'
 import { KEY_UNREADABLE_COPY, knownErrorCopy } from '@/lib/error-copy'
 import { useEffect, useRef, useState } from 'react'
 import { buildSources } from '@/lib/sources/ui-sources'
 import { emptyLeadsMessage, scoreLabel, quoteNote } from '@/lib/scan/leads-view'
 import { eventTypeLabel } from '@/lib/events/labels'
 import { companySearchEligible } from '@/lib/scan/find-contact-eligible'
-import { contactsFromEnrichments } from '@/lib/people/rank'
+import { contactsFromEnrichments, PEOPLE_SOURCE } from '@/lib/people/rank'
 import { OpportunityCardView } from './opportunity-card'
 import { publishedEmail, publishedContact, contactSearchNote, domainBasisNote, domainBasisText } from '@/lib/outreach/published-email'
 import { domainReviewFor } from '@/lib/outreach/domain-review'
@@ -493,6 +494,7 @@ export default function LeadsClient() {
             <p className="text-gray-400">{draftNote}</p>
             <button onClick={() => run(draft)} disabled={starting} className="btn-primary shrink-0 disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
           </div>
+          {draft.window_days ? <p className="text-xs text-[#555] mb-2" data-testid="draft-window">Time window for this run: the last {draft.window_days} days</p> : null}
           <label className="block text-xs text-gray-500 mb-1">Who you want</label>
           <textarea className={`${input} w-full mb-2`} rows={2} maxLength={300} value={draft.summary} onChange={e => setDraft({ ...draft, summary: e.target.value })} />
           {([['who', 'Roles or kinds of buyer (one per line)'], ['industries', 'Industries (one per line, empty means any)'], ['sizes', 'Company sizes (one per line, empty means any)'], ['where', 'Where (one per line, empty means anywhere)'], ['signals', 'Buying signals to look for (one per line)'], ['exclude', 'Skip these (one per line)']] as const).map(([k, label]) => (
@@ -504,7 +506,19 @@ export default function LeadsClient() {
           <button onClick={() => run(draft)} disabled={starting} className="btn-primary disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
         </div>
       )}
-      {icp && !draft && (
+      {/* Outside the collapsed profile details: a closed <details> hid the notice and its button (found by the rendered check, test/ui/window-edit.ui.mjs). */}
+      {icp && !draft && (<>
+        {/* Owner direction (#204): when the user's own constraint excluded results, say so and offer to widen it explicitly - never relax it quietly. */}
+        {(() => {
+          const wn = windowNotice(leads, icp.icp.window_days)
+          if (!wn) return null
+          return (
+            <p className="text-xs text-[#555] mb-2">
+              {wn.text}{' '}
+              {wn.editTo && <button className="underline text-[#111]" onClick={() => { setDraft({ ...icp.icp, window_days: wn.editTo! }); setDraftNote(wn.editNote!) }}>{wn.editLabel}</button>}
+            </p>
+          )
+        })()}
         <details className="text-sm text-gray-400 mb-4">
           <summary className="cursor-pointer">Profile used: {icp.icp.summary} <span className="text-gray-600">({icp.source === 'inferred' ? 'worked out by dazl' : icp.source === 'user' ? 'reviewed by you' : 'your words as written'})</span></summary>
           <ul className="mt-2 ml-4 list-disc text-xs">
@@ -520,7 +534,7 @@ export default function LeadsClient() {
           </div>
           {watchNote && <p className="text-xs text-gray-500 mt-1">{watchNote}</p>}
         </details>
-      )}
+      </>)}
       {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
       {jobId && status === 'loading' && !statusError && (
         <div className="card p-4 mb-4 flex items-center gap-3">
@@ -628,7 +642,7 @@ export default function LeadsClient() {
             {parseSignals(l.signals).length > 0 && (
               <div className="flex flex-wrap gap-1 mt-1">{parseSignals(l.signals).map(sg => <span key={sg} className="text-[10px] uppercase tracking-wide text-gray-500 border border-white/10 px-1 py-0.5">{sg.replace(/_/g, ' ')}</span>)}</div>
             )}
-            {l.enrichments && l.enrichments.some(e => e.kind === 'contact') && (() => {
+            {l.enrichments && l.enrichments.some(e => e.kind === 'contact' || e.kind === 'person') && (() => {
               const people = contactsFromEnrichments(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')
               return (
                 <div className="text-xs mt-1 space-y-0.5">
@@ -636,8 +650,9 @@ export default function LeadsClient() {
                   {people.map(p => (
                     <div key={p.name + (p.title ?? '')} className="text-gray-400">
                       <span className="text-[#111]">{p.name}</span>{p.title ? ` - ${p.title}` : ''}{' '}
-                      <span className="text-gray-500">via {p.connector}{p.tier === 'strong' ? `, title matches: ${p.matched.join(', ')}` : p.tier === 'weak' ? `, weak title match: ${p.matched.join(', ')}` : ', no title match'}</span>{' '}
+                      <span className="text-gray-500">via {PEOPLE_SOURCE[p.connector] ?? p.connector}{p.tier === 'strong' ? `, title matches: ${p.matched.join(', ')}` : p.tier === 'weak' ? `, weak title match: ${p.matched.join(', ')}` : ', no title match'}</span>{' '}
                       {p.linkedin && <a className="underline text-[#111]" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow">profile</a>}
+                      {!p.linkedin && p.source && <a className="underline text-[#111]" href={p.source} target="_blank" rel="noopener noreferrer nofollow">source</a>}
                     </div>
                   ))}
                   <div className="text-gray-500">{icp && icp.icp.who.length > 0 ? 'Ordered by title match to your profile - a heuristic. A match is not a verified decision maker or current employee; verify the person before reaching out.' : 'People found for this company - verify the person before reaching out.'}</div>
@@ -645,9 +660,9 @@ export default function LeadsClient() {
               )
             })()}
             <WarmPath leadId={l.id} company={l.company} signal={l.signal} />
-            {l.enrichments && l.enrichments.some(e => e.kind !== 'contact' && e.kind !== 'domain_review') && (
+            {l.enrichments && l.enrichments.some(e => e.kind !== 'contact' && e.kind !== 'person' && e.kind !== 'domain_review') && (
               <div className="text-xs mt-1 space-y-0.5">
-                {l.enrichments.filter(e => e.kind !== 'contact' && e.kind !== 'domain_review').map(e => (
+                {l.enrichments.filter(e => e.kind !== 'contact' && e.kind !== 'person' && e.kind !== 'domain_review').map(e => (
                   <div key={e.kind + e.value} className="text-gray-400">
                     <span className="text-[#111]">{e.kind === 'domain' ? e.value.split('|')[0] : e.value}</span>{e.kind === 'domain' ? ` (${domainBasisText(e)})` : e.label && !e.label.startsWith('contact-context-v1:') ? ` (${dedupeLabel(e.label)})` : ''} <span className="text-gray-500">{e.kind === 'tech' ? 'seen on the company website' : e.connector === 'sitecrawl' ? 'from a company website page' : e.connector === 'hunter' ? 'via Hunter (earlier)' : `via ${e.connector}`}{e.confidence !== null && !e.connector.startsWith('signals:') ? `, ${e.confidence}% confidence` : ''}{e.entity_status === 'unconfirmed' ? ' - entity unconfirmed (name match only), check the source before relying on this' : e.entity_status === 'heuristic' ? ' - entity matched by name only (heuristic, not independently confirmed)' : ''}, seen {e.source_date}</span>{' '}
                     <a className="underline text-[#111]" href={e.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
