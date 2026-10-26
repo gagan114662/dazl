@@ -1,5 +1,5 @@
 import { seedOffers } from './helpers/seed-offer.ts'
-import { test } from 'node:test'
+import { test, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
@@ -14,8 +14,12 @@ import { opportunityCard, type CardLead } from '../lib/scan/opportunity.ts'
 // Known gap 3 (docs/STATUS.md): the card's advice and the send gate are separate code. Property: for the SAME stored
 // lead, whenever the card recommends "Draft a first message", createDraft must accept it; and whenever createDraft
 // refuses it for identity, window, currentness or quarantine, the card must not recommend drafting. Fixtures only.
+// ONE clock for fixtures, the gates (createDraft/currentnessHeld read new Date()), quarantine and the card: Date is mocked
+// to a fixed instant, so the test means the same thing on any day. Scope: card advice vs createDraft eligibility only,
+// not approve/send/sequence/CSV agreement, identity correctness or delivery.
 const NOW = new Date('2026-10-26T12:00:00Z')
-const day = (n: number) => new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10)
+mock.timers.enable({ apis: ['Date'], now: NOW.getTime() })
+const day = (n: number) => new Date(NOW.getTime() + n * 86_400_000).toISOString().slice(0, 10)
 type E = { connector: string; kind: string; value: string; label: string | null; source_url: string }
 const S = 'https://x.example/news'
 const dom = (site: string, token: string): E => ({ connector: 'sitecrawl', kind: 'domain', value: `${site}|${token}`, label: `domain-basis-v1:${token}`, source_url: S })
@@ -23,7 +27,8 @@ const mail = (a: string, label: string | null = null): E => ({ connector: 'sitec
 const person: E = { connector: 'sitecrawl', kind: 'person', value: 'Dana Lee, Practice Owner', label: null, source_url: 'https://x.example/team' }
 const privacyCtx = 'contact-context-v1:' + JSON.stringify({ excerpt: 'For privacy requests email hello@x.example', restriction: 'restricted-purpose context' })
 
-type Scenario = { name: string; contact: string | null; date: string | null; rows: E[]; quarantine?: boolean; window?: number }
+type Scenario = { name: string; contact: string | null; date: string | null; rows: E[]; quarantine?: boolean; expectHeld?: boolean; icp?: string; query?: string }
+const ICP = { summary: 's', who: ['Practice owner'], industries: [], sizes: [], where: [], signals: [], exclude: [] }
 const SCENARIOS: Scenario[] = [
   { name: 'own domain crawled email, in window', contact: null, date: day(-10), rows: [dom('x.example', 'evidence_own_domain'), mail('owner@x.example'), person] },
   { name: 'name_probe crawled email', contact: null, date: day(-10), rows: [dom('x.example', 'name_probe'), mail('owner@x.example'), person] },
@@ -33,20 +38,29 @@ const SCENARIOS: Scenario[] = [
   { name: 'stale event date', contact: 'owner@x.example', date: day(-200), rows: [person] },
   { name: 'undated', contact: 'owner@x.example', date: null, rows: [person] },
   { name: 'quarantined', contact: 'owner@x.example', date: day(-10), rows: [person], quarantine: true },
+  { name: 'invalid calendar date', contact: 'owner@x.example', date: '2026-02-30', rows: [person] },
+  { name: 'future date', contact: 'owner@x.example', date: day(5), rows: [person] },
+  { name: 'exact boundary day (inside)', contact: 'owner@x.example', date: day(-90), rows: [person] },
+  { name: 'one day past the boundary (stale)', contact: 'owner@x.example', date: day(-91), rows: [person] },
+  // #208: a saved window that is not an integer in [1,365] must recover the query window or hold; never waive it
+  ...[0, -5, 30.5, '90', {}, 400].map(w => ({ name: `malformed saved window_days ${JSON.stringify(w)}, stale date`, contact: 'owner@x.example', date: day(-200), rows: [person], icp: JSON.stringify({ ...ICP, window_days: w }) })),
+  { name: 'malformed saved window_days 0, fresh date, query has a window (recovers, draftable)', contact: 'owner@x.example', date: day(-10), rows: [person], icp: JSON.stringify({ ...ICP, window_days: 0 }) },
+  { name: 'malformed saved window_days 0, query has no window (fails closed)', contact: 'owner@x.example', date: day(-10), rows: [person], icp: JSON.stringify({ ...ICP, window_days: 0 }), query: 'dental clinics in Ohio' },
+  { name: 'unparseable saved profile (fails closed)', contact: 'owner@x.example', date: day(-10), rows: [person], icp: '{not json' },
   { name: 'two recorded sites', contact: null, date: day(-10), rows: [dom('x.example', 'evidence_own_domain'), dom('y.example', 'evidence_own_domain'), mail('owner@x.example'), person] },
 ]
 
 function build(s: Scenario) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db); migrateOutreach(db); seedOffers(db)
-  const icp = JSON.stringify({ summary: 's', who: ['Practice owner'], industries: [], sizes: [], where: [], signals: [], exclude: [], window_days: 90 })
-  const job = createQueryJob(db, 'A', { query: 'dental clinics in the past 90 days', icp })
+  const icp = s.icp ?? JSON.stringify({ ...ICP, window_days: 90 })
+  const job = createQueryJob(db, 'A', { query: s.query ?? 'dental clinics in the past 90 days', icp })
   db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
   const id = randomBytes(12).toString('hex')
   db.prepare('INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence, fit, intent, event_date, human_confirmed_at, score) VALUES (?, ?, ?, ?, ?, ?, ?, 90, 4, 2, ?, 1, 70)')
     .run(id, job, 'X Dental', s.contact, 'X Dental opened a clinic', S, 'X Dental opened a clinic', s.date)
   const ins = db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES (?, ?, 'A', ?, ?, ?, ?, ?, '2026-10-20', 10)")
   for (const r of s.rows) ins.run(randomBytes(8).toString('hex'), id, r.connector, r.kind, r.value, r.label, r.source_url)
-  if (s.quarantine) setQuarantine(db, 'A', id, 'quarantine', 'wrong company', Date.now())
+  if (s.quarantine) setQuarantine(db, 'A', id, 'quarantine', 'wrong company', NOW.getTime())
   const q = db.prepare('SELECT quarantined_at FROM leads WHERE id = ?').get(id) as { quarantined_at: number | null }
   const lead: CardLead = {
     id, company: 'X Dental', signal: 'X Dental opened a clinic', source_url: S, evidence_excerpt: 'X Dental opened a clinic', event_date: s.date,
@@ -57,6 +71,13 @@ function build(s: Scenario) {
   return { db, id, lead }
 }
 
+// What createDraft itself must do (so the agreement property cannot pass with both sides refusing everything).
+const HELD = /stale|undated|invalid calendar|future date|quarantined|fails closed|malformed saved window_days .*stale date|two recorded|name_probe|restricted context/
+const FREE = /^(own domain crawled email|cited-page contact only|exact boundary day|malformed saved window_days 0, fresh date)/
+for (const s of SCENARIOS) {
+  if (HELD.test(s.name)) s.expectHeld = true
+  else if (FREE.test(s.name)) s.expectHeld = false
+}
 for (const s of SCENARIOS) {
   test(`card and createDraft agree: ${s.name}`, () => {
     const { db, id, lead } = build(s)
@@ -65,6 +86,7 @@ for (const s of SCENARIOS) {
     try { createDraft(db, 'A', id, 'Acme'); drafted = true } catch { /* refused */ }
     const advisesDraft = card.next.startsWith('Draft')
     // The card may be more cautious than the gate (e.g. no person named) but never advise what the gate refuses.
+    if (s.expectHeld !== undefined) assert.equal(drafted, !s.expectHeld, `gate expectation for ${s.name}`)
     if (advisesDraft) assert.equal(drafted, true, `card says "${card.next}" but createDraft refused`)
     if (!drafted) assert.equal(advisesDraft, false)
   })
