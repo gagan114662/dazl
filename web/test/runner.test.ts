@@ -311,8 +311,7 @@ test('a stop during research starts no complaint-source, grounding or later prov
     const prov = fake(async () => { researchCalls++; cancelJob(db, 'A', id); return { text: 'Here: ' + JSON.stringify([lead('https://a.com')]), citedUrls: ['https://a.com'] } })
     prov.anthropic.complete = async () => { completeCalls++; return 'supports' }
     assert.equal(await runJob(db, claimKeyedJob(db, id)!, { providers: prov, master, fetchPage: page, advancedWorker: worker }), 'done')
-    // completeCalls 1 = the free news-search query plan, which runs BEFORE research; nothing runs after the stop.
-    assert.deepEqual([researchCalls, workerCalls, completeCalls], [1, 0, 1])
+    assert.deepEqual([researchCalls, workerCalls, completeCalls], [1, 0, 0])
     assert.equal(listLeads(db, 'A', id).length, 0)
   } finally { for (const k of Object.keys(process.env)) if (!(k in savedEnv)) delete process.env[k]; Object.assign(process.env, savedEnv) }
 })

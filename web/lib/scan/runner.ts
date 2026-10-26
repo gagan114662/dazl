@@ -33,7 +33,7 @@ import { SourceRunLedger } from './source-runs.ts'
 import { applyBuyerFitGate } from './buyer-fit.ts'
 import { findPeople } from '../people/people-search.ts'
 import { collectLinkedInPeople } from '../signals/linkedin-people.ts'
-import { bingMarket, newsEnabled, newsSearch, NEWS_PER_SCAN } from '../search/news.ts'
+import { newsEnabled, newsSearch, NEWS_PER_SCAN, NEWS_SOURCE } from '../search/news.ts'
 import { safeGet } from '../sources/http.ts'
 import type { SafeGet } from '../sources/types.ts'
 
@@ -556,7 +556,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   const geo = { ...(icp.country ? { location: icp.country } : {}), ...(icp.language ? { language: icp.language } : {}) }
   for (const query of q) { const r = await tfSearch(db, job.user_id, query, { afterDate: after, ...geo }, spent, diag ? { trace: diag.trace } : {}); if (!r.ok) { if (hits.length === 0) return null; break } hits.push(...r.hits) }
   // Free news search beside TinyFish (lib/search/news.ts): the same queries minus site: restrictions, the ICP's market.
-  if (newsHttp && newsEnabled() && hits.length > 0) { const seen = new Set(hits.map(h => h.url)); for (const h of await newsSearch(newsHttp, q.filter(x => !/site:/i.test(x)), bingMarket(icp.country, icp.language))) if (!seen.has(h.url)) { seen.add(h.url); hits.push(h) } }
+  if (newsHttp && hits.length > 0) { const seen = new Set(hits.map(h => h.url)); for (const h of await newsSearch(newsHttp, q.filter(x => !/site:/i.test(x)), icp.language)) if (!seen.has(h.url)) { seen.add(h.url); hits.push(h) } }
   if (hits.length === 0) {
     // Every search answered and none returned a result: the evidence really is 0. If any search failed it stays unknown (null).
     if (diag && summarizeTrace(diag.trace).hits_complete === true) Object.assign(diag.info, { evidence_items: 0, evidence_with_page_text: 0, evidence_snippet_only: 0 })
@@ -575,16 +575,22 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   return parsed
 }
 
-// News-only discovery (no TinyFish): the scan's own planned queries through the free news search; the model reads the
-// dated headlines and descriptions; the verifier then fetches each cited publisher page as usual.
-async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, http: SafeGet, fetchImpl?: typeof fetch): Promise<LeadDraft[] | null> {
+// News-only discovery (no TinyFish): the scan's own planned queries through the free news search (GDELT). News titles
+// are labels, not quotable text, so the article pages are fetched with the verifier's own cached fetcher and the model
+// quotes from that page text: the verifier then checks the same text it was quoted from.
+export const NEWS_PAGES = 8
+async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, http: SafeGet, fetchPage: PageFetcher, fetchImpl?: typeof fetch): Promise<LeadDraft[] | null> {
   const complete = provider.complete!
   const plan = queryPlan(await complete.call(provider, key, queryPrompt(job.query!, icp, NEWS_PER_SCAN), fetchImpl, 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, NEWS_PER_SCAN)
   const q = withGeography(sanitizeQueries(plan.queries, job.query!), icp.where).filter(x => !/site:/i.test(x)) // news search has no site: operator
   if (q.length === 0) return null
-  const hits = await newsSearch(http, q, bingMarket(icp.country, icp.language))
+  const hits = await newsSearch(http, q, icp.language)
   if (hits.length === 0) return null
-  const items = toEvidence(hits, [])
+  const pages = (await Promise.all(hits.slice(0, NEWS_PAGES).map(async h => {
+    const p = await fetchPage(h.url).catch(() => null)
+    return p && !isFail(p) && p.text.length >= 200 ? { url: h.url, title: p.title || h.title, text: p.text } : null
+  }))).filter((p): p is { url: string; title: string; text: string } => !!p)
+  const items = toEvidence(hits.filter(h => pages.some(p => p.url === h.url)), pages).map(i => ({ ...i, source: NEWS_SOURCE }))
   if (items.length === 0) return null
   return parseLeads(await complete.call(provider, key, buildSourcePrompt(job.query!, icp, items), fetchImpl, 3000), items.map(i => i.url)) ?? null
 }
@@ -686,12 +692,15 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // pages. If TinyFish is off, capped, failing or finds nothing, fall back to the provider's built-in web search.
     let leads: LeadDraft[] | null = null
     let budgetRefused = false // the run budget refused a call in the TinyFish path
+    // Free news search: on unless NEWS_SEARCH_ENABLED=0 (npm test sets it, like SITECRAWL_ENABLED); an injected
+    // deps.newsHttp always turns it on, so tests that exercise news do so explicitly.
+    const newsOn = !!deps.newsHttp || newsEnabled()
     const diag = { trace: new SearchTrace(), info: {} as Partial<SourceStats>, hitUrls: [] as string[], tfTextUrls: [] as string[] }
     if (job.query && icpForSources && complete && tinyfishEnabled()) {
       try {
         ledger.record('search:tinyfish', 'started')
         assertOwned(db, job)
-        leads = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl, diag, deps.newsHttp ?? safeGet)
+        leads = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl, diag, newsOn ? deps.newsHttp ?? safeGet : undefined)
         ledger.record('search:tinyfish', leads === null ? 'unavailable' : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:tinyfish', leads)
       } catch (e) {
@@ -707,11 +716,11 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     const fetchP = cachedFetcher(recordingFetcher(deps.fetchPage ?? fetchPageDetailed, verifierFetch))
     // TinyFish off, capped, failing or empty: try the free news search before the provider's paid web search. Not after
     // the run budget already refused a call (its own calls would be refused too); a refusal inside it stops the scan.
-    if (!leads && !budgetRefused && job.query && icpForSources && complete && newsEnabled()) {
+    if (!leads && !budgetRefused && job.query && icpForSources && complete && newsOn) {
       try {
         ledger.record('search:news', 'started')
         assertOwned(db, job)
-        leads = await newsLeads(job, icpForSources, providers_[vendor], key, deps.newsHttp ?? safeGet, deps.fetchImpl)
+        leads = await newsLeads(job, icpForSources, providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl)
         ledger.record('search:news', leads === null ? 'unavailable' : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:news', leads)
       } catch (e) {
