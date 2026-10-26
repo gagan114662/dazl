@@ -54,3 +54,11 @@ test('default search budget is wide enough to find something', () => {
   assert.equal(L.searchesPerScan, 8); assert.equal(L.fetchesPerScan, 16)
   assert.ok(L.tenantDaily >= 3 * (L.searchesPerScan + L.fetchesPerScan)) // at least three full scans a day per tenant
 })
+
+test('country codes: UK (models say it) maps to GB, EL to GR; anything not ISO 3166-1 is dropped, never sent', async () => {
+  const { isoCountry } = await import('../lib/scan/icp.ts')
+  assert.equal(isoCountry('UK'), 'GB'); assert.equal(isoCountry('uk'), 'GB'); assert.equal(isoCountry('EL'), 'GR')
+  assert.equal(isoCountry('gb'), 'GB'); assert.equal(isoCountry('IN'), 'IN')
+  assert.equal(isoCountry('XX'), null); assert.equal(isoCountry('EU'), null); assert.equal(isoCountry(7), null)
+  assert.equal(normalizeIcp({ summary: 'London accountancies', country: 'UK', language: 'en' })!.country, 'GB')
+})

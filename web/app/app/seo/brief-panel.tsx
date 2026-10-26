@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import { markdownToPlain } from '@/lib/text/plain'
 
 type Brief = { id: string; topic: string; brief: string; created_at: number }
 
@@ -30,7 +31,7 @@ export default function BriefPanel() {
       {briefs.map(b => (
         <details key={b.id} className="text-sm mb-2">
           <summary className="cursor-pointer font-medium">{b.topic} <span className="text-[#999] text-xs">{new Date(b.created_at * 1000).toLocaleDateString()}</span></summary>
-          <pre className="whitespace-pre-wrap text-[#333] text-xs mt-2 font-sans">{b.brief}</pre>
+          <pre className="whitespace-pre-wrap text-[#333] text-xs mt-2 font-sans">{markdownToPlain(b.brief)}</pre>
         </details>
       ))}
     </div>
