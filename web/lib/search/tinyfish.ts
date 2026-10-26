@@ -227,16 +227,20 @@ export const QUERY_CAP = 300 // tfSearch slices the query to this length
 const escapeRe = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 export const namesPlace = (query: string, place: string): boolean =>
   new RegExp(`(?<![\\p{L}\\p{N}])${place.split(/\s+/).map(escapeRe).join('\\s+')}(?![\\p{L}\\p{N}])`, 'iu').test(query)
+// Several places are usually alternatives ("Lisbon, Porto"), and appending all of them made each query require every
+// place at once. A query that already names one requested place is left as written; any other query gets ONE place,
+// rotating through the list so the places share the queries. A place that does not fit the cap is skipped for the next.
 export function withGeography(queries: string[], where: string[]): string[] {
   const places = [...new Set(where.map(w => w.replace(/[\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim()).filter(w => w.length >= 2 && w.length <= 60))].slice(0, 3)
   if (places.length === 0) return queries
+  let turn = 0
   return queries.map(q => {
-    let out = q
-    for (const place of places) {
-      if (namesPlace(out, place)) continue
-      if (out.length + 1 + place.length <= QUERY_CAP) out += ' ' + place
+    if (places.some(p => namesPlace(q, p))) return q
+    for (let i = 0; i < places.length; i++) {
+      const place = places[(turn + i) % places.length]
+      if (q.length + 1 + place.length <= QUERY_CAP) { turn = (turn + i + 1) % places.length; return `${q} ${place}` }
     }
-    return out
+    return q
   })
 }
 
