@@ -539,12 +539,15 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
     }
   }
   const direct = directQueries(job.query!, icp.signals, icp.where) // reserved first, so the search cap never starves them
-  const plan = queryPlan(await ask(queryPrompt(job.query!, icp, 3 - Math.min(direct.length, 1)), 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, 3 - Math.min(direct.length, 1))
+  const modelQueries = Math.min(6, Math.max(2, tfLimits().searchesPerScan - direct.length)) // the rest of the search budget after the reserved direct queries
+  const plan = queryPlan(await ask(queryPrompt(job.query!, icp, modelQueries), 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, modelQueries)
   if (diag) diag.info.query_source = plan.source
   const q = withGeography([...direct, ...sanitizeQueries(plan.queries, job.query!)], icp.where).slice(0, tfLimits().searchesPerScan)
   const after = new Date(Date.now() - 365 * 86400_000).toISOString().slice(0, 10)
   const hits: Awaited<ReturnType<typeof tfSearch>> extends infer R ? (R extends { ok: true; hits: infer H } ? H : never) : never = []
-  for (const query of q) { const r = await tfSearch(db, job.user_id, query, { afterDate: after }, spent, diag ? { trace: diag.trace } : {}); if (!r.ok) { if (hits.length === 0) return null; break } hits.push(...r.hits) }
+  // Without location/language TinyFish searches as US/English; the profile's country and language target the buyer's market.
+  const geo = { ...(icp.country ? { location: icp.country } : {}), ...(icp.language ? { language: icp.language } : {}) }
+  for (const query of q) { const r = await tfSearch(db, job.user_id, query, { afterDate: after, ...geo }, spent, diag ? { trace: diag.trace } : {}); if (!r.ok) { if (hits.length === 0) return null; break } hits.push(...r.hits) }
   if (hits.length === 0) {
     // Every search answered and none returned a result: the evidence really is 0. If any search failed it stays unknown (null).
     if (diag && summarizeTrace(diag.trace).hits_complete === true) Object.assign(diag.info, { evidence_items: 0, evidence_with_page_text: 0, evidence_snippet_only: 0 })

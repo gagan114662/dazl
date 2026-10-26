@@ -11,6 +11,10 @@ export interface Icp {
   where: string[]          // geographies, empty means anywhere
   signals: string[]        // public events that show buying intent right now
   exclude: string[]        // things to skip
+  // Where the search runs. TinyFish defaults every search to US/English when neither is sent, so a Lisbon or Pune
+  // request was searched as if it were American. ISO 3166-1 alpha-2 (PT) and ISO 639-1 (pt); absent means unknown.
+  country?: string
+  language?: string
 }
 
 export const MAX_QUERY = 600
@@ -30,7 +34,9 @@ export function normalizeIcp(raw: unknown): Icp | null {
   const r = raw as Record<string, unknown>
   const summary = clean(r.summary, caps.summary)
   if (!summary) return null
-  return { summary, who: list(r.who, caps.who), industries: list(r.industries, caps.industries), sizes: list(r.sizes, caps.sizes), where: list(r.where, caps.where), signals: list(r.signals, caps.signals), exclude: list(r.exclude, caps.exclude) }
+  const country = typeof r.country === 'string' && /^[A-Za-z]{2}$/.test(r.country.trim()) ? r.country.trim().toUpperCase() : null
+  const language = typeof r.language === 'string' && /^[A-Za-z]{2}$/.test(r.language.trim()) ? r.language.trim().toLowerCase() : null
+  return { summary, who: list(r.who, caps.who), industries: list(r.industries, caps.industries), sizes: list(r.sizes, caps.sizes), where: list(r.where, caps.where), signals: list(r.signals, caps.signals), exclude: list(r.exclude, caps.exclude), ...(country ? { country } : {}), ...(language ? { language } : {}) }
 }
 
 export function icpPrompt(query: string, seller?: string): string {
@@ -40,7 +46,7 @@ Request: ${JSON.stringify(query.slice(0, MAX_QUERY))}${seller ? `\nWhat their co
 
 Work out the ideal customer profile. Do not ask questions, make reasonable choices. If the request names a place, keep it in "where". If it names no place, leave "where" empty.
 Reply with ONLY one JSON object, no prose, with these keys:
-{"summary": one sentence describing the buyer they want, "who": up to ${caps.who} roles or kinds of buyer, "industries": up to ${caps.industries} industries or [], "sizes": up to ${caps.sizes} company sizes (like "1-10 employees") or [], "where": up to ${caps.where} places or [], "signals": up to ${caps.signals} public events that show someone is likely to buy right now (hiring, funding, expansion, complaints about a competitor, a new launch, a permit, and so on), "exclude": up to ${caps.exclude} kinds of result to skip}`
+{"summary": one sentence describing the buyer they want, "who": up to ${caps.who} roles or kinds of buyer, "industries": up to ${caps.industries} industries or [], "sizes": up to ${caps.sizes} company sizes (like "1-10 employees") or [], "where": up to ${caps.where} places or [], "signals": up to ${caps.signals} public events that show someone is likely to buy right now (hiring, funding, expansion, complaints about a competitor, a new launch, a permit, and so on), "exclude": up to ${caps.exclude} kinds of result to skip, "country": the ISO 3166-1 alpha-2 code of the one country the buyers are in (like "US", "PT", "IN") or "" if not one country, "language": the ISO 639-1 code of the language those buyers publish their web pages in (like "en", "pt", "hi") or ""}`
 }
 
 export function parseIcp(text: string): Icp | null {
