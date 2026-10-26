@@ -29,6 +29,7 @@ import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } 
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
 import { sourceCap } from './source-quality.ts'
 import { SourceRunLedger } from './source-runs.ts'
+import { findPeople } from '../people/people-search.ts'
 
 export interface Job { id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string; seller?: string | null; watch_id?: string | null; csv_domain?: string | null; run_budget?: string | null }
 export interface LeadDraft extends Candidate {}
@@ -848,6 +849,9 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     try { markSeenBefore(db, job.user_id, job.id, companyKey) } catch { /* flag only, never affects the scan */ }
     // Bounded post-processing: see runPostFinishBounded.
     await runPostFinishBounded(db, job, deps)
+    // People search (person-first): the right people at each lead's company from public profile SEARCH RESULTS, for
+    // companies whose own site lists nobody. Never throws; never an address; kill switch PEOPLE_SEARCH_ENABLED=0.
+    await findPeople(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl })
     // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.
     try { await runAutopilot(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
     return 'done'
