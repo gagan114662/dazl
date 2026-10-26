@@ -9,6 +9,7 @@ import { guardedLookup, isPublicIp } from '../scan/fetch-page.ts'
 import { audit, addEnrichment, type Enrichment } from './store.ts'
 import { detectTech, type TechHit } from './techstack.ts'
 import { emailGuessEnabled, personalLocals, recordEmailGuesses } from '../people/email-pattern.ts'
+import { titleMatches } from '../people/rank.ts'
 
 // Contact-page crawl. No key. For a verified lead it finds the company's own website, reads a handful of
 // contact/about pages and keeps only business contacts the company itself published there.
@@ -233,7 +234,10 @@ export function extractContacts(html: string, pageUrl: string, site: string): Fo
 // B2B decision-maker titles join the owner-style ones: the person who buys a sales/ops/engineering tool is rarely "owner". Each
 // addition is a WHOLE title with no free text after it ("Director, Other Corp" still fails): C-suite, "Chief X Officer", and
 // "VP/Head/Director of <1-2 words>". Names still pass every name-shape and prose check below, so a wider title list admits no new kind of name.
-const EXEC = 'c[a-z]o|chief [a-z]+ officer|(?:vp|svp|evp|vice president|head|director) of [a-z]+(?: (?:&|and) [a-z]+)?|(?:vp|svp|evp|vice president) [a-z]+'
+// "Head/Director/VP of" takes up to two words ("Human Resources"). Titles specific to the seller's buyers are not listed
+// here: they come from each scan's own ICP roles (buyerTitle), so this works for any business and any language.
+const EXEC = `c[a-z]o|chief [a-z]+ officer|(?:vp|svp|evp|vice president|head|director) of [a-z]+(?: [a-z]+)?(?: (?:&|and) [a-z]+)?|(?:vp|svp|evp|vice president) [a-z]+`
+export const PAGE_PEOPLE = 8
 const T = `(?:founder|co-?founder|owner|co-?owner|ceo|president|principal|proprietor|managing director|general manager|director|managing partner|partner|practice manager|office manager|broker|dentist|doctor|${EXEC})`
 const TITLE_FULL = new RegExp(`^${T}(?: (?:&|and) ${T})?$`, 'i')
 const PEOPLE_PAGE = /(about|team|leadership|people|staff|our-story|who-we-are|meet|contact|company|owner|doctor|dentist)/i
@@ -288,7 +292,18 @@ function jsonLdPeople(html: string): { name: string; title: string }[] {
   }
   return out
 }
-export function extractPeople(html: string, pageUrl: string): Found[] {
+// A title that is one of the scan's own buyer roles ("Practice Manager", "Gerente de Vendas") counts as a whole title even
+// when it is not a generic executive title: it contains a full ICP role, or shares 2+ of its words. Same guards as
+// before: short, no comma, and nothing naming another employer ("at", "@", "for").
+// Word-preserving, any alphabet (this file's norm() drops spaces and company words, which suits domains, not titles).
+const titleNorm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/\p{M}/gu, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+export function buyerTitle(title: string, buyerRoles?: string): boolean {
+  if (!buyerRoles || title.length > 60 || title.split(/\s+/).length > 6 || /,|\s(?:at|@|for|bei|chez|em|en|presso)\s/i.test(title)) return false
+  const t = titleNorm(title)
+  if (buyerRoles.split(';').map(titleNorm).some(r => r.length >= 3 && (` ${t} `).includes(` ${r} `))) return true
+  return titleMatches(title, buyerRoles).length >= 2
+}
+export function extractPeople(html: string, pageUrl: string, buyerRoles?: string): Found[] {
   const found = new Map<string, Found>()
   let path = ''; try { path = new URL(pageUrl).pathname } catch { return [] }
   const clean = cutBlocks(html)
@@ -304,7 +319,7 @@ export function extractPeople(html: string, pageUrl: string): Found[] {
   const lowerWords = new Set(body.match(/\b[a-z][a-z'\u2019-]{1,}\b/g) ?? [])
   const add = (name: string, title: string, viaJson = false) => {
     name = name.replace(/\s+/g, ' ').trim(); title = title.replace(/\s+/g, ' ').trim()
-    if (!NAME_LINE.test(name) || !TITLE_FULL.test(title)) return
+    if (!NAME_LINE.test(name) || !(TITLE_FULL.test(title) || buyerTitle(title, buyerRoles))) return
     if (!viaJson) {
       if (!PEOPLE_PAGE.test(path)) return
       if (lowerWords.size < 15) return // no prose on the page: nothing to judge a name-shaped phrase against, fail closed
@@ -319,7 +334,8 @@ export function extractPeople(html: string, pageUrl: string): Found[] {
     if (same) add(same[1], same[2])
     if (i + 1 < lines.length && lines[i].length < 45 && lines[i + 1].length < 45) add(lines[i], lines[i + 1])
   }
-  return [...found.values()].sort(bySeniority).slice(0, 3)
+  // Up to PAGE_PEOPLE per page, most senior first; crawlSite makes the final choice of 3 (buyer roles first when known).
+  return [...found.values()].sort(bySeniority).slice(0, PAGE_PEOPLE)
 }
 
 // Which listed person to keep when a page lists many: whoever can sign off on a purchase first. Pure ordering of what
@@ -331,6 +347,8 @@ export function seniority(title: string): number {
   if (/\b(director|partner|broker)\b/.test(t)) return 2
   return 1
 }
+const titleOf = (f: Found) => f.value.slice(f.value.indexOf(', ') + 2)
+export const byBuyerThenSeniority = (buyerRoles: string) => (a: Found, b: Found) => titleMatches(titleOf(b), buyerRoles).length - titleMatches(titleOf(a), buyerRoles).length || bySeniority(a, b)
 export const bySeniority = (a: Found, b: Found) => seniority(b.value.slice(b.value.indexOf(', ') + 2)) - seniority(a.value.slice(a.value.indexOf(', ') + 2))
 
 const PAGE_HINT = /(contact|about|impressum|kontakt|contacto|contato|nous-contacter|contactez|chi-siamo|company|team|leadership|management|people|reach)/i
@@ -355,7 +373,9 @@ const sleepAbort = (ms: number, signal?: AbortSignal) => new Promise<boolean>((r
 const lastHit = new Map<string, number>()
 
 // onPage (optional) sees the raw HTML of every own-site page read; used only by the email finder (EMAIL_GUESS_ENABLED).
-export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string) => void): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeNorm?: string }> {
+// buyerRoles (optional): the scan ICP's "who" roles. Listed people whose title shares ICP words are kept first, so for a
+// payroll seller "Head of HR" is not crowded out by a CTO; seniority breaks ties. Without it, seniority only (as before).
+export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string) => void, buyerRoles?: string): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeNorm?: string }> {
   const origin = `https://${site}`
   const stopped = () => signal?.aborted ?? false
   const polite = async (url: string, delay: number) => { const h = new URL(url).hostname; const wait = (lastHit.get(h) ?? 0) + Math.max(gapMs, delay) - Date.now(); if (wait > 0 && !(await sleepAbort(wait, signal))) return null; lastHit.set(h, Date.now()); return get(url) }
@@ -372,7 +392,7 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
   if (expectName && !homeNorm.includes(norm(expectName))) return { found: [], reason: 'name_mismatch', pages: 1, homeNorm }
   const found = new Map<string, Found>(); let pages = 1
   onPage?.(home.body)
-  for (const f of [...extractContacts(home.body, home.finalUrl, site), ...extractPeople(home.body, home.finalUrl)]) found.set(f.kind + f.value, f)
+  for (const f of [...extractContacts(home.body, home.finalUrl, site), ...extractPeople(home.body, home.finalUrl, buyerRoles)]) found.set(f.kind + f.value, f)
   for (const p of contactPaths(home.body, new URL(home.finalUrl))) {
     if (stopped()) break
     if (pages >= MAX_PAGES) break
@@ -381,7 +401,7 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
     if (!r || r.status >= 400) continue
     pages++
     onPage?.(r.body)
-    for (const f of [...extractContacts(r.body, r.finalUrl, site), ...extractPeople(r.body, r.finalUrl)]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
+    for (const f of [...extractContacts(r.body, r.finalUrl, site), ...extractPeople(r.body, r.finalUrl, buyerRoles)]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
   }
   // Social bio adapter (flag SITECRAWL_SOCIAL=1). Same hard robots rule, per host. In practice x.com, facebook.com, linkedin.com and
   // instagram.com disallow our user agent, so this fetches nothing from them; it exists for smaller platforms that allow it.
@@ -401,7 +421,7 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
   }
   // Addresses and phones keep their cap; listed people ride separately so they never crowd an address out, and never turn 'none_published' into 'ok'.
   const all = [...found.values()], contacts = all.filter(f => f.kind !== 'person'), people = all.filter(f => f.kind === 'person')
-  return { found: [...contacts.slice(0, 6), ...people.sort(bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeNorm }
+  return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeNorm }
 }
 
 // Runs for one finished scan. Never throws, never touches the lead row, one audit row per site.
@@ -428,6 +448,9 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     // Email finder part 1 (off by default): personal local parts published on each confirmed site, never shown or sent.
     const guessing = emailGuessEnabled(deps.env ?? process.env)
     const localsBySite = new Map<string, Set<string>>()
+    // The scan's buyer roles (ICP "who"), so the 3 people kept per site are the ones the seller wants to reach.
+    let buyerRoles: string | undefined
+    try { const j = db.prepare('SELECT icp FROM scan_jobs WHERE id = ?').get(jobId) as { icp: string | null } | undefined; const who = j?.icp ? (JSON.parse(j.icp) as { who?: unknown }).who : null; if (Array.isArray(who) && who.length) buyerRoles = who.filter(x => typeof x === 'string').join('; ').slice(0, 600) } catch { /* no ICP: seniority only */ }
     const readSite = async (cand: string, company: string): Promise<Crawled> => {
       const c = siteRead.get(cand)
       if (c) {
@@ -436,7 +459,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         if (c.reason !== 'name_mismatch') return c
       }
       const locals = new Set<string>(); localsBySite.set(cand, locals)
-      const r = await crawlSite(cand, get, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, guessing ? html => { for (const l of personalLocals(html, cand)) locals.add(l) } : undefined)
+      const r = await crawlSite(cand, get, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, guessing ? html => { for (const l of personalLocals(html, cand)) locals.add(l) } : undefined, buyerRoles)
       siteRead.set(cand, r)
       return r
     }

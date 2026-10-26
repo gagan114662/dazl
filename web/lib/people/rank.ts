@@ -33,6 +33,12 @@ function words(text: string): string[] {
   return (text.toLowerCase().match(/[a-z][a-z0-9+-]{1,}/g) ?? []).filter(w => !STOP.has(w))
 }
 
+// ICP words a title shares (same word rules as rankPeople). Used by the crawl to choose WHICH listed people to keep.
+export function titleMatches(title: string, icpText: string): string[] {
+  const icp = new Set(words(icpText))
+  return [...new Set(words(title).filter(w => icp.has(w)))]
+}
+
 export function rankPeople<T extends PersonContact>(contacts: T[], icpText: string): (T & RankedPerson)[] {
   const icp = new Set(words(icpText))
   return contacts
