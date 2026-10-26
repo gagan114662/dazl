@@ -52,3 +52,17 @@ test('people search mode and session handling', async () => {
   assert.equal(voyagerGet('li_at=abc'), null) // no JSESSIONID: no call
   assert.equal(typeof voyagerGet('li_at=abc; JSESSIONID="ajax:123"'), 'function')
 })
+
+test('each LinkedIn call logs endpoint path, status and size only: no cookie, no query, no body', async () => {
+  const lines: string[] = []
+  const f = (async () => new Response('{"elements":[]}', { status: 200 })) as unknown as typeof fetch
+  const get = voyagerGet('li_at=SECRETCOOKIE; JSESSIONID="ajax:123"', f, l => lines.push(l))!
+  assert.deepEqual(await get('https://www.linkedin.com/voyager/api/feed/comments?updateId=activity:1&q=Rippling'), { elements: [] })
+  const g403 = voyagerGet('li_at=x; JSESSIONID="ajax:1"', (async () => new Response('no', { status: 403 })) as unknown as typeof fetch, l => lines.push(l))!
+  assert.equal(await g403('https://www.linkedin.com/voyager/api/search/blended?keywords=Jane%20Doe'), null)
+  assert.deepEqual(lines.map(l => JSON.parse(l)), [
+    { linkedin_call: '/voyager/api/feed/comments', status: 200, bytes: 15 },
+    { linkedin_call: '/voyager/api/search/blended', status: 403, bytes: 0 },
+  ])
+  assert.ok(lines.every(l => !l.includes('SECRETCOOKIE') && !l.includes('Rippling') && !l.includes('Jane')))
+})

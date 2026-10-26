@@ -99,9 +99,32 @@ export async function linkedinEngagers(competitor: string, get: Get, gapMs = 150
 }
 
 // Session headers for voyager calls. Returns null when the cookie lacks li_at or JSESSIONID.
-export function voyagerGet(session: string): Get | null {
+// One stderr line per LinkedIn call so a live test shows which endpoint failed and how (the endpoints are not yet
+// verified against live LinkedIn). Logs the endpoint path, HTTP status and byte count only: never the cookie, the
+// query string (it can carry a competitor or person name) or the response body.
+export function voyagerGet(session: string, fetchImpl: typeof fetch = fetch, log: (line: string) => void = l => console.error(l)): Get | null {
   const liAt = session.match(/li_at=([^;]+)/)?.[1]
   const jsession = session.match(/JSESSIONID="?([^";]+)"?/)?.[1]
   if (!liAt || !jsession) return null
-  return url => getJson(url, { cookie: `li_at=${liAt}; JSESSIONID="${jsession}"`, headers: { 'csrf-token': jsession, 'x-restli-protocol-version': '2.0.0', referer: 'https://www.linkedin.com/feed/' } })
+  return async url => {
+    const path = (() => { try { return new URL(url).pathname } catch { return 'bad-url' } })()
+    try {
+      const res = await fetchImpl(url, {
+        headers: {
+          'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+          accept: 'application/vnd.linkedin.normalized+json+2.1, application/json',
+          cookie: `li_at=${liAt}; JSESSIONID="${jsession}"`, 'csrf-token': jsession, 'x-restli-protocol-version': '2.0.0', referer: 'https://www.linkedin.com/feed/',
+        },
+        redirect: 'error',
+        signal: AbortSignal.timeout(15_000),
+      })
+      const text = res.ok ? await res.text() : ''
+      log(JSON.stringify({ linkedin_call: path, status: res.status, bytes: text.length }))
+      if (!res.ok || text.length > 1_000_000) return null
+      return JSON.parse(text)
+    } catch (e) {
+      log(JSON.stringify({ linkedin_call: path, status: 'error', error: e instanceof Error ? e.name : 'error' }))
+      return null
+    }
+  }
 }
