@@ -59,12 +59,19 @@ function dedupeLabel(label: string): string {
 
 export default function LeadsClient() {
   const [query, setQuery] = useState('')
+  // The request text of the job being VIEWED (history / deep link): the input must not keep the last typed or restored query
+  // of another scan while showing this scan's profile and results (live acceptance run: NYC results under the London query).
+  const queryShownFor = useRef<string | null>(null)
+  // The job being viewed, readable from async callbacks: a slow "restore the last profile" response must never replace the
+  // query or profile of a scan the user is looking at (whichever response arrives first). Synced on every render.
+  const viewedJob = useRef('')
   const [draft, setDraft] = useState<Icp | null>(null)
   const [draftNote, setDraftNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [starting, setStarting] = useState(false)
   const [icp, setIcp] = useState<{ icp: Icp; source: string } | null>(null)
   const [jobId, setJobId] = useState<string | null>(null)
+  viewedJob.current = jobId ?? ''
   const [status, setStatus] = useState<string>('')
   const [leadsSoFar, setLeadsSoFar] = useState(0)
   const [startedAt, setStartedAt] = useState<number | null>(null)
@@ -310,6 +317,7 @@ export default function LeadsClient() {
       setStatus(s.status); setJobError(s.error ?? ''); setLeadsSoFar(s.lead_count ?? 0); setStartedAt(s.claimed_at ?? null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
       setQuality(s.quality ?? null)
       if (s.icp) setIcp({ icp: s.icp, source: s.icp_source })
+      if (typeof s.query === 'string' && s.query && queryShownFor.current !== jobId) { queryShownFor.current = jobId; setQuery(s.query) }
     }
     void tick() // immediate first check: a done deep link must not sit on a loading state for a full interval
     const t = setInterval(tick, 5000)
@@ -360,6 +368,8 @@ export default function LeadsClient() {
     if (jobId) return
     void fetch('/api/scan/latest').then(r => r.ok ? r.json() : null).then(j => {
       if (!j) return
+      // Either order of responses: a job is being viewed (adopted, or named by the URL) => keep ITS query and profile.
+      if (viewedJob.current || /^[a-f0-9]{24}$/.test(new URLSearchParams(window.location.search).get('job_id') ?? '')) return
       if (j.query && !query) setQuery(j.query)
       if (j.icp) setIcp({ icp: j.icp, source: j.icp_source ?? 'user' })
     }).catch(() => {})
@@ -701,7 +711,7 @@ export default function LeadsClient() {
               <button onClick={() => withdrawConfirm(l.id)} className="text-gray-600 hover:text-red-400 text-xs mr-3" title={l.human_confirmed_from ? `Was in review: ${REVIEW[l.human_confirmed_from] ?? l.human_confirmed_from}` : undefined}>withdraw confirmation</button>
             )}
             <a className="underline text-[#111] text-xs" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
-            {l.discovered_via && l.discovered_via_link && <span className="text-xs text-[#555] ml-2">{l.discovered_via} (<a className="underline" href={l.discovered_via_link} target="_blank" rel="noopener noreferrer">gdeltproject.org</a>)</span>}
+            <DiscoveredVia l={l} />
             {(() => {
               const pc = publishedContact(l)
               const draftTo = publishedEmail(l)
@@ -760,6 +770,7 @@ export default function LeadsClient() {
                 <div className="text-gray-400">{`Saved signal claim: ${l.signal}`}</div>
                 <span className="text-[#333] text-xs mr-3">{l.source_kind === 'hiring_feed' && l.review_reason === 'source_review_required' ? 'Saved from a public job posting - literal source checks do not verify its meaning, date, buying need or consent' : (REVIEW[l.review_reason ?? ''] ?? 'Not verified')}</span>
                 <a className="underline text-[#111] text-xs" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
+                <DiscoveredVia l={l} />
                 {l.source_check && <div className="text-xs text-[#333] border-l-2 border-black/30 pl-3 my-2">
                   <p>Literal page check: {l.source_check.fetch_status}, checked {new Date(l.source_check.checked_at*1000).toISOString()}. Exact quote: {l.source_check.quote_match?'found':'not found'}. Company named with matching quote: {l.source_check.company_named?'yes':'no'}. Supplied email: {l.source_check.contact_match?'found on page':'not found or not supplied'}.</p>
                   <p>{eventDateCopy(l.event_date,l.date_status)}. No semantic signal verification, fit grade, named buyer, current need or consent.</p>
@@ -796,4 +807,10 @@ export default function LeadsClient() {
       )}
     </div>
   )
+}
+// GDELT's terms require a citation AND a link wherever its results are shown. Used in BOTH lanes (listed leads and the
+// "Needs your review" rows): a stale, undated or blocked row is still displayed data. The publisher link is separate.
+function DiscoveredVia({ l }: { l: { discovered_via?: string | null; discovered_via_link?: string | null } }) {
+  if (!l.discovered_via || !l.discovered_via_link) return null
+  return <span className="text-xs text-[#555] ml-2" data-testid="discovered-via">{l.discovered_via} (<a className="underline" href={l.discovered_via_link} target="_blank" rel="noopener noreferrer">gdeltproject.org</a>)</span>
 }
