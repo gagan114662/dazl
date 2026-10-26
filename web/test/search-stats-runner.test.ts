@@ -36,7 +36,7 @@ function run(modelQueries: string[] | string, searchStatus = 200, extraHits: { u
   const fetched: string[] = []
   const fetchImpl = (async (u: string, init?: RequestInit) => {
     if (u.startsWith('https://api.search.tinyfish.ai')) {
-      searched.push(new URL(u).searchParams.get('query') ?? '')
+      { const q = new URL(u).searchParams.get('query') ?? ''; if (!q.startsWith('site:linkedin.com/in ')) searched.push(q) } // discovery queries only: the post-scan people search (lib/people/people-search.ts) is pinned in its own tests
       searchCalls++
       if (mode === true) return new Response(JSON.stringify({ results: [] }), { status: 200 })
       if (mode === 'first-empty-then-fail') return searchCalls === 1 ? new Response(JSON.stringify({ results: [] }), { status: 200 }) : new Response('{}', { status: 500 })
