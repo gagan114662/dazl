@@ -9,7 +9,7 @@ import { guardedLookup, isPublicIp } from '../scan/fetch-page.ts'
 import { audit, addEnrichment, type Enrichment } from './store.ts'
 import { detectTech, type TechHit } from './techstack.ts'
 import { emailGuessEnabled, personalLocals, recordEmailGuesses } from '../people/email-pattern.ts'
-import { titleMatches } from '../people/rank.ts'
+import { roleContradicted, titleMatches } from '../people/rank.ts'
 
 // Contact-page crawl. No key. For a verified lead it finds the company's own website, reads a handful of
 // contact/about pages and keeps only business contacts the company itself published there.
@@ -298,7 +298,7 @@ function jsonLdPeople(html: string): { name: string; title: string }[] {
 // Word-preserving, any alphabet (this file's norm() drops spaces and company words, which suits domains, not titles).
 const titleNorm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/\p{M}/gu, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
 export function buyerTitle(title: string, buyerRoles?: string): boolean {
-  if (!buyerRoles || title.length > 60 || title.split(/\s+/).length > 6 || /,|\s(?:at|@|for|bei|chez|em|en|presso)\s/i.test(title)) return false
+  if (!buyerRoles || roleContradicted(title, buyerRoles) || title.length > 60 || title.split(/\s+/).length > 6 || /,|\s(?:at|@|for|bei|chez|em|en|presso)\s/i.test(title)) return false
   const t = titleNorm(title)
   if (buyerRoles.split(';').map(titleNorm).some(r => r.length >= 3 && (` ${t} `).includes(` ${r} `))) return true
   return titleMatches(title, buyerRoles).length >= 2
