@@ -11,6 +11,7 @@ import type { Provider } from '../llm/provider.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
 import { norm } from './evidence.ts'
 import { WHY_MAX } from './score.ts'
+import { HIRING } from '../search/direct-queries.ts'
 
 export const MAX_LEADS = 5
 export const FIT_CAP = 3
@@ -18,8 +19,10 @@ const PAGE_CHARS = 2500
 // Hiring by the signal wording, or by the source being an applicant-tracking or job-board page.
 const HIRING_WORDS = /\bhiring\b|\bwe'?re hiring\b|\bjob (posting|opening|ad)\b|\bopen(ing)? (role|position)s?\b|\bvacanc(y|ies)\b|\bis (recruiting|looking for an? )|\bposted an? .{0,40}\b(job|role|position)\b/i
 const ATS_HOST = /(^|\.)(greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com|smartrecruiters\.com|bamboohr\.com|jobvite\.com|recruitee\.com|indeed\.com|glassdoor\.com|ziprecruiter\.com|naukri\.com|wellfound\.com)$/i
+// The evidence requirement must not depend on language (Instinct review of #186): the same multilingual hiring words
+// the search uses (en, pt, es, fr, de, it, nl, hi) decide what counts as a hiring signal here too.
 export function isHiringLead(l: { signal: string; source_url: string }): boolean {
-  if (HIRING_WORDS.test(l.signal)) return true
+  if (HIRING_WORDS.test(l.signal) || HIRING.test(l.signal)) return true
   try { return ATS_HOST.test(new URL(l.source_url).hostname) } catch { return false }
 }
 

@@ -25,6 +25,20 @@ test('hiring is recognised by wording or by an ATS / job-board source', () => {
   assert.equal(isHiringLead({ signal: 'Acme raised a $5M seed round', source_url: 'https://techcrunch.com/x' }), false)
 })
 
+test('hiring signals in other languages from non-ATS sources are gated too (Instinct #186 probe)', () => {
+  const fb = 'https://facebook.com/escola/posts/1'
+  for (const signal of [
+    'Procuram-se Professores de Música', // pt, Instinct's exact probe
+    'A Escola Lisboa está a contratar um gerente de vendas', // pt
+    'Clínica en Madrid busca un director comercial', // es
+    'Acme recrute un chef de projet à Lyon', // fr
+    'Acme GmbH sucht einen Vertriebsleiter', // de
+    'Acme assume un responsabile vendite', // it
+    'पुणे स्कूल में हिंदी शिक्षक की भर्ती', // hi
+  ]) assert.equal(isHiringLead({ signal, source_url: fb }), true, signal)
+  assert.equal(isHiringLead({ signal: 'Empresa de Lisboa levantou uma ronda de investimento', source_url: fb }), false)
+})
+
 test('a hiring lead keeps its fit only with a "yes" whose quote is really on the home page', async () => {
   const db = setup([{ id: 'a', company: 'Acme Logistics', signal: 'Acme is hiring a payroll manager', source_url: 'https://boards.greenhouse.io/acme/jobs/1', fit: 5, domain: 'acme.com' }])
   const r = await applyBuyerFitGate(db, 'j', prov('COMPANY 1 | fit yes | quote runs a fleet of 40 refrigerated trucks serving grocery chains'), 'k', 'Trucking firms in Ohio', { fetchPage: page })
