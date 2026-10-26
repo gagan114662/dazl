@@ -103,3 +103,48 @@ test('profile generation (before any job) is recorded by tenant with job_id null
   const rows = db.prepare('SELECT tenant_id, job_id, stage, model_served, input_tokens, outcome FROM scan_model_calls ORDER BY rowid').all()
   assert.deepEqual(rows, [{ tenant_id: 'A', job_id: null, stage: 'profile', model_served: 'served-1', input_tokens: 300, outcome: 'ok' }, { tenant_id: 'A', job_id: null, stage: 'profile', model_served: null, input_tokens: null, outcome: 'error' }])
 })
+
+// Post-finish usage (Instinct #214): finish() persists the ledger BEFORE buyer-fit makes its own model call, so that call
+// must be flushed afterwards: once, with the job's tenant and attempt, never duplicated. Stubbed scan, no network.
+test('successful scan: buyer-fit (after finish) is recorded with tenant and attempt, once; a repeat flush adds nothing', async () => {
+  const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
+  saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
+  const recent = new Date(Date.now() - 20 * 86_400_000).toISOString().slice(0, 10)
+  const QUOTE = 'Acme Dental announced it is hiring a front desk coordinator for its Toronto clinic'
+  const HOME = 'Acme Dental is an independent dental practice in Toronto. Our team of dentists and hygienists serves families across the city and we are growing.'
+  const icp = { summary: 'Independent dental practices in Toronto', who: ['Practice manager'], industries: ['dental'], sizes: [], where: ['Toronto'], signals: ['hiring'], exclude: [] }
+  const id = createQueryJob(db, 'A', { query: 'Toronto dental practices hiring front desk staff', icp: JSON.stringify(icp) } as never)
+  const lead = { name: '', company: 'Acme Dental', contact: null, signal: 'Hiring a front desk coordinator', source_url: 'https://jobs.example/a', score: 80, excerpt: QUOTE, event_date: recent }
+  let buyerFitCalls = 0
+  const completeDetailed = async (_k: string, p: string) => {
+    let text = '[]'
+    if (p.includes('Reply with one line per lead')) text = 'LEAD 1 | fit 5 | intent 3 | action 3 | match yyy? | signals hiring | why Hiring front desk staff at a Toronto dental practice.'
+    else if (p.startsWith('You check whether companies fit')) { buyerFitCalls++; text = 'COMPANY 1 | fit yes | quote "independent dental practice in Toronto"' }
+    return { text, model: 'served-model-x', usage: { input_tokens: 200, output_tokens: 20 } }
+  }
+  const providers = { anthropic: { research: async () => ({ text: JSON.stringify([lead]), citedUrls: ['https://jobs.example/a'] }), complete: async (k: string, p: string) => (await completeDetailed(k, p)).text, completeDetailed, configuredModel: () => 'requested-model-x' }, openai: stub() } as Record<'anthropic' | 'openai', Provider>
+  const pages: Record<string, string> = { '/a': '<a href="https://acmedental.com/">Acme Dental</a>', '/robots.txt': 'User-agent: *\nAllow: /', '/': `<html><body>${HOME}</body></html>` }
+  const crawlGet = async (url: string) => { const u = new URL(url); const body = u.hostname === 'jobs.example' ? pages['/a'] : pages[u.pathname]; return body !== undefined ? { status: 200, body, finalUrl: url } : { status: 404, body: '', finalUrl: url } }
+  const page = async (u: string) => (u.includes('acmedental.com') ? { text: HOME, title: 'Acme Dental', retrievedAt: 1 } : { text: `Posted ${recent}. ${QUOTE}. Apply now.`, title: 'Jobs', retrievedAt: 1 })
+  const saved = process.env.SITECRAWL_ENABLED; process.env.SITECRAWL_ENABLED = '1'
+  try { assert.equal(await runJob(db, claimKeyedJob(db, id)!, { providers, master, fetchPage: page, crawlGet: crawlGet as never, judge: null, ground: false }), 'done') } finally { if (saved === undefined) delete process.env.SITECRAWL_ENABLED; else process.env.SITECRAWL_ENABLED = saved }
+  assert.equal(buyerFitCalls, 1, 'fixture precondition: the buyer-fit gate really made its model call')
+  const rows = db.prepare('SELECT tenant_id, job_id, attempt, seq, stage, model_served, input_tokens FROM scan_model_calls WHERE job_id = ? ORDER BY seq').all(id) as { tenant_id: string; attempt: number; seq: number; stage: string; model_served: string; input_tokens: number }[]
+  assert.ok(rows.some(r => r.stage === 'buyer_fit'), `buyer_fit recorded: ${JSON.stringify(rows.map(r => r.stage))}`)
+  assert.ok(rows.every(r => r.tenant_id === 'A' && r.attempt === 1))
+  assert.deepEqual(rows.map(r => r.seq), rows.map((_, i) => i), 'seq is contiguous: no gaps, no duplicates')
+  const u = modelUsage(db, 'A', id)
+  assert.equal(u.requests_recorded, rows.length); assert.equal(u.by_stage.buyer_fit, 1)
+  assert.equal(u.tokens_complete, false, 'the research request reports no usage, so totals stay a lower bound')
+  assert.ok(u.unknown.some(x => /actual_charges/.test(x)))
+  assert.equal(modelUsage(db, 'B', id).recorded, false)
+  // (job, attempt, seq) is unique: re-flushing a ledger that restarts at seq 0 for the same attempt inserts nothing, and an
+  // attempt that does not own the job (stale/other attempt number) writes nothing at all.
+  const { SourceRunLedger } = await import('../lib/scan/source-runs.ts')
+  const count = () => (db.prepare('SELECT count(*) n FROM scan_model_calls WHERE job_id = ?').get(id) as { n: number }).n
+  const before = count()
+  const dup = new SourceRunLedger(); dup.model(call()); dup.flushModelCalls(db, id, 1); dup.flushModelCalls(db, id, 1)
+  assert.equal(count(), before, 'a duplicate (job, attempt, seq) is ignored, never inserted twice')
+  const stale = new SourceRunLedger(); stale.model(call()); stale.flushModelCalls(db, id, 99)
+  assert.equal(count(), before, 'a non-owning attempt writes nothing')
+})

@@ -871,6 +871,8 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // Stale attempt: finish() wrote nothing, so every post-finish side effect
     // must be skipped too - a re-claimed job belongs to the newer attempt.
     if (!owned) return 'done'
+    // Everything below may make more model calls (buyer-fit): they are flushed to the usage record however this block ends.
+    try {
     if (complaints.length > 0) { try { badgeComplaintLeads(db, job.id, complaints) } catch { /* badge only */ } }
     // Watch run: flag the leads this watch has never surfaced, remember the rest.
     if (job.watch_id) { try { markWatchLeads(db, job.watch_id, job.id) } catch { /* bonus only */ } }
@@ -891,6 +893,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.
     try { await runAutopilot(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
     return 'done'
+    } finally { ledger.flushModelCalls(db, job.id, job.attempts) }
   } catch (e) {
     return failOrRetry(db, job, e, ledger)
   }

@@ -39,7 +39,20 @@ export class SourceRunLedger {
   private credits = new Map<string, Set<string>>()
   private diag = new Map<string, SourceStats>()
   private calls: ModelCall[] = []
+  private written = 0 // calls already persisted; the next flush starts here, so nothing is written twice
   model(c: ModelCall): void { this.calls.push(c) }
+  // Persists model calls recorded since the last flush. finish() flushes what the scan made up to that point; the
+  // post-finish steps (buyer-fit and any later model call) flush again, so their requests are not lost. Only the attempt
+  // that still OWNS the job writes (same job id, attempt number and tenant as the job row), and (job, attempt, seq) is
+  // unique, so a repeat flush cannot duplicate a row. Never throws.
+  flushModelCalls(db: Database.Database, jobId: string, attempt: number): void {
+    try {
+      const own = db.prepare('SELECT user_id FROM scan_jobs WHERE id = ? AND attempts = ?').get(jobId, attempt) as { user_id: string } | undefined
+      if (!own || this.written >= this.calls.length) return
+      writeModelCalls(db, own.user_id, jobId, attempt, this.calls.slice(this.written), process.env, this.written)
+      this.written = this.calls.length
+    } catch { /* usage recording never affects the scan */ }
+  }
   has(collector: string): boolean { return this.runs.has(collector) }
   stats(collector: string, s: SourceStats): void { this.diag.set(collector, s) }
   record(collector: string, status: string, evidence: number | null = null): void {
@@ -77,8 +90,7 @@ export class SourceRunLedger {
       ins.run(jobId, attempt, collector, run.status === 'started' ? 'error' : run.status, run.evidence, run.observed || run.evidence === 0 ? run.candidates.size : null, verified && (run.observed || run.evidence === 0) ? count(verifiedKeys) : null, review && (run.observed || run.evidence === 0) ? count(reviewKeys) : null, [...run.candidates].filter(k => insertedKeys.has(k)).length)
     }
     for (const [collector, s] of this.diag) writeSourceStats(db, jobId, attempt, collector, s) // on unless DAZL_SOURCE_STATS=0; never throws
-    const owner = (db.prepare('SELECT user_id FROM scan_jobs WHERE id=?').get(jobId) as { user_id: string } | undefined)?.user_id
-    if (owner) writeModelCalls(db, owner, jobId, attempt, this.calls) // never throws; failed and retried attempts included
+    this.flushModelCalls(db, jobId, attempt) // never throws; failed and retried attempts included
     const link = db.prepare('INSERT OR IGNORE INTO lead_sources (lead_id,collector,attempt) VALUES (?,?,?)')
     for (const l of stored) for (const collector of this.credits.get(evidenceKey(l)) ?? []) link.run(l.id, collector, attempt)
   }

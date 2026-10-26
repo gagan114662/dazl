@@ -83,17 +83,19 @@ export function migrateModelUsage(db: Database.Database): void {
     prompt_chars INTEGER NOT NULL,
     recorded_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
   )`)
-  db.exec('CREATE INDEX IF NOT EXISTS scan_model_calls_job ON scan_model_calls(job_id, attempt, seq)')
+  // One row per (job, attempt, seq): a second flush of the same call can never insert a duplicate. (job_id NULL rows - profile
+  // generation before a job - are distinct under SQLite's NULL rule and are written once, at the call.)
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS scan_model_calls_job ON scan_model_calls(job_id, attempt, seq)')
 }
 
 // Called from the job's finish transaction (done, failed or retry), so a failed scan still leaves its usage behind.
 // job_id null = a call made before any job exists (profile generation from the form); linked by tenant only.
-export function writeModelCalls(db: Database.Database, tenantId: string, jobId: string | null, attempt: number, calls: ModelCall[], env: Record<string, string | undefined> = process.env): boolean {
+export function writeModelCalls(db: Database.Database, tenantId: string, jobId: string | null, attempt: number, calls: ModelCall[], env: Record<string, string | undefined> = process.env, startSeq = 0): boolean {
   if (!modelUsageEnabled(env) || calls.length === 0) return false
   try {
     migrateModelUsage(db)
-    const ins = db.prepare('INSERT INTO scan_model_calls (tenant_id,job_id,attempt,seq,stage,method,model_requested,model_served,input_tokens,output_tokens,outcome,max_tokens,prompt_chars) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
-    calls.forEach((c, i) => ins.run(tenantId, jobId, attempt, i, c.stage, c.method, c.model_requested, c.model_served, c.input_tokens, c.output_tokens, c.outcome, c.max_tokens, c.prompt_chars))
+    const ins = db.prepare('INSERT OR IGNORE INTO scan_model_calls (tenant_id,job_id,attempt,seq,stage,method,model_requested,model_served,input_tokens,output_tokens,outcome,max_tokens,prompt_chars) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
+    calls.forEach((c, i) => ins.run(tenantId, jobId, attempt, startSeq + i, c.stage, c.method, c.model_requested, c.model_served, c.input_tokens, c.output_tokens, c.outcome, c.max_tokens, c.prompt_chars))
     return true
   } catch { return false }
 }
