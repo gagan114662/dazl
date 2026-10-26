@@ -10,6 +10,7 @@
 // own website review, several websites = conflict), so the card never claims more than the send gate accepts.
 import { rankPeople, type PersonContact } from '../people/rank.ts'
 import { domainBasisFor, publishedContact, PUBLISHED_EMAIL_RE, type DomainBasisKind } from '../outreach/published-email.ts'
+import { eventDateCopy } from './date-copy.ts'
 import { domainReviewFor } from '../outreach/domain-review.ts'
 
 export interface CardLead {
@@ -68,7 +69,9 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
     : matched.length ? `Fits your profile (${l.fit}/5): matches ${matched.join(', ')}.` : `Graded ${l.fit}/5 against your profile; no single criterion confirmed.`
 
   const ageDays = l.event_date ? Math.floor((now.getTime() - Date.parse(`${l.event_date}T00:00:00Z`)) / 86_400_000) : null
-  const dateNote = !l.event_date ? 'event date unknown' : l.date_status === 'verified' ? `dated ${l.event_date} (${ageDays} days ago), date confirmed on the page` : `dated ${l.event_date} (${ageDays} days ago), date not confirmed on the page`
+  // date_status 'verified' is a legacy nearby-year verdict, not proof the page dates the EVENT; same wording as the lead
+  // list and CSV (date-copy.ts). Never "confirmed on the page" (#198 live acceptance finding).
+  const dateNote = !l.event_date ? 'event date unknown' : `${eventDateCopy(l.event_date, l.date_status)}, ${ageDays} days ago`
 
   const people: PersonContact[] = rows.filter(r => r.kind === 'contact' || r.kind === 'person').map(r => {
     const sep = r.kind === 'person' ? ', ' : ' - '; const i = r.value.indexOf(sep)
@@ -95,7 +98,6 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
   const humanQuote = !machineQuote && !!l.evidence_excerpt && l.human_confirmed_at != null
   const facts: string[] = []; const assumptions: string[] = []; const missing: string[] = []
   if (machineQuote) facts.push('The quoted text was found on the cited page when the scan ran.')
-  if (l.event_date && l.date_status === 'verified') facts.push(`The event date ${l.event_date} appears on the page.`)
   if (ident?.state === 'fact') facts.push(`Company site ${ident.text}.`)
   if (humanQuote) assumptions.push('You reviewed the quote yourself; dazl did not confirm it on the page.')
   if (l.fit != null) assumptions.push('Fit is the model\'s grade of the evidence, not something the company confirmed.')
@@ -104,6 +106,7 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
   if (top) assumptions.push(`${top.name} is listed with this title; current role not verified.`)
   if (ident && ident.state !== 'fact') assumptions.push(`Company site ${ident.text}.`)
   if (!l.event_date) missing.push('event date')
+  else assumptions.push(`The date ${l.event_date} is the event day as claimed; the page was not shown to date the event itself.`)
   if (!top) missing.push('a named person to approach')
   if (!ident && !citedEmail) missing.push('the company\'s own website')
   if (!draftable && !phone) missing.push('an email or phone')
