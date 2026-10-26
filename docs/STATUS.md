@@ -13,6 +13,11 @@ Updated by the builder on every branch. Newest first.
 
 ## In review
 
+- `b/decision-maker-finder` (branched from decisions/email-and-scoreboard for the docs): contact crawl now tries /team and
+  /leadership, accepts B2B titles (C-suite, Chief X Officer, VP/Head/Director of X) and keeps the 3 most senior people.
+  Left: SEC officers and GitHub org members as extra sources; ICP-"who" ranking (lib/people/rank.ts) at selection time;
+  JS-rendered team pages are not fetched.
+
 - `search/market-and-role-phrases`: 21521e7 (country/language, quoted role phrases, budget), 13ccf6d (review
   fixes 1 and 3: non-English hiring requests, one place per query), ca98ade + 6d2dce0 (tenant daily limit 60,
   then 200 as a separate revertable commit with rationale).
@@ -27,11 +32,9 @@ Updated by the builder on every branch. Newest first.
 
 ## Next (in order, for the scheduled builder)
 
-1. Decision-maker finder: name and title of the right person from the company's own team/about/leadership
-   pages, SEC filings (officers), GitHub org members. Rank by the ICP's "who" roles (lib/people/rank.ts exists).
-2. Email finder (US only, verified only, see DECISIONS.md): infer the company's address pattern from addresses it
+1. Email finder (US only, verified only, see DECISIONS.md): infer the company's address pattern from addresses it
    publishes, build candidates for the person from item 1, mailbox check, catch-all domains never verified.
-3. New intent signal: people engaging with competitor GitHub repos (stargazers, issues) when the ICP names
+2. New intent signal: people engaging with competitor GitHub repos (stargazers, issues) when the ICP names
    competitors; public GitHub API only.
-4. Self-hosted SearXNG as a second free search backend (behind an env flag, off by default).
-5. Production: Outreach page chunk-load failure (README "Current state").
+3. Self-hosted SearXNG as a second free search backend (behind an env flag, off by default).
+4. Production: Outreach page chunk-load failure (README "Current state").
