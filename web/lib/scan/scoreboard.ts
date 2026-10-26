@@ -46,12 +46,21 @@ export function scoreSearch(leads: ScoredLeadInput[], now: Date = new Date()): S
   return s
 }
 
-export function scoreboardMarkdown(rows: { search: string; status: string; error: string | null; score: SearchScore }[], meta: { commit: string; date: string }): string {
+// What this score does NOT yet measure (Instinct review): buyer need beyond a dated public signal, whether the contact
+// is the right decision-maker, and consent. It is "qualified v1", stated as such wherever it is shown.
+export const SCORE_LIMITS = 'v1 score: verified dated signal + model-graded ICP fit + any email/phone. It does not yet prove buyer need, that the contact is the right decision-maker, or consent.'
+
+export function scoreboardMarkdown(rows: { search: string; status: string; error: string | null; complete?: boolean; score: SearchScore }[], meta: { commit: string; date: string; model?: string; rubric?: string; uniqueQualified?: number; budgetUsd?: number }): string {
   const total = rows.reduce((a, r) => a + r.score.qualified, 0)
+  const incomplete = rows.filter(r => r.complete === false).length
   const lines = [
     `# Scoreboard ${meta.date} (commit ${meta.commit})`,
     '',
-    `**Qualified leads: ${total}** across ${rows.length} searches (verified + dated within ${RECENT_DAYS} days + fit >= ${FIT_MIN}/5 + email or phone).`,
+    `**Qualified leads: ${total}** across ${rows.length} searches${meta.uniqueQualified !== undefined ? `, **${meta.uniqueQualified} unique companies**` : ''} (verified + dated within ${RECENT_DAYS} days + fit >= ${FIT_MIN}/5 + email or phone).`,
+    ...(incomplete ? ['', `**${incomplete} of ${rows.length} searches INCOMPLETE** (budget, timeout or key): their counts are not zero results, they are unknown.`] : []),
+    ...(meta.model || meta.rubric || meta.budgetUsd ? ['', `Grading model ${meta.model ?? '?'}, rubric ${meta.rubric ?? '?'} (sha256 of lib/scan/score.ts), total budget $${meta.budgetUsd ?? '?'}.`] : []),
+    '',
+    SCORE_LIMITS,
     '',
     '| Search | Status | Leads | Verified | Recent | Fit | Named | Reachable | Qualified |',
     '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',

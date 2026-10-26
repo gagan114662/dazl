@@ -36,3 +36,15 @@ test('search totals and markdown table', () => {
   const md = scoreboardMarkdown([{ search: 'Ohio | payroll', status: 'done', error: null, score: s }], { commit: 'abc123', date: '2026-10-26' })
   assert.ok(md.includes('**Qualified leads: 1**') && md.includes('Ohio / payroll') && md.includes('| **1** |'))
 })
+
+test('incomplete searches are flagged as unknown, unique companies and the pinned rubric are shown, limits stated', () => {
+  const s = scoreSearch([good], NOW)
+  const md = scoreboardMarkdown([
+    { search: 'a', status: 'done', error: null, complete: true, score: s },
+    { search: 'b', status: 'INCOMPLETE', error: 'budget_stopped', complete: false, score: scoreSearch([], NOW) },
+  ], { commit: 'c', date: 'd', model: 'm', rubric: 'r123', uniqueQualified: 1, budgetUsd: 3 })
+  assert.ok(md.includes('**1 of 2 searches INCOMPLETE**'))
+  assert.ok(md.includes('**1 unique companies**'))
+  assert.ok(md.includes('rubric r123') && md.includes('total budget $3'))
+  assert.ok(md.includes('does not yet prove buyer need'))
+})

@@ -13,12 +13,14 @@ Goal: dazl finds more qualified leads than Gojiberry, measured by the scoreboard
 
 ## The scoreboard is the definition of better
 
-`scoreboard/searches.json` holds fixed searches. `web/scripts/scoreboard.mts` runs them through the real pipeline
+`scoreboard/searches.json` holds fixed searches. `web/scripts/scoreboard.mts` runs them through the real pipeline (TinyFish required; one total budget, SCOREBOARD_MAX_USD_TOTAL, default $3; budget-stopped searches reported INCOMPLETE; results gitignored)
 and counts QUALIFIED leads (verified + dated within 90 days + ICP fit >= 4/5 + email or phone), see
 `web/lib/scan/scoreboard.ts`. A change that touches lead finding must report scoreboard numbers before and after
 (reviewer runs them with the test key). Merge rule: qualified leads go up, or hold for a pure fix.
 
-    cd web && SCOREBOARD_ANTHROPIC_KEY=... TINYFISH_API_KEY=... node --experimental-strip-types scripts/scoreboard.mts
+    cd web && SCOREBOARD_ANTHROPIC_KEY=... TINYFISH_API_KEY=... SCOREBOARD_MAX_USD_TOTAL=3 node --experimental-strip-types scripts/scoreboard.mts
+
+The v1 score does not yet prove buyer need, that the contact is the right decision-maker, or consent (see SCORE_LIMITS).
 
 ## Flow (no waiting)
 
