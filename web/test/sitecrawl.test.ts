@@ -129,8 +129,9 @@ test('crawlJob probes name-derived domains when evidence links nothing, verifies
   db.prepare("INSERT INTO leads VALUES ('l1','j1','Acme Robotics','https://news.example/a',NULL,90,80,NULL),('l2','j1','Ghost Corp','https://news.example/b',NULL,90,70,NULL)").run()
   const get: Get = async url => {
     const u = new URL(url)
-    if (u.hostname === 'news.example') return { status: 200, body: html('a roundup with no company links'), finalUrl: url }
-    if (u.hostname === 'acmerobotics.com' && u.pathname === '/') return { status: 200, body: html('Acme Robotics home. Email: hello@acmerobotics.com'), finalUrl: url }
+    // The roundup and the probed homepage share a place (Pittsburgh): guessed domains must also pass the #197 location rule.
+    if (u.hostname === 'news.example') return { status: 200, body: html('a roundup with no company links. Startups hiring in Pittsburgh this month.'), finalUrl: url }
+    if (u.hostname === 'acmerobotics.com' && u.pathname === '/') return { status: 200, body: html('Acme Robotics home, Pittsburgh PA. Email: hello@acmerobotics.com'), finalUrl: url }
     if (u.hostname === 'ghost.com' && u.pathname === '/') return { status: 200, body: html('Totally Different Company landing page'), finalUrl: url }
     if (u.pathname === '/robots.txt') return { status: 200, body: '', finalUrl: url }
     return { status: 404, body: '', finalUrl: url }
@@ -181,10 +182,13 @@ test('domain provenance: each accepted domain records how it was chosen and the 
     if (u.hostname === 'acmerobotics.com') return { status: 200, body: html(u.pathname === '/' ? 'Acme Robotics home hello@acmerobotics.com' : 'job'), finalUrl: url }
     if (u.hostname === 'news.example' && u.pathname === '/b') return { status: 200, body: html('<a href="https://betaworks.io">x</a>'), finalUrl: url }
     if (u.hostname === 'news.example' && u.pathname === '/c') return { status: 200, body: html('<a href="https://somewhere.test/x">Gamma Labs profile</a>'), finalUrl: url }
+    if (u.hostname === 'news.example' && u.pathname === '/d') return { status: 200, body: html('no links. Stable opened a new office in Austin.'), finalUrl: url }
     if (u.hostname === 'news.example') return { status: 200, body: html('no links'), finalUrl: url }
     if (u.hostname === 'betaworks.io' && u.pathname === '/') return { status: 200, body: html('Beta Works home info@betaworks.io'), finalUrl: url }
-    // a different company that happens to say "stable": the homepage name check alone accepts it, so the basis must say name_probe
-    if (u.hostname === 'stable.com' && u.pathname === '/') return { status: 200, body: html('Our horses are stable and calm. sales@stable.com'), finalUrl: url }
+    // a guessed site that passes the name check AND names the lead's place (Austin, from the evidence; #197 location
+    // rule): it binds, but only as name_probe, never as a confirmed company site. Without a shared place it is refused
+    // (test/identity-geo.test.ts).
+    if (u.hostname === 'stable.com' && u.pathname === '/') return { status: 200, body: html('Stable, Austin TX. Our horses are stable and calm. sales@stable.com'), finalUrl: url }
     if (u.hostname === 'somewhere.test' && u.pathname === '/') return { status: 200, body: html('Gamma Labs is listed here. info@somewhere.test'), finalUrl: url }
     return { status: 404, body: '', finalUrl: url }
   }
