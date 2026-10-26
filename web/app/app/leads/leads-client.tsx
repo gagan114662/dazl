@@ -1,4 +1,5 @@
 'use client'
+import { windowNotice } from '@/lib/scan/window-notice'
 import { KEY_UNREADABLE_COPY, knownErrorCopy } from '@/lib/error-copy'
 import { useEffect, useRef, useState } from 'react'
 import { buildSources } from '@/lib/sources/ui-sources'
@@ -504,16 +505,16 @@ export default function LeadsClient() {
             {icp.icp.window_days ? <li>Only signals from the last {icp.icp.window_days} days</li> : null}
           </ul>
           {/* Owner direction (#204): when the user's own constraint excluded results, say so and offer to widen it explicitly - never relax it quietly. */}
-          {icp.icp.window_days && leads.some(l => l.review_reason === 'outside_window') ? (() => {
-            const n = leads.filter(l => l.review_reason === 'outside_window').length
-            const wider = Math.min(365, icp.icp.window_days * 2)
+          {(() => {
+            const wn = windowNotice(leads, icp.icp.window_days)
+            if (!wn) return null
             return (
               <p className="text-xs text-[#555] mt-2">
-                {n} {n === 1 ? 'result was' : 'results were'} older than your {icp.icp.window_days}-day window and {n === 1 ? 'was' : 'were'} set aside (listed under needs review, never contacted).{' '}
-                {wider > icp.icp.window_days && <button className="underline text-[#111]" onClick={() => { setDraft({ ...icp.icp, window_days: wider }); setDraftNote(`Window widened to ${wider} days. Review the profile and run again.`) }}>Widen to {wider} days and run again</button>}
+                {wn.text}{' '}
+                {wn.editTo && <button className="underline text-[#111]" onClick={() => { setDraft({ ...icp.icp, window_days: wn.editTo! }); setDraftNote(wn.editNote!) }}>{wn.editLabel}</button>}
               </p>
             )
-          })() : null}
+          })()}
           <div className="flex items-center gap-3 mt-2">
             <button className="underline text-[#111] text-xs" onClick={() => { setDraft(icp.icp); setDraftNote('Edit the profile and run again.') }}>Edit and run again</button>
             <button className="underline text-[#111] text-xs" onClick={() => void watchReq({ query: query.trim(), icp: icp.icp })}>Watch this weekly</button>
