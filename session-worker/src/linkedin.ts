@@ -8,7 +8,7 @@
 // Voyager payload shapes shift without notice, so the parsers do not depend on one layout: they walk the JSON for
 // profile-shaped objects (publicIdentifier + firstName/lastName, or a search entity whose link is a /in/ profile).
 // NOT verified against live LinkedIn responses yet; fixtures follow the shapes LinkedIn has used for these endpoints.
-import { epochDay, getJson, item, type WorkerItem } from './util.ts'
+import { epochDay, item, type WorkerItem } from './util.ts'
 
 export interface LiPerson { publicId: string; name: string; headline: string }
 const PUBLIC_ID = /^[A-Za-z0-9\-_%]{3,100}$/
