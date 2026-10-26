@@ -9,6 +9,7 @@ import { guardedLookup, isPublicIp } from '../scan/fetch-page.ts'
 import { audit, addEnrichment, type Enrichment } from './store.ts'
 import { detectTech, type TechHit } from './techstack.ts'
 import { emailGuessEnabled, personalLocals, recordEmailGuesses } from '../people/email-pattern.ts'
+import { titleMatches } from '../people/rank.ts'
 
 // Contact-page crawl. No key. For a verified lead it finds the company's own website, reads a handful of
 // contact/about pages and keeps only business contacts the company itself published there.
@@ -233,7 +234,11 @@ export function extractContacts(html: string, pageUrl: string, site: string): Fo
 // B2B decision-maker titles join the owner-style ones: the person who buys a sales/ops/engineering tool is rarely "owner". Each
 // addition is a WHOLE title with no free text after it ("Director, Other Corp" still fails): C-suite, "Chief X Officer", and
 // "VP/Head/Director of <1-2 words>". Names still pass every name-shape and prose check below, so a wider title list admits no new kind of name.
-const EXEC = 'c[a-z]o|chief [a-z]+ officer|(?:vp|svp|evp|vice president|head|director) of [a-z]+(?: (?:&|and) [a-z]+)?|(?:vp|svp|evp|vice president) [a-z]+'
+// Department managers are buyers for many offers (payroll, HR, finance, IT, marketing), so "<department> manager" is a
+// whole title too, for a fixed list of departments only. "Head/Director of" takes up to two words ("Human Resources").
+const DEPT = '(?:hr|human resources|people|payroll|finance|accounting|it|operations|marketing|sales|procurement|purchasing|facilities|recruiting|talent)'
+const EXEC = `c[a-z]o|chief [a-z]+ officer|(?:vp|svp|evp|vice president|head|director) of [a-z]+(?: [a-z]+)?(?: (?:&|and) [a-z]+)?|(?:vp|svp|evp|vice president) [a-z]+|${DEPT} (?:manager|director|lead)`
+export const PAGE_PEOPLE = 8
 const T = `(?:founder|co-?founder|owner|co-?owner|ceo|president|principal|proprietor|managing director|general manager|director|managing partner|partner|practice manager|office manager|broker|dentist|doctor|${EXEC})`
 const TITLE_FULL = new RegExp(`^${T}(?: (?:&|and) ${T})?$`, 'i')
 const PEOPLE_PAGE = /(about|team|leadership|people|staff|our-story|who-we-are|meet|contact|company|owner|doctor|dentist)/i
@@ -319,7 +324,8 @@ export function extractPeople(html: string, pageUrl: string): Found[] {
     if (same) add(same[1], same[2])
     if (i + 1 < lines.length && lines[i].length < 45 && lines[i + 1].length < 45) add(lines[i], lines[i + 1])
   }
-  return [...found.values()].sort(bySeniority).slice(0, 3)
+  // Up to PAGE_PEOPLE per page, most senior first; crawlSite makes the final choice of 3 (buyer roles first when known).
+  return [...found.values()].sort(bySeniority).slice(0, PAGE_PEOPLE)
 }
 
 // Which listed person to keep when a page lists many: whoever can sign off on a purchase first. Pure ordering of what
@@ -331,6 +337,8 @@ export function seniority(title: string): number {
   if (/\b(director|partner|broker)\b/.test(t)) return 2
   return 1
 }
+const titleOf = (f: Found) => f.value.slice(f.value.indexOf(', ') + 2)
+export const byBuyerThenSeniority = (buyerRoles: string) => (a: Found, b: Found) => titleMatches(titleOf(b), buyerRoles).length - titleMatches(titleOf(a), buyerRoles).length || bySeniority(a, b)
 export const bySeniority = (a: Found, b: Found) => seniority(b.value.slice(b.value.indexOf(', ') + 2)) - seniority(a.value.slice(a.value.indexOf(', ') + 2))
 
 const PAGE_HINT = /(contact|about|impressum|kontakt|contacto|contato|nous-contacter|contactez|chi-siamo|company|team|leadership|management|people|reach)/i
@@ -355,7 +363,9 @@ const sleepAbort = (ms: number, signal?: AbortSignal) => new Promise<boolean>((r
 const lastHit = new Map<string, number>()
 
 // onPage (optional) sees the raw HTML of every own-site page read; used only by the email finder (EMAIL_GUESS_ENABLED).
-export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string) => void): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeNorm?: string }> {
+// buyerRoles (optional): the scan ICP's "who" roles. Listed people whose title shares ICP words are kept first, so for a
+// payroll seller "Head of HR" is not crowded out by a CTO; seniority breaks ties. Without it, seniority only (as before).
+export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string) => void, buyerRoles?: string): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeNorm?: string }> {
   const origin = `https://${site}`
   const stopped = () => signal?.aborted ?? false
   const polite = async (url: string, delay: number) => { const h = new URL(url).hostname; const wait = (lastHit.get(h) ?? 0) + Math.max(gapMs, delay) - Date.now(); if (wait > 0 && !(await sleepAbort(wait, signal))) return null; lastHit.set(h, Date.now()); return get(url) }
@@ -401,7 +411,7 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
   }
   // Addresses and phones keep their cap; listed people ride separately so they never crowd an address out, and never turn 'none_published' into 'ok'.
   const all = [...found.values()], contacts = all.filter(f => f.kind !== 'person'), people = all.filter(f => f.kind === 'person')
-  return { found: [...contacts.slice(0, 6), ...people.sort(bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeNorm }
+  return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeNorm }
 }
 
 // Runs for one finished scan. Never throws, never touches the lead row, one audit row per site.
@@ -428,6 +438,9 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     // Email finder part 1 (off by default): personal local parts published on each confirmed site, never shown or sent.
     const guessing = emailGuessEnabled(deps.env ?? process.env)
     const localsBySite = new Map<string, Set<string>>()
+    // The scan's buyer roles (ICP "who"), so the 3 people kept per site are the ones the seller wants to reach.
+    let buyerRoles: string | undefined
+    try { const j = db.prepare('SELECT icp FROM scan_jobs WHERE id = ?').get(jobId) as { icp: string | null } | undefined; const who = j?.icp ? (JSON.parse(j.icp) as { who?: unknown }).who : null; if (Array.isArray(who) && who.length) buyerRoles = who.filter(x => typeof x === 'string').join('; ').slice(0, 600) } catch { /* no ICP: seniority only */ }
     const readSite = async (cand: string, company: string): Promise<Crawled> => {
       const c = siteRead.get(cand)
       if (c) {
@@ -436,7 +449,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         if (c.reason !== 'name_mismatch') return c
       }
       const locals = new Set<string>(); localsBySite.set(cand, locals)
-      const r = await crawlSite(cand, get, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, guessing ? html => { for (const l of personalLocals(html, cand)) locals.add(l) } : undefined)
+      const r = await crawlSite(cand, get, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, guessing ? html => { for (const l of personalLocals(html, cand)) locals.add(l) } : undefined, buyerRoles)
       siteRead.set(cand, r)
       return r
     }
