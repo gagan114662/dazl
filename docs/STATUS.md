@@ -11,30 +11,35 @@ Updated by the builder on every branch. Newest first.
   Bottleneck: 5 candidates blocked by their source sites, 1 quote unconfirmed.
 - Scoreboard (scripts/scoreboard.mts): not yet run with a real key.
 
-## In review
+## Merged
 
-- `b/decision-maker-finder` (branched from decisions/email-and-scoreboard for the docs): contact crawl now tries /team and
-  /leadership, accepts B2B titles (C-suite, Chief X Officer, VP/Head/Director of X) and keeps the 3 most senior people.
-  Left: SEC officers and GitHub org members as extra sources; ICP-"who" ranking (lib/people/rank.ts) at selection time;
-  JS-rendered team pages are not fetched.
+- #183 search: country/language, quoted role phrases, non-English hiring, one place per query, budget 8/16,
+  tenant daily 200 (Instinct reviewed and merged 2026-10-26). Not yet deployed.
+- #184 process docs + scoreboard (Instinct reviewed and merged 2026-10-26).
 
-- `search/market-and-role-phrases`: 21521e7 (country/language, quoted role phrases, budget), 13ccf6d (review
-  fixes 1 and 3: non-English hiring requests, one place per query), ca98ade + 6d2dce0 (tenant daily limit 60,
-  then 200 as a separate revertable commit with rationale).
-- `decisions/email-and-scoreboard`: DECISIONS.md, PROCESS.md, STATUS.md, scoreboard runner.
+## In review (owner goal: better than Gojiberry/Pancake at finding leads for any business, any geography)
+
+- #186 b/buyer-fit-gate: a job posting alone is not a qualified lead (home-page fit evidence, multilingual hiring).
+- #187 docs/process-instinct-merges: PROCESS (Instinct merges, design items), this STATUS.
+- #188 b/verify-provenance: diagnostic, did TinyFish have text for pages the verifier could not read.
+- #189 b/design-email-finder: DESIGN note, needs owner answers (verification server, US rule details).
+- #190 b/email-pattern: email format inference, unverified candidates in own tables, off by default.
+- #191 b/dm-icp-rank (on #190): buyer roles first per site; buyer titles derived from the scan ICP (no fixed list).
+- #192 b/linkedin-people: LinkedIn engagers + people search via the tenant session (owner decision), not live-tested.
+- #193 b/people-search (on #191): right people from public profile search results; Right people UI shows them.
+- #194 b/extraction-yield: markdown-free evidence, one verbatim passage per company.
+- #195 b/news-search: free Bing News RSS beside TinyFish and before paid research.
+- integration/all-open: all of the above merged, for one scoreboard run (not for merging).
 
 ## In progress (interactive Claude session, do not duplicate)
 
-- `b/buyer-fit-gate`: Instinct finding 3, a job posting alone is not a qualified lead; require buyer-fit
-  evidence and a contact route.
-- Blocked-source verification: proposal sent to Instinct (verify against the text TinyFish already fetched for
-  the same URL, same rules). Waiting for Instinct's yes/no. Do not start this without it.
+- Blocked-source verification: waits for #188 data from a live run.
 
-## Next (in order, for the scheduled builder)
+## Next (in order, for the scheduled builder; nothing business- or place-specific)
 
-1. Email finder (US only, verified only, see DECISIONS.md): infer the company's address pattern from addresses it
-   publishes, build candidates for the person from item 1, mailbox check, catch-all domains never verified.
-2. New intent signal: people engaging with competitor GitHub repos (stargazers, issues) when the ICP names
+1. Decision-maker sources beyond the company site: officers named in SEC Form D filings (US), GitHub org members for
+   software companies. Stored as person enrichments with the source URL; ranked by the scan ICP roles (rank.ts).
+2. New intent signal: people opening issues on or starring competitor GitHub repos when the tenant lists
    competitors; public GitHub API only.
-3. Self-hosted SearXNG as a second free search backend (behind an env flag, off by default).
+3. Self-hosted SearXNG as a third free search backend (env flag, off by default), same shape as lib/search/news.ts.
 4. Production: Outreach page chunk-load failure (README "Current state").
