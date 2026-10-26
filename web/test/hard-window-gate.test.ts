@@ -97,3 +97,33 @@ test('tenant boundary: another tenant never sees or drafts the lead', () => {
   assert.equal(currentnessHeld(db, 'B', lead), false, 'not found for B (callers reject unknown leads separately)')
   try { createDraft(db, 'B', lead, 'Acme'); assert.fail('drafted across tenants') } catch (e) { assert.equal((e as { code: string }).code, 'not_found') }
 })
+
+// Instinct #208 review: a malformed saved window_days must never disable the window. Stale 400-day-old and undated
+// leads, saved window values 0, -5, 30.5, "90", {}, NaN-as-null and bad JSON; the original query says "past 90 days".
+test('malformed persisted window_days recovers the query window or holds; never waives', () => {
+  const base = { summary: 's', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] }
+  for (const bad of [0, -5, 30.5, '90', {}, [], 400, true]) {
+    for (const date of [day(-400), null]) {
+      const db = setup()
+      const lead = addLead(db, date, JSON.stringify({ ...base, window_days: bad }))
+      assert.equal(currentnessHeld(db, 'A', lead), true, `window_days=${JSON.stringify(bad)} date=${date}`)
+      confirmLeadReview(db, 'A', lead)
+      assert.equal(currentnessHeld(db, 'A', lead), true, 'review does not lift it')
+      assert.equal(leadWindowHeld(db, 'A', lead), true)
+      assert.equal(draftError(db, lead), 'lead_currentness_unconfirmed')
+    }
+  }
+  // corrupt window and a query with no window text: fail closed, even for a fresh-dated lead
+  const db = setup()
+  const noText = addLead(db, day(-5), JSON.stringify({ ...base, window_days: 0 }), 'dental clinics in Ohio')
+  assert.equal(leadWindowHeld(db, 'A', noText), true)
+  // corrupt window but the query recovers a valid 90-day window and the lead is inside it: not held
+  const db2 = setup(); const recovered = addLead(db2, day(-5), JSON.stringify({ ...base, window_days: 0 }))
+  assert.equal(leadWindowHeld(db2, 'A', recovered), false)
+  // null / absent window and no query window = no constraint (unchanged)
+  const db3 = setup(); const none = addLead(db3, day(-400), JSON.stringify(base), 'dental clinics in Ohio')
+  assert.equal(leadWindowHeld(db3, 'A', none), false)
+  // malformed JSON
+  const db4 = setup(); const junk = addLead(db4, day(-5), '{not json')
+  assert.equal(leadWindowHeld(db4, 'A', junk), true)
+})
