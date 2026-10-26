@@ -63,13 +63,15 @@ const call = (over: Partial<ModelCall> = {}): ModelCall => ({ stage: 'extraction
 
 test('read: totals only from reported numbers, tokens_complete false when any request lacks them, tenant-scoped, no rows is recorded:false with nulls', () => {
   const db = mk(); const job = createQueryJob(db, 'A', { query: 'q' } as never)
-  assert.deepEqual([modelUsage(db, 'A', job).recorded, modelUsage(db, 'A', job).input_tokens, modelUsage(db, 'A', job).requests], [false, null, 0])
+  assert.deepEqual([modelUsage(db, 'A', job).recorded, modelUsage(db, 'A', job).input_tokens, modelUsage(db, 'A', job).requests_recorded], [false, null, 0])
   assert.equal(writeModelCalls(db, 'A', job, 1, [call(), call({ input_tokens: null, output_tokens: null, model_served: null, method: 'research', stage: 'research' }), call({ outcome: 'error' })], {}), true)
   const u = modelUsage(db, 'A', job)
-  assert.deepEqual([u.recorded, u.requests, u.input_tokens, u.output_tokens, u.tokens_complete, u.errors, u.served_models, u.by_stage], [true, 3, 20, 4, false, 1, ['m-served'], { extraction: 2, research: 1 }])
+  assert.deepEqual([u.recorded, u.requests_recorded, u.requests_with_reported_tokens, u.requests_without_reported_tokens, u.input_tokens, u.output_tokens, u.tokens_complete, u.errors, u.served_models, u.by_stage], [true, 3, 2, 1, 20, 4, false, 1, ['m-served'], { extraction: 2, research: 1 }])
+  assert.ok(u.unknown.some(x => /retries/.test(x)) && u.unknown.some(x => /actual_charges/.test(x)) && u.unknown.some(x => /cache/.test(x)) && u.unknown.some(x => /profile_generation_before_run/.test(x)), 'what is NOT recorded is listed, never implied zero')
+  assert.match(u.note, /lower bound/)
   assert.equal(modelUsage(db, 'B', job).recorded, false, 'another tenant sees nothing')
   assert.equal(writeModelCalls(db, 'A', job, 2, [call()], { DAZL_MODEL_USAGE: '0' }), false, 'kill switch')
-  assert.equal(modelUsage(db, 'A', job).requests, 3)
+  assert.equal(modelUsage(db, 'A', job).requests_recorded, 3)
   db.prepare('DELETE FROM scan_jobs WHERE id = ?').run(job)
   assert.equal((db.prepare('SELECT count(*) n FROM scan_model_calls').get() as { n: number }).n, 0, 'rows go with the job')
 })
@@ -85,7 +87,7 @@ test('runner: a scan that ends in no_candidates still leaves its model requests;
   assert.equal(out, 'failed')
   const u = modelUsage(db, 'A', id)
   // exactly the one web-research request the stub received, with no usage reported: counted, tokens null (not 0)
-  assert.deepEqual([u.recorded, u.requests, u.by_stage, u.input_tokens, u.output_tokens, u.tokens_complete, u.requested_models, u.served_models], [true, 1, { research: 1 }, null, null, false, ['claude-test-requested'], []])
+  assert.deepEqual([u.recorded, u.requests_recorded, u.by_stage, u.input_tokens, u.output_tokens, u.tokens_complete, u.requested_models, u.served_models], [true, 1, { research: 1 }, null, null, false, ['claude-test-requested'], []])
   assert.equal(modelUsage(db, 'B', id).recorded, false)
 })
 

@@ -7,8 +7,9 @@
 //     NULL tokens, and totals say whether they are complete.
 //   - A request is recorded when it is SENT to the provider. A call the spend guard refuses never reaches this wrapper's
 //     inner provider and is not recorded as a request.
-//   - Requests are counted at this boundary. Retries inside the provider or the platform are not visible here, and the
-//     real invoice cannot be derived from these rows; no price is computed or stored.
+//   - Requests are counted at this boundary. Retries inside the provider or the platform are not visible here, cache
+//     token counts are not stored, and the real invoice cannot be derived from these rows; no price is computed or stored
+//     (see MODEL_USAGE_UNKNOWN, returned with every read).
 //   - Prompt text and responses are NOT stored (only prompt length and a fixed-template stage label).
 // ON by default; DAZL_MODEL_USAGE=0 turns recording off. Never throws into the scan.
 import type Database from 'better-sqlite3'
@@ -99,28 +100,42 @@ export function writeModelCalls(db: Database.Database, tenantId: string, jobId: 
 
 export interface ModelUsage {
   recorded: boolean
-  requests: number
+  // Requests dazl SENT through the job's provider (counted at that boundary). Not provider-side requests and not invoices.
+  requests_recorded: number
+  requests_with_reported_tokens: number
+  requests_without_reported_tokens: number
   by_stage: Record<string, number>
-  // Sums over calls that REPORTED the number; *_complete is false when any request did not (research calls never do).
+  // Sums over the requests that REPORTED the number; tokens_complete is false when any recorded request did not
+  // (web-search research calls never report usage). A sum with tokens_complete:false is a LOWER BOUND.
   input_tokens: number | null; output_tokens: number | null; tokens_complete: boolean
   served_models: string[]; requested_models: string[]
   errors: number
+  // Things this record does NOT contain. Fixed list, not derived from data, so absence is never read as zero.
+  unknown: string[]
   note: string
 }
+export const MODEL_USAGE_UNKNOWN = [
+  'provider_or_platform_retries (requests retried below dazl are not visible)',
+  'actual_charges (no price is computed; this is not an invoice)',
+  'cache_read_and_cache_creation_tokens (reported by the provider, not stored)',
+  'web_search_research_usage_and_served_model (research calls report none)',
+  'profile_generation_before_run (stored per tenant with no job, not in these totals)',
+]
 // null table / no rows => recorded:false with null totals, never zeros.
 export function modelUsage(db: Database.Database, tenantId: string, jobId: string): ModelUsage {
-  const none: ModelUsage = { recorded: false, requests: 0, by_stage: {}, input_tokens: null, output_tokens: null, tokens_complete: false, served_models: [], requested_models: [], errors: 0, note: 'No model usage was recorded for this scan (older scan, recording off, or no model request was made). This is not a zero.' }
+  const none: ModelUsage = { recorded: false, requests_recorded: 0, requests_with_reported_tokens: 0, requests_without_reported_tokens: 0, by_stage: {}, input_tokens: null, output_tokens: null, tokens_complete: false, served_models: [], requested_models: [], errors: 0, unknown: MODEL_USAGE_UNKNOWN, note: 'No model usage was recorded for this scan (older scan, recording off, or no model request was made). This is not a zero.' }
   try {
     const rows = db.prepare('SELECT c.* FROM scan_model_calls c JOIN scan_jobs j ON j.id=c.job_id WHERE j.user_id=? AND j.id=? ORDER BY c.attempt,c.seq').all(tenantId, jobId) as (ModelCall & Record<string, unknown>)[]
     if (rows.length === 0) return none
     const sum = (k: 'input_tokens' | 'output_tokens') => rows.some(r => r[k] != null) ? rows.reduce((a, r) => a + (r[k] ?? 0), 0) : null
     const by_stage: Record<string, number> = {}; for (const r of rows) by_stage[r.stage] = (by_stage[r.stage] ?? 0) + 1
+    const withTokens = rows.filter(r => r.input_tokens != null && r.output_tokens != null).length
     return {
-      recorded: true, requests: rows.length, by_stage, input_tokens: sum('input_tokens'), output_tokens: sum('output_tokens'),
-      tokens_complete: rows.every(r => r.input_tokens != null && r.output_tokens != null),
+      recorded: true, requests_recorded: rows.length, requests_with_reported_tokens: withTokens, requests_without_reported_tokens: rows.length - withTokens,
+      by_stage, input_tokens: sum('input_tokens'), output_tokens: sum('output_tokens'), tokens_complete: withTokens === rows.length,
       served_models: [...new Set(rows.map(r => r.model_served).filter((x): x is string => !!x))], requested_models: [...new Set(rows.map(r => r.model_requested).filter((x): x is string => !!x))],
-      errors: rows.filter(r => r.outcome === 'error').length,
-      note: 'Requests counted where dazl sends them; retries inside the provider are not visible. Tokens are only what the provider reported. No price is computed.',
+      errors: rows.filter(r => r.outcome === 'error').length, unknown: MODEL_USAGE_UNKNOWN,
+      note: 'Recorded requests and the tokens the provider reported for them. Totals are a lower bound whenever tokens_complete is false. Not an invoice.',
     }
   } catch { return none }
 }
