@@ -61,3 +61,15 @@ test('queries parse with fallback; evidence prefers fetched text over snippet', 
   const ev = toEvidence([{ url: 'https://a.example/x', title: 'T', snippet: 'short snippet that is long enough', date: null }], [{ url: 'https://a.example/x', title: 'Full', text: 'Full page text about Acme hiring a sales lead.' }])
   assert.equal(ev.length, 1); assert.ok(ev[0].quote.startsWith('Full page'))
 })
+
+test('markdown is reduced to the words the verifier will see on the page; wording itself is never changed', async () => {
+  const { markdownToText } = await import('../lib/search/tinyfish.ts')
+  const out = markdownToText('# Payroll Specialist\n\n**Acme Logistics** is hiring a [Payroll Specialist](https://boards.greenhouse.io/acme/jobs/1) in Columbus, Ohio.\n![logo](https://x/y.png) See https://acme.com/jobs for more.\n- Process payroll for _200_ staff\n|---|---|\nsnake_case_name and 3*4 stay').replace(/\s+/g, ' ').trim()
+  assert.equal(out, 'Payroll Specialist Acme Logistics is hiring a Payroll Specialist in Columbus, Ohio. See for more. Process payroll for 200 staff snake_case_name and 3*4 stay')
+})
+
+test('page evidence is markdown-free; snippet-only evidence is unchanged', () => {
+  const ev = toEvidence([{ url: 'https://a.example/x', title: 'T', snippet: 'snippet text that is long enough', date: null }, { url: 'https://b.example/y', title: 'U', snippet: 'Beta Corp [opens] a new office in Lisbon', date: null }], [{ url: 'https://a.example/x', title: 'Full', text: '**Acme** is hiring a [sales lead](https://a.example/jobs/1) in Ohio.' }])
+  assert.equal(ev[0].quote, 'Acme is hiring a sales lead in Ohio.')
+  assert.equal(ev[1].quote, 'Beta Corp [opens] a new office in Lisbon')
+})

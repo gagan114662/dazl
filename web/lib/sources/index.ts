@@ -69,8 +69,8 @@ Ideal customer profile: ${JSON.stringify(icp)}
 Items (index, source, url, title, text, date): ${JSON.stringify(items.map((e, i) => ({ i, source: e.source, url: e.url, title: e.title, text: e.quote, date: e.date })))}
 
 Pick only items that show a company or person matching the profile with a recent buying signal. Use only these items. Do not invent anything.
-Reply with ONLY a JSON array, no prose. Each item: {"name": person or "", "company": string, "contact": null, "signal": one sentence on why they are a lead, "source_url": the exact url of the item, "excerpt": the item's text copied VERBATIM, "event_date": the item's date as YYYY-MM-DD or null, "score": 0-100 fit}.
-The excerpt must name the company. Return [] if nothing fits.`
+Reply with ONLY a JSON array, no prose. Each item: {"name": person or "", "company": string, "contact": null, "signal": one sentence on why they are a lead, "source_url": the exact url of the item, "excerpt": ONE passage of 20-300 characters copied character-for-character from that item's text (no paraphrase, no "..." inside, no fixing typos) that names the company and shows the signal, "event_date": the item's date as YYYY-MM-DD or null, "score": 0-100 fit}.
+One item can name several companies (a list or a round-up): return each matching company separately, each with its own passage. Return [] if nothing fits.`
 }
 
 // Canonical form used to match a model-returned source_url back to a collected item (same rule as parseLeads).

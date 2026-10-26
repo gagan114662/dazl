@@ -245,6 +245,24 @@ export function withGeography(queries: string[], where: string[]): string[] {
   })
 }
 
+// TinyFish returns pages as markdown. The verifier later reads the same page as plain text, so markdown syntax in an
+// excerpt can never match: "[Apply now](https://...)" is "Apply now" on the page. Links keep their text; images, bare
+// URLs and emphasis/heading/bullet/table marks go. Wording is untouched, so a sentence copied from here is on the page.
+export function markdownToText(md: string): string {
+  return md
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/\[([^\]]{0,300})\]\((?:[^()]|\([^)]*\))*\)/g, '$1')
+    .replace(/<https?:\/\/[^>\s]+>/g, ' ')
+    .replace(/https?:\/\/\S+/g, ' ')
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/^\s*\|?\s*:?-{3,}.*$/gm, ' ')
+    .replace(/(\*{1,3})([^*\n]+)\1/g, '$2')
+    .replace(/(?<![A-Za-z0-9])(_{1,3})([^_\n]+)\1(?![A-Za-z0-9])/g, '$2') // _emphasis_ only; snake_case words keep their underscores
+    .replace(/`{1,3}/g, '')
+    .replace(/\|/g, ' ')
+}
+
 // Turns search hits and fetched page text into Evidence for the user's model. The existing verifier still
 // re-fetches every cited URL and checks quote, company, date and contact before a lead is kept.
 export function toEvidence(hits: SearchHit[], pages: { url: string; text: string; title: string }[]): Evidence[] {
@@ -254,7 +272,7 @@ export function toEvidence(hits: SearchHit[], pages: { url: string; text: string
   for (const h of hits) {
     const k = h.url.replace(/\/$/, ''); if (seen.has(k)) continue; seen.add(k)
     const page = byUrl.get(k)
-    const text = (page?.text ?? h.snippet).replace(/\s+/g, ' ').trim().slice(0, 1200)
+    const text = (page ? markdownToText(page.text) : h.snippet).replace(/\s+/g, ' ').trim().slice(0, 1200)
     if (text.length >= 20) out.push({ source: 'tinyfish', url: h.url, title: page?.title || h.title, quote: text, date: h.date })
   }
   return out.slice(0, 30)
