@@ -15,15 +15,26 @@ function buyerRoles(db: Database.Database, jobId: string): string {
   } catch { return '' }
 }
 
-export function bestPeople(db: Database.Database, rows: { lead_id: string; job_id: string }[]): Map<string, BestPerson> {
+// A title that says the role is over ("Former HR Manager", "Previously CEO") is never a person to reach first.
+// Only the title text is checked here; a contradictory CURRENT employer is #193's parser job, not detectable here.
+const FORMER = /\b(former|formerly|previous|previously|past|ex|retired|emeritus)\b/i
+
+// Tenant-scoped on both sides: the enrichment row must carry the tenant AND its lead must belong to a job that tenant
+// owns and not be quarantined, so a malformed/cross-tenant row is never selected. The table is checked before
+// preparing (an older/no-connector schema has none), so an empty or legacy export falls back to empty fields.
+export function bestPeople(db: Database.Database, tenantId: string, rows: { lead_id: string; job_id: string }[]): Map<string, BestPerson> {
   const out = new Map<string, BestPerson>()
   const rolesByJob = new Map<string, string>()
-  const q = db.prepare("SELECT kind, value, label, source_url, connector FROM lead_enrichments WHERE lead_id = ? AND kind IN ('contact', 'person')")
+  const hasTable = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'lead_enrichments'").get()
+  const q = hasTable ? db.prepare(
+    `SELECT e.kind, e.value, e.label, e.source_url, e.connector FROM lead_enrichments e
+     JOIN leads l ON l.id = e.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id
+     WHERE e.lead_id = ? AND e.tenant_id = ? AND j.user_id = ? AND l.quarantined_at IS NULL AND e.kind IN ('contact', 'person')`) : null
   for (const r of rows) {
     if (!rolesByJob.has(r.job_id)) rolesByJob.set(r.job_id, buyerRoles(db, r.job_id))
     let enr: { kind: string; value: string; label: string | null; source_url: string; connector: string }[] = []
-    try { enr = q.all(r.lead_id) as typeof enr } catch { /* no enrichment table yet */ }
-    const top = contactsFromEnrichments(enr, rolesByJob.get(r.job_id)!)[0]
+    if (q) enr = q.all(r.lead_id, tenantId, tenantId) as typeof enr
+    const top = contactsFromEnrichments(enr, rolesByJob.get(r.job_id)!).find(c => !FORMER.test(c.title ?? ''))
     out.set(r.lead_id, top ? { best_person: top.name, best_person_title: top.title ?? '', best_person_link: top.linkedin ?? top.source ?? '', best_person_found_via: PEOPLE_SOURCE[top.connector] ?? top.connector } : EMPTY)
   }
   return out
