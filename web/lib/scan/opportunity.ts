@@ -8,7 +8,7 @@
 // Pure: built only from what the lead already stores. Nothing here is fetched, guessed or invented; anything unknown
 // is listed under missing. Identity reuses the outreach provenance rules (weakest recorded basis governs, the user's
 // own website review, several websites = conflict), so the card never claims more than the send gate accepts.
-import { rankPeople, type PersonContact } from '../people/rank.ts'
+import { recommendedPerson, type PersonContact } from '../people/rank.ts'
 import { domainBasisFor, publishedContact, PUBLISHED_EMAIL_RE, type DomainBasisKind } from '../outreach/published-email.ts'
 import { eventDateCopy } from './date-copy.ts'
 import { domainReviewFor } from '../outreach/domain-review.ts'
@@ -77,7 +77,7 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
     const sep = r.kind === 'person' ? ', ' : ' - '; const i = r.value.indexOf(sep)
     return { name: (i < 0 ? r.value : r.value.slice(0, i)).trim(), title: i < 0 ? null : r.value.slice(i + sep.length).trim(), linkedin: r.source_url || null, connector: r.connector }
   })
-  const top = rankPeople(people, buyerRoles)[0]
+  const top = recommendedPerson(people, buyerRoles) ?? undefined
   const ident = identityOf(l, rows)
   // The SAME two rules createDraft enforces, not email syntax: publishedContact picks the address and classifies its
   // purpose from its own context label (support/privacy usage is rejected even when the local part is "hello");
@@ -107,7 +107,7 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
   if (ident && ident.state !== 'fact') assumptions.push(`Company site ${ident.text}.`)
   if (!l.event_date) missing.push('event date')
   else assumptions.push(`The date ${l.event_date} is the event day as claimed; the page was not shown to date the event itself.`)
-  if (!top) missing.push('a named person to approach')
+  if (!top) missing.push(people.length ? 'a current buyer (every listed person has a past, negated or assistant-to title)' : 'a named person to approach')
   if (!ident && !citedEmail) missing.push('the company\'s own website')
   if (!draftable && !phone) missing.push('an email or phone')
   for (const u of unknown) missing.push(`${u} (not shown in the evidence)`)
