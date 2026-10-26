@@ -32,6 +32,7 @@ import { sourceCap } from './source-quality.ts'
 import { SourceRunLedger } from './source-runs.ts'
 import { applyBuyerFitGate } from './buyer-fit.ts'
 import { findPeople } from '../people/people-search.ts'
+import { collectLinkedInPeople } from '../signals/linkedin-people.ts'
 
 export interface Job { id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string; seller?: string | null; watch_id?: string | null; csv_domain?: string | null; run_budget?: string | null }
 export interface LeadDraft extends Candidate {}
@@ -758,6 +759,25 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e // a rejected key still fails the scan
         // any other complaint-search failure only means no extra candidates
+      }
+    }
+    // LinkedIn people (owner decision 2026-10-26): competitor engagers and buyer-role matches through the tenant's own
+    // session. Same gates as every LinkedIn call; candidates are login-walled, so they land in the review lane.
+    if (job.query && icpForSources && complete) {
+      try {
+        assertOwned(db, job)
+        const li = await collectLinkedInPeople(db, job.user_id, job.id, icpForSources, { master: deps.master, worker: deps.advancedWorker })
+        if (li.length > 0) {
+          ledger.record('adv:linkedin-people', 'ok', li.length)
+          assertOwned(db, job)
+          const text = await complete.call(providers_[vendor], key, buildSourcePrompt(job.query!, icpForSources, li), deps.fetchImpl, 3000)
+          const extra = parseLeads(text, li.map(i => i.url)) ?? []
+          ledger.evidenceCandidates(li, extra)
+          walledLeads.push(...extra)
+        }
+      } catch (e) {
+        if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
+        if (e instanceof ProviderError && e.kind === 'auth') throw e
       }
     }
     // Nothing to verify at all: fail honestly. Failed scans do not count toward the monthly quota,

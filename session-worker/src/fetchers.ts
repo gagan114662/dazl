@@ -3,6 +3,7 @@
 // disallow automated access (X, Instagram, Facebook, LinkedIn) can rate-limit or ban the account:
 // that risk is the tenant's acknowledged choice, and calls are rate-limited server-side.
 import { epochDay, getJson, item, latinRun, latinUsable, type WorkerItem } from './util.ts'
+import { linkedinEngagers, linkedinPeople, voyagerGet } from './linkedin.ts'
 
 export type Platform = 'x' | 'reddit' | 'instagram' | 'facebook' | 'bilibili' | 'xiaohongshu' | 'linkedin'
 export type Fetcher = (query: string, session: string, env: Record<string, string | undefined>) => Promise<WorkerItem[]>
@@ -99,7 +100,15 @@ const instagram: Fetcher = async (query, session) => {
 }
 
 // --- LinkedIn: voyager search with li_at + JSESSIONID. Highest ban risk; the app caps it at 3/hour. ---
+// "people:<keywords>" and "engagers:<competitor>" are person-level modes (src/linkedin.ts); a plain query keeps the
+// post search below.
 const linkedin: Fetcher = async (query, session) => {
+  const mode = /^(people|engagers):s*(.{2,200})$/s.exec(query)
+  if (mode) {
+    const get = voyagerGet(session)
+    if (!get) return []
+    return mode[1] === 'people' ? linkedinPeople(mode[2], get) : linkedinEngagers(mode[2], get)
+  }
   const liAt = session.match(/li_at=([^;]+)/)?.[1]
   const jsession = session.match(/JSESSIONID="?([^";]+)"?/)?.[1]
   if (!liAt || !jsession) return []
