@@ -33,10 +33,12 @@ test('profile keeps a valid window; prompts state it', () => {
   assert.match(recencyAnchor(NOW), /on or after 2025-10-26/)
 })
 
-test('known dates outside the window are split out; undated stay', () => {
-  const r = splitByWindow([{ event_date: '2026-04-15' }, { event_date: '2026-10-01' }, { event_date: null }], 90, NOW)
-  assert.deepEqual(r.outside, [{ event_date: '2026-04-15' }])
-  assert.equal(r.inside.length, 2)
+test('with an explicit window only a valid in-window date is inside; stale, undated, invalid and future are split out with their own reason', () => {
+  const r = splitByWindow([{ event_date: '2026-04-15' }, { event_date: '2026-10-01' }, { event_date: null }, { event_date: '2026-02-30' }, { event_date: '2026-11-15' }], 90, NOW)
+  assert.deepEqual(r.inside, [{ event_date: '2026-10-01' }])
+  assert.deepEqual(r.outside.map(l => l.event_date), ['2026-04-15', null, '2026-02-30', '2026-11-15'])
+  assert.deepEqual(r.outsideReasons, ['outside_window', 'outside_window_undated', 'event_date_bad_date', 'event_date_future_date'])
+  assert.equal(splitByWindow([{ event_date: null }], null, NOW).inside.length, 1, 'no window: undated leads are unchanged')
   assert.equal(splitByWindow([{ event_date: '2020-01-01' }], null, NOW).outside.length, 0)
 })
 
@@ -58,4 +60,25 @@ test('#198 end to end: window stored on the profile; the April lead lands in rev
   assert.equal(JSON.parse(getJob(db, 'A', id)!.icp!).window_days, 90)
   const leads = listLeads(db, 'A', id, 200, true) as { company: string; review_reason: string | null }[]
   assert.deepEqual(leads.map(l => [l.company, l.review_reason]).sort(), [['Bright Teeth Studio', null], ['Smile Avenue Dental', 'outside_window']])
+})
+
+test('window counts end to end: an undated lead is review, not verified; funnel total is preserved and nothing is dropped', async () => {
+  const master = randomBytes(32)
+  const db = new Database(':memory:'); migrateScan(db); migrateKeys(db)
+  saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
+  const icp = { summary: 'Independent NYC dental practices that recently expanded', who: ['Practice owner'], industries: ['dental'], sizes: [], where: ['New York City'], signals: ['new location'], exclude: [] }
+  const id = createQueryJob(db, 'A', { query: Q198, icp: JSON.stringify(icp) } as never)
+  const Q = (c: string) => `${c} opened a new practice in Brooklyn`
+  const lead = (company: string, date: string | null) => ({ name: '', company, contact: null, signal: 'Opened a new practice', source_url: `https://news.example/${company.replace(/\s/g, '')}`, excerpt: Q(company), event_date: date, score: 85 })
+  const names = ['Smile Avenue Dental', 'Bright Teeth Studio', 'Undated Dental']
+  const prov: Record<'anthropic' | 'openai', Provider> = {
+    anthropic: { research: async () => ({ text: JSON.stringify([lead(names[0], '2026-04-15'), lead(names[1], '2026-10-10'), lead(names[2], null)]), citedUrls: names.map(n => `https://news.example/${n.replace(/\s/g, '')}`) }) },
+    openai: { research: async () => ({ text: '', citedUrls: [] }) },
+  }
+  const page = async (url: string) => { const n = names.find(x => url.includes(x.replace(/\s/g, '')))!; return { text: `News. ${Q(n)}. More.`, title: n, retrievedAt: 1 } }
+  assert.equal(await runJob(db, claimKeyedJob(db, id)!, { providers: prov, master, fetchPage: page, judge: null, score: false, ground: false, now: NOW }), 'done')
+  const leads = listLeads(db, 'A', id, 200, true) as { company: string; review_reason: string | null }[]
+  assert.deepEqual(leads.map(l => [l.company, l.review_reason]).sort(), [['Bright Teeth Studio', null], ['Smile Avenue Dental', 'outside_window'], ['Undated Dental', 'outside_window_undated']])
+  const job = db.prepare('SELECT verified, needs_review, dropped FROM scan_jobs WHERE id = ?').get(id) as { verified: number; needs_review: number; dropped: number }
+  assert.deepEqual(job, { verified: 1, needs_review: 2, dropped: 0 }, 'the two moved leads are counted under needs_review, not dropped, and verified no longer includes them')
 })
