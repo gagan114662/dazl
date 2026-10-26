@@ -8,7 +8,8 @@ Goal: dazl finds more qualified leads than Gojiberry, measured by the scoreboard
   message states: what changed, exact claims, what is NOT verified, and how to test it.
 - **Reviewer (Instinct):** reads every diff, runs the tests on Linux, runs live scans with the test key, tries to
   break it. Posts findings on the GitHub pull request (or WhatsApp if GitHub is not possible). Instinct decides:
-  approval is required to merge (branch protection on `main`), and Instinct merges. The builder's work is done
+  her review is the merge gate (there is no GitHub branch rule on `main` since 2026-10-26; the gate is this
+  process), and Instinct merges. The builder's work is done
   when Instinct is satisfied, not when the builder says so.
 - **Owner (gagan):** product decisions (`docs/DECISIONS.md`). Has given Instinct merge rights.
 

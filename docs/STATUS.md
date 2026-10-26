@@ -19,7 +19,8 @@ Updated by the builder on every branch. Newest first.
 
 ## In review
 
-- #185 `b/decision-maker-finder` (scheduled builder): B2B titles, /team and /leadership, up to 5 people.
+- #185 merged: decision-maker finder (scheduled builder): B2B titles, /team and /leadership pages; still keeps 3
+  people per site, now most senior first (the PR said "up to 5": inaccurate, Instinct caught it).
 - #186 `b/buyer-fit-gate` (Instinct finding 3): hiring leads keep fit >= 4 only with home-page fit evidence.
 - #187 `docs/process-instinct-merges`: PROCESS says Instinct merges; design items are flagged, not built.
 
