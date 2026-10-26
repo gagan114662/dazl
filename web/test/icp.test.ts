@@ -161,3 +161,20 @@ test('latestQueryJob returns the most recent query job with its stored profile',
   const row = db.prepare('SELECT seller FROM scan_jobs WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get('u1') as { seller: string }
   assert.equal(row.seller, 'Acme - sales software')
 })
+
+// Live London acceptance run: "seed funding within 90 days" came back as "seed / Series A" in the editable profile.
+import { keepStatedFundingStage } from '../lib/scan/icp.ts'
+test('a stated funding stage is never widened by the inferred profile (seed stays seed)', async () => {
+  const q = '10-50 employee London companies that raised seed funding in the past 90 days and are hiring sales'
+  const widened = { summary: 'London startups with seed / Series A funding hiring sales', who: ['Founder'], industries: [], sizes: ['10-50 employees'], where: ['London'], signals: ['raised seed or Series A funding', 'Series A announcement', 'hiring sales reps'], exclude: ['agencies'] }
+  const r = keepStatedFundingStage(q, widened)
+  assert.equal(r.summary, 'London startups with seed funding hiring sales')
+  assert.deepEqual(r.signals, ['raised seed funding', 'hiring sales reps'])
+  assert.deepEqual(r.sizes, ['10-50 employees']); assert.deepEqual(r.exclude, ['agencies'])
+  // end to end through inferIcp with a stub model that widens
+  const out = await inferIcp({ research: async () => ({ text: '', citedUrls: [] }), complete: async () => JSON.stringify(widened) }, KA, q)
+  assert.ok(!out.icp.signals.some(x => /series/i.test(x))); assert.doesNotMatch(out.icp.summary, /series/i)
+  // the request itself asks for Series A: nothing removed
+  assert.deepEqual(keepStatedFundingStage('seed or Series A startups in London', widened), widened)
+  assert.match(icpPrompt(q), /NEVER widen/)
+})
