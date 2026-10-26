@@ -7,9 +7,9 @@
 // (Devanagari and romanized). Word boundaries are Unicode-aware: \b is ASCII-only, and Devanagari vowel signs are marks.
 const L = '\\p{L}\\p{M}\\p{N}'
 const word = (alts: string) => new RegExp(`(?<![${L}])(?:${alts})(?![${L}])`, 'iu')
-const HIRING = word([
+export const HIRING = word([
   'hiring|hire[sd]?|jobs?|roles?|openings?|positions?|recruit\\p{L}*|vacanc\\p{L}+', // en
-  'contrat(?:a|am|ar|ando|amos|ação|acao)|vagas?|recrutamento|recrutando|recrutar|empregos?', // pt
+  'contrat(?:a|am|ar|ando|amos|ação|acao)|vagas?|recrutamento|recrutando|recrutar|empregos?|procura(?:m)?-se|procuramos|admite-se|admitimos', // pt
   'contratando|contratar|contratamos|vacantes?|empleos?|ofertas? de (?:trabajo|empleo)|busca[n]?|buscamos|reclutamiento|reclutando', // es
   'recrute(?:nt|r|ment)?|embauche(?:nt|r)?|offres? d.emploi|postes? à pourvoir', // fr
   'stellenangebote?|such(?:en|t)|jobangebote?|stellenausschreibung(?:en)?', // de

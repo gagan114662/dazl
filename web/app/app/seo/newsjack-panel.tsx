@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import { markdownToPlain } from '@/lib/text/plain'
 
 type Nj = { id: string; url: string; title: string | null; draft: string; status: string; created_at: number }
 
@@ -42,7 +43,7 @@ export default function NewsjackPanel() {
             {n.title || n.url} {n.status === 'approved' ? <span className="text-green-700 text-xs ml-1">approved</span> : <span className="text-[#999] text-xs ml-1">draft</span>}
             <span className="text-[#999] text-xs ml-2">{new Date(n.created_at * 1000).toLocaleDateString()}</span>
           </summary>
-          <pre className="whitespace-pre-wrap text-[#333] text-xs mt-2 font-sans">{n.draft}</pre>
+          <pre className="whitespace-pre-wrap text-[#333] text-xs mt-2 font-sans">{markdownToPlain(n.draft)}</pre>
           <div className="flex gap-4 mt-2 text-xs">
             {n.status === 'draft' && <button className="underline" onClick={() => approve(n.id)}>Approve</button>}
             {n.status === 'approved' && <button className="underline" onClick={() => copy(n.id, n.draft)}>{copied === n.id ? 'Copied' : 'Copy to clipboard'}</button>}
