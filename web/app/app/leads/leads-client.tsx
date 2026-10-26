@@ -6,6 +6,7 @@ import { emptyLeadsMessage, scoreLabel, quoteNote } from '@/lib/scan/leads-view'
 import { eventTypeLabel } from '@/lib/events/labels'
 import { companySearchEligible } from '@/lib/scan/find-contact-eligible'
 import { contactsFromEnrichments } from '@/lib/people/rank'
+import { OpportunityCardView } from './opportunity-card'
 import { publishedEmail, publishedContact, contactSearchNote, domainBasisNote, domainBasisText } from '@/lib/outreach/published-email'
 import { domainReviewFor } from '@/lib/outreach/domain-review'
 import SourceReview from './source-review'
@@ -17,8 +18,8 @@ import { WarmConnections, WarmPath } from './warm-path'
 import VerificationFixture from './verification-fixture'
 import { eventDateCopy } from '@/lib/scan/date-copy'
 
-interface Lead { quarantined_at?: number | null; quarantine_reason?: string | null; source_kind?: string | null; contact_context?: {excerpt:string;source_url:string}|null; currentness_held?: boolean; stored_intent?: number | null; stored_why?: string | null; source_check?: {fetch_status:string;quote_match:boolean;company_named:boolean;contact_match:boolean;checked_at:number} | null; sequence?: { status: string; step: number; next_due_at: number | null; stop_reason: string | null } | null; id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; human_confirmed_at: number | null; human_confirmed_from: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; watch_new?: number; seen_before?: number; stage?: string | null; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string; entity_status?: 'heuristic' | 'unconfirmed' | null }[]; events?: { id: string; event_type: string; summary: string; source_url: string; source_published_at: string | null; last_seen_at: number; fresh: boolean; entity_status?: 'heuristic' | 'unconfirmed' | null }[]; priority?: { graded: boolean; fit: number | null; intent: number | null; action: number | null; evidence_score: number; reasons: string[]; uncounted: string[] } | null; lookalike?: { state: 'insufficient' | 'scored'; cohort_size: number; matches: number; matched_on: string[] } | null }
-interface Icp { summary: string; who: string[]; industries: string[]; sizes: string[]; where: string[]; signals: string[]; exclude: string[] }
+interface Lead { quarantined_at?: number | null; quarantine_reason?: string | null; source_kind?: string | null; contact_context?: {excerpt:string;source_url:string}|null; currentness_held?: boolean; window_held?: boolean; stored_intent?: number | null; stored_why?: string | null; source_check?: {fetch_status:string;quote_match:boolean;company_named:boolean;contact_match:boolean;checked_at:number} | null; sequence?: { status: string; step: number; next_due_at: number | null; stop_reason: string | null } | null; id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; human_confirmed_at: number | null; human_confirmed_from: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; watch_new?: number; seen_before?: number; stage?: string | null; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string; entity_status?: 'heuristic' | 'unconfirmed' | null }[]; events?: { id: string; event_type: string; summary: string; source_url: string; source_published_at: string | null; last_seen_at: number; fresh: boolean; entity_status?: 'heuristic' | 'unconfirmed' | null }[]; priority?: { graded: boolean; fit: number | null; intent: number | null; action: number | null; evidence_score: number; reasons: string[]; uncounted: string[] } | null; lookalike?: { state: 'insufficient' | 'scored'; cohort_size: number; matches: number; matched_on: string[] } | null }
+interface Icp { summary: string; who: string[]; industries: string[]; sizes: string[]; where: string[]; signals: string[]; exclude: string[]; country?: string; language?: string; window_days?: number }
 interface JobSummary { id: string; status: string; error: string | null; query: string | null; business_name: string; csv_domain: string | null; created_at: number; finished_at: number | null; candidates: number | null; verified: number | null; needs_review: number | null; dropped: number | null; lead_count: number; test_only: boolean }
 interface Watch { id: string; query: string; active: boolean; next_run_at: number | null; last_run_at: number | null; paused_reason: string | null; last_job_id: string | null; last_status: string | null; new_leads: number }
 interface Monitor { id: string; query: string; interval_hours: number; enabled: number; paused_reason: string | null; next_run_at: number | null; last_new_count: number | null; run_count: number }
@@ -41,7 +42,7 @@ const REASON: Record<string, string> = {
   source_cap: 'over the 3-per-page cap',
   url_refused: 'unsafe or unsupported address', duplicate: 'duplicate company',
 }
-const REVIEW: Record<string, string> = { legacy_currentness_review: 'Legacy research reviewed by you for drafting, not verified current need or consent', event_timing_unconfirmed: 'The quote was found, but its event timing and current need are unconfirmed', event_date_bad_date: 'The claimed event date is invalid - review the source', event_date_stale: 'The claimed event date is outside the freshness window - historical evidence only', event_date_future_date: 'The claimed event date is in the future - current need unconfirmed',  source_review_required: 'Manually supplied claim - literal source checks do not verify its meaning, date, buying need or consent', self_description: 'Text its owner wrote about their own project. This evidence does not establish fit, date or need',  counterparty_signal: 'Names this company as someone else\'s customer - not evidence of its own buying intent', job_closed: 'Source says applications are closed - historical hiring evidence, not an active opening', quote_unconfirmed: 'The saved quote could not be confirmed on the source', login_required: 'Source requires sign-in - evidence unknown', blocked_by_site: 'The site blocked our check', needs_javascript: 'The page needs JavaScript to show its content' }
+const REVIEW: Record<string, string> = { legacy_currentness_review: 'Legacy research reviewed by you for drafting, not verified current need or consent', event_timing_unconfirmed: 'The quote was found, but its event timing and current need are unconfirmed', event_date_bad_date: 'The claimed event date is invalid - review the source', event_date_stale: 'The claimed event date is outside the freshness window - historical evidence only', event_date_future_date: 'The claimed event date is in the future - current need unconfirmed',  source_review_required: 'Manually supplied claim - literal source checks do not verify its meaning, date, buying need or consent', self_description: 'Text its owner wrote about their own project. This evidence does not establish fit, date or need',  counterparty_signal: 'Names this company as someone else\'s customer - not evidence of its own buying intent', job_closed: 'Source says applications are closed - historical hiring evidence, not an active opening', quote_unconfirmed: 'The saved quote could not be confirmed on the source', login_required: 'Source requires sign-in - evidence unknown', blocked_by_site: 'The site blocked our check', needs_javascript: 'The page needs JavaScript to show its content', outside_window: 'The event date is older than the time window you asked for - not a current lead' }
 
 // Enrichment labels join example titles with '; ' - older rows can repeat one
 // title per posting. Show each distinct title once; the count stays untouched.
@@ -186,11 +187,11 @@ export default function LeadsClient() {
   }
   async function confirmReview(leadId: string) {
     const r = await fetch(`/api/leads/${leadId}/confirm`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
-    if (r.ok) setLeads(ls => ls.map(l => l.id === leadId ? { ...l, human_confirmed_at: Math.floor(Date.now() / 1000), human_confirmed_from: l.review_reason ?? 'legacy_currentness_review', review_reason: null, currentness_held: false } : l))
+    if (r.ok) setLeads(ls => ls.map(l => l.id === leadId ? { ...l, human_confirmed_at: Math.floor(Date.now() / 1000), human_confirmed_from: l.review_reason ?? 'legacy_currentness_review', review_reason: null, currentness_held: !!l.window_held } : l))
   }
   async function withdrawConfirm(leadId: string) {
     const r = await fetch(`/api/leads/${leadId}/confirm`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: '{}' })
-    if (r.ok) setLeads(ls => ls.map(l => l.id === leadId ? { ...l, review_reason: l.human_confirmed_from === 'legacy_currentness_review' ? null : l.human_confirmed_from, human_confirmed_at: null, human_confirmed_from: null, currentness_held: l.confidence !== null } : l))
+    if (r.ok) setLeads(ls => ls.map(l => l.id === leadId ? { ...l, review_reason: l.human_confirmed_from === 'legacy_currentness_review' ? null : l.human_confirmed_from, human_confirmed_at: null, human_confirmed_from: null, currentness_held: l.confidence !== null || !!l.window_held } : l))
   }
   // Quarantine (wrong company / wrong contact details): kept with its evidence, never drafted, sent or exported. Reversible.
   async function quarantine(leadId: string, release = false) {
@@ -501,6 +502,7 @@ export default function LeadsClient() {
             {icp.icp.where.length > 0 && <li>Where: {icp.icp.where.join('; ')}</li>}
             {icp.icp.signals.length > 0 && <li>Signals: {icp.icp.signals.join('; ')}</li>}
             {icp.icp.exclude.length > 0 && <li>Skipping: {icp.icp.exclude.join('; ')}</li>}
+            {icp.icp.window_days ? <li>Only signals from the last {icp.icp.window_days} days</li> : null}
           </ul>
           <div className="flex items-center gap-3 mt-2">
             <button className="underline text-[#111] text-xs" onClick={() => { setDraft(icp.icp); setDraftNote('Edit the profile and run again.') }}>Edit and run again</button>
@@ -610,6 +612,7 @@ export default function LeadsClient() {
                 return <span className="ml-1 inline-flex gap-0.5 align-middle">{chip('role', m.role)}{chip('industry', m.industry)}{chip('size', m.size)}{chip('location', m.location)}</span>
               })()}
             </div>
+            <OpportunityCardView lead={l} buyerRoles={icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : ''} />
             <div className="text-gray-400">{`Saved signal claim: ${l.signal}`}</div>
             {l.why && <div className="text-xs text-gray-300 mt-1">Research rationale: {l.why}</div>}
             {parseSignals(l.signals).length > 0 && (
@@ -676,7 +679,8 @@ export default function LeadsClient() {
             )}
             {l.evidence_excerpt && <blockquote className="text-gray-500 text-xs border-l border-white/10 pl-3 my-1">{l.human_confirmed_at ? quoteNote(l.source_check?.quote_match).prefix : ''}&ldquo;{l.evidence_excerpt}&rdquo;</blockquote>}
             {l.stored_why && <details className="text-xs my-2"><summary>Saved historical grade (not a currentness verdict; a saved grade may have been made without your offer text and is not rescored)</summary><p>Saved intent: {l.stored_intent ?? 'unknown'}. {l.stored_why}</p></details>}
-            {l.currentness_held && <p className="text-xs border-l-2 border-black pl-3 my-2">Quote-backed research only - event timing unknown. Fit and contact research can be useful, but no current buying need was verified. Drafting requires your source review.</p>}
+            {l.window_held && <p className="text-xs border-l-2 border-black pl-3 my-2">Outside the time window you asked for, or its date is unknown - research only. It cannot be drafted or sent, even after you review the source. Run a scan with a wider window to include it.</p>}
+            {l.currentness_held && !l.window_held && <p className="text-xs border-l-2 border-black pl-3 my-2">Quote-backed research only - event timing unknown. Fit and contact research can be useful, but no current buying need was verified. Drafting requires your source review.</p>}
             <span className="text-gray-500 text-xs mr-3">{l.confidence === null ? (l.human_confirmed_at ? quoteNote(l.source_check?.quote_match).confirmed : 'not verified') : `confidence ${l.confidence}`}{`, ${eventDateCopy(l.event_date, l.date_status)}`}</span>
             {l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && (
               <button onClick={() => withdrawConfirm(l.id)} className="text-gray-600 hover:text-red-400 text-xs mr-3" title={l.human_confirmed_from ? `Was in review: ${REVIEW[l.human_confirmed_from] ?? l.human_confirmed_from}` : undefined}>withdraw confirmation</button>
