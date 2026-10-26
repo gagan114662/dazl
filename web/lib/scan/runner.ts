@@ -631,7 +631,8 @@ function budgetDeps(deps: RunDeps, budget: RunBudget | null): RunDeps {
 }
 
 export interface RunDeps {
-  sourceHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; jobBudgetMs?: number; clock?: () => number }
+  // newsHttp: the free news search's own HTTP (lib/search/news.ts), separate from the per-scan sources' sourceHttp.
+  sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; jobBudgetMs?: number; clock?: () => number }
 
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
   const ledger = new SourceRunLedger()
@@ -679,33 +680,36 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // Primary backend when the operator set TINYFISH_API_KEY: TinyFish search and fetch, the user's own model reads the
     // pages. If TinyFish is off, capped, failing or finds nothing, fall back to the provider's built-in web search.
     let leads: LeadDraft[] | null = null
+    let budgetRefused = false // the run budget refused a call in the TinyFish path
     const diag = { trace: new SearchTrace(), info: {} as Partial<SourceStats>, hitUrls: [] as string[] }
     if (job.query && icpForSources && complete && tinyfishEnabled()) {
       try {
         ledger.record('search:tinyfish', 'started')
         assertOwned(db, job)
-        leads = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl, diag, deps.sourceHttp ?? safeGet)
+        leads = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl, diag, deps.newsHttp ?? safeGet)
         ledger.record('search:tinyfish', leads === null ? 'unavailable' : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:tinyfish', leads)
       } catch (e) {
         if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e
+        if (e instanceof SpendRefused) budgetRefused = true
         leads = null
       }
       if (leads && leads.length === 0) leads = null
       if (diag.trace.events.length > 0 || diag.info.query_source) ledger.stats('search:tinyfish', { ...summarizeTrace(diag.trace), ...diag.info })
     }
     const fetchP = cachedFetcher(deps.fetchPage ?? fetchPageDetailed)
-    // TinyFish off, capped, failing or empty: try the free news search before the provider's paid web search.
-    if (!leads && job.query && icpForSources && complete && newsEnabled()) {
+    // TinyFish off, capped, failing or empty: try the free news search before the provider's paid web search. Not after
+    // the run budget already refused a call (its own calls would be refused too); a refusal inside it stops the scan.
+    if (!leads && !budgetRefused && job.query && icpForSources && complete && newsEnabled()) {
       try {
         ledger.record('search:news', 'started')
         assertOwned(db, job)
-        leads = await newsLeads(job, icpForSources, providers_[vendor], key, deps.sourceHttp ?? safeGet, deps.fetchImpl)
+        leads = await newsLeads(job, icpForSources, providers_[vendor], key, deps.newsHttp ?? safeGet, deps.fetchImpl)
         ledger.record('search:news', leads === null ? 'unavailable' : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:news', leads)
       } catch (e) {
-        if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
+        if (e instanceof ScanStopped || e instanceof ScanTimedOut || e instanceof SpendRefused) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e
         leads = null
       }

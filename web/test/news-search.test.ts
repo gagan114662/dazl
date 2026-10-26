@@ -56,7 +56,7 @@ test('TinyFish off: a scan finds and verifies a lead from the free news search b
     openai: { research: async () => ({ text: '', citedUrls: [] }) },
   }
   const page = async () => ({ text: `Toronto news. ${QUOTE}. More text about the clinic.`, title: 'Acme Dental opens second Toronto clinic', retrievedAt: 1 })
-  assert.equal(await runJob(db, claimKeyedJob(db, id)!, { providers: prov, master, fetchPage: page, sourceHttp: http, judge: null, score: false }), 'done')
+  assert.equal(await runJob(db, claimKeyedJob(db, id)!, { providers: prov, master, fetchPage: page, newsHttp: http, judge: null, score: false }), 'done')
   const leads = listLeads(db, 'A', id) as { company: string; review_reason: string | null }[]
   assert.deepEqual(leads.map(l => [l.company, l.review_reason]), [['Acme Dental', null]])
   assert.equal(research, 0) // the paid provider web search was not needed
