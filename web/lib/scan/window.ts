@@ -27,15 +27,34 @@ export function parseWindowDays(text: string): number | null {
   return null
 }
 
+// Date-only, inclusive: the window covers the cutoff day itself, the same day recencyAnchor tells the model
+// ("on or after <cutoff>"). Comparing whole calendar days avoids the noon-vs-midnight mismatch Instinct found (#198).
+export const windowCutoff = (windowDays: number, now: Date = new Date()): string => new Date(now.getTime() - windowDays * 86_400_000).toISOString().slice(0, 10)
+
+// A real calendar date in YYYY-MM-DD form (2026-02-30 is not).
+const validDate = (d: string): boolean => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return false
+  const t = Date.parse(`${d}T00:00:00Z`)
+  return Number.isFinite(t) && new Date(t).toISOString().slice(0, 10) === d
+}
+
+// Where one event date sits against the window. Only "inside" is actionable for outreach; every other state is
+// research only. No window: everything is "inside" (the default 12-month freshness has its own checks).
+export type WindowStatus = 'inside' | 'stale' | 'undated' | 'invalid' | 'future'
+export function windowStatus(eventDate: string | null | undefined, windowDays: number | null | undefined, now: Date = new Date()): WindowStatus {
+  if (!windowDays) return 'inside'
+  if (!eventDate) return 'undated'
+  if (!validDate(eventDate)) return 'invalid'
+  if (eventDate > now.toISOString().slice(0, 10)) return 'future'
+  return eventDate < windowCutoff(windowDays, now) ? 'stale' : 'inside'
+}
+
 // Leads whose known event date is older than the window: moved to the review lane with a dated reason, never returned
-// as a scored lead. Undated leads are left as they are (the grader and the date label already say "undated").
+// as a scored lead. Undated, invalid and future dates stay listed here (the date label says so) but are held from
+// outreach by the hard window gate (outreach/currentness.ts), which no ordinary review can clear.
 export function splitByWindow<T extends { event_date?: string | null }>(leads: T[], windowDays: number | null | undefined, now: Date = new Date()): { inside: T[]; outside: T[] } {
   if (!windowDays) return { inside: leads, outside: [] }
-  const cutoff = now.getTime() - windowDays * 86_400_000
   const inside: T[] = []; const outside: T[] = []
-  for (const l of leads) {
-    const t = l.event_date && /^\d{4}-\d{2}-\d{2}$/.test(l.event_date) ? Date.parse(`${l.event_date}T00:00:00Z`) : NaN
-    if (Number.isFinite(t) && t < cutoff) outside.push(l); else inside.push(l)
-  }
+  for (const l of leads) (windowStatus(l.event_date, windowDays, now) === 'stale' ? outside : inside).push(l)
   return { inside, outside }
 }
