@@ -11,6 +11,7 @@ export interface Icp {
   where: string[]          // geographies, empty means anywhere
   signals: string[]        // public events that show buying intent right now
   exclude: string[]        // things to skip
+  window_days?: number     // the user's recency window ("past 90 days"), from the request text (lib/scan/window.ts)
   // Where the search runs. TinyFish defaults every search to US/English when neither is sent, so a Lisbon or Pune
   // request was searched as if it were American. ISO 3166-1 alpha-2 (PT) and ISO 639-1 (pt); absent means unknown.
   country?: string
@@ -36,7 +37,8 @@ export function normalizeIcp(raw: unknown): Icp | null {
   if (!summary) return null
   const country = typeof r.country === 'string' && /^[A-Za-z]{2}$/.test(r.country.trim()) ? r.country.trim().toUpperCase() : null
   const language = typeof r.language === 'string' && /^[A-Za-z]{2}$/.test(r.language.trim()) ? r.language.trim().toLowerCase() : null
-  return { summary, who: list(r.who, caps.who), industries: list(r.industries, caps.industries), sizes: list(r.sizes, caps.sizes), where: list(r.where, caps.where), signals: list(r.signals, caps.signals), exclude: list(r.exclude, caps.exclude), ...(country ? { country } : {}), ...(language ? { language } : {}) }
+  const win = typeof r.window_days === 'number' && Number.isInteger(r.window_days) && r.window_days >= 1 && r.window_days <= 365 ? r.window_days : null
+  return { summary, who: list(r.who, caps.who), industries: list(r.industries, caps.industries), sizes: list(r.sizes, caps.sizes), where: list(r.where, caps.where), signals: list(r.signals, caps.signals), exclude: list(r.exclude, caps.exclude), ...(country ? { country } : {}), ...(language ? { language } : {}), ...(win ? { window_days: win } : {}) }
 }
 
 export function icpPrompt(query: string, seller?: string): string {
