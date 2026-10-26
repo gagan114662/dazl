@@ -139,6 +139,19 @@ export function keepStatedFundingStage(query: string, icp: Icp): Icp {
     return t.length >= 3 && !touched(t) && mentionsWanted(t) ? [t] : []
   })
   const out: Icp = { ...icp, summary, who: list(icp.who), industries: list(icp.industries), sizes: list(icp.sizes), where: list(icp.where), signals: list(icp.signals), exclude: icp.exclude }
+  // OMITTED stage (Instinct #213 recheck): a profile that names no wrong stage but also drops the stated one ("London
+  // startups", "recent funding") would silently search every funding stage. The requested stage must survive somewhere the
+  // search reads; if it does not, the original request is the profile.
+  const searchText = [out.summary, ...out.signals, ...out.who, ...out.industries, ...out.sizes, ...out.where]
+  if (want.size > 0 && !searchText.some(mentionsWanted)) return fallback()
+  // An excluded stage must stay excluded: add it to the exclusions when the model left it out (mechanical, nothing invented).
+  const label = (st: Stage) => (st === 'preseed' ? 'pre-seed' : st === 'seed' ? 'seed' : `Series ${st.toUpperCase()}`)
+  const excludedKept = (st: Stage) => out.exclude.some(x => mentions(x).some(m => m.stage === st)) || [out.summary, ...out.signals].some(t => mentions(t).some(m => m.excluded && m.stage === st))
+  for (const st of notWant) {
+    if (excludedKept(st)) continue
+    if (out.exclude.length >= caps.exclude) return fallback()
+    out.exclude = [...out.exclude, label(st)]
+  }
   return out
 }
 

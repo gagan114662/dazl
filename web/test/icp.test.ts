@@ -214,3 +214,28 @@ test('funding guard edge cases: hyphenated "series-a", "seed or later" requests,
   const pre = keepStatedFundingStage('London startups that raised pre-seed funding', { ...base, summary: 'London startups with seed funding' })
   assert.equal(pre.summary, 'London startups that raised pre-seed funding', 'seed is not pre-seed: fall back to the request')
 })
+
+// Instinct #213 recheck: a profile that OMITS the stated stage (no wrong stage either) must not search every stage.
+test('omitted stage: a seed request whose profile says only "London startups" / "recent funding" falls back to the request', () => {
+  const r = keepStatedFundingStage(Q_SEED, { ...base, summary: 'London startups', signals: ['recent funding', 'hiring sales reps'], country: 'GB' })
+  assert.equal(r.summary, Q_SEED); assert.deepEqual(r.signals, []); assert.equal(r.country, 'GB')
+  // the stage survives in a signal (not the summary): the search still reads it, nothing is replaced
+  const kept = { ...base, summary: 'London startups hiring sales', signals: ['raised a seed round', 'hiring sales reps'] }
+  assert.deepEqual(keepStatedFundingStage(Q_SEED, kept), kept)
+  // summary with the wanted stage is untouched
+  const ok = { ...base, summary: 'London seed-stage startups hiring sales', signals: ['recent funding'] }
+  assert.deepEqual(keepStatedFundingStage(Q_SEED, ok), ok)
+})
+test('omitted exclusion: "exclude Series A" is added to the exclusions when the model dropped it; wrong stage still falls back', () => {
+  const q = 'Find seed funded companies in London, exclude Series A or later'
+  const dropped = keepStatedFundingStage(q, { ...base, summary: 'Seed-funded London companies', signals: ['raised seed funding'], exclude: ['agencies'] })
+  assert.deepEqual(dropped.exclude, ['agencies', 'Series A']); assert.equal(dropped.summary, 'Seed-funded London companies')
+  const full = { ...base, exclude: ['a', 'b', 'c', 'd', 'e', 'f'], summary: 'Seed-funded London companies', signals: ['raised seed funding'] }
+  assert.equal(keepStatedFundingStage(q, full).summary, q, 'no room to keep the exclusion: original request')
+  // exclusion-only request, nothing positive stated: omitted exclusion is added, profile otherwise kept
+  const only = keepStatedFundingStage('London companies that raised funding, not Series A', { ...base, summary: 'London companies that raised funding' })
+  assert.deepEqual(only.exclude, ['Series A']); assert.equal(only.summary, 'London companies that raised funding')
+  // stage mentioned only as excluded in the summary counts as kept
+  const sum = { ...base, summary: 'Seed-funded London companies, excluding Series A', signals: ['raised seed funding'] }
+  assert.deepEqual(keepStatedFundingStage(q, sum), sum)
+})
