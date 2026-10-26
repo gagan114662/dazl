@@ -96,6 +96,8 @@ function addColumns(db: Database.Database): void {
   add('leads', 'human_confirmed_at', 'INTEGER') // the user checked this needs-review lead against its source and chose to use it
   add('leads', 'human_confirmed_from', 'TEXT') // the review_reason it was confirmed out of - provenance, never overwritten
   add('leads', 'company_domain', 'TEXT CHECK (company_domain IS NULL OR length(company_domain) <= 253)')
+  add('leads', 'quarantined_at', 'INTEGER') // the user quarantined this lead: kept with its evidence, never drafted, sent or exported (scan/quarantine.ts)
+  add('leads', 'quarantine_reason', 'TEXT CHECK (quarantine_reason IS NULL OR length(quarantine_reason) <= 300)')
   add('scan_jobs', 'candidates', 'INTEGER')
   add('scan_jobs', 'needs_review', 'INTEGER')
   add('scan_jobs', 'dropped', 'INTEGER')
@@ -244,7 +246,7 @@ export function listLeads(db: Database.Database, userId: string, jobId: string, 
     .prepare(
       `SELECT l.id, l.scan_job_id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.created_at,
 l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
-l.human_confirmed_at, l.human_confirmed_from, l.source_kind,
+l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l.quarantine_reason,
          l.fit, l.intent, l.action, l.why, l.signals, l.icp_match, l.watch_new, l.seen_before, l.stage
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
        WHERE j.id = ? AND j.user_id = ? ${includeHidden ? '' : 'AND (l.fit IS NULL OR l.fit > 1)'}
@@ -327,7 +329,7 @@ export function exportLeads(db: Database.Database, userId: string, jobId?: strin
               l.fit, l.intent, l.action, l.score, l.confidence, l.event_date, l.date_status, l.review_reason,
               l.human_confirmed_from, l.evidence_excerpt, l.created_at
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
-       WHERE j.user_id = ? ${jobId ? 'AND j.id = ?' : ''} AND (l.fit IS NULL OR l.fit > 1)
+       WHERE j.user_id = ? ${jobId ? 'AND j.id = ?' : ''} AND (l.fit IS NULL OR l.fit > 1) AND l.quarantined_at IS NULL
        ${includeFixtures ? '' : "AND (l.source_kind IS NULL OR l.source_kind != 'test')"}
        ORDER BY l.created_at DESC LIMIT ?`,
     )

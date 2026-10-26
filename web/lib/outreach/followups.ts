@@ -72,12 +72,14 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
     // The identity check and the claim are one write transaction (the lock the review action takes). A held thread is stopped for good,
     // like a withdrawn lead confirmation: re-confirming the website does not restart it.
     // An unreadable review state is a retryable fault: skip this round without stopping the thread.
-    const claim = db.transaction((): { changes: number } | 'required' | 'unreadable' => {
+    const claim = db.transaction((): { changes: number } | 'required' | 'unreadable' | 'quarantined' => {
       const st = domainReviewStatus(db, tenantId, t.lead_id, t.to_email)
       if (st !== 'ok') return st
       return db.prepare("INSERT OR IGNORE INTO followup_messages (tenant_id, thread_id, step, status, created_at) VALUES (?, ?, ?, 'sending', ?)").run(tenantId, t.thread_id, t.followups_sent, now)
     }).immediate()
     if (claim === 'unreadable') { skip('review_unreadable'); continue }
+    // A quarantined lead stops its thread for good, like an unconfirmed website (releasing it does not restart it).
+    if (claim === 'quarantined') { db.prepare("UPDATE followup_threads SET stopped = 'lead_quarantined' WHERE tenant_id = ? AND thread_id = ? AND stopped IS NULL").run(tenantId, t.thread_id); skip('lead_quarantined'); continue }
     if (claim === 'required') { db.prepare("UPDATE followup_threads SET stopped = 'domain_unconfirmed' WHERE tenant_id = ? AND thread_id = ? AND stopped IS NULL").run(tenantId, t.thread_id); skip('domain_unconfirmed'); continue }
     if (claim.changes !== 1) { skip('already claimed'); continue }
     if (accountSendCount(db,tenantId,now) > Math.min(ACCOUNT_SEND_CAP,cur.daily_cap)) { db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId,t.thread_id,t.followups_sent); return stop('daily_cap') }
@@ -112,8 +114,8 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
       const stAfter = domainReviewStatus(db,tenantId,t.lead_id,t.to_email)
       if (stAfter !== 'ok') {
         db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId,t.thread_id,t.followups_sent)
-        if (stAfter === 'required') db.prepare("UPDATE followup_threads SET stopped = 'domain_unconfirmed' WHERE tenant_id = ? AND thread_id = ? AND stopped IS NULL").run(tenantId, t.thread_id)
-        skip(stAfter === 'required' ? 'domain_unconfirmed' : 'review_unreadable'); continue
+        if (stAfter === 'required' || stAfter === 'quarantined') db.prepare("UPDATE followup_threads SET stopped = ? WHERE tenant_id = ? AND thread_id = ? AND stopped IS NULL").run(stAfter === 'quarantined' ? 'lead_quarantined' : 'domain_unconfirmed', tenantId, t.thread_id)
+        skip(stAfter === 'required' ? 'domain_unconfirmed' : stAfter === 'quarantined' ? 'lead_quarantined' : 'review_unreadable'); continue
       }
       const r = await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, t.thread_id)
       db.prepare("UPDATE followup_messages SET status = 'sent', gmail_id = ? WHERE tenant_id = ? AND thread_id = ? AND step = ?").run(r.id, tenantId, t.thread_id, t.followups_sent)
