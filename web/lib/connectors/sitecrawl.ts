@@ -229,7 +229,11 @@ export function extractContacts(html: string, pageUrl: string, site: string): Fo
 //    (trade and service words such as "Roof Repair" do; surnames and first names almost never do) or is a link label;
 //  - JSON-LD Person counts only under employee/founder/member of a node typed as an organisation/business, never inside review/author/comment nodes;
 //  - a blockquote/cite/q or testimonial-marked element that never closes makes the whole page unjudged (fail closed).
-const T = '(?:founder|co-?founder|owner|co-?owner|ceo|president|principal|proprietor|managing director|general manager|director|managing partner|partner|practice manager|office manager|broker|dentist|doctor)'
+// B2B decision-maker titles join the owner-style ones: the person who buys a sales/ops/engineering tool is rarely "owner". Each
+// addition is a WHOLE title with no free text after it ("Director, Other Corp" still fails): C-suite, "Chief X Officer", and
+// "VP/Head/Director of <1-2 words>". Names still pass every name-shape and prose check below, so a wider title list admits no new kind of name.
+const EXEC = 'c[a-z]o|chief [a-z]+ officer|(?:vp|svp|evp|vice president|head|director) of [a-z]+(?: (?:&|and) [a-z]+)?|(?:vp|svp|evp|vice president) [a-z]+'
+const T = `(?:founder|co-?founder|owner|co-?owner|ceo|president|principal|proprietor|managing director|general manager|director|managing partner|partner|practice manager|office manager|broker|dentist|doctor|${EXEC})`
 const TITLE_FULL = new RegExp(`^${T}(?: (?:&|and) ${T})?$`, 'i')
 const PEOPLE_PAGE = /(about|team|leadership|people|staff|our-story|who-we-are|meet|contact|company|owner|doctor|dentist)/i
 const NAME_LINE = /^(?:(?:Dr|Mr|Ms|Mrs)\.?\s+)?[A-Z][a-z'\u2019-]{1,20}(?:\s+[A-Z]\.?)?\s+[A-Z][A-Za-z'\u2019-]{2,24}$/ // both names 3+ letters: two-letter surnames (Li, Ng) are skipped on purpose, "Us" in "Contact Us" is not a surname
@@ -312,12 +316,23 @@ export function extractPeople(html: string, pageUrl: string): Found[] {
     if (same) add(same[1], same[2])
     if (i + 1 < lines.length && lines[i].length < 45 && lines[i + 1].length < 45) add(lines[i], lines[i + 1])
   }
-  return [...found.values()].slice(0, 3)
+  return [...found.values()].sort(bySeniority).slice(0, 3)
 }
 
-const PAGE_HINT = /(contact|about|impressum|kontakt|contacto|contato|nous-contacter|contactez|chi-siamo|company|team|reach)/i
+// Which listed person to keep when a page lists many: whoever can sign off on a purchase first. Pure ordering of what
+// extractPeople already accepted; it never adds or invents a person. Ties keep page order (stable sort).
+export function seniority(title: string): number {
+  const t = title.toLowerCase()
+  if (/\b(founder|owner|proprietor|ceo|president|principal|managing (?:director|partner)|chief executive)\b/.test(t)) return 4
+  if (/\b(c[a-z]o|chief|vp|svp|evp|vice president|head|general manager)\b/.test(t)) return 3
+  if (/\b(director|partner|broker)\b/.test(t)) return 2
+  return 1
+}
+export const bySeniority = (a: Found, b: Found) => seniority(b.value.slice(b.value.indexOf(', ') + 2)) - seniority(a.value.slice(a.value.indexOf(', ') + 2))
+
+const PAGE_HINT = /(contact|about|impressum|kontakt|contacto|contato|nous-contacter|contactez|chi-siamo|company|team|leadership|management|people|reach)/i
 export function contactPaths(homeHtml: string, home: URL): string[] {
-  const set = new Set<string>(['/contact', '/contact-us', '/about'])
+  const set = new Set<string>(['/contact', '/contact-us', '/about', '/team', '/leadership'])
   for (const m of homeHtml.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"'#]+)["']/gi)) {
     let u: URL; try { u = new URL(m[1].replace(/&amp;/g, '&'), home) } catch { continue }
     if (u.protocol !== 'https:' || u.hostname.replace(/^www\./, '') !== home.hostname.replace(/^www\./, '')) continue
@@ -380,7 +395,7 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
   }
   // Addresses and phones keep their cap; listed people ride separately so they never crowd an address out, and never turn 'none_published' into 'ok'.
   const all = [...found.values()], contacts = all.filter(f => f.kind !== 'person'), people = all.filter(f => f.kind === 'person')
-  return { found: [...contacts.slice(0, 6), ...people.slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeNorm }
+  return { found: [...contacts.slice(0, 6), ...people.sort(bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeNorm }
 }
 
 // Runs for one finished scan. Never throws, never touches the lead row, one audit row per site.

@@ -1,0 +1,8 @@
+[
+  { "id": "ohio-payroll", "query": "Find Ohio companies with 10 to 100 employees that recently posted a payroll, HR or office manager job", "seller": "Outsourced payroll and HR service for small businesses" },
+  { "id": "us-seed-sdr", "query": "US B2B software startups that raised a seed or Series A round in the last 3 months and are hiring their first sales reps", "seller": "Sales recruiting agency for early-stage startups" },
+  { "id": "toronto-dental", "query": "Dental clinics in Toronto opening a new location or expanding", "seller": "Dental clinic fit-out and renovation contractor" },
+  { "id": "lisbon-sales", "query": "Companies in Lisbon hiring a head of sales or sales manager", "seller": "Sales training and coaching for B2B teams" },
+  { "id": "pune-schools", "query": "Schools and coaching institutes in Pune hiring teachers or expanding", "seller": "School management software" },
+  { "id": "gurugram-offices", "query": "Companies in Gurugram expanding their team or opening a new office", "seller": "Grade A commercial office space for lease or sale in Gurugram" }
+]
