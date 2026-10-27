@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import type { Db } from './db/client.ts'
 
 // Plan limits are by scan count only (the tenant brings their own LLM key).
 export type PlanId = 'free' | 'pro'
@@ -18,13 +19,23 @@ export function migratePlans(db: Database.Database): void {
   `)
 }
 
+// Sync reader for callers not yet on the Db layer (scan, monitors, watch). Billing uses readPlan.
 export function getPlan(db: Database.Database, tenantId: string): PlanId {
   const r = db.prepare('SELECT plan FROM tenant_plans WHERE tenant_id = ?').get(tenantId) as { plan: PlanId } | undefined
   return r?.plan ?? 'free'
 }
 
+export async function readPlan(db: Db, tenantId: string): Promise<PlanId> {
+  return (await db.get<{ plan: PlanId }>('SELECT plan FROM tenant_plans WHERE tenant_id = ?', [tenantId]))?.plan ?? 'free'
+}
+
+// Sync writer kept for callers and test fixtures not yet on the Db layer; billing uses writePlan.
 export function setPlan(db: Database.Database, tenantId: string, plan: PlanId): void {
   db.prepare('INSERT INTO tenant_plans (tenant_id, plan) VALUES (?, ?) ON CONFLICT(tenant_id) DO UPDATE SET plan = excluded.plan').run(tenantId, plan)
+}
+
+export async function writePlan(db: Db, tenantId: string, plan: PlanId): Promise<void> {
+  await db.run('INSERT INTO tenant_plans (tenant_id, plan) VALUES (?, ?) ON CONFLICT (tenant_id) DO UPDATE SET plan = excluded.plan', [tenantId, plan])
 }
 
 export function monthStartS(now = new Date()): number {

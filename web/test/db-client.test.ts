@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { sqliteDb, pgDb, toPgPlaceholders, parseInt8 } from '../lib/db/client.ts'
+import { sqliteDb, pgDb, toPgPlaceholders, parseInt8, RawSqliteDuringTx } from '../lib/db/client.ts'
 import type { Param } from '../lib/db/client.ts'
 import type { Db } from '../lib/db/client.ts'
 import { PG_URL, pgSkip, freshSchema } from './helpers/pg-test.ts'
@@ -160,4 +160,37 @@ test('sqlite adapter: a statement outside a running transaction waits for it ins
   await outside
   assert.deepEqual(await db.all('SELECT v FROM k'), [{ v: 2 }])
   await db.close()
+})
+
+test('sqlite: one adapter per connection', () => {
+  const raw = new Database(':memory:')
+  assert.equal(sqliteDb(raw), sqliteDb(raw))
+  raw.close()
+})
+
+// Mixed mode: unported modules use the raw handle, ported ones the Db over the same connection.
+test('sqlite: raw statements on the shared connection fail while a Db transaction is open, and never join it', async () => {
+  const raw = new Database(':memory:')
+  const db = sqliteDb(raw)
+  raw.exec('CREATE TABLE m (v INTEGER)')
+  const prepared = raw.prepare('INSERT INTO m (v) VALUES (?)') // prepared before the transaction
+  const seen: unknown[] = []
+  await assert.rejects(db.tx(async t => {
+    await t.run('INSERT INTO m (v) VALUES (1)')
+    for (const f of [() => raw.prepare('INSERT INTO m (v) VALUES (2)').run(), () => prepared.run(3), () => raw.exec('INSERT INTO m (v) VALUES (4)'),
+      () => raw.prepare('SELECT v FROM m').all(), () => [...raw.prepare('SELECT v FROM m').iterate()]]) {
+      try { f() } catch (e) { seen.push(e) }
+    }
+    throw new Error('roll back')
+  }), /roll back/)
+  assert.equal(seen.length, 5)
+  assert.ok(seen.every(e => e instanceof RawSqliteDuringTx))
+  // after the transaction raw access works again, and none of the raw writes landed
+  prepared.run(5)
+  assert.deepEqual(raw.prepare('SELECT v FROM m').all(), [{ v: 5 }])
+  // a different connection is not affected by this one's transaction
+  const other = new Database(':memory:')
+  await db.tx(async () => { other.exec('CREATE TABLE o (v INTEGER)'); other.prepare('INSERT INTO o VALUES (1)').run() })
+  assert.deepEqual(other.prepare('SELECT v FROM o').all(), [{ v: 1 }])
+  await db.close(); other.close()
 })

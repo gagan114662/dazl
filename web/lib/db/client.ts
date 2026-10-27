@@ -158,17 +158,56 @@ class StatementFailedInTx extends Error {
 
 // ---- SQLite ----
 
+// While SQLite is the store, ported modules (Db) and unported ones (raw better-sqlite3) share one connection. A raw
+// statement that ran while a Db transaction is open would silently join it, and be lost if it rolls back. So while a
+// Db transaction is open on a handle, every raw statement or exec on that handle throws instead. Statements the adapter
+// itself prepares are exempt. Tx callbacks that only await Db calls never yield to the event loop on SQLite (each call
+// resolves as a microtask), so other requests cannot run inside them; the guard turns any exception to that into a
+// loud error rather than a cross-transaction write.
+export class RawSqliteDuringTx extends Error {
+  constructor() { super('raw SQLite access while a Db transaction is open on this connection; use the Db passed to tx, or move the work outside the transaction') }
+}
+const txOpen = new WeakSet<Database.Database>()
+const adapterStatements = new WeakSet<object>()
+let rawExec: ((this: Database.Database, sql: string) => Database.Database) | null = null
+function installRawGuard(handle: Database.Database): void {
+  if (rawExec) return
+  const S = Object.getPrototypeOf(handle.prepare('SELECT 1')) as Record<string, (...a: unknown[]) => unknown>
+  for (const m of ['run', 'get', 'all', 'iterate']) {
+    const orig = S[m]
+    S[m] = function (this: { database: Database.Database }, ...a: unknown[]) {
+      if (txOpen.has(this.database) && !adapterStatements.has(this)) throw new RawSqliteDuringTx()
+      return orig.apply(this, a)
+    }
+  }
+  const D = Object.getPrototypeOf(handle) as { exec: (this: Database.Database, sql: string) => Database.Database }
+  const exec = D.exec
+  rawExec = exec
+  D.exec = function (this: Database.Database, sql: string) {
+    if (txOpen.has(this)) throw new RawSqliteDuringTx()
+    return exec.call(this, sql)
+  }
+}
+
+// One adapter per handle, so every Db over a connection shares the same gate.
+const adapters = new WeakMap<Database.Database, Db>()
+
 // better-sqlite3 is synchronous and has one connection, so an async transaction must hold the connection for its whole
 // life: statements from outside the transaction wait on `gate` until it ends instead of landing inside it.
 export function sqliteDb(handle: Database.Database): Db {
+  const existing = adapters.get(handle)
+  if (existing) return existing
+  installRawGuard(handle)
+  const exec = (sql: string) => rawExec!.call(handle, sql)
+  const prep = (sql: string) => { const st = handle.prepare(sql); adapterStatements.add(st); return st }
   let gate: Promise<void> = Promise.resolve()
   const ops: Ops = {
-    all: async <T>(sql: string, params: Param[] = []) => handle.prepare(sql).all(...checkParams(params)) as T[],
-    get: async <T>(sql: string, params: Param[] = []) => handle.prepare(sql).get(...checkParams(params)) as T | undefined,
-    run: async (sql: string, params: Param[] = []) => ({ changes: handle.prepare(sql).run(...checkParams(params)).changes }),
+    all: async <T>(sql: string, params: Param[] = []) => prep(sql).all(...checkParams(params)) as T[],
+    get: async <T>(sql: string, params: Param[] = []) => prep(sql).get(...checkParams(params)) as T | undefined,
+    run: async (sql: string, params: Param[] = []) => ({ changes: prep(sql).run(...checkParams(params)).changes }),
   }
   const after = async <T>(f: () => Promise<T>): Promise<T> => { await gate; return f() }
-  return {
+  const db: Db = {
     kind: 'sqlite',
     all: (s, p) => after(() => ops.all(s, p)),
     get: (s, p) => after(() => ops.get(s, p)),
@@ -179,21 +218,25 @@ export function sqliteDb(handle: Database.Database): Db {
       gate = new Promise<void>(r => { release = r })
       await prev
       try {
-        handle.exec('BEGIN IMMEDIATE')
+        exec('BEGIN IMMEDIATE')
+        txOpen.add(handle)
         const h = txHandle('sqlite', ops)
         let v
-        try { v = await fn(h.db) } catch (e) { await h.end(); handle.exec('ROLLBACK'); throw e }
+        try { v = await fn(h.db) } catch (e) { await h.end(); exec('ROLLBACK'); throw e }
         const failed = await h.end()
-        if (failed) { handle.exec('ROLLBACK'); throw new StatementFailedInTx(failed) }
-        handle.exec('COMMIT')
+        if (failed) { exec('ROLLBACK'); throw new StatementFailedInTx(failed) }
+        exec('COMMIT')
         return v
       } finally {
-        if (handle.inTransaction) handle.exec('ROLLBACK')
+        txOpen.delete(handle)
+        if (handle.inTransaction) exec('ROLLBACK')
         release()
       }
     },
-    close: async () => { await gate; handle.close() },
+    close: async () => { await gate; adapters.delete(handle); handle.close() },
   }
+  adapters.set(handle, db)
+  return db
 }
 
 // ---- Postgres ----
@@ -270,8 +313,9 @@ export function getDb(): Promise<Db> {
   shared ??= (async () => {
     const url = process.env.DATABASE_URL
     if (url) return pgDb({ connectionString: url })
-    const { getAuthDb } = await import('../auth-db.ts')
-    return sqliteDb(getAuthDb())
+    // getScanDb runs every module's sqlite migrate*() once, so ported modules find their tables.
+    const { getScanDb } = await import('../scan/service.ts')
+    return sqliteDb(getScanDb())
   })()
   return shared
 }

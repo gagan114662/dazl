@@ -1,8 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash, generateKeyPairSync, createSign } from 'node:crypto'
-import Database from 'better-sqlite3'
-import { exchangeCode, migrateOauth, parseCookie, resolveUser, startAuth, verifyIdToken } from '../lib/auth-google.ts'
+import { exchangeCode, parseCookie, resolveUser, startAuth, verifyIdToken } from '../lib/auth-google.ts'
+import { bothEngines } from './helpers/engines.ts'
 
 const CID = 'cid.apps.googleusercontent.com'
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
@@ -64,34 +64,32 @@ test('exchangeCode sends the verifier and secret and returns only the id_token',
   assert.equal(await exchangeCode('C', { clientId: CID, clientSecret: 'S', redirectUri: 'R', verifier: 'V', fetchImpl: bad }), null)
 })
 
-function db() {
-  const d = new Database(':memory:')
-  d.exec('CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT, business_name TEXT, password_hash TEXT NOT NULL, salt TEXT NOT NULL)')
-  migrateOauth(d)
-  return d
-}
-
-test('new Google identity creates an account; same identity signs in again; email changes do not matter', () => {
-  const d = db()
-  const a = resolveUser(d, { sub: '1', email: 'a@x.com', name: 'A' })
+bothEngines('new Google identity creates an account; same identity signs in again; email changes do not matter', async ({ db }) => {
+  const a = await resolveUser(db, { sub: '1', email: 'a@x.com', name: 'A' })
   assert.ok('created' in a && a.created)
-  const again = resolveUser(d, { sub: '1', email: 'renamed@x.com', name: 'A' })
+  const again = await resolveUser(db, { sub: '1', email: 'renamed@x.com', name: 'A' })
   assert.deepEqual(again, { user_id: (a as { user_id: string }).user_id, created: false })
-  assert.equal((d.prepare('SELECT count(*) n FROM users').get() as { n: number }).n, 1)
+  assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM users'))!.n), 1)
 })
 
-test('an existing email account is never linked to a Google identity', () => {
-  const d = db()
-  d.prepare("INSERT INTO users (id, email, password_hash, salt) VALUES ('u1','a@x.com','h','s')").run()
-  assert.deepEqual(resolveUser(d, { sub: '9', email: 'a@x.com', name: '' }), { error: 'email_exists' })
-  assert.equal((d.prepare('SELECT count(*) n FROM oauth_identities').get() as { n: number }).n, 0)
+bothEngines('an existing email account is never linked to a Google identity', async ({ db }) => {
+  await db.run("INSERT INTO users (id, email, password_hash, salt) VALUES ('u1','a@x.com','h','s')")
+  assert.deepEqual(await resolveUser(db, { sub: '9', email: 'a@x.com', name: '' }), { error: 'email_exists' })
+  assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM oauth_identities'))!.n), 0)
 })
 
-test('Google accounts get a random unusable password hash', () => {
-  const d = db()
-  resolveUser(d, { sub: '1', email: 'a@x.com', name: '' })
-  resolveUser(d, { sub: '2', email: 'b@x.com', name: '' })
-  const h = d.prepare('SELECT password_hash FROM users').all() as { password_hash: string }[]
+bothEngines('Google accounts get a random unusable password hash', async ({ db }) => {
+  await resolveUser(db, { sub: '1', email: 'a@x.com', name: '' })
+  await resolveUser(db, { sub: '2', email: 'b@x.com', name: '' })
+  const h = await db.all<{ password_hash: string }>('SELECT password_hash FROM users')
   assert.notEqual(h[0].password_hash, h[1].password_hash)
   assert.ok(h[0].password_hash.length >= 64)
 })
+
+bothEngines('the same new Google identity resolving concurrently creates one account', async ({ db }) => {
+  const rs = await Promise.all([1, 2, 3, 4, 5].map(() => resolveUser(db, { sub: '7', email: 'c@x.com', name: '' })))
+  const ids = new Set(rs.map(r => (r as { user_id: string }).user_id))
+  assert.equal(ids.size, 1)
+  assert.equal(rs.filter(r => 'created' in r && r.created).length, 1)
+  assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM users'))!.n), 1)
+}, { pgMax: 5 })
