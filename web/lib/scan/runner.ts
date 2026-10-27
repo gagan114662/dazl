@@ -810,7 +810,11 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     if (ledger.has(`search:${vendor}`)) { ledger.record(`search:${vendor}`, leads.length ? 'ok' : 'empty'); ledger.candidates(`search:${vendor}`, leads) }
     // Optional per-scan sources: public evidence is collected without any key or DB access, then the user's own model
     // turns it into candidates. They go through the same verifier as web-search leads.
-    const sel = job.query && job.sources ? normalizeSources(safeJson(job.sources)) : null
+    // Hiring requests also read the public ATS boards (Greenhouse, Lever, Ashby JSON: dated, readable postings that name the company),
+    // using board links this scan's own searches returned; free, no key. A job's explicit sources win. The postings still go through
+    // the same extraction and verifier as every other candidate.
+    const autoBoards = !!(job.query && !job.sources && icpForSources && directQueries(job.query, icpForSources.signals, icpForSources.where).length > 0)
+    const sel = job.query && job.sources ? normalizeSources(safeJson(job.sources)) : autoBoards ? { adapters: ['jobboards'], feeds: [] as string[], pages: [] as string[] } : null
     const walledLeads: LeadDraft[] = []
     const selfDescribedLeads: LeadDraft[] = []
     let complaints: ComplaintItem[] = []
