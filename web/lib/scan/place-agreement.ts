@@ -16,8 +16,7 @@ const has = (hay: string, term: string) => new RegExp(`(?<![a-z0-9])${esc(term)}
 const NYC_PLACES = ['new york', 'manhattan', 'brooklyn', 'queens', 'bronx', 'the bronx', 'staten island', 'harlem', 'astoria', 'flushing', 'long island city', 'jamaica', 'williamsburg', 'soho', 'tribeca', 'midtown', 'upper east side', 'upper west side', 'east village', 'west village', 'chelsea', 'forest hills', 'bayside', 'ridgewood', 'sunnyside', 'woodside', 'jackson heights', 'park slope', 'bushwick', 'greenpoint', 'financial district', 'murray hill', 'gramercy', 'kips bay', 'washington heights', 'inwood', 'riverdale', 'rego park', 'elmhurst', 'corona', 'fresh meadows', 'whitestone', 'cobble hill', 'dumbo', 'fort greene', 'bay ridge', 'sunset park', 'crown heights', 'bed stuy', 'bedford stuyvesant', 'red hook', 'carroll gardens', 'boerum hill']
 const NYC_TERMS = ['new york city', 'nyc', 'new york ny', 'new york, ny', 'new york, new york', 'new york new york', 'manhattan', 'brooklyn', 'queens', 'bronx', 'staten island']
 const NYC_ASK = /\b(?:new york city|nyc|manhattan|brooklyn|queens|bronx|staten island|new york,\s*(?:ny|new york))\b/i
-// A New York City street address: borough/city + state + an NYC ZIP (100xx-104xx Manhattan/Bronx/SI, 110xx-116xx Queens/Brooklyn).
-const NYC_ADDRESS = /\b(?:new york|manhattan|brooklyn|queens|bronx|staten island|[a-z ]{3,25}),?\s*(?:ny|new york)\s+(?:10[0-4]\d{2}|11[0-6]\d{2})\b/i
+const NYC_STREET = /\b\d{1,5}\s+[\p{L}0-9'\- ]{2,40}?\s(?:st|street|ave|avenue|broadway|rd|road|blvd|boulevard|pl|place|plaza|sq|square|dr|drive|way|ln|lane|pkwy|parkway)\b\.?(?:,?\s*(?:fl(?:oor)?|suite|ste|apt|unit)\.?\s*\w+)?,\s*(?:new york|manhattan|brooklyn|queens|the bronx|bronx|staten island|long island city|astoria|flushing)\.?,?\s*(?:ny|new york)\s+(?:10[0-4]\d{2}|11[0-6]\d{2})\b/iu
 function otherNyCity(text: string): string | null {
   for (const m of text.matchAll(/\b([A-Z][\p{L}'.-]+(?: [A-Z][\p{L}'.-]+){0,2}),\s*(?:NY\b|New York\b)/gu)) {
     const city = clean(m[1]).replace(/\.$/, '')
@@ -37,7 +36,7 @@ function otherUsState(text: string, ours: string[]): string | null {
 function nycVerdict(text: string): PlaceVerdict {
   const t = clean(text); const named = NYC_TERMS.some(x => has(t, x))
   const other = otherNyCity(text) ?? otherUsState(text, ['NY'])
-  if (NYC_ADDRESS.test(text) && /\b(?:new york|manhattan|brooklyn|queens|bronx|staten island),?\s*(?:ny|new york)\s+\d{5}\b/i.test(text)) return 'agrees' // the company's own NYC address
+  if (NYC_STREET.test(text)) return 'agrees' // a street address in the city (number + street + NYC ZIP); a bare "New York, NY 10001" in a news line does not bind the company
   if (other) return 'mismatch' // another town / state is named and no NYC address binds the company to the city
   return named ? 'agrees' : 'unconfirmed'
 }
@@ -46,15 +45,13 @@ function nycVerdict(text: string): PlaceVerdict {
 const LONDON_TERMS = ['london', 'greater london']
 const UK_CITIES = ['manchester', 'birmingham', 'leeds', 'glasgow', 'edinburgh', 'liverpool', 'bristol', 'sheffield', 'newcastle', 'nottingham', 'cardiff', 'belfast', 'leicester', 'oxford', 'cambridge', 'brighton', 'southampton', 'reading', 'york', 'bath', 'aberdeen', 'dundee', 'swansea', 'coventry', 'norwich', 'exeter', 'milton keynes', 'plymouth', 'derby', 'hull']
 const LONDON_ADDRESS = /\blondon\s+(?:(?:EC|WC|SE|SW|NW|N|E|W)\d{1,2}[A-Z]?(?:\s*\d[A-Z]{2})?|[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2})\b/i
-const LONDON_UK = /\blondon,?\s*(?:uk|u\.k\.|united kingdom|england|gb)\b|\bgreater london\b/i
-const NOT_UK_LONDON = /\blondon,?\s*(?:ontario|on|canada|kentucky|ky|ohio|oh|ct|connecticut)\b/i
+const NOT_UK_LONDON = /\blondon,?\s*(?:ontario|on|canada|kentucky|ky|ohio|oh|ct|connecticut|south africa|eastern cape|za)\b|\blondon\s*\(\s*(?:ontario|canada|kentucky|ohio|south africa)/i
 function londonVerdict(text: string): PlaceVerdict {
   const t = clean(text)
-  const bound = LONDON_ADDRESS.test(text) || LONDON_UK.test(text)
   // Another UK city named as a place ("Manchester, England", "Leeds, UK") or a UK city on an address line.
   let other = UK_CITIES.find(c => new RegExp(`(?<![a-z0-9])${esc(c)},?\\s*(?:england|scotland|wales|northern ireland|uk|u\\.k\\.|united kingdom)(?![a-z0-9])`).test(t)) ?? null
   if (!other) for (const m of text.matchAll(/\b([A-Z][\p{L}'.-]+(?: [A-Z][\p{L}'.-]+){0,2}),\s*(?:England|Scotland|Wales|Northern Ireland|UK|U\.K\.|United Kingdom)\b/gu)) if (clean(m[1]) !== 'london') { other = m[1]; break }
-  if (NOT_UK_LONDON.test(text) && !bound) return 'mismatch' // London, Ontario is not London, UK, whatever else the page says about the UK
+  if (NOT_UK_LONDON.test(text) && !LONDON_ADDRESS.test(text)) return 'mismatch' // London, Ontario / East London, South Africa is not London, UK; an unrelated "London, UK" or UK news line does not bind the company, only a London postcode address does
   if (other && !LONDON_ADDRESS.test(text)) return 'mismatch'
   if (LONDON_TERMS.some(x => has(t, x))) return 'agrees'
   return 'unconfirmed'

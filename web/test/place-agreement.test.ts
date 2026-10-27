@@ -76,3 +76,15 @@ test('right city still agrees: London postcode / "London, UK" address and a New 
   assert.equal(placeAgreement('Acme Ltd, 1 Old Street, London EC1V 9HX. Second office: Leeds, UK', LON), 'agrees')
   assert.equal(placeAgreement('Smile Studio, 57 W 57th St, New York, NY 10019. Second office in Albany, NY', ['New York City']), 'agrees', 'the company\'s own NYC address binds it')
 })
+
+test('Instinct c3c505e cases: the company is bound to the city by its own text, not by an unrelated mention elsewhere', () => {
+  const LON = ['London, UK']
+  assert.notEqual(placeAgreement('Dent Blanche, East London, South Africa. Dental practice owner.', LON), 'agrees')
+  assert.equal(placeAgreement('Dent Blanche, East London, South Africa. Dental practice owner.', LON), 'mismatch')
+  assert.equal(placeAgreement('Dent Blanche in London, Ontario. News from London, UK.', LON), 'mismatch')
+  assert.equal(placeAgreement('Dental Studio based in Albany, NY. News: New York, NY 10001.', ['NYC']), 'mismatch')
+  // controls: a real street / postcode address of the company still binds it, even beside another office
+  assert.equal(placeAgreement('Dent Blanche in London, Ontario. Our UK office: 1 Old Street, London EC1V 9HX.', LON), 'agrees')
+  assert.equal(placeAgreement('Dental Studio, Albany, NY. Flagship: 57 W 57th St, New York, NY 10019.', ['NYC']), 'agrees')
+  assert.equal(placeAgreement('Acme Ltd, London, UK', LON), 'agrees')
+})
