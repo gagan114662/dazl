@@ -102,7 +102,7 @@ export async function tryLease(db: Db, name: string, o: LeaseOptions, now?: numb
 // already inside one). Statements that do not write (better-sqlite3's `readonly`) pass through unchanged.
 // No path from the view leads back to the raw objects: every method whose result is the raw statement or the raw
 // handle (fluent setters like bind/pluck/raw/expand/safeIntegers, statement.database, the handle's own fluent
-// returns) gives back the fenced wrapper instead, and a pragma that sets a value is fenced like a write.
+// returns) gives back the fenced wrapper instead, and every pragma is fenced like a write.
 // What it cannot stop is code that never uses the view: a module that fetches the raw handle itself (getAuthDb()) is
 // outside the fence. The tick's modules only read that way (lib/replies/threads.ts reads the seller profile).
 function fencedSqlite(raw: Database.Database, check: () => void): Database.Database {
@@ -139,9 +139,10 @@ function fencedSqlite(raw: Database.Database, check: () => void): Database.Datab
     get(_, p) {
       if (p === 'prepare') return (sql: string) => wrapStatement(target.prepare(sql))
       if (p === 'exec') return (sql: string) => { fenced(() => target.exec(sql)); return view }
-      // A pragma that assigns (user_version = 3) changes the store: the holder must still own the lease. Some pragmas
-      // cannot run inside a transaction (journal_mode), so this one is checked just before, not atomically with it.
-      if (p === 'pragma') return (src: string, o?: { simple?: boolean }) => { if (/=/.test(src)) check(); return target.pragma(src, o) }
+      // Every pragma is checked, reads included: SQLite has more than one way to assign (user_version = 3,
+      // user_version(3)), so the view does not try to tell reads from writes. Some pragmas cannot run inside a
+      // transaction (journal_mode), so the check runs just before the pragma, not atomically with it.
+      if (p === 'pragma') return (src: string, o?: { simple?: boolean }) => { check(); return target.pragma(src, o) }
       const v = Reflect.get(target, p, target)
       return typeof v === 'function' ? (...a: unknown[]) => remap((v as (...x: unknown[]) => unknown).apply(target, a)) : v
     },

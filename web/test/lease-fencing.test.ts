@@ -103,6 +103,9 @@ test('[sqlite] fenced raw handle: bound and fluent statements, statement.databas
   assert.equal(chained[0].pluck(false).database, view)
   bound.run() // works while A holds the lease
   view.pragma('user_version = 1')
+  view.pragma('user_version(5)') // the current holder can assign either way
+  assert.equal(view.pragma('user_version', { simple: true }), 5)
+  view.pragma('user_version = 1')
 
   c.now = T0 + 1500
   assert.ok(await tryLease(db, 'internal-tick', o)) // B takes over
@@ -111,7 +114,10 @@ test('[sqlite] fenced raw handle: bound and fluent statements, statement.databas
   assert.throws(() => viaDatabase.prepare("INSERT INTO rate_limits (key, count, reset_at) VALUES ('via-db', 1, 0)").run(), StaleLeaseWrite)
   assert.throws(() => viaDatabase.exec("INSERT INTO rate_limits (key, count, reset_at) VALUES ('via-exec', 1, 0)"), StaleLeaseWrite)
   assert.throws(() => view.pragma('user_version = 2'), StaleLeaseWrite)
-  assert.equal(view.pragma('user_version', { simple: true }), 1) // reads pass; the refused pragma did not land
+  assert.throws(() => view.pragma('user_version(37)'), StaleLeaseWrite) // review repro: parenthesized assignment
+  assert.throws(() => view.pragma(' USER_VERSION ( 38 ) '), StaleLeaseWrite)
+  assert.throws(() => view.pragma('user_version', { simple: true }), StaleLeaseWrite) // every pragma is fenced, reads too
+  assert.equal(raw.pragma('user_version', { simple: true }), 1) // none of the refused pragmas landed
   assert.deepEqual((raw.prepare("SELECT key FROM rate_limits WHERE key NOT LIKE 'k%' ORDER BY key").all() as { key: string }[]).map(r => r.key), ['stale-bind'])
   await db.close()
 })
