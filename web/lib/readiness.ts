@@ -34,7 +34,7 @@ export interface Play { id: string; query: string; outcome: string }
 
 // The account's own searches, newest first, with what each produced. Imports and test fixtures are not plays.
 // A finished search reports source-checked and needs-review counts separately (the same words as the Leads history):
-// research-only leads are never shown as yield. Older records without those counts say so instead of a bare total.
+// research-only leads are never shown as yield. Older records without those counts say "counts unavailable", never a lead total.
 export function recentPlays(jobs: JobRow[], limit = 5): Play[] {
   return jobs.filter(j => j.query && !j.csv_domain && !j.test_only)
     .sort((a, b) => b.created_at - a.created_at)
@@ -45,7 +45,8 @@ export function recentPlays(jobs: JobRow[], limit = 5): Play[] {
 function outcomeOf(j: JobRow): string {
   if (j.status === 'failed') return j.error === 'cancelled' ? 'cancelled' : 'failed'
   if (j.status !== 'done') return 'running'
-  if (j.verified == null && j.needs_review == null) return `${j.lead_count} lead${j.lead_count === 1 ? '' : 's'}, checks not recorded`
+  // Older records never stored the check counts: say so, and never call what they found "leads".
+  if (j.verified == null && j.needs_review == null) return 'counts unavailable'
   const review = j.needs_review ?? 0
   return `${j.verified ?? 0} source-checked, ${review} need${review === 1 ? 's' : ''} your review`
 }
