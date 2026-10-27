@@ -124,6 +124,29 @@ CREATE TABLE csv_rows (
       job_id   TEXT REFERENCES scan_jobs(id) ON DELETE SET NULL
     );
 
+CREATE TABLE email_candidates (
+      tenant_id TEXT NOT NULL, lead_id TEXT NOT NULL, person TEXT NOT NULL CHECK (length(person) <= 120),
+      address TEXT NOT NULL CHECK (length(address) <= 254), format TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'unverified' CHECK (status IN ('unverified')),
+      created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), PRIMARY KEY (lead_id, address));
+
+CREATE TABLE email_patterns (
+      tenant_id TEXT NOT NULL, lead_id TEXT NOT NULL, site TEXT NOT NULL, format TEXT NOT NULL, support INTEGER NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), PRIMARY KEY (lead_id, site));
+
+CREATE TABLE evidence_purge_audit (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  operator TEXT NOT NULL CHECK (length(operator) BETWEEN 2 AND 120),
+  reason TEXT NOT NULL CHECK (length(reason) BETWEEN 10 AND 500),
+  copies_deleted INTEGER NOT NULL,
+  bytes_deleted INTEGER NOT NULL,
+  leads_unlinked INTEGER NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+);
+
+CREATE TABLE evidence_purge_gate (tenant_id TEXT PRIMARY KEY);
+
 CREATE TABLE followup_messages (
       tenant_id TEXT NOT NULL, thread_id TEXT NOT NULL, step INTEGER NOT NULL, status TEXT NOT NULL CHECK (status IN ('sending','sent','uncertain')),
       gmail_id TEXT, created_at INTEGER NOT NULL, PRIMARY KEY (tenant_id, thread_id, step)
@@ -143,6 +166,10 @@ CREATE TABLE gmail_accounts (
       status       TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','needs_reconnect')),
       connected_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
     , read_granted INTEGER NOT NULL DEFAULT 0);
+
+CREATE TABLE hiring_feed_crawl (
+    lead_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, job_id TEXT NOT NULL, company_key TEXT NOT NULL, status TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER, claim TEXT
+  );
 
 CREATE TABLE inbound_messages (
       gmail_id TEXT NOT NULL, tenant_id TEXT NOT NULL, thread_id TEXT NOT NULL, lead_id TEXT, from_email TEXT NOT NULL,
@@ -165,6 +192,31 @@ CREATE TABLE lead_enrichments (
       UNIQUE (lead_id, connector, kind, value)
     );
 
+CREATE TABLE lead_evidence_copies (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  attempt INTEGER NOT NULL,
+  source_url TEXT NOT NULL,
+  canonical_url TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '' CHECK (length(CAST(title AS BLOB)) <= 1024),
+  title_sha256 TEXT NOT NULL CHECK (length(title_sha256) = 64),
+  sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+  text TEXT NOT NULL,
+  byte_length INTEGER NOT NULL CHECK (byte_length <= 262144),
+  fetched_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
+  expires_at INTEGER NOT NULL,
+  UNIQUE (tenant_id, job_id, attempt, canonical_url)
+);
+
+CREATE TABLE lead_qualifications (
+    tenant_id TEXT NOT NULL, lead_id TEXT NOT NULL, prompt_sha256 TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('running','done','failed')),
+    vendor TEXT, model TEXT, served_model TEXT, result TEXT, usage TEXT, error TEXT, evidence TEXT,
+    created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
+    UNIQUE (tenant_id, lead_id, prompt_sha256));
+
 CREATE TABLE lead_sources (
       lead_id TEXT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
       collector TEXT NOT NULL,
@@ -181,7 +233,7 @@ CREATE TABLE leads (
       signal      TEXT NOT NULL CHECK (length(signal) BETWEEN 1 AND 500),
       source_url  TEXT NOT NULL CHECK (length(source_url) <= 500 AND (source_url LIKE 'https://%' OR source_url LIKE 'http://%')),
       score       INTEGER NOT NULL DEFAULT 50 CHECK (score BETWEEN 0 AND 100),
-      created_at  INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), stage TEXT, watch_new INTEGER NOT NULL DEFAULT 0, evidence_excerpt TEXT CHECK (evidence_excerpt IS NULL OR length(evidence_excerpt) <= 400), icp_match TEXT CHECK (icp_match IS NULL OR length(icp_match) <= 400), event_date TEXT, date_status TEXT CHECK (date_status IS NULL OR date_status IN ('verified','unverified','undated')), retrieved_at INTEGER, confidence INTEGER CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 100), dedup_key TEXT, review_reason TEXT, company_domain TEXT CHECK (company_domain IS NULL OR length(company_domain) <= 253), fit INTEGER CHECK (fit IS NULL OR fit BETWEEN 0 AND 5), intent INTEGER CHECK (intent IS NULL OR intent BETWEEN 0 AND 5), action INTEGER CHECK (action IS NULL OR action BETWEEN 0 AND 5), why TEXT CHECK (why IS NULL OR length(why) <= 600), signals TEXT CHECK (signals IS NULL OR length(signals) <= 1000), seen_before INTEGER NOT NULL DEFAULT 0, signal_kind TEXT, source_kind TEXT,
+      created_at  INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), stage TEXT, watch_new INTEGER NOT NULL DEFAULT 0, evidence_excerpt TEXT CHECK (evidence_excerpt IS NULL OR length(evidence_excerpt) <= 400), icp_match TEXT CHECK (icp_match IS NULL OR length(icp_match) <= 400), event_date TEXT, date_status TEXT CHECK (date_status IS NULL OR date_status IN ('verified','unverified','undated')), retrieved_at INTEGER, confidence INTEGER CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 100), dedup_key TEXT, review_reason TEXT, evidence_origin TEXT CHECK (evidence_origin IS NULL OR evidence_origin IN ('tinyfish_copy')), own_fetch_failure TEXT, evidence_copy_sha256 TEXT, evidence_purged_at INTEGER, evidence_copy_id TEXT, human_confirmed_at INTEGER, human_confirmed_from TEXT, company_domain TEXT CHECK (company_domain IS NULL OR length(company_domain) <= 253), quarantined_at INTEGER, quarantine_reason TEXT CHECK (quarantine_reason IS NULL OR length(quarantine_reason) <= 300), fit INTEGER CHECK (fit IS NULL OR fit BETWEEN 0 AND 5), intent INTEGER CHECK (intent IS NULL OR intent BETWEEN 0 AND 5), action INTEGER CHECK (action IS NULL OR action BETWEEN 0 AND 5), why TEXT CHECK (why IS NULL OR length(why) <= 600), signals TEXT CHECK (signals IS NULL OR length(signals) <= 1000), seen_before INTEGER NOT NULL DEFAULT 0, signal_kind TEXT, source_kind TEXT,
       CHECK (name <> '' OR company <> '')
     );
 
@@ -238,6 +290,23 @@ CREATE TABLE oauth_states (
       verifier   TEXT NOT NULL,
       expires_at INTEGER NOT NULL
     , read_scope INTEGER NOT NULL DEFAULT 0);
+
+CREATE TABLE outreach_llm_usage (
+      id            INTEGER PRIMARY KEY,
+      tenant_id     TEXT NOT NULL,
+      message_id    TEXT,
+      purpose       TEXT NOT NULL,
+      vendor        TEXT,
+      requested_model TEXT,
+      model         TEXT,
+      request_id    TEXT,
+      outcome       TEXT NOT NULL,
+      input_tokens  INTEGER,
+      output_tokens INTEGER,
+      cache_read_input_tokens INTEGER,
+      cache_creation_input_tokens INTEGER,
+      created_at    INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+    );
 
 CREATE TABLE outreach_messages (
       id             TEXT PRIMARY KEY,
@@ -333,7 +402,24 @@ CREATE TABLE scan_jobs (
       created_at    INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
       claimed_at    INTEGER,
       finished_at   INTEGER
-    , funded_by TEXT NOT NULL DEFAULT 'user', seller TEXT, watch_id TEXT, candidates INTEGER, needs_review INTEGER, dropped INTEGER, drop_reasons TEXT, verified INTEGER, query TEXT CHECK (query IS NULL OR length(query) <= 600), icp TEXT CHECK (icp IS NULL OR length(icp) <= 4000), icp_inferred INTEGER, sources TEXT CHECK (sources IS NULL OR length(sources) <= 2000), csv_domain TEXT CHECK (csv_domain IS NULL OR length(csv_domain) <= 253), batch_id TEXT);
+    , funded_by TEXT NOT NULL DEFAULT 'user', seller TEXT, watch_id TEXT, candidates INTEGER, needs_review INTEGER, dropped INTEGER, run_budget TEXT, spend_reserved_usd REAL, drop_reasons TEXT, verified INTEGER, query TEXT CHECK (query IS NULL OR length(query) <= 600), icp TEXT CHECK (icp IS NULL OR length(icp) <= 4000), icp_inferred INTEGER, sources TEXT CHECK (sources IS NULL OR length(sources) <= 2000), csv_domain TEXT CHECK (csv_domain IS NULL OR length(csv_domain) <= 253), batch_id TEXT);
+
+CREATE TABLE scan_model_calls (
+    tenant_id TEXT NOT NULL,
+    job_id TEXT REFERENCES scan_jobs(id) ON DELETE CASCADE,
+    attempt INTEGER NOT NULL,
+    seq INTEGER NOT NULL,
+    stage TEXT NOT NULL CHECK (length(stage) <= 40),
+    method TEXT NOT NULL,
+    model_requested TEXT CHECK (model_requested IS NULL OR length(model_requested) <= 100),
+    model_served TEXT CHECK (model_served IS NULL OR length(model_served) <= 100),
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    outcome TEXT NOT NULL,
+    max_tokens INTEGER,
+    prompt_chars INTEGER NOT NULL,
+    recorded_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+  );
 
 CREATE TABLE scan_source_runs (
       job_id TEXT NOT NULL REFERENCES scan_jobs(id) ON DELETE CASCADE,
@@ -347,6 +433,38 @@ CREATE TABLE scan_source_runs (
       inserted_count INTEGER NOT NULL,
       PRIMARY KEY (job_id, attempt, collector)
     );
+
+CREATE TABLE scan_source_stats (
+    job_id TEXT NOT NULL REFERENCES scan_jobs(id) ON DELETE CASCADE,
+    attempt INTEGER NOT NULL,
+    collector TEXT NOT NULL,
+    queries TEXT CHECK (queries IS NULL OR length(queries) <= 2000),
+    query_source TEXT CHECK (query_source IS NULL OR query_source IN ('model','fallback')),
+    searches_attempted INTEGER,
+    searches_ok INTEGER,
+    searches_failed TEXT CHECK (searches_failed IS NULL OR length(searches_failed) <= 200),
+    searches_not_attempted TEXT CHECK (searches_not_attempted IS NULL OR length(searches_not_attempted) <= 200),
+    hits_raw INTEGER,
+    hits_unique_urls INTEGER,
+    hits_complete INTEGER CHECK (hits_complete IS NULL OR hits_complete IN (0,1)),
+    fetch_complete INTEGER CHECK (fetch_complete IS NULL OR fetch_complete IN (0,1)),
+    fetch_requested INTEGER,
+    fetch_outcome TEXT CHECK (fetch_outcome IS NULL OR length(fetch_outcome) <= 40),
+    fetch_pages_with_text INTEGER,
+    per_query TEXT CHECK (per_query IS NULL OR length(per_query) <= 4000),
+    distinct_hosts INTEGER,
+    urls_not_fetched INTEGER,
+    extracted_candidates INTEGER,
+    model_requested TEXT CHECK (model_requested IS NULL OR length(model_requested) <= 100),
+    model_served TEXT CHECK (model_served IS NULL OR length(model_served) <= 100),
+    model_calls INTEGER,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    evidence_items INTEGER,
+    evidence_with_page_text INTEGER,
+    evidence_snippet_only INTEGER,
+    PRIMARY KEY (job_id, attempt, collector)
+  );
 
 CREATE TABLE seo_audits (
     id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, domain TEXT NOT NULL,
@@ -427,6 +545,12 @@ CREATE TABLE sessions (
       created_at INTEGER DEFAULT (unixepoch()),
       expires_at INTEGER NOT NULL
     );
+
+CREATE TABLE source_reviews (
+ id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, job_id TEXT NOT NULL, lead_id TEXT NOT NULL,
+ input_json TEXT NOT NULL, fetch_status TEXT NOT NULL, quote_match INTEGER NOT NULL,
+ company_named INTEGER NOT NULL, contact_match INTEGER NOT NULL, checked_at INTEGER NOT NULL
+ );
 
 CREATE TABLE stripe_events (
       id TEXT PRIMARY KEY,
@@ -544,7 +668,25 @@ CREATE TABLE watches (
     last_run_at INTEGER,
     paused_reason TEXT,
     created_at  INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
-  );
+  , run_budget TEXT);
+
+CREATE TABLE work_queue (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        attempts INTEGER NOT NULL,
+        max_attempts INTEGER NOT NULL,
+        not_before INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        claimed_at INTEGER,
+        lease_expires_at INTEGER,
+        claim_token INTEGER,
+        last_error TEXT,
+        dedupe_key TEXT
+      );
+
+CREATE TABLE work_queue_meta (k TEXT PRIMARY KEY, v INTEGER NOT NULL);
 
 CREATE INDEX autopilot_audit_tenant ON autopilot_audit (tenant_id, created_at);
 
@@ -564,7 +706,15 @@ CREATE INDEX csv_batches_user ON csv_batches (user_id, created_at);
 
 CREATE INDEX csv_rows_batch ON csv_rows (batch_id);
 
+CREATE UNIQUE INDEX hiring_feed_crawl_company ON hiring_feed_crawl(tenant_id, company_key);
+
+CREATE INDEX hiring_feed_crawl_job ON hiring_feed_crawl(tenant_id, job_id);
+
+CREATE INDEX idx_evidence_copies_tenant ON lead_evidence_copies(tenant_id, expires_at);
+
 CREATE INDEX lead_enrichments_lead ON lead_enrichments (lead_id);
+
+CREATE UNIQUE INDEX lead_qualifications_one_per_lead ON lead_qualifications (tenant_id, lead_id);
 
 CREATE UNIQUE INDEX leads_dedup ON leads (scan_job_id, dedup_key) WHERE dedup_key IS NOT NULL;
 
@@ -584,11 +734,15 @@ CREATE INDEX scan_jobs_status ON scan_jobs (status, created_at);
 
 CREATE INDEX scan_jobs_user ON scan_jobs (user_id, created_at);
 
+CREATE UNIQUE INDEX scan_model_calls_job ON scan_model_calls(job_id, attempt, seq);
+
 CREATE INDEX seo_briefs_tenant ON seo_briefs (tenant_id, created_at);
 
 CREATE INDEX seo_index_results_tenant ON seo_index_results (tenant_id, keyword, checked_at);
 
 CREATE INDEX sequences_tenant ON sequences (tenant_id, status);
+
+CREATE INDEX source_reviews_tenant ON source_reviews(tenant_id,lead_id);
 
 CREATE INDEX tenant_connections_tenant ON tenant_connections (tenant_id);
 
@@ -601,6 +755,25 @@ CREATE INDEX trial_scans_tenant ON trial_scans (tenant_id, created_at);
 CREATE INDEX warm_user_paths_lead ON warm_user_paths (tenant_id, lead_id);
 
 CREATE INDEX watches_due ON watches (active, next_run_at);
+
+CREATE INDEX work_queue_claimable
+        ON work_queue(status, not_before, created_at);
+
+CREATE UNIQUE INDEX work_queue_dedupe
+        ON work_queue(tenant_id, kind, dedupe_key)
+        WHERE dedupe_key IS NOT NULL AND status IN ('pending','claimed');
+
+CREATE TRIGGER evidence_purge_audit_no_delete BEFORE DELETE ON evidence_purge_audit BEGIN SELECT RAISE(ABORT, 'purge audit is append-only'); END;
+
+CREATE TRIGGER evidence_purge_audit_no_update BEFORE UPDATE ON evidence_purge_audit BEGIN SELECT RAISE(ABORT, 'purge audit is append-only'); END;
+
+CREATE TRIGGER lead_evidence_copies_delete_only_expired BEFORE DELETE ON lead_evidence_copies
+  WHEN OLD.expires_at > CAST(strftime('%s','now') AS INTEGER)
+   AND NOT EXISTS (SELECT 1 FROM evidence_purge_gate g WHERE g.tenant_id = OLD.tenant_id)
+  BEGIN SELECT RAISE(ABORT, 'evidence copy is still within its retention period'); END;
+
+CREATE TRIGGER lead_evidence_copies_no_update BEFORE UPDATE ON lead_evidence_copies
+  BEGIN SELECT RAISE(ABORT, 'evidence copies are immutable'); END;
 
 CREATE TRIGGER leads_only_while_running
     BEFORE INSERT ON leads

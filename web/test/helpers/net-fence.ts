@@ -16,6 +16,8 @@ for (const name of Object.keys(process.env)) {
 // with DAZL_PG_ADMIN set explicitly - outside this harness, still loopback-only
 // and marker-guarded by scripts/pg-migrate/guard.ts.
 for (const name of ['DAZL_PG_ADMIN', 'DATABASE_URL']) delete process.env[name]
+// DAZL_TEST_PG_URL is kept on purpose: test/helpers/pg-test.ts accepts only a loopback URL and gives each test a fresh
+// schema that it drops afterwards (the CI postgres service container).
 
 // 2) Network fence: synthetic tests must not attempt real outbound
 //    connections at all - not provider APIs, not lead/company websites
