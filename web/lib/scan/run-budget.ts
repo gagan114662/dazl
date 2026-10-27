@@ -3,6 +3,7 @@
 //
 // What a budget IS here, stated once and returned to the caller with every accepted request (describeRunBudget):
 //  - narrowing flags (paid_fallback / credit_enrichment / judge = false) switch a paid surface OFF;
+//  - THIS IS A PARTIAL, API-ONLY BUDGET, not a whole-scan dollar ceiling (see BUDGET_EXCLUDED_PATHS).
 //  - max_usd is a reservation limit computed from what dazl sends (prompt bytes, or count_tokens x 1.2, plus max_tokens at the
 //    model's listed price), NOT a bill and not a vendor-enforced ceiling. Web-search research cannot be bounded, so a run with
 //    max_usd REFUSES it. A refused call ends the run as `budget_stopped`, which is not the same as "nothing found".
@@ -37,7 +38,22 @@ export function normalizeScanBudget(raw: unknown, supplied: boolean): BudgetChec
 }
 
 export type SurfaceStatus = 'allowed' | 'refused' | 'off' | 'not_covered'
+// This budget is PARTIAL by construction. It bounds only the model requests that go through the job's guarded provider.
+// These paths are outside it, said in every accepted response, in the PR and in docs/STATUS.md.
+export const BUDGET_EXCLUDED_PATHS = [
+  'Profile generation (/api/scan/icp) - a separate request before the run',
+  'TinyFish search and fetch (their own per-scan, per-tenant and global caps apply instead)',
+  'Free sources: GDELT news search, public job boards, SEC Form D, the company-site crawl',
+  'People search after the scan (TinyFish searches under their own caps)',
+  'Autopilot and every outreach action (drafting, AI rewrite, follow-ups, replies) - separate features on their own keys and switches',
+  'Monitors / weekly watches and CSV imports - they create jobs of their own (CSV takes the narrowing flags only, no max_usd)',
+  'Bring-your-own-key Apollo / People Data Labs enrichment is switched OFF under max_usd, not bounded',
+  'Retries below dazl (provider or platform) and the provider\'s real billing - requests are counted where dazl sends them',
+  'The per-owner pool (DAZL_RUN_MAX_USD_USERS) - in memory, resets on a restart',
+]
 export interface BudgetDisclosure {
+  scope: 'partial'
+  excluded_paths: string[]
   bounded: boolean
   max_usd: number | null
   ceiling: string
@@ -52,9 +68,11 @@ export function describeRunBudget(b: RunBudget | null): BudgetDisclosure {
   const row = (surface: string, r: { status: SurfaceStatus; note: string }) => ({ surface, ...r })
   const fallbackOff = b?.paid_fallback === false
   return {
+    scope: 'partial',
+    excluded_paths: BUDGET_EXCLUDED_PATHS,
     bounded: capped,
     max_usd: capped ? b!.max_usd! : null,
-    ceiling: capped ? 'A reservation limit computed from what dazl sends (listed price x prompt size + max output). Not a bill and not a vendor-enforced ceiling.' : 'None. Without max_usd the run is not dollar-bounded.',
+    ceiling: capped ? 'PARTIAL budget, not a whole-scan dollar ceiling: a reservation limit on the guarded model requests only (listed price x prompt size + max output). Not a bill and not a vendor-enforced ceiling. See excluded_paths.' : 'None. Without max_usd the run is not dollar-bounded. Narrowing flags switch single surfaces off; they are not a dollar limit either.',
     surfaces: [
       row('profile_generation', { status: 'not_covered', note: 'Happens before the run, in its own request (/api/scan/icp); this budget does not apply to it' }),
       row('search_query_writing', llm('One model call')),

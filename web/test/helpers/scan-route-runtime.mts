@@ -38,7 +38,8 @@ test('valid budget: persisted with the job in the same insert, and answered with
   as(db); const r = await post({ query: Q, budget: { max_usd: 0.5, judge: false } }); const j = await r.json() as { job_id: string; budget: { bounded: boolean; max_usd: number; ceiling: string; surfaces: { surface: string; status: string }[]; limits: string[] } }
   assert.equal(r.status, 202)
   assert.deepEqual(JSON.parse(rows(db)[0].run_budget!), { max_usd: 0.5, judge: false })
-  assert.equal(j.budget.bounded, true); assert.equal(j.budget.max_usd, 0.5); assert.match(j.budget.ceiling, /Not a bill and not a vendor-enforced ceiling/)
+  assert.equal((j.budget as unknown as { scope: string }).scope, 'partial'); assert.ok((j.budget as unknown as { excluded_paths: string[] }).excluded_paths.some(x => /Profile generation/.test(x)) && (j.budget as unknown as { excluded_paths: string[] }).excluded_paths.some(x => /TinyFish/.test(x)) && (j.budget as unknown as { excluded_paths: string[] }).excluded_paths.some(x => /Autopilot/.test(x)))
+  assert.equal(j.budget.bounded, true); assert.equal(j.budget.max_usd, 0.5); assert.match(j.budget.ceiling, /PARTIAL budget, not a whole-scan dollar ceiling/); assert.match(j.budget.ceiling, /Not a bill and not a vendor-enforced ceiling/)
   const st = Object.fromEntries(j.budget.surfaces.map(s => [s.surface, s.status]))
   assert.deepEqual(st, { profile_generation: 'not_covered', search_query_writing: 'allowed', extraction: 'allowed', scoring: 'allowed', grounding: 'refused', buyer_fit: 'allowed', judge: 'off', fallback_research: 'refused', credit_enrichment: 'off', search_and_fetch: 'not_covered' })
   assert.ok(j.budget.limits.some(l => /budget stop, not zero results/.test(l)) && j.budget.limits.some(l => /resets when the process restarts/.test(l)))

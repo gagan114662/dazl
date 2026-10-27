@@ -676,7 +676,11 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // The job's guard starts from what this job already reserved (saved per call), so a retry, a re-claimed attempt or a
     // restart cannot spend the limit again. The owner pool is in memory only and starts empty after a restart.
     const jobGuard = jobMax !== null ? new SpendGuard(jobMax, job.spend_reserved_usd ?? 0) : null
-    if (jobGuard) jobGuard.onReserve = usd => { db.prepare('UPDATE scan_jobs SET spend_reserved_usd = ? WHERE id = ? AND user_id = ? AND attempts = ?').run(usd, job.id, job.user_id, job.attempts) }
+    if (jobGuard) jobGuard.persist = usd => {
+      // Same job, same tenant, same attempt, still running: exactly one row must change, or the call is refused.
+      const r = db.prepare("UPDATE scan_jobs SET spend_reserved_usd = ? WHERE id = ? AND user_id = ? AND attempts = ? AND status = 'running'").run(usd, job.id, job.user_id, job.attempts)
+      if (r.changes !== 1) throw new SpendRefused('ownership_lost')
+    }
     const spendGuards = [...(jobGuard ? [jobGuard] : []), ...(ownerMax !== null ? [ownerPool(job.user_id, ownerMax)] : [])]
     const spendLimit = spendGuards.length ? 1 : null
     // Every model request of this run is counted at the provider boundary (model-usage.ts), inside the spend guard so a

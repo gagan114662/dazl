@@ -44,22 +44,23 @@ test('disclosure: no budget bounds nothing and says so; max_usd refuses research
 })
 
 test('SpendGuard: starts from what was already reserved, reports every reservation, and a refusal reserves nothing', () => {
-  const g = new SpendGuard(0.01, 0.0099); const seen: number[] = []; g.onReserve = v => seen.push(v)
+  const g = new SpendGuard(0.01, 0.0099); const seen: number[] = []; g.persist = v => { seen.push(v) }
   assert.throws(() => g.reserve('claude-sonnet-4-5', 100, 100), /spend_refused:over_limit/)
   assert.equal(seen.length, 0); assert.equal(g.reservedUsd, 0.0099)
-  const f = new SpendGuard(5); f.onReserve = v => seen.push(v); f.reserve('claude-sonnet-4-5', 100, 100); f.reserve('claude-sonnet-4-5', 100, 100)
+  const f = new SpendGuard(5); f.persist = v => { seen.push(v) }; f.reserve('claude-sonnet-4-5', 100, 100); f.reserve('claude-sonnet-4-5', 100, 100)
   assert.equal(seen.length, 2); assert.ok(seen[1] > seen[0] && seen[0] > 0)
   assert.equal(new SpendGuard(1, -5).reservedUsd, 0); assert.equal(new SpendGuard(1, NaN).reservedUsd, 0)
 })
 
 type Counts = { research: number; judge: number; complete: number }
-async function run(budget: string | null, opts: { reserved?: number; model?: string; tinyfish?: boolean; leads?: boolean } = {}) {
+async function run(budget: string | null, opts: { reserved?: number; model?: string; tinyfish?: boolean; leads?: boolean; beforeRun?: (db: Database.Database, id: string) => void; onFirstComplete?: (db: Database.Database, id: string) => void } = {}) {
   resetTinyfishState(); resetSpendPools()
   const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
   saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
   const id = createQueryJob(db, 'A', { query: REQUEST, icp: JSON.stringify(ICP), runBudget: budget })
   if (opts.reserved !== undefined) db.prepare('UPDATE scan_jobs SET spend_reserved_usd = ? WHERE id = ?').run(opts.reserved, id)
   const job = claimKeyedJob(db, id)!
+  opts.beforeRun?.(db, id)
   const c: Counts = { research: 0, judge: 0, complete: 0 }
   const fetchImpl = (async (u: string) => {
     if (u.startsWith('https://api.search.tinyfish.ai')) return new Response(JSON.stringify({ results: opts.tinyfish ? [{ url: 'https://jobs.example/hf', title: 'Payroll specialist', snippet: QUOTE, date: recent }] : [] }), { status: 200 })
@@ -69,7 +70,7 @@ async function run(budget: string | null, opts: { reserved?: number; model?: str
   }) as unknown as typeof fetch
   const anth: Provider = {
     research: async () => { c.research++; return { text: opts.leads ? JSON.stringify([LEAD]) : '[]', citedUrls: opts.leads ? [LEAD.source_url] : [] } },
-    complete: async (_k, p, _f, maxTokens) => { c.complete++; if (p.startsWith('You check one claim')) { c.judge++; return 'supports' } return maxTokens === 300 ? '["payroll specialist Ohio"]' : JSON.stringify([LEAD]) },
+    complete: async (_k, p, _f, maxTokens) => { c.complete++; if (c.complete === 1) opts.onFirstComplete?.(db, id); if (p.startsWith('You check one claim')) { c.judge++; return 'supports' } return maxTokens === 300 ? '["payroll specialist Ohio"]' : JSON.stringify([LEAD]) },
     ...(opts.model ? { configuredModel: () => opts.model! } : {}),
   }
   const providers: Record<'anthropic' | 'openai', Provider> = { anthropic: anth, openai: { research: async () => ({ text: '', citedUrls: [] }) } }
@@ -115,4 +116,42 @@ test('the job reservation is saved after every reserved call and a re-run contin
   const before = (db.prepare('SELECT spend_reserved_usd v FROM scan_jobs WHERE id = ?').get(id) as { v: number }).v
   assert.equal(db.prepare('UPDATE scan_jobs SET spend_reserved_usd = 0 WHERE id = ? AND user_id = ? AND attempts = ?').run(id, 'A', 99).changes, 0)
   assert.equal((db.prepare('SELECT spend_reserved_usd v FROM scan_jobs WHERE id = ?').get(id) as { v: number }).v, before)
+})
+
+// Instinct #216 review (0a0876d): saving the reservation failed open - the paid call still ran. Now the reservation must be
+// SAVED, by the current attempt of a running job, before the provider call is allowed.
+test('reservation cannot be saved (storage error): ZERO provider calls, budget_stopped, the saved reservation is unchanged', async () => {
+  const x = await run('{"max_usd":5}', { model: 'claude-sonnet-4-5', tinyfish: true, reserved: 1.25, beforeRun: db => db.exec("CREATE TRIGGER fail_save BEFORE UPDATE OF spend_reserved_usd ON scan_jobs BEGIN SELECT RAISE(ABORT, 'SQLITE_FULL'); END") })
+  assert.equal(x.c.complete + x.c.research, 0, 'no paid provider call without a saved reservation')
+  assert.equal(x.row.error, 'budget_stopped'); assert.equal(x.row.status, 'failed'); assert.equal(x.row.spend_reserved_usd, 1.25)
+})
+
+test('ownership lost BEFORE the first reservation (job re-claimed by a newer attempt): zero provider calls and the new owner\'s reservation is untouched', async () => {
+  const x = await run('{"max_usd":5}', { model: 'claude-sonnet-4-5', tinyfish: true, reserved: 0.5, beforeRun: (db, id) => { db.prepare('UPDATE scan_jobs SET attempts = attempts + 1 WHERE id = ?').run(id) } })
+  assert.equal(x.c.complete + x.c.research, 0)
+  assert.equal(x.row.spend_reserved_usd, 0.5, 'the current owner\'s saved reservation is unchanged')
+  assert.equal(x.row.status, 'running', 'the stale attempt does not finish, fail or re-queue the newer attempt\'s job'); assert.equal(x.row.attempts, 2)
+})
+
+test('ownership lost BETWEEN calls (reaped and re-claimed while the first call ran): exactly one provider call happened, no further call, owner\'s reservation unchanged', async () => {
+  let afterFirst: number | null = null
+  const x = await run('{"max_usd":5}', { model: 'claude-sonnet-4-5', tinyfish: true, onFirstComplete: (db, id) => {
+    afterFirst = (db.prepare('SELECT spend_reserved_usd v FROM scan_jobs WHERE id = ?').get(id) as { v: number }).v
+    db.prepare("UPDATE scan_jobs SET attempts = attempts + 1, spend_reserved_usd = ? WHERE id = ?").run(afterFirst + 1, id) // the newer attempt owns the job now and has its own total
+  } })
+  assert.equal(x.c.complete, 1, 'the first call was reserved and saved by the then-current owner; the next one is refused')
+  assert.ok(afterFirst! > 0)
+  assert.equal(x.row.spend_reserved_usd, afterFirst! + 1, 'the stale attempt did not overwrite the current owner\'s reservation')
+  assert.equal(x.row.attempts, 2); assert.equal(x.row.status, 'running')
+})
+
+test('a job that is no longer running cannot reserve either (finished/cancelled elsewhere)', async () => {
+  const x = await run('{"max_usd":5}', { model: 'claude-sonnet-4-5', tinyfish: true, beforeRun: (db, id) => { db.prepare("UPDATE scan_jobs SET status = 'failed' WHERE id = ?").run(id) } })
+  assert.equal(x.c.complete + x.c.research, 0)
+})
+
+test('SpendGuard.reserve: a failed save refuses with reservation_not_saved and leaves the in-memory total unchanged', () => {
+  const g = new SpendGuard(5, 1); g.persist = () => { throw new Error('SQLITE_FULL') }
+  assert.throws(() => g.reserve('claude-sonnet-4-5', 100, 100), /spend_refused:reservation_not_saved/)
+  assert.equal(g.reservedUsd, 1); assert.equal(g.calls, 0)
 })

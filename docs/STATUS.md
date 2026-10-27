@@ -46,14 +46,18 @@ Updated by the builder on every branch. Newest first.
   removed unless the request names them. (5) The query prompt states the user's window and prefers dated, readable
   sources. Not verified live: whether this raises yield.
 
-- b/scan-cost-control (per-run cost control on POST /api/scan; fixtures only, no live run): optional `budget` ({max_usd,
-  paid_fallback:false, credit_enrichment:false, judge:false}) validated before anything is queued (invalid -> 400
-  `invalid_budget`, no job), saved with the job in the same insert, and answered with the exact paid surfaces allowed,
-  refused or not covered. max_usd is a reservation limit computed from what dazl sends, not a bill or a vendor-guaranteed
-  ceiling; web-search research is refused under it (not the same search behaviour as an ordinary scan). The narrowing flags
-  now also apply to query jobs (they were ignored outside CSV jobs). The job's reservation is saved per call and survives a
-  re-run of that job; the per-owner pool is in memory and resets on restart. A budget stop shows as budget_stopped, not as
-  "nothing found". The web form does not send a budget yet (API only).
+- b/scan-cost-control (#216; fixtures only, no live run): a PARTIAL, API-ONLY per-run budget on POST /api/scan, NOT a
+  whole-scan dollar ceiling. Optional `budget` ({max_usd, paid_fallback:false, credit_enrichment:false, judge:false}),
+  validated before anything is queued (invalid -> 400 `invalid_budget`, no job), saved with the job in the same insert,
+  and answered with the paid surfaces allowed/refused/off/not covered. max_usd is a reservation limit on the guarded model
+  requests only, computed from what dazl sends (not a bill, not a vendor-enforced ceiling); web-search research is refused
+  under it (not the same search behaviour as an ordinary scan; a refusal ends as budget_stopped, not "nothing found").
+  The job's reservation must be SAVED by the current attempt of a running job before a provider call is allowed (storage
+  failure or lost ownership refuse the call; Instinct's fail-open finding). EXCLUDED from the budget: profile generation
+  (/api/scan/icp); TinyFish search/fetch (own caps); free sources (GDELT, job boards, SEC, site crawl); post-scan people
+  search; autopilot and all outreach actions; monitors/watches and CSV imports (flags only); BYOK enrichment (switched
+  off, not bounded); retries below dazl and real billing; the per-owner pool (in memory, resets on restart). The web
+  form sends no budget yet.
 
 ## In progress (interactive Claude session, do not duplicate)
 
