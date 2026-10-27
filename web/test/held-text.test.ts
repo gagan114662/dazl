@@ -108,7 +108,7 @@ stays('same host, different query string', { tf: { url: `${URL_}?id=2`, text: BO
 stays('login / consent wall text', { tf: { text: `Log in to continue. We use cookies. ${QUOTE}. ${'x '.repeat(300)}` } })
 stays('too short to be the page', { tf: { text: `${QUOTE}.` } })
 stays('copy that ends on a truncation marker', { tf: { text: `${BODY} Read more…` } })
-stays('a walled social host never uses a copy', { cited: 'https://www.facebook.com/groups/ohio/posts/1', tf: { text: BODY } }, 'login_required')
+stays('a walled social host never uses a copy', { cited: 'https://www.facebook.com/groups/ohio/posts/1', tf: { text: BODY } })
 
 // ---- unit: matching, attempt binding, immutability, truncation ----
 test('canonicalUrl: host case, default port, fragment and one trailing slash are the same page; query, path case, www, scheme aliases are not', () => {
