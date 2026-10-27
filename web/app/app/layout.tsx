@@ -7,6 +7,7 @@ import { getSessionUser } from '@/lib/auth-db'
 const NAV = [
   { href: '/app', label: 'Home' },
   { href: '/app/leads', label: 'Leads' },
+  { href: '/app/campaigns', label: 'Campaigns' },
   { href: '/app/outreach', label: 'Outreach' },
   { href: '/app/follow-ups', label: 'Follow-ups' },
   { href: '/app/replies', label: 'Replies' },
