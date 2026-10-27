@@ -30,6 +30,9 @@ import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } 
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
 import { sourceCap } from './source-quality.ts'
 import { SourceRunLedger } from './source-runs.ts'
+import { newsEnabled, newsSearch, NEWS_PER_SCAN, NEWS_SOURCE } from '../search/news.ts'
+import { safeGet } from '../sources/http.ts'
+import type { SafeGet } from '../sources/types.ts'
 import { meterProvider, writeModelCalls, type ModelCall } from './model-usage.ts'
 import { findPeople } from '../people/people-search.ts'
 import { parseWindowDays, splitByWindow } from './window.ts'
@@ -523,7 +526,7 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
 }
 
 // diag (optional) receives what this collector really did: every query sent, per-call outcomes, hit and page counts.
-async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider: Provider, key: string, fetchImpl?: typeof fetch, diag?: { trace: SearchTrace; info: Partial<SourceStats>; hitUrls: string[]; tfTextUrls?: string[] }): Promise<LeadDraft[] | null> {
+async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider: Provider, key: string, fetchImpl?: typeof fetch, diag?: { trace: SearchTrace; info: Partial<SourceStats>; hitUrls: string[]; tfTextUrls?: string[]; newsUrls?: string[] }, newsHttp?: SafeGet): Promise<LeadDraft[] | null> {
   migrateTinyfish(db)
   const complete = provider.complete!
   const spent = { searches: 0, fetches: 0 }
@@ -557,6 +560,8 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   // Without location/language TinyFish searches as US/English; the profile's country and language target the buyer's market.
   const geo = { ...(icp.country ? { location: icp.country } : {}), ...(icp.language ? { language: icp.language } : {}) }
   for (const query of q) { const r = await tfSearch(db, job.user_id, query, { afterDate: after, ...geo }, spent, diag ? { trace: diag.trace } : {}); if (!r.ok) { if (hits.length === 0) return null; break } hits.push(...r.hits) }
+  // Free news search beside TinyFish (lib/search/news.ts): the same queries minus site: restrictions, the ICP's market.
+  if (newsHttp && hits.length > 0) { const seen = new Set(hits.map(h => h.url)); for (const h of await newsSearch(newsHttp, q.filter(x => !/site:/i.test(x)), icp.language)) if (!seen.has(h.url)) { seen.add(h.url); hits.push(h); diag?.newsUrls?.push(h.url) } }
   if (hits.length === 0) {
     // Every search answered and none returned a result: the evidence really is 0. If any search failed it stays unknown (null).
     if (diag && summarizeTrace(diag.trace).hits_complete === true) Object.assign(diag.info, { evidence_items: 0, evidence_with_page_text: 0, evidence_snippet_only: 0 })
@@ -573,6 +578,26 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   const parsed = parseLeads(text, items.map(i => i.url)) ?? null
   if (diag) diag.info.extracted_candidates = parsed ? parsed.length : null // null = the model reply was unusable, not zero
   return parsed
+}
+
+// News-only discovery (no TinyFish): the scan's own planned queries through the free news search (GDELT). News titles
+// are labels, not quotable text, so the article pages are fetched with the verifier's own cached fetcher and the model
+// quotes from that page text: the verifier then checks the same text it was quoted from.
+export const NEWS_PAGES = 8
+async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, http: SafeGet, fetchPage: PageFetcher, fetchImpl?: typeof fetch): Promise<LeadDraft[] | null> {
+  const complete = provider.complete!
+  const plan = queryPlan(await complete.call(provider, key, queryPrompt(job.query!, icp, NEWS_PER_SCAN), fetchImpl, 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, NEWS_PER_SCAN)
+  const q = withGeography(sanitizeQueries(plan.queries, job.query!), icp.where).filter(x => !/site:/i.test(x)) // news search has no site: operator
+  if (q.length === 0) return null
+  const hits = await newsSearch(http, q, icp.language)
+  if (hits.length === 0) return null
+  const pages = (await Promise.all(hits.slice(0, NEWS_PAGES).map(async h => {
+    const p = await fetchPage(h.url).catch(() => null)
+    return p && !isFail(p) && p.text.length >= 200 ? { url: h.url, title: p.title || h.title, text: p.text } : null
+  }))).filter((p): p is { url: string; title: string; text: string } => !!p)
+  const items = toEvidence(hits.filter(h => pages.some(p => p.url === h.url)), pages).map(i => ({ ...i, source: NEWS_SOURCE }))
+  if (items.length === 0) return null
+  return parseLeads(await complete.call(provider, key, buildSourcePrompt(job.query!, icp, items), fetchImpl, 3000), items.map(i => i.url)) ?? null
 }
 
 export interface RunBudget { paid_fallback?: boolean; credit_enrichment?: boolean; judge?: boolean; max_usd?: number }
@@ -622,7 +647,8 @@ function budgetDeps(deps: RunDeps, budget: RunBudget | null): RunDeps {
 }
 
 export interface RunDeps {
-  sourceHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; jobBudgetMs?: number; clock?: () => number }
+  // newsHttp: the free news search's own HTTP (lib/search/news.ts), separate from the per-scan sources' sourceHttp.
+  sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; jobBudgetMs?: number; clock?: () => number }
 
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
   const ledger = new SourceRunLedger()
@@ -680,17 +706,24 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // Primary backend when the operator set TINYFISH_API_KEY: TinyFish search and fetch, the user's own model reads the
     // pages. If TinyFish is off, capped, failing or finds nothing, fall back to the provider's built-in web search.
     let leads: LeadDraft[] | null = null
-    const diag = { trace: new SearchTrace(), info: {} as Partial<SourceStats>, hitUrls: [] as string[], tfTextUrls: [] as string[] }
+    let budgetRefused = false // the run budget refused a call in the TinyFish path
+    // Free news search: on unless NEWS_SEARCH_ENABLED=0 (npm test sets it, like SITECRAWL_ENABLED); an injected
+    // deps.newsHttp always turns it on, so tests that exercise news do so explicitly.
+    const newsOn = !!deps.newsHttp || newsEnabled()
+    const diag = { trace: new SearchTrace(), info: {} as Partial<SourceStats>, hitUrls: [] as string[], tfTextUrls: [] as string[], newsUrls: [] as string[] }
     if (job.query && icpForSources && complete && tinyfishEnabled()) {
       try {
         ledger.record('search:tinyfish', 'started')
         assertOwned(db, job)
-        leads = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl, diag)
+        leads = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl, diag, newsOn ? deps.newsHttp ?? safeGet : undefined)
         ledger.record('search:tinyfish', leads === null ? 'unavailable' : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:tinyfish', leads)
+        // Leads whose page GDELT surfaced carry the GDELT attribution (its terms require citation and a link).
+        if (leads && diag.newsUrls.length) ledger.candidates(NEWS_SOURCE, leads.filter(l => diag.newsUrls.includes(l.source_url)))
       } catch (e) {
         if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e
+        if (e instanceof SpendRefused) budgetRefused = true
         leads = null
       }
       if (leads && leads.length === 0) leads = null
@@ -698,6 +731,22 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     }
     const verifierFetch = new Map<string, FetchOutcome>() // verify_provenance (diagnostic only)
     const fetchP = cachedFetcher(recordingFetcher(deps.fetchPage ?? fetchPageDetailed, verifierFetch))
+    // TinyFish off, capped, failing or empty: try the free news search before the provider's paid web search. Not after
+    // the run budget already refused a call (its own calls would be refused too); a refusal inside it stops the scan.
+    if (!leads && !budgetRefused && job.query && icpForSources && complete && newsOn) {
+      try {
+        ledger.record('search:news', 'started')
+        assertOwned(db, job)
+        leads = await newsLeads(job, icpForSources, providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl)
+        ledger.record('search:news', leads === null ? 'unavailable' : leads.length ? 'ok' : 'empty')
+        if (leads) { ledger.candidates('search:news', leads); ledger.candidates(NEWS_SOURCE, leads) }
+      } catch (e) {
+        if (e instanceof ScanStopped || e instanceof ScanTimedOut || e instanceof SpendRefused) throw e
+        if (e instanceof ProviderError && e.kind === 'auth') throw e
+        leads = null
+      }
+      if (leads && leads.length === 0) leads = null
+    }
     if (!leads) {
       ledger.record(`search:${vendor}`, 'started')
       assertOwned(db, job)
