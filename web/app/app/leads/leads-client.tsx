@@ -8,6 +8,7 @@ import { eventTypeLabel } from '@/lib/events/labels'
 import { companySearchEligible } from '@/lib/scan/find-contact-eligible'
 import { contactsFromEnrichments, PEOPLE_SOURCE } from '@/lib/people/rank'
 import { OpportunityCardView } from './opportunity-card'
+import { leadCardSummary } from '@/lib/scan/lead-card'
 import { publishedEmail, publishedContact, contactSearchNote, domainBasisNote, domainBasisText } from '@/lib/outreach/published-email'
 import { domainReviewFor } from '@/lib/outreach/domain-review'
 import SourceReview from './source-review'
@@ -22,6 +23,8 @@ import BudgetPanel from './budget-panel'
 import { budgetFromForm, EMPTY_BUDGET_FORM, type BudgetForm } from '@/lib/scan/run-budget-form'
 import { evidenceOriginLabel, purgedNote } from '@/lib/scan/evidence-origin'
 
+// Reject on the card is the existing reversible quarantine, with its own reason so the card can say "Rejected".
+const REJECT_REASON = 'Rejected: not a fit'
 interface Lead { evidence_copy_id?: string | null; evidence_purged_at?: number | null; evidence_origin?: string | null; own_fetch_failure?: string | null; discovered_via?: string | null; discovered_via_link?: string | null; quarantined_at?: number | null; quarantine_reason?: string | null; source_kind?: string | null; contact_context?: {excerpt:string;source_url:string}|null; currentness_held?: boolean; window_held?: boolean; stored_intent?: number | null; stored_why?: string | null; source_check?: {fetch_status:string;quote_match:boolean;company_named:boolean;contact_match:boolean;checked_at:number} | null; sequence?: { status: string; step: number; next_due_at: number | null; stop_reason: string | null } | null; id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; human_confirmed_at: number | null; human_confirmed_from: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; watch_new?: number; seen_before?: number; stage?: string | null; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string; entity_status?: 'heuristic' | 'unconfirmed' | null }[]; events?: { id: string; event_type: string; summary: string; source_url: string; source_published_at: string | null; last_seen_at: number; fresh: boolean; entity_status?: 'heuristic' | 'unconfirmed' | null }[]; priority?: { graded: boolean; fit: number | null; intent: number | null; action: number | null; evidence_score: number; reasons: string[]; uncounted: string[] } | null; lookalike?: { state: 'insufficient' | 'scored'; cohort_size: number; matches: number; matched_on: string[] } | null }
 interface Icp { summary: string; who: string[]; industries: string[]; sizes: string[]; where: string[]; signals: string[]; exclude: string[]; country?: string; language?: string; window_days?: number }
 interface JobSummary { id: string; status: string; error: string | null; query: string | null; business_name: string; csv_domain: string | null; created_at: number; finished_at: number | null; candidates: number | null; verified: number | null; needs_review: number | null; dropped: number | null; lead_count: number; test_only: boolean }
@@ -208,8 +211,7 @@ export default function LeadsClient() {
     if (r.ok) setLeads(ls => ls.map(l => l.id === leadId ? { ...l, review_reason: l.human_confirmed_from === 'legacy_currentness_review' ? null : l.human_confirmed_from, human_confirmed_at: null, human_confirmed_from: null, currentness_held: l.confidence !== null || !!l.window_held } : l))
   }
   // Quarantine (wrong company / wrong contact details): kept with its evidence, never drafted, sent or exported. Reversible.
-  async function quarantine(leadId: string, release = false) {
-    const reason = 'Wrong company or wrong contact details'
+  async function quarantine(leadId: string, release = false, reason = 'Wrong company or wrong contact details') {
     const r = await fetch(`/api/leads/${leadId}/quarantine`, { method: release ? 'DELETE' : 'POST', headers: { 'content-type': 'application/json' }, body: release ? '{}' : JSON.stringify({ reason }) })
     if (r.ok) setLeads(ls => ls.map(l => l.id === leadId ? { ...l, quarantined_at: release ? null : Math.floor(Date.now() / 1000), quarantine_reason: release ? null : reason } : l))
   }
@@ -235,7 +237,19 @@ export default function LeadsClient() {
     } catch { /* keep the generic message */ }
     setReviewMsg(m => ({ ...m, [leadId]: msg }))
   }
-  async function makeDraft(leadId: string) {
+  // Approve on the card = the existing Draft email action: it creates a draft for review in Outreach and never sends.
+  // The server (createDraft) re-checks every identity, quote, date and contact gate.
+  // In flight: one request per click burst; after a failure the button comes back so the user can retry.
+  const [approving, setApproving] = useState<Record<string, boolean>>({})
+  const [approved, setApproved] = useState<Record<string, boolean>>({})
+  const approvingRef = useRef<Set<string>>(new Set())
+  async function approveLead(leadId: string) {
+    if (approvingRef.current.has(leadId)) return
+    approvingRef.current.add(leadId); setApproving(a => ({ ...a, [leadId]: true }))
+    try { if (await makeDraft(leadId)) setApproved(a => ({ ...a, [leadId]: true })) }
+    finally { approvingRef.current.delete(leadId); setApproving(a => ({ ...a, [leadId]: false })) }
+  }
+  async function makeDraft(leadId: string): Promise<boolean> {
     // Network failure or a non-JSON body (proxy page, server error) must still show a message, never an unhandled rejection.
     let ok = false
     let message = 'Could not create the draft'
@@ -246,6 +260,7 @@ export default function LeadsClient() {
       if (!ok && typeof j?.error === 'string' && j.error) message = j.error
     } catch { /* offline or aborted: keep the fixed message */ }
     setDrafted(d => ({ ...d, [leadId]: ok ? 'Draft created from the free template. Review it in Outreach - the AI rewrite there is a separate click that uses your key.' : message }))
+    return ok
   }
 
   async function preview(e: React.FormEvent) {
@@ -629,10 +644,33 @@ export default function LeadsClient() {
             : <p className="p-10 text-center text-gray-500 text-sm">{emptyLeadsMessage(status, 0, hiddenCount, quality?.needs_review) ?? ''}</p>
         ) : visibleLeads.map(l => (
           <div key={l.id} className="p-4 text-sm">
+            {(() => {
+              const c = leadCardSummary(l, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')
+              return <div data-testid="lead-card">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="font-medium">{l.company_domain ? <a className="underline decoration-black/30" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{c.company}</a> : c.company}{!!l.watch_new && <span className="ml-2 text-[10px] uppercase tracking-wide text-[#111] border border-black/30 px-1 py-0.5">new</span>}</div>
+                    <div className="text-[#555] text-xs">{c.contact ?? 'No contact found yet'}</div>
+                    {c.contactStatus && <div data-testid="contact-status" className={`text-xs ${c.contactStatus.confirmed ? 'text-[#555]' : 'text-[#111] font-medium border-l-2 border-black pl-2 mt-0.5'}`}>{c.contactStatus.text}</div>}
+                  </div>
+                  {!l.quarantined_at && <div className="flex gap-2 shrink-0">
+                    <button onClick={() => approveLead(l.id)} disabled={!c.approve.ok || !!approving[l.id] || !!approved[l.id]} title={c.approve.ok ? 'Creates a draft for you to review in Outreach. Nothing is sent.' : c.approve.reason} className="btn-primary text-xs px-3 py-1.5">Approve</button>
+                    <button onClick={() => quarantine(l.id, false, REJECT_REASON)} className="btn-ghost text-xs px-3 py-1.5">Reject</button>
+                  </div>}
+                </div>
+                <p className="mt-2">{c.why}</p>
+                <p className="text-xs text-[#555] mt-1"><a className="underline" href={c.sourceUrl} target="_blank" rel="noopener noreferrer nofollow">{c.sourceHost}</a> · {c.date}</p>
+                {l.quarantined_at
+                  ? <p className="text-xs mt-2">{l.quarantine_reason === REJECT_REASON ? 'Rejected' : `Quarantined: ${l.quarantine_reason ?? 'by you'}`}. Kept with its evidence; it will not be drafted, sent or exported. <button className="underline" onClick={() => quarantine(l.id, true)}>Undo</button></p>
+                  : drafted[l.id] ? <p className="text-xs mt-2" role="status">{drafted[l.id]} {drafted[l.id].startsWith('Draft created') && <a className="underline" href="/app/outreach">Open Outreach</a>}</p>
+                  : !c.approve.ok ? <p className="text-xs text-[#555] mt-2">To approve: {c.approve.reason}</p> : null}
+              </div>
+            })()}
+            <details className="mt-2 text-sm">
+              <summary className="text-xs text-[#555] cursor-pointer">Details</summary>
+              <div className="mt-2">
             {l.sequence && <p className="text-xs text-[#555] mb-2">Sequence: {l.sequence.status} / {l.sequence.step} steps sent{l.sequence.next_due_at ? ` / next due ${new Date(l.sequence.next_due_at * 1000).toLocaleString()}` : ''}{l.sequence.stop_reason ? ` (${l.sequence.stop_reason})` : ''}</p>}
-            {l.quarantined_at
-              ? <p className="text-xs text-red-700 mb-2">Quarantined: {l.quarantine_reason ?? 'by you'}. Kept with its evidence; it cannot be drafted, sent or exported. <button className="underline" onClick={() => quarantine(l.id, true)}>Release</button></p>
-              : <p className="text-xs mb-1"><button className="underline text-[#555]" onClick={() => quarantine(l.id)}>Quarantine (wrong company or contacts)</button></p>}
+            {!l.quarantined_at && <p className="text-xs mb-1"><button className="underline text-[#555]" onClick={() => quarantine(l.id)}>Quarantine (wrong company or contacts)</button></p>}
 <div className="font-medium">{l.company_domain ? <a className="underline decoration-white/30 hover:decoration-white" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{l.company || l.name}</a> : (l.company || l.name)} <span className="text-gray-500">{scoreLabel(l.score, l.fit, l.intent, l.source_kind)}</span>
               {!!l.watch_new && <span className="ml-2 text-[10px] uppercase tracking-wide text-green-300 border border-green-300/30 px-1 py-0.5">new</span>}
               {l.stage === 'booked_call' && <span className="ml-2 text-[10px] uppercase tracking-wide text-blue-300 border border-blue-300/30 px-1 py-0.5">booked call</span>}
@@ -750,12 +788,14 @@ export default function LeadsClient() {
                 {draftTo && domainReviewFor(l, l.enrichments).state !== 'required' && (l.confidence !== null || l.human_confirmed_at !== null) && !(l.fit === 0 && l.intent === null) && (
                   drafted[l.id]
                     ? <span className="text-gray-400 text-xs ml-3">{drafted[l.id]}</span>
-                    : l.currentness_held ? <button onClick={()=>confirmReview(l.id)} className="font-mono text-xs border border-black px-2 py-1">I reviewed the source - use for drafting (not consent)</button> : <button onClick={() => makeDraft(l.id)} className="font-mono text-xs uppercase border border-black px-2 py-1 ml-3 hover:bg-black hover:text-white">Draft email</button>)}
+                    : l.currentness_held ? <button onClick={()=>confirmReview(l.id)} className="font-mono text-xs border border-black px-2 py-1">I reviewed the source - use for drafting (not consent)</button> : <button onClick={() => void approveLead(l.id)} className="font-mono text-xs uppercase border border-black px-2 py-1 ml-3 hover:bg-black hover:text-white">Draft email</button>)}
               </>
             })()}
             {crmOn && (pushed[l.id]
               ? <span className="text-gray-400 text-xs ml-2">{pushed[l.id]}</span>
               : <button onClick={() => pushCrm(l.id)} className="font-mono text-xs uppercase border border-black px-2 py-1 ml-2 hover:bg-black hover:text-white">Push to CRM</button>)}
+              </div>
+            </details>
           </div>
         ))}
       </div>
