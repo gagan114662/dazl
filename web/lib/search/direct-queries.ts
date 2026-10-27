@@ -43,10 +43,14 @@ const tokens = (text: string) => text.toLowerCase().split(new RegExp(`[^${L}+#&]
 // the search matches them exactly. The request's own words are used first; profile signals only when the request names
 // no role. At most 3 phrases.
 const JOINERS = new Set(['of', 'for', '&', 'de', 'da', 'do', 'del', 'des', 'du', 'di', 'von', 'für'])
+// A part of the request about a FUNDING event is a different signal, not a role: ("raised seed funding" OR "sales") on a
+// job board matches no posting. Funding words are cut from role extraction unless the same part also talks about hiring.
+const FUNDING = word('rais(?:e|ed|es|ing)|fund(?:ing|ed|s)?|seed|series [a-e]|rounds?|invest(?:ed|ment|ments|ors?)|venture|valuation|financiamento|investimento|financiación|inversión|levée|finanzierung|finanziamento')
 function phrasesIn(text: string, places: Set<string>): string[] {
   const out: string[] = []
   for (const part of text.toLowerCase().split(SEPARATOR)) {
     if (!part) continue
+    if (FUNDING.test(part) && !HIRING.test(part)) continue
     let run: string[] = []; let last: string[] = []
     for (const w of tokens(part)) {
       const keep = [...w].length >= 2 && !/^\d+$/.test(w) && !NOISE.has(w) && !places.has(w) && !JOINERS.has(w)
@@ -60,9 +64,22 @@ function phrasesIn(text: string, places: Set<string>): string[] {
   }
   return out
 }
+// Instruction clauses are not roles. Live acceptance run (2026-10-26, #204): requests that also said what to leave out or
+// what the user needs ("exclude chains", "I need founder contacts and dated evidence", "in the past 90 days") produced
+// role groups such as ("past" OR "exclude agencies" OR "need founder contacts") for the applicant-tracking hosts, a query
+// no posting can match. Before phrases are extracted, exclusion/requirement clauses and the time window are cut from the
+// request text. This only removes words from role extraction; it never adds a role, a host or a place, so the search
+// cannot become broader, and the exclusion and window still reach the profile, the search window and the gates.
+const CUE = '(?:exclud\\p{L}*|except(?:ing)?|without|skip|avoid|ignore|ignoring|need|needs|needed|require[sd]?|requiring|must|ensure|make sure|want|wants|please|only if|i.d like|we.d like|' +
+  'exclu\\p{L}*|excluindo|sem|preciso|precisamos|necessito|excluir|excluyendo|sin|necesito|necesitamos|exclure|excluant|sans|besoin|ausschlie\\p{L}*|ohne|brauche|benötige|escludere|senza|ho bisogno|uitsluiten|zonder|ik heb nodig)'
+const CUE_CLAUSE = new RegExp(`(?<![${L}])(?:(?:i|we|please|por favor|s'il vous plaît)\\s+)?${CUE}(?![${L}])[^.;!?\\n]*`, 'giu')
+const WINDOW_CLAUSE = new RegExp(`(?<![${L}])(?:in|within|over|during|from|nos?|em|dans|innerhalb|binnen)?\\s*(?:the\\s+)?(?:past|last|ultimos?|últimos?|derniers?|letzten?|laatste)\\s+\\d+\\s*\\p{L}+|(?<![${L}])within\\s+\\d+\\s*\\p{L}+`, 'giu')
+export function roleRequestText(request: string): string {
+  return request.replace(CUE_CLAUSE, ' . ').replace(WINDOW_CLAUSE, ' ').replace(/\s+/g, ' ').trim()
+}
 export function rolePhrases(request: string, signals: string[], where: string[]): string[] {
   const places = new Set(where.flatMap(tokens))
-  const fromRequest = phrasesIn(request, places)
+  const fromRequest = phrasesIn(roleRequestText(request), places)
   const all = fromRequest.length ? fromRequest : signals.flatMap(s => phrasesIn(s, places))
   return [...new Set(all)].slice(0, 3)
 }
