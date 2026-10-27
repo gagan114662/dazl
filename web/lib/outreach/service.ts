@@ -440,9 +440,9 @@ export function sendBlockReason(db: Database.Database, tenantId: string, id: str
   try { sendPreChecks(db, tenantId, m) } catch (e) { if (e instanceof OutreachError) return e.code; throw e }
   if (isSuppressed(db, tenantId, m.to_email)) return 'suppressed'
   if (m.approved_hash !== hash(m.to_email, m.subject, m.body)) return 'changed_since_approval'
-  if (o.skipAccount) return null
-  if (!getSettings(db, tenantId)) return 'sender_identity_missing'
-  if (!db.prepare('SELECT 1 FROM gmail_accounts WHERE tenant_id = ?').get(tenantId)) return 'gmail_not_connected'
+  // skipAccount skips only the sender and Gmail checks; the shared daily cap is never skipped.
+  if (!o.skipAccount && !getSettings(db, tenantId)) return 'sender_identity_missing'
+  if (!o.skipAccount && !db.prepare('SELECT 1 FROM gmail_accounts WHERE tenant_id = ?').get(tenantId)) return 'gmail_not_connected'
   if (accountSendCount(db, tenantId, now) + 1 > DAILY_CAP) return 'daily_cap'
   return null
 }

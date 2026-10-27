@@ -133,3 +133,23 @@ test('approve and send are recommended only when their gates accept; setup and h
   assert.deepEqual(next('jC').outreach.approvedHeld, 1)
   assert.doesNotMatch(next('jC').next.label, /send|approve/i)
 })
+
+// Instinct #239 (15e2948): skipAccount skips only sender/Gmail, never the daily cap. Missing setup plus an exhausted cap
+// is held (the cap refuses too), never "waiting on setup".
+test('missing setup plus an exhausted daily cap counts as held, not setup', () => {
+  const db = setup()
+  job(db, 'A', 'jX', 'Cap'); lead(db, 'jX', 'x1', { confidence: null, excerpt: null, confirmed: 5, contact: 'hi@cap.example' }); finish(db, 'jX'); msg(db, 'A', 'x1', 'draft')
+  saveSettings(db, 'A', { sender_name: 'Dana', postal_address: '1 Main St, Columbus OH 43004' })
+  db.prepare("INSERT INTO gmail_accounts (tenant_id, email, refresh_ct, status) VALUES ('A', 'me@example.test', 'x', 'active')").run()
+  approve(db, 'A', 'm-x1')
+  // 20 sends in the last 24 hours exhaust the shared cap; then sender details and Gmail go away.
+  const now = Math.floor(Date.now() / 1000)
+  for (let i = 0; i < 20; i++) db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, claimed_at, sent_at) VALUES (?, 'A', ?, ?, 'Hello', 'A body that is long enough to pass the check.', 'sent', ?, ?)").run(`s${i}`, `sent-lead-${i}`, `p${i}@example.test`, now, now)
+  db.prepare("DELETE FROM outreach_settings WHERE tenant_id = 'A'").run()
+  db.prepare("DELETE FROM gmail_accounts WHERE tenant_id = 'A'").run()
+  assert.equal(sendBlockReason(db, 'A', 'm-x1'), 'sender_identity_missing')
+  assert.equal(sendBlockReason(db, 'A', 'm-x1', { skipAccount: true }), 'daily_cap', 'the cap is checked even when the account checks are skipped')
+  const c = listCampaigns(db, 'A').find(x => x.id === 'jX')!
+  assert.deepEqual([c.outreach.approvedReady, c.outreach.approvedSetup, c.outreach.approvedHeld], [0, 0, 1])
+  assert.doesNotMatch(c.next.label, /sender details|connect Gmail|send/i)
+})
