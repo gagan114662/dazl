@@ -90,18 +90,23 @@ export default function RepliesClient() {
         Email replies to your outreach are in <a className="underline" href="/app/inbox">Inbox</a>.
       </p>
 
+      {/* Nothing here can work until the operator enables Reddit or X, so only this notice is shown: no searches, no
+          check button, no key prompt (threads saved earlier still appear below). */}
       {!anyPlatform && (
-        <div className="card p-4 mb-6 text-sm text-[#555]">Reddit/X access is not enabled on this deployment, so threads cannot be collected here.</div>
+        <div className="card p-4 mb-6 text-sm" data-testid="social-coming-soon">
+          <p className="font-medium">Coming soon on this workspace</p>
+          <p className="text-[#555] mt-1">Reddit and X access is not enabled here, so dazl cannot look for threads yet. There is nothing for you to set up.</p>
+        </div>
       )}
       {anyPlatform && !state.consent && (
         <div className="card p-4 mb-6 text-sm text-[#555]">Reddit/X collection needs your consent and your own session in <a className="underline" href="/app/settings">Settings</a> first. Nothing is collected until then.</div>
       )}
-      {!state.has_key && (
+      {anyPlatform && !state.has_key && (
         <div className="card p-4 mb-6 text-sm text-[#555]">Reply drafts use your own AI key - add one in <a className="underline" href="/app/settings">Settings</a>.</div>
       )}
 
-      <ThreadMetrics />
-      <div className="card p-6 mb-8">
+      {anyPlatform && <ThreadMetrics />}
+      {anyPlatform && <div className="card p-6 mb-8">
         <h2 className="font-semibold mb-1">Searches</h2>
         <p className="text-[#555] text-sm mb-3">Up to 5 short searches for the questions your buyers ask, like &quot;outbound tool&quot; or &quot;cold email software&quot;.</p>
         <div className="flex gap-2 mb-3">
@@ -123,10 +128,10 @@ export default function RepliesClient() {
           )}
         </div>
         {msg && <p className="text-sm text-[#555] mt-3">{msg}</p>}
-      </div>
+      </div>}
 
       {state.threads.length === 0 ? (
-        <p className="text-sm text-[#999]">No threads yet. Add a search above and check for new threads.</p>
+        anyPlatform && <p className="text-sm text-[#999]">No threads yet. Add a search above and check for new threads.</p>
       ) : state.threads.map(t => (
         <div key={t.id} className="card p-6 mb-4">
           <div className="flex items-center gap-2 mb-1 text-xs">

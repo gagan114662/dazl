@@ -2,7 +2,9 @@
 // Run:  cd web && npm run build && node test/ui/social.ui.mjs   (SHOTS=<dir> also saves screenshots)
 // Real production build, throwaway database, server under test/helpers/net-fence.ts, every /api/* call stubbed in the
 // browser. It proves: the nav says "Social opportunities" (no "Replies" entry), the old URL /app/replies still opens it,
-// its heading matches, it points email replies to Inbox, and the Inbox nav entry is unchanged.
+// its heading matches, it points email replies to Inbox, and the Inbox nav entry is unchanged. And availability:
+// with Reddit/X not enabled, only a "Coming soon on this workspace" notice shows (no search box, no Add/Check buttons,
+// no key prompt, no metrics); with it enabled, the searches card is there and the notice is not.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -27,13 +29,14 @@ const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'sta
 for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
 const b = await chromium.launch()
 try {
+  let enabled = false
   const ctx = await b.newContext({ viewport: { width: 1280, height: 800 } })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
   await ctx.route('**/*', async route => {
     const u = new URL(route.request().url())
     if (u.origin !== base) return route.abort()
     if (!u.pathname.startsWith('/api/')) return route.continue()
-    if (u.pathname === '/api/replies') return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ queries: [], threads: [], platforms: { reddit: false, x: false }, consent: false, has_key: true }) })
+    if (u.pathname === '/api/replies') return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ queries: [], threads: [], platforms: { reddit: enabled, x: false }, consent: enabled, has_key: false }) })
     return route.fulfill({ status: 404, contentType: 'application/json', body: '{}' })
   })
   const page = await ctx.newPage()
@@ -46,6 +49,21 @@ try {
   assert.equal(await nav.getByRole('link', { name: 'Social opportunities' }).getAttribute('href'), '/app/replies')
   assert.equal((await page.locator('main h1').textContent()).trim(), 'Social opportunities')
   assert.equal(await page.locator('main').getByRole('link', { name: 'Inbox' }).getAttribute('href'), '/app/inbox')
+  // Not enabled on this workspace: nothing that cannot work is offered.
+  const main = page.locator('main').last() // the page renders its own <main> inside the layout's
+  assert.equal(await page.getByTestId('social-coming-soon').isVisible(), true)
+  assert.match(await page.getByTestId('social-coming-soon').textContent(), /Coming soon on this workspace/)
+  assert.equal(await main.getByRole('button').count(), 0, 'no Add or Check buttons')
+  assert.equal(await main.locator('input, textarea').count(), 0, 'no search box')
+  assert.equal(await main.getByRole('heading', { name: 'Searches' }).count(), 0, 'no searches card')
+  assert.doesNotMatch(await main.innerText(), /Check for new threads|Reply drafts use your own AI key|No threads yet/)
+  // Enabled (with consent): the searches card is there and the notice is gone.
+  enabled = true
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.getByRole('heading', { name: 'Searches' }).waitFor()
+  assert.equal(await page.getByTestId('social-coming-soon').count(), 0)
+  assert.equal(await main.getByRole('button', { name: 'Check for new threads' }).count(), 1)
+  if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, 'social-enabled.png') })
   console.log('social opportunities UI check passed')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
