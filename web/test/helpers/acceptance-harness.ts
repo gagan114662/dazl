@@ -31,6 +31,7 @@ export interface Fixture {
   tfPages: Record<string, { title: string; text: string }>   // SYNTHETIC TinyFish fetch results
   own: Record<string, { title: string; text: string } | 'blocked' | 'js_required' | 'not_found'>   // SYNTHETIC verifier own-fetch results
   extraction: Cand[]                       // SYNTHETIC extraction reply (real parseLeads runs on it)
+  deps?: Record<string, unknown>           // extra runJob deps (e.g. memory exclusions)
 }
 export async function runFixture(f: Fixture) {
   resetTinyfishState()

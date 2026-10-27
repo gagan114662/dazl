@@ -10,7 +10,7 @@ import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { runFixture, daysAgo, type Fixture, type Cand } from './helpers/acceptance-harness.ts'
 
 const TXT = (q: string) => `Posted ${daysAgo(5)}. ${q}. ${'The practice serves families in Manhattan every week. '.repeat(8)}`
-const mk = (company: string, url: string, q = `${company} opened a second Manhattan dental office this month`) => ({ name: '', company, contact: null, signal: 's', source_url: url, score: 70, excerpt: q, event_date: daysAgo(5) })
+const mk = (company: string, url: string, q = `${company} opened a second Manhattan dental office this month`) => ({ name: '', company, contact: null as string | null, signal: 's', source_url: url, score: 70, excerpt: q, event_date: daysAgo(5) })
 const pageFor = (map: Record<string, string>) => async (u: string) => ({ text: TXT(map[u]), title: 'Dental news', retrievedAt: 1 })
 async function report(cands: ReturnType<typeof mk>[], map: Record<string, string>, judge?: (c: unknown, p: string) => Promise<'supports' | 'contradicts' | 'unclear' | 'unavailable'>) {
   const audit: CandidateAudit[] = []
