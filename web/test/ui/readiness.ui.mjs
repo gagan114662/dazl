@@ -7,7 +7,9 @@
 //   2. each missing item has its fix in place: business and sender save inline, the key is one inline field, and Gmail
 //      links to Settings (where its consent text is) - Home never starts the Google grant itself;
 //   3. after each inline fix the row turns done from re-read server state;
-//   4. "Your plays" lists own searches newest first with their outcome, linked to their leads.
+//   4. "Your plays" lists own searches newest first with their outcome, linked to their leads: source-checked and
+//      needs-review counts separately (a done search with 0 verified / 5 needing review never reads "5 leads"), old
+//      records without counts say "checks not recorded", cancelled runs say "cancelled".
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -33,7 +35,15 @@ for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } ca
 
 const now = Math.floor(Date.now() / 1000)
 const job = (id, query, created_at, o = {}) => ({ id: id.repeat(24), status: 'done', error: null, query, business_name: '', csv_domain: null, created_at, finished_at: created_at, candidates: 5, verified: 2, needs_review: 1, dropped: 2, lead_count: 3, test_only: false, ...o })
-const JOBS = [job('a', 'Dental practice owners in Ohio - opened a new location', now - 3000), job('b', 'Clinic administrators in NYC - hiring front-desk staff', now - 1000, { lead_count: 1 }), job('c', 'Orthodontists in Austin', now - 500, { status: 'failed', error: 'no_candidates', lead_count: 0 }), job('d', null, now - 100, { csv_domain: 'acme.com' })]
+const JOBS = [
+  job('a', 'Dental practice owners in Ohio - opened a new location', now - 3000, { verified: 2, needs_review: 1 }),
+  // The real NYC shape from Instinct's review: done, five leads, none source-checked.
+  job('b', 'Clinic administrators in NYC - hiring front-desk staff', now - 1000, { lead_count: 5, verified: 0, needs_review: 5 }),
+  job('c', 'Orthodontists in Austin', now - 500, { status: 'failed', error: 'no_candidates', lead_count: 0 }),
+  job('e', 'Old search from before the counts', now - 4000, { verified: null, needs_review: null, candidates: null, dropped: null }),
+  job('f', 'Cancelled search', now - 200, { status: 'failed', error: 'cancelled', lead_count: 0 }),
+  job('d', null, now - 100, { csv_domain: 'acme.com' }),
+]
 const state = { hasKey: false, sender: null }
 const writes = []
 const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: 1280, height: 1000 } })
@@ -70,8 +80,15 @@ try {
 
   // Plays: own searches newest first with their outcome; the CSV import is not a play.
   const plays = page.getByRole('list', { name: 'Your plays' }).getByRole('listitem')
-  assert.deepEqual(await plays.allTextContents(), ['Orthodontists in Austinfailed', 'Clinic administrators in NYC - hiring front-desk staff1 lead', 'Dental practice owners in Ohio - opened a new location3 leads'])
-  assert.equal(await plays.nth(1).getByRole('link').getAttribute('href'), `/app/leads?job_id=${'b'.repeat(24)}`)
+  assert.deepEqual(await plays.allTextContents(), [
+    'Cancelled searchcancelled',
+    'Orthodontists in Austinfailed',
+    'Clinic administrators in NYC - hiring front-desk staff0 source-checked, 5 need your review',
+    'Dental practice owners in Ohio - opened a new location2 source-checked, 1 needs your review',
+    'Old search from before the counts3 leads, checks not recorded',
+  ])
+  assert.doesNotMatch(await page.getByRole('list', { name: 'Your plays' }).textContent(), /\b5 leads\b/, 'research-only leads are never shown as yield')
+  assert.equal(await plays.nth(2).getByRole('link').getAttribute('href'), `/app/leads?job_id=${'b'.repeat(24)}`)
 
   // Inline fixes; each row turns done from re-read state.
   await row('site').getByRole('button', { name: 'Add' }).click()

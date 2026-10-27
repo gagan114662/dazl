@@ -32,7 +32,19 @@ test('Gmail that needs reconnecting and a half-filled sender are to-dos', () => 
 })
 
 test('plays: own searches newest first with their outcome; imports and fixtures excluded', () => {
-  const j = (id: string, created_at: number, o: object = {}) => ({ id, status: 'done', error: null, query: `q${id}`, csv_domain: null, created_at, lead_count: 3, ...o })
-  const p = recentPlays([j('1', 1), j('2', 3, { status: 'failed' }), j('3', 2, { lead_count: 1 }), j('4', 4, { csv_domain: 'acme.com' }), j('5', 5, { test_only: true }), j('6', 6, { status: 'running', query: null })])
-  assert.deepEqual(p, [{ id: '2', query: 'q2', outcome: 'failed' }, { id: '3', query: 'q3', outcome: '1 lead' }, { id: '1', query: 'q1', outcome: '3 leads' }])
+  const j = (id: string, created_at: number, o: object = {}) => ({ id, status: 'done', error: null, query: `q${id}`, csv_domain: null, created_at, lead_count: 3, verified: 3, needs_review: 0, ...o })
+  const p = recentPlays([j('1', 1), j('2', 3, { status: 'failed' }), j('3', 2, { lead_count: 1, verified: 1 }), j('4', 4, { csv_domain: 'acme.com' }), j('5', 5, { test_only: true }), j('6', 6, { status: 'running', query: null })])
+  assert.deepEqual(p, [{ id: '2', query: 'q2', outcome: 'failed' }, { id: '3', query: 'q3', outcome: '1 source-checked, 0 need your review' }, { id: '1', query: 'q1', outcome: '3 source-checked, 0 need your review' }])
+})
+
+// Instinct #234: a finished search whose leads are all research-only must not read as "5 leads" of yield.
+test('plays never present research-only leads as yield; old records and cancelled runs say what they are', () => {
+  const j = (o: object) => recentPlays([{ id: 'x', status: 'done', error: null, query: 'q', csv_domain: null, created_at: 1, lead_count: 5, ...o }])[0].outcome
+  assert.equal(j({ verified: 0, needs_review: 5 }), '0 source-checked, 5 need your review', 'the real NYC shape: all five need review')
+  assert.equal(j({ verified: 2, needs_review: 3 }), '2 source-checked, 3 need your review')
+  assert.equal(j({ verified: 0, needs_review: 1, lead_count: 1 }), '0 source-checked, 1 needs your review')
+  assert.equal(j({ verified: 0, needs_review: 0, lead_count: 0 }), '0 source-checked, 0 need your review')
+  assert.equal(j({ verified: null, needs_review: null }), '5 leads, checks not recorded', 'old record: never a bare yield number')
+  assert.equal(j({ status: 'failed', error: 'cancelled' }), 'cancelled')
+  assert.equal(j({ status: 'failed', error: 'no_candidates' }), 'failed')
 })

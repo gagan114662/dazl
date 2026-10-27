@@ -29,13 +29,23 @@ export function readinessRows(i: ReadinessInput): Row[] {
   return [site, key, gmail, sender]
 }
 
-export interface JobRow { id: string; status: string; error: string | null; query: string | null; csv_domain: string | null; created_at: number; lead_count: number; test_only?: boolean }
+export interface JobRow { id: string; status: string; error: string | null; query: string | null; csv_domain: string | null; created_at: number; lead_count: number; verified?: number | null; needs_review?: number | null; test_only?: boolean }
 export interface Play { id: string; query: string; outcome: string }
 
 // The account's own searches, newest first, with what each produced. Imports and test fixtures are not plays.
+// A finished search reports source-checked and needs-review counts separately (the same words as the Leads history):
+// research-only leads are never shown as yield. Older records without those counts say so instead of a bare total.
 export function recentPlays(jobs: JobRow[], limit = 5): Play[] {
   return jobs.filter(j => j.query && !j.csv_domain && !j.test_only)
     .sort((a, b) => b.created_at - a.created_at)
     .slice(0, limit)
-    .map(j => ({ id: j.id, query: j.query!, outcome: j.status === 'done' ? `${j.lead_count} lead${j.lead_count === 1 ? '' : 's'}` : j.status === 'failed' ? 'failed' : 'running' }))
+    .map(j => ({ id: j.id, query: j.query!, outcome: outcomeOf(j) }))
+}
+
+function outcomeOf(j: JobRow): string {
+  if (j.status === 'failed') return j.error === 'cancelled' ? 'cancelled' : 'failed'
+  if (j.status !== 'done') return 'running'
+  if (j.verified == null && j.needs_review == null) return `${j.lead_count} lead${j.lead_count === 1 ? '' : 's'}, checks not recorded`
+  const review = j.needs_review ?? 0
+  return `${j.verified ?? 0} source-checked, ${review} need${review === 1 ? 's' : ''} your review`
 }
