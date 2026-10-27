@@ -4,30 +4,18 @@
 import { createHash } from 'node:crypto'
 import { isLoginWalled } from '../search/tinyfish.ts'
 
-import { COPY_ORIGIN } from './evidence-origin.ts'
+import { COPY_ORIGIN, canonicalUrl } from './evidence-origin.ts'
 export { COPY_ORIGIN }
 // A copy shorter than this is an error page, a stub or a consent notice, not an article.
 export const MIN_COPY_CHARS = 400
+// A used copy is stored whole (scan/evidence-copies.ts); anything larger is not used rather than stored cut.
+export const MAX_COPY_BYTES = 256 * 1024
 // Own-fetch failures a copy may answer. login_required is deliberately absent: those pages are walled, not merely blocked.
 export const COPY_FAILURES = ['blocked_by_site', 'needs_javascript'] as const
 
 export interface HeldPage { url: string; title: string; text: string; sha256: string; heldAt: number }
 
-// URL identity for matching. Scheme and host are case-insensitive, default ports and the fragment do not name a different
-// page, one trailing slash on a non-root path is the same page. EVERYTHING ELSE is significant, including the query string
-// (an aggregator's id parameter picks the page) and www. versus bare host: no alias, no tracking-parameter stripping, no redirect
-// following. Returns null for anything that is not a plain http(s) URL.
-export function canonicalUrl(raw: string): string | null {
-  try {
-    const u = new URL(raw)
-    if (u.protocol !== 'https:' && u.protocol !== 'http:') return null
-    if (u.username || u.password) return null
-    u.hash = ''
-    let path = u.pathname
-    if (path.length > 1 && path.endsWith('/')) path = path.slice(0, -1)
-    return `${u.protocol}//${u.host.toLowerCase()}${path}${u.search}`
-  } catch { return null }
-}
+export { canonicalUrl }
 
 // Login, consent, bot-check and JavaScript-required notices. A real article that merely mentions "sign in" is long and is
 // still held to the verbatim-quote rule; this refuses the pages whose BODY is the notice.
@@ -46,7 +34,7 @@ export function looksTruncated(text: string): boolean {
   return /(…|\.\.\.|\[(?:truncated|\.\.\.)\]|\(truncated\)|read more|see more|continue reading|show more)\s*$/i.test(tail)
 }
 
-export type CopyRefusal = 'walled_host' | 'no_copy' | 'wrong_attempt' | 'too_short' | 'wall_text' | 'truncated' | 'failure_not_eligible'
+export type CopyRefusal = 'walled_host' | 'no_copy' | 'wrong_attempt' | 'too_short' | 'wall_text' | 'truncated' | 'too_large' | 'failure_not_eligible'
 
 // Sealed once per scan attempt. The map is built here and frozen; callers get copies of the entries, never the map.
 export class HeldText {
@@ -77,6 +65,7 @@ export class HeldText {
     const p = k ? this.pages.get(k) : undefined
     if (!p) return { ok: false, refusal: 'no_copy' }
     if (isLoginWalled(p.url)) return { ok: false, refusal: 'walled_host' }
+    if (Buffer.byteLength(p.text) > MAX_COPY_BYTES) return { ok: false, refusal: 'too_large' }
     if (p.text.replace(/\s+/g, ' ').trim().length < MIN_COPY_CHARS) return { ok: false, refusal: 'too_short' }
     if (looksLikeWall(p.text)) return { ok: false, refusal: 'wall_text' }
     if (looksTruncated(p.text)) return { ok: false, refusal: 'truncated' }

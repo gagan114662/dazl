@@ -13,8 +13,12 @@ import { migrateEvents } from '../lib/events/store.ts'
 import type { Provider } from '../lib/llm/provider.ts'
 import { resetTinyfishState } from '../lib/search/tinyfish.ts'
 import { claimKeyedJob, runJob, verifyLeads } from '../lib/scan/runner.ts'
-import { HeldText, canonicalUrl, looksLikeWall, looksTruncated, MIN_COPY_CHARS } from '../lib/scan/held-text.ts'
+import { HeldText, canonicalUrl, looksLikeWall, looksTruncated, MIN_COPY_CHARS, MAX_COPY_BYTES } from '../lib/scan/held-text.ts'
 import { evidenceOriginLabel } from '../lib/scan/evidence-origin.ts'
+import { evidenceCopyForLead, storeEvidenceCopy, purgeExpiredEvidenceCopies, MAX_TENANT_COPIES, MAX_COPY_BYTES as MAX_COPY_STORED } from '../lib/scan/evidence-copies.ts'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { rmSync } from 'node:fs'
 
 const master = randomBytes(32)
 process.env.DAZL_MASTER_KEY = master.toString('base64')
@@ -27,14 +31,15 @@ const URL_ = 'https://jobs.example/hf'
 const REQUEST = 'Find Ohio companies with 10 to 100 employees that recently posted a payroll, HR or office manager job'
 const ICP = { summary: 'Ohio SMBs hiring payroll', who: ['Controller'], industries: [], sizes: ['10-100 employees'], where: ['Ohio'], signals: ['payroll job'], exclude: [] }
 
-interface Opt { own?: 'blocked' | 'js_required' | 'ok'; tf?: { url?: string; title?: string; text: string } | null; cited?: string; company?: string; excerpt?: string; eventDate?: string | null }
+interface Opt { own?: 'blocked' | 'js_required' | 'ok'; tf?: { url?: string; title?: string; text: string } | null; cited?: string; company?: string; excerpt?: string; eventDate?: string | null; file?: string; fullTenant?: boolean }
 async function scan(o: Opt = {}) {
   const cited = o.cited ?? URL_
-  const db = new Database(':memory:')
+  const db = new Database(o.file ?? ':memory:')
   migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
   saveKey(db, 'A', 'anthropic', KEY, master)
   createQueryJob(db, 'A', { query: REQUEST, icp: JSON.stringify(ICP) })
   const job = claimKeyedJob(db)!
+  if (o.fullTenant) for (let i = 0; i < MAX_TENANT_COPIES; i++) { const t = `filler ${i} `.repeat(80); storeEvidenceCopy(db, 'A', 'oldjob', 1, { url: `https://filler.example/${i}`, title: '', text: t, sha256: createHash('sha256').update(t).digest('hex'), heldAt: 1 }) }
   const calls = { tfFetch: 0, ownFetch: [] as string[], other: [] as string[] }
   const tf = o.tf === undefined ? { text: BODY } : o.tf
   const fetchImpl = (async (u: string) => {
@@ -59,7 +64,7 @@ async function scan(o: Opt = {}) {
   globalThis.fetch = fetchImpl; process.env.TINYFISH_API_KEY = 'tf-test'
   try {
     const r = await runJob(db, job, { providers, master, fetchPage, fetchImpl, score: false, judge: null, ground: false })
-    const rows = db.prepare('SELECT company, source_url, review_reason, confidence, evidence_excerpt, evidence_origin, own_fetch_failure, evidence_copy_sha256, retrieved_at FROM leads').all() as Record<string, unknown>[]
+    const rows = db.prepare('SELECT id, company, source_url, review_reason, confidence, evidence_excerpt, evidence_origin, own_fetch_failure, evidence_copy_sha256, evidence_copy_id, retrieved_at FROM leads').all() as Record<string, unknown>[]
     return { r, rows, calls, db }
   } finally { globalThis.fetch = realFetch; delete process.env.TINYFISH_API_KEY }
 }
@@ -73,12 +78,49 @@ test('own fetch blocked + TinyFish text for the exact URL with the quote: verifi
   assert.equal(row.evidence_origin, 'tinyfish_copy'); assert.equal(row.own_fetch_failure, 'blocked_by_site')
   assert.equal(row.evidence_copy_sha256, createHash('sha256').update(BODY).digest('hex'), 'hash of the exact original text that was checked')
   assert.equal(row.evidence_excerpt, QUOTE, 'the saved quote is the original, unmodified')
+  // the original text is preserved in an immutable tenant-scoped record linked from the lead and survives the in-memory object
+  assert.ok(row.evidence_copy_id)
+  assert.equal(x.db.prepare('SELECT text FROM lead_evidence_copies WHERE id = ?').get(row.evidence_copy_id) !== undefined, true)
   assert.equal(x.calls.tfFetch, 1, 'the single fetch that extraction already made; the verifier added none')
   assert.deepEqual(x.calls.ownFetch, [URL_], 'dazl still tried its own fetch once, and only the cited URL')
   assert.deepEqual(x.calls.other.filter(u => u.includes('jobs.example')), [], 'nothing fetched from the cited site by anyone but the one own fetch (the other stubbed calls are the unrelated post-scan signal feeds)')
   const csv = (exportLeads(x.db, 'A') as Record<string, unknown>[])[0]
   assert.equal(csv.evidence_origin, 'tinyfish_copy'); assert.equal(csv.own_fetch_failure, 'blocked_by_site')
   assert.match(evidenceOriginLabel(String(csv.evidence_origin), String(csv.own_fetch_failure)), /copy of the page fetched by TinyFish.*own fetch.*blocked_by_site.*did not read the page directly/)
+})
+test('the exact original text is recoverable from a fresh database connection after the scan objects are gone; other tenants and expired records see nothing', async () => {
+  const file = join(tmpdir(), `dazl-evidence-${randomBytes(6).toString('hex')}.db`)
+  try {
+    const x = await scan({ file })
+    const leadId = String(x.rows[0].id); const jobId = (x.db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id
+    x.db.close()
+    const db2 = new Database(file)
+    const c = evidenceCopyForLead(db2, 'A', leadId)!
+    assert.equal(c.text, BODY, 'byte-for-byte the text that was checked'); assert.equal(c.integrity, 'ok')
+    assert.equal(c.sha256, createHash('sha256').update(BODY).digest('hex')); assert.equal(c.job_id, jobId); assert.equal(c.attempt, 1); assert.equal(c.source_url, URL_); assert.equal(c.own_fetch_failure, 'blocked_by_site')
+    assert.equal(evidenceCopyForLead(db2, 'B', leadId), null, 'tenant scoped')
+    // immutable: no update ever; no delete while retained
+    assert.throws(() => db2.prepare('UPDATE lead_evidence_copies SET text = ?').run('edited'), /immutable/)
+    assert.throws(() => db2.prepare('DELETE FROM lead_evidence_copies').run(), /retention/)
+    db2.close()
+  } finally { rmSync(file, { force: true }) }
+})
+test('retention and size are bounded: expired rows are the only deletable rows; a full tenant uses no copy; an oversize copy is not used', async () => {
+  const t = (n: number) => `retained ${n} `.repeat(80)
+  const db = new Database(':memory:'); migrateScan(db)
+  const past = Math.floor(Date.now() / 1000) - 91 * 86_400
+  const old = storeEvidenceCopy(db, 'A', 'j', 1, { url: 'https://x.example/old', title: '', text: t(1), sha256: createHash('sha256').update(t(1)).digest('hex'), heldAt: 1 }, past)
+  const fresh = storeEvidenceCopy(db, 'A', 'j', 1, { url: 'https://x.example/new', title: '', text: t(2), sha256: createHash('sha256').update(t(2)).digest('hex'), heldAt: 1 })
+  assert.equal(purgeExpiredEvidenceCopies(db), 1, 'only the expired row goes')
+  assert.equal(db.prepare('SELECT id FROM lead_evidence_copies').all().length, 1); assert.equal((db.prepare('SELECT id FROM lead_evidence_copies').get() as { id: string }).id, fresh); assert.notEqual(old, fresh)
+  assert.throws(() => storeEvidenceCopy(db, 'A', 'j', 1, { url: 'https://x.example/bad', title: '', text: 'abc', sha256: 'f'.repeat(64), heldAt: 1 }), /hash mismatch/)
+  db.close()
+  const full = await scan({ fullTenant: true })
+  assert.equal(full.rows[0].review_reason, 'blocked_by_site', 'no room for another copy: stays in review, nothing partial stored'); assert.equal(full.rows[0].evidence_copy_id, null)
+  const big = `${QUOTE}. ` + 'x'.repeat(MAX_COPY_BYTES)
+  const huge = await scan({ tf: { text: big } })
+  assert.equal(huge.rows[0].review_reason, 'blocked_by_site'); assert.equal(huge.rows[0].evidence_copy_id, null)
+  assert.equal(MAX_COPY_BYTES, MAX_COPY_STORED, 'the verifier limit and the storage limit are the same number')
 })
 test('a JavaScript-only page is eligible too and keeps its own failure name', async () => {
   const x = await scan({ own: 'js_required' })

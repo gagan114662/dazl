@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { primarySignalKind } from './score.ts'
 import { migrateSourceRuns } from './source-runs.ts'
+import { migrateEvidenceCopies } from './evidence-copies.ts'
 
 export const STALE_RUNNING_S = Number(process.env.SCAN_STALE_RUNNING_S || 20 * 60)
 export const MAX_ATTEMPTS = 3
@@ -74,6 +75,7 @@ export function migrateScan(db: Database.Database): void {
   `)
   addColumns(db)
   migrateSourceRuns(db)
+  migrateEvidenceCopies(db)
 }
 
 // Evidence columns. Nullable, so rows written by other workers (Hermes) stay valid:
@@ -96,6 +98,7 @@ function addColumns(db: Database.Database): void {
   add('leads', 'evidence_origin', "TEXT CHECK (evidence_origin IS NULL OR evidence_origin IN ('tinyfish_copy'))") // verified against text TinyFish fetched, not dazl's own read (scan/held-text.ts)
   add('leads', 'own_fetch_failure', 'TEXT') // dazl's own fetch failure for that page, kept beside the copy
   add('leads', 'evidence_copy_sha256', 'TEXT') // hash of the exact copied text that was checked
+  add('leads', 'evidence_copy_id', 'TEXT') // lead_evidence_copies.id: the preserved original text (scan/evidence-copies.ts)
   add('leads', 'human_confirmed_at', 'INTEGER') // the user checked this needs-review lead against its source and chose to use it
   add('leads', 'human_confirmed_from', 'TEXT') // the review_reason it was confirmed out of - provenance, never overwritten
   add('leads', 'company_domain', 'TEXT CHECK (company_domain IS NULL OR length(company_domain) <= 253)')
@@ -251,7 +254,7 @@ export function listLeads(db: Database.Database, userId: string, jobId: string, 
     .prepare(
       `SELECT l.id, l.scan_job_id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.created_at,
 l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
-l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l.quarantine_reason, l.evidence_origin, l.own_fetch_failure, l.evidence_copy_sha256,
+l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l.quarantine_reason, l.evidence_origin, l.own_fetch_failure, l.evidence_copy_sha256, l.evidence_copy_id,
          l.fit, l.intent, l.action, l.why, l.signals, l.icp_match, l.watch_new, l.seen_before, l.stage
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
        WHERE j.id = ? AND j.user_id = ? ${includeHidden ? '' : 'AND (l.fit IS NULL OR l.fit > 1)'}
