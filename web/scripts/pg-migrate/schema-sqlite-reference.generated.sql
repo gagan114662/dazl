@@ -4,6 +4,12 @@ CREATE TABLE advanced_consent (
     PRIMARY KEY (tenant_id, scope)
   );
 
+CREATE TABLE app_leases (
+      name TEXT PRIMARY KEY,
+      owner TEXT NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+
 CREATE TABLE autopilot_audit (
       id TEXT PRIMARY KEY,
       tenant_id TEXT NOT NULL,
@@ -345,6 +351,12 @@ CREATE TABLE outreach_signal_context (
     collectors_json TEXT,
     captured_at INTEGER NOT NULL
   );
+
+CREATE TABLE rate_limits (
+      key TEXT PRIMARY KEY CHECK (length(key) <= 300),
+      count INTEGER NOT NULL,
+      reset_at INTEGER NOT NULL
+    );
 
 CREATE TABLE reopen_messages (
       tenant_id  TEXT NOT NULL,
@@ -727,6 +739,8 @@ CREATE INDEX monitors_due ON monitors (enabled, next_run_at);
 CREATE INDEX newsjacks_tenant ON newsjacks (tenant_id, created_at);
 
 CREATE INDEX outreach_tenant ON outreach_messages (tenant_id, status);
+
+CREATE INDEX rate_limits_reset ON rate_limits (reset_at);
 
 CREATE INDEX reply_threads_tenant ON reply_threads (tenant_id, created_at);
 

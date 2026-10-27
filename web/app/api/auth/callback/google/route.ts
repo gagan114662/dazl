@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
   const clientId = process.env.GOOGLE_CLIENT_ID
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET
   if (!base || !clientId || !clientSecret) return NextResponse.redirect(new URL('/sign-in?error=google_unavailable', base || req.url))
-  if (!rateLimit(`google-cb:${clientIp(req)}`, 20, 10 * 60 * 1000).ok) return back(base, 'too_many')
+  if (!(await rateLimit(`google-cb:${clientIp(req)}`, 20, 10 * 60 * 1000)).ok) return back(base, 'too_many')
 
   const c = parseCookie(req.cookies.get('dazl_oauth')?.value)
   const q = req.nextUrl.searchParams
