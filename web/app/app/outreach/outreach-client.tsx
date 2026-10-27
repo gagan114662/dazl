@@ -9,7 +9,7 @@ interface Msg { send_footer?: string | null; currentness_held?: boolean; provena
 
 const ERR: Record<string, string> = {
   not_sales_contact: 'The published address is for recruitment, support, privacy or another restricted purpose. Saved words remain unchanged; approval and sending are blocked.',
-  sender_identity_missing: 'Add your name and mailing address in Settings first.',
+  sender_identity_missing: 'Add your name and mailing address in the form at the top of this page first.',
   gmail_not_connected: 'Connect Gmail in Settings first.',
   gmail_reconnect_needed: 'Gmail needs to be reconnected in Settings.',
   suppressed: 'This address unsubscribed, so it will not be emailed.',
@@ -37,7 +37,7 @@ export default function OutreachClient() {
     try { const r = await fetch('/api/outreach'); if (r.ok) { setMsgs((await r.json()).messages); setLoadFailed(false) } else setLoadFailed(true) } catch { setLoadFailed(true) } finally { setLoaded(true) }
     try { const seq=await fetch('/api/outreach/sequences'); if(seq.ok) setSequenceMessages((await seq.json()).sequences.map((s:{message_id:string})=>s.message_id)) } catch { /* sequence markers are optional; the email list above still stands */ }
   }
-  useEffect(() => { void load(); const refresh=()=>void load(); window.addEventListener('sequences-updated',refresh); return ()=>window.removeEventListener('sequences-updated',refresh) }, [])
+  useEffect(() => { void load(); const refresh=()=>void load(); window.addEventListener('sequences-updated',refresh); window.addEventListener('sender-updated',refresh); return ()=>{ window.removeEventListener('sequences-updated',refresh); window.removeEventListener('sender-updated',refresh) } }, [])
 
   async function createSequence(id:string) {
     setCreating(true);setNote('Preparing template sequence...')
@@ -97,7 +97,7 @@ export default function OutreachClient() {
                 <>
                   <div className="font-medium mb-1">{m.subject}</div>
                   <pre className="whitespace-pre-wrap text-[#333] font-sans mb-3">{m.body}</pre>
-                  {(m.status === 'draft' || m.status === 'approved') && (m.send_footer ? <div className="mb-3"><pre className="whitespace-pre-wrap text-[#777] font-sans text-xs" aria-label="Added automatically when sent">{m.send_footer}</pre><p className="text-[11px] text-[#999] mt-1">Added when sent, from your current Settings. Edit your name or address there before sending if it is wrong.</p></div> : <p className="text-xs text-[#777] mb-3">Sending needs your name and mailing address - add them in Settings. They are appended automatically.</p>)}
+                  {(m.status === 'draft' || m.status === 'approved') && (m.send_footer ? <div className="mb-3"><pre className="whitespace-pre-wrap text-[#777] font-sans text-xs" aria-label="Added automatically when sent">{m.send_footer}</pre><p className="text-[11px] text-[#999] mt-1">Added when sent, from your current Settings. Edit your name or address there before sending if it is wrong.</p></div> : <p className="text-xs text-[#777] mb-3">Sending needs your name and mailing address - add them in the form at the top of this page. They are appended automatically.</p>)}
                   <div className="flex gap-2 flex-wrap">
                     {(m.status === 'draft' || m.status === 'approved') && <button className={btn} onClick={() => setEdit({ ...edit, [m.id]: { subject: m.subject, body: m.body } })}>Edit</button>}
                     {!m.currentness_held && m.evidence_state !== 'unverified' && m.status === 'draft' && !sequenceMessages.includes(m.id) && <button className={btn} onClick={() => act(m.id, 'approve')}>Approve</button>}

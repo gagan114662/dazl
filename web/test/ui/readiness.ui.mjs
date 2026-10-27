@@ -1,0 +1,114 @@
+// Rendered check for the Home readiness checklist. NOT part of `npm test`.
+// Run:  cd web && npm run build && node test/ui/readiness.ui.mjs   (SHOTS=<dir> also saves screenshots)
+// Real production build, throwaway database, server under test/helpers/net-fence.ts. /api/settings/profile goes to the
+// REAL route; every other /api/* call is answered from a stub in the browser (no key check, no Gmail, no scan, no email).
+// It proves:
+//   1. an account that has searched sees the checklist (not the first-run flow): business, AI key, Gmail, sender;
+//   2. each missing item has its fix in place: business and sender save inline, the key is one inline field, and Gmail
+//      links to Settings (where its consent text is) - Home never starts the Google grant itself;
+//   3. after each inline fix the row turns done from re-read server state;
+//   4. "Your plays" lists own searches newest first with their outcome, linked to their leads: source-checked and
+//      needs-review counts separately (a done search with 0 verified / 5 needing review never reads "5 leads"), old
+//      records without counts say "checks not recorded", cancelled runs say "cancelled".
+// Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
+import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
+import { spawn } from 'node:child_process'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import assert from 'node:assert/strict'
+import path from 'node:path'
+const dir = process.env.WEB_DIR || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+const require = createRequire(path.join(dir, 'package.json'))
+const notRun = reason => { console.log(`NOT RUN${process.env.SMOKE_ALLOW_SKIP === '1' ? ' (allowed by SMOKE_ALLOW_SKIP=1)' : ''}: ${reason}`); process.exit(process.env.SMOKE_ALLOW_SKIP === '1' ? 0 : 2) }
+let chromium
+try { ({ chromium } = require('playwright')) } catch (e) { notRun(e.message.split('\n')[0]) }
+if (!existsSync(path.join(dir, '.next/BUILD_ID'))) notRun('no production build (run npm run build first)')
+const Database = require('better-sqlite3'); const { createHash, randomBytes } = require('crypto')
+const tmp = mkdtempSync(path.join(tmpdir(), 'dazl-ready-')); const DB = path.join(tmp, 'app.db'); const db = new Database(DB)
+db.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT, business_name TEXT, sells TEXT, website TEXT, password_hash TEXT NOT NULL, salt TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch())); CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch()), expires_at INTEGER NOT NULL);`)
+db.prepare("INSERT INTO users (id,email,password_hash,salt) VALUES ('u1','s@example.test','x','y')").run()
+const token = randomBytes(32).toString('hex'); db.prepare('INSERT INTO sessions (id,user_id,expires_at) VALUES (?,?,?)').run(createHash('sha256').update(token).digest('hex'), 'u1', Math.floor(Date.now() / 1000) + 3600); db.close()
+const port = 3300 + Math.floor(Math.random() * 500); const base = `http://127.0.0.1:${port}`
+const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
+for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
+
+const now = Math.floor(Date.now() / 1000)
+const job = (id, query, created_at, o = {}) => ({ id: id.repeat(24), status: 'done', error: null, query, business_name: '', csv_domain: null, created_at, finished_at: created_at, candidates: 5, verified: 2, needs_review: 1, dropped: 2, lead_count: 3, test_only: false, ...o })
+const JOBS = [
+  job('a', 'Dental practice owners in Ohio - opened a new location', now - 3000, { verified: 2, needs_review: 1 }),
+  // The real NYC shape from Instinct's review: done, five leads, none source-checked.
+  job('b', 'Clinic administrators in NYC - hiring front-desk staff', now - 1000, { lead_count: 5, verified: 0, needs_review: 5 }),
+  job('c', 'Orthodontists in Austin', now - 500, { status: 'failed', error: 'no_candidates', lead_count: 0 }),
+  job('e', 'Old search from before the counts', now - 4000, { verified: null, needs_review: null, candidates: null, dropped: null }),
+  job('f', 'Cancelled search', now - 200, { status: 'failed', error: 'cancelled', lead_count: 0 }),
+  job('d', null, now - 100, { csv_domain: 'acme.com' }),
+]
+const state = { hasKey: false, sender: null }
+const writes = []
+const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: 1280, height: 1000 } })
+await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
+await ctx.route('**/*', async route => {
+  const req = route.request(); const u = new URL(req.url()); const m = req.method(); const p = u.pathname
+  if (u.origin !== base) return route.abort()
+  if (!p.startsWith('/api/')) return route.continue()
+  if (m !== 'GET') writes.push(`${m} ${p}`)
+  if (p === '/api/settings/profile') return route.continue() // the real route and its temporary database
+  const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+  if (p === '/api/scan/jobs') return json({ jobs: JOBS })
+  if (p === '/api/usage') return json({ plan: 'free', scans_used: 3, scan_limit: 10, has_key: state.hasKey, trial: state.hasKey ? null : { funded: true, remaining: 1, cap: 3 } })
+  if (p === '/api/settings/llm-key' && m === 'PUT') { state.hasKey = true; return json({ ok: true, vendor: 'anthropic', last4: 'abcd' }) }
+  if (p === '/api/outreach/settings' && m === 'GET') return json({ gmail: null, sender: state.sender, daily_cap: 20, sent_24h: 0 })
+  if (p === '/api/outreach/settings' && m === 'PUT') { state.sender = JSON.parse(req.postData()); return json({ ok: true }) }
+  return json({}, 404)
+})
+const page = await ctx.newPage()
+const shot = async name => { if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`), fullPage: true }) }
+const row = id => page.getByTestId(`ready-${id}`)
+try {
+  await page.goto(base + '/app', { waitUntil: 'networkidle' })
+  if (process.env.BEFORE_ONLY) { await page.waitForTimeout(800); await shot('home'); console.log('before shot'); process.exit(0) }
+  await row('site').waitFor({ timeout: 15000 })
+  await shot('home')
+  assert.equal(await page.getByText("What's your website?").count(), 0, 'not the first-run flow')
+  assert.match(await row('site').textContent(), /Your business - missing business name, what you sell, website/)
+  assert.match(await row('key').textContent(), /AI key - not added; 1 free search left/)
+  assert.match(await row('gmail').textContent(), /Gmail - not connected/)
+  assert.equal(await row('gmail').getByRole('link', { name: 'Connect' }).getAttribute('href'), '/app/settings#gmail')
+  assert.match(await row('sender').textContent(), /Sender name and mailing address - added to every email; required before sending/)
+  assert.deepEqual(writes, [], 'nothing written by loading Home')
+
+  // Plays: own searches newest first with their outcome; the CSV import is not a play.
+  const plays = page.getByRole('list', { name: 'Your plays' }).getByRole('listitem')
+  assert.deepEqual(await plays.allTextContents(), [
+    'Cancelled searchcancelled',
+    'Orthodontists in Austinfailed',
+    'Clinic administrators in NYC - hiring front-desk staff0 source-checked, 5 need your review',
+    'Dental practice owners in Ohio - opened a new location2 source-checked, 1 needs your review',
+    'Old search from before the counts3 leads, checks not recorded',
+  ])
+  assert.doesNotMatch(await page.getByRole('list', { name: 'Your plays' }).textContent(), /\b5 leads\b/, 'research-only leads are never shown as yield')
+  assert.equal(await plays.nth(2).getByRole('link').getAttribute('href'), `/app/leads?job_id=${'b'.repeat(24)}`)
+
+  // Inline fixes; each row turns done from re-read state.
+  await row('site').getByRole('button', { name: 'Add' }).click()
+  await page.getByLabel('Business name').fill('Bright Smile Software')
+  await page.getByLabel('Your website').fill('brightsmile.example')
+  await page.getByLabel('What you sell').fill('Online booking for dental practices')
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+  await row('site').getByText('✓').waitFor()
+  assert.match(await row('site').textContent(), /Bright Smile Software - Online booking for dental practices \(brightsmile\.example\)/)
+  await row('key').getByRole('button', { name: 'Add key' }).click()
+  await page.getByLabel('Your AI key').fill('sk-ant-api03-' + 'x'.repeat(30)); await page.getByRole('button', { name: 'Save key' }).click()
+  await row('key').getByText('✓').waitFor()
+  await row('sender').getByRole('button', { name: 'Add' }).click()
+  await page.getByPlaceholder('Your name, as recipients will see it').fill('Dana Smith'); await page.getByPlaceholder(/Mailing address/).fill('1 Main St, Columbus, OH 43004, USA')
+  await page.getByRole('button', { name: 'Save sender details' }).click()
+  await row('sender').getByText('✓').waitFor()
+  await shot('after-fixes')
+  assert.equal(await row('gmail').getByText('✓').count(), 0, 'Gmail stays a to-do until connected in Settings')
+  assert.deepEqual(writes, ['POST /api/settings/profile', 'PUT /api/settings/llm-key', 'PUT /api/outreach/settings'])
+  console.log('readiness UI check passed:', writes.join(', '))
+} finally {
+  await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
+}

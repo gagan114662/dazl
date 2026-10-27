@@ -599,7 +599,7 @@ CREATE TABLE users (
       password_hash TEXT NOT NULL,
       salt TEXT NOT NULL,
       created_at BIGINT DEFAULT (floor(extract(epoch from now())))
-    );
+    , buyer_profile TEXT);
 
 CREATE TABLE warm_user_paths (
       id           TEXT PRIMARY KEY,
