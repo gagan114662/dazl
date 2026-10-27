@@ -82,7 +82,8 @@ test('a profile the user edited is used as given and inference is not called', a
   createQueryJob(db, 'A', { query: 'roofers', icp: JSON.stringify({ summary: 'Edited by user', who: [], where: ['Ohio'], signals: [], exclude: [] }) })
   const job = claimKeyedJob(db)!
   let inferred = 0, prompt = ''
-  await runJob(db, job, { master, judge: null, providers: prov(async () => { inferred++; return GOOD }, async (_k, p) => { prompt = p; return { text: '[]', citedUrls: [] } }) })
+  // Count only profile-inference calls: other completion calls (the news query plan) are not inference.
+  await runJob(db, job, { master, judge: null, providers: prov(async (_k, p) => { if (p.startsWith('A user of a lead-finding tool')) inferred++; return GOOD }, async (_k, p) => { prompt = p; return { text: '[]', citedUrls: [] } }) })
   assert.equal(inferred, 0)
   assert.ok(prompt.includes('Edited by user'))
   assert.ok(prompt.includes('Ohio'))
