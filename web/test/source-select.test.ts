@@ -1,0 +1,87 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { randomBytes } from 'node:crypto'
+import Database from 'better-sqlite3'
+import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
+import { migrateScan, createQueryJob } from '../lib/scan/store.ts'
+import { migratePlans } from '../lib/plans.ts'
+import { migrateConnectors } from '../lib/connectors/store.ts'
+import { migrateEvents } from '../lib/events/store.ts'
+import type { Provider } from '../lib/llm/provider.ts'
+import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
+import { isLoginWalled, pickFetchUrls, queryPrompt, sanitizeQueries, toEvidence, windowAfter } from '../lib/search/tinyfish.ts'
+
+// Source selection and dated evidence, from the live acceptance run of 2026-10-26 (#204): the NYC dental search's only
+// candidate was an undated, login-walled Facebook group post; the London search found nothing. The saved jobs are not
+// available to the builder, so these are STUBBED fixtures of the code paths (not a reproduction of those results and not
+// proof of better live yield). No gate is touched: window, quote, identity and date checks run after all of this.
+
+test('login-walled hosts are recognised by exact host or subdomain, nothing else', () => {
+  for (const u of ['https://www.facebook.com/groups/x/posts/1', 'https://m.facebook.com/a', 'https://instagram.com/p/1', 'https://nextdoor.com/p/1', 'https://www.linkedin.com/in/x']) assert.equal(isLoginWalled(u), true, u)
+  for (const u of ['https://facebook.com.evil.example/x', 'https://notfacebook.com/x', 'https://news.example/facebook.com', 'not a url']) assert.equal(isLoginWalled(u), false, u)
+})
+
+test('fetch slots go to readable hosts first; walled hosts are demoted, never dropped', () => {
+  const urls = ['https://www.facebook.com/groups/g/posts/1', 'https://a.example/1', 'https://www.facebook.com/groups/g/posts/2', 'https://b.example/1', 'https://c.example/1', 'https://nextdoor.com/p/1']
+  assert.deepEqual(pickFetchUrls(urls, 3), ['https://a.example/1', 'https://b.example/1', 'https://c.example/1'])
+  const all = pickFetchUrls(urls, 10)
+  assert.equal(all.length, 6); assert.deepEqual(all.slice(0, 3), ['https://a.example/1', 'https://b.example/1', 'https://c.example/1'])
+  assert.ok(all.includes('https://www.facebook.com/groups/g/posts/1') && all.includes('https://nextdoor.com/p/1'), 'nothing excluded')
+})
+
+test('the 30-item evidence cap is not filled by snippet-only walled results ahead of readable pages', () => {
+  const hits = [
+    ...Array.from({ length: 30 }, (_, i) => ({ url: `https://www.facebook.com/groups/g/posts/${i}`, title: 'post', snippet: 'a long enough snippet about a dental practice opening', date: null })),
+    { url: 'https://news.example/real', title: 'real', snippet: 'a long enough snippet about a dental practice opening', date: '2026-10-10' },
+  ]
+  const ev = toEvidence(hits, [])
+  assert.equal(ev.length, 30); assert.equal(ev[0].url, 'https://news.example/real')
+})
+
+test('model-written site: targets on social networks are removed unless the request names them', () => {
+  assert.deepEqual(sanitizeQueries(['dental practice new location site:facebook.com Brooklyn', 'dental opening site:nextdoor.com NYC', 'dental practice "now hiring" New York'], 'dental practices in NYC'),
+    ['dental practice new location Brooklyn', 'dental opening NYC', 'dental practice "now hiring" New York'])
+  assert.deepEqual(sanitizeQueries(['dental practice site:facebook.com Brooklyn'], 'dental practices on facebook.com in NYC'), ['dental practice site:facebook.com Brooklyn'])
+})
+
+test('query prompt carries the USER window, skip list, and the readable/dated-source preference', () => {
+  const p = queryPrompt('Find NYC dental practices opened in the past 90 days', { window_days: 90, exclude: ['chains', 'dental software vendors'], language: 'en' }, 6)
+  assert.match(p, /already limited to the last 90 days/); assert.doesNotMatch(p, /last year/)
+  assert.match(p, /skip: \["chains","dental software vendors"\]/)
+  assert.match(p, /publication date and can be read without logging in/); assert.match(p, /Facebook, Instagram, Nextdoor, LinkedIn\) need a login/)
+  assert.match(queryPrompt('q', { exclude: [] }, 3), /already limited to the last year/, 'no window: unchanged wording')
+})
+
+test('search window follows the user window, never wider than 365 days; malformed windows fall back to the default', () => {
+  const now = new Date('2026-10-26T12:00:00Z')
+  assert.equal(windowAfter(90, now), '2026-07-28'); assert.equal(windowAfter(365, now), '2025-10-26')
+  for (const bad of [null, undefined, 0, -5, 30.5, 400, NaN]) assert.equal(windowAfter(bad as never, now), '2025-10-26', String(bad))
+})
+
+// End to end through the real runner with a stubbed TinyFish: the search carries the user's window, and hiring-board
+// queries take at most half of the search budget (three places used to take 6 of 8).
+const master = randomBytes(32); process.env.DAZL_MASTER_KEY = master.toString('base64')
+test('runner: after_date is the 90-day cutoff; with three places at most 4 of the 8 searches are applicant-tracking queries', async () => {
+  const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
+  saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
+  const icp = { summary: 'Dental practices', who: ['Practice manager'], industries: ['dental'], sizes: [], where: ['New York', 'Brooklyn', 'Queens'], signals: ['hiring a receptionist'], exclude: ['chains'], window_days: 90 }
+  createQueryJob(db, 'A', { query: 'Independent dental practices hiring a receptionist or office manager in New York, Brooklyn or Queens in the past 90 days', icp: JSON.stringify(icp) })
+  const job = claimKeyedJob(db)!
+  const searches: { query: string; after: string | null }[] = []
+  const fetchImpl = (async (u: string) => {
+    if (u.startsWith('https://api.search.tinyfish.ai')) { const q = new URL(u).searchParams; if (!q.get('query')!.startsWith('site:linkedin.com/in ')) searches.push({ query: q.get('query')!, after: q.get('after_date') }); return new Response(JSON.stringify({ results: [] }), { status: 200 }) }
+    return new Response('{}', { status: 200 })
+  }) as typeof fetch
+  const providers: Record<'anthropic' | 'openai', Provider> = {
+    anthropic: { research: async () => ({ text: '', citedUrls: [] }), complete: async (_k, _p, _f, maxTokens) => maxTokens === 300 ? JSON.stringify(['dental office now hiring receptionist Brooklyn', 'dental practice office manager job Queens', 'new dental practice opening New York', 'dental front desk coordinator hiring NYC', 'dental clinic expansion Brooklyn']) : '[]' },
+    openai: { research: async () => ({ text: '', citedUrls: [] }) },
+  }
+  const realFetch = globalThis.fetch; globalThis.fetch = fetchImpl; process.env.TINYFISH_API_KEY = 'tf-test'
+  try { await runJob(db, job, { providers, master, fetchPage: async () => null as never, fetchImpl, judge: null, score: false, ground: false }) } finally { globalThis.fetch = realFetch; delete process.env.TINYFISH_API_KEY }
+  assert.ok(searches.length >= 1 && searches.length <= 8, `searches=${searches.length}`)
+  const expected = windowAfter(90)
+  assert.ok(searches.every(s => s.after === expected), `after_date should be ${expected}: ${JSON.stringify(searches.map(s => s.after))}`)
+  const ats = searches.filter(s => /site:(?:boards|job-boards)\.greenhouse\.io|site:jobs\.(?:ashbyhq\.com|lever\.co)/.test(s.query))
+  assert.ok(ats.length >= 1 && ats.length <= 4, `ATS queries ${ats.length} of ${searches.length}`)
+  assert.ok(searches.length - ats.length >= 4, 'at least half the budget stays for open searches')
+})
