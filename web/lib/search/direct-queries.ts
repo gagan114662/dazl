@@ -10,7 +10,7 @@ const word = (alts: string) => new RegExp(`(?<![${L}])(?:${alts})(?![${L}])`, 'i
 export const HIRING = word([
   'hiring|hire[sd]?|jobs?|roles?|openings?|positions?|recruit\\p{L}*|vacanc\\p{L}+', // en
   'contrat(?:a|am|ar|ando|amos|ação|acao)|vagas?|recrutamento|recrutando|recrutar|empregos?|procura(?:m)?-se|procuramos|admite-se|admitimos', // pt
-  'contratando|contratar|contratamos|vacantes?|empleos?|ofertas? de (?:trabajo|empleo)|busca[n]?|buscamos|reclutamiento|reclutando', // es
+  'contratando|contratar|contratamos|contratan|contrata|contratas|contrataci[oó]n|vacantes?|empleos?|ofertas? de (?:trabajo|empleo)|busca[n]?|buscamos|reclutamiento|reclutando', // es
   'recrute(?:nt|r|ment)?|embauche(?:nt|r)?|offres? d.emploi|postes? à pourvoir', // fr
   'stellenangebote?|such(?:en|t)|jobangebote?|stellenausschreibung(?:en)?', // de
   'assum(?:e|iamo|ono)|cerchiamo|offerte di lavoro|posizioni aperte', // it
@@ -24,6 +24,7 @@ const NOISE = new Set([
   // pt
   'empresas', 'empresa', 'em', 'na', 'nas', 'nos', 'um', 'uma', 'para', 'com', 'que', 'contratar', 'contrata', 'contratam', 'contratando', 'contratamos', 'recrutando', 'recrutar', 'recrutamento', 'vaga', 'vagas', 'emprego', 'empregos', 'procura', 'procuram', 'novo', 'nova', 'pequenas', 'médias',
   // es
+  'contratan', 'contratas', 'contratación', 'contratacion', 'contrata', 'contratamos', 'contratando',
   'en', 'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'con', 'busca', 'buscan', 'buscamos', 'vacante', 'vacantes', 'empleo', 'empleos', 'reclutando', 'reclutamiento', 'nuevo', 'nueva',
   // fr
   'entreprises', 'entreprise', 'le', 'les', 'une', 'pour', 'avec', 'qui', 'recrute', 'recrutent', 'recruter', 'recrutement', 'embauche', 'embauchent', 'poste', 'postes', 'offre', 'offres', 'emploi', 'nouveau', 'nouvelle',

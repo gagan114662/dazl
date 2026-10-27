@@ -38,3 +38,12 @@ test('controls: requests with no instruction clause and no funding clause extrac
   // a funding word inside a hiring part is kept (the part also talks about hiring)
   assert.deepEqual(rolePhrases('companies hiring a venture partner', [], []), ['venture partner'])
 })
+
+// Spanish verb forms missed by the hiring-word list ("contratan", "contrata") meant NO hiring-board queries for requests like
+// "Empresas en Madrid que contratan recepcionista"; the role phrase also swallowed the verb ("contratan recepcionista").
+test('Spanish "contratan"/"contrata" count as hiring words and do not leak into the role phrase', () => {
+  for (const r of ['Empresas en Madrid que contratan recepcionista', 'Clínicas en Madrid que contrata recepcionista', 'Empresas de Madrid con contratación de recepcionista']) {
+    assert.deepEqual(rolePhrases(r, [], ['Madrid']), ['recepcionista'], r)
+    const q = directQueries(r, [], ['Madrid']); assert.equal(q.length, 2, r); assert.match(q[0], /"recepcionista" Madrid$/)
+  }
+})
