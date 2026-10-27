@@ -22,7 +22,12 @@ export class SpendGuard {
   reservedUsd = 0
   calls = 0
   limitUsd: number
-  constructor(limitUsd: number) { this.limitUsd = limitUsd }
+  // Saves the NEW total before the reservation counts and before the paid call is allowed (a job guard saves it to the job
+  // row). It must throw if the save did not take effect (storage error, or this attempt no longer owns the job). Then the
+  // reservation is refused, the in-memory total is unchanged and no provider call is made: a reservation that exists only in
+  // memory would be lost on a restart and spent again.
+  persist?: (reservedUsd: number) => void
+  constructor(limitUsd: number, alreadyReservedUsd = 0) { this.limitUsd = limitUsd; this.reservedUsd = Number.isFinite(alreadyReservedUsd) && alreadyReservedUsd > 0 ? alreadyReservedUsd : 0 }
   private cost(model: string | undefined, promptBytes: number, maxOut: number): number {
     const p = model ? PRICES_USD_PER_M[model] : undefined
     if (!p) throw new SpendRefused('model_unpriced')
@@ -33,7 +38,11 @@ export class SpendGuard {
   }
   reserve(model: string | undefined, promptBytes: number, maxOut: number): void {
     this.check(model, promptBytes, maxOut)
-    this.reservedUsd += this.cost(model, promptBytes, maxOut); this.calls++
+    const next = this.reservedUsd + this.cost(model, promptBytes, maxOut)
+    if (this.persist) {
+      try { this.persist(next) } catch (e) { throw new SpendRefused(e instanceof SpendRefused ? e.reason : 'reservation_not_saved') }
+    }
+    this.reservedUsd = next; this.calls++
   }
 }
 
@@ -49,9 +58,10 @@ export function ownerPool(owner: string, limitUsd: number): SpendGuard {
 export function resetSpendPools(): void { pools.clear() }
 
 export function reserveAll(guards: SpendGuard[], model: string | undefined, promptBytes: number, maxOut: number): void {
-  // check every guard before committing to any, so a refusal leaves no partial reservation
+  // check every guard before committing to any, so a refusal leaves no partial reservation. Guards that must SAVE their
+  // reservation (a job guard) go first: if saving fails nothing has been reserved on any other guard.
   for (const g of guards) g.check(model, promptBytes, maxOut)
-  for (const g of guards) g.reserve(model, promptBytes, maxOut)
+  for (const g of [...guards].sort((a, b) => Number(!!b.persist) - Number(!!a.persist))) g.reserve(model, promptBytes, maxOut)
 }
 
 // Anthropic's free token-count request (https://docs.anthropic.com/en/docs/build-with-claude/token-counting): no inference,

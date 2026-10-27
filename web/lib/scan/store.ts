@@ -13,7 +13,7 @@ export interface ScanInput {
   location: string
 }
 // Free-text request. The legacy columns stay filled (placeholders) so older workers keep working.
-export interface QueryInput { query: string; icp?: string | null; sources?: string | null; seller?: string; watchId?: string }
+export interface QueryInput { query: string; icp?: string | null; sources?: string | null; seller?: string; watchId?: string; runBudget?: string | null }
 
 // Schema notes for the external worker (Hermes). Everything is enforced in
 // SQLite itself, so a writer that bypasses the web app cannot corrupt state:
@@ -101,7 +101,8 @@ function addColumns(db: Database.Database): void {
   add('scan_jobs', 'candidates', 'INTEGER')
   add('scan_jobs', 'needs_review', 'INTEGER')
   add('scan_jobs', 'dropped', 'INTEGER')
-  add('scan_jobs', 'run_budget', 'TEXT') // per-run budget controls (CSV company imports); null = current behavior
+  add('scan_jobs', 'run_budget', 'TEXT') // per-run budget controls (CSV company imports and POST /api/scan); null = current behavior
+  add('scan_jobs', 'spend_reserved_usd', 'REAL') // what this job has already RESERVED under max_usd, saved per call so a retry/restart continues from it
   add('scan_jobs', 'drop_reasons', 'TEXT')
   add('scan_jobs', 'verified', 'INTEGER')
   add('scan_jobs', 'query', 'TEXT CHECK (query IS NULL OR length(query) <= 600)')
@@ -186,10 +187,10 @@ function widenWhyCap(db: Database.Database): void {
   `)
 }
 
-export function createJob(db: Database.Database, userId: string, input: ScanInput): string {
+export function createJob(db: Database.Database, userId: string, input: ScanInput, runBudget: string | null = null): string {
   const id = randomBytes(12).toString('hex')
-  db.prepare('INSERT INTO scan_jobs (id, user_id, business_name, industry, location) VALUES (?, ?, ?, ?, ?)').run(
-    id, userId, input.business_name, input.industry, input.location,
+  db.prepare('INSERT INTO scan_jobs (id, user_id, business_name, industry, location, run_budget) VALUES (?, ?, ?, ?, ?, ?)').run(
+    id, userId, input.business_name, input.industry, input.location, runBudget,
   )
   return id
 }
@@ -197,8 +198,9 @@ export function createJob(db: Database.Database, userId: string, input: ScanInpu
 // icp is a JSON string the user already saw and accepted/edited; null means "infer it when the job runs".
 export function createQueryJob(db: Database.Database, userId: string, input: QueryInput): string {
   const id = randomBytes(12).toString('hex')
-  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, icp_inferred, sources, seller, watch_id) VALUES (?, ?, ?, '(from request)', '-', ?, ?, ?, ?, ?, ?)").run(
-    id, userId, input.query.slice(0, 150) || '-', input.query, input.icp ?? null, input.icp ? 0 : null, input.sources ?? null, (input.seller ?? '').trim().slice(0, 300) || null, input.watchId ?? null,
+  // run_budget is part of the INSERT, so a job is never visible to the runner without its budget.
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, icp_inferred, sources, seller, watch_id, run_budget) VALUES (?, ?, ?, '(from request)', '-', ?, ?, ?, ?, ?, ?, ?)").run(
+    id, userId, input.query.slice(0, 150) || '-', input.query, input.icp ?? null, input.icp ? 0 : null, input.sources ?? null, (input.seller ?? '').trim().slice(0, 300) || null, input.watchId ?? null, input.runBudget ?? null,
   )
   return id
 }
