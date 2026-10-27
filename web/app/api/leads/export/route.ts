@@ -27,6 +27,7 @@ const COLUMNS = [
   { key: 'event_date', label: 'Event Date' },
   { key: 'date_status', label: 'Date Status (not current need verification)' },
   { key: 'date_context', label: 'Event Date Context' },
+  { key: 'timing_note', label: 'Timing Note (how a missing date was read from the page, or a season with no date)' },
   { key: 'evidence_excerpt', label: 'Evidence Excerpt (unconfirmed when Confirmed By User is set)' },
   { key: 'source_url', label: 'Source URL' },
   { key: 'evidence_origin_label', label: 'Evidence Origin (only what is recorded: copied page text, or page dazl could not read; blank = nothing recorded)' },

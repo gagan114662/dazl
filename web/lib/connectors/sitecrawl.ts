@@ -351,7 +351,7 @@ const titleOf = (f: Found) => f.value.slice(f.value.indexOf(', ') + 2)
 export const byBuyerThenSeniority = (buyerRoles: string) => (a: Found, b: Found) => titleMatches(titleOf(b), buyerRoles).length - titleMatches(titleOf(a), buyerRoles).length || bySeniority(a, b)
 export const bySeniority = (a: Found, b: Found) => seniority(b.value.slice(b.value.indexOf(', ') + 2)) - seniority(a.value.slice(a.value.indexOf(', ') + 2))
 
-const PAGE_HINT = /(contact|about|impressum|kontakt|contacto|contato|nous-contacter|contactez|chi-siamo|company|team|leadership|management|people|reach)/i
+const PAGE_HINT = /(contact|about|impressum|kontakt|contacto|contato|nous-contacter|contactez|chi-siamo|company|team|leadership|management|people|reach|locations?|careers?|our-practice|meet-the|providers|doctors|staff)/i
 export function contactPaths(homeHtml: string, home: URL): string[] {
   const set = new Set<string>(['/contact', '/contact-us', '/about', '/team', '/leadership'])
   for (const m of homeHtml.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"'#]+)["']/gi)) {
@@ -359,6 +359,7 @@ export function contactPaths(homeHtml: string, home: URL): string[] {
     if (u.protocol !== 'https:' || u.hostname.replace(/^www\./, '') !== home.hostname.replace(/^www\./, '')) continue
     if (PAGE_HINT.test(u.pathname) && u.pathname.length < 60 && !/\.(pdf|jpg|png|zip)$/i.test(u.pathname) && !u.search) set.add(u.pathname)
   }
+  for (const extra of ['/locations', '/our-team', '/careers']) set.add(extra) // after the page's own links: same cap, never ahead of them
   return [...set].slice(0, 8)
 }
 
@@ -460,7 +461,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       ? (url: string) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, deps.signal)
       : defaultGet(deps.env))
     // signal and evidence_excerpt feed the location check; a leads table without them (older schema) still crawls.
-    const pick = (cols: string) => db.prepare(`SELECT ${cols} FROM leads WHERE scan_job_id = ? AND review_reason IS NULL AND confidence IS NOT NULL AND company <> '' ORDER BY score DESC LIMIT ?`).all(jobId, MAX_SITES_PER_SCAN)
+    const pick = (cols: string) => db.prepare(`SELECT ${cols} FROM leads WHERE scan_job_id = ? AND ((review_reason IS NULL AND confidence IS NOT NULL) OR review_reason IN ('outside_window_undated', 'quote_unconfirmed')) AND company <> '' ORDER BY (review_reason IS NOT NULL), score DESC LIMIT ?`).all(jobId, MAX_SITES_PER_SCAN)
     const leads = (deps.leads ?? (() => { try { return pick('id, company, source_url, signal, evidence_excerpt') } catch { return pick('id, company, source_url') } })()) as { id: string; company: string; source_url: string; signal?: string | null; evidence_excerpt?: string | null }[]
     // The scan's geography, for the location check on guessed domains.
     let where: string[] = []

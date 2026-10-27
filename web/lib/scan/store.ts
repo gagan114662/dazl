@@ -101,6 +101,7 @@ function addColumns(db: Database.Database): void {
   add('leads', 'own_fetch_failure', 'TEXT') // dazl's own fetch failure for that page, kept beside the copy
   add('leads', 'evidence_copy_sha256', 'TEXT') // hash of the exact copied text that was checked
   add('leads', 'evidence_purged_at', 'INTEGER') // the copied text was deleted on the tenant's request (audited); the lead keeps its origin label
+  add('leads', 'timing_note', 'TEXT CHECK (timing_note IS NULL OR length(timing_note) <= 300)') // how a missing date was resolved from the page, or a season label with no date
   add('leads', 'evidence_copy_id', 'TEXT') // lead_evidence_copies.id: the preserved original text (scan/evidence-copies.ts)
   add('leads', 'human_confirmed_at', 'INTEGER') // the user checked this needs-review lead against its source and chose to use it
   add('leads', 'human_confirmed_from', 'TEXT') // the review_reason it was confirmed out of - provenance, never overwritten
@@ -257,7 +258,7 @@ export function listLeads(db: Database.Database, userId: string, jobId: string, 
     .prepare(
       `SELECT l.id, l.scan_job_id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.created_at,
 l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
-l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l.quarantine_reason, l.evidence_origin, l.own_fetch_failure, l.evidence_copy_sha256, l.evidence_copy_id, l.evidence_purged_at,
+l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l.quarantine_reason, l.evidence_origin, l.own_fetch_failure, l.evidence_copy_sha256, l.evidence_copy_id, l.evidence_purged_at, l.timing_note,
          l.fit, l.intent, l.action, l.why, l.signals, l.icp_match, l.watch_new, l.seen_before, l.stage
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
        WHERE j.id = ? AND j.user_id = ? ${includeHidden ? '' : 'AND (l.fit IS NULL OR l.fit > 1)'}
@@ -338,7 +339,7 @@ export function exportLeads(db: Database.Database, userId: string, jobId?: strin
     .prepare(
       `SELECT l.id AS lead_id, l.scan_job_id AS job_id, l.company, l.name, l.contact, l.signal, l.why, l.source_url,
               l.fit, l.intent, l.action, l.score, l.confidence, l.event_date, l.date_status, l.review_reason,
-              l.human_confirmed_from, l.evidence_excerpt, l.evidence_origin, l.own_fetch_failure, l.evidence_purged_at, l.created_at
+              l.human_confirmed_from, l.evidence_excerpt, l.evidence_origin, l.own_fetch_failure, l.evidence_purged_at, l.timing_note, l.created_at
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
        WHERE j.user_id = ? ${jobId ? 'AND j.id = ?' : ''} AND (l.fit IS NULL OR l.fit > 1) AND l.quarantined_at IS NULL
        ${includeFixtures ? '' : "AND (l.source_kind IS NULL OR l.source_kind != 'test')"}

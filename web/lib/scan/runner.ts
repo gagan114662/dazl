@@ -18,6 +18,7 @@ import type { AdvPlatform } from '../advanced/config.ts'
 import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, selfDescribedUrls } from '../sources/index.ts'
 import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '../search/trace.ts'
 import { directQueries } from '../search/direct-queries.ts'
+import { resolveTiming } from './page-timing.ts'
 import { HeldText, COPY_ORIGIN, type HeldPage } from './held-text.ts'
 import type { CandidateAudit, UrlRecord } from './run-report.ts'
 import { evidenceCopyRoom, storeEvidenceCopy } from './evidence-copies.ts'
@@ -245,7 +246,10 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
   const fetched = await Promise.all(candidates.map(async c => ({ c, page: await get(c.source_url) })))
 
   const passed: { c: LeadDraft; v: Extract<ReturnType<typeof verifyEvidence>, { ok: true }>; copy?: { failure: string; sha256: string; page: HeldPage } }[] = []
-  for (const { c, page } of fetched) {
+  for (const { c: c0, page } of fetched) {
+    // A candidate with no date gets one read from the text we already fetched (or a season label). Same rules apply to it afterwards.
+    let c = c0
+    if (page && !isFail(page) && !c0.event_date) { const t = resolveTiming(page.text, c0.excerpt); if (t.date || t.note) c = { ...c0, event_date: t.date, timing_note: t.note } }
     if (!page) { drop('page_unreachable'); note(c, 'dropped', 'page_unreachable'); continue }
     if (isFail(page)) {
       const why = REVIEW_REASONS[page.fail]
@@ -405,14 +409,14 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
     const own = db.prepare("SELECT 1 FROM scan_jobs WHERE id = ? AND status = 'running' AND attempts = ?").get(job.id, job.attempts)
     if (!own) return false
     const ins = db.prepare(
-      'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, fit, intent, action, why, signals, icp_match, signal_kind, source_kind, evidence_origin, own_fetch_failure, evidence_copy_sha256, evidence_copy_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, fit, intent, action, why, signals, icp_match, signal_kind, source_kind, evidence_origin, own_fetch_failure, evidence_copy_sha256, evidence_copy_id, timing_note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
     const insertedKeys = new Set<string>()
-    for (const l of leads) { const result = ins.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, dedupKey(l), l.fit ?? null, l.intent ?? null, l.action ?? null, l.why ?? null, l.signals ?? null, l.icp_match ?? null, primarySignalKind(l.signals), sourceKind(job), l.evidence_origin ?? null, l.own_fetch_failure ?? null, l.evidence_copy_sha256 ?? null, l.evidence_copy_page ? storeEvidenceCopy(db, job.user_id, job.id, job.attempts, l.evidence_copy_page) : null); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
+    for (const l of leads) { const result = ins.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, dedupKey(l), l.fit ?? null, l.intent ?? null, l.action ?? null, l.why ?? null, l.signals ?? null, l.icp_match ?? null, primarySignalKind(l.signals), sourceKind(job), l.evidence_origin ?? null, l.own_fetch_failure ?? null, l.evidence_copy_sha256 ?? null, l.evidence_copy_page ? storeEvidenceCopy(db, job.user_id, job.id, job.attempts, l.evidence_copy_page) : null, l.timing_note ?? null); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
     const insReview = db.prepare(
-      'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, review_reason, source_kind) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)',
+      'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, review_reason, source_kind, timing_note) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?)',
     )
-    for (const l of review) { const result = insReview.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.event_date ? 'unverified' : 'undated', `review:${dedupKey(l)}`, l.review_reason, sourceKind(job)); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
+    for (const l of review) { const result = insReview.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.event_date ? 'unverified' : 'undated', `review:${dedupKey(l)}`, l.review_reason, sourceKind(job), l.timing_note ?? null); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
     ledger?.write(db, job.id, job.attempts, out ? leads : null, out ? review : null, insertedKeys)
     db.prepare(
       `UPDATE scan_jobs SET status = ?, error = ?, claimed_at = NULL, candidates = ?, verified = ?, needs_review = ?, dropped = ?, drop_reasons = ?,
