@@ -78,6 +78,8 @@ Updated by the builder on every branch. Newest first.
   and real billing below dazl, cache-token charges, reservations are estimates; the per-owner pool resets on restart; CSV
   imports take the flags only. max_usd remains a reservation limit on guarded model requests, not a whole-scan dollar ceiling.
 
+- b/evidence-purge (follow-up to #222; fixtures only): audited, tenant-scoped operator purge of copied evidence for deletion requests
+  (dry run by default; ordinary UPDATE/DELETE stay blocked; 410 `purged` and honest labels afterwards; SQLite only).
 - b/design-tf-text (#222; fixtures only, no live run): the NARROW blocked-source path is built and designed in
   docs/design/blocked-source-verification.md. A candidate whose own fetch was blocked_by_site/needs_javascript is checked against
   the TinyFish text ALREADY fetched for the exact cited URL in the same scan attempt (canonical URL match, no redirects, wall/short/
@@ -85,7 +87,7 @@ Updated by the builder on every branch. Newest first.
   against a copy fetched by TinyFish; dazl did not read the page directly" in the UI, API and CSV. The exact original TITLE and body
   are preserved in an immutable, tenant-scoped, hash-bound `lead_evidence_copies` row (90-day retention, 256 KB per copy, 300 per
   tenant) recoverable through GET /api/leads/evidence. CSV origin cells say only what is recorded (copy / unreadable / confirmed by
-  you); blank claims nothing. Limits: SQLite-only table, no account-deletion purge yet, English wall-phrase list, silent truncation
+  you); blank claims nothing. Limits: SQLite-only table (deletion requests: see b/evidence-purge), English wall-phrase list, silent truncation
   undetected, no live-yield evidence.
 
 ## In progress (interactive Claude session, do not duplicate)
