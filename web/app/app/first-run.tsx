@@ -31,8 +31,13 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   const [industries, setIndustries] = useState('')
   const [where, setWhere] = useState('')
   const [signals, setSignals] = useState('')
+  const [sizes, setSizes] = useState('')
+  const [exclude, setExclude] = useState('')
   const [readFrom, setReadFrom] = useState('')
   const [ask, setAsk] = useState('')
+  // True while the sentence is a suggestion (picked or prefilled), false once the user types their own. A suggestion is
+  // replaced when the profile changes, so the box never keeps a sentence built from an older profile.
+  const [askIsSuggestion, setAskIsSuggestion] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [needKey, setNeedKey] = useState(false)
@@ -52,6 +57,8 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
 
   const brain: Brain = { summary: summary || sells, who: list(who), industries: list(industries), where: list(where), signals: list(signals) }
   const plays = useMemo(() => suggestPlays(brain), [summary, sells, who, industries, where, signals]) // eslint-disable-line react-hooks/exhaustive-deps
+  // The reviewed profile exactly as shown in step 2; it goes to the search with the sentence (no hidden fields).
+  const profile = { summary: (summary || sells).trim(), who: list(who), industries: list(industries), sizes: list(sizes), where: list(where), signals: list(signals), exclude: list(exclude) }
 
   if (ready === 'loading') return null
   if (ready === 'home') return <>{children}</>
@@ -71,9 +78,10 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         if (j.error === 'no_api_key') { setNeedKey(true); return }
         return setError(knownErrorCopy(j.error) ?? SITE_ERR[j.error] ?? (r.status === 429 ? 'Too many website reads. Try again later, or fill in the profile yourself.' : 'Could not read that site. Fill in the profile yourself instead.'))
       }
-      const icp = j.icp as Brain
       if (j.sells) setSells(String(j.sells))
-      setSummary(icp.summary ?? ''); setWho((icp.who ?? []).join(', ')); setIndustries((icp.industries ?? []).join(', ')); setWhere((icp.where ?? []).join(', ')); setSignals((icp.signals ?? []).join(', '))
+      const site = j.icp as Brain & { sizes?: string[]; exclude?: string[] }
+      setSummary(site.summary ?? ''); setWho((site.who ?? []).join(', ')); setIndustries((site.industries ?? []).join(', ')); setWhere((site.where ?? []).join(', ')); setSignals((site.signals ?? []).join(', '))
+      setSizes((site.sizes ?? []).join(', ')); setExclude((site.exclude ?? []).join(', '))
       try { setReadFrom(new URL(j.source).hostname) } catch { setReadFrom('your website') }
       setWebsite(url); setStep('brain')
     } catch { setError('Could not reach the server. Check your connection and try again.') } finally { setBusy(false) }
@@ -85,16 +93,17 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       const r = await fetch('/api/settings/profile', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sells, website: normalizeWebsite(website), business_name: bizName }) })
       const j = await r.json().catch(() => ({}))
       if (!r.ok) return setError(j.error || 'Could not save')
-      setAsk(a => a || plays[0] || ''); setStep('ask')
+      if (askIsSuggestion || !ask.trim()) { setAsk(plays[0] || ''); setAskIsSuggestion(true) }
+      setStep('ask')
     } catch { setError('Could not reach the server. Try again.') } finally { setBusy(false) }
   }
 
   async function run(e: React.FormEvent) {
     e.preventDefault(); setError(''); setBusy(true)
     try {
-      // The sentence alone goes to the scan; the server builds the profile from it and the saved "what you sell",
-      // exactly as on Leads. Nothing here changes what a scan checks.
-      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: ask.trim() }) })
+      // The sentence on screen and the profile from step 2, as the Leads page sends a reviewed profile. The server
+      // validates both; nothing here changes what a scan checks.
+      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: ask.trim(), icp: profile }) })
       const j = await r.json().catch(() => ({}))
       if (r.ok && j.job_id) { router.push(`/app/leads?job_id=${encodeURIComponent(j.job_id)}`); return }
       if (j.error === 'no_api_key' || j.error === 'trial_exhausted') { setNeedKey(true); return setError(j.error === 'trial_exhausted' ? 'Your free scans are used up. Add your AI key to keep going.' : '') }
@@ -131,6 +140,10 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
           <label className="flex flex-col gap-1">Where<input className="field" value={where} onChange={e => setWhere(e.target.value)} placeholder="Ohio" /></label>
         </div>
         <label className="flex flex-col gap-1">Signs they need you now <span className="text-xs text-[#777]">comma separated public events</span><input className="field" value={signals} onChange={e => setSignals(e.target.value)} placeholder="Opened a new location, hiring front-desk staff" /></label>
+        <div className="grid sm:grid-cols-2 gap-3">
+          <label className="flex flex-col gap-1">Company sizes <span className="text-xs text-[#777]">optional</span><input className="field" value={sizes} onChange={e => setSizes(e.target.value)} placeholder="2-50 employees" /></label>
+          <label className="flex flex-col gap-1">Skip <span className="text-xs text-[#777]">optional</span><input className="field" value={exclude} onChange={e => setExclude(e.target.value)} placeholder="Dental schools, chains" /></label>
+        </div>
         <div className="flex gap-3 items-center mt-1">
           <button className="btn-primary" disabled={busy || sells.trim().length < 3}>{busy ? 'Saving...' : 'Looks right, continue'}</button>
           <button type="button" className="text-xs underline text-[#555]" onClick={() => setStep('site')}>Back</button>
@@ -141,9 +154,10 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         <h2 className="text-xl font-semibold">Who do you want to reach?</h2>
         <p className="text-[#555]">One sentence. Pick a suggestion or write your own.</p>
         <div className="flex flex-col gap-2" role="group" aria-label="Suggested plays">
-          {plays.map(p => <button type="button" key={p} onClick={() => setAsk(p)} className={`text-left border rounded-lg px-3 py-2 ${ask === p ? 'border-[#111] bg-black/5' : 'border-black/15 hover:border-black/40'}`}>{p}</button>)}
+          {plays.map(p => <button type="button" key={p} aria-pressed={ask === p} onClick={() => { setAsk(p); setAskIsSuggestion(true) }} className={`text-left border rounded-lg px-3 py-2 ${ask === p ? 'border-[#111] bg-black/5' : 'border-black/15 hover:border-black/40'}`}>{p}</button>)}
         </div>
-        <textarea className="field" rows={2} required minLength={3} maxLength={600} aria-label="Who do you want to reach" value={ask} onChange={e => setAsk(e.target.value)} />
+        <textarea className="field" rows={2} required minLength={3} maxLength={600} aria-label="Who do you want to reach" value={ask} onChange={e => { setAsk(e.target.value); setAskIsSuggestion(false) }} />
+        <p className="text-xs text-[#555]" aria-label="Search profile">Searched with your profile: {[profile.who.join(', '), profile.industries.join(', '), profile.where.length ? `in ${profile.where.join(', ')}` : 'any location', profile.sizes.join(', '), profile.exclude.length ? `skipping ${profile.exclude.join(', ')}` : ''].filter(Boolean).join(' · ')}. <button type="button" className="underline" onClick={() => setStep('brain')}>Edit</button></p>
         {needKey && !hasKey ? <KeyInline reason="Searches run on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); setError(''); void loadUsage() }} />
           : !hasKey && trialLeft > 0 ? <p className="text-xs text-[#555]">Your first {trialLeft} search{trialLeft === 1 ? '' : 'es'} are on us. No AI key needed yet.</p> : null}
         <div className="flex gap-3 items-center">

@@ -4,9 +4,13 @@
 // no scan, no model call, no key check, no email. Off-host requests are aborted. It proves:
 //   1. a first-run account sees the website step, and a keyless site read asks for the key inline (one field);
 //   2. the editable profile is filled from the site read, including "what you sell";
-//   3. three suggested plays are shown; the chosen one is sent as the only POST /api/scan, which lands on Leads;
+//   3. three suggested plays; after Back -> Ohio changed to NYC -> continue, the plays and the sentence are the NYC ones
+//      and Find leads sends exactly one POST /api/scan with that sentence and the edited profile, then lands on Leads;
+//   3b. every edited profile field (who buys, roles, industries, where, signals, sizes, skip) reaches that request,
+//      and a sentence the user typed is kept as typed;
 //   4. Outreach asks for sender name and address inline, saves them via PUT /api/outreach/settings, and then shows them.
-// Exit 1 on a failed expectation; exit 0 with "SKIP" when playwright or the build is missing.
+// Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
+// The server runs under test/helpers/net-fence.ts, so it cannot reach any non-loopback host either.
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
@@ -17,15 +21,16 @@ import path from 'node:path'
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(path.join(dir, 'package.json'))
 let chromium
-try { ({ chromium } = require('playwright')) } catch (e) { console.log(`SKIP: ${e.message.split('\n')[0]}`); process.exit(0) }
-if (!existsSync(path.join(dir, '.next/BUILD_ID'))) { console.log('SKIP: no production build (run npm run build first)'); process.exit(0) }
+const notRun = reason => { console.log(`NOT RUN${process.env.SMOKE_ALLOW_SKIP === '1' ? ' (allowed by SMOKE_ALLOW_SKIP=1)' : ''}: ${reason}`); process.exit(process.env.SMOKE_ALLOW_SKIP === '1' ? 0 : 2) }
+try { ({ chromium } = require('playwright')) } catch (e) { notRun(e.message.split('\n')[0]) }
+if (!existsSync(path.join(dir, '.next/BUILD_ID'))) notRun('no production build (run npm run build first)')
 const Database = require('better-sqlite3'); const { createHash, randomBytes } = require('crypto')
 const tmp = mkdtempSync(path.join(tmpdir(), 'dazl-onboarding-')); const DB = path.join(tmp, 'app.db'); const db = new Database(DB)
 db.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT, business_name TEXT, sells TEXT, website TEXT, password_hash TEXT NOT NULL, salt TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch())); CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch()), expires_at INTEGER NOT NULL);`)
 db.prepare("INSERT INTO users (id,email,password_hash,salt) VALUES ('u1','s@example.test','x','y')").run()
 const token = randomBytes(32).toString('hex'); db.prepare('INSERT INTO sessions (id,user_id,expires_at) VALUES (?,?,?)').run(createHash('sha256').update(token).digest('hex'),'u1',Math.floor(Date.now()/1000)+3600)
 const port = 3300 + Math.floor(Math.random() * 500); const base = `http://127.0.0.1:${port}`
-const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'),'start','-p',String(port),'-H','127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED:'0', NEWS_SEARCH_ENABLED:'0' }, stdio: 'ignore' })
+const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'),'start','-p',String(port),'-H','127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED:'0', NEWS_SEARCH_ENABLED:'0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
 for (let i=0;i<100;i++){ try { await fetch(base+'/sign-in'); break } catch { await new Promise(r=>setTimeout(r,200)) } }
 const calls = []; const scanBodies = []
 const state = { hasKey: false, sender: null }
@@ -54,23 +59,53 @@ await ctx.route('**/*', async route => {
 })
 const page = await ctx.newPage()
 const shot = async name => { await page.waitForTimeout(400); if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`) }) }
+const plays = () => page.getByRole('group', { name: 'Suggested plays' }).getByRole('button')
+const sentence = () => page.getByLabel('Who do you want to reach')
+const cont = async () => { await page.getByRole('button', { name: 'Looks right, continue' }).click(); await page.getByText('Who do you want to reach?').waitFor() }
+const back = async () => { await page.getByRole('button', { name: 'Back' }).click(); await page.getByText("Here's what we think you sell").waitFor() }
+const findLeads = async () => { await page.getByRole('button', { name: 'Find leads' }).click(); await page.waitForURL(/\/app\/leads\?job_id=/) }
+const PROFILE = { summary: ICP.summary, who: ICP.who, industries: ICP.industries, sizes: [], where: ['Ohio'], signals: ICP.signals, exclude: [] }
+
+// Scenario 1: website -> inline key -> profile -> plays; then Back, change Ohio to NYC, continue, Find leads.
 await page.goto(base + '/app', { waitUntil: 'networkidle' }); await shot('home')
 await page.getByText("What's your website?").waitFor()
-{
-  await page.getByLabel('Your website').fill('brightsmile.example'); await page.getByRole('button', { name: 'Read my site' }).click(); await page.getByLabel('Your AI key').waitFor(); await shot('key-needed')
-  assert.ok(!calls.includes('POST /api/scan'), 'nothing is scanned before Find leads')
-  await page.getByLabel('Your AI key').fill('sk-ant-api03-' + 'x'.repeat(30)); await page.getByRole('button', { name: 'Save key' }).click()
-  await page.getByText("Here's what we think you sell").waitFor(); await shot('brain')
-  assert.equal(await page.getByLabel('What you sell').inputValue(), 'Online booking and reminders for dental practices')
-  await page.getByRole('button', { name: 'Looks right, continue' }).click(); await page.getByText('Who do you want to reach?').waitFor(); await shot('ask')
-  assert.equal(await page.getByRole('group', { name: 'Suggested plays' }).getByRole('button').count(), 3)
-  await page.getByRole('group', { name: 'Suggested plays' }).getByRole('button').nth(1).click()
-  const asked = await page.getByLabel('Who do you want to reach').inputValue()
-  await page.getByRole('button', { name: 'Find leads' }).click(); await page.waitForURL(/\/app\/leads\?job_id=/)
-  assert.equal(asked, 'Office managers in Ohio - hiring front-desk staff')
-  assert.equal(calls.filter(c => c === 'POST /api/scan').length, 1, 'exactly one scan request')
-  assert.deepEqual(scanBodies, [{ query: asked }], 'the scan gets the chosen sentence only')
-}
+await page.getByLabel('Your website').fill('brightsmile.example'); await page.getByRole('button', { name: 'Read my site' }).click(); await page.getByLabel('Your AI key').waitFor(); await shot('key-needed')
+assert.ok(!calls.includes('POST /api/scan'), 'nothing is scanned before Find leads')
+await page.getByLabel('Your AI key').fill('sk-ant-api03-' + 'x'.repeat(30)); await page.getByRole('button', { name: 'Save key' }).click()
+await page.getByText("Here's what we think you sell").waitFor(); await shot('brain')
+assert.equal(await page.getByLabel('What you sell').inputValue(), 'Online booking and reminders for dental practices')
+await cont(); await shot('ask')
+assert.equal(await plays().count(), 3)
+assert.equal(await sentence().inputValue(), 'Practice owners in Ohio - opened a new location')
+await plays().nth(1).click()
+assert.equal(await sentence().inputValue(), 'Office managers in Ohio - hiring front-desk staff')
+await back()
+await page.getByLabel('Where').fill('NYC')
+await cont()
+assert.deepEqual(await plays().allTextContents(), ['Practice owners in NYC - opened a new location', 'Office managers in NYC - hiring front-desk staff', 'Practice owners in NYC - switched practice software'])
+assert.equal(await sentence().inputValue(), 'Practice owners in NYC - opened a new location', 'a suggestion from the old profile is replaced, never kept')
+assert.match(await page.getByLabel('Search profile').textContent(), /in NYC/)
+await findLeads()
+assert.deepEqual(scanBodies, [{ query: 'Practice owners in NYC - opened a new location', icp: { ...PROFILE, where: ['NYC'] } }], 'exactly one request: the sentence on screen and the edited profile')
+
+// Scenario 2: every edited profile field reaches the request; a sentence the user typed survives Back/continue as typed.
+scanBodies.length = 0
+await page.goto(base + '/app', { waitUntil: 'networkidle' })
+await page.getByLabel('Your website').fill('brightsmile.example'); await page.getByRole('button', { name: 'Read my site' }).click()
+await page.getByText("Here's what we think you sell").waitFor()
+await page.getByLabel('Who buys it').fill('Group dental practices opening new offices')
+await page.getByLabel('Buyer roles').fill('Practice owners, COO')
+await page.getByLabel('Industries').fill('Dental, Orthodontics')
+await page.getByLabel('Where').fill('Austin, TX')
+await page.getByLabel('Signs they need you now').fill('Opened a new location')
+await page.getByLabel('Company sizes').fill('10-50 employees')
+await page.getByLabel('Skip').fill('Dental schools')
+await cont()
+await sentence().fill('Orthodontists in Austin opening a second office')
+await back(); await cont()
+assert.equal(await sentence().inputValue(), 'Orthodontists in Austin opening a second office', "the user's own sentence is kept")
+await findLeads()
+assert.deepEqual(scanBodies, [{ query: 'Orthodontists in Austin opening a second office', icp: { summary: 'Group dental practices opening new offices', who: ['Practice owners', 'COO'], industries: ['Dental', 'Orthodontics'], sizes: ['10-50 employees'], where: ['Austin', 'TX'], signals: ['Opened a new location'], exclude: ['Dental schools'] } }])
 await page.goto(base + '/app/outreach', { waitUntil: 'networkidle' }); await shot('outreach')
 {
   await page.getByPlaceholder('Your name, as recipients will see it').fill('Dana Smith'); await page.getByPlaceholder(/Mailing address/).fill('1 Main St, Columbus, OH 43004, USA')
