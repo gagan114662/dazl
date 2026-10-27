@@ -127,6 +127,14 @@ test('wrong-city / wrong-country acceptances are refused: Albany for "New York, 
   for (const l of ['Buffalo, NY', 'Rochester, New York', 'Upstate New York', 'Remote - New York State', 'Remote - New York', 'New York State']) assert.equal(placeIn('New York City')!.ok(l), false, l)
   for (const l of ['London, Ontario', 'London, Kentucky', 'London, KY', 'Londonderry, UK', 'East London', 'East London, Eastern Cape', 'New London, CT', 'Manchester, UK', 'United Kingdom', 'England', 'Remote - United Kingdom', 'Remote - London', 'London, UK (Remote)']) assert.equal(placeIn('London UK')!.ok(l), false, l)
 })
+test('parenthetical place text is validated, not discarded: "London (Ontario, Canada)" and "New York (State, USA)" are refused', () => {
+  assert.equal(placeIn('London UK companies hiring')!.ok('London (Ontario, Canada)'), false)
+  assert.equal(placeIn('NYC companies hiring')!.ok('New York (State, USA)'), false)
+  for (const l of ['London (Kentucky)', 'London (Ontario)', 'London, UK (Ontario, Canada)', 'London (UK) (Ontario)', 'London (Remote)']) assert.equal(placeIn('London UK')!.ok(l), false, l)
+  for (const l of ['New York (Upstate)', 'New York (State)', 'New York, NY (Albany)', 'New York (Remote)', 'NYC (Texas, USA)']) assert.equal(placeIn('NYC')!.ok(l), false, l)
+  for (const l of ['London (UK)', 'London (Hybrid)', 'London (England, UK)']) assert.equal(placeIn('London UK')!.ok(l), true, l)
+  for (const l of ['New York (NY, USA)', 'New York (Hybrid)', 'New York, NY (10019)']) assert.equal(placeIn('NYC')!.ok(l), true, l)
+})
 test('the matching city forms still pass', () => {
   for (const l of ['New York, NY', 'New York', 'New York City', 'NYC', 'New York, New York, United States', 'Brooklyn, NY', 'Manhattan', 'Queens, New York', 'The Bronx, NY', 'Staten Island, NY', 'Hybrid - New York, NY', 'New York, NY (Hybrid)', 'New York, NY 10019']) assert.equal(placeIn('New York City')!.ok(l), true, l)
   for (const l of ['London', 'London, UK', 'London, United Kingdom', 'London, England, United Kingdom', 'Greater London', 'South London, UK', 'East London, UK', 'Hybrid - London, UK', 'London (Hybrid)']) assert.equal(placeIn('London UK')!.ok(l), true, l)
@@ -137,7 +145,7 @@ test('a UK-only request is its own country place, never London; "London UK" reso
 })
 function manyBoard() {
   const seen: string[] = []
-  const locs = ['Manchester, UK', 'Remote - United Kingdom', 'Birmingham, England', 'East London, South Africa', 'London, Ontario', 'London, UK', 'Greater London']
+  const locs = ['Manchester, UK', 'Remote - United Kingdom', 'Birmingham, England', 'East London, South Africa', 'London, Ontario', 'London, UK', 'Greater London', 'London (Ontario, Canada)', 'London (UK)']
   const http: SafeGet = async url => {
     if (new URL(url).hostname === 'hn.algolia.com') return null
     seen.push(url); const j = (o: unknown) => ({ status: 200, body: JSON.stringify(o) })
@@ -150,6 +158,21 @@ function manyBoard() {
 test('through the real collectEvidence: for an exact London request only the London postings are detail-fetched and returned', async () => {
   const { http, seen } = manyBoard()
   const ev = await collectEvidence({ adapters: ['jobboards'], feeds: ['https://boards.greenhouse.io/multi'], pages: [] }, 'London UK B2B SaaS startups hiring sales account executive', http, 5000)
-  assert.deepEqual(ev.map(e => e.url).sort(), ['https://boards.greenhouse.io/multi/jobs/6', 'https://boards.greenhouse.io/multi/jobs/7'])
-  assert.deepEqual(seen.filter(u => /\/jobs\/\d+$/.test(u)).map(u => u.split('/').pop()).sort(), ['6', '7'], 'wrong-city postings were never detail-fetched')
+  assert.deepEqual(ev.map(e => e.url).sort(), ['https://boards.greenhouse.io/multi/jobs/6', 'https://boards.greenhouse.io/multi/jobs/7', 'https://boards.greenhouse.io/multi/jobs/9'])
+  assert.deepEqual(seen.filter(u => /\/jobs\/\d+$/.test(u)).map(u => u.split('/').pop()).sort(), ['6', '7', '9'], 'wrong-city postings were never detail-fetched')
+})
+
+test('through the real collectEvidence: "New York (State, USA)" is never detail-fetched for an NYC request', async () => {
+  const seen: string[] = []
+  const locs = ['New York (State, USA)', 'New York (NY, USA)']
+  const http: SafeGet = async url => {
+    if (new URL(url).hostname === 'hn.algolia.com') return null
+    seen.push(url); const j = (o: unknown) => ({ status: 200, body: JSON.stringify(o) })
+    if (url === 'https://boards-api.greenhouse.io/v1/boards/ny/jobs') return j({ jobs: locs.map((l, i) => ({ id: i + 1, title: 'Sales Account Executive', updated_at: day(1), location: { name: l }, absolute_url: `https://boards.greenhouse.io/ny/jobs/${i + 1}` })) })
+    const d = url.match(/\/jobs\/(\d+)$/); if (d) return j({ id: +d[1], title: 'Sales Account Executive', first_published: day(9), content: `&lt;p&gt;${BODY}&lt;/p&gt;`, location: { name: locs[+d[1] - 1] }, absolute_url: `https://boards.greenhouse.io/ny/jobs/${d[1]}` })
+    return null
+  }
+  const ev = await collectEvidence({ adapters: ['jobboards'], feeds: ['https://boards.greenhouse.io/ny'], pages: [] }, 'NYC B2B SaaS startups hiring sales account executive', http, 5000)
+  assert.deepEqual(ev.map(e => e.url), ['https://boards.greenhouse.io/ny/jobs/2'])
+  assert.deepEqual(seen.filter(u => /\/jobs\/\d+$/.test(u)).map(u => u.split('/').pop()), ['2'])
 })
