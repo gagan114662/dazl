@@ -33,8 +33,13 @@ export function stateIn(query: string): string | null {
 const WORK = '(?:hybrid|on-?site|onsite|hq|head\\s*office|office)' // "remote" is deliberately absent: a remote posting is not located in the city
 const SEP = '\\s*[,;\\-\\u2013|/]\\s*'
 const UKM = '(?:london|uk|u\\.k\\.|united kingdom|england|gb|great britain|greater london)'
-const LONDON_OK = new RegExp(`^\\s*(?:${WORK}${SEP})?(?:(?:greater|central|north|south|west)\\s+london|london|east\\s+london(?=${SEP}${UKM}\\b))(?:\\s+(?:area|metro(?:politan)?\\s+area))?(?:\\s*\\((?!\\s*remote)[^)]*\\))?(?:${SEP}(?:${UKM}|${WORK}))*\\s*(?:\\((?!\\s*remote)[^)]*\\))?\\s*$`, 'i')
-const NYC_OK = new RegExp(`^\\s*(?:${WORK}${SEP})?(?:new york(?:\\s+city)?|nyc|manhattan|brooklyn|queens|the bronx|bronx|staten island)(?:\\s*\\((?!\\s*remote)[^)]*\\))?(?:${SEP}(?:(?:ny|new york|usa|us|united states|${WORK})(?:\\s+\\d{5}(?:-\\d{4})?)?|\\d{5}))*\\s*(?:\\((?!\\s*remote)[^)]*\\))?\\s*$`, 'i')
+// A parenthetical is place text too: it must be made only of markers that agree with the city ("London (UK)", "New York (NY, USA)"),
+// never "London (Ontario, Canada)" or "New York (State, USA)".
+const UK_ITEM = `(?:${UKM}|${WORK})`
+const NY_ITEM = `(?:(?:ny|new york|usa|us|united states|${WORK})(?:\\s+\\d{5}(?:-\\d{4})?)?|\\d{5})`
+const parens = (item: string) => `(?:\\s*\\(\\s*${item}(?:${SEP}${item})*\\s*\\))?`
+const LONDON_OK = new RegExp(`^\\s*(?:${WORK}${SEP})?(?:(?:greater|central|north|south|west)\\s+london|london|east\\s+london(?=${SEP}${UKM}\\b))(?:\\s+(?:area|metro(?:politan)?\\s+area))?${parens(UK_ITEM)}(?:${SEP}${UK_ITEM})*${parens(UK_ITEM)}\\s*$`, 'i')
+const NYC_OK = new RegExp(`^\\s*(?:${WORK}${SEP})?(?:new york(?:\\s+city)?|nyc|manhattan|brooklyn|queens|the bronx|bronx|staten island)${parens(NY_ITEM)}(?:${SEP}${NY_ITEM})*${parens(NY_ITEM)}\\s*$`, 'i')
 const CITY_PLACES: { ask: RegExp; name: string; ok: (l: string) => boolean }[] = [
   { ask: /\blondon\b/i, name: 'London', ok: l => LONDON_OK.test(l) },
   // "New York" alone is the state (stateIn). "New York, NY" / "New York, New York" / "New York City" / "NYC" / a borough name the city.
