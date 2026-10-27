@@ -27,8 +27,9 @@ const UNREAD = new Set(['blocked_by_site', 'needs_javascript', 'login_required']
 // The CSV "Evidence Origin" cell. It only ever states what is recorded: a verified copy, a candidate dazl could not read, or a
 // lead YOU confirmed after dazl could not read it. A row with nothing recorded is blank, and blank claims nothing (it does not
 // mean dazl read the page).
-export function exportEvidenceOrigin(r: { evidence_origin?: string | null; own_fetch_failure?: string | null; review_reason?: string | null; human_confirmed_from?: string | null }): string {
-  if (r.evidence_origin === COPY_ORIGIN) return evidenceOriginLabel(r.evidence_origin, r.own_fetch_failure)
+export const purgedNote = (at: number | null | undefined): string => at ? ` The copied text was deleted at the account owner's request on ${new Date(at * 1000).toISOString().slice(0, 10)}; it can no longer be shown or re-checked.` : ''
+export function exportEvidenceOrigin(r: { evidence_origin?: string | null; own_fetch_failure?: string | null; review_reason?: string | null; human_confirmed_from?: string | null; evidence_purged_at?: number | null }): string {
+  if (r.evidence_origin === COPY_ORIGIN) return evidenceOriginLabel(r.evidence_origin, r.own_fetch_failure) + purgedNote(r.evidence_purged_at)
   if (r.review_reason && UNREAD.has(r.review_reason)) return `Not verified: dazl could not read this page (${r.review_reason}); its quote was not checked against any page text.`
   if (r.human_confirmed_from && UNREAD.has(r.human_confirmed_from)) return `Confirmed by you, not verified by dazl: dazl could not read this page (${r.human_confirmed_from}); its quote was not checked against any page text.`
   return ''

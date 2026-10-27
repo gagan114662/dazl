@@ -4,8 +4,8 @@ import { randomBytes, createHash } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
-import { migrateScan, createJob } from '../../lib/scan/store.ts'
-import { storeEvidenceCopy } from '../../lib/scan/evidence-copies.ts'
+import { migrateScan, createJob, listLeads } from '../../lib/scan/store.ts'
+import { storeEvidenceCopy, purgeTenantEvidence } from '../../lib/scan/evidence-copies.ts'
 import { GET as exportGET } from '../../app/api/leads/export/route.ts'
 import { GET as evidenceGET } from '../../app/api/leads/evidence/route.ts'
 
@@ -52,4 +52,15 @@ test('export route: copied evidence is labelled as a copy; unreadable and user-c
   setUser({ id: 'B', business_name: 'Beta' }); assert.equal((await evidenceGET(get(`/api/leads/evidence?lead_id=${ids.copy}`))).status, 404)
   assert.equal((await exportGET(get(`/api/leads/export?job_id=${job}`)).then(r => r.text())).includes('CopyCo'), false)
   setUser(null); assert.equal((await evidenceGET(get(`/api/leads/evidence?lead_id=${ids.copy}`))).status, 401)
+  // after an audited purge of tenant A's evidence: no link, no false availability; 410 says it was deleted; B is untouched
+  setUser({ id: 'A', business_name: 'Acme' })
+  const pre = await (await exportGET(get(`/api/leads/export?job_id=${job}`))).text(); assert.doesNotMatch(pre, /deleted at the account owner/)
+  purgeTenantEvidence(db, { tenantId: 'A', confirmTenantId: 'A', operator: 'ops-jane', reason: 'Written deletion request, ticket 4411', execute: true })
+  const gone = await evidenceGET(get(`/api/leads/evidence?lead_id=${ids.copy}`)); assert.equal(gone.status, 410)
+  const gj = await gone.json() as { error: string; note: string; text?: string }; assert.equal(gj.error, 'purged'); assert.equal(gj.text, undefined); assert.match(gj.note, /deleted at the account owner's request/)
+  const post = parseCsv(await (await exportGET(get(`/api/leads/export?job_id=${job}`))).text())
+  assert.match(post.find(r => r['Company'] === 'CopyCo')![col], /copy of the page fetched by TinyFish.*deleted at the account owner's request.*can no longer be shown/)
+  assert.doesNotMatch(post.find(r => r['Company'] === 'PlainCo')![col], /deleted/)
+  const leadsBody = { leads: listLeads(db, 'A', job, 200, true) as { id: string; evidence_copy_id: string | null; evidence_purged_at: number | null }[] } // the rows /api/leads returns
+  const l = leadsBody.leads.find(x => x.id === ids.copy)!; assert.equal(l.evidence_copy_id, null); assert.ok(l.evidence_purged_at)
 })
