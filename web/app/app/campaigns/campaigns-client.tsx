@@ -34,7 +34,7 @@ export default function CampaignsClient() {
               {stage('Discovery', `${c.discovery.leads} lead${c.discovery.leads === 1 ? '' : 's'}`, c.discovery.candidates == null ? 'candidates not recorded' : `from ${c.discovery.candidates} candidates`)}
               {stage('Qualification', `${c.qualification.sourceChecked} source-checked, ${c.qualification.confirmedByYou} confirmed by you, ${c.qualification.needsReview} to review`, `${c.qualification.held} timing not confirmed, ${c.qualification.unverified} unverified, ${c.qualification.rejected} rejected`)}
               {stage('Contact', `${c.contact.withContact} with a contact`)}
-              {stage('Outreach', `${c.outreach.drafts} draft, ${c.outreach.approved} approved, ${c.outreach.sent} sent`)}
+              {stage('Outreach', `${c.outreach.drafts} draft, ${c.outreach.approved} approved, ${c.outreach.sent} sent`, `${c.outreach.draftsHeld + c.outreach.approvedHeld} held, ${c.outreach.draftsSetup + c.outreach.approvedSetup} waiting on setup`)}
               {stage('Sequence', `${c.sequence.active} running`, `${c.sequence.stopped} finished or stopped`)}
               {stage('Replies', `${c.reply.replied} replied, ${c.reply.interested} interested`, `${c.reply.bounced} bounced, ${c.reply.optOuts} opted out`)}
             </div>

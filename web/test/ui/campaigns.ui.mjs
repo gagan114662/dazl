@@ -52,16 +52,19 @@ try {
   assert.equal(await cards.count(), 4)
   assert.doesNotMatch(await page.locator('main').textContent(), /B-ONLY SEARCH/, "another tenant's search never shows")
   const [legacy, austin, nyc, ohio] = [cards.nth(0), cards.nth(1), cards.nth(2), cards.nth(3)]
+  const text = async (card, s) => (await card.getByTestId(`stage-${s}`).textContent())
   assert.match(await austin.textContent(), /Orthodontists in Austin/)
   assert.equal(await austin.getByTestId('next-action').textContent(), 'Search failed. Open it to see why')
-  assert.equal(await nyc.getByTestId('next-action').textContent(), 'Review and approve 2 drafts')
-  assert.equal(await nyc.getByTestId('next-action').getAttribute('href'), '/app/outreach')
+  // NYC's two stored drafts are for leads whose timing is not confirmed: the approve gate refuses them, so the card
+  // recommends the source review, never "approve" (Instinct #239, 60176be).
+  assert.equal(await nyc.getByTestId('next-action').textContent(), 'Review the source of 2 leads to confirm timing')
+  assert.equal(await nyc.getByTestId('next-action').getAttribute('href'), `/app/leads?job_id=${'b'.repeat(24)}`)
+  assert.equal(await text(nyc, 'outreach'), 'Outreach2 draft, 0 approved, 0 sent2 held, 0 waiting on setup')
   assert.match(await ohio.textContent(), /Dental owners in Ohio/)
-  const text = async (card, s) => (await card.getByTestId(`stage-${s}`).textContent())
   assert.equal(await text(ohio, 'discovery'), 'Discovery4 leadsfrom 9 candidates')
   assert.equal(await text(ohio, 'qualification'), 'Qualification2 source-checked, 0 confirmed by you, 1 to review2 timing not confirmed, 0 unverified, 1 rejected')
   assert.equal(await text(ohio, 'contact'), 'Contact2 with a contact')
-  assert.equal(await text(ohio, 'outreach'), 'Outreach1 draft, 0 approved, 1 sent')
+  assert.equal(await text(ohio, 'outreach'), 'Outreach1 draft, 0 approved, 1 sent1 held, 0 waiting on setup')
   assert.equal(await text(ohio, 'sequence'), 'Sequence0 running0 finished or stopped')
   assert.equal(await text(ohio, 'replies'), 'Replies1 replied, 1 interested0 bounced, 0 opted out')
   assert.equal(await ohio.getByTestId('next-action').textContent(), 'Check 1 lead that needs your review', 'review comes before the waiting draft')
@@ -70,7 +73,7 @@ try {
   assert.match(await legacy.textContent(), /Legacy search/)
   assert.equal(await text(legacy, 'qualification'), 'Qualification0 source-checked, 0 confirmed by you, 0 to review0 timing not confirmed, 1 unverified, 0 rejected')
   assert.equal(await text(legacy, 'contact'), 'Contact1 with a contact')
-  assert.doesNotMatch(await legacy.getByTestId('next-action').textContent(), /draft/i)
+  assert.equal(await legacy.getByTestId('next-action').textContent(), 'Check 1 unverified lead against their sources', 'an honest research step, never "nothing waiting"')
   assert.deepEqual(writes, [], 'loading the page writes nothing')
   console.log('campaigns UI check passed: 4 own campaigns (incl. a legacy unverified lead), stage counts and next actions from the real route')
 } finally {

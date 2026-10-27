@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { listCampaigns, nextAction } from '../lib/outreach/campaigns.ts'
-import { leadEvidenceState, draftBlockReason } from '../lib/outreach/service.ts'
+import { leadEvidenceState, draftBlockReason, approveBlockReason, sendBlockReason, saveSettings, approve } from '../lib/outreach/service.ts'
 
 function setup() {
   const db = new Database(':memory:')
@@ -49,7 +49,7 @@ test('one row per search with every stage counted from that search only', () => 
     discovery: { candidates: 9, leads: 5 },
     qualification: { sourceChecked: 2, confirmedByYou: 1, needsReview: 1, unverified: 0, held: 2, rejected: 1 },
     contact: { withContact: 3 },
-    outreach: { drafts: 1, approved: 0, sent: 1 },
+    outreach: { drafts: 1, approved: 0, sent: 1, draftsReady: 0, draftsSetup: 0, draftsHeld: 1, approvedReady: 0, approvedSetup: 0, approvedHeld: 0 },
     sequence: { active: 1, stopped: 0 },
     reply: { replied: 1, interested: 1, bounced: 0, optOuts: 0 },
     next: { label: 'Check 1 lead that needs your review', href: '/app/leads?job_id=j1' },
@@ -60,17 +60,23 @@ test('one row per search with every stage counted from that search only', () => 
 })
 
 test('next action follows the pipeline order and never skips a gate', () => {
-  const base = { id: 'j', query: 'q', status: 'done', error: null, created_at: 0, discovery: { candidates: 3, leads: 3 }, qualification: { sourceChecked: 3, confirmedByYou: 0, needsReview: 0, unverified: 0, held: 0, rejected: 0 }, contact: { withContact: 3 }, outreach: { drafts: 0, approved: 0, sent: 0 }, sequence: { active: 0, stopped: 0 }, reply: { replied: 0, interested: 0, bounced: 0, optOuts: 0 } }
+  const base = { id: 'j', query: 'q', status: 'done', error: null, created_at: 0, discovery: { candidates: 3, leads: 3 }, qualification: { sourceChecked: 3, confirmedByYou: 0, needsReview: 0, unverified: 0, held: 0, rejected: 0 }, contact: { withContact: 3 }, outreach: { drafts: 0, approved: 0, sent: 0, draftsReady: 0, draftsSetup: 0, draftsHeld: 0, approvedReady: 0, approvedSetup: 0, approvedHeld: 0 }, sequence: { active: 0, stopped: 0 }, reply: { replied: 0, interested: 0, bounced: 0, optOuts: 0 } }
   const at = (o: object, undrafted = 0) => nextAction({ ...base, ...o } as typeof base, undrafted)
   assert.deepEqual(at({ status: 'running' }), { label: 'Search still running', href: '/app/leads?job_id=j' })
   assert.deepEqual(at({ status: 'failed', error: 'cancelled' }).label, 'Search cancelled. Run it again if you still want it')
   assert.equal(at({ status: 'failed', error: 'no_candidates' }).label, 'Search failed. Open it to see why')
-  assert.equal(at({ qualification: { ...base.qualification, needsReview: 2 }, outreach: { drafts: 4, approved: 0, sent: 0 } }).label, 'Check 2 leads that need your review', 'review comes before drafts')
-  assert.deepEqual(at({ outreach: { drafts: 2, approved: 1, sent: 0 } }), { label: 'Review and approve 2 drafts', href: '/app/outreach' })
-  assert.deepEqual(at({ outreach: { drafts: 0, approved: 1, sent: 0 } }), { label: 'Send 1 approved email', href: '/app/outreach' })
+  const o = (x: object) => ({ outreach: { ...base.outreach, ...x } })
+  assert.equal(at({ qualification: { ...base.qualification, needsReview: 2 }, ...o({ drafts: 4, draftsReady: 4 }) }).label, 'Check 2 leads that need your review', 'review comes before drafts')
+  assert.deepEqual(at(o({ drafts: 2, draftsReady: 2, approved: 1, approvedReady: 1 })), { label: 'Review and approve 2 drafts', href: '/app/outreach' })
+  assert.deepEqual(at(o({ approved: 1, approvedReady: 1 })), { label: 'Send 1 approved email', href: '/app/outreach' })
+  assert.deepEqual(at(o({ drafts: 1, draftsSetup: 1 })), { label: 'Add your sender details and connect Gmail to continue 1 email', href: '/app' })
+  // Stored drafts/approvals the gates refuse are never recommended for approval or sending.
+  assert.deepEqual(at(o({ drafts: 2, draftsHeld: 2 })), { label: '2 emails are held: open Outreach to see why', href: '/app/outreach' })
+  assert.deepEqual(at(o({ approved: 1, approvedHeld: 1 })), { label: '1 email is held: open Outreach to see why', href: '/app/outreach' })
   assert.deepEqual(at({ reply: { ...base.reply, interested: 2 } }), { label: 'Answer 2 interested replies', href: '/app/inbox' })
   assert.deepEqual(at({}, 3), { label: 'Approve 3 leads to draft emails', href: '/app/leads?job_id=j' })
-  assert.deepEqual(at({ qualification: { ...base.qualification, held: 2 } }), { label: 'Confirm the timing of 2 leads before drafting', href: '/app/leads?job_id=j' })
+  assert.deepEqual(at({ qualification: { ...base.qualification, held: 2 }, ...o({ drafts: 2, draftsHeld: 2 }) }), { label: 'Review the source of 2 leads to confirm timing', href: '/app/leads?job_id=j' }, 'held drafts point to the hold, not to approval')
+  assert.deepEqual(at({ qualification: { ...base.qualification, unverified: 1 } }), { label: 'Check 1 unverified lead against their sources', href: '/app/leads?job_id=j' }, 'unverified leads are a research step, never "nothing waiting"')
   assert.deepEqual(at({ discovery: { candidates: 0, leads: 0 } }), { label: 'No leads from this search. Try a broader one', href: '/app/leads' })
   assert.deepEqual(at({}), { label: 'Nothing waiting on you', href: null })
 })
@@ -95,5 +101,35 @@ test('legacy no-excerpt, purged, confirmed and verified leads are counted exactl
   assert.deepEqual(c.next, { label: 'Approve 1 lead to draft emails', href: '/app/leads?job_id=j1' })
   // Once that one is drafted, the next step is the timing review the gate is holding, never a draft.
   msg(db, 'A', 'confirmed', 'draft'); db.prepare("UPDATE outreach_messages SET status = 'sent' WHERE lead_id = 'confirmed'").run()
-  assert.deepEqual(listCampaigns(db, 'A')[0].next, { label: 'Confirm the timing of 2 leads before drafting', href: '/app/leads?job_id=j1' })
+  assert.deepEqual(listCampaigns(db, 'A')[0].next, { label: 'Review the source of 2 leads to confirm timing', href: '/app/leads?job_id=j1' })
+})
+
+// Instinct #239 (60176be): a stored draft count is not approval eligibility. Drafts and approved emails are classified by
+// the real approve/send gates (approveBlockReason / sendBlockReason).
+test('approve and send are recommended only when their gates accept; setup and held are told apart', () => {
+  const db = setup()
+  const next = (id: string) => listCampaigns(db, 'A').find(c => c.id === id)!
+  // H: a machine-verified lead whose timing is not confirmed yet, with a stored draft, on a fully set-up account.
+  job(db, 'A', 'jH', 'Held'); lead(db, 'jH', 'h1', { contact: 'hi@held.example' }); finish(db, 'jH'); msg(db, 'A', 'h1', 'draft')
+  // C: a lead you confirmed, with a stored draft; the account has no sender details and no Gmail yet.
+  job(db, 'A', 'jC', 'Confirmed'); lead(db, 'jC', 'c1', { confidence: null, excerpt: null, confirmed: 5, contact: 'hi@conf.example' }); finish(db, 'jC'); msg(db, 'A', 'c1', 'draft')
+  assert.equal(approveBlockReason(db, 'A', 'm-c1'), 'sender_identity_missing')
+  assert.equal(approveBlockReason(db, 'A', 'm-c1', { skipAccount: true }), null)
+  assert.equal(approveBlockReason(db, 'A', 'm-h1', { skipAccount: true }), 'lead_currentness_unconfirmed')
+  assert.deepEqual(next('jC').next, { label: 'Add your sender details and connect Gmail to continue 1 email', href: '/app' })
+  assert.equal(next('jH').outreach.draftsHeld, 1, 'a held lead is held even while setup is also missing')
+  // Set up the account: sender details and a connected Gmail.
+  saveSettings(db, 'A', { sender_name: 'Dana', postal_address: '1 Main St, Columbus OH 43004' })
+  db.prepare("INSERT INTO gmail_accounts (tenant_id, email, refresh_ct, status) VALUES ('A', 'me@example.test', 'x', 'active')").run()
+  assert.deepEqual(next('jH').next, { label: 'Review the source of 1 lead to confirm timing', href: '/app/leads?job_id=jH' }, 'never "approve" for a held draft')
+  assert.deepEqual(next('jC').outreach, { drafts: 1, approved: 0, sent: 0, draftsReady: 1, draftsSetup: 0, draftsHeld: 0, approvedReady: 0, approvedSetup: 0, approvedHeld: 0 })
+  assert.deepEqual(next('jC').next, { label: 'Review and approve 1 draft', href: '/app/outreach' })
+  approve(db, 'A', 'm-c1')
+  assert.equal(sendBlockReason(db, 'A', 'm-c1'), null)
+  assert.deepEqual(next('jC').next, { label: 'Send 1 approved email', href: '/app/outreach' })
+  // The confirmation is withdrawn after approval: the send gate refuses, so sending is never recommended.
+  db.prepare("UPDATE leads SET human_confirmed_at = NULL WHERE id = 'c1'").run()
+  assert.notEqual(sendBlockReason(db, 'A', 'm-c1'), null)
+  assert.deepEqual(next('jC').outreach.approvedHeld, 1)
+  assert.doesNotMatch(next('jC').next.label, /send|approve/i)
 })
