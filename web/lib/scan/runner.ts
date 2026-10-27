@@ -19,8 +19,9 @@ import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, s
 import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '../search/trace.ts'
 import { directQueries } from '../search/direct-queries.ts'
 import { HeldText, COPY_ORIGIN, type HeldPage } from './held-text.ts'
+import type { CandidateAudit, UrlRecord } from './run-report.ts'
 import { evidenceCopyRoom, storeEvidenceCopy } from './evidence-copies.ts'
-import { limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
+import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { crawlJob } from '../connectors/sitecrawl.ts'
 import { anthropicCountTokens, guardProvider, ownerPool, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './verify-provenance.ts'
@@ -227,18 +228,25 @@ export async function groundLeads(provider: Provider, apiKey: string, query: str
 }
 
 // (shown to the user, never emailed) instead of vanishing. Dedup by company keeps the best.
-export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetcher = fetchPageDetailed, now = new Date(), judge?: Judge, knownDomain: string | null = null, held?: { text: HeldText; attempt: string }): Promise<VerifyOutcome> {
+export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetcher = fetchPageDetailed, now = new Date(), judge?: Judge, knownDomain: string | null = null, held?: { text: HeldText; attempt: string }, audit?: CandidateAudit[]): Promise<VerifyOutcome> {
   const cache = new Map<string, Promise<Page | FetchFail | null>>()
   const get = (u: string) => { if (!cache.has(u)) cache.set(u, fetchPage(u).catch(() => null)); return cache.get(u)! }
   const dropped: Record<string, number> = {}
   const drop = (r: string) => { dropped[r] = (dropped[r] ?? 0) + 1 }
+  // Instrumentation only (scan/run-report.ts): the fate of each candidate and why. Never read by a decision.
+  const noted = new Map<LeadDraft, CandidateAudit>()
+  const note = (c: LeadDraft, outcome: CandidateAudit['outcome'], reason: string | null, origin?: string | null) => {
+    if (!audit) return
+    const e = noted.get(c); if (e) { e.outcome = outcome; e.reason = reason; if (origin !== undefined) e.evidence_origin = origin; return }
+    const n: CandidateAudit = { key: `${dedupKey(c)}|${c.source_url}`, company: c.company, url: c.source_url, outcome, reason, evidence_origin: origin ?? null }; noted.set(c, n); audit.push(n)
+  }
   const best = new Map<string, VerifiedLead>()
   const review = new Map<string, ReviewLead>()
   const fetched = await Promise.all(candidates.map(async c => ({ c, page: await get(c.source_url) })))
 
   const passed: { c: LeadDraft; v: Extract<ReturnType<typeof verifyEvidence>, { ok: true }>; copy?: { failure: string; sha256: string; page: HeldPage } }[] = []
   for (const { c, page } of fetched) {
-    if (!page) { drop('page_unreachable'); continue }
+    if (!page) { drop('page_unreachable'); note(c, 'dropped', 'page_unreachable'); continue }
     if (isFail(page)) {
       const why = REVIEW_REASONS[page.fail]
       // Narrow, labelled exception (docs/design/blocked-source-verification.md): when dazl's own fetch was blocked and TinyFish ALREADY
@@ -248,10 +256,10 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
       if (copy?.ok) {
         const cp: Page = { text: copy.page.text, title: copy.page.title, retrievedAt: copy.page.heldAt }
         const v2 = !closedJobEvidence(c, cp) ? verifyEvidence(c, cp, now) : null
-        if (v2?.ok && !counterpartySignal(c, cp, '')) { passed.push({ c, v: v2, copy: { failure: why, sha256: copy.page.sha256, page: copy.page } }); continue }
+        if (v2?.ok && !counterpartySignal(c, cp, '')) { passed.push({ c, v: v2, copy: { failure: why, sha256: copy.page.sha256, page: copy.page } }); note(c, 'passed', null, COPY_ORIGIN); continue }
       }
-      if (why) { const key = dedupKey(c); if (!review.has(key)) review.set(key, { ...c, contact: null, review_reason: why }); else drop('duplicate') }
-      else drop(page.fail === 'not_found' ? 'page_not_found' : page.fail === 'refused' ? 'url_refused' : 'page_unreachable')
+      if (why) { const key = dedupKey(c); if (!review.has(key)) review.set(key, { ...c, contact: null, review_reason: why }); else drop('duplicate'); note(c, 'review', why) }
+      else { const r = page.fail === 'not_found' ? 'page_not_found' : page.fail === 'refused' ? 'url_refused' : 'page_unreachable'; drop(r); note(c, 'dropped', r) }
       continue
     }
     const closed = closedJobEvidence(c, page)
@@ -259,7 +267,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
       const k = dedupKey(c)
       if (!review.has(k)) review.set(k, { ...c, contact: null, review_reason: 'job_closed' })
       else drop('duplicate')
-      continue
+      note(c, 'review', 'job_closed'); continue
     }
     const v = verifyEvidence(c, page, now)
     if (!v.ok) {
@@ -270,7 +278,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
         const k = dedupKey(c)
         if (!review.has(k)) review.set(k, { ...c, contact: null, review_reason: `event_date_${v.reason}` })
         else drop('duplicate')
-        continue
+        note(c, 'review', `event_date_${v.reason}`); continue
       }
       if (v.reason === 'excerpt_not_on_page') {
         const key = companyKey(c.company)
@@ -279,19 +287,19 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
           const k = dedupKey(c)
           if (!review.has(k)) review.set(k, { ...c, contact: null, review_reason: 'quote_unconfirmed' })
           else drop('duplicate')
-          continue
+          note(c, 'review', 'quote_unconfirmed'); continue
         }
       }
-      drop(v.reason); continue
+      drop(v.reason); note(c, 'dropped', v.reason); continue
     }
     const cp = counterpartySignal(c, page, '')
     if (cp) {
       const k = dedupKey(c)
       if (!review.has(k)) review.set(k, { ...c, contact: null, review_reason: 'counterparty_signal' })
       else drop('duplicate')
-      continue
+      note(c, 'review', 'counterparty_signal'); continue
     }
-    passed.push({ c, v })
+    passed.push({ c, v }); note(c, 'passed', null)
   }
 
   // semantic check, small and bounded: at most MAX_LEADS calls
@@ -301,7 +309,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     if (j === 'contradicts') { drop('contradicted'); return }
     // Cap by source class: a content farm that copied the quote never outranks the company's own page.
     const confidence = Math.max(0, Math.min(sourceCap(c.source_url, c.company, knownDomain), Math.min(100, v.confidence + (j ? JUDGE_DELTA[j] : 0))))
-    if (confidence < MIN_CONFIDENCE) { drop(j === 'unclear' ? 'claim_unclear' : 'low_confidence'); return }
+    if (confidence < MIN_CONFIDENCE) { const r = j === 'unclear' ? 'claim_unclear' : 'low_confidence'; drop(r); note(c, 'dropped', r); return }
     const lead: VerifiedLead = { ...c, contact: v.contact, confidence, date_status: v.dateStatus, retrieved_at: v.retrievedAt, ...(copy ? { evidence_origin: COPY_ORIGIN, own_fetch_failure: copy.failure, evidence_copy_sha256: copy.sha256, evidence_copy_page: copy.page } : {}) }
     const key = dedupKey(c)
     const prev = best.get(key)
@@ -317,7 +325,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     const out: T[] = []
     for (const l of [...list].sort(rank)) {
       const n = seen.get(l.source_url) ?? 0
-      if (n >= MAX_LEADS_PER_SOURCE) { drop('source_cap'); continue }
+      if (n >= MAX_LEADS_PER_SOURCE) { drop('source_cap'); const c = l as unknown as LeadDraft; if (noted.has(c)) note(c, 'dropped', 'source_cap'); continue }
       seen.set(l.source_url, n + 1); out.push(l)
     }
     return out
@@ -537,7 +545,7 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
 }
 
 // diag (optional) receives what this collector really did: every query sent, per-call outcomes, hit and page counts.
-async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider: Provider, key: string, fetchImpl?: typeof fetch, diag?: { trace: SearchTrace; info: Partial<SourceStats>; hitUrls: string[]; tfTextUrls?: string[]; newsUrls?: string[]; held?: HeldText }, newsHttp?: SafeGet): Promise<LeadDraft[] | null> {
+async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider: Provider, key: string, fetchImpl?: typeof fetch, diag?: { trace: SearchTrace; info: Partial<SourceStats>; hitUrls: string[]; tfTextUrls?: string[]; newsUrls?: string[]; held?: HeldText; urls?: UrlRecord[] }, newsHttp?: SafeGet): Promise<LeadDraft[] | null> {
   migrateTinyfish(db)
   const complete = provider.complete!
   const spent = { searches: 0, fetches: 0 }
@@ -591,6 +599,10 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   const f = await tfFetchMany(db, job.user_id, urls, spent, diag ? { trace: diag.trace } : {})
   if (diag?.tfTextUrls && f.ok) diag.tfTextUrls.push(...f.pages.map(p => p.url)) // verify_provenance: pages TinyFish had text for
   if (diag && f.ok) diag.held = HeldText.seal(`${job.id}:${job.attempts}`, urls, f.pages) // sealed for THIS attempt: only text already fetched, never re-fetched
+  if (diag) { // run report: every result URL, whether it was selected for fetching and whether TinyFish returned text for it
+    const chosen = new Set(urls.map(u => canonicalUrl(u) ?? u)); const textLen = new Map((f.ok ? f.pages : []).map(p => [canonicalUrl(p.url) ?? p.url, p.text.length] as const))
+    diag.urls = [...hitByUrl.keys()].map(u => ({ url: u, hit_date: hitByUrl.get(u)?.date ?? null, walled: isLoginWalled(u), selected: chosen.has(canonicalUrl(u) ?? u), tinyfish_text_chars: textLen.get(canonicalUrl(u) ?? u) ?? null, own_fetch: null }))
+  }
   const items = toEvidence(hits, f.ok ? f.pages : [], fetchRank) // the same ranking decides what survives the extraction cap
   if (diag) Object.assign(diag.info, evidenceSplit(items, f.ok ? f.pages : []))
   if (items.length === 0) return null
@@ -741,7 +753,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // Free news search: on unless NEWS_SEARCH_ENABLED=0 (npm test sets it, like SITECRAWL_ENABLED); an injected
     // deps.newsHttp always turns it on, so tests that exercise news do so explicitly.
     const newsOn = !!deps.newsHttp || newsEnabled()
-    const diag = { trace: new SearchTrace(), info: {} as Partial<SourceStats>, hitUrls: [] as string[], tfTextUrls: [] as string[], newsUrls: [] as string[], held: undefined as HeldText | undefined }
+    const diag = { trace: new SearchTrace(), info: {} as Partial<SourceStats>, hitUrls: [] as string[], tfTextUrls: [] as string[], newsUrls: [] as string[], held: undefined as HeldText | undefined, urls: undefined as UrlRecord[] | undefined }
     if (job.query && icpForSources && complete && tinyfishEnabled()) {
       try {
         ledger.record('search:tinyfish', 'started')
@@ -761,6 +773,9 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       if (diag.trace.events.length > 0 || diag.info.query_source) ledger.stats('search:tinyfish', { ...summarizeTrace(diag.trace), ...diag.info })
     }
     const verifierFetch = new Map<string, FetchOutcome>() // verify_provenance (diagnostic only)
+    const audit: CandidateAudit[] = [] // run report: the fate of every candidate the verifier saw (instrumentation only)
+    { const st = { ...summarizeTrace(diag.trace), ...diag.info }
+      ledger.report({ queries: st.queries, query_source: st.query_source ?? null, search: { attempted: st.searches_attempted, ok: st.searches_ok, hits_raw: st.hits_raw, hits_unique_urls: st.hits_unique_urls, hits_complete: st.hits_complete }, urls: diag.urls, evidence: { items: st.evidence_items ?? null, with_page_text: st.evidence_with_page_text ?? null, snippet_only: st.evidence_snippet_only ?? null }, extracted_candidates: st.extracted_candidates ?? null, audit, ownFetch: verifierFetch, model: { calls: st.model_calls ?? null, input_tokens: st.input_tokens ?? null, output_tokens: st.output_tokens ?? null } }) }
     const fetchP = cachedFetcher(recordingFetcher(deps.fetchPage ?? fetchPageDetailed, verifierFetch))
     // TinyFish off, capped, failing or empty: try the free news search before the provider's paid web search. Not after
     // the run budget already refused a call (its own calls would be refused too); a refusal inside it stops the scan.
@@ -863,7 +878,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     if (leads.length === 0 && walledLeads.length === 0 && selfDescribedLeads.length === 0) { finish(db, job, 'failed', 'no_candidates', null, 0, ledger); return 'failed' }
     const judge = deps.judge === undefined ? makeJudge(providers_[vendor], key, deps.fetchImpl) : deps.judge ?? undefined
     assertOwned(db, job)
-    let outcome = await verifyLeads(leads, fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined)
+    let outcome = await verifyLeads(leads, fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit)
     const verifiedUrls = leads.map(l => l.source_url) // verify_provenance: every URL the verifier was asked about, retry included
     // First-scan killer: the model's stale memory returns only old news and the verifier
     // honestly drops all of it. One bounded retry with the date spelled out a second time
@@ -886,7 +901,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         if (fresh.length > 0) {
           assertOwned(db, job)
           verifiedUrls.push(...fresh.map(l => l.source_url))
-          const o2 = await verifyLeads(fresh, fetchP, deps.now, judge)
+          const o2 = await verifyLeads(fresh, fetchP, deps.now, judge, null, undefined, audit)
           const seenKeys = new Set(outcome.leads.map(dedupKey))
           for (const l of o2.leads) { const k = dedupKey(l); if (!seenKeys.has(k)) { seenKeys.add(k); outcome.leads.push(l) } }
           const seenReview = new Set(outcome.review.map(dedupKey))
@@ -898,6 +913,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         if (e instanceof ProviderError && e.kind === 'auth') throw e
       }
     }
+    ledger.report({ dropCounts: outcome.dropped })
     try { console.error(JSON.stringify({ verify_provenance: { job: job.id, tinyfish: tinyfishEnabled(), ...summarizeProvenance(verifiedUrls, new Set(diag.tfTextUrls), verifierFetch) } })) } catch { /* diagnostic only */ }
     // Memory exclusions are enforced in code, not the prompt: matching leads never reach
     // scoring, the UI or outreach. Counted in dropped like every other gate.

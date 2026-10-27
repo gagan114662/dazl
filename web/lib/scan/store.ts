@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3'
 import { primarySignalKind } from './score.ts'
 import { migrateSourceRuns } from './source-runs.ts'
 import { migrateEvidenceCopies } from './evidence-copies.ts'
+import { migrateRunReport } from './run-report.ts'
 
 export const STALE_RUNNING_S = Number(process.env.SCAN_STALE_RUNNING_S || 20 * 60)
 export const MAX_ATTEMPTS = 3
@@ -76,6 +77,7 @@ export function migrateScan(db: Database.Database): void {
   addColumns(db)
   migrateSourceRuns(db)
   migrateEvidenceCopies(db)
+  migrateRunReport(db)
 }
 
 // Evidence columns. Nullable, so rows written by other workers (Hermes) stay valid:

@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3'
 import { dedupKey } from './evidence.ts'
 import type { Candidate } from './evidence.ts'
 import { writeSourceStats, type SourceStats } from '../search/trace.ts'
+import { buildRunReport, writeRunReport, type ReportParts } from './run-report.ts'
 import { writeModelCalls, type ModelCall } from './model-usage.ts'
 
 // Discovery-stage provenance, not URL-domain classification. Counters are per
@@ -41,6 +42,9 @@ export class SourceRunLedger {
   private calls: ModelCall[] = []
   private written = 0 // calls already persisted; the next flush starts here, so nothing is written twice
   model(c: ModelCall): void { this.calls.push(c) }
+  private parts: ReportParts = {}
+  // Stage facts for the run report (scan/run-report.ts); merged, written once with the job.
+  report(p: ReportParts): void { this.parts = { ...this.parts, ...p } }
   // Persists model calls recorded since the last flush. finish() flushes what the scan made up to that point; the
   // post-finish steps (buyer-fit and any later model call) flush again, so their requests are not lost. Only the attempt
   // that still OWNS the job writes (same job id, attempt number and tenant as the job row), and (job, attempt, seq) is
@@ -91,6 +95,7 @@ export class SourceRunLedger {
     }
     for (const [collector, s] of this.diag) writeSourceStats(db, jobId, attempt, collector, s) // on unless DAZL_SOURCE_STATS=0; never throws
     this.flushModelCalls(db, jobId, attempt) // never throws; failed and retried attempts included
+    writeRunReport(db, jobId, attempt, buildRunReport(this.parts, verified ? verified.map(r => ({ key: evidenceKey(r) })) : null, review ? review.map(r => ({ key: evidenceKey(r), review_reason: (r as { review_reason?: string }).review_reason })) : null, attempt)) // never throws
     const link = db.prepare('INSERT OR IGNORE INTO lead_sources (lead_id,collector,attempt) VALUES (?,?,?)')
     for (const l of stored) for (const collector of this.credits.get(evidenceKey(l)) ?? []) link.run(l.id, collector, attempt)
   }
