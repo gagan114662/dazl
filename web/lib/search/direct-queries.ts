@@ -83,15 +83,24 @@ const lead = `(?:(?:i|we|please|por favor|s'il vous plaît)\\s+)?`
 const EXCL_CLAUSE = new RegExp(`(?<![${L}])${lead}${EXCL}(?![${L}])[^.;!?\\n]*`, 'giu')
 const REQ_CLAUSE = new RegExp(`(?<![${L}])${lead}${REQ}(?![${L}])([^.;!?\\n]*)`, 'giu')
 const WINDOW_CLAUSE = new RegExp(`(?<![${L}])(?:in|within|over|during|from|nos?|em|dans|innerhalb|binnen)?\\s*(?:the\\s+)?(?:past|last|ultimos?|últimos?|derniers?|letzten?|laatste)\\s+\\d+\\s*\\p{L}+|(?<![${L}])within\\s+\\d+\\s*\\p{L}+`, 'giu')
+// A NEGATED hiring clause ("companies in Madrid that do NOT hire a receptionist", "no contratan recepcionista") asks for the
+// opposite of an open posting. Before this cut, recognising a hiring word turned it into affirmative job-board searches for
+// the very role the user wants excluded (Instinct review of #220: HOLD). The negation cue, up to one filler word, the hiring
+// word and the rest of that comma/sentence clause are removed, so no role from it is searched and a request whose only hiring
+// words are negated gets no direct queries at all (the model-written queries and the exclusion gates still see the request).
+// Like the other cuts this only removes words; it never adds a role, host or place.
+const NEG = `(?:no|not|never|nunca|ne|n[ãa]o|nicht|pas|niet|non|\\p{L}*n['’]t)`
+const NEG_CLAUSE = new RegExp(`(?<![${L}])${NEG}(?![${L}])\\s+(?:\\p{L}+\\s+)?(?:${HIRING.source})[^.;,!?\\n]*`, 'giu')
+export const stripNegatedHiring = (text: string): string => text.replace(NEG_CLAUSE, ' . ')
 export function roleRequestText(request: string): string {
-  return request.replace(EXCL_CLAUSE, ' . ')
+  return stripNegatedHiring(request).replace(EXCL_CLAUSE, ' . ')
     .replace(REQ_CLAUSE, (_m, rest: string) => HIRING.test(rest) ? ` ${rest} ` : ' . ')
     .replace(WINDOW_CLAUSE, ' ').replace(/\s+/g, ' ').trim()
 }
 export function rolePhrases(request: string, signals: string[], where: string[]): string[] {
   const places = new Set(where.flatMap(tokens))
   const fromRequest = phrasesIn(roleRequestText(request), places)
-  const all = fromRequest.length ? fromRequest : signals.flatMap(s => phrasesIn(s, places))
+  const all = fromRequest.length ? fromRequest : signals.flatMap(s => phrasesIn(stripNegatedHiring(s), places))
   return [...new Set(all)].slice(0, 3)
 }
 // Every requested place gets its own pair of queries (Instinct review: only the first place was used). At most 3
@@ -99,7 +108,7 @@ export function rolePhrases(request: string, signals: string[], where: string[])
 // Order is HOST-major (every place on the first host, then every place on the second) so a truncated budget slice keeps
 // one direct query per place before a second host for any place (Instinct review of #215).
 export function directQueries(request: string, signals: string[], where: string[]): string[] {
-  if (!HIRING.test(`${request} ${signals.join(' ')}`)) return []
+  if (!HIRING.test(stripNegatedHiring(`${request} ${signals.map(stripNegatedHiring).join(' ')}`))) return []
   const places = [...new Set(where.map(w => w.replace(/[\u0000-\u001f"()]/g, ' ').replace(/\s+/g, ' ').trim()).filter(w => w.length >= 2 && w.length <= 60))].slice(0, 3)
   const roles = rolePhrases(request, signals, where).map(r => `"${r}"`)
   if (places.length === 0 || roles.length === 0) return [] // never every state, never every role

@@ -47,3 +47,26 @@ test('Spanish "contratan"/"contrata" count as hiring words and do not leak into 
     const q = directQueries(r, [], ['Madrid']); assert.equal(q.length, 2, r); assert.match(q[0], /"recepcionista" Madrid$/)
   }
 })
+
+// Instinct review of #220 (HOLD): a NEGATED hiring clause must not become affirmative job-board searches for the excluded role.
+test('negated hiring clauses are not searched: es/pt/en/fr/de, positive clauses and explicit exclusions are unchanged', () => {
+  for (const [r, place] of [
+    ['Empresas en Madrid que no contratan recepcionista', 'Madrid'],
+    ['Empresas en Madrid que no contratan', 'Madrid'],
+    ['Empresas em Lisboa que não contratam recepcionista', 'Lisboa'],
+    ['Companies in Austin that are not hiring a receptionist', 'Austin'],
+    ['Companies in Austin that aren’t hiring a receptionist', 'Austin'],
+    ['Entreprises à Paris qui ne recrutent pas de réceptionniste', 'Paris'],
+    ['Unternehmen in Berlin, die nicht suchen einen Empfangsmitarbeiter', 'Berlin'],
+  ] as const) assert.deepEqual(directQueries(r, [], [place]), [], r)
+  assert.deepEqual(directQueries('Empresas en Madrid que no contratan recepcionista', ['no contratan recepcionista'], ['Madrid']), [], 'negated profile signal too')
+  // a positive clause beside a negated one still searches only the positive role
+  const q = directQueries('Empresas en Madrid que contratan gerente, no contratan recepcionista', [], ['Madrid'])
+  assert.equal(q.length, 2); for (const x of q) { assert.match(x, /"gerente" Madrid$/); assert.doesNotMatch(x, /recepcionista/) }
+  // positive requirement clause and explicit exclusion probes unchanged
+  assert.equal(directQueries('Necesito empresas en Madrid que contratan recepcionista', [], ['Madrid']).length, 2)
+  assert.equal(directQueries('Empresas en Madrid que contratan recepcionista. Excluir cadenas', [], ['Madrid']).length, 2)
+  assert.equal(directQueries('companies hiring a receptionist in Austin', [], ['Austin']).length, 2)
+  // "subcontratación" is not a hiring word
+  assert.deepEqual(directQueries('Empresas de subcontratación en Madrid', [], ['Madrid']), [])
+})
