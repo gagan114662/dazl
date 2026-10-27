@@ -19,10 +19,10 @@ export async function POST(req: NextRequest) {
   const got = req.headers.get('authorization') ?? ''
   const want = `Bearer ${secret}`
   if (!secret || got.length !== want.length || !timingSafeEqual(Buffer.from(got), Buffer.from(want))) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  // One tick at a time across every app instance: a scheduler that fires twice, or fires on two instances, runs the
-  // work once. The lease is renewed by a heartbeat for as long as this process runs the tick, however long one tenant's
-  // step takes, and keep() stops the tick between steps if the lease could not be renewed (lib/shared/lease.ts). A
-  // crashed holder blocks ticks for at most TICK_LEASE.ttlMs.
+  // One tick at a time across app instances in normal operation: a scheduler that fires twice, or on two instances, gets
+  // `skipped`, and a heartbeat keeps the lease through long tenant steps. The lease is not a fence (lib/shared/lease.ts):
+  // duplicate sends are prevented by the outreach modules' own durable per-row claims, not by this lease. A crashed
+  // holder blocks ticks for at most TICK_LEASE.ttlMs.
   const lease = await tryLease(await getDb(), 'internal-tick', TICK_LEASE)
   if (!lease) return NextResponse.json({ ok: true, skipped: 'another tick is running' })
   try {

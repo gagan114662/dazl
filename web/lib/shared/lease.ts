@@ -1,11 +1,13 @@
-// Named leases in the app_leases table: at most one holder per name across all app instances.
+// Named leases in the app_leases table: at most one holder per name at a time, as the store sees it.
 //
-// No overlap while the holder runs, however long its work takes: a heartbeat timer renews the lease every renewEveryMs
-// while the holder's process is alive, so the lease cannot expire under work that is still running. It can lapse only
-// if the holder's process dies (then nothing of its is running) or the holder cannot write to the store. In that case
-// keep(), called between steps, stops the holder before the next step once its last confirmed expiry is closer than
-// stepBudgetMs, and a step already running cannot write anything without the store either (claims, sends and results
-// all go through it).
+// What a lease guarantees: while the holder's process runs and can renew, a heartbeat keeps the lease however long its
+// work takes, so a second instance does not start the same work. keep(), called between steps, stops the holder before
+// the next step once renewals have failed and the confirmed expiry is near.
+// What it does NOT guarantee: it is not a fence. If the holder's own connection fails while the store stays reachable
+// for others, the lease can expire and be taken over while the holder is still inside a step; when its connection
+// recovers, that step can still write. Work whose effects must never run twice needs its own fence where the effect
+// happens (for sends: the durable per-row claims in the outreach modules). A lease only keeps the normal case from
+// doing the work twice.
 // Acquire is one atomic upsert that takes the row over only when it is free or expired; renew and release only touch
 // the row while this holder still owns it.
 import { randomBytes } from 'node:crypto'
