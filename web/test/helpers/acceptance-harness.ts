@@ -31,6 +31,7 @@ export interface Fixture {
   tfPages: Record<string, { title: string; text: string }>   // SYNTHETIC TinyFish fetch results
   own: Record<string, { title: string; text: string } | 'blocked' | 'js_required' | 'not_found'>   // SYNTHETIC verifier own-fetch results
   extraction: Cand[]                       // SYNTHETIC extraction reply (real parseLeads runs on it)
+  onVerify?: (db: Database.Database, jobId: string) => void   // called once, while the verifier is fetching (the scan is still running)
 }
 export async function runFixture(f: Fixture) {
   resetTinyfishState()
@@ -67,7 +68,9 @@ export async function runFixture(f: Fixture) {
     } as unknown as Provider,
     openai: { research: async () => ({ text: '', citedUrls: [] }) },
   }
+  let snapped = false
   const fetchPage = async (u: string) => {
+    if (!snapped && f.onVerify) { snapped = true; f.onVerify(db, job.id) }
     calls.ownFetch.push(u)
     const o = f.own[u]
     if (!o) return { fail: 'error' as const }

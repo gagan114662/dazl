@@ -19,6 +19,8 @@ export interface ReportParts {
   audit?: CandidateAudit[]
   ownFetch?: Map<string, string>
   dropCounts?: Record<string, number>
+  stage?: string
+  sources?: { collector: string; status: string; evidence: number | null }[]
   model?: { calls: number | null; input_tokens: number | null; output_tokens: number | null }
 }
 export const MAX_URLS = 120, MAX_CANDIDATES = 80, MAX_REPORT_CHARS = 120_000
@@ -37,7 +39,7 @@ export function migrateRunReport(db: Database.Database): void {
 export interface FinalRow { key: string; review_reason?: string | null }
 // Builds the report from the parts gathered during the attempt and the FINAL saved rows (so window gate, dedup and caps are
 // reflected): a candidate's fate is `verified`, `review:<reason>` or `dropped:<reason>`.
-export function buildRunReport(p: ReportParts, verified: FinalRow[] | null, review: FinalRow[] | null, attempt: number, now = Date.now()) {
+export function buildRunReport(p: ReportParts, verified: FinalRow[] | null, review: FinalRow[] | null, attempt: number, now = Date.now(), inProgress = false) {
   const vKeys = new Set((verified ?? []).map(r => r.key)); const rMap = new Map((review ?? []).map(r => [r.key, r.review_reason ?? 'review']))
   const audit = p.audit ?? []
   const fates = audit.map(a => {
@@ -47,7 +49,7 @@ export function buildRunReport(p: ReportParts, verified: FinalRow[] | null, revi
   const count = (pre: string) => fates.filter(f => f.fate === pre || f.fate.startsWith(`${pre}:`)).length
   const reasons = (pre: string) => { const o: Record<string, number> = {}; for (const f of fates) if (f.fate.startsWith(`${pre}:`)) { const r = f.fate.slice(pre.length + 1); o[r] = (o[r] ?? 0) + 1 } return o }
   return {
-    v: 1, attempt, generated_at: new Date(now).toISOString(),
+    v: 1, attempt, generated_at: new Date(now).toISOString(), in_progress: inProgress, stage: inProgress ? (p.stage ?? 'running') : 'finished', sources: p.sources ?? [],
     queries: (p.queries ?? []).slice(0, 12).map(q => cut(q, 300)), query_source: p.query_source ?? null,
     search: p.search ?? null,
     urls: (p.urls ?? []).slice(0, MAX_URLS).map(u => ({ ...u, url: cut(u.url, 300), own_fetch: u.own_fetch ?? ownFetchOf(p.ownFetch, u.url) })),
@@ -77,4 +79,23 @@ export function runReportFor(db: Database.Database, tenantId: string, jobId: str
     const rows = db.prepare('SELECT r.attempt, r.report FROM scan_run_report r JOIN scan_jobs j ON j.id = r.job_id WHERE j.id = ? AND j.user_id = ? ORDER BY r.attempt').all(jobId, tenantId) as { attempt: number; report: string }[]
     return rows.length ? rows.map(r => JSON.parse(r.report)) : null
   } catch { return null }
+}
+
+// What a UI can show while a scan runs (and after): derived only from the stored report. Counts the scan has not reached yet are null.
+export interface Progress { stage: string; in_progress: boolean; sources_tried: { collector: string; status: string; candidates_or_evidence: number | null }[]; queries_sent: number; results_found: number | null; pages_selected: number; pages_with_text: number; candidates_found: number | null; checks_done: number; rejections_by_reason: Record<string, number> }
+export function progressOf(report: Record<string, any> | null | undefined): Progress | null {
+  if (!report || typeof report !== 'object') return null
+  const urls = Array.isArray(report.urls) ? report.urls : []
+  const f = report.funnel ?? {}
+  const rej: Record<string, number> = {}
+  for (const [k, n] of Object.entries(f.review_reasons ?? {})) rej[`review: ${k}`] = n as number
+  for (const [k, n] of Object.entries(f.drop_reasons ?? {})) rej[k] = n as number
+  const cands = Array.isArray(report.candidates) ? report.candidates : []
+  // Mid-scan the final fates are not known yet; the verifier's own drop counts are, as soon as verification has run.
+  if (report.in_progress) for (const [k, n] of Object.entries(report.funnel?.verifier_drop_counts ?? {})) rej[k] = n as number
+  return { stage: String(report.stage ?? 'finished'), in_progress: !!report.in_progress,
+    sources_tried: (report.sources ?? []).map((s: any) => ({ collector: s.collector, status: s.status, candidates_or_evidence: s.evidence ?? null })),
+    queries_sent: Array.isArray(report.queries) ? report.queries.length : 0, results_found: report.search?.hits_unique_urls ?? null,
+    pages_selected: urls.filter((u: any) => u.selected).length, pages_with_text: urls.filter((u: any) => u.tinyfish_text_chars).length,
+    candidates_found: report.extracted_candidates ?? (cands.length || null), checks_done: cands.filter((c: any) => !String(c.fate).startsWith('not_finished')).length, rejections_by_reason: rej }
 }

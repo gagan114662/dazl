@@ -45,6 +45,16 @@ export class SourceRunLedger {
   private parts: ReportParts = {}
   // Stage facts for the run report (scan/run-report.ts); merged, written once with the job.
   report(p: ReportParts): void { this.parts = { ...this.parts, ...p } }
+  // A partial run report for a scan that is still running (stage boundaries only: after the search, after verification). Only the attempt
+  // that still owns a running job writes; the final write in write() replaces it. Never throws, never changes the scan.
+  progress(db: Database.Database, jobId: string, attempt: number, stage: string): void {
+    try {
+      if (!db.prepare("SELECT 1 FROM scan_jobs WHERE id = ? AND attempts = ? AND status = 'running'").get(jobId, attempt)) return
+      this.parts = { ...this.parts, stage, sources: [...this.runs].map(([collector, r]) => ({ collector, status: r.status, evidence: r.evidence })) }
+      this.parts = { ...this.parts, sources: [...this.runs].map(([collector, r]) => ({ collector, status: r.status, evidence: r.evidence })) }
+    writeRunReport(db, jobId, attempt, buildRunReport(this.parts, null, null, attempt, Date.now(), true))
+    } catch { /* progress is best effort */ }
+  }
   // Persists model calls recorded since the last flush. finish() flushes what the scan made up to that point; the
   // post-finish steps (buyer-fit and any later model call) flush again, so their requests are not lost. Only the attempt
   // that still OWNS the job writes (same job id, attempt number and tenant as the job row), and (job, attempt, seq) is

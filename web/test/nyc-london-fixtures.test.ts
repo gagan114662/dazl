@@ -206,3 +206,20 @@ test('instrumentation: one scan records queries, every result URL with date/sele
   const jobId = (x.db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id
   assert.ok(runReportFor(x.db, 'A', jobId)); assert.equal(runReportFor(x.db, 'B', jobId), null); assert.equal(runReportFor(x.db, 'A', 'f'.repeat(24)), null)
 })
+
+test('progress: while the scan is still running the report already shows sources tried, queries, results, selected pages and candidates found; at the end the checks and rejections by reason', async () => {
+  const { progressOf, runReportFor } = await import('../lib/scan/run-report.ts')
+  let mid: ReturnType<typeof progressOf> = null; let midStatus = ''
+  const x = await runFixture({ ...nyc, extraction: [cOpen, cJob, cOld, cUndated, cFb, cWrong], onVerify: (db, jobId) => {
+    midStatus = (db.prepare('SELECT status FROM scan_jobs WHERE id = ?').get(jobId) as { status: string }).status
+    mid = progressOf((runReportFor(db, 'A', jobId) ?? []).at(-1) as Record<string, unknown>)
+  } })
+  assert.equal(midStatus, 'running'); assert.ok(mid, 'a partial report exists before the scan finishes')
+  const m = mid as NonNullable<typeof mid>
+  assert.equal(m.in_progress, true); assert.equal(m.stage, 'candidates_extracted'); assert.ok(m.queries_sent >= 3); assert.equal(m.results_found, 6)
+  assert.equal(m.pages_selected, 6); assert.equal(m.pages_with_text, 5); assert.equal(m.candidates_found, 6); assert.equal(m.checks_done, 0, 'verification has not run yet')
+  assert.ok(m.sources_tried.some(s => s.collector === 'search:tinyfish'), JSON.stringify(m.sources_tried))
+  const end = progressOf(x.report!)!
+  assert.equal(end.in_progress, false); assert.equal(end.stage, 'finished'); assert.equal(end.checks_done, 6)
+  assert.deepEqual(end.rejections_by_reason, { 'review: outside_window': 1, 'review: outside_window_undated': 1, 'review: blocked_by_site': 1, entity_mismatch: 1 })
+})
