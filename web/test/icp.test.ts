@@ -325,3 +325,33 @@ test('permitted-range controls: the request allows the whole range, or the model
   const sa = { ...base, summary: 'London companies with seed and Series A funding', signals: ['seed round', 'Series A round'] }
   assert.deepEqual(keepStatedFundingStage(q, sa).signals, ['seed round', 'Series A round'])
 })
+
+// Relay report: "seed-only requests are being widened to seed or later". Cause found by a stubbed repro: the REQUEST parser read
+// ordinary sentences ("...a seed round or after a pivot", "...seed round and later hiring sales") as "seed and every later
+// stage", so a widened model profile ("Seed or later companies") passed a seed-only request unchanged.
+const SEED_ONLY = [
+  'Find seed-funded companies in London',
+  'London startups that raised a seed round or after a pivot',
+  'London startups with a seed round and later hiring sales',
+  'Seed round, or later this year add sales hires',
+  'London seed stage startups and above all in fintech',
+  'Seed funded London companies. Later we may expand to Berlin.',
+  'London companies that raised seed funding, and later opened an office',
+]
+test('seed-only requests stay exactly seed: a model "Seed or later" profile never passes, a correct seed profile is untouched', () => {
+  for (const q of SEED_ONLY) {
+    const good = { ...base, summary: 'London seed-funded companies', signals: ['raised a seed round'] }
+    assert.deepEqual(keepStatedFundingStage(q, good), good, `correct profile unchanged: ${q}`)
+    const wide = keepStatedFundingStage(q, { ...base, summary: 'Seed or later companies in London', signals: ['Seed or later funding'] })
+    assert.equal(wide.summary, q, `widened summary falls back: ${q}`); assert.deepEqual(wide.signals, [])
+    const sig = keepStatedFundingStage(q, { ...base, summary: 'London seed-funded companies', signals: ['Seed or later funding', 'raised a seed round'] })
+    assert.deepEqual(sig.signals, ['raised a seed round'], `range signal dropped: ${q}`)
+    assert.equal(keepStatedFundingStage(q, { ...base, summary: 'London seed and Series A companies' }).summary.includes('Series A'), false, q)
+  }
+})
+test('real ranges in the request are still ranges (strict markers end their phrase)', () => {
+  for (const q of ['Find seed or later companies in London', 'London companies with seed funding or later', 'London seed+ startups', 'London seed or later startups, hiring sales', 'Seed and above funded companies in London.']) {
+    const rng = { ...base, summary: 'Seed or later companies in London', signals: ['Seed or later funding'] }
+    assert.deepEqual(keepStatedFundingStage(q, rng), rng, q)
+  }
+})
