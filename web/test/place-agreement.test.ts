@@ -1,12 +1,12 @@
 // Location agreement before a company gets evidence or contacts. Pure functions and stubbed verifier runs; pages are INVENTED.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { geoTerms, namesPlace, otherUsState, placeAgreement } from '../lib/scan/place-agreement.ts'
+import { geoTerms, namesPlace, otherState as otherUsState, placeAgreement } from '../lib/scan/place-agreement.ts'
 import { verifyLeads } from '../lib/scan/runner.ts'
 
 test('terms: NYC expands to its boroughs, London to the UK names; no geography means no demand', () => {
   assert.ok(geoTerms(['New York City']).includes('brooklyn') && geoTerms(['New York City']).includes('nyc'))
-  assert.ok(geoTerms(['London', 'UK']).includes('united kingdom'))
+  assert.deepEqual(geoTerms(['London', 'UK']), ['london', 'greater london'], 'the country beside a city is context, not a match')
   assert.deepEqual(geoTerms([]), []); assert.equal(placeAgreement('anything at all', []), 'no_geography')
 })
 test('agreement: a text naming the place agrees; another US state is a mismatch; a text naming no place is unconfirmed', () => {
@@ -41,7 +41,7 @@ test('city-level geography: "New York, NY" / "New York City" rejects Rome, NY an
     assert.equal(placeAgreement('Visit us in Albany, New York', W), 'mismatch')
     assert.equal(placeAgreement('Smile Studio, 57 W 57th St, New York, NY 10019', W), 'agrees')
     assert.equal(placeAgreement('Our Brooklyn, NY office', W), 'agrees')
-    assert.equal(placeAgreement('Offices in Rome, NY and Manhattan', W), 'agrees', 'it also names the city')
+    assert.equal(placeAgreement('Offices in Rome, NY and Manhattan', W), 'mismatch', 'another New York town is named and no NYC address binds the company to the city')
   }
   assert.equal(placeAgreement('Dent Blanche, Rome, NY 13440', ['New York']), 'unconfirmed', 'bare "New York" is the state: not city-scoped, not a conflict')
   assert.equal(placeAgreement('Dent Blanche, Rome, New York', ['New York']), 'agrees')
@@ -51,4 +51,28 @@ test('city-level geography: "New York, NY" / "New York City" rejects Rome, NY an
 test('verifier: a Rome, NY page is not attached to a New York City request', async () => {
   const wrong = await verifyLeads([cand], page('Visit us at 8500 Main St, Rome, NY 13440.'), new Date(), undefined, null, undefined, undefined, ['New York, NY'])
   assert.equal(wrong.leads.length, 0); assert.equal(wrong.review[0].review_reason, 'location_mismatch')
+})
+
+// Instinct's wrong-city reproductions for #230 (each its own test).
+const LON = ['London', 'UK']
+test('wrong city: "Manchester, England" is not London', () => { assert.equal(placeAgreement('Acme Ltd, 5 Deansgate, Manchester, England', LON), 'mismatch'); assert.equal(placeAgreement('Acme Ltd, 5 Deansgate, Manchester, England', ['London UK']), 'mismatch') })
+test('wrong city: London, Ontario plus an unrelated "United Kingdom news" mention is not London, UK', () => {
+  assert.equal(placeAgreement('Acme Dental, 12 Dundas St, London, Ontario, Canada. Latest United Kingdom news: ...', LON), 'mismatch')
+  assert.equal(placeAgreement('Acme Dental, London, ON N6A 1A1. United Kingdom', LON), 'mismatch')
+})
+test('wrong city: an Albany, NY company page with an incidental NYC mention is not New York City', () => {
+  for (const W of [['New York City'], ['New York, NY'], ['NYC']]) {
+    assert.equal(placeAgreement('Acme Dental, 12 State St, Albany, NY 12207. We also serve clients from NYC.', W), 'mismatch', W.join())
+    assert.equal(placeAgreement('Acme Dental, Rome, NY. Our founder grew up in Brooklyn.', W), 'mismatch', W.join())
+  }
+})
+test('wrong city: a footer / other-office / country mention does not bind the company to London', () => {
+  assert.equal(placeAgreement('Headquarters: 10 Wellington St, Leeds, UK. Satellite desk in London.', LON), 'mismatch')
+  assert.equal(placeAgreement('Acme is a United Kingdom company, offices in Glasgow, Scotland', LON), 'mismatch')
+  assert.equal(placeAgreement('Acme is a United Kingdom company', LON), 'unconfirmed', 'the country alone never agrees')
+})
+test('right city still agrees: London postcode / "London, UK" address and a New York, NY ZIP address, even beside another office', () => {
+  assert.equal(placeAgreement('Acme Ltd, 1 Old Street, London EC1V 9HX', LON), 'agrees'); assert.equal(placeAgreement('Acme Ltd, London, UK', LON), 'agrees')
+  assert.equal(placeAgreement('Acme Ltd, 1 Old Street, London EC1V 9HX. Second office: Leeds, UK', LON), 'agrees')
+  assert.equal(placeAgreement('Smile Studio, 57 W 57th St, New York, NY 10019. Second office in Albany, NY', ['New York City']), 'agrees', 'the company\'s own NYC address binds it')
 })
