@@ -32,6 +32,7 @@ export interface Fixture {
   own: Record<string, { title: string; text: string; published?: string } | 'blocked' | 'js_required' | 'not_found'>   // SYNTHETIC verifier own-fetch results
   extraction: Cand[]                       // SYNTHETIC extraction reply (real parseLeads runs on it)
   onVerify?: (db: Database.Database, jobId: string) => void   // called once, while the verifier is fetching (the scan is still running)
+  deps?: Record<string, unknown>           // extra runJob deps (e.g. memory exclusions)
 }
 export async function runFixture(f: Fixture) {
   resetTinyfishState()
@@ -79,7 +80,7 @@ export async function runFixture(f: Fixture) {
   }
   const realFetch = globalThis.fetch; globalThis.fetch = fetchImpl; process.env.TINYFISH_API_KEY = 'tf-test'
   try {
-    const r = await runJob(db, job, { providers, master, fetchPage, fetchImpl, score: false, ground: false, judge: null })
+    const r = await runJob(db, job, { providers, master, fetchPage, fetchImpl, score: false, ground: false, judge: null, ...(f.deps ?? {}) })
     const jobRow = db.prepare('SELECT status, error, candidates, verified, needs_review, dropped, drop_reasons FROM scan_jobs').get() as Record<string, unknown>
     const leads = db.prepare('SELECT company, source_url, review_reason, confidence, event_date, date_status FROM leads').all() as { company: string; source_url: string; review_reason: string | null; confidence: number | null; event_date: string | null; date_status: string | null }[]
     const report = (runReportFor(db, 'A', job.id) ?? [])[0] as Record<string, any> | undefined

@@ -108,7 +108,7 @@ test('control: the model finds no candidates -> a failed scan with reason no_can
 })
 test('control: the search returns nothing at all -> nothing to extract; queries are still recorded and the funnel is empty', async () => {
   const x = await runFixture({ ...nyc, hits: [], extraction: [cOpen] })
-  assert.equal(x.leads.length, 0); assert.ok(x.report, 'a report is written for a failed scan'); assert.ok(x.report!.queries.length >= 3); assert.equal(x.report!.search.hits_unique_urls, 0); assert.equal(x.report!.funnel.verified, 0)
+  assert.equal(x.leads.length, 0); assert.ok(x.report, 'a report is written for a failed scan'); assert.ok(x.report!.queries.length >= 3); assert.equal(x.report!.search.hits_unique_urls, 0); assert.equal(x.report!.funnel.verified, null, 'verification never ran: unobserved, not zero')
 })
 
 // ---------- London (all SYNTHETIC) ----------
@@ -199,7 +199,7 @@ test('instrumentation: one scan records queries, every result URL with date/sele
   assert.equal(rep.urls.filter((r: { selected: boolean }) => r.selected).length, 6); assert.equal(rep.urls.filter((r: { tinyfish_text_chars: number | null }) => r.tinyfish_text_chars).length, 5)
   assert.equal(rep.urls.find((r: { url: string }) => /facebook/.test(r.url)).own_fetch, 'blocked')
   // verification outcomes, per candidate and per reason (above) and model usage (SYNTHETIC stub counts: 2 calls x 1000 in / 100 out)
-  assert.equal(rep.model.calls, 2); assert.equal(rep.model.input_tokens, 2000); assert.equal(rep.model.output_tokens, 200)
+  assert.equal(rep.model.requests_recorded, 2); assert.equal(rep.model.input_tokens, 2000); assert.equal(rep.model.output_tokens, 200); assert.equal(rep.model.tokens_complete, true)
   assert.equal(x.usage.recorded, true); assert.equal(x.usage.requests_recorded, 2); assert.equal(x.usage.input_tokens, 2000); assert.equal(x.usage.tokens_complete, true); assert.deepEqual(x.usage.served_models, ['stub-model-served'])
   // tenant scoping and the status route field
   const { runReportFor } = await import('../lib/scan/run-report.ts')
