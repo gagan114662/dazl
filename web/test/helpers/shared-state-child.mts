@@ -17,7 +17,7 @@ if (process.env.CHILD_SQLITE) {
 // Start barrier: each instance marks itself ready in the shared store and waits for the other, so both race together
 // whatever their process start-up time.
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
-await tryLease(db, `ready-${process.env.CHILD_ORDER}`, 600_000)
+await tryLease(db, `ready-${process.env.CHILD_ORDER}`, { ttlMs: 600_000, stepBudgetMs: 1000 })
 while (Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM app_leases WHERE name LIKE 'ready-%'"))!.n) < 2) await sleep(2)
 const jobs = Array.from({ length: 40 }, (_, i) => `job-${String(i).padStart(2, '0')}`)
 const claimed: string[] = []
@@ -26,7 +26,7 @@ let allowed = 0
 // wins its own end and they contend where they meet.
 if (process.env.CHILD_ORDER === 'desc') jobs.reverse()
 await Promise.all([
-  (async () => { for (const j of jobs) { if (await tryLease(db, j, 60_000)) claimed.push(j); await sleep(2) } })(), // 2ms of 'work' per job
+  (async () => { for (const j of jobs) { if (await tryLease(db, j, { ttlMs: 60_000, stepBudgetMs: 1000 })) claimed.push(j); await sleep(2) } })(), // 2ms of 'work' per job
   ...Array.from({ length: 40 }, async () => { if ((await rateLimit('shared-burst', 30, 60_000, db)).ok) allowed++ }),
 ])
 await db.close()
