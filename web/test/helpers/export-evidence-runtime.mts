@@ -4,7 +4,7 @@ import { randomBytes, createHash } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
-import { migrateScan, createJob } from '../../lib/scan/store.ts'
+import { migrateScan, createJob, listLeads } from '../../lib/scan/store.ts'
 import { storeEvidenceCopy, purgeTenantEvidence } from '../../lib/scan/evidence-copies.ts'
 import { GET as exportGET } from '../../app/api/leads/export/route.ts'
 import { GET as evidenceGET } from '../../app/api/leads/evidence/route.ts'
@@ -61,6 +61,6 @@ test('export route: copied evidence is labelled as a copy; unreadable and user-c
   const post = parseCsv(await (await exportGET(get(`/api/leads/export?job_id=${job}`))).text())
   assert.match(post.find(r => r['Company'] === 'CopyCo')![col], /copy of the page fetched by TinyFish.*deleted at the account owner's request.*can no longer be shown/)
   assert.doesNotMatch(post.find(r => r['Company'] === 'PlainCo')![col], /deleted/)
-  const leadsRes = await (await import('../../app/api/leads/route.ts')).GET(get(`/api/leads?job_id=${job}`)); const leadsBody = await leadsRes.json() as { leads: { id: string; evidence_copy_id: string | null; evidence_purged_at: number | null }[] }
+  const leadsBody = { leads: listLeads(db, 'A', job, 200, true) as { id: string; evidence_copy_id: string | null; evidence_purged_at: number | null }[] } // the rows /api/leads returns
   const l = leadsBody.leads.find(x => x.id === ids.copy)!; assert.equal(l.evidence_copy_id, null); assert.ok(l.evidence_purged_at)
 })
