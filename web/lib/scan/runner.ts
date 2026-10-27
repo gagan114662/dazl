@@ -18,7 +18,7 @@ import type { AdvPlatform } from '../advanced/config.ts'
 import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, selfDescribedUrls } from '../sources/index.ts'
 import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '../search/trace.ts'
 import { directQueries } from '../search/direct-queries.ts'
-import { limits as tfLimits, migrateTinyfish, pickFetchUrls, queryPlan, queryPrompt, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
+import { limits as tfLimits, migrateTinyfish, pickFetchUrls, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { crawlJob } from '../connectors/sitecrawl.ts'
 import { anthropicCountTokens, guardProvider, ownerPool, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './verify-provenance.ts'
@@ -544,12 +544,15 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
       diag.info.input_tokens = u.inKnown ? u.inTok : null; diag.info.output_tokens = u.outKnown ? u.outTok : null
     }
   }
-  const direct = directQueries(job.query!, icp.signals, icp.where) // reserved first, so the search cap never starves them
+  // Hiring-board queries are reserved first, but at most HALF the per-scan search budget: they target the public applicant
+  // tracking hosts (Greenhouse, Ashby, Lever), which small local businesses (dental practices, shops) rarely use, and with
+  // three places they used to take 6 of the 8 searches and leave the open searches 2.
+  const direct = directQueries(job.query!, icp.signals, icp.where).slice(0, Math.floor(tfLimits().searchesPerScan / 2))
   const modelQueries = Math.min(6, Math.max(2, tfLimits().searchesPerScan - direct.length)) // the rest of the search budget after the reserved direct queries
   const plan = queryPlan(await ask(queryPrompt(job.query!, icp, modelQueries), 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, modelQueries)
   if (diag) diag.info.query_source = plan.source
   const q = withGeography([...direct, ...sanitizeQueries(plan.queries, job.query!)], icp.where).slice(0, tfLimits().searchesPerScan)
-  const after = new Date(Date.now() - 365 * 86400_000).toISOString().slice(0, 10)
+  const after = windowAfter(icp.window_days) // the user's window when set (never wider), else 365 days
   const hits: Awaited<ReturnType<typeof tfSearch>> extends infer R ? (R extends { ok: true; hits: infer H } ? H : never) : never = []
   // Without location/language TinyFish searches as US/English; the profile's country and language target the buyer's market.
   const geo = { ...(icp.country ? { location: icp.country } : {}), ...(icp.language ? { language: icp.language } : {}) }
