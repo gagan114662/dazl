@@ -84,6 +84,38 @@ test('[sqlite] fenced raw handle: a module\'s writes are refused once the lease 
   await db.close()
 })
 
+// Every way to reach a write through the view stays fenced: fluent statement setters (bind, pluck, raw, expand,
+// safeIntegers) and statement.database hand back fenced wrappers, never the raw objects (review repro: a bound
+// statement prepared while A held the lease, run after B took over).
+test('[sqlite] fenced raw handle: bound and fluent statements, statement.database and pragmas stay fenced', async () => {
+  const raw = new Database(':memory:')
+  migrateAllSqlite(raw)
+  const db = sqliteDb(raw)
+  const { c, o } = clocked()
+  const a = (await tryLease(db, 'internal-tick', o))!
+  const view = a.fenceSqlite(raw)
+  const ins = () => view.prepare('INSERT INTO rate_limits (key, count, reset_at) VALUES (?, 1, 0) RETURNING key')
+  // prepared (and bound / configured) while A holds the lease
+  const bound = view.prepare("INSERT INTO rate_limits (key, count, reset_at) VALUES (?, 1, 0)").bind('stale-bind')
+  const chained = [ins().pluck(), ins().raw(), ins().expand(), ins().safeIntegers(), ins().pluck().safeIntegers(true)]
+  const viaDatabase = view.prepare('SELECT 1').database
+  assert.equal(viaDatabase, view) // statement.database is the view, not the raw handle
+  assert.equal(chained[0].pluck(false).database, view)
+  bound.run() // works while A holds the lease
+  view.pragma('user_version = 1')
+
+  c.now = T0 + 1500
+  assert.ok(await tryLease(db, 'internal-tick', o)) // B takes over
+  assert.throws(() => bound.run(), StaleLeaseWrite)
+  chained.forEach((st, i) => assert.throws(() => st.get(`chained-${i}`), StaleLeaseWrite, `chain ${i}`))
+  assert.throws(() => viaDatabase.prepare("INSERT INTO rate_limits (key, count, reset_at) VALUES ('via-db', 1, 0)").run(), StaleLeaseWrite)
+  assert.throws(() => viaDatabase.exec("INSERT INTO rate_limits (key, count, reset_at) VALUES ('via-exec', 1, 0)"), StaleLeaseWrite)
+  assert.throws(() => view.pragma('user_version = 2'), StaleLeaseWrite)
+  assert.equal(view.pragma('user_version', { simple: true }), 1) // reads pass; the refused pragma did not land
+  assert.deepEqual((raw.prepare("SELECT key FROM rate_limits WHERE key NOT LIKE 'k%' ORDER BY key").all() as { key: string }[]).map(r => r.key), ['stale-bind'])
+  await db.close()
+})
+
 // PG: the fence check locks the lease row, so a takeover cannot slip in between A's check and A's write. A's
 // transaction passes the check and holds; B's takeover waits for it; once A commits, B takes over and A's next
 // transaction is refused.
