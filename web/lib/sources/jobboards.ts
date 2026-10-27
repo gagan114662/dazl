@@ -2,6 +2,7 @@ import type { Evidence, SourceAdapter, SafeGet } from './types.ts'
 import { decodeText } from './rss.ts'
 import { norm } from '../scan/evidence.ts'
 import { parseWindowDays } from '../scan/window.ts'
+import { rolePhrases } from '../search/direct-queries.ts'
 
 // Public job-board JSON (Greenhouse, Ashby, Lever). Evidence only: a posting says a company is hiring a role in a state.
 // It is not proof of a need; the normal verifier still checks every lead against the cited page.
@@ -141,7 +142,12 @@ export const jobBoardsAdapter: SourceAdapter = {
     }
     const place = placeIn(query)
     const state = place?.name ?? ''
-    const roles = keywords.filter(k => !GENERIC.has(k) && !(place && place.name.toLowerCase().split(' ').includes(k)))
+    // The role terms are the planner's own role phrases (their head noun: "front desk receptionist" -> "receptionist", "sales staff" -> "sales").
+    // The generic request keywords are only the fallback: they are the first six long words, which for "London UK B2B SaaS startups with
+    // 10-50 employees ... hiring sales staff" never reach "sales".
+    const heads = rolePhrases(query, [], place ? [place.name] : []).map(p => p.split(' ').pop()!).filter(w => w.length >= 3)
+    const fromKeywords = keywords.filter(k => !GENERIC.has(k) && !(place && place.name.toLowerCase().split(' ').includes(k)))
+    const roles = [...new Set([...fromKeywords, ...heads])] // the old keyword roles stay; the planner's role heads are added
     if (!place || roles.length === 0) return [] // never every place, never every role
     const windowDays = parseWindowDays(query) ?? WINDOW_DAYS // the user's own window when the request states one
     const fresh = (d: string | null) => !!d && Date.now() - Date.parse(d) <= windowDays * 86_400_000 && Date.parse(d) <= Date.now() + 86_400_000

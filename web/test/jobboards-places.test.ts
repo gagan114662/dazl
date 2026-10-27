@@ -35,11 +35,11 @@ function board(published: number, location = 'London, UK') {
     seen.push(url)
     const j = (o: unknown) => ({ status: 200, body: JSON.stringify(o) })
     if (url === 'https://boards-api.greenhouse.io/v1/boards/nimbus/jobs') return j({ jobs: [
-      { id: 1, title: 'Account Executive', updated_at: day(1), location: { name: location }, absolute_url: 'https://boards.greenhouse.io/nimbus/jobs/1' },
+      { id: 1, title: 'Sales Account Executive', updated_at: day(1), location: { name: location }, absolute_url: 'https://boards.greenhouse.io/nimbus/jobs/1' },
       { id: 2, title: 'Account Executive', updated_at: day(1), location: { name: 'Paris, France' }, absolute_url: 'https://boards.greenhouse.io/nimbus/jobs/2' },
       { id: 3, title: 'Backend Engineer', updated_at: day(1), location: { name: 'London, UK' }, absolute_url: 'https://boards.greenhouse.io/nimbus/jobs/3' },
     ] })
-    if (url === 'https://boards-api.greenhouse.io/v1/boards/nimbus/jobs/1') return j({ id: 1, title: 'Account Executive', first_published: day(published), updated_at: day(1), content: `&lt;p&gt;${BODY}&lt;/p&gt;`, location: { name: location }, absolute_url: 'https://boards.greenhouse.io/nimbus/jobs/1' })
+    if (url === 'https://boards-api.greenhouse.io/v1/boards/nimbus/jobs/1') return j({ id: 1, title: 'Sales Account Executive', first_published: day(published), updated_at: day(1), content: `&lt;p&gt;${BODY}&lt;/p&gt;`, location: { name: location }, absolute_url: 'https://boards.greenhouse.io/nimbus/jobs/1' })
     return null
   }
   return { http, seen }
