@@ -15,6 +15,8 @@ export function knownErrorCopy(code: unknown): string | null {
       return 'Your AI key was rejected. Check it in Settings.'
     case 'trial_key_invalid':
       return 'The scan service is having trouble right now. Try again later.'
+    case 'invalid_budget':
+      return 'The spend limit was not accepted.'
     default:
       return null
   }
