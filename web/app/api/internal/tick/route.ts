@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
   try {
     return await tick(lease)
   } catch (e) {
-    if (e instanceof LeaseLost || e instanceof StaleLeaseWrite) { console.error('tick stopped early', e.message); return NextResponse.json({ ok: false, stopped: 'lease_lost' }) }
+    if (e instanceof LeaseLost || e instanceof StaleLeaseWrite) { captureError(e, { source: 'worker', where: 'tick' }); return NextResponse.json({ ok: false, stopped: 'lease_lost' }) }
     throw e
   } finally {
     await lease.release().catch(() => {})
