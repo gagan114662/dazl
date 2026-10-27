@@ -97,7 +97,12 @@ These steps are development work behind flags and tests. Merging them does not c
    - Overlapping ticks do no duplicate non-send work (reply sync, monitor queueing, index checks).
    - All sends use stub providers. No real mail is sent.
    - The approval, cap, suppression and consent gates stay as they are.
-4. **Tenant isolation.** Build a route table from `app/api/**/route.ts`. For each route, seed tenants A and B, then assert that A gets a 404 or 403 on B's ids and that B's rows are unchanged.
+4. **Tenant isolation.** Step 4a:
+   - `test/tenant-isolation-manifest.ts` classifies all 113 API route handlers: 11 public, each with what authenticates it, and 102 session.
+   - CI proves that every session handler refuses an unauthenticated caller without changing data.
+   - 36 handlers have two-tenant tests (tenant B with tenant A's ids gets nothing of A's and changes nothing). The 13 that take ids but have no such test yet are listed as `pending`, and that list can only shrink.
+   - On both engines, every table must have a tenant column, a tenant-scoped parent, or a stated reason to be global.
+   - The ported modules (sessions, sign-in, Google sign-in, billing) are tested with two tenants on SQLite and PG.
 5. **Stripe e2e (test mode).** Use signed fixture events with `STRIPE_WEBHOOK_SECRET`, covering checkout → upgrade → portal → cancel → downgrade. The PR only tests plan transitions. Prices and plan terms are an **owner decision**, not something to settle in code. Open question for the owner: Free gives 50 BYOK scans a month, but the site says "3 trial scans then BYOK", and Pro ($49) says "unlimited".
 6. **Ops.** `/api/health` checks the DB and the worker heartbeat. Add a structured error log with an alert hook, a scheduled backup restore drill (extends `scripts/backup/restore-drill.ts`), and a deploy checklist in `web/docs/DEPLOY.md`.
 

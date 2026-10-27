@@ -179,6 +179,8 @@ export function addUserReportedPath(db: Database.Database, tenantId: string, lea
   const url = normalizeLinkedInUrl(contactUrl)
   const name = sanitizeCell(mutualName)
   if (!url || !name) return null
+  // Only the caller's own lead: another tenant's lead id is treated like one that does not exist.
+  if (!db.prepare('SELECT 1 FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId)) return null
   const id = crypto.randomUUID()
   db.prepare('INSERT OR IGNORE INTO warm_user_paths (id, tenant_id, lead_id, contact_url, mutual_name, note) VALUES (?, ?, ?, ?, ?, ?)')
     .run(id, tenantId, leadId, url, name, sanitizeCell(note, 500))
