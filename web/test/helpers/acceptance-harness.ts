@@ -29,7 +29,7 @@ export interface Fixture {
   modelQueries: string[]                   // SYNTHETIC query-writing reply
   hits: Hit[]                              // SYNTHETIC search results (returned for every query)
   tfPages: Record<string, { title: string; text: string }>   // SYNTHETIC TinyFish fetch results
-  own: Record<string, { title: string; text: string } | 'blocked' | 'js_required' | 'not_found'>   // SYNTHETIC verifier own-fetch results
+  own: Record<string, { title: string; text: string; published?: string } | 'blocked' | 'js_required' | 'not_found'>   // SYNTHETIC verifier own-fetch results
   extraction: Cand[]                       // SYNTHETIC extraction reply (real parseLeads runs on it)
   onVerify?: (db: Database.Database, jobId: string) => void   // called once, while the verifier is fetching (the scan is still running)
 }
@@ -75,7 +75,7 @@ export async function runFixture(f: Fixture) {
     const o = f.own[u]
     if (!o) return { fail: 'error' as const }
     if (typeof o === 'string') return { fail: (o === 'js_required' ? 'js_required' : o === 'not_found' ? 'not_found' : 'blocked') as 'blocked' }
-    return { text: o.text, title: o.title, retrievedAt: Math.floor(Date.now() / 1000) }
+    return { text: o.text, title: o.title, retrievedAt: Math.floor(Date.now() / 1000), ...(o.published ? { published: o.published } : {}) }
   }
   const realFetch = globalThis.fetch; globalThis.fetch = fetchImpl; process.env.TINYFISH_API_KEY = 'tf-test'
   try {

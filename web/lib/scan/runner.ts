@@ -250,7 +250,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
   for (const { c: c0, page } of fetched) {
     // A candidate with no date gets one read from the text we already fetched (or a season label). Same rules apply to it afterwards.
     let c = c0
-    if (page && !isFail(page) && !c0.event_date) { const t = resolveTiming(page.text, c0.excerpt); if (t.date || t.note) c = { ...c0, event_date: t.date, timing_note: t.note } }
+    if (page && !isFail(page) && !c0.event_date) { const t = resolveTiming(page.text, c0.excerpt, (page as { published?: string | null }).published); if (t.date || t.note) c = { ...c0, event_date: t.date, timing_note: t.note } }
     if (!page) { drop('page_unreachable'); note(c, 'dropped', 'page_unreachable'); continue }
     if (isFail(page)) {
       const why = REVIEW_REASONS[page.fail]
@@ -261,7 +261,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
       if (copy?.ok) {
         const cp: Page = { text: copy.page.text, title: copy.page.title, retrievedAt: copy.page.heldAt }
         const v2 = !closedJobEvidence(c, cp) ? verifyEvidence(c, cp, now) : null
-        if (v2?.ok && !counterpartySignal(c, cp, '') && ['agrees', 'no_geography'].includes(placeAgreement(`${cp.title} ${cp.text}`, geo))) { passed.push({ c, v: v2, copy: { failure: why, sha256: copy.page.sha256, page: copy.page } }); note(c, 'passed', null, COPY_ORIGIN); continue }
+        if (v2?.ok && !counterpartySignal(c, cp, '') && placeAgreement(`${cp.title} ${cp.text}`, geo) !== 'mismatch') { passed.push({ c, v: v2, copy: { failure: why, sha256: copy.page.sha256, page: copy.page } }); note(c, 'passed', null, COPY_ORIGIN); continue }
       }
       if (why) { const key = dedupKey(c); if (!review.has(key)) review.set(key, { ...c, contact: null, review_reason: why }); else drop('duplicate'); note(c, 'review', why) }
       else { const r = page.fail === 'not_found' ? 'page_not_found' : page.fail === 'refused' ? 'url_refused' : 'page_unreachable'; drop(r); note(c, 'dropped', r) }
@@ -297,10 +297,11 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
       }
       drop(v.reason); note(c, 'dropped', v.reason); continue
     }
-    // Location agreement: the request names a place, so the cited page must name it too. A page that names a different state is a
-    // mismatch; one that names no place is unconfirmed. Either stays in review (kept, labelled, never qualified or drafted).
+    // Location agreement: when the request names a place, a cited page that names a DIFFERENT place (and not ours) is a mismatch and stays
+    // in review (kept, labelled, never qualified or drafted). A page that names no place at all is not rejected here (small-business pages
+    // often name only a street or neighbourhood); contacts are stricter: profile results and linked domains must name the place.
     const where = placeAgreement(`${page.title} ${page.text}`, geo)
-    if (where === 'unconfirmed' || where === 'mismatch') {
+    if (where === 'mismatch') {
       const k = dedupKey(c); const why = `location_${where}`
       if (!review.has(k)) review.set(k, { ...c, contact: null, review_reason: why })
       else drop('duplicate')
