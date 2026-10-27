@@ -45,21 +45,23 @@ export type SurfaceStatus = 'allowed' | 'refused' | 'off' | 'not_covered'
 // Defaults below mirror lib/search/tinyfish.ts limits({}) (a test pins them); the operator can change those by env.
 export const DEFAULT_TINYFISH = { searchesPerScan: 8, fetchesPerScan: 16, tenantDaily: 200 }
 export const PEOPLE_SEARCHES_MAX = 5 // lib/people/people-search.ts MAX_COMPANIES
-// Profile generation is ONE request with a known maximum size: the longest prompt icpPrompt can build (600-char request, 300-char
-// seller text) plus the fixed 800 output tokens, priced at the listed price. A computed bound at the list price, not a bill.
-export function profileGenerationWorstCaseUsd(): number {
+// Profile generation is ONE request, but its size and price are NOT bounded here: the prompt grows with Unicode bytes and JSON
+// escaping, and previewIcp uses the tenant's own provider and model, whose price dazl may not know. So this is only an EXAMPLE
+// estimate: a typical ASCII request (200 chars, 80 seller chars) at the listed claude-sonnet-4-5 price with the 800-token output cap.
+// Not a worst case, not a bound, not a bill.
+export function profileGenerationExampleUsd(): number {
   const p = PRICES_USD_PER_M['claude-sonnet-4-5']
-  const bytes = new TextEncoder().encode(icpPrompt('x'.repeat(MAX_QUERY), 'y'.repeat(300))).length // not Buffer: this module is bundled into the browser (spend-limit panel)
+  const bytes = new TextEncoder().encode(icpPrompt('x'.repeat(200), 'y'.repeat(80))).length // not Buffer: this module is bundled into the browser (spend-limit panel)
   return ((bytes + INPUT_MARGIN_TOKENS) * p.in + 800 * p.out) / 1e6
 }
 export const BUDGET_EXCLUDED_PATHS = [
-  `Profile generation (/api/scan/icp) - a separate request before the run: one call, at most 800 output tokens, about $${profileGenerationWorstCaseUsd().toFixed(3)} worst case at the listed price (computed, unguarded)`,
+  `Profile generation (/api/scan/icp) - a separate request before the run: one call, output capped at 800 tokens; example estimate only (about $${profileGenerationExampleUsd().toFixed(3)} for a typical 200-character request on claude-sonnet-4-5 at the listed price). NOT a bound: longer or non-ASCII requests, JSON escaping and the model/provider the tenant picked cost more or less, and the call is unguarded`,
   `TinyFish search and fetch - bounded by COUNT, not dollars: at most ${DEFAULT_TINYFISH.searchesPerScan} searches and ${DEFAULT_TINYFISH.fetchesPerScan} fetched pages per scan and ${DEFAULT_TINYFISH.tenantDaily} units per tenant per day (defaults); what a unit costs is TinyFish's pricing, not known to dazl`,
   'Free sources: GDELT news search, public job boards, SEC Form D, the company-site crawl - no model cost',
   `People search after the scan - at most ${PEOPLE_SEARCHES_MAX} TinyFish searches under the same counts, no model cost`,
   'Autopilot and every outreach action (drafting, AI rewrite, follow-ups, replies) - separate features on their own keys and switches; a job with a budget does NOT start autopilot',
   'Weekly watches take their own budget (each weekly run is bounded separately, not the watch in total); CSV imports take the narrowing flags only, no max_usd',
-  'Bring-your-own-key Apollo / People Data Labs enrichment is switched OFF under any budget, not bounded',
+  'Bring-your-own-key Apollo / People Data Labs enrichment is switched OFF for any run that carries a budget (max_usd or any flag), not bounded',
   'NOT BOUNDED AT ALL: retries below dazl (provider or platform), the provider\'s real billing and cache-token charges - requests are counted where dazl sends them and reservations are estimates',
   'NOT BOUNDED ACROSS RESTARTS: the per-owner pool (DAZL_RUN_MAX_USD_USERS) is in memory and resets on a restart',
 ]
@@ -86,7 +88,7 @@ export function describeRunBudget(b: RunBudget | null): BudgetDisclosure {
     max_usd: capped ? b!.max_usd! : null,
     ceiling: capped ? 'PARTIAL budget, not a whole-scan dollar ceiling: a reservation limit on the guarded model requests only (listed price x prompt size + max output). Not a bill and not a vendor-enforced ceiling. See excluded_paths.' : 'None. Without max_usd the run is not dollar-bounded. Narrowing flags switch single surfaces off; they are not a dollar limit either.',
     surfaces: [
-      row('profile_generation', { status: 'not_covered', note: `Happens before the run, in its own request (/api/scan/icp); not covered by max_usd. One call, about $${profileGenerationWorstCaseUsd().toFixed(3)} worst case at the listed price` }),
+      row('profile_generation', { status: 'not_covered', note: `Happens before the run, in its own request (/api/scan/icp); not covered by max_usd. One call; example estimate only (about $${profileGenerationExampleUsd().toFixed(3)} for a typical request on claude-sonnet-4-5), not a bound` }),
       row('search_query_writing', llm('One model call')),
       row('extraction', llm('One model call per attempt')),
       row('scoring', llm('Grades the verified leads')),
@@ -94,7 +96,7 @@ export function describeRunBudget(b: RunBudget | null): BudgetDisclosure {
       row('buyer_fit', llm('Checks hiring leads against the company home page')),
       row('judge', b?.judge === false ? { status: 'off', note: 'judge=false' } : llm('Verification judge')),
       row('fallback_research', fallbackOff ? { status: 'refused', note: 'paid_fallback=false: the run stops as budget_stopped instead of using web-search research' } : capped ? { status: 'refused', note: 'Web-search research cannot be bounded, so a run with max_usd refuses it. This is NOT the same search behaviour as an ordinary scan: when search finds nothing the run ends as budget_stopped' } : { status: 'allowed', note: 'Web-search research when search finds nothing; cost is not bounded by anything dazl sends' }),
-      row('credit_enrichment', b?.credit_enrichment === false || capped ? { status: 'off', note: capped ? 'Off for any run with max_usd' : 'credit_enrichment=false' } : { status: 'allowed', note: 'Bring-your-own-key Apollo/People Data Labs, on your own credits' }),
+      row('credit_enrichment', b ? { status: 'off', note: 'Off for any run that carries a budget (max_usd or a narrowing flag)' } : { status: 'allowed', note: 'Bring-your-own-key Apollo/People Data Labs, on your own credits' }),
       row('search_and_fetch', { status: 'not_covered', note: `TinyFish search and fetch are bounded by count (${DEFAULT_TINYFISH.searchesPerScan} searches + ${DEFAULT_TINYFISH.fetchesPerScan} pages per scan by default), not by max_usd` }),
       row('autopilot', { status: 'off', note: 'A job with a budget does not start autopilot after the scan' }),
     ],

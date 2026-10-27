@@ -5,15 +5,16 @@ import Database from 'better-sqlite3'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { migrateScan, createQueryJob } from '../lib/scan/store.ts'
 import { migratePlans } from '../lib/plans.ts'
-import { migrateConnectors } from '../lib/connectors/store.ts'
+import { migrateConnectors, saveCredential } from '../lib/connectors/store.ts'
 import { migrateEvents } from '../lib/events/store.ts'
 import type { Provider } from '../lib/llm/provider.ts'
 import { resetTinyfishState, limits } from '../lib/search/tinyfish.ts'
 import { resetSpendPools, PRICES_USD_PER_M } from '../lib/llm/spend-guard.ts'
+import { ENRICH_APOLLO } from '../lib/enrich/index.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import { migrateWatch, createWatch, runDueWatches } from '../lib/watch.ts'
 import { MAX_COMPANIES } from '../lib/people/people-search.ts'
-import { BUDGET_EXCLUDED_PATHS, DEFAULT_TINYFISH, PEOPLE_SEARCHES_MAX, describeRunBudget, profileGenerationWorstCaseUsd } from '../lib/scan/run-budget.ts'
+import { BUDGET_EXCLUDED_PATHS, DEFAULT_TINYFISH, PEOPLE_SEARCHES_MAX, describeRunBudget, profileGenerationExampleUsd } from '../lib/scan/run-budget.ts'
 
 // The remaining paths around the PARTIAL per-run budget (STATUS "Next"; #216/#217 follow-up). Stubs only, no network, no price.
 // max_usd stays a reservation limit on guarded model requests; this file pins what ELSE bounds (or does not bound) each path.
@@ -23,14 +24,14 @@ test('the numbers the disclosure states are the numbers the code enforces', () =
   const l = limits({})
   assert.deepEqual([DEFAULT_TINYFISH.searchesPerScan, DEFAULT_TINYFISH.fetchesPerScan, DEFAULT_TINYFISH.tenantDaily], [l.searchesPerScan, l.fetchesPerScan, l.tenantDaily])
   assert.equal(PEOPLE_SEARCHES_MAX, MAX_COMPANIES)
-  const w = profileGenerationWorstCaseUsd()
-  assert.ok(w > 0.001 && w < 0.05, `profile generation worst case is cents or less: ${w}`)
+  const w = profileGenerationExampleUsd()
+  assert.ok(w > 0.001 && w < 0.05, `profile generation example estimate is cents or less: ${w}`)
   const p = PRICES_USD_PER_M['claude-sonnet-4-5']; assert.ok(w > 800 * p.out / 1e6, 'includes the 800 output tokens')
 })
 
 test('the disclosure names every path and what bounds it, and still says it is not a whole-scan ceiling', () => {
   const all = BUDGET_EXCLUDED_PATHS.join('\n')
-  for (const re of [/Profile generation[^\n]*about \$0\.\d+ worst case/, /TinyFish search and fetch[^\n]*COUNT, not dollars[^\n]*8 searches and 16 fetched pages/, /People search[^\n]*at most 5/, /Autopilot[^\n]*does NOT start autopilot/, /Weekly watches take their own budget/, /CSV imports take the narrowing flags only/, /NOT BOUNDED AT ALL: retries below dazl/, /NOT BOUNDED ACROSS RESTARTS: the per-owner pool/])
+  for (const re of [/Profile generation[^\n]*example estimate only \(about \$0\.\d+[^\n]*NOT a bound/, /TinyFish search and fetch[^\n]*COUNT, not dollars[^\n]*8 searches and 16 fetched pages/, /People search[^\n]*at most 5/, /Autopilot[^\n]*does NOT start autopilot/, /Weekly watches take their own budget/, /CSV imports take the narrowing flags only/, /NOT BOUNDED AT ALL: retries below dazl/, /NOT BOUNDED ACROSS RESTARTS: the per-owner pool/])
     assert.match(all, re)
   const d = describeRunBudget({ max_usd: 1 })
   assert.equal(d.scope, 'partial'); assert.match(d.ceiling, /not a whole-scan dollar ceiling/)
@@ -49,9 +50,10 @@ async function runScan(budget: string | null) {
   const id = createQueryJob(db, 'A', { query: 'Find Ohio companies hiring a payroll specialist', icp: JSON.stringify({ summary: 's', who: ['Controller'], industries: [], sizes: [], where: ['Ohio'], signals: ['payroll job'], exclude: [] }), runBudget: budget })
   const job = claimKeyedJob(db, id)!
   const providers: Record<'anthropic' | 'openai', Provider> = { anthropic: { research: async () => ({ text: JSON.stringify([lead]), citedUrls: [lead.source_url] }), complete: async () => 'supports' }, openai: { research: async () => ({ text: '', citedUrls: [] }) } }
-  let autopilot = 0
-  const r = await runJob(db, job, { providers, master, fetchPage: async () => ({ text: `Posted ${recent}. ${QUOTE}. Apply now.`, title: 'Jobs', retrievedAt: 1 }), score: false, ground: false, autopilot: (async () => { autopilot++; return { sent: 0, held: 0, skipped: 0 } }) as never })
-  return { r, autopilot, status: (db.prepare('SELECT status FROM scan_jobs').get() as { status: string }).status }
+  saveCredential(db, 'A', ENRICH_APOLLO, 'test-apollo-key', master)
+  let autopilot = 0, apollo = 0
+  const r = await runJob(db, job, { providers, master, fetchPage: async () => ({ text: `Posted ${recent}. ${QUOTE}. Apply now.`, title: 'Jobs', retrievedAt: 1 }), score: false, ground: false, fetchImpl: (async (u: string) => { if (String(u).includes('apollo')) apollo++; return new Response('{}', { status: 200 }) }) as never, autopilot: (async () => { autopilot++; return { sent: 0, held: 0, skipped: 0 } }) as never })
+  return { r, autopilot, apollo, status: (db.prepare('SELECT status FROM scan_jobs').get() as { status: string }).status }
 }
 test('autopilot: a job that carries a budget never starts it; an unbudgeted job still does (control)', async () => {
   const control = await runScan(null)
@@ -60,6 +62,17 @@ test('autopilot: a job that carries a budget never starts it; an unbudgeted job 
     const x = await runScan(b)
     assert.equal(x.autopilot, 0, `no autopilot under ${b}`)
   }
+})
+
+test('BYOK credit enrichment: runs without a budget (control); is OFF under every budget form, observed through the real runner', async () => {
+  const control = await runScan(null)
+  assert.ok(control.apollo > 0, 'fixture precondition: an unbudgeted run calls Apollo with the stored key')
+  for (const b of ['{"max_usd":5}', '{"judge":false}', '{"paid_fallback":false}', '{"credit_enrichment":false}', '{"max_usd":5,"judge":false,"paid_fallback":false,"credit_enrichment":false}', '{"judge":false,"paid_fallback":false}']) {
+    const x = await runScan(b)
+    assert.equal(x.apollo, 0, `no Apollo call under ${b}`)
+    assert.equal(describeRunBudget(JSON.parse(b)).surfaces.find(s => s.surface === 'credit_enrichment')!.status, 'off', `disclosure agrees for ${b}`)
+  }
+  assert.equal(describeRunBudget(null).surfaces.find(s => s.surface === 'credit_enrichment')!.status, 'allowed')
 })
 
 test('weekly watches: the budget is saved on the watch and every weekly run job carries it; an unbudgeted watch is unchanged', () => {

@@ -649,7 +649,7 @@ function budgetDeps(deps: RunDeps, budget: RunBudget | null): RunDeps {
   return {
     ...deps,
     ...(budget.paid_fallback === false ? { paidFallback: false } : {}),
-    ...(budget.credit_enrichment === false ? { creditEnrichment: false } : {}),
+    creditEnrichment: false, // any budget form switches BYOK credit enrichment off (disclosed as such)
     ...(budget.judge === false ? { judge: null } : {}),
   }
 }

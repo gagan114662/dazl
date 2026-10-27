@@ -68,8 +68,9 @@ Updated by the builder on every branch. Newest first.
   login-walled last; search order breaks ties and nothing is dropped when there is room. Not verified live.
 
 - b/cost-bounds (cost-control gap after the deployed partial budget; fixtures only): for each path outside max_usd the
-  disclosure now says what actually bounds it. Profile generation: one call, <= 800 output tokens, about $0.0xx worst case
-  at the listed price (computed, unguarded). TinyFish search/fetch and the post-scan people search: bounded by COUNT (8
+  disclosure now says what actually bounds it. Profile generation: one call, output capped at 800 tokens; cost shown only as an EXAMPLE estimate (typical
+  200-char ASCII request, claude-sonnet-4-5 list price), not a bound (Unicode, JSON escaping and the tenant's model vary; unguarded).
+  BYOK credit enrichment is now off for ANY job that carries a budget (max_usd or any flag), pinned per budget form through runJob. TinyFish search/fetch and the post-scan people search: bounded by COUNT (8
   searches, 16 pages per scan, 200 units per tenant per day, <= 5 people searches; defaults), not dollars; TinyFish's own
   pricing is unknown to dazl. A job that carries a budget no longer starts autopilot (its model drafting is outside the
   budget). Weekly watches can carry a budget that bounds each weekly run (not the watch in total). Still NOT bounded: retries
