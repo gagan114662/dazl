@@ -90,7 +90,12 @@ const WINDOW_CLAUSE = new RegExp(`(?<![${L}])(?:in|within|over|during|from|nos?|
 // words are negated gets no direct queries at all (the model-written queries and the exclusion gates still see the request).
 // Like the other cuts this only removes words; it never adds a role, host or place.
 const NEG = `(?:no|not|never|nunca|ne|n[ãa]o|nicht|pas|niet|non|\\p{L}*n['’]t)`
-const NEG_CLAUSE = new RegExp(`(?<![${L}])${NEG}(?![${L}])\\s+(?:\\p{L}+\\s+)?(?:${HIRING.source})[^.;,!?\\n]*`, 'giu')
+// The negated clause also ends before a conjunction that opens a NEW hiring clause ("no contratan recepcionista y contratan
+// gerente", "don't hire a receptionist and hire a manager"): Instinct's re-review of #220 found the tail swallowed the positive
+// clause joined by "y"/"and". A conjunction before a plain role ("no contratan recepcionista y cocinero") does not end it.
+const CONJ = '(?:y|e|and|but|pero|mas|mas|et|mais|und|aber|en|maar|e|ma|e|&)'
+const NEG_TAIL = `(?:(?!\\s+${CONJ}\\s+(?:\\p{L}+\\s+){0,2}(?:${HIRING.source})(?![${L}]))[^.;,!?\\n])*`
+const NEG_CLAUSE = new RegExp(`(?<![${L}])${NEG}(?![${L}])\\s+(?:\\p{L}+\\s+)?(?:${HIRING.source})${NEG_TAIL}`, 'giu')
 export const stripNegatedHiring = (text: string): string => text.replace(NEG_CLAUSE, ' . ')
 export function roleRequestText(request: string): string {
   return stripNegatedHiring(request).replace(EXCL_CLAUSE, ' . ')

@@ -70,3 +70,18 @@ test('negated hiring clauses are not searched: es/pt/en/fr/de, positive clauses 
   // "subcontratación" is not a hiring word
   assert.deepEqual(directQueries('Empresas de subcontratación en Madrid', [], ['Madrid']), [])
 })
+
+test('conjunction-joined positive hiring clause survives a negated one, in both orders (#220 re-review)', () => {
+  for (const [req, role, off] of [
+    ['Empresas en Madrid que no contratan recepcionista y contratan gerente', 'gerente', 'recepcionista'],
+    ['Empresas en Madrid que contratan gerente y no contratan recepcionista', 'gerente', 'recepcionista'],
+    ['Companies in Madrid that are not hiring a receptionist and are hiring a manager', 'manager', 'receptionist'],
+    ['Companies in Madrid hiring a manager and not hiring a receptionist', 'manager', 'receptionist'],
+  ]) {
+    const q = directQueries(req, [], ['Madrid'])
+    assert.ok(q.length > 0, req)
+    for (const x of q) { assert.match(x, new RegExp(role)); assert.doesNotMatch(x, new RegExp(off)) }
+  }
+  // a conjunction before a plain role (no new hiring clause) stays inside the negation
+  assert.deepEqual(directQueries('Empresas en Madrid que no contratan recepcionista y cocinero', [], ['Madrid']), [])
+})
