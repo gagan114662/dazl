@@ -4,6 +4,7 @@ import { getScanDb, requireUser } from '@/lib/scan/service'
 import { exportLeads } from '@/lib/scan/store'
 import { toCsv } from '@/lib/scan/csv'
 import { eventDateCopy } from '@/lib/scan/date-copy'
+import { exportEvidenceOrigin } from '@/lib/scan/evidence-origin'
 import { bestPeople } from '@/lib/people/best-person'
 
 const COLUMNS = [
@@ -28,6 +29,7 @@ const COLUMNS = [
   { key: 'date_context', label: 'Event Date Context' },
   { key: 'evidence_excerpt', label: 'Evidence Excerpt (unconfirmed when Confirmed By User is set)' },
   { key: 'source_url', label: 'Source URL' },
+  { key: 'evidence_origin_label', label: 'Evidence Origin (only what is recorded: copied page text, or page dazl could not read; blank = nothing recorded)' },
   { key: 'discovered_via', label: 'Found Through (discovery index; not the publisher)' },
   { key: 'discovered_via_link', label: 'Found Through (link)' },
   { key: 'review_reason', label: 'Review Reason' },
@@ -47,7 +49,7 @@ export async function GET(req: NextRequest) {
   const rows = exportLeads(db, user.id, jobId || undefined, 5000, includeFixtures) as Record<string, unknown>[]
   const via = gdeltAttribution(db, user.id, rows.map(r => String(r.lead_id)))
   const people = bestPeople(db, user.id, rows as { lead_id: string; job_id: string }[])
-  const csv = toCsv(rows.map(r => ({ ...r, ...people.get(r.lead_id as string), discovered_via: via.get(String(r.lead_id))?.text ?? '', discovered_via_link: via.get(String(r.lead_id))?.link ?? '', date_context: eventDateCopy(typeof r.event_date === 'string' ? r.event_date : null, typeof r.date_status === 'string' ? r.date_status : null), created_at: typeof r.created_at === 'number' ? new Date(r.created_at * 1000).toISOString() : r.created_at })), COLUMNS)
+  const csv = toCsv(rows.map(r => ({ ...r, ...people.get(r.lead_id as string), discovered_via: via.get(String(r.lead_id))?.text ?? '', discovered_via_link: via.get(String(r.lead_id))?.link ?? '', evidence_origin_label: exportEvidenceOrigin(r as Parameters<typeof exportEvidenceOrigin>[0]), date_context: eventDateCopy(typeof r.event_date === 'string' ? r.event_date : null, typeof r.date_status === 'string' ? r.date_status : null), created_at: typeof r.created_at === 'number' ? new Date(r.created_at * 1000).toISOString() : r.created_at })), COLUMNS)
   return new NextResponse(csv, {
     headers: {
       'content-type': 'text/csv; charset=utf-8',
