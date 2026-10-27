@@ -80,28 +80,54 @@ const EXCL = '(?:exclud\\p{L}*|except(?:ing)?|without|skip|avoid|ignore|ignoring
 const REQ = '(?:need|needs|needed|require[sd]?|requiring|must|ensure|make sure|want|wants|please|i.d like|we.d like|' +
   'preciso|precisamos|necessito|necesito|necesitamos|besoin|brauche|benötige|ho bisogno|ik heb nodig)'
 const lead = `(?:(?:i|we|please|por favor|s'il vous plaît)\\s+)?`
-const EXCL_CLAUSE = new RegExp(`(?<![${L}])${lead}${EXCL}(?![${L}])[^.;!?\\n]*`, 'giu')
 const REQ_CLAUSE = new RegExp(`(?<![${L}])${lead}${REQ}(?![${L}])([^.;!?\\n]*)`, 'giu')
 const WINDOW_CLAUSE = new RegExp(`(?<![${L}])(?:in|within|over|during|from|nos?|em|dans|innerhalb|binnen)?\\s*(?:the\\s+)?(?:past|last|ultimos?|últimos?|derniers?|letzten?|laatste)\\s+\\d+\\s*\\p{L}+|(?<![${L}])within\\s+\\d+\\s*\\p{L}+`, 'giu')
-// A NEGATED hiring clause ("companies in Madrid that do NOT hire a receptionist", "no contratan recepcionista") asks for the
-// opposite of an open posting. Before this cut, recognising a hiring word turned it into affirmative job-board searches for
-// the very role the user wants excluded (Instinct review of #220: HOLD). The negation cue, up to one filler word, the hiring
-// word and the rest of that comma/sentence clause are removed, so no role from it is searched and a request whose only hiring
-// words are negated gets no direct queries at all (the model-written queries and the exclusion gates still see the request).
-// Like the other cuts this only removes words; it never adds a role, host or place.
-const NEG = `(?:no|not|never|nunca|ne|n[ãa]o|nicht|pas|niet|non|\\p{L}*n['’]t)`
-// The negated clause also ends before a conjunction that opens a NEW hiring clause ("no contratan recepcionista y contratan
-// gerente", "don't hire a receptionist and hire a manager"): Instinct's re-review of #220 found the tail swallowed the positive
-// clause joined by "y"/"and". A conjunction before a plain role ("no contratan recepcionista y cocinero") does not end it.
-const CONJ = '(?:y|e|and|but|pero|mas|mas|et|mais|und|aber|en|maar|e|ma|e|&)'
-const NEG_TAIL = `(?:(?!\\s+${CONJ}\\s+(?:\\p{L}+\\s+){0,2}(?:${HIRING.source})(?![${L}]))[^.;,!?\\n])*`
-const NEG_CLAUSE = new RegExp(`(?<![${L}])${NEG}(?![${L}])\\s+(?:\\p{L}+\\s+)?(?:${HIRING.source})${NEG_TAIL}`, 'giu')
-// A short negated exclusion after a comma ("hiring a receptionist, no agencias") excludes that group; left in place its words
-// became an extra OR role (Instinct re-review of #220 at b39395a). Only a bare cue right after a comma, to the end of the clause.
-const NEG_NOUN = new RegExp(`,\\s*${NEG}(?![${L}])\\s+[^.;,!?\\n]*`, 'giu')
-export const stripNegatedHiring = (text: string): string => text.replace(NEG_CLAUSE, ' . ').replace(NEG_NOUN, ' . ')
+// Negation and exclusion are CLAUSE-level (Instinct re-reviews of #220). The request is cut into segments at sentence
+// punctuation, commas, and conjunctions that open a NEW clause (the conjunction is followed within two words by a hiring word
+// or a negation/exclusion cue: "no contratan recepcionista Y contratan gerente", "not agencies BUT hiring a manager"; a
+// conjunction before a plain role, "no contratan recepcionista y cocinero", does not split). Each segment is then:
+//   - negative: a negation cue before a hiring word ("no contratan", "do not hire"), a bare negation noun group ("no agencias",
+//     "not agencies"), or an exclusion cue ("exclude ...");
+//   - positive: it carries a hiring word and is not negative;
+//   - neutral: neither (places, role continuations).
+// Negative segments are dropped. After a negative segment the following NEUTRAL segments of the same sentence are dropped too
+// (they continue the excluded list: "no agencias, cadenas ni franquicias"), until a positive hiring segment ends the exclusion.
+// So excluded roles are never searched while every positive hiring clause around them is preserved, in either order.
+// This only removes words; it never adds a role, host or place. A request whose only hiring words are negated gets no direct
+// queries (the model-written queries and the exclusion gates still see the request).
+const NEG = `(?:no|not|never|nunca|ne|n[ãa]o|nicht|pas|niet|non|kein\\p{L}*|ning[uú]n\\p{L}*|nenhum\\p{L}*|aucun\\p{L}*|nessun\\p{L}*|geen|\\p{L}*n['’]t)`
+// ('en' is deliberately absent: Spanish "en Madrid" = "in Madrid", far more common here than Dutch "and".)
+const CONJ = '(?:y|e|and|but|pero|mas|et|mais|und|aber|maar|ni|nor|&)'
+// A hiring NOUN for agencies ("recruiters", "recruitment", "reclutamiento") in an exclusion list does not open a new hiring clause.
+const HIRING_VERBISH = `(?!(?:recruiters?|recruitment|recruiting\\s+agenc\\p{L}*|reclutamiento|recrutamento|recrutement|rekrutierung)(?![${L}]))(?:${HIRING.source})`
+// Object negators after the verb ("suchen keinen Leiter", "no tienen ningún ...") negate that hiring word too.
+const NEG_OBJECT = `(?:kein\\p{L}*|ning[uú]n\\p{L}*|nenhum\\p{L}*|aucun\\p{L}*|nessun\\p{L}*|geen)`
+const NEG_BEFORE_HIRING = new RegExp(`(?<![${L}])${NEG}(?![${L}-])\\s+(?:\\p{L}+\\s+)?(?:${HIRING.source})|(?:${HIRING.source})(?![${L}])\\s+${NEG_OBJECT}(?![${L}])`, 'iu')
+const NEG_START = new RegExp(`^\\s*(?:(?:y|e|and|but|pero|que|that|who|which|ni|nor)\\s+)?${NEG}(?![${L}'’-])(?=\\s)`, 'iu')
+const EXCL_ANY = new RegExp(`(?<![${L}])${EXCL}(?![${L}])`, 'iu')
+const SPLIT_CONJ = new RegExp(`\\s+${CONJ}\\s+(?=(?:\\p{L}+\\s+){0,2}(?:${HIRING_VERBISH}|${NEG}(?![${L}'’-])\\s|${EXCL}(?![${L}])))`, 'giu')
+function segmentsOf(sentence: string): string[] {
+  return sentence.split(',').flatMap(piece => piece.split(SPLIT_CONJ)).map(x => x.trim()).filter(Boolean)
+}
+export function positiveRequestText(text: string): string {
+  const sentences: string[] = []
+  for (const sentence of text.split(/[.;!?\n]+/)) {
+    if (!sentence.trim()) continue
+    let excluding = false; const kept: string[] = []
+    for (const seg of segmentsOf(sentence)) {
+      const hiring = HIRING.test(seg)
+      const negative = NEG_BEFORE_HIRING.test(seg) || (!hiring && NEG_START.test(seg)) || EXCL_ANY.test(seg)
+      if (negative) { excluding = true; continue }
+      if (hiring) excluding = false
+      if (!excluding) kept.push(seg)
+    }
+    sentences.push(kept.join(', '))
+  }
+  return sentences.map(x => x || '').join(' . ')
+}
+export const stripNegatedHiring = positiveRequestText
 export function roleRequestText(request: string): string {
-  return stripNegatedHiring(request).replace(EXCL_CLAUSE, ' . ')
+  return positiveRequestText(request)
     .replace(REQ_CLAUSE, (_m, rest: string) => HIRING.test(rest) ? ` ${rest} ` : ' . ')
     .replace(WINDOW_CLAUSE, ' ').replace(/\s+/g, ' ').trim()
 }

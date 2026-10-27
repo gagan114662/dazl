@@ -96,3 +96,51 @@ test('a short negated exclusion after a positive clause is not added as a role (
     for (const x of q) { assert.match(x, new RegExp(role)); assert.doesNotMatch(x, new RegExp(off)) }
   }
 })
+
+// Instinct re-review of #220 at fa0490b: the exclusion cut swallowed a POSITIVE hiring clause after it. Clause-level now:
+// negative segments are dropped, positive hiring segments around them are kept, in either order, at commas and conjunctions.
+const roles = (r: string, where = ['Madrid']) => rolePhrases(r, [], where)
+test('reported cases: a positive hiring clause after an exclusion is preserved, the excluded group is not searched', () => {
+  assert.deepEqual(roles('Empresas en Madrid, no agencias y que contratan recepcionista'), ['recepcionista'])
+  assert.equal(directQueries('Empresas en Madrid, no agencias y que contratan recepcionista', [], ['Madrid']).length, 2)
+  assert.deepEqual(roles('contratan recepcionista, no agencias y contratan gerente'), ['recepcionista', 'gerente'])
+  assert.deepEqual(roles('not agencies but hiring a manager', ['London']), ['manager'])
+  for (const x of directQueries('not agencies but hiring a manager', [], ['London'])) { assert.match(x, /"manager" London$/); assert.doesNotMatch(x, /agenc/i) }
+})
+
+test('both clause orders, comma and conjunction boundaries', () => {
+  const L = ['London']
+  assert.deepEqual(roles('hiring a receptionist, not agencies', L), ['receptionist'])
+  assert.deepEqual(roles('not agencies, hiring a receptionist', L), ['receptionist'])
+  assert.deepEqual(roles('hiring a receptionist but not agencies', L), ['receptionist'])
+  assert.deepEqual(roles('companies hiring a receptionist and not agencies', L), ['receptionist'])
+  assert.deepEqual(roles('not agencies and hiring a receptionist', L), ['receptionist'])
+  assert.deepEqual(roles('no contratan recepcionista y contratan gerente'), ['gerente'])
+  assert.deepEqual(roles('contratan gerente y no contratan recepcionista'), ['gerente'])
+  assert.deepEqual(roles('no contratan recepcionista y cocinero'), [], 'a conjunction before a plain role does not end a negated clause')
+  assert.deepEqual(roles('don\'t hire a receptionist and hire a manager', L), ['manager'])
+  assert.deepEqual(roles('ne recrutent pas de réceptionniste mais recrutent un directeur', ['Paris']), ['directeur'])
+  assert.deepEqual(roles('suchen keinen Empfangsmitarbeiter, aber suchen einen Leiter', ['Berlin']), ['leiter'])
+  assert.deepEqual(roles('não contratam recepcionista mas contratam gerente', ['Lisboa']), ['gerente'])
+})
+
+test('multiple positives and multiple negatives', () => {
+  const L = ['London']
+  assert.deepEqual(roles('hiring a receptionist, not agencies, not chains, hiring a manager', L), ['receptionist', 'manager'])
+  assert.deepEqual(roles('not agencies and not chains but hiring a receptionist or office manager', L), ['receptionist', 'office manager'])
+  assert.deepEqual(roles('hiring a receptionist, hiring a manager, hiring a nurse, not agencies', L), ['receptionist', 'manager', 'nurse'])
+  // an exclusion list continues after the negation, until a positive hiring clause ends it
+  assert.deepEqual(roles('hiring a receptionist, no agencias, cadenas ni franquicias, contratan gerente'), ['receptionist', 'gerente'])
+  assert.deepEqual(roles('exclude chains and dental software companies, hiring a receptionist', L), ['receptionist'])
+  assert.deepEqual(roles('exclude agencies and recruiters, hiring a receptionist', L), ['receptionist'], '"recruiters" in an exclusion list is not a hiring clause')
+  assert.deepEqual(roles('hiring a receptionist. Exclude agencies and recruiters.', L), ['receptionist'])
+})
+
+test('safety: excluded words are never searched; "non-profit" and place "en" are not negations or conjunctions', () => {
+  const L = ['London']
+  for (const r of ['hiring a receptionist, not agencies', 'not agencies but hiring a receptionist', 'no agencias y que contratan recepcionista']) for (const q of directQueries(r, [], ['London'])) assert.doesNotMatch(q, /agenc/i, r)
+  assert.deepEqual(roles('non-profit organizations hiring a manager', L), ['manager'])
+  assert.deepEqual(roles('Empresas en Madrid que contratan recepcionista'), ['recepcionista'])
+  assert.deepEqual(roles('only hiring negations: do not hire a receptionist', L), [])
+  assert.deepEqual(directQueries('do not hire a receptionist, no agencies', [], L), [], 'only negated hiring words: no direct queries')
+})
