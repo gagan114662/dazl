@@ -19,6 +19,7 @@ import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, s
 import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '../search/trace.ts'
 import { directQueries } from '../search/direct-queries.ts'
 import { resolveTiming } from './page-timing.ts'
+import { placeAgreement } from './place-agreement.ts'
 import { HeldText, COPY_ORIGIN, type HeldPage } from './held-text.ts'
 import type { CandidateAudit, UrlRecord } from './run-report.ts'
 import { evidenceCopyRoom, storeEvidenceCopy } from './evidence-copies.ts'
@@ -229,7 +230,7 @@ export async function groundLeads(provider: Provider, apiKey: string, query: str
 }
 
 // (shown to the user, never emailed) instead of vanishing. Dedup by company keeps the best.
-export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetcher = fetchPageDetailed, now = new Date(), judge?: Judge, knownDomain: string | null = null, held?: { text: HeldText; attempt: string }, audit?: CandidateAudit[]): Promise<VerifyOutcome> {
+export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetcher = fetchPageDetailed, now = new Date(), judge?: Judge, knownDomain: string | null = null, held?: { text: HeldText; attempt: string }, audit?: CandidateAudit[], geo: string[] = []): Promise<VerifyOutcome> {
   const cache = new Map<string, Promise<Page | FetchFail | null>>()
   const get = (u: string) => { if (!cache.has(u)) cache.set(u, fetchPage(u).catch(() => null)); return cache.get(u)! }
   const dropped: Record<string, number> = {}
@@ -260,7 +261,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
       if (copy?.ok) {
         const cp: Page = { text: copy.page.text, title: copy.page.title, retrievedAt: copy.page.heldAt }
         const v2 = !closedJobEvidence(c, cp) ? verifyEvidence(c, cp, now) : null
-        if (v2?.ok && !counterpartySignal(c, cp, '')) { passed.push({ c, v: v2, copy: { failure: why, sha256: copy.page.sha256, page: copy.page } }); note(c, 'passed', null, COPY_ORIGIN); continue }
+        if (v2?.ok && !counterpartySignal(c, cp, '') && ['agrees', 'no_geography'].includes(placeAgreement(`${cp.title} ${cp.text}`, geo))) { passed.push({ c, v: v2, copy: { failure: why, sha256: copy.page.sha256, page: copy.page } }); note(c, 'passed', null, COPY_ORIGIN); continue }
       }
       if (why) { const key = dedupKey(c); if (!review.has(key)) review.set(key, { ...c, contact: null, review_reason: why }); else drop('duplicate'); note(c, 'review', why) }
       else { const r = page.fail === 'not_found' ? 'page_not_found' : page.fail === 'refused' ? 'url_refused' : 'page_unreachable'; drop(r); note(c, 'dropped', r) }
@@ -295,6 +296,15 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
         }
       }
       drop(v.reason); note(c, 'dropped', v.reason); continue
+    }
+    // Location agreement: the request names a place, so the cited page must name it too. A page that names a different state is a
+    // mismatch; one that names no place is unconfirmed. Either stays in review (kept, labelled, never qualified or drafted).
+    const where = placeAgreement(`${page.title} ${page.text}`, geo)
+    if (where === 'unconfirmed' || where === 'mismatch') {
+      const k = dedupKey(c); const why = `location_${where}`
+      if (!review.has(k)) review.set(k, { ...c, contact: null, review_reason: why })
+      else drop('duplicate')
+      note(c, 'review', why); continue
     }
     const cp = counterpartySignal(c, page, '')
     if (cp) {
@@ -886,7 +896,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     if (leads.length === 0 && walledLeads.length === 0 && selfDescribedLeads.length === 0) { finish(db, job, 'failed', 'no_candidates', null, 0, ledger); return 'failed' }
     const judge = deps.judge === undefined ? makeJudge(providers_[vendor], key, deps.fetchImpl) : deps.judge ?? undefined
     assertOwned(db, job)
-    let outcome = await verifyLeads(leads, fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit)
+    let outcome = await verifyLeads(leads, fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [])
     const verifiedUrls = leads.map(l => l.source_url) // verify_provenance: every URL the verifier was asked about, retry included
     // First-scan killer: the model's stale memory returns only old news and the verifier
     // honestly drops all of it. One bounded retry with the date spelled out a second time
@@ -909,7 +919,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         if (fresh.length > 0) {
           assertOwned(db, job)
           verifiedUrls.push(...fresh.map(l => l.source_url))
-          const o2 = await verifyLeads(fresh, fetchP, deps.now, judge, null, undefined, audit)
+          const o2 = await verifyLeads(fresh, fetchP, deps.now, judge, null, undefined, audit, icpForSources?.where ?? [])
           const seenKeys = new Set(outcome.leads.map(dedupKey))
           for (const l of o2.leads) { const k = dedupKey(l); if (!seenKeys.has(k)) { seenKeys.add(k); outcome.leads.push(l) } }
           const seenReview = new Set(outcome.review.map(dedupKey))

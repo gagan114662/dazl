@@ -37,9 +37,11 @@ test('stores matching people as labelled person enrichments with the profile URL
   const { db, job } = setup(ICP)
   const urls: string[] = []
   const f = (async (u: string) => { urls.push(u); return new Response(JSON.stringify({ results: [
-    { url: 'https://www.linkedin.com/in/jane-doe-1', title: 'Jane Doe - Head of HR - Acme Logistics | LinkedIn', snippet: '' },
-    { url: 'https://www.linkedin.com/in/bob-ray', title: 'Bob Ray - Truck Driver - Acme Logistics | LinkedIn', snippet: '' },
-    { url: 'https://www.linkedin.com/in/ann-lee', title: 'Ann Lee - HR Manager - Rival Corp | LinkedIn', snippet: '' },
+    { url: 'https://www.linkedin.com/in/jane-doe-1', title: 'Jane Doe - Head of HR - Acme Logistics | LinkedIn', snippet: 'Columbus, Ohio, United States - Head of HR - Acme Logistics' },
+    { url: 'https://www.linkedin.com/in/bob-ray', title: 'Bob Ray - Truck Driver - Acme Logistics | LinkedIn', snippet: 'Columbus, Ohio' },
+    { url: 'https://www.linkedin.com/in/ann-lee', title: 'Ann Lee - HR Manager - Rival Corp | LinkedIn', snippet: 'Columbus, Ohio' },
+    { url: 'https://www.linkedin.com/in/cal-same', title: 'Cal Same - Head of HR - Acme Logistics | LinkedIn', snippet: 'Pico Rivera, California, United States' },
+    { url: 'https://www.linkedin.com/in/nowhere-nell', title: 'Nell Nowhere - HR Manager - Acme Logistics | LinkedIn', snippet: 'Head of HR at Acme Logistics' },
   ] })) }) as unknown as typeof fetch
   const n = await findPeople(db, 'A', job, { env, fetchImpl: f })
   assert.equal(n, 1)
@@ -47,6 +49,18 @@ test('stores matching people as labelled person enrichments with the profile URL
   assert.deepEqual(rows, [{ connector: 'search:people', kind: 'person', value: 'Jane Doe, Head of HR', label: LABEL, source_url: 'https://www.linkedin.com/in/jane-doe-1' }])
   const q = new URL(urls[0]).searchParams
   assert.ok(q.get('query')!.startsWith('site:linkedin.com/in "Acme Logistics"')); assert.equal(q.get('location'), 'US')
+})
+
+test('a same-name company in another place is not attached: a result naming another state, or no place at all, is dropped when the request names a place', async () => {
+  const { db, job } = setup(ICP)
+  const f = (async () => new Response(JSON.stringify({ results: [
+    { url: 'https://www.linkedin.com/in/cal-same', title: 'Cal Same - Head of HR - Acme Logistics | LinkedIn', snippet: 'Pico Rivera, California, United States' },
+    { url: 'https://www.linkedin.com/in/nowhere-nell', title: 'Nell Nowhere - HR Manager - Acme Logistics | LinkedIn', snippet: 'Head of HR at Acme Logistics' },
+  ] }))) as unknown as typeof fetch
+  assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: f }), 0)
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM lead_enrichments').get() as { n: number }).n, 0)
+  // no place in the request: no demand (global requests are unchanged)
+  const g = setup({ ...ICP, where: [] }); assert.equal(await findPeople(g.db, 'A', g.job, { env, fetchImpl: f }), 2)
 })
 
 test('off without TinyFish, with the kill switch, or with no buyer roles: no search at all', async () => {

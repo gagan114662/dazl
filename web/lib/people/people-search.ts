@@ -12,6 +12,7 @@ import { tfSearch, tinyfishEnabled, type SearchHit } from '../search/tinyfish.ts
 import { addEnrichment } from '../connectors/store.ts'
 import { companyKey, norm } from '../scan/evidence.ts'
 import { titleMatches } from './rank.ts'
+import { placeAgreement } from '../scan/place-agreement.ts'
 
 export const peopleSearchEnabled = (env: Record<string, string | undefined> = process.env) => env.PEOPLE_SEARCH_ENABLED !== '0' && tinyfishEnabled(env)
 export const MAX_COMPANIES = 5 // one search per company, best leads first
@@ -67,7 +68,8 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
     if (!peopleSearchEnabled(env)) return 0
     // Job ownership first: the job id alone must never let one tenant read or write another's leads.
     const j = db.prepare('SELECT icp FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as { icp: string | null } | undefined
-    const who = j?.icp ? (JSON.parse(j.icp) as { who?: unknown; country?: unknown; language?: unknown }) : null
+    const who = j?.icp ? (JSON.parse(j.icp) as { who?: unknown; country?: unknown; language?: unknown; where?: unknown }) : null
+    const where = Array.isArray(who?.where) ? (who!.where as unknown[]).filter((x): x is string => typeof x === 'string') : []
     const roles = Array.isArray(who?.who) ? (who!.who as unknown[]).filter((x): x is string => typeof x === 'string') : []
     if (roles.length === 0) return 0 // no buyer roles: nothing to search for
     const roleText = roles.join('; ')
@@ -93,6 +95,9 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
       if (!r.ok) { if (r.reason === 'cap' || r.reason === 'quota' || r.reason === 'auth') break; continue }
       const people = r.hits.map(h => ({ h, p: parseProfileHit(h, l.company) }))
         .filter((x): x is { h: SearchHit; p: { name: string; title: string } } => !!x.p && titleMatches(x.p.title, roleText).length > 0)
+        // Same company NAME is not the same company: when the request names a place, the result's own text must name it (a same-name
+        // practice in another state is a different business). No place named in the result = unconfirmed = not attached.
+        .filter(x => { const v = placeAgreement(`${x.h.title} ${x.h.snippet ?? ''}`, where); return v === 'agrees' || v === 'no_geography' })
         .sort((a, b) => titleMatches(b.p.title, roleText).length - titleMatches(a.p.title, roleText).length)
       const seen = new Set<string>()
       for (const { h, p } of people) {

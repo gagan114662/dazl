@@ -513,7 +513,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       for (const cand of sites) {
         site = cand
         r = await readSite(cand, l.company)
-        if (r.reason !== 'name_mismatch' && r.reason !== 'site_unreachable' && basisOf.get(cand) === 'name_probe' && !placeConsistent(r.homeNorm, places)) {
+        if (r.reason !== 'name_mismatch' && r.reason !== 'site_unreachable' && ((basisOf.get(cand) === 'name_probe' && !placeConsistent(r.homeNorm, places)) || (basisOf.get(cand) !== 'name_probe' && basisOf.get(cand) !== 'evidence_own_domain' && places.length > 0 && !placeConsistent(r.homeNorm, places)))) {
           // Same name, but the homepage names none of the lead's places (or no place is known): not this company.
           audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: places.length ? 'geo_mismatch' : 'geo_unknown', results: 0 })
           r = { found: [], reason: 'name_mismatch', pages: 0 }

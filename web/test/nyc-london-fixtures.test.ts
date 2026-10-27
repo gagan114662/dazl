@@ -34,7 +34,7 @@ const nyc: Fixture = {
   tfPages: {
     'https://news.example/brightsmile-opens': page('BrightSmile Dental opens in Brooklyn', `Published ${daysAgo(20)}. ${Q_OPEN}.`),
     'https://jobs.example/midtown-receptionist': page('Front desk receptionist - Midtown Family Dental', `Posted ${daysAgo(10)}. ${Q_JOB}.`),
-    'https://blog.example/cobble-hill-opening': page('Cobble Hill Dental opening', `Published ${daysAgo(200)}. ${Q_OLD}.`),
+    'https://blog.example/cobble-hill-opening': page('Cobble Hill Dental opening', `Published ${daysAgo(200)}. ${Q_OLD}. Visit us in Brooklyn, NY.`),
     'https://dental.example/riverside-new-office': page('Riverside Dental new office', Q_UNDATED + '.'),
     'https://news.example/lakeside-opens': page('Lakeside Orthodontics opens', `Published ${daysAgo(15)}. ${Q_WRONG}.`),
   },
