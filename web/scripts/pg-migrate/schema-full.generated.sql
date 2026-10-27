@@ -25,7 +25,7 @@ CREATE TABLE app_leases (
       name TEXT PRIMARY KEY,
       owner TEXT NOT NULL,
       expires_at BIGINT NOT NULL
-    );
+    , generation BIGINT NOT NULL DEFAULT 0);
 
 CREATE TABLE autopilot_audit (
       id TEXT PRIMARY KEY,
