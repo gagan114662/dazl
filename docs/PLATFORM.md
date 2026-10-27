@@ -101,8 +101,10 @@ These steps are development work behind flags and tests. Merging them does not c
    - `test/tenant-isolation-manifest.ts` classifies all 113 API route handlers: 11 public, each with what authenticates it, and 102 session.
    - CI proves that every session handler refuses an unauthenticated caller without changing data.
    - All 102 session handlers are exercised with two tenants:
-     - 48 that take ids or list tenant data have targeted tests: tenant B with tenant A's ids gets nothing of A's and changes nothing, and positive controls show A's calls work.
-     - The other 54 (no caller-supplied ids) are swept as tenant B with A's data seeded.
+     - 48 that take ids or list tenant data have targeted tests: tenant B with tenant A's ids gets nothing of A's and changes nothing.
+       - 45 of them also have a same-action positive control for A, so a handler that always refused would fail.
+       - Not yet verified on the positive side: `POST /api/leads/[lead]/domain-review`, `GET /api/leads/evidence` and `POST /api/scan/csv/[batch]`. Their tenant-B refusals are tested, but a handler that always refused would still pass.
+     - The other 54 (no caller-supplied ids) are swept as tenant B with A's data seeded. The sweep sends each entry point an empty body and accepts any status, so it shows no A data leaves and no A row changes on that input. It does not cover every branch.
      - No `pending` handler is left, and the manifest test keeps it at zero.
    - On both engines, every table must have a tenant column, a tenant-scoped parent, or a stated reason to be global.
    - The ported modules (sessions, sign-in, Google sign-in, billing) are tested with two tenants on SQLite and PG.

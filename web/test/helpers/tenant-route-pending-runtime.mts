@@ -61,6 +61,8 @@ function build() {
   db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
   const lead = hex()
   db.prepare("INSERT INTO leads (id, scan_job_id, company, name, signal, source_url, score, confidence, human_confirmed_at, evidence_excerpt, company_domain, source_kind) VALUES (?, ?, 'ASECRETCO8w2', 'Pat', 'Hiring', 'https://asecret8w2.invalid/jobs', 70, 80, 1, 'ASECRETCO8w2 is hiring', 'asecret8w2.invalid', 'query')").run(lead, job)
+  const lead2 = hex() // for A's own draft-create control: has a published contact address
+  db.prepare("INSERT INTO leads (id, scan_job_id, company, name, contact, signal, source_url, score, confidence, human_confirmed_at, evidence_excerpt, company_domain, source_kind) VALUES (?, ?, 'ASECRETCO8w2', 'Sam', 'hello@asecret8w2.invalid', 'Hiring', 'https://asecret8w2.invalid/jobs2', 70, 80, 1, 'ASECRETCO8w2 is hiring', 'asecret8w2.invalid', 'query')").run(lead2, job)
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(job)
   const draft = hex()
   db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status) VALUES (?, 'A', ?, 'pat@asecret8w2.invalid', 'ASECRETCO8w2 subject', 'Fixture body text long enough for the guard, twenty chars plus.', 'draft')").run(draft, lead)
@@ -74,7 +76,7 @@ function build() {
   db.prepare("INSERT INTO watches (id, user_id, query, icp, next_run_at) VALUES (?, 'A', 'ASECRETWATCH8w2', '{}', ?)").run(w, now + 86400)
   db.prepare("INSERT INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at, last_lead_reply_at, followups_sent) VALUES ('A', 'tA8', ?, 'pat@asecret8w2.invalid', 'r@x', ?, ?, 2)").run(lead, now - 86400 * 45, now - 86400 * 45)
   db.prepare("INSERT INTO reopen_messages (tenant_id, thread_id, lead_id, to_email, body) VALUES ('A', 'tA8', ?, 'pat@asecret8w2.invalid', 'ASECRETREOPEN8w2 body long enough to pass the check.')").run(lead)
-  return { db, job, lead, draft, thread, news, w }
+  return { db, job, lead, lead2, draft, thread, news, w }
 }
 
 test("tenant B cannot read or change tenant A's rows through the list, body-id and query-id routes; A's own calls work", async () => {
@@ -143,5 +145,23 @@ test("tenant B cannot read or change tenant A's rows through the list, body-id a
   assert.equal((await replies.POST(req('/api/replies', 'POST', { action: 'dismiss', id: f.thread })))!.status, 200)
   const hf = JSON.parse(await text(hiringFeed.GET(req(`/api/leads/hiring-feed?job_id=${f.job}`, 'GET'))))
   assert.equal(hf.contacts.length, 1)
+
+  // Same-action positives for the four handlers whose B call was a refusal or no-op: A's own call gets past the tenant
+  // check and acts. Where the action leaves the app, it reaches the external boundary, which the fetch stub refuses,
+  // so nothing real is called (no CRM push, no model call) - the attempt itself is the evidence.
+  const outbound = () => fetchCalls.splice(0).map(u => new URL(u).hostname)
+  outbound()
+  const push = (await crm.POST(req('/api/crm', 'POST', { action: 'push', lead_id: f.lead })))!
+  assert.equal(push.status, 502) // looked up A's lead, attempted the push, the stub refused it
+  assert.deepEqual(outbound(), ['api.hubapi.com'])
+  const pol = JSON.parse(await text(polish.POST(req('/api/outreach/polish', 'POST', { message_id: f.draft }))))
+  assert.equal(pol.rewritten, false)
+  assert.deepEqual(outbound(), ['api.anthropic.com']) // found A's draft and went to A's own provider key
+  const retry = JSON.parse(await text(hiringFeed.POST(req('/api/leads/hiring-feed', 'POST', { retry_job_id: f.job }))))
+  assert.equal(retry.retrying, 1) // claimed A's failed crawl row
+  const drafted = (await outreach.POST(req('/api/outreach', 'POST', { lead_id: f.lead2 })))!
+  const dj = await drafted.json() as { id?: string; code?: string }
+  assert.equal(drafted.status, 201, JSON.stringify(dj))
+  assert.ok(db.prepare("SELECT 1 FROM outreach_messages WHERE id = ? AND tenant_id = 'A'").get(dj.id))
   console.log('COHORT', done.length, JSON.stringify(done))
 })
