@@ -5,13 +5,14 @@ import Database from 'better-sqlite3'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { migrateScan, createQueryJob } from '../lib/scan/store.ts'
 import { migratePlans } from '../lib/plans.ts'
-import { migrateConnectors } from '../lib/connectors/store.ts'
+import { migrateConnectors, saveCredential } from '../lib/connectors/store.ts'
 import { migrateEvents } from '../lib/events/store.ts'
 import type { Provider } from '../lib/llm/provider.ts'
 import { resetTinyfishState, limits } from '../lib/search/tinyfish.ts'
-import { resetSpendPools, PRICES_USD_PER_M } from '../lib/llm/spend-guard.ts'
+import { resetSpendPools, PRICES_USD_PER_M, INPUT_MARGIN_TOKENS } from '../lib/llm/spend-guard.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import { migrateWatch, createWatch, runDueWatches } from '../lib/watch.ts'
+import { icpPrompt, MAX_QUERY } from '../lib/scan/icp.ts'
 import { MAX_COMPANIES } from '../lib/people/people-search.ts'
 import { BUDGET_EXCLUDED_PATHS, DEFAULT_TINYFISH, PEOPLE_SEARCHES_MAX, describeRunBudget, profileGenerationWorstCaseUsd } from '../lib/scan/run-budget.ts'
 
@@ -26,6 +27,10 @@ test('the numbers the disclosure states are the numbers the code enforces', () =
   const w = profileGenerationWorstCaseUsd()
   assert.ok(w > 0.001 && w < 0.05, `profile generation worst case is cents or less: ${w}`)
   const p = PRICES_USD_PER_M['claude-sonnet-4-5']; assert.ok(w > 800 * p.out / 1e6, 'includes the 800 output tokens')
+  // the bound must dominate every allowed input shape: ASCII, quotes, backslashes, BMP and astral chars, control chars
+  const bytesOf = (q: string, s: string) => new TextEncoder().encode(icpPrompt(q, s)).length
+  const usd = (n: number) => ((n + INPUT_MARGIN_TOKENS) * p.in + 800 * p.out) / 1e6
+  for (const c of ['x', '"', '\\', '\u20ac', '\u{1F600}', '\u0000', '\n']) assert.ok(usd(bytesOf(c.repeat(MAX_QUERY), c.repeat(300))) <= w, `bound covers ${JSON.stringify(c)}`)
 })
 
 test('the disclosure names every path and what bounds it, and still says it is not a whole-scan ceiling', () => {
@@ -49,9 +54,11 @@ async function runScan(budget: string | null) {
   const id = createQueryJob(db, 'A', { query: 'Find Ohio companies hiring a payroll specialist', icp: JSON.stringify({ summary: 's', who: ['Controller'], industries: [], sizes: [], where: ['Ohio'], signals: ['payroll job'], exclude: [] }), runBudget: budget })
   const job = claimKeyedJob(db, id)!
   const providers: Record<'anthropic' | 'openai', Provider> = { anthropic: { research: async () => ({ text: JSON.stringify([lead]), citedUrls: [lead.source_url] }), complete: async () => 'supports' }, openai: { research: async () => ({ text: '', citedUrls: [] }) } }
-  let autopilot = 0
-  const r = await runJob(db, job, { providers, master, fetchPage: async () => ({ text: `Posted ${recent}. ${QUOTE}. Apply now.`, title: 'Jobs', retrievedAt: 1 }), score: false, ground: false, autopilot: (async () => { autopilot++; return { sent: 0, held: 0, skipped: 0 } }) as never })
-  return { r, autopilot, status: (db.prepare('SELECT status FROM scan_jobs').get() as { status: string }).status }
+  saveCredential(db, 'A', 'enrich:apollo', 'apollo-test-key', master)
+  let autopilot = 0; let apollo = 0
+  const fetchImpl = (async (url: string | URL | Request) => { if (String(url).includes('apollo')) apollo++; return new Response('{}', { status: 404 }) }) as typeof fetch
+  const r = await runJob(db, job, { providers, master, fetchImpl, fetchPage: async () => ({ text: `Posted ${recent}. ${QUOTE}. Apply now.`, title: 'Jobs', retrievedAt: 1 }), score: false, ground: false, autopilot: (async () => { autopilot++; return { sent: 0, held: 0, skipped: 0 } }) as never })
+  return { r, autopilot, apollo, status: (db.prepare('SELECT status FROM scan_jobs').get() as { status: string }).status }
 }
 test('autopilot: a job that carries a budget never starts it; an unbudgeted job still does (control)', async () => {
   const control = await runScan(null)
@@ -84,4 +91,20 @@ test('run-budget.ts is bundled into the browser: it must not use Node-only globa
   const { readFileSync } = await import('node:fs')
   const src = readFileSync(new URL('../lib/scan/run-budget.ts', import.meta.url), 'utf8').replace(/\/\/.*$/gm, '')
   assert.doesNotMatch(src, /\bBuffer\b|\bprocess\./)
+})
+
+// Instinct #221: the disclosure said BYOK enrichment is off under ANY budget; the runner only turned it off for max_usd or
+// credit_enrichment=false. Pin the runner and the surfaces row to each other for every budget form.
+test('BYOK enrichment: runner behaviour equals the disclosed status for every budget form', async () => {
+  const control = await runScan(null)
+  assert.ok(control.apollo > 0, 'fixture precondition: an unbudgeted run with an Apollo key calls Apollo')
+  for (const [b, off] of [['{"max_usd":5}', true], ['{"credit_enrichment":false}', true], ['{"judge":false}', false], ['{"paid_fallback":false}', false]] as const) {
+    const x = await runScan(b)
+    // paid_fallback=false makes this fixture (its leads come from web-search research) stop as budget_stopped before the
+    // post-scan enrichment step, so the runner can only be observed there when the run reaches it
+    if (off || x.status === 'done') assert.equal(x.apollo === 0, off, `runner under ${b}`)
+    const row = describeRunBudget(JSON.parse(b)).surfaces.find(s => s.surface === 'credit_enrichment')!
+    assert.equal(row.status, off ? 'off' : 'allowed', `disclosure under ${b}`)
+  }
+  assert.match(BUDGET_EXCLUDED_PATHS.join('\n'), /enrichment is switched OFF only when the budget has max_usd or credit_enrichment=false/)
 })
