@@ -126,7 +126,15 @@ These steps are development work behind flags and tests. Merging them does not c
    - On both engines, every table must have a tenant column, a tenant-scoped parent, or a stated reason to be global.
    - The ported modules (sessions, sign-in, Google sign-in, billing) are tested with two tenants on SQLite and PG.
    - Route-level tests run on SQLite until each area is ported to `Db`.
-5. **Stripe e2e (test mode).** Use signed fixture events with `STRIPE_WEBHOOK_SECRET`, covering checkout → upgrade → portal → cancel → downgrade. The PR only tests plan transitions. Prices and plan terms are an **owner decision**, not something to settle in code. Open question for the owner: Free gives 50 BYOK scans a month, but the site says "3 trial scans then BYOK", and Pro ($49) says "unlimited".
+5. **Stripe e2e (test mode).** Step 5:
+   - `test/billing-e2e.test.ts` drives the real routes: checkout, signed webhook, Pro, portal, cancel at period end (still Pro), subscription deleted, Free.
+   - The webhook events are Stripe-shaped fixtures (`test/fixtures/stripe/`) signed with a test secret, the same way Stripe signs them.
+   - Unsigned, wrongly signed, stale and tampered deliveries are refused. A replay is a duplicate, and an event for another tenant's customer changes nothing.
+   - `api.stripe.com` is stubbed: no request leaves the test, and nothing is charged.
+   - **Pricing is inconsistent. This is for the owner to decide, not for code:**
+     - The landing page Free card says "3 trial scans, then your own AI key". It does not mention the 50-scans-a-month cap the code enforces (`PLAN_LIMITS.free`).
+     - The sign-up page says "Free plan: 50 scans a month with your own AI key. New accounts may get 3 trial scans first".
+     - Pro ($49/mo) says "Fair-use limits apply", but the code has no Pro limit (`scansPerMonth: null`), and Settings shows "unlimited".
 6. **Ops.** `/api/health` checks the DB and the worker heartbeat. Add a structured error log with an alert hook, a scheduled backup restore drill (extends `scripts/backup/restore-drill.ts`), and a deploy checklist in `web/docs/DEPLOY.md`.
 
 ## Production go/no-go (separate from merging the PRs above)
