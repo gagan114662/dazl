@@ -579,7 +579,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   const urls = pickFetchUrls(hits.map(h => h.url), tfLimits().fetchesPerScan, fetchRank) // exact duplicates removed, breadth first by host, nothing excluded
   const f = await tfFetchMany(db, job.user_id, urls, spent, diag ? { trace: diag.trace } : {})
   if (diag?.tfTextUrls && f.ok) diag.tfTextUrls.push(...f.pages.map(p => p.url)) // verify_provenance: pages TinyFish had text for
-  const items = toEvidence(hits, f.ok ? f.pages : [])
+  const items = toEvidence(hits, f.ok ? f.pages : [], fetchRank) // the same ranking decides what survives the extraction cap
   if (diag) Object.assign(diag.info, evidenceSplit(items, f.ok ? f.pages : []))
   if (items.length === 0) return null
   const text = await ask(buildSourcePrompt(job.query!, icp, items), 3000)

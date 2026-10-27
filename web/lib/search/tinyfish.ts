@@ -294,16 +294,25 @@ export function markdownToText(md: string): string {
 
 // Turns search hits and fetched page text into Evidence for the user's model. The existing verifier still
 // re-fetches every cited URL and checks quote, company, date and contact before a lead is kept.
-export function toEvidence(hits: SearchHit[], pages: { url: string; text: string; title: string }[]): Evidence[] {
+// rank (optional, lower = first; the runner passes the SAME rank it used to choose fetches): the extraction cap below must
+// respect it, or a preferred result chosen for a scarce fetch can be cut before the model sees it (Instinct #219: preferred
+// hit at position 39 of 40, cap 30). Order: rank, then pages we actually fetched before snippet-only results, then first
+// pages of distinct hosts before second pages (breadth), then search order. Undated results are ranked by the caller; nothing
+// here turns a discovery timestamp into an event date.
+export function toEvidence(hits: SearchHit[], pages: { url: string; text: string; title: string }[], rank?: (url: string) => number, cap = 30): Evidence[] {
   const byUrl = new Map(pages.map(p => [p.url.replace(/\/$/, ''), p]))
   const seen = new Set<string>()
-  const out: Evidence[] = []
+  const items: { e: Evidence; page: boolean; idx: number; host: string }[] = []
   for (const h of hits) {
     const k = h.url.replace(/\/$/, ''); if (seen.has(k)) continue; seen.add(k)
     const page = byUrl.get(k)
     const text = (page ? markdownToText(page.text) : h.snippet).replace(/\s+/g, ' ').trim().slice(0, 1200)
-    if (text.length >= 20) out.push({ source: h.via === 'gdelt' ? 'news:gdelt' : 'tinyfish', url: h.url, title: page?.title || h.title, quote: text, date: h.date, ...(h.observed ? { updated: h.observed } : {}) })
+    let host = ''; try { host = new URL(h.url).hostname.toLowerCase() } catch { host = h.url }
+    if (text.length >= 20) items.push({ e: { source: h.via === 'gdelt' ? 'news:gdelt' : 'tinyfish', url: h.url, title: page?.title || h.title, quote: text, date: h.date, ...(h.observed ? { updated: h.observed } : {}) }, page: !!page, idx: items.length, host })
   }
-  // The 30-item cap must not be filled by snippet-only login-walled results ahead of pages that can be read.
-  return [...out.filter(e => !isLoginWalled(e.url)), ...out.filter(e => isLoginWalled(e.url))].slice(0, 30)
+  const r = rank ?? ((u: string) => Number(isLoginWalled(u)))
+  const seenHost = new Map<string, number>()
+  const keyed = items.map(it => { const pos = seenHost.get(it.host) ?? 0; seenHost.set(it.host, pos + 1); return { ...it, rank: r(it.e.url), pos } })
+  keyed.sort((a, b) => a.rank - b.rank || Number(!a.page) - Number(!b.page) || a.pos - b.pos || a.idx - b.idx)
+  return keyed.slice(0, cap).map(k => k.e)
 }
