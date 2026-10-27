@@ -11,6 +11,7 @@ import { getDb } from '@/lib/db/client'
 import { LeaseLost, tryLease } from '@/lib/shared/lease'
 import type { Lease } from '@/lib/shared/lease'
 import { migrateIndexing, dueTenants, runIndexChecks } from '@/lib/seo/indexing'
+import { captureError } from '@/lib/ops/errors'
 
 // Called by a scheduler (cron or a systemd timer) with AUTOPILOT_TICK_SECRET. Reads replies and sends due
 // follow-ups for tenants who turned both on. Without the secret configured the route does not exist.
@@ -44,12 +45,12 @@ async function tick(lease: Lease) {
   let done = 0
   for (const t of tenants) {
     await lease.keep()
-    try { const sync = await syncReplies(db, t.tenant_id); if (sync.error) continue; await runFollowups(db, t.tenant_id, t.business_name ?? ''); done++ } catch (e) { console.error('tick failed', t.tenant_id, e instanceof Error ? e.message : 'error') }
+    try { const sync = await syncReplies(db, t.tenant_id); if (sync.error) continue; await runFollowups(db, t.tenant_id, t.business_name ?? ''); done++ } catch (e) { captureError(e, { source: 'worker', where: 'tick:replies', tenantId: t.tenant_id }) }
   }
   let sequences = 0
   for (const t of db.prepare("SELECT DISTINCT tenant_id FROM sequences WHERE status IN ('approved','active')").all() as { tenant_id: string }[]) {
     await lease.keep()
-    try { const r = await runSequences(db,t.tenant_id,''); sequences += r.sent } catch (e) { console.error('sequence tick failed',t.tenant_id,e instanceof Error ? e.message : 'error') }
+    try { const r = await runSequences(db,t.tenant_id,''); sequences += r.sent } catch (e) { captureError(e, { source: 'worker', where: 'tick:sequences', tenantId: t.tenant_id }) }
   }
   await lease.keep()
   const watches = runDueWatches(db)
@@ -65,7 +66,7 @@ async function tick(lease: Lease) {
   let indexChecked = 0
   for (const t of dueTenants(db, Math.floor(Date.now() / 1000))) {
     await lease.keep()
-    try { const r = await runIndexChecks(db, t); if (r && r.length > 0) indexChecked++ } catch (e) { console.error('index check failed', t, e instanceof Error ? e.message : 'error') }
+    try { const r = await runIndexChecks(db, t); if (r && r.length > 0) indexChecked++ } catch (e) { captureError(e, { source: 'worker', where: 'tick:index-checks', tenantId: t }) }
   }
   return NextResponse.json({ ok: true, tenants: done, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, index_checks: indexChecked })
 }

@@ -3,6 +3,7 @@ import { requireUser } from '@/lib/scan/service'
 import { getDb } from '@/lib/db/client'
 import { createPortalUrl } from '@/lib/billing/stripe'
 import { sameOriginJson } from '@/lib/same-origin'
+import { captureError } from '@/lib/ops/errors'
 
 export async function POST(req: NextRequest) {
   const user = await requireUser()
@@ -13,7 +14,7 @@ export async function POST(req: NextRequest) {
     const url = await createPortalUrl(await getDb(), user.id)
     return url ? NextResponse.json({ url }) : NextResponse.json({ error: 'No subscription found' }, { status: 404 })
   } catch (e) {
-    console.error('portal failed', e)
+    captureError(e, { source: 'route', where: '/api/billing/portal', method: 'POST', tenantId: user.id })
     return NextResponse.json({ error: 'Could not open the billing portal' }, { status: 502 })
   }
 }

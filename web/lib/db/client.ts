@@ -265,11 +265,12 @@ export function getDb(): Promise<Db> {
   shared ??= (async () => {
     const url = process.env.DATABASE_URL
     if (url) return pgDb({ connectionString: url })
-    // getScanDb runs every module's sqlite migrate*() once, so ported modules find their tables.
-    const { getScanDb } = await import('../scan/service.ts')
-    const { migratePlatform } = await import('./platform-tables.ts')
-    const raw = getScanDb()
-    migratePlatform(raw)
+    // The app's store with every module's sqlite migrate*() (lib/db/sqlite-migrations.ts, all idempotent). Not through
+    // lib/scan/service.ts: that module needs next/headers, so plain-Node callers (scripts, tests) could not open the store.
+    const { getAuthDb } = await import('../auth-db.ts')
+    const { migrateAllSqlite } = await import('./sqlite-migrations.ts')
+    const raw = getAuthDb()
+    migrateAllSqlite(raw)
     return sqliteDb(raw)
   })()
   return shared
