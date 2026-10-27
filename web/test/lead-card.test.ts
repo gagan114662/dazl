@@ -84,3 +84,9 @@ test('address printed on the cited page reads as confirmed, with its basis', () 
   assert.deepEqual(status({}), { confirmed: true, text: 'Confirmed: address printed on the cited page.' })
   assert.equal(status({ contact: null }), null)
 })
+
+test('a legacy lead with a confidence but no stored excerpt is not approvable (same evidence state as the gate)', () => {
+  const a = approveState({ ...base, evidence_excerpt: null })
+  assert.equal(a.ok, false)
+  assert.match(a.ok ? '' : a.reason, /Not verified/)
+})
