@@ -34,6 +34,13 @@ import { migrateThreadReplies } from '../../lib/replies/threads.ts'
 import { migrateEvents } from '../../lib/events/store.ts'
 import { migrateAdvanced } from '../../lib/advanced/index.ts'
 import { migrateCompetitors } from '../../lib/signals/competitor-reddit.ts'
+import { migrateQualify } from '../../lib/scan/qualify-run.ts'
+import { migrateModelUsage } from '../../lib/scan/model-usage.ts'
+import { migrateSourceStats } from '../../lib/search/trace.ts'
+import { migrateSourceReview } from '../../lib/scan/source-review.ts'
+import { migrateHiringFeed } from '../../lib/scan/job-feed.ts'
+import { migrateEmailGuess } from '../../lib/people/email-pattern.ts'
+import { SqliteQueue } from '../../lib/queue/sqlite.ts'
 
 const out = process.env.EXTRACT_OUT || '/tmp/full-schema'
 const dbPath = `${out}.db`
@@ -55,8 +62,11 @@ const migrates = [
   migrateNewsjacks, migrateMonitors, migratePlans, migrateMemory, migrateKeys,
   migrateWatch, migrateWarm, migrateConnectors, migrateBilling, migrateOauth,
   migrateTinyfish, migrateThreadReplies, migrateEvents, migrateAdvanced, migrateCompetitors,
+  migrateQualify, migrateModelUsage, migrateSourceStats, migrateSourceReview, migrateHiringFeed, migrateEmailGuess,
 ]
 for (const m of migrates) m(db)
+// The queue adapter owns its tables and creates them in its constructor.
+new SqliteQueue(db)
 
 const objects = db.prepare(
   `SELECT type, name, tbl_name, sql FROM sqlite_master

@@ -10,6 +10,13 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
   - `web/lib/db/leads-read-pg.ts` is the only Postgres query code: the `LeadsReadDb` read slice, tested for equivalence with pg-mem. No route uses it.
 - Tables are created at runtime by each module's `migrate*()` (`CREATE TABLE IF NOT EXISTS` plus `ALTER` in try/catch). There is no versioned migration runner.
 
+## Progress
+
+- **Step 2a:** adds `web/lib/db/client.ts`, an async `Db` with SQLite and PG adapters selected by `DATABASE_URL`, plus versioned PG migrations (`web/lib/db/migrations/pg`, run by `npm run db:migrate`). The 12 SQLite-only tables below are now in the PG schema, so all 72 tables have PG DDL.
+- **CI** (`.github/workflows/web-ci.yml`) runs the full suite twice, once on SQLite and once with a Postgres 16 service, and a schema drift check fails when the code's tables and the PG migrations differ.
+- **Still on SQLite:** no module uses `Db` yet, so every query in the app still runs on SQLite.
+- **SQLite-only SQL in queries:** about 18 queries use `rowid` (for example as an ORDER BY tie-break), which PG does not have. They need rewriting as each area is ported.
+
 ## Tables (73 created in code)
 
 Legend:
