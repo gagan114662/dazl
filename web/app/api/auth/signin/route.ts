@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { scryptSync, timingSafeEqual } from 'crypto'
 import { cookies } from 'next/headers'
-import { createSession, getAuthDb, SESSION_TTL_S } from '@/lib/auth-db'
+import { createSession, findPasswordUser, SESSION_TTL_S } from '@/lib/auth-db'
 import { validateEmail } from '@/lib/validate'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 
@@ -22,14 +22,12 @@ export async function POST(req: NextRequest) {
     const fail = () => NextResponse.json({ error: 'Invalid email or password' }, { status: 401 })
     if (!email || !password || password.length > 200) return fail()
 
-    const user = getAuthDb().prepare('SELECT id, password_hash, salt FROM users WHERE email = ?').get(email) as
-      | { id: string; password_hash: string; salt: string }
-      | undefined
+    const user = await findPasswordUser(email)
     const computed = scryptSync(password, user?.salt ?? DUMMY_SALT, 64)
     const stored = Buffer.from(user?.password_hash ?? '0'.repeat(128), 'hex')
     if (!user || !timingSafeEqual(computed, stored)) return fail()
 
-    const token = createSession(user.id)
+    const token = await createSession(user.id)
     const cookieStore = await cookies()
     cookieStore.set('dazl_session', token, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: SESSION_TTL_S, path: '/' })
     return NextResponse.json({ ok: true, redirect: '/app' })

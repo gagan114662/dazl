@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getScanDb } from '@/lib/scan/service'
+import { getDb } from '@/lib/db/client'
 import { applyStripeEvent, verifyStripeSignature, type StripeEvent } from '@/lib/billing/stripe'
 
 // Stripe calls this directly: no session. Authenticity comes only from the
@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
   }
   if (!event?.id || !event?.type) return NextResponse.json({ error: 'Bad payload' }, { status: 400 })
   try {
-    return NextResponse.json({ result: applyStripeEvent(getScanDb(), event) })
+    return NextResponse.json({ result: await applyStripeEvent(await getDb(), event) })
   } catch (e) {
     console.error('webhook apply failed', event.id, e)
     return NextResponse.json({ error: 'Could not process' }, { status: 500 }) // Stripe will retry
