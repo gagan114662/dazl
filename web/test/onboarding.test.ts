@@ -30,3 +30,10 @@ test('website input becomes an https URL', () => {
   assert.equal(normalizeWebsite('http://acme.com/about'), 'https://acme.com/about')
   assert.equal(normalizeWebsite('  '), '')
 })
+
+test('repeated signals or a single buyer still give three distinct plays', () => {
+  const p = suggestPlays({ summary: 'Clinics', who: ['Clinic administrators'], industries: [], where: ['New York City'], signals: ['Hiring', 'hiring', 'Hiring'] })
+  assert.equal(p.length, 3)
+  assert.equal(new Set(p).size, 3)
+  assert.ok(p.every(s => s.startsWith('Clinic administrators in New York City - ')))
+})

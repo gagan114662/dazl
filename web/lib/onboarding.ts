@@ -16,7 +16,8 @@ export function suggestPlays(b: Brain): string[] {
   const place = where ? ` in ${where}` : ''
   const fallbacks = ['hiring for a role my product supports', 'recent funding or expansion', 'a new location or launch']
   const out: string[] = []
-  for (let i = 0; out.length < 3 && i < 6; i++) {
+  // Enough rounds to reach three distinct plays even when the profile repeats a signal or a buyer.
+  for (let i = 0; out.length < 3 && i < signals.length + fallbacks.length + 3; i++) {
     const sig = signals[i] ? lower1(signals[i]) : fallbacks[(i - signals.length + fallbacks.length) % fallbacks.length]
     const play = `${buyer(i)}${place} - ${sig}`.slice(0, 300)
     if (!out.includes(play)) out.push(play)

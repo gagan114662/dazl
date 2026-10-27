@@ -1,13 +1,16 @@
 // Rendered first-run check (Home onboarding + inline sender details on Outreach). NOT part of `npm test`.
 // Run:  cd web && npm run build && node test/ui/onboarding.ui.mjs   (SHOTS=<dir> also saves screenshots)
-// Runs the real production build with a throwaway database and ANSWERS EVERY /api/* CALL FROM A STUB in the browser:
-// no scan, no model call, no key check, no email. Off-host requests are aborted. It proves:
+// Runs the real production build with a throwaway database. /api/settings/profile goes to the REAL route (and that
+// temporary database); every other /api/* call is answered from a stub in the browser: no scan, no model call, no key
+// check, no email. Off-host requests are aborted. It proves:
 //   1. a first-run account sees the website step, and a keyless site read asks for the key inline (one field);
 //   2. the editable profile is filled from the site read, including "what you sell";
 //   3. three suggested plays; after Back -> Ohio changed to NYC -> continue, the plays and the sentence are the NYC ones
 //      and Find leads sends exactly one POST /api/scan with that sentence and the edited profile, then lands on Leads;
 //   3b. every edited profile field (who buys, roles, industries, where, signals, sizes, skip) reaches that request,
 //      and a sentence the user typed is kept as typed;
+//   3c. the reviewed profile is saved by the real profile route: after a full reload, "Describe your business" shows
+//      the same buyer, roles, industries, place, signals, sizes and skip;
 //   4. Outreach asks for sender name and address inline, saves them via PUT /api/outreach/settings, and then shows them.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 // The server runs under test/helpers/net-fence.ts, so it cannot reach any non-loopback host either.
@@ -32,7 +35,7 @@ const token = randomBytes(32).toString('hex'); db.prepare('INSERT INTO sessions 
 const port = 3300 + Math.floor(Math.random() * 500); const base = `http://127.0.0.1:${port}`
 const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'),'start','-p',String(port),'-H','127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED:'0', NEWS_SEARCH_ENABLED:'0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
 for (let i=0;i<100;i++){ try { await fetch(base+'/sign-in'); break } catch { await new Promise(r=>setTimeout(r,200)) } }
-const calls = []; const scanBodies = []
+const calls = []; const scanBodies = []; const realProfile = []
 const state = { hasKey: false, sender: null }
 const ICP = { summary: 'Independent dental practices with 2-10 chairs that are growing.', who: ['Practice owners', 'Office managers'], industries: ['Dental'], sizes: [], where: ['Ohio'], signals: ['Opened a new location', 'Hiring front-desk staff', 'Switched practice software'], exclude: [] }
 const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } })
@@ -45,8 +48,8 @@ await ctx.route('**/*', async route => {
   const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
   const p = u.pathname
   if (p === '/api/scan/jobs') return json({ jobs: [] })
-  if (p === '/api/settings/profile' && m === 'GET') return json({ sells: '', website: '', business_name: '' })
-  if (p === '/api/settings/profile') return json({ ok: true, ...JSON.parse(req.postData()) })
+  // NOT stubbed: the real profile route on the production server and its temporary SQLite database.
+  if (p === '/api/settings/profile') { calls.pop(); realProfile.push(m); return route.continue() }
   if (p === '/api/usage') return json({ plan: 'free', scans_used: 0, scan_limit: 10, has_key: state.hasKey, trial: state.hasKey ? null : { funded: false, remaining: 0, cap: 3 } })
   if (p === '/api/scan/icp-from-url') return state.hasKey ? json({ icp: ICP, source: 'https://brightsmile.example/', sells: 'Online booking and reminders for dental practices' }) : json({ error: 'no_api_key' }, 400)
   if (p === '/api/settings/llm-key' && m === 'PUT') { state.hasKey = true; return json({ ok: true, vendor: 'anthropic', last4: 'abcd' }) }
@@ -106,6 +109,17 @@ await back(); await cont()
 assert.equal(await sentence().inputValue(), 'Orthodontists in Austin opening a second office', "the user's own sentence is kept")
 await findLeads()
 assert.deepEqual(scanBodies, [{ query: 'Orthodontists in Austin opening a second office', icp: { summary: 'Group dental practices opening new offices', who: ['Practice owners', 'COO'], industries: ['Dental', 'Orthodontics'], sizes: ['10-50 employees'], where: ['Austin', 'TX'], signals: ['Opened a new location'], exclude: ['Dental schools'] } }])
+
+// Scenario 3: full reload; the saved profile comes back from the real route, not from page memory.
+await page.goto(base + '/app', { waitUntil: 'networkidle' })
+await page.getByText("What's your website?").waitFor()
+assert.equal(await page.getByLabel('Your website').inputValue(), 'https://brightsmile.example')
+await page.getByRole('button', { name: 'No website? Describe your business yourself' }).click()
+await page.getByText("Here's what we think you sell").waitFor()
+const val = l => page.getByLabel(l).inputValue()
+assert.deepEqual({ sells: await val('What you sell'), who: await val('Who buys it'), roles: await val('Buyer roles'), industries: await val('Industries'), where: await val('Where'), signals: await val('Signs they need you now'), sizes: await val('Company sizes'), skip: await val('Skip') },
+  { sells: 'Online booking and reminders for dental practices', who: 'Group dental practices opening new offices', roles: 'Practice owners, COO', industries: 'Dental, Orthodontics', where: 'Austin, TX', signals: 'Opened a new location', sizes: '10-50 employees', skip: 'Dental schools' })
+assert.ok(realProfile.includes('POST') && realProfile.filter(m => m === 'GET').length >= 3, 'the profile went through the real route')
 await page.goto(base + '/app/outreach', { waitUntil: 'networkidle' }); await shot('outreach')
 {
   await page.getByPlaceholder('Your name, as recipients will see it').fill('Dana Smith'); await page.getByPlaceholder(/Mailing address/).fill('1 Main St, Columbus, OH 43004, USA')
@@ -113,4 +127,4 @@ await page.goto(base + '/app/outreach', { waitUntil: 'networkidle' }); await sho
 }
 assert.deepEqual(state.sender, { sender_name: 'Dana Smith', postal_address: '1 Main St, Columbus, OH 43004, USA', booking_url: '' })
 await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
-console.log('onboarding UI check passed:', calls.filter(c => !c.startsWith('GET')).join(', '))
+console.log('onboarding UI check passed:', calls.filter(c => !c.startsWith('GET')).join(', '), '| real profile route:', realProfile.join(', '))

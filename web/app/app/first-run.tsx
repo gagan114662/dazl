@@ -42,6 +42,11 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState('')
   const [needKey, setNeedKey] = useState(false)
 
+  // Fills the step-2 buyer fields from a profile (the saved one on load, or a fresh website read).
+  const fillBuyer = (b: Partial<Brain> & { sizes?: string[]; exclude?: string[] }) => {
+    const j = (v?: string[]) => (v ?? []).join(', ')
+    setSummary(b.summary ?? ''); setWho(j(b.who)); setIndustries(j(b.industries)); setWhere(j(b.where)); setSignals(j(b.signals)); setSizes(j(b.sizes)); setExclude(j(b.exclude))
+  }
   const loadUsage = () => fetch('/api/usage').then(r => r.ok ? r.json() : null).then(j => { if (j) setUsage(j) }).catch(() => {})
   useEffect(() => {
     void Promise.all([
@@ -49,7 +54,10 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       fetch('/api/settings/profile').then(r => r.ok ? r.json() : null).catch(() => null),
       loadUsage(),
     ]).then(([jobs, profile]) => {
-      if (profile) { setWebsite(String(profile.website ?? '')); setSells(String(profile.sells ?? '')); setBizName(String(profile.business_name ?? '')) }
+      if (profile) {
+        setWebsite(String(profile.website ?? '')); setSells(String(profile.sells ?? '')); setBizName(String(profile.business_name ?? ''))
+        if (profile.buyer) fillBuyer(profile.buyer)
+      }
       // Anything unreadable falls back to the normal Home rather than trapping a returning user in the wizard.
       setReady(jobs && Array.isArray(jobs.jobs) && jobs.jobs.length === 0 ? 'wizard' : 'home')
     })
@@ -79,9 +87,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         return setError(knownErrorCopy(j.error) ?? SITE_ERR[j.error] ?? (r.status === 429 ? 'Too many website reads. Try again later, or fill in the profile yourself.' : 'Could not read that site. Fill in the profile yourself instead.'))
       }
       if (j.sells) setSells(String(j.sells))
-      const site = j.icp as Brain & { sizes?: string[]; exclude?: string[] }
-      setSummary(site.summary ?? ''); setWho((site.who ?? []).join(', ')); setIndustries((site.industries ?? []).join(', ')); setWhere((site.where ?? []).join(', ')); setSignals((site.signals ?? []).join(', '))
-      setSizes((site.sizes ?? []).join(', ')); setExclude((site.exclude ?? []).join(', '))
+      fillBuyer(j.icp)
       try { setReadFrom(new URL(j.source).hostname) } catch { setReadFrom('your website') }
       setWebsite(url); setStep('brain')
     } catch { setError('Could not reach the server. Check your connection and try again.') } finally { setBusy(false) }
@@ -90,7 +96,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   async function saveBrain(e: React.FormEvent) {
     e.preventDefault(); setError(''); setBusy(true)
     try {
-      const r = await fetch('/api/settings/profile', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sells, website: normalizeWebsite(website), business_name: bizName }) })
+      const r = await fetch('/api/settings/profile', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sells, website: normalizeWebsite(website), business_name: bizName, buyer: profile }) })
       const j = await r.json().catch(() => ({}))
       if (!r.ok) return setError(j.error || 'Could not save')
       if (askIsSuggestion || !ask.trim()) { setAsk(plays[0] || ''); setAskIsSuggestion(true) }
@@ -130,7 +136,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
 
       {step === 'brain' && <form onSubmit={saveBrain} className="card p-6 flex flex-col gap-3 text-sm">
         <h2 className="text-xl font-semibold">Here&apos;s what we think you sell and who buys it</h2>
-        <p className="text-[#555]">{readFrom ? `Drafted from ${readFrom}. ` : ''}Edit anything that is off. This shapes every search and draft.</p>
+        <p className="text-[#555]">{readFrom ? `Drafted from ${readFrom}. ` : ''}Edit anything that is off. Saved to your account; your first search uses all of it.</p>
         <label className="flex flex-col gap-1">Business name <span className="text-xs text-[#777]">used in your email drafts</span><input className="field" maxLength={150} value={bizName} onChange={e => setBizName(e.target.value)} /></label>
         <label className="flex flex-col gap-1">What you sell<input className="field" required minLength={3} maxLength={150} value={sells} onChange={e => setSells(e.target.value)} placeholder="e.g. Scheduling software for dental practices" /></label>
         <label className="flex flex-col gap-1">Who buys it<textarea className="field" rows={2} maxLength={400} value={summary} onChange={e => setSummary(e.target.value)} placeholder="e.g. Independent dental practices with 2-10 chairs" /></label>

@@ -29,6 +29,7 @@ export function getAuthDb(): Database.Database {
   `)
     try { db.exec('ALTER TABLE users ADD COLUMN sells TEXT') } catch { /* exists */ }
   try { db.exec('ALTER TABLE users ADD COLUMN website TEXT') } catch { /* exists */ }
+  try { db.exec('ALTER TABLE users ADD COLUMN buyer_profile TEXT') } catch { /* exists */ }
   return db
 }
 
@@ -51,6 +52,17 @@ export function createSession(userId: string): string {
 export function getSellerProfile(db: Database.Database, userId: string): { sells: string; website: string } {
   const r = db.prepare('SELECT sells, website FROM users WHERE id = ?').get(userId) as { sells: string | null; website: string | null } | undefined
   return { sells: r?.sells ?? '', website: r?.website ?? '' }
+}
+
+// Who the seller sells to, as reviewed in onboarding: a normalized Icp stored as JSON (validated by the caller with
+// normalizeIcp). Read back through normalizeIcp too, so a stored row can never return fields the profile does not allow.
+export function getBuyerProfile(db: Database.Database, userId: string): string | null {
+  const r = db.prepare('SELECT buyer_profile FROM users WHERE id = ?').get(userId) as { buyer_profile: string | null } | undefined
+  return r?.buyer_profile ?? null
+}
+
+export function setBuyerProfile(db: Database.Database, userId: string, json: string | null): void {
+  db.prepare('UPDATE users SET buyer_profile = ? WHERE id = ?').run(json, userId)
 }
 
 export function getBusinessName(db: Database.Database, userId: string): string {
