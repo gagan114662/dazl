@@ -2,8 +2,8 @@
 // Liveness: the process answers. No dependency is touched, so a slow database never gets a healthy process restarted.
 // Readiness: this instance can serve: the store answers (Postgres when DATABASE_URL is set, else SQLite), its schema
 // has every migration this build ships (Postgres), and the SQLite file the raw-handle modules still use answers.
-// Each check has its own timeout. The response names which check failed, never why: the error itself goes to
-// captureError (stderr / alert hook), since /api/health is public.
+// Each check has a 2 s budget (timed() says what it can and cannot interrupt). The response names which check failed,
+// never why: the error itself goes to captureError (stderr / alert hook), since /api/health is public.
 import type { Db } from '../db/client.ts'
 import { captureError } from './errors.ts'
 
@@ -24,16 +24,24 @@ export interface ReadinessDeps {
 
 class Timeout extends Error { constructor() { super('readiness check timed out'); this.name = 'Timeout' } }
 
+// The timer only bounds asynchronous waits (the PG pool, network I/O): it starts before the check and rejects when the
+// event loop gets to it. Synchronous work (better-sqlite3 queries, opening and migrating the SQLite file on first use)
+// cannot be cut short on this thread: the probe waits for it, so a SQLite call blocked on a lock holds the probe for up
+// to better-sqlite3's busy timeout (5 s by default). Such a check is still reported as failed ('timeout') when it
+// returns over budget, so a slow store never reads as ready.
 async function timed(name: string, f: () => Promise<'ok' | 'behind'>, timeoutMs: number, clock: () => number): Promise<CheckResult> {
   const t0 = clock()
   let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Timeout()), timeoutMs) })
   try {
-    const r = await Promise.race([f(), new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Timeout()), timeoutMs) })])
-    return r === 'ok' ? { ok: true, ms: clock() - t0 } : { ok: false, ms: clock() - t0, reason: 'behind' }
+    const r = await Promise.race([Promise.resolve().then(f), deadline])
+    const ms = clock() - t0
+    if (ms > timeoutMs) throw new Timeout() // finished, but over budget (synchronous work the timer could not preempt)
+    return r === 'ok' ? { ok: true, ms } : { ok: false, ms, reason: 'behind' }
   } catch (e) {
     captureError(e, { source: 'health', where: `readiness:${name}` })
     return { ok: false, ms: clock() - t0, reason: e instanceof Timeout ? 'timeout' : 'error' }
-  } finally { clearTimeout(timer) }
+  } finally { clearTimeout(timer); deadline.catch(() => {}) }
 }
 
 export async function readiness(d: ReadinessDeps): Promise<Readiness> {

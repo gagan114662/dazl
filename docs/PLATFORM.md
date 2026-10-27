@@ -18,10 +18,11 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
 - **Mixed mode on SQLite:** ported and unported code share one connection. `Db.tx` bodies are generators that can only yield statements. On SQLite, a body runs synchronously inside one better-sqlite3 transaction, so no other request (raw or ported) can run during it, see it half-done or join it. `test/mixed-mode.test.ts` runs concurrent auth/billing transactions, including a rollback, alongside raw requests on one connection.
 - **Step 6a (health and error capture):**
   - `GET /api/health/live` answers without touching any store. Use it as the liveness probe.
-  - `GET /api/health/ready` and `GET /api/health` are the readiness probe. Each check has a 2 s timeout. They return 503 when any of these fails:
+  - `GET /api/health/ready` and `GET /api/health` are the readiness probe. Each check has a 2 s budget. They return 503 when any of these fails or goes over budget:
     - the store does not answer (Postgres when `DATABASE_URL` is set, else SQLite);
     - on Postgres, `dazl_schema_migrations` is behind the migrations this build ships;
     - the SQLite file the raw-handle modules use does not answer.
+  - The budget is a hard cut-off only for asynchronous waits (the Postgres pool). Synchronous better-sqlite3 work (a query, or the first open and migrate) cannot be preempted on the event loop. The probe waits for it, for up to the 5 s busy timeout on a locked file, and then reports that check as `timeout` if it went over budget.
   - The body names the failed check and the engine, never the error text. `/api/health` keeps `ok` and `commit` for `ops/safe_launch.py`.
   - Errors are captured by `lib/ops/errors.ts` as one JSON line on stderr. Every field is built in code, scrubbed free text, or checked against its exact shape and replaced when it does not match:
     - `where`: a route template or worker name, never a concrete path.

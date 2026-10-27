@@ -73,3 +73,18 @@ test('readiness: opening the store failing, or the SQLite file failing, is not r
   assert.equal(r2.checks.store.ok, true)
   assert.equal(r2.checks.sqlite.ok === false && r2.checks.sqlite.reason, 'error')
 }))
+
+// Review repro: synchronous SQLite work cannot be preempted by the timer. The probe waits for it (measured here), and
+// reports the check failed once it returns over budget, instead of {ok:true, ms:100}.
+test('readiness: a synchronous SQLite check over budget blocks the probe until it returns, then reports timeout', () => capturing(async got => {
+  const sqliteDb = { kind: 'sqlite', get: async () => ({ x: 1 }) } as unknown as Db
+  const slow = () => ({ prepare: () => ({ get: () => { const end = Date.now() + 100; while (Date.now() < end) { /* busy: holds the thread like a locked SQLite call */ } return 1 } }) })
+  const t0 = Date.now()
+  const r = await readiness({ db: async () => sqliteDb, sqlite: slow, migrations: shipped, timeoutMs: 10 })
+  assert.ok(Date.now() - t0 >= 100, 'the probe could not return before the synchronous call did')
+  assert.equal(r.ok, false)
+  assert.equal(r.checks.sqlite.ok === false && r.checks.sqlite.reason, 'timeout')
+  assert.ok(r.checks.sqlite.ms >= 100)
+  assert.equal(r.checks.store.ok, true)
+  assert.deepEqual(got.map(g => g.where), ['readiness:sqlite'])
+}))
