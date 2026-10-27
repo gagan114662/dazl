@@ -1,5 +1,5 @@
 // SQLite DDL for platform tables that hold state shared by every app instance (docs/PLATFORM.md step 3).
-// The PG side is lib/db/migrations/pg/0002_shared_state.sql.
+// The PG side is lib/db/migrations/pg/0003_shared_state.sql.
 import type Database from 'better-sqlite3'
 
 export function migratePlatform(db: Database.Database): void {
