@@ -6,6 +6,7 @@
 import { contactIdentity, opportunityCard, type CardLead } from './opportunity.ts'
 import { publishedContact, publishedEmail } from '../outreach/published-email.ts'
 import { domainReviewFor } from '../outreach/domain-review.ts'
+import { evidenceStateOf } from '../outreach/evidence-state.ts'
 
 export type ApproveState = { ok: true } | { ok: false; reason: string }
 
@@ -32,7 +33,7 @@ export function approveState(l: CardLead): ApproveState {
   if (l.quarantined_at) return { ok: false, reason: 'Rejected. Undo to use it again.' }
   if (l.review_reason) return { ok: false, reason: 'dazl could not confirm this lead. Check the source under Needs your review first.' }
   if (l.window_held) return { ok: false, reason: 'Outside the time window you asked for, or its date is unknown. Research only.' }
-  if (l.confidence == null && l.human_confirmed_at == null) return { ok: false, reason: 'Not verified. Check the source first.' }
+  if (evidenceStateOf({ evidence_excerpt: l.evidence_excerpt, confidence: l.confidence ?? null, human_confirmed_at: l.human_confirmed_at ?? null }) === 'unverified') return { ok: false, reason: 'Not verified. Check the source first.' }
   if (l.fit === 0 && l.intent === null) return { ok: false, reason: 'Graded as not a fit for your profile.' }
   if (!publishedEmail(l)) return { ok: false, reason: 'No published email address to draft to yet. See Details to look for one.' }
   if (domainReviewFor({ id: l.id ?? '', contact: l.contact }, l.enrichments ?? []).state === 'required') return { ok: false, reason: 'Confirm the company website in Details first.' }

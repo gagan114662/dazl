@@ -4,6 +4,8 @@
 // the server runs under test/helpers/net-fence.ts and every other /api/* call is stubbed in the browser. It proves:
 //   1. the nav has Campaigns; the page shows one card per own search (newest first), never another tenant's;
 //   2. each card shows discovery, qualification, contact, outreach, sequence and replies counts as stored;
+//   2b. qualification uses the server's evidence states: a legacy row (confidence, contact, no excerpt) is unverified
+//      and never offered as ready to draft;
 //   3. the next action follows the pipeline (review before drafts, drafts before sending) and links to the page where
 //      that step and its checks live; a failed search says so;
 //   4. loading the page writes nothing.
@@ -47,9 +49,9 @@ try {
   await cards.first().waitFor({ timeout: 15000 })
   if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, 'campaigns.png'), fullPage: true })
   assert.equal(await page.locator('aside').getByRole('link', { name: 'Campaigns' }).getAttribute('href'), '/app/campaigns')
-  assert.equal(await cards.count(), 3)
+  assert.equal(await cards.count(), 4)
   assert.doesNotMatch(await page.locator('main').textContent(), /B-ONLY SEARCH/, "another tenant's search never shows")
-  const [austin, nyc, ohio] = [cards.nth(0), cards.nth(1), cards.nth(2)]
+  const [legacy, austin, nyc, ohio] = [cards.nth(0), cards.nth(1), cards.nth(2), cards.nth(3)]
   assert.match(await austin.textContent(), /Orthodontists in Austin/)
   assert.equal(await austin.getByTestId('next-action').textContent(), 'Search failed. Open it to see why')
   assert.equal(await nyc.getByTestId('next-action').textContent(), 'Review and approve 2 drafts')
@@ -57,15 +59,20 @@ try {
   assert.match(await ohio.textContent(), /Dental owners in Ohio/)
   const text = async (card, s) => (await card.getByTestId(`stage-${s}`).textContent())
   assert.equal(await text(ohio, 'discovery'), 'Discovery4 leadsfrom 9 candidates')
-  assert.equal(await text(ohio, 'qualification'), 'Qualification2 source-checked, 1 to review1 rejected')
+  assert.equal(await text(ohio, 'qualification'), 'Qualification2 source-checked, 0 confirmed by you, 1 to review2 timing not confirmed, 0 unverified, 1 rejected')
   assert.equal(await text(ohio, 'contact'), 'Contact2 with a contact')
   assert.equal(await text(ohio, 'outreach'), 'Outreach1 draft, 0 approved, 1 sent')
   assert.equal(await text(ohio, 'sequence'), 'Sequence0 running0 finished or stopped')
   assert.equal(await text(ohio, 'replies'), 'Replies1 replied, 1 interested0 bounced, 0 opted out')
   assert.equal(await ohio.getByTestId('next-action').textContent(), 'Check 1 lead that needs your review', 'review comes before the waiting draft')
   assert.equal(await ohio.getByTestId('next-action').getAttribute('href'), `/app/leads?job_id=${'a'.repeat(24)}`)
+  // The legacy row is unverified (no stored excerpt) and is never offered as ready to draft.
+  assert.match(await legacy.textContent(), /Legacy search/)
+  assert.equal(await text(legacy, 'qualification'), 'Qualification0 source-checked, 0 confirmed by you, 0 to review0 timing not confirmed, 1 unverified, 0 rejected')
+  assert.equal(await text(legacy, 'contact'), 'Contact1 with a contact')
+  assert.doesNotMatch(await legacy.getByTestId('next-action').textContent(), /draft/i)
   assert.deepEqual(writes, [], 'loading the page writes nothing')
-  console.log('campaigns UI check passed: 3 own campaigns, stage counts and next actions from the real route')
+  console.log('campaigns UI check passed: 4 own campaigns (incl. a legacy unverified lead), stage counts and next actions from the real route')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }

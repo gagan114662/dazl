@@ -1,4 +1,5 @@
 import {contactPurposeRestricted} from './contact-purpose-db.ts'
+import { evidenceStateOf, type EvidenceState } from './evidence-state.ts'
 import {currentnessHeld} from './currentness.ts'
 import { messageProvenance } from './provenance.ts'
 import { snapshotSignalContext } from './attribution.ts'
@@ -54,12 +55,10 @@ export function leadHeld(db: Database.Database, tenantId: string, leadId: string
 // (or dazl's own verification) still stands: withdrawing the confirmation revokes the
 // eligibility that backed it, and an exact-word approval hash is not a substitute.
 // Machine-verified leads are unaffected. Tenant-scoped like every other lead read.
-export type EvidenceState = 'machine' | 'human' | 'unverified'
+export type { EvidenceState } from './evidence-state.ts'
 export function leadEvidenceState(db: Database.Database, tenantId: string, leadId: string): EvidenceState {
   const l = db.prepare('SELECT l.evidence_excerpt, l.confidence, l.human_confirmed_at FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as { evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null } | undefined
-  if (l && l.evidence_excerpt && l.confidence !== null) return 'machine'
-  if (l && l.human_confirmed_at !== null) return 'human'
-  return 'unverified'
+  return l ? evidenceStateOf(l) : 'unverified'
 }
 export function leadEvidenceEligible(db: Database.Database, tenantId: string, leadId: string): boolean {
   return leadEvidenceState(db, tenantId, leadId) !== 'unverified'
@@ -210,7 +209,8 @@ export function createDraft(db: Database.Database, tenantId: string, leadId: str
   return db.transaction(() => createDraftInner(db, tenantId, leadId, businessName)).immediate()
 }
 
-function createDraftInner(db: Database.Database, tenantId: string, leadId: string, businessName: string): string {
+// Every check createDraft makes before it writes, in the same order. Throws OutreachError on the first refusal.
+function draftChecks(db: Database.Database, tenantId: string, leadId: string) {
   const lead = db.prepare(
     `SELECT l.id, l.company, l.name, l.contact, l.signal, l.source_url, l.evidence_excerpt, l.confidence, l.fit, l.intent, l.human_confirmed_at
      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`,
@@ -221,7 +221,7 @@ function createDraftInner(db: Database.Database, tenantId: string, leadId: strin
   // Verified by dazl (quote confirmed on the cited page) OR confirmed by the user
   // themselves from the needs-review list. A human confirmation is the user's own
   // checked decision, labelled as such in the UI; it never rewrites the machine verdict.
-  if ((!lead.evidence_excerpt || lead.confidence === null) && lead.human_confirmed_at === null) throw new OutreachError('lead_not_verified')
+  if (evidenceStateOf(lead) === 'unverified') throw new OutreachError('lead_not_verified')
   // Held lead: ICP grading failed, so it sits at fit 0 with intent unset. That hold is not a
   // grade, and the lead must not be emailed until a rescan grades it successfully. A real
   // grade of 0 (intent set) and never-scored leads (fit unset) are not affected.
@@ -260,6 +260,17 @@ function createDraftInner(db: Database.Database, tenantId: string, leadId: strin
   const test = testRecipientApproved(db, tenantId, to) ? 1 : 0
   if (!recipientAllowed(db,tenantId,to)) throw new OutreachError('personal_email')
   if (isSuppressed(db, tenantId, to)) throw new OutreachError('suppressed')
+  return { lead, to, addressUrl, test }
+}
+
+// Read-only: why createDraft would refuse this lead right now (its error code), or null if it would accept it. Runs the
+// very same checks (draftChecks); used by views that recommend a next step, so they never recommend a refused one.
+export function draftBlockReason(db: Database.Database, tenantId: string, leadId: string): string | null {
+  try { draftChecks(db, tenantId, leadId); return null } catch (e) { if (e instanceof OutreachError) return e.code; throw e }
+}
+
+function createDraftInner(db: Database.Database, tenantId: string, leadId: string, businessName: string): string {
+  const { lead, to, addressUrl, test } = draftChecks(db, tenantId, leadId)
   // Older local databases may not have Memory yet. No default positioning is
   // fabricated, and another tenant's context is never used.
   let positioning = ''
