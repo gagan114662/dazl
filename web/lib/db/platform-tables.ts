@@ -16,4 +16,6 @@ export function migratePlatform(db: Database.Database): void {
       expires_at INTEGER NOT NULL
     );
   `)
+  // Fencing token (lib/shared/lease.ts): bumped on every takeover. PG: 0004_lease_generation.sql.
+  try { db.exec('ALTER TABLE app_leases ADD COLUMN generation INTEGER NOT NULL DEFAULT 0') } catch { /* exists */ }
 }
