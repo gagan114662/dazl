@@ -56,8 +56,12 @@ Updated by the builder on every branch. Newest first.
   failure or lost ownership refuse the call; Instinct's fail-open finding). EXCLUDED from the budget: profile generation
   (/api/scan/icp); TinyFish search/fetch (own caps); free sources (GDELT, job boards, SEC, site crawl); post-scan people
   search; autopilot and all outreach actions; monitors/watches and CSV imports (flags only); BYOK enrichment (switched
-  off, not bounded); retries below dazl and real billing; the per-owner pool (in memory, resets on restart). The web
-  form sends no budget yet.
+  off, not bounded); retries below dazl and real billing; the per-owner pool (in memory, resets on restart).
+
+- b/scan-budget-ui (stacked on #216; fixtures only): optional spend limit on the profile editor, off by default (then no
+  `budget` is sent). It builds the same budget object as the API (max_usd and the false-only flags) through the same
+  validator, shows the partial-scope disclosure and the not-covered list BEFORE Run (above both Run buttons), disables Run on
+  an unusable limit, and shows a server rejection. Still partial: it does not turn the scan into a whole-scan dollar ceiling.
 
 ## In progress (interactive Claude session, do not duplicate)
 
