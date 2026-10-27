@@ -7,6 +7,9 @@ function db(): Database.Database {
   const d = new Database(':memory:')
   migrateWarm(d)
   d.exec(`CREATE TABLE lead_enrichments (id TEXT PRIMARY KEY, lead_id TEXT NOT NULL, tenant_id TEXT NOT NULL, connector TEXT NOT NULL, kind TEXT NOT NULL, value TEXT NOT NULL, label TEXT, confidence INTEGER, source_url TEXT NOT NULL, source_date TEXT NOT NULL, retrieved_at INTEGER NOT NULL)`)
+  // lead1 belongs to tenant1 (through its scan job), the ownership addUserReportedPath checks
+  d.exec(`CREATE TABLE scan_jobs (id TEXT PRIMARY KEY, user_id TEXT NOT NULL); CREATE TABLE leads (id TEXT PRIMARY KEY, scan_job_id TEXT NOT NULL);
+    INSERT INTO scan_jobs VALUES ('job1', 'tenant1'); INSERT INTO leads VALUES ('lead1', 'job1');`)
   return d
 }
 
@@ -109,4 +112,12 @@ test('user-reported path requires a valid profile URL and name, dedupes, removes
   assert.equal(addUserReportedPath(d, 'tenant1', 'lead1', 'https://www.linkedin.com/in/x', 'Bob')!.id, p!.id) // dedupe
   assert.equal(removeUserReportedPath(d, 'tenant1', p!.id), true)
   assert.equal(removeUserReportedPath(d, 'tenant1', p!.id), false)
+})
+
+test("a user-reported path can only be attached to the caller's own lead", () => {
+  const d = db()
+  assert.equal(addUserReportedPath(d, 'tenant2', 'lead1', 'https://www.linkedin.com/in/x', 'Bob'), null) // tenant1's lead
+  assert.equal(addUserReportedPath(d, 'tenant1', 'no-such-lead', 'https://www.linkedin.com/in/x', 'Bob'), null)
+  assert.equal((d.prepare('SELECT count(*) AS n FROM warm_user_paths').get() as { n: number }).n, 0)
+  assert.ok(addUserReportedPath(d, 'tenant1', 'lead1', 'https://www.linkedin.com/in/x', 'Bob'))
 })
