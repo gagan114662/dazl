@@ -39,8 +39,16 @@ failure put it (review, `blocked_by_site` / `needs_javascript`). No extra networ
 ### Preserved evidence and the real failure
 - The original text is checked exactly as received (no cleanup, no markdown stripping beyond the verifier's own normalisation).
   Stored on the lead: `evidence_origin = 'tinyfish_copy'`, `own_fetch_failure` (the real own-fetch failure, `blocked_by_site` or
-  `needs_javascript`), `evidence_copy_sha256` (the hash of the exact text checked). The saved quote is the model's original quote,
-  verified verbatim, never rewritten. Only the hash and the quote are persisted, not the full copy.
+  `needs_javascript`), `evidence_copy_sha256` and `evidence_copy_id`. The saved quote is the model's original quote, verified
+  verbatim, never rewritten.
+- The ORIGINAL copied text is preserved in `lead_evidence_copies`: one immutable row per (tenant, job, attempt, canonical URL),
+  linked from the lead by `evidence_copy_id`, holding the URL as cited, SHA-256, byte length, TinyFish fetch time and the full text
+  as received. A trigger rejects every UPDATE; a DELETE is rejected until `expires_at`. Written in the same transaction as the lead.
+  Access: `GET /api/leads/evidence?lead_id=` through the lead's job owner only (foreign, expired and missing are one 404), returns
+  the text, hash, job, attempt, URL and an integrity check (hash recomputed); the lead card links to it.
+- Bounds: a copy over 256 KB is not used at all (so every used copy is stored whole); rows expire after 90 days and are purged
+  on the next scan by the same tenant; a tenant holds at most 300 unexpired copies, and with no room the verifier is given no copies
+  (candidates stay in review). At most the 16 fetched pages per scan can be used, and only pages that verified a lead are stored.
 - Date rules are unchanged: an event date is what the quote/page text supports. A search hit date, a TinyFish fetch time or dazl's
   seal time never establishes an event date (the copy's `retrievedAt` is only the time it was held).
 
@@ -59,18 +67,22 @@ failure put it (review, `blocked_by_site` / `needs_javascript`). No extra networ
 - No sign-in, no cookies, no wall bypass, no new fetches, no paid retries, no extra spend.
 
 ### Honest labels
-- Leads API: `evidence_origin`, `own_fetch_failure` on every lead row. CSV: column "Evidence Origin" with
-  "Checked against a copy of the page fetched by TinyFish. dazl's own fetch of the page failed (<failure>), so dazl did not read the
-  page directly." Leads page: the same sentence on the lead card. Never described as "read on the page by dazl".
+- Leads API: `evidence_origin`, `own_fetch_failure`, `evidence_copy_id` on every lead row. CSV column "Evidence Origin" states only
+  what is recorded: copied evidence -> "Checked against a copy of the page fetched by TinyFish ... dazl did not read the page
+  directly"; an unreadable review row -> "Not verified: dazl could not read this page (<failure>) ..."; a lead you confirmed out of a
+  blocked/JS/login review -> "Confirmed by you, not verified by dazl: dazl could not read this page ..."; nothing recorded -> blank,
+  and the header does not say blank means a direct read. Leads page: the copy sentence plus a link to the exact stored text.
 
 ## Tests (isolated; `web/test/held-text.test.ts`)
 Positive: blocked and JavaScript-only own fetch with an exact-URL copy containing quote + company (verified, labelled, failure and
 hash kept, original quote unchanged, exactly one TinyFish fetch and one own fetch, no other network call, CSV fields). Control: a page
 dazl can read is not labelled. Negative (stay in review under the real failure, unlabelled): no copy, quote missing, company not
 named, stale date, redirect/different returned URL, different query string, wall text, too short, truncated, walled social host.
-Unit: URL canonicalisation, attempt binding, requested-only holding, eligible failures, frozen entries, caller mutation after sealing.
+Storage: byte-for-byte recovery from a fresh database connection after the scan, tenant isolation, immutability, retention purge, full-tenant and oversize copies unused. Real export and evidence routes: copied, unreadable-review, user-confirmed-blocked and plain rows. Unit: URL canonicalisation, attempt binding, requested-only holding, eligible failures, frozen entries, caller mutation after sealing.
 
 ## Remaining limits
+- Evidence copies are SQLite-only: the Postgres read path carries the lead columns, but the table and its triggers are not in the generated Postgres schema (the translator fails closed on a DELETE trigger) until that migration is done.
+- Deleting a tenant's account does not yet remove its evidence rows before expiry (the retention trigger blocks deletes); that needs an explicit purge path.
 - Whether TinyFish text can differ from what a visitor sees is unmeasured; the verbatim-quote rule is the only defence beyond the
   wall/short/truncation guards. The wall-phrase list is English-only and heuristic.
 - The truncation guard cannot detect silent cuts that end mid-sentence without a marker.
