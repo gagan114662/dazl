@@ -18,13 +18,20 @@ import { resetTinyfishState } from '../lib/search/tinyfish.ts'
 const day = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString()
 const BODY = 'Nimbus Analytics is hiring an Account Executive to build its UK sales team in London.'
 
-test('placeIn: a state, London/UK and New York City are recognised; a location must name the place (Remote and look-alikes never match)', () => {
+test('placeIn: states, cities and countries; a location must name the place (Remote and look-alikes never match); a city never widens to its country or state', () => {
   assert.equal(placeIn('ohio hiring payroll')!.name, 'Ohio')
   const lon = placeIn('London UK B2B SaaS startups hiring sales staff')!
-  assert.equal(lon.name, 'London')
-  for (const l of ['London, UK', 'London', 'Remote - United Kingdom', 'Greater London Area', 'England']) assert.equal(lon.ok(l), true, l)
-  for (const l of ['Remote', undefined, 'Londonderry, Northern Ireland', 'Paris, France', 'Ukraine']) assert.equal(lon.ok(l), false, String(l))
+  assert.equal(lon.name, 'London', 'London UK is a London request, not the whole country')
+  for (const l of ['London, UK', 'London', 'Greater London Area', 'London, England, United Kingdom']) assert.equal(lon.ok(l), true, l)
+  for (const l of ['Remote', undefined, 'Londonderry, Northern Ireland', 'Paris, France', 'Ukraine', 'Manchester, United Kingdom', 'Birmingham, England', 'Remote - United Kingdom', 'England', 'London, Ontario, Canada']) assert.equal(lon.ok(l), false, String(l))
+  const nyc = placeIn('Find companies in New York City hiring receptionists')!
+  assert.equal(nyc.name, 'New York City')
+  for (const l of ['New York, NY', 'New York City', 'NYC', 'Brooklyn, NY', 'Bronx, New York', 'New York, NY, United States']) assert.equal(nyc.ok(l), true, l)
+  for (const l of ['Albany, New York', 'Buffalo, NY', 'Remote - New York', 'Upstate New York', 'Remote', undefined]) assert.equal(nyc.ok(l), false, String(l))
   assert.equal(placeIn('hiring a receptionist in the Bronx')!.ok('Bronx, NY'), true)
+  const state = placeIn('hiring in New York state')!; assert.equal(state.name, 'New York', 'plain New York stays the state'); assert.equal(state.ok('Albany, New York'), true)
+  const uk = placeIn('UK startups hiring sales')!
+  assert.equal(uk.name, 'United Kingdom'); for (const l of ['Manchester, United Kingdom', 'Remote - United Kingdom', 'London, UK']) assert.equal(uk.ok(l), true, l); assert.equal(uk.ok('Paris, France'), false)
   assert.equal(placeIn('hiring sales staff'), null, 'no place named: no boards')
 })
 
@@ -51,6 +58,12 @@ test('London: only the London sales posting is fetched and returned, dated from 
   const ev = await collectEvidence(sel, 'London UK B2B SaaS startups hiring sales account executive', http, 5000)
   assert.deepEqual(ev.map(e => e.url), ['https://boards.greenhouse.io/nimbus/jobs/1']); assert.equal(ev[0].date, day(9).slice(0, 10)); assert.equal(ev[0].quote, BODY)
   assert.deepEqual(seen, ['https://boards-api.greenhouse.io/v1/boards/nimbus/jobs', 'https://boards-api.greenhouse.io/v1/boards/nimbus/jobs/1'], 'one detail request, only for the posting that matched place and role')
+})
+test('exact London/NYC requests through collectEvidence: Manchester, UK-remote, Albany and Buffalo postings are never fetched; matching city postings are', async () => {
+  for (const [q, bad, good] of [['London UK startups hiring sales account executive', ['Manchester, United Kingdom', 'Remote - United Kingdom', 'Birmingham, England'], 'London, UK'], ['New York City companies hiring sales account executive', ['Albany, New York', 'Buffalo, NY', 'Upstate New York'], 'New York, NY']] as const) {
+    for (const loc of bad) { const { http, seen } = board(9, loc); assert.equal((await collectEvidence(sel, q, http, 5000)).length, 0, loc); assert.ok(!seen.some(u => u.endsWith('/jobs/1')), `${loc}: no detail fetch`) }
+    assert.equal((await collectEvidence(sel, q, board(9, good).http, 5000)).length, 1, good)
+  }
 })
 test('the request\'s own window is used: 45 days old is out for "past 30 days", in for "past 120 days", and the default stays 90', async () => {
   assert.equal((await collectEvidence(sel, 'London hiring account executive in the past 30 days', board(45).http, 5000)).length, 0)
