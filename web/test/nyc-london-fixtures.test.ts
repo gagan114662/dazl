@@ -193,7 +193,7 @@ test('instrumentation: one scan records queries, every result URL with date/sele
   const x = await runFixture({ ...nyc, extraction: [cOpen, cJob, cOld, cUndated, cFb, cWrong] })
   const rep = x.report!
   // queries sent (also in scan_source_stats)
-  assert.deepEqual(rep.queries, x.calls.searches); assert.deepEqual(JSON.parse((x.stats as { queries: string }[])[0].queries as unknown as string), x.calls.searches)
+  assert.deepEqual(rep.queries, x.calls.searches); assert.deepEqual((x.stats as { queries: string[] }[])[0].queries, x.calls.searches)
   // selected URLs + fetched-text availability + the verifier's own fetch outcome
   for (const r of rep.urls) assert.ok('selected' in r && 'tinyfish_text_chars' in r && 'own_fetch' in r && 'walled' in r && 'hit_date' in r)
   assert.equal(rep.urls.filter((r: { selected: boolean }) => r.selected).length, 6); assert.equal(rep.urls.filter((r: { tinyfish_text_chars: number | null }) => r.tinyfish_text_chars).length, 5)

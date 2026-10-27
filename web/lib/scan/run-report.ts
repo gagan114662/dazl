@@ -41,7 +41,7 @@ export function buildRunReport(p: ReportParts, verified: FinalRow[] | null, revi
   const vKeys = new Set((verified ?? []).map(r => r.key)); const rMap = new Map((review ?? []).map(r => [r.key, r.review_reason ?? 'review']))
   const audit = p.audit ?? []
   const fates = audit.map(a => {
-    const fate = vKeys.has(a.key) ? 'verified' : rMap.has(a.key) ? `review:${rMap.get(a.key)}` : a.outcome === 'dropped' ? `dropped:${a.reason ?? 'unknown'}` : verified === null ? `not_finished:${a.reason ?? a.outcome}` : `dropped:${a.reason ?? 'deduplicated_or_capped'}`
+    const fate = vKeys.has(a.key) ? 'verified' : rMap.has(a.key) ? `review:${rMap.get(a.key)}` : a.outcome === 'dropped' ? `dropped:${a.reason ?? 'unknown'}` : verified === null ? `not_finished:${a.reason ?? a.outcome}` : `dropped:${a.reason ?? 'duplicate_company_or_source_cap'}`
     return { company: cut(a.company, 120), url: cut(a.url, 300), fate, own_fetch: ownFetchOf(p.ownFetch, a.url), evidence_origin: a.evidence_origin ?? null }
   })
   const count = (pre: string) => fates.filter(f => f.fate === pre || f.fate.startsWith(`${pre}:`)).length

@@ -59,7 +59,7 @@ export async function runFixture(f: Fixture) {
   const reply = (p: string, maxTokens?: number) => { calls.prompts.push(p); return maxTokens === 300 ? JSON.stringify(f.modelQueries) : JSON.stringify(f.extraction) }
   const providers: Record<'anthropic' | 'openai', Provider> = {
     anthropic: {
-      research: async () => ({ text: '', citedUrls: [] }),
+      research: async () => ({ text: '[]', citedUrls: [] }), // the paid fallback (when search finds nothing) also answers with no candidates
       complete: async (_k: string, p: string, _f?: typeof fetch, maxTokens?: number) => reply(p, maxTokens),
       // SYNTHETIC usage numbers (stub counts, not real tokens or charges): proves the usage path records what a provider reports.
       completeDetailed: async (_k: string, p: string, _f?: typeof fetch, maxTokens?: number) => ({ text: reply(p, maxTokens), model: 'stub-model-served', usage: { input_tokens: 1000, output_tokens: 100 } }),
