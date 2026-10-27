@@ -23,7 +23,14 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
     - on Postgres, `dazl_schema_migrations` is behind the migrations this build ships;
     - the SQLite file the raw-handle modules use does not answer.
   - The body names the failed check and the engine, never the error text. `/api/health` keeps `ok` and `commit` for `ops/safe_launch.py`.
-  - Errors are captured by `lib/ops/errors.ts` as one JSON line on stderr. Each line has the route template or worker name, the tenant id (an opaque id; anything else is dropped), the error class, a scrubbed message and stack, and a fingerprint.
+  - Errors are captured by `lib/ops/errors.ts` as one JSON line on stderr. Every field is built in code, scrubbed free text, or checked against its exact shape and replaced when it does not match:
+    - `where`: a route template or worker name, never a concrete path.
+    - `tenant`: a `users.id`, 32 lowercase hex characters.
+    - `ref`: a Stripe event id from a signature-verified webhook.
+    - `method` and `source`: fixed sets.
+    - `error.name` and `cause.name`: a class name ending in Error/Exception, or one of the app's own error classes.
+    - `message` and stack frames: scrubbed and bounded.
+    - Also included: a fingerprint.
     - Scrubbed: emails, auth headers, provider keys, DB URLs, URL queries, IPs, phone numbers and long tokens.
     - Never read from the request: bodies, headers or cookies. The one exception is the session cookie, used only to look up the tenant id.
   - Sources:

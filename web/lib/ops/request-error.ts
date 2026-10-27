@@ -34,7 +34,7 @@ export async function handleRequestError(err: unknown, request: RequestInfo, con
       tenantId = await Promise.race([deps.tenantFor(token), new Promise<null>(res => { timer = setTimeout(() => res(null), deps.timeoutMs ?? 500) })])
     } catch { tenantId = null } finally { clearTimeout(timer) }
   }
-  // route template when Next gives one ('/api/leads/[lead]/confirm'); else the path without its query
-  const where = context.routePath || request.path.split(/[?#]/)[0]
+  // the route template Next gives ('/api/leads/[lead]/confirm'); never the concrete path, whose segments are caller data
+  const where = context.routePath || '[unknown-route]'
   return captureError(err, { source: context.routeType === 'route' ? 'route' : 'render', where, method: request.method, tenantId })
 }

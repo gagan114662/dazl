@@ -1,8 +1,13 @@
 // Structured error capture (docs/PLATFORM.md step 6). One JSON line per error on stderr, plus an optional alert hook.
-// What a record carries: where it happened (route template or worker name), the tenant id (an opaque random id,
-// never an email or name), the error's class, a scrubbed message and stack, and a fingerprint for grouping.
-// What it never carries: request bodies, headers, cookies, query strings, emails, phone numbers, IPs, tokens or keys.
-// The scrubbing is a backstop, not a licence: callers pass the error and the tenant id, nothing else about the user.
+// Every emitted field is either built here (ts, fingerprint), scrubbed free text (message, stack frames, both bounded),
+// or checked against the shape it must have, and replaced when it does not match:
+//   source, method   - fixed sets
+//   where            - a route template or worker name: [A-Za-z0-9_-./[]:] only, at most 128 chars
+//   tenant           - a users.id: 32 lowercase hex characters (randomBytes(16), app/api/auth/signup, lib/auth-google.ts)
+//   ref              - a Stripe event id from a signature-verified webhook (evt_ + 24-64 base62, with a digit)
+//   error.name, cause.name - a class name ending in Error/Exception, or one of this app's own error classes
+// Never read: request bodies, headers, cookies, query strings. The scrub (emails, keys, tokens, IPs, phone numbers,
+// DB URLs, URL queries) is a backstop for free text, not a licence: callers pass the error and the tenant id only.
 import { createHash } from 'node:crypto'
 
 export interface ErrorContext {
@@ -11,7 +16,7 @@ export interface ErrorContext {
   where: string
   method?: string
   tenantId?: string | null
-  // an opaque id that helps find the failing unit (scan job id, Stripe event id); dropped unless it looks opaque
+  // a Stripe event id (signature-verified webhook); dropped unless it has that shape
   ref?: string
 }
 
@@ -48,28 +53,42 @@ export function scrub(s: string): string {
   return out.length > 500 ? out.slice(0, 500) + '…' : out
 }
 
+// This app's error classes whose names do not end in Error (grep 'extends Error').
+const OWN_ERROR_NAMES = new Set(['LeaseLost', 'RaceLost', 'ScanStopped', 'ScanTimedOut', 'SpendRefused', 'StaleLeaseWrite', 'StatementFailedInTx', 'Timeout'])
+export function errorName(n: unknown): string {
+  return typeof n === 'string' && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(n) && (/(?:Error|Exception)$/.test(n) || OWN_ERROR_NAMES.has(n)) ? n : '[unrecognized-name]'
+}
+const SOURCES = new Set(['route', 'render', 'worker', 'health', 'process'])
+const METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'])
+export const isTenantId = (v: unknown): v is string => typeof v === 'string' && /^[a-f0-9]{32}$/.test(v)
+// Stripe ids are evt_ + 24+ random base62 characters (digits included); the only caller passes the id of an event whose
+// signature was verified, so the value came from Stripe, and the shape check is a second guard.
+const isStripeEventId = (v: unknown): v is string => typeof v === 'string' && /^evt_(?=[A-Za-z]*[0-9])[A-Za-z0-9]{24,64}$/.test(v)
+export function whereName(w: unknown): string {
+  const s = typeof w === 'string' ? w.split(/[?#]/)[0] : ''
+  return /^[A-Za-z0-9_\-./[\]:]{1,128}$/.test(s) && scrub(s) === s ? s : '[unrecognized]'
+}
+
 function describe(e: unknown): { name: string; message: string; stack: string[] } {
   if (e instanceof Error) {
     // stack frames only (the first stack line repeats the message); at most 8, scrubbed
     const frames = (e.stack ?? '').split('\n').map(l => l.trim()).filter(l => l.startsWith('at ')).slice(0, 8).map(scrub)
-    return { name: e.name || 'Error', message: scrub(e.message ?? ''), stack: frames }
+    return { name: errorName(e.name), message: scrub(String(e.message ?? '')), stack: frames }
   }
   // a thrown non-Error (string, object): keep only its type, its contents may be anything
   return { name: typeof e, message: typeof e === 'string' ? scrub(e) : '[non-error thrown]', stack: [] }
 }
 
-// Ids are random tokens; anything else (an email passed by mistake) is dropped rather than logged.
-const opaque = (v: string | null | undefined): string | null => typeof v === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(v) ? v : null
-
 export function toRecord(e: unknown, ctx: ErrorContext, now = new Date()): ErrorRecord {
   const d = describe(e)
   const cause = e instanceof Error && e.cause !== undefined ? describe(e.cause) : undefined
-  const where = scrub(ctx.where.split(/[?#]/)[0])
-  const fingerprint = createHash('sha256').update([ctx.source, where, d.name, d.stack[0] ?? d.message].join('|')).digest('hex').slice(0, 16)
+  const where = whereName(ctx.where)
+  const source = SOURCES.has(ctx.source) ? ctx.source : 'process'
+  const fingerprint = createHash('sha256').update([source, where, d.name, d.stack[0] ?? d.message].join('|')).digest('hex').slice(0, 16)
   return {
-    level: 'error', ts: now.toISOString(), source: ctx.source, where, ...(ctx.method ? { method: ctx.method } : {}),
-    tenant: opaque(ctx.tenantId),
-    ...(opaque(ctx.ref) ? { ref: opaque(ctx.ref)! } : {}),
+    level: 'error', ts: now.toISOString(), source, where, ...(ctx.method && METHODS.has(ctx.method) ? { method: ctx.method } : {}),
+    tenant: isTenantId(ctx.tenantId) ? ctx.tenantId : null,
+    ...(isStripeEventId(ctx.ref) ? { ref: ctx.ref } : {}),
     error: { ...d, ...(cause ? { cause: { name: cause.name, message: cause.message } } : {}) },
     fingerprint,
   }

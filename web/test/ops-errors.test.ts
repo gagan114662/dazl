@@ -2,7 +2,10 @@
 // tenant id, and the alert hook's throttling. Stubbed sinks and fetch only; nothing leaves the process.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { captureError, makeAlertHook, scrub, setErrorSinks, toRecord, type ErrorRecord } from '../lib/ops/errors.ts'
+import { captureError, makeAlertHook, scrub, setErrorSinks, toRecord, type ErrorContext, type ErrorRecord } from '../lib/ops/errors.ts'
+
+const TA = '0123456789abcdef0123456789abcdef' // a users.id: 32 lowercase hex
+const EVT = 'evt_1PqRsTuVwXyZaBcDeFgHiJkL'
 import { handleRequestError, sessionToken } from '../lib/ops/request-error.ts'
 
 const PII = [
@@ -21,11 +24,11 @@ test('scrub removes emails, auth headers, keys, DB URLs, IPs, phone numbers, lon
 
 test('a record has a fixed shape: where, tenant id, scrubbed error, fingerprint; nothing else', () => {
   const e = new Error(`stripe said no for jane.doe@example.com`, { cause: new TypeError('fetch failed for 203.0.113.7') })
-  const r = toRecord(e, { source: 'route', where: '/api/billing/checkout?x=jane@x.io', method: 'POST', tenantId: '0123abcd', ref: 'evt_123' }, new Date(0))
+  const r = toRecord(e, { source: 'route', where: '/api/billing/checkout?x=jane@x.io', method: 'POST', tenantId: TA, ref: EVT }, new Date(0))
   assert.deepEqual(Object.keys(r).sort(), ['error', 'fingerprint', 'level', 'method', 'ref', 'source', 'tenant', 'ts', 'where'])
   assert.equal(r.where, '/api/billing/checkout')
-  assert.equal(r.tenant, '0123abcd')
-  assert.equal(r.ref, 'evt_123')
+  assert.equal(r.tenant, TA)
+  assert.equal(r.ref, EVT)
   assert.equal(r.ts, '1970-01-01T00:00:00.000Z')
   assert.equal(r.error.name, 'Error')
   assert.equal(r.error.message, 'stripe said no for [email]')
@@ -37,11 +40,49 @@ test('a record has a fixed shape: where, tenant id, scrubbed error, fingerprint;
   assert.notEqual(toRecord(e, { source: 'route', where: '/api/billing/portal' }).fingerprint, toRecord(e, { source: 'route', where: '/api/billing/checkout' }).fingerprint)
 })
 
-test('only opaque ids are kept as tenant or ref: an email passed by mistake is dropped', () => {
-  const r = toRecord(new Error('x'), { source: 'worker', where: 'tick:replies', tenantId: 'jane@example.com', ref: 'a b' })
-  assert.equal(r.tenant, null)
-  assert.equal('ref' in r, false)
-  assert.ok(!JSON.stringify(r).includes('jane'))
+test('every emitted field is scrubbed or shape-checked: PII in a name, cause name, id, method or where never comes out (review repros)', () => {
+  const PII_EMAIL = 'synthetic.owner@example.test'
+  const named = (name: string, msg = 'x') => Object.assign(new Error(msg), { name })
+  const e = named(`Request for ${PII_EMAIL}`, 'failed')
+  e.cause = named(`Lookup of ${PII_EMAIL}`)
+  const hostile: ErrorContext[] = [
+    { source: 'route', where: '/api/x', tenantId: '1234567890', ref: 'SyntheticPerson' }, // phone-shaped tenant, name-shaped ref
+    { source: 'route', where: `/api/unsubscribe/${PII_EMAIL}`, method: `GET ${PII_EMAIL}`, tenantId: PII_EMAIL, ref: PII_EMAIL },
+    { source: 'route', where: 'tick:Jane Doe +1 415 555 0134', tenantId: 'SyntheticPerson', ref: 'evt_SyntheticPersonNameOfOwner' },
+    { source: `route ${PII_EMAIL}` as ErrorContext['source'], where: '/api/x' },
+  ]
+  const leaks = [PII_EMAIL, 'synthetic.owner', '1234567890', 'SyntheticPerson', 'Jane', '555']
+  for (const ctx of hostile) {
+    const r = toRecord(e, ctx)
+    const out = JSON.stringify(r)
+    for (const leak of leaks) assert.ok(!out.includes(leak), `${leak} leaked from ${JSON.stringify(ctx)}: ${out}`)
+    assert.equal(r.error.name, '[unrecognized-name]')
+    assert.equal(r.error.cause?.name, '[unrecognized-name]')
+    assert.equal(r.tenant, null)
+    assert.equal('ref' in r, false)
+    assert.equal('method' in r, false)
+  }
+  assert.equal(toRecord(e, hostile[1]).where, '[unrecognized]')
+  assert.equal(toRecord(e, hostile[2]).where, '[unrecognized]')
+  assert.equal(toRecord(e, hostile[3]).source, 'process')
+  // the alert hook posts the same record, so it is equally clean
+  const posted: string[] = []
+  const hook = makeAlertHook({ url: 'https://hooks.example.test/x', fetchImpl: (async (_u: string, init: RequestInit) => { posted.push(String(init.body)); return new Response('ok') }) as unknown as typeof fetch })
+  hook(toRecord(e, hostile[0]))
+  return new Promise<void>(res => setImmediate(() => {
+    assert.equal(posted.length, 1)
+    for (const leak of leaks) assert.ok(!posted[0].includes(leak), `${leak} leaked to the alert hook`)
+    res()
+  }))
+})
+
+test('valid shapes pass: error class names, this app\'s own error classes, users.id, Stripe event ids, methods, route templates', () => {
+  const r = toRecord(Object.assign(new TypeError('x'), { cause: Object.assign(new Error('y'), { name: 'StaleLeaseWrite' }) }),
+    { source: 'route', where: '/api/leads/[lead]/confirm', method: 'DELETE', tenantId: TA, ref: EVT })
+  assert.deepEqual([r.error.name, r.error.cause?.name, r.where, r.method, r.tenant, r.ref], ['TypeError', 'StaleLeaseWrite', '/api/leads/[lead]/confirm', 'DELETE', TA, EVT])
+  for (const n of ['DatabaseError', 'AbortError', 'LeaseLost', 'Timeout']) assert.equal(toRecord(Object.assign(new Error('x'), { name: n }), { source: 'worker', where: 'tick' }).error.name, n)
+  assert.equal(toRecord(new Error('x'), { source: 'worker', where: 'tick:index-checks' }).where, 'tick:index-checks')
+  assert.equal(toRecord(new Error('x'), { source: 'worker', where: 'tick', tenantId: TA.toUpperCase() }).tenant, null) // ids are lowercase hex
 })
 
 test('a thrown non-Error keeps only its type; an object is never serialized', () => {
@@ -54,7 +95,7 @@ test('captureError writes to every sink and never throws, even when a sink does'
   const got: ErrorRecord[] = []
   const restore = setErrorSinks([() => { throw new Error('sink down') }, r => got.push(r)])
   try {
-    const r = captureError(new Error('x'), { source: 'worker', where: 'tick:sequences', tenantId: 't1' })
+    const r = captureError(new Error('x'), { source: 'worker', where: 'tick:sequences', tenantId: TA })
     assert.equal(got.length, 1)
     assert.equal(got[0], r)
   } finally { restore() }
@@ -64,18 +105,18 @@ test('the default sink is one JSON line on stderr', () => {
   const lines: string[] = []
   const orig = process.stderr.write
   process.stderr.write = ((s: string) => { lines.push(String(s)); return true }) as typeof process.stderr.write
-  try { captureError(new Error('db down for jane@example.com'), { source: 'route', where: '/api/leads', tenantId: 't1' }) } finally { process.stderr.write = orig }
+  try { captureError(new Error('db down for jane@example.com'), { source: 'route', where: '/api/leads', tenantId: TA }) } finally { process.stderr.write = orig }
   assert.equal(lines.length, 1)
   assert.ok(lines[0].endsWith('\n') && !lines[0].slice(0, -1).includes('\n'))
   const r = JSON.parse(lines[0])
-  assert.equal(r.tenant, 't1')
+  assert.equal(r.tenant, TA)
   assert.equal(r.error.message, 'db down for [email]')
 })
 
 test('alert hook: off without an https URL; one alert per fingerprint per window; a global cap; failures swallowed', async () => {
   const sent: { url: string; body: ErrorRecord }[] = []
   const f = (async (url: string, init: RequestInit) => { sent.push({ url, body: JSON.parse(String(init.body)) }); return new Response('ok') }) as unknown as typeof fetch
-  const rec = (where: string) => toRecord(new Error('x'), { source: 'route', where, tenantId: 't1' })
+  const rec = (where: string) => toRecord(new Error('x'), { source: 'route', where, tenantId: TA })
   makeAlertHook({ fetchImpl: f })(rec('/a'))
   makeAlertHook({ url: 'http://hooks.example.test/x', fetchImpl: f })(rec('/a'))
   await new Promise(r => setImmediate(r))
@@ -87,7 +128,7 @@ test('alert hook: off without an https URL; one alert per fingerprint per window
   await new Promise(r => setImmediate(r))
   assert.deepEqual(sent.map(s => s.body.where), ['/a', '/b'], 'repeat of /a throttled, /c over the cap')
   assert.equal(sent[0].url, 'https://hooks.example.test/x')
-  assert.equal(sent[0].body.tenant, 't1')
+  assert.equal(sent[0].body.tenant, TA)
   now = 1000
   hook(rec('/a'))
   await new Promise(r => setImmediate(r))
@@ -107,17 +148,17 @@ test('request errors: the session cookie resolves to the tenant id; nothing else
   try {
     const looked: string[] = []
     const req = { path: '/api/leads/abc/confirm?email=jane@example.com', method: 'POST', headers: { cookie: 'dazl_session=tok123', 'x-forwarded-for': '203.0.113.7', authorization: 'Bearer secret' } }
-    await handleRequestError(new Error('boom'), req, { routePath: '/api/leads/[lead]/confirm', routeType: 'route' }, { tenantFor: async t => { looked.push(t); return 'tenant-a' } })
+    await handleRequestError(new Error('boom'), req, { routePath: '/api/leads/[lead]/confirm', routeType: 'route' }, { tenantFor: async t => { looked.push(t); return TA } })
     assert.deepEqual(looked, ['tok123'])
-    assert.equal(got[0].tenant, 'tenant-a')
+    assert.equal(got[0].tenant, TA)
     assert.equal(got[0].where, '/api/leads/[lead]/confirm')
     assert.equal(got[0].source, 'route')
     const s = JSON.stringify(got[0])
     for (const leak of ['tok123', 'jane', '203.0.113.7', 'secret']) assert.ok(!s.includes(leak), `${leak} leaked`)
 
-    // no route template: the path without its query; no cookie: no lookup
-    await handleRequestError(new Error('boom'), { ...req, headers: {} }, { routeType: 'render' }, { tenantFor: async () => { throw new Error('must not be called') } })
-    assert.equal(got[1].where, '/api/leads/abc/confirm')
+    // no route template: never the concrete path (its segments are caller data); no cookie: no lookup
+    await handleRequestError(new Error('boom'), { ...req, path: '/u/jane@example.com', headers: {} }, { routeType: 'render' }, { tenantFor: async () => { throw new Error('must not be called') } })
+    assert.equal(got[1].where, '[unknown-route]')
     assert.equal(got[1].tenant, null)
     assert.equal(got[1].source, 'render')
   } finally { restore() }
