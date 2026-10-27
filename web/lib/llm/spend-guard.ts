@@ -22,7 +22,9 @@ export class SpendGuard {
   reservedUsd = 0
   calls = 0
   limitUsd: number
-  constructor(limitUsd: number) { this.limitUsd = limitUsd }
+  // Called after every reservation with the new total, so a job's reservation can be saved and a retry continue from it.
+  onReserve?: (reservedUsd: number) => void
+  constructor(limitUsd: number, alreadyReservedUsd = 0) { this.limitUsd = limitUsd; this.reservedUsd = Number.isFinite(alreadyReservedUsd) && alreadyReservedUsd > 0 ? alreadyReservedUsd : 0 }
   private cost(model: string | undefined, promptBytes: number, maxOut: number): number {
     const p = model ? PRICES_USD_PER_M[model] : undefined
     if (!p) throw new SpendRefused('model_unpriced')
@@ -34,6 +36,7 @@ export class SpendGuard {
   reserve(model: string | undefined, promptBytes: number, maxOut: number): void {
     this.check(model, promptBytes, maxOut)
     this.reservedUsd += this.cost(model, promptBytes, maxOut); this.calls++
+    try { this.onReserve?.(this.reservedUsd) } catch { /* saving the reservation never changes what is allowed */ }
   }
 }
 

@@ -38,7 +38,7 @@ import { findPeople } from '../people/people-search.ts'
 import { parseWindowDays, splitByWindow } from './window.ts'
 import { applyBuyerFitGate } from './buyer-fit.ts'
 
-export interface Job { id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string; seller?: string | null; watch_id?: string | null; csv_domain?: string | null; run_budget?: string | null }
+export interface Job { spend_reserved_usd?: number | null; id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string; seller?: string | null; watch_id?: string | null; csv_domain?: string | null; run_budget?: string | null }
 export interface LeadDraft extends Candidate {}
 // The producing channel, known from the job row at write time. Monitor runs reuse query
 // jobs, so monitors stamp their kind when the run is recorded (see monitors.ts).
@@ -329,7 +329,7 @@ export function claimKeyedJob(db: Database.Database, jobId?: string, excludeTena
   return db.transaction(() => {
     const row = db
       .prepare(
-        `SELECT id, user_id, business_name, industry, location, attempts, query, icp, sources, funded_by, watch_id, csv_domain, run_budget FROM scan_jobs
+        `SELECT id, user_id, business_name, industry, location, attempts, query, icp, sources, funded_by, watch_id, csv_domain, run_budget, spend_reserved_usd FROM scan_jobs
          WHERE status = 'pending' ${jobId ? 'AND id = ?' : ''}
            AND (user_id IN (SELECT tenant_id FROM tenant_llm_keys) OR funded_by = 'trial')
            ${excl}
@@ -673,7 +673,11 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
   try {
     const jobMax = job.csv_domain ? null : parseRunBudget(job.run_budget)?.max_usd ?? null
     const ownerMax = job.csv_domain ? null : ownerMaxUsd(job.user_id)
-    const spendGuards = [...(jobMax !== null ? [new SpendGuard(jobMax)] : []), ...(ownerMax !== null ? [ownerPool(job.user_id, ownerMax)] : [])]
+    // The job's guard starts from what this job already reserved (saved per call), so a retry, a re-claimed attempt or a
+    // restart cannot spend the limit again. The owner pool is in memory only and starts empty after a restart.
+    const jobGuard = jobMax !== null ? new SpendGuard(jobMax, job.spend_reserved_usd ?? 0) : null
+    if (jobGuard) jobGuard.onReserve = usd => { db.prepare('UPDATE scan_jobs SET spend_reserved_usd = ? WHERE id = ? AND user_id = ? AND attempts = ?').run(usd, job.id, job.user_id, job.attempts) }
+    const spendGuards = [...(jobGuard ? [jobGuard] : []), ...(ownerMax !== null ? [ownerPool(job.user_id, ownerMax)] : [])]
     const spendLimit = spendGuards.length ? 1 : null
     // Every model request of this run is counted at the provider boundary (model-usage.ts), inside the spend guard so a
     // refused request is not recorded as sent. Behaviour is unchanged: same calls, same text, same errors.
@@ -681,6 +685,9 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     const baseProviders = { ...rawProviders, [vendor]: meterProvider(rawProviders[vendor], c => ledger.model(c)) } as Record<Vendor, Provider>
     const providers_ = spendLimit === null ? baseProviders : { ...baseProviders, [vendor]: guardProvider(baseProviders[vendor], spendGuards, vendor === 'anthropic' ? anthropicCountTokens : undefined) }
     if (spendLimit !== null) deps = { ...deps, creditEnrichment: false } // a budgeted run adds no other paid enrichment
+    // Narrowing flags of a query job's own budget (paid_fallback / credit_enrichment / judge = false). They only ever switch a paid
+    // surface off; before this the query path honoured max_usd but ignored the flags.
+    if (!job.csv_domain) deps = budgetDeps(deps, parseRunBudget(job.run_budget))
     if (job.csv_domain) return await runCompanyJob(db, job, providers_[vendor], vendor, key, budgetDeps(deps, parseRunBudget(job.run_budget)), ledger)
     let prompt = buildPrompt(job)
     let icpForSources: Icp | null = null
@@ -748,6 +755,8 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       if (leads && leads.length === 0) leads = null
     }
     if (!leads) {
+      // paid_fallback=false: stop honestly as a budget stop (not "nothing found") instead of web-search research.
+      if (deps.paidFallback === false) { finish(db, job, 'failed', 'budget_stopped', null, 0, ledger); return 'failed' }
       ledger.record(`search:${vendor}`, 'started')
       assertOwned(db, job)
       const res = await providers_[vendor].research(key, prompt, deps.fetchImpl)

@@ -46,6 +46,15 @@ Updated by the builder on every branch. Newest first.
   removed unless the request names them. (5) The query prompt states the user's window and prefers dated, readable
   sources. Not verified live: whether this raises yield.
 
+- b/scan-cost-control (per-run cost control on POST /api/scan; fixtures only, no live run): optional `budget` ({max_usd,
+  paid_fallback:false, credit_enrichment:false, judge:false}) validated before anything is queued (invalid -> 400
+  `invalid_budget`, no job), saved with the job in the same insert, and answered with the exact paid surfaces allowed,
+  refused or not covered. max_usd is a reservation limit computed from what dazl sends, not a bill or a vendor-guaranteed
+  ceiling; web-search research is refused under it (not the same search behaviour as an ordinary scan). The narrowing flags
+  now also apply to query jobs (they were ignored outside CSV jobs). The job's reservation is saved per call and survives a
+  re-run of that job; the per-owner pool is in memory and resets on restart. A budget stop shows as budget_stopped, not as
+  "nothing found". The web form does not send a budget yet (API only).
+
 ## In progress (interactive Claude session, do not duplicate)
 
 - Blocked-source verification: waits for #188 data from a live run.
