@@ -83,10 +83,11 @@ export default function RepliesClient() {
   const anyPlatform = state.platforms.reddit || state.platforms.x
   return (
     <main className="p-6 md:p-10 max-w-4xl">
-      <h1 className="text-2xl font-semibold mb-1">Thread replies</h1>
+      <h1 className="text-2xl font-semibold mb-1">Social opportunities</h1>
       <p className="text-[#555] text-sm mb-6">
         Fresh Reddit and X threads that mention your searches and look like questions. Not every match is your buyer - review each one and decide. Replies are drafted on your own AI key.
         dazl never posts: you review the reply, edit it, then copy it and post it yourself from your own account.
+        Email replies to your outreach are in <a className="underline" href="/app/inbox">Inbox</a>.
       </p>
 
       {!anyPlatform && (
