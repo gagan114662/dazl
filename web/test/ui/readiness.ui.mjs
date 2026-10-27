@@ -9,7 +9,7 @@
 //   3. after each inline fix the row turns done from re-read server state;
 //   4. "Your plays" lists own searches newest first with their outcome, linked to their leads: source-checked and
 //      needs-review counts separately (a done search with 0 verified / 5 needing review never reads "5 leads"), old
-//      records without counts say "checks not recorded", cancelled runs say "cancelled".
+//      records without counts say "counts unavailable" (never leads), cancelled runs say "cancelled".
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -85,9 +85,9 @@ try {
     'Orthodontists in Austinfailed',
     'Clinic administrators in NYC - hiring front-desk staff0 source-checked, 5 need your review',
     'Dental practice owners in Ohio - opened a new location2 source-checked, 1 needs your review',
-    'Old search from before the counts3 leads, checks not recorded',
+    'Old search from before the counts' + 'counts unavailable',
   ])
-  assert.doesNotMatch(await page.getByRole('list', { name: 'Your plays' }).textContent(), /\b5 leads\b/, 'research-only leads are never shown as yield')
+  assert.doesNotMatch(await page.getByRole('list', { name: 'Your plays' }).textContent(), /\bleads?\b/, 'no play is reported as leads: only checked / to-review counts, or counts unavailable')
   assert.equal(await plays.nth(2).getByRole('link').getAttribute('href'), `/app/leads?job_id=${'b'.repeat(24)}`)
 
   // Inline fixes; each row turns done from re-read state.
