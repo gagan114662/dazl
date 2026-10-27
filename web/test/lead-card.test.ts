@@ -40,3 +40,47 @@ test('Approve is offered only when every existing draft condition holds', () => 
   assert.match(blocked({ currentness_held: true })!, /timing is unknown/)
   assert.equal(blocked({ confidence: null, human_confirmed_at: 1700000000 }), null, 'a lead you confirmed can be approved')
 })
+
+// Instinct #231: the compact card must never present an unconfirmed contact as the company's established contact.
+type Row = NonNullable<CardLead['enrichments']>[number]
+const dom = (site: string, token: string, url = 'https://news.example/bright'): Row => ({ connector: 'sitecrawl', kind: 'domain', value: `${site}|${token}`, label: `domain-basis-v1:${token}`, source_url: url })
+const dana: Row = { connector: 'sitecrawl', kind: 'person', value: 'Dana Smith, Practice owner', label: 'x', source_url: 'https://name-guessed.example/team' }
+const crawled = (e: string): Row => ({ connector: 'sitecrawl', kind: 'email', value: e, label: null, source_url: 'https://name-guessed.example/contact' })
+const status = (over: Partial<CardLead>) => leadCardSummary({ ...base, ...over }, 'Practice owner').contactStatus
+
+test("Instinct's repro: name-guessed website, crawled address and a listed person read as unconfirmed beside the contact", () => {
+  const s = leadCardSummary({ ...base, contact: 'hello@name-guessed.example', company_domain: null, enrichments: [dom('name-guessed.example', 'name_probe', 'https://name-guessed.example/'), crawled('hello@name-guessed.example'), dana] }, 'Practice owner')
+  assert.match(s.contact!, /Dana Smith, Practice owner/)
+  assert.equal(s.contactStatus!.confirmed, false)
+  assert.match(s.contactStatus!.text, /^Unconfirmed - name match only: name-guessed\.example: found by name search, not linked from the source\./)
+  assert.match(s.contactStatus!.text, /Role as listed; current role not verified\./)
+  assert.equal(s.approve.ok, false, 'drafting stays blocked')
+})
+
+test('conflicting websites: unconfirmed, names the competing sites', () => {
+  const st = status({ contact: 'hello@a-dental.example', enrichments: [dom('a-dental.example', 'name_probe'), dom('b-dental.example', 'evidence_link_domain_label'), crawled('hello@a-dental.example')] })!
+  assert.equal(st.confirmed, false)
+  assert.match(st.text, /several websites recorded \(a-dental\.example, b-dental\.example\); which one is theirs is not settled/)
+})
+
+test('people with past or assistant titles are not shown as the buyer', () => {
+  const former: Row = { ...dana, value: 'Pat Lee, Former practice owner' }
+  const s = leadCardSummary({ ...base, enrichments: [dom('brightdental.example', 'evidence_own_domain', base.source_url), former] }, 'Practice owner')
+  assert.doesNotMatch(s.contact!, /Pat Lee/)
+  assert.match(s.contactStatus!.text, /Listed people have past, negated or assistant titles; no current buyer named\./)
+})
+
+test('a restricted-purpose inbox is labelled, never treated as a sales contact', () => {
+  const st = status({ contact: 'privacy@brightdental.example' })!
+  assert.equal(st.confirmed, false)
+  assert.match(st.text, /Restricted inbox \(privacy\): not a sales contact\./)
+})
+
+test('quarantined: never reads as an established contact', () => {
+  assert.deepEqual(status({ quarantined_at: 1 }), { confirmed: false, text: 'Quarantined or rejected: do not contact.' })
+})
+
+test('address printed on the cited page reads as confirmed, with its basis', () => {
+  assert.deepEqual(status({}), { confirmed: true, text: 'Confirmed: address printed on the cited page.' })
+  assert.equal(status({ contact: null }), null)
+})

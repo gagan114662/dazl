@@ -60,6 +60,23 @@ function identityOf(l: CardLead, rows: NonNullable<CardLead['enrichments']>): Id
   return { text: `${site}: ${BASIS_TEXT[b.kind]}`, state: 'unconfirmed', site }
 }
 
+// How far the card's contact is established, for the compact lead card: the same identity facts the opportunity card
+// uses (identityOf, the cited-email rule, domainReviewFor), reduced to a state and one plain line. Nothing is upgraded:
+// anything short of the cited page, the site's own page, or the user's own website check reads as unconfirmed.
+export type ContactIdentity = { state: 'cited' | 'fact' | 'user_confirmed' | 'unconfirmed' | 'conflict' | 'none'; text: string }
+export function contactIdentity(l: CardLead): ContactIdentity {
+  const rows = l.enrichments ?? []
+  const ident = identityOf(l, rows)
+  const pc = publishedContact({ contact: l.contact, source_url: l.source_url, evidence_excerpt: l.evidence_excerpt, enrichments: rows })
+  const review = domainReviewFor({ id: l.id ?? '', contact: l.contact }, rows)
+  if (PUBLISHED_EMAIL_RE.test((l.contact ?? '').trim().toLowerCase()) && pc?.source === 'lead' && review.state !== 'required') return { state: 'cited', text: 'address printed on the cited page' }
+  if (ident?.state === 'conflict') return { state: 'conflict', text: ident.text }
+  if (!ident) return { state: 'none', text: "the company's own website was not identified" }
+  if (ident.state === 'user_confirmed') return { state: 'user_confirmed', text: ident.text }
+  if (ident.state === 'fact' && review.state !== 'required') return { state: 'fact', text: ident.text }
+  return { state: 'unconfirmed', text: review.state === 'required' && ident.state === 'fact' ? `${ident.site}: you have not confirmed this website` : ident.text }
+}
+
 export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Date()): OpportunityCard {
   const rows = l.enrichments ?? []
   const match = parseMatch(l.icp_match)

@@ -239,8 +239,17 @@ export default function LeadsClient() {
   }
   // Approve on the card = the existing Draft email action: it creates a draft for review in Outreach and never sends.
   // The server (createDraft) re-checks every identity, quote, date and contact gate.
-  const approveLead = (leadId: string) => makeDraft(leadId)
-  async function makeDraft(leadId: string) {
+  // In flight: one request per click burst; after a failure the button comes back so the user can retry.
+  const [approving, setApproving] = useState<Record<string, boolean>>({})
+  const [approved, setApproved] = useState<Record<string, boolean>>({})
+  const approvingRef = useRef<Set<string>>(new Set())
+  async function approveLead(leadId: string) {
+    if (approvingRef.current.has(leadId)) return
+    approvingRef.current.add(leadId); setApproving(a => ({ ...a, [leadId]: true }))
+    try { if (await makeDraft(leadId)) setApproved(a => ({ ...a, [leadId]: true })) }
+    finally { approvingRef.current.delete(leadId); setApproving(a => ({ ...a, [leadId]: false })) }
+  }
+  async function makeDraft(leadId: string): Promise<boolean> {
     // Network failure or a non-JSON body (proxy page, server error) must still show a message, never an unhandled rejection.
     let ok = false
     let message = 'Could not create the draft'
@@ -251,6 +260,7 @@ export default function LeadsClient() {
       if (!ok && typeof j?.error === 'string' && j.error) message = j.error
     } catch { /* offline or aborted: keep the fixed message */ }
     setDrafted(d => ({ ...d, [leadId]: ok ? 'Draft created from the free template. Review it in Outreach - the AI rewrite there is a separate click that uses your key.' : message }))
+    return ok
   }
 
   async function preview(e: React.FormEvent) {
@@ -641,9 +651,10 @@ export default function LeadsClient() {
                   <div className="min-w-0">
                     <div className="font-medium">{l.company_domain ? <a className="underline decoration-black/30" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{c.company}</a> : c.company}{!!l.watch_new && <span className="ml-2 text-[10px] uppercase tracking-wide text-[#111] border border-black/30 px-1 py-0.5">new</span>}</div>
                     <div className="text-[#555] text-xs">{c.contact ?? 'No contact found yet'}</div>
+                    {c.contactStatus && <div data-testid="contact-status" className={`text-xs ${c.contactStatus.confirmed ? 'text-[#555]' : 'text-[#111] font-medium border-l-2 border-black pl-2 mt-0.5'}`}>{c.contactStatus.text}</div>}
                   </div>
                   {!l.quarantined_at && <div className="flex gap-2 shrink-0">
-                    <button onClick={() => approveLead(l.id)} disabled={!c.approve.ok || !!drafted[l.id]} title={c.approve.ok ? 'Creates a draft for you to review in Outreach. Nothing is sent.' : c.approve.reason} className="btn-primary text-xs px-3 py-1.5">Approve</button>
+                    <button onClick={() => approveLead(l.id)} disabled={!c.approve.ok || !!approving[l.id] || !!approved[l.id]} title={c.approve.ok ? 'Creates a draft for you to review in Outreach. Nothing is sent.' : c.approve.reason} className="btn-primary text-xs px-3 py-1.5">Approve</button>
                     <button onClick={() => quarantine(l.id, false, REJECT_REASON)} className="btn-ghost text-xs px-3 py-1.5">Reject</button>
                   </div>}
                 </div>
@@ -777,7 +788,7 @@ export default function LeadsClient() {
                 {draftTo && domainReviewFor(l, l.enrichments).state !== 'required' && (l.confidence !== null || l.human_confirmed_at !== null) && !(l.fit === 0 && l.intent === null) && (
                   drafted[l.id]
                     ? <span className="text-gray-400 text-xs ml-3">{drafted[l.id]}</span>
-                    : l.currentness_held ? <button onClick={()=>confirmReview(l.id)} className="font-mono text-xs border border-black px-2 py-1">I reviewed the source - use for drafting (not consent)</button> : <button onClick={() => makeDraft(l.id)} className="font-mono text-xs uppercase border border-black px-2 py-1 ml-3 hover:bg-black hover:text-white">Draft email</button>)}
+                    : l.currentness_held ? <button onClick={()=>confirmReview(l.id)} className="font-mono text-xs border border-black px-2 py-1">I reviewed the source - use for drafting (not consent)</button> : <button onClick={() => void approveLead(l.id)} className="font-mono text-xs uppercase border border-black px-2 py-1 ml-3 hover:bg-black hover:text-white">Draft email</button>)}
               </>
             })()}
             {crmOn && (pushed[l.id]
