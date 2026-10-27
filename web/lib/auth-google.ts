@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, createVerify, randomBytes, timingSafeEqual } from 'node:crypto'
 import type Database from 'better-sqlite3'
-import type { Db } from './db/client.ts'
+import type { Db, TxBody } from './db/client.ts'
 
 // Sign in with Google: authorization code + PKCE + state + nonce, identity only
 // (openid email profile). The ID token is checked here before anyone is signed in.
@@ -119,21 +119,21 @@ export async function resolveUser(db: Db, id: GoogleIdentity): Promise<Resolved>
   class RaceLost extends Error {}
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      return await db.tx(async (t): Promise<Resolved> => {
+      return await db.tx(function* (t): TxBody<Resolved> {
         const identity = () => t.get<{ user_id: string }>("SELECT user_id FROM oauth_identities WHERE provider='google' AND subject = ?", [id.sub])
-        const hit = await identity()
+        const hit = yield* identity()
         if (hit) return { user_id: hit.user_id, created: false }
-        if (await t.get('SELECT 1 AS x FROM users WHERE email = ?', [id.email])) {
+        if (yield* t.get('SELECT 1 AS x FROM users WHERE email = ?', [id.email])) {
           // On PG each statement sees the latest commit: a concurrent sign-in for this same identity may have committed
           // its user and identity between the two reads above. Look again before calling the email someone else's.
-          const late = await identity()
+          const late = yield* identity()
           return late ? { user_id: late.user_id, created: false } : { error: 'email_exists' }
         }
         const uid = randomBytes(16).toString('hex')
-        const u = await t.run('INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (email) DO NOTHING',
+        const u = yield* t.run('INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (email) DO NOTHING',
           [uid, id.email, id.name, '', randomBytes(64).toString('hex'), randomBytes(16).toString('hex')])
         if (u.changes !== 1) throw new RaceLost()
-        const o = await t.run("INSERT INTO oauth_identities (provider, subject, user_id) VALUES ('google', ?, ?) ON CONFLICT (provider, subject) DO NOTHING", [id.sub, uid])
+        const o = yield* t.run("INSERT INTO oauth_identities (provider, subject, user_id) VALUES ('google', ?, ?) ON CONFLICT (provider, subject) DO NOTHING", [id.sub, uid])
         if (o.changes !== 1) throw new RaceLost()
         return { user_id: uid, created: true }
       })

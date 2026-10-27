@@ -17,14 +17,44 @@ export interface Db {
   all<T = Record<string, unknown>>(sql: string, params?: Param[]): Promise<T[]>
   get<T = Record<string, unknown>>(sql: string, params?: Param[]): Promise<T | undefined>
   run(sql: string, params?: Param[]): Promise<RunResult>
-  // Runs fn inside one transaction on one connection: commit when fn resolves, roll back when it throws.
-  // SQLite takes the write lock up front (BEGIN IMMEDIATE), matching the existing .immediate() claims.
-  // The Db given to fn is revoked when fn settles: any later call on it rejects and never reaches the connection.
-  // If any statement inside fails, even one fn caught, the transaction rolls back and tx rejects (PG has already
-  // aborted it; SQLite does the same so both engines behave alike).
-  // Inside fn use only the Db it is given: on SQLite a call on the outer Db waits for the transaction to end (deadlock).
-  tx<T>(fn: (db: Db) => Promise<T>): Promise<T>
+  // Runs body as one transaction. body is a generator that yields statements through `t` and cannot await anything
+  // else, so a transaction can never pause for unrelated work:
+  //   await db.tx(function* (t) { const r = yield* t.get<Row>('SELECT …', [id]); yield* t.run('UPDATE …', [id]); return r })
+  // SQLite drives it synchronously inside one better-sqlite3 IMMEDIATE transaction: nothing else in the process runs
+  // until it commits or rolls back, so code still on the raw handle never sees or joins a half-done transaction.
+  // PG drives it on one pooled client between BEGIN and COMMIT.
+  // Commit when body returns; roll back when body throws or any statement fails (a failed statement always fails the
+  // transaction on both engines, as PG has already aborted it).
+  tx<T>(body: (t: Tx) => TxBody<T>): Promise<T>
   close(): Promise<void>
+}
+
+// A statement a tx body yields; `t` builds them so `yield*` returns a typed result.
+export interface TxOp { op: 'all' | 'get' | 'run'; sql: string; params: Param[] }
+export type TxBody<T> = Generator<TxOp, T, unknown>
+export interface Tx {
+  readonly kind: 'sqlite' | 'pg'
+  all<T = Record<string, unknown>>(sql: string, params?: Param[]): TxBody<T[]>
+  get<T = Record<string, unknown>>(sql: string, params?: Param[]): TxBody<T | undefined>
+  run(sql: string, params?: Param[]): TxBody<RunResult>
+}
+
+// A body that yields anything but a statement (say `yield somePromise`) is a bug: refuse it rather than guess.
+function asOp(v: unknown): TxOp {
+  const o = v as Partial<TxOp> | null
+  if (!o || (o.op !== 'all' && o.op !== 'get' && o.op !== 'run') || typeof o.sql !== 'string' || !Array.isArray(o.params)) {
+    throw new TypeError('a tx body may only yield statements built by its Tx (yield* t.get/all/run), never promises or other values')
+  }
+  return o as TxOp
+}
+
+function txBuilder(kind: Db['kind']): Tx {
+  return {
+    kind,
+    *all<T>(sql: string, params: Param[] = []): TxBody<T[]> { return (yield { op: 'all', sql, params }) as T[] },
+    *get<T>(sql: string, params: Param[] = []): TxBody<T | undefined> { return (yield { op: 'get', sql, params }) as T | undefined },
+    *run(sql: string, params: Param[] = []): TxBody<RunResult> { return (yield { op: 'run', sql, params }) as RunResult },
+  }
 }
 
 export function checkParams(params: readonly unknown[]): Param[] {
@@ -120,123 +150,45 @@ function scanQuoted(sql: string, start: number, q: string, backslash: boolean): 
 
 // ---- transactions ----
 
-type Ops = { all: Db['all']; get: Db['get']; run: Db['run'] }
-
-// The Db a tx callback receives. It records every statement it runs; end() revokes it (later calls reject without
-// touching the connection), waits for statements still in flight, and reports whether any of them failed.
-function txHandle(kind: Db['kind'], ops: Ops): { db: Db; end(): Promise<unknown> } {
-  let open = true
-  let failure: unknown = null
-  const pending = new Set<Promise<unknown>>()
-  const call = <R>(f: () => Promise<R>): Promise<R> => {
-    if (!open) return Promise.reject(new Error('transaction is over: this Db was revoked when its tx callback settled'))
-    const p = f()
-    pending.add(p)
-    p.then(() => pending.delete(p), e => { pending.delete(p); failure ??= e })
-    return p
-  }
-  return {
-    db: {
-      kind,
-      all: (s, p) => call(() => ops.all(s, p)),
-      get: (s, p) => call(() => ops.get(s, p)),
-      run: (s, p) => call(() => ops.run(s, p)),
-      tx: () => Promise.reject(new Error('nested transactions are not supported')),
-      close: () => Promise.reject(new Error('close the outer Db, not a transaction')),
-    },
-    async end() {
-      open = false
-      await Promise.allSettled([...pending])
-      return failure
-    },
-  }
-}
-
-class StatementFailedInTx extends Error {
+export class StatementFailedInTx extends Error {
   constructor(cause: unknown) { super(`a statement failed inside the transaction, so it was rolled back: ${cause instanceof Error ? cause.message : String(cause)}`, { cause }) }
 }
 
+type Ops = { all: Db['all']; get: Db['get']; run: Db['run'] }
+
 // ---- SQLite ----
 
-// While SQLite is the store, ported modules (Db) and unported ones (raw better-sqlite3) share one connection. A raw
-// statement that ran while a Db transaction is open would silently join it, and be lost if it rolls back. So while a
-// Db transaction is open on a handle, every raw statement or exec on that handle throws instead. Statements the adapter
-// itself prepares are exempt. Tx callbacks that only await Db calls never yield to the event loop on SQLite (each call
-// resolves as a microtask), so other requests cannot run inside them; the guard turns any exception to that into a
-// loud error rather than a cross-transaction write.
-export class RawSqliteDuringTx extends Error {
-  constructor() { super('raw SQLite access while a Db transaction is open on this connection; use the Db passed to tx, or move the work outside the transaction') }
-}
-const txOpen = new WeakSet<Database.Database>()
-const adapterStatements = new WeakSet<object>()
-let rawExec: ((this: Database.Database, sql: string) => Database.Database) | null = null
-function installRawGuard(handle: Database.Database): void {
-  if (rawExec) return
-  const S = Object.getPrototypeOf(handle.prepare('SELECT 1')) as Record<string, (...a: unknown[]) => unknown>
-  for (const m of ['run', 'get', 'all', 'iterate']) {
-    const orig = S[m]
-    S[m] = function (this: { database: Database.Database }, ...a: unknown[]) {
-      if (txOpen.has(this.database) && !adapterStatements.has(this)) throw new RawSqliteDuringTx()
-      return orig.apply(this, a)
-    }
-  }
-  const D = Object.getPrototypeOf(handle) as { exec: (this: Database.Database, sql: string) => Database.Database }
-  const exec = D.exec
-  rawExec = exec
-  D.exec = function (this: Database.Database, sql: string) {
-    if (txOpen.has(this)) throw new RawSqliteDuringTx()
-    return exec.call(this, sql)
-  }
-}
-
-// One adapter per handle, so every Db over a connection shares the same gate.
-const adapters = new WeakMap<Database.Database, Db>()
-
-// better-sqlite3 is synchronous and has one connection, so an async transaction must hold the connection for its whole
-// life: statements from outside the transaction wait on `gate` until it ends instead of landing inside it.
 export function sqliteDb(handle: Database.Database): Db {
-  const existing = adapters.get(handle)
-  if (existing) return existing
-  installRawGuard(handle)
-  const exec = (sql: string) => rawExec!.call(handle, sql)
-  const prep = (sql: string) => { const st = handle.prepare(sql); adapterStatements.add(st); return st }
-  let gate: Promise<void> = Promise.resolve()
+  const exec = (o: TxOp): unknown => {
+    const st = handle.prepare(o.sql)
+    const p = checkParams(o.params)
+    return o.op === 'all' ? st.all(...p) : o.op === 'get' ? st.get(...p) : { changes: st.run(...p).changes }
+  }
+  const t = txBuilder('sqlite')
   const ops: Ops = {
-    all: async <T>(sql: string, params: Param[] = []) => prep(sql).all(...checkParams(params)) as T[],
-    get: async <T>(sql: string, params: Param[] = []) => prep(sql).get(...checkParams(params)) as T | undefined,
-    run: async (sql: string, params: Param[] = []) => ({ changes: prep(sql).run(...checkParams(params)).changes }),
+    all: async <T>(sql: string, params: Param[] = []) => exec({ op: 'all', sql, params }) as T[],
+    get: async <T>(sql: string, params: Param[] = []) => exec({ op: 'get', sql, params }) as T | undefined,
+    run: async (sql: string, params: Param[] = []) => exec({ op: 'run', sql, params }) as RunResult,
   }
-  const after = async <T>(f: () => Promise<T>): Promise<T> => { await gate; return f() }
-  const db: Db = {
+  return {
     kind: 'sqlite',
-    all: (s, p) => after(() => ops.all(s, p)),
-    get: (s, p) => after(() => ops.get(s, p)),
-    run: (s, p) => after(() => ops.run(s, p)),
-    async tx(fn) {
-      let release!: () => void
-      const prev = gate
-      gate = new Promise<void>(r => { release = r })
-      await prev
-      try {
-        exec('BEGIN IMMEDIATE')
-        txOpen.add(handle)
-        const h = txHandle('sqlite', ops)
-        let v
-        try { v = await fn(h.db) } catch (e) { await h.end(); exec('ROLLBACK'); throw e }
-        const failed = await h.end()
-        if (failed) { exec('ROLLBACK'); throw new StatementFailedInTx(failed) }
-        exec('COMMIT')
-        return v
-      } finally {
-        txOpen.delete(handle)
-        if (handle.inTransaction) exec('ROLLBACK')
-        release()
-      }
+    ...ops,
+    async tx(body) {
+      // Synchronous from BEGIN to COMMIT: the generator only ever waits on statements, which run immediately here.
+      return handle.transaction(() => {
+        const g = body(t)
+        let step = g.next()
+        while (!step.done) {
+          const o = asOp(step.value)
+          let v: unknown
+          try { v = exec(o) } catch (e) { throw new StatementFailedInTx(e) }
+          step = g.next(v)
+        }
+        return step.value
+      }).immediate()
     },
-    close: async () => { await gate; adapters.delete(handle); handle.close() },
+    close: async () => { handle.close() },
   }
-  adapters.set(handle, db)
-  return db
 }
 
 // ---- Postgres ----
@@ -279,22 +231,22 @@ export function pgDb(opts: PgOptions): Db & { pool: pg.Pool } {
     kind: 'pg',
     pool,
     all: ops.all, get: ops.get, run: ops.run,
-    async tx(fn) {
+    async tx(body) {
       const client = await pool.connect()
-      // The client goes back to the pool only after the handle is revoked and its statements have settled, so nothing
-      // from this transaction can run on the client's next borrower.
-      let h: ReturnType<typeof txHandle> | null = null
       try {
         await client.query('BEGIN')
-        h = txHandle('pg', pgOps(client))
-        let v
-        try { v = await fn(h.db) } catch (e) { await h.end(); throw e }
-        const failed = await h.end()
-        if (failed) throw new StatementFailedInTx(failed)
+        const run = pgOps(client)
+        const g = body(txBuilder('pg'))
+        let step = g.next()
+        while (!step.done) {
+          const o = asOp(step.value)
+          let v: unknown
+          try { v = await (o.op === 'all' ? run.all(o.sql, o.params) : o.op === 'get' ? run.get(o.sql, o.params) : run.run(o.sql, o.params)) } catch (e) { throw new StatementFailedInTx(e) }
+          step = g.next(v)
+        }
         await client.query('COMMIT')
-        return v
+        return step.value
       } catch (e) {
-        if (h) await h.end()
         await client.query('ROLLBACK').catch(() => {})
         throw e
       } finally { client.release() }

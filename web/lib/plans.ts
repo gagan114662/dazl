@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3'
-import type { Db } from './db/client.ts'
+import type { Db, Tx, TxBody } from './db/client.ts'
 
 // Plan limits are by scan count only (the tenant brings their own LLM key).
 export type PlanId = 'free' | 'pro'
@@ -34,8 +34,9 @@ export function setPlan(db: Database.Database, tenantId: string, plan: PlanId): 
   db.prepare('INSERT INTO tenant_plans (tenant_id, plan) VALUES (?, ?) ON CONFLICT(tenant_id) DO UPDATE SET plan = excluded.plan').run(tenantId, plan)
 }
 
-export async function writePlan(db: Db, tenantId: string, plan: PlanId): Promise<void> {
-  await db.run('INSERT INTO tenant_plans (tenant_id, plan) VALUES (?, ?) ON CONFLICT (tenant_id) DO UPDATE SET plan = excluded.plan', [tenantId, plan])
+// A transaction step: billing changes a plan only inside the transaction that records the Stripe event.
+export function* writePlan(t: Tx, tenantId: string, plan: PlanId): TxBody<void> {
+  yield* t.run('INSERT INTO tenant_plans (tenant_id, plan) VALUES (?, ?) ON CONFLICT (tenant_id) DO UPDATE SET plan = excluded.plan', [tenantId, plan])
 }
 
 export function monthStartS(now = new Date()): number {

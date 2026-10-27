@@ -88,10 +88,10 @@ test('baseline guards: append-only, immutable, delete-only-expired, status trans
   await assert.rejects(db.run("DELETE FROM lead_evidence_copies WHERE id = 'live'"), /retention period/)
   // An expired copy must really be deleted (a BEFORE DELETE trigger returning NULL would silently skip it).
   assert.deepEqual(await db.run("DELETE FROM lead_evidence_copies WHERE id = 'old'"), { changes: 1 })
-  await db.tx(async t => {
-    await t.run("INSERT INTO evidence_purge_gate (tenant_id) VALUES ('t1')")
-    assert.deepEqual(await t.run("DELETE FROM lead_evidence_copies WHERE id = 'live'"), { changes: 1 })
-    await t.run("DELETE FROM evidence_purge_gate WHERE tenant_id = 't1'")
+  await db.tx(function* (t) {
+    yield* t.run("INSERT INTO evidence_purge_gate (tenant_id) VALUES ('t1')")
+    assert.deepEqual(yield* t.run("DELETE FROM lead_evidence_copies WHERE id = 'live'"), { changes: 1 })
+    yield* t.run("DELETE FROM evidence_purge_gate WHERE tenant_id = 't1'")
   })
   // title limit is bytes, as in SQLite: 400 three-byte characters are 1200 bytes
   await assert.rejects(db.run(
