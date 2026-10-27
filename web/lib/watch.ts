@@ -26,6 +26,8 @@ export function migrateWatch(db: Database.Database): void {
     paused_reason TEXT,
     created_at  INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
   )`)
+  // Optional per-run budget (lib/scan/run-budget.ts), applied to EACH weekly run's job. It bounds one run, not the watch in total.
+  if (!(db.prepare('PRAGMA table_info(watches)').all() as { name: string }[]).some(c => c.name === 'run_budget')) db.exec('ALTER TABLE watches ADD COLUMN run_budget TEXT')
   db.exec('CREATE INDEX IF NOT EXISTS watches_due ON watches (active, next_run_at)')
   db.exec(`CREATE TABLE IF NOT EXISTS watch_seen (
     watch_id   TEXT NOT NULL REFERENCES watches(id) ON DELETE CASCADE,
@@ -35,15 +37,15 @@ export function migrateWatch(db: Database.Database): void {
   )`)
 }
 
-export interface Watch { id: string; user_id: string; query: string; icp: string; active: number; next_run_at: number; last_run_at: number | null; paused_reason: string | null; created_at: number }
+export interface Watch { run_budget?: string | null; id: string; user_id: string; query: string; icp: string; active: number; next_run_at: number; last_run_at: number | null; paused_reason: string | null; created_at: number }
 
-export function createWatch(db: Database.Database, userId: string, query: string, icp: string): { watch?: Watch; error?: string } {
+export function createWatch(db: Database.Database, userId: string, query: string, icp: string, runBudget: string | null = null): { watch?: Watch; error?: string } {
   const active = (db.prepare('SELECT count(*) AS n FROM watches WHERE user_id = ? AND active = 1').get(userId) as { n: number }).n
   if (active >= MAX_WATCHES) return { error: `You already have ${MAX_WATCHES} weekly watches. Pause or delete one first.` }
   const dupe = db.prepare('SELECT id FROM watches WHERE user_id = ? AND active = 1 AND query = ?').get(userId, query)
   if (dupe) return { error: 'You are already watching that search.' }
   const id = randomBytes(12).toString('hex')
-  db.prepare('INSERT INTO watches (id, user_id, query, icp, next_run_at) VALUES (?, ?, ?, ?, ?)').run(id, userId, query.slice(0, 600), icp, Math.floor(Date.now() / 1000) + WEEK_S)
+  db.prepare('INSERT INTO watches (id, user_id, query, icp, next_run_at, run_budget) VALUES (?, ?, ?, ?, ?, ?)').run(id, userId, query.slice(0, 600), icp, Math.floor(Date.now() / 1000) + WEEK_S, runBudget)
   return { watch: db.prepare('SELECT * FROM watches WHERE id = ?').get(id) as Watch }
 }
 
@@ -95,7 +97,7 @@ export function runDueWatches(db: Database.Database, now = Math.floor(Date.now()
     if (!scanQuota(db, w.user_id).allowed) { pause('quota_exceeded'); continue }
     const activeJobs = countActiveJobs(db, w.user_id)
     if (activeJobs > 0) continue // a scan is already going; the next tick picks this watch up
-    const jobId = createQueryJob(db, w.user_id, { query: w.query, icp: w.icp, watchId: w.id })
+    const jobId = createQueryJob(db, w.user_id, { query: w.query, icp: w.icp, watchId: w.id, runBudget: w.run_budget ?? null })
     db.prepare('UPDATE watches SET last_run_at = ?, next_run_at = ? WHERE id = ?').run(now, now + WEEK_S, w.id)
     void jobId
     ran++

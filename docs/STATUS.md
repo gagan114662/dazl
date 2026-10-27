@@ -67,6 +67,15 @@ Updated by the builder on every branch. Newest first.
   page can still pass the window gate: dated inside the user's window, then undated, then dated outside it (can never pass),
   login-walled last; search order breaks ties and nothing is dropped when there is room. Not verified live.
 
+- b/cost-bounds (cost-control gap after the deployed partial budget; fixtures only): for each path outside max_usd the
+  disclosure now says what actually bounds it. Profile generation: one call, <= 800 output tokens, about $0.0xx worst case
+  at the listed price (computed, unguarded). TinyFish search/fetch and the post-scan people search: bounded by COUNT (8
+  searches, 16 pages per scan, 200 units per tenant per day, <= 5 people searches; defaults), not dollars; TinyFish's own
+  pricing is unknown to dazl. A job that carries a budget no longer starts autopilot (its model drafting is outside the
+  budget). Weekly watches can carry a budget that bounds each weekly run (not the watch in total). Still NOT bounded: retries
+  and real billing below dazl, cache-token charges, reservations are estimates; the per-owner pool resets on restart; CSV
+  imports take the flags only. max_usd remains a reservation limit on guarded model requests, not a whole-scan dollar ceiling.
+
 ## In progress (interactive Claude session, do not duplicate)
 
 - Blocked-source verification: waits for #188 data from a live run.

@@ -8,6 +8,8 @@ import { migrateScan } from '../../lib/scan/store.ts'
 import { migrateKeys, saveKey } from '../../lib/llm/key-store.ts'
 import { migratePlans } from '../../lib/plans.ts'
 import { POST } from '../../app/api/scan/route.ts'
+import { POST as WATCH_POST } from '../../app/api/watch/route.ts'
+import { migrateWatch } from '../../lib/watch.ts'
 
 // Real POST /api/scan handler, in-memory db, network fenced, runner never started (after() is captured and not flushed).
 process.env.DAZL_MASTER_KEY = randomBytes(32).toString('base64')
@@ -41,7 +43,7 @@ test('valid budget: persisted with the job in the same insert, and answered with
   assert.equal((j.budget as unknown as { scope: string }).scope, 'partial'); assert.ok((j.budget as unknown as { excluded_paths: string[] }).excluded_paths.some(x => /Profile generation/.test(x)) && (j.budget as unknown as { excluded_paths: string[] }).excluded_paths.some(x => /TinyFish/.test(x)) && (j.budget as unknown as { excluded_paths: string[] }).excluded_paths.some(x => /Autopilot/.test(x)))
   assert.equal(j.budget.bounded, true); assert.equal(j.budget.max_usd, 0.5); assert.match(j.budget.ceiling, /PARTIAL budget, not a whole-scan dollar ceiling/); assert.match(j.budget.ceiling, /Not a bill and not a vendor-enforced ceiling/)
   const st = Object.fromEntries(j.budget.surfaces.map(s => [s.surface, s.status]))
-  assert.deepEqual(st, { profile_generation: 'not_covered', search_query_writing: 'allowed', extraction: 'allowed', scoring: 'allowed', grounding: 'refused', buyer_fit: 'allowed', judge: 'off', fallback_research: 'refused', credit_enrichment: 'off', search_and_fetch: 'not_covered' })
+  assert.deepEqual(st, { profile_generation: 'not_covered', search_query_writing: 'allowed', extraction: 'allowed', scoring: 'allowed', grounding: 'refused', buyer_fit: 'allowed', judge: 'off', fallback_research: 'refused', credit_enrichment: 'off', search_and_fetch: 'not_covered', autopilot: 'off' })
   assert.ok(j.budget.limits.some(l => /budget stop, not zero results/.test(l)) && j.budget.limits.some(l => /resets when the process restarts/.test(l)))
 })
 
@@ -58,4 +60,19 @@ test('a legacy (non-query) request also persists a supplied budget', async () =>
   const db = setup()
   as(db); const r = await post({ business_name: 'Acme', industry: 'roofing', location: 'Toronto', budget: { paid_fallback: false } })
   assert.equal(r.status, 202); assert.deepEqual(JSON.parse(rows(db)[0].run_budget!), { paid_fallback: false })
+})
+
+const ICP_JSON = { summary: 'Dental practices', who: ['Practice owner'], industries: [], sizes: [], where: ['Toronto'], signals: [], exclude: [] }
+const wpost = (body: unknown) => WATCH_POST(new NextRequest('http://localhost/api/watch', { method: 'POST', headers: { 'content-type': 'application/json', host: 'localhost' }, body: JSON.stringify(body) }))
+test('POST /api/watch: a supplied budget is validated like the scan route and saved on the watch; none = unbounded as before', async () => {
+  const db = setup(); migrateWatch(db)
+  const wrow = () => db.prepare('SELECT run_budget FROM watches').all() as { run_budget: string | null }[]
+  for (const bad of [null, {}, { max_usd: -1 }, { judge: true }, { nope: false }]) {
+    as(db); const r = await wpost({ query: 'dental practices in Toronto hiring', icp: ICP_JSON, budget: bad }); const j = await r.json() as { error: string }
+    assert.equal(r.status, 400, JSON.stringify(bad)); assert.equal(j.error, 'invalid_budget')
+  }
+  assert.equal(wrow().length, 0, 'no watch is created for a rejected budget')
+  as(db); assert.equal((await wpost({ query: 'dental practices in Toronto hiring', icp: ICP_JSON, budget: { max_usd: 0.25, judge: false } })).status, 200)
+  as(db); assert.equal((await wpost({ query: 'dental practices in Ohio hiring', icp: ICP_JSON })).status, 200)
+  assert.deepEqual(wrow().map(w => w.run_budget === null ? null : JSON.parse(w.run_budget)), [{ max_usd: 0.25, judge: false }, null])
 })

@@ -656,7 +656,7 @@ function budgetDeps(deps: RunDeps, budget: RunBudget | null): RunDeps {
 
 export interface RunDeps {
   // newsHttp: the free news search's own HTTP (lib/search/news.ts), separate from the per-scan sources' sourceHttp.
-  sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; jobBudgetMs?: number; clock?: () => number }
+  autopilot?: typeof runAutopilot; sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; jobBudgetMs?: number; clock?: () => number }
 
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
   const ledger = new SourceRunLedger()
@@ -964,7 +964,8 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       } catch (e) { console.error('buyer-fit gate failed', e instanceof Error ? e.message : 'error') }
     }
     // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.
-    try { await runAutopilot(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
+    // A job that carries a budget never starts autopilot: its model drafting and sends are outside the budget (run-budget.ts).
+    if (!parseRunBudget(job.run_budget)) try { await (deps.autopilot ?? runAutopilot)(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
     return 'done'
     } finally { ledger.flushModelCalls(db, job.id, job.attempts) }
   } catch (e) {

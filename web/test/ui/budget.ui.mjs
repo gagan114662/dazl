@@ -67,6 +67,7 @@ async function open(scanReply) {
   const text = await disc.innerText()
   assert.match(text, /PARTIAL budget, not a whole-scan dollar ceiling/); assert.match(text, /Not a bill and not a vendor-enforced ceiling/)
   assert.match(text, /Not covered by this limit/); assert.match(text, /Profile generation/); assert.match(text, /TinyFish search and fetch/); assert.match(text, /Autopilot and every outreach action/)
+  assert.match(text, /worst case at the listed price/); assert.match(text, /bounded by COUNT, not dollars/); assert.match(text, /does NOT start autopilot/); assert.match(text, /NOT BOUNDED AT ALL: retries below dazl/)
   assert.match(text, /fallback research: refused/); assert.match(text, /judge: off/)
   assert.equal(posts.length, 0, 'the disclosure was on the page before anything was sent')
   for (const b of await run.all()) assert.equal(await b.isDisabled(), false)
