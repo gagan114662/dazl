@@ -136,3 +136,14 @@ test('parse: one role, one employer; trailing mentions of the company never atta
   assert.deepEqual(parseProfileHit(hit(u, 'Jane Doe - HR Manager - Acme Logistics Inc. | LinkedIn'), 'Acme Logistics'), { name: 'Jane Doe', title: 'HR Manager' })
   assert.deepEqual(parseProfileHit(hit(u, 'Jane Doe - HR Manager at Acme Logistics | LinkedIn'), 'Acme Logistics'), { name: 'Jane Doe', title: 'HR Manager' })
 })
+
+test('New York City request: a profile result in Rome, NY is not attached; the New York, NY one is', async () => {
+  const icp = { ...ICP, where: ['New York, NY'] }
+  const { db, job } = setup(icp)
+  const f = (async () => new Response(JSON.stringify({ results: [
+    { url: 'https://www.linkedin.com/in/rome-rita', title: 'Rita Rome - Head of HR - Acme Logistics | LinkedIn', snippet: 'Rome, New York, United States' },
+    { url: 'https://www.linkedin.com/in/nyc-nick', title: 'Nick Nyc - Head of HR - Acme Logistics | LinkedIn', snippet: 'New York, New York, United States' },
+  ] }))) as unknown as typeof fetch
+  assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: f }), 1)
+  assert.deepEqual((db.prepare("SELECT value FROM lead_enrichments").all() as { value: string }[]).map(r => r.value), ['Nick Nyc, Head of HR'])
+})

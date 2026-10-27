@@ -2,7 +2,7 @@ import { lookup as dnsLookup } from 'node:dns'
 import https from 'node:https'
 import { isIP } from 'node:net'
 
-export interface Page { text: string; title: string; retrievedAt: number }
+export interface Page { text: string; title: string; retrievedAt: number; published?: string | null } // published: the page's OWN publication metadata (never modified/updated), YYYY-MM-DD
 
 // True only for addresses on the public internet. Everything private, loopback,
 // link-local, cloud-metadata, CGNAT, multicast or reserved is refused.
@@ -96,7 +96,25 @@ function decode(s: string): string {
     })
 }
 
-export function htmlToText(html: string): { text: string; title: string } {
+// The page's own publication date from its markup: schema.org datePublished / datePosted (JSON-LD or microdata), article:published_time,
+// <time datetime> marked published/pubdate. Modified/updated stamps are update times, not event days, and are never read.
+export function publishedDate(html: string): string | null {
+  const head = html.slice(0, 400_000)
+  const cands: string[] = []
+  for (const m of head.matchAll(/"(?:datePublished|datePosted)"\s*:\s*"([^"]{8,40})"/gi)) cands.push(m[1])
+  for (const m of head.matchAll(/<meta\b[^>]*?(?:property|name|itemprop)\s*=\s*["'](?:article:published_time|og:published_time|datePublished|datePosted|pubdate|publish[-_]date|date)["'][^>]*?content\s*=\s*["']([^"']{8,40})["']/gi)) cands.push(m[1])
+  for (const m of head.matchAll(/<meta\b[^>]*?content\s*=\s*["']([^"']{8,40})["'][^>]*?(?:property|name|itemprop)\s*=\s*["'](?:article:published_time|og:published_time|datePublished|datePosted|pubdate|publish[-_]date)["']/gi)) cands.push(m[1])
+  for (const m of head.matchAll(/<time\b[^>]*?(?:pubdate|itemprop\s*=\s*["']datePublished["']|class\s*=\s*["'][^"']*publish[^"']*["'])[^>]*?datetime\s*=\s*["']([^"']{8,40})["']/gi)) cands.push(m[1])
+  for (const m of head.matchAll(/<time\b[^>]*?datetime\s*=\s*["']([^"']{8,40})["'][^>]*?(?:pubdate|itemprop\s*=\s*["']datePublished["']|class\s*=\s*["'][^"']*publish[^"']*["'])/gi)) cands.push(m[1])
+  for (const c of cands) {
+    const d = /^(\d{4})-(\d{2})-(\d{2})/.exec(c.trim()); if (!d) continue
+    const y = +d[1], mo = +d[2], da = +d[3]
+    const t = new Date(Date.UTC(y, mo - 1, da)); if (y >= 2000 && y <= 2100 && t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === da) return t.toISOString().slice(0, 10)
+  }
+  return null
+}
+
+export function htmlToText(html: string): { text: string; title: string; published: string | null } {
   const title = decode(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? '')
   const text = decode(
     html
@@ -106,7 +124,7 @@ export function htmlToText(html: string): { text: string; title: string } {
   )
     .replace(/\s+/g, ' ')
     .trim()
-  return { text, title: title.replace(/\s+/g, ' ').trim().slice(0, 300) }
+  return { text, title: title.replace(/\s+/g, ' ').trim().slice(0, 300), published: publishedDate(html) }
 }
 
 export type FetchFail = { fail: 'blocked' | 'js_required' | 'not_found' | 'error' | 'refused' }

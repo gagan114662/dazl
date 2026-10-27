@@ -23,14 +23,32 @@ const Q = 'Dent Blanche is opening a second location on West 57th Street'
 const dayStr = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10)
 const cand = { name: '', company: 'Dent Blanche', contact: null, signal: 'second location', source_url: 'https://news.example/db', score: 70, excerpt: Q, event_date: dayStr(10) }
 const page = (extra: string) => async () => ({ text: `Posted ${dayStr(10)}. ${Q}. ${extra} ${'The practice welcomes families. '.repeat(10)}`, title: 'Dent Blanche expands', retrievedAt: 1 })
-test('verifier: a same-name practice in another state is NOT attached (location_mismatch); a page with no place is location_unconfirmed; the right place verifies; no geography changes nothing', async () => {
+test('verifier: a same-name practice in another state is NOT attached (location_mismatch); a page with no place is not rejected; the right place verifies; no geography changes nothing', async () => {
   const W = ['New York City']
   const wrong = await verifyLeads([cand], page('Visit us at 8500 Whittier Blvd, Pico Rivera, CA 90660.'), new Date(), undefined, null, undefined, undefined, W)
   assert.equal(wrong.leads.length, 0); assert.equal(wrong.review[0].review_reason, 'location_mismatch')
   const none = await verifyLeads([cand], page(''), new Date(), undefined, null, undefined, undefined, W)
-  assert.equal(none.leads.length, 0); assert.equal(none.review[0].review_reason, 'location_unconfirmed')
+  assert.equal(none.leads.length, 1, 'a page naming no place is not rejected by the evidence gate (contacts are stricter)')
   const right = await verifyLeads([cand], page('Visit us at 57 W 57th St, New York, NY 10019.'), new Date(), undefined, null, undefined, undefined, W)
   assert.equal(right.leads.length, 1)
   const global = await verifyLeads([cand], page(''))
   assert.equal(global.leads.length, 1, 'a request with no place makes no demand')
+})
+
+test('city-level geography: "New York, NY" / "New York City" rejects Rome, NY and other New York towns; boroughs and the city line agree; a state-level request is not city-scoped', () => {
+  for (const W of [['New York, NY'], ['New York City'], ['NYC']]) {
+    assert.equal(placeAgreement('Dent Blanche, 8500 Main St, Rome, NY 13440', W), 'mismatch', W.join())
+    assert.equal(placeAgreement('Visit us in Albany, New York', W), 'mismatch')
+    assert.equal(placeAgreement('Smile Studio, 57 W 57th St, New York, NY 10019', W), 'agrees')
+    assert.equal(placeAgreement('Our Brooklyn, NY office', W), 'agrees')
+    assert.equal(placeAgreement('Offices in Rome, NY and Manhattan', W), 'agrees', 'it also names the city')
+  }
+  assert.equal(placeAgreement('Dent Blanche, Rome, NY 13440', ['New York']), 'unconfirmed', 'bare "New York" is the state: not city-scoped, not a conflict')
+  assert.equal(placeAgreement('Dent Blanche, Rome, New York', ['New York']), 'agrees')
+  assert.equal(placeAgreement('Acme Ltd, London, Ontario, Canada', ['London', 'UK']), 'mismatch')
+  assert.equal(placeAgreement('Acme Ltd, London, UK', ['London', 'UK']), 'agrees')
+})
+test('verifier: a Rome, NY page is not attached to a New York City request', async () => {
+  const wrong = await verifyLeads([cand], page('Visit us at 8500 Main St, Rome, NY 13440.'), new Date(), undefined, null, undefined, undefined, ['New York, NY'])
+  assert.equal(wrong.leads.length, 0); assert.equal(wrong.review[0].review_reason, 'location_mismatch')
 })
