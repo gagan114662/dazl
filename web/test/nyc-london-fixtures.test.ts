@@ -200,7 +200,7 @@ test('instrumentation: one scan records queries, every result URL with date/sele
   assert.equal(rep.urls.find((r: { url: string }) => /facebook/.test(r.url)).own_fetch, 'blocked')
   // verification outcomes, per candidate and per reason (above) and model usage (SYNTHETIC stub counts: 2 calls x 1000 in / 100 out)
   assert.equal(rep.model.calls, 2); assert.equal(rep.model.input_tokens, 2000); assert.equal(rep.model.output_tokens, 200)
-  assert.equal(x.usage.recorded, true); assert.equal(x.usage.requests, 2); assert.equal(x.usage.input_tokens, 2000)
+  assert.equal(x.usage.recorded, true); assert.equal(x.usage.requests_recorded, 2); assert.equal(x.usage.input_tokens, 2000); assert.equal(x.usage.tokens_complete, true); assert.deepEqual(x.usage.served_models, ['stub-model-served'])
   // tenant scoping and the status route field
   const { runReportFor } = await import('../lib/scan/run-report.ts')
   const jobId = (x.db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id
