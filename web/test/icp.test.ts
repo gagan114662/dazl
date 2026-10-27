@@ -325,3 +325,58 @@ test('permitted-range controls: the request allows the whole range, or the model
   const sa = { ...base, summary: 'London companies with seed and Series A funding', signals: ['seed round', 'Series A round'] }
   assert.deepEqual(keepStatedFundingStage(q, sa).signals, ['seed round', 'Series A round'])
 })
+
+// Relay report: "seed-only requests are being widened to seed or later". Cause found by a stubbed repro: the REQUEST parser read
+// ordinary sentences ("...a seed round or after a pivot", "...seed round and later hiring sales") as "seed and every later
+// stage", so a widened model profile ("Seed or later companies") passed a seed-only request unchanged.
+const SEED_ONLY = [
+  'Find seed-funded companies in London',
+  'London startups that raised a seed round or after a pivot',
+  'London startups with a seed round and later hiring sales',
+  'Seed round, or later this year add sales hires',
+  'London seed stage startups and above all in fintech',
+  'Seed funded London companies. Later we may expand to Berlin.',
+  'London companies that raised seed funding, and later opened an office',
+]
+test('seed-only requests stay exactly seed: a model "Seed or later" profile never passes, a correct seed profile is untouched', () => {
+  for (const q of SEED_ONLY) {
+    const good = { ...base, summary: 'London seed-funded companies', signals: ['raised a seed round'] }
+    assert.deepEqual(keepStatedFundingStage(q, good), good, `correct profile unchanged: ${q}`)
+    const wide = keepStatedFundingStage(q, { ...base, summary: 'Seed or later companies in London', signals: ['Seed or later funding'] })
+    assert.equal(wide.summary, q, `widened summary falls back: ${q}`); assert.deepEqual(wide.signals, [])
+    const sig = keepStatedFundingStage(q, { ...base, summary: 'London seed-funded companies', signals: ['Seed or later funding', 'raised a seed round'] })
+    assert.deepEqual(sig.signals, ['raised a seed round'], `range signal dropped: ${q}`)
+    assert.equal(keepStatedFundingStage(q, { ...base, summary: 'London seed and Series A companies' }).summary.includes('Series A'), false, q)
+  }
+})
+test('real ranges in the request are still ranges (strict markers end their phrase)', () => {
+  for (const q of ['Find seed or later companies in London', 'London companies with seed funding or later', 'London seed+ startups', 'London seed or later startups, hiring sales', 'Seed and above funded companies in London.']) {
+    const rng = { ...base, summary: 'Seed or later companies in London', signals: ['Seed or later funding'] }
+    assert.deepEqual(keepStatedFundingStage(q, rng), rng, q)
+  }
+})
+
+// Instinct #218 review (809e2a8): the strict request recognizer made "exclude Series B or later in London" exclude only B and
+// keep C. Negative ranges stay conservative: any "or later"/"and above" right after an EXCLUDED stage is the whole range.
+test('excluded ranges followed by ordinary context still exclude B and every later stage', () => {
+  const cases = [
+    'Find companies with recent funding, exclude Series B or later in London',
+    'Find companies in London, exclude Series B or later with recent funding',
+    'London companies with recent funding, exclude Series B or later hiring sales',
+    'London companies, without Series B and above in fintech',
+    'Find London companies with funding, not Series B or later this year',
+  ]
+  for (const q of cases) {
+    for (const st of ['Series B', 'Series C', 'Series D', 'Series E']) {
+      const r = keepStatedFundingStage(q, { ...base, summary: `London ${st} companies with funding`, signals: [`${st} funding`], exclude: [] })
+      assert.equal(r.summary, q, `${st} falls back: ${q}`); assert.deepEqual(r.signals, [])
+    }
+    const okp = keepStatedFundingStage(q, { ...base, summary: 'London Series A companies with funding', signals: ['Series A round'], exclude: [] })
+    assert.equal(okp.summary, 'London Series A companies with funding', `A is still allowed: ${q}`)
+    assert.ok(okp.exclude.some(x => /Series B/i.test(x) && /later|above/i.test(x)), `range added to exclusions: ${q} -> ${JSON.stringify(okp.exclude)}`)
+  }
+  // the exact repro: the profile used to come back unchanged with only ["Series B"] added
+  const q = 'Find companies with recent funding, exclude Series B or later in London'
+  const r = keepStatedFundingStage(q, { ...base, summary: 'London Series C companies with funding' })
+  assert.notEqual(r.summary, 'London Series C companies with funding'); assert.equal(r.summary, q)
+})

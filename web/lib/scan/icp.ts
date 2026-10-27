@@ -92,19 +92,30 @@ const stageOf = (m: RegExpExecArray): Stage => (m[1] ? 'preseed' : m[2] ? 'seed'
 // "Series A or later" / "Series A+" is a RANGE: the mention covers every stage from A up. Without this, excluding "A or
 // later" accepted a profile about Series B (Instinct #213 recheck).
 const ORDER: Stage[] = ['preseed', 'seed', 'a', 'b', 'c', 'd', 'e']
-const LATER = /^(?:[-\s]*(?:funding|funded|round|rounds|stage)\b){0,2}\s*(?:,\s*)?(?:(?:or|and)\s+(?:later|above|beyond|after|higher|newer)\b|\+|onwards?\b)/i
+// In the REQUEST a range marker must END its phrase ("seed or later", "seed or later funding"). "...a seed round or after a pivot"
+// and "seed round and later hiring sales" are ordinary sentences, not "seed and every later stage": reading them as ranges let
+// a widened "Seed or later" profile pass a seed-only request unchanged. "after" is not a marker at all. In MODEL text the same
+// words are read loosely (any "or later"/"and above" right after a stage is a range), because an unseen range is the unsafe
+// direction there.
+const FILL = '(?:[-\\s]*(?:funding|funded|round|rounds|stage)\\b){0,2}\\s*(?:,\\s*)?'
+const LATER_STRICT = new RegExp(`^${FILL}(?:(?:or|and)\\s+(?:later|above|beyond|higher|newer)\\b(?=\\s*(?:$|[,.;:)!?]|(?:stages?|rounds?|funding|funded|companies|startups|firms|businesses|investment|investors)\\b))|\\+|onwards?\\b)`, 'i')
+const LATER_LOOSE = new RegExp(`^${FILL}(?:(?:or|and)\\s+(?:later|above|beyond|higher|newer)\\b|\\+|onwards?\\b)`, 'i')
+
 const span = (st: Stage, later: boolean): Stage[] => (later ? ORDER.slice(ORDER.indexOf(st)) : [st])
 interface Mention { stage: Stage; start: number; end: number; excluded: boolean; later: boolean }
-function mentions(text: string): Mention[] {
+function mentions(text: string, strict = false): Mention[] {
   const out: Mention[] = []
   for (const clause of text.split(/(?<=[.;!?])\s+|\bbut\b|\n/i)) {
     const base = text.indexOf(clause)
     for (const m of clause.matchAll(STAGE_RE)) {
       const before = clause.slice(0, m.index)
       const after = clause.slice((m.index ?? 0) + m[0].length)
-      const lm = LATER.exec(after)
+      const isExcluded = EXCLUDE_CUE.test(before.slice(-60))
+      // Strict markers only disambiguate POSITIVE narrative phrases in the request. An explicit exclusion stays conservative:
+      // "exclude Series B or later in London" / "...or later with recent funding" must exclude B and every later stage.
+      const lm = (strict && !isExcluded ? LATER_STRICT : LATER_LOOSE).exec(after)
       // `end` covers the range marker too ("Seed or later", "seed funding or later"), so trimming removes the whole range.
-      out.push({ stage: stageOf(m as unknown as RegExpExecArray), start: base + (m.index ?? 0), end: base + (m.index ?? 0) + m[0].length + (lm ? lm[0].length : 0), excluded: EXCLUDE_CUE.test(before.slice(-60)), later: !!lm })
+      out.push({ stage: stageOf(m as unknown as RegExpExecArray), start: base + (m.index ?? 0), end: base + (m.index ?? 0) + m[0].length + (lm ? lm[0].length : 0), excluded: isExcluded, later: !!lm })
     }
   }
   return out
@@ -114,7 +125,7 @@ export function keepStatedFundingStage(query: string, icp: Icp): Icp {
   // "seed+", "seed-funded", "seed stage"). A bare "seed" ("seed oil producers") is not one.
   const fundingContext = FUNDING_CUE.test(query) || /\bseries[-\s]*[a-e]\b|\bpre[-\s]?seed\b|\bseed(?:\s+(?:or|and)\s+(?:later|above|beyond|higher)\b|\s*\+|[-\s](?:stage|funded|round|rounds)\b)/i.test(query)
   if (!fundingContext) return icp
-  const q = mentions(query)
+  const q = mentions(query, true) // the request: strict range markers
   // A positive "seed or later" is a RANGE too (seed..E). Every explicit exclusion is checked on top of it ("seed or later, but
   // exclude Series B or later" allows seed and A only): a positive range never switches the exclusions off.
   const want = new Set(q.filter(m => !m.excluded).flatMap(m => span(m.stage, m.later))); const notWant = new Set(q.filter(m => m.excluded).flatMap(m => span(m.stage, m.later)))
