@@ -50,7 +50,7 @@ export class HeldText {
     for (const p of returned) {
       const k = canonicalUrl(p.url)
       if (!k || !want.has(k) || m.has(k) || typeof p.text !== 'string') continue
-      m.set(k, Object.freeze({ url: p.url, title: p.title, text: p.text, sha256: createHash('sha256').update(p.text).digest('hex'), heldAt }))
+      m.set(k, Object.freeze({ url: p.url, title: typeof p.title === 'string' ? p.title : '', text: p.text, sha256: createHash('sha256').update(p.text).digest('hex'), heldAt }))
     }
     return new HeldText(attempt, m)
   }

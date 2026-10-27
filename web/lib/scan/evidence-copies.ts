@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS lead_evidence_copies (
   attempt INTEGER NOT NULL,
   source_url TEXT NOT NULL,
   canonical_url TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '' CHECK (length(CAST(title AS BLOB)) <= 1024),
+  title_sha256 TEXT NOT NULL CHECK (length(title_sha256) = 64),
   sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
   text TEXT NOT NULL,
   byte_length INTEGER NOT NULL CHECK (byte_length <= ${MAX_COPY_BYTES}),
@@ -56,17 +58,21 @@ export function storeEvidenceCopy(db: Database.Database, tenantId: string, jobId
   if (!canon) throw new Error('evidence copy url invalid')
   const sha = createHash('sha256').update(page.text).digest('hex')
   if (sha !== page.sha256) throw new Error('evidence copy hash mismatch')
-  db.prepare('INSERT OR IGNORE INTO lead_evidence_copies (id, tenant_id, job_id, attempt, source_url, canonical_url, sha256, text, byte_length, fetched_at, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(randomBytes(12).toString('hex'), tenantId, jobId, attempt, page.url, canon, sha, page.text, Buffer.byteLength(page.text), page.heldAt, now, now + RETENTION_DAYS * 86_400)
+  // The title is evidence too: the verifier accepts the company named in the page TITLE, so the exact title is stored and hashed
+  // beside the body in the same immutable row.
+  const title = page.title ?? ''
+  const titleSha = createHash('sha256').update(title).digest('hex')
+  db.prepare('INSERT OR IGNORE INTO lead_evidence_copies (id, tenant_id, job_id, attempt, source_url, canonical_url, title, title_sha256, sha256, text, byte_length, fetched_at, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(randomBytes(12).toString('hex'), tenantId, jobId, attempt, page.url, canon, title, titleSha, sha, page.text, Buffer.byteLength(page.text), page.heldAt, now, now + RETENTION_DAYS * 86_400)
   return (db.prepare('SELECT id FROM lead_evidence_copies WHERE tenant_id = ? AND job_id = ? AND attempt = ? AND canonical_url = ?').get(tenantId, jobId, attempt, canon) as { id: string }).id
 }
 
-export interface EvidenceCopyView { id: string; lead_id: string; job_id: string; attempt: number; source_url: string; sha256: string; fetched_at: number; expires_at: number; text: string; own_fetch_failure: string | null; integrity: 'ok' | 'mismatch' }
+export interface EvidenceCopyView { id: string; lead_id: string; job_id: string; attempt: number; source_url: string; title: string; title_sha256: string; sha256: string; fetched_at: number; expires_at: number; text: string; own_fetch_failure: string | null; integrity: 'ok' | 'mismatch' }
 // Tenant-scoped read through the lead (and its job's owner); an expired or foreign record is simply absent.
 export function evidenceCopyForLead(db: Database.Database, tenantId: string, leadId: string): EvidenceCopyView | null {
-  const r = db.prepare(`SELECT c.id, l.id AS lead_id, c.job_id, c.attempt, c.source_url, c.sha256, c.fetched_at, c.expires_at, c.text, l.own_fetch_failure
+  const r = db.prepare(`SELECT c.id, l.id AS lead_id, c.job_id, c.attempt, c.source_url, c.title, c.title_sha256, c.sha256, c.fetched_at, c.expires_at, c.text, l.own_fetch_failure
     FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id JOIN lead_evidence_copies c ON c.id = l.evidence_copy_id
     WHERE l.id = ? AND j.user_id = ? AND c.tenant_id = ? AND c.job_id = j.id AND c.expires_at > CAST(strftime('%s','now') AS INTEGER)`).get(leadId, tenantId, tenantId) as Omit<EvidenceCopyView, 'integrity'> | undefined
   if (!r) return null
-  return { ...r, integrity: createHash('sha256').update(r.text).digest('hex') === r.sha256 ? 'ok' : 'mismatch' }
+  return { ...r, integrity: createHash('sha256').update(r.text).digest('hex') === r.sha256 && createHash('sha256').update(r.title).digest('hex') === r.title_sha256 ? 'ok' : 'mismatch' }
 }

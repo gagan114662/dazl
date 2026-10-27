@@ -26,7 +26,7 @@ function parseCsv(csv: string): Record<string, string>[] {
 test('export route: copied evidence is labelled as a copy; unreadable and user-confirmed blocked rows say dazl could not read the page; nothing claims a direct read; evidence route is tenant-scoped', async () => {
   const db = new Database(':memory:'); migrateScan(db); setScanDb(db)
   const job = createJob(db, 'A', { business_name: 'Acme', industry: 'x', location: 'y' }); db.prepare("UPDATE scan_jobs SET status='running', attempts=1 WHERE id=?").run(job)
-  const page = { url: 'https://jobs.example/hf', title: 't', text: TEXT, sha256: createHash('sha256').update(TEXT).digest('hex'), heldAt: 1_700_000_000 }
+  const page = { url: 'https://jobs.example/hf', title: 'Harbor Freight Supply \u2014 Careers', text: TEXT, sha256: createHash('sha256').update(TEXT).digest('hex'), heldAt: 1_700_000_000 }
   const copyId = storeEvidenceCopy(db, 'A', job, 1, page)
   const ins = db.prepare('INSERT INTO leads(id,scan_job_id,company,signal,source_url,confidence,review_reason,human_confirmed_at,human_confirmed_from,evidence_origin,own_fetch_failure,evidence_copy_sha256,evidence_copy_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
   const ids = { copy: hex(), review: hex(), confirmed: hex(), plain: hex() }
@@ -46,8 +46,8 @@ test('export route: copied evidence is labelled as a copy; unreadable and user-c
   for (const r of rows) assert.doesNotMatch(r[col], /read (?:on )?the page (?:itself|directly) by dazl|dazl read the page/i)
   // evidence route: owner recovers the exact text; another tenant, a wrong id and no session do not
   const ok = await evidenceGET(get(`/api/leads/evidence?lead_id=${ids.copy}`)); assert.equal(ok.status, 200)
-  const body = await ok.json() as { text: string; sha256: string; integrity: string; job_id: string; attempt: number; source_url: string; label: string }
-  assert.equal(body.text, TEXT); assert.equal(body.integrity, 'ok'); assert.equal(body.job_id, job); assert.equal(body.attempt, 1); assert.equal(body.source_url, page.url); assert.match(body.label, /did not read the page directly/)
+  const body = await ok.json() as { title: string; text: string; sha256: string; integrity: string; job_id: string; attempt: number; source_url: string; label: string }
+  assert.equal(body.title, page.title); assert.equal(body.text, TEXT); assert.equal(body.integrity, 'ok'); assert.equal(body.job_id, job); assert.equal(body.attempt, 1); assert.equal(body.source_url, page.url); assert.match(body.label, /did not read the page directly/)
   assert.equal((await evidenceGET(get(`/api/leads/evidence?lead_id=${ids.plain}`))).status, 404, 'a lead without a copy has no evidence record')
   setUser({ id: 'B', business_name: 'Beta' }); assert.equal((await evidenceGET(get(`/api/leads/evidence?lead_id=${ids.copy}`))).status, 404)
   assert.equal((await exportGET(get(`/api/leads/export?job_id=${job}`)).then(r => r.text())).includes('CopyCo'), false)

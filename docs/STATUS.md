@@ -78,12 +78,19 @@ Updated by the builder on every branch. Newest first.
   and real billing below dazl, cache-token charges, reservations are estimates; the per-owner pool resets on restart; CSV
   imports take the flags only. max_usd remains a reservation limit on guarded model requests, not a whole-scan dollar ceiling.
 
-- docs/design/blocked-source-verification.md (DESIGN, not built): verify a blocked candidate against the TinyFish page text we
-  already hold, same checks, labelled; needs an owner/Instinct decision and the #188 diagnostic from a live run first.
+- b/design-tf-text (#222; fixtures only, no live run): the NARROW blocked-source path is built and designed in
+  docs/design/blocked-source-verification.md. A candidate whose own fetch was blocked_by_site/needs_javascript is checked against
+  the TinyFish text ALREADY fetched for the exact cited URL in the same scan attempt (canonical URL match, no redirects, wall/short/
+  truncated copies refused, walled social hosts excluded), with every quote/company/date/window gate unchanged, labelled "checked
+  against a copy fetched by TinyFish; dazl did not read the page directly" in the UI, API and CSV. The exact original TITLE and body
+  are preserved in an immutable, tenant-scoped, hash-bound `lead_evidence_copies` row (90-day retention, 256 KB per copy, 300 per
+  tenant) recoverable through GET /api/leads/evidence. CSV origin cells say only what is recorded (copy / unreadable / confirmed by
+  you); blank claims nothing. Limits: SQLite-only table, no account-deletion purge yet, English wall-phrase list, silent truncation
+  undetected, no live-yield evidence.
 
 ## In progress (interactive Claude session, do not duplicate)
 
-- Blocked-source verification: waits for #188 data from a live run.
+- Blocked-source verification: the narrow copy path is in review (#222); wider use waits for #188 data from a live run.
 
 ## Next (in order, for the scheduled builder; nothing business- or place-specific)
 

@@ -42,10 +42,10 @@ failure put it (review, `blocked_by_site` / `needs_javascript`). No extra networ
   `needs_javascript`), `evidence_copy_sha256` and `evidence_copy_id`. The saved quote is the model's original quote, verified
   verbatim, never rewritten.
 - The ORIGINAL copied text is preserved in `lead_evidence_copies`: one immutable row per (tenant, job, attempt, canonical URL),
-  linked from the lead by `evidence_copy_id`, holding the URL as cited, SHA-256, byte length, TinyFish fetch time and the full text
-  as received. A trigger rejects every UPDATE; a DELETE is rejected until `expires_at`. Written in the same transaction as the lead.
+  linked from the lead by `evidence_copy_id`, holding the URL as cited, the exact page TITLE as received (the verifier accepts the company named in the title, so the title is
+  evidence) with its SHA-256, the body's SHA-256, byte length, TinyFish fetch time and the full body as received. A trigger rejects every UPDATE; a DELETE is rejected until `expires_at`. Written in the same transaction as the lead.
   Access: `GET /api/leads/evidence?lead_id=` through the lead's job owner only (foreign, expired and missing are one 404), returns
-  the text, hash, job, attempt, URL and an integrity check (hash recomputed); the lead card links to it.
+  the title, text, both hashes, job, attempt, URL and an integrity check (both hashes recomputed; a changed row is reported as `mismatch`); the lead card links to it.
 - Bounds: a copy over 256 KB is not used at all (so every used copy is stored whole); rows expire after 90 days and are purged
   on the next scan by the same tenant; a tenant holds at most 300 unexpired copies, and with no room the verifier is given no copies
   (candidates stay in review). At most the 16 fetched pages per scan can be used, and only pages that verified a lead are stored.
@@ -81,6 +81,7 @@ named, stale date, redirect/different returned URL, different query string, wall
 Storage: byte-for-byte recovery from a fresh database connection after the scan, tenant isolation, immutability, retention purge, full-tenant and oversize copies unused. Real export and evidence routes: copied, unreadable-review, user-confirmed-blocked and plain rows. Unit: URL canonicalisation, attempt binding, requested-only holding, eligible failures, frozen entries, caller mutation after sealing.
 
 ## Remaining limits
+- The title is stored as dazl's TinyFish client received it (that client cuts titles to 200 characters before verification), so the stored title is exactly the one the verifier used.
 - Evidence copies are SQLite-only: the Postgres read path carries the lead columns, but the table and its triggers are not in the generated Postgres schema (the translator fails closed on a DELETE trigger) until that migration is done.
 - Deleting a tenant's account does not yet remove its evidence rows before expiry (the retention trigger blocks deletes); that needs an explicit purge path.
 - Whether TinyFish text can differ from what a visitor sees is unmeasured; the verbatim-quote rule is the only defence beyond the

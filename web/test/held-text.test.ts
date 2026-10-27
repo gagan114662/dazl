@@ -105,6 +105,30 @@ test('the exact original text is recoverable from a fresh database connection af
     db2.close()
   } finally { rmSync(file, { force: true }) }
 })
+test('company named ONLY in the page title: verified from the copy, and the exact title and body are both recoverable from a fresh connection, bound immutably', async () => {
+  const TITLE = 'Zenith Widgets \u2014 Careers \u00b7 "Ohio" payroll'
+  const file = join(tmpdir(), `dazl-evidence-title-${randomBytes(6).toString('hex')}.db`)
+  try {
+    const x = await scan({ file, company: 'Zenith Widgets', tf: { title: TITLE, text: BODY } })
+    assert.equal(x.rows[0].review_reason, null, 'the title names the company, the quote does not: the existing rule accepts it')
+    assert.doesNotMatch(QUOTE, /Zenith/)
+    const leadId = String(x.rows[0].id); x.db.close()
+    const db2 = new Database(file)
+    const c = evidenceCopyForLead(db2, 'A', leadId)!
+    assert.equal(c.title, TITLE, 'exact original title, byte for byte'); assert.equal(c.text, BODY); assert.equal(c.integrity, 'ok')
+    assert.equal(c.title_sha256, createHash('sha256').update(TITLE).digest('hex')); assert.equal(c.sha256, createHash('sha256').update(BODY).digest('hex'))
+    assert.equal(evidenceCopyForLead(db2, 'B', leadId), null)
+    assert.throws(() => db2.prepare('UPDATE lead_evidence_copies SET title = ?').run('Other Co'), /immutable/)
+    // a tampered row (trigger bypassed) is reported, not silently trusted
+    db2.exec('DROP TRIGGER lead_evidence_copies_no_update'); db2.prepare('UPDATE lead_evidence_copies SET title = ?').run('Other Co')
+    assert.equal(evidenceCopyForLead(db2, 'A', leadId)!.integrity, 'mismatch')
+    db2.close()
+  } finally { rmSync(file, { force: true }) }
+})
+test('company in neither the quote nor the title: stays in review (the title is not a free pass)', async () => {
+  const x = await scan({ company: 'Zenith Widgets', tf: { title: 'Jobs at another firm', text: BODY } })
+  assert.equal(x.rows[0].review_reason, 'blocked_by_site'); assert.equal(x.rows[0].evidence_copy_id, null)
+})
 test('retention and size are bounded: expired rows are the only deletable rows; a full tenant uses no copy; an oversize copy is not used', async () => {
   const t = (n: number) => `retained ${n} `.repeat(80)
   const db = new Database(':memory:'); migrateScan(db)
