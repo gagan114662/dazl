@@ -244,13 +244,31 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
   }
   const best = new Map<string, VerifiedLead>()
   const review = new Map<string, ReviewLead>()
+  // Which candidate each surviving row came from (rows are clones), so a LATER drop (duplicate, source cap) is recorded against the right occurrence.
+  const bestSrc = new Map<string, LeadDraft>(); const reviewSrc = new Map<string, LeadDraft>(); const origin = new WeakMap<object, LeadDraft>()
+  const toReview = (c: LeadDraft, why: string) => {
+    const k = dedupKey(c)
+    if (!review.has(k)) { const row = { ...c, contact: null, review_reason: why } as ReviewLead; review.set(k, row); reviewSrc.set(k, c); origin.set(row, c); note(c, 'review', why) }
+    else { drop('duplicate'); note(c, 'dropped', 'duplicate') }
+  }
   const fetched = await Promise.all(candidates.map(async c => ({ c, page: await get(c.source_url) })))
 
   const passed: { c: LeadDraft; v: Extract<ReturnType<typeof verifyEvidence>, { ok: true }>; copy?: { failure: string; sha256: string; page: HeldPage } }[] = []
   for (const { c: c0, page } of fetched) {
     // A candidate with no date gets one read from the text we already fetched (or a season label). Same rules apply to it afterwards.
     let c = c0
-    if (page && !isFail(page) && !c0.event_date) { const t = resolveTiming(page.text, c0.excerpt, (page as { published?: string | null }).published); if (t.date || t.note) c = { ...c0, event_date: t.date, timing_note: t.note } }
+    if (page && !isFail(page) && !c0.event_date) {
+      // What the page says about WHEN is kept apart from what the quote says happened: a publication day is a label, never the event date
+      // (a 2019 opening on a page republished this month is still a 2019 opening), and a past year named in the quote makes the claim stale.
+      const t = resolveTiming(page.text, c0.excerpt, (page as { published?: string | null }).published, now.getFullYear())
+      if (t.olderYear) {
+        const k = dedupKey(c0); const why = 'event_date_stale'
+        if (!review.has(k)) review.set(k, { ...c0, contact: null, review_reason: why, published_at: t.published, timing_note: `the quote names ${t.olderYear}; ${t.note ?? 'the event is older than the window'}`.slice(0, 300) })
+        else drop('duplicate')
+        note(c0, 'review', why); continue
+      }
+      if (t.published || t.note) c = { ...c0, published_at: t.published, timing_note: t.note }
+    }
     if (!page) { drop('page_unreachable'); note(c, 'dropped', 'page_unreachable'); continue }
     if (isFail(page)) {
       const why = REVIEW_REASONS[page.fail]
@@ -263,16 +281,13 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
         const v2 = !closedJobEvidence(c, cp) ? verifyEvidence(c, cp, now) : null
         if (v2?.ok && !counterpartySignal(c, cp, '') && placeAgreement(`${cp.title} ${cp.text}`, geo) !== 'mismatch') { passed.push({ c, v: v2, copy: { failure: why, sha256: copy.page.sha256, page: copy.page } }); note(c, 'passed', null, COPY_ORIGIN); continue }
       }
-      if (why) { const key = dedupKey(c); if (!review.has(key)) review.set(key, { ...c, contact: null, review_reason: why }); else drop('duplicate'); note(c, 'review', why) }
+      if (why) toReview(c, why)
       else { const r = page.fail === 'not_found' ? 'page_not_found' : page.fail === 'refused' ? 'url_refused' : 'page_unreachable'; drop(r); note(c, 'dropped', r) }
       continue
     }
     const closed = closedJobEvidence(c, page)
     if (closed) {
-      const k = dedupKey(c)
-      if (!review.has(k)) review.set(k, { ...c, contact: null, review_reason: 'job_closed' })
-      else drop('duplicate')
-      note(c, 'review', 'job_closed'); continue
+      toReview(c, 'job_closed'); continue
     }
     const v = verifyEvidence(c, page, now)
     if (!v.ok) {
@@ -280,19 +295,13 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
       // drift), but when the page really is about this company the signal may still be real.
       // Show it as needs-review - labeled unconfirmed, never emailed - instead of vanishing.
       if (['bad_date', 'stale', 'future_date'].includes(v.reason)) {
-        const k = dedupKey(c)
-        if (!review.has(k)) review.set(k, { ...c, contact: null, review_reason: `event_date_${v.reason}` })
-        else drop('duplicate')
-        note(c, 'review', `event_date_${v.reason}`); continue
+        toReview(c, `event_date_${v.reason}`); continue
       }
       if (v.reason === 'excerpt_not_on_page') {
         const key = companyKey(c.company)
         const hay = `${norm(page.title)} ${norm(page.text).slice(0, 4000)}`
         if (key.length >= 2 && hasPhrase(hay, key)) {
-          const k = dedupKey(c)
-          if (!review.has(k)) review.set(k, { ...c, contact: null, review_reason: 'quote_unconfirmed' })
-          else drop('duplicate')
-          note(c, 'review', 'quote_unconfirmed'); continue
+          toReview(c, 'quote_unconfirmed'); continue
         }
       }
       drop(v.reason); note(c, 'dropped', v.reason); continue
@@ -309,10 +318,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     }
     const cp = counterpartySignal(c, page, '')
     if (cp) {
-      const k = dedupKey(c)
-      if (!review.has(k)) review.set(k, { ...c, contact: null, review_reason: 'counterparty_signal' })
-      else drop('duplicate')
-      note(c, 'review', 'counterparty_signal'); continue
+      toReview(c, 'counterparty_signal'); continue
     }
     passed.push({ c, v }); note(c, 'passed', null)
   }
@@ -321,7 +327,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
   const verdicts = await Promise.all(passed.map(({ c, v }) => (judge ? judge(c, v.passage) : Promise.resolve<Judgement | null>(null))))
   passed.forEach(({ c, v, copy }, i) => {
     const j = verdicts[i]
-    if (j === 'contradicts') { drop('contradicted'); return }
+    if (j === 'contradicts') { drop('contradicted'); note(c, 'dropped', 'contradicted'); return }
     // Cap by source class: a content farm that copied the quote never outranks the company's own page.
     const confidence = Math.max(0, Math.min(sourceCap(c.source_url, c.company, knownDomain), Math.min(100, v.confidence + (j ? JUDGE_DELTA[j] : 0))))
     if (confidence < MIN_CONFIDENCE) { const r = j === 'unclear' ? 'claim_unclear' : 'low_confidence'; drop(r); note(c, 'dropped', r); return }
@@ -329,10 +335,11 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     const key = dedupKey(c)
     const prev = best.get(key)
     if (prev) drop('duplicate')
-    if (!prev || lead.confidence > prev.confidence) best.set(key, lead)
+    if (!prev || lead.confidence > prev.confidence) { if (prev) note(bestSrc.get(key)!, 'dropped', 'duplicate'); best.set(key, lead); bestSrc.set(key, c); origin.set(lead, c) }
+    else note(c, 'dropped', 'duplicate')
   })
   // a company we already verified does not also need a manual review entry
-  for (const k of best.keys()) if (review.delete(k)) drop('duplicate')
+  for (const k of best.keys()) if (review.delete(k)) { drop('duplicate'); const src = reviewSrc.get(k); if (src) note(src, 'dropped', 'duplicate') }
   // Per-source cap (gagan approved 2026-10-21): one listicle or directory page must not fill a
   // scan with lookalike leads. Keep the strongest MAX_LEADS_PER_SOURCE per source page.
   const capPer = <T extends { source_url: string }>(list: T[], rank: (a: T, b: T) => number): T[] => {
@@ -340,7 +347,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     const out: T[] = []
     for (const l of [...list].sort(rank)) {
       const n = seen.get(l.source_url) ?? 0
-      if (n >= MAX_LEADS_PER_SOURCE) { drop('source_cap'); const c = l as unknown as LeadDraft; if (noted.has(c)) note(c, 'dropped', 'source_cap'); continue }
+      if (n >= MAX_LEADS_PER_SOURCE) { drop('source_cap'); const src = origin.get(l as object); if (src) note(src, 'dropped', 'source_cap'); continue }
       seen.set(l.source_url, n + 1); out.push(l)
     }
     return out
@@ -420,14 +427,14 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
     const own = db.prepare("SELECT 1 FROM scan_jobs WHERE id = ? AND status = 'running' AND attempts = ?").get(job.id, job.attempts)
     if (!own) return false
     const ins = db.prepare(
-      'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, fit, intent, action, why, signals, icp_match, signal_kind, source_kind, evidence_origin, own_fetch_failure, evidence_copy_sha256, evidence_copy_id, timing_note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, fit, intent, action, why, signals, icp_match, signal_kind, source_kind, evidence_origin, own_fetch_failure, evidence_copy_sha256, evidence_copy_id, timing_note, published_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
     const insertedKeys = new Set<string>()
-    for (const l of leads) { const result = ins.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, dedupKey(l), l.fit ?? null, l.intent ?? null, l.action ?? null, l.why ?? null, l.signals ?? null, l.icp_match ?? null, primarySignalKind(l.signals), sourceKind(job), l.evidence_origin ?? null, l.own_fetch_failure ?? null, l.evidence_copy_sha256 ?? null, l.evidence_copy_page ? storeEvidenceCopy(db, job.user_id, job.id, job.attempts, l.evidence_copy_page) : null, l.timing_note ?? null); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
+    for (const l of leads) { const result = ins.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, dedupKey(l), l.fit ?? null, l.intent ?? null, l.action ?? null, l.why ?? null, l.signals ?? null, l.icp_match ?? null, primarySignalKind(l.signals), sourceKind(job), l.evidence_origin ?? null, l.own_fetch_failure ?? null, l.evidence_copy_sha256 ?? null, l.evidence_copy_page ? storeEvidenceCopy(db, job.user_id, job.id, job.attempts, l.evidence_copy_page) : null, l.timing_note ?? null, l.published_at ?? null); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
     const insReview = db.prepare(
-      'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, review_reason, source_kind, timing_note) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?)',
+      'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, review_reason, source_kind, timing_note, published_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?)',
     )
-    for (const l of review) { const result = insReview.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.event_date ? 'unverified' : 'undated', `review:${dedupKey(l)}`, l.review_reason, sourceKind(job), l.timing_note ?? null); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
+    for (const l of review) { const result = insReview.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.event_date ? 'unverified' : 'undated', `review:${dedupKey(l)}`, l.review_reason, sourceKind(job), l.timing_note ?? null, l.published_at ?? null); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
     ledger?.write(db, job.id, job.attempts, out ? leads : null, out ? review : null, insertedKeys)
     db.prepare(
       `UPDATE scan_jobs SET status = ?, error = ?, claimed_at = NULL, candidates = ?, verified = ?, needs_review = ?, dropped = ?, drop_reasons = ?,
@@ -789,8 +796,9 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     }
     const verifierFetch = new Map<string, FetchOutcome>() // verify_provenance (diagnostic only)
     const audit: CandidateAudit[] = [] // run report: the fate of every candidate the verifier saw (instrumentation only)
+    const markDropped = (rows: { company: string; name: string; source_url: string }[], reason: string) => { for (const r of rows) { const k = `${dedupKey(r)}|${r.source_url}`; const e = audit.find(a => a.key === k && a.outcome !== 'dropped'); if (e) { e.outcome = 'dropped'; e.reason = reason } } } // a later gate removed a row the verifier had passed
     { const st = { ...summarizeTrace(diag.trace), ...diag.info }
-      ledger.report({ queries: st.queries, query_source: st.query_source ?? null, search: { attempted: st.searches_attempted, ok: st.searches_ok, hits_raw: st.hits_raw, hits_unique_urls: st.hits_unique_urls, hits_complete: st.hits_complete }, urls: diag.urls, evidence: { items: st.evidence_items ?? null, with_page_text: st.evidence_with_page_text ?? null, snippet_only: st.evidence_snippet_only ?? null }, extracted_candidates: st.extracted_candidates ?? null, audit, ownFetch: verifierFetch, model: { calls: st.model_calls ?? null, input_tokens: st.input_tokens ?? null, output_tokens: st.output_tokens ?? null } }) }
+      ledger.report({ queries: st.queries, query_source: st.query_source ?? null, search: { attempted: st.searches_attempted, ok: st.searches_ok, hits_raw: st.hits_raw, hits_unique_urls: st.hits_unique_urls, hits_complete: st.hits_complete }, urls: diag.urls, evidence: { items: st.evidence_items ?? null, with_page_text: st.evidence_with_page_text ?? null, snippet_only: st.evidence_snippet_only ?? null }, extracted_candidates: st.extracted_candidates ?? null, audit, ownFetch: verifierFetch }) }
     const fetchP = cachedFetcher(recordingFetcher(deps.fetchPage ?? fetchPageDetailed, verifierFetch))
     // TinyFish off, capped, failing or empty: try the free news search before the provider's paid web search. Not after
     // the run budget already refused a call (its own calls would be refused too); a refusal inside it stops the scan.
@@ -941,9 +949,11 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     if (memory && memory.exclusions.length > 0) {
       const kept = outcome.leads.filter(l => !isExcluded(memory, l))
       outcome.dropped['excluded'] = (outcome.dropped['excluded'] ?? 0) + outcome.leads.length - kept.length
+      markDropped(outcome.leads.filter(l => !kept.includes(l)), 'excluded')
       outcome.leads = kept
       const keptReview = outcome.review.filter(l => !isExcluded(memory, l))
       outcome.dropped['excluded'] += outcome.review.length - keptReview.length
+      markDropped(outcome.review.filter(l => !keptReview.includes(l)), 'excluded')
       outcome.review = keptReview
     }
     // The user's recency window (#198): with an explicit window only a valid, in-window event date is a scored lead.
@@ -980,9 +990,11 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     try { applyEvidenceQualityGate(outcome.leads) } catch { /* gate only, never fails the scan */ }
     const seen = new Set(outcome.review.map(r => dedupKey(r)))
     const walledRows: typeof outcome.review = []
-    for (const l of walledLeads) { const k = dedupKey(l); if (!seen.has(k)) { seen.add(k); walledRows.push({ ...l, contact: null, review_reason: 'login_required' }) } }
+    // Candidates added outside verifyLeads are audited here with the reason they were held, so the run report covers them too.
+    const auditExtra = (l: LeadDraft, outcome: CandidateAudit['outcome'], reason: string) => { audit.push({ key: `${dedupKey(l)}|${l.source_url}`, company: l.company, url: l.source_url, outcome, reason }) }
+    for (const l of walledLeads) { const k = dedupKey(l); if (!seen.has(k)) { seen.add(k); walledRows.push({ ...l, contact: null, review_reason: 'login_required' }); auditExtra(l, 'review', 'login_required') } else auditExtra(l, 'dropped', 'duplicate') }
     // Owner self-descriptions (e.g. a repo description) show what someone builds, not a need or fit: review lane only, never verified or emailed.
-    for (const l of selfDescribedLeads) { const k = dedupKey(l); if (!seen.has(k)) { seen.add(k); walledRows.push({ ...l, contact: null, review_reason: 'self_description' }) } }
+    for (const l of selfDescribedLeads) { const k = dedupKey(l); if (!seen.has(k)) { seen.add(k); walledRows.push({ ...l, contact: null, review_reason: 'self_description' }); auditExtra(l, 'review', 'self_description') } else auditExtra(l, 'dropped', 'duplicate') }
     // Login-walled items keep their candidate-level score; the same gate applies to them -
     // a walled hiring post with no pain in its snippet is capped below 50 like any job ad.
     try { applyEvidenceQualityGate(walledRows) } catch { /* gate only */ }

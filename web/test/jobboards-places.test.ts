@@ -18,13 +18,20 @@ import { resetTinyfishState } from '../lib/search/tinyfish.ts'
 const day = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString()
 const BODY = 'Nimbus Analytics is hiring an Account Executive to build its UK sales team in London.'
 
-test('placeIn: a state, London/UK and New York City are recognised; a location must name the place (Remote and look-alikes never match)', () => {
+test('placeIn: states, cities and countries; a location must name the place (Remote and look-alikes never match); a city never widens to its country or state', () => {
   assert.equal(placeIn('ohio hiring payroll')!.name, 'Ohio')
   const lon = placeIn('London UK B2B SaaS startups hiring sales staff')!
-  assert.equal(lon.name, 'London')
-  for (const l of ['London, UK', 'London', 'Remote - United Kingdom', 'Greater London Area', 'England']) assert.equal(lon.ok(l), true, l)
-  for (const l of ['Remote', undefined, 'Londonderry, Northern Ireland', 'Paris, France', 'Ukraine']) assert.equal(lon.ok(l), false, String(l))
+  assert.equal(lon.name, 'London', 'London UK is a London request, not the whole country')
+  for (const l of ['London, UK', 'London', 'Greater London Area', 'London, England, United Kingdom']) assert.equal(lon.ok(l), true, l)
+  for (const l of ['Remote', undefined, 'Londonderry, Northern Ireland', 'Paris, France', 'Ukraine', 'Manchester, United Kingdom', 'Birmingham, England', 'Remote - United Kingdom', 'England', 'London, Ontario, Canada']) assert.equal(lon.ok(l), false, String(l))
+  const nyc = placeIn('Find companies in New York City hiring receptionists')!
+  assert.equal(nyc.name, 'New York City')
+  for (const l of ['New York, NY', 'New York City', 'NYC', 'Brooklyn, NY', 'Bronx, New York', 'New York, NY, United States']) assert.equal(nyc.ok(l), true, l)
+  for (const l of ['Albany, New York', 'Buffalo, NY', 'Remote - New York', 'Upstate New York', 'Remote', undefined]) assert.equal(nyc.ok(l), false, String(l))
   assert.equal(placeIn('hiring a receptionist in the Bronx')!.ok('Bronx, NY'), true)
+  const state = placeIn('hiring in New York state')!; assert.equal(state.name, 'New York', 'plain New York stays the state'); assert.equal(state.ok('Albany, New York'), true)
+  const uk = placeIn('UK startups hiring sales')!
+  assert.equal(uk.name, 'United Kingdom'); for (const l of ['Manchester, United Kingdom', 'Remote - United Kingdom', 'London, UK']) assert.equal(uk.ok(l), true, l); assert.equal(uk.ok('Paris, France'), false)
   assert.equal(placeIn('hiring sales staff'), null, 'no place named: no boards')
 })
 
@@ -51,6 +58,12 @@ test('London: only the London sales posting is fetched and returned, dated from 
   const ev = await collectEvidence(sel, 'London UK B2B SaaS startups hiring sales account executive', http, 5000)
   assert.deepEqual(ev.map(e => e.url), ['https://boards.greenhouse.io/nimbus/jobs/1']); assert.equal(ev[0].date, day(9).slice(0, 10)); assert.equal(ev[0].quote, BODY)
   assert.deepEqual(seen, ['https://boards-api.greenhouse.io/v1/boards/nimbus/jobs', 'https://boards-api.greenhouse.io/v1/boards/nimbus/jobs/1'], 'one detail request, only for the posting that matched place and role')
+})
+test('exact London/NYC requests through collectEvidence: Manchester, UK-remote, Albany and Buffalo postings are never fetched; matching city postings are', async () => {
+  for (const [q, bad, good] of [['London UK startups hiring sales account executive', ['Manchester, United Kingdom', 'Remote - United Kingdom', 'Birmingham, England'], 'London, UK'], ['New York City companies hiring sales account executive', ['Albany, New York', 'Buffalo, NY', 'Upstate New York'], 'New York, NY']] as const) {
+    for (const loc of bad) { const { http, seen } = board(9, loc); assert.equal((await collectEvidence(sel, q, http, 5000)).length, 0, loc); assert.ok(!seen.some(u => u.endsWith('/jobs/1')), `${loc}: no detail fetch`) }
+    assert.equal((await collectEvidence(sel, q, board(9, good).http, 5000)).length, 1, good)
+  }
 })
 test('the request\'s own window is used: 45 days old is out for "past 30 days", in for "past 120 days", and the default stays 90', async () => {
   assert.equal((await collectEvidence(sel, 'London hiring account executive in the past 30 days', board(45).http, 5000)).length, 0)
@@ -99,4 +112,44 @@ test('runner: a hiring request auto-reads the public board found by search; the 
   assert.deepEqual(hiring.leads.filter(l => !l.review_reason).map(l => l.company), ['Nimbus Analytics'])
   const none = await run('London UK B2B SaaS startups that announced seed funding', ['announced seed funding'])
   assert.deepEqual(none.requested, [], 'no hiring signal: the boards are not touched')
+})
+
+// ---- Instinct's exact-input city scoping findings on #226 (each case its own assertion) ----
+test('request spellings bind the city: "New York, NY" and "New York, New York" are NYC, bare "New York State" is the state', () => {
+  assert.equal(placeIn('Find companies in New York, NY hiring receptionists')!.name, 'New York City')
+  assert.equal(placeIn('Find companies in New York, New York hiring receptionists')!.name, 'New York City')
+  assert.equal(placeIn('Find companies in New York State hiring receptionists')!.name, 'New York')
+})
+test('wrong-city / wrong-country acceptances are refused: Albany for "New York, NY", "New York State, USA" for NYC, "East London, South Africa" for London UK', () => {
+  assert.equal(placeIn('New York, NY')!.ok('Albany, New York'), false)
+  assert.equal(placeIn('NYC')!.ok('New York State, USA'), false)
+  assert.equal(placeIn('London UK')!.ok('East London, South Africa'), false)
+  for (const l of ['Buffalo, NY', 'Rochester, New York', 'Upstate New York', 'Remote - New York State', 'Remote - New York', 'New York State']) assert.equal(placeIn('New York City')!.ok(l), false, l)
+  for (const l of ['London, Ontario', 'London, Kentucky', 'London, KY', 'Londonderry, UK', 'East London', 'East London, Eastern Cape', 'New London, CT', 'Manchester, UK', 'United Kingdom', 'England', 'Remote - United Kingdom', 'Remote - London', 'London, UK (Remote)']) assert.equal(placeIn('London UK')!.ok(l), false, l)
+})
+test('the matching city forms still pass', () => {
+  for (const l of ['New York, NY', 'New York', 'New York City', 'NYC', 'New York, New York, United States', 'Brooklyn, NY', 'Manhattan', 'Queens, New York', 'The Bronx, NY', 'Staten Island, NY', 'Hybrid - New York, NY', 'New York, NY (Hybrid)', 'New York, NY 10019']) assert.equal(placeIn('New York City')!.ok(l), true, l)
+  for (const l of ['London', 'London, UK', 'London, United Kingdom', 'London, England, United Kingdom', 'Greater London', 'South London, UK', 'East London, UK', 'Hybrid - London, UK', 'London (Hybrid)']) assert.equal(placeIn('London UK')!.ok(l), true, l)
+})
+test('a UK-only request is its own country place, never London; "London UK" resolves to London', () => {
+  assert.equal(placeIn('UK startups hiring sales')!.name, 'United Kingdom'); assert.equal(placeIn('UK startups hiring sales')!.ok('Manchester, UK'), true)
+  assert.equal(placeIn('London UK startups hiring sales')!.name, 'London')
+})
+function manyBoard() {
+  const seen: string[] = []
+  const locs = ['Manchester, UK', 'Remote - United Kingdom', 'Birmingham, England', 'East London, South Africa', 'London, Ontario', 'London, UK', 'Greater London']
+  const http: SafeGet = async url => {
+    if (new URL(url).hostname === 'hn.algolia.com') return null
+    seen.push(url); const j = (o: unknown) => ({ status: 200, body: JSON.stringify(o) })
+    if (url === 'https://boards-api.greenhouse.io/v1/boards/multi/jobs') return j({ jobs: locs.map((l, i) => ({ id: i + 1, title: 'Sales Account Executive', updated_at: day(1), location: { name: l }, absolute_url: `https://boards.greenhouse.io/multi/jobs/${i + 1}` })) })
+    const d = url.match(/\/jobs\/(\d+)$/); if (d) return j({ id: +d[1], title: 'Sales Account Executive', first_published: day(9), content: `&lt;p&gt;${BODY}&lt;/p&gt;`, location: { name: locs[+d[1] - 1] }, absolute_url: `https://boards.greenhouse.io/multi/jobs/${d[1]}` })
+    return null
+  }
+  return { http, seen }
+}
+test('through the real collectEvidence: for an exact London request only the London postings are detail-fetched and returned', async () => {
+  const { http, seen } = manyBoard()
+  const ev = await collectEvidence({ adapters: ['jobboards'], feeds: ['https://boards.greenhouse.io/multi'], pages: [] }, 'London UK B2B SaaS startups hiring sales account executive', http, 5000)
+  assert.deepEqual(ev.map(e => e.url).sort(), ['https://boards.greenhouse.io/multi/jobs/6', 'https://boards.greenhouse.io/multi/jobs/7'])
+  assert.deepEqual(seen.filter(u => /\/jobs\/\d+$/.test(u)).map(u => u.split('/').pop()).sort(), ['6', '7'], 'wrong-city postings were never detail-fetched')
 })
