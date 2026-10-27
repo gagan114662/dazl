@@ -38,7 +38,8 @@ Page title: ${JSON.stringify(title.slice(0, 200))}
 Page text: """${text}"""
 
 From what this company sells, describe their ideal buyer as JSON with exactly these keys:
-{"summary": string (one or two plain sentences: who they sell to and what makes that buyer a fit),
+{"sells": string (one plain line, under 120 characters: what this company sells, as the company would say it),
+ "summary": string (one or two plain sentences: who they sell to and what makes that buyer a fit),
  "who": string[] (roles or kinds of buyer, up to 4),
  "industries": string[] (buyer industries, up to 4, [] if the site does not say),
  "sizes": string[] (buyer company sizes, up to 3, [] if unclear),
@@ -49,7 +50,7 @@ Rules: only what the page supports, no invented facts, no hype words. Reply with
 
 export interface IcpFromSiteDeps { fetchImpl?: typeof fetch; lookup?: Lookup; master?: Buffer; providers?: Record<string, Provider> }
 
-export async function icpFromWebsite(db: Database.Database, tenantId: string, rawUrl: string, deps: IcpFromSiteDeps = {}): Promise<{ icp: Icp; source: string } | { error: IcpFromSiteError }> {
+export async function icpFromWebsite(db: Database.Database, tenantId: string, rawUrl: string, deps: IcpFromSiteDeps = {}): Promise<{ icp: Icp; source: string; sells: string } | { error: IcpFromSiteError }> {
   // Key first: no key of their own, no fetch and no call. This feature never uses the
   // trial or an operator key - the cost always lands on the tenant's own key.
   const vendor = pickVendor(db, tenantId)
@@ -66,13 +67,17 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
   if (text.length < 200) return { error: 'js_only' } // nothing readable without running JS
 
   let icp: Icp | null = null
+  let sells = ''
   try {
     const out = await provider.complete(read.key, PROMPT(new URL(page.finalUrl).hostname, title, text), deps.fetchImpl, 700)
     const json = /^\s*```(?:json)?\s*([\s\S]*?)\s*```\s*$/.exec(out)?.[1] ?? out
-    icp = normalizeIcp(JSON.parse(json))
+    const parsed = JSON.parse(json)
+    icp = normalizeIcp(parsed)
+    // Optional: what the seller offers, for the editable onboarding profile. Never required, never saved here.
+    if (typeof parsed?.sells === 'string') sells = parsed.sells.replace(/\s+/g, ' ').trim().slice(0, 150)
   } catch {
     return { error: 'key_rejected' }
   }
   if (!icp) return { error: 'key_rejected' }
-  return { icp, source: page.finalUrl }
+  return { icp, source: page.finalUrl, sells }
 }
