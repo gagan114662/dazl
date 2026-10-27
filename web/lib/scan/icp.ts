@@ -92,7 +92,7 @@ const stageOf = (m: RegExpExecArray): Stage => (m[1] ? 'preseed' : m[2] ? 'seed'
 // "Series A or later" / "Series A+" is a RANGE: the mention covers every stage from A up. Without this, excluding "A or
 // later" accepted a profile about Series B (Instinct #213 recheck).
 const ORDER: Stage[] = ['preseed', 'seed', 'a', 'b', 'c', 'd', 'e']
-const LATER = /^\s*(?:,\s*)?(?:(?:or|and)\s+(?:later|above|beyond|after|higher|newer)\b|\+|onwards?\b)/i
+const LATER = /^\s*(?:(?:funding|funded|round|rounds|stage)\s+){0,2}(?:,\s*)?(?:(?:or|and)\s+(?:later|above|beyond|after|higher|newer)\b|\+|onwards?\b)/i
 const span = (st: Stage, later: boolean): Stage[] => (later ? ORDER.slice(ORDER.indexOf(st)) : [st])
 interface Mention { stage: Stage; start: number; end: number; excluded: boolean; later: boolean }
 function mentions(text: string): Mention[] {
@@ -108,13 +108,17 @@ function mentions(text: string): Mention[] {
   return out
 }
 export function keepStatedFundingStage(query: string, icp: Icp): Icp {
-  if (!FUNDING_CUE.test(query)) return icp
-  // "seed or later" / "Series A+": later stages are requested, so there is nothing to protect from widening.
-  if (query.split(/(?<=[.;!?])\s+|\bbut\b|\n/i).some(c => /\b(?:or|and)\s+(?:later|above|beyond|after)\b|\b(?:seed|series[-\s]*[a-e])\s*\+/i.test(c) && !EXCLUDE_CUE.test(c))) return icp
+  // A funding context: a funding word, a "Series X" mention, a pre-seed mention, or "seed" used as a stage ("seed or later",
+  // "seed+", "seed-funded", "seed stage"). A bare "seed" ("seed oil producers") is not one.
+  const fundingContext = FUNDING_CUE.test(query) || /\bseries[-\s]*[a-e]\b|\bpre[-\s]?seed\b|\bseed(?:\s+(?:or|and)\s+(?:later|above|beyond|higher)\b|\s*\+|[-\s](?:stage|funded|round|rounds)\b)/i.test(query)
+  if (!fundingContext) return icp
   const q = mentions(query)
-  const want = new Set(q.filter(m => !m.excluded).map(m => m.stage)); const notWant = new Set(q.filter(m => m.excluded).flatMap(m => span(m.stage, m.later)))
+  // A positive "seed or later" is a RANGE too (seed..E). Every explicit exclusion is checked on top of it ("seed or later, but
+  // exclude Series B or later" allows seed and A only): a positive range never switches the exclusions off.
+  const want = new Set(q.filter(m => !m.excluded).flatMap(m => span(m.stage, m.later))); const notWant = new Set(q.filter(m => m.excluded).flatMap(m => span(m.stage, m.later)))
   if (want.size === 0 && notWant.size === 0) return icp // the request names no stage: nothing to protect, nothing to change
-  const bad = (m: Mention) => !m.excluded && (notWant.has(m.stage) || (want.size > 0 && !want.has(m.stage)))
+  const allowed = (st: Stage) => (want.size === 0 || want.has(st)) && !notWant.has(st)
+  const bad = (m: Mention) => !m.excluded && !allowed(m.stage)
   const fallback = (): Icp => { const f = fallbackIcp(query); return { ...f, ...(icp.country ? { country: icp.country } : {}), ...(icp.language ? { language: icp.language } : {}), ...(icp.window_days ? { window_days: icp.window_days } : {}) } }
   // Remove offending mentions plus the separator that joined them ("seed / Series A", "seed or Series A, Series B").
   const trim = (t: string): string => {
@@ -126,7 +130,7 @@ export function keepStatedFundingStage(query: string, icp: Icp): Icp {
     return out
   }
   const touched = (t: string) => mentions(t).some(bad)
-  const mentionsWanted = (t: string) => mentions(t).some(m => !m.excluded && want.has(m.stage))
+  const mentionsWanted = (t: string) => mentions(t).some(m => !m.excluded && allowed(m.stage))
   // The summary is what the user reads as "the search". Offending, and nothing safe to keep => the original request.
   let summary = icp.summary
   if (touched(summary)) {
