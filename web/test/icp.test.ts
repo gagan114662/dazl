@@ -296,3 +296,32 @@ test('a positive range alone still allows every later stage (no exclusion stated
   // a request with no funding context at all ("seed oil") is untouched
   assert.deepEqual(keepStatedFundingStage('seed oil producers in Ohio', { ...base, summary: 'Series C seed suppliers' }), { ...base, summary: 'Series C seed suppliers' })
 })
+
+// Instinct #213 recheck 4: a model-side RANGE ("Seed or later") silently broadened a seed-only request: the guard looked at the
+// mention's first stage only. Every stage in a positive range the MODEL wrote must be allowed by the request.
+test('model-side positive range under a seed-only request: summary and signals', () => {
+  const q = 'Find seed-funded companies in London'
+  const sum = keepStatedFundingStage(q, { ...base, summary: 'Seed or later companies in London', signals: ['Seed or later funding'], country: 'GB' })
+  assert.equal(sum.summary, q); assert.deepEqual(sum.signals, []); assert.equal(sum.country, 'GB')
+  assert.equal(keepStatedFundingStage(q, { ...base, summary: 'Seed-funded or later companies in London' }).summary, q)
+  assert.equal(keepStatedFundingStage(q, { ...base, summary: 'London companies with seed funding or later' }).summary, q, 'range marker after "funding"')
+  assert.equal(keepStatedFundingStage(q, { ...base, summary: 'London seed+ startups' }).summary, q, '"seed+"')
+  // the summary is fine; only a signal carries the range: that signal is dropped, the seed signal stays
+  const sig = keepStatedFundingStage(q, { ...base, summary: 'London seed-funded companies', signals: ['Seed or later funding', 'raised a seed round'] })
+  assert.equal(sig.summary, 'London seed-funded companies'); assert.deepEqual(sig.signals, ['raised a seed round'])
+  // a range marker phrase beside the stated stage is trimmed whole, never left as "or later"
+  assert.equal(keepStatedFundingStage(q, { ...base, summary: 'London seed or later and seed-funded companies' }).summary.includes('later'), false)
+})
+test('permitted-range controls: the request allows the whole range, or the model range stays inside it', () => {
+  const rng = { ...base, summary: 'Seed or later companies in London', signals: ['Seed or later funding'] }
+  assert.deepEqual(keepStatedFundingStage('Find seed or later companies in London', rng), rng, 'request asked for seed or later')
+  assert.deepEqual(keepStatedFundingStage('London companies with seed funding or later', rng), rng)
+  // a Series A+ range inside a seed-or-later request is fine; one that reaches an EXCLUDED stage is not
+  const a = { ...base, summary: 'Series A or later London companies', signals: ['Series A or later funding'] }
+  assert.deepEqual(keepStatedFundingStage('Find seed or later companies in London', a), a)
+  const q = 'Find seed or later companies in London, but exclude Series B or later'
+  assert.equal(keepStatedFundingStage(q, { ...base, summary: 'Seed or later companies in London' }).summary, q, 'the model range reaches the excluded B..E')
+  // separate permitted stages are not a range
+  const sa = { ...base, summary: 'London companies with seed and Series A funding', signals: ['seed round', 'Series A round'] }
+  assert.deepEqual(keepStatedFundingStage(q, sa).signals, ['seed round', 'Series A round'])
+})

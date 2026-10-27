@@ -92,7 +92,7 @@ const stageOf = (m: RegExpExecArray): Stage => (m[1] ? 'preseed' : m[2] ? 'seed'
 // "Series A or later" / "Series A+" is a RANGE: the mention covers every stage from A up. Without this, excluding "A or
 // later" accepted a profile about Series B (Instinct #213 recheck).
 const ORDER: Stage[] = ['preseed', 'seed', 'a', 'b', 'c', 'd', 'e']
-const LATER = /^\s*(?:(?:funding|funded|round|rounds|stage)\s+){0,2}(?:,\s*)?(?:(?:or|and)\s+(?:later|above|beyond|after|higher|newer)\b|\+|onwards?\b)/i
+const LATER = /^(?:[-\s]*(?:funding|funded|round|rounds|stage)\b){0,2}\s*(?:,\s*)?(?:(?:or|and)\s+(?:later|above|beyond|after|higher|newer)\b|\+|onwards?\b)/i
 const span = (st: Stage, later: boolean): Stage[] => (later ? ORDER.slice(ORDER.indexOf(st)) : [st])
 interface Mention { stage: Stage; start: number; end: number; excluded: boolean; later: boolean }
 function mentions(text: string): Mention[] {
@@ -102,7 +102,9 @@ function mentions(text: string): Mention[] {
     for (const m of clause.matchAll(STAGE_RE)) {
       const before = clause.slice(0, m.index)
       const after = clause.slice((m.index ?? 0) + m[0].length)
-      out.push({ stage: stageOf(m as unknown as RegExpExecArray), start: base + (m.index ?? 0), end: base + (m.index ?? 0) + m[0].length, excluded: EXCLUDE_CUE.test(before.slice(-60)), later: LATER.test(after) })
+      const lm = LATER.exec(after)
+      // `end` covers the range marker too ("Seed or later", "seed funding or later"), so trimming removes the whole range.
+      out.push({ stage: stageOf(m as unknown as RegExpExecArray), start: base + (m.index ?? 0), end: base + (m.index ?? 0) + m[0].length + (lm ? lm[0].length : 0), excluded: EXCLUDE_CUE.test(before.slice(-60)), later: !!lm })
     }
   }
   return out
@@ -118,7 +120,8 @@ export function keepStatedFundingStage(query: string, icp: Icp): Icp {
   const want = new Set(q.filter(m => !m.excluded).flatMap(m => span(m.stage, m.later))); const notWant = new Set(q.filter(m => m.excluded).flatMap(m => span(m.stage, m.later)))
   if (want.size === 0 && notWant.size === 0) return icp // the request names no stage: nothing to protect, nothing to change
   const allowed = (st: Stage) => (want.size === 0 || want.has(st)) && !notWant.has(st)
-  const bad = (m: Mention) => !m.excluded && !allowed(m.stage)
+  // A model mention is bad if ANY stage in its span is not allowed: "Seed or later" under a seed-only request names A..E too.
+  const bad = (m: Mention) => !m.excluded && span(m.stage, m.later).some(st => !allowed(st))
   const fallback = (): Icp => { const f = fallbackIcp(query); return { ...f, ...(icp.country ? { country: icp.country } : {}), ...(icp.language ? { language: icp.language } : {}), ...(icp.window_days ? { window_days: icp.window_days } : {}) } }
   // Remove offending mentions plus the separator that joined them ("seed / Series A", "seed or Series A, Series B").
   const trim = (t: string): string => {
@@ -130,7 +133,7 @@ export function keepStatedFundingStage(query: string, icp: Icp): Icp {
     return out
   }
   const touched = (t: string) => mentions(t).some(bad)
-  const mentionsWanted = (t: string) => mentions(t).some(m => !m.excluded && allowed(m.stage))
+  const mentionsWanted = (t: string) => mentions(t).some(m => !m.excluded && !bad(m) && allowed(m.stage))
   // The summary is what the user reads as "the search". Offending, and nothing safe to keep => the original request.
   let summary = icp.summary
   if (touched(summary)) {
