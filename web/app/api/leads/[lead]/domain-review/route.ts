@@ -12,7 +12,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad origin' }, { status: 403 })
   if (!/^[a-f0-9]{24}$/.test(lead)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  if (!rateLimit(`domain-review:${user.id}`, 30, 60_000).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!(await rateLimit(`domain-review:${user.id}`, 30, 60_000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   let action: unknown; let binding: unknown
   try { const b = await req.json(); action = b?.action; binding = b?.binding } catch { return NextResponse.json({ error: 'Bad request' }, { status: 400 }) }
   if (action !== 'confirm' && action !== 'withdraw') return NextResponse.json({ error: 'Bad request' }, { status: 400 })

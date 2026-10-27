@@ -2,6 +2,7 @@
 // two-engine test harness (test/helpers/engines.ts) both use it, so the PG schema and the test schema cannot drift.
 import type Database from 'better-sqlite3'
 import { migrateAuth } from '../auth-db.ts'
+import { migratePlatform } from './platform-tables.ts'
 import { migrateScan } from '../scan/store.ts'
 import { migrateSourceRuns } from '../scan/source-runs.ts'
 import { migrateCsv } from '../scan/csv-import.ts'
@@ -42,6 +43,7 @@ import { SqliteQueue } from '../queue/sqlite.ts'
 
 export function migrateAllSqlite(db: Database.Database): void {
   migrateAuth(db)
+  migratePlatform(db)
   const migrates = [
     migrateScan, migrateSourceRuns, migrateCsv, migrateCommenterImport, migrateTrial,
     migrateOutreach, migrateSequences, migrateReplies, migrateLedger, migrateReopen,

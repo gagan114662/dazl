@@ -3,7 +3,8 @@
 // route rejects before calling this - cannot exhaust another tenant's allowance.
 // A shared global bucket here was finding F2 in docs/security/tenant-isolation-assessment.md.
 import { rateLimit } from '../rate-limit.ts'
+import type { Db } from '../db/client.ts'
 
-export function enrichmentWriteLimit(userId: string): { ok: boolean; retryAfterS: number } {
-  return rateLimit(`settings:enrichment:${userId}`, 20, 60_000)
+export async function enrichmentWriteLimit(userId: string, d?: Db): Promise<{ ok: boolean; retryAfterS: number }> {
+  return rateLimit(`settings:enrichment:${userId}`, 20, 60_000, d)
 }

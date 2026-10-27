@@ -6,7 +6,7 @@ import { cleanText, validateEmail, validatePassword } from '@/lib/validate'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 
 export async function POST(req: NextRequest) {
-  const rl = rateLimit(`signup:${clientIp(req)}`, 5, 60 * 60 * 1000)
+  const rl = (await rateLimit(`signup:${clientIp(req)}`, 5, 60 * 60 * 1000))
   if (!rl.ok) {
     return NextResponse.json({ error: 'Too many attempts. Try again later.' }, { status: 429, headers: { 'Retry-After': String(rl.retryAfterS) } })
   }

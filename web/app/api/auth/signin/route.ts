@@ -13,8 +13,8 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => null)
     const email = validateEmail(body?.email)
     const password = typeof body?.password === 'string' ? body.password : ''
-    const ip = rateLimit(`signin-ip:${clientIp(req)}`, 20, 15 * 60 * 1000)
-    const acct = rateLimit(`signin-acct:${email ?? 'invalid'}`, 8, 15 * 60 * 1000)
+    const ip = (await rateLimit(`signin-ip:${clientIp(req)}`, 20, 15 * 60 * 1000))
+    const acct = (await rateLimit(`signin-acct:${email ?? 'invalid'}`, 8, 15 * 60 * 1000))
     if (!ip.ok || !acct.ok) {
       const retry = Math.max(ip.retryAfterS, acct.retryAfterS)
       return NextResponse.json({ error: 'Too many attempts. Try again later.' }, { status: 429, headers: { 'Retry-After': String(retry) } })

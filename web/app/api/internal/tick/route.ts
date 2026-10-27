@@ -7,6 +7,8 @@ import { runFollowups } from '@/lib/outreach/followups'
 import { runDueWatches } from '@/lib/watch'
 import { collectMonitorResults, runDueMonitors } from '@/lib/monitors'
 import { kickRunner } from '@/lib/scan/runner'
+import { getDb } from '@/lib/db/client'
+import { tryLease } from '@/lib/shared/lease'
 import { migrateIndexing, dueTenants, runIndexChecks } from '@/lib/seo/indexing'
 
 // Called by a scheduler (cron or a systemd timer) with AUTOPILOT_TICK_SECRET. Reads replies and sends due
@@ -16,6 +18,20 @@ export async function POST(req: NextRequest) {
   const got = req.headers.get('authorization') ?? ''
   const want = `Bearer ${secret}`
   if (!secret || got.length !== want.length || !timingSafeEqual(Buffer.from(got), Buffer.from(want))) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  // One tick at a time across every app instance: a scheduler that fires twice, or fires on two instances, runs the
+  // work once. The lease outlives a crashed holder by at most TICK_LEASE_MS.
+  const lease = await tryLease(await getDb(), 'internal-tick', TICK_LEASE_MS)
+  if (!lease) return NextResponse.json({ ok: true, skipped: 'another tick is running' })
+  try {
+    return await tick()
+  } finally {
+    await lease.release()
+  }
+}
+
+const TICK_LEASE_MS = 30 * 60 * 1000
+
+async function tick() {
   const db = getScanDb()
   const tenants = db.prepare('SELECT s.tenant_id, u.business_name FROM autopilot_settings s JOIN users u ON u.id = s.tenant_id WHERE s.enabled = 1 AND s.paused = 0 AND s.followups_enabled = 1').all() as { tenant_id: string; business_name: string | null }[]
   let done = 0

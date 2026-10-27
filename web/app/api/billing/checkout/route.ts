@@ -11,7 +11,7 @@ export async function POST(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   if (!process.env.STRIPE_SECRET_KEY || !process.env.STRIPE_PRICE_PRO) return NextResponse.json({ error: 'Billing is not available yet' }, { status: 503 })
-  if (!rateLimit(`checkout:${user.id}`, 10, 60 * 60 * 1000).ok) return NextResponse.json({ error: 'Too many attempts' }, { status: 429 })
+  if (!(await rateLimit(`checkout:${user.id}`, 10, 60 * 60 * 1000)).ok) return NextResponse.json({ error: 'Too many attempts' }, { status: 429 })
   const db = await getDb()
   if (await readPlan(db, user.id) === 'pro') return NextResponse.json({ error: 'Already on Pro' }, { status: 409 })
   try {

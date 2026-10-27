@@ -51,12 +51,12 @@ Totals: 60 PG-schema, 12 SQLite-only, 1 temp.
 
 | Store | File | Effect with 2+ instances | Target |
 |---|---|---|---|
-| Rate-limit buckets | `lib/rate-limit.ts` (46 callers) | Each instance has its own limit, so the real limit is N times higher | PG table, fixed window, upsert |
+| Rate-limit buckets | `lib/rate-limit.ts` (45 callers) | **Done (step 3a):** the `rate_limits` table, one atomic upsert per check, shared by all instances and kept across restarts | — |
 | Per-owner spend pool | `lib/llm/spend-guard.ts` `ownerPool` | The budget resets on restart, and each instance has its own copy (overspend) | PG row per owner with an atomic reserve |
 | Scan concurrency slots | `lib/scan/run-slots.ts` | `SCAN_MAX_CONCURRENT` applies per instance | Global count of running jobs in PG |
 | Scan runner loop and claiming | `lib/scan/runner.ts` `kickRunner`, `claimKeyedJob`, `reapStaleJobs` | Claim is durable today (see below). Gap: on PG a racing loser gets `null` and stops its loop instead of taking the next job; the stale reaper runs on every instance | `FOR UPDATE SKIP LOCKED` claim; keep the conditional `attempts` fence |
 | Shutdown requeue | `instrumentation.ts` → `scan/shutdown-hook.ts` | Must requeue only this instance's jobs | Tag each claim with an instance id |
-| Tick scheduler | `POST /api/internal/tick` (external cron) | Sends are already guarded by durable per-row claims (see below). Not proven safe: duplicate non-send work in overlapping ticks (reply sync, monitor/watch queueing, index checks that use TinyFish allowance) | `pg_try_advisory_lock` per tick as defense in depth; prove the non-send paths in step 3 |
+| Tick scheduler | `POST /api/internal/tick` (external cron) | **Done (step 3a):** the whole tick holds the `internal-tick` lease (`app_leases`, 30 min TTL), so an overlapping tick on any instance returns `skipped`. The per-row send claims stay as they are | A tick running longer than 30 min would let a second one start; the send claims still guard sends |
 | Reopen resolve guard | `lib/outreach/reopen.ts` `inFlight` Set | The send claim is durable (see below). The Set only stops a user resolving a claim older than the lease while the Gmail call still runs in *this* process; another instance cannot see it. Bounded by the 20s Gmail abort vs the 10 min lease | Record the in-flight call in the row, or accept with the lease bound documented |
 | TinyFish minute window and breaker | `lib/search/tinyfish.ts` | Provider limit is exceeded N times | PG window row (daily usage is already in `tinyfish_usage`) |
 | News request queue | `lib/search/news.ts` | Requests are spaced per instance only | Accept this, or use a PG advisory lock |

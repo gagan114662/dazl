@@ -267,7 +267,10 @@ export function getDb(): Promise<Db> {
     if (url) return pgDb({ connectionString: url })
     // getScanDb runs every module's sqlite migrate*() once, so ported modules find their tables.
     const { getScanDb } = await import('../scan/service.ts')
-    return sqliteDb(getScanDb())
+    const { migratePlatform } = await import('./platform-tables.ts')
+    const raw = getScanDb()
+    migratePlatform(raw)
+    return sqliteDb(raw)
   })()
   return shared
 }
