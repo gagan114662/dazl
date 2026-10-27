@@ -85,3 +85,14 @@ test('conjunction-joined positive hiring clause survives a negated one, in both 
   // a conjunction before a plain role (no new hiring clause) stays inside the negation
   assert.deepEqual(directQueries('Empresas en Madrid que no contratan recepcionista y cocinero', [], ['Madrid']), [])
 })
+
+test('a short negated exclusion after a positive clause is not added as a role (#220 re-review)', () => {
+  for (const [req, role, off] of [
+    ['Empresas en Madrid que contratan recepcionista, no agencias', 'recepcionista', 'agencias'],
+    ['Companies in Madrid hiring a receptionist, not agencies', 'receptionist', 'agencies'],
+  ]) {
+    const q = directQueries(req, [], ['Madrid'])
+    assert.ok(q.length > 0, req)
+    for (const x of q) { assert.match(x, new RegExp(role)); assert.doesNotMatch(x, new RegExp(off)) }
+  }
+})

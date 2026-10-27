@@ -96,7 +96,10 @@ const NEG = `(?:no|not|never|nunca|ne|n[ãa]o|nicht|pas|niet|non|\\p{L}*n['’]t
 const CONJ = '(?:y|e|and|but|pero|mas|mas|et|mais|und|aber|en|maar|e|ma|e|&)'
 const NEG_TAIL = `(?:(?!\\s+${CONJ}\\s+(?:\\p{L}+\\s+){0,2}(?:${HIRING.source})(?![${L}]))[^.;,!?\\n])*`
 const NEG_CLAUSE = new RegExp(`(?<![${L}])${NEG}(?![${L}])\\s+(?:\\p{L}+\\s+)?(?:${HIRING.source})${NEG_TAIL}`, 'giu')
-export const stripNegatedHiring = (text: string): string => text.replace(NEG_CLAUSE, ' . ')
+// A short negated exclusion after a comma ("hiring a receptionist, no agencias") excludes that group; left in place its words
+// became an extra OR role (Instinct re-review of #220 at b39395a). Only a bare cue right after a comma, to the end of the clause.
+const NEG_NOUN = new RegExp(`,\\s*${NEG}(?![${L}])\\s+[^.;,!?\\n]*`, 'giu')
+export const stripNegatedHiring = (text: string): string => text.replace(NEG_CLAUSE, ' . ').replace(NEG_NOUN, ' . ')
 export function roleRequestText(request: string): string {
   return stripNegatedHiring(request).replace(EXCL_CLAUSE, ' . ')
     .replace(REQ_CLAUSE, (_m, rest: string) => HIRING.test(rest) ? ` ${rest} ` : ' . ')
