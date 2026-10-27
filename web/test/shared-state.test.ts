@@ -18,17 +18,18 @@ import { PG_URL, pgSkip, freshSchema } from './helpers/pg-test.ts'
 
 const run = promisify(execFile)
 
-bothEngines('rate limit: fixed window per key, retry-after, then a fresh window', async ({ db }) => {
+// Keys carry the engine: the per-process shadow is shared by both engines' runs in this one test process.
+bothEngines('rate limit: fixed window per key, retry-after, then a fresh window', async ({ db, kind }) => {
   const t0 = 1_800_000_000_000
-  for (let i = 1; i <= 3; i++) assert.deepEqual(await rateLimit('k', 3, 60_000, db, t0 + i), { ok: true, retryAfterS: 0 })
-  assert.deepEqual(await rateLimit('k', 3, 60_000, db, t0 + 10), { ok: false, retryAfterS: 60 })
-  assert.equal((await rateLimit('other', 3, 60_000, db, t0 + 10)).ok, true) // keys are independent
-  assert.equal((await rateLimit('k', 3, 60_000, db, t0 + 60_001)).ok, true) // window over
-  assert.equal((await rateLimit('k', 3, 60_000, db, t0 + 60_002)).ok, true)
+  for (let i = 1; i <= 3; i++) assert.deepEqual(await rateLimit(`${kind}:k`, 3, 60_000, db, t0 + i), { ok: true, retryAfterS: 0 })
+  assert.deepEqual(await rateLimit(`${kind}:k`, 3, 60_000, db, t0 + 10), { ok: false, retryAfterS: 60 })
+  assert.equal((await rateLimit(`${kind}:other`, 3, 60_000, db, t0 + 10)).ok, true) // keys are independent
+  assert.equal((await rateLimit(`${kind}:k`, 3, 60_000, db, t0 + 60_001)).ok, true) // window over
+  assert.equal((await rateLimit(`${kind}:k`, 3, 60_000, db, t0 + 60_002)).ok, true)
 })
 
-bothEngines('rate limit: concurrent calls in one process never exceed the limit', async ({ db }) => {
-  const rs = await Promise.all(Array.from({ length: 40 }, () => rateLimit('burst', 25, 60_000, db)))
+bothEngines('rate limit: concurrent calls in one process never exceed the limit', async ({ db, kind }) => {
+  const rs = await Promise.all(Array.from({ length: 40 }, () => rateLimit(`${kind}:burst`, 25, 60_000, db)))
   assert.equal(rs.filter(r => r.ok).length, 25)
 }, { pgMax: 8 })
 
@@ -83,7 +84,7 @@ test('PG unreachable: the limit still holds', async () => {
 })
 
 bothEngines('lease: one holder at a time; release frees it; an expired lease can be taken over; a stale release frees nothing', async ({ db }) => {
-  const t0 = 1_800_000_000_000, o = { ttlMs: 1000, stepBudgetMs: 300 }
+  const t0 = 1_800_000_000_000, o = { ttlMs: 1000, stepBudgetMs: 300, heartbeat: false }
   const a = await tryLease(db, 'tick', o, t0)
   assert.ok(a)
   assert.equal(await tryLease(db, 'tick', o, t0 + 1), null)
@@ -101,7 +102,7 @@ bothEngines('lease: one holder at a time; release frees it; an expired lease can
 // A long tick: 40 steps of 200 ms (8 s) under a 1 s lease. The holder renews at checkpoints, so another instance trying
 // every 50 ms never gets in while it runs, and gets in right after it releases.
 bothEngines('lease: work far longer than the TTL never overlaps another holder while it keeps renewing', async ({ db }) => {
-  const t0 = 1_800_000_000_000, o = { ttlMs: 1000, stepBudgetMs: 300 }
+  const t0 = 1_800_000_000_000, o = { ttlMs: 1000, stepBudgetMs: 300, heartbeat: false }
   let now = t0
   const a = (await tryLease(db, 'tick', o, now))!
   for (let step = 0; step < 40; step++) {
@@ -115,7 +116,7 @@ bothEngines('lease: work far longer than the TTL never overlaps another holder w
 // The holder cannot reach the store to renew: it stops starting steps while its confirmed lease still covers a whole
 // step, before anyone else can take the lease over, so the last step it ran has ended by the time a new holder starts.
 bothEngines('lease: a holder that cannot renew stops before the lease can be taken over', async ({ db }) => {
-  const t0 = 1_800_000_000_000, o = { ttlMs: 1000, stepBudgetMs: 300 }
+  const t0 = 1_800_000_000_000, o = { ttlMs: 1000, stepBudgetMs: 300, heartbeat: false }
   // the holder's store connection accepts the acquire (a read-back upsert) but every renewal write fails
   const flaky = { ...db, run: () => Promise.reject(new Error('connection lost')) } as Db
   const a = (await tryLease(flaky, 'tick', o, t0))!
@@ -123,6 +124,57 @@ bothEngines('lease: a holder that cannot renew stops before the lease can be tak
   await assert.rejects(a.keep(t0 + 701), LeaseLost) // under one step's budget left: no new step
   assert.equal(await tryLease(db, 'tick', o, t0 + 999), null) // nobody else before expiry...
   assert.ok(await tryLease(db, 'tick', o, t0 + 1000)) // ...and at expiry the holder stopped starting steps >= 300 ms ago
+})
+
+// Healthy -> outage -> recovery on one key: the decision never forgets an allowance already used (review repro).
+test('rate limit: an outage or a recovery never hands back an allowance already used', async () => {
+  const raw = new Database(':memory:'); migrateAllSqlite(raw)
+  const db = sqliteDb(raw)
+  const orig = console.error
+  console.error = () => {}
+  try {
+    const ok = async (k: string, limit = 1) => (await rateLimit(k, limit, 60_000, db)).ok
+    assert.equal(await ok('transition'), true)
+    assert.equal(await ok('transition'), false) // used up while the store is healthy
+    raw.pragma('query_only = ON')
+    assert.equal(await ok('transition'), false) // the outage does not reset it
+    assert.equal(await ok('transition'), false)
+    raw.pragma('query_only = OFF')
+    assert.equal(await ok('transition'), false) // nor does the recovery
+    // flipping the store on and off every call: exactly `limit` calls get through in the window
+    let allowed = 0
+    for (let i = 0; i < 20; i++) {
+      raw.pragma(`query_only = ${i % 2 ? 'ON' : 'OFF'}`)
+      if (await ok('flip', 3)) allowed++
+    }
+    assert.equal(allowed, 3)
+    raw.pragma('query_only = OFF')
+    // an outage first, then recovery: what was counted during the outage still counts
+    raw.pragma('query_only = ON')
+    assert.equal(await ok('outage-first', 2), true)
+    assert.equal(await ok('outage-first', 2), true)
+    await new Promise(r => setTimeout(r, 5)) // the store's own window starts later than this process's
+    raw.pragma('query_only = OFF')
+    assert.equal(await ok('outage-first', 2), false)
+  } finally { console.error = orig }
+})
+
+// A step far longer than the TTL, with no checkpoint inside it: the heartbeat keeps the lease, so another instance
+// polling all along never gets in; it gets in right after the release.
+bothEngines('lease: the heartbeat holds the lease through one step three times longer than the TTL', async ({ db }) => {
+  const o = { ttlMs: 300, stepBudgetMs: 100, renewEveryMs: 50 }
+  const a = (await tryLease(db, 'tick', o))!
+  await a.keep()
+  let stolen = 0
+  const until = Date.now() + 1000
+  while (Date.now() < until) { // the "step": 1 s of work with no keep() call, while another instance polls
+    if (await tryLease(db, 'tick', { ...o, heartbeat: false })) stolen++
+    await new Promise(r => setTimeout(r, 20))
+  }
+  assert.equal(stolen, 0)
+  await a.keep() // still the holder after the long step
+  await a.release()
+  assert.ok(await tryLease(db, 'tick', { ...o, heartbeat: false }))
 })
 
 // Two real app instances: separate Node processes over one store. Each instance takes leases for the same 40 job names

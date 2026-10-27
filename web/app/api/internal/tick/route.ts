@@ -20,9 +20,9 @@ export async function POST(req: NextRequest) {
   const want = `Bearer ${secret}`
   if (!secret || got.length !== want.length || !timingSafeEqual(Buffer.from(got), Buffer.from(want))) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   // One tick at a time across every app instance: a scheduler that fires twice, or fires on two instances, runs the
-  // work once. The holder renews the lease between per-tenant steps and stops before a step it cannot finish inside
-  // its confirmed lease, so a long tick never overlaps the next one (lib/shared/lease.ts). A crashed holder blocks
-  // ticks for at most TICK_LEASE.ttlMs.
+  // work once. The lease is renewed by a heartbeat for as long as this process runs the tick, however long one tenant's
+  // step takes, and keep() stops the tick between steps if the lease could not be renewed (lib/shared/lease.ts). A
+  // crashed holder blocks ticks for at most TICK_LEASE.ttlMs.
   const lease = await tryLease(await getDb(), 'internal-tick', TICK_LEASE)
   if (!lease) return NextResponse.json({ ok: true, skipped: 'another tick is running' })
   try {
@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// Each step is one tenant's work (Gmail/TinyFish calls carry their own timeouts), far below the 10 minute budget.
+// Heartbeat every ~6.7 min (default (ttl - budget) / 3); keep() refuses a new step with under 10 min of confirmed lease.
 const TICK_LEASE = { ttlMs: 30 * 60 * 1000, stepBudgetMs: 10 * 60 * 1000 }
 
 async function tick(lease: Lease) {
