@@ -37,6 +37,15 @@ Updated by the builder on every branch. Newest first.
   invalid and future dates are stored under needs_review with a reason each. verified + needs_review is unchanged.
   Existing scans are not backfilled. Fixture tests only; no live run.
 
+- b/source-select (source quality, from the 2026-10-26 live NYC/London failures; fixtures only): (1) the hiring-board
+  search used instruction fragments as roles ("exclude chains", "dated source", "past", "need founder contacts",
+  "raised seed funding"), found by running reconstructed versions of the two requests (verbatim saved text and results
+  are not available to the builder); now cut from role extraction. (2) The search window was a fixed 365 days; now the
+  user's window when set. (3) Hiring-board queries took up to 6 of 8 searches; now at most half. (4) Login-walled hosts
+  (Facebook, Instagram, Nextdoor, LinkedIn) are fetched and listed after readable hosts and their site: targets are
+  removed unless the request names them. (5) The query prompt states the user's window and prefers dated, readable
+  sources. Not verified live: whether this raises yield.
+
 ## In progress (interactive Claude session, do not duplicate)
 
 - Blocked-source verification: waits for #188 data from a live run.
