@@ -136,7 +136,9 @@ export function canonicalUrl(raw: string): string | null {
 // employer is the unit of breadth. Every other host is its own unit (no taxonomy beyond these documented URL shapes).
 const ATS_EMPLOYER_HOSTS = /^(boards|job-boards)(\.eu)?\.greenhouse\.io$|^jobs\.(ashbyhq\.com|lever\.co)$|^apply\.workable\.com$/
 const employerKey = (u: URL): string => { const seg = u.pathname.split('/')[1]; return ATS_EMPLOYER_HOSTS.test(u.hostname) && seg ? `${u.hostname}/${seg.toLowerCase()}` : u.hostname }
-export function pickFetchUrls(urls: string[], max: number): string[] {
+// rank (optional, lower = fetched first, ties keep search order): which result is worth a scarce fetch slot. The same pages are
+// eligible; only the order changes, so with room for all of them nothing is dropped.
+export function pickFetchUrls(urls: string[], max: number, rank?: (url: string) => number): string[] {
   const seen = new Set<string>(); const byHost = new Map<string, string[]>()
   for (const url of urls) {
     const c = canonicalUrl(url); if (c === null || seen.has(c)) continue
@@ -145,15 +147,19 @@ export function pickFetchUrls(urls: string[], max: number): string[] {
     if (!byHost.has(host)) byHost.set(host, [])
     byHost.get(host)!.push(url)
   }
-  const out: string[] = []
-  // Readable hosts first, login-walled hosts after them: a walled page uses a fetch slot and still cannot be read.
-  const queues = [...byHost.entries()].sort(([a, qa], [b, qb]) => Number(isLoginWalled(qa[0])) - Number(isLoginWalled(qb[0]))).map(([, q]) => q)
-  for (let round = 0; out.length < max; round++) {
-    let any = false
-    for (const q of queues) { if (round < q.length) { any = true; if (out.length < max) out.push(q[round]) } }
-    if (!any) break
-  }
-  return out
+  // Candidates ordered by (rank, position within its host, host order): among equally ranked pages the breadth-first rule still
+  // holds (first pages of distinct hosts before second pages), and a lower rank always comes first. Default rank: login-walled
+  // pages after every readable page (a walled page uses a fetch slot and still cannot be read).
+  const r = rank ?? ((u: string) => Number(isLoginWalled(u)))
+  const flat: { url: string; rank: number; pos: number; host: number; order: number }[] = []
+  let host = 0, order = 0
+  for (const q of byHost.values()) { q.forEach((url, pos) => flat.push({ url, rank: r(url), pos, host, order: order++ })); host++ }
+  // Within one host the best-ranked page leads: positions are assigned after sorting that host's pages by rank (stable).
+  const byHostIdx = new Map<number, typeof flat>()
+  for (const f of flat) { if (!byHostIdx.has(f.host)) byHostIdx.set(f.host, []); byHostIdx.get(f.host)!.push(f) }
+  for (const group of byHostIdx.values()) { group.sort((a, b) => a.rank - b.rank || a.order - b.order); group.forEach((f, i) => { f.pos = i }) }
+  flat.sort((a, b) => a.rank - b.rank || a.pos - b.pos || a.host - b.host)
+  return flat.slice(0, Math.max(0, max)).map(f => f.url)
 }
 
 // Fetch in provider-sized batches (tfFetch takes at most 10 urls per call). All per-scan, per-tenant and global caps
@@ -288,16 +294,25 @@ export function markdownToText(md: string): string {
 
 // Turns search hits and fetched page text into Evidence for the user's model. The existing verifier still
 // re-fetches every cited URL and checks quote, company, date and contact before a lead is kept.
-export function toEvidence(hits: SearchHit[], pages: { url: string; text: string; title: string }[]): Evidence[] {
+// rank (optional, lower = first; the runner passes the SAME rank it used to choose fetches): the extraction cap below must
+// respect it, or a preferred result chosen for a scarce fetch can be cut before the model sees it (Instinct #219: preferred
+// hit at position 39 of 40, cap 30). Order: rank, then pages we actually fetched before snippet-only results, then first
+// pages of distinct hosts before second pages (breadth), then search order. Undated results are ranked by the caller; nothing
+// here turns a discovery timestamp into an event date.
+export function toEvidence(hits: SearchHit[], pages: { url: string; text: string; title: string }[], rank?: (url: string) => number, cap = 30): Evidence[] {
   const byUrl = new Map(pages.map(p => [p.url.replace(/\/$/, ''), p]))
   const seen = new Set<string>()
-  const out: Evidence[] = []
+  const items: { e: Evidence; page: boolean; idx: number; host: string }[] = []
   for (const h of hits) {
     const k = h.url.replace(/\/$/, ''); if (seen.has(k)) continue; seen.add(k)
     const page = byUrl.get(k)
     const text = (page ? markdownToText(page.text) : h.snippet).replace(/\s+/g, ' ').trim().slice(0, 1200)
-    if (text.length >= 20) out.push({ source: h.via === 'gdelt' ? 'news:gdelt' : 'tinyfish', url: h.url, title: page?.title || h.title, quote: text, date: h.date, ...(h.observed ? { updated: h.observed } : {}) })
+    let host = ''; try { host = new URL(h.url).hostname.toLowerCase() } catch { host = h.url }
+    if (text.length >= 20) items.push({ e: { source: h.via === 'gdelt' ? 'news:gdelt' : 'tinyfish', url: h.url, title: page?.title || h.title, quote: text, date: h.date, ...(h.observed ? { updated: h.observed } : {}) }, page: !!page, idx: items.length, host })
   }
-  // The 30-item cap must not be filled by snippet-only login-walled results ahead of pages that can be read.
-  return [...out.filter(e => !isLoginWalled(e.url)), ...out.filter(e => isLoginWalled(e.url))].slice(0, 30)
+  const r = rank ?? ((u: string) => Number(isLoginWalled(u)))
+  const seenHost = new Map<string, number>()
+  const keyed = items.map(it => { const pos = seenHost.get(it.host) ?? 0; seenHost.set(it.host, pos + 1); return { ...it, rank: r(it.e.url), pos } })
+  keyed.sort((a, b) => a.rank - b.rank || Number(!a.page) - Number(!b.page) || a.pos - b.pos || a.idx - b.idx)
+  return keyed.slice(0, cap).map(k => k.e)
 }
