@@ -41,12 +41,12 @@ export async function runFixture(f: Fixture) {
   const { icp } = await inferIcp(icpProvider, KEY, f.request)
   createQueryJob(db, 'A', { query: f.request, icp: JSON.stringify(icp) })
   const job = claimKeyedJob(db)!
-  const calls = { searches: [] as string[], tfFetchBatches: [] as string[][], ownFetch: [] as string[], prompts: [] as string[] }
+  const calls = { afters: [] as (string | null)[], searches: [] as string[], tfFetchBatches: [] as string[][], ownFetch: [] as string[], prompts: [] as string[] }
   const fetchImpl = (async (u: string, init?: RequestInit) => {
     if (u.startsWith('https://api.search.tinyfish.ai')) {
       const q = new URL(u).searchParams.get('query') ?? ''
       if (q.startsWith('site:linkedin.com/in ')) return new Response(JSON.stringify({ results: [] }), { status: 200 })
-      calls.searches.push(q)
+      calls.searches.push(q); calls.afters.push(new URL(u).searchParams.get('after_date'))
       return new Response(JSON.stringify({ results: f.hits.map(h => ({ url: h.url, title: h.title, snippet: h.snippet, ...(h.date ? { date: h.date } : {}) })) }), { status: 200 })
     }
     if (u.startsWith('https://api.fetch.tinyfish.ai')) {
