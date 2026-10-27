@@ -16,7 +16,9 @@ const iso = (y: number, m: number, d: number): string | null => {
   const t = new Date(Date.UTC(y, m - 1, d)); return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d ? t.toISOString().slice(0, 10) : null
 }
 export interface PageTiming { date: string | null; note: string | null }
-export function resolveTiming(pageText: string, quote: string): PageTiming {
+export function resolveTiming(pageText: string, quote: string, published?: string | null): PageTiming {
+  // The page's own publication metadata wins when it exists: it is stated by the source about the page, not guessed from prose.
+  if (published && /^\d{4}-\d{2}-\d{2}$/.test(published)) return { date: published, note: `date read from the page's own publication metadata (${published}), not stated by the source as the event day` }
   const text = pageText.replace(/\s+/g, ' ')
   const q = quote.replace(/\s+/g, ' ').slice(0, 80).toLowerCase()
   const at = q ? text.toLowerCase().indexOf(q) : -1
