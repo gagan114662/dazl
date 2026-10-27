@@ -24,6 +24,8 @@ const securityHeaders = [
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   deploymentId: process.env.NEXT_DEPLOYMENT_ID || buildCommit(),
+  // The same ID for the chunk-load recovery guard, which is scoped to the build (lib/chunk-recovery.ts).
+  env: { NEXT_PUBLIC_DAZL_BUILD: process.env.NEXT_DEPLOYMENT_ID || buildCommit() || '' },
   cacheComponents: true,
   partialPrefetching: true,
   async headers() {
