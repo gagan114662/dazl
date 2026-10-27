@@ -299,6 +299,10 @@ export default function LeadsClient() {
   }
 
   const [advReady, setAdvReady] = useState<string[]>([])
+  // The account's plan, for showing only the imports it can use. Unknown (load failed) keeps them visible: the server
+  // refuses a free account with pro_only either way.
+  const [plan, setPlan] = useState<'free' | 'pro' | null>(null)
+  useEffect(() => { void fetch('/api/usage').then(r => r.ok ? r.json() : null).then(j => { if (j?.plan === 'free' || j?.plan === 'pro') setPlan(j.plan) }).catch(() => {}) }, [])
   const [advPick, setAdvPick] = useState<string[]>([])
   useEffect(() => { void fetch('/api/settings/advanced').then(r => r.ok ? r.json() : null).then(j => { if (j?.available) setAdvReady(j.platforms.filter((p: { consent: boolean; connected: boolean; enabled: boolean; operator_index?: boolean }) => p.consent && ((p.connected && p.enabled) || p.operator_index)).map((p: { platform: string }) => p.platform)) }).catch(() => {}) }, [])
 
@@ -412,102 +416,112 @@ export default function LeadsClient() {
       <form onSubmit={preview} className="mb-4">
         <textarea className={`${input} w-full`} rows={3} required minLength={3} maxLength={600} value={query} onChange={e => setQuery(e.target.value)}
           placeholder="What are you looking for? e.g. Seed-stage fintech founders in Europe who just hired their first sales rep" />
-        <details className="mt-2 text-sm">
-          <summary className="cursor-pointer text-gray-400">More sources (optional)</summary>
-          <div className="mt-2 space-y-2">
-            <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useGithub} onChange={e => setUseGithub(e.target.checked)} /> Also search public GitHub repositories</label>
-            <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useYoutube} onChange={e => setUseYoutube(e.target.checked)} /> Also search public YouTube videos</label>
-            <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useV2ex} onChange={e => setUseV2ex(e.target.checked)} /> Also search public V2EX topics</label>
-            <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useJobboards} onChange={e => setUseJobboards(e.target.checked)} /> Also read public job postings (Greenhouse, Ashby, Lever) for a US state in your request</label>
-            <label className="block text-xs text-gray-500">Web page URLs to read (https only, one per line, up to 3). Pages are read through Jina Reader, a third-party service: the URLs are sent to it, and it rate limits requests without a key.</label>
-            <textarea className={`${input} w-full`} rows={2} value={pageText} onChange={e => setPageText(e.target.value)} placeholder="https://example.com/blog/post" />
-            <label className="block text-xs text-gray-500">RSS or Atom feed URLs to include (https only, one per line, up to 5)</label>
-            <textarea className={`${input} w-full`} rows={2} value={feedText} onChange={e => setFeedText(e.target.value)} placeholder="https://example.com/news/feed.xml" />
-            {advReady.map(p => <label key={p} className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={advPick.includes(p)} onChange={e => setAdvPick(e.target.checked ? [...advPick, p] : advPick.filter(x => x !== p))} /> {p === "x" ? "Also search X posts (via web index, no account risk)" : `Also search ${p} (uses operator session, posts may be flagged)`}</label>)}
-            <p className="text-xs text-gray-500">Items from these sources are checked against their page like every other lead.</p>
-          </div>
-        </details>
-        <div className="flex gap-2 mt-2 items-center">
-          <input type="text" value={siteUrl} onChange={e => setSiteUrl(e.target.value)} maxLength={300} placeholder="Your website - we will fill the profile from it" className={`${input} flex-1`} />
-          <button type="button" onClick={() => void fillFromSite()} disabled={siteBusy || siteUrl.trim().length < 5} className="text-gray-400 hover:text-white text-sm px-3 whitespace-nowrap disabled:opacity-40">{siteBusy ? 'Reading your site...' : 'Fill from my website'}</button>
-        </div>
-        <div className="flex gap-2 mt-2">
+        <div className="flex gap-3 mt-2 items-center">
           <button disabled={busy || scanActive} title={scanActive ? 'A scan is already running below' : undefined} className="btn-primary">{busy ? 'Working out your profile...' : 'Find leads'}</button>
-          <button type="button" disabled={query.trim().length < 3 || starting || scanActive} onClick={() => run(null)} className="text-gray-400 hover:text-white text-sm px-3 disabled:opacity-40">{starting ? 'Starting...' : 'Skip review, just run'}</button>
+          <button type="button" disabled={query.trim().length < 3 || starting || scanActive} onClick={() => run(null)} className="text-xs text-[#555] underline disabled:opacity-40 disabled:no-underline">{starting ? 'Starting...' : 'or run without reviewing the profile'}</button>
         </div>
       </form>
-      <SourceReview />
-      <HiringFeed />
-      <details className="mb-4 text-sm">
-        <summary className="cursor-pointer text-gray-400">Bulk import company domains (Pro)</summary>
-        <div className="card p-4 mt-2">
-          <p className="text-gray-500 text-xs mb-2">A CSV or text file with one company domain per line, up to 50. Each domain runs as its own scan on your AI key - contacts and signals land in the table below. Blank rows are skipped; bad rows are flagged.</p>
-          <input type="file" accept=".csv,.txt,text/csv,text/plain" disabled={csvBusy} onChange={e => { const f = e.target.files?.[0]; if (f) void importCsv(f); e.target.value = '' }} className="text-xs text-gray-300 file:mr-3 file:font-mono file:uppercase file:text-xs file:border file:border-black file:px-2 file:py-1 file:bg-transparent file:text-white hover:file:bg-black" />
-          {csvNote && <p className="text-xs text-gray-400 mt-2">{csvNote}</p>}
-          {csvInvalid.length > 0 && (
-            <div className="mt-2">
-              <p className="text-xs text-yellow-500">Skipped {csvInvalid.length} invalid row{csvInvalid.length === 1 ? '' : 's'}:</p>
-              <ul className="text-xs text-gray-500 ml-4 list-disc">{csvInvalid.slice(0, 10).map(r => <li key={r.line}>{r.line} - {r.reason}</li>)}</ul>
-              {csvInvalid.length > 10 && <p className="text-xs text-gray-600">and {csvInvalid.length - 10} more</p>}
-            </div>
-          )}
-          {csvBatch && (
-            <div className="mt-3">
-              <div className="flex items-center gap-3 text-xs text-gray-400 mb-1">
-                <span>{csvBatch.total} domains: {(['done','running','queued','failed','pending'] as const).filter(k => csvBatch.counts[k]).map(k => `${csvBatch.counts[k]} ${k === 'pending' ? 'waiting' : k}`).join(', ')}</span>
-                {(csvBatch.counts.pending ?? 0) > 0 && !csvActive && <button onClick={() => void resumeCsv()} disabled={csvBusy} className="font-mono text-xs uppercase border border-black px-2 py-1 hover:bg-black hover:text-white">Resume</button>}
-              </div>
-              {csvBatch.note && <p className="text-xs text-yellow-500 mb-1">{csvBatch.note}</p>}
-              <div className="divide-y divide-white/5 border-t border-white/5">
-                {csvBatch.rows.map(r => (
-                  <div key={r.domain} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5 text-xs">
-                    <span className="text-gray-200 min-w-0 flex-1 truncate">{r.domain}</span>
-                    <span className={r.status === 'failed' ? 'text-red-400' : r.status === 'done' ? 'text-green-300' : 'text-gray-500'}>
-                      {r.status === 'queued' ? 'queued' : r.status === 'running' ? 'scanning' : r.status === 'pending' ? 'waiting - quota reached' : r.status === 'failed' ? `failed${r.error === 'budget_stopped' ? ' - stopped by run budget' : r.error === 'no_candidates' ? ' - nothing found' : ''}` : 'done'}
-                    </span>
-                    {r.status === 'done' && r.job_id && <a className="underline text-[#111]" href={`/app/leads?job_id=${r.job_id}`}>{r.leads ?? 0} lead{(r.leads ?? 0) === 1 ? '' : 's'}</a>}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      </details>
-      <details className="mb-4 text-sm">
-        <summary className="cursor-pointer text-gray-400">Import post commenters (Pro)</summary>
-        <div className="card p-4 mt-2">
-          <p className="text-gray-500 text-xs mb-2">People who engaged with a post, imported as leads. Upload a CSV with profile URL, name, title and company columns, or paste LinkedIn profile links (linkedin.com/in/...) one per line, up to 100. Links are never opened - no scraping. Names guessed from a link are marked derived; your CSV names win. Only your Apollo/PDL key (org lookup, 1 credit per company, max 50) and free sources enrich them.</p>
-          <input value={cmtContext} onChange={e => setCmtContext(e.target.value)} maxLength={500} placeholder="Context: what they engaged with, e.g. Commented on my post about CRM switching costs" className="field w-full mb-2 text-xs" />
-          <textarea value={cmtText} onChange={e => setCmtText(e.target.value)} rows={4} placeholder={'profile_url,name,title,company\nhttps://www.linkedin.com/in/jane-doe,Jane Doe,VP Sales,Acme'} className="field w-full mb-2 text-xs font-mono" />
-          <div className="flex items-center gap-3">
-            <button onClick={() => void importCommenters()} disabled={cmtBusy || !cmtText.trim() || !cmtContext.trim()} className="font-mono text-xs uppercase border border-black px-2 py-1 hover:bg-black hover:text-white disabled:opacity-40">Import</button>
-            <label className="text-xs text-gray-400 underline cursor-pointer">or upload a file<input type="file" accept=".csv,.txt,text/csv,text/plain" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) void f.text().then(t => setCmtText(t)); e.target.value = '' }} /></label>
+      <details className="mb-4 text-sm" data-testid="more-sources">
+        <summary className="cursor-pointer text-[#555]">More sources</summary>
+        <div className="mt-3 space-y-4 border-l border-black/10 pl-4">
+          <div className="space-y-2">
+            <p className="text-xs font-medium text-[#111]">Add to this search</p>
+              <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useGithub} onChange={e => setUseGithub(e.target.checked)} /> Also search public GitHub repositories</label>
+              <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useYoutube} onChange={e => setUseYoutube(e.target.checked)} /> Also search public YouTube videos</label>
+              <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useV2ex} onChange={e => setUseV2ex(e.target.checked)} /> Also search public V2EX topics</label>
+              <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useJobboards} onChange={e => setUseJobboards(e.target.checked)} /> Also read public job postings (Greenhouse, Ashby, Lever) for a US state in your request</label>
+              <label className="block text-xs text-gray-500">Web page URLs to read (https only, one per line, up to 3). Pages are read through Jina Reader, a third-party service: the URLs are sent to it, and it rate limits requests without a key.</label>
+              <textarea className={`${input} w-full`} rows={2} value={pageText} onChange={e => setPageText(e.target.value)} placeholder="https://example.com/blog/post" />
+              <label className="block text-xs text-gray-500">RSS or Atom feed URLs to include (https only, one per line, up to 5)</label>
+              <textarea className={`${input} w-full`} rows={2} value={feedText} onChange={e => setFeedText(e.target.value)} placeholder="https://example.com/news/feed.xml" />
+              {advReady.map(p => <label key={p} className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={advPick.includes(p)} onChange={e => setAdvPick(e.target.checked ? [...advPick, p] : advPick.filter(x => x !== p))} /> {p === "x" ? "Also search X posts (via web index, no account risk)" : `Also search ${p} (uses operator session, posts may be flagged)`}</label>)}
+              <p className="text-xs text-gray-500">Items from these sources are checked against their page like every other lead.</p>
           </div>
-          {cmtNote && <p className="text-xs text-gray-400 mt-2">{cmtNote}</p>}
-          {cmtInvalid.length > 0 && (
-            <div className="mt-2">
-              <p className="text-xs text-yellow-500">Skipped {cmtInvalid.length} invalid row{cmtInvalid.length === 1 ? '' : 's'}:</p>
-              <ul className="text-xs text-gray-500 ml-4 list-disc">{cmtInvalid.slice(0, 10).map(r => <li key={r.line}>{r.line} - {r.reason}</li>)}</ul>
-              {cmtInvalid.length > 10 && <p className="text-xs text-gray-600">and {cmtInvalid.length - 10} more</p>}
-            </div>
-          )}
-          {cmtBatch && (
-            <div className="mt-3">
-              <div className="flex items-center gap-3 text-xs text-gray-400 mb-1">
-                <span>{cmtBatch.total} imported: {cmtBatch.context}</span>
-                <button onClick={() => void deleteCommenters()} disabled={cmtBusy} className="font-mono text-xs uppercase border border-red-900 text-red-400 px-2 py-1 hover:bg-red-900 hover:text-white">Delete batch</button>
-              </div>
-              <div className="divide-y divide-white/5 border-t border-white/5">
-                {cmtBatch.rows.map(r => (
-                  <div key={r.profile_url} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5 text-xs">
-                    <span className="text-gray-200 min-w-0 flex-1 truncate">{r.name}{r.title ? ` - ${r.title}` : ''}{r.company ? `, ${r.company}` : ''}</span>
-                    {r.name_source === 'derived' && <span className="text-yellow-500">name derived from link</span>}
-                    {r.lead_id && <a className="underline text-[#111]" href={`/app/leads?job_id=${cmtBatch.job_id}`}>in leads</a>}
+          <div>
+            <p className="text-xs font-medium text-[#111]">Fill the profile from your website</p>
+          <div className="flex gap-2 mt-1 items-center">
+            <input type="text" value={siteUrl} onChange={e => setSiteUrl(e.target.value)} maxLength={300} placeholder="Your website - we will fill the profile from it" className={`${input} flex-1`} />
+            <button type="button" onClick={() => void fillFromSite()} disabled={siteBusy || siteUrl.trim().length < 5} className="text-gray-400 hover:text-white text-sm px-3 whitespace-nowrap disabled:opacity-40">{siteBusy ? 'Reading your site...' : 'Fill from my website'}</button>
+          </div>
+          </div>
+          <SourceReview />
+          <HiringFeed />
+          {plan === 'free'
+            ? <p className="text-xs text-[#555]" data-testid="pro-sources-note">Bulk domain import and post-commenter import are on the Pro plan. <a className="underline" href="/app/settings#plan">See plans</a></p>
+            : <>
+          <details className="mb-4 text-sm">
+            <summary className="cursor-pointer text-gray-400">Bulk import company domains (Pro)</summary>
+            <div className="card p-4 mt-2">
+              <p className="text-gray-500 text-xs mb-2">A CSV or text file with one company domain per line, up to 50. Each domain runs as its own scan on your AI key - contacts and signals land in the table below. Blank rows are skipped; bad rows are flagged.</p>
+              <input type="file" accept=".csv,.txt,text/csv,text/plain" disabled={csvBusy} onChange={e => { const f = e.target.files?.[0]; if (f) void importCsv(f); e.target.value = '' }} className="text-xs text-gray-300 file:mr-3 file:font-mono file:uppercase file:text-xs file:border file:border-black file:px-2 file:py-1 file:bg-transparent file:text-white hover:file:bg-black" />
+              {csvNote && <p className="text-xs text-gray-400 mt-2">{csvNote}</p>}
+              {csvInvalid.length > 0 && (
+                <div className="mt-2">
+                  <p className="text-xs text-yellow-500">Skipped {csvInvalid.length} invalid row{csvInvalid.length === 1 ? '' : 's'}:</p>
+                  <ul className="text-xs text-gray-500 ml-4 list-disc">{csvInvalid.slice(0, 10).map(r => <li key={r.line}>{r.line} - {r.reason}</li>)}</ul>
+                  {csvInvalid.length > 10 && <p className="text-xs text-gray-600">and {csvInvalid.length - 10} more</p>}
+                </div>
+              )}
+              {csvBatch && (
+                <div className="mt-3">
+                  <div className="flex items-center gap-3 text-xs text-gray-400 mb-1">
+                    <span>{csvBatch.total} domains: {(['done','running','queued','failed','pending'] as const).filter(k => csvBatch.counts[k]).map(k => `${csvBatch.counts[k]} ${k === 'pending' ? 'waiting' : k}`).join(', ')}</span>
+                    {(csvBatch.counts.pending ?? 0) > 0 && !csvActive && <button onClick={() => void resumeCsv()} disabled={csvBusy} className="font-mono text-xs uppercase border border-black px-2 py-1 hover:bg-black hover:text-white">Resume</button>}
                   </div>
-                ))}
-              </div>
+                  {csvBatch.note && <p className="text-xs text-yellow-500 mb-1">{csvBatch.note}</p>}
+                  <div className="divide-y divide-white/5 border-t border-white/5">
+                    {csvBatch.rows.map(r => (
+                      <div key={r.domain} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5 text-xs">
+                        <span className="text-gray-200 min-w-0 flex-1 truncate">{r.domain}</span>
+                        <span className={r.status === 'failed' ? 'text-red-400' : r.status === 'done' ? 'text-green-300' : 'text-gray-500'}>
+                          {r.status === 'queued' ? 'queued' : r.status === 'running' ? 'scanning' : r.status === 'pending' ? 'waiting - quota reached' : r.status === 'failed' ? `failed${r.error === 'budget_stopped' ? ' - stopped by run budget' : r.error === 'no_candidates' ? ' - nothing found' : ''}` : 'done'}
+                        </span>
+                        {r.status === 'done' && r.job_id && <a className="underline text-[#111]" href={`/app/leads?job_id=${r.job_id}`}>{r.leads ?? 0} lead{(r.leads ?? 0) === 1 ? '' : 's'}</a>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
-          )}
+          </details>
+          <details className="mb-4 text-sm">
+            <summary className="cursor-pointer text-gray-400">Import post commenters (Pro)</summary>
+            <div className="card p-4 mt-2">
+              <p className="text-gray-500 text-xs mb-2">People who engaged with a post, imported as leads. Upload a CSV with profile URL, name, title and company columns, or paste LinkedIn profile links (linkedin.com/in/...) one per line, up to 100. Links are never opened - no scraping. Names guessed from a link are marked derived; your CSV names win. Only your Apollo/PDL key (org lookup, 1 credit per company, max 50) and free sources enrich them.</p>
+              <input value={cmtContext} onChange={e => setCmtContext(e.target.value)} maxLength={500} placeholder="Context: what they engaged with, e.g. Commented on my post about CRM switching costs" className="field w-full mb-2 text-xs" />
+              <textarea value={cmtText} onChange={e => setCmtText(e.target.value)} rows={4} placeholder={'profile_url,name,title,company\nhttps://www.linkedin.com/in/jane-doe,Jane Doe,VP Sales,Acme'} className="field w-full mb-2 text-xs font-mono" />
+              <div className="flex items-center gap-3">
+                <button onClick={() => void importCommenters()} disabled={cmtBusy || !cmtText.trim() || !cmtContext.trim()} className="font-mono text-xs uppercase border border-black px-2 py-1 hover:bg-black hover:text-white disabled:opacity-40">Import</button>
+                <label className="text-xs text-gray-400 underline cursor-pointer">or upload a file<input type="file" accept=".csv,.txt,text/csv,text/plain" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) void f.text().then(t => setCmtText(t)); e.target.value = '' }} /></label>
+              </div>
+              {cmtNote && <p className="text-xs text-gray-400 mt-2">{cmtNote}</p>}
+              {cmtInvalid.length > 0 && (
+                <div className="mt-2">
+                  <p className="text-xs text-yellow-500">Skipped {cmtInvalid.length} invalid row{cmtInvalid.length === 1 ? '' : 's'}:</p>
+                  <ul className="text-xs text-gray-500 ml-4 list-disc">{cmtInvalid.slice(0, 10).map(r => <li key={r.line}>{r.line} - {r.reason}</li>)}</ul>
+                  {cmtInvalid.length > 10 && <p className="text-xs text-gray-600">and {cmtInvalid.length - 10} more</p>}
+                </div>
+              )}
+              {cmtBatch && (
+                <div className="mt-3">
+                  <div className="flex items-center gap-3 text-xs text-gray-400 mb-1">
+                    <span>{cmtBatch.total} imported: {cmtBatch.context}</span>
+                    <button onClick={() => void deleteCommenters()} disabled={cmtBusy} className="font-mono text-xs uppercase border border-red-900 text-red-400 px-2 py-1 hover:bg-red-900 hover:text-white">Delete batch</button>
+                  </div>
+                  <div className="divide-y divide-white/5 border-t border-white/5">
+                    {cmtBatch.rows.map(r => (
+                      <div key={r.profile_url} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5 text-xs">
+                        <span className="text-gray-200 min-w-0 flex-1 truncate">{r.name}{r.title ? ` - ${r.title}` : ''}{r.company ? `, ${r.company}` : ''}</span>
+                        {r.name_source === 'derived' && <span className="text-yellow-500">name derived from link</span>}
+                        {r.lead_id && <a className="underline text-[#111]" href={`/app/leads?job_id=${cmtBatch.job_id}`}>in leads</a>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </details>
+            </>}
         </div>
       </details>
       {draft && (
