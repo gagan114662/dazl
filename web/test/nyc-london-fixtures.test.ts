@@ -226,9 +226,9 @@ test('progress: while the scan is still running the report already shows sources
 })
 
 // Instinct's first live scoreboard scan (NYC, normal flow): 5 candidates, none source-checked, all without a usable date, one in Rome, NY.
-// SYNTHETIC reproduction of the two causes (not a replay): undated candidates are dated from the page itself where the page states it,
-// and a "New York, NY" request rejects Rome, NY by city, not by state.
-test('5 undated NYC candidates: page metadata and prose dates resolve two; a stale one is held; Rome, NY is rejected by city; a seasonal one is a researched opportunity with a timing label', async () => {
+// SYNTHETIC reproduction (not a replay) with the corrected semantics: a page's PUBLICATION day is stored as a label and never becomes the event
+// date, so undated claims stay held in review (not qualified, not draftable); Rome, NY is rejected by city.
+test('5 undated NYC candidates: none qualifies on a publication day; publication days are labels; Rome, NY is a location_mismatch; the seasonal one is a researched opportunity with a timing label', async () => {
   const U = (n: string) => `https://src.example/${n}`
   const body = (t: string) => `${t} ${'The practice welcomes families across the five boroughs. '.repeat(8)}`
   const q = { a: 'Harbor Smile Dental is hiring a front desk receptionist at its Manhattan office', b: 'Cedar Dental Group opened its second New York, NY location this month', c: 'Old Mill Dental opened a new Brooklyn location', d: 'Dent Blanche is hiring a front desk receptionist at 8500 Main St, Rome, NY 13440', e: 'Bright Teeth Dental will open a second Manhattan location this fall' }
@@ -238,13 +238,14 @@ test('5 undated NYC candidates: page metadata and prose dates resolve two; a sta
       [U('c')]: { title: 'Old Mill opens', text: body(q.c), published: '2019-04-02' }, [U('d')]: { title: 'Dent Blanche careers', text: body(q.d), published: daysAgo(6) }, [U('e')]: { title: 'Bright Teeth', text: body(q.e) } },
     extraction: [['a', 'Harbor Smile Dental'], ['b', 'Cedar Dental Group'], ['c', 'Old Mill Dental'], ['d', 'Dent Blanche'], ['e', 'Bright Teeth Dental']].map(([k, company]) => ({ company, signal: 's', source_url: U(k), excerpt: (q as Record<string, string>)[k], event_date: null })) }
   const x = await runFixture(fx)
-  assert.equal(fate(x, 'Harbor Smile Dental'), 'verified'); assert.equal(fate(x, 'Cedar Dental Group'), 'verified')
-  assert.equal(fate(x, 'Old Mill Dental'), 'review:event_date_stale'); assert.equal(fate(x, 'Dent Blanche'), 'review:location_mismatch')
+  assert.equal(fate(x, 'Harbor Smile Dental'), 'review:outside_window_undated'); assert.equal(fate(x, 'Cedar Dental Group'), 'review:outside_window_undated')
+  assert.equal(fate(x, 'Old Mill Dental'), 'review:outside_window_undated'); assert.equal(fate(x, 'Dent Blanche'), 'review:location_mismatch')
   assert.equal(fate(x, 'Bright Teeth Dental'), 'review:outside_window_undated')
-  const row = (c: string) => x.db.prepare('SELECT event_date, date_status, timing_note, review_reason FROM leads WHERE company = ?').get(c) as { event_date: string | null; date_status: string; timing_note: string | null; review_reason: string | null }
-  assert.equal(row('Harbor Smile Dental').event_date, daysAgo(9)); assert.match(row('Harbor Smile Dental').timing_note!, /publication metadata/)
-  assert.equal(row('Cedar Dental Group').event_date, daysAgo(14)); assert.match(row('Cedar Dental Group').timing_note!, /read from the page text/)
-  assert.equal(row('Bright Teeth Dental').event_date, null); assert.match(row('Bright Teeth Dental').timing_note!, /timing: fall, unconfirmed/)
-  assert.deepEqual(x.leads.filter(l => !l.review_reason).map(l => l.company).sort(), ['Cedar Dental Group', 'Harbor Smile Dental'])
-  assert.deepEqual(x.report!.funnel.review_reasons, { event_date_stale: 1, location_mismatch: 1, outside_window_undated: 1 })
+  const row = (c: string) => x.db.prepare('SELECT event_date, published_at, timing_note, review_reason FROM leads WHERE company = ?').get(c) as { event_date: string | null; published_at: string | null; timing_note: string | null; review_reason: string | null }
+  for (const c of ['Harbor Smile Dental', 'Cedar Dental Group', 'Old Mill Dental', 'Dent Blanche', 'Bright Teeth Dental']) assert.equal(row(c).event_date, null, `${c}: no event date was invented`)
+  assert.equal(row('Harbor Smile Dental').published_at, daysAgo(9)); assert.match(row('Harbor Smile Dental').timing_note!, /publication date only/)
+  assert.equal(row('Cedar Dental Group').published_at, daysAgo(14)); assert.equal(row('Old Mill Dental').published_at, '2019-04-02')
+  assert.match(row('Bright Teeth Dental').timing_note!, /timing: fall, unconfirmed/)
+  assert.deepEqual(x.leads.filter(l => !l.review_reason), [], 'nothing qualifies on a publication day')
+  assert.deepEqual(x.report!.funnel.review_reasons, { outside_window_undated: 4, location_mismatch: 1 })
 })
