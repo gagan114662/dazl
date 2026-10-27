@@ -110,9 +110,12 @@ function mentions(text: string, strict = false): Mention[] {
     for (const m of clause.matchAll(STAGE_RE)) {
       const before = clause.slice(0, m.index)
       const after = clause.slice((m.index ?? 0) + m[0].length)
-      const lm = (strict ? LATER_STRICT : LATER_LOOSE).exec(after)
+      const isExcluded = EXCLUDE_CUE.test(before.slice(-60))
+      // Strict markers only disambiguate POSITIVE narrative phrases in the request. An explicit exclusion stays conservative:
+      // "exclude Series B or later in London" / "...or later with recent funding" must exclude B and every later stage.
+      const lm = (strict && !isExcluded ? LATER_STRICT : LATER_LOOSE).exec(after)
       // `end` covers the range marker too ("Seed or later", "seed funding or later"), so trimming removes the whole range.
-      out.push({ stage: stageOf(m as unknown as RegExpExecArray), start: base + (m.index ?? 0), end: base + (m.index ?? 0) + m[0].length + (lm ? lm[0].length : 0), excluded: EXCLUDE_CUE.test(before.slice(-60)), later: !!lm })
+      out.push({ stage: stageOf(m as unknown as RegExpExecArray), start: base + (m.index ?? 0), end: base + (m.index ?? 0) + m[0].length + (lm ? lm[0].length : 0), excluded: isExcluded, later: !!lm })
     }
   }
   return out

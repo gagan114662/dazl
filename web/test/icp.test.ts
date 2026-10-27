@@ -355,3 +355,28 @@ test('real ranges in the request are still ranges (strict markers end their phra
     assert.deepEqual(keepStatedFundingStage(q, rng), rng, q)
   }
 })
+
+// Instinct #218 review (809e2a8): the strict request recognizer made "exclude Series B or later in London" exclude only B and
+// keep C. Negative ranges stay conservative: any "or later"/"and above" right after an EXCLUDED stage is the whole range.
+test('excluded ranges followed by ordinary context still exclude B and every later stage', () => {
+  const cases = [
+    'Find companies with recent funding, exclude Series B or later in London',
+    'Find companies in London, exclude Series B or later with recent funding',
+    'London companies with recent funding, exclude Series B or later hiring sales',
+    'London companies, without Series B and above in fintech',
+    'Find London companies with funding, not Series B or later this year',
+  ]
+  for (const q of cases) {
+    for (const st of ['Series B', 'Series C', 'Series D', 'Series E']) {
+      const r = keepStatedFundingStage(q, { ...base, summary: `London ${st} companies with funding`, signals: [`${st} funding`], exclude: [] })
+      assert.equal(r.summary, q, `${st} falls back: ${q}`); assert.deepEqual(r.signals, [])
+    }
+    const okp = keepStatedFundingStage(q, { ...base, summary: 'London Series A companies with funding', signals: ['Series A round'], exclude: [] })
+    assert.equal(okp.summary, 'London Series A companies with funding', `A is still allowed: ${q}`)
+    assert.ok(okp.exclude.some(x => /Series B/i.test(x) && /later|above/i.test(x)), `range added to exclusions: ${q} -> ${JSON.stringify(okp.exclude)}`)
+  }
+  // the exact repro: the profile used to come back unchanged with only ["Series B"] added
+  const q = 'Find companies with recent funding, exclude Series B or later in London'
+  const r = keepStatedFundingStage(q, { ...base, summary: 'London Series C companies with funding' })
+  assert.notEqual(r.summary, 'London Series C companies with funding'); assert.equal(r.summary, q)
+})
