@@ -10,8 +10,9 @@ import path from 'node:path'
 import { ROUTES } from './tenant-isolation-manifest.ts'
 
 const web = fileURLToPath(new URL('../', import.meta.url))
-// Handlers that take resource ids and have no two-tenant test yet. Lower it as tests land; it must never grow.
-const PENDING_MAX = 13
+// Handlers that take resource ids and have no two-tenant test. Every one has a test now: a new id-taking route must
+// come with its two-tenant test.
+const PENDING_MAX = 0
 
 function routeFiles(dir: string): string[] {
   return readdirSync(dir).flatMap(n => {
@@ -49,10 +50,15 @@ test('each cited two-tenant test names the route it covers; the pending list doe
   assert.ok(pending.length <= PENDING_MAX, `pending grew to ${pending.length}: ${pending.map(r => `${r.method} /api/${r.path}`).join(', ')}`)
 })
 
+const SCOPED = ROUTES.filter(r => r.auth === 'session' && r.crossTenant === 'session-scope').length
+
 // The route runtimes load route modules through a resolver hook, so each runs in its own process.
 for (const [name, file, expect] of [
   ['every session route refuses an unauthenticated caller and changes nothing', 'tenant-route-unauth-runtime.mts', /UNAUTH 102/],
   ["tenant B cannot read or change tenant A's rows through the id-taking lead, batch and reply routes", 'tenant-route-ids-runtime.mts', /COHORT 17/],
+  ["tenant B cannot read or change tenant A's rows through the list, body-id and query-id routes, or any session-scope route", 'tenant-route-pending-runtime.mts',
+    // 13 targeted handlers, then the sweep over every session-scope handler (the cohort counts both)
+    new RegExp(`SWEPT ${SCOPED}\\b[\\s\\S]*COHORT ${13 + SCOPED}\\b`)],
 ] as const) {
   test(name, () => {
     const env = { ...process.env }

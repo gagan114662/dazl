@@ -8,9 +8,11 @@
 // crossTenant (session routes):
 //   { covered: <test> } - a two-tenant test calls it as tenant B with tenant A's ids and proves A's data is unchanged
 //                          and not returned (path of the test file, relative to test/).
-//   'session-scope'     - takes no resource id from the caller: the tenant comes only from the session (static
-//                          review; still worth a two-tenant test, listed so it is visible).
-//   'pending'           - takes resource ids from the caller and has no two-tenant test yet. This list must shrink.
+//   'session-scope'     - takes no resource id from the caller: the tenant comes only from the session. Every one is
+//                          called as tenant B with tenant A's data seeded (tenant-route-pending-runtime.mts sweep):
+//                          nothing of A's comes back and A's rows stay unchanged.
+//   'pending'           - takes resource ids from the caller and has no two-tenant test. None left; the manifest test
+//                          keeps it at zero.
 export type CrossTenant = { covered: string } | 'session-scope' | 'pending'
 export type RouteEntry =
   | { path: string; method: string; auth: 'public'; note: string }
@@ -25,8 +27,8 @@ export const ROUTES: RouteEntry[] = [
   { path: 'billing/checkout', method: 'POST', auth: 'session', crossTenant: 'session-scope' },
   { path: 'billing/portal', method: 'POST', auth: 'session', crossTenant: 'session-scope' },
   { path: 'billing/webhook', method: 'POST', auth: 'public', note: 'Stripe signature over the raw body' },
-  { path: 'crm', method: 'GET', auth: 'session', crossTenant: 'pending' },
-  { path: 'crm', method: 'POST', auth: 'session', crossTenant: 'pending' },
+  { path: 'crm', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' } },
+  { path: 'crm', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' } },
   { path: 'gmail/callback', method: 'GET', auth: 'session', crossTenant: 'session-scope' },
   { path: 'gmail/connect', method: 'GET', auth: 'session', crossTenant: 'session-scope' },
   { path: 'gmail/disconnect', method: 'POST', auth: 'session', crossTenant: 'session-scope' },
@@ -44,8 +46,8 @@ export const ROUTES: RouteEntry[] = [
   { path: 'leads/[lead]/warm-path', method: 'DELETE', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' } },
   { path: 'leads/evidence', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' } },
   { path: 'leads/export', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' } },
-  { path: 'leads/hiring-feed', method: 'GET', auth: 'session', crossTenant: 'pending' },
-  { path: 'leads/hiring-feed', method: 'POST', auth: 'session', crossTenant: 'pending' },
+  { path: 'leads/hiring-feed', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' } },
+  { path: 'leads/hiring-feed', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' } },
   { path: 'leads/page-signals', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' } },
   { path: 'leads/qualify-preview', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' } },
   { path: 'leads/qualify', method: 'POST', auth: 'session', crossTenant: 'session-scope' },
@@ -67,21 +69,21 @@ export const ROUTES: RouteEntry[] = [
   { path: 'outreach/conversion', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' } },
   { path: 'outreach/followups', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' } },
   { path: 'outreach/inbox', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' } },
-  { path: 'outreach/polish', method: 'POST', auth: 'session', crossTenant: 'pending' },
-  { path: 'outreach/reopen', method: 'GET', auth: 'session', crossTenant: 'pending' },
+  { path: 'outreach/polish', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' } },
+  { path: 'outreach/reopen', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' } },
   { path: 'outreach/reopen', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' } },
   { path: 'outreach/replies', method: 'GET', auth: 'session', crossTenant: 'session-scope' },
   { path: 'outreach/replies', method: 'POST', auth: 'session', crossTenant: 'session-scope' },
   { path: 'outreach', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' } },
-  { path: 'outreach', method: 'POST', auth: 'session', crossTenant: 'pending' },
+  { path: 'outreach', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' } },
   { path: 'outreach/sequences', method: 'GET', auth: 'session', crossTenant: 'session-scope' },
   { path: 'outreach/sequences', method: 'POST', auth: 'session', crossTenant: 'session-scope' },
   { path: 'outreach/settings', method: 'GET', auth: 'session', crossTenant: 'session-scope' },
   { path: 'outreach/settings', method: 'PUT', auth: 'session', crossTenant: 'session-scope' },
   { path: 'outreach/usage', method: 'GET', auth: 'session', crossTenant: 'session-scope' },
   { path: 'replies/[id]', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' } },
-  { path: 'replies', method: 'GET', auth: 'session', crossTenant: 'pending' },
-  { path: 'replies', method: 'POST', auth: 'session', crossTenant: 'pending' },
+  { path: 'replies', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' } },
+  { path: 'replies', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' } },
   { path: 'replies/thread-metrics', method: 'GET', auth: 'session', crossTenant: 'session-scope' },
   { path: 'scan/cancel', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' } },
   { path: 'scan/commenters/[batch]', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' } },
@@ -103,8 +105,8 @@ export const ROUTES: RouteEntry[] = [
   { path: 'seo/brief', method: 'POST', auth: 'session', crossTenant: 'session-scope' },
   { path: 'seo/indexing', method: 'GET', auth: 'session', crossTenant: 'session-scope' },
   { path: 'seo/indexing', method: 'POST', auth: 'session', crossTenant: 'session-scope' },
-  { path: 'seo/newsjack', method: 'GET', auth: 'session', crossTenant: 'pending' },
-  { path: 'seo/newsjack', method: 'POST', auth: 'session', crossTenant: 'pending' },
+  { path: 'seo/newsjack', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' } },
+  { path: 'seo/newsjack', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' } },
   { path: 'settings/advanced', method: 'GET', auth: 'session', crossTenant: 'session-scope' },
   { path: 'settings/advanced', method: 'POST', auth: 'session', crossTenant: 'session-scope' },
   { path: 'settings/advanced', method: 'DELETE', auth: 'session', crossTenant: 'session-scope' },
@@ -128,6 +130,6 @@ export const ROUTES: RouteEntry[] = [
   { path: 'warm/connections', method: 'GET', auth: 'session', crossTenant: 'session-scope' },
   { path: 'warm/connections', method: 'POST', auth: 'session', crossTenant: 'session-scope' },
   { path: 'warm/connections', method: 'DELETE', auth: 'session', crossTenant: 'session-scope' },
-  { path: 'watch', method: 'GET', auth: 'session', crossTenant: 'pending' },
-  { path: 'watch', method: 'POST', auth: 'session', crossTenant: 'pending' },
+  { path: 'watch', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' } },
+  { path: 'watch', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' } },
 ]

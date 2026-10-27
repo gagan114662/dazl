@@ -133,5 +133,12 @@ test("tenant B cannot read or change tenant A's lead, batch or reply-thread rows
   assert.equal(await st(replies.POST(req(`/api/replies/${f.thread}`, 'POST', { action: 'save', draft: 'A edit' }), ctx({ id: f.thread }))), 200)
   assert.equal(await st(replies.POST(req(`/api/replies/${f.thread}`, 'POST', { action: 'mark', status: 'posted' }), ctx({ id: f.thread }))), 200)
   assert.equal(await st(commenters.DELETE(req(`/api/scan/commenters/${f.commenterBatch}`, 'DELETE'), ctx({ batch: f.commenterBatch }))), 200)
+  // Read-only lookups that B got a 404 from: A finds its own lead. Any page fetch they try is refused by the network
+  // fence (no real request); the 200 shows the tenant check let A through.
+  // 503 when contact search is switched off (SITECRAWL_ENABLED=0 under npm test): that check runs after the ownership
+  // lookup, so it is still past the tenant check B was stopped at with a 404.
+  assert.ok([200, 503].includes(await st(findContact.POST(req(`/api/leads/${f.confirmed}/find-contact`, 'POST', {}), ctx({ lead: f.confirmed })))))
+  assert.equal(await st(pageSignals.GET(req(`/api/leads/page-signals?lead_id=${L}`, 'GET'))), 200)
+  assert.equal(await st(qualifyPreview.GET(req(`/api/leads/qualify-preview?lead_id=${L}`, 'GET'))), 200)
   console.log('COHORT', done.length, JSON.stringify(done))
 })
