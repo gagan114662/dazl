@@ -21,17 +21,35 @@ export function stateIn(query: string): string | null {
   for (const [, name] of Object.entries(STATES)) if (new RegExp(`\\b${name.toLowerCase()}\\b`).test(q)) return name
   return null
 }
-// The place a request names: a US state (above) or one of the cities/countries below. Postings are matched on their own location
-// text; "Remote" or an empty location never matches (a place must be named). A request naming no place gets no boards (never every place).
-const CITY_PLACES: { ask: RegExp; name: string; loc: RegExp }[] = [
-  { ask: /\b(?:london|united kingdom|great britain|england|uk)\b/i, name: 'London', loc: /\b(?:london|united kingdom|england|great britain|u\.k\.|uk|gb)\b/i },
-  { ask: /\b(?:new york city|nyc|manhattan|brooklyn|queens|bronx|staten island)\b/i, name: 'New York City', loc: /\b(?:new york|nyc|manhattan|brooklyn|queens|bronx|staten island)\b/i },
+// The place a request names, most specific first: a CITY (London, New York City), then a US state, then a bare COUNTRY (UK).
+// Specific wins because "London UK" is a London request (not all of the UK) and "New York City" is not the whole state of New York.
+// Postings are matched on their own location text; "Remote" or an empty location never matches (a place must be named). A request
+// naming no place gets no boards (never every place). A city never widens to its country/state: Manchester is not London, Albany is
+// not NYC, "Remote - United Kingdom" is not London. A country request accepts any UK location, which is what it asked for.
+// A location counts for LONDON only when the text starts with London (optionally Greater/Central/North/South/West London, or "East London" only
+// with a UK marker) and every other component is a UK marker or a work-mode word: "East London, South Africa", "London, Ontario",
+// "London, Kentucky", "Londonderry" are all out. NYC the same way: it must START with New York / NYC / a borough and carry nothing but a
+// New York/US marker after it ("New York State, USA", "Albany, New York", "Buffalo, NY" are out).
+const WORK = '(?:hybrid|on-?site|onsite|hq|head\\s*office|office)' // "remote" is deliberately absent: a remote posting is not located in the city
+const SEP = '\\s*[,;\\-\\u2013|/]\\s*'
+const UKM = '(?:london|uk|u\\.k\\.|united kingdom|england|gb|great britain|greater london)'
+const LONDON_OK = new RegExp(`^\\s*(?:${WORK}${SEP})?(?:(?:greater|central|north|south|west)\\s+london|london|east\\s+london(?=${SEP}${UKM}\\b))(?:\\s+(?:area|metro(?:politan)?\\s+area))?(?:\\s*\\((?!\\s*remote)[^)]*\\))?(?:${SEP}(?:${UKM}|${WORK}))*\\s*(?:\\((?!\\s*remote)[^)]*\\))?\\s*$`, 'i')
+const NYC_OK = new RegExp(`^\\s*(?:${WORK}${SEP})?(?:new york(?:\\s+city)?|nyc|manhattan|brooklyn|queens|the bronx|bronx|staten island)(?:\\s*\\((?!\\s*remote)[^)]*\\))?(?:${SEP}(?:(?:ny|new york|usa|us|united states|${WORK})(?:\\s+\\d{5}(?:-\\d{4})?)?|\\d{5}))*\\s*(?:\\((?!\\s*remote)[^)]*\\))?\\s*$`, 'i')
+const CITY_PLACES: { ask: RegExp; name: string; ok: (l: string) => boolean }[] = [
+  { ask: /\blondon\b/i, name: 'London', ok: l => LONDON_OK.test(l) },
+  // "New York" alone is the state (stateIn). "New York, NY" / "New York, New York" / "New York City" / "NYC" / a borough name the city.
+  { ask: /\b(?:new york city|nyc|manhattan|brooklyn|queens|bronx|staten island|new york,\s*(?:ny|new york))\b/i, name: 'New York City', ok: l => NYC_OK.test(l) },
+]
+const COUNTRY_PLACES: { ask: RegExp; name: string; ok: (l: string) => boolean }[] = [
+  { ask: /\b(?:united kingdom|great britain|england|uk)\b/i, name: 'United Kingdom', ok: l => /\b(?:united kingdom|england|scotland|wales|great britain|u\.k\.|uk|gb)\b/i.test(l) },
 ]
 export interface Place { name: string; ok: (...locs: (string | undefined)[]) => boolean }
+const placeOf = (c: { name: string; ok: (l: string) => boolean }): Place => ({ name: c.name, ok: (...l) => l.some(x => !!x && c.ok(x)) })
 export function placeIn(query: string): Place | null {
+  for (const c of CITY_PLACES) if (c.ask.test(query)) return placeOf(c)
   const st = stateIn(query)
   if (st) return { name: st, ok: (...l) => locationInState(st, ...l) }
-  for (const c of CITY_PLACES) if (c.ask.test(query)) return { name: c.name, ok: (...l) => l.some(x => !!x && c.loc.test(x)) }
+  for (const c of COUNTRY_PLACES) if (c.ask.test(query)) return placeOf(c)
   return null
 }
 export function locationInState(state: string, ...locs: (string | undefined)[]): boolean {

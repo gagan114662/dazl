@@ -106,12 +106,15 @@ export function publishedDate(html: string): string | null {
   for (const m of head.matchAll(/<meta\b[^>]*?content\s*=\s*["']([^"']{8,40})["'][^>]*?(?:property|name|itemprop)\s*=\s*["'](?:article:published_time|og:published_time|datePublished|datePosted|pubdate|publish[-_]date)["']/gi)) cands.push(m[1])
   for (const m of head.matchAll(/<time\b[^>]*?(?:pubdate|itemprop\s*=\s*["']datePublished["']|class\s*=\s*["'][^"']*publish[^"']*["'])[^>]*?datetime\s*=\s*["']([^"']{8,40})["']/gi)) cands.push(m[1])
   for (const m of head.matchAll(/<time\b[^>]*?datetime\s*=\s*["']([^"']{8,40})["'][^>]*?(?:pubdate|itemprop\s*=\s*["']datePublished["']|class\s*=\s*["'][^"']*publish[^"']*["'])/gi)) cands.push(m[1])
+  // Exactly ONE distinct publication day across all of the page's markup. Two or more (a news list, several articles, an unrelated JSON-LD
+  // entity beside the page's own) mean none of them can be tied to this quote, so none is reported.
+  const days = new Set<string>()
   for (const c of cands) {
     const d = /^(\d{4})-(\d{2})-(\d{2})/.exec(c.trim()); if (!d) continue
     const y = +d[1], mo = +d[2], da = +d[3]
-    const t = new Date(Date.UTC(y, mo - 1, da)); if (y >= 2000 && y <= 2100 && t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === da) return t.toISOString().slice(0, 10)
+    const t = new Date(Date.UTC(y, mo - 1, da)); if (y >= 2000 && y <= 2100 && t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === da) days.add(t.toISOString().slice(0, 10))
   }
-  return null
+  return days.size === 1 ? [...days][0] : null
 }
 
 export function htmlToText(html: string): { text: string; title: string; published: string | null } {
