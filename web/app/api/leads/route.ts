@@ -5,6 +5,7 @@ import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sourceCheckForLead } from '@/lib/scan/source-review'
 import { sqliteLeadsRead } from '@/lib/db/leads-read'
 import { rankLeads } from '@/lib/events/prioritize'
+import { gdeltAttribution } from '@/lib/search/news-attribution'
 import { savedGradeWhy } from '@/lib/scan/leads-view'
 import { classifyEntityMatch, classifyBoardMatch, qualifyEvent, withinEventWindow } from '@/lib/signals/entity-match'
 
@@ -30,7 +31,8 @@ export async function GET(req: NextRequest) {
     currentness_held:currentnessHeld(getScanDb(),user.id,l.id), window_held:leadWindowHeld(getScanDb(),user.id,l.id)}))
   for (const p of Object.values(pri)) if (p) p.intent=0
   const ranked = rankLeads(safeLeads, pri)
-  return NextResponse.json({ job_id: job.id, status: job.status, hidden_count: includeHidden ? 0 : await db.countHiddenLeads(user.id, job.id), leads: ranked.map(l => ({ ...l, contact_context:leadContactContext(getScanDb(),user.id,l.id), source_check: sourceCheckForLead(getScanDb(), user.id, l.id), sequence: sequences.get(l.id) ?? null, enrichments: (enr[l.id] ?? []).map(e => ({ ...e, entity_status:
+  const via = gdeltAttribution(getScanDb(), user.id, ranked.map(l => l.id))
+  return NextResponse.json({ job_id: job.id, status: job.status, hidden_count: includeHidden ? 0 : await db.countHiddenLeads(user.id, job.id), leads: ranked.map(l => ({ ...l, discovered_via: via.get(l.id)?.text ?? null, discovered_via_link: via.get(l.id)?.link ?? null, contact_context:leadContactContext(getScanDb(),user.id,l.id), source_check: sourceCheckForLead(getScanDb(), user.id, l.id), sequence: sequences.get(l.id) ?? null, enrichments: (enr[l.id] ?? []).map(e => ({ ...e, entity_status:
           e.connector === 'signals:sec-edgar'
             ? (() => { const base = classifyEntityMatch(l.company, e.label ?? '')
                 return base === 'heuristic' && l.event_date && e.source_date && !withinEventWindow(e.source_date, l.event_date) ? 'unconfirmed' : base })()

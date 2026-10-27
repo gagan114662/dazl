@@ -1,3 +1,4 @@
+import { gdeltAttribution } from '@/lib/search/news-attribution'
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { exportLeads } from '@/lib/scan/store'
@@ -27,6 +28,8 @@ const COLUMNS = [
   { key: 'date_context', label: 'Event Date Context' },
   { key: 'evidence_excerpt', label: 'Evidence Excerpt (unconfirmed when Confirmed By User is set)' },
   { key: 'source_url', label: 'Source URL' },
+  { key: 'discovered_via', label: 'Found Through (discovery index; not the publisher)' },
+  { key: 'discovered_via_link', label: 'Found Through (link)' },
   { key: 'review_reason', label: 'Review Reason' },
   { key: 'job_id', label: 'Scan Job' },
   { key: 'created_at', label: 'Found At (UTC)' },
@@ -42,8 +45,9 @@ export async function GET(req: NextRequest) {
   // that keeps the verification fixture rows in the file.
   const includeFixtures = req.nextUrl.searchParams.get('include_fixtures') === '1'
   const rows = exportLeads(db, user.id, jobId || undefined, 5000, includeFixtures) as Record<string, unknown>[]
+  const via = gdeltAttribution(db, user.id, rows.map(r => String(r.lead_id)))
   const people = bestPeople(db, user.id, rows as { lead_id: string; job_id: string }[])
-  const csv = toCsv(rows.map(r => ({ ...r, ...people.get(r.lead_id as string), date_context: eventDateCopy(typeof r.event_date === 'string' ? r.event_date : null, typeof r.date_status === 'string' ? r.date_status : null), created_at: typeof r.created_at === 'number' ? new Date(r.created_at * 1000).toISOString() : r.created_at })), COLUMNS)
+  const csv = toCsv(rows.map(r => ({ ...r, ...people.get(r.lead_id as string), discovered_via: via.get(String(r.lead_id))?.text ?? '', discovered_via_link: via.get(String(r.lead_id))?.link ?? '', date_context: eventDateCopy(typeof r.event_date === 'string' ? r.event_date : null, typeof r.date_status === 'string' ? r.date_status : null), created_at: typeof r.created_at === 'number' ? new Date(r.created_at * 1000).toISOString() : r.created_at })), COLUMNS)
   return new NextResponse(csv, {
     headers: {
       'content-type': 'text/csv; charset=utf-8',

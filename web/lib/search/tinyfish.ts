@@ -53,7 +53,9 @@ function allow(now: number, perMinute: number): boolean {
 
 export type Fail = 'disabled' | 'cap' | 'rate' | 'auth' | 'quota' | 'unavailable'
 export interface TfDeps { env?: Env; fetchImpl?: typeof fetch; now?: number; trace?: SearchTrace }
-export interface SearchHit { url: string; title: string; snippet: string; date: string | null }
+// date = the date the SOURCE states for the event/post. A discovery index's own timestamp is NOT that: it goes in
+// `observed` (context only) and `date` stays null. via marks which index surfaced the hit (attribution).
+export interface SearchHit { url: string; title: string; snippet: string; date: string | null; observed?: string | null; via?: 'gdelt' }
 
 async function call(url: string, init: RequestInit, key: string, f: typeof fetch, now: number): Promise<{ ok: true; json: unknown } | { ok: false; reason: Fail }> {
   try {
@@ -274,7 +276,7 @@ export function toEvidence(hits: SearchHit[], pages: { url: string; text: string
     const k = h.url.replace(/\/$/, ''); if (seen.has(k)) continue; seen.add(k)
     const page = byUrl.get(k)
     const text = (page ? markdownToText(page.text) : h.snippet).replace(/\s+/g, ' ').trim().slice(0, 1200)
-    if (text.length >= 20) out.push({ source: 'tinyfish', url: h.url, title: page?.title || h.title, quote: text, date: h.date })
+    if (text.length >= 20) out.push({ source: h.via === 'gdelt' ? 'news:gdelt' : 'tinyfish', url: h.url, title: page?.title || h.title, quote: text, date: h.date, ...(h.observed ? { updated: h.observed } : {}) })
   }
   return out.slice(0, 30)
 }
