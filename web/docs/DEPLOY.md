@@ -15,6 +15,7 @@ Not used in this release: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET (Gmail is PR #1
 
 ## Steps
 1. On the box: `git fetch && git checkout <this PR's merge commit>` in a NEW directory (not the old app's), then `cd web && npm ci && npm run build`.
+   Then `npm run db:migrate`. It does nothing while `DATABASE_URL` is unset (SQLite). Do not set `DATABASE_URL` in production until the owner authorizes the Postgres cutover (`docs/PLATFORM.md`, "Production go/no-go").
 2. Put the env vars in a root-only env file and start the app on port 3100: `PORT=3100 npm start` under systemd or pm2 (one instance).
 3. Check it before cutover: `curl localhost:3100/api/health`, then `curl -I localhost:3100/sign-up`.
 4. Back up Caddy: `cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.pre-next`. Point dazl.ai `reverse_proxy` at `localhost:3100`. `caddy validate`, then `systemctl reload caddy`.

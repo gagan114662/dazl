@@ -1,0 +1,60 @@
+name: web-ci
+on:
+  pull_request:
+    paths: ["web/**", ".github/workflows/web-ci.yml"]
+  push:
+    branches: [main]
+    paths: ["web/**"]
+jobs:
+  # Full suite on SQLite, today's runtime store. PG-only tests skip here.
+  test-sqlite:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm test
+
+  # Full suite again with a Postgres 16 service container. Tests that take DAZL_TEST_PG_URL run against it (data layer
+  # contract, migrations, schema drift) and DAZL_REQUIRE_PG=1 makes them fail instead of skipping if it is missing.
+  # Modules not yet moved to lib/db/client.ts still run on SQLite in this job (docs/PLATFORM.md step 2).
+  test-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DAZL_TEST_PG_URL: postgres://postgres:ci@127.0.0.1:5432/postgres
+      DAZL_REQUIRE_PG: "1"
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - name: db:migrate against the service container, twice (second run must apply nothing)
+        run: |
+          DATABASE_URL=$DAZL_TEST_PG_URL npm run db:migrate
+          DATABASE_URL=$DAZL_TEST_PG_URL npm run db:migrate | grep -q 'applied \[\]'
+      - name: live leads-read contract on the regenerated schema
+        run: DAZL_PG_ADMIN=$DAZL_TEST_PG_URL node --experimental-strip-types --test test/leads-read-pg-live.test.ts
