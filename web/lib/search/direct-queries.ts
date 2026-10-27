@@ -10,7 +10,7 @@ const word = (alts: string) => new RegExp(`(?<![${L}])(?:${alts})(?![${L}])`, 'i
 export const HIRING = word([
   'hiring|hire[sd]?|jobs?|roles?|openings?|positions?|recruit\\p{L}*|vacanc\\p{L}+', // en
   'contrat(?:a|am|ar|ando|amos|ação|acao)|vagas?|recrutamento|recrutando|recrutar|empregos?|procura(?:m)?-se|procuramos|admite-se|admitimos', // pt
-  'contratando|contratar|contratamos|vacantes?|empleos?|ofertas? de (?:trabajo|empleo)|busca[n]?|buscamos|reclutamiento|reclutando', // es
+  'contratando|contratar|contratamos|contratan|contrata|contratas|contrataci[oó]n|vacantes?|empleos?|ofertas? de (?:trabajo|empleo)|busca[n]?|buscamos|reclutamiento|reclutando', // es
   'recrute(?:nt|r|ment)?|embauche(?:nt|r)?|offres? d.emploi|postes? à pourvoir', // fr
   'stellenangebote?|such(?:en|t)|jobangebote?|stellenausschreibung(?:en)?', // de
   'assum(?:e|iamo|ono)|cerchiamo|offerte di lavoro|posizioni aperte', // it
@@ -24,6 +24,7 @@ const NOISE = new Set([
   // pt
   'empresas', 'empresa', 'em', 'na', 'nas', 'nos', 'um', 'uma', 'para', 'com', 'que', 'contratar', 'contrata', 'contratam', 'contratando', 'contratamos', 'recrutando', 'recrutar', 'recrutamento', 'vaga', 'vagas', 'emprego', 'empregos', 'procura', 'procuram', 'novo', 'nova', 'pequenas', 'médias',
   // es
+  'contratan', 'contratas', 'contratación', 'contratacion', 'contrata', 'contratamos', 'contratando',
   'en', 'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'con', 'busca', 'buscan', 'buscamos', 'vacante', 'vacantes', 'empleo', 'empleos', 'reclutando', 'reclutamiento', 'nuevo', 'nueva',
   // fr
   'entreprises', 'entreprise', 'le', 'les', 'une', 'pour', 'avec', 'qui', 'recrute', 'recrutent', 'recruter', 'recrutement', 'embauche', 'embauchent', 'poste', 'postes', 'offre', 'offres', 'emploi', 'nouveau', 'nouvelle',
@@ -79,18 +80,61 @@ const EXCL = '(?:exclud\\p{L}*|except(?:ing)?|without|skip|avoid|ignore|ignoring
 const REQ = '(?:need|needs|needed|require[sd]?|requiring|must|ensure|make sure|want|wants|please|i.d like|we.d like|' +
   'preciso|precisamos|necessito|necesito|necesitamos|besoin|brauche|benötige|ho bisogno|ik heb nodig)'
 const lead = `(?:(?:i|we|please|por favor|s'il vous plaît)\\s+)?`
-const EXCL_CLAUSE = new RegExp(`(?<![${L}])${lead}${EXCL}(?![${L}])[^.;!?\\n]*`, 'giu')
 const REQ_CLAUSE = new RegExp(`(?<![${L}])${lead}${REQ}(?![${L}])([^.;!?\\n]*)`, 'giu')
 const WINDOW_CLAUSE = new RegExp(`(?<![${L}])(?:in|within|over|during|from|nos?|em|dans|innerhalb|binnen)?\\s*(?:the\\s+)?(?:past|last|ultimos?|últimos?|derniers?|letzten?|laatste)\\s+\\d+\\s*\\p{L}+|(?<![${L}])within\\s+\\d+\\s*\\p{L}+`, 'giu')
+// Negation and exclusion are CLAUSE-level (Instinct re-reviews of #220). The request is cut into segments at sentence
+// punctuation, commas, and conjunctions that open a NEW clause (the conjunction is followed within two words by a hiring word
+// or a negation/exclusion cue: "no contratan recepcionista Y contratan gerente", "not agencies BUT hiring a manager"; a
+// conjunction before a plain role, "no contratan recepcionista y cocinero", does not split). Each segment is then:
+//   - negative: a negation cue before a hiring word ("no contratan", "do not hire"), a bare negation noun group ("no agencias",
+//     "not agencies"), or an exclusion cue ("exclude ...");
+//   - positive: it carries a hiring word and is not negative;
+//   - neutral: neither (places, role continuations).
+// Negative segments are dropped. After a negative segment the following NEUTRAL segments of the same sentence are dropped too
+// (they continue the excluded list: "no agencias, cadenas ni franquicias"), until a positive hiring segment ends the exclusion.
+// So excluded roles are never searched while every positive hiring clause around them is preserved, in either order.
+// This only removes words; it never adds a role, host or place. A request whose only hiring words are negated gets no direct
+// queries (the model-written queries and the exclusion gates still see the request).
+const NEG = `(?:no|not|never|nunca|ne|n[ãa]o|nicht|pas|niet|non|kein\\p{L}*|ning[uú]n\\p{L}*|nenhum\\p{L}*|aucun\\p{L}*|nessun\\p{L}*|geen|\\p{L}*n['’]t)`
+// ('en' is deliberately absent: Spanish "en Madrid" = "in Madrid", far more common here than Dutch "and".)
+const CONJ = '(?:y|e|and|but|pero|mas|et|mais|und|aber|maar|ni|nor|&)'
+// A hiring NOUN for agencies ("recruiters", "recruitment", "reclutamiento") in an exclusion list does not open a new hiring clause.
+const HIRING_VERBISH = `(?!(?:recruiters?|recruitment|recruiting\\s+agenc\\p{L}*|reclutamiento|recrutamento|recrutement|rekrutierung)(?![${L}]))(?:${HIRING.source})`
+// Object negators after the verb ("suchen keinen Leiter", "no tienen ningún ...") negate that hiring word too.
+const NEG_OBJECT = `(?:kein\\p{L}*|ning[uú]n\\p{L}*|nenhum\\p{L}*|aucun\\p{L}*|nessun\\p{L}*|geen)`
+const NEG_BEFORE_HIRING = new RegExp(`(?<![${L}])${NEG}(?![${L}-])\\s+(?:\\p{L}+\\s+)?(?:${HIRING.source})|(?:${HIRING.source})(?![${L}])\\s+${NEG_OBJECT}(?![${L}])`, 'iu')
+const NEG_START = new RegExp(`^\\s*(?:(?:y|e|and|but|pero|que|that|who|which|ni|nor)\\s+)?${NEG}(?![${L}'’-])(?=\\s)`, 'iu')
+const EXCL_ANY = new RegExp(`(?<![${L}])${EXCL}(?![${L}])`, 'iu')
+const SPLIT_CONJ = new RegExp(`\\s+${CONJ}\\s+(?=(?:\\p{L}+\\s+){0,2}(?:${HIRING_VERBISH}|${NEG}(?![${L}'’-])\\s|${EXCL}(?![${L}])))`, 'giu')
+function segmentsOf(sentence: string): string[] {
+  return sentence.split(',').flatMap(piece => piece.split(SPLIT_CONJ)).map(x => x.trim()).filter(Boolean)
+}
+export function positiveRequestText(text: string): string {
+  const sentences: string[] = []
+  for (const sentence of text.split(/[.;!?\n]+/)) {
+    if (!sentence.trim()) continue
+    let excluding = false; const kept: string[] = []
+    for (const seg of segmentsOf(sentence)) {
+      const hiring = HIRING.test(seg)
+      const negative = NEG_BEFORE_HIRING.test(seg) || (!hiring && NEG_START.test(seg)) || EXCL_ANY.test(seg)
+      if (negative) { excluding = true; continue }
+      if (hiring) excluding = false
+      if (!excluding) kept.push(seg)
+    }
+    sentences.push(kept.join(', '))
+  }
+  return sentences.map(x => x || '').join(' . ')
+}
+export const stripNegatedHiring = positiveRequestText
 export function roleRequestText(request: string): string {
-  return request.replace(EXCL_CLAUSE, ' . ')
+  return positiveRequestText(request)
     .replace(REQ_CLAUSE, (_m, rest: string) => HIRING.test(rest) ? ` ${rest} ` : ' . ')
     .replace(WINDOW_CLAUSE, ' ').replace(/\s+/g, ' ').trim()
 }
 export function rolePhrases(request: string, signals: string[], where: string[]): string[] {
   const places = new Set(where.flatMap(tokens))
   const fromRequest = phrasesIn(roleRequestText(request), places)
-  const all = fromRequest.length ? fromRequest : signals.flatMap(s => phrasesIn(s, places))
+  const all = fromRequest.length ? fromRequest : signals.flatMap(s => phrasesIn(stripNegatedHiring(s), places))
   return [...new Set(all)].slice(0, 3)
 }
 // Every requested place gets its own pair of queries (Instinct review: only the first place was used). At most 3
@@ -98,7 +142,7 @@ export function rolePhrases(request: string, signals: string[], where: string[])
 // Order is HOST-major (every place on the first host, then every place on the second) so a truncated budget slice keeps
 // one direct query per place before a second host for any place (Instinct review of #215).
 export function directQueries(request: string, signals: string[], where: string[]): string[] {
-  if (!HIRING.test(`${request} ${signals.join(' ')}`)) return []
+  if (!HIRING.test(stripNegatedHiring(`${request} ${signals.map(stripNegatedHiring).join(' ')}`))) return []
   const places = [...new Set(where.map(w => w.replace(/[\u0000-\u001f"()]/g, ' ').replace(/\s+/g, ' ').trim()).filter(w => w.length >= 2 && w.length <= 60))].slice(0, 3)
   const roles = rolePhrases(request, signals, where).map(r => `"${r}"`)
   if (places.length === 0 || roles.length === 0) return [] // never every state, never every role
