@@ -62,4 +62,11 @@ export function installChunkRecovery(w: any, buildId: string): void {
   w.addEventListener('unhandledrejection', (e: any) => { if (isChunk(e.reason)) recover() })
 }
 
+// The same test as the inline script's, for React error boundaries (app/app/error.tsx). Kept separate because the
+// installed function must stay self-contained.
+export function isChunkLoadError(e: unknown): boolean {
+  const r = e as { name?: unknown; message?: unknown } | null | undefined
+  return !!r && /ChunkLoadError|Loading chunk [^ ]+ failed|Failed to load chunk|Loading CSS chunk/i.test(`${String(r.name ?? '')} ${String(r.message ?? (typeof e === 'string' ? e : ''))}`)
+}
+
 export const chunkRecoveryScript = (buildId: string) => `(${installChunkRecovery.toString()})(window, ${JSON.stringify(buildId)});`

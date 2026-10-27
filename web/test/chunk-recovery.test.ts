@@ -120,3 +120,12 @@ test('the shipped script is self-contained', () => {
   assert.doesNotThrow(() => new Function(chunkRecoveryScript('x').replace(/\(window, "x"\);$/, '')))
   assert.ok(!/\brequire\(|\bimport\b/.test(chunkRecoveryScript('x')))
 })
+
+test('isChunkLoadError (error boundaries) recognises chunk failures only', async () => {
+  const { isChunkLoadError } = await import('../lib/chunk-recovery.ts')
+  assert.equal(isChunkLoadError(Object.assign(new Error('Failed to load chunk /_next/static/chunks/a.js from module 1'), { name: 'ChunkLoadError' })), true)
+  assert.equal(isChunkLoadError(new Error('Loading CSS chunk 3 failed')), true)
+  assert.equal(isChunkLoadError(new TypeError('x is undefined')), false)
+  assert.equal(isChunkLoadError(null), false)
+  assert.equal(isChunkLoadError('Loading chunk 7 failed.'), true)
+})

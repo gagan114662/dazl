@@ -32,12 +32,16 @@ try {
     if (from === '/app/outreach') await page.reload().catch(() => {}) // the next visit of an already-open page after a deploy
     else await page.locator('aside').getByRole('link', { name: 'Outreach', exact: true }).click()
     await page.waitForTimeout(8000) // a looping page would keep loading documents here
-    const notice = page.getByRole('alert').filter({ hasText: 'dazl was updated' })
+    // The <head> script's notice is appended to <body>; the page's own error boundary (app/app/error.tsx) is in <main>.
+    const notice = page.locator('body > [role="alert"]').filter({ hasText: 'dazl was updated' })
     const shown = await notice.isVisible()
     const button = shown && await notice.getByRole('button', { name: 'Reload' }).isVisible()
-    console.log(`${name}: document loads=${docs}, notice=${shown}, Reload button=${button}, page errors=[${errors.join(', ')}], writes=${writes.length}`)
+    const mainText = ((await page.locator('main').innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim()
+    const boundary = await page.locator('main [role="alert"]').filter({ hasText: 'dazl was updated' }).isVisible()
+    console.log(`${name}: document loads=${docs}, notice=${shown}, Reload button=${button}, main="${mainText.slice(0, 60)}", boundary=${boundary}, page errors=[${errors.join(', ')}], writes=${writes.length}`)
+    if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/${name.split(' ')[0]}.png` })
     await ctx.close()
-    return { docs, shown, button, writes }
+    return { docs, shown, button, writes, mainText, boundary, errors }
   }
 
   // A: chunk gone before the tab opened (old HTML/new server): the first page itself fails, then the user navigates.
@@ -49,7 +53,11 @@ try {
     assert.equal(r.shown, true, 'the notice is shown after the one automatic reload')
     assert.equal(r.button, true)
     assert.deepEqual(r.writes, [], 'recovery never sends a write')
+    assert.ok(r.mainText.length > 0, 'the page content area is never left blank')
   }
+  // Client navigation into the missing chunk throws ChunkLoadError while rendering: the /app error boundary shows a
+  // Reload message in the content area (the nav stays) instead of a blank page.
+  assert.equal(a.boundary, true, 'error boundary message shown in <main>')
   console.log(`\nChunk-load recovery is bounded on the production build (${missing.length} chunk(s) removed).`)
 } finally {
   await browser?.close(); srv.stop()
