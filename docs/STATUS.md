@@ -63,6 +63,10 @@ Updated by the builder on every branch. Newest first.
   validator, shows the partial-scope disclosure and the not-covered list BEFORE Run (above both Run buttons), disables Run on
   an unusable limit, and shows a server rejection. Still partial: it does not turn the scan into a whole-scan dollar ceiling.
 
+- b/fetch-order (source quality; fixtures only): the ~16 fetch slots per scan (of ~80 results) are now ordered by how likely a
+  page can still pass the window gate: dated inside the user's window, then undated, then dated outside it (can never pass),
+  login-walled last; search order breaks ties and nothing is dropped when there is room. Not verified live.
+
 ## In progress (interactive Claude session, do not duplicate)
 
 - Blocked-source verification: waits for #188 data from a live run.

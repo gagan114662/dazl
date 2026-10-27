@@ -18,7 +18,7 @@ import type { AdvPlatform } from '../advanced/config.ts'
 import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, selfDescribedUrls } from '../sources/index.ts'
 import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '../search/trace.ts'
 import { directQueries } from '../search/direct-queries.ts'
-import { limits as tfLimits, migrateTinyfish, pickFetchUrls, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
+import { limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { crawlJob } from '../connectors/sitecrawl.ts'
 import { anthropicCountTokens, guardProvider, ownerPool, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './verify-provenance.ts'
@@ -35,7 +35,7 @@ import { safeGet } from '../sources/http.ts'
 import type { SafeGet } from '../sources/types.ts'
 import { meterProvider, writeModelCalls, type ModelCall } from './model-usage.ts'
 import { findPeople } from '../people/people-search.ts'
-import { parseWindowDays, splitByWindow } from './window.ts'
+import { parseWindowDays, splitByWindow, windowStatus } from './window.ts'
 import { applyBuyerFitGate } from './buyer-fit.ts'
 
 export interface Job { spend_reserved_usd?: number | null; id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string; seller?: string | null; watch_id?: string | null; csv_domain?: string | null; run_budget?: string | null }
@@ -568,7 +568,15 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
     return null
   }
   if (diag) diag.hitUrls.push(...new Set(hits.map(h => h.url)))
-  const urls = pickFetchUrls(hits.map(h => h.url), tfLimits().fetchesPerScan) // exact duplicates removed, breadth first by host, nothing excluded
+  // Fetch slots are scarce (16 of ~80 results). Order by how likely a page can still pass the window gate: dated inside the
+  // user's window first, undated next, dated outside the window (can never pass) after that, login-walled pages last.
+  const hitByUrl = new Map(hits.map(h => [h.url, h]))
+  const fetchRank = (u: string): number => {
+    if (isLoginWalled(u)) return 3
+    const st = windowStatus(hitByUrl.get(u)?.date ?? null, icp.window_days ?? 365, new Date())
+    return st === 'inside' ? 0 : st === 'undated' ? 1 : 2
+  }
+  const urls = pickFetchUrls(hits.map(h => h.url), tfLimits().fetchesPerScan, fetchRank) // exact duplicates removed, breadth first by host, nothing excluded
   const f = await tfFetchMany(db, job.user_id, urls, spent, diag ? { trace: diag.trace } : {})
   if (diag?.tfTextUrls && f.ok) diag.tfTextUrls.push(...f.pages.map(p => p.url)) // verify_provenance: pages TinyFish had text for
   const items = toEvidence(hits, f.ok ? f.pages : [])

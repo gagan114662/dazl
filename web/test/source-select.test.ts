@@ -85,3 +85,38 @@ test('runner: after_date is the 90-day cutoff; with three places at most 4 of th
   assert.ok(ats.length >= 1 && ats.length <= 4, `ATS queries ${ats.length} of ${searches.length}`)
   assert.ok(searches.length - ats.length >= 4, 'at least half the budget stays for open searches')
 })
+
+// Fetch slots are scarce (16 of ~80 results): order by how likely a page can still pass the window gate.
+test('pickFetchUrls with a rank: lower rank first across and within hosts, ties keep search order, nothing dropped with room', () => {
+  const urls = ['https://a.example/old', 'https://b.example/undated', 'https://a.example/new', 'https://c.example/new', 'https://www.facebook.com/g/1']
+  const rank = (u: string) => (u.endsWith('/new') ? 0 : u.endsWith('/undated') ? 1 : u.includes('facebook') ? 3 : 2)
+  assert.deepEqual(pickFetchUrls(urls, 3, rank), ['https://a.example/new', 'https://c.example/new', 'https://b.example/undated'])
+  const all = pickFetchUrls(urls, 10, rank); assert.equal(all.length, 5); assert.equal(all[all.length - 1], 'https://www.facebook.com/g/1')
+  assert.deepEqual(pickFetchUrls(urls, 10), pickFetchUrls(urls, 10), 'deterministic')
+})
+
+test('runner: with a 90-day window, in-window dated results are fetched before undated, stale and walled ones when the fetch cap bites', async () => {
+  const day = (n: number) => new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10)
+  const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
+  saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
+  const icp = { summary: 'Dental practices', who: ['Practice manager'], industries: [], sizes: [], where: ['New York'], signals: ['opening'], exclude: [], window_days: 90 }
+  createQueryJob(db, 'A', { query: 'New dental practices opened in New York in the past 90 days', icp: JSON.stringify(icp) })
+  const job = claimKeyedJob(db)!
+  const results = [
+    { url: 'https://stale.example/a', title: 's', snippet: 'a long enough snippet about a dental practice opening', date: day(-300) },
+    { url: 'https://www.facebook.com/groups/g/posts/1', title: 'f', snippet: 'a long enough snippet about a dental practice opening', date: null },
+    { url: 'https://undated.example/a', title: 'u', snippet: 'a long enough snippet about a dental practice opening', date: null },
+    { url: 'https://fresh1.example/a', title: 'n1', snippet: 'a long enough snippet about a dental practice opening', date: day(-5) },
+    { url: 'https://fresh2.example/a', title: 'n2', snippet: 'a long enough snippet about a dental practice opening', date: day(-20) },
+  ]
+  let fetched: string[] = []
+  const fetchImpl = (async (u: string, init?: RequestInit) => {
+    if (u.startsWith('https://api.search.tinyfish.ai')) return new Response(JSON.stringify({ results: new URL(u).searchParams.get('query')!.startsWith('site:linkedin.com/in ') ? [] : results }), { status: 200 })
+    if (u.startsWith('https://api.fetch.tinyfish.ai')) { fetched.push(...JSON.parse(String(init?.body)).urls); return new Response(JSON.stringify({ results: [] }), { status: 200 }) }
+    return new Response('{}', { status: 200 })
+  }) as typeof fetch
+  const providers: Record<'anthropic' | 'openai', Provider> = { anthropic: { research: async () => ({ text: '', citedUrls: [] }), complete: async () => '[]' }, openai: { research: async () => ({ text: '', citedUrls: [] }) } }
+  const realFetch = globalThis.fetch; globalThis.fetch = fetchImpl; process.env.TINYFISH_API_KEY = 'tf-test'; process.env.TINYFISH_FETCHES_PER_SCAN = '2'
+  try { await runJob(db, job, { providers, master, fetchPage: async () => null as never, fetchImpl, judge: null, score: false, ground: false }) } finally { globalThis.fetch = realFetch; delete process.env.TINYFISH_API_KEY; delete process.env.TINYFISH_FETCHES_PER_SCAN }
+  assert.deepEqual(fetched.slice(0, 2).sort(), ['https://fresh1.example/a', 'https://fresh2.example/a'], `fetch cap of 2 goes to the in-window dated pages, got ${JSON.stringify(fetched)}`)
+})

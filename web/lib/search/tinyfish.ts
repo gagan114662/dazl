@@ -136,7 +136,9 @@ export function canonicalUrl(raw: string): string | null {
 // employer is the unit of breadth. Every other host is its own unit (no taxonomy beyond these documented URL shapes).
 const ATS_EMPLOYER_HOSTS = /^(boards|job-boards)(\.eu)?\.greenhouse\.io$|^jobs\.(ashbyhq\.com|lever\.co)$|^apply\.workable\.com$/
 const employerKey = (u: URL): string => { const seg = u.pathname.split('/')[1]; return ATS_EMPLOYER_HOSTS.test(u.hostname) && seg ? `${u.hostname}/${seg.toLowerCase()}` : u.hostname }
-export function pickFetchUrls(urls: string[], max: number): string[] {
+// rank (optional, lower = fetched first, ties keep search order): which result is worth a scarce fetch slot. The same pages are
+// eligible; only the order changes, so with room for all of them nothing is dropped.
+export function pickFetchUrls(urls: string[], max: number, rank?: (url: string) => number): string[] {
   const seen = new Set<string>(); const byHost = new Map<string, string[]>()
   for (const url of urls) {
     const c = canonicalUrl(url); if (c === null || seen.has(c)) continue
@@ -145,15 +147,19 @@ export function pickFetchUrls(urls: string[], max: number): string[] {
     if (!byHost.has(host)) byHost.set(host, [])
     byHost.get(host)!.push(url)
   }
-  const out: string[] = []
-  // Readable hosts first, login-walled hosts after them: a walled page uses a fetch slot and still cannot be read.
-  const queues = [...byHost.entries()].sort(([a, qa], [b, qb]) => Number(isLoginWalled(qa[0])) - Number(isLoginWalled(qb[0]))).map(([, q]) => q)
-  for (let round = 0; out.length < max; round++) {
-    let any = false
-    for (const q of queues) { if (round < q.length) { any = true; if (out.length < max) out.push(q[round]) } }
-    if (!any) break
-  }
-  return out
+  // Candidates ordered by (rank, position within its host, host order): among equally ranked pages the breadth-first rule still
+  // holds (first pages of distinct hosts before second pages), and a lower rank always comes first. Default rank: login-walled
+  // pages after every readable page (a walled page uses a fetch slot and still cannot be read).
+  const r = rank ?? ((u: string) => Number(isLoginWalled(u)))
+  const flat: { url: string; rank: number; pos: number; host: number; order: number }[] = []
+  let host = 0, order = 0
+  for (const q of byHost.values()) { q.forEach((url, pos) => flat.push({ url, rank: r(url), pos, host, order: order++ })); host++ }
+  // Within one host the best-ranked page leads: positions are assigned after sorting that host's pages by rank (stable).
+  const byHostIdx = new Map<number, typeof flat>()
+  for (const f of flat) { if (!byHostIdx.has(f.host)) byHostIdx.set(f.host, []); byHostIdx.get(f.host)!.push(f) }
+  for (const group of byHostIdx.values()) { group.sort((a, b) => a.rank - b.rank || a.order - b.order); group.forEach((f, i) => { f.pos = i }) }
+  flat.sort((a, b) => a.rank - b.rank || a.pos - b.pos || a.host - b.host)
+  return flat.slice(0, Math.max(0, max)).map(f => f.url)
 }
 
 // Fetch in provider-sized batches (tfFetch takes at most 10 urls per call). All per-scan, per-tenant and global caps
