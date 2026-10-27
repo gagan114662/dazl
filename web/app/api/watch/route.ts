@@ -4,6 +4,7 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { normalizeIcp } from '@/lib/scan/icp'
 import { createWatch, listWatches, watchAction } from '@/lib/watch'
+import { normalizeScanBudget } from '@/lib/scan/run-budget'
 
 export async function GET() {
   const user = await requireUser()
@@ -27,7 +28,11 @@ export async function POST(req: NextRequest) {
   const query = typeof body?.query === 'string' ? body.query.trim() : ''
   const icp = normalizeIcp(body?.icp)
   if (query.length < 3 || query.length > 600 || !icp) return NextResponse.json({ error: 'A search and its profile are needed' }, { status: 400 })
-  const { watch, error } = createWatch(db, user.id, query, JSON.stringify(icp))
+  // Optional per-run budget, validated like POST /api/scan; each weekly run is bounded separately (not the watch in total).
+  const budgetSupplied = body !== null && typeof body === 'object' && 'budget' in body
+  const nb = normalizeScanBudget(budgetSupplied ? body.budget : undefined, budgetSupplied)
+  if (!nb.ok) return NextResponse.json({ error: 'invalid_budget', detail: nb.error }, { status: 400 })
+  const { watch, error } = createWatch(db, user.id, query, JSON.stringify(icp), nb.value)
   if (error) return NextResponse.json({ error }, { status: 400 })
   return NextResponse.json({ watch })
 }
