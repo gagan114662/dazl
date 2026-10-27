@@ -78,6 +78,9 @@ Updated by the builder on every branch. Newest first.
   and real billing below dazl, cache-token charges, reservations are estimates; the per-owner pool resets on restart; CSV
   imports take the flags only. max_usd remains a reservation limit on guarded model requests, not a whole-scan dollar ceiling.
 
+- docs/design/blocked-source-verification.md (DESIGN, not built): verify a blocked candidate against the TinyFish page text we
+  already hold, same checks, labelled; needs an owner/Instinct decision and the #188 diagnostic from a live run first.
+
 ## In progress (interactive Claude session, do not duplicate)
 
 - Blocked-source verification: waits for #188 data from a live run.
