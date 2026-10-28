@@ -34,6 +34,8 @@ export const ROUTES: RouteEntry[] = [
   { path: 'gmail/connect', method: 'GET', auth: 'session', crossTenant: 'session-scope' },
   { path: 'gmail/disconnect', method: 'POST', auth: 'session', crossTenant: 'session-scope' },
   { path: 'health', method: 'GET', auth: 'public', note: 'no tenant data' },
+  { path: 'health/live', method: 'GET', auth: 'public', note: 'liveness: no tenant data, touches no store' },
+  { path: 'health/ready', method: 'GET', auth: 'public', note: 'readiness: check names and timings only, no tenant data' },
   { path: 'hooks/calcom', method: 'POST', auth: 'public', note: 'per-tenant HMAC signature' },
   { path: 'internal/tick', method: 'POST', auth: 'public', note: 'shared secret, timing-safe compare' },
   { path: 'leads/[lead]/confirm', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' } },

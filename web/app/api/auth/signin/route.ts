@@ -4,6 +4,7 @@ import { cookies } from 'next/headers'
 import { createSession, findPasswordUser, SESSION_TTL_S } from '@/lib/auth-db'
 import { validateEmail } from '@/lib/validate'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
+import { captureError } from '@/lib/ops/errors'
 
 // Fixed dummy salt/hash so unknown emails cost the same time as known ones.
 const DUMMY_SALT = '00000000000000000000000000000000'
@@ -32,7 +33,7 @@ export async function POST(req: NextRequest) {
     cookieStore.set('dazl_session', token, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: SESSION_TTL_S, path: '/' })
     return NextResponse.json({ ok: true, redirect: '/app' })
   } catch (e) {
-    console.error('signin failed', e)
+    captureError(e, { source: 'route', where: '/api/auth/signin', method: 'POST' })
     return NextResponse.json({ error: 'Something went wrong. Try again.' }, { status: 500 })
   }
 }

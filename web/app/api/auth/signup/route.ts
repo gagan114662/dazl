@@ -4,6 +4,7 @@ import { cookies } from 'next/headers'
 import { createPasswordUser, createSession, SESSION_TTL_S } from '@/lib/auth-db'
 import { cleanText, validateEmail, validatePassword } from '@/lib/validate'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
+import { captureError } from '@/lib/ops/errors'
 
 export async function POST(req: NextRequest) {
   const rl = (await rateLimit(`signup:${clientIp(req)}`, 5, 60 * 60 * 1000))
@@ -32,7 +33,7 @@ export async function POST(req: NextRequest) {
     cookieStore.set('dazl_session', token, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: SESSION_TTL_S, path: '/' })
     return NextResponse.json({ ok: true, redirect: '/app' })
   } catch (e) {
-    console.error('signup failed', e)
+    captureError(e, { source: 'route', where: '/api/auth/signup', method: 'POST' })
     return NextResponse.json({ error: 'Something went wrong. Try again.' }, { status: 500 })
   }
 }

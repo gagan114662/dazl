@@ -16,6 +16,31 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
 - **CI** (`.github/workflows/web-ci.yml`) runs the full suite twice, once on SQLite and once with a Postgres 16 service, and a schema drift check fails when the code's tables and the PG migrations differ.
 - **Step 2b (auth + billing on `Db`):** sessions, password sign-in/sign-up, Google sign-in (`users`, `sessions`, `oauth_identities`), and the Stripe webhook, checkout and portal (`tenant_plans`, `stripe_events`) now go through `Db`. They run against both engines in tests (`test/helpers/engines.ts`). Sync readers that other areas still call (`getPlan`, `setPlan`, `scanQuota`, and the seller- and buyer-profile functions in `auth-db.ts`) stay on raw SQLite until those areas are ported.
 - **Mixed mode on SQLite:** ported and unported code share one connection. `Db.tx` bodies are generators that can only yield statements. On SQLite, a body runs synchronously inside one better-sqlite3 transaction, so no other request (raw or ported) can run during it, see it half-done or join it. `test/mixed-mode.test.ts` runs concurrent auth/billing transactions, including a rollback, alongside raw requests on one connection.
+- **Step 6a (health and error capture):**
+  - `GET /api/health/live` answers without touching any store. Use it as the liveness probe.
+  - `GET /api/health/ready` and `GET /api/health` are the readiness probe. Each check has a 2 s budget. They return 503 when any of these fails or goes over budget:
+    - the store does not answer (Postgres when `DATABASE_URL` is set, else SQLite);
+    - on Postgres, `dazl_schema_migrations` is behind the migrations this build ships;
+    - the SQLite file the raw-handle modules use does not answer.
+  - The budget is a hard cut-off only for asynchronous waits (the Postgres pool). Synchronous better-sqlite3 work (a query, or the first open and migrate) cannot be preempted on the event loop. The probe waits for it, for up to the 5 s busy timeout on a locked file, and then reports that check as `timeout` if it went over budget.
+  - The body names the failed check and the engine, never the error text. `/api/health` keeps `ok` and `commit` for `ops/safe_launch.py`.
+  - Errors are captured by `lib/ops/errors.ts` as one JSON line on stderr. Every field is built in code, scrubbed free text, or checked against its exact shape and replaced when it does not match:
+    - `where`: a route template or worker name, never a concrete path.
+    - `tenant`: a `users.id`, 32 lowercase hex characters.
+    - `ref`: a Stripe event id from a signature-verified webhook.
+    - `method` and `source`: fixed sets.
+    - `error.name` and `cause.name`: a class name ending in Error/Exception, or one of the app's own error classes.
+    - `message` and stack frames: scrubbed and bounded.
+    - Also included: a fingerprint.
+    - Scrubbed: emails, auth headers, provider keys, DB URLs, URL queries, IPs, phone numbers and long tokens.
+    - Never read from the request: bodies, headers or cookies. The one exception is the session cookie, used only to look up the tenant id.
+  - Sources:
+    - every uncaught route, page or server-action error (Next `onRequestError` in `instrumentation.ts`, tenant from the session cookie, lookup bounded to 500 ms);
+    - the auth, billing and Gmail callback routes' own catches;
+    - the tick's per-tenant workers;
+    - uncaught process exceptions (monitor only, exit behaviour unchanged).
+  - Alert hook: with `OPS_ALERT_WEBHOOK_URL` (https only) set, the same scrubbed record is POSTed. It is throttled to one per fingerprint per 10 min and 20 per 10 min overall, fire and forget.
+  - Not yet: the scan runner and queue runner crash catches (`lib/scan/runner.ts`, `lib/scan/queue-runner.ts`) still use `console.error`. Those files belong to the yield stack (#224/#226/#230), so they move after it merges. Also not done yet: the backup restore drill and the deploy checklist (step 6b).
 - **Still on SQLite:** every other module. Production keeps running on SQLite until cutover.
 - **SQLite-only SQL in queries:** about 18 queries use `rowid` (for example as an ORDER BY tie-break), which PG does not have. They need rewriting as each area is ported.
 
@@ -98,7 +123,7 @@ These steps are development work behind flags and tests. Merging them does not c
    - All sends use stub providers. No real mail is sent.
    - The approval, cap, suppression and consent gates stay as they are.
 4. **Tenant isolation.** Step 4a/4b:
-   - `test/tenant-isolation-manifest.ts` classifies all 113 API route handlers: 11 public, each with what authenticates it, and 102 session.
+   - `test/tenant-isolation-manifest.ts` classifies all 115 API route handlers: 13 public, each with what authenticates it, and 102 session.
    - CI proves that every session handler refuses an unauthenticated caller without changing data.
    - All 102 session handlers are exercised with two tenants:
      - 48 that take ids or list tenant data have targeted tests: tenant B with tenant A's ids gets nothing of A's and changes nothing.

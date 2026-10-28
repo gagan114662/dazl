@@ -5,6 +5,7 @@ import { createCheckoutUrl } from '@/lib/billing/stripe'
 import { readPlan } from '@/lib/plans'
 import { rateLimit } from '@/lib/rate-limit'
 import { sameOriginJson } from '@/lib/same-origin'
+import { captureError } from '@/lib/ops/errors'
 
 export async function POST(req: NextRequest) {
   const user = await requireUser()
@@ -17,7 +18,7 @@ export async function POST(req: NextRequest) {
   try {
     return NextResponse.json({ url: await createCheckoutUrl(db, user.id, user.email) })
   } catch (e) {
-    console.error('checkout failed', e)
+    captureError(e, { source: 'route', where: '/api/billing/checkout', method: 'POST', tenantId: user.id })
     return NextResponse.json({ error: 'Could not start checkout' }, { status: 502 })
   }
 }
