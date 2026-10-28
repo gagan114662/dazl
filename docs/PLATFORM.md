@@ -56,6 +56,18 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
     - Times come from the caller.
     - Same-second ties order by `id`, not `rowid`.
     - `getJob` does not reap as a side effect.
+- **Tenant isolation of tables on `Db`** (audit of every table a `Db`-layer module reads or writes, both engines):
+
+  | Table | Covered by |
+  |---|---|
+  | `users`, `sessions`, `oauth_identities` | `test/tenant-isolation-db.test.ts`: sessions, password sign-in, Google sign-in |
+  | `tenant_plans`, `stripe_events` | `test/tenant-isolation-db.test.ts` (billing); `billing-e2e` (another tenant's customer changes nothing) |
+  | `seo_audits`, `seo_briefs`, `newsjacks` | `test/seo-store.test.ts` |
+  | `scan_jobs`, `leads` (via `lib/scan/store-db.ts`) | `test/scan-store-db.test.ts` |
+  | `rate_limits` (global table, per-tenant keys) | `test/tenant-isolation-db.test.ts`: one tenant using up its allowance never spends or blocks another's |
+  | `app_leases`, `dazl_schema_migrations` | Global, no tenant data (listed in `NOT_DIRECT`) |
+
+  On open branches: `work_queue` is covered in `test/multi-instance.test.ts` (#252). `stripe_ended_subscriptions` (#253) is keyed by Stripe's globally unique subscription id, and its tenant comes from the verified event; a two-tenant test follows once #253 merges.
 - **Still on SQLite:** every other module. Production keeps running on SQLite until cutover.
 - **SQLite-only SQL in queries:** about 18 queries use `rowid` (for example as an ORDER BY tie-break), which PG does not have. They need rewriting as each area is ported.
 
