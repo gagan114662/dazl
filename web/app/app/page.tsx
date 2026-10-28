@@ -1,6 +1,7 @@
 import Readiness from './readiness'
 import FirstRun from './first-run'
 import Journey from './journey'
+import HomeChecklist from './home-checklist'
 import FeatureDiscovery from './feature-discovery'
 import InfoTip from './ui/info-tip'
 
@@ -12,6 +13,7 @@ export default function AppHome() {
       <h1 className="text-3xl font-bold tracking-tight">Welcome to dazl</h1>
       <p className="text-[var(--ink-2)] text-sm mt-1 mb-6">Find businesses that need what you sell.<InfoTip>Each lead keeps a public source. You email them from your own Gmail after you approve every word.</InfoTip></p>
       <FirstRun>
+        <HomeChecklist />
         <Journey />
         <details className="drawer card mt-4" data-testid="setup-details">
           <summary><span className="flex items-center gap-2">Setup details and all plays</span><span className="ml-auto text-xs font-normal text-[var(--ink-3)] hidden sm:inline">AI key, sources, Gmail, sender, limits</span></summary>

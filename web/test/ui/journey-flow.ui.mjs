@@ -112,7 +112,7 @@ try {
   }
   // 2a. Running -> result, no reload.
   {
-    const s = { profile: { sells: 'x', website: 'https://acme.example', buyer: BUYER }, job: job({ status: 'running' }), finishAfter: 2 }
+    const s = { profile: { sells: 'x', website: 'https://acme.example', buyer: BUYER }, job: job({ status: 'running' }), finishAfter: 3 } // Home reads the jobs list once more on load for its five-step checklist (not a poll)
     const { ctx, page, writes, docs } = await open(s)
     await page.getByTestId('journey').waitFor({ timeout: 15000 })
     assert.equal(await stage(page), 'running'); await page.getByTestId('scan-stepper').waitFor()

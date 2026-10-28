@@ -154,3 +154,12 @@ body { font-size: 16px; line-height: 1.5; }
 .step-dot { width: 1.4rem; height: 1.4rem; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-size: .7rem; font-weight: 700; flex-shrink: 0; }
 @keyframes dazl-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 .step-live { animation: dazl-pulse 1.4s ease-in-out infinite; }
+
+/* Home's five-step path: a row of steps on wide screens, a list on narrow ones. */
+.hc-steps { display: grid; gap: 1rem; }
+@media (min-width: 900px) { .hc-steps { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .75rem; } }
+.hc-step { display: flex; gap: .75rem; align-items: flex-start; }
+@media (min-width: 900px) { .hc-step { flex-direction: column; gap: .6rem; } }
+.hc-dot { width: 1.75rem; height: 1.75rem; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-size: .78rem; font-weight: 700; flex-shrink: 0; background: #f3eeea; color: var(--ink-3); }
+.hc-dot-done { background: var(--mint-bg); color: #17694a; }
+.hc-dot-next { background: var(--ink); color: #fff; }
