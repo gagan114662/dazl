@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import Caveat from '@/app/app/caveat'
 
 interface State { gmail: { email: string; status: string; read_granted: boolean } | null; sender: { sender_name: string; postal_address: string; booking_url?: string | null } | null; daily_cap: number; sent_24h: number; read_notice: string[] }
 
@@ -41,7 +42,7 @@ export default function GmailPanel() {
   return (
     <div className="card p-6 mb-4">
       <h2 className="font-semibold mb-1">Email sending (Gmail)</h2>
-      <p className="text-[#555] text-sm mb-4">Emails go out from your own Gmail. By default each one is sent after you approve it; if you turn on autopilot below, it can send first emails on its own within the limits you set. Connecting also asks for read access, limited to replies in the threads dazl started for you and delivery-failure notices for them - dazl never lists, searches, or reads anything else in your mailbox. On Google&apos;s consent screen you can untick the read access and still connect send-only.</p>
+      <Caveat className="text-[#555] text-sm mb-4" summary="Emails go out from your own Gmail after you approve them (or on autopilot, if you turn it on), and connecting asks to read only replies and delivery-failure notices in the threads dazl started.">Emails go out from your own Gmail. By default each one is sent after you approve it; if you turn on autopilot below, it can send first emails on its own within the limits you set. Connecting also asks for read access, limited to replies in the threads dazl started for you and delivery-failure notices for them - dazl never lists, searches, or reads anything else in your mailbox. On Google&apos;s consent screen you can untick the read access and still connect send-only.</Caveat>
       {s?.gmail ? (
         <div className="text-sm mb-4">
           <div className="flex items-center justify-between">

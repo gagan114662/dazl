@@ -1,6 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { CHANNELS, TIER_LABEL, type Channel } from '@/lib/channels'
+import Caveat from '@/app/app/caveat'
 
 interface P { platform: string; allowed: boolean; consent: boolean; connected: boolean; enabled: boolean; last4: string | null; high_risk: boolean }
 const NAMES: Record<string, string> = { linkedin: 'LinkedIn', x: 'X', reddit: 'Reddit', xiaohongshu: 'XiaoHongShu', bilibili: 'Bilibili' }
@@ -50,9 +51,9 @@ export default function AdvancedPanel() {
   return (
     <div id="connectors" className="card p-6 mb-4 scroll-mt-6">
       <h2 className="font-semibold mb-1">Connectors</h2>
-      <p className="text-[#555] text-sm mb-3">dazl reads public web pages for free. No paid lookup service is used and no outside API key is needed. Tier 0 channels need no setup. Session channels are optional and stay off until you accept the risk notice and connect your own account.</p>
-      <p className="text-[#555] text-sm mb-3">Session channels use your own logged-in session on a platform to find leads there. This breaks the terms of most of these platforms. They can limit or ban the account you use. Use a throwaway account, never your main one. You accept that risk yourself; dazl cannot protect your account.</p>
-      <p className="text-[#555] text-sm mb-4">Your session is encrypted, used only for your scans, rate limited, and logged below your scans in the lookup history. Leads from pages behind a login are never verified automatically. They go to needs review. Remove a session at any time.</p>
+      <Caveat className="text-[#555] text-sm mb-3" summary="dazl reads public web pages for free; optional session channels stay off until you accept the risk notice.">dazl reads public web pages for free. No paid lookup service is used and no outside API key is needed. Tier 0 channels need no setup. Session channels are optional and stay off until you accept the risk notice and connect your own account.</Caveat>
+      <Caveat className="text-[#555] text-sm mb-3" summary="Session channels break most platforms' terms and can get the account you use limited or banned - use a throwaway account, never your main one.">Session channels use your own logged-in session on a platform to find leads there. This breaks the terms of most of these platforms. They can limit or ban the account you use. Use a throwaway account, never your main one. You accept that risk yourself; dazl cannot protect your account.</Caveat>
+      <Caveat className="text-[#555] text-sm mb-4" summary="Your session is encrypted and used only for your scans; leads from pages behind a login always go to needs review.">Your session is encrypted, used only for your scans, rate limited, and logged below your scans in the lookup history. Leads from pages behind a login are never verified automatically. They go to needs review. Remove a session at any time.</Caveat>
       {([0, 1, 2] as const).map(t => (
         <div key={t} className="mt-5">
           <div className="text-xs font-mono uppercase tracking-wider text-[#555] mb-1">{TIER_LABEL[t]}</div>
