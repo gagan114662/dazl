@@ -231,7 +231,10 @@ export default function LeadsClient() {
     if (!r.ok) { setCsvNote(j.error === 'quota_exceeded' ? 'Monthly scans are used up.' : j.error || 'Could not resume'); return }
     setCsvBatch(j)
   }
-  const [leadTab, setLeadTab] = useState<'all' | 'review' | 'approved' | 'rejected'>('all')
+  // The cards open on what is left to decide; an approved card moves to Approved (it became a draft) and a rejected one to
+  // Rejected (it leaves the list), each with a one-line result above the list.
+  const [leadTab, setLeadTab] = useState<'review' | 'approved' | 'rejected'>('review')
+  const [cardResult, setCardResult] = useState<{ kind: 'approved' | 'rejected'; id: string; company: string; reason?: string } | null>(null)
   const scanActive = !!jobId && (status === 'pending' || status === 'running' || status === 'enriching')
   const csvActive = !!csvBatch && ((csvBatch.counts.queued ?? 0) + (csvBatch.counts.running ?? 0) > 0)
   useEffect(() => {
@@ -265,11 +268,14 @@ export default function LeadsClient() {
     if (!rejecting) return
     const { id, why } = rejecting
     setRejecting(null)
-    await quarantine(id, false, rejectReason(why))
+    if (await quarantine(id, false, rejectReason(why))) setCardResult({ kind: 'rejected', id, company: leads.find(l => l.id === id)?.company ?? 'This lead', reason: why.trim() || undefined })
   }
   async function quarantine(leadId: string, release = false, reason = 'Wrong company or wrong contact details') {
     const r = await fetch(`/api/leads/${leadId}/quarantine`, { method: release ? 'DELETE' : 'POST', headers: { 'content-type': 'application/json' }, body: release ? '{}' : JSON.stringify({ reason }) })
-    if (r.ok) setLeads(ls => ls.map(l => l.id === leadId ? { ...l, quarantined_at: release ? null : Math.floor(Date.now() / 1000), quarantine_reason: release ? null : reason } : l))
+    if (r.ok && release) setCardResult(c => c?.id === leadId ? null : c)
+    if (!r.ok) return false
+    setLeads(ls => ls.map(l => l.id === leadId ? { ...l, quarantined_at: release ? null : Math.floor(Date.now() / 1000), quarantine_reason: release ? null : reason } : l))
+    return true
   }
   const [contactMsg, setContactMsg] = useState<Record<string, string>>({})
   async function findContact(leadId: string) {
@@ -302,7 +308,7 @@ export default function LeadsClient() {
   async function approveLead(leadId: string) {
     if (approvingRef.current.has(leadId)) return
     approvingRef.current.add(leadId); setApproving(a => ({ ...a, [leadId]: true }))
-    try { if (await makeDraft(leadId)) { setApproved(a => ({ ...a, [leadId]: true })); void loadScanDrafts() } }
+    try { if (await makeDraft(leadId)) { setApproved(a => ({ ...a, [leadId]: true })); setCardResult({ kind: 'approved', id: leadId, company: leads.find(l => l.id === leadId)?.company ?? 'This lead' }); void loadScanDrafts() } }
     finally { approvingRef.current.delete(leadId); setApproving(a => ({ ...a, [leadId]: false })) }
   }
   async function makeDraft(leadId: string): Promise<boolean> {
@@ -801,9 +807,9 @@ export default function LeadsClient() {
         </div>
       )}
       {quality && status === 'done' && (
-        <p className="text-gray-400 text-sm mb-4">
-          {quality.candidates} found: {quality.passed ?? 0} source-checked, {quality.needs_review ?? 0} need{(quality.needs_review ?? 0) === 1 ? 's' : ''} your review, {quality.dropped ?? 0} dropped
-          {Object.keys(quality.drop_reasons).length > 0 && <> ({Object.entries(quality.drop_reasons).map(([k, n]) => `${n} ${REASON[k] ?? k}`).join(', ')})</>}.
+        <p className="text-xs text-[var(--ink-2)] mb-3 flex flex-wrap items-center gap-1.5" data-testid="scan-quality">
+          <span className="tag">{quality.candidates} found</span><span className="tag">{quality.passed ?? 0} source-checked</span><span className="tag">{quality.needs_review ?? 0} to review</span><span className="tag">{quality.dropped ?? 0} dropped</span>
+          {Object.keys(quality.drop_reasons).length > 0 && <InfoTip label="Why leads were dropped">Dropped: {Object.entries(quality.drop_reasons).map(([k, n]) => `${n} ${REASON[k] ?? k}`).join(', ')}.</InfoTip>}
         </p>
       )}
       <VerificationFixture />
@@ -851,42 +857,52 @@ export default function LeadsClient() {
       )}
       {jobId && visibleLeads.length > 0 && (() => {
         const n = cardCounts(visibleLeads, draftedLeads, approved)
-        // "Approved" on a card only makes a draft: the email itself is still approved in Outreach before anything sends.
-        return <p className="text-xs text-[#555] mb-2">
-          <span data-testid="card-counts-scope">Cards shown below (not counting Needs your review{!showSeen && leads.some(l => l.seen_before && !l.review_reason) ? ' or hidden already-seen leads' : ''}): </span>
-          <span data-testid="card-counts"><span className="text-[#111] font-medium">Approved {n.approved ?? '?'}</span> · <span className="text-[#111] font-medium">Rejected {n.rejected}</span> · <span className="text-[#111] font-medium">To review {n.toReview ?? '?'}</span></span>
-          {n.approved === null ? <span data-testid="card-counts-note"> (drafts could not be loaded, so Approved is unknown)</span> : <span data-testid="card-counts-note"> - approving a card makes a draft; each email is still approved in Outreach before it sends.</span>}
-        </p>
+        const count = { review: n.toReview, approved: n.approved, rejected: n.rejected }
+        return <div className="flex flex-wrap items-center gap-2 mb-3">
+          <div className="seg" role="tablist" aria-label="Filter leads" data-testid="lead-tabs">
+            {(['review', 'approved', 'rejected'] as const).map(t => <button key={t} type="button" role="tab" aria-selected={leadTab === t} onClick={() => setLeadTab(t)} data-testid={`tab-${t}`}>{{ review: 'To review', approved: 'Approved', rejected: 'Rejected' }[t]} <span className="text-[var(--ink-3)]">{count[t] ?? '?'}</span></button>)}
+          </div>
+          {/* "Approved" on a card only makes a draft: the email itself is still approved in Outreach before anything sends. */}
+          <InfoTip label="About these counts"><span data-testid="card-counts-scope">Cards below, not counting Needs your review{!showSeen && leads.some(l => l.seen_before && !l.review_reason) ? ' or hidden already-seen leads' : ''}. </span>{n.approved === null ? <span data-testid="card-counts-note">Drafts could not be loaded, so Approved is unknown.</span> : <span data-testid="card-counts-note">Approving a card makes a draft; each email is still approved in Outreach before it sends.</span>}</InfoTip>
+        </div>
       })()}
-      {jobId && visibleLeads.length > 0 && <div className="seg mb-3" role="tablist" aria-label="Filter leads" data-testid="lead-tabs">
-        {(['all', 'review', 'approved', 'rejected'] as const).map(t => <button key={t} type="button" role="tab" aria-selected={leadTab === t} onClick={() => setLeadTab(t)}>{{ all: 'All', review: 'To review', approved: 'Approved', rejected: 'Rejected' }[t]}</button>)}
+      {jobId && cardResult && <div className="card px-4 py-3 mb-3 flex flex-wrap items-center gap-3 text-sm" role="status" data-testid="card-result" data-kind={cardResult.kind}>
+        {cardResult.kind === 'approved'
+          ? <><Pill tone="mint">Approved</Pill><span className="flex-1"><span className="font-semibold">{cardResult.company}</span>: draft created.<InfoTip>Nothing is sent. You review and approve the email in Outreach first.</InfoTip></span><a className="btn-primary btn-sm" href={`/app/outreach?job_id=${jobId}`}>Review draft</a></>
+          : <><Pill tone="pink">Rejected</Pill><span className="flex-1"><span className="font-semibold">{cardResult.company}</span>{cardResult.reason ? ` (${cardResult.reason})` : ''} left the list.<InfoTip>Kept with its evidence; it will not be drafted, sent or exported.</InfoTip></span><button type="button" className="btn-ghost btn-sm" onClick={() => void quarantine(cardResult.id, true)}>Undo</button></>}
+        <button type="button" aria-label="Dismiss" className="text-[var(--ink-3)] hover:text-[var(--ink)]" onClick={() => setCardResult(null)}><Icon name="x" className="w-4 h-4" /></button>
       </div>}
       <div className={visibleLeads.length ? 'card overflow-hidden divide-y divide-[var(--line)]' : ''}>
         {visibleLeads.length === 0 ? (
           // Loading, failed and status-error states have their own truthful copy above.
           status === 'loading' || status === 'failed' || statusError ? null
             : <p className="p-10 text-center text-gray-500 text-sm">{emptyLeadsMessage(status, 0, hiddenCount, quality?.needs_review) ?? ''}</p>
-        ) : visibleLeads.filter(l => leadTab === 'all' ? true : leadTab === 'rejected' ? !!l.quarantined_at : leadTab === 'approved' ? !l.quarantined_at && !!(draftedLeads?.has(l.id) || approved[l.id]) : !l.quarantined_at && !(draftedLeads?.has(l.id) || approved[l.id])).map(l => (
+        ) : visibleLeads.filter(l => leadTab === 'rejected' ? !!l.quarantined_at : leadTab === 'approved' ? !l.quarantined_at && !!(draftedLeads?.has(l.id) || approved[l.id]) : !l.quarantined_at && !(draftedLeads?.has(l.id) || approved[l.id])).map(l => (
           <div key={l.id} className="p-4 sm:p-5 text-sm bg-[var(--panel)] hover:bg-white transition-colors">
             {(() => {
               const c = leadCardSummary(l, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')
               return <div data-testid="lead-card">
-                <div className="flex items-start justify-between gap-3">
+                {/* Below sm the actions sit under the identity so the company, contact and any warning get the full width. */}
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div className="flex items-start gap-3 min-w-0">
                   <Avatar name={c.company} size={40} />
-                  <div className="min-w-0">
+                  <div className="min-w-0 break-words">
                     <div className="font-semibold text-base leading-tight">{l.company_domain ? <a className="hover:underline" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{c.company}</a> : c.company}{!!l.watch_new && <span className="ml-2"><Pill tone="mint">new</Pill></span>}{l.quarantined_at && <span className="ml-2"><Pill tone="pink">Rejected</Pill></span>}{!l.quarantined_at && (draftedLeads?.has(l.id) || approved[l.id]) && <span className="ml-2"><Pill tone="mint">Approved</Pill></span>}</div>
                     <div className="text-[var(--ink-2)] text-xs mt-0.5">{c.contact ?? 'No contact found yet'}</div>
-                    {c.contactStatus && <div data-testid="contact-status" className={`text-xs ${c.contactStatus.confirmed ? 'text-[#555]' : 'text-[#111] font-medium border-l-2 border-black pl-2 mt-0.5'}`}>{c.contactStatus.text}</div>}
+                    {/* A plain confirmation (one sentence, nothing in doubt) is a small mark with its basis behind the (i); any
+                        doubt - unconfirmed, role not verified, no current buyer - stays on screen in full. */}
+                    {c.contactStatus && (c.contactStatus.confirmed && /^Confirmed: [^.]+\.$/.test(c.contactStatus.text)
+                      ? <div className="text-xs mt-1"><Pill tone="mint">Contact confirmed</Pill><InfoTip label="How the contact was confirmed"><span data-testid="contact-status">{c.contactStatus.text}</span></InfoTip></div>
+                      : <div data-testid="contact-status" className={`text-xs ${c.contactStatus.confirmed ? 'text-[var(--ink-2)] mt-0.5' : 'text-[#111] font-medium border-l-2 border-black pl-2 mt-0.5'}`}>{c.contactStatus.text}</div>)}
                   </div>
                   </div>
-                  {!l.quarantined_at && <div className="flex gap-2 shrink-0">
+                  {!l.quarantined_at && <div className="flex gap-2 shrink-0 pl-[52px] sm:pl-0" data-testid="card-actions">
                     <button onClick={() => approveLead(l.id)} disabled={!c.approve.ok || !!approving[l.id] || !!approved[l.id]} title={c.approve.ok ? 'Creates a draft for you to review in Outreach. Nothing is sent.' : c.approve.reason} className="btn-primary btn-sm"><Icon name="check" className="w-3.5 h-3.5" />Approve</button>
                     <button onClick={() => setRejecting(rejecting?.id === l.id ? null : { id: l.id, why: '' })} aria-expanded={rejecting?.id === l.id} className="btn-ghost btn-sm"><Icon name="x" className="w-3.5 h-3.5" />Reject</button>
                   </div>}
                 </div>
                 {rejecting?.id === l.id && !l.quarantined_at && <div className="mt-2 border-l-2 border-black pl-3 text-xs" data-testid="reject-reason">
-                  <p className="mb-1">Reject this lead? A reason is optional. It leaves this list; nothing is drafted, sent or exported, and Undo brings it back.</p>
+                  <p className="mb-1.5 font-semibold">Why reject? <span className="font-normal text-[var(--ink-3)]">(optional)</span><InfoTip>It leaves this list; nothing is drafted, sent or exported, and Undo brings it back.</InfoTip></p>
                   <div className="flex flex-wrap gap-1.5 mb-1.5">{REJECT_PRESETS.map(r => <button key={r} type="button" aria-pressed={rejecting.why === r} onClick={() => setRejecting({ id: l.id, why: rejecting.why === r ? '' : r })} className={`border rounded-full px-2 py-0.5 ${rejecting.why === r ? 'border-black bg-black/5' : 'border-black/20'}`}>{r}</button>)}</div>
                   <form className="flex gap-2 items-center" onSubmit={e => { e.preventDefault(); void confirmReject() }}>
                     <input className="field flex-1 text-xs" aria-label="Reason (optional)" placeholder="Reason (optional)" maxLength={120} value={rejecting.why} autoFocus onKeyDown={e => { if (e.key === 'Escape') setRejecting(null) }} onChange={e => setRejecting({ id: l.id, why: e.target.value })} />
@@ -897,9 +913,9 @@ export default function LeadsClient() {
                 <p className="mt-3 font-semibold text-[15px] leading-snug">{c.why}</p>
                 <p className="text-xs mt-2 flex flex-wrap gap-2 items-center"><a className="pill pill-plain hover:border-[var(--ink-3)]" href={c.sourceUrl} target="_blank" rel="noopener noreferrer nofollow"><Icon name="link" className="w-3 h-3" />{c.sourceHost}</a><span className="sr-only"> · </span><span className="pill pill-plain"><Icon name="calendar" className="w-3 h-3" />{c.date}</span></p>
                 {l.quarantined_at
-                  ? <p className="text-xs mt-2">{isRejection(l.quarantine_reason) ? l.quarantine_reason : `Quarantined: ${l.quarantine_reason ?? 'by you'}`}. Kept with its evidence; it will not be drafted, sent or exported. <button className="underline" onClick={() => quarantine(l.id, true)}>Undo</button></p>
-                  : drafted[l.id] ? <p className="text-xs mt-2" role="status">{drafted[l.id]} {drafted[l.id].startsWith('Draft created') && <a className="underline" href="/app/outreach">Open Outreach</a>}</p>
-                  : !c.approve.ok ? <p className="text-xs text-[#555] mt-2">To approve: {c.approve.reason}</p> : null}
+                  ? <div className="text-xs mt-2 flex items-center gap-2"><span>{isRejection(l.quarantine_reason) ? l.quarantine_reason : `Quarantined: ${l.quarantine_reason ?? 'by you'}`}<InfoTip>Kept with its evidence; it will not be drafted, sent or exported.</InfoTip></span><button className="btn-ghost btn-sm" onClick={() => quarantine(l.id, true)}>Undo</button></div>
+                  : drafted[l.id] ? <div className="text-xs mt-2 flex items-center gap-2" role="status"><span>{drafted[l.id]}</span>{drafted[l.id].startsWith('Draft created') && <a className="btn-ghost btn-sm" href={`/app/outreach?job_id=${jobId}`}>Review draft</a>}</div>
+                  : !c.approve.ok ? <div className="text-xs text-[var(--ink-2)] mt-2" data-testid="approve-hold">Can&apos;t approve yet<InfoTip label="Why this lead is on hold">To approve: {c.approve.reason}</InfoTip></div> : null}
               </div>
             })()}
             <details className="mt-2 text-sm">

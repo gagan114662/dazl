@@ -5,7 +5,7 @@
 //   1. a full card shows company, contact, one line of why, "source · claimed event date 1 Oct 2026", Approve and Reject;
 //   2. a card with no contact says "No contact found yet"; an undated lead says "No dated source" (a published-only lead
 //      says "published ..., event date unknown"), never an invented date;
-//   3. the bar reads Approved / Rejected / To review from this scan's complete campaign record (a draft older than the
+//   3. the tabs read Approved / Rejected / To review from this scan's complete campaign record (a draft older than the
 //      newest 200 Outreach emails still counts as approved), says it excludes Needs your review, and
 //      follows Approve (one POST /api/outreach), Reject (one quarantine POST) and Undo (one DELETE);
 //   4. if this scan's emails cannot be read, Approved and To review show "?" with the reason, never a guess.
@@ -68,7 +68,8 @@ await ctx.route('**/*', async route => {
 const page = await ctx.newPage()
 const shot = async name => { if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`), fullPage: true }) }
 const card = company => page.getByTestId('lead-card').filter({ hasText: company })
-const counts = () => page.getByTestId('card-counts').textContent()
+// The counts sit on the To review / Approved / Rejected tabs; read back in the old bar's order.
+const counts = async () => { const n = async t => (await page.getByTestId(`tab-${t}`).textContent()).trim().split(' ').pop(); return `Approved ${await n('approved')} · Rejected ${await n('rejected')} · To review ${await n('review')}` }
 try {
   await page.goto(`${base}/app/leads?job_id=${JOB}&passive=1`, { waitUntil: 'networkidle' })
   await card('Bright Dental').waitFor({ timeout: 15000 })
@@ -86,22 +87,22 @@ try {
   assert.doesNotMatch(none, /claimed event date|\d{4}-\d{2}-\d{2}/, 'no invented date')
   assert.match(await card('Maple Dental').textContent(), /news\.example · published 3 Oct 2026, event date unknown/)
   // 3. Counts from real state: Grove already has a draft in Outreach.
-  await page.getByTestId('card-counts').waitFor()
-  await page.waitForFunction(() => /Approved 1/.test(document.querySelector('[data-testid=card-counts]')?.textContent ?? ''))
+  await page.getByTestId('lead-tabs').waitFor()
+  await page.waitForFunction(() => /Approved 1/.test(document.querySelector('[data-testid=tab-approved]')?.textContent ?? ''))
   assert.equal(await counts(), 'Approved 1 · Rejected 0 · To review 3', "Instinct #285: Grove's draft is older than the newest 200 emails and still counts")
-  assert.equal(await page.getByTestId('card-counts-scope').textContent(), 'Cards shown below (not counting Needs your review or hidden already-seen leads): ')
-  assert.match(await page.getByTestId('card-counts-note').textContent(), /approving a card makes a draft; each email is still approved in Outreach before it sends/, 'a card approval is never presented as an approved email')
+  assert.equal(await page.getByTestId('card-counts-scope').textContent(), 'Cards below, not counting Needs your review or hidden already-seen leads. ')
+  assert.match(await page.getByTestId('card-counts-note').textContent(), /Approving a card makes a draft; each email is still approved in Outreach before it sends/, 'a card approval is never presented as an approved email')
   await shot('counts-initial')
   await card('Bright Dental').getByRole('button', { name: 'Approve' }).click()
-  await card('Bright Dental').getByText(/Draft created/).waitFor()
-  await page.waitForFunction(() => /Approved 2/.test(document.querySelector('[data-testid=card-counts]')?.textContent ?? ''))
+  await page.getByTestId('card-result').getByText(/Bright Dental: draft created/).waitFor()
+  await page.waitForFunction(() => /Approved 2/.test(document.querySelector('[data-testid=tab-approved]')?.textContent ?? ''))
   assert.equal(await counts(), 'Approved 2 · Rejected 0 · To review 2')
   await card('Lakeside Smiles').getByRole('button', { name: 'Reject' }).click()
   await card('Lakeside Smiles').getByRole('button', { name: 'Confirm reject' }).click()
-  await card('Lakeside Smiles').getByRole('button', { name: 'Undo' }).waitFor()
+  await page.getByTestId('card-result').getByRole('button', { name: 'Undo' }).waitFor()
   assert.equal(await counts(), 'Approved 2 · Rejected 1 · To review 1')
   await shot('counts-after')
-  await card('Lakeside Smiles').getByRole('button', { name: 'Undo' }).click()
+  await page.getByTestId('card-result').getByRole('button', { name: 'Undo' }).click()
   await card('Lakeside Smiles').getByRole('button', { name: 'Reject' }).waitFor()
   assert.equal(await counts(), 'Approved 2 · Rejected 0 · To review 2')
   assert.deepEqual(writes, ['POST /api/outreach', `POST /api/leads/${'c'.repeat(24)}/quarantine`, `DELETE /api/leads/${'c'.repeat(24)}/quarantine`], 'only the approve, reject and undo writes')
@@ -110,7 +111,7 @@ try {
   await page.reload({ waitUntil: 'networkidle' })
   await card('Bright Dental').waitFor({ timeout: 15000 })
   assert.equal(await counts(), 'Approved ? · Rejected 0 · To review ?')
-  assert.equal(await page.getByTestId('card-counts-note').textContent(), ' (drafts could not be loaded, so Approved is unknown)')
+  assert.equal(await page.getByTestId('card-counts-note').textContent(), 'Drafts could not be loaded, so Approved is unknown.')
   console.log('card counts UI check passed: full and no-contact cards, "No dated source", published-only date, Approved/Rejected/To review follow approve, reject and undo; unknown when drafts cannot load')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
