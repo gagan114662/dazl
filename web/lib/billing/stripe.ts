@@ -45,6 +45,8 @@ interface StripeObject {
   status?: string
   mode?: string
   metadata?: { tenant_id?: string }
+  // invoices: the subscription id moved under parent.subscription_details in API version 2025-03-31
+  parent?: { subscription_details?: { subscription?: string } }
 }
 export interface StripeEvent {
   id: string
@@ -156,6 +158,7 @@ export async function applyStripeEvent(db: Db, event: StripeEvent, deps: StripeD
     if ((yield* t.run('INSERT INTO stripe_events (id, type) VALUES (?, ?) ON CONFLICT (id) DO NOTHING', [event.id, event.type])).changes === 0) return 'duplicate'
     const tenantId = yield* tenantFor(t, o)
     if (!tenantId) return 'ignored'
+    if (event.type === 'invoice.payment_failed') return yield* paymentFailed(t, tenantId, o.subscription ?? o.parent?.subscription_details?.subscription, created)
     if (!eventFx) return 'ignored'
     yield* t.run('INSERT INTO tenant_plans (tenant_id) VALUES (?) ON CONFLICT (tenant_id) DO NOTHING', [tenantId])
     const row = (yield* t.get<PlanRow>(
@@ -187,6 +190,23 @@ export async function applyStripeEvent(db: Db, event: StripeEvent, deps: StripeD
     if (created !== null) yield* t.run('UPDATE tenant_plans SET stripe_event_at = ? WHERE tenant_id = ? AND (stripe_event_at IS NULL OR stripe_event_at < ?)', [created, tenantId, created])
     return tie ? 'reconciled' : 'applied'
   })
+}
+
+// invoice.payment_failed: Stripe is retrying the payment. The plan never changes here (a failed payment never grants
+// Pro, and the policy keeps past_due on Pro until Stripe gives up, which arrives as subscription.updated/deleted); the
+// tenant's billing status becomes past_due so Settings can say why, even when Stripe's subscription.updated is late.
+// Only for the tenant's current subscription while it is Pro; an invoice of an older or ended subscription, or one
+// created before the event that last set the plan, changes nothing.
+function* paymentFailed(t: Tx, tenantId: string, subscription: string | undefined, created: number | null): TxBody<ApplyResult> {
+  const row = yield* t.get<PlanRow>(
+    `SELECT plan, stripe_subscription_id, stripe_event_at, stripe_reconcile_at FROM tenant_plans WHERE tenant_id = ?${t.kind === 'pg' ? ' FOR UPDATE' : ''}`, [tenantId])
+  if (!row || !subscription || subscription !== row.stripe_subscription_id) return 'ignored'
+  if (yield* t.get('SELECT 1 AS x FROM stripe_ended_subscriptions WHERE subscription_id = ?', [subscription])) return 'stale'
+  if (created !== null && row.stripe_event_at != null && created < Number(row.stripe_event_at)) return 'stale'
+  if (row.plan !== 'pro') return 'ignored'
+  yield* t.run("UPDATE tenant_plans SET subscription_status = 'past_due' WHERE tenant_id = ?", [tenantId])
+  if (created !== null) yield* t.run('UPDATE tenant_plans SET stripe_event_at = ? WHERE tenant_id = ? AND (stripe_event_at IS NULL OR stripe_event_at < ?)', [created, tenantId, created])
+  return 'applied'
 }
 
 function baseUrl() {

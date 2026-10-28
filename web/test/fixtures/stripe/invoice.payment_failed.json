@@ -1,0 +1,21 @@
+{
+  "id": "evt_test_invoice_payment_failed",
+  "object": "event",
+  "api_version": "2025-03-31.basil",
+  "created": 1793000150,
+  "livemode": false,
+  "type": "invoice.payment_failed",
+  "data": {
+    "object": {
+      "id": "in_test_fixture",
+      "object": "invoice",
+      "customer": "{{CUSTOMER}}",
+      "status": "open",
+      "billing_reason": "subscription_cycle",
+      "attempt_count": 1,
+      "next_payment_attempt": 1793259350,
+      "parent": { "type": "subscription_details", "subscription_details": { "subscription": "{{SUBSCRIPTION}}", "metadata": { "tenant_id": "{{TENANT}}" } } },
+      "metadata": {}
+    }
+  }
+}
