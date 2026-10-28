@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { isJobId } from '@/lib/outreach/scan-drafts'
 import { leadStatus, scanMessages, type ViewLead, type ViewMsg } from '@/lib/outreach/campaign-view'
+import { scanOutcome } from '@/lib/scan/scan-outcome'
 
 import type { CampaignDetail } from '@/lib/outreach/campaign-detail'
 
@@ -32,7 +33,15 @@ export default function CampaignView({ id }: { id: string }) {
       <p className="text-xs mb-2"><Link className="underline" href="/app/campaigns">All campaigns</Link></p>
       <h1 className="text-2xl font-bold tracking-tight mb-1" data-testid="campaign-play">{job && typeof job === 'object' ? job.query || 'Untitled search' : job === 'failed' ? 'Campaign' : 'Loading...'}</h1>
       {job === 'failed' && <p className="text-sm mb-2" role="alert">Could not load this campaign&apos;s search. Refresh to retry.</p>}
-      {job && typeof job === 'object' && <p className="text-[#555] text-sm mb-1" data-testid="campaign-status">Scan {job.status === 'done' ? 'finished' : job.status === 'failed' ? 'stopped or failed' : job.status}{job.created_at ? ` - started ${new Date(job.created_at * 1000).toLocaleDateString()}` : ''}</p>}
+      {job && typeof job === 'object' && (() => {
+        // The same recorded outcome and next step as the Leads history (lib/scan/scan-outcome.ts).
+        const o = scanOutcome({ ...job, empty_reason: (job as { empty_reason?: string | null }).empty_reason ?? null, lead_count: Array.isArray(leads) ? leads.length : null })
+        return <p className="text-[#555] text-sm mb-1" data-testid="campaign-status" data-outcome={o.kind}>
+          Scan: {o.label}{job.created_at ? ` - started ${new Date(job.created_at * 1000).toLocaleDateString()}` : ''}
+          {o.next && <>. <Link className="underline" href={o.next.href} data-testid="next-step">{o.next.text}</Link></>}
+          {o.detail && <span className="block text-xs mt-1" data-testid="outcome-detail">{o.detail}</span>}
+        </p>
+      })()}
       <p className="text-[#555] text-sm mb-6">Review, approve, draft and send on <Link className="underline" href={`/app/leads?job_id=${id}`}>Leads</Link> and <Link className="underline" href={`/app/outreach?job_id=${id}`}>Outreach</Link>; this page only shows where each lead stands. Sent is not delivered.</p>
 
       <h2 className="text-lg font-semibold mb-2">Leads</h2>

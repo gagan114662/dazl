@@ -3,13 +3,16 @@
 // Real production build, throwaway database, server under test/helpers/net-fence.ts, and EVERY /api/* CALL ANSWERED
 // FROM A STUB in the browser: no scan, no draft is really created, nothing is sent. Off-host requests are aborted.
 // It proves, on the rendered page:
+//   0. viewing a scan, Leads links to that scan's campaign page;
 //   1. each card shows company, contact, one line of why, source link + date, and Approve / Reject; Details is closed;
 //   1b. the contact's uncertainty is visible beside it on the collapsed card: name-guessed website (Instinct's repro),
 //      conflicting websites, restricted inbox, past-title people; only cited/own-site/user-checked reads "Confirmed";
 //   2. Approve on an eligible lead sends one POST /api/outreach { lead_id } per attempt (the existing draft action),
 //      even on a double click against a slow server; after a failure it can be retried; nothing else is written;
 //   3. Approve is disabled with the reason on leads the existing gates hold (no email, window, timing);
-//   4. Reject sends the existing quarantine POST with the reason "Rejected: not a fit"; Undo sends its DELETE.
+//   4. Reject opens an optional-reason step (presets, free text, Cancel/Escape writes nothing); Confirm reject sends the
+//      existing quarantine POST with "Rejected: <reason>" (or just "Rejected" with none) and the card says so; Undo sends
+//      its DELETE.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -78,6 +81,7 @@ try {
   const cards = page.getByTestId('lead-card')
   await cards.first().waitFor({ timeout: 15000 })
   assert.equal(await cards.count(), 7)
+  assert.equal(await page.getByTestId('campaign-page-link').getAttribute('href'), `/app/campaigns/${JOB}`, 'Leads links the scan being viewed to its campaign page')
   await page.locator('main').evaluate(m => m.scrollTo(0, m.scrollHeight)); await shot('cards')
 
   const bright = cards.filter({ hasText: 'Bright Dental' })
@@ -121,13 +125,37 @@ try {
   assert.deepEqual(outreachBodies, [{ lead_id: 'a'.repeat(24) }, { lead_id: 'a'.repeat(24) }], 'one request per attempt: the failed one and the retry')
   assert.equal(await bright.getByRole('button', { name: 'Approve' }).isDisabled(), true, 'cannot approve again after success')
 
+  // Reject asks for an optional reason; Cancel and Escape write nothing.
   await lakeside.getByRole('button', { name: 'Reject' }).click()
-  await lakeside.getByText(/^Rejected\./).waitFor()
+  const reasonRow = lakeside.getByTestId('reject-reason'); await reasonRow.waitFor()
+  assert.deepEqual(await reasonRow.getByRole('button').allTextContents(), ['Not a fit', 'Wrong company', 'Wrong contact', 'Already a customer', 'Confirm reject', 'Cancel'])
+  await reasonRow.getByRole('button', { name: 'Cancel' }).click()
+  assert.equal(await lakeside.getByTestId('reject-reason').count(), 0)
+  await lakeside.getByRole('button', { name: 'Reject' }).click()
+  await lakeside.getByLabel('Reason (optional)').press('Escape')
+  assert.equal(await lakeside.getByTestId('reject-reason').count(), 0)
+  assert.deepEqual(quarantineCalls, [], 'cancelling writes nothing')
+  // A preset reason.
+  await lakeside.getByRole('button', { name: 'Reject' }).click()
+  await lakeside.getByTestId('reject-reason').getByRole('button', { name: 'Wrong company' }).click()
+  await shot('reject-reason')
+  await lakeside.getByRole('button', { name: 'Confirm reject' }).click()
+  await lakeside.getByText(/^Rejected: Wrong company\. Kept with its evidence/).waitFor()
   await shot('after-actions')
   await lakeside.getByRole('button', { name: 'Undo' }).click()
   await lakeside.getByRole('button', { name: 'Reject' }).waitFor()
-  assert.deepEqual(quarantineCalls, [{ method: 'POST', lead: 'c'.repeat(24), body: { reason: 'Rejected: not a fit' } }, { method: 'DELETE', lead: 'c'.repeat(24), body: {} }])
-  assert.deepEqual(writes, ['POST /api/outreach', 'POST /api/outreach', `POST /api/leads/${'c'.repeat(24)}/quarantine`, `DELETE /api/leads/${'c'.repeat(24)}/quarantine`], 'no other writes')
+  // No reason at all: just "Rejected" (Enter in the box confirms).
+  await lakeside.getByRole('button', { name: 'Reject' }).click()
+  await lakeside.getByLabel('Reason (optional)').press('Enter')
+  await lakeside.getByText(/^Rejected\. Kept with its evidence/).waitFor()
+  await lakeside.getByRole('button', { name: 'Undo' }).click()
+  await lakeside.getByRole('button', { name: 'Reject' }).waitFor()
+  const C = 'c'.repeat(24)
+  assert.deepEqual(quarantineCalls, [
+    { method: 'POST', lead: C, body: { reason: 'Rejected: Wrong company' } }, { method: 'DELETE', lead: C, body: {} },
+    { method: 'POST', lead: C, body: { reason: 'Rejected' } }, { method: 'DELETE', lead: C, body: {} },
+  ])
+  assert.deepEqual(writes, ['POST /api/outreach', 'POST /api/outreach', `POST /api/leads/${C}/quarantine`, `DELETE /api/leads/${C}/quarantine`, `POST /api/leads/${C}/quarantine`, `DELETE /api/leads/${C}/quarantine`], 'no other writes')
 
   await page.locator('summary', { hasText: 'Details' }).first().click()
   assert.equal(await page.getByText('Saved signal claim: Bright Dental opened a second office').isVisible(), true, 'everything else is still there under Details')
