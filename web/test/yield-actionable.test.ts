@@ -4,6 +4,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
 import { listLeads, exportLeads } from '../lib/scan/store.ts'
+import { listLeads as listLeadsDb, exportLeads as exportLeadsDb } from '../lib/scan/store-db.ts'
+import { sqliteDb } from '../lib/db/client.ts'
 
 // CI runs with SITECRAWL_ENABLED=0 (npm test). These fixtures need their STUBBED crawl (an injected crawlGet, no network) to establish the lead's domain, so the crawl is
 // switched on for the duration of one fixture run only and restored; the domain gate itself is unchanged.
@@ -145,6 +147,12 @@ test('SURFACES: the write was rejected - the card/list read, the export and the 
   // the export
   const [row] = exportLeads(r.db, 'A', jobId) as { company: string; review_reason: string | null; confidence: number | null }[]
   assert.deepEqual([row.company, row.review_reason, row.confidence], ['Brightloop', 'sales_hiring_check_failed', null])
+  // the readers the real routes use (store-db.ts, on SQLite too)
+  const dbh = sqliteDb(r.db)
+  const [card2] = await listLeadsDb(dbh, 'A', jobId) as { company: string; review_reason: string | null; confidence: number | null }[]
+  assert.deepEqual([card2.company, card2.review_reason, card2.confidence], ['Brightloop', 'sales_hiring_check_failed', null], 'store-db list read')
+  const [row2] = await exportLeadsDb(dbh, 'A', jobId) as { company: string; review_reason: string | null; confidence: number | null }[]
+  assert.deepEqual([row2.company, row2.review_reason, row2.confidence], ['Brightloop', 'sales_hiring_check_failed', null], 'store-db export read')
   // job / campaign counts
   assert.deepEqual(r.db.prepare('SELECT verified, needs_review FROM scan_jobs').get(), { verified: 0, needs_review: 1 })
   // and the classification card row says so

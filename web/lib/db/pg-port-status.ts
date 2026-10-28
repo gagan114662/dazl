@@ -3,8 +3,6 @@
 // today. Production can move to Postgres only when this is empty (docs/PLATFORM.md "Postgres cutover").
 // Porting a module to the Db layer removes its line; a new raw-SQLite module, or a new rejected statement, fails the test.
 export const RAW_SQLITE_MODULES: Record<string, number> = {
-  'app/api/auth/callback/google/route.ts': 0,
-  'app/api/campaigns/[id]/route.ts': 0,
   'app/api/campaigns/route.ts': 0,
   'app/api/crm/route.ts': 0,
   'app/api/gmail/callback/route.ts': 0,
@@ -12,13 +10,10 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'app/api/gmail/disconnect/route.ts': 0,
   'app/api/hooks/calcom/route.ts': 0,
   'app/api/internal/tick/route.ts': 0,
-  'app/api/leads/[lead]/confirm/route.ts': 0,
   'app/api/leads/[lead]/domain-review/route.ts': 0,
   'app/api/leads/[lead]/find-contact/route.ts': 0,
-  'app/api/leads/[lead]/quarantine/route.ts': 0,
   'app/api/leads/[lead]/warm-path/route.ts': 0,
   'app/api/leads/evidence/route.ts': 0,
-  'app/api/leads/export/route.ts': 0,
   'app/api/leads/hiring-feed/route.ts': 0,
   'app/api/leads/page-signals/route.ts': 0,
   'app/api/leads/qualify-preview/route.ts': 0,
@@ -45,15 +40,12 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'app/api/replies/[id]/route.ts': 0,
   'app/api/replies/route.ts': 0,
   'app/api/replies/thread-metrics/route.ts': 0,
-  'app/api/scan/cancel/route.ts': 0,
   'app/api/scan/commenters/[batch]/route.ts': 0,
   'app/api/scan/commenters/route.ts': 0,
   'app/api/scan/csv/[batch]/route.ts': 0,
   'app/api/scan/csv/route.ts': 0,
   'app/api/scan/icp-from-url/route.ts': 0,
   'app/api/scan/icp/route.ts': 0,
-  'app/api/scan/jobs/route.ts': 0,
-  'app/api/scan/latest/route.ts': 0,
   'app/api/scan/route.ts': 0,
   'app/api/scan/status/route.ts': 0,
   'app/api/seo/brief/route.ts': 0,
@@ -66,9 +58,7 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'app/api/settings/enrichment/route.ts': 0,
   'app/api/settings/llm-key/route.ts': 0,
   'app/api/settings/memory/route.ts': 0,
-  'app/api/settings/profile/route.ts': 0,
   'app/api/unsubscribe/route.ts': 0,
-  'app/api/usage/route.ts': 0,
   'app/api/warm/connections/route.ts': 0,
   'app/api/watch/route.ts': 0,
   'lib/advanced/index.ts': 2,
@@ -87,7 +77,6 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/ops/health.ts': 0,
   'lib/outreach/attribution.ts': 1,
   'lib/outreach/autopilot.ts': 3,
-  'lib/outreach/campaign-detail.ts': 2,
   'lib/outreach/campaigns.ts': 0,
   'lib/outreach/contact-purpose-db.ts': 0,
   'lib/outreach/conversion.ts': 1,
@@ -103,7 +92,6 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/outreach/service.ts': 2,
   'lib/outreach/store.ts': 0,
   'lib/outreach/test-fixture.ts': 0,
-  'lib/people/best-person.ts': 1,
   'lib/people/email-pattern.ts': 2,
   'lib/people/people-search.ts': 0,
   'lib/plans.ts': 0,
@@ -122,7 +110,6 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/scan/evidence-copies.ts': 2,
   'lib/scan/find-contact.ts': 0,
   'lib/scan/held-state.ts': 0,
-  'lib/scan/history-jobs.ts': 0,
   'lib/scan/job-feed.ts': 4,
   'lib/scan/lookalike.ts': 0,
   'lib/scan/model-usage.ts': 1,
@@ -132,7 +119,6 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/scan/quarantine.ts': 0,
   'lib/scan/queue-runner.ts': 1,
   'lib/scan/ranking-fixture.ts': 0,
-  'lib/scan/review-confirm.ts': 1,
   'lib/scan/review-draft-fixture.ts': 0,
   'lib/scan/run-report.ts': 1,
   'lib/scan/runner.ts': 5,
@@ -156,3 +142,11 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/warm/connections.ts': 2,
   'lib/watch.ts': 2,
 }
+
+// Ported modules that break same-second ties with insertionOrder() (lib/db/order.ts): SQLite's rowid there, but only
+// the row id on Postgres, which is not insertion order. A cutover gap until each table has an insertion-order column.
+export const PG_INSERTION_ORDER_GAPS: string[] = [
+  'lib/outreach/campaign-detail.ts',
+  'lib/people/best-person.ts',
+  'lib/scan/store-db.ts',
+]

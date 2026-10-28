@@ -13,6 +13,7 @@ import { addEnrichment } from '../connectors/store.ts'
 import { companyKey, norm } from '../scan/evidence.ts'
 import { titleMatches } from './rank.ts'
 import { placeAgreement } from '../scan/place-agreement.ts'
+import { firstPlaceLabel, leadPlaceLabel, recordContactRejection } from '../scan/contact-agreement.ts'
 
 export const peopleSearchEnabled = (env: Record<string, string | undefined> = process.env) => env.PEOPLE_SEARCH_ENABLED !== '0' && tinyfishEnabled(env)
 export const MAX_COMPANIES = 5 // one search per company, best leads first
@@ -93,11 +94,19 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
       ]).finally(() => clearTimeout(timer))
       if (!r) break // deadline hit
       if (!r.ok) { if (r.reason === 'cap' || r.reason === 'quota' || r.reason === 'auth') break; continue }
+      const refused = new Set<string>()
       const people = r.hits.map(h => ({ h, p: parseProfileHit(h, l.company) }))
         .filter((x): x is { h: SearchHit; p: { name: string; title: string } } => !!x.p && titleMatches(x.p.title, roleText).length > 0)
         // Same company NAME is not the same company: when the request names a place, the result's own text must name it (a same-name
-        // practice in another state is a different business). No place named in the result = unconfirmed = not attached.
-        .filter(x => { const v = placeAgreement(`${x.h.title} ${x.h.snippet ?? ''}`, where, l.company); return v === 'agrees' || v === 'no_geography' })
+        // practice in another state is a different business). No place named in the result = unconfirmed = not attached; the refusal is
+        // recorded on the lead (contact_location_mismatch / contact_location_unconfirmed) and the other results are still looked at.
+        .filter(x => {
+          const v = placeAgreement(`${x.h.title} ${x.h.snippet ?? ''}`, where, l.company)
+          if (v === 'agrees' || v === 'no_geography') return true
+          const reason = `contact rejected: location ${v === 'mismatch' ? 'mismatch' : 'unconfirmed'} ${(firstPlaceLabel(`${x.h.title} ${x.h.snippet ?? ''}`) ?? /^([A-Z][\p{L} .'-]+,\s*[A-Z][\p{L} .'-]+)/u.exec(x.h.snippet ?? '')?.[1] ?? (v === 'mismatch' ? 'another place' : 'no place named')).slice(0, 60)} vs ${leadPlaceLabel(where).slice(0, 60)}`
+          if (!refused.has(reason)) { refused.add(reason); try { recordContactRejection(db, tenantId, l.id, { connector: CONNECTOR, reason, sourceUrl: x.h.url.split('?')[0] }) } catch { /* the refusal note never blocks the search */ } }
+          return false
+        })
         .sort((a, b) => titleMatches(b.p.title, roleText).length - titleMatches(a.p.title, roleText).length)
       const seen = new Set<string>()
       for (const { h, p } of people) {

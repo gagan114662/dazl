@@ -3,6 +3,7 @@
 // text, the verifier's own fetch outcome per cited URL, every extracted candidate with its verification fate and reason, the
 // funnel counts, rejection reasons and model usage. Absent fields stay null ("not recorded"), never a fabricated zero.
 import type Database from 'better-sqlite3'
+import type { Db } from '../db/client.ts'
 import { canonicalUrl } from './evidence-origin.ts'
 import { canonicalUrl as trackingFreeUrl } from '../search/tinyfish.ts'
 
@@ -115,10 +116,20 @@ export function reconcileRunReport(db: Database.Database, jobId: string, attempt
   } catch { return false }
 }
 
+const RUN_REPORT_SQL = 'SELECT r.attempt, r.report FROM scan_run_report r JOIN scan_jobs j ON j.id = r.job_id WHERE j.id = ? AND j.user_id = ? ORDER BY r.attempt'
+
 // Owner-scoped read. null = never recorded for this job (table absent or no row) - "not recorded", not zero.
 export function runReportFor(db: Database.Database, tenantId: string, jobId: string): unknown[] | null {
   try {
-    const rows = db.prepare('SELECT r.attempt, r.report FROM scan_run_report r JOIN scan_jobs j ON j.id = r.job_id WHERE j.id = ? AND j.user_id = ? ORDER BY r.attempt').all(jobId, tenantId) as { attempt: number; report: string }[]
+    const rows = db.prepare(RUN_REPORT_SQL).all(jobId, tenantId) as { attempt: number; report: string }[]
+    return rows.length ? rows.map(r => JSON.parse(r.report)) : null
+  } catch { return null }
+}
+
+// runReportFor on the Db layer (SQLite or Postgres): the same query and the same null for "not recorded".
+export async function readRunReport(db: Db, tenantId: string, jobId: string): Promise<unknown[] | null> {
+  try {
+    const rows = await db.all<{ attempt: number; report: string }>(RUN_REPORT_SQL, [jobId, tenantId])
     return rows.length ? rows.map(r => JSON.parse(r.report)) : null
   } catch { return null }
 }

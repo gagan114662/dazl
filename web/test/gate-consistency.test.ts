@@ -1,4 +1,5 @@
 import { seedOffers } from './helpers/seed-offer.ts'
+import { sqliteDb } from '../lib/db/client.ts'
 import { test, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
@@ -50,7 +51,7 @@ const SCENARIOS: Scenario[] = [
   { name: 'two recorded sites', contact: null, date: day(-10), rows: [dom('x.example', 'evidence_own_domain'), dom('y.example', 'evidence_own_domain'), mail('owner@x.example'), person] },
 ]
 
-function build(s: Scenario) {
+async function build(s: Scenario) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db); migrateOutreach(db); seedOffers(db)
   const icp = s.icp ?? JSON.stringify({ ...ICP, window_days: 90 })
   const job = createQueryJob(db, 'A', { query: s.query ?? 'dental clinics in the past 90 days', icp })
@@ -60,7 +61,7 @@ function build(s: Scenario) {
     .run(id, job, 'X Dental', s.contact, 'X Dental opened a clinic', S, 'X Dental opened a clinic', s.date)
   const ins = db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES (?, ?, 'A', ?, ?, ?, ?, ?, '2026-10-20', 10)")
   for (const r of s.rows) ins.run(randomBytes(8).toString('hex'), id, r.connector, r.kind, r.value, r.label, r.source_url)
-  if (s.quarantine) setQuarantine(db, 'A', id, 'quarantine', 'wrong company', NOW.getTime())
+  if (s.quarantine) await setQuarantine(sqliteDb(db), 'A', id, 'quarantine', 'wrong company', NOW.getTime())
   const q = db.prepare('SELECT quarantined_at FROM leads WHERE id = ?').get(id) as { quarantined_at: number | null }
   const lead: CardLead = {
     id, company: 'X Dental', signal: 'X Dental opened a clinic', source_url: S, evidence_excerpt: 'X Dental opened a clinic', event_date: s.date,
@@ -79,8 +80,8 @@ for (const s of SCENARIOS) {
   else if (FREE.test(s.name)) s.expectHeld = false
 }
 for (const s of SCENARIOS) {
-  test(`card and createDraft agree: ${s.name}`, () => {
-    const { db, id, lead } = build(s)
+  test(`card and createDraft agree: ${s.name}`, async () => {
+    const { db, id, lead } = await build(s)
     const card = opportunityCard(lead, 'Practice owner', NOW)
     let drafted = false
     try { createDraft(db, 'A', id, 'Acme'); drafted = true } catch { /* refused */ }
@@ -92,8 +93,8 @@ for (const s of SCENARIOS) {
   })
 }
 
-test('control: the strongest scenario is actually draftable by both (the property is not vacuous)', () => {
-  const { db, id, lead } = build(SCENARIOS[0])
+test('control: the strongest scenario is actually draftable by both (the property is not vacuous)', async () => {
+  const { db, id, lead } = await build(SCENARIOS[0])
   assert.ok(opportunityCard(lead, 'Practice owner', NOW).next.startsWith('Draft'))
   assert.doesNotThrow(() => createDraft(db, 'A', id, 'Acme'))
 })
@@ -107,8 +108,8 @@ function body(db: Database.Database, id: string): { to_email: string; body: stri
   return db.prepare('SELECT to_email, body FROM outreach_messages WHERE lead_id = ?').get(id) as { to_email: string; body: string }
 }
 const CONTACT_URL = 'https://x.example/contact'
-test('draft source URL: contact equal to a crawled own-domain address cites /contact; the news excerpt is separate', () => {
-  const { db, id } = build({ name: 'eq own', contact: 'owner@x.example', date: day(-10), rows: [dom('x.example', 'evidence_own_domain'), mail('owner@x.example'), person] })
+test('draft source URL: contact equal to a crawled own-domain address cites /contact; the news excerpt is separate', async () => {
+  const { db, id } = await build({ name: 'eq own', contact: 'owner@x.example', date: day(-10), rows: [dom('x.example', 'evidence_own_domain'), mail('owner@x.example'), person] })
   createDraft(db, 'A', id, 'Acme')
   const m = body(db, id)
   assert.equal(m.to_email, 'owner@x.example')
@@ -116,8 +117,8 @@ test('draft source URL: contact equal to a crawled own-domain address cites /con
   assert.ok(m.body.includes(`Saved excerpt from this public page: "X Dental opened a clinic"\n${S}`), 'the signal excerpt keeps its own URL')
   assert.ok(!m.body.includes(`page:\n${S}`), 'the address is not attributed to the news page')
 })
-test('draft source URL: a website-reviewed name_probe address that equals the contact also cites /contact', () => {
-  const { db, id } = build({ name: 'eq probe reviewed', contact: 'owner@x.example', date: day(-10), rows: [dom('x.example', 'name_probe'), mail('owner@x.example'), person] })
+test('draft source URL: a website-reviewed name_probe address that equals the contact also cites /contact', async () => {
+  const { db, id } = await build({ name: 'eq probe reviewed', contact: 'owner@x.example', date: day(-10), rows: [dom('x.example', 'name_probe'), mail('owner@x.example'), person] })
   assert.throws(() => createDraft(db, 'A', id, 'Acme'), /domain_unconfirmed/)
   const rows = db.prepare('SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ?').all(id) as Parameters<typeof domainReviewFor>[1] & object
   const binding = domainReviewFor({ id, contact: 'owner@x.example' }, rows).binding!
@@ -126,8 +127,8 @@ test('draft source URL: a website-reviewed name_probe address that equals the co
   const m = body(db, id)
   assert.equal(m.to_email, 'owner@x.example'); assert.ok(m.body.includes(`page:\n${CONTACT_URL}\n`), m.body); assert.ok(!m.body.includes(`page:\n${S}`))
 })
-test('draft source URL: cited-page-only contact (no crawl record) still cites the signal page, with no duplicate excerpt block', () => {
-  const { db, id } = build({ name: 'cited only', contact: 'owner@x.example', date: day(-10), rows: [person] })
+test('draft source URL: cited-page-only contact (no crawl record) still cites the signal page, with no duplicate excerpt block', async () => {
+  const { db, id } = await build({ name: 'cited only', contact: 'owner@x.example', date: day(-10), rows: [person] })
   createDraft(db, 'A', id, 'Acme')
   const m = body(db, id)
   assert.ok(m.body.includes(`page:\n${S}\n`), m.body); assert.ok(!m.body.includes('Saved excerpt'))

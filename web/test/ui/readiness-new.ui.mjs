@@ -30,8 +30,8 @@ const port = 3300 + Math.floor(Math.random() * 500); const base = `http://127.0.
 const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
 for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
 
-const NEW = { profile: { business_name: '', sells: '', website: '', buyer: null }, usage: { plan: 'free', scans_used: 0, scan_limit: 10, has_key: false, trial: null }, jobs: [], outreach: { gmail: null, sender: null, daily_cap: 20, sent_24h: 0, account_sent_24h: 0 }, sources: { web_index: false, news: true, websites: true } }
-const DONE = { profile: { business_name: 'Bright Smile', sells: 'Online booking for dental practices', website: 'https://brightsmile.example', buyer: { summary: 'Independent dental practices', who: ['Practice owner'], industries: [], sizes: [], where: [], signals: [], exclude: [] } }, usage: { plan: 'free', scans_used: 1, scan_limit: 10, has_key: true, trial: null }, jobs: [{ id: 'a'.repeat(24), status: 'done', error: null, query: 'Dental practice owners in Ohio', business_name: '', csv_domain: null, created_at: 1761500000, finished_at: 1761500100, candidates: 5, verified: 2, needs_review: 1, dropped: 2, lead_count: 3, test_only: false }], outreach: { gmail: { email: 'dana@brightsmile.example', status: 'active' }, sender: { sender_name: 'Dana', postal_address: '1 Main St, Columbus, OH 43004, USA' }, daily_cap: 20, sent_24h: 0, account_sent_24h: 0 }, sources: { web_index: false, news: true, websites: true } }
+const NEW = { profile: { business_name: '', sells: '', website: '', buyer: null }, usage: { plan: 'free', scans_used: 0, scan_limit: 10, has_key: false, trial: null }, jobs: [], outreach: { gmail: null, sender: null, daily_cap: 20, sent_24h: 0, account_sent_24h: 0 }, sources: { web_index: false, news: true, websites: true }, messages: [], campaigns: [] }
+const DONE = { profile: { business_name: 'Bright Smile', sells: 'Online booking for dental practices', website: 'https://brightsmile.example', buyer: { summary: 'Independent dental practices', who: ['Practice owner'], industries: [], sizes: [], where: [], signals: [], exclude: [] } }, usage: { plan: 'free', scans_used: 1, scan_limit: 10, has_key: true, trial: null }, jobs: [{ id: 'a'.repeat(24), status: 'done', error: null, query: 'Dental practice owners in Ohio', business_name: '', csv_domain: null, created_at: 1761500000, finished_at: 1761500100, candidates: 5, verified: 2, needs_review: 1, dropped: 2, lead_count: 3, test_only: false }], outreach: { gmail: { email: 'dana@brightsmile.example', status: 'active' }, sender: { sender_name: 'Dana', postal_address: '1 Main St, Columbus, OH 43004, USA' }, daily_cap: 20, sent_24h: 0, account_sent_24h: 0 }, sources: { web_index: false, news: true, websites: true }, messages: [{ id: 'm1', lead_id: 'l1', status: 'sent' }], campaigns: [{ id: 'a'.repeat(24), qualification: { rejected: 1 } }] }
 const b = await chromium.launch()
 async function open(st) {
   const writes = []
@@ -48,6 +48,8 @@ async function open(st) {
     if (p === '/api/scan/jobs') return json({ jobs: st.jobs })
     if (p === '/api/outreach/settings') return json(st.outreach)
     if (p === '/api/scan/sources') return json(st.sources)
+    if (p === '/api/outreach') return json({ messages: st.messages })
+    if (p === '/api/campaigns') return json({ campaigns: st.campaigns })
     return json({}, 404)
   })
   const page = await ctx.newPage()
@@ -64,8 +66,12 @@ try {
   const cardY = (await n.page.getByTestId('readiness-checklist').boundingBox()).y, setupY = (await n.page.getByText("What's your website?").boundingBox()).y
   assert.ok(cardY < setupY, 'the checklist is at the top, above the setup steps')
   const states = await n.page.locator('li[data-testid^="ready-"]').evaluateAll(e => e.map(x => [x.dataset.testid.slice(6), x.textContent.includes('✓') ? 'done' : 'open']))
-  assert.deepEqual(states, [['site', 'open'], ['brain', 'open'], ['play', 'open'], ['key', 'open'], ['sources', 'open'], ['gmail', 'open'], ['sender', 'open'], ['limit', 'done']])
-  assert.equal(await n.page.getByTestId('ready-progress').textContent(), '1 of 8 done')
+  assert.deepEqual(states, [['site', 'open'], ['brain', 'open'], ['key', 'open'], ['sources', 'open'], ['play', 'open'], ['scan', 'open'], ['review', 'open'], ['gmail', 'open'], ['sender', 'open'], ['approved', 'open'], ['limit', 'done']])
+  assert.equal(await n.page.getByTestId('ready-progress').textContent(), '1 of 11 done')
+  // One next step: the first to-do, marked and with the only primary button.
+  assert.deepEqual(await n.page.locator('li[data-next="true"]').evaluateAll(e => e.map(x => x.dataset.testid)), ['ready-site'])
+  assert.equal(await row('site').getByTestId('next-step-tag').textContent(), 'Next step')
+  assert.equal(await n.page.getByTestId('readiness-checklist').locator('.btn-primary').count(), 1)
   assert.equal(await row('brain').getByRole('link', { name: 'Build' }).getAttribute('href'), '/app?setup=brain')
   assert.equal(await row('play').getByRole('link', { name: 'Write a play' }).getAttribute('href'), '/app/leads')
   assert.equal(await row('gmail').getByRole('link', { name: 'Connect' }).getAttribute('href'), '/app/settings#gmail')
@@ -81,6 +87,12 @@ try {
   assert.equal(await d.page.getByTestId('readiness-checklist').count(), 0, 'finished account: no card')
   assert.equal(await d.page.getByText('Before your first scan and send').count(), 0)
   assert.equal(await d.page.getByText("What's your website?").count(), 0, 'not the setup steps')
+  // Hidden, not lost: one line says all steps are done, and Show it reopens the finished checklist.
+  assert.equal(await d.page.getByTestId('ready-all-done').textContent(), 'Setup checklist: all 11 steps done. Show it')
+  await d.page.getByTestId('ready-all-done').getByRole('button', { name: 'Show it' }).click()
+  await d.page.getByTestId('readiness-checklist').waitFor()
+  assert.equal(await d.page.getByTestId('ready-progress').textContent(), '11 of 11 done')
+  assert.equal(await d.page.locator('li[data-next="true"]').count(), 0)
   assert.deepEqual(d.writes, [])
   await shot(d.page, 'finished-account')
   await d.ctx.close()

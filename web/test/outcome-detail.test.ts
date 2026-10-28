@@ -1,4 +1,5 @@
 import { test } from 'node:test'
+import { sqliteDb } from '../lib/db/client.ts'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
@@ -21,11 +22,11 @@ function fixture() {
 }
 
 // Instinct #274: no extracted candidates is not "no matches"; keep what the run recorded.
-test('a scan that read pages but extracted none keeps its recorded diagnostic, distinct from one whose search had no hits', () => {
+test('a scan that read pages but extracted none keeps its recorded diagnostic, distinct from one whose search had no hits', async () => {
   const { db, failedJob } = fixture()
   const noHits = failedJob('A', note({}))
   const readNone = failedJob('A', note({ results: 8, requested: 5, fetched: 4, fetch_failed: 1, offered: 6, page_texts_given: 4, snippet_only: 2 }))
-  const a = recordedEmptyReason(db, 'A', noHits)!, b = recordedEmptyReason(db, 'A', readNone)!
+  const a = (await recordedEmptyReason(sqliteDb(db), 'A', noHits))!, b = (await recordedEmptyReason(sqliteDb(db), 'A', readNone))!
   assert.match(a, /^The search returned 0 results/)
   assert.match(b, /^The search returned 8 results; dazl asked to read 5 pages and read 4/)
   assert.match(b, /returned 0 candidates.*does not show that no matching companies exist/)
@@ -35,12 +36,12 @@ test('a scan that read pages but extracted none keeps its recorded diagnostic, d
   }
 })
 
-test('nothing recorded, another outcome or another tenant: no diagnostic, and the outcome still never claims no matches', () => {
+test('nothing recorded, another outcome or another tenant: no diagnostic, and the outcome still never claims no matches', async () => {
   const { db, failedJob } = fixture()
   const bare = failedJob('A', null)
-  assert.equal(recordedEmptyReason(db, 'A', bare), null)
+  assert.equal(await recordedEmptyReason(sqliteDb(db), 'A', bare), null)
   assert.match(scanOutcome({ ...bare, empty_reason: null }).detail!, /does not show that no matching companies exist/)
   const other = failedJob('B', note({ results: 3 }))
-  assert.equal(recordedEmptyReason(db, 'A', other), null, "another tenant's run report is never read")
-  assert.equal(recordedEmptyReason(db, 'A', { id: other.id, status: 'done', error: null, candidates: 4 }), null)
+  assert.equal(await recordedEmptyReason(sqliteDb(db), 'A', other), null, "another tenant's run report is never read")
+  assert.equal(await recordedEmptyReason(sqliteDb(db), 'A', { id: other.id, status: 'done', error: null, candidates: 4 }), null)
 })
