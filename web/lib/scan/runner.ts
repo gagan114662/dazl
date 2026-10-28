@@ -34,6 +34,8 @@ import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './veri
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
 import { getMemory, isExcluded, memoryPromptBlock } from '../memory.ts'
 import { enrichJobSignals } from '../signals/index.ts'
+import { beginEnrichment, endEnrichment } from './enrichment.ts'
+import { regradeFromKeptContacts } from './contact-agreement.ts'
 import { primarySignalKind } from './score.ts'
 import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } from '../signals/competitor-reddit.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
@@ -563,7 +565,8 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
     // Contact-page crawl and free intent signals (SEC Form D, public job boards) - this is
     // where the batch table's contacts come from. Same bonuses, same silence on failure.
     // Same bounded post-processing as the main path - one deadline source.
-    await runPostFinishBounded(db, job, deps)
+    beginEnrichment(db, job.id, job.attempts)
+    try { await runPostFinishBounded(db, job, deps) } finally { endEnrichment(db, job.id, job.attempts) }
     return 'done'
   } catch (e) {
     return failOrRetry(db, job, e, ledger)
@@ -1018,6 +1021,8 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // must be skipped too - a re-claimed job belongs to the newer attempt.
     if (!owned) return 'done'
     // Everything below may make more model calls (buyer-fit): they are flushed to the usage record however this block ends.
+    // The rows exist, but contacts, people and the fit gate are still being added: clients see 'enriching' until the end mark.
+    beginEnrichment(db, job.id, job.attempts)
     try {
     if (complaints.length > 0) { try { badgeComplaintLeads(db, job.id, complaints) } catch { /* badge only */ } }
     // Watch run: flag the leads this watch has never surfaced, remember the rest.
@@ -1028,6 +1033,8 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // People search (person-first): the right people at each lead's company from public profile SEARCH RESULTS, for
     // companies whose own site lists nobody. Never throws; never an address; kill switch PEOPLE_SEARCH_ENABLED=0.
     await findPeople(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl })
+    // Contacts refused for disagreeing with the lead (wrong place / wrong domain) leave nothing reachable: regrade the lead from the evidence actually kept.
+    try { regradeFromKeptContacts(db, job.user_id, job.id) } catch (e) { console.error('regrade from kept contacts failed', e instanceof Error ? e.message : 'error') }
     // Buyer-fit gate (after the crawl, which confirms each company's own site): a hiring lead keeps fit >= 4 only when
     // its own home page shows it fits, quoted verbatim. Fail closed; never fails the scan.
     if (complete && deps.score !== false) {
@@ -1036,11 +1043,13 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         await applyBuyerFitGate(db, job.id, providers_[vendor], key, icpText, { fetchPage: deps.fetchPage, fetchImpl: deps.fetchImpl })
       } catch (e) { console.error('buyer-fit gate failed', e instanceof Error ? e.message : 'error') }
     }
+    // Contacts, people and fit are final: the stage ends before autopilot, whose drafting/sending is separate work, not enrichment.
+    endEnrichment(db, job.id, job.attempts)
     // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.
     // A job that carries a budget never starts autopilot: its model drafting and sends are outside the budget (run-budget.ts).
     if (!parseRunBudget(job.run_budget)) try { await (deps.autopilot ?? runAutopilot)(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
     return 'done'
-    } finally { ledger.flushModelCalls(db, job.id, job.attempts) }
+    } finally { endEnrichment(db, job.id, job.attempts); ledger.flushModelCalls(db, job.id, job.attempts) }
   } catch (e) {
     return failOrRetry(db, job, e, ledger)
   }

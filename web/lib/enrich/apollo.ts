@@ -15,8 +15,8 @@ export class EnrichError extends Error {
 const BASE = 'https://api.apollo.io'
 const TIMEOUT_MS = 15_000
 
-export interface ApolloOrg { name: string | null; employees: number | null; industry: string | null; founded: number | null; website: string | null; linkedin: string | null }
-export interface ApolloPerson { name: string; title: string | null; linkedin: string | null }
+export interface ApolloOrg { name: string | null; employees: number | null; industry: string | null; founded: number | null; website: string | null; linkedin: string | null; place: string | null }
+export interface ApolloPerson { name: string; title: string | null; linkedin: string | null; place?: string | null; domain?: string | null; organization?: { name: string | null; domain: string | null } | null } // organization: the company the RESULT says the person works for (kept so a contradicting one can be refused)
 
 async function call(apiKey: string, path: string, body: Record<string, unknown>, fetchImpl: typeof fetch): Promise<unknown> {
   const ctrl = new AbortController()
@@ -35,6 +35,7 @@ async function call(apiKey: string, path: string, body: Record<string, unknown>,
   } finally { clearTimeout(t) }
 }
 
+import { formatPlace } from '../scan/contact-agreement.ts'
 const clean = (v: unknown, max = 200) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, max) : null)
 
 // 1 credit per call.
@@ -53,7 +54,16 @@ export async function apolloOrgEnrich(apiKey: string, org: { domain?: string | n
     founded: typeof o.founded_year === 'number' ? o.founded_year : null,
     website: clean(o.website_url),
     linkedin: clean(o.linkedin_url),
+    place: formatPlace(clean(o.city, 80), clean(o.state, 80), clean(o.country, 80)),
   }
+}
+
+function orgOf(p: Record<string, unknown>): { name: string | null; domain: string | null } | null {
+  const o = (p.organization && typeof p.organization === 'object' ? p.organization : null) as Record<string, unknown> | null
+  const name = clean(o?.name ?? p.organization_name, 160)
+  const raw = clean(o?.primary_domain ?? o?.website_url ?? o?.domain, 200)
+  const domain = raw ? raw.toLowerCase().replace(/^[a-z]+:\/\//, '').replace(/[/?#].*$/, '').replace(/^www\./, '') || null : null
+  return name || domain ? { name, domain } : null
 }
 
 // 0 credits. People come back with no emails/phones; we strip them even if present.
@@ -66,6 +76,7 @@ export async function apolloPeopleSearch(apiKey: string, org: { domain?: string 
     name: clean(p.name, 120) ?? '',
     title: clean(p.title, 120),
     linkedin: clean(p.linkedin_url),
+    organization: orgOf(p),
     // p.email / p.phone_numbers deliberately never read
   })).filter(p => p.name)
 }
