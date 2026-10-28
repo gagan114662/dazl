@@ -15,7 +15,8 @@ const filler = ' The team builds developer tooling for London engineering teams 
 const URL = 'https://news.example/embedd-office'
 const QUOTE = 'Embedd opened a new office in Shoreditch, London for its growing engineering team'
 const ld = (o: object) => JSON.stringify(o)
-const EVENT = (startDate: string, organizer = 'Embedd') => ld({ '@context': 'https://schema.org', '@type': 'Event', name: 'Office opening', startDate, organizer: { '@type': 'Organization', name: organizer } })
+const EVENT = (startDate: string, organizer = 'Embedd') => ld({ '@context': 'https://schema.org', '@type': 'Event', name: 'Embedd office opening', startDate, organizer: { '@type': 'Organization', name: organizer }, location: { '@type': 'Place', name: 'Embedd Shoreditch office', address: { '@type': 'PostalAddress', streetAddress: '1 Old Street', addressLocality: 'London', addressCountry: 'GB' } } })
+const WEBINAR = (startDate: string, organizer = 'Embedd') => ld({ '@context': 'https://schema.org', '@type': 'Event', name: 'Embedd product webinar: shipping faster', startDate, eventAttendanceMode: 'https://schema.org/OnlineEventAttendanceMode', location: { '@type': 'VirtualLocation', url: 'https://embedd.example/webinar' }, organizer: { '@type': 'Organization', name: organizer } })
 function fx(structured: string[] | undefined, over: { published?: string; quote?: string } = {}): Fixture {
   const c: Cand = { company: 'Embedd', signal: 'opened a new London office', source_url: URL, excerpt: over.quote ?? QUOTE, event_date: null }
   return { request: REQUEST, modelIcp: ICP, modelQueries: ['london startup opens office'], hits: [{ url: URL, title: 'Embedd', snippet: QUOTE, date: null }], tfPages: {},
@@ -46,18 +47,19 @@ test('identity: an Event organised by another company, a publication/modified st
   ]) { const { r } = await row(fx(structured)); assert.equal(r.review_reason, 'outside_window_undated', structured[0]); assert.equal(r.event_date, null) }
 })
 test('resolveStructuredDate: @graph and nested nodes are read; kind must fit the claim; one distinct date only', () => {
-  const g = ld({ '@graph': [{ '@type': 'WebSite' }, { '@type': ['Thing', 'BusinessEvent'], name: 'Embedd launch', startDate: '2026-10-01T09:00:00+01:00' }] })
-  assert.deepEqual(resolveStructuredDate([g], 'Embedd Ltd', 'opened a new office'), { date: '2026-10-01', kind: 'Event' })
+  const g = ld({ '@graph': [{ '@type': 'WebSite' }, { '@type': ['Thing', 'BusinessEvent'], name: 'Embedd office opening', startDate: '2026-10-01T09:00:00+01:00', location: { '@type': 'Place', name: 'Embedd London office' } }] })
+  assert.deepEqual(resolveStructuredDate([g], 'Embedd Ltd', 'opened a new office in London'), { date: '2026-10-01', kind: 'Event' })
   assert.equal(resolveStructuredDate([g], 'Embedd', 'raised a seed round'), null, 'a funding claim is never dated by an Event')
-  const jp = ld({ '@type': 'JobPosting', datePosted: '2026-10-02', hiringOrganization: { name: 'Embedd' } })
+  const jp = ld({ '@type': 'JobPosting', title: 'Sales Account Executive', datePosted: '2026-10-02', hiringOrganization: { name: 'Embedd' } })
   assert.deepEqual(resolveStructuredDate([jp], 'Embedd', 'is hiring an account executive'), { date: '2026-10-02', kind: 'JobPosting' })
+  assert.equal(resolveStructuredDate([jp], 'Embedd', 'is hiring a backend engineer'), null, 'a posting for another role is not this claim')
   assert.equal(resolveStructuredDate([jp], 'Embedd', 'opened a new office'), null)
   assert.equal(resolveStructuredDate([ld({ '@type': 'Event', name: 'Embedd', startDate: '2026-02-30' })], 'Embedd', 'opened'), null, 'not a real calendar day')
   assert.deepEqual(kindsFor('raised a seed round'), [])
 })
 test('bounded: at most 6 undated candidates are finished per scan', async () => {
   const { finishUndatedLeads } = await import('../lib/scan/structured-date.ts')
-  const leads = Array.from({ length: 9 }, (_, i) => ({ company: 'Embedd', signal: 'opened a new office', excerpt: 'x', source_url: `https://e.example/${i}`, event_date: null as string | null }))
+  const leads = Array.from({ length: 9 }, (_, i) => ({ company: 'Embedd', signal: 'opened a new office', excerpt: 'opened a new office in London', source_url: `https://e.example/${i}`, event_date: null as string | null }))
   let fetched = 0
   const done = await finishUndatedLeads(leads, async () => { fetched++; return { structured: [EVENT('2026-10-20')] } })
   assert.equal(fetched, 6); assert.equal(done.length, 6); assert.equal(leads.filter(l => l.event_date).length, 6)
@@ -88,4 +90,31 @@ test('QUERIO: nothing found on any board or careers page -> stays held with the 
   const { db, job } = querio()
   const r = await applySalesHiringGate(db, job, serve({}), { now: NOW })
   assert.equal(r.demoted, 1); assert.equal((db.prepare("SELECT review_reason FROM leads WHERE id = 'L1'").get() as { review_reason: string | null }).review_reason, 'no_sales_hiring_evidence')
+})
+
+// ---- #307 review: the date must come from text about the SAME event, not the same company or page ----
+test('INSTINCT CASE: a company page with a dated WEBINAR and an undated office-opening claim -> the claim stays undated and held; the webinar date is never borrowed', async () => {
+  for (const structured of [[WEBINAR(daysAgo(9))], [WEBINAR(daysAgo(9)), ld({ '@type': 'Organization', name: 'Embedd' })]]) {
+    const { r } = await row(fx(structured))
+    assert.equal(r.event_date, null, 'no date borrowed from the webinar'); assert.equal(r.review_reason, 'outside_window_undated'); assert.equal(r.timing_note, null)
+  }
+  assert.equal(resolveStructuredDate([WEBINAR('2026-10-10')], 'Embedd', 'opened a new office in Shoreditch, London', ['London, UK']), null)
+})
+test('POSITIVE: a dated OFFICE-OPENING Event in the claim\'s place dates the claim; with a webinar on the same page, only the opening\'s date is used', async () => {
+  const { r } = await row(fx([EVENT(daysAgo(9))])); assert.equal(r.event_date, daysAgo(9)); assert.equal(r.review_reason, null)
+  const mixed = await row(fx([WEBINAR(daysAgo(2)), EVENT(daysAgo(9))]))
+  assert.equal(mixed.r.event_date, daysAgo(9), 'the opening\'s date, not the webinar\'s'); assert.equal(mixed.r.review_reason, null)
+})
+test('same event TYPE is not enough - the PLACE must match: an office opening in another city, or an Event with a place but none in common with the claim, never dates it', () => {
+  const other = ld({ '@type': 'Event', name: 'Embedd office opening', startDate: '2026-10-05', organizer: { name: 'Embedd' }, location: { '@type': 'Place', name: 'Embedd Manchester office', address: { '@type': 'PostalAddress', addressLocality: 'Manchester' } } })
+  assert.equal(resolveStructuredDate([other], 'Embedd', 'opened a new office in Shoreditch, London', ['London, UK']), null)
+  const noPlace = ld({ '@type': 'Event', name: 'Embedd office opening', startDate: '2026-10-05', organizer: { name: 'Embedd' } })
+  assert.equal(resolveStructuredDate([noPlace], 'Embedd', 'opened a new office in Shoreditch, London', ['London, UK']), null, 'an opening with no place at all cannot be tied to this office')
+  const launch = ld({ '@type': 'Event', name: 'Embedd product launch', startDate: '2026-10-05', organizer: { name: 'Embedd' }, location: { '@type': 'Place', name: 'London' } })
+  assert.equal(resolveStructuredDate([launch], 'Embedd', 'opened a new office in London', ['London, UK']), null, 'a product launch is not an office opening')
+})
+test('an online webinar claim IS dated by the webinar Event (same type); a conference claim by a conference', () => {
+  assert.deepEqual(resolveStructuredDate([WEBINAR('2026-10-10')], 'Embedd', 'is hosting a webinar on shipping faster'), { date: '2026-10-10', kind: 'Event' })
+  const conf = ld({ '@type': 'Event', name: 'Embedd developer summit', startDate: '2026-10-12', organizer: { name: 'Embedd' } })
+  assert.deepEqual(resolveStructuredDate([conf], 'Embedd', 'is running a developer summit'), { date: '2026-10-12', kind: 'Event' })
 })

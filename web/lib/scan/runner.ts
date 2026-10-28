@@ -1005,7 +1005,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // gate), so verified / qualified counts never include a lead the gate would hold. Stored, not dropped.
     if (icpForSources?.window_days) {
       // Finish undated candidates first (bounded): an event date the source page itself declares as structured data. The window gate below judges it like any other date.
-      try { datesFinished = await finishUndatedLeads(outcome.leads, fetchP) } catch { /* bonus only: the candidate stays undated and is held with its own reason */ }
+      try { datesFinished = await finishUndatedLeads(outcome.leads, fetchP, 6, icpForSources.where ?? []) } catch { /* bonus only: the candidate stays undated and is held with its own reason */ }
       const { inside, outside, outsideReasons } = splitByWindow(outcome.leads, icpForSources.window_days, deps.now ?? new Date())
       outcome.leads = inside
       outside.forEach((l, i) => outcome.review.push({ ...l, contact: null, review_reason: outsideReasons[i] }))
