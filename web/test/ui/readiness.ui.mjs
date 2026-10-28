@@ -134,7 +134,7 @@ try {
   await page.getByText("Here's what we think you sell and who buys it").waitFor()
   await page.getByLabel('Who buys it').fill('Independent dental practices with 2-10 chairs')
   await page.getByRole('button', { name: 'Looks right, continue' }).click()
-  await page.getByRole('heading', { name: 'Who do you want to reach?' }).waitFor() // saved; the steps replace Home while open
+  await page.getByRole('heading', { name: 'Who do you want to find?' }).waitFor() // saved; the steps replace Home while open
   await page.goto(base + '/app', { waitUntil: 'networkidle' })
   await page.getByTestId('setup-details').evaluate(d => { d.open = true }, null, { timeout: 15000 })
   await row('brain').getByText('✓').waitFor()
