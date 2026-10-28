@@ -61,3 +61,15 @@ test('Instinct audit controls: another company\'s city on the same page never de
   // third-party address inside the company's own sentence is not its address
   assert.notEqual(ownPlaceAgreement(pg('Brightloop uses a supplier whose address is London EC1V 9HX. Brightloop is headquartered in Leeds, UK.'), ['London'], 'Brightloop'), 'agrees')
 })
+
+test('Pico Rivera regression: a same-name Dent Blanche practice in Pico Rivera, CA is not attached to the New York lead, on a mixed page or a contact record', async () => {
+  const NYC = ['New York City']
+  const page = { title: 'Dental practices expanding', text: `Posted ${day(5)}. Dent Blanche is opening a second location on West 57th Street. Dent Blanche Dental, 8500 Whittier Blvd, Pico Rivera, CA 90660 offers family dentistry. Smile Studio, 57 W 57th St, New York, NY 10019 also welcomes patients. ${'The practice welcomes families. '.repeat(8)}`, retrievedAt: 1 }
+  const c = { name: '', company: 'Dent Blanche', contact: null, signal: 'second location', source_url: 'https://news.example/db', score: 70, excerpt: 'Dent Blanche is opening a second location on West 57th Street', event_date: day(5) }
+  const r = await verifyLeads([c], async () => page, new Date(), undefined, null, undefined, undefined, NYC)
+  assert.equal(r.leads.length, 0, 'the page also places a same-name Dent Blanche in Pico Rivera, and no New York address is bound to it: held, not attached'); assert.equal(r.review[0].review_reason, 'location_mismatch')
+  const pico = await verifyLeads([{ ...c, excerpt: 'Dent Blanche Dental, 8500 Whittier Blvd, Pico Rivera, CA 90660 offers family dentistry' }], async () => page, new Date(), undefined, null, undefined, undefined, NYC)
+  assert.equal(pico.leads.length, 0); assert.equal(pico.review[0].review_reason, 'location_mismatch')
+  const contact = contactAgreement({ company_domain: null, where: NYC }, { place: 'Pico Rivera, CA' })
+  assert.equal(contact.ok, false); assert.match((contact as { reason: string }).reason, /location mismatch Pico Rivera, CA vs New York, NY/)
+})
