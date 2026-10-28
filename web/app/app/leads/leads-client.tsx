@@ -588,6 +588,8 @@ export default function LeadsClient() {
               <textarea value={cmtText} onChange={e => setCmtText(e.target.value)} rows={4} placeholder={'profile_url,name,title,company\nhttps://www.linkedin.com/in/jane-doe,Jane Doe,VP Sales,Acme'} className="field w-full mb-2 text-xs font-mono" />
               <div className="flex items-center gap-3">
                 <button onClick={() => void importCommenters()} disabled={cmtBusy || !cmtText.trim() || !cmtContext.trim()} className="font-mono text-xs uppercase border border-black px-2 py-1 hover:bg-black hover:text-white disabled:opacity-40">Import</button>
+                {/* A cost is never behind a click: enrichment starts on its own after Import when a connector key is on. */}
+                <span className="text-gray-500 text-xs" data-testid="import-cost">Paid enrichment: if an Apollo or People Data Labs key is enabled in Settings, Import uses it automatically - 1 credit per company, up to 50 companies, plus a people search per company that your provider may also bill. With no key enabled, only free sources are used.</span>
                 <label className="text-xs text-gray-400 underline cursor-pointer">or upload a file<input type="file" accept=".csv,.txt,text/csv,text/plain" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) void f.text().then(t => setCmtText(t)); e.target.value = '' }} /></label>
               </div>
               {cmtNote && <p className="text-xs text-gray-400 mt-2">{cmtNote}</p>}

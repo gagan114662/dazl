@@ -5,7 +5,8 @@
 // FROM A STUB in the browser: nothing is scanned, drafted or sent. It proves, per page:
 //   1. each shortened caveat shows exactly one visible sentence and a closed Details;
 //   2. the Details holds the original caveat text word for word (nothing a caveat claims is removed) and opens on click;
-//   3. loading writes nothing.
+//   3. the paid-enrichment cost (1 credit per company, up to 50, when a key is enabled) is visible beside Import;
+//   4. loading writes nothing.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -92,6 +93,17 @@ try {
       assert.equal(await c.locator(':scope > details > p').isVisible(), false)
       await c.getByText('Details', { exact: true }).click()
       assert.equal(await c.locator(':scope > details > p').isVisible(), true)
+    }
+    if (name === 'leads') {
+      // Instinct #278: the paid-enrichment cost is visible beside Import without opening any caveat Details.
+      await page.reload({ waitUntil: 'networkidle' })
+      await page.evaluate(() => document.querySelectorAll('details').forEach(d => { if (!d.closest('[data-testid=caveat]')) d.open = true })) // the page's own sections, never a caveat's
+      const cost = page.getByTestId('import-cost')
+      assert.equal(await cost.isVisible(), true, 'cost line visible with every caveat Details still closed')
+      assert.equal(await page.locator('[data-testid=caveat] details[open]').count(), 0)
+      assert.match(await cost.textContent(), /Apollo or People Data Labs key is enabled.*Import uses it automatically - 1 credit per company, up to 50 companies/)
+      assert.equal(await cost.evaluate(e => !!e.closest('[data-testid=caveat]')), false, 'not part of a collapsible caveat')
+      assert.equal(await cost.evaluate(e => e.parentElement.querySelector('button')?.textContent), 'Import', 'beside the Import button')
     }
     await shot(`${name}-details-open`)
   }
