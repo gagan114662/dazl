@@ -82,7 +82,9 @@ test('not configured: keyless accounts get no_api_key behavior (not funded)', ()
 })
 
 test('runner claims trial-funded jobs from keyless accounts and runs them on the operator key', async () => {
-  process.env.DAZL_TRIAL_ANTHROPIC_KEY = 'sk-ant-test'
+  // a trial scan runs only with dazl's trial budget configured (lib/billing/trial-budget.ts)
+  const CAPS = { DAZL_TRIAL_ANTHROPIC_KEY: 'sk-ant-test', DAZL_TRIAL_SCAN_RESERVE_USD: '1', DAZL_TRIAL_USER_DAILY_USD: '3', DAZL_TRIAL_GLOBAL_DAILY_USD: '10', DAZL_TRIAL_RESEARCH_RESERVE_USD: '0.5' }
+  Object.assign(process.env, CAPS)
   try {
     const db = new Database(':memory:')
     migrateScan(db); migrateKeys(db); migrateTrial(db)
@@ -100,7 +102,7 @@ test('runner claims trial-funded jobs from keyless accounts and runs them on the
     }
     await runJob(db, claimed!, { providers: prov })
     assert.equal(seenKey, 'sk-ant-test') // operator key, never a tenant key
-  } finally { delete process.env.DAZL_TRIAL_ANTHROPIC_KEY }
+  } finally { for (const k of Object.keys(CAPS)) delete process.env[k] }
 })
 
 test('keyless non-trial jobs are still never claimed', () => {

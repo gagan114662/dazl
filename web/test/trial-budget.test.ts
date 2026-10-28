@@ -9,7 +9,7 @@ import { admitTrialScan, linkTrialReservation, trialCaps, utcDay } from '../lib/
 import { bothEngines } from './helpers/engines.ts'
 
 const NOW = 1_800_000_000
-const caps = { DAZL_TRIAL_SCAN_RESERVE_USD: '1', DAZL_TRIAL_USER_DAILY_USD: '2.5', DAZL_TRIAL_GLOBAL_DAILY_USD: '4' }
+const caps = { DAZL_TRIAL_SCAN_RESERVE_USD: '1', DAZL_TRIAL_USER_DAILY_USD: '2.5', DAZL_TRIAL_GLOBAL_DAILY_USD: '4', DAZL_TRIAL_RESEARCH_RESERVE_USD: '0.5' }
 const user = async (db: Db, id: string, email: string, google = true) => {
   await db.run("INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, 'n', 'b', 'x', 'y')", [id, email])
   if (google) await db.run("INSERT INTO oauth_identities (provider, subject, user_id) VALUES ('google', ?, ?)", [`sub-${id}`, id])
@@ -18,13 +18,17 @@ const user = async (db: Db, id: string, email: string, google = true) => {
 const admit = (db: Db, u: { id: string; email: string }, env: Record<string, string> = caps, now = NOW) => admitTrialScan(db, u, { env, now })
 const job = async (db: Db, tenant: string, id: string, status: string) =>
   db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, created_at) VALUES (?, ?, 'b', 'i', 'l', ?, ?)", [id, tenant, status, NOW])
-const call = (db: Db, tenant: string, jobId: string, model: string, inTok: number | null, outTok: number | null, seq: number) =>
-  db.run("INSERT INTO scan_model_calls (tenant_id, job_id, attempt, seq, stage, method, model_requested, model_served, input_tokens, output_tokens, outcome, prompt_chars) VALUES (?, ?, 1, ?, 'other', 'complete', ?, ?, ?, ?, 'ok', 10)",
-    [tenant, jobId, seq, model, model, inTok, outTok])
+// what the runner recorded as spent on the scan: every paid step it counted against the trial budget
+const spent = (db: Db, jobId: string, usd: number) => db.run('UPDATE scan_jobs SET spend_reserved_usd = ? WHERE id = ?', [usd, jobId])
 
 bothEngines('trial caps: fail closed without caps; Google sign-in required; one trial per company domain', async ({ db }) => {
   assert.equal(trialCaps({}), null)
   assert.equal(trialCaps({ ...caps, DAZL_TRIAL_GLOBAL_DAILY_USD: '0' }), null)
+  assert.equal(trialCaps({ ...caps, DAZL_TRIAL_RESEARCH_RESERVE_USD: '' }), null, 'research must be priced')
+  // with TinyFish on (dazl's key), its search and fetch prices must be set too; 0 is allowed (a free tier), unset is not
+  const tf = { ...caps, TINYFISH_API_KEY: 'x' }
+  assert.equal(trialCaps(tf), null)
+  assert.equal(trialCaps({ ...tf, DAZL_TRIAL_TINYFISH_SEARCH_USD: '0', DAZL_TRIAL_TINYFISH_FETCH_USD: '0.002' })?.tinyfishFetchUsd, 0.002)
   const a = await user(db, 'a'.repeat(32), 'ann@acme.example')
   assert.deepEqual(await admit(db, a, {}), { ok: false, reason: 'not_configured' })
   const pw = await user(db, 'p'.repeat(32), 'pat@other.example', false)
@@ -46,19 +50,19 @@ bothEngines('trial caps: per-user and global daily budget; running scans count t
   const r1 = await admit(db, a), r2 = await admit(db, a)
   assert.ok(r1.ok && r2.ok)
   assert.deepEqual(await admit(db, a), { ok: false, reason: 'user_daily_cap' })
-  // A's first scan finishes having cost $0.15 (claude-sonnet-4-5 at $3/$15 per M: 20k in + 6k out): A is at 1.15, room again
+  // A's first scan finishes having recorded $0.15 spent (model calls, research, searches): A is at 1.15, room again
   await job(db, a.id, 'j'.repeat(24), 'done'); await linkTrialReservation(db, a.id, r1.reservation, 'j'.repeat(24))
-  await call(db, a.id, 'j'.repeat(24), 'claude-sonnet-4-5', 20_000, 6_000, 0)
+  await spent(db, 'j'.repeat(24), 0.15)
   const r3 = await admit(db, a)
-  assert.equal(r3.ok, true, 'a finished scan counts at its real cost')
+  assert.equal(r3.ok, true, 'a finished scan counts at what it recorded as spent')
   // global: A 2.15 + B 1 = 3.15; C's 1 would reach 4.15 > 4
   assert.equal((await admit(db, b)).ok, true)
   assert.deepEqual(await admit(db, c), { ok: false, reason: 'global_daily_cap' })
-  // a finished scan whose model has no listed price, or a call without token counts, still counts as its reserve
+  // B's scan ends having spent its whole reserve: still no room for C
   await job(db, b.id, 'k'.repeat(24), 'done')
   const rb = (await db.get<{ id: string }>('SELECT id FROM trial_reservations WHERE tenant_id = ?', [b.id]))!.id
   await linkTrialReservation(db, b.id, rb, 'k'.repeat(24))
-  await call(db, b.id, 'k'.repeat(24), 'unlisted-model', 10, 10, 0)
+  await spent(db, 'k'.repeat(24), 1)
   assert.deepEqual(await admit(db, c), { ok: false, reason: 'global_daily_cap' })
   // a reservation links only to its own tenant's job: B cannot attach A's reservation to its scan
   await linkTrialReservation(db, b.id, r2.ok ? r2.reservation : '', 'k'.repeat(24))

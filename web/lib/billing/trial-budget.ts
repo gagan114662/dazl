@@ -9,16 +9,16 @@
 //   3. one trial per company: an email domain that is not a consumer mailbox (gmail.com, outlook.com, ...) gets one
 //      trial account; a second account on the same domain is refused;
 //   4. money: today's trial spend (UTC day) plus this scan's reserve must stay within the user's and the global cap.
-//      A scan counts as its reserve until it ends, then as what it actually cost (its recorded model calls at the
-//      model's listed price; an unpriced model counts as the reserve). So caps are checked against a worst case for
-//      scans still running, and against real spend for finished ones.
-// What this does not bound: one scan costing more than its reserve (the runner's own limits apply; a hard per-run
-// dollar limit would switch off web research and paid enrichment, see lib/scan/run-budget.ts), and search-provider
-// charges, which have their own windows (lib/search/tinyfish.ts). Previews of the search profile are not counted.
+//      A scan counts as its reserve until it ends, then as what it recorded as spent. So caps are checked against a
+//      worst case for scans still running, and against recorded spend for finished ones.
+// Inside the scan (lib/scan/runner.ts), every paid step on dazl's keys is counted against the scan's reserve before it
+// is made: model calls, research (worst case, then settled to its reported usage), TinyFish searches and fetches,
+// retries and failed calls. A step that does not fit stops the scan with what it has (trial_budget_reached), and web
+// research stays on until then. A scan therefore never spends more than its reserve, except by what one research call
+// reports above its own reserve, which is recorded and stops the scan. Search-profile previews are not counted.
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import type { Db, Tx, TxBody } from '../db/client.ts'
-import { PRICES_USD_PER_M } from '../llm/spend-guard.ts'
 
 export function migrateTrialBudget(db: Database.Database): void {
   db.exec(`
@@ -36,12 +36,23 @@ export function migrateTrialBudget(db: Database.Database): void {
   `)
 }
 
-export interface TrialCaps { reserveUsd: number; userDailyUsd: number; globalDailyUsd: number }
+export interface TrialCaps {
+  reserveUsd: number; userDailyUsd: number; globalDailyUsd: number
+  // Prices of the paid steps a trial scan's own budget counts in the runner (lib/scan/runner.ts): a research call's worst
+  // case (settled to the usage it reports), and each TinyFish search and fetched URL on dazl's key. Model calls are
+  // priced from their tokens (lib/llm/spend-guard.ts PRICES_USD_PER_M). 0 is allowed for a free tier, but must be set.
+  researchReserveUsd: number; tinyfishSearchUsd: number; tinyfishFetchUsd: number
+}
 const positive = (v: string | undefined) => { const n = Number(v); return v !== undefined && v.trim() !== '' && Number.isFinite(n) && n > 0 ? n : null }
-// null unless all three are set: no cap, no trial.
+const nonNegative = (v: string | undefined) => { const n = Number(v); return v !== undefined && v.trim() !== '' && Number.isFinite(n) && n >= 0 ? n : null }
+// null unless every number is set: no cap or no price, no trial. TinyFish prices are needed only while TinyFish is on.
 export function trialCaps(env: Record<string, string | undefined> = process.env): TrialCaps | null {
   const reserveUsd = positive(env.DAZL_TRIAL_SCAN_RESERVE_USD), userDailyUsd = positive(env.DAZL_TRIAL_USER_DAILY_USD), globalDailyUsd = positive(env.DAZL_TRIAL_GLOBAL_DAILY_USD)
-  return reserveUsd && userDailyUsd && globalDailyUsd ? { reserveUsd, userDailyUsd, globalDailyUsd } : null
+  const researchReserveUsd = positive(env.DAZL_TRIAL_RESEARCH_RESERVE_USD)
+  const tfOn = !!env.TINYFISH_API_KEY && env.TINYFISH_ENABLED !== '0'
+  const tinyfishSearchUsd = tfOn ? nonNegative(env.DAZL_TRIAL_TINYFISH_SEARCH_USD) : 0, tinyfishFetchUsd = tfOn ? nonNegative(env.DAZL_TRIAL_TINYFISH_FETCH_USD) : 0
+  if (!reserveUsd || !userDailyUsd || !globalDailyUsd || !researchReserveUsd || tinyfishSearchUsd === null || tinyfishFetchUsd === null) return null
+  return { reserveUsd, userDailyUsd, globalDailyUsd, researchReserveUsd, tinyfishSearchUsd, tinyfishFetchUsd }
 }
 
 // Mailbox providers anyone can sign up to: the one-trial-per-domain rule would lock out everyone else on them, so these
@@ -53,32 +64,25 @@ export const emailDomain = (email: string) => email.trim().toLowerCase().split('
 
 export const utcDay = (nowS: number) => Math.floor(nowS / 86400)
 
+// The reason a free-trial scan stopped at its budget (scan_jobs.error) and why its leads are in review (leads.review_reason).
+export const TRIAL_BUDGET_REASON = 'trial_budget_reached'
+
 export type TrialRefusal = 'not_configured' | 'google_required' | 'domain_used' | 'user_daily_cap' | 'global_daily_cap'
 export type Admission = { ok: true; reservation: string } | { ok: false; reason: TrialRefusal }
 
-// A reservation's cost: its job's recorded model calls at listed prices once the job has ended, else the reserve. A
-// model without a listed price, or a call without token counts, makes the job count as at least its reserve.
-const SPENT_SQL = `SELECT r.id, r.tenant_id, r.reserve_usd, j.status, c.model_served, c.model_requested, c.input_tokens, c.output_tokens
+// A reservation's cost for the day: its reserve while the scan runs (or before it exists), then what the scan recorded
+// as spent once it ended: scan_jobs.spend_reserved_usd, every paid step the runner counted against the trial budget
+// (model calls, research settled to its reported usage, TinyFish searches and fetched URLs, retries and failed calls).
+const SPENT_SQL = `SELECT r.tenant_id, r.reserve_usd, j.status, j.spend_reserved_usd
   FROM trial_reservations r LEFT JOIN scan_jobs j ON j.id = r.job_id AND j.user_id = r.tenant_id
-  LEFT JOIN scan_model_calls c ON c.job_id = r.job_id AND c.tenant_id = r.tenant_id
   WHERE r.day = ?`
-type SpentRow = { id: string; tenant_id: string; reserve_usd: number; status: string | null; model_served: string | null; model_requested: string | null; input_tokens: number | null; output_tokens: number | null }
+type SpentRow = { tenant_id: string; reserve_usd: number; status: string | null; spend_reserved_usd: number | null }
 export function spendByTenant(rows: SpentRow[]): Map<string, number> {
-  const per = new Map<string, { tenant: string; reserve: number; ended: boolean; usd: number; unpriced: boolean }>()
-  for (const r of rows) {
-    const e = per.get(r.id) ?? { tenant: r.tenant_id, reserve: Number(r.reserve_usd), ended: r.status === 'done' || r.status === 'failed', usd: 0, unpriced: false }
-    const model = r.model_served ?? r.model_requested
-    if (model !== null) {
-      const price = PRICES_USD_PER_M[model]
-      if (!price || r.input_tokens === null || r.output_tokens === null) e.unpriced = true
-      else e.usd += (Number(r.input_tokens) * price.in + Number(r.output_tokens) * price.out) / 1_000_000
-    }
-    per.set(r.id, e)
-  }
   const out = new Map<string, number>()
-  for (const e of per.values()) {
-    const cost = !e.ended || e.unpriced ? Math.max(e.reserve, e.usd) : e.usd
-    out.set(e.tenant, (out.get(e.tenant) ?? 0) + cost)
+  for (const r of rows) {
+    const ended = r.status === 'done' || r.status === 'failed'
+    const cost = ended ? Math.max(0, Number(r.spend_reserved_usd ?? 0)) : Number(r.reserve_usd)
+    out.set(r.tenant_id, (out.get(r.tenant_id) ?? 0) + cost)
   }
   return out
 }
