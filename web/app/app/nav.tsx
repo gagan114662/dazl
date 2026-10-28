@@ -29,7 +29,7 @@ function NavLink({ item, p, q }: { item: Item; p: string; q: URLSearchParams }) 
   const on = item.match(p, q)
   return (
     <Link href={item.href} aria-current={on ? 'page' : undefined}
-      className={`flex items-center gap-2.5 text-sm px-3 py-2 rounded-xl transition ${on ? 'bg-[var(--lav-bg)] text-[var(--ink)] font-semibold' : 'text-[var(--ink-2)] hover:text-[var(--ink)] hover:bg-[#f6eff2]'}`}>
+      className={`flex items-center gap-2.5 text-sm px-3 py-2 rounded-xl transition ${on ? 'bg-[var(--soft)] text-[var(--ink)] font-semibold' : 'text-[var(--ink-2)] hover:text-[var(--ink)] hover:bg-black/5'}`}>
       <Icon name={item.icon} className="w-[18px] h-[18px] shrink-0" />{item.label}
     </Link>
   )
@@ -49,7 +49,7 @@ export default function Nav() {
         </div>
       ))}
       <details className="mt-4 group" open={moreOn}>
-        <summary className="list-none cursor-pointer flex items-center gap-2.5 text-sm px-3 py-2 rounded-xl text-[var(--ink-2)] hover:bg-[#f6eff2] [&::-webkit-details-marker]:hidden">
+        <summary className="list-none cursor-pointer flex items-center gap-2.5 text-sm px-3 py-2 rounded-xl text-[var(--ink-2)] hover:bg-black/5 [&::-webkit-details-marker]:hidden">
           <Icon name="more" className="w-[18px] h-[18px]" />More
         </summary>
         <div className="flex flex-col gap-0.5 mt-0.5">{MORE.map(i => <NavLink key={i.href} item={i} p={p} q={q} />)}</div>

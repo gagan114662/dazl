@@ -123,6 +123,7 @@ try {
   const home = async (keys, words) => {
     JOBS = keys.map(k => ALL[k])
     await page.goto(`${base}/app`, { waitUntil: 'networkidle' })
+    await page.getByTestId('setup-details').evaluate(d => { d.open = true }, null, { timeout: 15000 }) // "Your plays" is secondary, under Setup details
     await page.getByTestId('play-campaign-link').first().waitFor({ timeout: 15000 })
     if (!before) for (const t of words) await page.locator('main').getByRole('link', { name: t, exact: true }).first().waitFor({ timeout: 5000 })
   }

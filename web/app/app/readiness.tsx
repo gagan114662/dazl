@@ -6,7 +6,7 @@ import SenderInline from './sender-inline'
 import { normalizeWebsite } from '@/lib/onboarding'
 import { Icon } from './ui/icons'
 import { Pill } from './ui/bits'
-import { capNotice, readinessRows, recentPlays, type ReadinessInput, type Play } from '@/lib/readiness'
+import { readinessRows, recentPlays, type ReadinessInput, type Play } from '@/lib/readiness'
 
 // Home after the first search: the steps left before a useful scan and send, each with its fix (in place, or a link to
 // the page that fixes it). Gmail stays in Settings: connecting is an explicit Google grant whose read-access terms are
@@ -45,10 +45,8 @@ export default function Readiness() {
   if (!input) return null
   const rows = readinessRows(input)
   const done = rows.filter(r => r.state === 'done').length
-  const capped = capNotice(input.outreach)
   return (
     <section className="mb-10">
-      {capped && <p role="status" data-testid="cap-notice" className="card p-4 mb-6 text-sm bg-[var(--peach-bg)]">{capped} <Link className="underline" href="/app/outreach">Outreach</Link></p>}
       {done === rows.length && !reopened && <div className="card px-4 py-3 text-sm mb-6 flex items-center gap-3"><span aria-hidden className="step-dot bg-[var(--mint)] text-white">✓</span><p className="flex-1 flex items-center justify-between gap-3" data-testid="ready-all-done"><span>Setup checklist: all {rows.length} steps done.</span> <button type="button" className="btn-ghost btn-sm" onClick={() => setReopened(true)}>Show it</button></p></div>}
       {(done < rows.length || reopened) && <div data-testid="readiness-checklist" className="card overflow-hidden">
       <div className="p-5 pb-4">
@@ -56,14 +54,14 @@ export default function Readiness() {
           <h2 id="ready-heading" className="text-lg font-bold tracking-tight">Get set up</h2>
           <span className="text-sm font-semibold text-[var(--ink-2)]" data-testid="ready-progress">{done} of {rows.length} done</span>
         </div>
-        <div className="mt-3 h-2 rounded-full bg-[#f3ebee] overflow-hidden" aria-hidden><div className="h-full rounded-full bg-gradient-to-r from-[var(--peach)] via-[var(--pink)] to-[var(--lav)]" style={{ width: `${Math.round(done / rows.length * 100)}%` }} /></div>
+        <div className="mt-3 h-2 rounded-full bg-[#ececec] overflow-hidden" aria-hidden><div className="h-full rounded-full bg-[var(--ink)]" style={{ width: `${Math.round(done / rows.length * 100)}%` }} /></div>
       </div>
       <ul className="divide-y divide-[var(--line)] border-t border-[var(--line)]" aria-labelledby="ready-heading">
         {rows.map(r => (
           <li key={r.id} className={`px-5 py-3.5 text-sm ${r.next ? 'bg-[var(--lav-bg)]' : ''}`} data-testid={`ready-${r.id}`} data-next={r.next ? 'true' : undefined}>
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0 flex items-start gap-3">
-                <span aria-hidden className={`step-dot shrink-0 ${r.state === 'done' ? 'bg-[var(--mint)] text-white' : r.next ? 'bg-[var(--lav)] text-white' : 'bg-[#f1e9ec] text-[var(--ink-3)]'}`}>{r.state === 'done' ? '✓' : r.state === 'unknown' ? '?' : ''}</span>
+                <span aria-hidden className={`step-dot shrink-0 ${r.state === 'done' ? 'bg-[var(--mint)] text-white' : r.next ? 'bg-[var(--lav)] text-white' : 'bg-[#efefef] text-[var(--ink-3)]'}`}>{r.state === 'done' ? '✓' : r.state === 'unknown' ? '?' : ''}</span>
                 <span className="min-w-0">
                   <span className="font-semibold">{r.label}</span><span className="sr-only"> - </span>
                   <span className="block text-xs text-[var(--ink-2)] mt-0.5">{r.detail}</span>

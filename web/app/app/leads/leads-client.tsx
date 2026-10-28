@@ -513,7 +513,8 @@ export default function LeadsClient() {
   const visibleLeads = leads.filter(l => !l.review_reason && (showSeen || !l.seen_before))
 
   return (
-    <div className="p-4 sm:p-8 max-w-6xl mx-auto">
+    <div className="p-4 sm:p-8 max-w-6xl mx-auto flex flex-col">
+      {/* A scan's own page reads like a conversation: its progress and leads first, the next ask at the bottom. */}
       <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">{jobId ? 'Leads' : 'Plays'}</h1>
@@ -527,27 +528,31 @@ export default function LeadsClient() {
       </div>
       {/* Submitting the sentence runs the scan (the server works out the profile, as the run-without-review path always did)
           and lands on live progress; reviewing the profile first is optional. */}
-      <form onSubmit={e => { e.preventDefault(); void run(reuseIcp) }} className="card p-5 sm:p-7 mb-4">
-        <label htmlFor="play" className="block text-xl sm:text-2xl font-bold tracking-tight mb-3">Who do you want to reach?</label>
-        <textarea id="play" className={`${input} w-full !text-base sm:!text-lg !rounded-2xl !px-4 !py-3.5`} rows={3} required minLength={3} maxLength={600} value={query} onChange={e => setQuery(e.target.value)}
-          placeholder="One sentence: who, where, and what just happened. e.g. Seed-stage fintech founders in Europe who just hired their first sales rep" />
-        {!jobId && plays && <div className="mt-3 space-y-2" data-testid="play-suggestions">
+      <form onSubmit={e => { e.preventDefault(); void run(reuseIcp) }} className={`${jobId ? 'card p-5 sm:p-6 mb-4 order-last mt-6' : 'card px-5 py-8 sm:px-12 sm:py-12 mb-5'}`}>
+        <div className={jobId ? '' : 'max-w-2xl mx-auto'}>
+        <label htmlFor="play" className={`block font-bold tracking-tight mb-4 ${jobId ? 'text-lg' : 'text-2xl sm:text-4xl text-center'}`}>Who do you want to reach?</label>
+        <div className="ask">
+          <textarea id="play" rows={jobId ? 1 : 2} required minLength={3} maxLength={600} value={query} onChange={e => setQuery(e.target.value)}
+            placeholder="Find people who..." />
+          <button disabled={busy || starting || scanActive} title={scanActive ? 'A scan is still running or finishing below' : undefined} className="btn-primary send"><Icon name="arrow" className="w-4 h-4 -rotate-90" /><span className="sr-only">{starting ? 'Starting...' : 'Find leads'}</span></button>
+        </div>
+        {!jobId && plays && <div className="mt-4 space-y-2" data-testid="play-suggestions">
           {([['business', 'From your business details:', plays.business], ['examples', 'Examples:', plays.examples]] as const).filter(([, , items]) => items.length > 0).map(([k, label, items]) =>
             <div key={k} className="flex flex-wrap items-center gap-2" data-testid={`play-suggestions-${k}`}>
-              <span className="text-xs font-semibold text-[var(--ink-3)] mr-1">{label}</span>
-              {items.map(t => <button key={t} type="button" data-testid="play-suggestion" aria-pressed={query.trim() === t} onClick={() => setQuery(t)} className="chip"><Icon name="spark" className="w-3.5 h-3.5 text-[var(--lav)]" />{t}</button>)}
+              <span className="text-xs text-[var(--ink-3)] mr-1">{label}</span>
+              {items.map(t => <button key={t} type="button" data-testid="play-suggestion" aria-pressed={query.trim() === t} onClick={() => setQuery(t)} className="chip">{t}</button>)}
             </div>)}
         </div>}
-        <div className="flex flex-wrap gap-3 mt-5 items-center">
-          <button disabled={busy || starting || scanActive} title={scanActive ? 'A scan is still running or finishing below' : undefined} className="btn-primary btn-lg">{starting ? 'Starting...' : 'Find leads'}{!starting && <Icon name="arrow" className="w-4 h-4" />}</button>
-          <button type="button" disabled={query.trim().length < 3 || busy || starting || scanActive} onClick={() => void preview()} className="btn-ghost disabled:opacity-40">{busy ? 'Working out your profile...' : 'Review profile first'}</button>
+        <div className="flex flex-wrap gap-3 mt-4 items-center">
+          <button type="button" disabled={query.trim().length < 3 || busy || starting || scanActive} onClick={() => void preview()} className="btn-ghost btn-sm disabled:opacity-40">{busy ? 'Working out your profile...' : 'Review profile first'}</button>
           {scanActive && <span className="text-xs text-gray-500" data-reason="scan-active">{status === 'enriching' ? 'The scan is finishing (contacts and fit checks). You can start another when it ends.' : 'A scan is already running. You can start another when it ends.'}</span>}
         </div>
         {reuseIcp && !scanActive && <p className="text-xs text-[#555] mt-2" data-testid="reuse-profile">Find leads runs with your reviewed profile: {reuseIcp.summary.replace(/[.\s]+$/, '')}. Change the sentence, or use Review profile first, to build a new one.</p>}
+        </div>
       </form>
       {/* Everything that tunes a play lives in one drawer, closed by default: sources, imports, past source results and
           warm paths. The play box above stays the only thing asking for attention. */}
-      <details className="drawer card mb-6" data-testid="play-settings">
+      <details className={`drawer card ${jobId ? 'order-last' : 'mb-6'}`} data-testid="play-settings">
         <summary><span className="flex items-center gap-2"><Icon name="sliders" className="w-4 h-4" />Settings for this play</span><span className="ml-auto text-xs font-normal text-[var(--ink-3)] hidden sm:inline">Sources, imports, profile, warm paths</span></summary>
         <div className="px-5 pb-5 space-y-4 text-sm border-t border-[var(--line)] pt-4">
           {!jobId && <SourceAvailability core={core} social={socialSources(advanced)} />}
@@ -721,10 +726,10 @@ export default function LeadsClient() {
           {/* The stages are what the scan record can honestly tell apart: queued, running (search + read), finishing (contacts
               + fit checks), done. dazl has no per-source count, so "found" only shows saved leads. */}
           <Stepper steps={[
-            { label: 'Queued', state: status === 'pending' ? 'live' : 'done', note: status === 'pending' && createdAt ? `${Math.max(0, Math.floor((now - createdAt) / 60))} min ago` : undefined },
-            { label: 'Searching and reading', state: status === 'running' ? 'live' : 'todo', note: status === 'running' && startedAt ? `${Math.max(0, Math.floor((now - startedAt) / 60))} min so far` : undefined },
-            { label: 'Checking fit', state: 'todo' },
-            { label: leadsSoFar > 0 ? `Found ${leadsSoFar}` : 'Found', state: 'todo', note: leadsSoFar > 0 ? 'saved so far' : undefined },
+            { label: 'Read your profile and play', state: status === 'pending' ? 'live' : 'done', note: status === 'pending' ? `Queued${createdAt ? ` ${Math.max(0, Math.floor((now - createdAt) / 60))} min` : ''}` : undefined },
+            { label: 'Search and read sources', state: status === 'running' ? 'live' : 'todo', note: status === 'running' ? `Searching...${startedAt ? ` ${Math.max(0, Math.floor((now - startedAt) / 60))} min` : ''}` : undefined },
+            { label: 'Check fit and find contacts', state: 'todo' },
+            { label: leadsSoFar > 0 ? `Found ${leadsSoFar} lead${leadsSoFar === 1 ? '' : 's'}` : 'Found leads', state: 'todo', note: leadsSoFar > 0 ? 'so far' : undefined },
           ]} />
           <div className="flex flex-wrap items-center justify-between gap-3 text-sm border-t border-[var(--line)] pt-3">
             <div>
@@ -749,10 +754,10 @@ export default function LeadsClient() {
       {jobId && status === 'enriching' && (
         <div className="card p-5 mb-4 space-y-4" role="status" data-testid="scan-progress">
           <Stepper steps={[
-            { label: 'Queued', state: 'done' },
-            { label: 'Searching and reading', state: 'done' },
-            { label: 'Checking fit', state: 'live', note: 'finding contacts' },
-            { label: leadsSoFar > 0 ? `Found ${leadsSoFar}` : 'Found', state: 'todo' },
+            { label: 'Read your profile and play', state: 'done' },
+            { label: 'Search and read sources', state: 'done' },
+            { label: 'Check fit and find contacts', state: 'live', note: 'Checking...' },
+            { label: leadsSoFar > 0 ? `Found ${leadsSoFar} lead${leadsSoFar === 1 ? '' : 's'}` : 'Found leads', state: 'todo' },
           ]} />
           <div className="text-sm border-t border-[var(--line)] pt-3">
             <span className="font-semibold">Finishing - finding contacts and checking fit.</span>
@@ -795,30 +800,31 @@ export default function LeadsClient() {
       <VerificationFixture />
       {!jobId && pastJobs && pastJobs.length > 0 && (
         <section className="mb-6" aria-labelledby="your-plays">
-          <h2 id="your-plays" className="text-lg font-bold tracking-tight mb-3">Past scans<InfoTip>Pick one to review its leads. Nothing runs until you start a new scan above.</InfoTip></h2>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <h2 id="your-plays" className="text-xl font-bold tracking-tight mb-3">Past scans<InfoTip>Pick one to review its leads. Nothing runs until you start a new scan above.</InfoTip></h2>
+          <div className="grid gap-3 md:grid-cols-2">
           {pastJobs.map(j => {
             // What the scan record says it ended as (lib/scan/scan-outcome.ts), with its one next step beside it.
             const o = scanOutcome(j)
             const tone: Tone = o.kind === 'leads' ? 'mint' : o.kind === 'review_only' ? 'lav' : o.kind === 'running' || o.kind === 'enriching' ? 'peach' : o.kind === 'failed' ? 'pink' : 'grey'
             const pill = o.kind === 'leads' ? 'Leads ready' : o.kind === 'review_only' ? 'Needs review' : o.kind === 'running' ? 'Running' : o.kind === 'enriching' ? 'Finishing' : o.kind === 'failed' ? 'Failed' : o.kind === 'stopped' ? 'Stopped' : 'No leads'
             return (
-              <div key={j.id} className="card p-4 flex flex-col gap-2 hover:shadow-md transition-shadow" data-testid="past-scan" data-outcome={o.kind}>
-                <div className="flex items-center justify-between gap-2">
-                  <Pill tone={tone}>{pill}</Pill>
-                  <span className="text-xs text-[var(--ink-3)]">{new Date(j.created_at * 1000).toLocaleDateString()}</span>
+              <div key={j.id} className="card p-4 sm:p-5 flex flex-col" data-testid="past-scan" data-outcome={o.kind}>
+                <div className="flex items-start justify-between gap-3 mb-2">
+                  <a href={`/app/leads?job_id=${j.id}`} className="block min-w-0">
+                    <span className="text-xs text-[var(--ink-3)]">Play</span>
+                    <div className="font-semibold leading-snug line-clamp-2" data-testid="past-scan-title">
+                      {j.test_only && <span className="text-[var(--ink-3)]">test only · </span>}
+                      {j.query ?? (j.csv_domain ? `CSV import: ${j.csv_domain}` : j.business_name)}
+                    </div>
+                  </a>
+                  {o.kind === 'running' || o.kind === 'enriching' ? <span className="live-dot shrink-0 mt-1">{pill}</span> : <span className="shrink-0"><Pill tone={tone}>{pill}</Pill></span>}
                 </div>
-                <a href={`/app/leads?job_id=${j.id}`} className="block">
-                  <div className="font-semibold leading-snug line-clamp-2" data-testid="past-scan-title">
-                    {j.test_only && <span className="text-[var(--ink-3)]">test only · </span>}
-                    {j.query ?? (j.csv_domain ? `CSV import: ${j.csv_domain}` : j.business_name)}
-                  </div>
-                </a>
-                <div className="text-xs text-[var(--ink-2)]">
-                  <span className="font-semibold text-[var(--ink)]">{j.lead_count}</span> lead{j.lead_count === 1 ? '' : 's'} saved
-                  <span className="block mt-1 text-[var(--ink-3)]">{o.label}{o.detail && <InfoTip><span data-testid="outcome-detail">{o.detail}</span></InfoTip>}</span>
-                </div>
-                <div className="mt-auto pt-1 flex gap-2">
+                <dl className="mb-3">
+                  <div className="kv"><dt>Last run</dt><dd>{new Date(j.created_at * 1000).toLocaleDateString()}</dd></div>
+                  <div className="kv"><dt>Leads</dt><dd><span className="font-semibold">{j.lead_count}</span> saved</dd></div>
+                  <div className="kv"><dt>Result</dt><dd className="text-[var(--ink-2)]">{o.label}{o.detail && <InfoTip><span data-testid="outcome-detail">{o.detail}</span></InfoTip>}</dd></div>
+                </dl>
+                <div className="mt-auto flex flex-wrap gap-2">
                   <a className="btn-ghost btn-sm" href={`/app/leads?job_id=${j.id}`}>Open</a>
                   {o.next && <a className="btn-ghost btn-sm" href={o.next.href} data-testid="next-step">{o.next.text}</a>}
                 </div>
@@ -846,19 +852,19 @@ export default function LeadsClient() {
       {jobId && visibleLeads.length > 0 && <div className="seg mb-3" role="tablist" aria-label="Filter leads" data-testid="lead-tabs">
         {(['all', 'review', 'approved', 'rejected'] as const).map(t => <button key={t} type="button" role="tab" aria-selected={leadTab === t} onClick={() => setLeadTab(t)}>{{ all: 'All', review: 'To review', approved: 'Approved', rejected: 'Rejected' }[t]}</button>)}
       </div>}
-      <div className="grid gap-3">
+      <div className={visibleLeads.length ? 'card overflow-hidden divide-y divide-[var(--line)]' : ''}>
         {visibleLeads.length === 0 ? (
           // Loading, failed and status-error states have their own truthful copy above.
           status === 'loading' || status === 'failed' || statusError ? null
             : <p className="p-10 text-center text-gray-500 text-sm">{emptyLeadsMessage(status, 0, hiddenCount, quality?.needs_review) ?? ''}</p>
         ) : visibleLeads.filter(l => leadTab === 'all' ? true : leadTab === 'rejected' ? !!l.quarantined_at : leadTab === 'approved' ? !l.quarantined_at && !!(draftedLeads?.has(l.id) || approved[l.id]) : !l.quarantined_at && !(draftedLeads?.has(l.id) || approved[l.id])).map(l => (
-          <div key={l.id} className="card p-4 sm:p-5 text-sm">
+          <div key={l.id} className="p-4 sm:p-5 text-sm bg-[var(--panel)] hover:bg-white transition-colors">
             {(() => {
               const c = leadCardSummary(l, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')
               return <div data-testid="lead-card">
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-start gap-3 min-w-0">
-                  <Avatar name={c.company} size={44} />
+                  <Avatar name={c.company} size={40} />
                   <div className="min-w-0">
                     <div className="font-semibold text-base leading-tight">{l.company_domain ? <a className="hover:underline" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{c.company}</a> : c.company}{!!l.watch_new && <span className="ml-2"><Pill tone="mint">new</Pill></span>}{l.quarantined_at && <span className="ml-2"><Pill tone="pink">Rejected</Pill></span>}{!l.quarantined_at && (draftedLeads?.has(l.id) || approved[l.id]) && <span className="ml-2"><Pill tone="mint">Approved</Pill></span>}</div>
                     <div className="text-[var(--ink-2)] text-xs mt-0.5">{c.contact ?? 'No contact found yet'}</div>

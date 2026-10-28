@@ -77,7 +77,7 @@ async function shots(width, height, tag) {
     assert.equal(await page.getByText('This page could not be shown').count(), 0, `${name}: app error screen`)
     await page.screenshot({ path: path.join(process.env.SHOTS, `${name}-${tag}.png`), fullPage: true })
   }
-  await go('home', '/app', () => page.getByText('Your plays').first().waitFor({ timeout: 15000 }))
+  await go('home', '/app', () => page.getByTestId('journey').waitFor({ timeout: 15000 }).then(() => page.waitForLoadState('networkidle')))
   await go('plays', '/app/leads', () => page.getByLabel('Who do you want to reach').first().waitFor({ timeout: 15000 }))
   await go('lead-cards', `/app/leads?job_id=${JOB}&passive=1`, () => page.getByTestId('lead-card').first().waitFor({ timeout: 15000 }))
   await go('scan-progress', `/app/leads?job_id=${RUN}&passive=1`, () => page.getByText(/Scanning|Searching|Reading/).first().waitFor({ timeout: 15000 }))
