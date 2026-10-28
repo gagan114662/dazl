@@ -96,7 +96,7 @@ try {
   await page.getByText('Past scans').scrollIntoViewIfNeeded()
   await shot('history')
   if (!before) {
-    const rows = await page.getByTestId('past-scan').evaluateAll(els => els.map(e => ({ q: e.querySelector('.font-medium')?.textContent, kind: e.dataset.outcome, text: e.textContent, detail: e.querySelector('[data-testid=outcome-detail]')?.textContent ?? null, next: e.querySelector('[data-testid=next-step]')?.textContent ?? null, href: e.querySelector('[data-testid=next-step]')?.getAttribute('href') ?? null })))
+    const rows = await page.getByTestId('past-scan').evaluateAll(els => els.map(e => ({ q: e.querySelector('[data-testid=past-scan-title]')?.textContent.trim(), kind: e.dataset.outcome, text: e.textContent, detail: e.querySelector('[data-testid=outcome-detail]')?.textContent ?? null, next: e.querySelector('[data-testid=next-step]')?.textContent ?? null, href: e.querySelector('[data-testid=next-step]')?.getAttribute('href') ?? null })))
     for (const [k, [kind, label, next, href]] of Object.entries(EXPECT)) {
       if (k === 'enriching') continue
       const r = rows.find(x => x.q === ALL[k].query); assert.ok(r, k)

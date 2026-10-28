@@ -56,3 +56,78 @@ body { font-size: 16px; line-height: 1.5; }
 .tab { font-size: .72rem; padding: .35rem .8rem; border-radius: 4px; color: #555; }
 .tab[data-on="true"] { background: #111; color: #fff; }
 .badge-review { border-style: dashed; color: #555; border-color: #555; }
+
+/* ---------------------------------------------------------------------------------------------------------------
+   dazl app visual language (scoped to the signed-in app shell, .app-ui; the marketing pages keep their own look).
+   Warm cream canvas, deep plum ink, white rounded cards, pill buttons, pastel status pills.
+   --------------------------------------------------------------------------------------------------------------- */
+.app-ui {
+  --canvas: #fbf6f1;
+  --panel: #ffffff;
+  --ink: #2c002a;
+  --ink-2: #5e4a5c;   /* secondary text, ~8:1 on white */
+  --ink-3: #7a6878;   /* tertiary text, ~5:1 on white */
+  --line: rgba(44, 0, 42, 0.10);
+  --line-2: rgba(44, 0, 42, 0.18);
+  --peach: #ffbd7a; --peach-bg: #fff1e2;
+  --pink: #ff7aa0; --pink-bg: #ffe8ee;
+  --lav: #ba8bff; --lav-bg: #f2eaff;
+  --mint: #68cea7; --mint-bg: #e3f6ee;
+  --color-gray-300: #7a6878;
+  --color-gray-400: #6b5a69;
+  --color-gray-500: #5e4a5c;
+  background: var(--canvas);
+  color: var(--ink);
+}
+.app-ui main { background: var(--canvas); }
+.app-ui .card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 1px 2px rgba(44,0,42,.04), 0 8px 24px -12px rgba(44,0,42,.10); }
+.app-ui .card-hover:hover { border-color: var(--line-2); background: #fff; box-shadow: 0 1px 2px rgba(44,0,42,.06), 0 12px 28px -12px rgba(44,0,42,.18); }
+.app-ui .field { border-radius: 12px; border-color: var(--line-2); padding: .7rem .95rem; color: var(--ink); }
+.app-ui .field:focus { border-color: var(--ink); outline: 3px solid rgba(186,139,255,.35); outline-offset: 0; }
+.app-ui .btn-primary, .app-ui .btn-ghost, .app-ui .btn-accent {
+  font-family: inherit; text-transform: none; letter-spacing: 0; font-weight: 600; font-size: .85rem;
+  padding: .55rem 1.1rem; border-radius: 999px; line-height: 1.25;
+}
+.app-ui .btn-primary, .app-ui .btn-accent { background: var(--ink); color: #fff; }
+.app-ui .btn-primary:hover, .app-ui .btn-accent:hover { background: #4a1347; }
+.app-ui .btn-ghost { background: #fff; color: var(--ink); border-color: var(--line-2); }
+.app-ui .btn-ghost:hover { background: #fff; border-color: var(--ink); }
+.app-ui .btn-primary:focus-visible, .app-ui .btn-ghost:focus-visible { outline: 3px solid rgba(186,139,255,.55); outline-offset: 2px; }
+.app-ui .btn-lg { font-size: .95rem; padding: .8rem 1.5rem; }
+.app-ui .btn-sm { font-size: .78rem; padding: .35rem .8rem; }
+.app-ui .badge { border-radius: 999px; border-color: var(--line-2); color: var(--ink); }
+
+/* Pills: status and source chips. */
+.pill { display: inline-flex; align-items: center; gap: .35rem; font-size: .72rem; font-weight: 600; line-height: 1; padding: .3rem .6rem; border-radius: 999px; background: #f4eef1; color: var(--ink, #2c002a); white-space: nowrap; }
+.pill-mint { background: var(--mint-bg); color: #1f6b4f; }
+.pill-peach { background: var(--peach-bg); color: #8a4a12; }
+.pill-pink { background: var(--pink-bg); color: #9b1c45; }
+.pill-lav { background: var(--lav-bg); color: #5b2ca8; }
+.pill-plain { background: #fff; border: 1px solid var(--line-2); font-weight: 500; }
+.chip { display: inline-flex; align-items: center; gap: .4rem; text-align: left; font-size: .85rem; padding: .5rem .9rem; border-radius: 999px; background: #fff; border: 1px solid var(--line-2); color: var(--ink); transition: border-color .15s, background .15s; }
+.chip:hover { border-color: var(--ink); }
+.chip[aria-pressed="true"] { background: var(--lav-bg); border-color: var(--lav); }
+
+/* Tabs (segmented). */
+.seg { display: inline-flex; gap: .25rem; padding: .25rem; border-radius: 999px; background: #f1e9ec; }
+.seg button { font-size: .8rem; font-weight: 600; padding: .4rem .9rem; border-radius: 999px; color: var(--ink-2); }
+.seg button[aria-selected="true"] { background: #fff; color: var(--ink); box-shadow: 0 1px 2px rgba(44,0,42,.12); }
+
+/* (i) info tooltips: caveats live here. Opens on hover, keyboard focus or click. */
+.infotip { position: relative; display: inline-flex; vertical-align: middle; }
+.infotip > button { width: 1.1rem; height: 1.1rem; border-radius: 999px; border: 1px solid var(--line-2); color: var(--ink-2); font: 600 .65rem/1 ui-serif, Georgia, serif; font-style: italic; display: inline-flex; align-items: center; justify-content: center; background: #fff; }
+.infotip > button:hover, .infotip > button:focus-visible { border-color: var(--ink); color: var(--ink); outline: none; }
+.infotip > [role="tooltip"] { display: none; position: absolute; z-index: 40; left: 50%; top: calc(100% + .45rem); transform: translateX(-50%); width: min(22rem, 80vw); background: var(--ink); color: #fff; font-size: .78rem; font-weight: 400; font-style: normal; line-height: 1.45; text-align: left; padding: .7rem .85rem; border-radius: 12px; box-shadow: 0 12px 28px -8px rgba(44,0,42,.45); white-space: normal; }
+.infotip > [role="tooltip"] a { color: #fff; text-decoration: underline; }
+.infotip[data-open="true"] > [role="tooltip"], .infotip:hover > [role="tooltip"], .infotip:focus-within > [role="tooltip"] { display: block; }
+
+/* Drawer-style disclosure ("Settings for this play"). */
+.drawer > summary { list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: .75rem; padding: .9rem 1.1rem; font-weight: 600; font-size: .9rem; }
+.drawer > summary::-webkit-details-marker { display: none; }
+.drawer > summary::after { content: ""; width: .55rem; height: .55rem; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg); transition: transform .15s; margin-right: .25rem; }
+.drawer[open] > summary::after { transform: rotate(-135deg); }
+
+/* Live stepper. */
+.step-dot { width: 1.6rem; height: 1.6rem; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-size: .75rem; font-weight: 700; flex-shrink: 0; }
+@keyframes dazl-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(186,139,255,.55); } 50% { box-shadow: 0 0 0 6px rgba(186,139,255,0); } }
+.step-live { animation: dazl-pulse 1.6s ease-in-out infinite; }
