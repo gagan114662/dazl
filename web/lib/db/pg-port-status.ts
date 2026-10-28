@@ -66,6 +66,7 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/calcom/index.ts': 2,
   'lib/connectors/sitecrawl.ts': 0,
   'lib/connectors/store.ts': 1,
+  'lib/db/insertion-order.ts': 1,
   'lib/enrich/index.ts': 0,
   'lib/events/store.ts': 1,
   'lib/gmail/oauth.ts': 1,
@@ -142,11 +143,3 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/warm/connections.ts': 2,
   'lib/watch.ts': 2,
 }
-
-// Ported modules that break same-second ties with insertionOrder() (lib/db/order.ts): SQLite's rowid there, but only
-// the row id on Postgres, which is not insertion order. A cutover gap until each table has an insertion-order column.
-export const PG_INSERTION_ORDER_GAPS: string[] = [
-  'lib/outreach/campaign-detail.ts',
-  'lib/people/best-person.ts',
-  'lib/scan/store-db.ts',
-]

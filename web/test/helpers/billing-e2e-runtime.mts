@@ -3,19 +3,24 @@
 // subscription deleted -> Free -> a late, older event and an old subscription's cancellation change nothing. Webhook bodies are Stripe-shaped fixture events (test/fixtures/stripe/*.json) signed
 // with a test webhook secret exactly as Stripe signs them. Calls to api.stripe.com are answered by a stub that records
 // them, so nothing reaches Stripe and nothing is charged. Runs under tenant-route-loader.mjs (signed-in user stubbed).
+// The same scenario runs on SQLite and, with DAZL_TEST_PG_URL, on a fresh Postgres schema (the cutover target), where
+// the raw SQLite handle is a trap: getScanDb() throws, so every step has to go through the Db layer.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHmac, randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { NextRequest } from 'next/server'
+import Database from 'better-sqlite3'
 import { setScanDb, setUser } from './tenant-route-db.ts'
+import { PG_URL, freshSchema } from './pg-test.ts'
 
 process.env.STRIPE_SECRET_KEY = 'sk_test_fixture'
 process.env.STRIPE_PRICE_PRO = 'price_fixture_pro'
 process.env.STRIPE_WEBHOOK_SECRET = 'whsec_fixture_' + randomBytes(8).toString('hex')
 process.env.PUBLIC_BASE_URL = 'https://dazl.test'
 
-const { getDb } = await import('../../lib/db/client.ts') // the real store the billing routes use
+const { getDb, setDb, pgDb } = await import('../../lib/db/client.ts') // the real store the billing routes use
+const { runPgMigrations } = await import('../../lib/db/migrate-pg.ts')
 const { getAuthDb } = await import('../../lib/auth-db.ts')
 const checkout = await import('../../app/api/billing/checkout/route.ts')
 const portal = await import('../../app/api/billing/portal/route.ts')
@@ -51,9 +56,8 @@ const json = (path: string, body: unknown = {}) => new NextRequest(`https://dazl
   method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json', host: 'dazl.test', origin: 'https://dazl.test' } })
 const plan = async () => (await (await usage.GET(new NextRequest('https://dazl.test/api/usage')))!.json()) as { plan: string; scan_limit: number | null }
 
-test('Stripe test mode end to end: checkout, signed webhook, Pro, portal, cancel, downgrade to Free', async () => {
-  await getDb() // opens and migrates the store at DB_PATH (a throwaway file under the test fence)
-  setScanDb(getAuthDb()) // /api/usage (getScanDb) reads the same store the billing routes write
+async function scenario(engine: 'sqlite' | 'pg') {
+  stripeCalls.length = 0; statusReads.length = 0; subscriptionNow = 'active'
   const T = 'tenant' + randomBytes(6).toString('hex')
   const other = 'other' + randomBytes(6).toString('hex')
   setUser({ id: T, business_name: 'Acme' } as never)
@@ -168,5 +172,22 @@ test('Stripe test mode end to end: checkout, signed webhook, Pro, portal, cancel
   subscriptionNow = 'active'
   assert.deepEqual(await (await deliver(unpaid2, sign(unpaid2))).json(), { result: 'reconciled' }) // Stripe's redelivery
   assert.equal((await plan()).plan, 'pro')
-  console.log('STRIPE_E2E', stripeCalls.length)
+  console.log('STRIPE_E2E', engine, stripeCalls.length)
+}
+
+test('Stripe test mode end to end on SQLite: checkout, signed webhook, Pro, portal, cancel, downgrade to Free', async () => {
+  await getDb() // opens and migrates the store at DB_PATH (a throwaway file under the test fence)
+  setScanDb(getAuthDb()) // routes still on the raw handle read the same store the billing routes write
+  await scenario('sqlite')
+})
+
+test('Stripe test mode end to end on Postgres: the same steps, the same answers, no SQLite', { skip: PG_URL ? false : 'DAZL_TEST_PG_URL not set' }, async () => {
+  const s = await freshSchema()
+  const pg = pgDb({ connectionString: PG_URL!, searchPath: s.schema, max: 3 })
+  try {
+    await runPgMigrations(pg.pool)
+    setScanDb(null as unknown as Database.Database) // getScanDb() now throws 'test database unset'
+    setDb(pg)
+    await scenario('pg')
+  } finally { await pg.close(); await s.drop() }
 })

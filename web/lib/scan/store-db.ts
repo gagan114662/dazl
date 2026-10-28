@@ -4,16 +4,14 @@
 // side by side on SQLite and runs these on Postgres, with two tenants.
 // Differences from store.ts, all engine-neutral:
 //   - times come from the caller's clock, not strftime('now'), so the SQL runs on both engines;
-//   - same-second ties order by insertionOrder() (lib/db/order.ts): rowid on SQLite, so the order is exactly
-//     store.ts's (an explicit rowid where store.ts relied on SQLite's implicit insertion order); id on Postgres,
-//     which has no rowid (a tracked cutover gap, PG_INSERTION_ORDER_GAPS);
+//   - same-second ties order by insert_seq (lib/db/insertion-order.ts), the insertion order both engines keep: on
+//     SQLite it is the order rowid gave, so it lists exactly as store.ts does;
 //   - getJob does not run the stale reaper as a side effect: reapStaleJobs is its own call.
 // The status-transition and running-job triggers stay in the schema on both engines; nothing here bypasses them.
 import { randomBytes } from 'node:crypto'
 import type { Db, Param, TxBody } from '../db/client.ts'
 import { CANCEL_HOLD_S, MAX_ATTEMPTS, STALE_RUNNING_S, type QueryInput, type ScanInput, type CancelResult, type JobSummary } from './store.ts'
 import { ENRICH_STALE_S } from './enrichment.ts'
-import { insertionOrder } from '../db/order.ts'
 
 const nowS = () => Math.floor(Date.now() / 1000)
 
@@ -34,7 +32,7 @@ export async function createQueryJob(db: Db, userId: string, input: QueryInput, 
 }
 
 export function latestQueryJob(db: Db, userId: string): Promise<{ query: string | null; icp: string | null; icp_inferred: number | null } | undefined> {
-  return db.get(`SELECT query, icp, icp_inferred FROM scan_jobs WHERE user_id = ? AND query IS NOT NULL ORDER BY created_at DESC, ${insertionOrder(db.kind)} DESC LIMIT 1`, [userId])
+  return db.get(`SELECT query, icp, icp_inferred FROM scan_jobs WHERE user_id = ? AND query IS NOT NULL ORDER BY created_at DESC, insert_seq DESC LIMIT 1`, [userId])
 }
 
 // Jobs stuck in 'running' past the timeout go back to 'pending', or to 'failed' ('timeout') after MAX_ATTEMPTS.
@@ -86,7 +84,7 @@ export function listLeads(db: Db, userId: string, jobId: string, limit = 200, in
     `SELECT ${LEAD_COLUMNS}
      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
      WHERE j.id = ? AND j.user_id = ? ${includeHidden ? '' : 'AND (l.fit IS NULL OR l.fit > 1)'}
-     ORDER BY (l.fit IS NULL), l.fit DESC, l.action DESC, (l.confidence IS NULL), l.confidence DESC, l.score DESC, l.created_at DESC, ${insertionOrder(db.kind, 'l')} LIMIT ?`,
+     ORDER BY (l.fit IS NULL), l.fit DESC, l.action DESC, (l.confidence IS NULL), l.confidence DESC, l.score DESC, l.created_at DESC, l.insert_seq LIMIT ?`,
     'l.confidence, l.review_reason,', `${HELD_CONF}, ${HELD_REVIEW},`, [jobId, userId, Math.min(limit, 500)])
 }
 
@@ -95,7 +93,7 @@ export async function countHiddenLeads(db: Db, userId: string, jobId: string): P
 }
 
 export async function latestJobId(db: Db, userId: string): Promise<string | undefined> {
-  return (await db.get<{ id: string }>(`SELECT id FROM scan_jobs WHERE user_id = ? ORDER BY created_at DESC, ${insertionOrder(db.kind)} DESC LIMIT 1`, [userId]))?.id
+  return (await db.get<{ id: string }>(`SELECT id FROM scan_jobs WHERE user_id = ? ORDER BY created_at DESC, insert_seq DESC LIMIT 1`, [userId]))?.id
 }
 
 export function listJobs(db: Db, userId: string, limit = 20): Promise<JobSummary[]> {
@@ -104,7 +102,7 @@ export function listJobs(db: Db, userId: string, limit = 20): Promise<JobSummary
             j.candidates, j.verified, j.needs_review, j.dropped, j.enrich_started_at, j.enrich_finished_at,
             (SELECT count(*) FROM leads l WHERE l.scan_job_id = j.id) AS lead_count
      FROM scan_jobs j WHERE j.user_id = ?
-     ORDER BY j.created_at DESC, ${insertionOrder(db.kind, 'j')} DESC LIMIT ?`, [userId, limit])
+     ORDER BY j.created_at DESC, j.insert_seq DESC LIMIT ?`, [userId, limit])
 }
 
 // CSV export: the tenant's visible leads (no hidden fit<=1, no quarantined), one job or all, newest first. Fixture
@@ -117,7 +115,7 @@ export function exportLeads(db: Db, userId: string, jobId?: string, limit = 5000
      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
      WHERE j.user_id = ? ${jobId ? 'AND j.id = ?' : ''} AND (l.fit IS NULL OR l.fit > 1) AND l.quarantined_at IS NULL
      ${includeFixtures ? '' : "AND (l.source_kind IS NULL OR l.source_kind != 'test')"}
-     ORDER BY l.created_at DESC, ${insertionOrder(db.kind, 'l')} LIMIT ?`,
+     ORDER BY l.created_at DESC, l.insert_seq LIMIT ?`,
     'l.confidence, l.event_date, l.date_status, l.review_reason,', `${HELD_CONF}, l.event_date, l.date_status, ${HELD_REVIEW},`, jobId ? [userId, jobId, limit] : [userId, limit])
 }
 

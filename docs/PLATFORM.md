@@ -127,7 +127,7 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
   - Modules that keep a sync version for callers still on the raw handle (the scan runner, the send gate, other routes) gained async twins that share their SQL and logic: `auth-db.ts`, `plans.ts`, `llm/key-store.ts`, `scan/trial.ts`, `scan/run-report.ts`, `scan/quarantine.ts`, `search/news-attribution.ts`.
   - **Behaviour on SQLite is unchanged:**
     - Rewritten statements: `strftime('now')` became the caller's clock (the same epoch second); a `sqlite_master` table check became a zero-row probe of the table.
-    - Ordering: `rowid` tie-breaks became `insertionOrder()` (`lib/db/order.ts`), which is still `rowid` on SQLite. Two places that relied on SQLite's implicit insertion order now say `rowid` explicitly: export rows, and enrichments for Best Person.
+    - Ordering: `rowid` tie-breaks became `insert_seq` (see below), which on SQLite is the order `rowid` gave. Two places that relied on SQLite's implicit insertion order now say `rowid` explicitly: export rows, and enrichments for Best Person.
     - No `INSERT OR IGNORE` was in this batch. The one on the core path that can swallow NOT NULL/CHECK failures is the runner's lead insert (`lib/scan/runner.ts`); `store-db.ts`'s `finishJob` already does not.
   - **Tests:** `test/helpers/pg-port-routes-runtime.mts` runs the real handlers as two tenants:
     - On SQLite, compared with the raw store they replaced, including same-second ties.
@@ -137,9 +137,18 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
     - `GET /api/leads`: its read contract spans sequences, connectors, events, priorities and lookalikes, plus the currentness gate's storage.
     - The campaign list: it evaluates the draft, approve and send gates per draft, so those gates' storage moves first.
     - Starting a scan and scan status: they call the runner, which is yield-owned.
-- **Postgres insertion-order gap:** Postgres has no `rowid`, so on Postgres same-second ties order by id, not by insertion order.
-  - `PG_INSERTION_ORDER_GAPS` in `lib/db/pg-port-status.ts` lists the modules affected. `test/pg-sql-audit.test.ts` keeps the list exact, and the parity runtime pins the Postgres order.
-  - Before cutover, each of these tables needs a real insertion-order column: `scan_jobs`, `leads`, `outreach_messages`, `lead_enrichments`.
+- **Insertion order on both engines (`insert_seq`):**
+  - What it fixes: SQLite's `rowid` gave `scan_jobs`, `leads`, `outreach_messages` and `lead_enrichments` an implicit insertion order, which same-second ties relied on. Postgres has none.
+  - `insert_seq` makes that order a column on both engines:
+    - **SQLite** (`lib/db/insertion-order.ts`, called by each table's own migration (`migrateScan`, `migrateOutreach`, `migrateConnectors`) and once more at the end of `migrateAllSqlite` and `getScanDb`): existing rows are backfilled from `rowid`. An AFTER INSERT trigger then gives each new row `max(insert_seq) + 1`. Using max rather than `rowid` keeps the order increasing after a copy back from Postgres. A row that brings its own value keeps it.
+    - **Postgres** (`0010_insertion_order.sql`): a sequence default. `translate-schema.ts` maps the SQLite trigger to it, so the drift test holds.
+  - The ported queries (`store-db.ts`, `campaign-detail.ts`, `best-person.ts`) order ties by `insert_seq` on both engines, and the insertion-order gap list is gone.
+  - A `rowid` left in `Db`-layer SQL fails the audit, because Postgres rejects it in `PREPARE`.
+  - `copyStore` moves every column sequence past the copied values: `insert_seq`, and the identity ids of `INTEGER PRIMARY KEY` tables. Before this, the first insert after a copy would have reused an id.
+  - **Tests:**
+    - `test/insertion-order.test.ts`: on an existing store, the migration backfills from `rowid`, re-runs change nothing, and new and copied rows order correctly.
+    - The parity runtime: ties seeded out of id order come back identically on SQLite and Postgres.
+    - `test/copy-store.test.ts`: the sequences continue past the copied values.
 - **Still on SQLite:** the 135 modules in `lib/db/pg-port-status.ts`, down from 149 before batch 1 (the audit's 148 plus `lib/scan/sales-hiring-gate.ts` from #276). Postgres rejects 83 of their statements, down from 87. Production keeps running on SQLite until that list is empty and the cutover below is authorized.
 
 ## Tables (73 created in code)
@@ -237,7 +246,7 @@ These steps are development work behind flags and tests. Merging them does not c
    - The ported modules (sessions, sign-in, Google sign-in, billing) are tested with two tenants on SQLite and PG.
    - Route-level tests run on SQLite until each area is ported to `Db`.
 5. **Stripe e2e (test mode).** Step 5:
-   - `test/billing-e2e.test.ts` drives the real routes: checkout, signed webhook, Pro, portal, cancel at period end (still Pro), subscription deleted, Free.
+   - `test/billing-e2e.test.ts` drives the real routes: checkout, signed webhook, Pro, portal, cancel at period end (still Pro), subscription deleted, Free. The same scenario runs on SQLite and on Postgres (the cutover target); on Postgres the raw SQLite handle is a trap, so every step goes through `Db`.
    - The webhook events are Stripe-shaped fixtures (`test/fixtures/stripe/`) signed with a test secret, the same way Stripe signs them.
    - Unsigned, wrongly signed, stale and tampered deliveries are refused. A replay is a duplicate, and an event for another tenant's customer changes nothing.
    - `api.stripe.com` is stubbed: no request leaves the test, and nothing is charged.
@@ -311,7 +320,7 @@ The quote, identity and date gates in the scan pipeline do not change in any ste
 
 Nothing here has been run against production. The tool and the steps are ready for a rehearsal; the switch itself is Instinct's call.
 
-**Gate.** `lib/db/pg-port-status.ts` must be empty: both `RAW_SQLITE_MODULES` and `PG_INSERTION_ORDER_GAPS`. A module on the raw SQLite handle keeps reading and writing the SQLite file whatever `DATABASE_URL` says. With the list non-empty, a cutover would split the data between two stores. `scripts/pg-cutover.mts` refuses to copy into Postgres while the list is non-empty, unless `--rehearsal` is passed.
+**Gate.** `lib/db/pg-port-status.ts` must be empty. A module on the raw SQLite handle keeps reading and writing the SQLite file whatever `DATABASE_URL` says. With the list non-empty, a cutover would split the data between two stores. `scripts/pg-cutover.mts` refuses to copy into Postgres while the list is non-empty, unless `--rehearsal` is passed.
 
 **Tool.** `scripts/pg-cutover.mts` (library: `lib/db/copy-store.ts`, tests: `test/copy-store.test.ts`):
 - `copy --from <app.db | postgres://…> --to <postgres://… | new.db>` copies every table into an empty store, in one target transaction:
