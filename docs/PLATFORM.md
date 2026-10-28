@@ -158,6 +158,23 @@ These steps are development work behind flags and tests. Merging them does not c
    - The webhook events are Stripe-shaped fixtures (`test/fixtures/stripe/`) signed with a test secret, the same way Stripe signs them.
    - Unsigned, wrongly signed, stale and tampered deliveries are refused. A replay is a duplicate, and an event for another tenant's customer changes nothing.
    - `api.stripe.com` is stubbed: no request leaves the test, and nothing is charged.
+   - **Event order (step 5b):** Stripe does not deliver events in order, and `created` is in whole seconds.
+     - An ended subscription (deleted, `canceled`, `incomplete_expired`) is recorded in `stripe_ended_subscriptions` and never upgrades the tenant again, whatever the timestamps. A resubscribe is a new subscription id.
+     - The end of the tenant's current subscription always downgrades. The end of an older subscription changes nothing.
+     - Otherwise `tenant_plans.stripe_event_at` (the `created` time of the last event that set the plan) makes an older event `stale`.
+     - A same-second tie between two non-ending states of the current subscription (`active` vs `unpaid`/`past_due`) that would change the plan is settled by the subscription's current status at Stripe, never by delivery order. That status comes from a read-only `GET /v1/subscriptions/:id` made before the transaction.
+       - Status policy:
+         - Pro: `active`, `trialing`, `past_due`.
+         - Free, ended for good: `canceled`, `incomplete_expired`.
+         - Free, can recover: `unpaid`, `incomplete`, `paused`.
+         - Anything else is unknown and never proof of Pro.
+       - Without a usable answer (the read failed, Stripe returned an unknown status, or the tie appeared only under the row lock), the tie goes to the restrictive state, Free, at once. `tenant_plans.stripe_reconcile_at` records the unsettled second, and the event is left unprocessed: the webhook answers 503 (`held`).
+       - Stripe's redelivery is then settled by the read, whatever the plan reads meanwhile.
+       - A delayed `active` never grants Pro without Stripe confirming it.
+       - Invoice events (`invoice.paid`, `invoice.payment_failed`) are not handled, and nothing relies on them.
+     - The plan row is locked (`FOR UPDATE` on PG) before the checks, so concurrent deliveries follow these rules, not commit order.
+     - PG: `0007_stripe_event_order.sql`.
+     - Covered by `test/billing-order.test.ts` on both engines: same second, opposite order, resubscribe, ties settled from Stripe's answer, a failed read retried, and concurrent deliveries. It is also covered by signed deliveries through the real webhook in `billing-e2e`, including a tie read from the stubbed Stripe API.
    - **Pricing is inconsistent. This is for the owner to decide, not for code:**
      - The landing page Free card says "3 trial scans, then your own AI key". It does not mention the 50-scans-a-month cap the code enforces (`PLAN_LIMITS.free`).
      - The sign-up page says "Free plan: 50 scans a month with your own AI key. New accounts may get 3 trial scans first".
