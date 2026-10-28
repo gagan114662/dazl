@@ -108,3 +108,15 @@ test('POST /api/scan refuses a new scan while one is pending, running or ENRICHI
   db3.prepare("UPDATE scan_jobs SET status = 'running', attempts = 1 WHERE id = ?").run(id3); db3.prepare("UPDATE scan_jobs SET status = 'failed', error = 'key_rejected' WHERE id = ?").run(id3)
   assert.equal((await post({ query: Q })).status, 202)
 })
+
+test('POST /api/scan stores a reviewed profile exactly as sent (icp_inferred 0) and a sentence-only request stores none (the server infers later)', async () => {
+  const REVIEWED = { summary: 'Seed-funded London B2B SaaS startups that are also hiring sales', who: ['Founder', 'Co-founder', 'CEO'], industries: ['B2B SaaS'], sizes: ['10-50 employees'], where: ['London, UK'], signals: ['announced seed funding within the past 90 days AND currently hiring sales staff'], exclude: ['agencies', 'recruiters'], country: 'GB', language: 'en', window_days: 90 }
+  const db = setup(); as(db)
+  const r = await post({ query: Q, icp: REVIEWED }); assert.equal(r.status, 202)
+  const row = db.prepare('SELECT icp, icp_inferred FROM scan_jobs').get() as { icp: string; icp_inferred: number }
+  assert.deepEqual(JSON.parse(row.icp), REVIEWED, 'stored as reviewed: nothing added, widened or split'); assert.equal(row.icp_inferred, 0)
+  const db2 = setup(); as(db2)
+  assert.equal((await post({ query: Q })).status, 202)
+  const none = db2.prepare('SELECT icp, icp_inferred FROM scan_jobs').get() as { icp: string | null; icp_inferred: number | null }
+  assert.deepEqual([none.icp, none.icp_inferred], [null, null])
+})

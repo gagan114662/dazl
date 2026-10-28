@@ -83,7 +83,8 @@ export default function Readiness() {
         : plays.length === 0 ? null
         : <ul className="card divide-y divide-black/10" aria-label="Your plays">
           {plays.map(p => <li key={p.id} className="p-4 text-sm flex items-center justify-between gap-3">
-            <span className="min-w-0 truncate" title={p.query}>{p.query}</span>
+            {/* The play opens its campaign page (play, leads, drafts and sends together); the outcome opens its leads. */}
+            <Link className="min-w-0 truncate hover:underline" title={`${p.query} - campaign page`} href={`/app/campaigns/${p.id}`} data-testid="play-campaign-link">{p.query}</Link>
             <Link className="underline shrink-0" href={`/app/leads?job_id=${p.id}`}>{p.outcome}</Link>
           </li>)}
         </ul>}

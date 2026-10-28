@@ -9,7 +9,7 @@ import { migratePlans } from '../../lib/plans.ts'
 import { migrateConnectors } from '../../lib/connectors/store.ts'
 import { migrateEvents } from '../../lib/events/store.ts'
 import type { Provider } from '../../lib/llm/provider.ts'
-import { inferIcp } from '../../lib/scan/icp.ts'
+import { inferIcp, normalizeIcp } from '../../lib/scan/icp.ts'
 import { claimKeyedJob, runJob } from '../../lib/scan/runner.ts'
 import { resetTinyfishState } from '../../lib/search/tinyfish.ts'
 import { runReportFor } from '../../lib/scan/run-report.ts'
@@ -32,6 +32,8 @@ export interface Fixture {
   own: Record<string, { title: string; text: string; published?: string } | 'blocked' | 'js_required' | 'not_found'>   // SYNTHETIC verifier own-fetch results
   extraction: Cand[]                       // SYNTHETIC extraction reply (real parseLeads runs on it)
   onVerify?: (db: Database.Database, jobId: string) => void   // called once, while the verifier is fetching (the scan is still running)
+
+  reviewedIcp?: object                     // a profile the USER reviewed: stored with the job exactly as POST /api/scan stores it (normalizeIcp, icp_inferred = 0); no inference is run
   deps?: Record<string, unknown>           // extra runJob deps (e.g. memory exclusions)
 }
 export async function runFixture(f: Fixture) {
@@ -40,7 +42,7 @@ export async function runFixture(f: Fixture) {
   saveKey(db, 'A', 'anthropic', KEY, master)
   db.exec('CREATE TABLE IF NOT EXISTS users (id TEXT, business_name TEXT)'); db.prepare('INSERT INTO users VALUES (?, ?)').run('A', 'Acme')
   const icpProvider = { complete: async () => JSON.stringify(f.modelIcp) } as unknown as Provider
-  const { icp } = await inferIcp(icpProvider, KEY, f.request)
+  const icp = f.reviewedIcp ? normalizeIcp(f.reviewedIcp)! : (await inferIcp(icpProvider, KEY, f.request)).icp
   createQueryJob(db, 'A', { query: f.request, icp: JSON.stringify(icp) })
   const job = claimKeyedJob(db)!
   const calls = { afters: [] as (string | null)[], searches: [] as string[], tfFetchBatches: [] as string[][], ownFetch: [] as string[], prompts: [] as string[] }
