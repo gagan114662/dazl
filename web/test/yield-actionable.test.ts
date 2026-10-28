@@ -4,6 +4,12 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
 
+// CI runs with SITECRAWL_ENABLED=0 (npm test). These fixtures need their STUBBED crawl (an injected crawlGet, no network) to establish the lead's domain, so the crawl is
+// switched on for the duration of one fixture run only and restored; the domain gate itself is unchanged.
+async function runCrawl(f: Fixture) {
+  const saved = process.env.SITECRAWL_ENABLED; process.env.SITECRAWL_ENABLED = '1'
+  try { return await runFixture(f) } finally { if (saved === undefined) delete process.env.SITECRAWL_ENABLED; else process.env.SITECRAWL_ENABLED = saved }
+}
 const REQUEST = 'Find London UK B2B SaaS startups with 10-50 employees that announced seed funding within the past 90 days and are hiring sales staff. Exclude agencies and recruiters. Include founder contacts and dated evidence.'
 const ICP = { summary: 'London seed-funded B2B SaaS hiring sales', who: ['Founder'], industries: ['SaaS'], sizes: ['10-50'], where: ['London, UK'], signals: ['announced seed funding', 'hiring sales staff'], exclude: ['agencies', 'recruiters'], country: 'GB', language: 'en', window_days: 90 }
 const NEWS = 'https://sifted.example/brightloop-raises-seed'
@@ -37,12 +43,12 @@ const TEAM = pad('<html><body><p>Brightloop is a London software company buildin
 const CONTACT = '<html><body><p>Say hello to the team at Brightloop in London.</p><a href="mailto:hello@brightloop.io">hello@brightloop.io</a></body></html>'
 const CAREERS = '<html><body><h1>Careers at Brightloop</h1><p>Join Brightloop in London.</p><h2>Open roles</h2><ul><li>Backend Engineer</li><li><a href="/careers/ae">Account Executive - London</a> <a href="/careers/ae">Apply</a></li></ul></body></html>'
 
-const lead = (r: Awaited<ReturnType<typeof runFixture>>) => r.db.prepare("SELECT id, review_reason, confidence, company_domain FROM leads").get() as { id: string; review_reason: string | null; confidence: number | null; company_domain: string | null } | undefined
-const report = (r: Awaited<ReturnType<typeof runFixture>>) => JSON.parse((r.db.prepare('SELECT report FROM scan_run_report ORDER BY attempt DESC LIMIT 1').get() as { report: string }).report) as { yield: { source_checked: number; verified: number; actionable: number; missing: Record<string, number> }; enrichment: { stage: string; status: string; reason: string | null }[]; funnel: { verified: number; needs_review: number } }
-const actionRow = (r: Awaited<ReturnType<typeof runFixture>>) => (r.db.prepare("SELECT value, label FROM lead_enrichments WHERE connector = 'scan:actionable'").get() as { value: string; label: string | null } | undefined)
+const lead = (r: Awaited<ReturnType<typeof runCrawl>>) => r.db.prepare("SELECT id, review_reason, confidence, company_domain FROM leads").get() as { id: string; review_reason: string | null; confidence: number | null; company_domain: string | null } | undefined
+const report = (r: Awaited<ReturnType<typeof runCrawl>>) => JSON.parse((r.db.prepare('SELECT report FROM scan_run_report ORDER BY attempt DESC LIMIT 1').get() as { report: string }).report) as { yield: { source_checked: number; verified: number; actionable: number; missing: Record<string, number> }; enrichment: { stage: string; status: string; reason: string | null }[]; funnel: { verified: number; needs_review: number } }
+const actionRow = (r: Awaited<ReturnType<typeof runCrawl>>) => (r.db.prepare("SELECT value, label FROM lead_enrichments WHERE connector = 'scan:actionable'").get() as { value: string; label: string | null } | undefined)
 
 test('POSITIVE exact-ICP fixture: seed evidence + an open sales role on the own careers page + the real domain + a listed founder with a published contact = ACTIONABLE; report and card agree', async () => {
-  const r = await runFixture(fixture({ site: { home: HOME, team: TEAM, careers: CAREERS, contact: CONTACT } }))
+  const r = await runCrawl(fixture({ site: { home: HOME, team: TEAM, careers: CAREERS, contact: CONTACT } }))
   const l = lead(r)!
   assert.equal(l.company_domain, 'brightloop.io'); assert.equal(l.review_reason, null); assert.ok(l.confidence !== null)
   const vac = r.db.prepare("SELECT value, label, source_url, confidence FROM lead_enrichments WHERE connector = 'signals:careers-gtm'").get() as { value: string; label: string; source_url: string; confidence: number }
@@ -57,7 +63,7 @@ test('POSITIVE exact-ICP fixture: seed evidence + an open sales role on the own 
 
 test('OBSERO-SHAPED negative: seed article that talks about engineering growth and GTM plans, no company site linked, no vacancy, no contact -> held, zero actionable, and the trace says what ran', async () => {
   const quote = 'Brightloop, a London B2B SaaS startup, raised a 1m EUR seed round to double engineering and accelerate its go-to-market'
-  const r = await runFixture(fixture({ quote, articleLinks: null, site: null }))
+  const r = await runCrawl(fixture({ quote, articleLinks: null, site: null }))
   const l = lead(r)!
   assert.equal(l.review_reason, 'no_sales_hiring_evidence', JSON.stringify(l)); assert.equal(l.confidence, null); assert.equal(l.company_domain, null)
   const rep = report(r)
@@ -70,13 +76,13 @@ test('OBSERO-SHAPED negative: seed article that talks about engineering growth a
 test('negative controls that DO get a real domain: no vacancy / closed / engineering-only careers page -> held; vacancy but no listed founder or only a support inbox -> verified but NOT actionable (missing parts named)', async () => {
   const site = (careers: string, team = TEAM, contact = CONTACT): Site => ({ home: HOME, team, careers, contact })
   for (const [name, careers] of [['engineering only', '<html><body><h1>Careers at Brightloop</h1><p>Join Brightloop in London.</p><h2>Open roles</h2><li>Backend Engineer</li> Apply</body></html>'], ['closed', '<html><body><h2>Careers at Brightloop</h2><p>There are no open positions right now.</p></body></html>'], ['GTM plans, no role', '<html><body><p>Brightloop in London is accelerating our go-to-market and doubling engineering.</p> Apply</body></html>']] as const) {
-    const r = await runFixture(fixture({ site: site(careers) }))
+    const r = await runCrawl(fixture({ site: site(careers) }))
     assert.equal(lead(r)!.review_reason, 'no_sales_hiring_evidence', name); assert.equal(report(r).yield.actionable, 0, name)
   }
-  const noPerson = await runFixture(fixture({ site: site(CAREERS, pad('<html><body><p>Brightloop is a London software company.</p>')) }))
+  const noPerson = await runCrawl(fixture({ site: site(CAREERS, pad('<html><body><p>Brightloop is a London software company.</p>')) }))
   assert.equal(lead(noPerson)!.review_reason, null); let rep = report(noPerson)
   assert.deepEqual([rep.yield.verified, rep.yield.actionable], [1, 0]); assert.equal(rep.yield.missing.no_contact_person, 1); assert.match(actionRow(noPerson)!.value, /^Not actionable yet: .*no contact person/)
-  const support = await runFixture(fixture({ site: site(CAREERS, TEAM, '<html><body><p>Brightloop support in London.</p><a href="mailto:support@brightloop.io">support@brightloop.io</a> <a href="mailto:careers@brightloop.io">careers@brightloop.io</a></body></html>') }))
+  const support = await runCrawl(fixture({ site: site(CAREERS, TEAM, '<html><body><p>Brightloop support in London.</p><a href="mailto:support@brightloop.io">support@brightloop.io</a> <a href="mailto:careers@brightloop.io">careers@brightloop.io</a></body></html>') }))
   rep = report(support); assert.deepEqual([rep.yield.verified, rep.yield.actionable], [1, 0]); assert.equal(rep.yield.missing.no_published_contact, 1)
   assert.match(actionRow(support)!.value, /no published contact/)
 })
