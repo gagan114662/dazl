@@ -12,6 +12,8 @@ type Thread = {
 }
 type State = { queries: string[]; threads: Thread[]; platforms: { reddit: boolean; x: boolean }; consent: boolean; has_key: boolean }
 
+const without = (o: Record<string, string>, k: string) => { const c = { ...o }; delete c[k]; return c }
+
 export default function SocialClient() {
   const [state, setState] = useState<State | null>(null)
   const [newQuery, setNewQuery] = useState('')
@@ -20,6 +22,7 @@ export default function SocialClient() {
   const [copied, setCopied] = useState('')
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [editing, setEditing] = useState<string | null>(null)
+  const [cardErr, setCardErr] = useState<Record<string, string>>({})
 
   async function load() { const r = await fetch('/api/replies'); if (r.ok) setState(await r.json()) }
   useEffect(() => { void load() }, [])
@@ -57,17 +60,24 @@ export default function SocialClient() {
     void load()
   }
   async function draft(id: string) {
-    setBusy(id); setMsg('')
-    try { await post({ action: 'draft' }, `/api/replies/${id}`) } catch (e) { setMsg((e as Error).message) }
+    setBusy(id); setCardErr(c => ({ ...c, [id]: '' }))
+    try {
+      await post({ action: 'draft' }, `/api/replies/${id}`)
+      setEdits(e => without(e, id)) // the editor shows the new server draft, not stale text
+    } catch (e) { setCardErr(c => ({ ...c, [id]: (e as Error).message })) }
     setBusy('')
     void load()
   }
+  // Save keeps the editor open until the server confirms; a failure is shown on that card, never above the list.
   async function saveEdit(id: string) {
-    try { await post({ action: 'save', draft: edits[id] ?? '' }, `/api/replies/${id}`) } catch (e) { setMsg((e as Error).message) }
+    setCardErr(c => ({ ...c, [id]: '' }))
+    try { await post({ action: 'save', draft: edits[id] ?? '' }, `/api/replies/${id}`) } catch (e) { setCardErr(c => ({ ...c, [id]: `Not saved: ${(e as Error).message}. Your text is still here; try Save again.` })); return }
+    setEditing(null)
+    setEdits(e => without(e, id))
     void load()
   }
   async function copyAndOpen(t: Thread) {
-    const text = edits[t.id] ?? t.draft ?? ''
+    const text = t.draft ?? '' // the server-confirmed draft, never unsaved editor text
     try { await navigator.clipboard.writeText(text) } catch { setMsg('Copy failed - select the text and copy it by hand.') }
     window.open(t.url, '_blank', 'noopener,noreferrer')
     setCopied(t.id); setTimeout(() => setCopied(''), 3000)
@@ -154,12 +164,13 @@ export default function SocialClient() {
             ? <div className="mt-3">
               <textarea className="field w-full text-sm" rows={5} aria-label="Your reply" value={edits[t.id] ?? t.draft} onChange={e => setEdits({ ...edits, [t.id]: e.target.value })} maxLength={4000} autoFocus />
               <div className="flex flex-wrap items-center gap-2 mt-2">
-                <button className="btn-ghost btn-sm" onClick={async () => { await saveEdit(t.id); setEditing(null) }}>Save</button>
-                <button className="btn-ghost btn-sm" onClick={() => { setEdits({ ...edits, [t.id]: t.draft ?? '' }); setEditing(null) }}>Cancel</button>
+                <button className="btn-ghost btn-sm" onClick={() => saveEdit(t.id)}>Save</button>
+                <button className="btn-ghost btn-sm" onClick={() => { setEdits(e => without(e, t.id)); setCardErr(c => ({ ...c, [t.id]: '' })); setEditing(null) }}>Cancel</button>
                 <button className="text-xs underline text-[var(--ink-2)] ml-auto" disabled={busy === t.id || !state.has_key} onClick={() => draft(t.id)}>{busy === t.id ? 'Drafting...' : 'Write a new draft on your AI key'}</button>
               </div>
             </div>
-            : <p className="mt-3 text-sm whitespace-pre-wrap break-words rounded-[10px] bg-[#f8f4f0] px-3 py-2.5" data-testid="draft-text">{edits[t.id] ?? t.draft}</p>)}
+            : <p className="mt-3 text-sm whitespace-pre-wrap break-words rounded-[10px] bg-[#f8f4f0] px-3 py-2.5" data-testid="draft-text">{t.draft}</p>)}
+          {cardErr[t.id] && <p role="alert" className="mt-2 text-xs font-medium text-[#a3173f]" data-testid="card-error">{cardErr[t.id]}</p>}
           <div className="mt-3" data-testid="thread-actions">
             {editing !== t.id && <div className="flex flex-wrap items-center gap-2">
               {t.draft === null

@@ -34,7 +34,7 @@ const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'sta
 for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
 const b = await chromium.launch()
 try {
-  let enabled = false, hasKey = false
+  let enabled = false, hasKey = false, failSave = false
   const writes = [], offHost = []
   const THREADS = [
     { id: 't1', platform: 'reddit', url: 'https://www.reddit.com/r/dentistry/comments/abc', title: 'Which booking tool do you use?', quote: 'Looking for an online booking tool for a two-chair practice.', date: '2026-10-20', query: 'booking tool', buyer_intent: 'uncertain', draft: null, draft_status: null },
@@ -47,7 +47,15 @@ try {
     const req = route.request(); const u = new URL(req.url())
     if (u.origin !== base) { offHost.push(u.href); return route.abort() }
     if (!u.pathname.startsWith('/api/')) return route.continue()
-    if (req.method() !== 'GET') { writes.push(`${req.method()} ${u.pathname} ${req.postData()}`); return route.fulfill({ contentType: 'application/json', body: '{"ok":true}' }) }
+    if (req.method() !== 'GET') {
+      writes.push(`${req.method()} ${u.pathname} ${req.postData()}`)
+      const body = JSON.parse(req.postData() || '{}')
+      if (body.action === 'save') {
+        if (failSave) return route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"Database busy"}' })
+        const t = THREADS.find(x => u.pathname.endsWith(`/${x.id}`)); t.draft = body.draft; t.draft_status = 'edited' // what the server stores
+      }
+      return route.fulfill({ contentType: 'application/json', body: '{"ok":true}' })
+    }
     if (u.pathname === '/api/replies') return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ queries: enabled ? ['booking tool'] : [], threads: enabled ? THREADS : [], platforms: { reddit: enabled, x: false }, consent: enabled, has_key: hasKey }) })
     return route.fulfill({ status: 404, contentType: 'application/json', body: '{}' })
   })
@@ -90,17 +98,44 @@ try {
   assert.equal(await main.getByTestId('thread-card').nth(1).getByTestId('draft-text').textContent(), THREADS[1].draft, 'the draft is shown before you approve it')
   for (const btn of await main.getByTestId('thread-actions').getByRole('button').all()) assert.ok((await btn.textContent()).trim().length >= 4, 'no icon-only or one-letter action')
   if (process.env.SHOTS) { await main.getByTestId('thread-card').first().scrollIntoViewIfNeeded(); await page.screenshot({ path: path.join(process.env.SHOTS, 'social-enabled.png') }); await second.locator('xpath=..').screenshot({ path: path.join(process.env.SHOTS, 'social-drafted-card.png') }) }
-  // Edit draft: the text opens with Save / Cancel; Cancel writes nothing, Save uses the existing save action.
-  await second.getByRole('button', { name: 'Edit draft' }).click()
-  const box = main.getByTestId('thread-card').nth(1).getByRole('textbox', { name: 'Your reply' })
-  await box.fill('Edited reply')
-  await main.getByTestId('thread-card').nth(1).getByRole('button', { name: 'Cancel' }).click()
-  assert.equal(await main.getByTestId('thread-card').nth(1).getByTestId('draft-text').textContent(), THREADS[1].draft, 'Cancel restores the draft')
+  // Edit draft: the text opens with Save / Cancel; Cancel writes nothing and restores the saved draft.
+  const card2 = main.getByTestId('thread-card').nth(1)
+  const box = card2.getByRole('textbox', { name: 'Your reply' })
+  const SAVED = THREADS[1].draft
   await second.getByRole('button', { name: 'Edit draft' }).click()
   await box.fill('Edited reply')
-  await main.getByTestId('thread-card').nth(1).getByRole('button', { name: 'Save' }).click()
-  await page.waitForTimeout(400)
-  assert.deepEqual(writes.splice(0), ['POST /api/replies/t2 {"action":"save","draft":"Edited reply"}'])
+  await card2.getByRole('button', { name: 'Cancel' }).click()
+  assert.equal(await card2.getByTestId('draft-text').textContent(), SAVED, 'Cancel restores the saved draft')
+  assert.deepEqual(writes.splice(0), [])
+  // A failed Save (Instinct #333): the editor stays open with the typed text, the error is on this card, and the saved
+  // draft and its status are unchanged; Cancel then restores the last server-confirmed draft.
+  failSave = true
+  await second.getByRole('button', { name: 'Edit draft' }).click()
+  await box.fill('Edited reply')
+  await card2.getByRole('button', { name: 'Save' }).click()
+  await card2.getByTestId('card-error').waitFor()
+  assert.equal(await card2.getByTestId('card-error').textContent(), 'Not saved: Database busy. Your text is still here; try Save again.')
+  assert.equal(await box.isVisible(), true, 'the editor stays open')
+  assert.equal(await box.inputValue(), 'Edited reply', 'with the typed text')
+  assert.equal(await card2.getByTestId('draft-status').textContent(), 'Copied', 'the status is unchanged')
+  assert.equal(await page.getByText('Database busy').count(), 1, 'the error shows once, beside the card, not above the list')
+  await card2.getByRole('button', { name: 'Cancel' }).click()
+  assert.equal(await card2.getByTestId('draft-text').textContent(), SAVED, 'the displayed draft is still the saved one')
+  assert.equal(await card2.getByTestId('card-error').count(), 0)
+  await page.reload({ waitUntil: 'networkidle' }); await cards.first().waitFor()
+  assert.equal(await card2.getByTestId('draft-text').textContent(), SAVED, 'after reload too')
+  // Retry: fail, then Save again succeeds and closes the editor with the saved text shown.
+  await second.getByRole('button', { name: 'Edit draft' }).click()
+  await box.fill('Edited reply')
+  await card2.getByRole('button', { name: 'Save' }).click()
+  await card2.getByTestId('card-error').waitFor()
+  failSave = false
+  await card2.getByRole('button', { name: 'Save' }).click()
+  await card2.getByTestId('draft-text').waitFor()
+  assert.equal(await card2.getByTestId('draft-text').textContent(), 'Edited reply')
+  assert.equal(await card2.getByTestId('card-error').count(), 0)
+  assert.equal(await card2.getByTestId('draft-status').textContent(), 'Edited')
+  assert.deepEqual(writes.splice(0), Array(3).fill('POST /api/replies/t2 {"action":"save","draft":"Edited reply"}'))
   // Approve with a draft: copies and opens the thread (the popup is aborted off-host), recorded as copied; nothing posted.
   await ctx.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: base })
   const popup = page.waitForEvent('popup')
