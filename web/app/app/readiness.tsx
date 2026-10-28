@@ -23,7 +23,12 @@ export default function Readiness() {
     setPlays(jobs?.jobs ? recentPlays(jobs.jobs) : null)
     if (profile) setSite({ website: String(profile.website ?? ''), sells: String(profile.sells ?? ''), business_name: String(profile.business_name ?? '') })
   }
-  useEffect(() => { void load() }, []) // eslint-disable-line react-hooks/set-state-in-effect
+  useEffect(() => {
+    void load() // eslint-disable-line react-hooks/set-state-in-effect
+    const refresh = () => void load()
+    window.addEventListener('profile-updated', refresh) // the Home setup steps saved the business or buyer profile
+    return () => window.removeEventListener('profile-updated', refresh)
+  }, [])
 
   async function saveSite(e: React.FormEvent) {
     e.preventDefault(); setSiteMsg('')
@@ -54,7 +59,9 @@ export default function Readiness() {
                 <span className="text-[#555]"> - {r.detail}</span>
               </div>
               {r.state !== 'done' && r.fix && (r.fix.kind === 'link'
-                ? <Link href={r.fix.href} className="btn-ghost text-xs px-3 py-1.5 shrink-0">{r.fix.label}</Link>
+                // A same-page link with ?setup= must load the page (the setup steps read it once, on load).
+                ? r.fix.href.includes('?setup=') ? <a href={r.fix.href} className="btn-ghost text-xs px-3 py-1.5 shrink-0">{r.fix.label}</a>
+                  : <Link href={r.fix.href} className="btn-ghost text-xs px-3 py-1.5 shrink-0">{r.fix.label}</Link>
                 : <button type="button" className="btn-ghost text-xs px-3 py-1.5 shrink-0" aria-expanded={open === r.id} onClick={() => setOpen(open === r.id ? null : r.id)}>{r.fix.label}</button>)}
             </div>
             {open === r.id && r.id === 'site' && <form onSubmit={saveSite} className="mt-3 flex flex-col gap-2">
@@ -70,9 +77,10 @@ export default function Readiness() {
       </ul>
       </div>}
 
-      <h2 className={`text-lg font-semibold mb-3 ${done < rows.length ? 'mt-8' : ''}`}>Your plays</h2>
+      {/* No plays yet: nothing to list (the First play row and the setup steps below point to the first one). */}
+      {(plays === null || plays.length > 0) && <h2 className={`text-lg font-semibold mb-3 ${done < rows.length ? 'mt-8' : ''}`}>Your plays</h2>}
       {plays === null ? <p className="text-sm text-[#555]">Could not load your searches. Reload to retry.</p>
-        : plays.length === 0 ? <p className="text-sm text-[#555]">No searches yet. <Link className="underline" href="/app/leads">Find leads</Link></p>
+        : plays.length === 0 ? null
         : <ul className="card divide-y divide-black/10" aria-label="Your plays">
           {plays.map(p => <li key={p.id} className="p-4 text-sm flex items-center justify-between gap-3">
             {/* The play opens its campaign page (play, leads, drafts and sends together); the outcome opens its leads. */}

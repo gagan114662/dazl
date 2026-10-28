@@ -31,7 +31,8 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
   - **Not wired yet:** scan jobs still claim through `claimKeyedJob` on the SQLite `scan_jobs` table, single writer per file. Moving scan claiming onto `DbQueue` needs `scan_jobs` on Postgres. That is the next slice, with the yield owners. The other per-process state is listed in the table below.
 - **Step 6a (health and error capture):**
   - `GET /api/health/live` answers without touching any store. Use it as the liveness probe.
-  - `GET /api/health/ready` and `GET /api/health` are the readiness probe. Each check has a 2 s budget. They return 503 when any of these fails or goes over budget:
+  - `GET /api/ready`, `GET /api/health/ready` and `GET /api/health` are the readiness probe. They are unauthenticated and carry no tenant data. `/api/health` stays readiness rather than liveness, because `ops/safe_launch.py` and the deploy checklist use it to confirm a new process can serve.
+  - Readiness: Each check has a 2 s budget. They return 503 when any of these fails or goes over budget:
     - the store does not answer (Postgres when `DATABASE_URL` is set, else SQLite);
     - on Postgres, `dazl_schema_migrations` is behind the migrations this build ships;
     - the SQLite file the raw-handle modules use does not answer.
@@ -54,8 +55,42 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
     - uncaught process exceptions (monitor only, exit behaviour unchanged);
     - unhandled promise rejections (`lib/ops/process-errors.ts`). Next's own listener keeps the server up. If ours is the only listener, it rethrows after recording, so bare Node still exits;
     - scan runner and queue runner crashes (`lib/scan/crash.ts`). A rejection that escapes `runJob`'s own failure handling is recorded with the tenant and job id. The job is marked `failed` with `error = 'crashed'`, fenced on `status = 'running'` and the same `attempts`, instead of waiting in `running` for the stale-lease reaper. On the queue path the queue item is failed too, not retried, since a crash would repeat.
-  - Alert hook: with `OPS_ALERT_WEBHOOK_URL` (https only) set, the same scrubbed record is POSTed. It is throttled to one per fingerprint per 10 min and 20 per 10 min overall, fire and forget.
+  - **Request ids and JSON request logs** (`proxy.ts`, `lib/ops/request-log.ts`):
+    - Every `/app` and `/api` request gets a fresh random UUIDv4. An incoming `x-request-id` is replaced, never trusted.
+    - The id is forwarded to the route as the `x-request-id` request header, returned as a response header, and recorded on error records as `request_id`, so a log line and an error can be joined.
+    - Each request writes one JSON line to stdout: `{level, type: 'request', ts, request_id, method, path}`.
+      - `path` is the route template the request matches (`lib/ops/routes.ts`, e.g. `/api/leads/[lead]/confirm`). No caller-supplied path text is ever logged, encoded or decoded. A path matching no route logs as `/api/[unknown]` or `/app/[unknown]`. A test fails when the list and the route files under `app/` differ.
+      - It never contains headers, cookies, bodies or IPs.
+      - Health probes write no line.
+    - The proxy runs before the route, so the line has no status or duration. Failures appear as error records carrying the same `request_id`.
+    - `middleware.ts` moved to `proxy.ts`: the Next 16 name, Node runtime. The `/app` sign-in redirect is unchanged.
+  - Alert hook (the error reporter's DSN): with `OPS_ALERT_WEBHOOK_URL` (https only) set, the same scrubbed record is POSTed. It is throttled to one per fingerprint per 10 min and 20 per 10 min overall, fire and forget.
   - Not yet: other diagnostic `console.error` calls inside the scan pipeline (handled per-step failures, not crashes). Also not done yet: the backup restore drill and the deploy checklist (step 6b).
+- **Scan jobs to Postgres, step 1 (platform part):**
+  - `lib/scan/store-db.ts` has `Db` versions of the scan job store: create, query-create, get, count-active, list leads, count hidden, latest, list jobs, export, cancel and the stale reaper.
+  - `test/scan-store-db.test.ts` covers them with two tenants on both engines, and pins them to `store.ts` on SQLite with the same rows.
+  - No caller is switched. `store.ts`, the runner and the routes are unchanged; callers move with their owners.
+  - **Step 2, storage half:** `finishJob` and `failOrRequeue` write an attempt's end in one `Db` transaction: leads, review rows, counts and the job row.
+    - They are fenced on `status = 'running' AND attempts = ?`, with `FOR UPDATE` on PG.
+    - They are tested on both engines: stale attempts write nothing; requeue until `MAX_ATTEMPTS`, then fail.
+    - One deliberate difference from the runner's `finish()`: only duplicates are skipped (`ON CONFLICT DO NOTHING`, the same on both engines). A row that fails a CHECK fails the whole attempt instead of being dropped silently, as SQLite's `INSERT OR IGNORE` does.
+    - Wiring the runner to them is the yield session's part.
+  - Differences from `store.ts`:
+    - Times come from the caller.
+    - Same-second ties order by `id`, not `rowid`.
+    - `getJob` does not reap as a side effect.
+- **Tenant isolation of tables on `Db`** (audit of every table a `Db`-layer module reads or writes, both engines):
+
+  | Table | Covered by |
+  |---|---|
+  | `users`, `sessions`, `oauth_identities` | `test/tenant-isolation-db.test.ts`: sessions, password sign-in, Google sign-in |
+  | `tenant_plans`, `stripe_events` | `test/tenant-isolation-db.test.ts` (billing); `billing-e2e` (another tenant's customer changes nothing) |
+  | `seo_audits`, `seo_briefs`, `newsjacks` | `test/seo-store.test.ts` |
+  | `scan_jobs`, `leads` (via `lib/scan/store-db.ts`) | `test/scan-store-db.test.ts` |
+  | `rate_limits` (global table, per-tenant keys) | `test/tenant-isolation-db.test.ts`: one tenant using up its allowance never spends or blocks another's |
+  | `app_leases`, `dazl_schema_migrations` | Global, no tenant data (listed in `NOT_DIRECT`) |
+
+  On open branches: `work_queue` is covered in `test/multi-instance.test.ts` (#252). `stripe_ended_subscriptions` (#253) is keyed by Stripe's globally unique subscription id, and its tenant comes from the verified event; a two-tenant test follows once #253 merges.
 - **Still on SQLite:** every other module. Production keeps running on SQLite until cutover.
 - **SQLite-only SQL in queries:** about 18 queries use `rowid` (for example as an ORDER BY tie-break), which PG does not have. They need rewriting as each area is ported.
 
@@ -142,7 +177,7 @@ These steps are development work behind flags and tests. Merging them does not c
    - All sends use stub providers. No real mail is sent.
    - The approval, cap, suppression and consent gates stay as they are.
 4. **Tenant isolation.** Step 4a/4b:
-   - `test/tenant-isolation-manifest.ts` classifies all 115 API route handlers: 13 public, each with what authenticates it, and 102 session.
+   - `test/tenant-isolation-manifest.ts` classifies all 116 API route handlers: 14 public, each with what authenticates it, and 102 session.
    - CI proves that every session handler refuses an unauthenticated caller without changing data.
    - All 102 session handlers are exercised with two tenants:
      - 48 that take ids or list tenant data have targeted tests: tenant B with tenant A's ids gets nothing of A's and changes nothing.
