@@ -226,3 +226,43 @@ test('ROLE identity (Instinct note): one shared generic role word is not the pos
   assert.deepEqual(resolveStructuredDate([jp('Account Executive - London')], 'Embedd', 'is hiring an account executive in London'), { date: '2026-10-02', kind: 'JobPosting' }, 'a location tag after a dash is not part of the role')
   assert.deepEqual(resolveStructuredDate([jp('ACCOUNT EXECUTIVES')], 'Embedd', 'is hiring account executive'), { date: '2026-10-02', kind: 'JobPosting' })
 })
+
+// ---- #307 review 5: the request's own words must never cancel the finer-place comparison ----
+const PAIRS: [string, string, string, string, string][] = [['East Kensington', 'West Kensington', 'London', 'UK', 'United Kingdom'], ['North Shields', 'South Shields', 'Newcastle', 'UK', 'United Kingdom'], ['Upper Manhattan', 'Lower Manhattan', 'New York', 'NY, USA', 'United States'], ['New Cross', 'Old Cross', 'London', 'UK', 'United Kingdom'], ['East Village', 'West Village', 'New York', 'NY, USA', 'United States'], ['Upper Norwood', 'Lower Norwood', 'London', 'UK', 'United Kingdom']]
+test('INSTINCT REPRO 5: request "East Kensington, London, UK" + East Kensington claim + West Kensington event -> undated and held (the request cannot cancel the qualifier)', async () => {
+  assert.equal(resolveStructuredDate([PLACE('Embedd West Kensington', 'London')], 'Embedd', 'opened a new office in East Kensington, London', ['East Kensington, London, UK']), null)
+  for (const q of CASINGS('East Kensington, London, UK')) for (const c of CASINGS('East Kensington')) for (const e of CASINGS('West Kensington'))
+    assert.equal(resolveStructuredDate([EV(e)], 'Embedd', CLAIM_OF(c), [q]), null, `${q} | ${c} | ${e}`)
+  const claim = 'Embedd opened a new office in East Kensington, London for its growing engineering team'
+  const held = await row(fx([PLACE('Embedd West Kensington', 'London')], { quote: claim }))
+  assert.equal(held.r.review_reason, 'outside_window_undated') // (this run's request is the fixture's London request; the resolver cases above carry the East Kensington request)
+})
+test('EVERY request-place variant x EVERY directional pair x every casing: the event\'s finer place is compared whole against the claim\'s - request = claim place, request = event place, request = bare city, no request', () => {
+  for (const [a, b, city, reg, country] of PAIRS) for (const ca of CASINGS(a)) for (const eb of CASINGS(b)) {
+    const claim = `opened a new office in ${ca}, ${city}`
+    const requests: string[][] = [[`${a}, ${city}, ${reg}`], [`${b}, ${city}, ${reg}`], [`${city}, ${reg}`], [`${city}, ${country}`], [`${a}, ${city}, ${country}`], [`${b}, ${city}, ${country}`], [`${a}, ${city}`], [`${b}, ${city}`], [], [`${a}, ${city}, ${reg}`.toUpperCase()], [`${b}, ${city}, ${reg}`.toLowerCase()]]
+    for (const req of requests) assert.equal(resolveStructuredDate([EV(eb, city, country)], 'Embedd', claim, req), null, `${ca} claim | ${eb} event | request ${JSON.stringify(req)}`)
+  }
+})
+test('a claim with NO place of its own: the request\'s finer place binds the event - West Kensington cannot date a request for East Kensington, and an event that only says "London" is ambiguous', () => {
+  for (const req of CASINGS('East Kensington, London, UK')) {
+    assert.equal(resolveStructuredDate([EV('West Kensington')], 'Embedd', 'opened a new office', [req]), null, req)
+    assert.equal(resolveStructuredDate([EV('Kensington')], 'Embedd', 'opened a new office', [req]), null, req)
+    assert.equal(resolveStructuredDate([PLACE('Embedd', 'London')], 'Embedd', 'opened a new office', [req]), null, `London-only: ${req}`)
+    assert.deepEqual(resolveStructuredDate([EV('East Kensington')], 'Embedd', 'opened a new office', [req]), { date: '2026-10-19', kind: 'Event' }, req)
+  }
+  // a claim and a request that name DIFFERENT finer places can be dated by neither event
+  assert.equal(resolveStructuredDate([EV('East Kensington')], 'Embedd', CLAIM_OF('Camden'), ['East Kensington, London, UK']), null)
+  assert.equal(resolveStructuredDate([EV('Camden')], 'Embedd', CLAIM_OF('Camden'), ['East Kensington, London, UK']), null)
+})
+test('POSITIVES stay green with every request-place variant that does not contradict: request = claim place, request = bare city, no request - all casings', () => {
+  for (const [a, , city, reg, country] of PAIRS) for (const ca of CASINGS(a)) for (const ea of CASINGS(a)) {
+    const claim = `opened a new office in ${ca}, ${city}`
+    for (const req of [[`${a}, ${city}, ${reg}`], [`${city}, ${reg}`], [`${city}, ${country}`], [`${a}, ${city}, ${country}`], [`${a}, ${city}`.toUpperCase()], []]) assert.deepEqual(resolveStructuredDate([EV(ea, city, country)], 'Embedd', claim, req), { date: '2026-10-19', kind: 'Event' }, `${ca} | ${ea} | ${JSON.stringify(req)}`)
+  }
+})
+
+test('"Greater London" as the request place is the city London, not a finer place; a Shoreditch claim still needs a Shoreditch event', () => {
+  assert.deepEqual(resolveStructuredDate([EV('Shoreditch')], 'Embedd', CLAIM_OF('Shoreditch'), ['Greater London, UK']), { date: '2026-10-19', kind: 'Event' })
+  assert.equal(resolveStructuredDate([EV('Camden')], 'Embedd', CLAIM_OF('Shoreditch'), ['Greater London, UK']), null)
+})

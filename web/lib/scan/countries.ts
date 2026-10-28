@@ -307,3 +307,10 @@ export function countriesIn(text: string): string[] {
   return [...found]
 }
 export const COUNTRY_COUNT = new Set([...BY_NAME.values()]).size
+
+// True when a comma segment of a place is a country or a region (a US state / DC, a two-letter state code, "England"): the parts of "East Kensington, London, UK" that are NOT a city or neighbourhood.
+export function isCountryOrRegion(segment: string): boolean {
+  const s = trimPostal(segment)
+  if (!s) return false
+  return STATE_FORMS.has(s) || US_STATE_NAME.test(s) || resolveSegment(segment, true) !== null
+}

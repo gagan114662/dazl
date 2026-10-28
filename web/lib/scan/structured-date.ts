@@ -8,6 +8,7 @@
 //   - exactly one distinct date across all qualifying nodes (several = a list of items: none is this lead's),
 //   - a real calendar day. datePublished / dateModified / dateCreated are publication or update stamps and are never read here (page-timing.ts keeps them as labels only).
 import { companyKey, hasPhrase, norm } from './evidence.ts'
+import { isCountryOrRegion } from './countries.ts'
 
 export type DateKind = 'Event' | 'JobPosting'
 export interface StructuredDate { date: string; kind: DateKind }
@@ -67,6 +68,25 @@ const PLACE_FILLER = new Set(['office', 'offices', 'location', 'branch', 'clinic
 const stripPlace = (toks: string[], key: string, extra: Set<string> = new Set()): string[] => toks.filter(t => t !== key && !PLACE_FILLER.has(t) && !PLACE_STOP.has(t) && !extra.has(t) && !/^\d/.test(t))
 const sameSeq = (a: string[], b: string[]) => a.length === b.length && a.every((t, i) => t === b[i])
 const hasSeq = (hay: string[], needle: string[]) => needle.length > 0 && hay.some((_, i) => needle.every((t, j) => hay[i + j] === t))
+// The request's place split into its CITY and its finer parts: "East Kensington, London, UK" -> city [london], finer [[east, kensington]]. A segment is the CITY when it is the event's own city (so
+// "New York" in "Upper Manhattan, New York, NY, USA" stays the city even though New York is also a state), country / region segments are dropped, and EVERYTHING ELSE is a finer place name in its own
+// right. Only the city may ever be taken off a place before it is compared; a finer part is never cancelled. (With no event city, the last non-region segment is taken as the city.)
+function requestPlaces(where: string[], eventCity: string[][]): { city: string[][]; finer: string[][] } {
+  const city: string[][] = [], finer: string[][] = []
+  for (const w of where) {
+    const segs = w.split(',').map(x => x.trim()).filter(Boolean)
+    const rest: string[][] = []
+    for (const seg of segs) {
+      const t = tokensOf(seg); if (t.length === 0) continue
+      if (eventCity.some(c => sameSeq(c, t) || sameSeq(['greater', ...c], t))) { city.push(t); continue }   // "Greater London" is the city London
+      if (isCountryOrRegion(seg)) continue
+      rest.push(t)
+    }
+    if (eventCity.length === 0 && rest.length > 0) { city.push(rest[rest.length - 1]); for (const t of rest.slice(0, -1)) finer.push(t) }
+    else for (const t of rest) finer.push(t)
+  }
+  return { city, finer }
+}
 // What an Event's location states: `city` = each addressLocality as a token phrase, `local` = the place-name phrase(s) (neighbourhood / site) with the city words taken off. Street, region, country and postal code are not place terms.
 function eventPlace(location: unknown, key: string): { city: string[][]; local: string[][] } {
   const city: string[][] = [], names: string[][] = []
@@ -115,15 +135,21 @@ function eventMatches(o: Record<string, unknown>, claim: string, where: string[]
   // The event's OWN place has to agree with the claim's place - same city / neighbourhood (or the request's place), never merely a shared country, region or the word "London".
   const { city, local } = eventPlace(o.location, key)
   if (city.length + local.length > 0) {
+    const req = requestPlaces(where, city)
     const whereToks = where.map(tokensOf), claimToks = tokensOf(claim)
     const known = (phrase: string[]) => hasSeq(claimToks, phrase) || whereToks.some(w => hasSeq(w, phrase))
     // 1. the CITY must be the claim's / request's city, as a whole phrase (Manchester is not London, whatever country they share). With no addressLocality the place name has to be that city.
     for (const c of city.length ? city : local) if (!known(c)) return false
-    // 2. if the claim names a finer place than the city ("in East Kensington"), the event must name EXACTLY that place - the same words, qualifiers included. West Kensington, a bare Kensington,
-    //    Camden, or an event that only says "London", is a different or unconfirmed place -> undated and held. Words the city / request already account for are not "finer".
-    const cityWords = new Set([...city.flat(), ...whereToks.flat()])
-    const finer = claimPlacePhrases(claim).map(p => stripPlace(p, key, cityWords)).filter(p => p.length > 0)
-    if (finer.length > 0 && !finer.some(f => local.some(l => sameSeq(l, f)) || city.some(c => sameSeq(c, f)))) return false
+    // 2. a FINER place (a neighbourhood) named by the claim, or by the request itself ("East Kensington, London, UK"), must be the event's own place EXACTLY - the same words, qualifiers included.
+    //    Only the CITY and country words are taken off before comparing; the request can never cancel a qualifier or a finer place name (West Kensington stays West Kensington whatever the request says).
+    //    West Kensington, a bare Kensington, Camden, or an event that only says "London" is a different or unconfirmed place -> undated and held.
+    const cityWords = new Set([...city.flat(), ...req.city.flat()])
+    const eventLocal = local.map(l => stripPlace(l, key, cityWords)).filter(l => l.length > 0)
+    const satisfied = (f: string[]) => eventLocal.some(l => sameSeq(l, f)) || city.some(c => sameSeq(c, f))
+    const claimFiner = claimPlacePhrases(claim).map(p => stripPlace(p, key, cityWords)).filter(p => p.length > 0)
+    if (claimFiner.length > 0 && !claimFiner.some(satisfied)) return false
+    const reqFiner = req.finer.map(p => stripPlace(p, key, cityWords)).filter(p => p.length > 0)
+    if (reqFiner.length > 0 && !reqFiner.some(satisfied)) return false
     return true
   }
   return claimTypes.has('webinar') || claimTypes.has('conference')                       // no place at all: only an online / conference claim can be dated by it
