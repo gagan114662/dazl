@@ -112,12 +112,12 @@ test('JUICEBOX-TYPE job ad: a lead whose quote shows only a London office / sale
   const seen: string[] = []
   const r = await applySalesHiringGate(db, job, serve(board(), seen), { now: NOW })
   assert.deepEqual([r.passed, r.demoted], [0, 1]); assert.equal(lead(db).review_reason, 'no_event_evidence'); assert.equal(lead(db).confidence, null)
-  assert.match(lead(db).why, /^No event evidence: the source quote shows hiring but not the funding or event the request asks for\./); assert.equal(seen.length, 0, 'no board lookup was spent on it')
+  assert.match(lead(db).why, /^No event evidence: /); assert.equal(seen.length, 0, 'no board lookup was spent on it')
   assert.deepEqual(counts(db), { verified: 0, needs_review: 1 })
   // control: another verified candidate for the same company carries the funding (kept out as a duplicate) -> the event half is met
   const other = seed({ excerpt: ad }); const row = other.db.prepare("SELECT dedup_key FROM leads").get() as { dedup_key: string | null }
   other.db.prepare("UPDATE leads SET dedup_key = 'k1' WHERE id = 'L1'").run(); void row
-  assert.equal((await applySalesHiringGate(other.db, other.job, serve(board()), { now: NOW, fundingKeys: new Set(['k1']) })).passed, 1)
+  assert.equal((await applySalesHiringGate(other.db, other.job, serve(board()), { now: NOW, quotes: new Map([['k1', [{ url: 'https://news.example/other', excerpt: 'Brightloop raised a seed round in London', date: null }]]]) })).passed, 1)
 })
 
 test('seed-only and hiring-only requests are not touched, and review / human-confirmed rows are never promoted or changed', async () => {
@@ -133,8 +133,8 @@ test('seed-only and hiring-only requests are not touched, and review / human-con
 // ---- through the real runJob: the funding article is verified by the normal gates, then the board decides ----
 const NEWS = 'https://sifted.example/brightloop-raises-seed'
 const pad = (s: string) => `${s} ${'More about the company and its people. '.repeat(15)}`
-function london(boardJson: Record<string, unknown>): Fixture {
-  const page = { title: 'Brightloop raises seed round', text: pad(`Published ${daysAgo(12)}. ${QUOTE}.`) }
+function london(boardJson: Record<string, unknown>, quote = QUOTE): Fixture {
+  const page = { title: 'Brightloop raises seed round', text: pad(`Published ${daysAgo(12)}. ${quote}.`) }
   const crawl = async (url: string) => {
     const u = new URL(url)
     if (u.hostname === 'sifted.example') return { status: 200, body: `<html><body><a href="https://brightloop.io/">Brightloop</a> ${page.text}</body></html>`, finalUrl: url }
@@ -143,8 +143,8 @@ function london(boardJson: Record<string, unknown>): Fixture {
   }
   return {
     request: REQUEST, modelIcp: { summary: 's', who: ['Founder'], industries: ['SaaS'], sizes: [], where: ['London, UK'], signals: ['announced seed funding', 'hiring sales staff'], exclude: [], country: 'GB', language: 'en', window_days: 90 },
-    modelQueries: ['London SaaS startup seed round'], hits: [{ url: NEWS, title: page.title, snippet: QUOTE, date: daysAgo(12) }], tfPages: { [NEWS]: page }, own: { [NEWS]: page },
-    extraction: [{ company: 'Brightloop', signal: 'raised a seed round', source_url: NEWS, excerpt: QUOTE, event_date: daysAgo(12) }],
+    modelQueries: ['London SaaS startup seed round'], hits: [{ url: NEWS, title: page.title, snippet: quote, date: daysAgo(12) }], tfPages: { [NEWS]: page }, own: { [NEWS]: page },
+    extraction: [{ company: 'Brightloop', signal: 'raised a seed round', source_url: NEWS, excerpt: quote, event_date: daysAgo(12) }],
     deps: {
       crawlGet: crawl as never,
       fetchImpl: (async (u: RequestInfo | URL, init?: RequestInit) => { const k = String(u); return boardJson[k] ? ok(boardJson[k]) : k.includes('greenhouse.io') || k.includes('lever.co') || k.includes('ashbyhq.com') ? no() : globalThis.fetch(u, init) }) as never,
@@ -164,6 +164,23 @@ test('through the real runJob: the seed lead passes the normal gates; with a boa
   assert.equal(l2.review_reason, 'no_sales_hiring_evidence', JSON.stringify(l2)); assert.equal(l2.confidence, null)
   const job = none.db.prepare('SELECT verified, needs_review FROM scan_jobs').get() as { verified: number; needs_review: number }
   assert.deepEqual(job, { verified: 0, needs_review: 1 })
+  // the saved run report shows the FINAL outcome, not the pre-gate one
+  const rep = JSON.parse((none.db.prepare('SELECT report FROM scan_run_report ORDER BY attempt DESC LIMIT 1').get() as { report: string }).report) as { funnel: { verified: number; needs_review: number; review_reasons: Record<string, number> }; candidates: { company: string; fate: string }[]; final_gate?: string }
+  assert.equal(rep.funnel.verified, 0); assert.equal(rep.funnel.needs_review, 1); assert.equal(rep.funnel.review_reasons.no_sales_hiring_evidence, 1)
+  assert.equal(rep.candidates.find(c => c.company === 'Brightloop')!.fate, 'review:no_sales_hiring_evidence'); assert.equal(rep.final_gate, 'sales_hiring')
+})
+
+test('through the real runJob: a Series A-only article with a perfect sales board is NOT a seed lead (no_event_evidence, report agrees)', async () => {
+  const board = {
+    'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs': { jobs: [{ id: 1, title: 'Account Executive' }] },
+    'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs/1': { id: 1, title: 'Account Executive', first_published: new Date(Date.now() - 12 * 86_400_000).toISOString(), absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/1', content: '&lt;p&gt;Write to jobs@brightloop.io&lt;/p&gt;' },
+  }
+  const r = await runFixture(london(board, 'Brightloop, a London B2B SaaS startup, raised a 3m GBP Series A round this month'))
+  const l = r.db.prepare("SELECT review_reason, confidence FROM leads WHERE company = 'Brightloop'").get() as { review_reason: string | null; confidence: number | null }
+  assert.equal(l.review_reason, 'no_event_evidence', JSON.stringify(l)); assert.equal(l.confidence, null)
+  assert.deepEqual(r.db.prepare('SELECT verified, needs_review FROM scan_jobs').get(), { verified: 0, needs_review: 1 })
+  const rep = JSON.parse((r.db.prepare('SELECT report FROM scan_run_report ORDER BY attempt DESC LIMIT 1').get() as { report: string }).report) as { funnel: { verified: number } }
+  assert.equal(rep.funnel.verified, 0)
 })
 
 test('affirmative hiring only: negated or near-miss sentences are NOT sales-hiring evidence', () => {
@@ -219,4 +236,29 @@ test('no processing cap bypasses the gate: with 21 source-checked leads every on
   assert.equal(rows.filter(x => x.review_reason === null).length, r.passed)
   const held = rows.filter(x => x.review_reason === 'no_sales_hiring_evidence'); assert.equal(held.length, 1); assert.equal(held[0].confidence, null)
   assert.match(held[0].why, /not checked - this scan had more leads than the job-board lookup limit \(20\)/)
+})
+
+test('gate negative controls: lowercase other company, negated seed, wrong stage, and same-name evidence from another domain are all held', async () => {
+  const cases: [string, string][] = [
+    ['Brightloop raised a seed round in London. Separately, othercorp is hiring sales staff.', 'no_sales_hiring_evidence'],
+    ['othercorp raised a seed round in London. Brightloop is hiring sales staff.', 'no_event_evidence'],
+    ['Brightloop did not raise a seed round in London. Brightloop is hiring sales staff.', 'no_event_evidence'],
+    ['Brightloop raised a Series A round in London. Brightloop is hiring sales staff.', 'no_event_evidence'],
+    ['Brightloop plans to raise a seed round in London. Brightloop is hiring sales staff.', 'no_event_evidence'],
+    ['Brightloop raised a seed extension after its Series A in London. Brightloop is hiring sales staff.', 'no_event_evidence'],
+  ]
+  for (const [excerpt, reason] of cases) {
+    const { db, job } = seed({ domain: null, excerpt }); const r = await applySalesHiringGate(db, job, serve({}), { now: NOW })
+    assert.deepEqual([r.passed, r.demoted], [0, 1], excerpt); assert.equal(lead(db).review_reason, reason, excerpt); assert.equal(lead(db).confidence, null, excerpt)
+  }
+  // controls that must still pass
+  for (const excerpt of ['Brightloop raised a seed round in London. Brightloop is hiring sales staff.', 'Brightloop raised a pre-seed round led by Octopus Ventures and is hiring two account executives.', 'Brightloop, the London startup, closed a seed round. It is hiring sales reps.']) {
+    const { db, job } = seed({ domain: null, excerpt }); assert.equal((await applySalesHiringGate(db, job, serve({}), { now: NOW })).passed, 1, excerpt)
+  }
+  // same name, different domain: hiring evidence found on brightloop.com is not credited to the brightloop.io lead (and vice versa), a third-party page is
+  const mk = (url: string, domain: string | null) => { const x = seed({ domain, excerpt: 'Brightloop raised a seed round in London.' }); x.db.prepare("UPDATE leads SET dedup_key = 'brightloop' WHERE id = 'L1'").run(); return { ...x, quotes: new Map([['brightloop', [{ url, excerpt: 'Brightloop is hiring two account executives in London.', date: null }]]]) } }
+  for (const [url, domain, passes] of [['https://brightloop.com/careers', 'brightloop.io', 0], ['https://brightloop.com/careers', null, 0], ['https://brightloop.io/careers', 'brightloop.io', 1], ['https://sifted.example/brightloop-hiring', 'brightloop.io', 1]] as const) {
+    const x = mk(url, domain); const r = await applySalesHiringGate(x.db, x.job, serve({}), { now: NOW, quotes: x.quotes })
+    assert.equal(r.passed, passes, `${url} for ${domain}`); if (!passes) assert.equal(lead(x.db).review_reason, 'no_sales_hiring_evidence')
+  }
 })

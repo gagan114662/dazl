@@ -29,9 +29,33 @@ export function salesHiringRequired(query: string | null | undefined, icp: strin
 // The source quote itself says the company is hiring for a sales / GTM role.
 // The saved quote / claim itself shows the event half (funding, an opening ...): a job ad alone does not show that a company raised money.
 // When the request asks for FUNDING, only a funding mention counts (an office opening is not a raise); otherwise any event beyond hiring does.
-export const quoteShowsEvent = (excerpt: string | null, signal: string | null, fundingAsked = false, company?: string | null): boolean => { void signal; const t = excerpt ?? ''
-  // The funding / event sentence must be about THIS company: "Othercorp raised a seed round" is not the lead's raise.
-  return clauses(t).some(c => (fundingAsked ? mentionsFunding(c) : showsEventBeyondHiring(c)) && !namesOtherEntity(c.slice(0, Math.max(0, c.search(/\b(?:rais|fund|seed|series|invest|round|open|launch|expan|announc)/i))), company)) }
+// Event half. The sentence must be about THIS company (case-insensitive subject check), must affirm the event (not "did not raise", "plans to raise", "in talks"),
+// and, when the request names a funding STAGE, must be that stage ("Series A" never answers a seed request, "seed" never a Series A request).
+export type Stage = 'seed' | `series ${string}` | null
+export function requestedStage(query: string | null | undefined, icp: string | null | undefined): Stage {
+  let sig = ''; try { const j = icp ? JSON.parse(icp) as { signals?: unknown } : null; if (Array.isArray(j?.signals)) sig = j!.signals.filter((x): x is string => typeof x === 'string').join(' . ') } catch { /* none */ }
+  const t = `${sig} . ${query ?? ''}`
+  const series = /\bseries\s+([a-e])\b/i.exec(t)
+  if (/\bseed\b/i.test(t) && !series) return 'seed'
+  return series ? `series ${series[1].toLowerCase()}` : /\bseed\b/i.test(t) ? 'seed' : null
+}
+const RAISE_VERB = /\b(?:rais(?:ed|es|ing)|clos(?:ed|es|ing)|secur(?:ed|es|ing)|announc(?:ed|es|ing)|land(?:ed|s)|complet(?:ed|es)|bagg?(?:ed|s)|receiv(?:ed|es)|won|gets|got|backed|funded|seed-funded|unveil(?:ed|s))\b/i
+const FUNDING_NEG = /\b(?:not|no|never|didn'?t|hasn'?t|haven'?t|wasn'?t|without|failed\s+to|unable\s+to|yet\s+to|den(?:y|ies|ied)|reject\w*|refut\w+|cancel\w*|withdr\w+|collaps\w+|fell\s+through|ruled?\s+out|untrue|false)\b/i
+const FUNDING_HYPO = /\b(?:if|unless|would|could|may|might|plans?\s+to|planning\s+to|hopes?\s+to|aims?\s+to|intends?\s+to|looking\s+to|seeking\s+to|in\s+talks|expects?\s+to|expected\s+to|reportedly|rumou?r\w*|allegedly)\b/i
+export function stageOk(clause: string, stage: Stage): boolean {
+  if (!stage) return true
+  const series = /\bseries\s+([a-z])\b|\b(?:growth|bridge)\s+(?:round|equity)\b/i.exec(clause)
+  if (stage === 'seed') return /\b(?:pre-?)?seed\b/i.test(clause) && !series
+  const letter = stage.slice(7)
+  return new RegExp(`\\bseries\\s+${letter}\\b`, 'i').test(clause) && !/\bseed\b/i.test(clause)
+}
+export const quoteShowsEvent = (excerpt: string | null, signal: string | null, fundingAsked = false, company?: string | null, stage: Stage = null): boolean => { void signal
+  return clauses(excerpt ?? '').some(c => {
+    if (!fundingAsked) { const i = c.search(/\b(?:open|launch|expan|announc)/i); return showsEventBeyondHiring(c) && !subjectIsOther(c.slice(0, Math.max(0, i)), company) }
+    if (!mentionsFunding(c) || FUNDING_NEG.test(c) || FUNDING_HYPO.test(c)) return false
+    const v = RAISE_VERB.exec(c); if (!v) return false
+    return stageOk(c, stage) && !subjectIsOther(c.slice(0, v.index), company)
+  }) }
 export const requestAsksFunding = (query: string | null | undefined, icp: string | null | undefined): boolean => { let sig = ''; try { const j = icp ? JSON.parse(icp) as { signals?: unknown } : null; if (Array.isArray(j?.signals)) sig = j!.signals.filter((x): x is string => typeof x === 'string').join(' . ') } catch { /* none */ } return mentionsFunding(`${sig} . ${query ?? ''}`) }
 // Affirmative hiring proof, not keyword co-occurrence. A CLAUSE (split on sentence ends and but / however / while / although / yet) must say the lead's OWN
 // company is hiring, now, for a sales / GTM role:
@@ -53,62 +77,87 @@ const HIRING_VERB_OBJECT = new RegExp(`\\b${HIRE_VERB}\\s+${FILLER}${GTM_OBJECT}
 const OPEN_ROLE = /\b(?:open|new|several|two|three|\d+)\s+(?:[a-z-]+\s+){0,3}(?:roles?|positions?|openings?|vacanc(?:y|ies))\b/i
 const FIRST_HIRE = /\b(?:first|new|key)\s+(?:sales|ae|sdr|bdr|gtm|account\s+executive)\s+hire\b|\bjoin(?:ing)?\s+(?:our|the)\s+(?:sales|gtm)\s+team\b/i
 const clauses = (t: string) => t.split(/[.;!?\n]+|\s(?:but|however|while|although|though|yet)\s/i).map(x => x.trim()).filter(Boolean)
-// Capitalised words that are not a company: sentence openers, places and stage words that may stand in front of the verb.
-const NOT_ENTITY = new Set(['the', 'it', 'its', 'we', 'our', 'they', 'their', 'now', 'also', 'still', 'currently', 'and', 'then', 'today', 'london', 'uk', 'nyc', 'new', 'york', 'us', 'saas', 'b2b', 'seed', 'series', 'startup', 'company', 'team', 'founder', 'founders', 'ceo', 'cto', 'cofounder', 'inc', 'ltd', 'llc', 'limited', 'plc', 'a', 'an', 'in', 'at', 'to', 'of', 'for', 'is', 'are', 'has', 'have', 'recently', 'just', 'actively', 'already', 'additionally', 'meanwhile', 'following'])
-const wordsOf = (x: string) => x.toLowerCase().replace(/&/g, ' and ').split(/[^a-z0-9]+/).filter(Boolean)
-// True when text in FRONT of the hiring verb names a company other than the lead ("Separately, Othercorp is hiring ..."). Without a company there is nothing to bind to.
-export function namesOtherEntity(prefix: string, company: string | null | undefined): boolean {
+// The subject in front of a hiring / raising verb must be the lead (case-insensitive: "othercorp is hiring" is another company just like "Othercorp").
+// The prefix is cut into segments at commas / "and" / "which" / "who" / "while" / "as"; the nearest segment that says anything is the subject segment. It is the
+// lead's when it names the company (not as the object of a preposition: "Acme, which works with Brightloop, is hiring" is Acme) or says nothing but generic words
+// (it, the startup, the London company, raised a seed round ...). Any other word in it is another company.
+const NOT_ENTITY = new Set(['the', 'it', 'its', 'we', 'our', 'they', 'their', 'now', 'also', 'still', 'currently', 'and', 'then', 'today', 'london', 'uk', 'nyc', 'new', 'york', 'us', 'saas', 'b2b', 'seed', 'series', 'startup', 'company', 'team', 'founder', 'founders', 'ceo', 'cto', 'cofounder', 'inc', 'ltd', 'llc', 'limited', 'plc', 'a', 'an', 'in', 'at', 'to', 'of', 'for', 'is', 'are', 'has', 'have', 'recently', 'just', 'actively', 'already', 'additionally', 'meanwhile', 'following', 'was', 'were', 'been', 'being', 'will', 'which', 'who', 'that', 'raised', 'raises', 'raising', 'announced', 'closed', 'secured', 'round', 'funding', 'million', 'pre', 'based', 'london-based', 'early-stage', 'young', 'growing', 'fast-growing', 'british', 'uk-based', 'this', 'month', 'week', 'year', 'separately', 'elsewhere', 'furthermore', 'however', 'but', 'sales', 'gtm', 'platform', 'software', 'firm', 'business', 'brand'])
+const PREPOSITION = new Set(['with', 'from', 'by', 'at', 'for', 'of', 'to', 'via', 'behind', 'near', 'like', 'including', 'about', 'on', 'over', 'under', 'against'])
+const wordsOf = (x: string) => x.toLowerCase().replace(/&/g, ' and ').replace(/['’]s\b/g, '').split(/[^a-z0-9]+/).filter(Boolean)
+export function subjectIsOther(prefix: string, company: string | null | undefined): boolean {
   if (!company) return false
-  const own = new Set(wordsOf(company))
-  for (const m of prefix.matchAll(/\b[A-Z][A-Za-z0-9'’-]*/g)) {
-    const w = m[0].toLowerCase().replace(/['’]s$/, '')
-    if (NOT_ENTITY.has(w) || own.has(w)) continue
-    if (m.index === 0 && /^(?:separately|meanwhile|elsewhere|additionally|furthermore|however|but|also|today|now|recently)$/.test(w)) continue
-    return true
+  const own = new Set(wordsOf(company).filter(w => !['inc', 'ltd', 'llc', 'limited', 'plc', 'the', 'co', 'corp', 'group'].includes(w)))
+  if (own.size === 0) return false
+  const segs = prefix.split(/,|;|\band\b|\bwhile\b|\bwhich\b|\bwho\b|\bas\b/i).map(wordsOf)
+  for (let i = segs.length - 1; i >= 0; i--) {
+    const ws = segs[i].filter(w => !(NOT_ENTITY.has(w) && !own.has(w)) && !/^\d/.test(w))
+    const sayings = segs[i].filter(w => !['is', 'are', 'was', 'were', 'has', 'have', 'been', 'now', 'also', 'still', 'currently', 'actively', 'recently', 'just', 'already'].includes(w))
+    if (sayings.length === 0) continue // only auxiliaries: the subject is carried from the earlier segment
+    if (segs[i].some((w, k) => own.has(w) && !(k > 0 && PREPOSITION.has(segs[i][k - 1])))) return false
+    return ws.length > 0 // another company's name; only generic words left = still about the lead
   }
   return false
 }
 export const affirmativeSalesHiring = (text: string | null, company?: string | null): boolean => clauses(text ?? '').some(c => {
   if (NEGATED.test(c) || HYPOTHETICAL.test(c) || PAST.test(c)) return false
   const m = HIRING_VERB_OBJECT.exec(c)
-  if (m) return !/\bsalesforce\b|\bsales\s*tax\b/i.test(m[0]) && !namesOtherEntity(c.slice(0, m.index), company)
+  if (m) return !/\bsalesforce\b|\bsales\s*tax\b/i.test(m[0]) && !subjectIsOther(c.slice(0, m.index), company)
   const o = OPEN_ROLE.exec(c) ?? FIRST_HIRE.exec(c)
-  return !!o && isGtmRole(c) && !namesOtherEntity(c.slice(0, o.index), company)
+  return !!o && isGtmRole(c) && !subjectIsOther(c.slice(0, o.index), company)
 })
 export const quoteNamesSalesHiring = (excerpt: string | null, signal: string | null, company?: string | null): boolean => { void signal; return affirmativeSalesHiring(excerpt, company) } // the VERIFIED quote only: the model's claim is not evidence
 
-export async function applySalesHiringGate(db: Database.Database, job: JobLike, fetchImpl: typeof fetch = fetch, opts: { now?: number; hiringKeys?: Map<string, { url: string; date: string | null }>; eventKeys?: Set<string>; fundingKeys?: Set<string> } = {}): Promise<{ required: boolean; checked: number; passed: number; demoted: number }> {
-  const none = { required: false, checked: 0, passed: 0, demoted: 0 }
+export interface QuoteEvidence { url: string; excerpt: string; date: string | null }
+const labelOf = (host: string) => { const l = host.replace(/^www\./, '').split('.'); return (l.length >= 3 && /^(?:co|com|org|ac)$/.test(l[l.length - 2]) ? l[l.length - 3] : l[l.length - 2] ?? '').replace(/[^a-z0-9]/g, '') }
+const registrable = (host: string) => { const l = host.replace(/^www\./, '').split('.'); return l.length >= 3 && /^(?:co|com|org|ac)$/.test(l[l.length - 2]) ? l.slice(-3).join('.') : l.slice(-2).join('.') }
+// Evidence from ANOTHER candidate that shares only the lead's NAME is usable only when it is identity-compatible: a third-party page (news, a directory) can be
+// about the company, but a page on a company-looking site of a DIFFERENT domain (brightloop.com for the brightloop.io lead, or any such site when the lead has no
+// domain) is some other business with the same name.
+export function evidenceCompatible(url: string, company: string, leadDomain: string | null): boolean {
+  let host = ''; try { host = new URL(url).hostname.toLowerCase() } catch { return false }
+  const lab = labelOf(host), key = company.toLowerCase().replace(/&/g, 'and').replace(/\b(inc|ltd|llc|limited|plc|corp|co|the)\b/g, '').replace(/[^a-z0-9]/g, '')
+  const looksOwn = lab.length >= 4 && key.length >= 3 && (lab.includes(key) || key.includes(lab))
+  if (!looksOwn) return true
+  return !!leadDomain && registrable(host) === registrable(leadDomain.toLowerCase().replace(/^https?:\/\//, '').replace(/[/?#].*$/, ''))
+}
+
+export async function applySalesHiringGate(db: Database.Database, job: JobLike, fetchImpl: typeof fetch = fetch, opts: { now?: number; quotes?: Map<string, QuoteEvidence[]> } = {}): Promise<{ required: boolean; checked: number; passed: number; demoted: number; demotions: { company: string; url: string; reason: string }[] }> {
+  const none = { required: false, checked: 0, passed: 0, demoted: 0, demotions: [] as { company: string; url: string; reason: string }[] }
   if (!salesHiringRequired(job.query, job.icp)) return none
+  const demotions = none.demotions
+  const stage = requestedStage(job.query, job.icp)
   const windowDays = parseWindowDays(job.query ?? '') ?? 90
   const fundingAsked = requestAsksFunding(job.query, job.icp)
   const now = Math.floor((opts.now ?? Date.now()) / 1000)
   const leads = db.prepare(
-    `SELECT id, company, company_domain, evidence_excerpt, signal, why, dedup_key FROM leads
+    `SELECT id, company, company_domain, evidence_excerpt, signal, why, dedup_key, source_url FROM leads
      WHERE scan_job_id = ? AND review_reason IS NULL AND confidence IS NOT NULL AND human_confirmed_at IS NULL AND company <> '' ORDER BY score DESC`,
-  ).all(job.id) as { id: string; company: string; company_domain: string | null; evidence_excerpt: string | null; signal: string; why: string | null; dedup_key: string | null }[]
+  ).all(job.id) as { id: string; company: string; company_domain: string | null; evidence_excerpt: string | null; signal: string; why: string | null; dedup_key: string | null; source_url: string }[]
   const setWhy = db.prepare('UPDATE leads SET why = ? WHERE id = ?')
   const demote = db.prepare('UPDATE leads SET review_reason = ?, confidence = NULL, why = ? WHERE id = ? AND review_reason IS NULL')
   const counts = db.prepare('UPDATE scan_jobs SET verified = MAX(COALESCE(verified, 0) - 1, 0), needs_review = COALESCE(needs_review, 0) + 1 WHERE id = ?')
   let passed = 0, demoted = 0, lookups = 0
-  const demoteEvent = db.prepare('UPDATE leads SET review_reason = ?, confidence = NULL, why = ? WHERE id = ? AND review_reason IS NULL')
   for (const l of leads) {
+    // Evidence for THIS lead: its own saved quote, plus other verified candidates' quotes for the same company that are identity-compatible (see evidenceCompatible).
+    const others = (l.dedup_key ? opts.quotes?.get(l.dedup_key) ?? [] : []).filter(q => evidenceCompatible(q.url, l.company, l.company_domain))
+    const quotes: QuoteEvidence[] = [{ url: l.source_url, excerpt: l.evidence_excerpt ?? '', date: null }, ...others]
+    const demoteFor = (reason: string, why: string) => { if (demote.run(reason, (why + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id).changes) { counts.run(job.id); demoted++; demotions.push({ company: l.company, url: l.source_url, reason }) } }
     // The event half first: a hiring page alone (a job ad) does not show seed funding / an opening, whatever it says about the company.
-    if (!quoteShowsEvent(l.evidence_excerpt, l.signal, fundingAsked, l.company) && !(l.dedup_key && (fundingAsked ? opts.fundingKeys : opts.eventKeys)?.has(l.dedup_key))) {
-      if (demoteEvent.run(NO_EVENT, (`No event evidence: the source quote shows hiring but not the funding or event the request asks for. ` + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id).changes) { counts.run(job.id); demoted++ }
+    if (!quotes.some(q => quoteShowsEvent(q.excerpt, l.signal, fundingAsked, l.company, stage))) {
+      demoteFor(NO_EVENT, stage && fundingAsked ? `No event evidence: no source quote affirms this company raised a ${stage} round (a different stage, a negated or planned raise, or another company's raise does not count). ` : `No event evidence: the source quote shows hiring but not the funding or event the request asks for. `)
       continue
     }
-    if (quoteNamesSalesHiring(l.evidence_excerpt, l.signal, l.company)) { passed++; continue }
-    // Another VERIFIED candidate for the same company (kept out as a duplicate) is the one whose own quote names the sales hiring.
-    const other = l.dedup_key ? opts.hiringKeys?.get(l.dedup_key) : undefined
-    if (other) {
-      let host = ''; try { host = new URL(other.url).hostname.replace(/^www\./, '') } catch { /* keep blank */ }
-      setWhy.run((`Hiring sales: named in a verified source${host ? ` (${host})` : ''}${other.date ? `, dated ${other.date}` : ''}. ${l.why ?? ''}`).trim().slice(0, WHY_MAX), l.id)
+    if (quotes.some(q => quoteNamesSalesHiring(q.excerpt, l.signal, l.company))) {
+      const o = others.find(q => quoteNamesSalesHiring(q.excerpt, l.signal, l.company))
+      if (!quoteNamesSalesHiring(l.evidence_excerpt, l.signal, l.company) && o) {
+        let host = ''; try { host = new URL(o.url).hostname.replace(/^www\./, '') } catch { /* keep blank */ }
+        setWhy.run((`Hiring sales: named in a verified source${host ? ` (${host})` : ''}${o.date ? `, dated ${o.date}` : ''}. ${l.why ?? ''}`).trim().slice(0, WHY_MAX), l.id)
+      }
       passed++; continue
     }
     if (l.company_domain && lookups >= MAX_BOARD_LOOKUPS) {
       // A processing limit never lets a lead through unproven: it is held, and the card says it was not checked (unknown, not absent).
-      if (demote.run(NO_SALES_HIRING, (`No sales-hiring evidence: not checked - this scan had more leads than the job-board lookup limit (${MAX_BOARD_LOOKUPS}). ` + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id).changes) { counts.run(job.id); demoted++ }
+      demoteFor(NO_SALES_HIRING, `No sales-hiring evidence: not checked - this scan had more leads than the job-board lookup limit (${MAX_BOARD_LOOKUPS}). `)
       continue
     }
     if (l.company_domain) lookups++
@@ -128,8 +177,8 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
     const line = heuristic
       ? `No sales-hiring evidence: a job board was found only through ${l.company_domain}, a domain matched by company name, so it is not established as this company's board. `
       : `No sales-hiring evidence: no sales or GTM posting dated in the last ${windowDays} days was found on a public job board tied to ${l.company_domain ?? 'a confirmed company domain (none found)'} (a board that could not be reached looks the same as none, so this is unconfirmed, not proof the company is not hiring). `
-    if (demote.run(NO_SALES_HIRING, (line + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id).changes) { counts.run(job.id); demoted++ }
+    demoteFor(NO_SALES_HIRING, line)
   }
   audit(db, { tenantId: job.user_id, connector: 'scan:sales-hiring-gate', jobId: job.id, lookup: `${leads.length} leads, window ${windowDays}d`.slice(0, 200), status: demoted ? 'demoted' : 'ok', results: passed })
-  return { required: true, checked: leads.length, passed, demoted }
+  return { required: true, checked: leads.length, passed, demoted, demotions }
 }
