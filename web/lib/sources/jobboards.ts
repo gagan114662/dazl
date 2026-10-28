@@ -1,6 +1,7 @@
 import type { Evidence, SourceAdapter, SafeGet } from './types.ts'
 import { decodeText } from './rss.ts'
 import { norm } from '../scan/evidence.ts'
+import { countriesIn, resolveSegment } from '../scan/countries.ts'
 import { parseWindowDays } from '../scan/window.ts'
 import { rolePhrases } from '../search/direct-queries.ts'
 import { domainSlug } from '../signals/entity-match.ts'
@@ -52,12 +53,31 @@ const COUNTRY_PLACES: { ask: RegExp; name: string; ok: (l: string) => boolean }[
 ]
 export interface Place { name: string; ok: (...locs: (string | undefined)[]) => boolean }
 const placeOf = (c: { name: string; ok: (l: string) => boolean }): Place => ({ name: c.name, ok: (...l) => l.some(x => !!x && c.ok(x)) })
+// Any other "<City>, <Country>" in the request (Toronto Canada, Gurugram India, Dubai UAE, Berlin Germany): a posting is in the place when its location names the city as a whole word and does
+// not name a different country. Before this, only London, New York City, a US state or the UK had boards at all, so a request anywhere else read no job board. City-only requests (no country
+// stated) still get none: a bare capitalized word is not enough to call a place.
+const CAP = "[A-Z][\\p{L}'.-]+"
+const CITY_COUNTRY = new RegExp(`(${CAP}(?: ${CAP}){0,2}),?\\s+(?:in\\s+)?(${CAP}(?: ${CAP}){0,3})`, 'gu')
+export function genericPlace(query: string): Place | null {
+  for (const m of query.matchAll(CITY_COUNTRY)) {
+    const city = m[1].replace(/^(?:Find|In|Hiring|Hire|Startups?|Companies|Firms?)\s+/i, '').trim(), country = resolveSegment(m[2].trim(), true)
+    if (!country || !city) continue
+    const key = norm(city); if (key.length < 3) continue
+    const ok = (...locs: (string | undefined)[]) => locs.some(l => {
+      if (!l) return false
+      const t = norm(l); if (!new RegExp(`(^| )${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( |$)`).test(t)) return false
+      const named = countriesIn(l); return named.length === 0 || named.every(c => c === country)
+    })
+    return { name: city, ok }
+  }
+  return null
+}
 export function placeIn(query: string): Place | null {
   for (const c of CITY_PLACES) if (c.ask.test(query)) return placeOf(c)
   const st = stateIn(query)
   if (st) return { name: st, ok: (...l) => locationInState(st, ...l) }
   for (const c of COUNTRY_PLACES) if (c.ask.test(query)) return placeOf(c)
-  return null
+  return genericPlace(query)
 }
 export function locationInState(state: string, ...locs: (string | undefined)[]): boolean {
   const abbr = Object.keys(STATES).find(k => STATES[k] === state)!
