@@ -269,3 +269,18 @@ test('partial vs ok vs empty: a partial source can never leave the outcome readi
   assert.equal(newsStatus([{} as never], { searched: true, hits: 1, attempted: 3, failed: 0 }), 'ok')
   assert.equal(newsStatus(null, { searched: true, hits: 0, attempted: 3, failed: 3 }), 'error')
 })
+
+test('END TO END (public status/outcome mapping): news hits with valid page evidence but the model extracts nothing -> search:news is no_candidates (evidence read), NOT empty, and the outcome is not zero-match', async () => {
+  const f: Fixture = { ...base({ hits: [], modelQueries: ['london saas startup seed round', 'london startup raises seed funding'], deps: { newsHttp: async () => ({ status: 200, body: gdeltBody }) } }), extraction: [] }
+  const e = await ending(f)
+  const n = e.progress.find(p => p.source === 'search:news')!
+  assert.equal(n.status, 'no_candidates', JSON.stringify(e.rows)); assert.equal(n.state, 'done'); assert.match(n.note ?? '', /items read, none extracted as candidates/)
+  assert.notEqual(n.status as string, 'empty')
+  assert.notEqual(e.outcome.kind, 'zero_match', JSON.stringify(e.outcome)); assert.match((e.outcome.detail ?? '') + e.outcome.label, /search:news returned \d+ items?, none matched as candidates/)
+  assert.equal(outcomeInputs(null, e.rows, 'failed').evidence_sources.some(x => x.source === 'search:news'), true)
+})
+test('newsStatus: evidence + no extraction is no_candidates; zero hits is empty; the two are never conflated', () => {
+  assert.equal(newsStatus([], { searched: true, hits: 2, attempted: 2, failed: 0 }), 'no_candidates')
+  assert.equal(newsStatus([], { searched: true, hits: 0, attempted: 2, failed: 0 }), 'empty')
+  assert.equal(newsStatus([], { searched: true, hits: 2, attempted: 2, failed: 1 }), 'partial:1_of_2', 'a failed request still wins')
+})

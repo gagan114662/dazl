@@ -665,7 +665,8 @@ export const NEWS_PAGES = 8
 export function newsStatus(leads: LeadDraft[] | null, note: { searched: boolean; hits: number; attempted: number; failed: number; malformed?: number }): string {
   // Any failed request or invalid entry beside answers that worked makes the source PARTIAL - never ok, never a plain empty. All requests failed is handled below ('error').
   const partial = note.failed > 0 ? `partial:${note.failed}_of_${note.attempted}` : (note.malformed ?? 0) > 0 ? 'partial:malformed' : null
-  if (leads) return partial ?? (leads.length ? 'ok' : 'empty')
+  // Hits with usable page evidence but nothing extracted is NOT "nothing found": its own status, so progress and the outcome say evidence was read and no candidate came of it.
+  if (leads) return partial ?? (leads.length ? 'ok' : note.hits > 0 ? 'no_candidates' : 'empty')
   if (!note.searched) return 'unavailable'
   if (note.hits === 0) return note.failed === 0 ? ((note.malformed ?? 0) > 0 ? 'unavailable' : 'empty') : note.failed >= note.attempted ? 'error' : `error_partial:${note.failed}_of_${note.attempted}`
   return partial ?? 'unavailable'   // hits but no usable page evidence: unknown (named as partial when some requests also failed)

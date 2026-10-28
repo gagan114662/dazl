@@ -2,7 +2,7 @@
 // route serves the result so the UX can poll it while a scan runs.
 //   per source:  { source, status, candidates, accepted, review, rejected }   null = not known yet (never a fabricated zero)
 //   outcome:     failed (which source), rejected (counts per reason), zero-match (the sources returned nothing), or yielded N leads (see scan-outcome.ts)
-export type SourceStatus = 'running' | 'ok' | 'empty' | 'failed' | 'skipped' | 'unavailable' | 'partial'   // partial: it answered, but some of its requests or entries failed - never ok, never an empty result; unavailable: the source gave nothing usable (no results, or switched off) - NOT proof that it failed
+export type SourceStatus = 'running' | 'ok' | 'empty' | 'failed' | 'skipped' | 'unavailable' | 'partial' | 'no_candidates'   // no_candidates: it returned evidence but none of it was extracted as a candidate (not "found nothing"); partial: it answered, but some of its requests or entries failed - never ok, never an empty result; unavailable: the source gave nothing usable (no results, or switched off) - NOT proof that it failed
 export type SourceState = 'queued' | 'running' | 'done' | 'failed'
 export interface SourceProgress { source: string; state: SourceState; status: SourceStatus; note: string | null; candidates: number | null; accepted: number | null; review: number | null; rejected: number | null }
 export interface SourceRunRow { collector?: unknown; status?: unknown; evidence_count?: unknown; candidate_count?: unknown; verified_count?: unknown; review_count?: unknown }
@@ -16,6 +16,7 @@ export function sourceStatusOf(raw: string, jobRunning: boolean): SourceStatus {
   if (/^skipped/i.test(raw)) return 'skipped'
   if (raw === 'unavailable') return 'unavailable'
   if (/^partial/i.test(raw)) return 'partial'
+  if (raw === 'no_candidates') return 'no_candidates'
   if (raw === 'empty') return 'empty'
   return 'ok'
 }
@@ -34,7 +35,7 @@ export function progressOf(rows: SourceRunRow[], jobStatus: string): SourceProgr
     const candidates = num(r.candidate_count), accepted = num(r.verified_count), review = num(r.review_count)
     const rejected = candidates !== null && accepted !== null && review !== null ? Math.max(0, candidates - accepted - review) : null
     const raw = String(r.status ?? ''), status = sourceStatusOf(raw, running)
-    return { source: String(r.collector ?? ''), state: stateOf(raw, status), status, note: partialNote(raw), candidates, accepted, review, rejected }
+    return { source: String(r.collector ?? ''), state: stateOf(raw, status), status, note: partialNote(raw) ?? (status === 'no_candidates' ? `${num(r.evidence_count) ?? 'some'} items read, none extracted as candidates` : null), candidates, accepted, review, rejected }
   }).filter(p => p.source)
 }
 
