@@ -11,6 +11,7 @@ export const ROUTE_TEMPLATES: readonly string[] = [
   '/api/billing/webhook',
   '/api/campaigns',
   '/api/campaigns/[id]',
+  '/api/client-errors',
   '/api/crm',
   '/api/gmail/callback',
   '/api/gmail/connect',

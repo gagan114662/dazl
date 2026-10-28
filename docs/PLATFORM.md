@@ -73,6 +73,12 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
     - uncaught process exceptions (monitor only, exit behaviour unchanged);
     - unhandled promise rejections (`lib/ops/process-errors.ts`). Next's own listener keeps the server up. If ours is the only listener, it rethrows after recording, so bare Node still exits;
     - scan runner and queue runner crashes (`lib/scan/crash.ts`). A rejection that escapes `runJob`'s own failure handling is recorded with the tenant and job id. The job is marked `failed` with `error = 'crashed'`, fenced on `status = 'running'` and the same `attempts`, instead of waiting in `running` for the stale-lease reaper. On the queue path the queue item is failed too, not retried, since a crash would repeat.
+    - browser errors (`lib/client-error-report.ts`, mounted in the root layout): uncaught errors, unhandled rejections and errors caught by the three error boundaries are posted to `POST /api/client-errors` and recorded with `source: 'client'` and `where: '<kind>:<page route template>'`.
+      - The browser sends only the error's name, message and stack, its kind and the page path. The server keeps the path only as its route template.
+      - The tenant comes from the session cookie, never from the body.
+      - Limits: same origin only, 8 KB, 30 per IP per 10 min, at most 5 per page load, each distinct error once.
+      - A missing JavaScript chunk after a deploy is not reported (`lib/chunk-recovery.ts` handles it).
+      - End to end on a production build: `npm run test:smoke:client-errors`.
   - **Request ids and JSON request logs** (`proxy.ts`, `lib/ops/request-log.ts`):
     - Every `/app` and `/api` request gets a fresh random UUIDv4. An incoming `x-request-id` is replaced, never trusted.
     - The id is forwarded to the route as the `x-request-id` request header, returned as a response header, and recorded on error records as `request_id`, so a log line and an error can be joined.
