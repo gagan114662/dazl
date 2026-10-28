@@ -12,8 +12,12 @@ import { runPgMigrations } from '../../lib/db/migrate-pg.ts'
 import { PG_URL, freshSchema } from './pg-test.ts'
 
 const mode = process.env.HEALTH_MODE
+// the environment web/docs/DEPLOY.md requires, as test values (no real key); 'env-missing' leaves one out
+Object.assign(process.env, { DAZL_MASTER_KEY: Buffer.alloc(32, 7).toString('base64'), PUBLIC_BASE_URL: 'https://dazl.test',
+  STRIPE_SECRET_KEY: 'sk_test_fixture', STRIPE_PRICE_PRO: 'price_fixture', STRIPE_WEBHOOK_SECRET: 'whsec_fixture' })
+if (mode === 'env-missing') delete process.env.STRIPE_WEBHOOK_SECRET
 if (mode === 'pg-down') process.env.DATABASE_URL = process.env.HEALTH_DATABASE_URL
-if (mode === 'sqlite') { const lite = new Database(':memory:'); migrateAllSqlite(lite); setScanDb(lite) } // as getDb() opens it; pg-down must keep getDb() on DATABASE_URL
+if (mode === 'sqlite' || mode === 'env-missing') { const lite = new Database(':memory:'); migrateAllSqlite(lite); setScanDb(lite) } // as getDb() opens it; pg-down must keep getDb() on DATABASE_URL
 const livePg = mode === 'pg' || mode === 'pg-behind'
 const schema = livePg ? await freshSchema() : null
 if (schema) {
@@ -45,8 +49,14 @@ test(`health routes (${mode})`, async () => {
     const body = await res.json()
     assert.equal(res.headers.get('cache-control'), 'no-store')
     assert.ok('commit' in body)
-    if (mode === 'sqlite') {
+    if (mode === 'env-missing') {
+      assert.equal(res.status, 503, JSON.stringify(body))
+      assert.equal(body.checks.store.ok, true, 'the store answers')
+      assert.deepEqual(body.checks.env, { ok: false, missing: 1 })
+      assert.ok(!JSON.stringify(body).includes('STRIPE'), 'the public body never names the variable')
+    } else if (mode === 'sqlite') {
       assert.equal(res.status, 200, JSON.stringify(body))
+      assert.deepEqual(body.checks.env, { ok: true, missing: 0 })
       assert.equal(body.ok, true)
       assert.equal(body.checks.store.engine, 'sqlite')
       assert.deepEqual(body.checks.schema, { ok: true, skipped: 'sqlite' })

@@ -22,6 +22,6 @@ export function liveResponse(): NextResponse {
 }
 
 export async function readyResponse(): Promise<NextResponse> {
-  const r = await readiness({ db: getDb, sqlite: getAuthDb, migrations, rawSqliteModules: () => Object.keys(RAW_SQLITE_MODULES).length })
+  const r = await readiness({ db: getDb, sqlite: getAuthDb, migrations, rawSqliteModules: () => Object.keys(RAW_SQLITE_MODULES).length, env: () => process.env })
   return NextResponse.json({ ...r, commit: resolveServedCommit() }, { status: r.ok ? 200 : 503, headers: { 'Cache-Control': 'no-store' } })
 }
