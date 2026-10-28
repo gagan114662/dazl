@@ -882,10 +882,11 @@ export default function LeadsClient() {
             {(() => {
               const c = leadCardSummary(l, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')
               return <div data-testid="lead-card">
-                <div className="flex items-start justify-between gap-3">
+                {/* Below sm the actions sit under the identity so the company, contact and any warning get the full width. */}
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div className="flex items-start gap-3 min-w-0">
                   <Avatar name={c.company} size={40} />
-                  <div className="min-w-0">
+                  <div className="min-w-0 break-words">
                     <div className="font-semibold text-base leading-tight">{l.company_domain ? <a className="hover:underline" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{c.company}</a> : c.company}{!!l.watch_new && <span className="ml-2"><Pill tone="mint">new</Pill></span>}{l.quarantined_at && <span className="ml-2"><Pill tone="pink">Rejected</Pill></span>}{!l.quarantined_at && (draftedLeads?.has(l.id) || approved[l.id]) && <span className="ml-2"><Pill tone="mint">Approved</Pill></span>}</div>
                     <div className="text-[var(--ink-2)] text-xs mt-0.5">{c.contact ?? 'No contact found yet'}</div>
                     {/* A plain confirmation (one sentence, nothing in doubt) is a small mark with its basis behind the (i); any
@@ -895,7 +896,7 @@ export default function LeadsClient() {
                       : <div data-testid="contact-status" className={`text-xs ${c.contactStatus.confirmed ? 'text-[var(--ink-2)] mt-0.5' : 'text-[#111] font-medium border-l-2 border-black pl-2 mt-0.5'}`}>{c.contactStatus.text}</div>)}
                   </div>
                   </div>
-                  {!l.quarantined_at && <div className="flex gap-2 shrink-0">
+                  {!l.quarantined_at && <div className="flex gap-2 shrink-0 pl-[52px] sm:pl-0" data-testid="card-actions">
                     <button onClick={() => approveLead(l.id)} disabled={!c.approve.ok || !!approving[l.id] || !!approved[l.id]} title={c.approve.ok ? 'Creates a draft for you to review in Outreach. Nothing is sent.' : c.approve.reason} className="btn-primary btn-sm"><Icon name="check" className="w-3.5 h-3.5" />Approve</button>
                     <button onClick={() => setRejecting(rejecting?.id === l.id ? null : { id: l.id, why: '' })} aria-expanded={rejecting?.id === l.id} className="btn-ghost btn-sm"><Icon name="x" className="w-3.5 h-3.5" />Reject</button>
                   </div>}

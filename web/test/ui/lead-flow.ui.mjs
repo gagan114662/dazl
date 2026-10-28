@@ -115,6 +115,23 @@ try {
     ['POST', `/api/leads/${M}/quarantine`, { reason: 'Rejected: Not a fit' }],
     ['DELETE', `/api/leads/${M}/quarantine`, {}],
   ], 'only the existing draft and quarantine actions are written')
+  // 4. At 390px the actions stack under the identity: a long company name, its email and the role warning get the card's width.
+  const L = 'e'.repeat(24), LONG = 'Northern Kentucky Pediatric & Family Dental Associates of Greater Cincinnati'
+  LEADS.push(lead(L, LONG, { contact: 'frontdesk.scheduling@northernkentuckypediatricdental.example', enrichments: [person('Alexandra Montgomery-Whitfield, Practice owner and clinical director', 'https://www.daytondailynews.example/eeee')] }))
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.reload({ waitUntil: 'networkidle' })
+  const long = card(LONG); await long.waitFor()
+  const box = await long.boundingBox(), text = await long.locator('.min-w-0.break-words').boundingBox()
+  const acts = await long.getByTestId('card-actions').boundingBox()
+  assert.ok(text.width >= box.width - 60, `identity column uses the card width at 390px (${Math.round(text.width)} of ${Math.round(box.width)})`)
+  assert.ok(acts.y >= text.y + text.height - 1, 'Approve/Reject sit below the identity and contact')
+  assert.match(await long.getByTestId('contact-status').innerText(), /current role not verified/, 'the role warning stays on screen')
+  for (const name of ['Approve', 'Reject']) { const btn = long.getByRole('button', { name }); assert.equal(await btn.isVisible(), true); const bb = await btn.boundingBox(); assert.ok(bb.x >= box.x && bb.x + bb.width <= box.x + box.width, `${name} fits inside the card`) }
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'no horizontal scroll')
+  if (process.env.SHOTS) { await long.scrollIntoViewIfNeeded(); await long.screenshot({ path: path.join(process.env.SHOTS, 'after-390-long.png') }) }
+  await page.setViewportSize({ width: 1280, height: 900 })
+  const dbox = await card('Maple Family Dentistry').getByTestId('card-actions').boundingBox(), didb = await card('Maple Family Dentistry').locator('.min-w-0.break-words').boundingBox()
+  assert.ok(Math.abs(dbox.y - didb.y) < 30, 'desktop keeps the actions beside the identity')
   console.log('lead flow UI check passed: cards show company, contact name + role, one-line why, source + date; Approve -> draft + moves to Approved; Reject -> leaves the list with Undo; no caveat paragraphs')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
