@@ -46,9 +46,9 @@ test('GATES HOLD: other press about a DIFFERENT company, or dated 200 days ago, 
   assert.equal((other.x.db.prepare("SELECT count(*) AS n FROM leads WHERE company = 'Zenix'").get() as { n: number }).n, 0)
   const stale = await run({ pressDays: 200 }); assert.notEqual(state(stale.lead), 'verifier-passed', JSON.stringify(stale.lead))
 })
-test('a run that disabled the paid fallback makes no recovery search and says so on the hold', async () => {
+test('a run that disabled the paid fallback makes no recovery search (no fallback:news source row) and says so on the hold', async () => {
   const r = await run({ paid: false })
-  assert.equal(state(r.lead), 'held:outside_window_undated'); assert.equal(r.newsCalls.length, 0); assert.match(r.rec!.value, /^Recovery pass did not run \(the run disabled the paid fallback\)\./)
+  assert.equal(state(r.lead), 'held:outside_window_undated'); assert.equal((r.x.db.prepare("SELECT count(*) AS n FROM scan_source_runs WHERE collector = 'fallback:news'").get() as { n: number }).n, 0, 'no recovery search recorded'); assert.match(r.rec!.value, /^Recovery pass did not run \(the run disabled the paid fallback\)\./)
 })
 test('targets: only undated verified leads and reasons another source can fix (blocked / JavaScript / quote not on the page); stale, place, closed-job and counterparty verdicts get none; at most 3', () => {
   const held = (company: string, reason: string) => ({ company, signal: 'raised a seed round', source_url: `https://${company.toLowerCase()}.example/x`, review_reason: reason })
@@ -57,4 +57,12 @@ test('targets: only undated verified leads and reasons another source can fix (b
   const outcome = { leads: [{ company: 'U1', source_url: 'https://u1.example/x', event_date: null as string | null }], review: [], dropped: {} as Record<string, number> }
   const n1 = mergeFallback(outcome as never, { leads: [{ company: 'U1', source_url: 'https://press.example/u1', event_date: null }], dropped: {} } as never, fallbackTargets([], ['London'], [{ company: 'U1', signal: 's', source_url: 'https://u1.example/x' }])); assert.equal(n1.length, 0, 'an undated replacement changes nothing')
   void recordRecovery
+})
+
+test('REPLAY SET (stubbed): verifier-passed with the recovery pass OFF (paid fallback disabled) vs ON, over five held-candidate scenarios', async () => {
+  const set: [string, Opt][] = [['undated, dated press exists', {}], ['quote not on the cited page, press has it', { blogText: `Orbitly is a London software company.${filler}`, blogDate: daysAgo(10) }], ['undated, no other press', { press: false }], ['undated, press is another company', { otherCompany: true }], ['undated, press is 200 days old', { pressDays: 200 }]]
+  let before = 0, after = 0
+  for (const [, o] of set) { if (state((await run({ ...o, paid: false })).lead) === 'verifier-passed') before++; if (state((await run(o)).lead) === 'verifier-passed') after++ }
+  console.log(`# recovery replay (stub, verifier-passed not qualified): before ${before} / ${set.length}, after ${after} / ${set.length}`)
+  assert.deepEqual([before, after], [0, 2])
 })

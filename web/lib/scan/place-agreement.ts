@@ -86,6 +86,35 @@ function londonVerdict(text: string, company?: string): PlaceVerdict {
   return 'unconfirmed'
 }
 
+// India, the UAE and the neighbouring Gulf states: a page that names a DIFFERENT city of the list than the one asked for is a place conflict, not "unconfirmed" (Mumbai for Gurugram, Abu Dhabi or Doha for
+// Dubai). Doha, Riyadh ... are listed as other countries' cities. A city and its alternate names are one metro; "Delhi NCR" counts for Delhi, Gurugram and Noida. Only used when the request itself
+// is a listed city or names India / the UAE, so no other request is affected.
+const METROS: string[][] = [
+  ['delhi', 'new delhi'], ['gurugram', 'gurgaon'], ['noida'], ['faridabad'], ['mumbai', 'bombay'], ['bengaluru', 'bangalore'], ['hyderabad'], ['chennai', 'madras'], ['kolkata', 'calcutta'], ['pune'], ['ahmedabad'], ['jaipur'],
+  ['dubai'], ['abu dhabi'], ['sharjah'], ['ajman'], ['ras al khaimah'], ['fujairah'],
+  ['doha'], ['riyadh'], ['jeddah'], ['kuwait city'], ['manama'], ['muscat'],
+]
+const NCR_METROS = new Set(['delhi', 'gurugram', 'noida', 'faridabad'])
+const named = (t: string, name: string) => new RegExp(`(^| )${name}( |$)`).test(t)
+// An alternate name of the asked city (Gurgaon for Gurugram, Bangalore for Bengaluru, Bombay for Mumbai) is the same place.
+export function askedMetroAlias(text: string, terms: string[]): boolean {
+  const t = clean(text).replace(/[,.]+/g, ' ').replace(/ +/g, ' ')
+  return METROS.some(m => m.some(n => terms.some(x => x === n || x.startsWith(`${n},`))) && m.some(n => named(t, n)))
+}
+export function otherListedCity(text: string, terms: string[]): string | null {
+  const t = clean(text).replace(/[,.]+/g, ' ').replace(/ +/g, ' '), ours = new Set(METROS.filter(m => m.some(n => terms.some(x => x === n || x.startsWith(`${n},`) || x === `${n} india`))).map(m => m[0]))
+  const COUNTRY = /^(india|uae|united arab emirates|emirates)$/
+  const countryAsked = terms.some(x => COUNTRY.test(x)), cityAsked = terms.some(x => !x.includes(',') && !COUNTRY.test(x))   // a COUNTRY-level request (India) accepts every city of it
+  if (ours.size === 0 && !(countryAsked && cityAsked)) return null
+  const ncr = /\b(?:delhi ncr|ncr|national capital region)\b/.test(t) && [...ours].some(m => NCR_METROS.has(m))
+  for (const m of METROS) {
+    if (ours.has(m[0])) continue
+    if (ncr && NCR_METROS.has(m[0])) continue
+    if (m.some(n => named(t, n))) return m[0]
+  }
+  return null
+}
+
 const GENERIC_ALIAS: Record<string, string[]> = {}
 export function geoTerms(where: string[]): string[] {
   const out = new Set<string>()
@@ -131,6 +160,8 @@ export function placeAgreement(text: string, where: string[], company?: string):
   if (where.some(w => /\blondon\b/i.test(w))) verdicts.push(londonVerdict(text, company))
   if (verdicts.length) return verdicts.includes('agrees') ? 'agrees' : verdicts.includes('mismatch') ? 'mismatch' : 'unconfirmed'
   if (namesPlace(text, terms)) return 'agrees'
+  if (askedMetroAlias(text, terms)) return 'agrees'
+  if (otherListedCity(text, terms)) return 'mismatch'
   const ours = Object.entries(US_STATES).filter(([ab, name]) => terms.some(x => x === name || x === ab.toLowerCase() || x.endsWith(`, ${ab.toLowerCase()}`))).map(([ab]) => ab)
   return otherUsState(text, ours) ? 'mismatch' : 'unconfirmed'
 }
