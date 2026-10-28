@@ -1,13 +1,13 @@
 // SEO audits, content briefs and newsjack drafts on the Db layer (docs/PLATFORM.md step 2), on SQLite and Postgres:
 // each module's write and read paths, and two tenants kept apart (tenant B cannot list, approve or change A's rows).
-// The tenant's AI key still comes from the SQLite key store; the provider and the audited site are stubbed.
+// The tenant's AI key is read from the same store (each tenant's own); the provider and the audited site are stubbed.
 import assert from 'node:assert/strict'
-import Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { runAudit, recentAudits } from '../lib/seo/audit.ts'
 import { generateBrief, recentBriefs } from '../lib/seo/brief.ts'
 import { createNewsjack, approveNewsjack, recentNewsjacks } from '../lib/seo/newsjack.ts'
-import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
+import { writeKey } from '../lib/llm/key-store.ts'
+import type { Db } from '../lib/db/client.ts'
 import type { Lookup } from '../lib/net/public-fetch.ts'
 import { bothEngines } from './helpers/engines.ts'
 
@@ -33,11 +33,10 @@ const stub = (async (u: string, init?: RequestInit) => {
   return new Response('nf', { status: 404 })
 }) as unknown as typeof fetch
 
-function keys(): Database.Database {
-  const k = new Database(':memory:'); migrateKeys(k)
-  saveKey(k, A, 'anthropic', 'sk-ant-test-key-AAAAAA', master)
-  saveKey(k, B, 'anthropic', 'sk-ant-test-key-BBBBBB', master)
-  return k
+// each tenant's own key, in the store under test
+async function keys(db: Db): Promise<void> {
+  await writeKey(db, A, 'anthropic', 'sk-ant-test-key-AAAAAA', master)
+  await writeKey(db, B, 'anthropic', 'sk-ant-test-key-BBBBBB', master)
 }
 
 bothEngines('SEO audits: stored per tenant; each tenant lists only its own', async ({ db }) => {
@@ -52,9 +51,9 @@ bothEngines('SEO audits: stored per tenant; each tenant lists only its own', asy
 })
 
 bothEngines("briefs: generated on each tenant's own key, stored per tenant; B never sees A's", async ({ db }) => {
-  const k = keys()
-  const a = await generateBrief(db, k, A, 'lead generation', { fetchImpl: stub, master, now: NOW })
-  const b = await generateBrief(db, k, B, 'pipe sales', { fetchImpl: stub, master, now: NOW })
+  await keys(db)
+  const a = await generateBrief(db, A, 'lead generation', { fetchImpl: stub, master, now: NOW })
+  const b = await generateBrief(db, B, 'pipe sales', { fetchImpl: stub, master, now: NOW })
   assert.ok(!('error' in a) && !('error' in b))
   const la = await recentBriefs(db, A), lb = await recentBriefs(db, B)
   assert.deepEqual(la.map(r => r.topic), ['lead generation'])
@@ -64,9 +63,9 @@ bothEngines("briefs: generated on each tenant's own key, stored per tenant; B ne
 })
 
 bothEngines("newsjacks: B cannot list or approve A's draft; A's approval works once", async ({ db }) => {
-  const k = keys()
-  const a = await createNewsjack(db, k, A, 'https://news.example/a', { fetchImpl: stub, lookup: pubLookup, master, now: NOW })
-  const b = await createNewsjack(db, k, B, 'https://news.example/b', { fetchImpl: stub, lookup: pubLookup, master, now: NOW })
+  await keys(db)
+  const a = await createNewsjack(db, A, 'https://news.example/a', { fetchImpl: stub, lookup: pubLookup, master, now: NOW })
+  const b = await createNewsjack(db, B, 'https://news.example/b', { fetchImpl: stub, lookup: pubLookup, master, now: NOW })
   assert.ok(!('error' in a) && !('error' in b))
   if ('error' in a || 'error' in b) return
   assert.deepEqual((await recentNewsjacks(db, B)).map(r => r.id), [b.id])
