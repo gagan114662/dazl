@@ -39,3 +39,10 @@ test('homepage claims match behaviour (Instinct #326): example demo labelled, we
   assert.match(pro, /your provider bills that usage separately/)
   assert.doesNotMatch(page, /no overages/i)
 })
+
+test('onboarding "brain ready" copy matches behaviour: no approve-every-send, no unconditional follow-up stop, no contact-today promise', () => {
+  const fr = read('app/app/first-run.tsx')
+  assert.doesNotMatch(fr, /You approve every email before it sends|Follow-ups stop the moment|contact today/)
+  assert.match(fr, /autopilot is off unless you turn it on/)
+  assert.match(fr, /held for your review/)
+})
