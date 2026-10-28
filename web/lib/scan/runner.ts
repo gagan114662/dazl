@@ -23,6 +23,7 @@ import { placeIn } from '../sources/jobboards.ts'
 import { resolveTiming } from './page-timing.ts'
 import { ownPlaceAgreement } from './own-block.ts'
 import { HeldText, COPY_ORIGIN, type HeldPage } from './held-text.ts'
+import { markHeldInProcess } from './held-state.ts'
 import { reconcileRunReport, type CandidateAudit, type UrlRecord } from './run-report.ts'
 import { evidenceCopyRoom, storeEvidenceCopy } from './evidence-copies.ts'
 import { isJobPage, needsEventBeyondHiring } from '../search/page-class.ts'
@@ -1063,13 +1064,14 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       // A REQUIRED gate that fails is a fail, never a pass: every lead still verified is held, the failure is its reason, and the report agrees.
       let held: HeldLead[] = []
       try { held = failClosedSalesHiring(db, job, msg); reconcileRunReport(db, job.id, job.attempts, held) } catch (e2) { console.error('sales-hiring fail-closed failed', e2 instanceof Error ? e2.message : 'error') }
-      heldByGate = new Map(held.map(h => [h.id, h.reason]))   // kept in memory: classification must not infer "passed" from a row whose write did not land
+      heldByGate = new Map(held.map(h => [h.id, h.reason]))
+      markHeldInProcess(job.user_id, held.map(h => h.id))   // kept in memory: classification must not infer "passed" from a row whose write did not land
       trace.note('sales_hiring_gate', 'failed', `${msg} - ${held.length} lead(s) held as sales_hiring_check_failed${held.some(h => !h.written) ? ` (${held.filter(h => !h.written).length} write(s) rejected: held in memory)` : ''}`)
       console.error('sales-hiring gate failed', msg)
     }
     // Actionable yield (domain + sales proof + named person + published contact) is measured here, at the END of enrichment, apart from the source-checked counts.
     // The same facts go beside each lead and into the run report, so the card and the report agree.
-    try { mergeIntoRunReport(db, job.id, job.attempts, { enrichment: trace.stages, yield: recordActionability(db, job, heldByGate) }) } catch (e) { console.error('actionable yield failed', e instanceof Error ? e.message : 'error') }
+    try { mergeIntoRunReport(db, job.id, job.attempts, { enrichment: trace.stages, yield: recordActionability(db, job, heldByGate), held_lead_ids: [...heldByGate.keys()] }) } catch (e) { console.error('actionable yield failed', e instanceof Error ? e.message : 'error') }
     // Contacts, people, fit and the sales-hiring check are final: the stage ends before autopilot, whose drafting/sending is separate work, not enrichment.
     endEnrichment(db, job.id, job.attempts)
     // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.

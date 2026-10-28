@@ -3,6 +3,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
+import { requiredGateHeld } from '../lib/scan/held-state.ts'
+import { currentnessHeld } from '../lib/outreach/currentness.ts'
 
 // CI runs with SITECRAWL_ENABLED=0 (npm test). These fixtures need their STUBBED crawl (an injected crawlGet, no network) to establish the lead's domain, so the crawl is
 // switched on for the duration of one fixture run only and restored; the domain gate itself is unchanged.
@@ -128,4 +130,8 @@ test('FAIL-CLOSED when the recovery write is rejected too: the gate\u2019s norma
   assert.equal(rep.candidates.find(c => c.company === 'Brightloop')!.fate, 'review:sales_hiring_check_failed', 'the report shows the final result')
   assert.equal(rep.funnel.verified, 0)
   assert.match(actionRow(r)!.value, /^Not actionable yet: sales hiring check failed/)
+  // the run keeps its own record, so the draft consumers still see the hold on THIS branch alone (no marker writer needed)
+  const id = (r.db.prepare('SELECT id FROM leads').get() as { id: string }).id
+  assert.deepEqual((JSON.parse((r.db.prepare('SELECT report FROM scan_run_report ORDER BY attempt DESC LIMIT 1').get() as { report: string }).report) as { held_lead_ids: string[] }).held_lead_ids, [id])
+  assert.equal(requiredGateHeld(r.db, 'A', id), 'sales_hiring_check_failed'); assert.equal(currentnessHeld(r.db, 'A', id), true)
 })
