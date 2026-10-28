@@ -9,7 +9,7 @@
 import type Database from 'better-sqlite3'
 import { addEnrichment } from '../connectors/store.ts'
 import { titleMatches } from '../people/rank.ts'
-import { salesHiringRequired } from './sales-hiring-gate.ts'
+import { salesHiringRequired } from './sales-hiring-required.ts'
 import { FIT_MIN } from './scoreboard.ts'
 import { getMemory, isExcluded } from '../memory.ts'
 import { requiredGateHeld } from './held-state.ts'

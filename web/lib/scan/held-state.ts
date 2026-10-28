@@ -6,7 +6,7 @@
 //   - this process's memory (when nothing at all could be persisted).
 // It clears only when the gate runs again and passes (applySalesHiringGate removes the marker for a lead it passes).
 import type Database from 'better-sqlite3'
-import { salesHiringRequired } from './sales-hiring-gate.ts'
+import { salesHiringRequired } from './sales-hiring-required.ts'
 
 export const SALES_GATE_HELD = 'sales_hiring_check_failed'
 // (No creation-date exemption: every machine-verified lead of a job that needs the proof needs a durable pass record.)
