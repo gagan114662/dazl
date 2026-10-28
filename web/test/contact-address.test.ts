@@ -70,3 +70,30 @@ test('same city, different street address is unresolved too; an address-less rec
   const noAddr = seed(); await enrichLeadContacts(noAddr.db, 'u1', noAddr.jobId, [noAddr.lead], { fetchImpl: apollo({ ...NY, street_address: undefined }), master })
   assert.deepEqual(attached(noAddr.db).sort(), ['contact', 'firmographic'], 'New York, NY agrees on the city when the record has no street address')
 })
+
+// ---- the crawler's own address check (sitecrawl): a homepage that lists street addresses, none of them the lead's, is another business with the same name ----
+test('CRAWLER: two same-name sites - the Pico Rivera, CA homepage (other street address) is refused with a contact_address_mismatch record and attaches nothing; the New York homepage at the lead’s own address attaches its contact', async () => {
+  const { crawlJob } = await import('../lib/connectors/sitecrawl.ts')
+  const db = new Database(':memory:'); migrateConnectors(db)
+  db.exec('CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT, signal TEXT, evidence_excerpt TEXT)')
+  const ex = 'Smile Avenue Dental is opening a second practice at 57 W 57th St, New York'
+  db.prepare("INSERT INTO leads VALUES ('wrong','j1','Smile Avenue Dental','https://news.example/wrong',NULL,90,80,NULL,'opened a new practice',?),('right','j1','Smile Avenue Dental','https://news.example/right',NULL,90,70,NULL,'opened a new practice',?)").run(ex, ex)
+  const html = (b: string) => `<html><body>${b}</body></html>`
+  const pages: Record<string, string> = {
+    'news.example/wrong': html('<a href="https://smileavenue-pr.com/">Smile Avenue Dental</a>'),
+    'news.example/right': html('<a href="https://smileavenuedental.com/">Smile Avenue Dental</a>'),
+    'smileavenue-pr.com/': html('<h1>Smile Avenue Dental</h1><p>Visit us at 8500 Whittier Blvd, Pico Rivera, CA 90660.</p><a href="/contact">Contact</a>'),
+    'smileavenue-pr.com/contact': html('Email: hello@smileavenue-pr.com'),
+    'smileavenuedental.com/': html('<h1>Smile Avenue Dental</h1><p>Visit us at 57 West 57th Street, New York, NY 10019.</p><a href="/contact">Contact</a>'),
+    'smileavenuedental.com/contact': html('Email: hello@smileavenuedental.com'),
+  }
+  const get = async (url: string) => { const u = new URL(url); const b = pages[u.hostname + u.pathname]; return b !== undefined ? { status: 200, body: b, finalUrl: url } : u.pathname === '/robots.txt' ? { status: 200, body: '', finalUrl: url } : { status: 404, body: '', finalUrl: url } }
+  await crawlJob(db, 't1', 'j1', { get, gapMs: 0, env: {}, now: Date.parse('2026-10-20T12:00:00Z') })
+  const rows = (id: string) => db.prepare("SELECT kind, value, label FROM lead_enrichments WHERE lead_id = ? AND kind <> 'domain'").all(id) as { kind: string; value: string; label: string }[]
+  assert.deepEqual(rows('wrong').map(r => [r.kind, r.label]), [['contact_rejected', 'contact_address_mismatch']], JSON.stringify(rows('wrong')))
+  assert.match(rows('wrong')[0].value, /^contact rejected: address mismatch 8500 whittier blvd vs 57 w 57th st/)
+  assert.deepEqual(rows('right').map(r => [r.kind, r.value]), [['email', 'hello@smileavenuedental.com']], 'the practice at the lead’s own address attaches')
+  assert.equal((db.prepare("SELECT company_domain FROM leads WHERE id = 'wrong'").get() as { company_domain: string | null }).company_domain, null, 'the wrong site is never recorded as the lead’s domain')
+  assert.equal((db.prepare("SELECT company_domain FROM leads WHERE id = 'right'").get() as { company_domain: string | null }).company_domain, 'smileavenuedental.com')
+  assert.ok((db.prepare("SELECT status FROM connector_audit").all() as { status: string }[]).some(a => /address mismatch/.test(a.status)))
+})
