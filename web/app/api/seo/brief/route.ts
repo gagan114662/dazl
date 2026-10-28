@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getScanDb, requireUser } from '@/lib/scan/service'
+import { requireUser } from '@/lib/scan/service'
 import { getDb } from '@/lib/db/client'
 import { generateBrief, recentBriefs } from '@/lib/seo/brief'
 import { sameOriginJson } from '@/lib/same-origin'
@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   if (!(await rateLimit(`seo-brief:${user.id}`, 10, 60 * 60 * 1000)).ok) return NextResponse.json({ error: 'Too many briefs this hour. Try later.' }, { status: 429 })
   const body = await req.json().catch(() => null)
-  const r = await generateBrief(await getDb(), getScanDb(), user.id, typeof body?.topic === 'string' ? body.topic : '')
+  const r = await generateBrief(await getDb(), user.id, typeof body?.topic === 'string' ? body.topic : '')
   if ('error' in r) {
     if (r.error === 'no_key') return NextResponse.json({ error: 'Briefs use your own AI key. Add one in Settings first.' }, { status: 400 })
     if (r.error === 'invalid') return NextResponse.json({ error: 'Give the topic a few words.' }, { status: 400 })
