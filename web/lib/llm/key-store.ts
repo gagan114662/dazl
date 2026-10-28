@@ -34,7 +34,7 @@ export async function writeKey(db: Db, tenantId: string, vendor: Vendor, apiKey:
 
 // Safe for the browser: never includes the key or ciphertext.
 type KeyStatusRow = { vendor: Vendor; last4: string; validated_at: number }
-const KEY_STATUS_SQL = 'SELECT vendor, last4, validated_at FROM tenant_llm_keys WHERE tenant_id = ?'
+const KEY_STATUS_SQL = 'SELECT vendor, last4, validated_at FROM tenant_llm_keys WHERE tenant_id = ? ORDER BY vendor' // the primary-key order SQLite gave
 export function keyStatus(db: Database.Database, tenantId: string) {
   return db.prepare(KEY_STATUS_SQL).all(tenantId) as KeyStatusRow[]
 }

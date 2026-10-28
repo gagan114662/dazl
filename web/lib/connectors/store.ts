@@ -63,9 +63,10 @@ export async function writeCredential(db: Db, tenantId: string, connector: strin
   await db.run(SAVE_CREDENTIAL_SQL, credentialArgs(tenantId, connector, secret, master))
 }
 
-// Safe for the browser: never includes the credential or ciphertext.
+// Safe for the browser: never includes the credential or ciphertext. By connector, the order SQLite's primary-key
+// index gave; Postgres has no implicit order.
 export async function connectorStatus(db: Db, tenantId: string) {
-  return (await db.all<{ connector: string; last4: string; enabled: number }>('SELECT connector, last4, enabled FROM tenant_connectors WHERE tenant_id = ?', [tenantId]))
+  return (await db.all<{ connector: string; last4: string; enabled: number }>('SELECT connector, last4, enabled FROM tenant_connectors WHERE tenant_id = ? ORDER BY connector', [tenantId]))
     .map(r => ({ connector: r.connector, last4: r.last4, enabled: Number(r.enabled) === 1 }))
 }
 
