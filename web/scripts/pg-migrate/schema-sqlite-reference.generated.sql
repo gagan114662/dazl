@@ -673,7 +673,7 @@ CREATE TABLE warm_user_paths (
       contact_url  TEXT NOT NULL,
       mutual_name  TEXT NOT NULL CHECK (length(mutual_name) <= 200),
       note         TEXT CHECK (note IS NULL OR length(note) <= 500),
-      created_at   INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
+      created_at   INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), insert_seq INTEGER,
       UNIQUE (tenant_id, lead_id, contact_url, mutual_name)
     );
 
@@ -790,6 +790,8 @@ CREATE INDEX trial_scans_ip ON trial_scans (ip_hash, created_at);
 
 CREATE INDEX trial_scans_tenant ON trial_scans (tenant_id, created_at);
 
+CREATE INDEX warm_user_paths_insert_seq_idx ON warm_user_paths (insert_seq);
+
 CREATE INDEX warm_user_paths_lead ON warm_user_paths (tenant_id, lead_id);
 
 CREATE INDEX watches_due ON watches (active, next_run_at);
@@ -846,3 +848,5 @@ CREATE TRIGGER sequence_sent_final
     BEFORE UPDATE ON sequence_steps
     WHEN OLD.status = 'sent' AND (NEW.status <> 'sent' OR NEW.subject <> OLD.subject OR NEW.body <> OLD.body)
     BEGIN SELECT RAISE(ABORT, 'sent sequence step is final'); END;
+
+CREATE TRIGGER warm_user_paths_insert_seq AFTER INSERT ON warm_user_paths WHEN NEW.insert_seq IS NULL BEGIN UPDATE warm_user_paths SET insert_seq = (SELECT coalesce(max(insert_seq), 0) + 1 FROM warm_user_paths) WHERE rowid = NEW.rowid; END;
