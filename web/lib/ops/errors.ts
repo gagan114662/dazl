@@ -141,7 +141,10 @@ const BUILTIN_ERRORS = new Set(['Error', 'TypeError', 'RangeError', 'ReferenceEr
 // This app's error classes (test/ops-sentry.test.ts fails when a class extending an Error in lib/ or app/ is missing).
 export const APP_ERROR_CLASSES: ReadonlySet<string> = new Set(['CopyRefused', 'CopyVerifyError', 'EnrichError', 'FixtureError', 'GmailError', 'GmailSendError', 'JobFeedError',
   'LeaseLost', 'MemoryError', 'OutreachError', 'ProviderError', 'RaceLost', 'ScanStopped', 'ScanTimedOut', 'SequenceError', 'SourceReviewError', 'SpendRefused',
-  'StaleLeaseWrite', 'StatementFailedInTx', 'Timeout'])
+  'StaleLeaseWrite', 'StatementFailedInTx', 'Timeout',
+  // lib/ops/client-errors.ts (#312): the wrapper for a browser report. Its runtime name is always replaced by an
+  // allowlisted built-in type before capture, so this class name itself is never what is sent.
+  'ClientReport'])
 export const outboundType = (name: string): string => BUILTIN_ERRORS.has(name) || APP_ERROR_CLASSES.has(name) ? name : 'Error'
 export interface OutboundFrame { filename: string; lineno: number; colno: number }
 // A frame's file only when it is this build's own code (lib/ops/emitted.ts): a server file that exists under the app
