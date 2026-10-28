@@ -1073,7 +1073,13 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     }
     // Actionable yield (domain + sales proof + named person + published contact) is measured here, at the END of enrichment, apart from the source-checked counts.
     // The same facts go beside each lead and into the run report, so the card and the report agree.
-    try { mergeIntoRunReport(db, job.id, job.attempts, { enrichment: trace.stages, yield: recordActionability(db, job, heldByGate), held_lead_ids: [...heldByGate.keys()] }) } catch (e) { console.error('actionable yield failed', e instanceof Error ? e.message : 'error') }
+    try {
+      const y = recordActionability(db, job, heldByGate)
+      // A lead the gate passed whose durable pass record could not be saved is held by the draft guard (default-deny); the report says so too, with the same reason.
+      const extra = (y.held_leads ?? []).filter(h => !heldByGate.has(h.id))
+      if (extra.length) { markHeldInProcess(job.user_id, extra.map(h => h.id)); reconcileRunReport(db, job.id, job.attempts, extra.map(h => ({ company: h.company, url: h.url, reason: 'sales_hiring_check_failed' }))) }
+      mergeIntoRunReport(db, job.id, job.attempts, { enrichment: trace.stages, yield: y, held_lead_ids: [...heldByGate.keys(), ...extra.map(h => h.id)] })
+    } catch (e) { console.error('actionable yield failed', e instanceof Error ? e.message : 'error') }
     // Contacts, people, fit and the sales-hiring check are final: the stage ends before autopilot, whose drafting/sending is separate work, not enrichment.
     endEnrichment(db, job.id, job.attempts)
     // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.
