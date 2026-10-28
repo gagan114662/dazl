@@ -353,6 +353,7 @@ export default function LeadsClient() {
   // The profile Find leads sends: the reviewed profile, unchanged, for an unchanged sentence; nothing otherwise (the server then works one
   // out, exactly as before). A reviewed profile held for a DIFFERENT sentence is dropped and the user is told.
   function reviewedProfileFor(q: string): Icp | null {
+    setProfileNote(null)
     if (!icp || icp.source !== 'user') return null
     if (sameRequest(icpQuery, q)) return icp.icp
     setIcp(null); setIcpQuery(null)
@@ -368,7 +369,7 @@ export default function LeadsClient() {
       const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) }) })
       const j = await r.json().catch(() => ({}))
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : j.error === 'trial_exhausted' ? 'Your 3 free scans are used up. Add your own AI key in Settings to keep scanning.' : j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')); if (j.error === 'invalid_budget' && j.detail) setError(`The spend limit was not accepted: ${String(j.detail).slice(0, 200)}`); return }
-      setRunExtras(extraLabels(srcBody)); passiveJob.current = false; setProfileNote(null); setJobId(j.job_id); setStatus('pending'); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0
+      setRunExtras(extraLabels(srcBody)); passiveJob.current = false; setJobId(j.job_id); setStatus('pending'); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0
     } catch {
       // A rejected fetch (offline, aborted) used to fail silently - the click looked dead.
       setError('Could not reach the server. Check your connection and try again.')
