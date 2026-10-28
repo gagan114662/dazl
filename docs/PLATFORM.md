@@ -224,7 +224,7 @@ Totals: 60 PG-schema, 12 SQLite-only, 1 temp.
 | Shutdown requeue | `instrumentation.ts` → `scan/shutdown-hook.ts` | Must requeue only this instance's jobs | Tag each claim with an instance id |
 | Tick scheduler | `POST /api/internal/tick` (external cron) | **Done (step 3b): fenced.** The tick holds the `internal-tick` lease, and an overlapping tick returns `skipped`. Each takeover bumps the lease's `generation` (the fencing token). All the tick's writes go through `lease.fenceSqlite()`, which checks ownership, generation and expiry in the same transaction as the write. A tick that lost its lease (paused, cut off, expired) has every later write through that view refused (`StaleLeaseWrite`) and stops. That includes bound and fluent statements and `statement.database`. On PG the check locks the lease row, so a takeover waits for a fenced transaction in flight | Not fenced: (1) code that fetches the raw handle itself instead of using the view (the tick's modules only read that way); (2) an email Gmail accepted between a fenced claim and a fenced result, which relies on the outreach claim -> send -> uncertain handling |
 | Reopen resolve guard | `lib/outreach/reopen.ts` `inFlight` Set | The send claim is durable (see below). The Set only stops a user resolving a claim older than the lease while the Gmail call still runs in *this* process; another instance cannot see it. Bounded by the 20s Gmail abort vs the 10 min lease | Record the in-flight call in the row, or accept with the lease bound documented |
-| TinyFish minute window and breaker | `lib/search/tinyfish.ts` | Provider limit is exceeded N times | PG window row (daily usage is already in `tinyfish_usage`) |
+| TinyFish minute window and breaker | `lib/search/tinyfish.ts` | **Done:** both are rows in the shared `rate_limits` table. `tinyfish:minute` is a fixed one-minute window for the whole server, checked in the caps transaction under the day's advisory lock. `tinyfish:blocked` is the breaker after a 401/403, 402 or 429, and its `reset_at` is when it lifts. Times are in ms, so the limiter's sweep clears them | A fixed window, not sliding: up to 2× the per-minute limit can fall in one 60 s span across a window boundary. A 429 then trips the shared breaker |
 | News request queue | `lib/search/news.ts` | Requests are spaced per instance only | Accept this, or use a PG advisory lock |
 | Per-host crawl spacing | `lib/connectors/sitecrawl.ts` `lastHit` | Politeness spacing is per instance | Accept this (best effort) |
 | Source result caches | `lib/sources/{youtube,jina,github,v2ex}.ts` | Cache is per instance | Fine to keep |
@@ -233,6 +233,15 @@ Totals: 60 PG-schema, 12 SQLite-only, 1 temp.
 | Shared store handles | `lib/db/client.ts` `shared`, `lib/auth-db.ts` `db` | One pool or handle per instance | Fine |
 | Error sinks and alert throttle | `lib/ops/errors.ts` `sinks`, `hook` | Alert throttling is per instance (up to N× the alert rate) | Accept, or a shared throttle row if alerts get noisy |
 | Sessions, plans, 24h send counts | `sessions`, `tenant_plans`, `autopilot_audit` tables | Already durable rows: shared once the table is on the shared store | Port with their areas |
+
+**Proved across two instances** (`test/multi-instance-safety.test.ts`): two app processes, each with its own pool, run at the same time on one Postgres.
+- The same signed Stripe event is delivered 16 times through `/api/stripe` and applied once.
+- 30 failed sign-ins from one IP share the one per-IP limit of 20.
+- 30 queued jobs are each processed once.
+- 16 TinyFish searches make exactly 6 calls under a limit of 6 a minute.
+- A breaker tripped on one instance stops the other.
+
+Still per instance, by design or with their owners: the spend pool (`lib/scan/runner.ts`), scan run slots and the reopen guard (rows above).
 
 ### Existing durable guards (keep them; PG must preserve these semantics)
 

@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import { asDb, type DbLike, type Tx, type TxBody } from '../db/client.ts'
+import { migratePlatform } from '../db/platform-tables.ts'
 import type { Evidence } from '../sources/types.ts'
 import type { SearchTrace } from './trace.ts'
 
@@ -27,6 +28,7 @@ export const limits = (env: Env = process.env): Limits => ({
 export const tinyfishEnabled = (env: Env = process.env) => !!env.TINYFISH_API_KEY && env.TINYFISH_ENABLED !== '0'
 
 export function migrateTinyfish(db: Database.Database): void {
+  migratePlatform(db) // the minute window and the breaker live in the shared rate_limits table
   db.exec(`CREATE TABLE IF NOT EXISTS tinyfish_usage (day TEXT NOT NULL, tenant_id TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('search','fetch')), n INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (day, tenant_id, kind))`)
 }
 const dayOf = (now: number) => new Date(now * 1000).toISOString().slice(0, 10)
@@ -45,16 +47,31 @@ function* lockDay(t: Tx, day: string): TxBody<void> {
   if (t.kind === 'pg') yield* t.get("SELECT pg_advisory_xact_lock(hashtext('tinyfish_usage:' || ?)) AS x", [day])
 }
 
-// Process-wide guards: a minute window, and a breaker after auth or allowance errors.
-const stamps: number[] = []
-let blockedUntil = 0
-export const resetTinyfishState = () => { stamps.length = 0; blockedUntil = 0 }
-function allow(now: number, perMinute: number): boolean {
-  if (now < blockedUntil) return false
-  while (stamps.length && stamps[0] <= now - 60) stamps.shift()
-  if (stamps.length >= perMinute) return false
-  stamps.push(now)
+// Guards shared by every app instance, in the shared rate_limits table (lib/rate-limit.ts keeps its rows there too;
+// times are in milliseconds, so its sweep of expired rows also clears these):
+//   tinyfish:minute  - a fixed one-minute window of calls for the whole server (count, reset_at = window end)
+//   tinyfish:blocked - the breaker after an auth, allowance or rate error from TinyFish (reset_at = when it lifts)
+// Checked inside the caps transaction, so on Postgres the day's advisory lock orders them across instances too.
+const MINUTE_KEY = 'tinyfish:minute', BLOCKED_KEY = 'tinyfish:blocked'
+// Kept for tests that share one store between scenarios; the state is in the store, so a fresh store starts clean.
+export const resetTinyfishState = async (db?: DbLike) => { if (db) await asDb(db).run('DELETE FROM rate_limits WHERE key IN (?, ?)', [MINUTE_KEY, BLOCKED_KEY]) }
+function* allow(t: Tx, now: number, perMinute: number): TxBody<boolean> {
+  const ms = now * 1000
+  const b = yield* t.get<{ reset_at: number }>('SELECT reset_at FROM rate_limits WHERE key = ?', [BLOCKED_KEY])
+  if (b && Number(b.reset_at) > ms) return false
+  const w = yield* t.get<{ count: number }>('SELECT count FROM rate_limits WHERE key = ? AND reset_at > ?', [MINUTE_KEY, ms])
+  if (w && Number(w.count) >= perMinute) return false
+  yield* t.run(`INSERT INTO rate_limits (key, count, reset_at) VALUES (?, 1, ?)
+    ON CONFLICT (key) DO UPDATE SET count = CASE WHEN rate_limits.reset_at <= ? THEN 1 ELSE rate_limits.count + 1 END,
+      reset_at = CASE WHEN rate_limits.reset_at <= ? THEN ? ELSE rate_limits.reset_at END`, [MINUTE_KEY, ms + 60_000, ms, ms, ms + 60_000])
   return true
+}
+// Trips the breaker until `untilS` (seconds); an existing later block is kept.
+async function block(db: DbLike, untilS: number): Promise<void> {
+  try {
+    await asDb(db).run(`INSERT INTO rate_limits (key, count, reset_at) VALUES (?, 0, ?)
+      ON CONFLICT (key) DO UPDATE SET reset_at = CASE WHEN excluded.reset_at > rate_limits.reset_at THEN excluded.reset_at ELSE rate_limits.reset_at END`, [BLOCKED_KEY, untilS * 1000])
+  } catch { /* the call already failed; a store error here leaves the breaker as it was */ }
 }
 
 export type Fail = 'disabled' | 'cap' | 'rate' | 'auth' | 'quota' | 'unavailable'
@@ -63,12 +80,12 @@ export interface TfDeps { env?: Env; fetchImpl?: typeof fetch; now?: number; tra
 // `observed` (context only) and `date` stays null. via marks which index surfaced the hit (attribution).
 export interface SearchHit { url: string; title: string; snippet: string; date: string | null; observed?: string | null; via?: 'gdelt' }
 
-async function call(url: string, init: RequestInit, key: string, f: typeof fetch, now: number): Promise<{ ok: true; json: unknown } | { ok: false; reason: Fail }> {
+async function call(db: DbLike, url: string, init: RequestInit, key: string, f: typeof fetch, now: number): Promise<{ ok: true; json: unknown } | { ok: false; reason: Fail }> {
   try {
     const res = await f(url, { ...init, headers: { ...(init.headers as Record<string, string>), 'X-API-Key': key }, redirect: 'error', signal: AbortSignal.timeout(20_000) })
-    if (res.status === 401 || res.status === 403) { blockedUntil = now + 600; return { ok: false, reason: 'auth' } }
-    if (res.status === 402) { const t = new Date(now * 1000); t.setUTCHours(24, 0, 0, 0); blockedUntil = Math.floor(t.getTime() / 1000); return { ok: false, reason: 'quota' } }
-    if (res.status === 429) { blockedUntil = now + 60; return { ok: false, reason: 'rate' } }
+    if (res.status === 401 || res.status === 403) { await block(db, now + 600); return { ok: false, reason: 'auth' } }
+    if (res.status === 402) { const t = new Date(now * 1000); t.setUTCHours(24, 0, 0, 0); await block(db, Math.floor(t.getTime() / 1000)); return { ok: false, reason: 'quota' } }
+    if (res.status === 429) { await block(db, now + 60); return { ok: false, reason: 'rate' } }
     if (!res.ok) return { ok: false, reason: 'unavailable' }
     const text = await res.text()
     if (text.length > 3_000_000) return { ok: false, reason: 'unavailable' }
@@ -83,13 +100,13 @@ export async function tfSearch(db: DbLike, tenant: string, query: string, opts: 
   const gate = await asDb(db).tx(function* (t: Tx): TxBody<'cap' | 'rate' | 'go'> {
     yield* lockDay(t, day)
     if (spent.searches >= L.searchesPerScan || (yield* used(t, day, tenant, 'search')) >= L.tenantDaily || (yield* used(t, day, null, 'search')) >= L.globalSearchDaily) return 'cap'
-    if (!allow(now, L.perMinute)) return 'rate'
+    if (!(yield* allow(t, now, L.perMinute))) return 'rate'
     spent.searches++; yield* bump(t, day, tenant, 'search', 1)
     return 'go'
   })
   if (gate !== 'go') { d.trace?.search({ query, attempted: false, outcome: gate, hits: null }); return { ok: false, reason: gate } }
   const q = new URLSearchParams({ query: query.slice(0, QUERY_CAP), ...(opts.afterDate ? { after_date: opts.afterDate } : {}), ...(opts.location ? { location: opts.location } : {}), ...(opts.language ? { language: opts.language } : {}) })
-  const r = await call(`${SEARCH_URL}?${q}`, { method: 'GET' }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
+  const r = await call(db, `${SEARCH_URL}?${q}`, { method: 'GET' }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
   if (!r.ok) { d.trace?.search({ query, attempted: true, outcome: r.reason, hits: null }); return r }
   const arr = (r.json as { results?: unknown } | null)?.results
   // 200 with `{}`, null or no `results` array is a malformed answer, not an empty result list: a failed search (unavailable), never a counted zero.
@@ -113,14 +130,14 @@ export async function tfFetch(db: DbLike, tenant: string, urls: string[], spent:
     const room = Math.min(10, L.fetchesPerScan - spent.fetches, L.tenantDaily - (yield* used(t, day, tenant, 'search')), L.globalFetchDaily - (yield* used(t, day, null, 'fetch')))
     const batch = urls.slice(0, Math.max(0, room))
     if (batch.length === 0) return { out: 'cap', batch }
-    if (!allow(now, L.perMinute)) return { out: 'rate', batch }
+    if (!(yield* allow(t, now, L.perMinute))) return { out: 'rate', batch }
     spent.fetches += batch.length; yield* bump(t, day, tenant, 'fetch', batch.length)
     return { out: 'go', batch }
   })
   const batch = gate.batch
   if (gate.out === 'cap') { d.trace?.fetch({ requested: urls.length, attempted: false, outcome: 'cap', pages: null }); return { ok: false, reason: 'cap' } }
   if (gate.out === 'rate') { d.trace?.fetch({ requested: batch.length, attempted: false, outcome: 'rate', pages: null }); return { ok: false, reason: 'rate' } }
-  const r = await call(FETCH_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ urls: batch, format: 'markdown' }) }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
+  const r = await call(db, FETCH_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ urls: batch, format: 'markdown' }) }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
   if (!r.ok) { d.trace?.fetch({ requested: batch.length, attempted: true, outcome: r.reason, pages: null }); return r }
   const arr = (r.json as { results?: unknown })?.results
   const pages: { url: string; title: string; text: string }[] = []
