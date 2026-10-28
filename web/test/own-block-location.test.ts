@@ -73,3 +73,17 @@ test('Pico Rivera regression: a same-name Dent Blanche practice in Pico Rivera, 
   const contact = contactAgreement({ company_domain: null, where: NYC }, { place: 'Pico Rivera, CA' })
   assert.equal(contact.ok, false); assert.match((contact as { reason: string }).reason, /location mismatch Pico Rivera, CA vs New York, NY/)
 })
+
+test('#277 review: a roundup title naming both companies, a lowercase company name, and "Its competitor Acme is headquartered in Manchester" do not hold the London company', async () => {
+  const text = (n: string) => `Posted ${day(5)}. Brightloop raised a $3M seed round to build sales tooling. ${n} is based in London, UK. Its competitor Acme is headquartered in Manchester. ${'Founders shared what is next. '.repeat(8)}`
+  const page = { title: 'Seed round-up: Brightloop and Acme', text: text('brightloop'), retrievedAt: 1 }
+  assert.equal(ownPlaceAgreement(page, LONDON, 'Brightloop'), 'agrees', 'lowercase name matches; the competitor sentence ends the block')
+  assert.equal(ownPlaceAgreement({ ...page, text: text('BRIGHTLOOP') }, LONDON, 'Brightloop Ltd'), 'agrees')
+  assert.notEqual(ownPlaceAgreement(page, LONDON, 'Acme'), 'agrees', 'the competitor is judged on its own sentence, never credited with London')
+  assert.equal(ownPlaceAgreement({ ...page, text: page.text.replace('Manchester.', 'Manchester, England.') }, LONDON, 'Acme'), 'mismatch', 'with the country named, the competitor is held on its own block')
+  const c = { name: '', company: 'Brightloop', contact: null, signal: 'seed round', source_url: 'https://news.example/roundup', score: 70, excerpt: 'Brightloop raised a $3M seed round to build sales tooling', event_date: day(5) }
+  const r = await verifyLeads([c], async () => page, new Date(), undefined, null, undefined, undefined, LONDON)
+  assert.equal(r.leads.length, 1, JSON.stringify(r.review))
+  // control: a company's OWN-address continuation still binds, and a single-subject title still covers the whole page
+  assert.equal(ownPlaceAgreement({ title: 'Brightloop raises seed', text: 'Brightloop raised a seed round. The founders met in Leeds, England. Visit us at 12 Hoxton Square, London N1 6NU.' }, LONDON, 'Brightloop'), 'agrees')
+})
