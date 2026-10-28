@@ -7,6 +7,9 @@
 //   SI_MODE=race   no queue: try to bind every pending job directly, in shuffled order (two instances race each bind)
 //   SI_MODE=crash  claim and bind one job, record the run, then hang until the parent kills it (SIGKILL)
 //   SI_MODE=stall  claim and bind one job, then wait for the parent's 'go' and try to finish that old attempt
+//   SI_MODE=shared        the production claimer (lib/queue/scan-claimer.ts, DAZL_SCAN_SHARED_QUEUE) kicked until no scan
+//                         is left: mirror, claim, bind, run, settle; two run slots per instance
+//   SI_MODE=shared-crash  the same claimer; the first scan it starts never finishes, until the parent kills the process
 import { pgDb, type Db } from '../../lib/db/client.ts'
 import { DbQueue } from '../../lib/queue/db.ts'
 import { finishJob, type LeadRow } from '../../lib/scan/store-db.ts'
@@ -71,6 +74,28 @@ if (mode === 'crash' || mode === 'stall') {
   await Promise.all([worker(), worker()])
   await db.close()
   out({ ran, stale })
+} else if (mode === 'shared' || mode === 'shared-crash') {
+  const { kickSharedScanQueue } = await import('../../lib/queue/scan-claimer.ts')
+  if (mode === 'shared') await barrier()
+  let inFlight = 0, ran = 0
+  const slots = { available: () => inFlight < (mode === 'shared' ? 2 : 1), acquire: () => { inFlight++ }, release: () => { inFlight-- } }
+  const run = async (job: { id: string; attempts: number }): Promise<'done' | 'failed'> => {
+    await recordRun(job.id, job.attempts)
+    if (mode === 'shared-crash') { out({ holding: job.id, attempt: job.attempts }); setInterval(() => {}, 1000); return new Promise(() => {}) }
+    await sleep(3) // the scan's work
+    const r = await finish(job.id, job.attempts)
+    if (r.owned) ran++
+    return r.owned ? 'done' : 'failed'
+  }
+  const lease = Number(process.env.SI_LEASE_S ?? 60)
+  for (let idle = 0; idle < 3;) {
+    await kickSharedScanQueue({ queue: db, domain: db, run, onCrash: () => {}, slots, leaseSeconds: lease })
+    if (mode === 'shared-crash') break
+    const open = Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM scan_jobs WHERE status IN ('pending', 'running')"))!.n)
+    if (open === 0 && inFlight === 0) idle++; else idle = 0
+    await sleep(20)
+  }
+  if (mode === 'shared') { await db.close(); out({ ran }) }
 } else if (mode === 'race') {
   await barrier()
   const ids = (await db.all<{ id: string }>("SELECT id FROM scan_jobs WHERE status = 'pending'")).map(r => r.id).sort(() => Math.random() - 0.5)

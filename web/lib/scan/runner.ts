@@ -9,6 +9,8 @@ import type { Vendor } from '../llm/vendors.ts'
 import { runAutopilot } from '../outreach/autopilot.ts'
 import { MAX_ATTEMPTS, reapStaleJobs, markSeenBefore } from './store.ts'
 import { kickQueueRunner, queueTenants } from './queue-runner.ts'
+import { kickSharedScanQueue, sharedScanQueue } from '../queue/scan-claimer.ts'
+import { getDb, sqliteDb } from '../db/client.ts'
 import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, verifyEvidence, type Candidate } from './evidence.ts'
@@ -1168,6 +1170,12 @@ export function requeueInFlightForShutdown(db: Database.Database): number {
 }
 
 export async function kickRunner(db: Database.Database, deps: RunDeps = {}): Promise<void> {
+  // DAZL_SCAN_SHARED_QUEUE=1 (default OFF): every scan is claimed through the shared work queue instead (lib/queue/scan-claimer.ts).
+  if (sharedScanQueue()) {
+    await kickSharedScanQueue<Job>({ queue: await getDb(), domain: sqliteDb(db), run: job => runJob(db, job, deps), onCrash: (job, e) => failCrashedJob(db, job, e, 'queue-runner'),
+      slots: { available: slotAvailable, acquire: acquireSlot, release: releaseSlot }, track: trackInFlight })
+    return
+  }
   // Tenant-scoped queue gate (default OFF): listed tenants are claimed by the
   // queue bridge, the legacy claimer skips exactly those tenants - every
   // kicker (tick, scan/csv routes, status poll) funnels through here, so the
