@@ -35,12 +35,16 @@ export function newsUrl(query: string, lang: string | null, timespan = '1month')
 // seendate is "20261021T061500Z" and is when GDELT OBSERVED the article, not when the business event happened: it is kept
 // as `observed` (context only) and `date` stays null, so the model must take event timing from the fetched page text or
 // leave it unknown. Titles come tokenized ("$1 . 5 million"); they are labels, never quoted as evidence.
-export function parseGdelt(body: string, max = 15): SearchHit[] {
+export function parseGdelt(body: string, max = 15): SearchHit[] { return parseGdeltStrict(body, max) ?? [] }
+// A 200 whose body is not the documented shape (invalid HTML / text, an empty object, a missing `articles` array) is a PARSE FAILURE (null), never a search that found nothing.
+// Only a JSON object carrying an `articles` array (possibly empty) is a real answer.
+export function parseGdeltStrict(body: string, max = 15): SearchHit[] | null {
   let j: unknown
-  try { j = JSON.parse(body) } catch { return [] }
-  const arts = (j as { articles?: unknown })?.articles
+  try { j = JSON.parse(body) } catch { return null }
+  const arts = (j as { articles?: unknown } | null)?.articles
+  if (!Array.isArray(arts)) return null
   const out: SearchHit[] = []
-  for (const a of Array.isArray(arts) ? arts : []) {
+  for (const a of arts) {
     const o = a as Record<string, unknown>
     if (typeof o.url !== 'string' || !/^https:\/\/[^\s]{4,480}$/.test(o.url) || typeof o.title !== 'string') continue
     const d = typeof o.seendate === 'string' ? o.seendate.match(/^(\d{4})(\d{2})(\d{2})T/) : null
@@ -77,7 +81,9 @@ export async function newsSearch(http: SafeGet, queries: string[], language?: st
     attempted++
     const r = await queued(() => http(newsUrl(q, lang), { accept: 'application/json' }).catch(() => null), opts.gapMs ?? GAP_MS, sleep)
     if (!r || r.status !== 200 || !r.body) { failed++; continue }
-    for (const h of parseGdelt(r.body)) if (!seen.has(h.url)) { seen.add(h.url); hits.push(h) }
+    const parsed = parseGdeltStrict(r.body)
+    if (!parsed) { failed++; continue }   // 200 but malformed: a parse failure, counted with the failed requests
+    for (const h of parsed) if (!seen.has(h.url)) { seen.add(h.url); hits.push(h) }
   }
   return { hits, attempted, failed }
 }

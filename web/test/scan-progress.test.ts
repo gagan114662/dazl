@@ -178,3 +178,41 @@ test('news partial failure with zero hits is failed and named (2 of 3 requests);
   assert.equal(newsStatus(null, { searched: true, hits: 4, attempted: 3, failed: 0 }), 'unavailable')
   assert.equal(newsStatus(null, { searched: false, hits: 0, attempted: 0, failed: 0 }), 'unavailable')
 })
+
+test('REGRESSION (Instinct): HTTP 200 with invalid HTML, an empty JSON object or a missing results field is a PARSE FAILURE — never a successful zero-result search', async () => {
+  const { parseGdeltStrict } = await import('../lib/search/news.ts')
+  for (const body of ['<html><body>Rate limit page</body></html>', '{}', '{"status":"ok"}', 'null', '[]', '{"articles":"none"}']) assert.equal(parseGdeltStrict(body), null, body)
+  assert.deepEqual(parseGdeltStrict('{"articles":[]}'), [], 'an articles array, even empty, is a real answer')
+  for (const body of ['<!doctype html><p>oops</p>', '{}', '{"unrelated":1}']) {
+    resetNewsQueue()
+    const r = await newsSearch(async () => ({ status: 200, body }), ['a', 'b'], 'en', { gapMs: 0, sleep: async () => {} })
+    assert.deepEqual([r.hits.length, r.attempted, r.failed], [0, 2, 2], body)
+    assert.equal(newsStatus(null, { searched: true, hits: 0, attempted: r.attempted, failed: r.failed }), 'error', body)
+    const o = outcomeOf([R('search:tinyfish', 'unavailable', null, null), R('search:news', newsStatus(null, { searched: true, hits: 0, attempted: 2, failed: 2 }), 0, null)])
+    assert.equal(o.kind, 'failed'); assert.notEqual(o.kind, 'zero_match')
+  }
+})
+test('REGRESSION: TinyFish search 200 with {} / no results array is a failed search (unavailable), not an ok zero; a real empty results array is still ok', async () => {
+  const { tfSearch, migrateTinyfish, resetTinyfishState } = await import('../lib/search/tinyfish.ts')
+  const { SearchTrace, summarizeTrace } = await import('../lib/search/trace.ts')
+  const Database = (await import('better-sqlite3')).default
+  const env = { TINYFISH_API_KEY: 'tf-secret-xyz', TINYFISH_SEARCHES_PER_SCAN: '5', TINYFISH_TENANT_DAILY: '50' }
+  const res = (text: string) => (async () => new Response(text, { status: 200 })) as unknown as typeof fetch
+  for (const [body, ok] of [['{}', false], ['null', false], ['<html>captcha</html>', false], ['{"results":"x"}', false], ['{"results":[]}', true]] as const) {
+    const db = new Database(':memory:'); migrateTinyfish(db); resetTinyfishState(); const trace = new SearchTrace()
+    const r = await tfSearch(db, 't1', 'ohio payroll hiring', {}, { searches: 0 }, { env, fetchImpl: res(body), now: 1_800_000_000, trace })
+    const s = summarizeTrace(trace)
+    assert.equal(r.ok, ok, body); assert.equal(s.searches_ok, ok ? 1 : 0, `${body}: only a real results array counts as an ok search`)
+    if (!ok) assert.equal(s.hits_raw, null, `${body}: no fabricated zero hits`)
+  }
+})
+test('job boards: HTTP 200 with an empty object / no jobs array / invalid JSON is a partial (parse failure), and a partial source is unknown, never a zero', async () => {
+  const { collectEvidenceReport } = await import('../lib/sources/index.ts')
+  for (const body of ['{}', '<html>nope</html>', '{"jobs":"x"}']) {
+    const http = (async (url: string) => (new URL(url).hostname === 'hn.algolia.com' ? { status: 404, body: '' } : { status: 200, body })) as never
+    const r = await collectEvidenceReport({ adapters: ['jobboards'], feeds: ['https://boards.greenhouse.io/acme'], pages: [] }, 'London UK startups hiring sales account executives', http, 5000)
+    assert.equal(r.runs[0].status, 'partial', body); assert.ok(r.runs[0].notes?.unparseable, body)
+    const o = outcomeOf([R('search:tinyfish', 'unavailable', null, null), R('adapter:jobboards', 'partial', 0, 0)])
+    assert.notEqual(o.kind, 'zero_match', body); assert.match(o.detail ?? '', /adapter:jobboards/)
+  }
+})

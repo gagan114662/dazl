@@ -80,9 +80,11 @@ export async function tfSearch(db: Database.Database, tenant: string, query: str
   const q = new URLSearchParams({ query: query.slice(0, QUERY_CAP), ...(opts.afterDate ? { after_date: opts.afterDate } : {}), ...(opts.location ? { location: opts.location } : {}), ...(opts.language ? { language: opts.language } : {}) })
   const r = await call(`${SEARCH_URL}?${q}`, { method: 'GET' }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
   if (!r.ok) { d.trace?.search({ query, attempted: true, outcome: r.reason, hits: null }); return r }
-  const arr = (r.json as { results?: unknown })?.results
+  const arr = (r.json as { results?: unknown } | null)?.results
+  // 200 with `{}`, null or no `results` array is a malformed answer, not an empty result list: a failed search (unavailable), never a counted zero.
+  if (!Array.isArray(arr)) { d.trace?.search({ query, attempted: true, outcome: 'unavailable', hits: null }); return { ok: false, reason: 'unavailable' } }
   const hits: SearchHit[] = []
-  for (const x of Array.isArray(arr) ? arr.slice(0, 10) : []) {
+  for (const x of arr.slice(0, 10)) {
     const o = x as Record<string, unknown>
     if (typeof o?.url !== 'string' || !/^https:\/\/[^\s]{4,480}$/.test(o.url) || typeof o.title !== 'string') continue
     hits.push({ url: o.url, title: o.title.slice(0, 200), snippet: typeof o.snippet === 'string' ? o.snippet.slice(0, 400) : '', date: typeof o.date === 'string' && /^\d{4}-\d{2}-\d{2}/.test(o.date) ? o.date.slice(0, 10) : null })
