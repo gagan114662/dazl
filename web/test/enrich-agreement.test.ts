@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { enrichLeadContacts } from '../lib/enrich/index.ts'
-import { contactAgreement, formatPlace, leadPlaceLabel, firstPlaceLabel } from '../lib/scan/contact-agreement.ts'
+import { contactAgreement, formatPlace, leadPlaceLabel, firstPlaceLabel, regradeFromKeptContacts, recordContactRejection } from '../lib/scan/contact-agreement.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, saveCredential, recentAudit, enrichmentsForLeads } from '../lib/connectors/store.ts'
 
@@ -18,7 +18,7 @@ function seed(opts: { domain: string | null; icp?: string | null }) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
   const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
   db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(opts.icp === undefined ? NYC_ICP : opts.icp, jobId)
-  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url) VALUES ('lead1', ?, '', 'Smile Avenue Dental', ?, 'opened a new practice', 'https://x.example/1')").run(jobId, opts.domain)
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, fit, intent, action, why) VALUES ('lead1', ?, '', 'Smile Avenue Dental', ?, 'opened a new practice', 'https://x.example/1', 4, 3, 4, 'New dental practice in Sunnyside.')").run(jobId, opts.domain)
   return { db, jobId, lead: { id: 'lead1', company: 'Smile Avenue Dental', company_domain: opts.domain } }
 }
 const apollo = (org: Record<string, unknown> | null, people: Record<string, unknown>[] = [{ name: 'Sophia Rozov', title: 'Practice Manager', linkedin_url: 'https://linkedin.com/in/sr' }]) => (async (url: RequestInfo | URL) => {
@@ -27,7 +27,7 @@ const apollo = (org: Record<string, unknown> | null, people: Record<string, unkn
   if (u.includes('mixed_people')) return ok({ people })
   return new Response('no', { status: 404 })
 }) as never
-const rows = (db: Database.Database) => (enrichmentsForLeads(db, 'u1', ['lead1']).lead1 ?? []).map(e => `${e.kind}:${e.value}`)
+const rows = (db: Database.Database) => (enrichmentsForLeads(db, 'u1', ['lead1']).lead1 ?? []).filter(e => e.kind !== 'contact_rejected').map(e => `${e.kind}:${e.value}`)   // what was ATTACHED (refusal reasons are separate rows)
 const audits = (db: Database.Database) => (recentAudit(db, 'u1', 20) as { status: string; lookup: string }[]).map(a => a.status)
 
 test('contactAgreement: domain agrees / disagrees; place agrees / mismatches / unconfirmed; no geography makes no place demand', () => {
@@ -100,4 +100,34 @@ test('no geography on the scan: PDL / Apollo behave as before (a record with a m
   saveCredential(db, 'u1', 'enrich:pdl', 'test-pdl-key-5678', master)
   await enrichLeadContacts(db, 'u1', jobId, [lead], { fetchImpl: (async () => ok({ data: [{ full_name: 'Jane Doe', job_title: 'VP Sales' }] })) as never, master })
   assert.deepEqual(rows(db), ['contact:Jane Doe - VP Sales'])
+})
+
+const leadRow = (db: Database.Database) => db.prepare("SELECT fit, intent, action, why FROM leads WHERE id = 'lead1'").get() as { fit: number; intent: number; action: number; why: string }
+
+test('Pico Rivera / NYC regression: the refusal is recorded on the lead as a reason and the lead is regraded from the evidence actually kept', async () => {
+  const { db, jobId, lead } = seed({ domain: null })
+  saveCredential(db, 'u1', 'enrich:apollo', 'test-apollo-key-1234', master)
+  await enrichLeadContacts(db, 'u1', jobId, [lead], { fetchImpl: apollo({ name: 'Smile Avenue Dental Group', estimated_num_employees: 12, industry: 'Dental', website_url: 'https://smileavenuedental.com', city: 'Pico Rivera', state: 'California', country: 'United States' }), master })
+  const e = enrichmentsForLeads(db, 'u1', ['lead1']).lead1
+  assert.deepEqual(e.map(x => [x.kind, x.value]), [['contact_rejected', 'contact rejected: location mismatch Pico Rivera, CA vs New York, NY']], 'only the reason is stored: no firmographic, no contact')
+  assert.equal(leadRow(db).action, 4, 'not regraded yet')
+  assert.equal(regradeFromKeptContacts(db, 'u1', jobId), 1)
+  const l = leadRow(db); assert.equal(l.action, 2, 'reachability unconfirmed: action capped'); assert.equal(l.fit, 4); assert.equal(l.intent, 3)
+  assert.match(l.why, /^Contact unconfirmed: location mismatch Pico Rivera, CA vs New York, NY\. New dental practice in Sunnyside\./)
+  assert.equal(regradeFromKeptContacts(db, 'u1', jobId), 0, 'idempotent'); assert.equal(leadRow(db).why.match(/Contact unconfirmed/g)!.length, 1)
+})
+
+test('regrade control: the New York practice keeps its action grade; a refused record beside a kept contact changes nothing; the grade never goes up', async () => {
+  const ny = seed({ domain: null }); saveCredential(ny.db, 'u1', 'enrich:apollo', 'test-apollo-key-1234', master)
+  await enrichLeadContacts(ny.db, 'u1', ny.jobId, [ny.lead], { fetchImpl: apollo({ name: 'Smile Avenue Dental', estimated_num_employees: 12, website_url: 'https://smileavenuedental.com', city: 'New York', state: 'New York' }), master })
+  assert.equal(regradeFromKeptContacts(ny.db, 'u1', ny.jobId), 0); assert.equal(leadRow(ny.db).action, 4)
+  const mixed = seed({ domain: null })
+  recordContactRejection(mixed.db, 'u1', 'lead1', { connector: 'enrich:pdl', reason: 'contact rejected: location mismatch Pico Rivera, CA vs New York, NY', sourceUrl: 'https://x.example/' })
+  mixed.db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES ('E1', 'lead1', 'u1', 'enrich:pdl', 'contact', 'Maya Chen - Practice Manager', 'PDL', 70, 'https://x.example/', '2026-10-28', 1)").run()
+  assert.equal(regradeFromKeptContacts(mixed.db, 'u1', mixed.jobId), 0, 'a contact that agreed was kept'); assert.equal(leadRow(mixed.db).action, 4)
+  const low = seed({ domain: null }); low.db.prepare("UPDATE leads SET action = 1 WHERE id = 'lead1'").run()
+  recordContactRejection(low.db, 'u1', 'lead1', { connector: 'sitecrawl', reason: 'contact rejected: location mismatch Rome, NY vs New York, NY', sourceUrl: 'https://x.example/' })
+  assert.equal(regradeFromKeptContacts(low.db, 'u1', low.jobId), 0); assert.equal(leadRow(low.db).action, 1, 'never raised')
+  const other = seed({ domain: null }); recordContactRejection(other.db, 'u1', 'lead1', { connector: 'sitecrawl', reason: 'contact rejected: location mismatch Rome, NY vs New York, NY', sourceUrl: 'https://x.example/' })
+  assert.equal(regradeFromKeptContacts(other.db, 'other-tenant', other.jobId), 0, 'tenant-scoped'); assert.equal(leadRow(other.db).action, 4)
 })

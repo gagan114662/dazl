@@ -7,7 +7,7 @@ import { addEnrichment, audit, getEnabledCredential } from '../connectors/store.
 import { apolloOrgEnrich, apolloPeopleSearch, EnrichError } from './apollo.ts'
 import { pdlPeopleSearch } from './pdl.ts'
 import { getMasterKey } from '../secrets.ts'
-import { contactAgreement } from '../scan/contact-agreement.ts'
+import { contactAgreement, recordContactRejection } from '../scan/contact-agreement.ts'
 
 export const ENRICH_APOLLO = 'enrich:apollo'
 export const ENRICH_PDL = 'enrich:pdl'
@@ -46,7 +46,7 @@ export async function enrichLeadContacts(
         org = await apolloOrgEnrich(apolloKey, { domain: lead.company_domain, name: lead.company }, fetchImpl)
         // A same-name company elsewhere (Pico Rivera, CA for a New York lead) is not attached: the record must agree on the domain or the place.
         const agree = org ? contactAgreement({ company_domain: lead.company_domain, where }, { domain: domainOf(org.website), place: org.place, keyedOnLeadDomain: !!lead.company_domain }) : null
-        if (org && agree && !agree.ok) { audit(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: `org ${lead.company}`.slice(0, 200), status: agree.reason, results: 0 }); continue }
+        if (org && agree && !agree.ok) { audit(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: `org ${lead.company}`.slice(0, 200), status: agree.reason, results: 0 }); recordContactRejection(db, tenantId, lead.id, { connector: ENRICH_APOLLO, reason: agree.reason, sourceUrl: org.website ?? src }); continue }
         if (org && (org.employees || org.industry)) {
           const bits = [org.employees ? `${org.employees} employees` : null, org.industry, org.founded ? `founded ${org.founded}` : null].filter(Boolean).join(' · ')
           addEnrichment(db, tenantId, lead.id, { connector: ENRICH_APOLLO, kind: 'firmographic', value: bits.slice(0, 254), label: org.name, confidence: 75, source_url: org.linkedin ?? org.website ?? src, source_date: today, retrieved_at: now })
@@ -61,7 +61,7 @@ export async function enrichLeadContacts(
         // search people by that domain (much more reliable than a raw company name,
         // especially noisy ones like "The Jackson Laboratory (JAX)").
         const orgDomain = lead.company_domain ?? (/^[a-z]+:\/\/([^/?#]+)/i.exec(org?.website ?? '')?.[1]?.replace(/^www\./, '') || null)
-        if (!orgDomain) { audit(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: `people ${lead.company}`.slice(0, 200), status: 'contact rejected: no domain to confirm the company', results: 0 }); continue }
+        if (!orgDomain) { audit(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: `people ${lead.company}`.slice(0, 200), status: 'contact rejected: no domain to confirm the company', results: 0 }); recordContactRejection(db, tenantId, lead.id, { connector: ENRICH_APOLLO, reason: 'contact rejected: no domain to confirm the company', sourceUrl: src }); continue }
         const people = await apolloPeopleSearch(apolloKey, { domain: orgDomain, name: lead.company }, fetchImpl, MAX_CONTACTS)
         for (const p of people) addEnrichment(db, tenantId, lead.id, { connector: ENRICH_APOLLO, kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: 'Apollo', confidence: 70, source_url: p.linkedin ?? src, source_date: today, retrieved_at: now })
         audit(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: `people ${lead.company}`, status: people.length ? 'ok' : 'empty', results: people.length })
@@ -76,7 +76,7 @@ export async function enrichLeadContacts(
         const people = []
         for (const p of found) {
           const a = contactAgreement({ company_domain: lead.company_domain, where }, { domain: p.domain, place: p.place })
-          if (a.ok) people.push(p); else audit(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: `people ${lead.company}`.slice(0, 200), status: a.reason, results: 0 })
+          if (a.ok) people.push(p); else { audit(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: `people ${lead.company}`.slice(0, 200), status: a.reason, results: 0 }); recordContactRejection(db, tenantId, lead.id, { connector: ENRICH_PDL, reason: a.reason, sourceUrl: src }) }
         }
         for (const p of people) addEnrichment(db, tenantId, lead.id, { connector: ENRICH_PDL, kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: 'People Data Labs', confidence: 70, source_url: p.linkedin ?? src, source_date: today, retrieved_at: now })
         audit(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: `people ${lead.company}`, status: people.length ? 'ok' : 'empty', results: people.length })

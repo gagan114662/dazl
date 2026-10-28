@@ -11,7 +11,7 @@ import { detectTech, type TechHit } from './techstack.ts'
 import { emailGuessEnabled, personalLocals, recordEmailGuesses } from '../people/email-pattern.ts'
 import { roleContradicted, titleMatches } from '../people/rank.ts'
 import { placeAgreement, cityScoped } from '../scan/place-agreement.ts'
-import { firstPlaceLabel, leadPlaceLabel } from '../scan/contact-agreement.ts'
+import { firstPlaceLabel, leadPlaceLabel, recordContactRejection } from '../scan/contact-agreement.ts'
 
 // Contact-page crawl. No key. For a verified lead it finds the company's own website, reads a handful of
 // contact/about pages and keeps only business contacts the company itself published there.
@@ -521,6 +521,8 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         if (r.reason !== 'name_mismatch' && r.reason !== 'site_unreachable' && ((basisOf.get(cand) === 'name_probe' && !placeConsistent(r.homeNorm, places)) || (basisOf.get(cand) !== 'name_probe' && basisOf.get(cand) !== 'evidence_own_domain' && places.length > 0 && !placeConsistent(r.homeNorm, places)))) {
           // Same name, but the homepage names none of the lead's places (or no place is known): not this company.
           audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: (places.length ? `contact rejected: location mismatch ${firstPlaceLabel(r.homeText ?? '') ?? 'another place'} vs ${leadPlaceLabel(where)}` : 'contact rejected: no location to confirm the company').slice(0, 180), results: 0 })
+          // a refusal is recorded on the lead only when a homepage was actually read (an unreachable probe is not a wrong-company record)
+          if (r.homeText) recordContactRejection(db, tenantId, l.id, { connector: 'sitecrawl', reason: ((places.length ? `contact rejected: location mismatch ${firstPlaceLabel(r.homeText ?? '') ?? 'another place'} vs ${leadPlaceLabel(where)}` : 'contact rejected: no location to confirm the company').slice(0, 180)).slice(0, 180), sourceUrl: `https://${cand}/` })
           r = { found: [], reason: 'name_mismatch', pages: 0 }
           continue
         }
@@ -531,6 +533,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           if (v === 'mismatch' || (v !== 'agrees' && v !== 'no_geography' && cityScoped(where) && basisOf.get(cand) === 'name_probe')) {
             // Reason in plain words, e.g. "contact rejected: location mismatch Pico Rivera, CA vs New York, NY".
             audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: `contact rejected: location ${v === 'mismatch' ? 'mismatch' : 'unconfirmed'} ${firstPlaceLabel(r.homeText ?? '') ?? 'another place'} vs ${leadPlaceLabel(where)}`.slice(0, 180), results: 0 })
+            if (r.homeText) recordContactRejection(db, tenantId, l.id, { connector: 'sitecrawl', reason: (`contact rejected: location ${v === 'mismatch' ? 'mismatch' : 'unconfirmed'} ${firstPlaceLabel(r.homeText ?? '') ?? 'another place'} vs ${leadPlaceLabel(where)}`.slice(0, 180)).slice(0, 180), sourceUrl: `https://${cand}/` })
             r = { found: [], reason: 'name_mismatch', pages: 0 }
             continue
           }

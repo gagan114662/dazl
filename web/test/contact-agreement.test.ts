@@ -32,7 +32,7 @@ async function run(homeBySite: Record<string, Record<string, string>>, icpWhere:
   await crawlJob(db, 'A', job, { get, gapMs: 0, env: {}, now: Date.parse('2026-10-26T12:00:00Z') })
   return {
     domain: (db.prepare('SELECT company_domain FROM leads WHERE id = ?').get('L1') as { company_domain: string | null }).company_domain,
-    enr: db.prepare("SELECT kind, value, label FROM lead_enrichments WHERE kind <> 'domain' ORDER BY kind, value").all() as { kind: string; value: string; label: string }[],
+    enr: db.prepare("SELECT kind, value, label FROM lead_enrichments WHERE kind NOT IN ('domain', 'contact_rejected') ORDER BY kind, value").all() as { kind: string; value: string; label: string }[],
     audit: (db.prepare("SELECT lookup, status FROM connector_audit WHERE connector = 'sitecrawl'").all() as { lookup: string; status: string }[]),
   }
 }
@@ -82,4 +82,21 @@ test('the crawl refusal reads like the others: "contact rejected: location misma
   const r = await run({ 'smileavenuedental.com': { '/': home, '/contact': CONTACT } }, ['New York City'])
   assert.equal(attached(r), false)
   assert.ok(r.audit.some(a => a.status === 'contact rejected: location mismatch Pico Rivera, CA vs New York, NY'), JSON.stringify(r.audit))
+})
+
+test('the crawl refusal is recorded on the lead too (card reason), and the lead is regraded', async () => {
+  const { regradeFromKeptContacts } = await import('../lib/scan/contact-agreement.ts')
+  const home = html(`Smile Avenue Dental Group - Dentist in Pico Rivera, CA 90660. ${PROSE}<a href="/contact">Contact</a>`)
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
+  const job = createJob(db, 'A', { business_name: 'S', industry: 'x', location: 'y' })
+  db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(JSON.stringify({ summary: 's', where: ['New York City'] }), job)
+  db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score,fit,intent,action,why) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
+    .run('L1', job, 'Smile Avenue Dental', null, 'Opened a new practice in Sunnyside', 'https://qns.example/s', 'Smile Avenue Dental has opened at 45-04 Greenpoint Ave in Sunnyside', 90, 85, 4, 3, 5, 'Opened in Sunnyside.')
+  const get: Get = async url => { const u = new URL(url); if (u.hostname === 'qns.example') return { status: 200, body: ARTICLE, finalUrl: url }; if (u.hostname.replace(/^www\./, '') !== 'smileavenuedental.com') return null; if (u.pathname === '/robots.txt') return { status: 200, body: 'User-agent: *\nAllow: /', finalUrl: url }; return u.pathname === '/' ? { status: 200, body: home, finalUrl: url } : { status: 404, body: '', finalUrl: url } }
+  await crawlJob(db, 'A', job, { get, gapMs: 0, env: {}, now: Date.parse('2026-10-26T12:00:00Z') })
+  const rows = db.prepare("SELECT kind, value FROM lead_enrichments WHERE lead_id = 'L1'").all() as { kind: string; value: string }[]
+  assert.deepEqual(rows, [{ kind: 'contact_rejected', value: 'contact rejected: location mismatch Pico Rivera, CA vs New York, NY' }])
+  assert.equal(regradeFromKeptContacts(db, 'A', job), 1)
+  const l = db.prepare("SELECT action, why FROM leads WHERE id = 'L1'").get() as { action: number; why: string }
+  assert.equal(l.action, 2); assert.match(l.why, /^Contact unconfirmed: location mismatch Pico Rivera, CA vs New York, NY\./)
 })

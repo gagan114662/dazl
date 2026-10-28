@@ -1,7 +1,10 @@
 // Before a contact or company record from an enrichment source (Apollo, People Data Labs, a crawled site) is attached to a lead, it must AGREE
 // with the lead: on the company's domain, or on the city/state the scan is about (city-level for New York City and London, see place-agreement.ts).
 // A same-name practice in Pico Rivera, CA must never be attached to a New York lead. A refusal carries a plain reason for the audit trail.
+import type Database from 'better-sqlite3'
 import { placeAgreement, cityScoped, US_STATES } from './place-agreement.ts'
+import { addEnrichment } from '../connectors/store.ts'
+import { WHY_MAX } from './score.ts'
 
 export interface Candidate { domain?: string | null; place?: string | null; keyedOnLeadDomain?: boolean } // keyedOnLeadDomain: the lookup was made BY the lead's own domain       // place: "City, ST" (or free text) as the source reports it
 export interface LeadSide { company_domain?: string | null; where: string[] }
@@ -52,4 +55,33 @@ export function firstPlaceLabel(text: string): string | null {
   if (m) return `${m[1]}, ${m[2]}`
   const u = /\b([A-Z][\p{L}'.-]+(?: [A-Z][\p{L}'.-]+){0,2}),\s*(England|Scotland|Wales|Northern Ireland|UK|United Kingdom|South Africa|Canada|Ontario)\b/u.exec(text)
   return u ? `${u[1]}, ${u[2]}` : null
+}
+
+// ---- the refusal is recorded on the lead, and the lead is regraded from the evidence actually kept ----
+export const REJECTED_KIND = 'contact_rejected'
+const KEPT_KINDS = ['contact', 'person', 'email', 'phone']
+// A refused record is kept as a labelled row beside the lead (shown on the card as the reason, never counted as a contact).
+export function recordContactRejection(db: Database.Database, tenantId: string, leadId: string, r: { connector: string; reason: string; sourceUrl: string }): void {
+  const url = /^https?:\/\//.test(r.sourceUrl) ? r.sourceUrl : 'https://invalid.example/'
+  addEnrichment(db, tenantId, leadId, { connector: r.connector, kind: REJECTED_KIND, value: r.reason.slice(0, 254), label: 'not attached', confidence: null, source_url: url.slice(0, 500), source_date: new Date().toISOString().slice(0, 10), retrieved_at: Math.floor(Date.now() / 1000) })
+}
+// "Can the seller act on it" (the action grade, 0-5) assumed a reachable company. When every contact found for a lead was refused (wrong place /
+// wrong domain) and nothing else reaches it, reachability is unconfirmed: the grade is capped at 2 (it only ever goes DOWN) and the card says why.
+// The list is ranked by fit, then action, so the lead drops below leads that do have a contact. Idempotent.
+export const UNCONFIRMED_ACTION_CAP = 2
+export function regradeFromKeptContacts(db: Database.Database, tenantId: string, jobId: string): number {
+  const rows = db.prepare(
+    `SELECT l.id, l.action, l.why, l.contact,
+            (SELECT e.value FROM lead_enrichments e WHERE e.lead_id = l.id AND e.tenant_id = ? AND e.kind = '${REJECTED_KIND}' ORDER BY e.retrieved_at DESC LIMIT 1) AS rejected,
+            (SELECT count(*) FROM lead_enrichments e WHERE e.lead_id = l.id AND e.tenant_id = ? AND e.kind IN (${KEPT_KINDS.map(k => `'${k}'`).join(',')})) AS kept
+     FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.scan_job_id = ? AND j.user_id = ? AND l.action IS NOT NULL AND l.action > ${UNCONFIRMED_ACTION_CAP}`,
+  ).all(tenantId, tenantId, jobId, tenantId) as { id: string; action: number; why: string | null; contact: string | null; rejected: string | null; kept: number }[]
+  const upd = db.prepare('UPDATE leads SET action = ?, why = ? WHERE id = ?')
+  let n = 0
+  for (const r of rows) {
+    if (!r.rejected || r.kept > 0 || (r.contact ?? '').trim()) continue
+    const note = `Contact unconfirmed: ${r.rejected.replace(/^contact rejected:\s*/i, '')}. `
+    upd.run(UNCONFIRMED_ACTION_CAP, (note + (r.why ?? '')).slice(0, WHY_MAX), r.id); n++
+  }
+  return n
 }
