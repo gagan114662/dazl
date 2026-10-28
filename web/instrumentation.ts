@@ -5,10 +5,9 @@ export async function register() {
   if (process.env.NEXT_RUNTIME !== 'nodejs') return
   const { installShutdownRequeue } = await import('./lib/scan/shutdown-hook.ts')
   installShutdownRequeue()
-  // An uncaught exception is recorded (structured, scrubbed) before Node's default handling; the monitor event does
-  // not change whether the process exits.
-  const { captureError } = await import('./lib/ops/errors.ts')
-  process.on('uncaughtExceptionMonitor', (e, origin) => { captureError(e, { source: 'process', where: origin }) })
+  // Uncaught exceptions and unhandled rejections go through the scrubbed error monitor (lib/ops/process-errors.ts).
+  const { recordProcessErrors } = await import('./lib/ops/process-errors.ts')
+  recordProcessErrors()
 }
 
 // Every uncaught error from a route handler, page or server action (lib/ops/request-error.ts).

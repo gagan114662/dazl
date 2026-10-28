@@ -22,6 +22,7 @@ import { eventDateCopy } from '@/lib/scan/date-copy'
 import BudgetPanel from './budget-panel'
 import { budgetFromForm, EMPTY_BUDGET_FORM, type BudgetForm } from '@/lib/scan/run-budget-form'
 import { evidenceOriginLabel, purgedNote } from '@/lib/scan/evidence-origin'
+import { playSuggestions, type PlaySuggestions } from '@/lib/play-suggestions'
 
 // Reject on the card is the existing reversible quarantine, with its own reason so the card can say "Rejected".
 const REJECT_REASON = 'Rejected: not a fit'
@@ -263,8 +264,8 @@ export default function LeadsClient() {
     return ok
   }
 
-  async function preview(e: React.FormEvent) {
-    e.preventDefault()
+  // Optional: work out the profile for review before running. The sentence alone runs straight away (submit below).
+  async function preview() {
     setError(''); setDraft(null); setBusy(true)
     try {
       const r = await fetch('/api/scan/icp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query }) })
@@ -401,6 +402,11 @@ export default function LeadsClient() {
     }).catch(() => {})
   }, [])
 
+  // One-sentence play suggestions from the saved business details (examples when there are none). Filling the box is all
+  // a click does; the scan starts only from the existing buttons.
+  const [plays, setPlays] = useState<PlaySuggestions | null>(null)
+  useEffect(() => { void fetch('/api/settings/profile').then(r => r.ok ? r.json() : null).catch(() => null).then(p => setPlays(playSuggestions(p))) }, [])
+
   const input = 'field'
   const visibleLeads = leads.filter(l => !l.review_reason && (showSeen || !l.seen_before))
 
@@ -413,12 +419,22 @@ export default function LeadsClient() {
         </div>
         <a className="text-sm text-gray-300 underline underline-offset-4 hover:text-white" href={jobId ? `/api/leads/export?job_id=${jobId}` : '/api/leads/export'}>Download CSV</a>
       </div>
-      <form onSubmit={preview} className="mb-4">
-        <textarea className={`${input} w-full`} rows={3} required minLength={3} maxLength={600} value={query} onChange={e => setQuery(e.target.value)}
-          placeholder="What are you looking for? e.g. Seed-stage fintech founders in Europe who just hired their first sales rep" />
+      {/* Submitting the sentence runs the scan (the server works out the profile, as the run-without-review path always did)
+          and lands on live progress; reviewing the profile first is optional. */}
+      <form onSubmit={e => { e.preventDefault(); void run(null) }} className="mb-4">
+        <label htmlFor="play" className="block text-base font-semibold mb-2">Who do you want to reach?</label>
+        <textarea id="play" className={`${input} w-full`} rows={3} required minLength={3} maxLength={600} value={query} onChange={e => setQuery(e.target.value)}
+          placeholder="One sentence: who, where, and what just happened. e.g. Seed-stage fintech founders in Europe who just hired their first sales rep" />
+        {!jobId && plays && <div className="mt-2 space-y-1 text-xs" data-testid="play-suggestions">
+          {([['business', 'From your business details:', plays.business], ['examples', 'Examples:', plays.examples]] as const).filter(([, , items]) => items.length > 0).map(([k, label, items]) =>
+            <div key={k} className="flex flex-wrap items-center gap-2" data-testid={`play-suggestions-${k}`}>
+              <span className="text-[#555]">{label}</span>
+              {items.map(t => <button key={t} type="button" data-testid="play-suggestion" onClick={() => setQuery(t)} className="border border-black/20 rounded-full px-3 py-1 text-left hover:border-black">{t}</button>)}
+            </div>)}
+        </div>}
         <div className="flex gap-3 mt-2 items-center">
-          <button disabled={busy || scanActive} title={scanActive ? 'A scan is already running below' : undefined} className="btn-primary">{busy ? 'Working out your profile...' : 'Find leads'}</button>
-          <button type="button" disabled={query.trim().length < 3 || starting || scanActive} onClick={() => run(null)} className="text-xs text-[#555] underline disabled:opacity-40 disabled:no-underline">{starting ? 'Starting...' : 'or run without reviewing the profile'}</button>
+          <button disabled={busy || starting || scanActive} title={scanActive ? 'A scan is already running below' : undefined} className="btn-primary">{starting ? 'Starting...' : 'Find leads'}</button>
+          <button type="button" disabled={query.trim().length < 3 || busy || starting || scanActive} onClick={() => void preview()} className="text-xs text-[#555] underline disabled:opacity-40 disabled:no-underline">{busy ? 'Working out your profile...' : 'Review profile first'}</button>
         </div>
       </form>
       <details className="mb-4 text-sm" data-testid="more-sources">
