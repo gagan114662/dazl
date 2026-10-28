@@ -4,31 +4,29 @@ import { useEffect, useState } from 'react'
 import { isJobId } from '@/lib/outreach/scan-drafts'
 import { leadStatus, scanMessages, type ViewLead, type ViewMsg } from '@/lib/outreach/campaign-view'
 
-interface Job { query: string | null; status: string; created_at?: number }
-type Load<T> = T | 'failed' | null
+import type { CampaignDetail } from '@/lib/outreach/campaign-detail'
 
 // One campaign (= one scan): its play, every lead with where it stands, and its drafts and sends. Read-only: reviewing,
 // approving, drafting and sending stay on Leads and Outreach with their checks; this page only reports and links.
-// The status read is passive (never starts or resumes the scan).
+// Its data comes from GET /api/campaigns/<id>: plain owner-scoped reads of this scan only (never the scan status read,
+// which can reap stale jobs, and never the account-wide newest-200 Outreach list), complete for an old campaign too.
 export default function CampaignView({ id }: { id: string }) {
   const valid = isJobId(id)
-  const [job, setJob] = useState<Load<Job> | 'not_found'>(null)
-  const [leads, setLeads] = useState<Load<ViewLead[]>>(null)
-  const [msgs, setMsgs] = useState<Load<ViewMsg[]>>(null)
+  const [data, setData] = useState<CampaignDetail | 'failed' | 'not_found' | null>(null)
   useEffect(() => {
     if (!valid) return
-    const get = (u: string) => fetch(u).then(async r => ({ status: r.status, body: r.ok ? await r.json().catch(() => null) : null })).catch(() => ({ status: 0, body: null }))
-    void get(`/api/scan/status?job_id=${id}&passive=1`).then(r => setJob(r.status === 404 ? 'not_found' : r.body?.status ? r.body : 'failed'))
-    void get(`/api/leads?job_id=${id}&all=1`).then(r => setLeads(Array.isArray(r.body?.leads) ? r.body.leads : 'failed'))
-    void get('/api/outreach').then(r => setMsgs(Array.isArray(r.body?.messages) ? r.body.messages : 'failed'))
+    void fetch(`/api/campaigns/${id}`).then(async r => r.status === 404 ? 'not_found' as const : r.ok ? await r.json().catch(() => 'failed' as const) : 'failed' as const)
+      .catch(() => 'failed' as const).then(d => setData(d && (d === 'not_found' || d === 'failed' || Array.isArray(d.leads)) ? d : 'failed'))
   }, [id, valid])
+  const job = data && typeof data === 'object' ? data.job : data
+  const leads = data && typeof data === 'object' ? data.leads : data === 'failed' ? 'failed' : null
+  const msgs = data && typeof data === 'object' ? data.messages : data === 'failed' ? 'failed' : null
 
   if (!valid || job === 'not_found') return (
     <div className="p-8 max-w-5xl"><p className="text-sm" role="alert">This campaign was not found. <Link className="underline" href="/app/campaigns">All campaigns</Link></p></div>
   )
-  const leadList = Array.isArray(leads) ? leads : null
-  // Fail closed: without this scan's leads, no email can be attributed to it, so none is listed.
-  const mine = leadList && Array.isArray(msgs) ? scanMessages(msgs, leadList) : null
+  // The endpoint already returns only this scan's emails; scanMessages keeps that true even if a row slipped through.
+  const mine = Array.isArray(leads) && Array.isArray(msgs) ? scanMessages(msgs, leads) : null
   return (
     <div className="p-8 max-w-5xl">
       <p className="text-xs mb-2"><Link className="underline" href="/app/campaigns">All campaigns</Link></p>

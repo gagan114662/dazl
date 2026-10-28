@@ -3,11 +3,12 @@
 // Real production build, throwaway database, server under test/helpers/net-fence.ts, and EVERY /api/* CALL ANSWERED
 // FROM A STUB in the browser: no scan, no draft, nothing sent. Off-host requests are aborted. It proves:
 //   1. the Campaigns list links each campaign to its own page;
-//   2. the page shows the play (the search sentence) and the scan's state, read passively (passive=1: never resumes it);
+//   2. the page shows the play (the search sentence) and the scan's state from GET /api/campaigns/<id> only: it never
+//      calls the scan status read (which can reap stale jobs) or the account-wide Outreach list (newest 200 only);
 //   3. every lead of the scan (rejected ones included) shows where it stands: rejected, needs review, not verified,
 //      source-checked, draft waiting, approved not sent, sent;
 //   4. drafts and sends list only this scan's emails (another scan's draft is not shown);
-//   5. if the scan's leads cannot be read, no email is attributed to it (fail closed); an unknown scan says not found;
+//   5. if the campaign cannot be read, nothing is claimed (no leads, no emails); an unknown scan says not found;
 //   6. loading the page writes nothing.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
@@ -41,8 +42,8 @@ const LEADS = [
 ]
 const M = (lead, status, to, sent_at = null) => ({ id: lead.slice(0, 1) + 'm', lead_id: lead.repeat(24), to_email: to, subject: `Hello ${to}`, body: 'Hi', status, error: null, created_at: 1, sent_at, test: 0 })
 const MSGS = [M('1', 'sent', 'hi@sent.example', 1761600000), M('2', 'approved', 'hi@approved.example'), M('3', 'draft', 'hi@draft.example'), M('9', 'draft', 'hi@elsewhere.example')]
-let leadsFail = false
-const writes = []; const statusUrls = []
+let detailFail = false
+const writes = []; const calls = []
 const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: 1280, height: 1000 } })
 await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
 await ctx.route('**/*', async route => {
@@ -52,9 +53,9 @@ await ctx.route('**/*', async route => {
   const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
   if (m !== 'GET') writes.push(`${m} ${u.pathname}`)
   if (u.pathname === '/api/campaigns') return json({ campaigns: [{ id: JOB, query: 'Dental practice owners in Ohio - opened a new location', status: 'done', error: null, created_at: 1761500000, discovery: { candidates: 9, leads: 7 }, qualification: { sourceChecked: 4, confirmedByYou: 0, needsReview: 1, unverified: 1, held: 0, rejected: 1 }, contact: { withContact: 3 }, outreach: { drafts: 1, approved: 1, sent: 1, draftsReady: 1, draftsSetup: 0, draftsHeld: 0, approvedReady: 1, approvedSetup: 0, approvedHeld: 0 }, sequence: { active: 0, stopped: 0 }, reply: { replied: 0, interested: 0, bounced: 0, optOuts: 0 }, next: { label: 'Review 1 draft', href: '/app/outreach' } }] })
-  if (u.pathname === '/api/scan/status') { statusUrls.push(u.search); return u.searchParams.get('job_id') === JOB ? json({ job_id: JOB, status: 'done', created_at: 1761500000, query: 'Dental practice owners in Ohio - opened a new location' }) : json({ error: 'Not found' }, 404) }
-  if (u.pathname === '/api/leads') { if (leadsFail) return json({ error: 'unavailable' }, 503); return u.searchParams.get('job_id') === JOB ? json({ job_id: JOB, status: 'done', hidden_count: 0, leads: LEADS }) : json({ error: 'Not found' }, 404) }
-  if (u.pathname === '/api/outreach') return json({ messages: MSGS })
+  calls.push(u.pathname)
+  if (u.pathname === `/api/campaigns/${JOB}`) return detailFail ? json({ error: 'unavailable' }, 503) : json({ job: { id: JOB, query: 'Dental practice owners in Ohio - opened a new location', status: 'done', error: null, created_at: 1761500000 }, leads: LEADS, messages: MSGS })
+  if (u.pathname.startsWith('/api/campaigns/')) return json({ error: 'Not found' }, 404)
   return json({}, 404)
 })
 const page = await ctx.newPage()
@@ -69,7 +70,7 @@ try {
   await page.getByTestId('campaign-email').first().waitFor()
   assert.equal(await page.getByTestId('campaign-play').textContent(), 'Dental practice owners in Ohio - opened a new location')
   assert.match(await page.getByTestId('campaign-status').textContent(), /^Scan finished/)
-  assert.ok(statusUrls.every(s => s.includes('passive=1')), 'status is read passively')
+  assert.ok(!calls.some(p => p === '/api/scan/status' || p === '/api/outreach' || p === '/api/leads'), `only the campaign read is used: ${calls.join(', ')}`)
   const rows = await page.getByTestId('campaign-lead').evaluateAll(els => els.map(e => [e.children[0].textContent, e.children[1].textContent]))
   assert.deepEqual(rows, [
     ['Sent Dental', 'Sent'], ['Approved Dental', 'Approved, not sent yet'], ['Draft Dental', 'Draft waiting for your review'],
@@ -83,20 +84,21 @@ try {
   assert.ok(!emails.some(t => t.includes('elsewhere')), "another scan's draft is not listed")
   assert.equal(await page.locator('main').last().getByRole('link', { name: 'Outreach', exact: true }).getAttribute('href'), `/app/outreach?job_id=${JOB}`)
   await shot('campaign')
-  // Leads unreadable: no email is attributed to this scan.
-  leadsFail = true
+  // The campaign cannot be read: no lead or email is claimed.
+  detailFail = true
   await page.reload({ waitUntil: 'networkidle' })
   await page.getByTestId('messages-unavailable').waitFor()
   assert.equal(await page.getByTestId('campaign-email').count(), 0)
   assert.equal(await page.getByText('hi@elsewhere.example').count(), 0)
+  assert.equal(await page.getByTestId('campaign-lead').count(), 0)
   // Unknown scan.
-  leadsFail = false
+  detailFail = false
   await page.goto(`${base}/app/campaigns/${OTHER_JOB}`, { waitUntil: 'networkidle' })
   await page.getByText('This campaign was not found.').waitFor()
   await page.goto(`${base}/app/campaigns/not-a-scan`, { waitUntil: 'networkidle' })
   await page.getByText('This campaign was not found.').waitFor()
   assert.deepEqual(writes, [], 'loading writes nothing')
-  console.log('campaign view UI check passed: list links to the page, play + passive status, every lead staged, only this scan\'s emails, fail closed, not found, no writes')
+  console.log('campaign view UI check passed: list links to the page, play + status from the campaign read only, every lead staged, only this scan\'s emails, fail closed, not found, no writes')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }
