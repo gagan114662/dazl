@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getDb } from '@/lib/db/client'
 import { applyStripeEvent, verifyStripeSignature, type StripeEvent } from '@/lib/billing/stripe'
 import { captureError } from '@/lib/ops/errors'
+import { requestIdOf } from '@/lib/ops/request-log'
 
 // Stripe calls this directly: no session. Authenticity comes only from the
 // signature over the raw body. With no STRIPE_WEBHOOK_SECRET the endpoint is off.
@@ -24,7 +25,7 @@ export async function POST(req: NextRequest) {
     if (result === 'held') return NextResponse.json({ result }, { status: 503 })
     return NextResponse.json({ result })
   } catch (e) {
-    captureError(e, { source: 'route', where: '/api/billing/webhook', method: 'POST', ref: event.id })
+    captureError(e, { source: 'route', where: '/api/billing/webhook', method: 'POST', ref: event.id, requestId: requestIdOf(req) })
     return NextResponse.json({ error: 'Could not process' }, { status: 500 }) // Stripe will retry
   }
 }

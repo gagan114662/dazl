@@ -5,6 +5,7 @@ import type { OutreachProvenance } from '@/lib/outreach/provenance'
 import SequencesClient from './sequences-client'
 import SendReadiness from './send-readiness'
 import { forScan, isJobId } from '@/lib/outreach/scan-drafts'
+import Caveat from '@/app/app/caveat'
 
 interface Msg { lead_id: string; send_footer?: string | null; currentness_held?: boolean; provenance?: OutreachProvenance | null; id: string; to_email: string; subject: string; body: string; status: string; error: string | null; sent_at: number | null; test?: number; evidence_state?: 'machine' | 'human' | 'unverified' }
 
@@ -87,7 +88,7 @@ export default function OutreachClient() {
   return (
     <div className="p-8 max-w-3xl">
       <h1 className="text-2xl font-bold mb-1">Outreach</h1>
-      <p className="text-[#555] text-sm mb-6">Review each email, approve it, then send. Manual emails send only after your click. If you turn on autopilot, it can send first emails on its own after you approve the first sends (its consent text is in Settings). A sequence sends its later steps only after you approve all three steps together. Every email gets your name, mailing address and an unsubscribe link added automatically.</p>
+      <Caveat className="text-[#555] text-sm mb-6" summary="Review and approve each email, then send it; only autopilot (if you turn it on) and the later steps of a sequence you approved send without a click.">Review each email, approve it, then send. Manual emails send only after your click. If you turn on autopilot, it can send first emails on its own after you approve the first sends (its consent text is in Settings). A sequence sends its later steps only after you approve all three steps together. Every email gets your name, mailing address and an unsubscribe link added automatically.</Caveat>
       <SendReadiness />
       {note && <p className="text-sm text-[#111] border-l-2 border-[#111] pl-3 mb-4" role="status">{note}</p>}
       {!loaded && <p className="text-[#666] text-sm" role="status">Loading your emails...</p>}

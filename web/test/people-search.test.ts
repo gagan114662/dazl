@@ -45,7 +45,7 @@ test('stores matching people as labelled person enrichments with the profile URL
   ] })) }) as unknown as typeof fetch
   const n = await findPeople(db, 'A', job, { env, fetchImpl: f })
   assert.equal(n, 1)
-  const rows = db.prepare("SELECT connector, kind, value, label, source_url FROM lead_enrichments").all()
+  const rows = db.prepare("SELECT connector, kind, value, label, source_url FROM lead_enrichments WHERE kind <> 'contact_rejected'").all()
   assert.deepEqual(rows, [{ connector: 'search:people', kind: 'person', value: 'Jane Doe, Head of HR', label: LABEL, source_url: 'https://www.linkedin.com/in/jane-doe-1' }])
   const q = new URL(urls[0]).searchParams
   assert.ok(q.get('query')!.startsWith('site:linkedin.com/in "Acme Logistics"')); assert.equal(q.get('location'), 'US')
@@ -58,7 +58,11 @@ test('a same-name company in another place is not attached: a result naming anot
     { url: 'https://www.linkedin.com/in/nowhere-nell', title: 'Nell Nowhere - HR Manager - Acme Logistics | LinkedIn', snippet: 'Head of HR at Acme Logistics' },
   ] }))) as unknown as typeof fetch
   assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: f }), 0)
-  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM lead_enrichments').get() as { n: number }).n, 0)
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM lead_enrichments WHERE kind <> 'contact_rejected'").get() as { n: number }).n, 0, 'nothing is attached')
+  // ... but each refusal is recorded on the lead with its marker, and the search went on to the other results
+  const refused = db.prepare("SELECT value, label, source_url FROM lead_enrichments WHERE kind = 'contact_rejected' ORDER BY value").all() as { value: string; label: string; source_url: string }[]
+  assert.deepEqual(refused.map(r => r.label).sort(), ['contact_location_mismatch', 'contact_location_unconfirmed'])
+  assert.ok(refused.some(r => r.value === 'contact rejected: location mismatch Pico Rivera, California vs Ohio' && r.source_url === 'https://www.linkedin.com/in/cal-same'), JSON.stringify(refused))
   // no place in the request: no demand (global requests are unchanged)
   const g = setup({ ...ICP, where: [] }); assert.equal(await findPeople(g.db, 'A', g.job, { env, fetchImpl: f }), 2)
 })
@@ -145,5 +149,6 @@ test('New York City request: a profile result in Rome, NY is not attached; the N
     { url: 'https://www.linkedin.com/in/nyc-nick', title: 'Nick Nyc - Head of HR - Acme Logistics | LinkedIn', snippet: 'New York, New York, United States' },
   ] }))) as unknown as typeof fetch
   assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: f }), 1)
-  assert.deepEqual((db.prepare("SELECT value FROM lead_enrichments").all() as { value: string }[]).map(r => r.value), ['Nick Nyc, Head of HR'])
+  assert.deepEqual((db.prepare("SELECT value FROM lead_enrichments WHERE kind = 'person'").all() as { value: string }[]).map(r => r.value), ['Nick Nyc, Head of HR'])
+  assert.deepEqual(db.prepare("SELECT label FROM lead_enrichments WHERE kind = 'contact_rejected'").all(), [{ label: 'contact_location_mismatch' }], 'Rome, NY is refused and marked')
 })

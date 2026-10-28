@@ -23,7 +23,7 @@ export default function SendReadiness() {
         {!senderOk && <li>Add your name and mailing address below.</li>}
       </ul>
       {!senderOk && <div className="mb-3"><SenderInline initial={s.sender} onSaved={() => void load()} /></div>}
-      {!gmailOk && <a className="underline underline-offset-2" href="/app/settings">Connect Gmail in Settings</a>}
+      {!gmailOk && <a className="underline underline-offset-2" href="/app/settings#gmail">Connect Gmail in Settings</a>}
     </div>
   )
 }

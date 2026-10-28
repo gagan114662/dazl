@@ -1,4 +1,5 @@
 import { test } from 'node:test'
+import { sqliteDb } from '../lib/db/client.ts'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateScan, createJob, exportLeads, listLeads } from '../lib/scan/store.ts'
@@ -20,27 +21,27 @@ function setup() {
   return { db, job }
 }
 
-test('quarantine keeps the lead and its evidence, is tenant-scoped and reversible', () => {
+test('quarantine keeps the lead and its evidence, is tenant-scoped and reversible', async () => {
   const { db, job } = setup()
-  assert.deepEqual(setQuarantine(db, 'B', 'L1', 'quarantine', 'x'), { status: 'not_found' }) // another tenant cannot
-  assert.deepEqual(setQuarantine(db, 'A', 'L1', 'quarantine', 'Wrong company: Pico Rivera CA site'), { status: 'quarantined' })
+  assert.deepEqual(await setQuarantine(sqliteDb(db), 'B', 'L1', 'quarantine', 'x'), { status: 'not_found' }) // another tenant cannot
+  assert.deepEqual(await setQuarantine(sqliteDb(db), 'A', 'L1', 'quarantine', 'Wrong company: Pico Rivera CA site'), { status: 'quarantined' })
   assert.equal(isQuarantined(db, 'L1'), true)
   const row = (listLeads(db, 'A', job, 200, true) as { id: string; quarantine_reason: string; evidence_excerpt: string }[])[0]
   assert.equal(row.quarantine_reason, 'Wrong company: Pico Rivera CA site'); assert.ok(row.evidence_excerpt.includes('Greenpoint'))
   assert.equal((db.prepare('SELECT count(*) n FROM lead_enrichments WHERE lead_id = ?').get('L1') as { n: number }).n, 1) // nothing deleted
-  assert.deepEqual(setQuarantine(db, 'A', 'L1', 'release'), { status: 'released' })
+  assert.deepEqual(await setQuarantine(sqliteDb(db), 'A', 'L1', 'release'), { status: 'released' })
   assert.equal(isQuarantined(db, 'L1'), false)
-  assert.deepEqual(setQuarantine(db, 'A', 'L1', 'release'), { status: 'unchanged' })
+  assert.deepEqual(await setQuarantine(sqliteDb(db), 'A', 'L1', 'release'), { status: 'unchanged' })
 })
 
-test('a quarantined lead cannot be drafted, is held at the send gate, and is left out of exports', () => {
+test('a quarantined lead cannot be drafted, is held at the send gate, and is left out of exports', async () => {
   const { db } = setup()
-  setQuarantine(db, 'A', 'L1', 'quarantine', 'wrong company')
+  await setQuarantine(sqliteDb(db), 'A', 'L1', 'quarantine', 'wrong company')
   assert.throws(() => createDraft(db, 'A', 'L1', 'Seller'), (e: unknown) => e instanceof OutreachError && e.code === 'lead_quarantined')
   assert.equal(domainReviewStatus(db, 'A', 'L1', 'hello@smileavenuedental.com'), 'quarantined')
   assert.equal(domainHoldCode(db, 'A', 'L1', 'hello@smileavenuedental.com'), 'lead_quarantined')
   assert.equal((exportLeads(db, 'A') as unknown[]).length, 0)
-  setQuarantine(db, 'A', 'L1', 'release')
+  await setQuarantine(sqliteDb(db), 'A', 'L1', 'release')
   assert.equal((exportLeads(db, 'A') as unknown[]).length, 1)
   assert.notEqual(domainReviewStatus(db, 'A', 'L1', 'hello@smileavenuedental.com'), 'quarantined')
 })

@@ -1,0 +1,183 @@
+// A REQUIRED gate that failed (the sales-hiring check) is a hold that lead / domain confirmation cannot clear. Real confirmation + draft-gate functions, isolated stubbed database, no
+// network, no draft sent. The control (a lead in ordinary review) is unblocked by confirmation exactly as before.
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { randomBytes } from 'node:crypto'
+import Database from 'better-sqlite3'
+import { migrateScan, createJob } from '../lib/scan/store.ts'
+import { migrateOutreach } from '../lib/outreach/store.ts'
+import { migrateConnectors } from '../lib/connectors/store.ts'
+import { seedOffers } from './helpers/seed-offer.ts'
+import { confirmLeadReview } from '../lib/scan/review-confirm.ts'
+import { setDomainReview } from '../lib/scan/domain-review-action.ts'
+import { sqliteDb } from '../lib/db/client.ts'
+import { createDraft } from '../lib/outreach/service.ts'
+import { currentnessHeld } from '../lib/outreach/currentness.ts'
+import { requiredGateHeld, markHeldInProcess, releaseHeld } from '../lib/scan/held-state.ts'
+import { migrateRunReport } from '../lib/scan/run-report.ts'
+
+function setup() { const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateConnectors(db); seedOffers(db); return db }
+function addLead(db: Database.Database, o: { reason: string | null; confidence?: number | null }) {
+  const job = createJob(db, 'A', { business_name: 'Acme', industry: 'SaaS', location: 'London' })
+  const id = randomBytes(12).toString('hex')
+  db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
+  db.prepare('INSERT INTO leads (id, scan_job_id, company, company_domain, contact, signal, source_url, evidence_excerpt, confidence, review_reason, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(id, job, 'Northside Builders', 'northside.example', 'info@northside.example', 'Northside Builders raised a seed round', 'https://news.example/a', 'Northside Builders raised a seed round', o.confidence ?? null, o.reason, 70)
+  return id
+}
+const mark = (db: Database.Database, leadId: string) => db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, 'A', 'scan:gate', 'gate_failed', 'sales_hiring_check_failed', 'x', NULL, 'https://invalid.example/', '2026-10-28', 1)").run(randomBytes(12).toString('hex'), leadId)
+
+test('CONTROL: a lead in ordinary review becomes draftable after the user confirms it', async () => {
+  const db = setup(); const id = addLead(db, { reason: 'quote_unconfirmed' })
+  assert.equal(requiredGateHeld(db, 'A', id), null); assert.throws(() => createDraft(db, 'A', id, 'Acme'), /lead_not_verified/)
+  assert.equal(await confirmLeadReview(sqliteDb(db), 'A', id), true)
+  assert.equal(typeof createDraft(db, 'A', id, 'Acme'), 'string', 'confirmation unblocks drafting when no required gate failed')
+})
+
+test('a lead held by the FAILED sales-hiring gate stays blocked through lead confirmation and domain confirmation', async () => {
+  const db = setup(); const id = addLead(db, { reason: 'sales_hiring_check_failed' })
+  assert.throws(() => createDraft(db, 'A', id, 'Acme'), /lead_not_verified|sales_hiring_check_failed/)
+  assert.equal(await confirmLeadReview(sqliteDb(db), 'A', id), true, 'the user can still confirm the lead (it moves out of review)')
+  assert.equal(requiredGateHeld(db, 'A', id), 'sales_hiring_check_failed', 'the reason it was confirmed FROM still holds')
+  try { setDomainReview(db, 'A', id, 'confirm') } catch { /* the website confirmation may be refused for other reasons: the hold must hold either way */ }
+  assert.throws(() => createDraft(db, 'A', id, 'Acme'), /sales_hiring_check_failed/, 'drafting stays blocked with the failed gate as the reason')
+  assert.equal(currentnessHeld(db, 'A', id), true, 'approve / send / sequences / follow-ups use the same hold')
+})
+
+test('WRITE-REJECTED: the row still reads verified, only the gate_failed marker holds it - confirmation (lead and domain) still cannot unblock drafting', async () => {
+  const db = setup(); const id = addLead(db, { reason: null, confidence: 80 })
+  mark(db, id)
+  assert.equal(requiredGateHeld(db, 'A', id), 'sales_hiring_check_failed')
+  assert.throws(() => createDraft(db, 'A', id, 'Acme'), /sales_hiring_check_failed/, 'verified-looking row, held by the marker')
+  assert.equal(await confirmLeadReview(sqliteDb(db), 'A', id), true)   // a verified row can be human-confirmed too
+  try { setDomainReview(db, 'A', id, 'confirm') } catch { /* see above */ }
+  assert.throws(() => createDraft(db, 'A', id, 'Acme'), /sales_hiring_check_failed/)
+  assert.equal(currentnessHeld(db, 'A', id), true)
+})
+
+test('tenant scope: another tenant’s lead id is never reported held', () => {
+  const db = setup(); const id = addLead(db, { reason: 'sales_hiring_check_failed' })
+  assert.equal(requiredGateHeld(db, 'B', id), null)
+})
+
+test('STANDS ALONE: the run report’s held_lead_ids (the run’s own record) holds the lead when the review write AND any marker are gone - lead and domain confirmation cannot unblock drafting', async () => {
+  const db = setup(); const id = addLead(db, { reason: null, confidence: 80 })   // the row still reads verified
+  const jobId = (db.prepare('SELECT scan_job_id AS j FROM leads WHERE id = ?').get(id) as { j: string }).j
+  assert.equal(requiredGateHeld(db, 'A', id), null, 'nothing records a failure yet')
+  migrateRunReport(db)
+  db.prepare('INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, 1, ?)').run(jobId, JSON.stringify({ held_lead_ids: [id] }))
+  assert.equal(requiredGateHeld(db, 'A', id), 'sales_hiring_check_failed')
+  await confirmLeadReview(sqliteDb(db), 'A', id); try { setDomainReview(db, 'A', id, 'confirm') } catch { /* see above */ }
+  assert.throws(() => createDraft(db, 'A', id, 'Acme'), /sales_hiring_check_failed/)
+  assert.equal(currentnessHeld(db, 'A', id), true)
+  // the gate running again and passing releases it
+  releaseHeld(db, 'A', jobId, [id])
+  assert.equal(requiredGateHeld(db, 'A', id), null)
+})
+
+test('NOTHING PERSISTED: the process remembers the held lead; a gate pass releases it', () => {
+  const db = setup(); const id = addLead(db, { reason: null, confidence: 80 })
+  const jobId = (db.prepare('SELECT scan_job_id AS j FROM leads WHERE id = ?').get(id) as { j: string }).j
+  markHeldInProcess('A', [id])
+  assert.equal(requiredGateHeld(db, 'A', id), 'sales_hiring_check_failed'); assert.equal(requiredGateHeld(db, 'B', id), null)
+  assert.throws(() => createDraft(db, 'A', id, 'Acme'), /sales_hiring_check_failed/)
+  releaseHeld(db, 'A', jobId, [id]); assert.equal(requiredGateHeld(db, 'A', id), null)
+})
+
+test('DURABLE across a restart: every write of the failure rejected (no review reason, no marker, no report entry) and no pass record -> a FRESH process still holds the lead through lead + domain confirmation; with a durable pass record it is draftable', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs'); const { tmpdir } = await import('node:os'); const { join } = await import('node:path'); const { spawnSync } = await import('node:child_process'); const { fileURLToPath } = await import('node:url')
+  const dir = mkdtempSync(join(tmpdir(), 'gate-hold-'))
+  try {
+    const file = join(dir, 'scan.db')
+    const db = new Database(file); migrateScan(db); migrateOutreach(db); migrateConnectors(db); seedOffers(db)
+    const ICP = JSON.stringify({ summary: 's', where: ['London, UK'], who: ['Founder'], signals: ['announced seed funding', 'hiring sales staff'], exclude: [] })
+    const mkLead = (id: string) => {
+      const job = createJob(db, 'A', { business_name: 'Acme', industry: 'SaaS', location: 'London' })
+      db.prepare("UPDATE scan_jobs SET status = 'running', query = ?, icp = ? WHERE id = ?").run('Find London UK B2B SaaS startups that announced seed funding and are hiring sales staff.', ICP, job)
+      db.prepare('INSERT INTO leads (id, scan_job_id, company, company_domain, contact, signal, source_url, evidence_excerpt, confidence, review_reason, score, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 80, NULL, 70, ?)')
+        .run(id, job, 'Northside Builders', 'northside.example', 'info@northside.example', 'raised a seed round', 'https://news.example/a', 'Northside Builders raised a seed round', Math.floor(Date.now() / 1000))
+    }
+    mkLead('held1'); mkLead('passed1')
+    // only the lead the gate actually passed carries the durable record
+    db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, 'passed1', 'A', 'scan:gate', 'gate_passed', 'sales_hiring', 'x', NULL, 'https://invalid.example/', '2026-10-28', 1)").run(randomBytes(12).toString('hex'))
+    db.close()
+    const run = (leadId: string) => {
+      const env = { ...process.env }; delete env.NODE_TEST_CONTEXT
+      const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts', './test/helpers/fresh-process-hold.mts', file, leadId], { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 60000 })
+      assert.equal(r.status, 0, r.stdout + r.stderr)
+      return JSON.parse(/RESULT (.*)/.exec(r.stdout)![1]) as { heldBefore: string | null; confirmed: boolean; draft?: string; draftError?: string; heldAfter: string | null }
+    }
+    const held = run('held1')
+    assert.equal(held.heldBefore, 'sales_hiring_check_failed', 'a fresh process forgets nothing: no pass record means held'); assert.equal(held.confirmed, true)
+    assert.match(held.draftError ?? '', /sales_hiring_check_failed/, JSON.stringify(held)); assert.equal(held.draft, undefined); assert.equal(held.heldAfter, 'sales_hiring_check_failed')
+    const passed = run('passed1')
+    assert.equal(passed.heldBefore, null); assert.equal(typeof passed.draft, 'string', `a lead with a durable pass record is draftable after confirmation: ${JSON.stringify(passed)}`)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// ---- Instinct review of 10176eb: classification consistency and the creation-date boundary ----
+async function fileDb() {
+  const { mkdtempSync } = await import('node:fs'); const { tmpdir } = await import('node:os'); const { join } = await import('node:path')
+  const dir = mkdtempSync(join(tmpdir(), 'gate-hold-')); const file = join(dir, 'scan.db')
+  const db = new Database(file); migrateScan(db); migrateOutreach(db); migrateConnectors(db); seedOffers(db)
+  return { dir, file, db }
+}
+const SALES_Q = 'Find London UK B2B SaaS startups that announced seed funding and are hiring sales staff.'
+const SALES_ICP = JSON.stringify({ summary: 's', where: ['London, UK'], who: ['Founder'], signals: ['announced seed funding', 'hiring sales staff'], exclude: [] })
+function salesLead(db: Database.Database, id: string, o: { created: number; excerpt: string }) {
+  const job = createJob(db, 'A', { business_name: 'Acme', industry: 'SaaS', location: 'London' })
+  db.prepare("UPDATE scan_jobs SET status = 'running', query = ?, icp = ? WHERE id = ?").run(SALES_Q, SALES_ICP, job)
+  db.prepare("INSERT INTO leads (id, scan_job_id, company, company_domain, contact, signal, source_url, evidence_excerpt, confidence, review_reason, score, created_at, fit, date_status) VALUES (?, ?, 'Northside Builders', 'northside.example', 'info@northside.example', 'raised a seed round', 'https://news.example/a', ?, 80, NULL, 70, ?, 5, 'verified')").run(id, job, o.excerpt, o.created)
+  db.prepare("UPDATE scan_jobs SET status = 'done', verified = verified + 1 WHERE id = ?").run(job)
+  return { id: job, user_id: 'A', query: SALES_Q, icp: SALES_ICP }
+}
+async function fresh(file: string, leadId: string) {
+  const { spawnSync } = await import('node:child_process'); const { fileURLToPath } = await import('node:url')
+  const env = { ...process.env }; delete env.NODE_TEST_CONTEXT
+  const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts', './test/helpers/fresh-process-hold.mts', file, leadId], { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 60000 })
+  assert.equal(r.status, 0, r.stdout + r.stderr)
+  return JSON.parse(/RESULT (.*)/.exec(r.stdout)![1]) as { heldBefore: string | null; confirmed: boolean; draft?: string; draftError?: string; heldAfter: string | null }
+}
+const PASSING_QUOTE = 'Northside Builders raised a seed round in London and is hiring two account executives.'
+const noFetch = (async () => new Response('no', { status: 404 })) as never
+
+test('CONSISTENCY: the gate passed the lead but its durable pass record could not be saved -> the report/classification says NOT actionable with the same reason as the draft guard, and a fresh process blocks the draft', async () => {
+  const { applySalesHiringGate } = await import('../lib/scan/sales-hiring-gate.ts'); const { recordActionability } = await import('../lib/scan/actionable.ts'); const { rmSync } = await import('node:fs')
+  const { dir, file, db } = await fileDb()
+  try {
+    const now = Math.floor(Date.now() / 1000)
+    const job = salesLead(db, 'p1', { created: now, excerpt: PASSING_QUOTE })
+    db.exec("CREATE TRIGGER reject_pass BEFORE INSERT ON lead_enrichments WHEN NEW.kind = 'gate_passed' BEGIN SELECT RAISE(ABORT, 'pass record rejected'); END")
+    const r = await applySalesHiringGate(db, job, noFetch, {})
+    assert.deepEqual([r.passed, r.demoted], [1, 0], 'the gate itself passed the lead')
+    assert.equal((db.prepare("SELECT count(*) AS n FROM lead_enrichments WHERE kind = 'gate_passed'").get() as { n: number }).n, 0, 'precondition: the pass record was not saved')
+    const y = recordActionability(db, job)
+    assert.equal(y.actionable, 0); assert.equal(y.verified, 0, 'not counted as verified: it has no durable pass'); assert.equal(y.missing.sales_hiring_check_failed, 1)
+    assert.deepEqual(y.held_leads?.map(h => h.id), ['p1'])
+    assert.equal(requiredGateHeld(db, 'A', 'p1'), 'sales_hiring_check_failed', 'the very check the draft guard uses')
+    db.close()
+    const f = await fresh(file, 'p1'); assert.match(f.draftError ?? '', /sales_hiring_check_failed/); assert.equal(f.draft, undefined)
+    // control: the record saves -> not held
+    const c = await fileDb()
+    try { const j = salesLead(c.db, 'p2', { created: now, excerpt: PASSING_QUOTE }); await applySalesHiringGate(c.db, j, noFetch, {}); assert.equal(requiredGateHeld(c.db, 'A', 'p2'), null); assert.equal(recordActionability(c.db, j).held_leads?.length, 0); c.db.close() } finally { rmSync(c.dir, { recursive: true, force: true }) }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('BOUNDARY (no creation-date exemption): a lead created at cutoff minus 1s - the gate-run marker, the review write AND the failure marker are ALL rejected - a FRESH process still blocks createDraft through lead + domain confirmation', async () => {
+  const { applySalesHiringGate, failClosedSalesHiring } = await import('../lib/scan/sales-hiring-gate.ts'); const { rmSync } = await import('node:fs')
+  const { dir, file, db } = await fileDb()
+  try {
+    const old = 1793145600 - 1   // one second before the date the pass records were introduced
+    const job = salesLead(db, 'oldFailed', { created: old, excerpt: 'Northside Builders raised a seed round in London.' })
+    db.exec("CREATE TRIGGER reject_run BEFORE INSERT ON lead_enrichments WHEN NEW.kind IN ('gate_run', 'gate_failed', 'gate_passed') BEGIN SELECT RAISE(ABORT, 'marker rejected'); END")
+    db.exec("CREATE TRIGGER reject_review BEFORE UPDATE OF review_reason ON leads WHEN NEW.review_reason IS NOT NULL BEGIN SELECT RAISE(ABORT, 'write rejected'); END")
+    await assert.rejects(applySalesHiringGate(db, job, noFetch, {}), /write rejected/)
+    assert.deepEqual(failClosedSalesHiring(db, job, 'write rejected').map(h => h.written), [false])
+    assert.equal((db.prepare("SELECT count(*) AS n FROM lead_enrichments WHERE connector = 'scan:gate'").get() as { n: number }).n, 0, 'precondition: no marker of any kind was saved')
+    assert.equal((db.prepare('SELECT review_reason FROM leads').get() as { review_reason: string | null }).review_reason, null, 'precondition: the review write was rejected')
+    db.close()
+    const failed = await fresh(file, 'oldFailed')
+    assert.equal(failed.heldBefore, 'sales_hiring_check_failed', 'a fresh process forgets nothing: no durable pass, so held - whatever the lead\u2019s age')
+    assert.equal(failed.confirmed, true); assert.match(failed.draftError ?? '', /sales_hiring_check_failed/); assert.equal(failed.draft, undefined); assert.equal(failed.heldAfter, 'sales_hiring_check_failed')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})

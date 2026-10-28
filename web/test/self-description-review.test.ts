@@ -2,6 +2,7 @@
 // must land in needs-review with reason self_description, never verified, never emailable.
 // A non-self-described item in the same run keeps the normal verification path.
 import { test } from 'node:test'
+import { sqliteDb } from '../lib/db/client.ts'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
@@ -52,7 +53,7 @@ test('owner self-description lands in review as self_description; the other sour
 test('after the user confirms a self_description row, a draft still needs a published email and is refused', async () => {
   const { db, rows } = await run(u => u)
   const lead = (db.prepare("SELECT id FROM leads WHERE company = 'Pulseforge'").get() as { id: string })
-  assert.equal(confirmLeadReview(db, 'A', lead.id), true)
+  assert.equal(await confirmLeadReview(sqliteDb(db), 'A', lead.id), true)
   assert.throws(() => createDraft(db, 'A', lead.id, 'Test Co'), (e: unknown) => e instanceof OutreachError && e.code === 'no_email_contact')
   assert.ok(rows.length >= 1)
 })

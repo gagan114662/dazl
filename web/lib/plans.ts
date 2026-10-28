@@ -22,6 +22,9 @@ export function migratePlans(db: Database.Database): void {
   try { db.exec('ALTER TABLE tenant_plans ADD COLUMN stripe_event_at INTEGER') } catch { /* exists */ }
   // A same-second tie Stripe has not settled yet (lib/billing/stripe.ts): that second, until the read settles it.
   try { db.exec('ALTER TABLE tenant_plans ADD COLUMN stripe_reconcile_at INTEGER') } catch { /* exists */ }
+  // The subscription's status as Stripe last reported it (lib/billing/stripe.ts): active, past_due after a failed
+  // payment while Stripe retries, unpaid, canceled... The plan is what entitles; this says why. PG: 0009_subscription_status.sql.
+  try { db.exec('ALTER TABLE tenant_plans ADD COLUMN subscription_status TEXT') } catch { /* exists */ }
 }
 
 // Sync reader for callers not yet on the Db layer (scan, monitors, watch). Billing uses readPlan.
@@ -40,6 +43,16 @@ export function setPlan(db: Database.Database, tenantId: string, plan: PlanId): 
 }
 
 // A transaction step: billing changes a plan only inside the transaction that records the Stripe event.
+// The subscription status Stripe last reported, null without one. Sync for callers on the raw handle; /api/usage uses
+// readBillingStatus (Db layer).
+const BILLING_STATUS_SQL = 'SELECT subscription_status FROM tenant_plans WHERE tenant_id = ?'
+export function getBillingStatus(db: Database.Database, tenantId: string): string | null {
+  return (db.prepare(BILLING_STATUS_SQL).get(tenantId) as { subscription_status: string | null } | undefined)?.subscription_status ?? null
+}
+export async function readBillingStatus(db: Db, tenantId: string): Promise<string | null> {
+  return (await db.get<{ subscription_status: string | null }>(BILLING_STATUS_SQL, [tenantId]))?.subscription_status ?? null
+}
+
 export function* writePlan(t: Tx, tenantId: string, plan: PlanId): TxBody<void> {
   yield* t.run('INSERT INTO tenant_plans (tenant_id, plan) VALUES (?, ?) ON CONFLICT (tenant_id) DO UPDATE SET plan = excluded.plan', [tenantId, plan])
 }
@@ -49,14 +62,21 @@ export function monthStartS(now = new Date()): number {
 }
 
 // Scans started this UTC month. Genuine failures do not count (the user gets the slot back); cancelled scans keep their charge because their provider work may already have run.
+const SCANS_THIS_MONTH_SQL = "SELECT count(*) AS n FROM scan_jobs WHERE user_id = ? AND created_at >= ? AND (status != 'failed' OR error = 'cancelled') AND funded_by != 'trial'"
 export function scansThisMonth(db: Database.Database, tenantId: string, now = new Date()): number {
-  const r = db.prepare("SELECT count(*) AS n FROM scan_jobs WHERE user_id = ? AND created_at >= ? AND (status != 'failed' OR error = 'cancelled') AND funded_by != 'trial'").get(tenantId, monthStartS(now)) as { n: number }
+  const r = db.prepare(SCANS_THIS_MONTH_SQL).get(tenantId, monthStartS(now)) as { n: number }
   return r.n
 }
 
-export function scanQuota(db: Database.Database, tenantId: string, now = new Date()) {
-  const plan = getPlan(db, tenantId)
+const quota = (plan: PlanId, used: number) => {
   const limit = PLAN_LIMITS[plan].scansPerMonth
-  const used = scansThisMonth(db, tenantId, now)
   return { plan, used, limit, allowed: limit === null || used < limit }
+}
+export function scanQuota(db: Database.Database, tenantId: string, now = new Date()) {
+  return quota(getPlan(db, tenantId), scansThisMonth(db, tenantId, now))
+}
+// scanQuota on the Db layer (SQLite or Postgres): the same plan, count and limit.
+export async function readScanQuota(db: Db, tenantId: string, now = new Date()) {
+  const used = Number((await db.get<{ n: number }>(SCANS_THIS_MONTH_SQL, [tenantId, monthStartS(now)]))!.n)
+  return quota(await readPlan(db, tenantId), used)
 }

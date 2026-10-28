@@ -50,7 +50,8 @@ export function createWatch(db: Database.Database, userId: string, query: string
 }
 
 export function listWatches(db: Database.Database, userId: string) {
-  const rows = db.prepare('SELECT * FROM watches WHERE user_id = ? ORDER BY created_at DESC').all(userId) as Watch[]
+  // created_at is whole seconds: id breaks ties so watches made in the same second always list in the same order
+  const rows = db.prepare('SELECT * FROM watches WHERE user_id = ? ORDER BY created_at DESC, id DESC').all(userId) as Watch[]
   return rows.map(w => {
     const last = db.prepare("SELECT id, status, finished_at FROM scan_jobs WHERE watch_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(w.id) as { id: string; status: string; finished_at: number | null } | undefined
     const newCount = last ? (db.prepare('SELECT count(*) AS n FROM leads WHERE scan_job_id = ? AND watch_new = 1').get(last.id) as { n: number }).n : 0

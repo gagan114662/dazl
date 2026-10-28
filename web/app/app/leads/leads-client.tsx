@@ -8,7 +8,7 @@ import { eventTypeLabel } from '@/lib/events/labels'
 import { companySearchEligible } from '@/lib/scan/find-contact-eligible'
 import { contactsFromEnrichments, PEOPLE_SOURCE } from '@/lib/people/rank'
 import { OpportunityCardView } from './opportunity-card'
-import { leadCardSummary } from '@/lib/scan/lead-card'
+import { cardCounts, leadCardSummary } from '@/lib/scan/lead-card'
 import { reviewAction } from '@/lib/scan/review-action'
 import { coreSources, socialLabel, socialSources, usableLabels, type Advanced, type KeyState, type ServerSources, type SourceRow } from '@/lib/scan/source-availability'
 import { barCopy, scanCounts } from '@/lib/outreach/scan-drafts'
@@ -27,6 +27,7 @@ import { budgetFromForm, EMPTY_BUDGET_FORM, type BudgetForm } from '@/lib/scan/r
 import { evidenceOriginLabel, purgedNote } from '@/lib/scan/evidence-origin'
 import { playSuggestions, type PlaySuggestions } from '@/lib/play-suggestions'
 import { scanOutcome } from '@/lib/scan/scan-outcome'
+import Caveat from '@/app/app/caveat'
 
 // Reject on the card is the existing reversible quarantine, with its own reason so the card can say "Rejected".
 // Reject asks for an optional reason (a preset or a few words); it is stored as "Rejected" or "Rejected: <reason>".
@@ -57,7 +58,7 @@ const REASON: Record<string, string> = {
   source_cap: 'over the 3-per-page cap',
   url_refused: 'unsafe or unsupported address', duplicate: 'duplicate company',
 }
-const REVIEW: Record<string, string> = { legacy_currentness_review: 'Legacy research reviewed by you for drafting, not verified current need or consent', event_timing_unconfirmed: 'The quote was found, but its event timing and current need are unconfirmed', event_date_bad_date: 'The claimed event date is invalid - review the source', event_date_stale: 'The claimed event date is outside the freshness window - historical evidence only', event_date_future_date: 'The claimed event date is in the future - current need unconfirmed',  source_review_required: 'Manually supplied claim - literal source checks do not verify its meaning, date, buying need or consent', self_description: 'Text its owner wrote about their own project. This evidence does not establish fit, date or need',  counterparty_signal: 'Names this company as someone else\'s customer - not evidence of its own buying intent', job_closed: 'Source says applications are closed - historical hiring evidence, not an active opening', quote_unconfirmed: 'The saved quote could not be confirmed on the source', location_unconfirmed: 'The source page does not name the place you asked for, so it cannot be tied to a company there - not verified', location_mismatch: 'The source page names a different place than you asked for - possibly a same-name business elsewhere. Not verified', login_required: 'Source requires sign-in - evidence unknown', blocked_by_site: 'The site blocked our check', needs_javascript: 'The page needs JavaScript to show its content', outside_window: 'The event date is older than the time window you asked for - not a current lead', no_event_evidence: 'The request asks for a funding or other event as well as hiring, and the saved quote shows only hiring (a job ad alone does not show that) - research only', no_sales_hiring_evidence: 'The request asks for sales hiring too, and no dated sales or GTM posting was found on a public job board tied to this company - the funding evidence alone is not enough', outside_window_undated: 'No event date was found, so it cannot be placed inside the time window you asked for - research only' }
+const REVIEW: Record<string, string> = { legacy_currentness_review: 'Legacy research reviewed by you for drafting, not verified current need or consent', event_timing_unconfirmed: 'The quote was found, but its event timing and current need are unconfirmed', event_date_bad_date: 'The claimed event date is invalid - review the source', event_date_stale: 'The claimed event date is outside the freshness window - historical evidence only', event_date_future_date: 'The claimed event date is in the future - current need unconfirmed',  source_review_required: 'Manually supplied claim - literal source checks do not verify its meaning, date, buying need or consent', self_description: 'Text its owner wrote about their own project. This evidence does not establish fit, date or need',  counterparty_signal: 'Names this company as someone else\'s customer - not evidence of its own buying intent', job_closed: 'Source says applications are closed - historical hiring evidence, not an active opening', quote_unconfirmed: 'The saved quote could not be confirmed on the source', location_unconfirmed: 'The source page does not name the place you asked for, so it cannot be tied to a company there - not verified', location_mismatch: 'The source page names a different place than you asked for - possibly a same-name business elsewhere. Not verified', login_required: 'Source requires sign-in - evidence unknown', blocked_by_site: 'The site blocked our check', needs_javascript: 'The page needs JavaScript to show its content', outside_window: 'The event date is older than the time window you asked for - not a current lead', no_event_evidence: 'The request asks for a funding or other event as well as hiring, and the saved quote shows only hiring (a job ad alone does not show that) - research only', no_sales_hiring_evidence: 'The request asks for sales hiring too, and no dated sales or GTM posting was found on a public job board tied to this company - the funding evidence alone is not enough', sales_hiring_check_failed: 'The sales-hiring check could not run, so the lead is not verified. Run the scan again', outside_window_undated: 'No event date was found, so it cannot be placed inside the time window you asked for - research only' }
 
 // Enrichment labels join example titles with '; ' - older rows can repeat one
 // title per posting. Show each distinct title once; the count stays untouched.
@@ -413,12 +414,21 @@ export default function LeadsClient() {
   // The Review drafts bar: this scan's unsent emails by state (drafts to review, approved not sent), read back from
   // Outreach so it survives a reload and counts drafts made with Draft email too. Read-only; null when it could not load.
   const [scanDrafts, setScanDrafts] = useState<{ drafts: number; approved: number } | null>(null)
+  // Leads of this scan that have an email made from them (any status but skipped): the cards' "Approved" count.
+  const [draftedLeads, setDraftedLeads] = useState<Set<string> | null>(null)
+  // Read from this scan's campaign record (GET /api/campaigns/<job>: every email made from this scan's leads, no cap),
+  // not the account-wide Outreach list, which holds only the newest 200 and can miss an older scan's drafts.
   const loadScanDrafts = async () => {
-    const r = await fetch('/api/outreach').catch(() => null)
+    const id = jobIdRef.current
+    const r = id ? await fetch(`/api/campaigns/${id}`).catch(() => null) : null
     const j = r?.ok ? await r.json().catch(() => null) : null
     setScanDrafts(j?.messages ? scanCounts(j.messages, leadIdsRef.current) : null)
+    const ids = new Set(leadIdsRef.current)
+    setDraftedLeads(Array.isArray(j?.messages) ? new Set((j.messages as { lead_id: string; status: string }[]).filter(m => ids.has(m.lead_id) && m.status !== 'skipped').map(m => m.lead_id)) : null)
   }
   const leadIdsRef = useRef<string[]>([])
+  const jobIdRef = useRef<string | null>(null)
+  jobIdRef.current = jobId
   leadIdsRef.current = leads.map(l => l.id)
   const leadKey = leads.map(l => l.id).join(',')
   useEffect(() => { if (leadKey) void loadScanDrafts() }, [leadKey]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -433,6 +443,16 @@ export default function LeadsClient() {
     const id = new URLSearchParams(window.location.search).get('job_id')
     if (id && /^[a-f0-9]{24}$/.test(id)) { passiveJob.current = new URLSearchParams(window.location.search).get('passive') === '1'; setJobId(id); setStatus('loading') }
   }, [])
+  // The address bar names the job on screen. A fresh scan started from an older scan's URL used to leave that old
+  // job_id in the bar, so a refresh, copy or reopen showed the old result. Rewrite it in place (no navigation, no
+  // fetch) whenever the viewed job changes; 'passive' belongs to the job it was opened with, so it is dropped then.
+  useEffect(() => {
+    if (!jobId) return
+    const url = new URL(window.location.href)
+    if (url.searchParams.get('job_id') === jobId) return
+    url.searchParams.set('job_id', jobId); url.searchParams.delete('passive')
+    window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash)
+  }, [jobId])
   const watchReq = async (body: Record<string, unknown>) => {
     setWatchNote('')
     const r = await fetch('/api/watch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => null)
@@ -513,7 +533,7 @@ export default function LeadsClient() {
           <button type="button" disabled={query.trim().length < 3 || busy || starting || scanActive} onClick={() => void preview()} className="text-xs text-[#555] underline disabled:opacity-40 disabled:no-underline">{busy ? 'Working out your profile...' : 'Review profile first'}</button>
           {scanActive && <span className="text-xs text-gray-500" data-reason="scan-active">{status === 'enriching' ? 'The scan is finishing (contacts and fit checks). You can start another when it ends.' : 'A scan is already running. You can start another when it ends.'}</span>}
         </div>
-        {reuseIcp && !scanActive && <p className="text-xs text-[#555] mt-2" data-testid="reuse-profile">Find leads runs with your reviewed profile: {reuseIcp.summary}. Change the sentence, or use Review profile first, to build a new one.</p>}
+        {reuseIcp && !scanActive && <p className="text-xs text-[#555] mt-2" data-testid="reuse-profile">Find leads runs with your reviewed profile: {reuseIcp.summary.replace(/[.\s]+$/, '')}. Change the sentence, or use Review profile first, to build a new one.</p>}
         {!jobId && <SourceAvailability core={core} social={socialSources(advanced)} />}
       </form>
       <details className="mb-4 text-sm" data-testid="more-sources">
@@ -582,11 +602,13 @@ export default function LeadsClient() {
           <details className="mb-4 text-sm">
             <summary className="cursor-pointer text-gray-400">Import post commenters (Pro)</summary>
             <div className="card p-4 mt-2">
-              <p className="text-gray-500 text-xs mb-2">People who engaged with a post, imported as leads. Upload a CSV with profile URL, name, title and company columns, or paste LinkedIn profile links (linkedin.com/in/...) one per line, up to 100. Links are never opened - no scraping. Names guessed from a link are marked derived; your CSV names win. Only your Apollo/PDL key (org lookup, 1 credit per company, max 50) and free sources enrich them.</p>
+              <Caveat className="text-gray-500 text-xs mb-2" summary="Import people who engaged with a post from a CSV or LinkedIn profile links (up to 100); the links are never opened.">People who engaged with a post, imported as leads. Upload a CSV with profile URL, name, title and company columns, or paste LinkedIn profile links (linkedin.com/in/...) one per line, up to 100. Links are never opened - no scraping. Names guessed from a link are marked derived; your CSV names win. Only your Apollo/PDL key (org lookup, 1 credit per company, max 50) and free sources enrich them.</Caveat>
               <input value={cmtContext} onChange={e => setCmtContext(e.target.value)} maxLength={500} placeholder="Context: what they engaged with, e.g. Commented on my post about CRM switching costs" className="field w-full mb-2 text-xs" />
               <textarea value={cmtText} onChange={e => setCmtText(e.target.value)} rows={4} placeholder={'profile_url,name,title,company\nhttps://www.linkedin.com/in/jane-doe,Jane Doe,VP Sales,Acme'} className="field w-full mb-2 text-xs font-mono" />
               <div className="flex items-center gap-3">
                 <button onClick={() => void importCommenters()} disabled={cmtBusy || !cmtText.trim() || !cmtContext.trim()} className="font-mono text-xs uppercase border border-black px-2 py-1 hover:bg-black hover:text-white disabled:opacity-40">Import</button>
+                {/* A cost is never behind a click: enrichment starts on its own after Import when a connector key is on. */}
+                <span className="text-gray-500 text-xs" data-testid="import-cost">Paid enrichment: if an Apollo or People Data Labs key is enabled in Settings, Import uses it automatically - 1 credit per company, up to 50 companies, plus a people search per company that your provider may also bill. With no key enabled, only free sources are used.</span>
                 <label className="text-xs text-gray-400 underline cursor-pointer">or upload a file<input type="file" accept=".csv,.txt,text/csv,text/plain" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) void f.text().then(t => setCmtText(t)); e.target.value = '' }} /></label>
               </div>
               {cmtNote && <p className="text-xs text-gray-400 mt-2">{cmtNote}</p>}
@@ -769,6 +791,15 @@ export default function LeadsClient() {
           <a className="btn-primary text-xs px-3 py-1.5 shrink-0" href={`/app/outreach?job_id=${jobId}`}>{scanDrafts.drafts > 0 ? 'Review drafts' : 'Open in Outreach'}</a>
         </div>
       )}
+      {jobId && visibleLeads.length > 0 && (() => {
+        const n = cardCounts(visibleLeads, draftedLeads, approved)
+        // "Approved" on a card only makes a draft: the email itself is still approved in Outreach before anything sends.
+        return <p className="text-xs text-[#555] mb-2">
+          <span data-testid="card-counts-scope">Cards shown below (not counting Needs your review{!showSeen && leads.some(l => l.seen_before && !l.review_reason) ? ' or hidden already-seen leads' : ''}): </span>
+          <span data-testid="card-counts"><span className="text-[#111] font-medium">Approved {n.approved ?? '?'}</span> · <span className="text-[#111] font-medium">Rejected {n.rejected}</span> · <span className="text-[#111] font-medium">To review {n.toReview ?? '?'}</span></span>
+          {n.approved === null ? <span data-testid="card-counts-note"> (drafts could not be loaded, so Approved is unknown)</span> : <span data-testid="card-counts-note"> - approving a card makes a draft; each email is still approved in Outreach before it sends.</span>}
+        </p>
+      })()}
       <div className="card divide-y divide-white/5">
         {visibleLeads.length === 0 ? (
           // Loading, failed and status-error states have their own truthful copy above.

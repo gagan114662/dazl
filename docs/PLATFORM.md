@@ -91,8 +91,56 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
   | `app_leases`, `dazl_schema_migrations` | Global, no tenant data (listed in `NOT_DIRECT`) |
 
   On open branches: `work_queue` is covered in `test/multi-instance.test.ts` (#252). `stripe_ended_subscriptions` (#253) is keyed by Stripe's globally unique subscription id, and its tenant comes from the verified event; a two-tenant test follows once #253 merges.
-- **Still on SQLite:** every other module. Production keeps running on SQLite until cutover.
-- **SQLite-only SQL in queries:** about 18 queries use `rowid` (for example as an ORDER BY tie-break), which PG does not have. They need rewriting as each area is ported.
+- **Tenant isolation across instances** (`test/multi-instance-isolation.test.ts`): two app instances (separate processes and pools) share one Postgres.
+  - They write tenant A's and tenant B's data concurrently through every `Db`-layer write path:
+    - sign-up and sessions;
+    - billing;
+    - scan jobs and leads;
+    - SEO audits, briefs and drafts;
+    - the work queue.
+  - Then each reads as the tenant the other instance wrote, through every `Db`-layer read, list, export and action path:
+    - with its own data, nothing of the other tenant comes back;
+    - with the other tenant's ids, it gets nothing and changes nothing (cancel, approve);
+    - Stripe calls carry only its own customer;
+    - its rate allowance is untouched.
+  - No leak was found. A planted leak (`getJob` ignoring the tenant) fails the test.
+  - Modules still on raw SQLite (campaigns, most settings, outreach) cannot run on Postgres yet; their routes are covered on SQLite by the route manifest tests.
+- **Route error records carry the request id**: the auth, billing, Gmail callback and tick catches pass `requestIdOf(req)`, the UUID `proxy.ts` set, as uncaught errors already do (`test/route-errors.test.ts`).
+- **Postgres-readiness audit** (`lib/db/sql-audit.ts`, `test/pg-sql-audit.test.ts`): every SQL statement in `lib/` and `app/` is found statically and `PREPARE`d on a freshly migrated Postgres schema, which parses it and resolves every table, column, function and parameter type without running it.
+  - At the time of the audit: 786 statements: 76 on `Db`, 18 Postgres-native (`lib/db/leads-read-pg.ts`), the rest raw. Postgres accepts every `Db` and Postgres-native statement; it rejects 86 raw ones.
+  - 148 modules still need the synchronous SQLite handle: 87 run raw queries or writes on it, and 61 get it (`getAuthDb`/`getScanDb`) for code that does.
+  - Not counted:
+    - Modules whose only raw statements are SQLite schema setup (their Postgres side is the PG migrations): `auth-google.ts`, `billing/stripe.ts`, `db/platform-tables.ts`, and the three `seo/` stores.
+    - `ENGINE_FILES` (`lib/db/sql-audit.ts`): the `Db` layer's SQLite engine and the cross-engine tooling, which are tested on both engines.
+  - The rejected statements are SQLite dialect: `strftime` (28), `INSERT OR IGNORE/REPLACE` (most of the syntax errors), `rowid` (12), `sqlite_master` table checks (9), and a few type-inference or aggregate differences. They are fixed as each module is ported, under both-engine tests, not rewritten in place: on the raw handle they cannot reach Postgres anyway, and an in-place rewrite would change SQLite behaviour (`INSERT OR IGNORE` also swallows NOT NULL and CHECK violations; `ON CONFLICT DO NOTHING` does not).
+  - Port order by size (modules / rejected statements): `lib/scan` 31/38 and `app/api/scan` 11 (yield-owned); `lib/outreach` 18/17 and `app/api/outreach` 12/1; `app/api/leads` 16; `app/api/settings` 8; the rest are 1 to 7 modules per area.
+  - No schema gap: every table and column the app uses exists in the PG schema.
+  - `lib/db/pg-port-status.ts` lists each raw module and how many of its statements Postgres rejects. The test holds the code to it both ways: a new raw module or a newly rejected statement fails, and a port that shrinks it fails until the manifest is regenerated (`scripts/pg-migrate/sql-audit.mts --write`).
+  - SQL built at runtime (35 statements) cannot be checked statically. The `Db`-layer ones run on Postgres in the both-engine tests.
+- **Postgres port, batch 1 (core customer path):** these routes now run on `Db`, on SQLite and on Postgres:
+  - scan history (`/api/scan/jobs`), the last search (`/api/scan/latest`) and cancel (`/api/scan/cancel`), through `lib/scan/store-db.ts`;
+  - lead confirm and quarantine, which are writes;
+  - the leads CSV export;
+  - the campaign page (`/api/campaigns/[id]`);
+  - the settings profile, usage (plan quota, billing status, key presence, trial) and the Google sign-in callback.
+  - Modules that moved fully: `history-jobs.ts`, `outcome-detail.ts`, `review-confirm.ts`, `campaign-detail.ts`, `best-person.ts`.
+  - Modules that keep a sync version for callers still on the raw handle (the scan runner, the send gate, other routes) gained async twins that share their SQL and logic: `auth-db.ts`, `plans.ts`, `llm/key-store.ts`, `scan/trial.ts`, `scan/run-report.ts`, `scan/quarantine.ts`, `search/news-attribution.ts`.
+  - **Behaviour on SQLite is unchanged:**
+    - Rewritten statements: `strftime('now')` became the caller's clock (the same epoch second); a `sqlite_master` table check became a zero-row probe of the table.
+    - Ordering: `rowid` tie-breaks became `insertionOrder()` (`lib/db/order.ts`), which is still `rowid` on SQLite. Two places that relied on SQLite's implicit insertion order now say `rowid` explicitly: export rows, and enrichments for Best Person.
+    - No `INSERT OR IGNORE` was in this batch. The one on the core path that can swallow NOT NULL/CHECK failures is the runner's lead insert (`lib/scan/runner.ts`); `store-db.ts`'s `finishJob` already does not.
+  - **Tests:** `test/helpers/pg-port-routes-runtime.mts` runs the real handlers as two tenants:
+    - On SQLite, compared with the raw store they replaced, including same-second ties.
+    - On SQLite and Postgres from the same seed: every response and every row must be identical.
+    - In the Postgres run, `getScanDb()` throws and `DB_PATH` cannot be opened, so a route still reaching for the raw handle fails. (Checked: pointing `/api/scan/latest` back at the raw store fails the run.)
+  - **Not in batch 1:**
+    - `GET /api/leads`: its read contract spans sequences, connectors, events, priorities and lookalikes, plus the currentness gate's storage.
+    - The campaign list: it evaluates the draft, approve and send gates per draft, so those gates' storage moves first.
+    - Starting a scan and scan status: they call the runner, which is yield-owned.
+- **Postgres insertion-order gap:** Postgres has no `rowid`, so on Postgres same-second ties order by id, not by insertion order.
+  - `PG_INSERTION_ORDER_GAPS` in `lib/db/pg-port-status.ts` lists the modules affected. `test/pg-sql-audit.test.ts` keeps the list exact, and the parity runtime pins the Postgres order.
+  - Before cutover, each of these tables needs a real insertion-order column: `scan_jobs`, `leads`, `outreach_messages`, `lead_enrichments`.
+- **Still on SQLite:** the 135 modules in `lib/db/pg-port-status.ts`, down from 149 before batch 1 (the audit's 148 plus `lib/scan/sales-hiring-gate.ts` from #276). Postgres rejects 83 of their statements, down from 87. Production keeps running on SQLite until that list is empty and the cutover below is authorized.
 
 ## Tables (73 created in code)
 
@@ -209,6 +257,17 @@ These steps are development work behind flags and tests. Merging them does not c
        - Invoice events (`invoice.paid`, `invoice.payment_failed`) are not handled, and nothing relies on them.
      - The plan row is locked (`FOR UPDATE` on PG) before the checks, so concurrent deliveries follow these rules, not commit order.
      - PG: `0007_stripe_event_order.sql`.
+   - **Plan limits and billing status (step 5c):**
+     - `tenant_plans.subscription_status` (PG `0009_subscription_status.sql`) keeps the status Stripe last reported, and `/api/usage` returns it as `billing_status`.
+       - Checkout gives `active`.
+       - A failed payment gives `past_due` while Stripe retries. The plan stays Pro.
+       - A settled tie stores Stripe's answer, and a stale event never rewrites it.
+     - `test/billing-limits.test.ts` runs the real routes, signed fixtures and stubbed Stripe, through to the limit on the next scan:
+       1. Free at its limit: `/api/scan` returns 402.
+       2. Checkout webhook: Pro, and the next scan is accepted.
+       3. Failed payment: `past_due`, still Pro.
+       4. Subscription deleted: Free, `canceled`, and the next scan returns 402.
+     - The scan runner is never started in that test.
      - Covered by `test/billing-order.test.ts` on both engines: same second, opposite order, resubscribe, ties settled from Stripe's answer, a failed read retried, and concurrent deliveries. It is also covered by signed deliveries through the real webhook in `billing-e2e`, including a tie read from the stubbed Stripe API.
    - **Pricing is inconsistent. This is for the owner to decide, not for code:**
      - The landing page Free card says "3 trial scans, then your own AI key". It does not mention the 50-scans-a-month cap the code enforces (`PLAN_LIMITS.free`).
@@ -237,7 +296,7 @@ Steps, one small PR each. Nothing changes where the rows live until step 5.
    - The stale reaper becomes the lease expiry. Requeue or fail stays bounded by `MAX_ATTEMPTS`.
 4. **The other readers.** Outreach, people, warm and the rest move their `scan_jobs` and `leads` joins to `Db`, each with its owning session. Until every reader of the cluster is on `Db`, `DATABASE_URL` must not be set in production. Mixed mode is safe only on SQLite.
 5. **Cutover**, owner-authorized (see "Production go/no-go" below):
-   - Copy the cluster with `scripts/pg-migrate/rehearse-full.ts`.
+   - Copy with `scripts/pg-cutover.mts copy` (see "Postgres cutover" below; `rehearse-full.ts` stays the synthetic full-schema rehearsal).
    - Verify counts and checksums.
    - Switch `DATABASE_URL` for all instances at once.
 6. **Test that gates step 5.** Two app instances on one Postgres run N stubbed scans:
@@ -247,6 +306,44 @@ Steps, one small PR each. Nothing changes where the rows live until step 5.
    - tenant isolation holds on every scan route.
 
 The quote, identity and date gates in the scan pipeline do not change in any step. Each step moves storage only.
+
+## Postgres cutover (plan; Instinct decides and deploys)
+
+Nothing here has been run against production. The tool and the steps are ready for a rehearsal; the switch itself is Instinct's call.
+
+**Gate.** `lib/db/pg-port-status.ts` must be empty: both `RAW_SQLITE_MODULES` and `PG_INSERTION_ORDER_GAPS`. A module on the raw SQLite handle keeps reading and writing the SQLite file whatever `DATABASE_URL` says. With the list non-empty, a cutover would split the data between two stores. `scripts/pg-cutover.mts` refuses to copy into Postgres while the list is non-empty, unless `--rehearsal` is passed.
+
+**Tool.** `scripts/pg-cutover.mts` (library: `lib/db/copy-store.ts`, tests: `test/copy-store.test.ts`):
+- `copy --from <app.db | postgres://…> --to <postgres://… | new.db>` copies every table into an empty store, in one target transaction:
+  - The source is opened read-only. A Postgres target is migrated first; a SQLite target must be a new file.
+  - It refuses a target that holds rows, and a source table or column the target lacks.
+  - Rows go in parents first. The guard triggers are off only inside that transaction, so a finished job's leads can be copied, and they are back on at commit.
+  - Before commit, every table's row count and full-content SHA-256 are compared with the source. Any difference rolls everything back, so the target is either a verified copy or empty.
+  - The queue's fencing-token counter carries over, so no token is ever handed out twice.
+- `verify --from … --to …` compares the two stores, table by table: row counts and content checksums.
+
+**Cutover steps** (one maintenance window):
+1. Take a fresh backup of the SQLite file and restore-test it.
+2. Stop every writer: all app instances, plus `worker/`, `session-worker/` and the Hermes tunnel (the write fence does not cover them).
+3. `pg-cutover.mts copy --from <app.db> --to $DATABASE_URL`. It prints each table's rows and checksum.
+4. `pg-cutover.mts verify --from <app.db> --to $DATABASE_URL` must report "stores match".
+5. Set `DATABASE_URL` on every instance and start them. `/api/ready` must report the `pg` engine with the schema check ok.
+6. Keep the SQLite file read-only and untouched. Never delete it.
+
+**Rollback:**
+- **Before any write lands on Postgres** (the copy failed, verify differs, or readiness fails): stop the instances, unset `DATABASE_URL`, start again. The SQLite file is exactly as it was.
+- **After Postgres has taken writes:**
+  1. Stop every writer.
+  2. `pg-cutover.mts copy --from $DATABASE_URL --to <new.db>` writes a new, verified SQLite file.
+  3. Run `verify` on it.
+  4. Point `DB_PATH` at the new file, unset `DATABASE_URL`, and start the instances.
+  5. Keep the pre-cutover file as a second copy.
+- Both directions are covered by `test/copy-store.test.ts`. The rollback test also changes a row on Postgres after the cutover copy and checks the change comes back.
+
+**Limits:**
+- Each table is read into memory whole, which is fine at today's store size.
+- The copy needs downtime: there is no live replication.
+- The SQLite file is not encrypted on disk, and neither is the copy.
 
 ## Production go/no-go (separate from merging the PRs above)
 

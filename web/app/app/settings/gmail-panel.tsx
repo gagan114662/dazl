@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import Caveat from '@/app/app/caveat'
 
 interface State { gmail: { email: string; status: string; read_granted: boolean } | null; sender: { sender_name: string; postal_address: string; booking_url?: string | null } | null; daily_cap: number; sent_24h: number; read_notice: string[] }
 
@@ -9,6 +10,7 @@ export default function GmailPanel() {
   const [addr, setAddr] = useState('')
   const [booking, setBooking] = useState('')
   const [msg, setMsg] = useState('')
+  const [justConnected, setJustConnected] = useState(false) // back from Google's grant: offer the way back to the emails
 
   async function load() {
     const r = await fetch('/api/outreach/settings')
@@ -22,7 +24,9 @@ export default function GmailPanel() {
   useEffect(() => {
     void load()
     const q = new URLSearchParams(window.location.search).get('gmail')
-    if (q === 'connected') setMsg('Gmail connected.')
+    // Google's redirect lands at the top of Settings: bring this panel (and its next step) into view.
+    if (q) setTimeout(() => document.getElementById('gmail')?.scrollIntoView({ block: 'start' }), 0)
+    if (q === 'connected') { setMsg('Gmail connected.'); setJustConnected(true) }
     else if (q) setMsg('Gmail was not connected. Try again.')
   }, [])
 
@@ -41,7 +45,7 @@ export default function GmailPanel() {
   return (
     <div className="card p-6 mb-4">
       <h2 className="font-semibold mb-1">Email sending (Gmail)</h2>
-      <p className="text-[#555] text-sm mb-4">Emails go out from your own Gmail. By default each one is sent after you approve it; if you turn on autopilot below, it can send first emails on its own within the limits you set. Connecting also asks for read access, limited to replies in the threads dazl started for you and delivery-failure notices for them - dazl never lists, searches, or reads anything else in your mailbox. On Google&apos;s consent screen you can untick the read access and still connect send-only.</p>
+      <Caveat className="text-[#555] text-sm mb-4" summary="Emails go out from your own Gmail after you approve them (or on autopilot, if you turn it on), and connecting asks to read only replies and delivery-failure notices in the threads dazl started.">Emails go out from your own Gmail. By default each one is sent after you approve it; if you turn on autopilot below, it can send first emails on its own within the limits you set. Connecting also asks for read access, limited to replies in the threads dazl started for you and delivery-failure notices for them - dazl never lists, searches, or reads anything else in your mailbox. On Google&apos;s consent screen you can untick the read access and still connect send-only.</Caveat>
       {s?.gmail ? (
         <div className="text-sm mb-4">
           <div className="flex items-center justify-between">
@@ -69,7 +73,7 @@ export default function GmailPanel() {
         <button className="btn-ghost px-5 py-2 text-sm w-fit">Save sender details</button>
       </form>
       {s && <p className="text-[#666] text-xs mt-3">Sent in the last 24 hours: {s.sent_24h} of {s.daily_cap}.</p>}
-      {msg && <p className="text-sm text-[#555] mt-2">{msg}</p>}
+      {msg && <p className="text-sm text-[#555] mt-2" role="status">{msg}{justConnected && <> <a className="underline text-[#111]" href="/app/outreach">Back to Outreach to send your approved emails</a></>}</p>}
     </div>
   )
 }

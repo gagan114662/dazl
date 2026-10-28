@@ -99,3 +99,13 @@ export async function applyBuyerFitGate(db: Database.Database, jobId: string, pr
   }
   return { checked: hiring.length, confirmed, capped }
 }
+
+// The gate itself failed before it could cap anything (a database error, not a model answer): every hiring lead still graded fit >= 4 is capped below the qualified bar.
+// Never leave a buyer-fit claim standing because the check that decides it did not run.
+export function failClosedBuyerFit(db: Database.Database, jobId: string, message: string): number {
+  const rows = db.prepare('SELECT id, company, signal, source_url, fit, why, company_domain FROM leads WHERE scan_job_id = ? AND review_reason IS NULL AND fit >= 4').all(jobId) as LeadRow[]
+  const cap = db.prepare('UPDATE leads SET fit = MIN(COALESCE(fit, 0), ?), why = ? WHERE id = ?')
+  let n = 0
+  for (const l of rows.filter(isHiringLead)) { cap.run(FIT_CAP, `Buyer fit unconfirmed: the check failed (${message.slice(0, 80)}). A job posting alone is not a buyer signal. ${l.why ?? ''}`.trim().slice(0, WHY_MAX), l.id); n++ }
+  return n
+}

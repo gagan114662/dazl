@@ -241,3 +241,22 @@ bothEngines('status policy outside ties: paused and incomplete downgrade (recove
   assert.equal(await applyStripeEvent(db, sub('e5', 'customer.subscription.updated', 500, 'sub_1', 'cus_t', 'some_new_status'), never), 'ignored')
   assert.equal(await readPlan(db, T), 'free') // unknown never grants anything
 })
+
+// The subscription status Stripe last reported is kept beside the plan (tenant_plans.subscription_status): past_due
+// after a failed payment while Stripe retries keeps Pro; a stale event never rewrites it; a settled tie stores Stripe's
+// answer.
+bothEngines('subscription status: past_due keeps Pro, a stale event never rewrites it, a settled tie stores Stripe\'s answer', async ({ db }) => {
+  const status = async (t: string) => (await db.get<{ s: string | null }>('SELECT subscription_status AS s FROM tenant_plans WHERE tenant_id = ?', [t]))?.s ?? null
+  await applyStripeEvent(db, checkout('e1', 100, T, 'cus_t', 'sub_1'))
+  assert.equal(await status(T), 'active')
+  assert.equal(await applyStripeEvent(db, sub('e2', 'customer.subscription.updated', 200, 'sub_1', 'cus_t', 'past_due'), never), 'applied')
+  assert.deepEqual([await readPlan(db, T), await status(T)], ['pro', 'past_due'])
+  assert.equal(await applyStripeEvent(db, sub('e0', 'customer.subscription.updated', 150, 'sub_1', 'cus_t', 'active'), never), 'stale')
+  assert.equal(await status(T), 'past_due')
+  // same-second tie (past_due @200 vs unpaid @200): Stripe says unpaid
+  assert.equal(await applyStripeEvent(db, sub('e3', 'customer.subscription.updated', 200, 'sub_1', 'cus_t', 'unpaid'), stripeSays('unpaid')), 'reconciled')
+  assert.deepEqual([await readPlan(db, T), await status(T)], ['free', 'unpaid'])
+  await applyStripeEvent(db, sub('e4', 'customer.subscription.deleted', 300, 'sub_1', 'cus_t', 'canceled'))
+  assert.deepEqual([await readPlan(db, T), await status(T)], ['free', 'canceled'])
+  assert.equal(await status(U), null) // another tenant untouched
+})
