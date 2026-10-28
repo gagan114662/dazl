@@ -30,7 +30,12 @@ test('homepage claims match behaviour (Instinct #326): example demo labelled, we
   assert.match(demo, /Live · runs weekly/)
   // The demo's people and companies are invented: labelled on screen and for screen readers.
   assert.match(demo, /data-testid="demo-label">Illustrative example · made-up companies and people</)
-  assert.match(demo, /aria-label="Illustrative example of a dazl run, with made-up companies and people/)
+  assert.match(demo, /'Illustrative example of a dazl run, with made-up companies and people/)
+  // The example leads are made up until real ones from a saved scan are swapped in; until then the label must show.
+  const ex = read('lib/landing-examples.ts')
+  assert.match(ex, /real: false/)
+  assert.match(demo, /\{!EXAMPLES\.real && <div[^>]*data-testid="demo-label"/)
+  assert.doesNotMatch(ex, /url: 'http/, 'made-up leads link no source')
   // Leads that fail a check are kept as held research for review, not deleted.
   assert.doesNotMatch(page, /are dropped|drops what fails/)
   assert.match(page, /held for your review, out of the ready-to-contact list/)
@@ -38,4 +43,18 @@ test('homepage claims match behaviour (Instinct #326): example demo labelled, we
   const pro = page.slice(page.indexOf('>Pro<'), page.indexOf('Start free, upgrade any time'))
   assert.match(pro, /your provider bills that usage separately/)
   assert.doesNotMatch(page, /no overages/i)
+})
+
+test('homepage approval wording is exact (Hermes): nothing sends until approved; autopilot opt-in, account-wide', () => {
+  const page = read('app/page.tsx')
+  assert.match(page, /Nothing sends until you approve it/)
+  assert.match(page, /Autopilot is off unless you turn it on; it has a sending limit you set and starts only after you have approved your first sends/)
+  // Autopilot is one switch per account (lib/outreach/autopilot.ts autopilot_settings keyed by tenant): no per-Play claim.
+  assert.match(read('lib/outreach/autopilot.ts'), /tenant_id TEXT PRIMARY KEY/)
+  assert.doesNotMatch(page, /which Plays it covers/)
+  // The warm-up the wording relies on: the first sends are approved by the user.
+  assert.match(read('lib/outreach/autopilot.ts'), /WARMUP_SENDS/)
+  // No BYOK or trial-scan wording in the hero.
+  const hero = page.slice(page.indexOf('<h1'), page.indexOf('<LandingDemo'))
+  assert.doesNotMatch(hero, /BYOK|own (AI )?key|trial/i)
 })

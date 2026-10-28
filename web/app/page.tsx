@@ -15,12 +15,12 @@ export const metadata: Metadata = {
 const STEPS = [
   { n: '1', title: 'Paste your website', desc: 'That is the only thing you type. dazl reads your site and works out who buys from you and which signals to watch for. You can edit it.' },
   { n: '2', title: 'Get new leads every week', desc: 'Your Play runs again each week, searching hiring, funding and expansion news. Each lead comes with the line that shows the signal, linked to its source.' },
-  { n: '3', title: 'Approve and send', desc: 'dazl drafts the message. You approve each one, and it goes from your own Gmail.' },
+  { n: '3', title: 'Approve and send', desc: 'dazl drafts the message from the evidence. Nothing sends until you approve it, and it goes from your own Gmail.' },
 ]
 const PROOF = [
   ['Quoted and linked', 'Every lead shows the exact line from its source page, with the link.'],
   ['Company and date checked', 'dazl confirms the page names the company and that the date is recent. Leads that fail a check are held for your review, out of the ready-to-contact list.'],
-  ['You approve each send', 'Email goes from your own Gmail after you approve the text. Autopilot is off unless you turn it on.'],
+  ['Nothing sends until you approve it', 'Email goes from your own Gmail. Autopilot is off unless you turn it on; it has a sending limit you set and starts only after you have approved your first sends.'],
 ]
 
 export default function Home() {
@@ -41,7 +41,9 @@ export default function Home() {
 
       <section className="px-4 sm:px-6 pt-12 md:pt-20 pb-10 max-w-4xl mx-auto w-full text-center">
         <h1 className="lp-h1">Your website in.<br />Verified leads out.</h1>
-        <p className="text-lg md:text-xl text-[var(--ink-2)] mt-6 max-w-2xl mx-auto leading-relaxed">dazl reads your site, finds companies showing buying signals right now, and drafts the message. You approve each one.</p>
+        <p className="text-lg md:text-xl text-[var(--ink-2)] mt-6 max-w-2xl mx-auto leading-relaxed">dazl reads your site and finds companies with a buying signal right now. Every lead comes with the quoted line, a working source link and a date, and dazl checks the company and date match before a lead is marked ready.</p>
+        <p className="text-sm font-semibold mt-4" data-testid="hero-contrast">Evidence for every lead, not a list of guesses.</p>
+        <p className="text-sm text-[var(--ink-2)] mt-1" data-testid="hero-any">For any business, in any country: paste your website and dazl works out who buys from you.</p>
         <div className="flex flex-wrap gap-3 mt-8 justify-center">
           <a href="/api/auth/google" className="btn-primary btn-lg" data-testid="hero-cta">Start free</a>
           <a href="#how" className="btn-ghost btn-lg">See how it works</a>
@@ -77,19 +79,18 @@ export default function Home() {
       </section>
 
       <section id="pricing" className="px-4 sm:px-6 py-16 max-w-6xl mx-auto w-full">
-        <h2 className="lp-h2 text-center mb-2">Simple pricing</h2>
-        <p className="text-[var(--ink-2)] text-center mb-10">One flat price for dazl. No credits, no per-lead fees. Searches run on your own AI key, billed by your provider.</p>
+        <h2 className="lp-h2 text-center mb-10">Simple pricing</h2>
         <div className="grid sm:grid-cols-2 gap-4 max-w-2xl mx-auto">
           <div className="lp-card p-7">
             <div className="text-sm font-medium text-[var(--ink-2)] mb-1">Free</div>
             <div className="text-4xl font-semibold mb-2">$0</div>
-            <p className="text-[var(--ink-2)] text-sm mb-6">3 trial scans, then your own AI key. Your provider bills you directly for usage.</p>
+            <p className="text-[var(--ink-2)] text-sm mb-6">Start free.</p>
             <a href="/api/auth/google" className="btn-ghost w-full text-center block">Start free</a>
           </div>
           <div className="lp-card p-7">
             <div className="text-sm font-medium mb-1">Pro</div>
             <div className="text-4xl font-semibold mb-2">$49<span className="text-base font-medium text-[var(--ink-2)]">/mo</span></div>
-            <p className="text-[var(--ink-2)] text-sm mb-6">No credits, no per-lead fees. Runs on your own AI key: your provider bills that usage separately. Fair-use limits apply.</p>
+            <p className="text-[var(--ink-2)] text-sm mb-6">One flat price. Runs on your own AI key: your provider bills that usage separately. Fair-use limits apply.</p>
             <a href="/api/auth/google" className="btn-primary w-full text-center block">Start free, upgrade any time</a>
           </div>
         </div>

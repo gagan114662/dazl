@@ -173,3 +173,4 @@ body { font-size: 16px; line-height: 1.5; }
 .lp-fade { opacity: .25; transform: translateY(4px); transition: opacity .45s, transform .45s; }
 .lp-fade.lp-in { opacity: 1; transform: none; }
 @media (prefers-reduced-motion: reduce) { .lp-fade, .lp-tick { transition: none; } .lp-caret, .lp-tick-now { animation: none; } }
+.lp-quote { font-size: .92rem; line-height: 1.45; color: var(--ink); border-left: 2px solid var(--mint); padding-left: .65rem; }

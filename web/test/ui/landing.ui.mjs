@@ -3,7 +3,7 @@
 // Real production build, throwaway database, server under test/helpers/net-fence.ts; signed out; every /api/* call
 // answered from a stub and off-host requests aborted. It proves, on the rendered page:
 //   1. the hero is one line, the subhead, one "Start free" (Google sign-in) and a secondary "See how it works";
-//   2. the demo plays the flow: a URL typed, the four checks tick, "5 leads found" with 3 lead cards (name, title,
+//   2. the demo plays the flow (five businesses in five countries, picked by chips or one per loop): a URL typed, the four checks tick, "5 leads found" with 3 lead cards (name, title,
 //      company, fit pill, quoted signal with date), then a Play card "Live · runs weekly"; the demo is labelled as an illustrative example;
 //   3. the 3 steps, the proof strip, pricing and footer are there;
 //   4. none of the old page is left: no FIND/VERIFY/REVIEW/SEND tabs, monospace, "Illustration only", BYOK or trial
@@ -38,7 +38,7 @@ try {
     const main = page.locator('main')
     // 1. Hero.
     assert.equal((await page.locator('h1').innerText()).replace(/\s+/g, ' '), 'Your website in. Verified leads out.')
-    assert.match(await main.innerText(), /dazl reads your site, finds companies showing buying signals right now, and drafts the message\. You approve each one\./)
+    assert.match(await main.innerText(), /dazl reads your site and finds companies with a buying signal right now\. Every lead comes with the quoted line, a working source link and a date, and dazl checks the company and date match before a lead is marked ready\./)
     const cta = page.getByTestId('hero-cta')
     assert.equal(await cta.innerText(), 'Start free'); assert.equal(await cta.getAttribute('href'), '/api/auth/google', 'Start free is Google sign-in')
     assert.equal(await page.getByRole('link', { name: 'See how it works' }).getAttribute('href'), '#how')
@@ -46,7 +46,7 @@ try {
     // 2. The demo plays through to the live Play.
     const demo = page.getByTestId('landing-demo')
     await page.waitForFunction(() => document.querySelector('[data-testid=landing-demo]')?.getAttribute('data-step') === 'checks', null, { timeout: 10000 })
-    assert.match(await demo.innerText(), /brightsmile-dental\.com/, 'the URL is typed')
+    assert.match(await demo.innerText(), /ledgerline\.example/, 'the first business\'s website is typed')
     await page.waitForFunction(() => document.querySelector('[data-testid=landing-demo]')?.getAttribute('data-step') === 'live', null, { timeout: 15000 })
     const dt = await demo.innerText()
     for (const c of ['Reading your site', 'Building your profile', 'Searching hiring & funding news', 'Checking evidence', '5 leads found', 'Live · runs weekly']) assert.ok(dt.includes(c), c)
@@ -54,8 +54,22 @@ try {
     assert.equal(await page.getByTestId('demo-label').innerText(), 'Illustrative example · made-up companies and people', 'the demo says it is an example, on screen')
     assert.match(await demo.getAttribute('aria-label'), /^Illustrative example/, 'and to screen readers')
     const leads = demo.getByTestId('demo-lead'); assert.equal(await leads.count(), 3)
-    for (let i = 0; i < 3; i++) assert.match(await leads.nth(i).innerText(), /^[A-Z]{2}\n.+ .+ · .+\n?fit [45]\/5\n?“.+”.*· \d{1,2} \w{3} 2026$/s, 'name, title · company, fit pill, quoted signal with date')
+    for (let i = 0; i < 3; i++) {
+      assert.match(await leads.nth(i).innerText(), /^[A-Z]{2}\n.+ .+ · .+\n?fit [45]\/5\n?“.+”/s, 'name, title · company, fit pill, quoted line')
+      assert.match(await leads.nth(i).getByTestId('demo-evidence').innerText(), /^\S+\.example\s+\d{1,2} \w{3} 2026\s+✓ Company and date checked$/, 'source, date and the checked mark')
+    }
+    assert.equal(await page.getByTestId('hero-contrast').innerText(), 'Evidence for every lead, not a list of guesses.')
+    assert.match(await page.locator('main').innerText(), /Nothing sends until you approve it/)
     await demo.scrollIntoViewIfNeeded(); await page.waitForTimeout(600)
+    // Any business, any country: five very different businesses to pick from; picking one replays the run for it.
+    assert.deepEqual(await page.getByTestId('demo-chips').getByRole('button').allTextContents(), ['B2B SaaS · London', 'Marketing agency · Toronto', 'Dental group · New York', 'Commercial real estate · Gurugram', 'Logistics · Dubai'])
+    assert.equal(await page.getByTestId('hero-any').innerText(), 'For any business, in any country: paste your website and dazl works out who buys from you.')
+    await page.getByTestId('demo-chips').getByRole('button', { name: 'Logistics · Dubai' }).click()
+    assert.equal(await page.getByTestId('demo-scenario').getAttribute('data-scenario'), 'logistics-dubai')
+    assert.equal(await page.getByTestId('demo-chips').getByRole('button', { name: 'Logistics · Dubai' }).getAttribute('aria-pressed'), 'true')
+    await page.waitForFunction(() => document.querySelector('[data-testid=landing-demo]')?.getAttribute('data-step') === 'live', null, { timeout: 15000 })
+    assert.match(await demo.innerText(), /gulfroute-freight\.example[\s\S]*Desert Bloom Home[\s\S]*UAE retailers and e-commerce brands scaling deliveries/)
+    await page.waitForTimeout(600)
     if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${kind}-demo.png`) })
     // 3. Steps, proof, pricing, footer.
     assert.deepEqual((await page.getByTestId('step').locator('h3').allInnerTexts()), ['Paste your website', 'Get new leads every week', 'Approve and send'])
