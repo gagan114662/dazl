@@ -1,4 +1,4 @@
-import { counterpartySignal } from './counterparty.ts'
+import { counterpartySignal, counterpartyEvidence } from './counterparty.ts'
 import { closedJobEvidence } from './closed-job.ts'
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
@@ -40,7 +40,8 @@ import { getMemory, isExcluded, memoryPromptBlock } from '../memory.ts'
 import { enrichJobSignals } from '../signals/index.ts'
 import { applySalesHiringGate, failClosedSalesHiring, persistHeldState, type QuoteEvidence, type HeldLead } from './sales-hiring-gate.ts'
 import { beginEnrichment, endEnrichment } from './enrichment.ts'
-import { regradeFromKeptContacts } from './contact-agreement.ts'
+import { regradeFromKeptContacts, firstPlaceLabel } from './contact-agreement.ts'
+import { addEnrichment } from '../connectors/store.ts'
 import { primarySignalKind } from './score.ts'
 import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } from '../signals/competitor-reddit.ts'
 import { finishUndatedLeads } from './structured-date.ts'
@@ -149,10 +150,16 @@ export type Judgement = 'supports' | 'contradicts' | 'unclear' | 'unavailable'
 export type Judge = (c: LeadDraft, passage: string) => Promise<Judgement>
 export type PageFetcher = (url: string) => Promise<Page | FetchFail | null>
 
-export interface ReviewLead extends LeadDraft { review_reason: string }
+export interface ReviewLead extends LeadDraft { review_reason: string; passage?: string | null }   // passage: the exact text that caused the hold (verbatim, <= 250 chars), stored beside the lead and shown with it
 // The seller's own offer text, read from the same account row the profile page writes. A missing column or row means no block.
 export function offerBlockFor(db: Database.Database, userId: string): string {
   try { return sellerOfferBlock((db.prepare('SELECT sells FROM users WHERE id = ?').get(userId) as { sells?: string } | undefined)?.sells) } catch { return '' }
+}
+// The sentence of the page that names the other place (the first place label it writes), verbatim; falls back to the claimed quote when no label is found.
+function placePassage(text: string, fallback: string): string {
+  const label = firstPlaceLabel(text)
+  if (label) { const i = text.toLowerCase().indexOf(label.toLowerCase()); if (i >= 0) return text.slice(Math.max(0, i - 110), i + label.length + 110).replace(/\s+/g, ' ').trim().slice(0, 250) }
+  return fallback.slice(0, 250)
 }
 export interface VerifyOutcome { leads: VerifiedLead[]; review: ReviewLead[]; dropped: Record<string, number>; quotes?: Map<string, QuoteEvidence[]> } // quotes: every VERIFIED candidate's quote by company key, even when a duplicate candidate was the one kept; the sales-hiring gate reads them only through its identity-compatibility check
 
@@ -262,9 +269,9 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
   const review = new Map<string, ReviewLead>()
   // Which candidate each surviving row came from (rows are clones), so a LATER drop (duplicate, source cap) is recorded against the right occurrence.
   const bestSrc = new Map<string, LeadDraft>(); const reviewSrc = new Map<string, LeadDraft>(); const origin = new WeakMap<object, LeadDraft>()
-  const toReview = (c: LeadDraft, why: string) => {
+  const toReview = (c: LeadDraft, why: string, passage?: string | null) => {
     const k = dedupKey(c)
-    if (!review.has(k)) { const row = { ...c, contact: null, review_reason: why } as ReviewLead; review.set(k, row); reviewSrc.set(k, c); origin.set(row, c); note(c, 'review', why) }
+    if (!review.has(k)) { const row = { ...c, contact: null, review_reason: why, ...(passage ? { passage: passage.replace(/\s+/g, ' ').trim().slice(0, 250) } : {}) } as ReviewLead; review.set(k, row); reviewSrc.set(k, c); origin.set(row, c); note(c, 'review', why) }
     else { drop('duplicate'); note(c, 'dropped', 'duplicate') }
   }
   const fetched = await Promise.all(candidates.map(async c => ({ c, page: await get(c.source_url) })))
@@ -303,7 +310,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     }
     const closed = closedJobEvidence(c, page)
     if (closed) {
-      toReview(c, 'job_closed'); continue
+      toReview(c, 'job_closed', `${closed.marker}`); continue
     }
     const v = verifyEvidence(c, page, now)
     if (!v.ok) {
@@ -311,13 +318,13 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
       // drift), but when the page really is about this company the signal may still be real.
       // Show it as needs-review - labeled unconfirmed, never emailed - instead of vanishing.
       if (['bad_date', 'stale', 'future_date'].includes(v.reason)) {
-        toReview(c, `event_date_${v.reason}`); continue
+        toReview(c, `event_date_${v.reason}`, `${c.event_date ? `event date ${c.event_date}: ` : ''}${c.excerpt}`); continue
       }
       if (v.reason === 'excerpt_not_on_page') {
         const key = companyKey(c.company)
         const hay = `${norm(page.title)} ${norm(page.text).slice(0, 4000)}`
         if (key.length >= 2 && hasPhrase(hay, key)) {
-          toReview(c, 'quote_unconfirmed'); continue
+          toReview(c, 'quote_unconfirmed', c.excerpt); continue
         }
       }
       drop(v.reason); note(c, 'dropped', v.reason); continue
@@ -328,13 +335,13 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     const where = ownPlaceAgreement(page, geo, c.company, c.excerpt)
     if (where === 'mismatch') {
       const k = dedupKey(c); const why = `location_${where}`
-      if (!review.has(k)) review.set(k, { ...c, contact: null, review_reason: why })
+      if (!review.has(k)) review.set(k, { ...c, contact: null, review_reason: why, passage: placePassage(page.text, c.excerpt) })
       else drop('duplicate')
       note(c, 'review', why); continue
     }
-    const cp = counterpartySignal(c, page, '')
+    const cp = counterpartyEvidence(c, page, '')
     if (cp) {
-      toReview(c, 'counterparty_signal'); continue
+      toReview(c, 'counterparty_signal', cp.passage); continue
     }
     passed.push({ c, v }); note(c, 'passed', null)
   }
@@ -452,7 +459,7 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
     const insReview = db.prepare(
       'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, review_reason, source_kind, timing_note, published_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?)',
     )
-    for (const l of review) { const result = insReview.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.event_date ? 'unverified' : 'undated', `review:${dedupKey(l)}`, l.review_reason, sourceKind(job), l.timing_note ?? null, l.published_at ?? null); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
+    for (const l of review) { const rid = randomBytes(12).toString('hex'); const result = insReview.run(rid, job.id, l.name, l.company, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.event_date ? 'unverified' : 'undated', `review:${dedupKey(l)}`, l.review_reason, sourceKind(job), l.timing_note ?? null, l.published_at ?? null); if (result.changes) { insertedKeys.add(`${dedupKey(l)}|${l.source_url}`); if (l.passage) { try { addEnrichment(db, job.user_id, rid, { connector: 'scan:rejection', kind: 'rejection', value: l.passage.slice(0, 254), label: `held as ${l.review_reason}: the passage that caused it`.slice(0, 200), confidence: null, source_url: l.source_url, source_date: new Date().toISOString().slice(0, 10), retrieved_at: Math.floor(Date.now() / 1000) }) } catch { /* the passage is a note beside the hold, never a reason to lose the lead */ } } } }
     ledger?.write(db, job.id, job.attempts, out ? leads : null, out ? review : null, insertedKeys)
     db.prepare(
       `UPDATE scan_jobs SET status = ?, error = ?, claimed_at = NULL, candidates = ?, verified = ?, needs_review = ?, dropped = ?, drop_reasons = ?,
