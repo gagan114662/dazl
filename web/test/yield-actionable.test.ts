@@ -3,6 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
+import { listLeads, exportLeads } from '../lib/scan/store.ts'
 
 // CI runs with SITECRAWL_ENABLED=0 (npm test). These fixtures need their STUBBED crawl (an injected crawlGet, no network) to establish the lead's domain, so the crawl is
 // switched on for the duration of one fixture run only and restored; the domain gate itself is unchanged.
@@ -128,4 +129,29 @@ test('FAIL-CLOSED when the recovery write is rejected too: the gate\u2019s norma
   assert.equal(rep.candidates.find(c => c.company === 'Brightloop')!.fate, 'review:sales_hiring_check_failed', 'the report shows the final result')
   assert.equal(rep.funnel.verified, 0)
   assert.match(actionRow(r)!.value, /^Not actionable yet: sales hiring check failed/)
+})
+
+test('SURFACES: the write was rejected - the card/list read, the export and the job counts must NOT show the held lead as verified (fails without the held marker)', async () => {
+  const site: Site = { home: HOME, team: TEAM, careers: '<html><body><h1>Careers at Brightloop</h1><p>No open roles.</p></body></html>', contact: CONTACT }
+  const f = fixture({ site })
+  f.onVerify = db => { db.exec("CREATE TRIGGER reject_review BEFORE UPDATE OF review_reason ON leads WHEN NEW.review_reason IS NOT NULL BEGIN SELECT RAISE(ABORT, 'write rejected'); END") }
+  const r = await runCrawl(f)
+  const stored = r.db.prepare('SELECT review_reason, confidence FROM leads').get() as { review_reason: string | null; confidence: number | null }
+  assert.equal(stored.review_reason, null, 'precondition: the stored row still reads verified because the write was rejected')
+  const jobId = (r.db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id
+  // the lead list / card read
+  const [card] = listLeads(r.db, 'A', jobId) as { company: string; review_reason: string | null; confidence: number | null }[]
+  assert.deepEqual([card.company, card.review_reason, card.confidence], ['Brightloop', 'sales_hiring_check_failed', null], 'the card is held, not verified')
+  // the export
+  const [row] = exportLeads(r.db, 'A', jobId) as { company: string; review_reason: string | null; confidence: number | null }[]
+  assert.deepEqual([row.company, row.review_reason, row.confidence], ['Brightloop', 'sales_hiring_check_failed', null])
+  // job / campaign counts
+  assert.deepEqual(r.db.prepare('SELECT verified, needs_review FROM scan_jobs').get(), { verified: 0, needs_review: 1 })
+  // and the classification card row says so
+  assert.match(actionRow(r)!.value, /^Not actionable yet: sales hiring check failed/)
+  // control: a lead whose write landed is unaffected by the overlay, and a verified lead with no marker still reads verified
+  const ok = await runCrawl(fixture({ site: { home: HOME, team: TEAM, careers: CAREERS, contact: CONTACT } }))
+  const okJob = (ok.db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id
+  const [okCard] = listLeads(ok.db, 'A', okJob) as { review_reason: string | null; confidence: number | null }[]
+  assert.equal(okCard.review_reason, null); assert.ok(okCard.confidence !== null)
 })

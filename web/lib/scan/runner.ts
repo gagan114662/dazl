@@ -34,7 +34,7 @@ import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './veri
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
 import { getMemory, isExcluded, memoryPromptBlock } from '../memory.ts'
 import { enrichJobSignals } from '../signals/index.ts'
-import { applySalesHiringGate, failClosedSalesHiring, type QuoteEvidence, type HeldLead } from './sales-hiring-gate.ts'
+import { applySalesHiringGate, failClosedSalesHiring, persistHeldState, type QuoteEvidence, type HeldLead } from './sales-hiring-gate.ts'
 import { beginEnrichment, endEnrichment } from './enrichment.ts'
 import { regradeFromKeptContacts } from './contact-agreement.ts'
 import { primarySignalKind } from './score.ts'
@@ -1063,7 +1063,8 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       // A REQUIRED gate that fails is a fail, never a pass: every lead still verified is held, the failure is its reason, and the report agrees.
       let held: HeldLead[] = []
       try { held = failClosedSalesHiring(db, job, msg); reconcileRunReport(db, job.id, job.attempts, held) } catch (e2) { console.error('sales-hiring fail-closed failed', e2 instanceof Error ? e2.message : 'error') }
-      heldByGate = new Map(held.map(h => [h.id, h.reason]))   // kept in memory: classification must not infer "passed" from a row whose write did not land
+      heldByGate = new Map(held.map(h => [h.id, h.reason]))
+      persistHeldState(db, job, held.filter(h => !h.written), msg)   // surfaces that read only the lead row must not show an unwritten held lead as verified   // kept in memory: classification must not infer "passed" from a row whose write did not land
       trace.note('sales_hiring_gate', 'failed', `${msg} - ${held.length} lead(s) held as sales_hiring_check_failed${held.some(h => !h.written) ? ` (${held.filter(h => !h.written).length} write(s) rejected: held in memory)` : ''}`)
       console.error('sales-hiring gate failed', msg)
     }

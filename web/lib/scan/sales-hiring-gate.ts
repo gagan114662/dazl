@@ -6,6 +6,7 @@
 // Otherwise it moves to review with the distinct reason `no_sales_hiring_evidence` and says so on its card. This only ADDS a requirement:
 // the quote, date, identity and place gates that put the lead there are not touched, and nothing here promotes a review row.
 import type Database from 'better-sqlite3'
+import { randomBytes } from 'node:crypto'
 import { addEnrichment, audit } from '../connectors/store.ts'
 import { atsGtmHiring, isGtmRole, postingEvidence, BOARD_LABEL } from '../signals/ats-gtm.ts'
 import { careersSalesVacancy } from '../signals/careers-page.ts'
@@ -246,4 +247,23 @@ export function failClosedSalesHiring(db: Database.Database, job: JobLike, messa
     out.push({ id: l.id, company: l.company, url: l.source_url, reason: SALES_GATE_FAILED, written })
   }
   return out
+}
+
+// Persist the held state so every surface that reads the lead row agrees with the in-memory set. Two best-effort writes, each independent of the other:
+//   - the marker beside the lead (read by listLeads / exportLeads, which then show the lead as held, not verified),
+//   - the job's verified / needs-review counts, adjusted once per newly marked lead (campaign counts follow the same truth).
+// A retry of the review write is also made. Returns how many leads were marked. Never throws.
+export function persistHeldState(db: Database.Database, job: JobLike, held: HeldLead[], message: string): number {
+  let marked = 0
+  for (const h of held) {
+    try {
+      const ch = db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, ?, 'scan:gate', 'gate_failed', ?, ?, NULL, 'https://invalid.example/', ?, ?) ON CONFLICT (lead_id, connector, kind, value) DO NOTHING")
+        .run(randomBytes(12).toString('hex'), h.id, job.user_id, SALES_GATE_FAILED, `Sales-hiring check failed: ${message}`.slice(0, 200), new Date().toISOString().slice(0, 10), Math.floor(Date.now() / 1000)).changes
+      if (ch) {
+        marked++
+        if (!h.written) { try { db.prepare('UPDATE scan_jobs SET verified = MAX(COALESCE(verified, 0) - 1, 0), needs_review = COALESCE(needs_review, 0) + 1 WHERE id = ?').run(job.id) } catch { /* the count write was rejected too: the marker still holds */ } }
+      }
+    } catch { /* no marker: the in-memory set still holds this run's report, trace and classification */ }
+  }
+  return marked
 }
