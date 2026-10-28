@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { migrateInsertionOrder } from '../db/insertion-order.ts'
 import type Database from 'better-sqlite3'
 import { primarySignalKind } from './score.ts'
 import { migrateSourceRuns } from './source-runs.ts'
@@ -79,6 +80,7 @@ export function migrateScan(db: Database.Database): void {
   migrateSourceRuns(db)
   migrateEvidenceCopies(db)
   migrateRunReport(db)
+  migrateInsertionOrder(db, ['scan_jobs', 'leads']) // insert_seq (lib/db/insertion-order.ts); after any table rebuild above
 }
 
 // Evidence columns. Nullable, so rows written by other workers (Hermes) stay valid:
@@ -256,20 +258,30 @@ export function countActiveJobs(db: Database.Database, userId: string): number {
   return (db.prepare(`SELECT count(*) AS n FROM scan_jobs WHERE user_id = ? AND csv_domain IS NULL AND (status IN ('pending','running') OR (status = 'done' AND enrich_started_at IS NOT NULL AND enrich_finished_at IS NULL AND enrich_started_at > CAST(strftime('%s','now') AS INTEGER) - ${ENRICH_STALE_S}) OR (status = 'failed' AND error = 'cancelled' AND finished_at >= ?))`).get(userId, holdFrom) as { n: number }).n
 }
 
+// A lead a REQUIRED gate failed on whose review write was rejected still reads verified in leads.review_reason. The gate leaves a marker beside it (lead_enrichments,
+// connector 'scan:gate', kind 'gate_failed'); every user-facing read of the lead row overlays it, so a held lead is never shown as verified. A store without the
+// enrichments table reads the row as stored.
+const HELD_MARK = "EXISTS (SELECT 1 FROM lead_enrichments h WHERE h.lead_id = l.id AND h.connector = 'scan:gate' AND h.kind = 'gate_failed')"
+export const HELD_REASON = 'sales_hiring_check_failed'
+const withHeld = (sql: string, plain: string, overlaid: string) => ({ held: sql.replace(plain, overlaid), plain: sql })
+const HELD_REVIEW = `CASE WHEN l.review_reason IS NULL AND ${HELD_MARK} THEN '${HELD_REASON}' ELSE l.review_reason END AS review_reason`
+const HELD_CONF = `CASE WHEN l.review_reason IS NULL AND ${HELD_MARK} THEN NULL ELSE l.confidence END AS confidence`
+function allWithHeldFallback(db: Database.Database, sql: { held: string; plain: string }, params: unknown[]) {
+  try { return db.prepare(sql.held).all(...params) } catch (e) { if (!/no such table/i.test(e instanceof Error ? e.message : '')) throw e; return db.prepare(sql.plain).all(...params) }
+}
+
 // Ranked: scored leads first by ICP fit, then intent, actionability and evidence confidence.
 // Low-fit scored leads (fit <= 1) are hidden unless includeHidden - they stay in the scan.
 export function listLeads(db: Database.Database, userId: string, jobId: string, limit = 200, includeHidden = false) {
-  return db
-    .prepare(
+  const plain =
       `SELECT l.id, l.scan_job_id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.created_at,
 l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
 l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l.quarantine_reason, l.evidence_origin, l.own_fetch_failure, l.evidence_copy_sha256, l.evidence_copy_id, l.evidence_purged_at, l.timing_note, l.published_at,
          l.fit, l.intent, l.action, l.why, l.signals, l.icp_match, l.watch_new, l.seen_before, l.stage
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
        WHERE j.id = ? AND j.user_id = ? ${includeHidden ? '' : 'AND (l.fit IS NULL OR l.fit > 1)'}
-       ORDER BY (l.fit IS NULL), l.fit DESC, l.action DESC, (l.confidence IS NULL), l.confidence DESC, l.score DESC, l.created_at DESC LIMIT ?`,
-    )
-    .all(jobId, userId, Math.min(limit, 500))
+       ORDER BY (l.fit IS NULL), l.fit DESC, l.action DESC, (l.confidence IS NULL), l.confidence DESC, l.score DESC, l.created_at DESC LIMIT ?`
+  return allWithHeldFallback(db, withHeld(plain, 'l.confidence, l.review_reason,', `${HELD_CONF}, ${HELD_REVIEW},`), [jobId, userId, Math.min(limit, 500)])
 }
 
 export function countHiddenLeads(db: Database.Database, userId: string, jobId: string): number {
@@ -342,17 +354,15 @@ export function listJobs(db: Database.Database, userId: string, limit = 20): Job
 // The export defaults to real rows only; includeFixtures is the explicit opt-in for
 // verification workflows. Nothing is deleted - every row stays in the database.
 export function exportLeads(db: Database.Database, userId: string, jobId?: string, limit = 5000, includeFixtures = false) {
-  return db
-    .prepare(
+  const plain =
       `SELECT l.id AS lead_id, l.scan_job_id AS job_id, l.company, l.name, l.contact, l.signal, l.why, l.source_url,
               l.fit, l.intent, l.action, l.score, l.confidence, l.event_date, l.date_status, l.review_reason,
               l.human_confirmed_from, l.evidence_excerpt, l.evidence_origin, l.own_fetch_failure, l.evidence_purged_at, l.timing_note, l.published_at, l.created_at
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
        WHERE j.user_id = ? ${jobId ? 'AND j.id = ?' : ''} AND (l.fit IS NULL OR l.fit > 1) AND l.quarantined_at IS NULL
        ${includeFixtures ? '' : "AND (l.source_kind IS NULL OR l.source_kind != 'test')"}
-       ORDER BY l.created_at DESC LIMIT ?`,
-    )
-    .all(...(jobId ? [userId, jobId, limit] : [userId, limit]))
+       ORDER BY l.created_at DESC LIMIT ?`
+  return allWithHeldFallback(db, withHeld(plain.replace('l.score, l.confidence, l.event_date, l.date_status, l.review_reason,', 'l.score, l.confidence, l.event_date, l.date_status, l.review_reason,'), 'l.confidence, l.event_date, l.date_status, l.review_reason,', `${HELD_CONF}, l.event_date, l.date_status, ${HELD_REVIEW},`), jobId ? [userId, jobId, limit] : [userId, limit])
 }
 
 

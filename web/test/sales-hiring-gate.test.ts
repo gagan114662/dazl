@@ -63,7 +63,7 @@ test('PASS: a dated sales posting on a Greenhouse board bound to the lead’s do
   const l = lead(db); assert.equal(l.review_reason, null); assert.equal(l.confidence, 80)
   assert.match(l.why, new RegExp(`^Hiring sales: Account Executive posted ${d(12).slice(0, 10)} on its Greenhouse job board \\(brightloop\\.io\\)\\. Seed-funded`))
   assert.deepEqual(counts(db), { verified: 1, needs_review: 0 })
-  const e = (enrichmentsForLeads(db, 'u1', ['L1']).L1 ?? []).filter(x => x.kind === 'hiring'); assert.equal(e.length, 1); assert.equal(e[0].source_date, d(12).slice(0, 10))
+  const e = (enrichmentsForLeads(db, 'u1', ['L1']).L1 ?? []).filter(x => x.kind === 'hiring' && /sales\/GTM role/.test(x.value)); assert.equal(e.length, 1); assert.equal(e[0].source_date, d(12).slice(0, 10))   // the aggregate row; the per-posting rows are checked below
 })
 
 test('PASS (source): the saved quote itself names the sales hiring, so no board lookup is made', async () => {
@@ -331,6 +331,15 @@ test('FAIL-CLOSED whole gate: failClosedSalesHiring holds every lead still verif
   assert.deepEqual(held.map(h => h.reason), ['sales_hiring_check_failed']); assert.equal(lead(db).review_reason, 'sales_hiring_check_failed'); assert.deepEqual(counts(db), { verified: 0, needs_review: 1 })
   const seedOnly = seed({ query: 'Find London UK SaaS startups that announced seed funding.', icp: JSON.stringify({ summary: 's', where: ['London, UK'], who: ['Founder'], signals: ['announced seed funding'], exclude: [] }) })
   assert.deepEqual(failClosedSalesHiring(seedOnly.db, seedOnly.job, 'x'), [], 'no sales proof required: nothing to fail'); assert.equal(lead(seedOnly.db).review_reason, null)
+})
+
+test('a lead kept on a dated board posting stores per-posting evidence: role title, posting URL, publish date, board + location, retrieval time', async () => {
+  const { db, job } = seed({ domain: 'brightloop.io', excerpt: QUOTE })
+  assert.equal((await applySalesHiringGate(db, job, serve(board()), { now: NOW })).passed, 1)
+  const rows = db.prepare("SELECT value, label, source_url, source_date, retrieved_at, confidence FROM lead_enrichments WHERE value LIKE '% - posted %'").all() as { value: string; label: string; source_url: string; source_date: string; retrieved_at: number; confidence: number }[]
+  assert.equal(rows.length, 1)
+  assert.deepEqual([rows[0].value, rows[0].source_url, rows[0].source_date, rows[0].confidence], [`Account Executive - posted ${d(12).slice(0, 10)}`, 'https://boards.greenhouse.io/brightloop/jobs/1', d(12).slice(0, 10), 70])
+  assert.equal(rows[0].label, 'London, UK; Greenhouse'); assert.equal(rows[0].retrieved_at, Math.floor(NOW / 1000))
 })
 
 test('FAIL-CLOSED in memory: failClosedSalesHiring still returns the held lead when its own write is rejected', () => {

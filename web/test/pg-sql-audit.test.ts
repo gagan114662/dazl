@@ -9,8 +9,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
 import pg from 'pg'
-import { sqlInventory, sqlSitesIn, rawSqliteModules, pgRejects, portStatus, toPgParams, isSqliteAdmin, insertionOrderUsers } from '../lib/db/sql-audit.ts'
-import { RAW_SQLITE_MODULES, PG_INSERTION_ORDER_GAPS } from '../lib/db/pg-port-status.ts'
+import { sqlInventory, sqlSitesIn, rawSqliteModules, pgRejects, portStatus, toPgParams, isSqliteAdmin } from '../lib/db/sql-audit.ts'
+import { RAW_SQLITE_MODULES } from '../lib/db/pg-port-status.ts'
 import { runPgMigrations } from '../lib/db/migrate-pg.ts'
 import { PG_URL, pgSkip, freshSchema } from './helpers/pg-test.ts'
 import { writeFileSync, mkdtempSync, rmSync, mkdirSync } from 'node:fs'
@@ -64,10 +64,6 @@ test('every module on the raw SQLite handle is in lib/db/pg-port-status.ts, and 
   const ported = listed.filter(f => !raw.includes(f))
   assert.deepEqual(added, [], `new code on the raw SQLite handle: write it on the Db layer (lib/db/client.ts) instead. ${REGEN} only if it truly cannot be`)
   assert.deepEqual(ported, [], `these no longer use the raw SQLite handle: remove their lines (${REGEN})`)
-})
-
-test('every module ordering ties by insertionOrder() is listed as a Postgres insertion-order gap, and only those', () => {
-  assert.deepEqual(insertionOrderUsers(root), PG_INSERTION_ORDER_GAPS, REGEN)
 })
 
 test('Postgres PREPAREs every statement on the Db layer, and rejects no more raw statements than the manifest says', { skip: pgSkip }, async () => {

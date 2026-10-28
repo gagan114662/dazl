@@ -9,8 +9,8 @@ import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { seedOffers } from './helpers/seed-offer.ts'
 import { confirmLeadReview } from '../lib/scan/review-confirm.ts'
-import { setDomainReview } from '../lib/scan/domain-review-action.ts'
 import { sqliteDb } from '../lib/db/client.ts'
+import { setDomainReview } from '../lib/scan/domain-review-action.ts'
 import { createDraft } from '../lib/outreach/service.ts'
 import { currentnessHeld } from '../lib/outreach/currentness.ts'
 import { requiredGateHeld, markHeldInProcess, releaseHeld } from '../lib/scan/held-state.ts'
@@ -58,6 +58,22 @@ test('WRITE-REJECTED: the row still reads verified, only the gate_failed marker 
 test('tenant scope: another tenant’s lead id is never reported held', () => {
   const db = setup(); const id = addLead(db, { reason: 'sales_hiring_check_failed' })
   assert.equal(requiredGateHeld(db, 'B', id), null)
+})
+
+test('the hold clears only when the gate RUNS AGAIN AND PASSES: a stale gate_failed marker is removed for a lead the gate passes, and a lead it does not pass keeps it', async () => {
+  const { applySalesHiringGate } = await import('../lib/scan/sales-hiring-gate.ts')
+  const db = setup()
+  const job = createJob(db, 'A', { business_name: 'Acme', industry: 'SaaS', location: 'London' })
+  const ICP = JSON.stringify({ summary: 's', where: ['London, UK'], who: ['Founder'], signals: ['announced seed funding', 'hiring sales staff'], exclude: [] })
+  db.prepare("UPDATE scan_jobs SET status = 'running', query = ?, icp = ? WHERE id = ?").run('Find London UK B2B SaaS startups that announced seed funding and are hiring sales staff.', ICP, job)
+  const mk = (id: string, excerpt: string) => { db.prepare("INSERT INTO leads (id, scan_job_id, company, company_domain, contact, signal, source_url, evidence_excerpt, confidence, review_reason, score, date_status) VALUES (?, ?, ?, NULL, NULL, 'raised a seed round', 'https://news.example/a', ?, 80, NULL, 80, 'verified')").run(id, job, `Co ${id}`, excerpt); mark(db, id) }
+  mk('pass', 'Co pass raised a seed round in London. Co pass is hiring two account executives.')
+  mk('hold', 'Co hold raised a seed round in London.')
+  db.prepare("UPDATE scan_jobs SET status = 'done', verified = 2 WHERE id = ?").run(job)
+  const noFetch = (async () => new Response('no', { status: 404 })) as never
+  await applySalesHiringGate(db, { id: job, user_id: 'A', query: 'Find London UK B2B SaaS startups that announced seed funding and are hiring sales staff.', icp: ICP }, noFetch, {})
+  assert.equal(requiredGateHeld(db, 'A', 'pass'), null, 'the gate passed this lead: its stale marker is gone')
+  assert.equal(requiredGateHeld(db, 'A', 'hold'), 'sales_hiring_check_failed', 'the gate demoted the other lead (no sales proof): still held')
 })
 
 test('STANDS ALONE: the run report’s held_lead_ids (the run’s own record) holds the lead when the review write AND any marker are gone - lead and domain confirmation cannot unblock drafting', async () => {

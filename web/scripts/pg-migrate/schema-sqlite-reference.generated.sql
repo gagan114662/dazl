@@ -194,7 +194,7 @@ CREATE TABLE lead_enrichments (
       confidence  INTEGER,
       source_url  TEXT NOT NULL CHECK (length(source_url) <= 500 AND source_url LIKE 'http%'),
       source_date TEXT NOT NULL CHECK (length(source_date) = 10),
-      retrieved_at INTEGER NOT NULL,
+      retrieved_at INTEGER NOT NULL, insert_seq INTEGER,
       UNIQUE (lead_id, connector, kind, value)
     );
 
@@ -239,7 +239,7 @@ CREATE TABLE leads (
       signal      TEXT NOT NULL CHECK (length(signal) BETWEEN 1 AND 500),
       source_url  TEXT NOT NULL CHECK (length(source_url) <= 500 AND (source_url LIKE 'https://%' OR source_url LIKE 'http://%')),
       score       INTEGER NOT NULL DEFAULT 50 CHECK (score BETWEEN 0 AND 100),
-      created_at  INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), stage TEXT, watch_new INTEGER NOT NULL DEFAULT 0, evidence_excerpt TEXT CHECK (evidence_excerpt IS NULL OR length(evidence_excerpt) <= 400), icp_match TEXT CHECK (icp_match IS NULL OR length(icp_match) <= 400), event_date TEXT, date_status TEXT CHECK (date_status IS NULL OR date_status IN ('verified','unverified','undated')), retrieved_at INTEGER, confidence INTEGER CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 100), dedup_key TEXT, review_reason TEXT, evidence_origin TEXT CHECK (evidence_origin IS NULL OR evidence_origin IN ('tinyfish_copy')), own_fetch_failure TEXT, evidence_copy_sha256 TEXT, evidence_purged_at INTEGER, timing_note TEXT CHECK (timing_note IS NULL OR length(timing_note) <= 300), published_at TEXT, evidence_copy_id TEXT, human_confirmed_at INTEGER, human_confirmed_from TEXT, company_domain TEXT CHECK (company_domain IS NULL OR length(company_domain) <= 253), quarantined_at INTEGER, quarantine_reason TEXT CHECK (quarantine_reason IS NULL OR length(quarantine_reason) <= 300), fit INTEGER CHECK (fit IS NULL OR fit BETWEEN 0 AND 5), intent INTEGER CHECK (intent IS NULL OR intent BETWEEN 0 AND 5), action INTEGER CHECK (action IS NULL OR action BETWEEN 0 AND 5), why TEXT CHECK (why IS NULL OR length(why) <= 600), signals TEXT CHECK (signals IS NULL OR length(signals) <= 1000), seen_before INTEGER NOT NULL DEFAULT 0, signal_kind TEXT, source_kind TEXT,
+      created_at  INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), stage TEXT, watch_new INTEGER NOT NULL DEFAULT 0, evidence_excerpt TEXT CHECK (evidence_excerpt IS NULL OR length(evidence_excerpt) <= 400), icp_match TEXT CHECK (icp_match IS NULL OR length(icp_match) <= 400), event_date TEXT, date_status TEXT CHECK (date_status IS NULL OR date_status IN ('verified','unverified','undated')), retrieved_at INTEGER, confidence INTEGER CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 100), dedup_key TEXT, review_reason TEXT, evidence_origin TEXT CHECK (evidence_origin IS NULL OR evidence_origin IN ('tinyfish_copy')), own_fetch_failure TEXT, evidence_copy_sha256 TEXT, evidence_purged_at INTEGER, timing_note TEXT CHECK (timing_note IS NULL OR length(timing_note) <= 300), published_at TEXT, evidence_copy_id TEXT, human_confirmed_at INTEGER, human_confirmed_from TEXT, company_domain TEXT CHECK (company_domain IS NULL OR length(company_domain) <= 253), quarantined_at INTEGER, quarantine_reason TEXT CHECK (quarantine_reason IS NULL OR length(quarantine_reason) <= 300), fit INTEGER CHECK (fit IS NULL OR fit BETWEEN 0 AND 5), intent INTEGER CHECK (intent IS NULL OR intent BETWEEN 0 AND 5), action INTEGER CHECK (action IS NULL OR action BETWEEN 0 AND 5), why TEXT CHECK (why IS NULL OR length(why) <= 600), signals TEXT CHECK (signals IS NULL OR length(signals) <= 1000), seen_before INTEGER NOT NULL DEFAULT 0, signal_kind TEXT, source_kind TEXT, insert_seq INTEGER,
       CHECK (name <> '' OR company <> '')
     );
 
@@ -328,7 +328,7 @@ CREATE TABLE outreach_messages (
       sent_at        INTEGER,
       gmail_id       TEXT,
       error          TEXT CHECK (error IS NULL OR length(error) <= 200),
-      created_at     INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), thread_id TEXT, test INTEGER NOT NULL DEFAULT 0,
+      created_at     INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), thread_id TEXT, test INTEGER NOT NULL DEFAULT 0, insert_seq INTEGER,
       UNIQUE (tenant_id, lead_id)
     );
 
@@ -414,7 +414,7 @@ CREATE TABLE scan_jobs (
       created_at    INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
       claimed_at    INTEGER,
       finished_at   INTEGER
-    , funded_by TEXT NOT NULL DEFAULT 'user', seller TEXT, watch_id TEXT, candidates INTEGER, needs_review INTEGER, dropped INTEGER, run_budget TEXT, spend_reserved_usd REAL, drop_reasons TEXT, verified INTEGER, query TEXT CHECK (query IS NULL OR length(query) <= 600), icp TEXT CHECK (icp IS NULL OR length(icp) <= 4000), icp_inferred INTEGER, sources TEXT CHECK (sources IS NULL OR length(sources) <= 2000), csv_domain TEXT CHECK (csv_domain IS NULL OR length(csv_domain) <= 253), batch_id TEXT, enrich_started_at INTEGER, enrich_finished_at INTEGER);
+    , funded_by TEXT NOT NULL DEFAULT 'user', seller TEXT, watch_id TEXT, candidates INTEGER, needs_review INTEGER, dropped INTEGER, run_budget TEXT, spend_reserved_usd REAL, drop_reasons TEXT, verified INTEGER, query TEXT CHECK (query IS NULL OR length(query) <= 600), icp TEXT CHECK (icp IS NULL OR length(icp) <= 4000), icp_inferred INTEGER, sources TEXT CHECK (sources IS NULL OR length(sources) <= 2000), csv_domain TEXT CHECK (csv_domain IS NULL OR length(csv_domain) <= 253), batch_id TEXT, enrich_started_at INTEGER, enrich_finished_at INTEGER, insert_seq INTEGER);
 
 CREATE TABLE scan_model_calls (
     tenant_id TEXT NOT NULL,
@@ -738,11 +738,15 @@ CREATE INDEX hiring_feed_crawl_job ON hiring_feed_crawl(tenant_id, job_id);
 
 CREATE INDEX idx_evidence_copies_tenant ON lead_evidence_copies(tenant_id, expires_at);
 
+CREATE INDEX lead_enrichments_insert_seq_idx ON lead_enrichments (insert_seq);
+
 CREATE INDEX lead_enrichments_lead ON lead_enrichments (lead_id);
 
 CREATE UNIQUE INDEX lead_qualifications_one_per_lead ON lead_qualifications (tenant_id, lead_id);
 
 CREATE UNIQUE INDEX leads_dedup ON leads (scan_job_id, dedup_key) WHERE dedup_key IS NOT NULL;
+
+CREATE INDEX leads_insert_seq_idx ON leads (insert_seq);
 
 CREATE INDEX leads_job ON leads (scan_job_id);
 
@@ -752,11 +756,15 @@ CREATE INDEX monitors_due ON monitors (enabled, next_run_at);
 
 CREATE INDEX newsjacks_tenant ON newsjacks (tenant_id, created_at);
 
+CREATE INDEX outreach_messages_insert_seq_idx ON outreach_messages (insert_seq);
+
 CREATE INDEX outreach_tenant ON outreach_messages (tenant_id, status);
 
 CREATE INDEX rate_limits_reset ON rate_limits (reset_at);
 
 CREATE INDEX reply_threads_tenant ON reply_threads (tenant_id, created_at);
+
+CREATE INDEX scan_jobs_insert_seq_idx ON scan_jobs (insert_seq);
 
 CREATE INDEX scan_jobs_status ON scan_jobs (status, created_at);
 
@@ -795,6 +803,8 @@ CREATE TRIGGER evidence_purge_audit_no_delete BEFORE DELETE ON evidence_purge_au
 
 CREATE TRIGGER evidence_purge_audit_no_update BEFORE UPDATE ON evidence_purge_audit BEGIN SELECT RAISE(ABORT, 'purge audit is append-only'); END;
 
+CREATE TRIGGER lead_enrichments_insert_seq AFTER INSERT ON lead_enrichments WHEN NEW.insert_seq IS NULL BEGIN UPDATE lead_enrichments SET insert_seq = (SELECT coalesce(max(insert_seq), 0) + 1 FROM lead_enrichments) WHERE rowid = NEW.rowid; END;
+
 CREATE TRIGGER lead_evidence_copies_delete_only_expired BEFORE DELETE ON lead_evidence_copies
   WHEN OLD.expires_at > CAST(strftime('%s','now') AS INTEGER)
    AND NOT EXISTS (SELECT 1 FROM evidence_purge_gate g WHERE g.tenant_id = OLD.tenant_id)
@@ -803,15 +813,21 @@ CREATE TRIGGER lead_evidence_copies_delete_only_expired BEFORE DELETE ON lead_ev
 CREATE TRIGGER lead_evidence_copies_no_update BEFORE UPDATE ON lead_evidence_copies
   BEGIN SELECT RAISE(ABORT, 'evidence copies are immutable'); END;
 
+CREATE TRIGGER leads_insert_seq AFTER INSERT ON leads WHEN NEW.insert_seq IS NULL BEGIN UPDATE leads SET insert_seq = (SELECT coalesce(max(insert_seq), 0) + 1 FROM leads) WHERE rowid = NEW.rowid; END;
+
 CREATE TRIGGER leads_only_while_running
     BEFORE INSERT ON leads
     WHEN (SELECT status FROM scan_jobs WHERE id = NEW.scan_job_id) IS NOT 'running'
     BEGIN SELECT RAISE(ABORT, 'leads can only be added to a running job'); END;
 
+CREATE TRIGGER outreach_messages_insert_seq AFTER INSERT ON outreach_messages WHEN NEW.insert_seq IS NULL BEGIN UPDATE outreach_messages SET insert_seq = (SELECT coalesce(max(insert_seq), 0) + 1 FROM outreach_messages) WHERE rowid = NEW.rowid; END;
+
 CREATE TRIGGER outreach_sent_is_final
     BEFORE UPDATE OF status ON outreach_messages
     WHEN OLD.status IN ('sent','skipped') AND NEW.status <> OLD.status
     BEGIN SELECT RAISE(ABORT, 'final outreach status'); END;
+
+CREATE TRIGGER scan_jobs_insert_seq AFTER INSERT ON scan_jobs WHEN NEW.insert_seq IS NULL BEGIN UPDATE scan_jobs SET insert_seq = (SELECT coalesce(max(insert_seq), 0) + 1 FROM scan_jobs) WHERE rowid = NEW.rowid; END;
 
 CREATE TRIGGER scan_jobs_transitions
     BEFORE UPDATE OF status ON scan_jobs

@@ -36,7 +36,7 @@ async function describe(schema: string) {
   try {
     const q = async (sql: string) => (await c.query(sql, [schema])).rows.map(r => Object.values(r).join(' | ')).sort()
     return {
-      columns: await q(`SELECT table_name, column_name, data_type, is_nullable, coalesce(column_default, ''), is_identity FROM information_schema.columns WHERE table_schema = $1 AND table_name <> 'dazl_schema_migrations'`),
+      columns: await q(`SELECT table_name, column_name, data_type, is_nullable, replace(coalesce(column_default, ''), $1 || '.', ''), is_identity FROM information_schema.columns WHERE table_schema = $1 AND table_name <> 'dazl_schema_migrations'`),
       constraints: await q(`SELECT r.relname, replace(pg_get_constraintdef(c.oid), $1 || '.', '') FROM pg_constraint c JOIN pg_class r ON r.oid = c.conrelid WHERE c.connamespace = $1::regnamespace AND r.relname <> 'dazl_schema_migrations'`),
       indexes: await q(`SELECT tablename, replace(indexdef, $1 || '.', '') FROM pg_indexes WHERE schemaname = $1 AND tablename <> 'dazl_schema_migrations'`),
       triggers: await q(`SELECT event_object_table, trigger_name, event_manipulation, action_timing FROM information_schema.triggers WHERE trigger_schema = $1`),

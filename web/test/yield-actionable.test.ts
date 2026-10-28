@@ -3,6 +3,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
+import { listLeads, exportLeads } from '../lib/scan/store.ts'
+import { listLeads as listLeadsDb, exportLeads as exportLeadsDb } from '../lib/scan/store-db.ts'
+import { sqliteDb } from '../lib/db/client.ts'
+import { confirmLeadReview } from '../lib/scan/review-confirm.ts'
+
 import { requiredGateHeld } from '../lib/scan/held-state.ts'
 import { currentnessHeld } from '../lib/outreach/currentness.ts'
 
@@ -134,4 +139,57 @@ test('FAIL-CLOSED when the recovery write is rejected too: the gate\u2019s norma
   const id = (r.db.prepare('SELECT id FROM leads').get() as { id: string }).id
   assert.deepEqual((JSON.parse((r.db.prepare('SELECT report FROM scan_run_report ORDER BY attempt DESC LIMIT 1').get() as { report: string }).report) as { held_lead_ids: string[] }).held_lead_ids, [id])
   assert.equal(requiredGateHeld(r.db, 'A', id), 'sales_hiring_check_failed'); assert.equal(currentnessHeld(r.db, 'A', id), true)
+})
+
+test('SURFACES: the write was rejected - the card/list read, the export and the job counts must NOT show the held lead as verified (fails without the held marker)', async () => {
+  const site: Site = { home: HOME, team: TEAM, careers: '<html><body><h1>Careers at Brightloop</h1><p>No open roles.</p></body></html>', contact: CONTACT }
+  const f = fixture({ site })
+  f.onVerify = db => { db.exec("CREATE TRIGGER reject_review BEFORE UPDATE OF review_reason ON leads WHEN NEW.review_reason IS NOT NULL BEGIN SELECT RAISE(ABORT, 'write rejected'); END") }
+  const r = await runCrawl(f)
+  const stored = r.db.prepare('SELECT review_reason, confidence FROM leads').get() as { review_reason: string | null; confidence: number | null }
+  assert.equal(stored.review_reason, null, 'precondition: the stored row still reads verified because the write was rejected')
+  const jobId = (r.db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id
+  // the lead list / card read
+  const [card] = listLeads(r.db, 'A', jobId) as { company: string; review_reason: string | null; confidence: number | null }[]
+  assert.deepEqual([card.company, card.review_reason, card.confidence], ['Brightloop', 'sales_hiring_check_failed', null], 'the card is held, not verified')
+  // the export
+  const [row] = exportLeads(r.db, 'A', jobId) as { company: string; review_reason: string | null; confidence: number | null }[]
+  assert.deepEqual([row.company, row.review_reason, row.confidence], ['Brightloop', 'sales_hiring_check_failed', null])
+  // the readers the real routes use (store-db.ts, on SQLite too)
+  const dbh = sqliteDb(r.db)
+  const [card2] = await listLeadsDb(dbh, 'A', jobId) as { company: string; review_reason: string | null; confidence: number | null }[]
+  assert.deepEqual([card2.company, card2.review_reason, card2.confidence], ['Brightloop', 'sales_hiring_check_failed', null], 'store-db list read')
+  const [row2] = await exportLeadsDb(dbh, 'A', jobId) as { company: string; review_reason: string | null; confidence: number | null }[]
+  assert.deepEqual([row2.company, row2.review_reason, row2.confidence], ['Brightloop', 'sales_hiring_check_failed', null], 'store-db export read')
+  // job / campaign counts
+  assert.deepEqual(r.db.prepare('SELECT verified, needs_review FROM scan_jobs').get(), { verified: 0, needs_review: 1 })
+  // and the classification card row says so
+  assert.match(actionRow(r)!.value, /^Not actionable yet: sales hiring check failed/)
+  // control: a lead whose write landed is unaffected by the overlay, and a verified lead with no marker still reads verified
+  const ok = await runCrawl(fixture({ site: { home: HOME, team: TEAM, careers: CAREERS, contact: CONTACT } }))
+  const okJob = (ok.db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id
+  const [okCard] = listLeads(ok.db, 'A', okJob) as { review_reason: string | null; confidence: number | null }[]
+  assert.equal(okCard.review_reason, null); assert.ok(okCard.confidence !== null)
+})
+
+test('BOTH WRITES REJECTED: the review update AND the gate_failed marker insert fail - the draft consumers still see the hold (the run\u2019s report / process record keeps it), and confirming the lead cannot clear it', async () => {
+  const site: Site = { home: HOME, team: TEAM, careers: '<html><body><h1>Careers at Brightloop</h1><p>No open roles.</p></body></html>', contact: CONTACT }
+  const f = fixture({ site })
+  f.onVerify = db => {
+    db.exec("CREATE TRIGGER reject_review BEFORE UPDATE OF review_reason ON leads WHEN NEW.review_reason IS NOT NULL BEGIN SELECT RAISE(ABORT, 'write rejected'); END")
+    db.exec("CREATE TRIGGER reject_marker BEFORE INSERT ON lead_enrichments WHEN NEW.kind = 'gate_failed' BEGIN SELECT RAISE(ABORT, 'marker write rejected'); END")
+  }
+  const r = await runCrawl(f)
+  const id = (r.db.prepare('SELECT id FROM leads').get() as { id: string }).id
+  assert.equal((r.db.prepare('SELECT review_reason FROM leads').get() as { review_reason: string | null }).review_reason, null, 'precondition: the review write was rejected')
+  assert.equal((r.db.prepare("SELECT count(*) AS n FROM lead_enrichments WHERE kind = 'gate_failed'").get() as { n: number }).n, 0, 'precondition: the marker write was rejected too')
+  // the report (a separate row) and the process still carry the hold, so the draft consumers keep it
+  assert.equal(requiredGateHeld(r.db, 'A', id), 'sales_hiring_check_failed')
+  // lead confirmation changes the row but not the hold
+  r.db.exec("DROP TRIGGER reject_review")   // the user's confirmation write is an ordinary, permitted write
+  assert.equal(await confirmLeadReview(sqliteDb(r.db), 'A', id), true)
+  assert.equal(requiredGateHeld(r.db, 'A', id), 'sales_hiring_check_failed', 'confirmation did not clear the failed required check')
+  assert.equal(currentnessHeld(r.db, 'A', id), true)
+  const rep = report(r) as ReturnType<typeof report> & { held_lead_ids: string[] }
+  assert.deepEqual(rep.held_lead_ids, [id]); assert.equal(rep.yield.actionable, 0)
 })
