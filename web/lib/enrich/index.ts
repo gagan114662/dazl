@@ -39,13 +39,15 @@ export async function enrichLeadContacts(
   const where = scanWhere(db, jobId)
 
   for (const lead of leads.slice(0, MAX_LEADS)) {
+    // the lead's OWN evidence (its quote and signal): a street address in it is an agreement basis for the record found by name
+    const evidence = (() => { try { const r = db.prepare('SELECT evidence_excerpt, signal FROM leads WHERE id = ?').get(lead.id) as { evidence_excerpt: string | null; signal: string | null } | undefined; return `${r?.evidence_excerpt ?? ''} ${r?.signal ?? ''}` } catch { return '' } })()
     const src = lead.company_domain ? `https://${lead.company_domain}` : `https://www.linkedin.com/company/${encodeURIComponent(lead.company.toLowerCase().replace(/[^a-z0-9]+/g, '-'))}`
     if (apolloKey) {
       let org: Awaited<ReturnType<typeof apolloOrgEnrich>> = null
       try {
         org = await apolloOrgEnrich(apolloKey, { domain: lead.company_domain, name: lead.company }, fetchImpl)
         // A same-name company elsewhere (Pico Rivera, CA for a New York lead) is not attached: the record must agree on the domain or the place.
-        const agree = org ? contactAgreement({ company_domain: lead.company_domain, where }, { domain: domainOf(org.website), place: org.place, keyedOnLeadDomain: !!lead.company_domain }) : null
+        const agree = org ? contactAgreement({ company_domain: lead.company_domain, where, evidence: evidence }, { domain: domainOf(org.website), place: org.place, address: org.address, keyedOnLeadDomain: !!lead.company_domain }) : null
         if (org && agree && !agree.ok) { audit(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: `org ${lead.company}`.slice(0, 200), status: agree.reason, results: 0 }); recordContactRejection(db, tenantId, lead.id, { connector: ENRICH_APOLLO, reason: agree.reason, sourceUrl: org.website ?? src }); continue }
         if (org && (org.employees || org.industry)) {
           const bits = [org.employees ? `${org.employees} employees` : null, org.industry, org.founded ? `founded ${org.founded}` : null].filter(Boolean).join(' · ')
@@ -83,7 +85,7 @@ export async function enrichLeadContacts(
         // PDL matches on the company NAME only: each person's company must agree with the lead on its domain or place.
         const people = []
         for (const p of found) {
-          const a = contactAgreement({ company_domain: lead.company_domain, where }, { domain: p.domain, place: p.place })
+          const a = contactAgreement({ company_domain: lead.company_domain, where, evidence: evidence }, { domain: p.domain, place: p.place, address: p.address })
           if (a.ok) people.push(p); else { audit(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: `people ${lead.company}`.slice(0, 200), status: a.reason, results: 0 }); recordContactRejection(db, tenantId, lead.id, { connector: ENRICH_PDL, reason: a.reason, sourceUrl: src }) }
         }
         for (const p of people) addEnrichment(db, tenantId, lead.id, { connector: ENRICH_PDL, kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: 'People Data Labs', confidence: 70, source_url: p.linkedin ?? src, source_date: today, retrieved_at: now })

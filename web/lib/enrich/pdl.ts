@@ -30,6 +30,7 @@ export async function pdlPeopleSearch(apiKey: string, orgName: string, fetchImpl
       // Where the person works and the company's site, so a same-name company elsewhere can be told apart (lib/scan/contact-agreement.ts).
       // EMPLOYER location only. A person's own residence (location_*) says nothing about where the company is: never a fallback.
       place: formatPlace(str(p.job_company_location_locality), str(p.job_company_location_region), str(p.job_company_location_country)),
+      address: str(p.job_company_location_street_address),
       domain: str(p.job_company_website),
     })).filter(p => p.name)
   } finally { clearTimeout(t) }
