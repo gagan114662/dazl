@@ -63,7 +63,7 @@ const page = await ctx.newPage()
 const shot = async name => { if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`), fullPage: true }) }
 const row = id => page.getByTestId(`ready-${id}`)
 const nextIds = () => page.locator('li[data-next="true"]').evaluateAll(e => e.map(x => x.dataset.testid))
-const load = async () => { await page.goto(base + '/app', { waitUntil: 'networkidle' }); await page.getByTestId('readiness-checklist').waitFor({ timeout: 15000 }) }
+const load = async () => { await page.goto(base + '/app', { waitUntil: 'networkidle' }); await page.getByTestId('setup-details').evaluate(d => { d.open = true }, null, { timeout: 15000 }); await page.getByTestId('readiness-checklist').waitFor({ timeout: 15000 }) }
 const before = process.env.BEFORE_ONLY === '1'
 try {
   await load(); await shot('1-running')

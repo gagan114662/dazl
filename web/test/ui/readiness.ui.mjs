@@ -79,6 +79,7 @@ const row = id => page.getByTestId(`ready-${id}`)
 try {
   await page.goto(base + '/app', { waitUntil: 'networkidle' })
   if (process.env.BEFORE_ONLY) { await page.waitForTimeout(800); await shot('home'); console.log('before shot'); process.exit(0) }
+  await page.getByTestId('setup-details').evaluate(d => { d.open = true }, null, { timeout: 15000 }) // the checklist is secondary, under Setup details
   await row('site').waitFor({ timeout: 15000 })
   await shot('home')
   assert.equal(await page.getByText("What's your website?").count(), 0, 'not the first-run flow')
@@ -112,9 +113,9 @@ try {
 
   // Inline fixes; each row turns done from re-read state.
   await row('site').getByRole('button', { name: 'Add' }).click()
-  await page.getByLabel('Business name').fill('Bright Smile Software')
-  await page.getByLabel('Your website').fill('brightsmile.example')
-  await page.getByLabel('What you sell').fill('Online booking for dental practices')
+  await row('site').getByLabel('Business name').fill('Bright Smile Software')
+  await row('site').getByLabel('Your website').fill('brightsmile.example')
+  await row('site').getByLabel('What you sell').fill('Online booking for dental practices')
   await page.getByRole('button', { name: 'Save', exact: true }).click()
   await row('site').getByText('✓').waitFor()
   assert.match(await row('site').textContent(), /Bright Smile Software - Online booking for dental practices \(brightsmile\.example\)/)
@@ -133,9 +134,11 @@ try {
   await page.getByText("Here's what we think you sell and who buys it").waitFor()
   await page.getByLabel('Who buys it').fill('Independent dental practices with 2-10 chairs')
   await page.getByRole('button', { name: 'Looks right, continue' }).click()
+  await page.getByRole('heading', { name: 'Who do you want to reach?' }).waitFor() // saved; the steps replace Home while open
+  await page.goto(base + '/app', { waitUntil: 'networkidle' })
+  await page.getByTestId('setup-details').evaluate(d => { d.open = true }, null, { timeout: 15000 })
   await row('brain').getByText('✓').waitFor()
   assert.match(await row('brain').textContent(), /Independent dental practices with 2-10 chairs/)
-  await page.goto(base + '/app', { waitUntil: 'networkidle' })
   await row('brain').getByText('✓').waitFor()
   await shot('after-fixes')
   assert.equal(await row('gmail').getByText('✓').count(), 0, 'Gmail stays a to-do until connected in Settings')
@@ -145,6 +148,7 @@ try {
   // Gmail connected (in Settings; here the stubbed status says so): everything is done, so the checklist goes away.
   state.gmail = { email: 'dana@brightsmile.example', status: 'active' }
   await page.reload({ waitUntil: 'networkidle' })
+  await page.getByTestId('setup-details').evaluate(d => { d.open = true }, null, { timeout: 15000 })
   await page.getByRole('list', { name: 'Your plays' }).waitFor()
   assert.equal(await page.getByTestId('readiness-checklist').count(), 0, 'all done: checklist hidden')
   assert.equal(await page.getByText('Before your first scan and send').count(), 0)
@@ -154,6 +158,7 @@ try {
   // Same finished setup, but today's sends (first touches plus follow-ups) reached the cap: Home says so.
   state.sent = 20
   await page.reload({ waitUntil: 'networkidle' })
+  await page.getByTestId('setup-details').evaluate(d => { d.open = true }, null, { timeout: 15000 })
   await page.getByTestId('cap-notice').waitFor()
   assert.equal(await page.getByTestId('readiness-checklist').count(), 0, 'checklist still hidden: every step is done')
   assert.match(await page.getByTestId('cap-notice').textContent(), /^Today's 20-email limit is used up \(20 sent in the last 24 hours\)\. Sending resumes as those sends pass 24 hours old\./)
@@ -163,6 +168,7 @@ try {
   // The source check fails: that row is "could not check", so the checklist comes back instead of reading complete.
   state.sent = 0; state.sourcesFail = true
   await page.reload({ waitUntil: 'networkidle' })
+  await page.getByTestId('setup-details').evaluate(d => { d.open = true }, null, { timeout: 15000 })
   await page.getByTestId('readiness-checklist').waitFor()
   assert.match(await row('sources').textContent(), /Lead sources - could not check/)
   assert.equal(await row('sources').getByText('✓').count(), 0)
