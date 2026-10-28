@@ -22,6 +22,9 @@ export function migratePlans(db: Database.Database): void {
   try { db.exec('ALTER TABLE tenant_plans ADD COLUMN stripe_event_at INTEGER') } catch { /* exists */ }
   // A same-second tie Stripe has not settled yet (lib/billing/stripe.ts): that second, until the read settles it.
   try { db.exec('ALTER TABLE tenant_plans ADD COLUMN stripe_reconcile_at INTEGER') } catch { /* exists */ }
+  // The subscription's status as Stripe last reported it (lib/billing/stripe.ts): active, past_due after a failed
+  // payment while Stripe retries, unpaid, canceled... The plan is what entitles; this says why. PG: 0008_subscription_status.sql.
+  try { db.exec('ALTER TABLE tenant_plans ADD COLUMN subscription_status TEXT') } catch { /* exists */ }
 }
 
 // Sync reader for callers not yet on the Db layer (scan, monitors, watch). Billing uses readPlan.
@@ -40,6 +43,11 @@ export function setPlan(db: Database.Database, tenantId: string, plan: PlanId): 
 }
 
 // A transaction step: billing changes a plan only inside the transaction that records the Stripe event.
+// Sync reader for /api/usage (still on the raw handle): the subscription status Stripe last reported, null without one.
+export function getBillingStatus(db: Database.Database, tenantId: string): string | null {
+  return (db.prepare('SELECT subscription_status FROM tenant_plans WHERE tenant_id = ?').get(tenantId) as { subscription_status: string | null } | undefined)?.subscription_status ?? null
+}
+
 export function* writePlan(t: Tx, tenantId: string, plan: PlanId): TxBody<void> {
   yield* t.run('INSERT INTO tenant_plans (tenant_id, plan) VALUES (?, ?) ON CONFLICT (tenant_id) DO UPDATE SET plan = excluded.plan', [tenantId, plan])
 }

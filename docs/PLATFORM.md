@@ -199,6 +199,17 @@ These steps are development work behind flags and tests. Merging them does not c
        - Invoice events (`invoice.paid`, `invoice.payment_failed`) are not handled, and nothing relies on them.
      - The plan row is locked (`FOR UPDATE` on PG) before the checks, so concurrent deliveries follow these rules, not commit order.
      - PG: `0007_stripe_event_order.sql`.
+   - **Plan limits and billing status (step 5c):**
+     - `tenant_plans.subscription_status` (PG `0008_subscription_status.sql`) keeps the status Stripe last reported, and `/api/usage` returns it as `billing_status`.
+       - Checkout gives `active`.
+       - A failed payment gives `past_due` while Stripe retries. The plan stays Pro.
+       - A settled tie stores Stripe's answer, and a stale event never rewrites it.
+     - `test/billing-limits.test.ts` runs the real routes, signed fixtures and stubbed Stripe, through to the limit on the next scan:
+       1. Free at its limit: `/api/scan` returns 402.
+       2. Checkout webhook: Pro, and the next scan is accepted.
+       3. Failed payment: `past_due`, still Pro.
+       4. Subscription deleted: Free, `canceled`, and the next scan returns 402.
+     - The scan runner is never started in that test.
      - Covered by `test/billing-order.test.ts` on both engines: same second, opposite order, resubscribe, ties settled from Stripe's answer, a failed read retried, and concurrent deliveries. It is also covered by signed deliveries through the real webhook in `billing-e2e`, including a tie read from the stubbed Stripe API.
    - **Pricing is inconsistent. This is for the owner to decide, not for code:**
      - The landing page Free card says "3 trial scans, then your own AI key". It does not mention the 50-scans-a-month cap the code enforces (`PLAN_LIMITS.free`).
