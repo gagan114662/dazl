@@ -8,7 +8,7 @@ import { setErrorSinks } from '../../lib/ops/errors.ts'
 
 const mode = process.env.HEALTH_MODE
 if (mode === 'pg-down') process.env.DATABASE_URL = process.env.HEALTH_DATABASE_URL
-setScanDb(new Database(':memory:'))
+if (mode === 'sqlite') setScanDb(new Database(':memory:')) // pg-down must keep getDb() on DATABASE_URL
 const restore = setErrorSinks([]) // keep the expected pg-down records out of the test output
 
 test(`health routes (${mode})`, async () => {

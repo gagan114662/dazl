@@ -84,7 +84,8 @@ async function build() {
 
 test('all 11 read routes: A and B each get their own content, never the other tenant\'s; A ids look nonexistent to B; GETs do not mutate; unauth is 401 for every route', async () => {
   const { db, a, b } = await build()
-  const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[]).map(r => r.name)
+  // rate_limits and app_leases are global platform tables (no tenant data); rateLimit() writes there through getDb().
+  const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('rate_limits', 'app_leases') ORDER BY name").all() as { name: string }[]).map(r => r.name)
   const snap = () => JSON.stringify(tables.map(t => [t, db.prepare(`SELECT * FROM "${t}" ORDER BY rowid`).all()]))
   const before = snap()
   const text = async (r: Response) => r.text()

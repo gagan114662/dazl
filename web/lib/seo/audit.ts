@@ -1,10 +1,12 @@
 import type Database from 'better-sqlite3'
+import type { Db } from '../db/client.ts'
 import { fetchPublicHtml, defaultLookup, type Lookup, type PublicFetchDeps } from '../net/public-fetch.ts'
 
 // Indexing audit: fetches the user's own homepage directly (not via Jina Reader - Jina
 // returns markdown, which strips the meta description and canonical tag this audit checks),
 // plus robots.txt and the sitemap, and reports the basics a search engine needs. No LLM,
 // no key, no third-party call: one page plus two well-known files on the audited domain.
+// Stored through the Db layer (SQLite or Postgres, docs/PLATFORM.md step 2); migrateSeo is the SQLite DDL.
 export function migrateSeo(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS seo_audits (
     id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, domain TEXT NOT NULL,
@@ -66,7 +68,7 @@ async function get(url: string, deps: PublicFetchDeps, cap: number): Promise<{ o
   return { ok: true, status: r.status, body: r.html, finalUrl: r.finalUrl }
 }
 
-export async function runAudit(db: Database.Database, tenantId: string, rawDomain: string, deps: { fetchImpl?: typeof fetch; lookup?: Lookup; now?: number; id?: string } = {}): Promise<AuditResult | { error: string }> {
+export async function runAudit(db: Db, tenantId: string, rawDomain: string, deps: { fetchImpl?: typeof fetch; lookup?: Lookup; now?: number; id?: string } = {}): Promise<AuditResult | { error: string }> {
   const domain = normalizeDomain(rawDomain)
   if (!domain) return { error: 'Enter a domain like acme.com (no https://, no path).' }
   const fetchDeps: PublicFetchDeps = { fetchImpl: deps.fetchImpl, lookup: deps.lookup ?? defaultLookup }
@@ -99,11 +101,11 @@ export async function runAudit(db: Database.Database, tenantId: string, rawDomai
   checks.push({ id: 'sitemap', label: 'Sitemap', ok: sitemapFound, value: sitemapValue, hint: sitemapFound ? '' : 'Add an XML sitemap and reference it from robots.txt so crawlers find every page.' })
 
   const result: AuditResult = { domain, final_url: home.finalUrl, fetched_at: now, checks }
-  db.prepare('INSERT INTO seo_audits (id, tenant_id, domain, results) VALUES (?, ?, ?, ?)').run(deps.id ?? `${now.toString(36)}${Math.random().toString(36).slice(2, 10)}`, tenantId, domain, JSON.stringify(result))
+  await db.run('INSERT INTO seo_audits (id, tenant_id, domain, results, created_at) VALUES (?, ?, ?, ?, ?)', [deps.id ?? `${now.toString(36)}${Math.random().toString(36).slice(2, 10)}`, tenantId, domain, JSON.stringify(result), now])
   return result
 }
 
-export function recentAudits(db: Database.Database, tenantId: string, limit = 10): { id: string; domain: string; results: AuditResult; created_at: number }[] {
-  return (db.prepare('SELECT id, domain, results, created_at FROM seo_audits WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?').all(tenantId, limit) as { id: string; domain: string; results: string; created_at: number }[])
+export async function recentAudits(db: Db, tenantId: string, limit = 10): Promise<{ id: string; domain: string; results: AuditResult; created_at: number }[]> {
+  return (await db.all<{ id: string; domain: string; results: string; created_at: number }>('SELECT id, domain, results, created_at FROM seo_audits WHERE tenant_id = ? ORDER BY created_at DESC, id DESC LIMIT ?', [tenantId, limit]))
     .map(r => ({ ...r, results: JSON.parse(r.results) as AuditResult }))
 }

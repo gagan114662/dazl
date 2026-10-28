@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateSeo, normalizeDomain, parseHomepage, parseRobots, runAudit, recentAudits } from '../lib/seo/audit.ts'
 import type { Lookup } from '../lib/net/public-fetch.ts'
+import { sqliteDb } from '../lib/db/client.ts'
 
 const pubLookup: Lookup = async () => [{ address: '93.184.216.34', family: 4 }]
 
@@ -49,11 +50,11 @@ test('runAudit: healthy site passes all checks and history is stored', async () 
     'https://acme.com/robots.txt': { status: 200, body: 'User-agent: *\nDisallow: /admin\nSitemap: https://acme.com/sitemap.xml\n' },
   }
   const f = (async (u: string) => { const b = bodies[u]; return new Response(b ? b.body : 'nf', { status: b ? b.status : 404 }) }) as unknown as typeof fetch
-  const r = await runAudit(db, 'A', 'https://acme.com/', { fetchImpl: f, lookup: pubLookup, now: NOW })
+  const r = await runAudit(sqliteDb(db), 'A', 'https://acme.com/', { fetchImpl: f, lookup: pubLookup, now: NOW })
   assert.ok('checks' in r && r.checks.every(c => c.ok), JSON.stringify(r))
-  const hist = recentAudits(db, 'A')
+  const hist = (await recentAudits(sqliteDb(db), 'A'))
   assert.equal(hist.length, 1); assert.equal(hist[0].domain, 'acme.com')
-  const other = recentAudits(db, 'B'); assert.equal(other.length, 0) // tenant isolation
+  const other = (await recentAudits(sqliteDb(db), 'B')); assert.equal(other.length, 0) // tenant isolation
 })
 
 test('runAudit: missing meta/canonical/h1, disallow-all robots, no sitemap -> honest failures', async () => {
@@ -63,7 +64,7 @@ test('runAudit: missing meta/canonical/h1, disallow-all robots, no sitemap -> ho
     if (u === 'https://acme.com/robots.txt') return new Response('User-agent: *\nDisallow: /\n', { status: 200 })
     return new Response('nf', { status: 404 })
   }) as unknown as typeof fetch
-  const r = await runAudit(db, 'A', 'acme.com', { fetchImpl: f, lookup: pubLookup, now: NOW })
+  const r = await runAudit(sqliteDb(db), 'A', 'acme.com', { fetchImpl: f, lookup: pubLookup, now: NOW })
   assert.ok('checks' in r)
   const by = Object.fromEntries(r.checks.map(c => [c.id, c]))
   assert.equal(by.title.ok, false) // too short
@@ -78,9 +79,9 @@ test('runAudit: missing meta/canonical/h1, disallow-all robots, no sitemap -> ho
 test('runAudit: unreachable domain and bad input return errors, nothing stored', async () => {
   const db = setup()
   const f = (async () => { throw new Error('dns') }) as unknown as typeof fetch
-  const r = await runAudit(db, 'A', 'down.example', { fetchImpl: f, lookup: pubLookup, now: NOW })
+  const r = await runAudit(sqliteDb(db), 'A', 'down.example', { fetchImpl: f, lookup: pubLookup, now: NOW })
   assert.ok('error' in r && !('checks' in r)); assert.match((r as { error: string }).error, /could not reach/i)
-  const bad = await runAudit(db, 'A', 'not a domain', { fetchImpl: f, lookup: pubLookup, now: NOW })
+  const bad = await runAudit(sqliteDb(db), 'A', 'not a domain', { fetchImpl: f, lookup: pubLookup, now: NOW })
   assert.ok('error' in bad)
-  assert.equal(recentAudits(db, 'A').length, 0)
+  assert.equal((await recentAudits(sqliteDb(db), 'A')).length, 0)
 })

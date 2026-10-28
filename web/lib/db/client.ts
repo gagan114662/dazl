@@ -259,6 +259,10 @@ export function pgDb(opts: PgOptions): Db & { pool: pg.Pool } {
 
 let shared: Promise<Db> | null = null
 
+// Points getDb() at a given store. For tests that run route handlers against their own fixture database (the route
+// harness in test/helpers/tenant-route-db.ts); the app never calls it.
+export function setDb(db: Db | null): void { shared = db ? Promise.resolve(db) : null }
+
 // DATABASE_URL set -> Postgres; otherwise the app's existing SQLite handle. Production must not set DATABASE_URL until
 // the owner authorizes the cutover (docs/PLATFORM.md, "Production go/no-go").
 export function getDb(): Promise<Db> {
