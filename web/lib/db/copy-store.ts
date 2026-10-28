@@ -110,6 +110,11 @@ export async function copyStore(src: Db, dst: Db, opts: { batch?: number } = {})
     ? (await dst.all<{ t: string }>("SELECT DISTINCT c.relname AS t FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid WHERE NOT g.tgisinternal AND c.relnamespace = current_schema()::regnamespace")).map(r => r.t)
     : []
 
+  const pgSequences = dst.kind === 'pg'
+    ? (await dst.all<{ table: string; column: string }>("SELECT table_name AS \"table\", column_name AS \"column\" FROM information_schema.columns WHERE table_schema = current_schema() AND (is_identity = 'YES' OR column_default LIKE 'nextval(%')"))
+      .filter(s => plan.some(p => p.table === s.table && p.cols.includes(s.column)))
+    : []
+
   await dst.tx(function* (t: Tx): TxBody<void> {
     for (const g of sqliteTriggers) yield* t.run(`DROP TRIGGER ${ident(g.name)}`)
     for (const n of pgTriggerTables) yield* t.run(`ALTER TABLE ${ident(n)} DISABLE TRIGGER USER`)
@@ -126,6 +131,9 @@ export async function copyStore(src: Db, dst: Db, opts: { batch?: number } = {})
       if (checksum(got, p.cols) !== p.sum) throw new CopyVerifyError(`${p.table}: content differs from the source after the copy`)
     }
     for (const n of pgTriggerTables) yield* t.run(`ALTER TABLE ${ident(n)} ENABLE TRIGGER USER`)
+    // Sequences behind copied columns (identity ids, insert_seq) continue after the largest copied value; otherwise
+    // the first insert after the copy would reuse an id or sort before rows it came after.
+    for (const s of pgSequences) yield* t.get(`SELECT setval(pg_get_serial_sequence(?, ?), coalesce((SELECT max(${ident(s.column)}) FROM ${ident(s.table)}), 0) + 1, false) AS v`, [s.table, s.column])
     for (const g of sqliteTriggers) yield* t.run(g.sql)
   })
   return { from: src.kind, to: dst.kind, tables: order.map(p => ({ table: p.table, rows: p.rows.length, checksum: p.sum })), skipped }

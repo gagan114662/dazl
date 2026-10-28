@@ -192,23 +192,26 @@ test('batch 1 routes on SQLite answer exactly as the raw store did, including sa
   assert.deepEqual([by('unconfirm').status, by('release').status], [200, 200])
 })
 
-test('batch 1 routes: identical responses and writes on SQLite and Postgres; Postgres never touches the SQLite handle', { skip: PG_URL ? false : 'DAZL_TEST_PG_URL not set' }, async () => {
-  const ids = makeIds(true)
-  const sqlite = await onSqlite(ids)
-  const pg = await onPg(ids)
-  for (const [i, o] of sqlite.out.entries()) assert.deepEqual(pg.out[i], o, `${o.name}: Postgres answered differently`)
-  assert.deepEqual(pg.rows, sqlite.rows, 'rows after the writes differ')
-  console.log('BATCH1 ROUTES IDENTICAL')
-})
+// Both seeds: 'aligned' (ids ascend in insertion order) and 'scrambled' (ids disagree with insertion order on every
+// tie). insert_seq (lib/db/insertion-order.ts) is the insertion order on both engines, so even the scrambled ties
+// must come back identically.
+for (const aligned of [true, false]) {
+  test(`batch 1 routes (${aligned ? 'aligned' : 'scrambled'} ids): identical responses and writes on SQLite and Postgres; Postgres never touches the SQLite handle`, { skip: PG_URL ? false : 'DAZL_TEST_PG_URL not set' }, async () => {
+    const ids = makeIds(aligned)
+    const sqlite = await onSqlite(ids)
+    const pg = await onPg(ids)
+    for (const [i, o] of sqlite.out.entries()) assert.deepEqual(pg.out[i], o, `${o.name}: Postgres answered differently`)
+    assert.deepEqual(pg.rows, sqlite.rows, 'rows after the writes differ')
+    console.log(`BATCH1 ROUTES IDENTICAL ${aligned ? 'aligned' : 'scrambled'}`)
+  })
+}
 
-// The tracked gap (lib/db/order.ts, PG_INSERTION_ORDER_GAPS): Postgres has no insertion order, so same-second ties
-// fall back to id order there. Pinned so it cannot change unnoticed; the fix is an insertion-order column.
-test('Postgres insertion-order gap: same-second ties order by id on Postgres', { skip: PG_URL ? false : 'DAZL_TEST_PG_URL not set' }, async () => {
+test('Postgres keeps insertion order for same-second ties (insert_seq), not id order', { skip: PG_URL ? false : 'DAZL_TEST_PG_URL not set' }, async () => {
   const ids = makeIds(false), { J, L } = ids
   const pg = await onPg(ids)
   const by = (n: string) => pg.out.find(o => o.name === n)!
-  assert.deepEqual(jobIds(by('jobs')), [J.aPending, J.aEmpty, J.aDone], 'id order, not insertion order')
-  assert.deepEqual(campaignLeads(by('campaign')), [L.first, L.review, L.third, L.second])
-  assert.deepEqual(campaignMessages(by('campaign')), ['m3', 'm2', 'm1'])
-  assert.match(String(by('export').body).split('\n').find(l => l.startsWith('First Dental'))!, /Eli Novak/, 'the lower id wins the ranking tie')
+  assert.deepEqual(jobIds(by('jobs')), [J.aEmpty, J.aDone, J.aPending], 'newest-inserted first, as on SQLite')
+  assert.deepEqual(campaignLeads(by('campaign')), [L.second, L.first, L.review, L.third])
+  assert.deepEqual(campaignMessages(by('campaign')), ['m3', 'm1', 'm2'])
+  assert.match(String(by('export').body).split('\n').find(l => l.startsWith('First Dental'))!, /Dana Lee/, 'the first stored person wins the ranking tie')
 })

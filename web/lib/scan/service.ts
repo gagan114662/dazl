@@ -1,4 +1,5 @@
 import { migrateSourceReview } from './source-review.ts'
+import { migrateInsertionOrder } from '../db/insertion-order.ts'
 import { migrateSequences } from '../outreach/sequences.ts'
 import { cookies } from 'next/headers'
 import { getAuthDb, getSessionUser } from '../auth-db'
@@ -53,6 +54,7 @@ export function getScanDb() {
     migrateCommenterImport(db)
     migrateMemory(db)
     migrateReopen(db)
+    migrateInsertionOrder(db) // last: adds insert_seq to tables created above
     ready = true
   }
   return db

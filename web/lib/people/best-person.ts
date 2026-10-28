@@ -2,7 +2,6 @@
 // as the page: contactsFromEnrichments ordered by the scan ICP's buyer roles. Nothing is invented: a lead with no
 // found person gets empty fields.
 import type { Db } from '../db/client.ts'
-import { insertionOrder } from '../db/order.ts'
 import { contactsFromEnrichments, PEOPLE_SOURCE, roleContradicted } from './rank.ts'
 
 export interface BestPerson { best_person: string; best_person_title: string; best_person_link: string; best_person_found_via: string }
@@ -37,7 +36,7 @@ export async function bestPeople(db: Db, tenantId: string, rows: { lead_id: stri
       `SELECT e.kind, e.value, e.label, e.source_url, e.connector FROM lead_enrichments e
        JOIN leads l ON l.id = e.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id
        WHERE e.lead_id = ? AND e.tenant_id = ? AND j.user_id = ? AND l.quarantined_at IS NULL AND e.kind IN ('contact', 'person')
-       ORDER BY ${insertionOrder(db.kind, 'e')}`, [r.lead_id, tenantId, tenantId])
+       ORDER BY e.insert_seq`, [r.lead_id, tenantId, tenantId])
     const top = contactsFromEnrichments(enr, rolesByJob.get(r.job_id)!).find(c => !c.title || !roleContradicted(c.title, rolesByJob.get(r.job_id)!))
     out.set(r.lead_id, top ? { best_person: top.name, best_person_title: top.title ?? '', best_person_link: top.linkedin ?? top.source ?? '', best_person_found_via: PEOPLE_SOURCE[top.connector] ?? top.connector } : EMPTY)
   }

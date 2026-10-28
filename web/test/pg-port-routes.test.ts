@@ -15,5 +15,5 @@ test('Postgres port batch 1: route parity on both engines', () => {
   assert.equal(r.error, undefined, String(r.error))
   assert.equal(r.status, 0, r.stdout + r.stderr)
   assert.match(r.stdout, /# fail 0/)
-  if (process.env.DAZL_TEST_PG_URL) assert.match(r.stdout, /BATCH1 ROUTES IDENTICAL/)
+  if (process.env.DAZL_TEST_PG_URL) for (const seed of ['aligned', 'scrambled']) assert.match(r.stdout, new RegExp(`BATCH1 ROUTES IDENTICAL ${seed}`))
 })

@@ -41,7 +41,7 @@ test('two instances migrating at once: each migration is applied exactly once', 
   const other = pgDb({ connectionString: PG_URL!, searchPath: (await db.get<{ s: string }>('SELECT current_schema() AS s'))!.s })
   try {
     const [a, b] = await Promise.all([runPgMigrations(db.pool), runPgMigrations(other.pool)])
-    const all = [...a.applied, ...b.applied].sort()
+    const all = [...a.applied, ...b.applied].sort((x, y) => x - y)
     assert.deepEqual(all, loadMigrations().map(m => m.version))
     assert.equal((await db.get<{ n: number }>('SELECT count(*)::int AS n FROM dazl_schema_migrations'))!.n, all.length)
   } finally { await other.close() }
