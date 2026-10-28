@@ -140,13 +140,13 @@ try {
         if (name === 'useful' && tag === 'desktop') {
           const u = page.getByTestId('journey-understanding')
           await u.getByRole('button', { name: 'Edit' }).click()
-          await u.getByLabel('Where').fill('Ohio, Kentucky')
+          await u.getByLabel('Where').fill('Ohio; Kentucky') // list fields are separated with ";"
           await u.getByRole('button', { name: 'Save' }).click()
           await u.getByRole('button', { name: 'Edit' }).waitFor()
           assert.deepEqual(s.saved.buyer, { ...BUYER, where: ['Ohio', 'Kentucky'] }, 'only the edited field changed; exclusions and sizes kept exactly')
           await page.reload({ waitUntil: 'networkidle' })
           await page.getByTestId('journey-understanding').waitFor()
-          assert.match(await page.getByTestId('journey-understanding').textContent(), /WhereOhio, Kentucky/)
+          assert.match(await page.getByTestId('journey-understanding').textContent(), /WhereOhio; Kentucky/)
           assert.deepEqual(writes, ['POST /api/settings/profile'])
         } else assert.deepEqual(writes, [], `${name}: Home writes nothing`)
       }
