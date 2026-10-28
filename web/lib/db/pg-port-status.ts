@@ -82,6 +82,7 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/replies/thread-metrics.ts': 0,
   'lib/replies/threads.ts': 4,
   'lib/scan/actionable.ts': 0,
+  'lib/scan/blocked-fallback.ts': 0,
   'lib/scan/buyer-fit.ts': 2,
   'lib/scan/commenter-import.ts': 2,
   'lib/scan/contact-agreement.ts': 0,
