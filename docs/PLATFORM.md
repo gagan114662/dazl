@@ -21,6 +21,14 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
   - `test/seo-store.test.ts` runs their write and read paths with two tenants on both engines.
   - The tenant's AI key for briefs and drafts is still read from the SQLite key store until `tenant_llm_keys` is ported.
   - The route-test harness (`test/helpers/tenant-route-db.ts`) points `getDb()` at the same fixture store as `getScanDb()`, as in the app. The route isolation tests therefore also cover the ported routes, and the shared rate limiter writes to that store. The snapshots skip the two global platform tables.
+- **Scan jobs to Postgres, step 1 (platform part):**
+  - `lib/scan/store-db.ts` has `Db` versions of the scan job store: create, query-create, get, count-active, list leads, count hidden, latest, list jobs, export, cancel and the stale reaper.
+  - `test/scan-store-db.test.ts` covers them with two tenants on both engines, and pins them to `store.ts` on SQLite with the same rows.
+  - No caller is switched. `store.ts`, the runner and the routes are unchanged; callers move with their owners.
+  - Differences from `store.ts`:
+    - Times come from the caller.
+    - Same-second ties order by `id`, not `rowid`.
+    - `getJob` does not reap as a side effect.
 - **Step 6a (health and error capture):**
   - `GET /api/health/live` answers without touching any store. Use it as the liveness probe.
   - `GET /api/health/ready` and `GET /api/health` are the readiness probe. Each check has a 2 s budget. They return 503 when any of these fails or goes over budget:
