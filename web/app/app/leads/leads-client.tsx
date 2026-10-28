@@ -28,7 +28,10 @@ import { evidenceOriginLabel, purgedNote } from '@/lib/scan/evidence-origin'
 import { playSuggestions, type PlaySuggestions } from '@/lib/play-suggestions'
 
 // Reject on the card is the existing reversible quarantine, with its own reason so the card can say "Rejected".
-const REJECT_REASON = 'Rejected: not a fit'
+// Reject asks for an optional reason (a preset or a few words); it is stored as "Rejected" or "Rejected: <reason>".
+const REJECT_PRESETS = ['Not a fit', 'Wrong company', 'Wrong contact', 'Already a customer']
+const rejectReason = (why: string) => { const t = why.replace(/\s+/g, ' ').trim().slice(0, 120); return t ? `Rejected: ${t}` : 'Rejected' }
+const isRejection = (r: string | null | undefined) => !!r && /^Rejected(:|$)/.test(r)
 interface Lead { timing_note?: string | null; evidence_copy_id?: string | null; evidence_purged_at?: number | null; evidence_origin?: string | null; own_fetch_failure?: string | null; discovered_via?: string | null; discovered_via_link?: string | null; quarantined_at?: number | null; quarantine_reason?: string | null; source_kind?: string | null; contact_context?: {excerpt:string;source_url:string}|null; currentness_held?: boolean; window_held?: boolean; stored_intent?: number | null; stored_why?: string | null; source_check?: {fetch_status:string;quote_match:boolean;company_named:boolean;contact_match:boolean;checked_at:number} | null; sequence?: { status: string; step: number; next_due_at: number | null; stop_reason: string | null } | null; id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; human_confirmed_at: number | null; human_confirmed_from: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; watch_new?: number; seen_before?: number; stage?: string | null; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string; entity_status?: 'heuristic' | 'unconfirmed' | null }[]; events?: { id: string; event_type: string; summary: string; source_url: string; source_published_at: string | null; last_seen_at: number; fresh: boolean; entity_status?: 'heuristic' | 'unconfirmed' | null }[]; priority?: { graded: boolean; fit: number | null; intent: number | null; action: number | null; evidence_score: number; reasons: string[]; uncounted: string[] } | null; lookalike?: { state: 'insufficient' | 'scored'; cohort_size: number; matches: number; matched_on: string[] } | null }
 interface Icp { summary: string; who: string[]; industries: string[]; sizes: string[]; where: string[]; signals: string[]; exclude: string[]; country?: string; language?: string; window_days?: number }
 interface JobSummary { id: string; status: string; error: string | null; query: string | null; business_name: string; csv_domain: string | null; created_at: number; finished_at: number | null; candidates: number | null; verified: number | null; needs_review: number | null; dropped: number | null; lead_count: number; test_only: boolean }
@@ -110,7 +113,8 @@ export default function LeadsClient() {
   // Optional per-run spend limit (same budget object as the API; partial, see budget-panel.tsx). Off by default.
   const [budgetForm, setBudgetForm] = useState<BudgetForm>(EMPTY_BUDGET_FORM)
   const budgetCheck = budgetFromForm(budgetForm)
-  const [icp, setIcp] = useState<{ icp: Icp; source: string } | null>(null)
+  // The profile shown as "Profile used", with the sentence it was used for (null when unknown).
+  const [icp, setIcp] = useState<{ icp: Icp; source: string; query?: string | null } | null>(null)
   const [jobId, setJobId] = useState<string | null>(null)
   viewedJob.current = jobId ?? ''
   const [status, setStatus] = useState<string>('')
@@ -244,6 +248,14 @@ export default function LeadsClient() {
     if (r.ok) setLeads(ls => ls.map(l => l.id === leadId ? { ...l, review_reason: l.human_confirmed_from === 'legacy_currentness_review' ? null : l.human_confirmed_from, human_confirmed_at: null, human_confirmed_from: null, currentness_held: l.confidence !== null || !!l.window_held } : l))
   }
   // Quarantine (wrong company / wrong contact details): kept with its evidence, never drafted, sent or exported. Reversible.
+  // The lead whose Reject was clicked: its optional reason row is open until confirmed or cancelled.
+  const [rejecting, setRejecting] = useState<{ id: string; why: string } | null>(null)
+  async function confirmReject() {
+    if (!rejecting) return
+    const { id, why } = rejecting
+    setRejecting(null)
+    await quarantine(id, false, rejectReason(why))
+  }
   async function quarantine(leadId: string, release = false, reason = 'Wrong company or wrong contact details') {
     const r = await fetch(`/api/leads/${leadId}/quarantine`, { method: release ? 'DELETE' : 'POST', headers: { 'content-type': 'application/json' }, body: release ? '{}' : JSON.stringify({ reason }) })
     if (r.ok) setLeads(ls => ls.map(l => l.id === leadId ? { ...l, quarantined_at: release ? null : Math.floor(Date.now() / 1000), quarantine_reason: release ? null : reason } : l))
@@ -382,7 +394,7 @@ export default function LeadsClient() {
       const s = await r.json()
       setStatus(s.status); setEmptyReason(typeof s.empty_reason === 'string' ? s.empty_reason : null); setJobError(s.error ?? ''); setLeadsSoFar(s.lead_count ?? 0); setStartedAt(s.claimed_at ?? null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
       setQuality(s.quality ?? null)
-      if (s.icp) setIcp({ icp: s.icp, source: s.icp_source })
+      if (s.icp) setIcp({ icp: s.icp, source: s.icp_source, query: typeof s.query === 'string' ? s.query : null })
       if (typeof s.query === 'string' && s.query && queryShownFor.current !== jobId) { queryShownFor.current = jobId; setQuery(s.query) }
     }
     void tick() // immediate first check: a done deep link must not sit on a loading state for a full interval
@@ -449,7 +461,7 @@ export default function LeadsClient() {
       // Either order of responses: a job is being viewed (adopted, or named by the URL) => keep ITS query and profile.
       if (viewedJob.current || /^[a-f0-9]{24}$/.test(new URLSearchParams(window.location.search).get('job_id') ?? '')) return
       if (j.query && !query) setQuery(j.query)
-      if (j.icp) setIcp({ icp: j.icp, source: j.icp_source ?? 'user' })
+      if (j.icp) setIcp({ icp: j.icp, source: j.icp_source ?? 'user', query: typeof j.query === 'string' ? j.query : null })
     }).catch(() => {})
   }, [])
 
@@ -459,6 +471,11 @@ export default function LeadsClient() {
   useEffect(() => { void fetch('/api/settings/profile').then(r => r.ok ? r.json() : null).catch(() => null).then(p => setPlays(playSuggestions(p))) }, [])
 
   const core = coreSources(serverSrc, keyState)
+
+  // Repeating a search: when the sentence is the one a profile YOU reviewed was used for, Find leads runs with that
+  // reviewed profile instead of letting the server work out a new one (which silently discarded the review). A changed
+  // sentence, or a profile dazl only inferred, still gets a fresh profile; Review profile first always rebuilds it.
+  const reuseIcp = icp && icp.source === 'user' && icp.query && icp.query.trim() === query.trim() ? icp.icp : null
 
   const input = 'field'
   const visibleLeads = leads.filter(l => !l.review_reason && (showSeen || !l.seen_before))
@@ -474,7 +491,7 @@ export default function LeadsClient() {
       </div>
       {/* Submitting the sentence runs the scan (the server works out the profile, as the run-without-review path always did)
           and lands on live progress; reviewing the profile first is optional. */}
-      <form onSubmit={e => { e.preventDefault(); void run(null) }} className="mb-4">
+      <form onSubmit={e => { e.preventDefault(); void run(reuseIcp) }} className="mb-4">
         <label htmlFor="play" className="block text-base font-semibold mb-2">Who do you want to reach?</label>
         <textarea id="play" className={`${input} w-full`} rows={3} required minLength={3} maxLength={600} value={query} onChange={e => setQuery(e.target.value)}
           placeholder="One sentence: who, where, and what just happened. e.g. Seed-stage fintech founders in Europe who just hired their first sales rep" />
@@ -489,6 +506,7 @@ export default function LeadsClient() {
           <button disabled={busy || starting || scanActive} title={scanActive ? 'A scan is already running below' : undefined} className="btn-primary">{starting ? 'Starting...' : 'Find leads'}</button>
           <button type="button" disabled={query.trim().length < 3 || busy || starting || scanActive} onClick={() => void preview()} className="text-xs text-[#555] underline disabled:opacity-40 disabled:no-underline">{busy ? 'Working out your profile...' : 'Review profile first'}</button>
         </div>
+        {reuseIcp && !scanActive && <p className="text-xs text-[#555] mt-2" data-testid="reuse-profile">Find leads runs with your reviewed profile: {reuseIcp.summary}. Change the sentence, or use Review profile first, to build a new one.</p>}
         {!jobId && <SourceAvailability core={core} social={socialSources(advanced)} />}
       </form>
       <details className="mb-4 text-sm" data-testid="more-sources">
@@ -746,13 +764,22 @@ export default function LeadsClient() {
                   </div>
                   {!l.quarantined_at && <div className="flex gap-2 shrink-0">
                     <button onClick={() => approveLead(l.id)} disabled={!c.approve.ok || !!approving[l.id] || !!approved[l.id]} title={c.approve.ok ? 'Creates a draft for you to review in Outreach. Nothing is sent.' : c.approve.reason} className="btn-primary text-xs px-3 py-1.5">Approve</button>
-                    <button onClick={() => quarantine(l.id, false, REJECT_REASON)} className="btn-ghost text-xs px-3 py-1.5">Reject</button>
+                    <button onClick={() => setRejecting(rejecting?.id === l.id ? null : { id: l.id, why: '' })} aria-expanded={rejecting?.id === l.id} className="btn-ghost text-xs px-3 py-1.5">Reject</button>
                   </div>}
                 </div>
+                {rejecting?.id === l.id && !l.quarantined_at && <div className="mt-2 border-l-2 border-black pl-3 text-xs" data-testid="reject-reason">
+                  <p className="mb-1">Reject this lead? A reason is optional. It leaves this list; nothing is drafted, sent or exported, and Undo brings it back.</p>
+                  <div className="flex flex-wrap gap-1.5 mb-1.5">{REJECT_PRESETS.map(r => <button key={r} type="button" aria-pressed={rejecting.why === r} onClick={() => setRejecting({ id: l.id, why: rejecting.why === r ? '' : r })} className={`border rounded-full px-2 py-0.5 ${rejecting.why === r ? 'border-black bg-black/5' : 'border-black/20'}`}>{r}</button>)}</div>
+                  <form className="flex gap-2 items-center" onSubmit={e => { e.preventDefault(); void confirmReject() }}>
+                    <input className="field flex-1 text-xs" aria-label="Reason (optional)" placeholder="Reason (optional)" maxLength={120} value={rejecting.why} autoFocus onKeyDown={e => { if (e.key === 'Escape') setRejecting(null) }} onChange={e => setRejecting({ id: l.id, why: e.target.value })} />
+                    <button className="btn-primary text-xs px-3 py-1.5">Confirm reject</button>
+                    <button type="button" className="underline" onClick={() => setRejecting(null)}>Cancel</button>
+                  </form>
+                </div>}
                 <p className="mt-2">{c.why}</p>
                 <p className="text-xs text-[#555] mt-1"><a className="underline" href={c.sourceUrl} target="_blank" rel="noopener noreferrer nofollow">{c.sourceHost}</a> · {c.date}</p>
                 {l.quarantined_at
-                  ? <p className="text-xs mt-2">{l.quarantine_reason === REJECT_REASON ? 'Rejected' : `Quarantined: ${l.quarantine_reason ?? 'by you'}`}. Kept with its evidence; it will not be drafted, sent or exported. <button className="underline" onClick={() => quarantine(l.id, true)}>Undo</button></p>
+                  ? <p className="text-xs mt-2">{isRejection(l.quarantine_reason) ? l.quarantine_reason : `Quarantined: ${l.quarantine_reason ?? 'by you'}`}. Kept with its evidence; it will not be drafted, sent or exported. <button className="underline" onClick={() => quarantine(l.id, true)}>Undo</button></p>
                   : drafted[l.id] ? <p className="text-xs mt-2" role="status">{drafted[l.id]} {drafted[l.id].startsWith('Draft created') && <a className="underline" href="/app/outreach">Open Outreach</a>}</p>
                   : !c.approve.ok ? <p className="text-xs text-[#555] mt-2">To approve: {c.approve.reason}</p> : null}
               </div>
