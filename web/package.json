@@ -14,7 +14,8 @@
     "test:smoke": "node test/smoke/app-pages.smoke.mjs",
     "test:smoke:chunks": "node test/smoke/chunk-recovery.smoke.mjs",
     "preview:shots": "node test/smoke/preview.mjs",
-    "test:smoke:auth": "node test/smoke/app-auth.smoke.mjs"
+    "test:smoke:auth": "node test/smoke/app-auth.smoke.mjs",
+    "test:smoke:staging": "node --experimental-strip-types --no-warnings test/smoke/staging.smoke.mjs"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.84",

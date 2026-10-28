@@ -1,0 +1,8 @@
+# Deploys origin/main to staging when it changes (ops/staging/deploy.sh). Started by dazl-staging-deploy.timer.
+[Unit]
+Description=dazl staging deploy from main
+
+[Service]
+Type=oneshot
+ExecStart=/srv/dazl-staging/deploy.sh
+Nice=10

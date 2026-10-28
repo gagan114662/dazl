@@ -1,0 +1,18 @@
+# staging.dazl.ai app (docs/STAGING.md). One instance on 127.0.0.1:3200, its own user, env file and database.
+[Unit]
+Description=dazl staging (staging.dazl.ai)
+After=network.target
+
+[Service]
+User=dazl-staging
+WorkingDirectory=/srv/dazl-staging/current/web
+EnvironmentFile=/etc/dazl-staging/env
+EnvironmentFile=-/srv/dazl-staging/release.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/npx next start -p 3200 -H 127.0.0.1
+Restart=on-failure
+RestartSec=5
+MemoryMax=1536M
+
+[Install]
+WantedBy=multi-user.target
