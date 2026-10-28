@@ -16,6 +16,14 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
 - **CI** (`.github/workflows/web-ci.yml`) runs the full suite twice, once on SQLite and once with a Postgres 16 service, and a schema drift check fails when the code's tables and the PG migrations differ.
 - **Step 2b (auth + billing on `Db`):** sessions, password sign-in/sign-up, Google sign-in (`users`, `sessions`, `oauth_identities`), and the Stripe webhook, checkout and portal (`tenant_plans`, `stripe_events`) now go through `Db`. They run against both engines in tests (`test/helpers/engines.ts`). Sync readers that other areas still call (`getPlan`, `setPlan`, `scanQuota`, and the seller- and buyer-profile functions in `auth-db.ts`) stay on raw SQLite until those areas are ported.
 - **Mixed mode on SQLite:** ported and unported code share one connection. `Db.tx` bodies are generators that can only yield statements. On SQLite, a body runs synchronously inside one better-sqlite3 transaction, so no other request (raw or ported) can run during it, see it half-done or join it. `test/mixed-mode.test.ts` runs concurrent auth/billing transactions, including a rollback, alongside raw requests on one connection.
+- **Step 3c (shared work queue across instances):** `lib/queue/db.ts` `DbQueue` is the queue contract (`lib/queue/types.ts`) on `Db`, so on Postgres any number of instances share one queue.
+  - A claim takes the next fencing token with `UPDATE work_queue_meta … RETURNING`, a row lock held to commit, so claims are serialized across instances and the per-tenant and global in-flight caps count only committed claims. It then selects the item `FOR UPDATE SKIP LOCKED`.
+  - `complete` and `fail` match on the claim token: a stale holder changes nothing.
+  - A claim whose instance died expires at the end of its lease. It goes back to pending with backoff, or to `failed`/`timeout` past max attempts.
+  - `test/multi-instance.test.ts` runs the contract on both engines, then on Postgres:
+    - Two instances, as separate processes with their own pools, drain 60 jobs. Each runs exactly once, both take jobs, and one 24h limit is shared across them.
+    - An instance killed mid-job loses its claim at lease end. The job runs once more on the survivor, or fails past max attempts.
+  - **Not wired yet:** scan jobs still claim through `claimKeyedJob` on the SQLite `scan_jobs` table, single writer per file. Moving scan claiming onto `DbQueue` needs `scan_jobs` on Postgres. That is the next slice, with the yield owners. The other per-process state is listed in the table below.
 - **Step 6a (health and error capture):**
   - `GET /api/health/live` answers without touching any store. Use it as the liveness probe.
   - `GET /api/health/ready` and `GET /api/health` are the readiness probe. Each check has a 2 s budget. They return 503 when any of these fails or goes over budget:
@@ -88,6 +96,10 @@ Totals: 60 PG-schema, 12 SQLite-only, 1 temp.
 | Per-host crawl spacing | `lib/connectors/sitecrawl.ts` `lastHit` | Politeness spacing is per instance | Accept this (best effort) |
 | Source result caches | `lib/sources/{youtube,jina,github,v2ex}.ts` | Cache is per instance | Fine to keep |
 | Migration-ran flags | `lib/scan/service.ts` `ready`, and similar | None, once migrations run on deploy | Remove after step 2 |
+| In-flight scan set and deadlines | `lib/scan/runner.ts` `trackInFlight`, `jobDeadlines` | Only this instance's own runs (used for shutdown requeue and the per-job time budget) | Fine per instance; the claim itself is the shared state |
+| Shared store handles | `lib/db/client.ts` `shared`, `lib/auth-db.ts` `db` | One pool or handle per instance | Fine |
+| Error sinks and alert throttle | `lib/ops/errors.ts` `sinks`, `hook` | Alert throttling is per instance (up to N× the alert rate) | Accept, or a shared throttle row if alerts get noisy |
+| Sessions, plans, 24h send counts | `sessions`, `tenant_plans`, `autopilot_audit` tables | Already durable rows: shared once the table is on the shared store | Port with their areas |
 
 ### Existing durable guards (keep them; PG must preserve these semantics)
 
