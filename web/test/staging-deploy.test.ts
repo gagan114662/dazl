@@ -164,3 +164,68 @@ if [ -e ${T}/unready-$sha ]; then echo starting > ${served}; else echo "$sha" > 
     assert.deepEqual([current(), servedNow(), releases()], [s4, s4, [s0, s4].sort()])
   } finally { server.kill() }
 })
+
+// Low-disk protection (review hold before enabling staging): below the floor, or when a release would not fit above
+// it, the deploy SKIPS (exit 0, nothing fetched, built or deleted) and alerts, at most once per reason per interval;
+// when the floor is reached during a build, the build is stopped, its release removed, and an alert sent. The staging
+// directory may not be inside or contain production's data directory.
+test('low disk: skip and alert (throttled), stop a build at the floor, never touch anything outside the staging root', async () => {
+  const { execFileSync } = await import('node:child_process')
+  const { existsSync, readdirSync } = await import('node:fs')
+  const T = mkdtempSync(path.join(tmpdir(), 'staging-disk-'))
+  const root = path.join(T, 'root'), repo = path.join(T, 'repo'), alerts = path.join(T, 'alerts')
+  const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_CONFIG_'))) as NodeJS.ProcessEnv
+  mkdirSync(path.join(repo, 'web'), { recursive: true }); mkdirSync(root)
+  execFileSync('git', ['init', '-q', '-b', 'main', repo], { env: gitEnv })
+  writeFileSync(path.join(repo, 'web', 'package-lock.json'), '{}')
+  execFileSync('git', ['-C', repo, '-c', 'user.email=t@example.test', '-c', 'user.name=t', 'add', '-A'], { env: gitEnv })
+  execFileSync('git', ['-C', repo, '-c', 'user.email=t@example.test', '-c', 'user.name=t', 'commit', '-qm', 'one'], { env: gitEnv })
+  const env = path.join(T, 'env'); writeFileSync(env, good)
+  writeFileSync(path.join(T, 'alert.sh'), `echo "$1" >> ${alerts}\n`)
+  const free = () => Number(execFileSync('df', ['-B1', '--output=avail', root], { encoding: 'utf8' }).trim().split('\n').at(-1))
+  const run = (over: Record<string, string>) => {
+    const r = spawnSync('bash', [script], { encoding: 'utf8', env: {
+      PATH: process.env.PATH, HOME: process.env.HOME, STAGING_ROOT: root, STAGING_ENV_FILE: env, STAGING_PORT: '1',
+      STAGING_USER: execFileSync('id', ['-un'], { encoding: 'utf8' }).trim(), STAGING_REPO_URL: `file://${repo}`, STAGING_RESTART: 'true',
+      STAGING_BUILD: 'true', STAGING_HEALTH_TRIES: '1', PROD_DB_PATH: prodDb, FIRST_RELEASE_BYTES: '1', STAGING_ALERT_CMD: `bash ${path.join(T, 'alert.sh')}`,
+      ...over,
+    } as unknown as NodeJS.ProcessEnv })
+    return { code: r.status, out: r.stdout + r.stderr }
+  }
+  const sent = () => existsSync(alerts) ? readFileSync(alerts, 'utf8').trim().split('\n').map(l => JSON.parse(l)) : []
+  const releases = () => existsSync(path.join(root, 'releases')) ? readdirSync(path.join(root, 'releases')) : []
+
+  // 1. below the floor: skipped with exit 0 before anything is fetched; one alert, then throttled
+  const huge = String(1e15)
+  let r = run({ MIN_FREE_BYTES: huge })
+  assert.equal(r.code, 0, r.out); assert.match(r.out, /ALERT low_disk: skipped: \d+ bytes free, below the floor/)
+  assert.equal(existsSync(path.join(root, 'repo')), false, 'nothing fetched'); assert.deepEqual(releases(), [])
+  assert.deepEqual(sent().map(a => [a.type, a.reason, a.floor_bytes]), [['staging_deploy', 'low_disk', 1e15]])
+  r = run({ MIN_FREE_BYTES: huge })
+  assert.equal(r.code, 0); assert.match(r.out, /already sent within 3600s/); assert.equal(sent().length, 1, 'throttled')
+  r = run({ MIN_FREE_BYTES: huge, STAGING_ALERT_EVERY_S: '0' })
+  assert.equal(sent().length, 2, 'alerts again once the interval has passed')
+
+  // 2. above the floor, but the release would not fit above it: skipped, alerted, nothing built
+  r = run({ MIN_FREE_BYTES: String(free() - 50_000_000), FIRST_RELEASE_BYTES: '200000000' })
+  assert.equal(r.code, 0, r.out); assert.match(r.out, /ALERT low_disk_for_release: skipped [0-9a-f]{40}: \d+ bytes free, a release needs about 200000000/)
+  assert.deepEqual(releases(), []); assert.equal(sent().at(-1).reason, 'low_disk_for_release'); assert.equal(sent().at(-1).needed_bytes, 200000000)
+
+  // 3. the floor is reached while the build runs: stopped, release removed, alerted, exit 1, no live pointer created
+  r = run({ MIN_FREE_BYTES: String(free() - 40_000_000), STAGING_BUILD: 'head -c 80000000 /dev/zero > fill.bin && sleep 6' })
+  assert.equal(r.code, 1, r.out); assert.match(r.out, /ALERT low_disk_during_build: stopped the build/)
+  assert.deepEqual(releases(), [], 'the stopped release is removed'); assert.equal(existsSync(path.join(root, 'current')), false)
+  assert.equal(sent().at(-1).reason, 'low_disk_during_build')
+
+  // 4. enough disk again: deploys, and the low-disk throttles are cleared so the next low disk alerts at once
+  r = run({ MIN_FREE_BYTES: '1' })
+  assert.equal(r.code, 1, 'the stub service never reports health, so the cutover rolls back; the deploy itself ran')
+  assert.match(r.out, /deploying [0-9a-f]{40}/)
+  assert.deepEqual(readdirSync(root).filter(f => f.startsWith('.alert-low_disk')), [])
+
+  // 5. the staging root may not be inside, or contain, production's data directory
+  for (const bad of [path.join(prodDir, 'staging'), dir]) {
+    const x = run({ MIN_FREE_BYTES: '1', STAGING_ROOT: bad })
+    assert.equal(x.code, 1); assert.match(x.out, /STAGING_ROOT .* (inside|contains) production's data directory/)
+  }
+})

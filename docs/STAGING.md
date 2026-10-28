@@ -21,10 +21,15 @@ Staging is the app on the same box as production, as a separate service. It has 
 Nothing in staging uses production data or keys: a fresh master key, test-mode Stripe and no Google credentials.
 
 ## Before installing: disk and safety checks (`ops/staging/deploy.sh`)
-- **Disk floor.** A release is started only if free space minus the release's estimated size stays above `MIN_FREE_BYTES` (2 GiB by default, the host's floor). A watcher stops the build if free space reaches the floor while it runs. A release that fails at any step is deleted at once, and the live release keeps serving.
+- **Disk floor.** `MIN_FREE_BYTES` is 2 GiB by default, the host's floor. Every run of the 2-minute timer checks free space first:
+  - **Below the floor:** the run is skipped (exit 0), before anything is fetched, built or deleted, and an alert is sent.
+  - **A new release wouldn't fit above the floor** (free space minus its estimated size): skipped the same way, with an alert. The live release keeps serving.
+  - **The floor is reached during a build:** a watcher stops the build, its release is deleted, an alert is sent, and the live release keeps serving.
+  - **Alerts** are a JSON POST (`{"type":"staging_deploy","reason":"low_disk|low_disk_for_release|low_disk_during_build","free_bytes":…,"needed_bytes":…,"floor_bytes":…}`) to `OPS_ALERT_WEBHOOK_URL` in the staging env file. They're throttled to one per reason per hour while the disk stays low, and reset once a deploy finds enough room. Every skip is also logged to `journalctl -u dazl-staging-deploy`.
+  - **Scope:** everything the deploy deletes is under `STAGING_ROOT`, and the deploy refuses a `STAGING_ROOT` that is inside, or contains, production's data directory. So production data and production's rollbacks are never touched.
   - **Sizes measured:** a first release is about 1.1 GB (`node_modules` 0.7 GB plus build output). Later releases hard-link `node_modules` from the live one when `package-lock.json` is unchanged, so they cost about their build output (0.3–0.4 GB).
   - **What's kept:** the live release plus two complete rollbacks.
-  - **Space needed:** about **2.3 GB above the floor**, roughly 4.5 GB free on a 2 GiB floor. With about 2.5 GB free today, the deploy will refuse on this host. Free space first, add disk, or use another host. That's an owner decision.
+  - **Space needed:** about **2.3 GB above the floor**, roughly 4.5 GB free on a 2 GiB floor. After the cleanup there's 5.42 GB free, enough for a first release; below that, the deploy skips and alerts instead of eating into the floor.
 - **Production's database.** The deploy must be told where production's database is: `PROD_ENV_FILE` (production's env file, read for `DB_PATH` only) or `PROD_DB_PATH`, in `dazl-staging-deploy.service`. Without it, the deploy refuses to run. It refuses a staging `DB_PATH` that:
   - is production's file, by canonical path, with symlinks and `..` resolved;
   - is inside production's database directory, or contains it;

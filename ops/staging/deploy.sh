@@ -30,6 +30,10 @@ PROD_ENV_FILE=${PROD_ENV_FILE:-}
 # The build, run in the release's web/ directory as the service user with the env file's values. Tests replace it.
 BUILD=${STAGING_BUILD:-'{ [ -d node_modules ] || npm ci --no-audit --no-fund --loglevel=error; } && NODE_OPTIONS=--max-old-space-size=2048 nice -n 10 npx next build && rm -rf .next/cache && npm run -s db:migrate && node --experimental-strip-types --no-warnings scripts/staging-seed.mts'}
 HEALTH_TRIES=${STAGING_HEALTH_TRIES:-60}
+# Low-disk alerts: OPS_ALERT_WEBHOOK_URL from the staging env file (https), or STAGING_ALERT_CMD (tests). One alert per
+# reason per STAGING_ALERT_EVERY_S while the condition lasts; every skip is still logged to the journal.
+ALERT_CMD=${STAGING_ALERT_CMD:-}
+ALERT_EVERY_S=${STAGING_ALERT_EVERY_S:-3600}
 
 log() { echo "staging-deploy: $*"; }
 fail() { echo "staging-deploy: $*" >&2; exit 1; }
@@ -63,10 +67,39 @@ check_env() {
 if [ "${1:-}" = --check-env ]; then check_env "${2:?usage: deploy.sh --check-env FILE}"; echo "env ok"; exit 0; fi
 
 check_env "$ENV_FILE"
+# Staging's own directory must not be, contain, or sit inside production's data directory: everything this script
+# deletes (failed releases, old staging releases) is under it, so production data and production rollbacks can never be.
+prod_dir=$(dirname "$(realpath -m -- "${PROD_DB_PATH:-$(val DB_PATH "$PROD_ENV_FILE")}")"); root_real=$(realpath -m -- "$ROOT")
+[ "$root_real" != / ] || fail "STAGING_ROOT must not be /"
+case "$root_real/" in "$prod_dir/"*) fail "STAGING_ROOT $ROOT is inside production's data directory";; esac
+case "$prod_dir/" in "$root_real/"*) fail "STAGING_ROOT $ROOT contains production's data directory";; esac
 mkdir -p "$ROOT/releases"
 exec 9>"$ROOT/.deploy.lock"; flock -n 9 || { log "another deploy is running"; exit 0; }
 as() { if [ "$(id -un)" = "$RUN_AS" ]; then "$@"; else runuser -u "$RUN_AS" -- "$@"; fi; }
 free_bytes() { df -B1 --output=avail "$ROOT" | tail -n 1 | tr -d ' '; }
+alert() { # reason, free bytes, bytes needed (0 when only the floor matters), message
+  local reason=$1 free=$2 need=$3 msg=$4 stamp="$ROOT/.alert-$1" now
+  log "ALERT $reason: $msg"
+  now=$(date +%s)
+  if [ -e "$stamp" ] && [ $(( now - $(stat -c %Y "$stamp") )) -lt "$ALERT_EVERY_S" ]; then log "(alert $reason already sent within ${ALERT_EVERY_S}s)"; return 0; fi
+  touch "$stamp"
+  local body
+  body=$(printf '{"level":"warn","type":"staging_deploy","reason":"%s","free_bytes":%s,"needed_bytes":%s,"floor_bytes":%s,"host":"%s"}' "$reason" "$free" "$need" "$MIN_FREE_BYTES" "$(hostname -s 2>/dev/null || echo unknown)")
+  if [ -n "$ALERT_CMD" ]; then $ALERT_CMD "$body" || log "alert command failed"; return 0; fi
+  local url; url=$(val OPS_ALERT_WEBHOOK_URL "$ENV_FILE")
+  case "$url" in
+    https://*) curl -fsS -m 10 -H 'content-type: application/json' -d "$body" "$url" >/dev/null || log "alert webhook failed" ;;
+    *) log "no alert destination: set OPS_ALERT_WEBHOOK_URL (https) in $ENV_FILE" ;;
+  esac
+}
+disk_ok() { rm -f "$ROOT"/.alert-low_disk*; } # back above the floor: the next low-disk event alerts at once
+
+# Below the floor already: skip this run before fetching or building anything.
+avail=$(free_bytes)
+if [ "$avail" -lt "$MIN_FREE_BYTES" ]; then
+  alert low_disk "$avail" 0 "skipped: $avail bytes free, below the floor of $MIN_FREE_BYTES; nothing fetched, built or deleted"
+  exit 0
+fi
 
 # leftovers of an interrupted deploy (no completion mark) go first
 live_now=; [ -L "$ROOT/current" ] && live_now=$(readlink -f "$ROOT/current")
@@ -88,8 +121,10 @@ if [ -n "$live" ] && [ -d "$live/web" ]; then
 else est=$FIRST_RELEASE_BYTES; fi
 avail=$(free_bytes)
 if [ $(( avail - est )) -lt "$MIN_FREE_BYTES" ]; then
-  fail "not deploying $new: $avail bytes free, a release needs about $est, and the floor is $MIN_FREE_BYTES"
+  alert low_disk_for_release "$avail" "$est" "skipped $new: $avail bytes free, a release needs about $est, and the floor is $MIN_FREE_BYTES; the live release is unchanged"
+  exit 0
 fi
+disk_ok
 log "deploying $new (was ${cur:-none}); $avail bytes free, release about $est"
 
 rel="$ROOT/releases/$new"
@@ -112,7 +147,11 @@ while kill -0 "$build_pid" 2>/dev/null; do
 done
 status=0; wait "$build_pid" || status=$?
 build_pid=
-[ $low = 0 ] || { cleanup; fail "free space reached the floor ($MIN_FREE_BYTES bytes) during the build; release removed"; }
+if [ $low = 1 ]; then
+  cleanup
+  alert low_disk_during_build "$(free_bytes)" "$est" "stopped the build of $new: free space reached the floor ($MIN_FREE_BYTES bytes); its release removed, the live release unchanged"
+  fail "free space reached the floor ($MIN_FREE_BYTES bytes) during the build; release removed"
+fi
 [ $status = 0 ] || { cleanup; fail "build or seed of $new failed (exit $status); release removed"; }
 trap - ERR
 

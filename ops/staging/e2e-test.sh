@@ -51,11 +51,13 @@ commit() { # a new main commit on top of the current one, changing one file (mad
   local w=$T/work; rm -rf "$w"; install -d -o "$U" "$w"
   runuser -u "$U" -- bash -c "git clone -q -b main '$T/origin.git' '$w' && cd '$w' && $1 && git -c user.email=e2e@example.test -c user.name=e2e commit -qam '$2' && git push -q origin HEAD:main"; }
 
-# 1. floor: refused before anything is created
-out=$(MIN_FREE_BYTES=999999999999999 $D 2>&1) && die "deploy ran under the floor" || true
-echo "$out" | grep -q "not deploying" || die "no floor message: $out"
+# 1. floor: skipped (not failed), alerted, nothing created
+echo 'echo "$1" >> '"$T"'/alerts.log' > "$T/alert.sh"
+out=$(MIN_FREE_BYTES=999999999999999 STAGING_ALERT_CMD="bash $T/alert.sh" $D 2>&1) || die "a low-disk skip exited non-zero: $out"
+echo "$out" | grep -q "ALERT low_disk: skipped" || die "no low-disk alert: $out"
+grep -q '"reason":"low_disk"' "$T/alerts.log" || die "the alert command did not receive the alert"
 [ -z "$(ls -A "$T/root/releases")" ] || die "a release was created under the floor"
-pass "under the disk floor: refused, no release created ($(echo "$out" | tail -1))"
+pass "under the disk floor: skipped with exit 0, alert sent ($(head -c 160 "$T/alerts.log")), no release created"
 
 # 2. first deploy as the service user
 $D
