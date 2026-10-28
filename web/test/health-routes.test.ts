@@ -11,9 +11,10 @@ const TITLES: Record<string, string> = {
   'pg-down': 'Postgres unreachable: 503 not ready, liveness (/api/health, /api/health/live) still 200',
   'pg': 'Postgres reachable with every shipped migration: store and schema ready (503 only while raw-SQLite modules remain)',
   'pg-behind': 'Postgres missing a shipped migration: 503 not ready (schema behind)',
+  'env-missing': 'a required environment variable missing: 503 not ready by count only, liveness still 200',
 }
 
-for (const mode of ['sqlite', 'pg-down', 'pg', 'pg-behind']) {
+for (const mode of ['sqlite', 'pg-down', 'pg', 'pg-behind', 'env-missing']) {
   test(`health routes: ${TITLES[mode]}`, { skip: mode === 'pg' || mode === 'pg-behind' ? pgSkip : false }, () => {
     const env: NodeJS.ProcessEnv = { ...process.env, HEALTH_MODE: mode }
     delete env.NODE_TEST_CONTEXT
