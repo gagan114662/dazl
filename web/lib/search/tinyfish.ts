@@ -292,6 +292,20 @@ export function markdownToText(md: string): string {
     .replace(/\|/g, ' ')
 }
 
+// Which fetched pages actually reached extraction. toEvidence builds an item from a page only when the page URL matches a hit (same key as
+// there) and its text, once markdown is stripped, has at least 20 characters; otherwise the page is dropped (the item falls back to the
+// hit's snippet, or to nothing when the page was matched but empty). `given` counts items built from page text; `unused` counts distinct
+// fetched pages that did not become one; `tooShort` is the part of those whose converted text is under 20 characters.
+export function pageUseSplit(items: { url: string }[], pages: { url: string; text: string }[]): { given: number; unused: number; tooShort: number } {
+  const key = (u: string) => u.replace(/\/$/, '')
+  const byUrl = new Map(pages.map(p => [key(p.url), p]))
+  const used = new Set<string>()
+  for (const i of items) if (byUrl.has(key(i.url))) used.add(key(i.url))
+  let tooShort = 0
+  for (const [k, p] of byUrl) if (!used.has(k) && markdownToText(p.text).replace(/\s+/g, ' ').trim().length < 20) tooShort++
+  return { given: used.size, unused: byUrl.size - used.size, tooShort }
+}
+
 // Turns search hits and fetched page text into Evidence for the user's model. The existing verifier still
 // re-fetches every cited URL and checks quote, company, date and contact before a lead is kept.
 // rank (optional, lower = first; the runner passes the SAME rank it used to choose fetches): the extraction cap below must
