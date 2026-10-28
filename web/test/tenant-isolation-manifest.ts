@@ -28,6 +28,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'billing/portal', method: 'POST', auth: 'session', crossTenant: 'session-scope' },
   { path: 'billing/webhook', method: 'POST', auth: 'public', note: 'Stripe signature over the raw body' },
   { path: 'campaigns', method: 'GET', auth: 'session', crossTenant: 'session-scope' },
+  { path: 'campaigns/[id]', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' } },
   { path: 'crm', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' } },
   { path: 'crm', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' } },
   { path: 'gmail/callback', method: 'GET', auth: 'session', crossTenant: 'session-scope' },
