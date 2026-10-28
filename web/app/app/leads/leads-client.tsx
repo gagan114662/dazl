@@ -9,6 +9,7 @@ import { companySearchEligible } from '@/lib/scan/find-contact-eligible'
 import { contactsFromEnrichments, PEOPLE_SOURCE } from '@/lib/people/rank'
 import { OpportunityCardView } from './opportunity-card'
 import { leadCardSummary } from '@/lib/scan/lead-card'
+import { reviewAction } from '@/lib/scan/review-action'
 import { coreSources, socialLabel, socialSources, usableLabels, type Advanced, type KeyState, type ServerSources, type SourceRow } from '@/lib/scan/source-availability'
 import { barCopy, scanCounts } from '@/lib/outreach/scan-drafts'
 import { publishedEmail, publishedContact, contactSearchNote, domainBasisNote, domainBasisText } from '@/lib/outreach/published-email'
@@ -128,6 +129,7 @@ export default function LeadsClient() {
   const [error, setError] = useState('')
   const [quality, setQuality] = useState<Quality | null>(null)
   const [jobError, setJobError] = useState('')
+  const [enrichInterrupted, setEnrichInterrupted] = useState(false) // enrichment started but never ended (crash/restart): contacts and fit may be incomplete
   const [emptyReason, setEmptyReason] = useState<string | null>(null) // why a scan that read pages still extracted nothing (counts only)
   const [statusError, setStatusError] = useState<'not_found' | 'unavailable' | null>(null)
   const statusFails = useRef(0)
@@ -221,7 +223,7 @@ export default function LeadsClient() {
     if (!r.ok) { setCsvNote(j.error === 'quota_exceeded' ? 'Monthly scans are used up.' : j.error || 'Could not resume'); return }
     setCsvBatch(j)
   }
-  const scanActive = !!jobId && (status === 'pending' || status === 'running')
+  const scanActive = !!jobId && (status === 'pending' || status === 'running' || status === 'enriching')
   const csvActive = !!csvBatch && ((csvBatch.counts.queued ?? 0) + (csvBatch.counts.running ?? 0) > 0)
   useEffect(() => {
     if (!csvActive || !csvBatch) return
@@ -366,7 +368,7 @@ export default function LeadsClient() {
       const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) }) })
       const j = await r.json().catch(() => ({}))
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : j.error === 'trial_exhausted' ? 'Your 3 free scans are used up. Add your own AI key in Settings to keep scanning.' : j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')); if (j.error === 'invalid_budget' && j.detail) setError(`The spend limit was not accepted: ${String(j.detail).slice(0, 200)}`); return }
-      setRunExtras(extraLabels(srcBody)); passiveJob.current = false; setJobId(j.job_id); setStatus('pending'); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0
+      setRunExtras(extraLabels(srcBody)); passiveJob.current = false; setJobId(j.job_id); setStatus('pending'); setEnrichInterrupted(false); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0
     } catch {
       // A rejected fetch (offline, aborted) used to fail silently - the click looked dead.
       setError('Could not reach the server. Check your connection and try again.')
@@ -392,7 +394,7 @@ export default function LeadsClient() {
       }
       statusFails.current = 0
       const s = await r.json()
-      setStatus(s.status); setEmptyReason(typeof s.empty_reason === 'string' ? s.empty_reason : null); setJobError(s.error ?? ''); setLeadsSoFar(s.lead_count ?? 0); setStartedAt(s.claimed_at ?? null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
+      setStatus(s.status); setEnrichInterrupted(s.enrichment?.state === 'interrupted'); setEmptyReason(typeof s.empty_reason === 'string' ? s.empty_reason : null); setJobError(s.error ?? ''); setLeadsSoFar(s.lead_count ?? 0); setStartedAt(s.claimed_at ?? null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
       setQuality(s.quality ?? null)
       if (s.icp) setIcp({ icp: s.icp, source: s.icp_source, query: typeof s.query === 'string' ? s.query : null })
       if (typeof s.query === 'string' && s.query && queryShownFor.current !== jobId) { queryShownFor.current = jobId; setQuery(s.query) }
@@ -407,7 +409,7 @@ export default function LeadsClient() {
     const l = await fetch(`/api/leads?job_id=${jobId}${showHidden ? '&all=1' : ''}`)
     if (l.ok) { const j = await l.json(); setLeads(j.leads); setHiddenCount(j.hidden_count ?? 0) }
   }
-  useEffect(() => { if (status === 'done') void loadLeads() }, [jobId, status, showHidden])
+  useEffect(() => { if (status === 'done' || status === 'enriching') void loadLeads() }, [jobId, status, showHidden])
   // The Review drafts bar: this scan's unsent emails by state (drafts to review, approved not sent), read back from
   // Outreach so it survives a reload and counts drafts made with Draft email too. Read-only; null when it could not load.
   const [scanDrafts, setScanDrafts] = useState<{ drafts: number; approved: number } | null>(null)
@@ -449,7 +451,7 @@ export default function LeadsClient() {
       setPastJobs(jobs)
       // A scan that is still queued/running is the one exception to "nothing autoselects": a reload or a
       // return from Home must show its progress and Stop control, not an enabled Find leads button.
-      const active = jobs.find(x => !x.csv_domain && (x.status === 'pending' || x.status === 'running'))
+      const active = jobs.find(x => !x.csv_domain && (x.status === 'pending' || x.status === 'running' || x.status === 'enriching'))
       if (active) { passiveJob.current = new URLSearchParams(window.location.search).get('passive') === '1'; setJobId(active.id); setStatus(active.status) }
     } }).catch(() => {})
   }, [jobId])
@@ -507,8 +509,9 @@ export default function LeadsClient() {
             </div>)}
         </div>}
         <div className="flex gap-3 mt-2 items-center">
-          <button disabled={busy || starting || scanActive} title={scanActive ? 'A scan is already running below' : undefined} className="btn-primary">{starting ? 'Starting...' : 'Find leads'}</button>
+          <button disabled={busy || starting || scanActive} title={scanActive ? 'A scan is still running or finishing below' : undefined} className="btn-primary">{starting ? 'Starting...' : 'Find leads'}</button>
           <button type="button" disabled={query.trim().length < 3 || busy || starting || scanActive} onClick={() => void preview()} className="text-xs text-[#555] underline disabled:opacity-40 disabled:no-underline">{busy ? 'Working out your profile...' : 'Review profile first'}</button>
+          {scanActive && <span className="text-xs text-gray-500" data-reason="scan-active">{status === 'enriching' ? 'The scan is finishing (contacts and fit checks). You can start another when it ends.' : 'A scan is already running. You can start another when it ends.'}</span>}
         </div>
         {reuseIcp && !scanActive && <p className="text-xs text-[#555] mt-2" data-testid="reuse-profile">Find leads runs with your reviewed profile: {reuseIcp.summary}. Change the sentence, or use Review profile first, to build a new one.</p>}
         {!jobId && <SourceAvailability core={core} social={socialSources(advanced)} />}
@@ -685,6 +688,21 @@ export default function LeadsClient() {
           </div>
         </div>
       )}
+      {jobId && status === 'done' && enrichInterrupted && (
+        <div className="card p-4 mb-4 text-sm" role="status" data-testid="enrich-interrupted">
+          <div>Contacts and fit checks did not finish for this scan.</div>
+          <div className="text-gray-400 text-xs">The stage that finds contacts and checks fit stopped before it ended (for example a restart). The leads below are real, but some may be missing contacts or fit grades. You can start a new scan.</div>
+        </div>
+      )}
+      {jobId && status === 'enriching' && (
+        <div className="card p-4 mb-4 flex items-center gap-3" role="status">
+          <span className="inline-block h-4 w-4 rounded-full border-2 border-gray-500 border-t-white animate-spin" aria-hidden />
+          <div className="text-sm">
+            <div>Finishing - finding contacts and checking fit.</div>
+            <div className="text-gray-400 text-xs">The leads below are not final yet. The scan is not done until this ends.</div>
+          </div>
+        </div>
+      )}
       {jobId && status === 'failed' && <p className="text-gray-400 text-sm mb-4">{jobError === 'budget_stopped' ? 'This run stopped because its per-run budget refused the next paid step. That is a budget stop, not an empty search: nothing was concluded about whether leads exist. Run again without that budget control (or with a larger one) to search further.' : jobError === 'cancelled' ? 'Scan stopped. The step that was already running can continue for a while and may still be billed. Its results are discarded and this scan holds its slot for a few minutes.' : jobError === 'scan_timeout' ? 'This scan ran past its time limit and was stopped between steps. Nothing was saved. Steps that already ran may have been billed by your AI provider. Try again with a narrower search.' : jobError === 'no_candidates' ? (emptyReason ? `${emptyReason} This scan did not count toward your monthly scans.` : 'No candidates were extracted for that search. That does not show that no matching companies exist. Try rephrasing or broadening it - this scan did not count toward your monthly scans.') : jobError === 'key_rejected' ? 'Your AI provider rejected the key this scan used. Check or replace your key in Settings, then run the scan again.' : jobError === 'trial_key_invalid' ? 'The scan service is having trouble right now. Try again later - this scan did not count toward your free scans.' : jobError === 'key_unreadable' ? KEY_UNREADABLE_COPY.replace(/\.$/, ', then run the scan again.') : 'Scan failed. Try again.'}</p>}
       {jobId && statusError && (
         <p className="text-gray-400 text-sm mb-4">{statusError === 'not_found'
@@ -737,6 +755,7 @@ export default function LeadsClient() {
                     {j.query ?? (j.csv_domain ? `CSV import: ${j.csv_domain}` : j.business_name)}
                   </div>
                   <div className="text-gray-500 text-xs mt-0.5">{new Date(j.created_at * 1000).toLocaleDateString()} · {o.label}</div>
+                  {o.detail && <div className="text-gray-500 text-xs mt-0.5" data-testid="outcome-detail">{o.detail}</div>}
                 </a>
                 {o.next && <a className="underline text-[#111] text-xs" href={o.next.href} data-testid="next-step">{o.next.text}</a>}
               </div>
@@ -943,7 +962,6 @@ export default function LeadsClient() {
                 <div className="text-gray-400">{`Saved signal claim: ${l.signal}`}</div>
                 <span className="text-[#333] text-xs mr-3">{l.source_kind === 'hiring_feed' && l.review_reason === 'source_review_required' ? 'Saved from a public job posting - literal source checks do not verify its meaning, date, buying need or consent' : (REVIEW[l.review_reason ?? ''] ?? 'Not verified')}</span>
                 {l.timing_note && <span className="text-[#333] text-xs mr-3" data-testid="timing-note-review">Researched opportunity - {l.timing_note}.</span>}
-                <a className="underline text-[#111] text-xs" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
                 <DiscoveredVia l={l} />
                 {l.source_check && <div className="text-xs text-[#333] border-l-2 border-black/30 pl-3 my-2">
                   <p>Literal page check: {l.source_check.fetch_status}, checked {new Date(l.source_check.checked_at*1000).toISOString()}. Exact quote: {l.source_check.quote_match?'found':'not found'}. Company named with matching quote: {l.source_check.company_named?'yes':'no'}. Supplied email: {l.source_check.contact_match?'found on page':'not found or not supplied'}.</p>
@@ -951,10 +969,17 @@ export default function LeadsClient() {
                 </div>}
                 {l.source_kind === 'hiring_feed' && <PageSignals leadId={l.id} />}
                 {l.source_kind === 'hiring_feed' && <QualifyPreview leadId={l.id} />}
-                <button onClick={() => confirmReview(l.id)} className="font-mono text-xs uppercase border border-black px-2 py-1 ml-3 hover:bg-black hover:text-white">I checked this - use it</button>
                 {['quote_unconfirmed','source_review_required','event_timing_unconfirmed','event_date_bad_date','event_date_stale','event_date_future_date'].includes(l.review_reason ?? '') && l.evidence_excerpt && (
                   <div className="text-xs text-gray-500 mt-1">{quoteNote(l.source_check?.quote_match).prefix}"{l.evidence_excerpt}"</div>
                 )}
+                {/* Labelled actions: check the source first, then confirm - worded for what confirming unlocks for this lead. */}
+                {(() => { const a = reviewAction(l); return <div className="mt-3" data-testid="review-actions">
+                  <div className="flex flex-wrap gap-2">
+                    <a className="btn-ghost text-xs px-3 py-1.5" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">Open source</a>
+                    <button onClick={() => confirmReview(l.id)} className="btn-primary text-xs px-3 py-1.5">{a.label}</button>
+                  </div>
+                  <p className="text-xs text-[#555] mt-1" data-testid="review-hint">{a.hint}</p>
+                </div> })()}
               </div>
             ))}
           </div>

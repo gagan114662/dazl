@@ -9,7 +9,8 @@ test('failed, none-extracted and all-rejected scans are distinct outcomes, each 
   const zero = failed('no_candidates', { candidates: 0 })
   assert.equal(zero.kind, 'none_extracted')
   // Instinct #274: no extracted candidates is not proof the search found no matching companies.
-  assert.equal(zero.label, 'No candidates were extracted - this does not show that no matching companies exist')
+  assert.equal(zero.label, 'No candidates were extracted')
+  assert.match(zero.detail!, /does not show that no matching companies exist/, 'nothing recorded: the bounded common wording')
   assert.doesNotMatch(zero.label, /^No matches|found no companies/i)
   assert.deepEqual(zero.next, { text: 'See what the scan read', href: '/app/leads?job_id=j1' }, 'the scan page shows the recorded extraction diagnostic')
   assert.equal(done({ candidates: 0, verified: 0, needs_review: 0, dropped: 0 }).kind, 'none_extracted')
@@ -78,4 +79,15 @@ test('older records without counts say they cannot tell zero-match from all-drop
 test('pending and running scans have no outcome yet', () => {
   assert.equal(scanOutcome({ id: 'j', status: 'running', error: null }).kind, 'running')
   assert.equal(scanOutcome({ id: 'j', status: 'pending', error: 'retrying' }).next, null)
+})
+
+// #254: the enrichment stage (contacts, fit) runs after the rows are written; history must not call it done.
+test('a scan still enriching reads as finishing; one whose enrichment never ended says so', () => {
+  const now = Math.floor(Date.now() / 1000)
+  const base = { candidates: 4, verified: 2, needs_review: 1, dropped: 1 }
+  assert.equal(scanOutcome({ id: 'j', status: 'enriching', error: null, ...base }).label, 'Finishing - finding contacts and checking fit')
+  assert.equal(done({ ...base, enrich_started_at: now - 30, enrich_finished_at: null }).kind, 'enriching')
+  const stale = done({ ...base, enrich_started_at: now - 3600, enrich_finished_at: null })
+  assert.deepEqual([stale.kind, stale.label], ['leads', '4 found: 2 source-checked, 1 needs your review, 1 dropped; contacts and fit checks did not finish'])
+  assert.equal(done({ ...base, enrich_started_at: now - 3600, enrich_finished_at: now - 3500 }).label, '4 found: 2 source-checked, 1 needs your review, 1 dropped')
 })

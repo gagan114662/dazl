@@ -97,8 +97,14 @@ function outcomeOf(j: JobRow): string {
   // The same recorded outcome as the Leads history and the campaign page (lib/scan/scan-outcome.ts), in short words.
   const o = scanOutcome(j)
   if (o.kind === 'running') return 'running'
+  if (o.kind === 'enriching') return 'finishing'
   if (o.kind === 'stopped') return j.error === 'cancelled' ? 'cancelled' : 'stopped'
-  if (o.kind === 'failed') return 'failed'
+  if (o.kind === 'failed') {
+    // A rejected key says whose it was, exactly as the history and campaign page do (funded_by from the scan record).
+    if (j.error === 'trial_key_invalid' || (j.error === 'key_rejected' && j.funded_by === 'trial')) return 'failed: free-search key trouble'
+    if (j.error === 'key_rejected') return j.funded_by === 'user' ? 'failed: your AI key was rejected' : 'failed: AI key rejected'
+    return 'failed'
+  }
   if (o.kind === 'none_extracted') return 'no candidates extracted'
   // Older records never stored the check counts: say so, and never call what they found "leads".
   if (o.kind === 'unrecorded') return 'counts unavailable'

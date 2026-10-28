@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { listJobs } from '@/lib/scan/store'
+import { effectiveStatus } from '@/lib/scan/enrichment'
+import { recordedEmptyReason } from '@/lib/scan/outcome-detail'
 
 // The leads page history list: the signed-in tenant's own past scans so a returning
 // user can explicitly pick one. Read-only; same tenant scoping as every other scan read.
@@ -14,6 +16,9 @@ export async function GET() {
   const jobs = listJobs(db, user.id).map(j => ({
     ...j,
     funded_by: trial.has(j.id) ? 'trial' : 'user',
+    status: effectiveStatus(j),
+    // Why a scan extracted nothing, as recorded (counts only); null when not recorded or not that outcome.
+    empty_reason: recordedEmptyReason(db, user.id, j),
     // Fixture jobs carry the inserters' own job-level marker (industry/location
     // 'test only') - the same provenance the export filter uses - so a genuine
     // business whose name contains '(test only)' is never mislabeled or hidden.

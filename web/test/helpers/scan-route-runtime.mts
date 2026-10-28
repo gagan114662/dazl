@@ -77,6 +77,38 @@ test('POST /api/watch: a supplied budget is validated like the scan route and sa
   assert.deepEqual(wrow().map(w => w.run_budget === null ? null : JSON.parse(w.run_budget)), [{ max_usd: 0.25, judge: false }, null])
 })
 
+test('POST /api/scan refuses a new scan while one is pending, running or ENRICHING (409 scan_active, no row); a finished, failed or stale-enriching one does not block', async () => {
+  const db = setup(); as(db)
+  const uid = (db.prepare('SELECT user_id FROM scan_jobs LIMIT 1').get() as { user_id: string } | undefined)?.user_id
+  void uid
+  // First scan starts normally (202); it is pending, so the second is refused.
+  const first = await post({ query: Q }); assert.equal(first.status, 202)
+  const second = await post({ query: Q }); const j2 = await second.json() as { error: string; message: string }
+  assert.equal(second.status, 409); assert.equal(j2.error, 'scan_active'); assert.match(j2.message, /still running or finishing/); assert.equal(rows(db).length, 1, 'nothing was queued')
+  const id = rows(db)[0].id
+  // running
+  db.prepare("UPDATE scan_jobs SET status = 'running', attempts = 1 WHERE id = ?").run(id)
+  assert.equal((await post({ query: Q })).status, 409)
+  // done but ENRICHING (contacts / people / fit still being added): still refused
+  db.prepare("UPDATE scan_jobs SET status = 'done', enrich_started_at = CAST(strftime('%s','now') AS INTEGER), enrich_finished_at = NULL WHERE id = ?").run(id)
+  const enr = await post({ query: Q }); assert.equal(enr.status, 409, 'refused while enriching'); assert.equal(rows(db).length, 1)
+  // enrichment ended: allowed
+  db.prepare("UPDATE scan_jobs SET enrich_finished_at = CAST(strftime('%s','now') AS INTEGER) WHERE id = ?").run(id)
+  assert.equal((await post({ query: Q })).status, 202)
+  // a crashed enrichment (mark older than the stale limit) does not block forever
+  const db2 = setup(); as(db2)
+  assert.equal((await post({ query: Q })).status, 202)
+  const id2 = rows(db2)[0].id
+  db2.prepare("UPDATE scan_jobs SET status = 'running', attempts = 1 WHERE id = ?").run(id2)
+  db2.prepare("UPDATE scan_jobs SET status = 'done', enrich_started_at = CAST(strftime('%s','now') AS INTEGER) - 3600, enrich_finished_at = NULL WHERE id = ?").run(id2)
+  assert.equal((await post({ query: Q })).status, 202, 'a stale enrichment mark is not active')
+  // failed scan: allowed
+  const db3 = setup(); as(db3)
+  assert.equal((await post({ query: Q })).status, 202); const id3 = rows(db3)[0].id
+  db3.prepare("UPDATE scan_jobs SET status = 'running', attempts = 1 WHERE id = ?").run(id3); db3.prepare("UPDATE scan_jobs SET status = 'failed', error = 'key_rejected' WHERE id = ?").run(id3)
+  assert.equal((await post({ query: Q })).status, 202)
+})
+
 test('POST /api/scan stores a reviewed profile exactly as sent (icp_inferred 0) and a sentence-only request stores none (the server infers later)', async () => {
   const REVIEWED = { summary: 'Seed-funded London B2B SaaS startups that are also hiring sales', who: ['Founder', 'Co-founder', 'CEO'], industries: ['B2B SaaS'], sizes: ['10-50 employees'], where: ['London, UK'], signals: ['announced seed funding within the past 90 days AND currently hiring sales staff'], exclude: ['agencies', 'recruiters'], country: 'GB', language: 'en', window_days: 90 }
   const db = setup(); as(db)
