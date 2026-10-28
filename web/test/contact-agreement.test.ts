@@ -47,7 +47,7 @@ const attached = (r: Awaited<ReturnType<typeof run>>) => r.enr.length > 0 || r.d
 test('NYC request: the same-name practice in Rome, NY (a New York town, not the city) is not bound', async () => {
   const home = html(`Smile Avenue Dental, 12 Black River Blvd, Rome, NY 13440. Serving New York families. ${PROSE}<a href="/contact">Contact</a>`)
   const r = await run({ 'smileavenuedental.com': { '/': home, '/contact': CONTACT } }, ['New York City'])
-  assert.equal(attached(r), false); assert.ok(r.audit.some(a => a.status === 'geo_mismatch'), JSON.stringify(r.audit))
+  assert.equal(attached(r), false); assert.ok(r.audit.some(a => /^contact rejected: location mismatch/.test(a.status)), JSON.stringify(r.audit))
 })
 test('NYC request: Albany, NY and a Texas practice are refused even though the page says "New York" somewhere', async () => {
   for (const home of [html(`Smile Avenue Dental, Albany, NY 12207. We also welcome patients from New York City. ${PROSE}<a href="/contact">Contact</a>`), html(`Smile Avenue Dental of Dallas, TX. New York style care. ${PROSE}<a href="/contact">Contact</a>`)]) {
@@ -58,7 +58,7 @@ test('NYC request: Albany, NY and a Texas practice are refused even though the p
 test('NYC request: a guessed domain whose homepage only says "New York" (no city address) is refused as geo_unknown; the right NYC address binds', async () => {
   const vague = html(`Smile Avenue Dental - quality care across New York. ${PROSE}<a href="/contact">Contact</a>`)
   const r1 = await run({ 'smileavenuedental.com': { '/': vague, '/contact': CONTACT } }, ['New York City'])
-  assert.equal(attached(r1), false); assert.ok(r1.audit.some(a => a.status === 'geo_unknown'), JSON.stringify(r1.audit))
+  assert.equal(attached(r1), false); assert.ok(r1.audit.some(a => /^contact rejected: location unconfirmed/.test(a.status)), JSON.stringify(r1.audit))
   const r2 = await run({ 'smileavenuedental.com': { '/': NYC_OK, '/contact': CONTACT } }, ['New York City'])
   assert.equal(r2.domain, 'smileavenuedental.com'); assert.ok(r2.enr.length > 0)
 })
@@ -74,5 +74,12 @@ test('London request: East London, South Africa and Manchester, England are refu
 })
 test('a request with no place makes no place demand beyond the existing evidence check', async () => {
   const r = await run({ 'smileavenuedental.com': { '/': NYC_OK, '/contact': CONTACT } }, [])
-  assert.ok(r.domain === 'smileavenuedental.com' || r.audit.some(a => a.status === 'geo_unknown' || a.status === 'geo_mismatch'))
+  assert.ok(r.domain === 'smileavenuedental.com' || r.audit.some(a => /^contact rejected: location unconfirmed/.test(a.status) || /^contact rejected: location mismatch/.test(a.status)))
+})
+
+test('the crawl refusal reads like the others: "contact rejected: location mismatch Pico Rivera, CA vs New York, NY"', async () => {
+  const home = html(`Smile Avenue Dental Group - Dentist in Pico Rivera, CA 90660. ${PROSE}<a href="/contact">Contact</a>`)
+  const r = await run({ 'smileavenuedental.com': { '/': home, '/contact': CONTACT } }, ['New York City'])
+  assert.equal(attached(r), false)
+  assert.ok(r.audit.some(a => a.status === 'contact rejected: location mismatch Pico Rivera, CA vs New York, NY'), JSON.stringify(r.audit))
 })

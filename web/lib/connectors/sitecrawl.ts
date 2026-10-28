@@ -11,6 +11,7 @@ import { detectTech, type TechHit } from './techstack.ts'
 import { emailGuessEnabled, personalLocals, recordEmailGuesses } from '../people/email-pattern.ts'
 import { roleContradicted, titleMatches } from '../people/rank.ts'
 import { placeAgreement, cityScoped } from '../scan/place-agreement.ts'
+import { firstPlaceLabel, leadPlaceLabel } from '../scan/contact-agreement.ts'
 
 // Contact-page crawl. No key. For a verified lead it finds the company's own website, reads a handful of
 // contact/about pages and keeps only business contacts the company itself published there.
@@ -519,16 +520,17 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         r = await readSite(cand, l.company)
         if (r.reason !== 'name_mismatch' && r.reason !== 'site_unreachable' && ((basisOf.get(cand) === 'name_probe' && !placeConsistent(r.homeNorm, places)) || (basisOf.get(cand) !== 'name_probe' && basisOf.get(cand) !== 'evidence_own_domain' && places.length > 0 && !placeConsistent(r.homeNorm, places)))) {
           // Same name, but the homepage names none of the lead's places (or no place is known): not this company.
-          audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: places.length ? 'geo_mismatch' : 'geo_unknown', results: 0 })
+          audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: (places.length ? `contact rejected: location mismatch ${firstPlaceLabel(r.homeText ?? '') ?? 'another place'} vs ${leadPlaceLabel(where)}` : 'contact rejected: no location to confirm the company').slice(0, 180), results: 0 })
           r = { found: [], reason: 'name_mismatch', pages: 0 }
           continue
         }
         // Place agreement against the scan's geography (city-scoped for New York City / London): a same-name practice in another state or
         // another UK city names its own address on its homepage and is refused; a guessed (name_probe) domain must also AGREE for a city ask.
         if (r.reason !== 'name_mismatch' && r.reason !== 'site_unreachable' && where.length > 0 && basisOf.get(cand) !== 'evidence_own_domain') {
-          const v = r.homeText ? placeAgreement(r.homeText, where) : 'unconfirmed'
+          const v = r.homeText ? placeAgreement(r.homeText, where, l.company) : 'unconfirmed'
           if (v === 'mismatch' || (v !== 'agrees' && v !== 'no_geography' && cityScoped(where) && basisOf.get(cand) === 'name_probe')) {
-            audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: v === 'mismatch' ? 'geo_mismatch' : 'geo_unknown', results: 0 })
+            // Reason in plain words, e.g. "contact rejected: location mismatch Pico Rivera, CA vs New York, NY".
+            audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: `contact rejected: location ${v === 'mismatch' ? 'mismatch' : 'unconfirmed'} ${firstPlaceLabel(r.homeText ?? '') ?? 'another place'} vs ${leadPlaceLabel(where)}`.slice(0, 180), results: 0 })
             r = { found: [], reason: 'name_mismatch', pages: 0 }
             continue
           }

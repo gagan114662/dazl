@@ -15,8 +15,8 @@ export class EnrichError extends Error {
 const BASE = 'https://api.apollo.io'
 const TIMEOUT_MS = 15_000
 
-export interface ApolloOrg { name: string | null; employees: number | null; industry: string | null; founded: number | null; website: string | null; linkedin: string | null }
-export interface ApolloPerson { name: string; title: string | null; linkedin: string | null }
+export interface ApolloOrg { name: string | null; employees: number | null; industry: string | null; founded: number | null; website: string | null; linkedin: string | null; place: string | null }
+export interface ApolloPerson { name: string; title: string | null; linkedin: string | null; place?: string | null; domain?: string | null }
 
 async function call(apiKey: string, path: string, body: Record<string, unknown>, fetchImpl: typeof fetch): Promise<unknown> {
   const ctrl = new AbortController()
@@ -35,6 +35,7 @@ async function call(apiKey: string, path: string, body: Record<string, unknown>,
   } finally { clearTimeout(t) }
 }
 
+import { formatPlace } from '../scan/contact-agreement.ts'
 const clean = (v: unknown, max = 200) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, max) : null)
 
 // 1 credit per call.
@@ -53,6 +54,7 @@ export async function apolloOrgEnrich(apiKey: string, org: { domain?: string | n
     founded: typeof o.founded_year === 'number' ? o.founded_year : null,
     website: clean(o.website_url),
     linkedin: clean(o.linkedin_url),
+    place: formatPlace(clean(o.city, 80), clean(o.state, 80), clean(o.country, 80)),
   }
 }
 
