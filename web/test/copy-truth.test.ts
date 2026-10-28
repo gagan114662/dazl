@@ -45,16 +45,43 @@ test('homepage claims match behaviour (Instinct #326): example demo labelled, we
   assert.doesNotMatch(page, /no overages/i)
 })
 
-test('homepage approval wording is exact (Hermes): nothing sends until approved; autopilot opt-in, account-wide', () => {
-  const page = read('app/page.tsx')
-  assert.match(page, /Nothing sends until you approve it/)
-  assert.match(page, /Autopilot is off unless you turn it on; it has a sending limit you set and starts only after you have approved your first sends/)
-  // Autopilot is one switch per account (lib/outreach/autopilot.ts autopilot_settings keyed by tenant): no per-Play claim.
-  assert.match(read('lib/outreach/autopilot.ts'), /tenant_id TEXT PRIMARY KEY/)
+test('homepage approval wording matches the sending contract (Instinct #338): approval per email unless Autopilot is on', () => {
+  const page = read('app/page.tsx'), ap = read('lib/outreach/autopilot.ts')
+  // What Autopilot does once on (its consent text): later emails go out without asking first, within limits, after the
+  // first approved sends. So no categorical "nothing sends until you approve it" anywhere on the page.
+  assert.match(ap, /without asking you first/)
+  assert.match(ap, /after the first sends have been approved by you/)
+  assert.doesNotMatch(page, /Nothing sends until you approve it/)
+  // Every approval claim on the page names the Autopilot exception in the same sentence.
+  const claims = page.split(/(?<=[.!?'])\s+/).filter(x => /\byou approve\b/i.test(x) && !/first sends/.test(x))
+  assert.ok(claims.length >= 2, 'the proof strip and step 3 both state it')
+  for (const c of claims) assert.match(c, /unless you turn on Autopilot/, c)
+  assert.match(page, /later emails can send without your individual review/)
+  // Autopilot is one switch per account (autopilot_settings keyed by tenant): no per-Play claim.
+  assert.match(ap, /tenant_id TEXT PRIMARY KEY/)
   assert.doesNotMatch(page, /which Plays it covers/)
-  // The warm-up the wording relies on: the first sends are approved by the user.
-  assert.match(read('lib/outreach/autopilot.ts'), /WARMUP_SENDS/)
   // No BYOK or trial-scan wording in the hero.
   const hero = page.slice(page.indexOf('<h1'), page.indexOf('<LandingDemo'))
   assert.doesNotMatch(hero, /BYOK|own (AI )?key|trial/i)
+})
+
+test('homepage evidence and coverage claims match what a scan returns (Instinct #338)', () => {
+  const page = read('app/page.tsx'), demo = read('app/landing-demo.tsx')
+  // Undated, unconfirmed or blocked candidates stay held for review: only ready leads carry the checked evidence.
+  assert.doesNotMatch(page, /Every lead (comes|shows)|Each lead comes|Evidence for every lead/)
+  assert.match(page, /Leads marked ready come with the quoted line/)
+  assert.match(page, /stay held for your review, with the reason/)
+  // Any business is welcome; results are not promised for every market.
+  assert.doesNotMatch(page, /works out who buys from you\./)
+  assert.match(page, /What it finds depends on the public evidence available for your market/)
+  // The demo shows held leads beside ready ones, never only a headline count.
+  assert.doesNotMatch(demo, /5 leads found/)
+  assert.match(demo, /held for your review/)
+})
+
+test('onboarding "brain ready" copy matches behaviour: no approve-every-send, no unconditional follow-up stop, no contact-today promise', () => {
+  const fr = read('app/app/first-run.tsx')
+  assert.doesNotMatch(fr, /You approve every email before it sends|Follow-ups stop the moment|contact today/)
+  assert.match(fr, /autopilot is off unless you turn it on/)
+  assert.match(fr, /held for your review/)
 })

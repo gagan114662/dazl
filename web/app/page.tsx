@@ -14,13 +14,13 @@ export const metadata: Metadata = {
 
 const STEPS = [
   { n: '1', title: 'Paste your website', desc: 'That is the only thing you type. dazl reads your site and works out who buys from you and which signals to watch for. You can edit it.' },
-  { n: '2', title: 'Get new leads every week', desc: 'Your Play runs again each week, searching hiring, funding and expansion news. Each lead comes with the line that shows the signal, linked to its source.' },
-  { n: '3', title: 'Approve and send', desc: 'dazl drafts the message from the evidence. Nothing sends until you approve it, and it goes from your own Gmail.' },
+  { n: '2', title: 'Get new leads every week', desc: 'Your Play runs again each week, searching hiring, funding and expansion news. Each ready lead comes with the line that shows the signal, linked to its source.' },
+  { n: '3', title: 'Approve and send', desc: 'dazl drafts the message from the evidence. You approve each email before it sends, unless you turn on Autopilot. Email goes from your own Gmail.' },
 ]
 const PROOF = [
-  ['Quoted and linked', 'Every lead shows the exact line from its source page, with the link.'],
+  ['Quoted and linked', 'Each ready lead shows the exact line from its source page, with the link.'],
   ['Company and date checked', 'dazl confirms the page names the company and that the date is recent. Leads that fail a check are held for your review, out of the ready-to-contact list.'],
-  ['Nothing sends until you approve it', 'Email goes from your own Gmail. Autopilot is off unless you turn it on; it has a sending limit you set and starts only after you have approved your first sends.'],
+  ['You approve each send, unless you turn on Autopilot', 'Email goes from your own Gmail. Autopilot is off unless you turn it on. Once on, and after you have approved your first sends, later emails can send without your individual review, within the sending limit you set.'],
 ]
 
 export default function Home() {
@@ -41,9 +41,9 @@ export default function Home() {
 
       <section className="px-4 sm:px-6 pt-12 md:pt-20 pb-10 max-w-4xl mx-auto w-full text-center">
         <h1 className="lp-h1">Your website in.<br />Verified leads out.</h1>
-        <p className="text-lg md:text-xl text-[var(--ink-2)] mt-6 max-w-2xl mx-auto leading-relaxed">dazl reads your site and finds companies with a buying signal right now. Every lead comes with the quoted line, a working source link and a date, and dazl checks the company and date match before a lead is marked ready.</p>
-        <p className="text-sm font-semibold mt-4" data-testid="hero-contrast">Evidence for every lead, not a list of guesses.</p>
-        <p className="text-sm text-[var(--ink-2)] mt-1" data-testid="hero-any">For any business, in any country: paste your website and dazl works out who buys from you.</p>
+        <p className="text-lg md:text-xl text-[var(--ink-2)] mt-6 max-w-2xl mx-auto leading-relaxed">dazl reads your site and finds companies with a buying signal right now. Leads marked ready come with the quoted line, the source link and the date, checked against the company. Leads dazl cannot confirm stay held for your review, with the reason.</p>
+        <p className="text-sm font-semibold mt-4" data-testid="hero-contrast">Evidence for every ready lead, not a list of guesses.</p>
+        <p className="text-sm text-[var(--ink-2)] mt-1" data-testid="hero-any">Made for any business, anywhere: paste your website and dazl drafts who buys from you. What it finds depends on the public evidence available for your market.</p>
         <div className="flex flex-wrap gap-3 mt-8 justify-center">
           <a href="/api/auth/google" className="btn-primary btn-lg" data-testid="hero-cta">Start free</a>
           <a href="#how" className="btn-ghost btn-lg">See how it works</a>

@@ -47,8 +47,8 @@ export default function LandingDemo() {
       </div>
       <div className={`lp-card mt-3 p-4 sm:p-5 lp-fade ${done ? 'lp-in' : ''}`}>
         <div className="flex items-center justify-between mb-3">
-          <div className="font-semibold">5 leads found</div>
-          <span className="text-xs text-[var(--ink-3)]">3 of 5 shown</span>
+          <div className="font-semibold">3 leads ready</div>
+          <span className="text-xs text-[var(--ink-3)]">2 more held for your review</span>
         </div>
         <div className="grid gap-2">
           {LEADS.map((l, i) => (
