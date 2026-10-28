@@ -94,8 +94,8 @@ pass "broken commit: build failed, its release removed, $s2 still live"
 commit "git -c user.email=e2e@example.test -c user.name=e2e revert --no-edit HEAD >/dev/null && echo >> README.md" "e2e fixed"; s4=$(sha)
 avail=$(df -B1 --output=avail "$T/root" | tail -1 | tr -d ' '); est=$(du -sb --exclude=node_modules "$T/root/current/web" | cut -f1)
 # a floor the pre-check just clears, which the build's own writes then cross
-if out=$(MIN_FREE_BYTES=$(( avail - est - 5000000 )) $D 2>&1); then die "deployed although the build crossed the floor"; fi
-echo "$out" | grep -q "reached the floor" || die "no mid-build floor stop: $(echo "$out" | tail -3)"
+if out=$(DISK_RESERVE_BYTES=0 MIN_FREE_BYTES=$(( avail - est - 5000000 )) $D 2>&1); then die "deployed although the build crossed the floor"; fi
+echo "$out" | grep -q "fell below the floor plus reserve" || die "no mid-build floor stop: $(echo "$out" | tail -3)"
 [ ! -e "$T/root/releases/$s4" ] || die "release left behind after the floor stop"
 curl -fsS "http://127.0.0.1:$PORT/api/health" | grep -q "\"commit\":\"$s2\"" || die "live release changed after the floor stop"
 pass "floor reached during the build: build stopped, release removed, $s2 still live"

@@ -207,12 +207,12 @@ test('low disk: skip and alert (throttled), stop a build at the floor, never tou
   assert.equal(sent().length, 2, 'alerts again once the interval has passed')
 
   // 2. above the floor, but the release would not fit above it: skipped, alerted, nothing built
-  r = run({ MIN_FREE_BYTES: String(free() - 50_000_000), FIRST_RELEASE_BYTES: '200000000' })
+  r = run({ MIN_FREE_BYTES: String(free() - 50_000_000), FIRST_RELEASE_BYTES: '200000000', DISK_RESERVE_BYTES: '0' })
   assert.equal(r.code, 0, r.out); assert.match(r.out, /ALERT low_disk_for_release: skipped [0-9a-f]{40}: \d+ bytes free, a release needs about 200000000/)
   assert.deepEqual(releases(), []); assert.equal(sent().at(-1).reason, 'low_disk_for_release'); assert.equal(sent().at(-1).needed_bytes, 200000000)
 
   // 3. the floor is reached while the build runs: stopped, release removed, alerted, exit 1, no live pointer created
-  r = run({ MIN_FREE_BYTES: String(free() - 40_000_000), STAGING_BUILD: 'head -c 80000000 /dev/zero > fill.bin && sleep 6' })
+  r = run({ MIN_FREE_BYTES: String(free() - 40_000_000), DISK_RESERVE_BYTES: '0', STAGING_BUILD: 'head -c 80000000 /dev/zero > fill.bin && sleep 6' })
   assert.equal(r.code, 1, r.out); assert.match(r.out, /ALERT low_disk_during_build: stopped the build/)
   assert.deepEqual(releases(), [], 'the stopped release is removed'); assert.equal(existsSync(path.join(root, 'current')), false)
   assert.equal(sent().at(-1).reason, 'low_disk_during_build')
@@ -228,4 +228,66 @@ test('low disk: skip and alert (throttled), stop a build at the floor, never tou
     const x = run({ MIN_FREE_BYTES: '1', STAGING_ROOT: bad })
     assert.equal(x.code, 1); assert.match(x.out, /STAGING_ROOT .* (inside|contains) production's data directory/)
   }
+})
+
+// Review repro (#314): a successful build that ends low AFTER the watcher's last poll. With a fake df reading its value
+// from a file, the build flips free space to 1 byte just before it exits; the deploy must not go live. Also: the reserve
+// is kept above the floor (no build starts, and a running one stops, before the floor itself is reached), and the
+// watcher reacts within its 0.5 s cadence.
+test('low disk after or near the end of a build: never put live; the reserve above the floor is enforced', async () => {
+  const { execFileSync } = await import('node:child_process')
+  const { existsSync, readdirSync, readlinkSync, symlinkSync } = await import('node:fs')
+  const T = mkdtempSync(path.join(tmpdir(), 'staging-final-'))
+  const root = path.join(T, 'root'), repo = path.join(T, 'repo'), bin = path.join(T, 'bin'), availFile = path.join(T, 'avail'), alerts = path.join(T, 'alerts')
+  const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_CONFIG_'))) as NodeJS.ProcessEnv
+  const g = (...a: string[]) => execFileSync('git', ['-C', repo, '-c', 'user.email=t@example.test', '-c', 'user.name=t', ...a], { encoding: 'utf8', env: gitEnv }).trim()
+  mkdirSync(path.join(repo, 'web'), { recursive: true }); mkdirSync(bin)
+  execFileSync('git', ['init', '-q', '-b', 'main', repo], { env: gitEnv })
+  writeFileSync(path.join(repo, 'web', 'package-lock.json'), '{}'); g('add', '-A'); g('commit', '-qm', 'new')
+  const sha = g('rev-parse', 'HEAD')
+  // a fake df: "avail" for every path, read from a file the test (and the stub build) control
+  writeFileSync(path.join(bin, 'df'), `#!/usr/bin/env bash\necho Avail\ncat ${availFile}\n`); execFileSync('chmod', ['+x', path.join(bin, 'df')])
+  writeFileSync(path.join(T, 'alert.sh'), `echo "$1" >> ${alerts}\n`)
+  // an existing live release (complete), which must stay live
+  const old = 'a'.repeat(40)
+  mkdirSync(path.join(root, 'releases', old, 'web'), { recursive: true }); writeFileSync(path.join(root, 'releases', old, '.complete'), '')
+  symlinkSync(path.join(root, 'releases', old), path.join(root, 'current')); writeFileSync(path.join(root, 'current-sha'), old + '\n')
+  const env = path.join(T, 'env'); writeFileSync(env, good)
+  const FLOOR = 2147483648, RESERVE = 268435456
+  const run = (build: string, avail: number) => {
+    writeFileSync(availFile, String(avail))
+    const t0 = Date.now()
+    const r = spawnSync('bash', [script], { encoding: 'utf8', env: {
+      PATH: `${bin}:${process.env.PATH}`, HOME: process.env.HOME, STAGING_ROOT: root, STAGING_ENV_FILE: env, STAGING_PORT: '1',
+      STAGING_USER: execFileSync('id', ['-un'], { encoding: 'utf8' }).trim(), STAGING_REPO_URL: `file://${repo}`, STAGING_RESTART: 'true',
+      STAGING_BUILD: build, STAGING_HEALTH_TRIES: '1', PROD_DB_PATH: prodDb, MIN_FREE_BYTES: String(FLOOR),
+      STAGING_ALERT_CMD: `bash ${path.join(T, 'alert.sh')}`, STAGING_ALERT_EVERY_S: '0',
+    } as unknown as NodeJS.ProcessEnv })
+    return { code: r.status, out: r.stdout + r.stderr, ms: Date.now() - t0 }
+  }
+  const live = () => [path.basename(readlinkSync(path.join(root, 'current'))), readFileSync(path.join(root, 'current-sha'), 'utf8').trim()]
+  const lastAlert = () => JSON.parse(readFileSync(alerts, 'utf8').trim().split('\n').at(-1)!)
+
+  // 1. the build succeeds, then free space is 1 byte, between watcher polls: not put live, release removed
+  let r = run(`sleep 0.25 && echo 1 > ${availFile}`, 10e9)
+  assert.equal(r.code, 1, r.out)
+  assert.match(r.out, /ALERT low_disk_after_build: did not put [0-9a-f]{40} live: 1 bytes free after its build/)
+  assert.doesNotMatch(r.out, /live: [0-9a-f]{40}$/m)
+  assert.doesNotMatch(r.out, /cutover of/, 'no cutover was even attempted')
+  assert.deepEqual(live(), [old, old], 'the live release is unchanged')
+  assert.deepEqual(readdirSync(path.join(root, 'releases')), [old], 'the failed release is removed')
+  assert.equal(existsSync(path.join(root, 'releases', sha)), false)
+  assert.equal(lastAlert().reason, 'low_disk_after_build')
+
+  // 2. above the floor but inside the reserve: no build starts at all
+  r = run(`touch ${path.join(T, 'built')}`, FLOOR + RESERVE / 2)
+  assert.equal(r.code, 0, r.out); assert.match(r.out, /ALERT low_disk_for_release: skipped .* plus a reserve of 268435456/)
+  assert.equal(existsSync(path.join(T, 'built')), false, 'no build ran'); assert.deepEqual(live(), [old, old])
+
+  // 3. free space drops into the reserve while a long build runs: stopped within the watcher cadence, before the floor
+  r = run(`echo ${FLOOR + 1000} > ${availFile} && sleep 20`, 10e9)
+  assert.equal(r.code, 1, r.out); assert.match(r.out, /ALERT low_disk_during_build: stopped the build/)
+  assert.ok(r.ms < 8000, `stopped promptly (${r.ms} ms), not after the 20 s build`)
+  assert.deepEqual(live(), [old, old]); assert.deepEqual(readdirSync(path.join(root, 'releases')), [old])
+  assert.ok(lastAlert().free_bytes >= FLOOR, 'stopped while still above the protected floor')
 })

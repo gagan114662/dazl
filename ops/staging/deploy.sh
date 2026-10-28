@@ -22,6 +22,10 @@ RUN_AS=${STAGING_USER:-dazl-staging}
 REPO_URL=${STAGING_REPO_URL:-https://github.com/gagan114662/dazl.git}
 RESTART=${STAGING_RESTART:-systemctl restart $SERVICE}
 MIN_FREE_BYTES=${MIN_FREE_BYTES:-2147483648}
+# Headroom kept above the floor while building: the build is stopped, and a finished release is not put live, once free
+# space falls below MIN_FREE_BYTES + DISK_RESERVE_BYTES, so the protected floor itself is never crossed.
+DISK_RESERVE_BYTES=${DISK_RESERVE_BYTES:-268435456}
+WATCH_INTERVAL=${STAGING_WATCH_INTERVAL:-0.5}
 # used when there is no live release to measure: node_modules plus build output, measured at about 1.1 GB
 FIRST_RELEASE_BYTES=${FIRST_RELEASE_BYTES:-1200000000}
 # Production's database: given as its path, or read from production's env file. Fail closed when neither is known.
@@ -120,8 +124,8 @@ if [ -n "$live" ] && [ -d "$live/web" ]; then
   [ $reuse = 1 ] || est=$(( est + $(du -sb "$live/web/node_modules" | cut -f1) ))
 else est=$FIRST_RELEASE_BYTES; fi
 avail=$(free_bytes)
-if [ $(( avail - est )) -lt "$MIN_FREE_BYTES" ]; then
-  alert low_disk_for_release "$avail" "$est" "skipped $new: $avail bytes free, a release needs about $est, and the floor is $MIN_FREE_BYTES; the live release is unchanged"
+if [ $(( avail - est )) -lt $(( MIN_FREE_BYTES + DISK_RESERVE_BYTES )) ]; then
+  alert low_disk_for_release "$avail" "$est" "skipped $new: $avail bytes free, a release needs about $est, and the floor is $MIN_FREE_BYTES plus a reserve of $DISK_RESERVE_BYTES; the live release is unchanged"
   exit 0
 fi
 disk_ok
@@ -135,24 +139,31 @@ rm -rf "$rel"; install -d -o "$RUN_AS" -g "$(id -gn "$RUN_AS")" "$rel"
 as sh -c "git -C '$ROOT/repo' archive '$new' | tar -x -C '$rel'"
 [ $reuse = 1 ] && cp -al "$live/web/node_modules" "$rel/web/node_modules"
 
-# The build runs in its own process group; a watcher stops it if free space reaches the floor.
+# The build runs in its own process group; a watcher stops it if free space falls to the floor plus the reserve.
 ( set -a; . "$ENV_FILE"; set +a
   exec setsid bash -c 'if [ "$(id -un)" = "$0" ]; then exec "$@"; else exec runuser -u "$0" -- "$@"; fi' "$RUN_AS" \
     bash -c "cd '$rel/web' && echo '$new' > .build-commit && $BUILD" ) &
 build_pid=$!
-low=0
+low=0; guard=$(( MIN_FREE_BYTES + DISK_RESERVE_BYTES ))
 while kill -0 "$build_pid" 2>/dev/null; do
-  if [ "$(free_bytes)" -lt "$MIN_FREE_BYTES" ]; then low=1; kill -TERM -- "-$build_pid" 2>/dev/null || true; break; fi
-  sleep 2
+  if [ "$(free_bytes)" -lt "$guard" ]; then low=1; kill -TERM -- "-$build_pid" 2>/dev/null || true; break; fi
+  sleep "$WATCH_INTERVAL"
 done
 status=0; wait "$build_pid" || status=$?
 build_pid=
 if [ $low = 1 ]; then
   cleanup
-  alert low_disk_during_build "$(free_bytes)" "$est" "stopped the build of $new: free space reached the floor ($MIN_FREE_BYTES bytes); its release removed, the live release unchanged"
-  fail "free space reached the floor ($MIN_FREE_BYTES bytes) during the build; release removed"
+  alert low_disk_during_build "$(free_bytes)" "$est" "stopped the build of $new: free space fell below the floor plus reserve ($guard bytes); its release removed, the live release unchanged"
+  fail "free space fell below the floor plus reserve ($guard bytes) during the build; release removed"
 fi
 [ $status = 0 ] || { cleanup; fail "build or seed of $new failed (exit $status); release removed"; }
+# The last word before going live: the build may have ended (and written most) after the watcher's last look.
+after=$(free_bytes)
+if [ "$after" -lt "$guard" ]; then
+  cleanup
+  alert low_disk_after_build "$after" "$est" "did not put $new live: $after bytes free after its build, below the floor plus reserve ($guard bytes); its release removed, the live release unchanged"
+  fail "free space below the floor plus reserve ($guard bytes) after the build; release removed, live release unchanged"
+fi
 trap - ERR
 
 # Cutover. From here until the new release is healthy, any failure (the switch, the restart command, readiness)
