@@ -7,7 +7,7 @@ import Database from 'better-sqlite3'
 import { sqliteDb, pgDb, type Db } from '../lib/db/client.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { runPgMigrations } from '../lib/db/migrate-pg.ts'
-import { copyStore, compareStores, CopyRefused, CopyVerifyError } from '../lib/db/copy-store.ts'
+import { copyStore, compareStores, storeCounts, CopyRefused, CopyVerifyError } from '../lib/db/copy-store.ts'
 import { DbQueue } from '../lib/queue/db.ts'
 import * as S from '../lib/scan/store-db.ts'
 import { PG_URL, pgSkip, freshSchema } from './helpers/pg-test.ts'
@@ -149,5 +149,18 @@ test('compareStores names each table whose rows differ', async () => {
     await b.run("UPDATE leads SET score = 1 WHERE id = 'l1'")
     await b.run("DELETE FROM watch_seen")
     assert.deepEqual(await compareStores(a, b), ['leads: same row count, different content', 'watch_seen: 1 rows vs 0'])
+  } finally { await a.close(); await b.close() }
+})
+
+test('a re-run after a finished copy writes nothing; storeCounts splits rows by tenant', async () => {
+  const a = sqliteStore(), b = sqliteStore()
+  try {
+    await seed(a)
+    assert.equal((await copyStore(a, b)).alreadyCopied, undefined)
+    const again = await copyStore(a, b)
+    assert.equal(again.alreadyCopied, true)
+    assert.deepEqual(await compareStores(a, b), [])
+    const jobs = (await storeCounts(a)).find(c => c.table === 'scan_jobs')!
+    assert.deepEqual([jobs.rows, jobs.tenantColumn, jobs.byTenant], [2, 'user_id', { [A]: 1, [B]: 1 }])
   } finally { await a.close(); await b.close() }
 })

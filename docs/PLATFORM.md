@@ -64,7 +64,10 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
       - Health probes write no line.
     - The proxy runs before the route, so the line has no status or duration. Failures appear as error records carrying the same `request_id`.
     - `middleware.ts` moved to `proxy.ts`: the Next 16 name, Node runtime. The `/app` sign-in redirect is unchanged.
-  - Alert hook (the error reporter's DSN): with `OPS_ALERT_WEBHOOK_URL` (https only) set, the same scrubbed record is POSTed. It is throttled to one per fingerprint per 10 min and 20 per 10 min overall, fire and forget.
+  - Alert hooks, both off unless configured, both throttled to one per fingerprint per 10 min and 20 per 10 min overall, fire and forget:
+    - `OPS_ALERT_WEBHOOK_URL` (https only): the scrubbed record is POSTed as JSON.
+    - `SENTRY_DSN` (https only): the scrubbed record goes as a Sentry event, in an envelope to the DSN's project (`/api/<project>/envelope/`), so Sentry, GlitchTip or a Sentry relay can receive it. No SDK is loaded. Grouping uses the record's fingerprint; the tenant id is the event user; `SENTRY_ENVIRONMENT` and `DAZL_COMMIT_SHA` set environment and release. Without a DSN, or with one that does not parse, nothing is sent (`test/ops-sentry.test.ts`).
+  - Health on both engines: `test/health-routes.test.ts` runs the real `/api/health`, `/api/health/live`, `/api/health/ready` and `/api/ready` handlers on SQLite, on an unreachable Postgres, and (with `DAZL_TEST_PG_URL`) on a Postgres with every shipped migration (store and schema ready; 503 from the `split` check alone while raw-SQLite modules remain) and on one missing the newest (503, schema `behind`).
   - Not yet: other diagnostic `console.error` calls inside the scan pipeline (handled per-step failures, not crashes). Also not done yet: the backup restore drill and the deploy checklist (step 6b).
 - **Scan jobs to Postgres, step 1 (platform part):**
   - `lib/scan/store-db.ts` has `Db` versions of the scan job store: create, query-create, get, count-active, list leads, count hidden, latest, list jobs, export, cancel and the stale reaper.
@@ -137,10 +140,22 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
     - `GET /api/leads`: its read contract spans sequences, connectors, events, priorities and lookalikes, plus the currentness gate's storage.
     - The campaign list: it evaluates the draft, approve and send gates per draft, so those gates' storage moves first.
     - Starting a scan and scan status: they call the runner, which is yield-owned.
+- **Postgres port, batch 2 (settings, Cal.com, warm paths):** these routes now run on `Db`:
+  - settings: memory, competitors, Cal.com, connectors, enrichment keys, advanced connectors, the LLM key;
+  - the Cal.com webhook (`/api/hooks/calcom`);
+  - the LinkedIn connections import (`/api/warm/connections`) and a lead's warm paths (`/api/leads/[lead]/warm-path`).
+  - Modules that moved fully: `calcom/index.ts`, `llm/key-evidence.ts`, `warm/connections.ts` (all but its SQLite migration).
+  - Async twins sharing SQL with the sync version the scan pipeline still uses: `memory.ts`, `signals/competitor-reddit.ts`, `connectors/store.ts`, `advanced/index.ts`, `llm/key-store.ts`.
+  - **Behaviour on SQLite is unchanged:**
+    - `INSERT OR IGNORE` / `OR REPLACE` became explicit `ON CONFLICT` on the primary key: Cal.com bookings (`DO NOTHING` on the booking uid), user-reported warm paths (`DO NOTHING`), and the connections import, which upserts on `(tenant_id, linkedin_url)` (the last row for a profile URL wins, as `OR REPLACE` did). A row a later repeat replaces is still written first, so the table's CHECKs judge every accepted row: an over-long `connected_on` anywhere in the file still rejects the whole import and leaves the existing connections in place (`test/warm-connections.test.ts`, both engines). None of these was hiding a NOT NULL or CHECK failure.
+    - `strftime('now')` became the caller's clock. Unordered reads that SQLite answered in primary-key order now say so (`connectorStatus` by connector, LLM key status by vendor); same-second ties use `insert_seq`.
+    - `insert_seq` now covers `connector_audit` and `warm_user_paths` too (SQLite migration; Postgres `0011_insertion_order_more.sql`).
+  - **Tests:** `test/helpers/pg-port-routes-2-runtime.mts` runs the real handlers as two tenants on SQLite and on Postgres from one seed: every response and every row the writes leave must be identical (random ids, secrets and clock times compared by identity), tenant B sees none of tenant A's settings, bookings, connections or paths, and the SQLite handle is a trap on Postgres. It caught the `connectorStatus` order.
+  - **Not in batch 2:** `GET /api/leads` and the other leads routes. They read through yield-owned `lib/scan` modules (source review, lookalikes, domain review, evidence copies, find-contact, page signals, qualify) and the outreach gates' storage, which their owners port first.
 - **Insertion order on both engines (`insert_seq`):**
   - What it fixes: SQLite's `rowid` gave `scan_jobs`, `leads`, `outreach_messages` and `lead_enrichments` an implicit insertion order, which same-second ties relied on. Postgres has none.
   - `insert_seq` makes that order a column on both engines:
-    - **SQLite** (`lib/db/insertion-order.ts`, called by each table's own migration (`migrateScan`, `migrateOutreach`, `migrateConnectors`) and once more at the end of `migrateAllSqlite` and `getScanDb`): existing rows are backfilled from `rowid`. An AFTER INSERT trigger then gives each new row `max(insert_seq) + 1`. Using max rather than `rowid` keeps the order increasing after a copy back from Postgres. A row that brings its own value keeps it.
+    - **SQLite** (`lib/db/insertion-order.ts`, called by each table's own migration (`migrateScan`, `migrateOutreach`, `migrateConnectors`, `migrateWarm`) and once more at the end of `migrateAllSqlite` and `getScanDb`): existing rows are backfilled from `rowid`. An AFTER INSERT trigger then gives each new row `max(insert_seq) + 1`. Using max rather than `rowid` keeps the order increasing after a copy back from Postgres. A row that brings its own value keeps it.
     - **Postgres** (`0010_insertion_order.sql`): a sequence default. `translate-schema.ts` maps the SQLite trigger to it, so the drift test holds.
   - The ported queries (`store-db.ts`, `campaign-detail.ts`, `best-person.ts`) order ties by `insert_seq` on both engines, and the insertion-order gap list is gone.
   - A `rowid` left in `Db`-layer SQL fails the audit, because Postgres rejects it in `PREPARE`.
@@ -149,7 +164,7 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
     - `test/insertion-order.test.ts`: on an existing store, the migration backfills from `rowid`, re-runs change nothing, and new and copied rows order correctly.
     - The parity runtime: ties seeded out of id order come back identically on SQLite and Postgres.
     - `test/copy-store.test.ts`: the sequences continue past the copied values.
-- **Still on SQLite:** the 135 modules in `lib/db/pg-port-status.ts`, down from 149 before batch 1 (the audit's 148 plus `lib/scan/sales-hiring-gate.ts` from #276). Postgres rejects 83 of their statements, down from 87. Production keeps running on SQLite until that list is empty and the cutover below is authorized.
+- **Still on SQLite:** the 122 modules in `lib/db/pg-port-status.ts`, down from 135 after batch 1 and 149 before it (the audit's 148 plus `lib/scan/sales-hiring-gate.ts` from #276). Postgres rejects 74 of their statements, down from 83 and 87. Production keeps running on SQLite until that list is empty and the cutover below is authorized.
 
 ## Tables (73 created in code)
 
@@ -322,32 +337,58 @@ Nothing here has been run against production. The tool and the steps are ready f
 
 **Gate.** `lib/db/pg-port-status.ts` must be empty. A module on the raw SQLite handle keeps reading and writing the SQLite file whatever `DATABASE_URL` says. With the list non-empty, a cutover would split the data between two stores. `scripts/pg-cutover.mts` refuses to copy into Postgres while the list is non-empty, unless `--rehearsal` is passed.
 
-**Tool.** `scripts/pg-cutover.mts` (library: `lib/db/copy-store.ts`, tests: `test/copy-store.test.ts`):
-- `copy --from <app.db | postgres://…> --to <postgres://… | new.db>` copies every table into an empty store, in one target transaction:
-  - The source is opened read-only. A Postgres target is migrated first; a SQLite target must be a new file.
-  - It refuses a target that holds rows, and a source table or column the target lacks.
-  - Rows go in parents first. The guard triggers are off only inside that transaction, so a finished job's leads can be copied, and they are back on at commit.
-  - Before commit, every table's row count and full-content SHA-256 are compared with the source. Any difference rolls everything back, so the target is either a verified copy or empty.
-  - The queue's fencing-token counter carries over, so no token is ever handed out twice.
-- `verify --from … --to …` compares the two stores, table by table: row counts and content checksums.
+**Verify which store an instance serves from.** `/api/ready` and `/api/health`, both unauthenticated, return:
+- `store`:
+  - `engine`: `sqlite` or `pg`;
+  - `migrations.shipped`: the highest PG migration this build ships;
+  - `migrations.applied`: the highest recorded in the store, or null on SQLite;
+  - `raw_sqlite_modules`: the count from `lib/db/pg-port-status.ts`.
+- `checks.split`: on Postgres it fails, making readiness answer 503, while any raw-SQLite module remains. Those modules would keep using the SQLite file, so an instance that reports `pg` and is ready has no split data. On SQLite it is skipped, because everything is in one file.
 
-**Cutover steps** (one maintenance window):
+**Tool.** `scripts/pg-cutover.mts` (library: `lib/db/copy-store.ts`; tests: `test/copy-store.test.ts`, `test/pg-cutover-cli.test.ts`).
+- `plan --from <app.db> [--to $DATABASE_URL] [--tenants]` is the dry run and writes nothing. It prints:
+  - every table's row count, with the number of tenants (or with `--tenants`, each tenant's count);
+  - the target's state: not migrated, empty, already holding exactly these rows, or holding other rows (copy would refuse);
+  - whether the cutover gate is open.
+- `copy --from <app.db> --to $DATABASE_URL` migrates the target, then copies every table in one target transaction:
+  - The source is opened read-only.
+  - It refuses a source table or column the target lacks.
+  - Rows go in parents first. The guard triggers are off only inside that transaction, so a finished job's leads can be copied, and they are back on at commit.
+  - Before commit, every table's row count and full-content SHA-256 are compared with the source. Any difference rolls everything back, so the target is either a verified copy or untouched.
+  - The queue's fencing-token counter and every column sequence (identity ids, `insert_seq`) continue after the copied values.
+  - **Idempotent:** re-run after it finished, it finds exactly the source's rows, reports "already copied" and writes nothing. A target holding anything else is refused.
+  - Refused while the gate is closed, unless `--rehearsal` is passed.
+- `verify --from … --to …` compares row counts and content checksums table by table. Where counts differ, it names the tenants whose counts differ.
+- `rollback --from $DATABASE_URL --to <new.db>` copies Postgres back into a new SQLite file and verifies it. It never writes over an existing file.
+- Exit codes: 0 done or matching, 1 stores differ, 2 usage, 3 refused.
+
+**Cutover steps** (one maintenance window, once the gate is open):
 1. Take a fresh backup of the SQLite file and restore-test it.
-2. Stop every writer: all app instances, plus `worker/`, `session-worker/` and the Hermes tunnel (the write fence does not cover them).
-3. `pg-cutover.mts copy --from <app.db> --to $DATABASE_URL`. It prints each table's rows and checksum.
-4. `pg-cutover.mts verify --from <app.db> --to $DATABASE_URL` must report "stores match".
-5. Set `DATABASE_URL` on every instance and start them. `/api/ready` must report the `pg` engine with the schema check ok.
-6. Keep the SQLite file read-only and untouched. Never delete it.
+2. Provision Postgres, then run `pg-cutover.mts plan --from <app.db> --to $DATABASE_URL --tenants` and keep the output.
+3. Stop every writer: all app instances, plus `worker/`, `session-worker/` and the Hermes tunnel (the write fence does not cover them).
+4. `pg-cutover.mts copy --from <app.db> --to $DATABASE_URL`: it migrates, copies and verifies.
+5. `pg-cutover.mts verify --from <app.db> --to $DATABASE_URL` must exit 0 ("stores match").
+6. Set `DATABASE_URL` on every instance and start them. `/api/ready` must answer 200 with `store.engine: "pg"`, `migrations.applied` equal to `migrations.shipped`, and `checks.split.ok: true`.
+7. Keep the SQLite file read-only and untouched. Never delete it.
 
 **Rollback:**
 - **Before any write lands on Postgres** (the copy failed, verify differs, or readiness fails): stop the instances, unset `DATABASE_URL`, start again. The SQLite file is exactly as it was.
 - **After Postgres has taken writes:**
   1. Stop every writer.
-  2. `pg-cutover.mts copy --from $DATABASE_URL --to <new.db>` writes a new, verified SQLite file.
-  3. Run `verify` on it.
-  4. Point `DB_PATH` at the new file, unset `DATABASE_URL`, and start the instances.
-  5. Keep the pre-cutover file as a second copy.
-- Both directions are covered by `test/copy-store.test.ts`. The rollback test also changes a row on Postgres after the cutover copy and checks the change comes back.
+  2. `pg-cutover.mts rollback --from $DATABASE_URL --to <new.db>` writes a new, verified SQLite file.
+  3. Point `DB_PATH` at the new file, unset `DATABASE_URL`, and start the instances. `/api/ready` must report `store.engine: "sqlite"`.
+  4. Keep the pre-cutover file as a second copy.
+- Both directions are covered by `test/copy-store.test.ts` and `test/pg-cutover-cli.test.ts`. The CLI test also writes to Postgres after the copy and checks that the rollback carries the write back.
+
+**Still blocking the switch:**
+- 122 modules on the raw SQLite handle (`lib/db/pg-port-status.ts`): the gate. The largest groups:
+  - the scan runner and pipeline (`lib/scan`, yield-owned);
+  - outreach and the send gates (`lib/outreach`);
+  - the leads routes, including `GET /api/leads` (they wait on `lib/scan` and `lib/outreach` storage).
+  - Settings moved in batch 2.
+- Not authorized: provisioning production Postgres, setting `DATABASE_URL`, and the cutover itself (see "Production go/no-go").
+- The write fence is not wired into the app. Writers are stopped by stopping the processes, and the Hermes tunnel and workers must be paused separately.
+- 35 runtime-built SQL statements are not statically checked; the ported ones run on Postgres in tests.
 
 **Limits:**
 - Each table is read into memory whole, which is fine at today's store size.

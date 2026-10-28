@@ -5,6 +5,7 @@
 // fallback, same rate budget as the other advanced fetchers. Public posts only,
 // nothing is ever sent anywhere. Competitors are configured in Settings (max 5).
 import type Database from 'better-sqlite3'
+import type { Db, Tx, TxBody } from '../db/client.ts'
 import type { Evidence } from '../sources/types.ts'
 import { audit, getEnabledCredential } from '../connectors/store.ts'
 import { advFlags, connectorId, maxCallsPerHour, platformAllowed, scopeFor } from '../advanced/config.ts'
@@ -25,17 +26,24 @@ export function cleanCompetitorName(v: unknown): string {
   return String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, 60)
 }
 
+const COMPETITORS_SQL = 'SELECT name FROM tenant_competitors WHERE tenant_id = ? ORDER BY position'
+// Sync for the complaint collector (scan runner, raw handle); readCompetitors for the settings route (Db layer).
 export function listCompetitors(db: Database.Database, tenantId: string): string[] {
-  return (db.prepare('SELECT name FROM tenant_competitors WHERE tenant_id = ? ORDER BY position').all(tenantId) as { name: string }[]).map(r => r.name)
+  return (db.prepare(COMPETITORS_SQL).all(tenantId) as { name: string }[]).map(r => r.name)
+}
+export async function readCompetitors(db: Db, tenantId: string): Promise<string[]> {
+  return (await db.all<{ name: string }>(COMPETITORS_SQL, [tenantId])).map(r => r.name)
 }
 
-export function setCompetitors(db: Database.Database, tenantId: string, names: string[]): { ok: boolean; error?: string; names: string[] } {
+// On the Db layer: the list is replaced in one transaction.
+export async function setCompetitors(db: Db, tenantId: string, names: string[]): Promise<{ ok: boolean; error?: string; names: string[] }> {
   const cleaned = [...new Set(names.map(cleanCompetitorName).filter(Boolean))]
   if (cleaned.length > MAX_COMPETITORS) return { ok: false, error: `Up to ${MAX_COMPETITORS} competitors`, names: [] }
   for (const n of cleaned) if (n.length < 2) return { ok: false, error: 'Competitor names need at least 2 characters', names: [] }
-  db.prepare('DELETE FROM tenant_competitors WHERE tenant_id = ?').run(tenantId)
-  const ins = db.prepare('INSERT INTO tenant_competitors (tenant_id, name, position) VALUES (?, ?, ?)')
-  cleaned.forEach((n, i) => ins.run(tenantId, n, i))
+  await db.tx(function* (t: Tx): TxBody<void> {
+    yield* t.run('DELETE FROM tenant_competitors WHERE tenant_id = ?', [tenantId])
+    for (const [i, n] of cleaned.entries()) yield* t.run('INSERT INTO tenant_competitors (tenant_id, name, position) VALUES (?, ?, ?)', [tenantId, n, i])
+  })
   return { ok: true, names: cleaned }
 }
 

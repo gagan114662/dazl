@@ -3,6 +3,7 @@
 // data, and must leave A's rows byte-unchanged. Positive controls show the same calls work for A on A's ids, so a
 // handler that always refuses cannot pass. Any outbound fetch fails the test; nothing here is live data or a send.
 import { test } from 'node:test'
+import { sqliteDb } from '../../lib/db/client.ts'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import { mkdtempSync } from 'node:fs'
@@ -46,7 +47,7 @@ function snapshot(db: Database.Database): string {
   return JSON.stringify(tables.map(t => [t, db.prepare(`SELECT * FROM "${t}" ORDER BY rowid`).all()]))
 }
 
-function build() {
+async function build() {
   const db = new Database(':memory:')
   migrateAllSqlite(db)
   setScanDb(db)
@@ -63,7 +64,7 @@ function build() {
   const quarantined = lead('quarantined_at=1700000000')                 // for quarantine DELETE
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(job)
   db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, 'A', 'apollo', 'contact', 'ASECRETMUTUAL4q7 - VP', 'c', 90, 'https://www.linkedin.com/in/asecret4q7', '2026-10-01', 1)").run(hex(), review)
-  const warmPath = addUserReportedPath(db, 'A', review, 'https://www.linkedin.com/in/asecret4q7', 'ASECRETMUTUAL4q7')!.id
+  const warmPath = (await addUserReportedPath(sqliteDb(db), 'A', review, 'https://www.linkedin.com/in/asecret4q7', 'ASECRETMUTUAL4q7'))!.id
   const commenterBatch = hex()
   db.prepare("INSERT INTO commenter_batches (id, user_id, context, total) VALUES (?, 'A', 'ASECRETCONTEXT4q7', 0)").run(commenterBatch)
   const csvBatch = hex()
@@ -76,7 +77,7 @@ function build() {
 }
 
 test("tenant B cannot read or change tenant A's lead, batch or reply-thread rows by id; A's own calls work", async () => {
-  const f = build()
+  const f = await build()
   const { db } = f
   const before = snapshot(db)
   const done: string[] = []

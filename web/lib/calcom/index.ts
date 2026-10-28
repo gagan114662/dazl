@@ -1,9 +1,11 @@
 import crypto from 'node:crypto'
 import type Database from 'better-sqlite3'
+import type { Db, Tx, TxBody } from '../db/client.ts'
 
 // Cal.com booking webhooks -> pipeline stage. A booking is matched to a lead by the attendee's
 // normalized email against lead.contact. Zero or several matches stay "unmatched" - a booking is
 // never guessed onto a lead. Idempotent on (tenant, booking uid): Cal.com retries are safe.
+// Reads and writes run on the Db layer (SQLite or Postgres); migrateCalcom is the SQLite schema.
 
 export function migrateCalcom(db: Database.Database): void {
   db.exec(`
@@ -24,14 +26,13 @@ export function migrateCalcom(db: Database.Database): void {
   `)
 }
 
-export function getSecret(db: Database.Database, tenantId: string): string | null {
-  const r = db.prepare('SELECT secret FROM calcom_hooks WHERE tenant_id = ?').get(tenantId) as { secret: string } | undefined
-  return r?.secret ?? null
+export async function getSecret(db: Db, tenantId: string): Promise<string | null> {
+  return (await db.get<{ secret: string }>('SELECT secret FROM calcom_hooks WHERE tenant_id = ?', [tenantId]))?.secret ?? null
 }
 
-export function rotateSecret(db: Database.Database, tenantId: string): string {
+export async function rotateSecret(db: Db, tenantId: string, nowS = Math.floor(Date.now() / 1000)): Promise<string> {
   const secret = crypto.randomBytes(24).toString('base64url')
-  db.prepare("INSERT INTO calcom_hooks (tenant_id, secret) VALUES (?, ?) ON CONFLICT(tenant_id) DO UPDATE SET secret = excluded.secret, created_at = CAST(strftime('%s','now') AS INTEGER)").run(tenantId, secret)
+  await db.run('INSERT INTO calcom_hooks (tenant_id, secret, created_at) VALUES (?, ?, ?) ON CONFLICT(tenant_id) DO UPDATE SET secret = excluded.secret, created_at = excluded.created_at', [tenantId, secret, nowS])
   return secret
 }
 
@@ -57,24 +58,30 @@ export function parseBooking(rawBody: string): { uid: string; email: string; nam
 
 export const normalizeEmail = (s: string) => s.trim().toLowerCase()
 
-// Returns 'duplicate' when this booking was already recorded, otherwise the match outcome.
-export function recordBooking(db: Database.Database, tenantId: string, b: { uid: string; email: string; name: string | null }): 'duplicate' | 'matched' | 'unmatched' {
+// Returns 'duplicate' when this booking was already recorded, otherwise the match outcome. One transaction: the
+// booking, the lead's stage and the booking's lead link land together. A duplicate is skipped by the primary key
+// (ON CONFLICT DO NOTHING): the table has no CHECK, and parseBooking always gives a uid and an email, so this skips
+// exactly what INSERT OR IGNORE skipped.
+export function recordBooking(db: Db, tenantId: string, b: { uid: string; email: string; name: string | null }): Promise<'duplicate' | 'matched' | 'unmatched'> {
   const email = normalizeEmail(b.email)
-  const ins = db.prepare('INSERT OR IGNORE INTO calcom_bookings (tenant_id, booking_uid, attendee_email, attendee_name) VALUES (?, ?, ?, ?)').run(tenantId, b.uid, email, b.name)
-  if (ins.changes === 0) return 'duplicate'
-  // Exactly one lead with this contact email across the tenant's jobs -> book it. Anything else stays unmatched.
-  const rows = db.prepare('SELECT l.id FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ? AND l.contact IS NOT NULL AND lower(l.contact) = ?').all(tenantId, email) as { id: string }[]
-  if (rows.length === 1) {
-    db.prepare("UPDATE leads SET stage = 'booked_call' WHERE id = ?").run(rows[0].id)
-    db.prepare('UPDATE calcom_bookings SET lead_id = ? WHERE tenant_id = ? AND booking_uid = ?').run(rows[0].id, tenantId, b.uid)
-    return 'matched'
-  }
-  return 'unmatched'
+  return db.tx(function* (t: Tx): TxBody<'duplicate' | 'matched' | 'unmatched'> {
+    const ins = yield* t.run('INSERT INTO calcom_bookings (tenant_id, booking_uid, attendee_email, attendee_name) VALUES (?, ?, ?, ?) ON CONFLICT (tenant_id, booking_uid) DO NOTHING', [tenantId, b.uid, email, b.name])
+    if (ins.changes === 0) return 'duplicate'
+    // Exactly one lead with this contact email across the tenant's jobs -> book it. Anything else stays unmatched.
+    const rows = yield* t.all<{ id: string }>('SELECT l.id FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ? AND l.contact IS NOT NULL AND lower(l.contact) = ?', [tenantId, email])
+    if (rows.length === 1) {
+      yield* t.run("UPDATE leads SET stage = 'booked_call' WHERE id = ?", [rows[0].id])
+      yield* t.run('UPDATE calcom_bookings SET lead_id = ? WHERE tenant_id = ? AND booking_uid = ?', [rows[0].id, tenantId, b.uid])
+      return 'matched'
+    }
+    return 'unmatched'
+  })
 }
 
-export function listBookings(db: Database.Database, tenantId: string, limit = 50) {
-  return db.prepare(`
+// Newest first; same-second bookings by booking uid, the order SQLite's primary-key index gave.
+export function listBookings(db: Db, tenantId: string, limit = 50) {
+  return db.all(`
     SELECT b.booking_uid, b.attendee_email, b.attendee_name, b.created_at, b.lead_id, l.company, l.name AS lead_name
     FROM calcom_bookings b LEFT JOIN leads l ON l.id = b.lead_id
-    WHERE b.tenant_id = ? ORDER BY b.created_at DESC LIMIT ?`).all(tenantId, limit)
+    WHERE b.tenant_id = ? ORDER BY b.created_at DESC, b.booking_uid LIMIT ?`, [tenantId, limit])
 }
