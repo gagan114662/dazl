@@ -95,7 +95,7 @@ try {
   assert.deepEqual(await deliver(checkout), { status: 200, result: 'applied' })
   assert.deepEqual(await deliver(checkout), { status: 200, result: 'duplicate' }, 'a replay is a no-op')
   s = await step(2, 'After checkout.session.completed: Pro')
-  assert.equal(s.badge, 'Pro'); assert.match(s.text, /Manage billing/); assert.match(s.text, /unlimited/)
+  assert.equal(s.badge, 'Pro'); assert.match(s.text, /Manage billing/); assert.match(s.text, /no monthly scan cap/i)
   assert.deepEqual(planRow(A), { plan: 'pro', subscription_status: 'active', stripe_customer_id: 'cus_smoke_a', stripe_subscription_id: 'sub_smoke_a' })
 
   s = await step(3, 'Back from Checkout (?billing=success) after the webhook: Pro confirmed by the server', '/app/settings?billing=success')

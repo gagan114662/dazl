@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import Banner from './banner'
+import { AI_COST_LINE, FREE_LINE, LIMITS_LINE, PRO_LINE, PRO_PRICE_USD_MONTH } from '@/lib/billing/allowance'
 import LandingDemo from './landing-demo'
 
 import { SITE_BASE } from '@/lib/site'
@@ -78,18 +79,18 @@ export default function Home() {
 
       <section id="pricing" className="px-4 sm:px-6 py-16 max-w-6xl mx-auto w-full">
         <h2 className="lp-h2 text-center mb-2">Simple pricing</h2>
-        <p className="text-[var(--ink-2)] text-center mb-10">One flat price for dazl. No credits, no per-lead fees. Searches run on your own AI key, billed by your provider.</p>
+        <p className="text-[var(--ink-2)] text-center mb-10">One flat price for dazl. No credits, no per-lead fees. {AI_COST_LINE} {LIMITS_LINE}</p>
         <div className="grid sm:grid-cols-2 gap-4 max-w-2xl mx-auto">
           <div className="lp-card p-7">
             <div className="text-sm font-medium text-[var(--ink-2)] mb-1">Free</div>
             <div className="text-4xl font-semibold mb-2">$0</div>
-            <p className="text-[var(--ink-2)] text-sm mb-6">3 trial scans, then your own AI key. Your provider bills you directly for usage.</p>
+            <p className="text-[var(--ink-2)] text-sm mb-6">{FREE_LINE}</p>
             <a href="/api/auth/google" className="btn-ghost w-full text-center block">Start free</a>
           </div>
           <div className="lp-card p-7">
             <div className="text-sm font-medium mb-1">Pro</div>
-            <div className="text-4xl font-semibold mb-2">$49<span className="text-base font-medium text-[var(--ink-2)]">/mo</span></div>
-            <p className="text-[var(--ink-2)] text-sm mb-6">No credits, no per-lead fees. Runs on your own AI key: your provider bills that usage separately. Fair-use limits apply.</p>
+            <div className="text-4xl font-semibold mb-2">${PRO_PRICE_USD_MONTH}<span className="text-base font-medium text-[var(--ink-2)]">/mo</span></div>
+            <p className="text-[var(--ink-2)] text-sm mb-6">{PRO_LINE}</p>
             <a href="/api/auth/google" className="btn-primary w-full text-center block">Start free, upgrade any time</a>
           </div>
         </div>
