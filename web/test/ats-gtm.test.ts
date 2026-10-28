@@ -236,3 +236,14 @@ test('open-status: a posting whose own text says it is closed / filled / expired
   const ashby = { 'https://api.ashbyhq.com/posting-api/job-board/brightloop': { jobs: [{ title: 'Account Executive', jobUrl: 'https://jobs.ashbyhq.com/brightloop/1', isListed: true, publishedAt: d(7), descriptionPlain: 'Applications are closed. brightloop.io' }] } }
   assert.equal((await atsGtmBoard('Brightloop', 'brightloop.io', route(ashby), { now: NOW })).hiring, null)
 })
+
+test('board adapters take the role from the posting’s own JSON title: a non-sales posting never becomes sales-hiring evidence, whatever the board or any index calls it', async () => {
+  const lever = { 'https://api.lever.co/v0/postings/brightloop?mode=json': [
+    { text: 'Backend Engineer', hostedUrl: 'https://jobs.lever.co/brightloop/a', createdAt: NOW - 5 * 86_400_000, descriptionPlain: 'Account Executive wanted. brightloop.io' },
+    { text: 'Account Executive', hostedUrl: 'https://jobs.lever.co/brightloop/b', createdAt: NOW - 5 * 86_400_000, descriptionPlain: 'brightloop.io' }] }
+  assert.deepEqual((await atsGtmBoard('Brightloop', 'brightloop.io', route(lever), { now: NOW })).hiring?.postings.map(p => p.title), ['Account Executive'], 'only the posting whose own title is a sales role')
+  const gh2 = { [GH + '/jobs']: { jobs: [{ id: 9, title: 'Backend Engineer' }] }, [`${GH}/jobs/9`]: { id: 9, title: 'Backend Engineer', first_published: d(5), absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/9', content: 'Account Executive. brightloop.io' } }
+  assert.equal((await atsGtmBoard('Brightloop', 'brightloop.io', route(gh2), { now: NOW })).hiring, null)
+  const ashby = { 'https://api.ashbyhq.com/posting-api/job-board/brightloop': { jobs: [{ title: 'Backend Engineer', jobUrl: 'https://jobs.ashbyhq.com/brightloop/1', isListed: true, publishedAt: d(7), descriptionPlain: 'Account Executive. brightloop.io' }] } }
+  assert.equal((await atsGtmBoard('Brightloop', 'brightloop.io', route(ashby), { now: NOW })).hiring, null)
+})
