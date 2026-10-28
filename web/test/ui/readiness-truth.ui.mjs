@@ -65,6 +65,7 @@ const shot = async name => { if (process.env.SHOTS) await page.screenshot({ path
 const row = id => page.getByTestId(`ready-${id}`)
 try {
   await page.goto(`${base}/app`, { waitUntil: 'networkidle' })
+  await page.getByTestId('setup-details').evaluate(d => { d.open = true }, null, { timeout: 15000 }) // the checklist is secondary, under Setup details
   await row('key').waitFor({ timeout: 15000 })
   await row('key').scrollIntoViewIfNeeded()
   await shot('readiness')
@@ -83,12 +84,14 @@ try {
     // A later cancelled scan and the newer OpenAI save alone are not acceptance of every key: still a to-do.
     JOBS.push(job('c', now - 20, { status: 'failed', error: 'cancelled', lead_count: 0 }))
     await page.reload({ waitUntil: 'networkidle' })
+    await page.getByTestId('setup-details').evaluate(d => { d.open = true }, null, { timeout: 15000 })
     await row('key').waitFor({ timeout: 15000 })
     assert.match(await row('key').textContent(), /rejected its key/)
     assert.equal(await row('key').getByText('✓').count(), 0)
     // Both keys were saved again (each accepted by its provider): the server reports no open rejection.
     state.rejection = null
     await page.reload({ waitUntil: 'networkidle' })
+    await page.getByTestId('setup-details').evaluate(d => { d.open = true }, null, { timeout: 15000 })
     await row('sources').getByText('✓').waitFor({ timeout: 15000 })
     assert.equal(await row('key').getByText('✓').count(), 1)
     assert.equal(await row('sources').textContent().then(t => t.replace(/^.*?Lead sources - /, '').replace(/Set up$/, '')),

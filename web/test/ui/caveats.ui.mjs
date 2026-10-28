@@ -79,20 +79,22 @@ try {
     await shot(name)
     if (before) continue
     const cav = page.getByTestId('caveat')
-    const found = await cav.evaluateAll(els => els.map(e => ({ summary: e.querySelector(':scope > p').textContent, open: e.querySelector(':scope > details').open, full: e.querySelector(':scope > details > p').textContent })))
+    // The summary is the line without its (i); the full original text is the tooltip's.
+    const found = await cav.evaluateAll(els => els.map(e => { const line = e.querySelector(':scope > p').cloneNode(true); line.querySelector('.infotip')?.remove(); return { summary: line.textContent, open: e.querySelector('[data-testid=infotip]').dataset.open === 'true', full: e.querySelector('[data-testid=infotip-text]').textContent } }))
     const fulls = found.map(f => norm(f.full)); if (process.env.DEBUG) console.log(name, JSON.stringify(fulls, null, 1))
-    for (const o of ORIGINAL[name]) assert.ok(fulls.includes(norm(o)), `${name}: original caveat kept verbatim under Details: ${o.slice(0, 60)}`)
+    for (const o of ORIGINAL[name]) assert.ok(fulls.includes(norm(o)), `${name}: original caveat kept verbatim behind (i): ${o.slice(0, 60)}`)
     for (const f of found) {
-      assert.equal(f.open, false, `${name}: Details closed by default`)
+      assert.equal(f.open, false, `${name}: (i) closed by default`)
       assert.equal((f.summary.match(/[.!?](\s|$)/g) ?? []).length, 1, `${name}: one sentence: ${f.summary}`)
       assert.ok(f.summary.length < f.full.length, `${name}: shorter than the full text`)
     }
     for (let k = 0; k < found.length; k++) {
       const c = cav.nth(k)
       if (!(await c.isVisible())) continue
-      assert.equal(await c.locator(':scope > details > p').isVisible(), false)
-      await c.getByText('Details', { exact: true }).click()
-      assert.equal(await c.locator(':scope > details > p').isVisible(), true)
+      assert.equal(await c.getByTestId('infotip-text').isVisible(), false)
+      await c.getByTestId('infotip').getByRole('button').click()
+      assert.equal(await c.getByTestId('infotip-text').isVisible(), true)
+      await page.keyboard.press('Escape'); await page.evaluate(() => document.activeElement?.blur()); await page.mouse.move(0, 0) // closed again before the next one
     }
     if (name === 'leads') {
       // Instinct #278: the paid-enrichment cost is visible beside Import without opening any caveat Details.
@@ -100,7 +102,7 @@ try {
       await page.evaluate(() => document.querySelectorAll('details').forEach(d => { if (!d.closest('[data-testid=caveat]')) d.open = true })) // the page's own sections, never a caveat's
       const cost = page.getByTestId('import-cost')
       assert.equal(await cost.isVisible(), true, 'cost line visible with every caveat Details still closed')
-      assert.equal(await page.locator('[data-testid=caveat] details[open]').count(), 0)
+      assert.equal(await page.locator('[data-testid=caveat] [data-testid=infotip][data-open=true]').count(), 0)
       assert.match(await cost.textContent(), /Apollo or People Data Labs key is enabled.*Import uses it automatically - 1 credit per company, up to 50 companies/)
       assert.equal(await cost.evaluate(e => !!e.closest('[data-testid=caveat]')), false, 'not part of a collapsible caveat')
       assert.equal(await cost.evaluate(e => e.parentElement.querySelector('button')?.textContent), 'Import', 'beside the Import button')
@@ -108,7 +110,7 @@ try {
     await shot(`${name}-details-open`)
   }
   assert.deepEqual(writes, [], 'loading and opening Details write nothing')
-  console.log(before ? 'screenshots taken (BEFORE_ONLY)' : 'caveats UI check passed: Settings, Outreach and Leads caveats show one sentence with the original text verbatim under a closed Details; no writes')
+  console.log(before ? 'screenshots taken (BEFORE_ONLY)' : 'caveats UI check passed: Settings, Outreach and Leads caveats show one sentence with the original text verbatim behind a closed (i); no writes')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }
