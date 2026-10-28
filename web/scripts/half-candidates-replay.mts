@@ -29,7 +29,7 @@ async function run(halves: boolean) {
   const rep = (runReportFor(x.db, 'A', jobId) as Record<string, unknown>[])[0]
   const rows = x.db.prepare('SELECT company, review_reason FROM leads').all() as { company: string; review_reason: string | null }[]
   console.log(formatDropoff(dropoffOf(rep)))
-  console.log(`qualified: ${rows.filter(r => !r.review_reason).map(r => r.company).join(', ') || 'none'}`)
+  console.log(`verifier-passed (not scoreboard-qualified: no contact or fit grade in the replay): ${rows.filter(r => !r.review_reason).map(r => r.company).join(', ') || 'none'}`)
   const held: Record<string, number> = {}; for (const r of rows) if (r.review_reason) held[r.review_reason] = (held[r.review_reason] ?? 0) + 1
   console.log(`held for review: ${JSON.stringify(held)}\n`)
 }

@@ -36,16 +36,16 @@ function scan(pages: { url: string; text: string; cand: Cand }[]): Fixture {
   return { request: REQUEST, modelIcp: ICP, modelQueries: ['london saas startup seed round'], hits: pages.map(p => ({ url: p.url, title: p.url, snippet: p.text, date: daysAgo(10) })), tfPages: Object.fromEntries(pages.map(p => [p.url, page(p)])), own: Object.fromEntries(pages.map(p => [p.url, page(p)])),
     extraction: [], extractionFn: extractor(pages.map(p => p.cand)) }
 }
-const fate = (x: Awaited<ReturnType<typeof runFixture>>, company: string) => { const l = x.db.prepare('SELECT review_reason, confidence FROM leads WHERE company = ?').get(company) as { review_reason: string | null; confidence: number | null } | undefined; return !l ? 'none' : l.review_reason === null ? 'qualified' : `held:${l.review_reason}` }
+const fate = (x: Awaited<ReturnType<typeof runFixture>>, company: string) => { const l = x.db.prepare('SELECT review_reason, confidence FROM leads WHERE company = ?').get(company) as { review_reason: string | null; confidence: number | null } | undefined; return !l ? 'none' : l.review_reason === null ? 'verifier-passed' : `held:${l.review_reason}` }
 const PAGES = [funding('Lette'), posting('Lette'), funding('SpaceAm'), posting('Orbitly')]
 
 test('BEFORE the split: only an item showing BOTH facts becomes a candidate, so a funding article and a job posting for the same company produce nothing', async () => {
   const saved = process.env[HALVES_ENV]; process.env[HALVES_ENV] = '0'
   try { const x = await runFixture(scan(PAGES)); assert.equal((x.db.prepare('SELECT count(*) AS n FROM leads').get() as { n: number }).n, 0) } finally { if (saved === undefined) delete process.env[HALVES_ENV]; else process.env[HALVES_ENV] = saved }
 })
-test('AFTER the split, joined by company in code: Lette (funding article + sales posting) QUALIFIES; SpaceAm (funding only) is held for no sales-hiring evidence; Orbitly (posting only) is held for no event evidence', async () => {
+test('AFTER the split, joined by company in code: Lette (funding article + sales posting) is VERIFIER-PASSED (not scoreboard-qualified: no contact or fit grade); SpaceAm (funding only) is held for no sales-hiring evidence; Orbitly (posting only) is held for no event evidence', async () => {
   const x = await runFixture(scan(PAGES))
-  assert.equal(fate(x, 'Lette'), 'qualified'); assert.equal(fate(x, 'SpaceAm'), 'held:no_sales_hiring_evidence'); assert.equal(fate(x, 'Orbitly'), 'held:no_event_evidence')
+  assert.equal(fate(x, 'Lette'), 'verifier-passed'); assert.equal(fate(x, 'SpaceAm'), 'held:no_sales_hiring_evidence'); assert.equal(fate(x, 'Orbitly'), 'held:no_event_evidence')
   assert.equal((x.db.prepare('SELECT count(*) AS n FROM leads WHERE company = ?').get('Lette') as { n: number }).n, 1, 'the two halves are ONE lead')
   const why = (x.db.prepare("SELECT why FROM leads WHERE company = 'Lette'").get() as { why: string | null }).why ?? ''; assert.match(why, /Hiring sales: named in a verified source/)
   const rep = (runReportFor(x.db, 'A', (x.db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id) as { extraction?: { returned: number } }[])[0]; assert.equal(rep.extraction?.returned, 4)
@@ -54,7 +54,7 @@ test('IDENTITY / GATES still hold across the join: a posting for a DIFFERENT com
   const other = posting('Zenith'); other.cand.company = 'Zenith'
   const x1 = await runFixture(scan([funding('Lette'), other])); assert.equal(fate(x1, 'Lette'), 'held:no_sales_hiring_evidence'); assert.equal(fate(x1, 'Zenith'), 'held:no_event_evidence')
   const stale = funding('Mintly'); stale.cand.event_date = daysAgo(200)
-  const x2 = await runFixture(scan([stale, posting('Mintly')])); assert.notEqual(fate(x2, 'Mintly'), 'qualified', 'a 200-day-old funding date cannot complete the pair')
+  const x2 = await runFixture(scan([stale, posting('Mintly')])); assert.notEqual(fate(x2, 'Mintly'), 'verifier-passed', 'a 200-day-old funding date cannot complete the pair')
   const neg = posting('Pennyloop'); neg.text = 'Pennyloop is not hiring any sales staff right now and is hiring engineers'; neg.cand.excerpt = neg.text
-  const x3 = await runFixture(scan([funding('Pennyloop'), neg])); assert.notEqual(fate(x3, 'Pennyloop'), 'qualified')
+  const x3 = await runFixture(scan([funding('Pennyloop'), neg])); assert.notEqual(fate(x3, 'Pennyloop'), 'verifier-passed')
 })
