@@ -28,6 +28,12 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
   - `test/multi-instance.test.ts` runs the contract on both engines, then on Postgres:
     - Two instances, as separate processes with their own pools, drain 60 jobs. Each runs exactly once, both take jobs, and one 24h limit is shared across them.
     - An instance killed mid-job loses its claim at lease end. The job runs once more on the survivor, or fails past max attempts.
+  - `test/two-instance-scan.test.ts` adds the scan rows the queue schedules, on Postgres, two instances as separate processes. The scan is a stub (no provider, no fetch, no spend); the storage is the real `DbQueue`, the runner's conditional bind (pending to running, attempts + 1) and `store-db.ts`'s fenced `finishJob`:
+    - Draining one queue, each of 30 scans is claimed, bound and run once, by both instances. Racing the bind with no queue, each of 40 scans goes to one instance.
+    - An instance killed with SIGKILL mid-scan: after the lease and the stale reaper, the other runs it as attempt 2. Each job ends with exactly its leads, none written twice.
+    - An attempt that lost its scan (stalled past its lease while the other instance re-ran it) cannot finish it: no leads, no status change, its queue token is stale.
+    - Tenant isolation through the real routes (scan history, campaign, export, confirm, quarantine, cancel), one instance per tenant: each sees only its own scans and leads, and every action on the other tenant's ids is a 404 that changes nothing. The SQLite handle is a trap in those processes.
+    - Mutation-checked: dropping the bind's `status = 'pending'` guard, or `finishJob`'s attempt fence, fails it.
   - **Not wired yet:** scan jobs still claim through `claimKeyedJob` on the SQLite `scan_jobs` table, single writer per file. Moving scan claiming onto `DbQueue` needs `scan_jobs` on Postgres. That is the next slice, with the yield owners. The other per-process state is listed in the table below.
 - **Step 6a (health and error capture):**
   - `GET /api/health/live` answers without touching any store. Use it as the liveness probe.
