@@ -21,3 +21,21 @@ test('copy matches behaviour: no "approve every send" vs autopilot contradiction
   assert.doesNotMatch(banner, /in seconds/)
   for (const p of ['app/app/seo/brief-panel.tsx', 'app/app/seo/newsjack-panel.tsx']) assert.match(read(p), /markdownToPlain\(/, p)
 })
+
+test('homepage claims match behaviour (Instinct #326): example demo labelled, weekly plays, held not dropped, provider costs at Pro', () => {
+  const page = read('app/page.tsx'); const demo = read('app/landing-demo.tsx')
+  // lib/watch.ts schedules a play's next run a week out; nothing runs daily.
+  assert.match(read('lib/watch.ts'), /WEEK_S = 7 \* 86400/)
+  for (const t of [page, demo]) assert.doesNotMatch(t, /\bdaily\b|every day/i)
+  assert.match(demo, /Live · runs weekly/)
+  // The demo's people and companies are invented: labelled on screen and for screen readers.
+  assert.match(demo, /data-testid="demo-label">Illustrative example · made-up companies and people</)
+  assert.match(demo, /aria-label="Illustrative example of a dazl run, with made-up companies and people/)
+  // Leads that fail a check are kept as held research for review, not deleted.
+  assert.doesNotMatch(page, /are dropped|drops what fails/)
+  assert.match(page, /held for your review, out of the ready-to-contact list/)
+  // Pro is a flat dazl fee; AI usage on the user's own key is billed by the provider, stated on the Pro card itself.
+  const pro = page.slice(page.indexOf('>Pro<'), page.indexOf('Start free, upgrade any time'))
+  assert.match(pro, /your provider bills that usage separately/)
+  assert.doesNotMatch(page, /no overages/i)
+})
