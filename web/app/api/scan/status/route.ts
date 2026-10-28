@@ -5,8 +5,9 @@ import { kickRunner } from '@/lib/scan/runner'
 import { sourceRuns } from '@/lib/scan/source-runs'
 import { sourceStats } from '@/lib/search/trace'
 import { modelUsage } from '@/lib/scan/model-usage'
-import { runReportFor } from '@/lib/scan/run-report'
+import { runReportFor, progressOf } from '@/lib/scan/run-report'
 import { emptyExtractionReason } from '@/lib/scan/extraction-note'
+import { scanOutcome, reportSummaries } from '@/lib/scan/outcome'
 
 // What a scan never stored, so a reader cannot mistake absence for a zero. Fixed list, not derived from data.
 const NOT_RECORDED = ['search_queries', 'raw_search_hits', 'fetched_pages']
@@ -35,6 +36,8 @@ export async function GET(req: NextRequest) {
   const run_report = runReportFor(getScanDb(), user.id, job.id)
   // Why a scan that searched and read pages still extracted nothing (counts only). null when extraction produced candidates or was not recorded.
   const empty_reason = emptyExtractionReason((run_report as { extraction?: never }[] | null)?.at(-1)?.extraction)
+  const progress = progressOf((run_report as Record<string, unknown>[] | null)?.at(-1))
+  const outcome = scanOutcome(job as never, reportSummaries(getScanDb(), user.id, [job.id]).get(job.id) ?? null)
   const notRecorded = (recorded ? NOT_RECORDED_WITH_STATS : NOT_RECORDED).filter(x => !(x === 'model_token_usage' && model_usage.recorded && model_usage.tokens_complete) && !(x === 'per_url_fetch_outcomes' && run_report))
-  return NextResponse.json({ job_id: job.id, status: job.status, created_at: job.created_at, claimed_at: job.claimed_at, attempts: job.attempts, max_attempts: MAX_ATTEMPTS, lead_count: job.lead_count, quality: job.candidates === null ? null : { candidates: job.candidates, passed: job.verified, needs_review: job.needs_review, dropped: job.dropped, drop_reasons: job.drop_reasons ? JSON.parse(job.drop_reasons) : {} }, error: job.error === 'key_rejected' && (job as { funded_by?: string }).funded_by === 'trial' ? 'trial_key_invalid' : job.error, source_runs, source_stats, model_usage, run_report, empty_reason, not_recorded: notRecorded, query: job.query, icp: job.icp ? JSON.parse(job.icp) : null, icp_source: job.icp_inferred === 1 ? 'inferred' : job.icp_inferred === 2 ? 'request_only' : job.icp_inferred === 0 ? 'user' : null })
+  return NextResponse.json({ job_id: job.id, status: job.status, created_at: job.created_at, claimed_at: job.claimed_at, attempts: job.attempts, max_attempts: MAX_ATTEMPTS, lead_count: job.lead_count, quality: job.candidates === null ? null : { candidates: job.candidates, passed: job.verified, needs_review: job.needs_review, dropped: job.dropped, drop_reasons: job.drop_reasons ? JSON.parse(job.drop_reasons) : {} }, error: job.error === 'key_rejected' && (job as { funded_by?: string }).funded_by === 'trial' ? 'trial_key_invalid' : job.error, source_runs, source_stats, model_usage, run_report, empty_reason, progress, outcome, not_recorded: notRecorded, query: job.query, icp: job.icp ? JSON.parse(job.icp) : null, icp_source: job.icp_inferred === 1 ? 'inferred' : job.icp_inferred === 2 ? 'request_only' : job.icp_inferred === 0 ? 'user' : null })
 }

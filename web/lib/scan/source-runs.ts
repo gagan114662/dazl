@@ -50,6 +50,15 @@ export class SourceRunLedger {
     const known = this.calls.filter(c => c.input_tokens !== null && c.output_tokens !== null)
     return { requests_recorded: this.calls.length, requests_with_reported_tokens: known.length, input_tokens: known.length ? known.reduce((a, c) => a + c.input_tokens!, 0) : null, output_tokens: known.length ? known.reduce((a, c) => a + c.output_tokens!, 0) : null, tokens_complete: this.calls.length > 0 && known.length === this.calls.length }
   }
+  // A partial run report for a scan that is still running (stage boundaries only: after the search, after verification). Only the attempt
+  // that still owns a running job writes; the final write in write() replaces it. Never throws, never changes the scan.
+  progress(db: Database.Database, jobId: string, attempt: number, stage: string): void {
+    try {
+      if (!db.prepare("SELECT 1 FROM scan_jobs WHERE id = ? AND attempts = ? AND status = 'running'").get(jobId, attempt)) return
+      this.parts = { ...this.parts, stage, model: this.modelSummary(), sources: [...this.runs].map(([collector, r]) => ({ collector, status: r.status, evidence: r.evidence })) }
+      writeRunReport(db, jobId, attempt, buildRunReport(this.parts, null, null, attempt, Date.now(), true))
+    } catch { /* progress is best effort */ }
+  }
   // Persists model calls recorded since the last flush. finish() flushes what the scan made up to that point; the
   // post-finish steps (buyer-fit and any later model call) flush again, so their requests are not lost. Only the attempt
   // that still OWNS the job writes (same job id, attempt number and tenant as the job row), and (job, attempt, seq) is
@@ -100,7 +109,7 @@ export class SourceRunLedger {
     }
     for (const [collector, s] of this.diag) writeSourceStats(db, jobId, attempt, collector, s) // on unless DAZL_SOURCE_STATS=0; never throws
     this.flushModelCalls(db, jobId, attempt) // never throws; failed and retried attempts included
-    this.parts = { ...this.parts, model: this.modelSummary() }
+    this.parts = { ...this.parts, model: this.modelSummary(), sources: [...this.runs].map(([collector, r]) => ({ collector, status: r.status, evidence: r.evidence })) }
     writeRunReport(db, jobId, attempt, buildRunReport(this.parts, verified ? verified.map(r => ({ key: evidenceKey(r) })) : null, review ? review.map(r => ({ key: evidenceKey(r), review_reason: (r as { review_reason?: string }).review_reason })) : null, attempt)) // never throws
     const link = db.prepare('INSERT OR IGNORE INTO lead_sources (lead_id,collector,attempt) VALUES (?,?,?)')
     for (const l of stored) for (const collector of this.credits.get(evidenceKey(l)) ?? []) link.run(l.id, collector, attempt)

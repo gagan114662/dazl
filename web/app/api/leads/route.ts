@@ -7,6 +7,7 @@ import { sqliteLeadsRead } from '@/lib/db/leads-read'
 import { rankLeads } from '@/lib/events/prioritize'
 import { gdeltAttribution } from '@/lib/search/news-attribution'
 import { savedGradeWhy } from '@/lib/scan/leads-view'
+import { capScores, capsFor } from '@/lib/scan/evidence-caps'
 import { classifyEntityMatch, classifyBoardMatch, qualifyEvent, withinEventWindow } from '@/lib/signals/entity-match'
 
 export async function GET(req: NextRequest) {
@@ -25,11 +26,13 @@ export async function GET(req: NextRequest) {
   const look = await db.lookalikeSignals(user.id, leads.map(l => ({ id: l.id, signal: l.signal, industry: job.industry, location: job.location })))
   // Read-time only: preserve stored grade/rationale for inspection, but never
   // rank legacy unsupported timing as a live need. No history is rewritten.
-  const safeLeads = leads.map(l => ({...l, stored_intent:l.intent, intent:0,
+  const safeLeads = leads.map(l => capScores(l)).map(l => ({...l, stored_intent:l.intent, intent:0,
     stored_why:(l as typeof l & {why?:string|null}).why ?? null,
     why:savedGradeWhy(l as typeof l & {why?:string|null}),
     currentness_held:currentnessHeld(getScanDb(),user.id,l.id), window_held:leadWindowHeld(getScanDb(),user.id,l.id)}))
   for (const p of Object.values(pri)) if (p) p.intent=0
+  // The same evidence ceilings apply to the ranking inputs, so a blocked / stale / wrong-company lead cannot outrank a verified one on a stale grade.
+  for (const l of leads) { const p = pri[l.id]; if (!p) continue; const c = capScores(l); if (p.fit !== null && c.fit !== null) p.fit = Math.min(p.fit, c.fit); if (p.action !== null && c.action !== null) p.action = Math.min(p.action, c.action); if (capsFor(l).length) p.reasons = [...p.reasons, `score capped: ${c.score_caps.join('; ')}`] }
   const ranked = rankLeads(safeLeads, pri)
   const via = gdeltAttribution(getScanDb(), user.id, ranked.map(l => l.id))
   return NextResponse.json({ job_id: job.id, status: job.status, hidden_count: includeHidden ? 0 : await db.countHiddenLeads(user.id, job.id), leads: ranked.map(l => ({ ...l, discovered_via: via.get(l.id)?.text ?? null, discovered_via_link: via.get(l.id)?.link ?? null, contact_context:leadContactContext(getScanDb(),user.id,l.id), source_check: sourceCheckForLead(getScanDb(), user.id, l.id), sequence: sequences.get(l.id) ?? null, enrichments: (enr[l.id] ?? []).map(e => ({ ...e, entity_status:

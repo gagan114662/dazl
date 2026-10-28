@@ -142,3 +142,18 @@ test('all 12 read routes: A and B each get their own content, never the other te
   assert.equal(fetchCalls.length, 0)
   console.log('READ COHORT', cohort.length)
 })
+
+test('scores follow evidence through the real leads and export routes: a quarantined 209-day-old lead graded 5/5/5 is no longer highly actionable; a fresh verified lead keeps its grade', async () => {
+  const { db, a } = await build()
+  const old = new Date(Date.now() - 209 * 86_400_000).toISOString().slice(0, 10), fresh = new Date(Date.now() - 12 * 86_400_000).toISOString().slice(0, 10)
+  db.prepare('UPDATE leads SET fit = 5, intent = 5, action = 5, event_date = ?, quarantined_at = 1700000000, quarantine_reason = ? WHERE id = ?').run(old, 'wrong company: same name, other city', a.lead)
+  const fresh2 = hex()
+  db.prepare("INSERT INTO leads(id,scan_job_id,company,name,signal,source_url,evidence_excerpt,confidence,score,fit,intent,action,event_date,date_status) VALUES(?,?,?,'Pat','Hiring','https://x.invalid/ok','a quote that is long enough to count',80,70,5,5,5,?,'unverified')").run(fresh2, a.job, 'FreshCo', fresh)
+  setUser(A)
+  const res = await leadsGET(get(`/api/leads?job_id=${a.job}&all=1`)); assert.equal(res.status, 200)
+  const body = await res.json() as { leads: { id: string; fit: number; action: number; stored_fit: number; stored_action: number; score_caps: string[] }[] }
+  const q = body.leads.find(l => l.id === a.lead)!, f = body.leads.find(l => l.id === fresh2)!
+  assert.ok(q.fit <= 2 && q.action === 0, JSON.stringify(q)); assert.equal(q.stored_fit, 5); assert.equal(q.stored_action, 5)
+  assert.ok(q.score_caps.includes('quarantined') && q.score_caps.some(c => /209 days old/.test(c)), q.score_caps.join('|'))
+  assert.equal(f.fit, 5); assert.equal(f.action, 5, 'fresh dated evidence: the stored grade stands'); assert.deepEqual(f.score_caps, [])
+})

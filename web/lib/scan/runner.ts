@@ -811,6 +811,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     const markDropped = (rows: { company: string; name: string; source_url: string }[], reason: string) => { for (const r of rows) { const k = `${dedupKey(r)}|${r.source_url}`; const e = audit.find(a => a.key === k && a.outcome !== 'dropped'); if (e) { e.outcome = 'dropped'; e.reason = reason } } } // a later gate removed a row the verifier had passed
     { const st = { ...summarizeTrace(diag.trace), ...diag.info }
       ledger.report({ queries: st.queries, query_source: st.query_source ?? null, search: { attempted: st.searches_attempted, ok: st.searches_ok, hits_raw: st.hits_raw, hits_unique_urls: st.hits_unique_urls, hits_complete: st.hits_complete }, urls: diag.urls, evidence: { items: st.evidence_items ?? null, with_page_text: st.evidence_with_page_text ?? null, snippet_only: st.evidence_snippet_only ?? null }, extracted_candidates: st.extracted_candidates ?? null, extraction: st.extraction ?? null, audit, ownFetch: verifierFetch }) }
+    ledger.progress(db, job.id, job.attempts, 'candidates_extracted')
     const fetchP = cachedFetcher(recordingFetcher(deps.fetchPage ?? fetchPageDetailed, verifierFetch))
     // TinyFish off, capped, failing or empty: try the free news search before the provider's paid web search. Not after
     // the run budget already refused a call (its own calls would be refused too); a refusal inside it stops the scan.
@@ -956,6 +957,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       }
     }
     ledger.report({ dropCounts: outcome.dropped })
+    ledger.progress(db, job.id, job.attempts, 'verified')
     try { console.error(JSON.stringify({ verify_provenance: { job: job.id, tinyfish: tinyfishEnabled(), ...summarizeProvenance(verifiedUrls, new Set(diag.tfTextUrls), verifierFetch) } })) } catch { /* diagnostic only */ }
     // Memory exclusions are enforced in code, not the prompt: matching leads never reach
     // scoring, the UI or outreach. Counted in dropped like every other gate.

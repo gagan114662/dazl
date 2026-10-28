@@ -4,6 +4,7 @@ import { getScanDb, requireUser } from '@/lib/scan/service'
 import { exportLeads } from '@/lib/scan/store'
 import { toCsv } from '@/lib/scan/csv'
 import { eventDateCopy } from '@/lib/scan/date-copy'
+import { capScores } from '@/lib/scan/evidence-caps'
 import { exportEvidenceOrigin } from '@/lib/scan/evidence-origin'
 import { bestPeople } from '@/lib/people/best-person'
 
@@ -19,7 +20,8 @@ const COLUMNS = [
   { key: 'signal', label: 'Signal' },
   { key: 'why', label: 'Why This Lead (model rationale)' },
   { key: 'human_confirmed_from', label: 'Confirmed By User (reason dazl could not verify)' },
-  { key: 'fit', label: 'Fit (0-5)' },
+  { key: 'score_caps', label: 'Score Caps (why Fit / Intent / Action were lowered by the lead\'s current evidence)' },
+  { key: 'fit', label: 'Fit (0-5, after evidence caps)' },
   { key: 'intent', label: 'Saved Intent (historical, not current need proof)' },
   { key: 'action', label: 'Action (0-5)' },
   { key: 'score', label: 'Score (0-100)' },
@@ -51,7 +53,7 @@ export async function GET(req: NextRequest) {
   const rows = exportLeads(db, user.id, jobId || undefined, 5000, includeFixtures) as Record<string, unknown>[]
   const via = gdeltAttribution(db, user.id, rows.map(r => String(r.lead_id)))
   const people = bestPeople(db, user.id, rows as { lead_id: string; job_id: string }[])
-  const csv = toCsv(rows.map(r => ({ ...r, ...people.get(r.lead_id as string), discovered_via: via.get(String(r.lead_id))?.text ?? '', discovered_via_link: via.get(String(r.lead_id))?.link ?? '', evidence_origin_label: exportEvidenceOrigin(r as Parameters<typeof exportEvidenceOrigin>[0]), date_context: eventDateCopy(typeof r.event_date === 'string' ? r.event_date : null, typeof r.date_status === 'string' ? r.date_status : null), created_at: typeof r.created_at === 'number' ? new Date(r.created_at * 1000).toISOString() : r.created_at })), COLUMNS)
+  const csv = toCsv(rows.map(r0 => { const r = capScores(r0 as never) as unknown as Record<string, unknown>; return r }).map(r => ({ ...r, score_caps: (r.score_caps as string[]).join('; '), ...people.get(r.lead_id as string), discovered_via: via.get(String(r.lead_id))?.text ?? '', discovered_via_link: via.get(String(r.lead_id))?.link ?? '', evidence_origin_label: exportEvidenceOrigin(r as Parameters<typeof exportEvidenceOrigin>[0]), date_context: eventDateCopy(typeof r.event_date === 'string' ? r.event_date : null, typeof r.date_status === 'string' ? r.date_status : null), created_at: typeof r.created_at === 'number' ? new Date(r.created_at * 1000).toISOString() : r.created_at })), COLUMNS)
   return new NextResponse(csv, {
     headers: {
       'content-type': 'text/csv; charset=utf-8',
