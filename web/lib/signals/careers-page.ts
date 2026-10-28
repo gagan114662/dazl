@@ -8,7 +8,7 @@ import { isGtmRole } from './ats-gtm.ts'
 import { parseRobots, type Get } from '../connectors/sitecrawl.ts'
 
 export interface CareersVacancy { url: string; title: string; quote: string; retrievedAt: number; pageText: string } // pageText: the page's visible text (capped), so the caller can check it names the company and its place
-export type CareersReason = 'found' | 'robots_unreachable' | 'robots_disallow' | 'no_careers_page' | 'no_open_sales_role' | 'closed_marker' | 'wrong_domain'
+export type CareersReason = 'job_closed' | 'job_company_mismatch' | 'job_unverified' | 'found' | 'robots_unreachable' | 'robots_disallow' | 'no_careers_page' | 'no_open_sales_role' | 'closed_marker' | 'wrong_domain'
 export interface CareersResult { vacancy: CareersVacancy | null; reason: CareersReason; pages: number }
 
 const PATHS = ['/careers', '/jobs', '/join-us', '/join', '/about/careers', '/company/careers', '/work-with-us']
@@ -51,25 +51,84 @@ function specificJobUrl(href: string, base: string, site: string): string | null
   if (/alert|newsletter|subscribe|notify|login|signin|contact|about|team|blog|press/i.test(u.pathname)) return null
   return segs.length >= 2 || /job|role|position|opening|vacanc/i.test(u.pathname) ? u.toString() : null
 }
-export function openJobFor(html: string, pageUrl: string, site: string): { title: string; jobUrl: string } | null {
+export function openJobsFor(html: string, pageUrl: string, site: string): { title: string; jobUrl: string }[] {
   const body = visible(html)
   const anchors = [...body.matchAll(/<a\b[^>]*?href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)].map(m => ({ href: decode(m[1]), text: decode(m[2].replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim(), end: (m.index ?? 0) + m[0].length, start: m.index ?? 0 }))
   const titles = salesRoleTitles(html)
+  const hits: { title: string; jobUrl: string }[] = []
   for (const t of titles) {
     // (a) the title is itself a link to that job
     const own = anchors.find(a => a.text === t)
     const ownUrl = own ? specificJobUrl(own.href, pageUrl, site) : null
-    if (ownUrl) return { title: t, jobUrl: ownUrl }
+    if (ownUrl) { hits.push({ title: t, jobUrl: ownUrl }); continue }
     // (b) the title is followed (before the next role-like title) by an apply / view-role link to that job
     const at = body.indexOf(t); if (at < 0) continue
     const nextTitle = titles.map(x => body.indexOf(x, at + t.length)).filter(i => i > 0).sort((x, y) => x - y)[0] ?? Infinity
     const apply = anchors.find(a => a.start >= at && a.start < Math.min(at + t.length + 400, nextTitle) && APPLY_TEXT.test(a.text) && specificJobUrl(a.href, pageUrl, site))
-    if (apply) return { title: t, jobUrl: specificJobUrl(apply.href, pageUrl, site)! }
+    if (apply) hits.push({ title: t, jobUrl: specificJobUrl(apply.href, pageUrl, site)! })
   }
-  return null
+  return hits
 }
 
-export async function careersSalesVacancy(domain: string, get: Get, opts: { now?: number; signal?: AbortSignal } = {}): Promise<CareersResult> {
+// ---- the selected job must be verified, never trusted from the careers index ----
+// A link on the careers index can outlive its job. Before a role is accepted its OWN page / posting is fetched:
+//   same-domain job page: reachable (not 404 / 410), still on the company's domain after redirects (not bounced to the index or another site), still shows the title,
+//                         and carries no closed wording (closed / filled / expired / no longer accepting ...).
+//   public ATS posting:   read through the board's public JSON (Greenhouse / Lever / Ashby). 404 or unlisted = closed. The board must be the lead's: its token equals the
+//                         domain's name, or the posting itself names the company (never a board that merely exists). Another company's posting is rejected.
+const norm = (x: string) => x.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/&/g, 'and').replace(/\b(inc|ltd|llc|limited|plc|corp|co|the|gmbh)\b/g, ' ').replace(/[^a-z0-9]+/g, '')
+const json = (b: string): any => { try { return JSON.parse(b) } catch { return null } }
+export type JobVerdict = { ok: true; text: string } | { ok: false; reason: 'job_closed' | 'job_company_mismatch' | 'job_unverified' }
+async function verifyAtsJob(url: URL, get: Get, site: string, company: string | undefined): Promise<JobVerdict> {
+  const host = url.hostname.toLowerCase(), segs = url.pathname.split('/').filter(Boolean), token = (segs[0] ?? '').toLowerCase()
+  let title = '', body = '', open = false
+  if (host.endsWith('greenhouse.io')) {
+    const id = segs[2]; if (!id || segs[1] !== 'jobs') return { ok: false, reason: 'job_unverified' }
+    const r = await get(`https://boards-api.greenhouse.io/v1/boards/${token}/jobs/${id}`)
+    if (!r) return { ok: false, reason: 'job_unverified' }; if (r.status === 404 || r.status === 410) return { ok: false, reason: 'job_closed' }
+    const j = json(r.body); if (r.status >= 400 || !j || typeof j.title !== 'string') return { ok: false, reason: 'job_unverified' }
+    title = j.title; body = `${j.title} ${j.company_name ?? ''} ${String(j.content ?? '')}`; open = true
+  } else if (host === 'jobs.lever.co') {
+    const id = segs[1]; if (!id) return { ok: false, reason: 'job_unverified' }
+    const r = await get(`https://api.lever.co/v0/postings/${token}/${id}`)
+    if (!r) return { ok: false, reason: 'job_unverified' }; if (r.status === 404 || r.status === 410) return { ok: false, reason: 'job_closed' }
+    const j = json(r.body); if (r.status >= 400 || !j || typeof j.text !== 'string') return { ok: false, reason: 'job_unverified' }
+    title = j.text; body = `${j.text} ${String(j.descriptionPlain ?? j.description ?? '')} ${String(j.additionalPlain ?? '')}`; open = true
+  } else if (host === 'jobs.ashbyhq.com') {
+    const id = segs[1]; if (!id) return { ok: false, reason: 'job_unverified' }
+    const r = await get(`https://api.ashbyhq.com/posting-api/job-board/${token}`)
+    if (!r || r.status >= 500) return { ok: false, reason: 'job_unverified' }; if (r.status === 404) return { ok: false, reason: 'job_closed' }
+    const j = json(r.body); const jobs = Array.isArray(j?.jobs) ? j.jobs : null; if (!jobs) return { ok: false, reason: 'job_unverified' }
+    const job = jobs.find((x: any) => typeof x?.jobUrl === 'string' && x.jobUrl.split('/').filter(Boolean).pop() === id)
+    if (!job || job.isListed !== true) return { ok: false, reason: 'job_closed' }
+    title = String(job.title ?? ''); body = `${title} ${String(job.descriptionPlain ?? job.descriptionHtml ?? '')}`; open = true
+  } else return { ok: false, reason: 'job_unverified' }
+  if (!open) return { ok: false, reason: 'job_unverified' }
+  const plain = decode(body.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ')
+  if (CLOSED.test(plain.slice(0, 1500))) return { ok: false, reason: 'job_closed' }
+  const slug = norm(site.split('.')[0] ?? ''), tokenN = norm(token)
+  const ownBoard = tokenN.length >= 3 && tokenN === slug
+  const namesCompany = !!company && norm(company).length >= 3 && norm(plain).includes(norm(company))
+  if (!ownBoard && !namesCompany) return { ok: false, reason: 'job_company_mismatch' }
+  return { ok: true, text: plain.slice(0, 6000) }
+}
+async function verifyJob(hit: { title: string; jobUrl: string }, get: Get, site: string, company: string | undefined, robots: { allows: (p: string) => boolean }): Promise<JobVerdict> {
+  let u: URL; try { u = new URL(hit.jobUrl) } catch { return { ok: false, reason: 'job_unverified' } }
+  if (ATS_HOST.test(u.hostname.toLowerCase())) return verifyAtsJob(u, get, site, company)
+  if (!robots.allows(u.pathname)) return { ok: false, reason: 'job_unverified' }
+  const r = await get(u.toString())
+  if (!r) return { ok: false, reason: 'job_unverified' }
+  if (r.status === 404 || r.status === 410) return { ok: false, reason: 'job_closed' }
+  if (r.status >= 400) return { ok: false, reason: 'job_unverified' }
+  let f: URL; try { f = new URL(r.finalUrl) } catch { return { ok: false, reason: 'job_unverified' } }
+  if (registrable(f.hostname) !== registrable(site)) return { ok: false, reason: 'job_company_mismatch' }
+  const text = flat(r.body)
+  if (CLOSED.test(text) || /\b(?:this )?(?:job|position|role|posting|vacancy) (?:is |has )?(?:closed|expired|no longer|been (?:filled|removed|closed))\b/i.test(text)) return { ok: false, reason: 'job_closed' }
+  if (!norm(text).includes(norm(hit.title))) return { ok: false, reason: 'job_closed' } // the page no longer shows this job (a redirect to a listing, a generic page)
+  return { ok: true, text }
+}
+
+export async function careersSalesVacancy(domain: string, get: Get, opts: { now?: number; signal?: AbortSignal; company?: string } = {}): Promise<CareersResult> {
   const site = domain.toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/[/?#].*$/, '')
   if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(site)) return { vacancy: null, reason: 'no_careers_page', pages: 0 }
   const origin = `https://${site}`
@@ -82,7 +141,7 @@ export async function careersSalesVacancy(domain: string, get: Get, opts: { now?
   if (home && home.status < 400) for (const m of home.body.matchAll(/href\s*=\s*["']([^"'#?]*(?:careers?|jobs|join(?:-us)?|work-with-us)[^"'#?]*)["']/gi)) {
     try { const u = new URL(m[1], home.finalUrl); if (registrable(u.hostname) === registrable(site) && !paths.includes(u.pathname)) paths.unshift(u.pathname) } catch { /* ignore */ }
   }
-  let pages = 0, sawPage = false, closed = false, wrongDomain = false
+  let pages = 0, sawPage = false, closed = false, wrongDomain = false, verdict: CareersReason | null = null
   for (const p of paths) {
     if (pages >= MAX_PAGES || opts.signal?.aborted) break
     if (!robots.allows(p)) continue
@@ -94,10 +153,16 @@ export async function careersSalesVacancy(domain: string, get: Get, opts: { now?
     const text = flat(r.body)
     // Closed-status wording is checked BEFORE any title is accepted: a page that says it is not hiring does not have a vacancy, whatever else it lists.
     if (CLOSED.test(text)) { closed = true; continue }
-    const hit = openJobFor(r.body, r.finalUrl, site)
-    if (!hit) continue // titles with no link to that specific job (team listings, alerts, newsletters) are mentions, not vacancies
-    const at = text.indexOf(hit.title)
-    return { vacancy: { url: hit.jobUrl.slice(0, 500), title: hit.title.slice(0, 120), quote: (at >= 0 ? text.slice(Math.max(0, at - 60), at + hit.title.length + 160) : hit.title).slice(0, 300), retrievedAt: Math.floor((opts.now ?? Date.now()) / 1000), pageText: text.slice(0, 6000) }, reason: 'found', pages }
+    const hits = openJobsFor(r.body, r.finalUrl, site)
+    if (hits.length === 0) continue // titles with no link to that specific job (team listings, alerts, newsletters) are mentions, not vacancies
+    // The index link is never enough: the selected job's own page / posting is fetched and must prove the vacancy (open, this company's, still showing the role).
+    for (const hit of hits.slice(0, 3)) {
+      const v = await verifyJob(hit, get, site, opts.company, robots)
+      if (!v.ok) { verdict = v.reason; continue }
+      const at = text.indexOf(hit.title)
+      return { vacancy: { url: hit.jobUrl.slice(0, 500), title: hit.title.slice(0, 120), quote: (at >= 0 ? text.slice(Math.max(0, at - 60), at + hit.title.length + 160) : hit.title).slice(0, 300), retrievedAt: Math.floor((opts.now ?? Date.now()) / 1000), pageText: `${text} ${v.text}`.slice(0, 6000) }, reason: 'found', pages }
+    }
   }
+  if (verdict) return { vacancy: null, reason: verdict, pages }
   return { vacancy: null, reason: closed ? 'closed_marker' : sawPage ? 'no_open_sales_role' : wrongDomain ? 'wrong_domain' : 'no_careers_page', pages }
 }
