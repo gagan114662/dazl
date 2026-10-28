@@ -110,13 +110,33 @@ function eventGeo(location: unknown): Geo {
 }
 // The countries / regions the CLAIM and the REQUEST state (comma segments only, so "in" / "on" / "or" in running text are never read as a province or state). Each request entry, and the claim,
 // must be consistent in itself ("London, Ontario, UK" is not), or nothing can date the claim.
+// A single place written as a comma chain ends in consecutive country / region segments ("London, England, Canada, UK"): that chain is ONE place and must be consistent in itself. Prose that merely
+// mentions two places ("London, UK and New York, USA") has a function word between them, so no chain spans both.
+function geoChains(text: string): { explicit: Set<string>; implied: Set<string> }[] {
+  const chains: { explicit: Set<string>; implied: Set<string> }[] = []
+  let cur: { explicit: Set<string>; implied: Set<string> } | null = null
+  const segs = text.split(',')
+  segs.forEach((seg, i) => {
+    const clean = seg.trim().replace(/[.;:!?]+$/, '')
+    // a final segment may carry the sentence on ("UK for its growing team"): its geo head counts when a preposition follows it
+    const m = i === segs.length - 1 ? /^(.+?)\s+(?:for|with|to|as|which|in|at|on)\b/i.exec(clean) : null
+    const head = isCountryOrRegion(clean) ? clean : m && isCountryOrRegion(m[1]) ? m[1] : null
+    if (head === null) { cur = null; return }
+    if (!cur) { cur = { explicit: new Set(), implied: new Set() }; chains.push(cur) }
+    for (const c of countriesIn(head)) cur.explicit.add(c)
+    const r = regionOf(head); if (r) cur.implied.add(countryOfRegion(r))
+  })
+  return chains
+}
 function claimGeo(claim: string, where: string[]): Geo {
   const countries = new Set<string>(), regions = new Set<string>(), reqCountries = new Set<string>(), claimCountries = new Set<string>()
   let contradictory = false
   for (const text of [...where, claim]) {
-    const explicit = new Set(countriesIn(text)), implied = new Set<string>()
-    for (const r of regionsIn(text)) { regions.add(r); implied.add(countryOfRegion(r)) }
+    const flat = text.replace(/\s+(?:and|&)\s+/gi, ', ')   // "London, UK and New York, USA" names two places: read each on its own for the country / region sets (chains are judged on the original text)
+    const explicit = new Set(countriesIn(flat)), implied = new Set<string>()
+    for (const r of regionsIn(flat)) { regions.add(r); implied.add(countryOfRegion(r)) }
     if (text !== claim ? geoConsistency(explicit, implied) : explicit.size > 0 && implied.size > 0 && ![...explicit].some(c => implied.has(c)) || implied.size > 1) contradictory = true
+    if (text === claim && geoChains(text).some(ch => geoConsistency(ch.explicit, ch.implied))) contradictory = true   // one place written as a chain must agree with itself
     for (const c of [...explicit, ...implied]) { countries.add(c); (text === claim ? claimCountries : reqCountries).add(c) }
   }
   // the claim and the request name countries with nothing in common (claim: London, England; request: London, Ontario): the place is unconfirmed
@@ -173,7 +193,8 @@ function eventMatches(o: Record<string, unknown>, claim: string, where: string[]
   const geoE = eventGeo(o.location), geoC = claimGeo(claim, where)
   if (geoE.contradictory || geoC.contradictory) return false                                 // Canada + England, US + Ontario: a place that contradicts itself dates nothing
   if (geoE.countries.size > 0 && geoC.countries.size > 0 && ![...geoE.countries].some(c => geoC.countries.has(c))) return false
-  if (geoE.regions.size > 0 && geoC.regions.size > 0 && ![...geoE.regions].some(r => geoC.regions.has(r))) return false
+  // regions are compared WITHIN a country: a claim that also names a region of another country (prose about offices in London, UK and New York, USA) does not veto the UK event's England
+  for (const r of geoE.regions) { const same = [...geoC.regions].filter(x => countryOfRegion(x) === countryOfRegion(r)); if (same.length > 0 && !same.includes(r)) return false }
   const { city, local } = eventPlace(o.location, key)
   if (city.length + local.length > 0) {
     const req = requestPlaces(where, city)

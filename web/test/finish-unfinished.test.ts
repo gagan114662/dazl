@@ -338,3 +338,23 @@ test('FULL RUN: an internally contradictory event (Canada + England) leaves the 
   const ok = await row(fx([ev('GB', 'England', daysAgo(9))], { quote: claim }))
   assert.equal(ok.r.event_date, daysAgo(9)); assert.equal(ok.r.review_reason, null)
 })
+
+// ---- #307 review 8: a single-place comma chain in the CLAIM must agree with itself too ----
+test('INSTINCT REPRO 8: "London, England, Canada, UK" / "London, Ontario, UK, Canada" (one place, contradictory) date nothing; ordinary London UK + GB/England still dates', () => {
+  const ev = (country: string, region: string) => ld({ '@type': 'Event', name: 'Embedd office opening', startDate: '2026-10-19', organizer: { name: 'Embedd' }, location: { '@type': 'Place', name: 'Embedd London office', address: { '@type': 'PostalAddress', addressLocality: 'London', addressCountry: country, addressRegion: region } } })
+  const bad = ['Embedd opened a new office in London, England, Canada, UK', 'Embedd opened a new office in London, Ontario, UK, Canada', 'Embedd opened a new office in London, England, Canada', 'Embedd opened a new office in London, Ontario, UK', 'Embedd opened a new office in London, Scotland, Canada, UK for its growing engineering team', 'EMBEDD OPENED A NEW OFFICE IN LONDON, ENGLAND, CANADA, UK', 'embedd opened a new office in london, ontario, uk, canada.']
+  for (const claim of bad) for (const e of [ev('GB', 'England'), ev('CA', 'Ontario'), ev('GB', 'England')]) for (const where of [[], ['London, UK'], ['London, Ontario, Canada']]) assert.equal(resolveStructuredDate([e], 'Embedd', claim, where), null, `${claim} | ${JSON.stringify(where)}`)
+  // controls that must keep dating
+  for (const claim of ['Embedd opened a new office in London, UK', 'Embedd opened a new office in London, England', 'Embedd opened a new office in London, England, UK', 'Embedd opened a new office in London, England, United Kingdom for its growing team', 'EMBEDD OPENED A NEW OFFICE IN LONDON, UK']) assert.deepEqual(resolveStructuredDate([ev('GB', 'England')], 'Embedd', claim, []), { date: '2026-10-19', kind: 'Event' }, claim)
+  assert.deepEqual(resolveStructuredDate([ev('CA', 'Ontario')], 'Embedd', 'Embedd opened a new office in London, Ontario, Canada', []), { date: '2026-10-19', kind: 'Event' })
+  // genuine multi-place prose (a function word between the places) is not one contradictory place
+  assert.deepEqual(resolveStructuredDate([ev('GB', 'England')], 'Embedd', 'Embedd opened offices in London, UK and New York, USA', ['London, UK']), { date: '2026-10-19', kind: 'Event' })
+})
+test('FULL RUN: the contradictory single-place claim stays undated and held; the ordinary London, UK claim is dated by the GB / England event', async () => {
+  const ev = (startDate: string) => ld({ '@context': 'https://schema.org', '@type': 'Event', name: 'Embedd office opening', startDate, organizer: { '@type': 'Organization', name: 'Embedd' }, location: { '@type': 'Place', name: 'Embedd London office', address: { '@type': 'PostalAddress', addressLocality: 'London', addressCountry: 'GB', addressRegion: 'England' } } })
+  for (const q of ['Embedd opened a new office in London, England, Canada, UK for its growing engineering team', 'Embedd opened a new office in London, Ontario, UK, Canada for its growing engineering team']) {
+    const held = await row(fx([ev(daysAgo(9))], { quote: q })); assert.equal(held.r.event_date, null, q); assert.notEqual(held.r.review_reason, null, `${q}: held (by the place gate or as undated)`); assert.equal(held.r.timing_note, null)
+  }
+  const ok = await row(fx([ev(daysAgo(9))], { quote: 'Embedd opened a new office in London, UK for its growing engineering team' }))
+  assert.equal(ok.r.event_date, daysAgo(9)); assert.equal(ok.r.review_reason, null)
+})
