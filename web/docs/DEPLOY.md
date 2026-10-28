@@ -21,6 +21,23 @@ Not used in this release: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET (Gmail is PR #1
 4. Back up Caddy: `cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.pre-next`. Point dazl.ai `reverse_proxy` at `localhost:3100`. `caddy validate`, then `systemctl reload caddy`.
 5. Smoke test on https://dazl.ai: sign up, Settings > add key, scan, leads page. Stripe test checkout.
 
+## Previews (each PR, before production)
+- Every pull request touching `web/` runs `.github/workflows/web-preview.yml`. It builds the PR exactly as production builds it and starts it with a throwaway SQLite database and one signed-in test account. Then it:
+  - screenshots every page at desktop and mobile width (`npm run preview:shots`), into the run's `preview-pr<N>-<sha>` artifact (`index.html` plus PNGs; open the PR's checks > web-preview > Summary > Artifacts);
+  - runs the production smoke checks against the same build (`test:smoke`, `test:smoke:chunks`).
+- It uses no secrets and no production config: the server runs under the test network fence, so nothing is scanned, sent or billed. Pages show a new account's empty state.
+- It is not a hosted URL. A clickable staging site needs a host, DNS and its own env file, which are owner decisions; the steps below are the plan, not something done.
+
+## Staging site (plan; owner decision, not set up)
+On the same box, beside production and sharing nothing with it:
+1. Use a NEW directory and its own root-only env file, with `DB_PATH` set to a new file (never production's), `PUBLIC_BASE_URL=https://staging.dazl.ai`, a fresh `DAZL_MASTER_KEY`, Stripe **test** keys and a test-mode webhook secret for `https://staging.dazl.ai/api/stripe`, and `SENTRY_ENVIRONMENT=staging`.
+2. Run it on another port (`PORT=3200 npm start`, one instance), checking `curl localhost:3200/api/ready` first.
+3. Add a Caddy site for `staging.dazl.ai` with `basic_auth` in front of `reverse_proxy localhost:3200`, after backing up the Caddyfile as in step 4 above; `caddy validate`, then reload.
+4. Deploy a PR's head there (`git checkout <sha>`, `npm ci && npm run build`, restart) to click through it before merge.
+
+## Error monitoring on the deployed app
+Server errors (uncaught route/page/action errors, process crashes, scan runner crashes) are already recorded as scrubbed JSON lines on stderr. They reach a person only once a destination is set in the production env file: `SENTRY_DSN` (Sentry or GlitchTip project DSN) and/or `OPS_ALERT_WEBHOOK_URL` (e.g. a Slack incoming webhook), then restart. Both are currently unset; setting them is an owner/Instinct production change. `/api/ready` does not require them.
+
 ## Rollback
 1. `cp /etc/caddy/Caddyfile.pre-next /etc/caddy/Caddyfile && systemctl reload caddy` (back on the old app in seconds).
 2. Stop the new service. The old app and its database were never touched. The new DB file can stay or be deleted.
