@@ -6,6 +6,7 @@ import { readPlan } from '@/lib/plans'
 import { rateLimit } from '@/lib/rate-limit'
 import { sameOriginJson } from '@/lib/same-origin'
 import { captureError } from '@/lib/ops/errors'
+import { requestIdOf } from '@/lib/ops/request-log'
 
 export async function POST(req: NextRequest) {
   const user = await requireUser()
@@ -18,7 +19,7 @@ export async function POST(req: NextRequest) {
   try {
     return NextResponse.json({ url: await createCheckoutUrl(db, user.id, user.email) })
   } catch (e) {
-    captureError(e, { source: 'route', where: '/api/billing/checkout', method: 'POST', tenantId: user.id })
+    captureError(e, { source: 'route', where: '/api/billing/checkout', method: 'POST', tenantId: user.id, requestId: requestIdOf(req) })
     return NextResponse.json({ error: 'Could not start checkout' }, { status: 502 })
   }
 }

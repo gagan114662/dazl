@@ -5,6 +5,7 @@ import { createPasswordUser, createSession, SESSION_TTL_S } from '@/lib/auth-db'
 import { cleanText, validateEmail, validatePassword } from '@/lib/validate'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { captureError } from '@/lib/ops/errors'
+import { requestIdOf } from '@/lib/ops/request-log'
 
 export async function POST(req: NextRequest) {
   const rl = (await rateLimit(`signup:${clientIp(req)}`, 5, 60 * 60 * 1000))
@@ -33,7 +34,7 @@ export async function POST(req: NextRequest) {
     cookieStore.set('dazl_session', token, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: SESSION_TTL_S, path: '/' })
     return NextResponse.json({ ok: true, redirect: '/app' })
   } catch (e) {
-    captureError(e, { source: 'route', where: '/api/auth/signup', method: 'POST' })
+    captureError(e, { source: 'route', where: '/api/auth/signup', method: 'POST', requestId: requestIdOf(req) })
     return NextResponse.json({ error: 'Something went wrong. Try again.' }, { status: 500 })
   }
 }

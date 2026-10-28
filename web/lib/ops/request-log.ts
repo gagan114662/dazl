@@ -45,3 +45,9 @@ export function setRequestLogWriter(w: (line: string) => void): () => void {
 export function logRequest(l: RequestLogLine): void {
   try { write(JSON.stringify(l)) } catch { /* logging never breaks a request */ }
 }
+
+// The id proxy.ts gave this request, for a route's own error records; undefined when absent or not that shape.
+export function requestIdOf(req: { headers: { get(name: string): string | null } }): string | undefined {
+  const v = req.headers.get('x-request-id')
+  return isRequestId(v) ? v : undefined
+}
