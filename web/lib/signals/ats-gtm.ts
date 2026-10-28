@@ -2,8 +2,9 @@
 // Why: a seed-funded lead is only half of "seed funding AND hiring sales". The board says, with the posting's own date, whether the
 // company is hiring sales / GTM people. Evidence only (an enrichment beside the lead, never a verdict, never a date for the lead's event).
 // Dates: Greenhouse `first_published` (detail call), Lever `createdAt`, Ashby `publishedAt`. `updated_at` is never a posting date.
-// Identity: a board counts only when its token derives from the lead's own domain (heuristic, like atsHiring) or its Greenhouse board
-// NAME is token-identical to the company; a company domain found in the postings must agree with the lead's domain.
+// Identity: the board is FOUND by a token derived from the lead's domain (or, on Greenhouse, a board whose name equals the company's); finding it is not
+// proof it is the company's. The caller scores it only when the domain is established or the postings name the lead's domain; every company domain named
+// in the INCLUDED postings (all of them, several per posting) must be one and the same domain as the lead's, otherwise the board is contradictory: nothing.
 import { classifyEntityMatch, domainSlug } from './entity-match.ts'
 
 const TIMEOUT = 8000
@@ -31,19 +32,36 @@ const day = (v: unknown): string | null => {
 const dedupe = (xs: GtmPosting[]) => { const seen = new Set<string>(); return xs.filter(p => !seen.has(p.url) && !!seen.add(p.url)) }
 
 // A company domain the postings themselves name: an https link or an e-mail host whose first label is the board slug.
-export function domainInText(text: string, slug: string): string | null {
+// EVERY company domain the text names (a link or an e-mail host whose label is the board slug), registrable form. More than one distinct domain in one
+// posting (brightloop.io and brightloop.com) is itself a contradiction the caller must treat as such.
+export function domainsInText(text: string, slug: string): string[] {
   const plain = text.replace(/&lt;|&gt;|&quot;|&amp;/g, ' ').replace(/<[^>]*>/g, ' ')
+  const out = new Set<string>()
   for (const m of plain.matchAll(/(?:https?:\/\/(?:www\.)?|@)([a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,})/gi)) {
-    const host = m[1].toLowerCase()
-    const labels = host.split('.')
-    const registrable = labels.slice(-2).join('.') // good enough for the identity check; co.uk style hosts compare on their first label below
-    if (labels.some(l => l.replace(/[^a-z0-9]/g, '') === slug)) return registrable.length >= 4 ? (labels.length >= 3 && /^(?:co|com|org|ac)$/.test(labels[labels.length - 2]) ? labels.slice(-3).join('.') : registrable) : null
+    const labels = m[1].toLowerCase().split('.')
+    if (!labels.some(l => l.replace(/[^a-z0-9]/g, '') === slug)) continue
+    const reg = labels.length >= 3 && /^(?:co|com|org|ac)$/.test(labels[labels.length - 2]) ? labels.slice(-3).join('.') : labels.slice(-2).join('.')
+    if (reg.length >= 4) out.add(reg)
   }
-  return null
+  return [...out]
+}
+export const domainInText = (text: string, slug: string): string | null => domainsInText(text, slug)[0] ?? null
+// The domains the included postings named: none = no claim; exactly one that agrees with the lead's (or the lead has none) = that domain; more than one,
+// or one that is not the lead's = contradictory (false): the board cannot corroborate this company.
+function settle(seen: Set<string>, leadDomain: string | null): string | null | false {
+  if (seen.size === 0) return null
+  if (seen.size > 1) return false
+  const d = [...seen][0]
+  return leadDomain && !sameDomain(d, leadDomain) ? false : d
 }
 const sameDomain = (a: string, b: string) => a.replace(/^www\./, '').toLowerCase() === b.replace(/^www\./, '').toLowerCase()
 
 export async function atsGtmHiring(company: string, domain: string | null, fetchImpl: typeof fetch = fetch, opts: { now?: number; windowDays?: number } = {}): Promise<GtmHiring | null> {
+  return (await atsGtmBoard(company, domain, fetchImpl, opts)).hiring
+}
+// Same lookup, but says when the board's included postings name contradictory company domains: the caller must then not use ANY board evidence for the
+// company (including the older open-role count), not just this one.
+export async function atsGtmBoard(company: string, domain: string | null, fetchImpl: typeof fetch = fetch, opts: { now?: number; windowDays?: number } = {}): Promise<{ hiring: GtmHiring | null; contradictory: boolean }> {
   const now = opts.now ?? Date.now(), win = (opts.windowDays ?? WINDOW_DAYS) * 86_400_000
   const fresh = (d: string | null) => !!d && now - Date.parse(d) <= win && Date.parse(d) <= now + 86_400_000
   const slug = domainSlug(domain)
@@ -57,38 +75,38 @@ export async function atsGtmHiring(company: string, domain: string | null, fetch
       let nameOk = viaDomain
       if (!nameOk) { const b = await get(`https://boards-api.greenhouse.io/v1/boards/${token}`, fetchImpl); nameOk = typeof b?.name === 'string' && classifyEntityMatch(company, b.name) === 'heuristic' }
       if (nameOk) {
-        const postings: GtmPosting[] = []; let found: string | null = null
+        const postings: GtmPosting[] = []; const seen = new Set<string>()
         for (const j of gh.jobs.filter((x: { id?: unknown; title?: unknown }) => Number.isInteger(x?.id) && typeof x.title === 'string' && isGtmRole(x.title)).slice(0, MAX_DETAIL)) {
           const det = await get(`https://boards-api.greenhouse.io/v1/boards/${token}/jobs/${j.id}`, fetchImpl)
           const date = day(det?.first_published), url = typeof det?.absolute_url === 'string' ? det.absolute_url : ''
           if (!fresh(date) || !url.startsWith('https://')) continue
-          found = found ?? domainInText(String(det.content ?? ''), token)
+          for (const d of domainsInText(String(det.content ?? ''), token)) seen.add(d)   // every included posting is examined, and every domain in it
           postings.push({ title: String(det.title ?? j.title).slice(0, 120), date: date!, url, location: typeof det?.location?.name === 'string' ? det.location.name : null })
         }
-        if (found && domain && !sameDomain(found, domain)) return null // the postings name another company's site: not this company
-        if (postings.length) return build('greenhouse', postings, `https://boards.greenhouse.io/${token}`, found, viaDomain ? 'domain' : 'board_name')
+        const found = settle(seen, domain); if (found === false) return { hiring: null, contradictory: true } // the postings name more than one company site, or another company's: contradictory, fail closed
+        if (postings.length) return { hiring: build('greenhouse', postings, `https://boards.greenhouse.io/${token}`, found, viaDomain ? 'domain' : 'board_name'), contradictory: false }
       }
     }
     // Lever and Ashby carry no company name in the payload: only a domain-derived token counts.
     if (!viaDomain) continue
     const lever = await get(`https://api.lever.co/v0/postings/${token}?mode=json`, fetchImpl)
     if (Array.isArray(lever) && lever.length > 0) {
-      let found: string | null = null
+      const seen = new Set<string>()
       const postings = dedupe(lever.filter((j: any) => typeof j?.text === 'string' && isGtmRole(j.text) && typeof j.hostedUrl === 'string' && j.hostedUrl.startsWith('https://') && fresh(day(j.createdAt)))
-        .slice(0, MAX_DETAIL).map((j: any) => { found = found ?? domainInText(String(j.descriptionPlain ?? j.description ?? ''), token); return { title: j.text.slice(0, 120), date: day(j.createdAt)!, url: j.hostedUrl, location: typeof j?.categories?.location === 'string' ? j.categories.location : null } }))
-      if (found && domain && !sameDomain(found, domain)) return null
-      if (postings.length) return build('lever', postings, `https://jobs.lever.co/${token}`, found, 'domain')
+        .slice(0, MAX_DETAIL).map((j: any) => { for (const d of domainsInText(String(j.descriptionPlain ?? j.description ?? ''), token)) seen.add(d); return { title: j.text.slice(0, 120), date: day(j.createdAt)!, url: j.hostedUrl, location: typeof j?.categories?.location === 'string' ? j.categories.location : null } }))
+      const found = settle(seen, domain); if (found === false) return { hiring: null, contradictory: true }
+      if (postings.length) return { hiring: build('lever', postings, `https://jobs.lever.co/${token}`, found, 'domain'), contradictory: false }
     }
     const ashby = await get(`https://api.ashbyhq.com/posting-api/job-board/${token}`, fetchImpl)
     if (Array.isArray(ashby?.jobs) && ashby.jobs.length > 0) {
-      let found: string | null = null
+      const seen = new Set<string>()
       const postings = dedupe(ashby.jobs.filter((j: any) => j?.isListed === true && typeof j.title === 'string' && isGtmRole(j.title) && typeof j.jobUrl === 'string' && j.jobUrl.startsWith('https://') && fresh(day(j.publishedAt)))
-        .slice(0, MAX_DETAIL).map((j: any) => { found = found ?? domainInText(String(j.descriptionPlain ?? j.descriptionHtml ?? ''), token); return { title: j.title.slice(0, 120), date: day(j.publishedAt)!, url: j.jobUrl, location: typeof j.location === 'string' ? j.location : null } }))
-      if (found && domain && !sameDomain(found, domain)) return null
-      if (postings.length) return build('ashby', postings, `https://jobs.ashbyhq.com/${token}`, found, 'domain')
+        .slice(0, MAX_DETAIL).map((j: any) => { for (const d of domainsInText(String(j.descriptionPlain ?? j.descriptionHtml ?? ''), token)) seen.add(d); return { title: j.title.slice(0, 120), date: day(j.publishedAt)!, url: j.jobUrl, location: typeof j.location === 'string' ? j.location : null } }))
+      const found = settle(seen, domain); if (found === false) return { hiring: null, contradictory: true }
+      if (postings.length) return { hiring: build('ashby', postings, `https://jobs.ashbyhq.com/${token}`, found, 'domain'), contradictory: false }
     }
   }
-  return null
+  return { hiring: null, contradictory: false }
 }
 
 function build(board: GtmHiring['board'], postings: GtmPosting[], boardUrl: string, domain: string | null, via: GtmHiring['via']): GtmHiring {

@@ -10,7 +10,7 @@ import { addEnrichment, audit } from '../connectors/store.ts'
 import { companyKey, recordCompanyEvent } from '../events/store.ts'
 import { listLeads } from '../scan/store.ts'
 import { classifyEntityMatch, domainSlug, withinEventWindow } from './entity-match.ts'
-import { atsGtmHiring } from './ats-gtm.ts'
+import { atsGtmBoard } from './ats-gtm.ts'
 import { domainRelationship, HEURISTIC_NOTE } from './domain-basis.ts'
 
 const TIMEOUT = 8000
@@ -135,6 +135,8 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
       edgarFunding(lead.company, fetchImpl).catch(() => null),
       atsHiring(lead.company, lead.company_domain, fetchImpl).catch(() => null),
     ])
+    // Postings naming contradictory company domains cannot corroborate this company: neither the dated sales / GTM roles nor the older open-role count.
+    const gb = await atsGtmBoard(lead.company, lead.company_domain, fetchImpl).catch(() => ({ hiring: null, contradictory: false }))
     // A filing far from the claimed round date is a real fact about the entity but not
     // corroboration of THIS raise (fund filings and stale filings both collide here).
     const f = f0 && withinEventWindow(f0.date, (lead as { event_date?: string | null }).event_date ?? null) ? f0 : null
@@ -143,7 +145,7 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
       if (ck) recordCompanyEvent(db, tenantId, { companyKey: ck, companyName: lead.company, scope: 'account', leadId: lead.id, eventType: 'sec_filing', summary: `SEC Form D filed ${f.date}`, detail: f.entity.slice(0, 120), sourceUrl: f.url, sourcePublishedAt: f.date, retrievedAt: now, confidence: 80 })
       funding++
     }
-    if (h && h.via === 'domain') {
+    if (h && h.via === 'domain' && !gb.contradictory) {
       // Only a board under a domain the cited page itself is hosted on (or the user confirmed) is the company's own. Otherwise the roles are shown
       // as unconfirmed, are not scored (no confidence) and are NOT written to the company's account history as hiring growth.
       const rel = domainRelationship(db, tenantId, lead.id, lead.company_domain)
@@ -154,12 +156,14 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
     }
     // Dated sales / go-to-market postings from the company's own public board: the "hiring sales" half of a seed + sales request, with the
     // posting's own date. An enrichment beside the lead; it never changes the lead, its date or any verdict.
-    const g = await atsGtmHiring(lead.company, lead.company_domain, fetchImpl).catch(() => null)
+    const g = gb.hiring
     if (g) {
       const n = g.postings.length
-      const est = g.via === 'board_name' || domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established' || (!!g.domain && !!lead.company_domain && g.domain.replace(/^www\./, '') === lead.company_domain.replace(/^www\./, ''))   // or the board's own postings name the lead's domain   // a Greenhouse board NAME token-identical to the company is its own evidence of identity
+      // A board's own NAME (even token-identical to the company) is a claim by the board, not proof of ownership: only an established domain, or the board's
+      // postings all naming the lead's own domain, binds it. Otherwise: Unconfirmed, no confidence, nothing written to the company's history.
+      const est = domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established' || (!!g.domain && !!lead.company_domain && g.domain.replace(/^www\./, '') === lead.company_domain.replace(/^www\./, ''))
       const titles = g.postings.map(p => p.title).slice(0, 3).join('; ')
-      addEnrichment(db, tenantId, lead.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${est ? '' : 'Unconfirmed: '}${n} sales/GTM role${n === 1 ? '' : 's'} posted, newest ${g.newest}`, label: (est ? titles : `${titles} (${HEURISTIC_NOTE})`).slice(0, 200) || null, confidence: est ? (g.via === 'domain' ? 70 : 75) : null, source_url: g.url, source_date: g.newest, retrieved_at: now })
+      addEnrichment(db, tenantId, lead.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${est ? '' : 'Unconfirmed: '}${n} sales/GTM role${n === 1 ? '' : 's'} posted, newest ${g.newest}`, label: (est ? titles : `${titles} (${HEURISTIC_NOTE})`).slice(0, 200) || null, confidence: est ? 70 : null, source_url: g.url, source_date: g.newest, retrieved_at: now })
       gtm++
     }
     const r = await fundingRoundFor(lead.company, news, { fetchImpl, jinaLeft }).catch(() => null)

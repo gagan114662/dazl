@@ -35,6 +35,7 @@ import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngrade
 import { getMemory, isExcluded, memoryPromptBlock } from '../memory.ts'
 import { enrichJobSignals } from '../signals/index.ts'
 import { applySalesHiringGate, quoteNamesSalesHiring, quoteShowsEvent } from './sales-hiring-gate.ts'
+import { beginEnrichment, endEnrichment } from './enrichment.ts'
 import { regradeFromKeptContacts } from './contact-agreement.ts'
 import { primarySignalKind } from './score.ts'
 import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } from '../signals/competitor-reddit.ts'
@@ -573,7 +574,8 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
     // Contact-page crawl and free intent signals (SEC Form D, public job boards) - this is
     // where the batch table's contacts come from. Same bonuses, same silence on failure.
     // Same bounded post-processing as the main path - one deadline source.
-    await runPostFinishBounded(db, job, deps)
+    beginEnrichment(db, job.id, job.attempts)
+    try { await runPostFinishBounded(db, job, deps) } finally { endEnrichment(db, job.id, job.attempts) }
     return 'done'
   } catch (e) {
     return failOrRetry(db, job, e, ledger)
@@ -1028,6 +1030,8 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // must be skipped too - a re-claimed job belongs to the newer attempt.
     if (!owned) return 'done'
     // Everything below may make more model calls (buyer-fit): they are flushed to the usage record however this block ends.
+    // The rows exist, but contacts, people and the fit gate are still being added: clients see 'enriching' until the end mark.
+    beginEnrichment(db, job.id, job.attempts)
     try {
     if (complaints.length > 0) { try { badgeComplaintLeads(db, job.id, complaints) } catch { /* badge only */ } }
     // Watch run: flag the leads this watch has never surfaced, remember the rest.
@@ -1051,11 +1055,13 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // Seed funding AND hiring sales: a lead that passed on the funding quote alone is moved to review unless sales / GTM hiring is evidenced
     // (its own quote, or a dated posting on a public job board bound to its domain). Before autopilot, so nothing is drafted on a half proof.
     try { await applySalesHiringGate(db, job, deps.fetchImpl ?? fetch, { hiringKeys: outcome.hiring_keys, eventKeys: outcome.event_keys, fundingKeys: outcome.funding_keys }) } catch (e) { console.error('sales-hiring gate failed', e instanceof Error ? e.message : 'error') }
+    // Contacts, people, fit and the sales-hiring check are final: the stage ends before autopilot, whose drafting/sending is separate work, not enrichment.
+    endEnrichment(db, job.id, job.attempts)
     // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.
     // A job that carries a budget never starts autopilot: its model drafting and sends are outside the budget (run-budget.ts).
     if (!parseRunBudget(job.run_budget)) try { await (deps.autopilot ?? runAutopilot)(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
     return 'done'
-    } finally { ledger.flushModelCalls(db, job.id, job.attempts) }
+    } finally { endEnrichment(db, job.id, job.attempts); ledger.flushModelCalls(db, job.id, job.attempts) }
   } catch (e) {
     return failOrRetry(db, job, e, ledger)
   }
