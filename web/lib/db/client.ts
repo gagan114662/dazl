@@ -259,6 +259,12 @@ export function pgDb(opts: PgOptions): Db & { pool: pg.Pool } {
 
 let shared: Promise<Db> | null = null
 
+// A store a module can take from either kind of caller during the runner's storage port: the Db layer, or a raw
+// better-sqlite3 handle (today's runner), wrapped as a Db on that same connection, so it reads and writes exactly what
+// the raw calls did.
+export type DbLike = Db | Database.Database
+export function asDb(d: DbLike): Db { return 'tx' in d && 'kind' in d ? d : sqliteDb(d) }
+
 // Points getDb() at a given store. For tests that run route handlers against their own fixture database (the route
 // harness in test/helpers/tenant-route-db.ts); the app never calls it.
 export function setDb(db: Db | null): void { shared = db ? Promise.resolve(db) : null }

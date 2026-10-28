@@ -65,9 +65,15 @@ export function defaultVendor(db: Database.Database, tenantId: string): Vendor |
   return r?.vendor ?? null
 }
 
-// Server-side only (the scan runner). Never return this from an API route.
+// Server-side only (the scan runner). Never return this from an API route. Sync on the raw handle (the runner today);
+// fetchKey/readTenantKey are the same on the Db layer (the runner's storage port, behind DAZL_SCAN_SHARED_QUEUE).
+const KEY_SQL = 'SELECT ciphertext FROM tenant_llm_keys WHERE tenant_id = ? AND vendor = ?'
 export function getKey(db: Database.Database, tenantId: string, vendor: Vendor, master?: Buffer): string | null {
-  const r = db.prepare('SELECT ciphertext FROM tenant_llm_keys WHERE tenant_id = ? AND vendor = ?').get(tenantId, vendor) as { ciphertext: string } | undefined
+  const r = db.prepare(KEY_SQL).get(tenantId, vendor) as { ciphertext: string } | undefined
+  return r ? decryptSecret(r.ciphertext, ctx(tenantId, vendor), master) : null
+}
+export async function fetchKey(db: Db, tenantId: string, vendor: Vendor, master?: Buffer): Promise<string | null> {
+  const r = await db.get<{ ciphertext: string }>(KEY_SQL, [tenantId, vendor])
   return r ? decryptSecret(r.ciphertext, ctx(tenantId, vendor), master) : null
 }
 
@@ -76,11 +82,21 @@ export function getKey(db: Database.Database, tenantId: string, vendor: Vendor, 
 // the tenant id, wrong master). On user-facing paths that throw escapes as a bare 500,
 // so those callers use readKey instead: the real error is logged server-side and the
 // caller gets a typed "unreadable" it can show honestly.
+function unreadable(vendor: Vendor, tenantId: string, e: unknown): { key: null; unreadable: true } {
+  console.error(`stored ${vendor} key for tenant ${tenantId} could not be read:`, e instanceof Error ? e.message : e)
+  return { key: null, unreadable: true }
+}
 export function readKey(db: Database.Database, tenantId: string, vendor: Vendor, master?: Buffer): { key: string | null; unreadable: boolean } {
   try {
     return { key: getKey(db, tenantId, vendor, master), unreadable: false }
   } catch (e) {
-    console.error(`stored ${vendor} key for tenant ${tenantId} could not be read:`, e instanceof Error ? e.message : e)
-    return { key: null, unreadable: true }
+    return unreadable(vendor, tenantId, e)
+  }
+}
+export async function readTenantKey(db: Db, tenantId: string, vendor: Vendor, master?: Buffer): Promise<{ key: string | null; unreadable: boolean }> {
+  try {
+    return { key: await fetchKey(db, tenantId, vendor, master), unreadable: false }
+  } catch (e) {
+    return unreadable(vendor, tenantId, e)
   }
 }

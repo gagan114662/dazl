@@ -3,13 +3,13 @@
 Run it as ONE Node process (in-memory rate limits and the in-process scan runner assume that).
 
 ## Env vars
-Required:
+Required (`/api/ready` answers 503 until every one is set and well-formed, so `ops/safe_launch.py` will not cut over without them):
 - `DB_PATH` - SQLite file. Use a NEW path (for example /var/lib/dazl-next/app.db). Never point it at the old app's database.
 - `DAZL_MASTER_KEY` - base64 of exactly 32 random bytes (`openssl rand -base64 32`). Encrypts customer API keys. Losing it makes stored keys unreadable. Do not rotate casually.
 - `PUBLIC_BASE_URL` - https://dazl.ai
 - `STRIPE_SECRET_KEY` - sk_test_ until you go live, then sk_live_
 - `STRIPE_PRICE_PRO` - the Pro price ID (copy it from the Stripe dashboard)
-- `STRIPE_WEBHOOK_SECRET` - whsec_ for https://dazl.ai/api/billing/webhook
+- `STRIPE_WEBHOOK_SECRET` - whsec_ for https://dazl.ai/api/billing/webhook (or https://dazl.ai/api/stripe, the same handler)
 Optional: `OPS_ALERT_WEBHOOK_URL` (https; receives each scrubbed error record, throttled; see `lib/ops/errors.ts`), `SENTRY_DSN` (https; the same records as Sentry events, throttled; `SENTRY_ENVIRONMENT` optional), `DAZL_SCAN_SHARED_QUEUE` (`1` claims scans through the shared work queue, `lib/queue/scan-claimer.ts`; default off, see docs/PLATFORM.md), `SCAN_MAX_CONCURRENT` (3), `SCAN_RENDER_URL` and `SCAN_RENDER_TOKEN` (separate renderer container only), `DAZL_ANTHROPIC_MODEL`, `DAZL_OPENAI_MODEL`, `SCAN_STALE_RUNNING_S`, `SCAN_PAGE_TIMEOUT_MS`, `SCAN_LLM_TIMEOUT_MS`, `SCAN_MAX_AGE_DAYS`.
 Not used in this release: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET (Gmail is PR #13, separate).
 

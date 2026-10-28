@@ -16,7 +16,7 @@ import { enrichState } from './enrichment.ts'
 // - a rejected key is the free-search key's only when the job is known to be trial-funded (funded_by 'trial'). Nothing
 //   in the record proves a scan used the user's own key (the column defaults to 'user', also for rows from before it
 //   existed), so every other rejection gets neutral wording: no owner and no service outage is claimed.
-export type ScanOutcomeKind = 'running' | 'enriching' | 'leads' | 'review_only' | 'all_dropped' | 'none_extracted' | 'unrecorded' | 'stopped' | 'failed'
+export type ScanOutcomeKind = 'running' | 'enriching' | 'leads' | 'review_only' | 'all_dropped' | 'zero_match' | 'none_extracted' | 'unrecorded' | 'stopped' | 'failed'
 export interface ScanOutcome { kind: ScanOutcomeKind; label: string; detail?: string; next: { text: string; href: string } | null }
 export interface ScanRecord {
   id: string; status: string; error: string | null; funded_by?: string | null
@@ -24,18 +24,46 @@ export interface ScanRecord {
   enrich_started_at?: number | null; enrich_finished_at?: number | null
   // The recorded extraction diagnostic for a scan that extracted nothing (server-computed; null when not recorded).
   empty_reason?: string | null
+  // From the run report / source rows (lib/scan/progress.ts), when recorded: the sources that failed, the per-reason counts of everything rejected, and the number of search results.
+  failed_sources?: string[] | null; reject_reasons?: Record<string, number> | null; search_hits?: number | null
+  // Per-source findings (progress.ts): sources that returned evidence but extracted no candidates, and sources that were unavailable / not run.
+  evidence_sources?: { source: string; evidence: number }[] | null; unknown_sources?: string[] | null
+  // Sources that answered only in part (some requests / entries failed): named beside whatever the scan ended as - never read as ok, never as an empty result.
+  partial_sources?: string[] | null
 }
+const reasonList = (r: Record<string, number> | null | undefined) => r ? Object.entries(r).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k.replace(/^(?:review|dropped):/, '').replace(/_/g, ' ')} x${v}`).join(', ') : ''
+// Zero match is claimed only when EVERY recorded source genuinely returned nothing: the search came back with a recorded 0, no source failed, none returned evidence that
+// extracted no candidates, and none was unavailable / not run (those are unknown, not zero).
+const ZERO_MATCH = (j: ScanRecord, open: string): ScanOutcome => ({ kind: 'zero_match', label: 'Zero match - the sources returned nothing', detail: 'The search and the other sources came back with no results for this request, and none of them failed.', next: { text: 'Widen the search', href: NEW_SCAN } })
+const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
+// What the empty result honestly is, given every recorded source. Evidence that yielded no candidates and unavailable sources are named; neither is a zero result.
+function emptyResult(j: ScanRecord, open: string): ScanOutcome {
+  const ev = j.evidence_sources ?? [], unknown = j.unknown_sources ?? []
+  if (ev.length) return { kind: 'none_extracted', label: 'No candidates were extracted', detail: `${ev.map(e => `${e.source} returned ${plural(e.evidence, 'item')}`).join('; ')}, none matched as candidates.${unknown.length ? ` ${unknown.join(', ')} was unavailable or has no recorded counts.` : ''} This is not a zero-results scan and does not show that no matching companies exist.`, next: { text: 'See what the scan read', href: open } }
+  if (unknown.length) return { kind: 'none_extracted', label: 'No candidates - a source was unavailable', detail: `${unknown.join(', ')} was unavailable, not run or has no recorded counts (unknown, not zero), so the other sources returning nothing does not show that no company matches.`, next: { text: 'See what the scan read', href: open } }
+  return j.search_hits === 0 ? ZERO_MATCH(j, open) : NONE_EXTRACTED(open, j.empty_reason)
+}
+const sourcesFailed = (j: ScanRecord) => (j.failed_sources ?? []).length > 0
 
 const NEW_SCAN = '/app/leads'
 // The scan page shows what the run recorded about it (search results, pages read, what extraction was given).
 const NONE_EXTRACTED = (open: string, why?: string | null): ScanOutcome => ({ kind: 'none_extracted', label: 'No candidates were extracted', detail: why || 'Nothing more was recorded about what the search returned. This does not show that no matching companies exist.', next: { text: 'See what the scan read', href: open } })
 const TRIAL_KEY: ScanOutcome = { kind: 'failed', label: 'Failed - the free-search key had trouble (not your key)', next: { text: 'Try again later', href: NEW_SCAN } }
 
+const PARTIAL_KINDS: ScanOutcomeKind[] = ['leads', 'review_only', 'all_dropped', 'none_extracted', 'zero_match']
 export function scanOutcome(j: ScanRecord): ScanOutcome {
+  const o = baseOutcome(j), partial = j.partial_sources ?? []
+  if (partial.length === 0 || !PARTIAL_KINDS.includes(o.kind)) return o
+  const note = `Partial: ${partial.join('; ')} - the result may be incomplete.`
+  // A partial source can never leave an empty result reading as "the sources returned nothing".
+  if (o.kind === 'zero_match') return { kind: 'none_extracted', label: 'No candidates - a source answered only in part', detail: `${note} The other sources returned nothing, which does not show that no company matches.`, next: o.next }
+  return { ...o, detail: o.detail ? `${o.detail} ${note}` : note }
+}
+function baseOutcome(j: ScanRecord): ScanOutcome {
   const open = `/app/leads?job_id=${j.id}`
   if (j.status === 'failed') {
     switch (j.error) {
-      case 'no_candidates': return NONE_EXTRACTED(open, j.empty_reason)
+      case 'no_candidates': return sourcesFailed(j) ? { kind: 'failed', label: `Failed - ${j.failed_sources!.join(', ')} had an error`, detail: 'A source failed, so the empty result is not proof that nothing matches.', next: { text: 'Try again', href: NEW_SCAN } } : emptyResult(j, open)
       case 'budget_stopped': return { kind: 'stopped', label: 'Stopped by its budget - not an empty search', next: { text: 'Run it again with a larger budget', href: NEW_SCAN } }
       case 'scan_timeout': return { kind: 'stopped', label: 'Stopped at its time limit - nothing was saved', next: { text: 'Try a narrower search', href: NEW_SCAN } }
       case 'cancelled': return { kind: 'stopped', label: 'Cancelled', next: { text: 'Start a new scan', href: NEW_SCAN } }
@@ -44,7 +72,9 @@ export function scanOutcome(j: ScanRecord): ScanOutcome {
       case 'key_rejected':
         return j.funded_by === 'trial' ? TRIAL_KEY
           : { kind: 'failed', label: 'Failed - the AI provider rejected the key this scan used', next: { text: 'Check your AI key in Settings', href: '/app/settings' } }
-      default: return { kind: 'failed', label: 'Failed', next: { text: 'Try again', href: NEW_SCAN } }
+      default: return sourcesFailed(j)
+        ? { kind: 'failed', label: `Failed - ${j.failed_sources!.join(', ')} had an error`, detail: 'A source or an infrastructure step failed; this is not an empty search.', next: { text: 'Try again', href: NEW_SCAN } }
+        : { kind: 'failed', label: 'Failed', next: { text: 'Try again', href: NEW_SCAN } }
     }
   }
   const enrich = enrichState(j)
@@ -63,8 +93,8 @@ function finished(j: ScanRecord, open: string): ScanOutcome {
   }
   const verified = j.verified ?? 0, review = j.needs_review ?? 0, found = j.candidates ?? 0, dropped = j.dropped ?? 0
   // The runner only finishes 'done' after it had companies to check, but a 0 here still means exactly that.
-  if (found === 0 && verified === 0 && review === 0) return NONE_EXTRACTED(open, j.empty_reason)
+  if (found === 0 && verified === 0 && review === 0) return sourcesFailed(j) ? { kind: 'failed', label: `Failed - ${j.failed_sources!.join(', ')} had an error`, detail: 'A source failed, so the empty result is not proof that nothing matches.', next: { text: 'Try again', href: NEW_SCAN } } : emptyResult(j, open)
   if (verified > 0) return { kind: 'leads', label: `${found} found: ${verified} source-checked, ${review} need${review === 1 ? 's' : ''} your review, ${dropped} dropped`, next: null }
   if (review > 0) return { kind: 'review_only', label: `${found} found: none passed the checks on their own, ${review} need${review === 1 ? 's' : ''} your review`, next: { text: `Review ${review === 1 ? 'it' : 'them'}`, href: open } }
-  return { kind: 'all_dropped', label: `${found} found, all dropped by the checks`, next: { text: 'See why they were dropped', href: open } }
+  return { kind: 'all_dropped', label: `${found} found, all dropped by the checks`, ...(j.reject_reasons ? { detail: `Rejected: ${reasonList(j.reject_reasons)}.` } : {}), next: { text: 'See why they were dropped', href: open } }
 }

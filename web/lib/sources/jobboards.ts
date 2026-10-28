@@ -88,12 +88,17 @@ const day = (v: unknown): string | null => {
 }
 const fresh = (d: string | null) => !!d && Date.now() - Date.parse(d) <= WINDOW_DAYS * 86_400_000 && Date.parse(d) <= Date.now() + 86_400_000
 type Note = (code: string) => void
-const json = async (http: SafeGet, url: string, note?: Note): Promise<any> => {
+const json = async (http: SafeGet, url: string, note?: Note, expect?: 'array' | 'jobs'): Promise<any> => {
   const r = await http(url, { accept: 'application/json' })
   if (!r) { note?.('unreachable'); return null }
   if (r.status !== 200) return null // a missing or private board is normal, not a partial result
   if (r.truncated) { note?.('oversize'); return null } // cut at the shared byte cap: never parse a prefix
-  try { return JSON.parse(r.body) } catch { note?.('unparseable'); return null }
+  try {
+    const parsed = JSON.parse(r.body)
+    // A 200 that is not the documented shape (an empty object, no jobs array) is a parse failure, never a healthy empty board.
+    if ((expect === 'array' && !Array.isArray(parsed)) || (expect === 'jobs' && !Array.isArray(parsed?.jobs))) { note?.('unparseable'); return null }
+    return parsed
+  } catch { note?.('unparseable'); return null }
 }
 function board(feed: string): { kind: 'gh' | 'ashby' | 'lever'; token: string } | null {
   let u: URL
@@ -195,7 +200,7 @@ export const jobBoardsAdapter: SourceAdapter = {
       if (b.kind === 'lever') {
         // Lever's public postings JSON: createdAt (epoch milliseconds) is the only date and is used as the posting date.
         // A missing or non-numeric createdAt means no date and no evidence.
-        const d = await json(http, `https://api.lever.co/v0/postings/${b.token}?mode=json`, note)
+        const d = await json(http, `https://api.lever.co/v0/postings/${b.token}?mode=json`, note, 'array')
         for (const j of Array.isArray(d) ? d : []) {
           const url = typeof j?.hostedUrl === 'string' ? j.hostedUrl : ''
           const loc = typeof j?.categories?.location === 'string' ? j.categories.location : undefined
@@ -207,7 +212,7 @@ export const jobBoardsAdapter: SourceAdapter = {
           out.push({ source: 'jobboards', url, title: `${j.text} (${loc ?? state})`.slice(0, 200), quote, date })
         }
       } else if (b.kind === 'ashby') {
-        const d = await json(http, `https://api.ashbyhq.com/posting-api/job-board/${b.token}`, note)
+        const d = await json(http, `https://api.ashbyhq.com/posting-api/job-board/${b.token}`, note, 'jobs')
         for (const j of Array.isArray(d?.jobs) ? d.jobs : []) {
           if (j?.isListed !== true || typeof j.title !== 'string' || typeof j.jobUrl !== 'string' || !j.jobUrl.startsWith('https://')) continue
           if (!roleOk(j.title) || !place.ok(j.location, j.address?.postalAddress?.addressRegion)) continue
@@ -218,7 +223,7 @@ export const jobBoardsAdapter: SourceAdapter = {
           out.push({ source: 'jobboards', url: j.jobUrl, title: `${j.title} (${j.location ?? state})`.slice(0, 200), quote, date })
         }
       } else {
-        const d = await json(http, `https://boards-api.greenhouse.io/v1/boards/${b.token}/jobs`, note)
+        const d = await json(http, `https://boards-api.greenhouse.io/v1/boards/${b.token}/jobs`, note, 'jobs')
         let n = 0
         for (const j of Array.isArray(d?.jobs) ? d.jobs : []) {
           if (n >= MAX_DETAIL) break

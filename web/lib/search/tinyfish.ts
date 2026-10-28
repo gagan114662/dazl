@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import { asDb, type DbLike, type Tx, type TxBody } from '../db/client.ts'
 import type { Evidence } from '../sources/types.ts'
 import type { SearchTrace } from './trace.ts'
 
@@ -30,14 +31,19 @@ export function migrateTinyfish(db: Database.Database): void {
 }
 const dayOf = (now: number) => new Date(now * 1000).toISOString().slice(0, 10)
 // tenant given: that tenant's search+fetch total for the day. tenant null: the whole server's total for `kind`.
-function used(db: Database.Database, day: string, tenant: string | null, kind: 'search' | 'fetch'): number {
+function* used(t: Tx, day: string, tenant: string | null, kind: 'search' | 'fetch'): TxBody<number> {
   const r = tenant
-    ? db.prepare('SELECT COALESCE(SUM(n),0) AS n FROM tinyfish_usage WHERE day = ? AND tenant_id = ?').get(day, tenant)
-    : db.prepare('SELECT COALESCE(SUM(n),0) AS n FROM tinyfish_usage WHERE day = ? AND kind = ?').get(day, kind)
-  return (r as { n: number }).n
+    ? yield* t.get<{ n: number }>('SELECT COALESCE(SUM(n),0) AS n FROM tinyfish_usage WHERE day = ? AND tenant_id = ?', [day, tenant])
+    : yield* t.get<{ n: number }>('SELECT COALESCE(SUM(n),0) AS n FROM tinyfish_usage WHERE day = ? AND kind = ?', [day, kind])
+  return Number(r!.n)
 }
-const bump = (db: Database.Database, day: string, tenant: string, kind: 'search' | 'fetch', by: number) =>
-  db.prepare('INSERT INTO tinyfish_usage (day, tenant_id, kind, n) VALUES (?, ?, ?, ?) ON CONFLICT(day, tenant_id, kind) DO UPDATE SET n = n + excluded.n').run(day, tenant, kind, by)
+const bump = (t: Tx, day: string, tenant: string, kind: 'search' | 'fetch', by: number) =>
+  t.run('INSERT INTO tinyfish_usage (day, tenant_id, kind, n) VALUES (?, ?, ?, ?) ON CONFLICT(day, tenant_id, kind) DO UPDATE SET n = tinyfish_usage.n + excluded.n', [day, tenant, kind, by])
+// The caps are checked and the use recorded in one transaction, so concurrent calls cannot both pass a cap: SQLite runs
+// it synchronously, and on Postgres the day's advisory lock orders it against every other instance.
+function* lockDay(t: Tx, day: string): TxBody<void> {
+  if (t.kind === 'pg') yield* t.get("SELECT pg_advisory_xact_lock(hashtext('tinyfish_usage:' || ?)) AS x", [day])
+}
 
 // Process-wide guards: a minute window, and a breaker after auth or allowance errors.
 const stamps: number[] = []
@@ -70,19 +76,26 @@ async function call(url: string, init: RequestInit, key: string, f: typeof fetch
   } catch { return { ok: false, reason: 'unavailable' } }
 }
 
-export async function tfSearch(db: Database.Database, tenant: string, query: string, opts: { afterDate?: string; location?: string; language?: string }, spent: { searches: number }, d: TfDeps = {}): Promise<{ ok: true; hits: SearchHit[] } | { ok: false; reason: Fail }> {
+export async function tfSearch(db: DbLike, tenant: string, query: string, opts: { afterDate?: string; location?: string; language?: string }, spent: { searches: number }, d: TfDeps = {}): Promise<{ ok: true; hits: SearchHit[] } | { ok: false; reason: Fail }> {
   const env = d.env ?? process.env; const now = d.now ?? Math.floor(Date.now() / 1000); const L = limits(env)
   if (!tinyfishEnabled(env)) { d.trace?.search({ query, attempted: false, outcome: 'disabled', hits: null }); return { ok: false, reason: 'disabled' } }
   const day = dayOf(now)
-  if (spent.searches >= L.searchesPerScan || used(db, day, tenant, 'search') >= L.tenantDaily || used(db, day, null, 'search') >= L.globalSearchDaily) { d.trace?.search({ query, attempted: false, outcome: 'cap', hits: null }); return { ok: false, reason: 'cap' } }
-  if (!allow(now, L.perMinute)) { d.trace?.search({ query, attempted: false, outcome: 'rate', hits: null }); return { ok: false, reason: 'rate' } }
-  spent.searches++; bump(db, day, tenant, 'search', 1)
+  const gate = await asDb(db).tx(function* (t: Tx): TxBody<'cap' | 'rate' | 'go'> {
+    yield* lockDay(t, day)
+    if (spent.searches >= L.searchesPerScan || (yield* used(t, day, tenant, 'search')) >= L.tenantDaily || (yield* used(t, day, null, 'search')) >= L.globalSearchDaily) return 'cap'
+    if (!allow(now, L.perMinute)) return 'rate'
+    spent.searches++; yield* bump(t, day, tenant, 'search', 1)
+    return 'go'
+  })
+  if (gate !== 'go') { d.trace?.search({ query, attempted: false, outcome: gate, hits: null }); return { ok: false, reason: gate } }
   const q = new URLSearchParams({ query: query.slice(0, QUERY_CAP), ...(opts.afterDate ? { after_date: opts.afterDate } : {}), ...(opts.location ? { location: opts.location } : {}), ...(opts.language ? { language: opts.language } : {}) })
   const r = await call(`${SEARCH_URL}?${q}`, { method: 'GET' }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
   if (!r.ok) { d.trace?.search({ query, attempted: true, outcome: r.reason, hits: null }); return r }
-  const arr = (r.json as { results?: unknown })?.results
+  const arr = (r.json as { results?: unknown } | null)?.results
+  // 200 with `{}`, null or no `results` array is a malformed answer, not an empty result list: a failed search (unavailable), never a counted zero.
+  if (!Array.isArray(arr)) { d.trace?.search({ query, attempted: true, outcome: 'unavailable', hits: null }); return { ok: false, reason: 'unavailable' } }
   const hits: SearchHit[] = []
-  for (const x of Array.isArray(arr) ? arr.slice(0, 10) : []) {
+  for (const x of arr.slice(0, 10)) {
     const o = x as Record<string, unknown>
     if (typeof o?.url !== 'string' || !/^https:\/\/[^\s]{4,480}$/.test(o.url) || typeof o.title !== 'string') continue
     hits.push({ url: o.url, title: o.title.slice(0, 200), snippet: typeof o.snippet === 'string' ? o.snippet.slice(0, 400) : '', date: typeof o.date === 'string' && /^\d{4}-\d{2}-\d{2}/.test(o.date) ? o.date.slice(0, 10) : null })
@@ -91,15 +104,22 @@ export async function tfSearch(db: Database.Database, tenant: string, query: str
   return { ok: true, hits }
 }
 
-export async function tfFetch(db: Database.Database, tenant: string, urls: string[], spent: { fetches: number }, d: TfDeps = {}): Promise<{ ok: true; pages: { url: string; title: string; text: string }[] } | { ok: false; reason: Fail }> {
+export async function tfFetch(db: DbLike, tenant: string, urls: string[], spent: { fetches: number }, d: TfDeps = {}): Promise<{ ok: true; pages: { url: string; title: string; text: string }[] } | { ok: false; reason: Fail }> {
   const env = d.env ?? process.env; const now = d.now ?? Math.floor(Date.now() / 1000); const L = limits(env)
   if (!tinyfishEnabled(env)) { d.trace?.fetch({ requested: urls.length, attempted: false, outcome: 'disabled', pages: null }); return { ok: false, reason: 'disabled' } }
   const day = dayOf(now)
-  const room = Math.min(10, L.fetchesPerScan - spent.fetches, L.tenantDaily - used(db, day, tenant, 'search'), L.globalFetchDaily - used(db, day, null, 'fetch'))
-  const batch = urls.slice(0, Math.max(0, room))
-  if (batch.length === 0) { d.trace?.fetch({ requested: urls.length, attempted: false, outcome: 'cap', pages: null }); return { ok: false, reason: 'cap' } }
-  if (!allow(now, L.perMinute)) { d.trace?.fetch({ requested: batch.length, attempted: false, outcome: 'rate', pages: null }); return { ok: false, reason: 'rate' } }
-  spent.fetches += batch.length; bump(db, day, tenant, 'fetch', batch.length)
+  const gate = await asDb(db).tx(function* (t: Tx): TxBody<{ out: 'cap' | 'rate' | 'go'; batch: string[] }> {
+    yield* lockDay(t, day)
+    const room = Math.min(10, L.fetchesPerScan - spent.fetches, L.tenantDaily - (yield* used(t, day, tenant, 'search')), L.globalFetchDaily - (yield* used(t, day, null, 'fetch')))
+    const batch = urls.slice(0, Math.max(0, room))
+    if (batch.length === 0) return { out: 'cap', batch }
+    if (!allow(now, L.perMinute)) return { out: 'rate', batch }
+    spent.fetches += batch.length; yield* bump(t, day, tenant, 'fetch', batch.length)
+    return { out: 'go', batch }
+  })
+  const batch = gate.batch
+  if (gate.out === 'cap') { d.trace?.fetch({ requested: urls.length, attempted: false, outcome: 'cap', pages: null }); return { ok: false, reason: 'cap' } }
+  if (gate.out === 'rate') { d.trace?.fetch({ requested: batch.length, attempted: false, outcome: 'rate', pages: null }); return { ok: false, reason: 'rate' } }
   const r = await call(FETCH_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ urls: batch, format: 'markdown' }) }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
   if (!r.ok) { d.trace?.fetch({ requested: batch.length, attempted: true, outcome: r.reason, pages: null }); return r }
   const arr = (r.json as { results?: unknown })?.results
@@ -164,7 +184,7 @@ export function pickFetchUrls(urls: string[], max: number, rank?: (url: string) 
 
 // Fetch in provider-sized batches (tfFetch takes at most 10 urls per call). All per-scan, per-tenant and global caps
 // still bind inside tfFetch. A provider failure stops further batches; pages already returned are kept.
-export async function tfFetchMany(db: Database.Database, tenant: string, urls: string[], spent: { fetches: number }, d: TfDeps = {}): Promise<{ ok: true; pages: { url: string; title: string; text: string }[] } | { ok: false; reason: Fail }> {
+export async function tfFetchMany(db: DbLike, tenant: string, urls: string[], spent: { fetches: number }, d: TfDeps = {}): Promise<{ ok: true; pages: { url: string; title: string; text: string }[] } | { ok: false; reason: Fail }> {
   const L = limits(d.env ?? process.env)
   const todo = urls.slice(0, Math.max(0, L.fetchesPerScan - spent.fetches))
   const pages: { url: string; title: string; text: string }[] = []
