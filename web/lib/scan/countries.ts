@@ -307,3 +307,37 @@ export function countriesIn(text: string): string[] {
   return [...found]
 }
 export const COUNTRY_COUNT = new Set([...BY_NAME.values()]).size
+
+// True when a comma segment of a place is a country or a region (a US state / DC, a two-letter state code, "England"): the parts of "East Kensington, London, UK" that are NOT a city or neighbourhood.
+export function isCountryOrRegion(segment: string): boolean {
+  const s = trimPostal(segment)
+  if (!s) return false
+  return STATE_FORMS.has(s) || US_STATE_NAME.test(s) || resolveSegment(segment, true) !== null || regionOf(segment) !== null   // regions: US states, Canadian provinces, UK constituents
+}
+
+// ---- structured country / region fields (schema.org PostalAddress.addressCountry / addressRegion) ----
+const A2 = new Set<string>([...BY_NAME.values()])
+// In a country FIELD a two-letter value is an ISO code ("GB", "CA" = Canada, "US"): unambiguous there, unlike in free text where CA / IN / DE are US states.
+export function countryFromField(v: unknown): string | null {
+  const raw = typeof v === 'string' ? v : v && typeof v === 'object' && typeof (v as { name?: unknown }).name === 'string' ? (v as { name: string }).name : ''
+  const t = raw.trim()
+  if (!t) return null
+  if (/^[A-Za-z]{2}$/.test(t) && A2.has(t.toUpperCase())) return t.toUpperCase()
+  if (/^[A-Za-z]{3}$/.test(t) && ALPHA3.has(t.toUpperCase())) return ALPHA3.get(t.toUpperCase())!
+  return resolveSegment(t, true)
+}
+const CA_PROV: Record<string, string> = { on: 'on', ontario: 'on', qc: 'qc', quebec: 'qc', bc: 'bc', 'british columbia': 'bc', ab: 'ab', alberta: 'ab', mb: 'mb', manitoba: 'mb', sk: 'sk', saskatchewan: 'sk', ns: 'ns', 'nova scotia': 'ns', nb: 'nb', 'new brunswick': 'nb', nl: 'nl', 'newfoundland and labrador': 'nl', pe: 'pe', 'prince edward island': 'pe', yt: 'yt', nt: 'nt', nu: 'nu' }
+const UK_REGION: Record<string, string> = { england: 'eng', scotland: 'sct', wales: 'wls', 'northern ireland': 'nir' }
+// A region a comma segment names: a US state (name or code), a Canadian province (name or code), or a UK constituent country -> a canonical id ("US-ny", "CA-on", "GB-eng"), else null.
+export function regionOf(segment: string): string | null {
+  const s = trimPostal(segment)
+  if (!s) return null
+  for (const [ab, name] of Object.entries(US_STATES)) if (s === name || s === ab.toLowerCase()) return `US-${ab.toLowerCase()}`
+  if (s === 'district of columbia' || s === 'dc') return 'US-dc'
+  if (CA_PROV[s]) return `CA-${CA_PROV[s]}`
+  if (UK_REGION[s]) return `GB-${UK_REGION[s]}`
+  return null
+}
+export const regionsIn = (text: string): string[] => [...new Set(text.split(',').map(regionOf).filter((x): x is string => !!x))]
+// A region implies its country: Ontario is Canada, New York is the United States, Scotland is the United Kingdom.
+export const countryOfRegion = (r: string): string => (r.startsWith('CA-') ? 'CA' : r.startsWith('GB-') ? 'GB' : 'US')
