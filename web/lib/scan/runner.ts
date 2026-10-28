@@ -21,7 +21,7 @@ import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '..
 import { directQueries, hasHiringSignal } from '../search/direct-queries.ts'
 import { placeIn } from '../sources/jobboards.ts'
 import { resolveTiming } from './page-timing.ts'
-import { placeAgreement } from './place-agreement.ts'
+import { ownPlaceAgreement } from './own-block.ts'
 import { HeldText, COPY_ORIGIN, type HeldPage } from './held-text.ts'
 import type { CandidateAudit, UrlRecord } from './run-report.ts'
 import { evidenceCopyRoom, storeEvidenceCopy } from './evidence-copies.ts'
@@ -285,7 +285,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
       if (copy?.ok) {
         const cp: Page = { text: copy.page.text, title: copy.page.title, retrievedAt: copy.page.heldAt }
         const v2 = !closedJobEvidence(c, cp) ? verifyEvidence(c, cp, now) : null
-        if (v2?.ok && !counterpartySignal(c, cp, '') && placeAgreement(`${cp.title} ${cp.text}`, geo, c.company) !== 'mismatch') { passed.push({ c, v: v2, copy: { failure: why, sha256: copy.page.sha256, page: copy.page } }); note(c, 'passed', null, COPY_ORIGIN); continue }
+        if (v2?.ok && !counterpartySignal(c, cp, '') && ownPlaceAgreement(cp, geo, c.company, c.excerpt) !== 'mismatch') { passed.push({ c, v: v2, copy: { failure: why, sha256: copy.page.sha256, page: copy.page } }); note(c, 'passed', null, COPY_ORIGIN); continue }
       }
       if (why) toReview(c, why)
       else { const r = page.fail === 'not_found' ? 'page_not_found' : page.fail === 'refused' ? 'url_refused' : 'page_unreachable'; drop(r); note(c, 'dropped', r) }
@@ -315,7 +315,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     // Location agreement: when the request names a place, a cited page that names a DIFFERENT place (and not ours) is a mismatch and stays
     // in review (kept, labelled, never qualified or drafted). A page that names no place at all is not rejected here (small-business pages
     // often name only a street or neighbourhood); contacts are stricter: profile results and linked domains must name the place.
-    const where = placeAgreement(`${page.title} ${page.text}`, geo, c.company)
+    const where = ownPlaceAgreement(page, geo, c.company, c.excerpt)
     if (where === 'mismatch') {
       const k = dedupKey(c); const why = `location_${where}`
       if (!review.has(k)) review.set(k, { ...c, contact: null, review_reason: why })
