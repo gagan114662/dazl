@@ -1,4 +1,5 @@
 import test from 'node:test'
+import { sqliteDb } from '../lib/db/client.ts'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
@@ -8,7 +9,7 @@ import { addEnrichment, audit, connectorStatus, enrichmentsForLeads, getEnabledC
 const master = randomBytes(32)
 const KEY = 'h'.repeat(40)
 
-test('credentials are encrypted, tenant bound, and only returned when enabled', () => {
+test('credentials are encrypted, tenant bound, and only returned when enabled', async () => {
   const db = new Database(':memory:')
   migrateConnectors(db)
   saveCredential(db, 't1', 'hunter', KEY, master)
@@ -19,12 +20,12 @@ test('credentials are encrypted, tenant bound, and only returned when enabled', 
   db.prepare("UPDATE tenant_connectors SET tenant_id = 't2'").run() // copied to another tenant: must not decrypt
   assert.throws(() => getEnabledCredential(db, 't2', 'hunter', master))
   db.prepare("UPDATE tenant_connectors SET tenant_id = 't1'").run()
-  assert.equal(setEnabled(db, 't1', 'hunter', false), true)
+  assert.equal(await setEnabled(sqliteDb(db), 't1', 'hunter', false), true)
   assert.equal(getEnabledCredential(db, 't1', 'hunter', master), null)
-  assert.deepEqual(connectorStatus(db, 't1'), [{ connector: 'hunter', last4: 'hhhh', enabled: false }])
+  assert.deepEqual(await connectorStatus(sqliteDb(db), 't1'), [{ connector: 'hunter', last4: 'hhhh', enabled: false }])
 })
 
-test('enrichment rows require a source URL and a date', () => {
+test('enrichment rows require a source URL and a date', async () => {
   const db = new Database(':memory:')
   migrateConnectors(db)
   const base = { connector: 'hunter', kind: 'email', value: 'a@b.co', label: null, confidence: 50, retrieved_at: 1 }

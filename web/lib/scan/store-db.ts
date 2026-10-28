@@ -9,7 +9,7 @@
 //   - getJob does not run the stale reaper as a side effect: reapStaleJobs is its own call.
 // The status-transition and running-job triggers stay in the schema on both engines; nothing here bypasses them.
 import { randomBytes } from 'node:crypto'
-import type { Db, TxBody } from '../db/client.ts'
+import type { Db, Param, TxBody } from '../db/client.ts'
 import { CANCEL_HOLD_S, MAX_ATTEMPTS, STALE_RUNNING_S, type QueryInput, type ScanInput, type CancelResult, type JobSummary } from './store.ts'
 import { ENRICH_STALE_S } from './enrichment.ts'
 
@@ -62,6 +62,16 @@ export async function countActiveJobs(db: Db, userId: string, now = nowS()): Pro
   return Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM scan_jobs WHERE user_id = ? AND csv_domain IS NULL AND (status IN ('pending','running') OR (status = 'done' AND enrich_started_at IS NOT NULL AND enrich_finished_at IS NULL AND enrich_started_at > ?) OR (status = 'failed' AND error = 'cancelled' AND finished_at >= ?))", [userId, now - ENRICH_STALE_S, now - CANCEL_HOLD_S]))!.n)
 }
 
+// A lead a REQUIRED gate failed on whose review write was rejected still reads verified in leads.review_reason. The gate leaves a marker beside it (lead_enrichments, connector
+// 'scan:gate', kind 'gate_failed'); every user-facing read of the lead row overlays it (SQLite and Postgres), so a held lead is never shown or exported as verified. A store
+// without the enrichments table (an older SQLite database) reads the row as stored.
+const HELD_MARK = "EXISTS (SELECT 1 FROM lead_enrichments h WHERE h.lead_id = l.id AND h.connector = 'scan:gate' AND h.kind = 'gate_failed')"
+const HELD_REVIEW = `CASE WHEN l.review_reason IS NULL AND ${HELD_MARK} THEN 'sales_hiring_check_failed' ELSE l.review_reason END AS review_reason`
+const HELD_CONF = `CASE WHEN l.review_reason IS NULL AND ${HELD_MARK} THEN NULL ELSE l.confidence END AS confidence`
+async function allHeld(db: Db, plain: string, plainCols: string, heldCols: string, params: Param[]): Promise<Record<string, unknown>[]> {
+  try { return await db.all(plain.replace(plainCols, heldCols), params) } catch (e) { if (!/no such table/i.test(e instanceof Error ? e.message : '')) throw e; return db.all(plain, params) }
+}
+
 const LEAD_COLUMNS = `l.id, l.scan_job_id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.created_at,
 l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
 l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l.quarantine_reason, l.evidence_origin, l.own_fetch_failure, l.evidence_copy_sha256, l.evidence_copy_id, l.evidence_purged_at, l.timing_note, l.published_at,
@@ -70,12 +80,12 @@ l.fit, l.intent, l.action, l.why, l.signals, l.icp_match, l.watch_new, l.seen_be
 // Ranked: scored leads first by ICP fit, then intent, actionability and evidence confidence. Low-fit scored leads
 // (fit <= 1) are hidden unless includeHidden. Scoped through the job's owner.
 export function listLeads(db: Db, userId: string, jobId: string, limit = 200, includeHidden = false): Promise<Record<string, unknown>[]> {
-  return db.all(
+  return allHeld(db,
     `SELECT ${LEAD_COLUMNS}
      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
      WHERE j.id = ? AND j.user_id = ? ${includeHidden ? '' : 'AND (l.fit IS NULL OR l.fit > 1)'}
      ORDER BY (l.fit IS NULL), l.fit DESC, l.action DESC, (l.confidence IS NULL), l.confidence DESC, l.score DESC, l.created_at DESC, l.insert_seq LIMIT ?`,
-    [jobId, userId, Math.min(limit, 500)])
+    'l.confidence, l.review_reason,', `${HELD_CONF}, ${HELD_REVIEW},`, [jobId, userId, Math.min(limit, 500)])
 }
 
 export async function countHiddenLeads(db: Db, userId: string, jobId: string): Promise<number> {
@@ -98,7 +108,7 @@ export function listJobs(db: Db, userId: string, limit = 20): Promise<JobSummary
 // CSV export: the tenant's visible leads (no hidden fit<=1, no quarantined), one job or all, newest first. Fixture
 // rows (source_kind 'test') only with includeFixtures. Read-only.
 export function exportLeads(db: Db, userId: string, jobId?: string, limit = 5000, includeFixtures = false): Promise<Record<string, unknown>[]> {
-  return db.all(
+  return allHeld(db,
     `SELECT l.id AS lead_id, l.scan_job_id AS job_id, l.company, l.name, l.contact, l.signal, l.why, l.source_url,
             l.fit, l.intent, l.action, l.score, l.confidence, l.event_date, l.date_status, l.review_reason,
             l.human_confirmed_from, l.evidence_excerpt, l.evidence_origin, l.own_fetch_failure, l.evidence_purged_at, l.timing_note, l.published_at, l.created_at
@@ -106,7 +116,7 @@ export function exportLeads(db: Db, userId: string, jobId?: string, limit = 5000
      WHERE j.user_id = ? ${jobId ? 'AND j.id = ?' : ''} AND (l.fit IS NULL OR l.fit > 1) AND l.quarantined_at IS NULL
      ${includeFixtures ? '' : "AND (l.source_kind IS NULL OR l.source_kind != 'test')"}
      ORDER BY l.created_at DESC, l.insert_seq LIMIT ?`,
-    jobId ? [userId, jobId, limit] : [userId, limit])
+    'l.confidence, l.event_date, l.date_status, l.review_reason,', `${HELD_CONF}, l.event_date, l.date_status, ${HELD_REVIEW},`, jobId ? [userId, jobId, limit] : [userId, limit])
 }
 
 // Stop-requested, not provider-stopped: moves the job to failed/'cancelled' in one transaction (a pending job takes

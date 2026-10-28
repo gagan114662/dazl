@@ -10,7 +10,7 @@ import { addEnrichment, audit } from '../connectors/store.ts'
 import { companyKey, recordCompanyEvent } from '../events/store.ts'
 import { listLeads } from '../scan/store.ts'
 import { classifyEntityMatch, domainSlug, withinEventWindow } from './entity-match.ts'
-import { atsGtmBoard } from './ats-gtm.ts'
+import { atsGtmBoard, postingEvidence } from './ats-gtm.ts'
 import { domainRelationship, HEURISTIC_NOTE } from './domain-basis.ts'
 
 const TIMEOUT = 8000
@@ -164,6 +164,7 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
       const est = domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established' || (!!g.domain && !!lead.company_domain && g.domain.replace(/^www\./, '') === lead.company_domain.replace(/^www\./, ''))
       const titles = g.postings.map(p => p.title).slice(0, 3).join('; ')
       addEnrichment(db, tenantId, lead.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${est ? '' : 'Unconfirmed: '}${n} sales/GTM role${n === 1 ? '' : 's'} posted, newest ${g.newest}`, label: (est ? titles : `${titles} (${HEURISTIC_NOTE})`).slice(0, 200) || null, confidence: est ? 70 : null, source_url: g.url, source_date: g.newest, retrieved_at: now })
+      for (const e of postingEvidence(g, now, est ? null : HEURISTIC_NOTE)) addEnrichment(db, tenantId, lead.id, e)
       gtm++
     }
     const r = await fundingRoundFor(lead.company, news, { fetchImpl, jinaLeft }).catch(() => null)

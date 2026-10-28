@@ -4,7 +4,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { applySalesHiringGate, salesHiringRequired, quoteNamesSalesHiring } from '../lib/scan/sales-hiring-gate.ts'
+import { applySalesHiringGate, failClosedSalesHiring, salesHiringRequired, quoteNamesSalesHiring } from '../lib/scan/sales-hiring-gate.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, enrichmentsForLeads } from '../lib/connectors/store.ts'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
@@ -63,7 +63,7 @@ test('PASS: a dated sales posting on a Greenhouse board bound to the lead’s do
   const l = lead(db); assert.equal(l.review_reason, null); assert.equal(l.confidence, 80)
   assert.match(l.why, new RegExp(`^Hiring sales: Account Executive posted ${d(12).slice(0, 10)} on its Greenhouse job board \\(brightloop\\.io\\)\\. Seed-funded`))
   assert.deepEqual(counts(db), { verified: 1, needs_review: 0 })
-  const e = (enrichmentsForLeads(db, 'u1', ['L1']).L1 ?? []).filter(x => x.kind === 'hiring'); assert.equal(e.length, 1); assert.equal(e[0].source_date, d(12).slice(0, 10))
+  const e = (enrichmentsForLeads(db, 'u1', ['L1']).L1 ?? []).filter(x => x.kind === 'hiring' && /sales\/GTM role/.test(x.value)); assert.equal(e.length, 1); assert.equal(e[0].source_date, d(12).slice(0, 10))   // the aggregate row; the per-posting rows are checked below
 })
 
 test('PASS (source): the saved quote itself names the sales hiring, so no board lookup is made', async () => {
@@ -315,4 +315,37 @@ test('appositive subject: "Brightloop, a London B2B SaaS startup with 24 employe
   const { db, job } = seed({ domain: null, excerpt: good }); assert.equal((await applySalesHiringGate(db, job, serve({}), { now: NOW })).passed, 1)
   const bad = seed({ domain: null, excerpt: 'othercorp, a London B2B SaaS startup with 24 employees, raised a 3m GBP seed round this month and is hiring two account executives' })
   assert.equal((await applySalesHiringGate(bad.db, bad.job, serve({}), { now: NOW })).passed, 0)
+})
+
+test('FAIL-CLOSED per lead: an error while a lead is being proven holds that lead (sales_hiring_check_failed); it is never passed', async () => {
+  const { db, job } = seed({ domain: 'brightloop.io', excerpt: QUOTE })
+  db.exec('DROP TABLE lead_enrichments')   // the evidence write for a board pass now throws
+  const r = await applySalesHiringGate(db, job, serve(board()), { now: NOW })
+  assert.deepEqual([r.passed, r.demoted], [0, 1]); assert.equal(lead(db).review_reason, 'sales_hiring_check_failed'); assert.equal(lead(db).confidence, null)
+  assert.match(lead(db).why, /^Sales-hiring check failed \(/); assert.deepEqual(counts(db), { verified: 0, needs_review: 1 })
+  assert.deepEqual(r.demotions.map(d => d.reason), ['sales_hiring_check_failed'])
+})
+test('FAIL-CLOSED whole gate: failClosedSalesHiring holds every lead still verified, only when the request needs the proof', () => {
+  const { db, job } = seed({ domain: 'brightloop.io', excerpt: QUOTE })
+  const held = failClosedSalesHiring(db, job, 'database is locked')
+  assert.deepEqual(held.map(h => h.reason), ['sales_hiring_check_failed']); assert.equal(lead(db).review_reason, 'sales_hiring_check_failed'); assert.deepEqual(counts(db), { verified: 0, needs_review: 1 })
+  const seedOnly = seed({ query: 'Find London UK SaaS startups that announced seed funding.', icp: JSON.stringify({ summary: 's', where: ['London, UK'], who: ['Founder'], signals: ['announced seed funding'], exclude: [] }) })
+  assert.deepEqual(failClosedSalesHiring(seedOnly.db, seedOnly.job, 'x'), [], 'no sales proof required: nothing to fail'); assert.equal(lead(seedOnly.db).review_reason, null)
+})
+
+test('a lead kept on a dated board posting stores per-posting evidence: role title, posting URL, publish date, board + location, retrieval time', async () => {
+  const { db, job } = seed({ domain: 'brightloop.io', excerpt: QUOTE })
+  assert.equal((await applySalesHiringGate(db, job, serve(board()), { now: NOW })).passed, 1)
+  const rows = db.prepare("SELECT value, label, source_url, source_date, retrieved_at, confidence FROM lead_enrichments WHERE value LIKE '% - posted %'").all() as { value: string; label: string; source_url: string; source_date: string; retrieved_at: number; confidence: number }[]
+  assert.equal(rows.length, 1)
+  assert.deepEqual([rows[0].value, rows[0].source_url, rows[0].source_date, rows[0].confidence], [`Account Executive - posted ${d(12).slice(0, 10)}`, 'https://boards.greenhouse.io/brightloop/jobs/1', d(12).slice(0, 10), 70])
+  assert.equal(rows[0].label, 'London, UK; Greenhouse'); assert.equal(rows[0].retrieved_at, Math.floor(NOW / 1000))
+})
+
+test('FAIL-CLOSED in memory: failClosedSalesHiring still returns the held lead when its own write is rejected', () => {
+  const { db, job } = seed({ domain: 'brightloop.io', excerpt: QUOTE })
+  db.exec("CREATE TRIGGER reject_review BEFORE UPDATE OF review_reason ON leads WHEN NEW.review_reason IS NOT NULL BEGIN SELECT RAISE(ABORT, 'write rejected'); END")
+  const held = failClosedSalesHiring(db, job, 'database is locked')
+  assert.deepEqual(held.map(h => [h.id, h.reason, h.written]), [['L1', 'sales_hiring_check_failed', false]])
+  assert.equal(lead(db).review_reason, null, 'the row did not change - the in-memory set is the truth')
 })

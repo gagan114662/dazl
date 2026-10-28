@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import { parseWindowDays, windowStatus } from '../scan/window.ts'
+import { requiredGateHeld } from '../scan/held-state.ts'
 // A legacy nearby-year verdict proves no event association. Human confirmation
 // remains a user's review choice, not a machine freshness or consent verdict.
 // The user's own recency window (#198) is a hard gate on top: a lead whose event date is not inside the window of the
@@ -9,6 +10,7 @@ export function currentnessHeld(db: Database.Database, tenant: string, lead: str
  const row=db.prepare('SELECT l.human_confirmed_at,l.confidence,l.event_date,j.icp,j.query FROM leads l JOIN scan_jobs j ON j.id=l.scan_job_id WHERE l.id=? AND j.user_id=?').get(lead,tenant) as {human_confirmed_at:number|null;confidence:number|null;event_date:string|null;icp:string|null;query:string|null}|undefined
  if (!row) return false
  if (windowHeld(row, now)) return true
+ if (requiredGateHeld(db, tenant, lead)) return true   // a failed REQUIRED gate survives lead / domain confirmation
  return row.human_confirmed_at===null && row.confidence!==null
 }
 

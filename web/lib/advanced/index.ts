@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import type { Db } from '../db/client.ts'
 import { audit, getEnabledCredential } from '../connectors/store.ts'
 import type { Evidence } from '../sources/types.ts'
 import { advFlags, CONSENT_VERSION, connectorId, maxCallsPerHour, platformAllowed, scopeFor, type AdvPlatform, type ConsentScope } from './config.ts'
@@ -12,16 +13,30 @@ export function migrateAdvanced(db: Database.Database): void {
   );`)
 }
 
+// Each consent read and write exists sync (the raw handle: the scan pipeline and its fixtures) and async on Db (the
+// settings route), with one SQL string each. The acceptance time comes from the caller's clock (epoch seconds).
+const ACCEPT_SQL = 'INSERT INTO advanced_consent (tenant_id, scope, version, accepted_at) VALUES (?, ?, ?, ?) ON CONFLICT(tenant_id, scope) DO UPDATE SET version = excluded.version, accepted_at = excluded.accepted_at'
+const REVOKE_SQL = 'DELETE FROM advanced_consent WHERE tenant_id = ? AND scope = ?'
+const CONSENT_SQL = 'SELECT version FROM advanced_consent WHERE tenant_id = ? AND scope = ?'
+const nowS = () => Math.floor(Date.now() / 1000)
 export function acceptConsent(db: Database.Database, tenantId: string, scope: ConsentScope): void {
-  db.prepare('INSERT INTO advanced_consent (tenant_id, scope, version) VALUES (?, ?, ?) ON CONFLICT(tenant_id, scope) DO UPDATE SET version = excluded.version, accepted_at = CAST(strftime(\'%s\',\'now\') AS INTEGER)').run(tenantId, scope, CONSENT_VERSION)
+  db.prepare(ACCEPT_SQL).run(tenantId, scope, CONSENT_VERSION, nowS())
+}
+export async function writeConsent(db: Db, tenantId: string, scope: ConsentScope): Promise<void> {
+  await db.run(ACCEPT_SQL, [tenantId, scope, CONSENT_VERSION, nowS()])
 }
 export function revokeConsent(db: Database.Database, tenantId: string, scope: ConsentScope): void {
-  db.prepare('DELETE FROM advanced_consent WHERE tenant_id = ? AND scope = ?').run(tenantId, scope)
+  db.prepare(REVOKE_SQL).run(tenantId, scope)
+}
+export async function removeConsent(db: Db, tenantId: string, scope: ConsentScope): Promise<void> {
+  await db.run(REVOKE_SQL, [tenantId, scope])
 }
 // Consent only counts for the current wording; a new version asks again.
 export function hasConsent(db: Database.Database, tenantId: string, scope: ConsentScope): boolean {
-  const r = db.prepare('SELECT version FROM advanced_consent WHERE tenant_id = ? AND scope = ?').get(tenantId, scope) as { version: string } | undefined
-  return r?.version === CONSENT_VERSION
+  return (db.prepare(CONSENT_SQL).get(tenantId, scope) as { version: string } | undefined)?.version === CONSENT_VERSION
+}
+export async function readConsent(db: Db, tenantId: string, scope: ConsentScope): Promise<boolean> {
+  return (await db.get<{ version: string }>(CONSENT_SQL, [tenantId, scope]))?.version === CONSENT_VERSION
 }
 
 export interface WorkerItem { url: string; title: string; quote: string; date: string | null; login_walled: boolean }

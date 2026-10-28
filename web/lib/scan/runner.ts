@@ -23,18 +23,19 @@ import { placeIn } from '../sources/jobboards.ts'
 import { resolveTiming } from './page-timing.ts'
 import { ownPlaceAgreement } from './own-block.ts'
 import { HeldText, COPY_ORIGIN, type HeldPage } from './held-text.ts'
+import { markHeldInProcess } from './held-state.ts'
 import { reconcileRunReport, type CandidateAudit, type UrlRecord } from './run-report.ts'
 import { evidenceCopyRoom, storeEvidenceCopy } from './evidence-copies.ts'
 import { isJobPage, needsEventBeyondHiring } from '../search/page-class.ts'
 import { extractionNote } from './extraction-note.ts'
 import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
-import { crawlJob } from '../connectors/sitecrawl.ts'
+import { crawlJob, defaultGet, sitecrawlEnabled } from '../connectors/sitecrawl.ts'
 import { anthropicCountTokens, guardProvider, ownerPool, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './verify-provenance.ts'
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
 import { getMemory, isExcluded, memoryPromptBlock } from '../memory.ts'
 import { enrichJobSignals } from '../signals/index.ts'
-import { applySalesHiringGate, type QuoteEvidence } from './sales-hiring-gate.ts'
+import { applySalesHiringGate, failClosedSalesHiring, persistHeldState, type QuoteEvidence, type HeldLead } from './sales-hiring-gate.ts'
 import { beginEnrichment, endEnrichment } from './enrichment.ts'
 import { regradeFromKeptContacts } from './contact-agreement.ts'
 import { primarySignalKind } from './score.ts'
@@ -47,8 +48,10 @@ import { safeGet } from '../sources/http.ts'
 import type { SafeGet } from '../sources/types.ts'
 import { meterProvider, writeModelCalls, type ModelCall } from './model-usage.ts'
 import { findPeople } from '../people/people-search.ts'
+import { EnrichmentTrace, noteFromAudit, auditSummary, mergeIntoRunReport } from './enrichment-trace.ts'
+import { recordActionability } from './actionable.ts'
 import { parseWindowDays, splitByWindow, windowStatus } from './window.ts'
-import { applyBuyerFitGate } from './buyer-fit.ts'
+import { applyBuyerFitGate, failClosedBuyerFit } from './buyer-fit.ts'
 
 export interface Job { spend_reserved_usd?: number | null; id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string; seller?: string | null; watch_id?: string | null; csv_domain?: string | null; run_budget?: string | null }
 export interface LeadDraft extends Candidate {}
@@ -720,7 +723,7 @@ function budgetDeps(deps: RunDeps, budget: RunBudget | null): RunDeps {
 
 export interface RunDeps {
   // newsHttp: the free news search's own HTTP (lib/search/news.ts), separate from the per-scan sources' sourceHttp.
-  autopilot?: typeof runAutopilot; sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; jobBudgetMs?: number; clock?: () => number }
+  autopilot?: typeof runAutopilot; sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; salesHiringGate?: typeof applySalesHiringGate; jobBudgetMs?: number; clock?: () => number }
 
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
   const ledger = new SourceRunLedger()
@@ -1033,23 +1036,50 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     if (job.watch_id) { try { markWatchLeads(db, job.watch_id, job.id) } catch { /* bonus only */ } }
     try { markSeenBefore(db, job.user_id, job.id, companyKey) } catch { /* flag only, never affects the scan */ }
     // Bounded post-processing: see runPostFinishBounded.
-    await runPostFinishBounded(db, job, deps)
+    const trace = new EnrichmentTrace()
+    await runPostFinishBounded(db, job, deps, trace)
     // People search (person-first): the right people at each lead's company from public profile SEARCH RESULTS, for
     // companies whose own site lists nobody. Never throws; never an address; kill switch PEOPLE_SEARCH_ENABLED=0.
-    await findPeople(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl })
+    if (process.env.PEOPLE_SEARCH_ENABLED === '0') trace.note('people_search', 'skipped', 'PEOPLE_SEARCH_ENABLED=0')
+    else try { const n = await findPeople(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl }); trace.note('people_search', n > 0 ? 'ok' : 'attempted_no_result', n > 0 ? null : 'no profile results named a role-matching person at a verified company, or no search key/quota', { people_stored: n }) } catch (e) { trace.note('people_search', 'failed', e instanceof Error ? e.message : 'error') }
     // Contacts refused for disagreeing with the lead (wrong place / wrong domain) leave nothing reachable: regrade the lead from the evidence actually kept.
     try { regradeFromKeptContacts(db, job.user_id, job.id) } catch (e) { console.error('regrade from kept contacts failed', e instanceof Error ? e.message : 'error') }
     // Buyer-fit gate (after the crawl, which confirms each company's own site): a hiring lead keeps fit >= 4 only when
     // its own home page shows it fits, quoted verbatim. Fail closed; never fails the scan.
+    if (!(complete && deps.score !== false)) trace.note('buyer_fit', 'skipped', deps.score === false ? 'scoring disabled for this run' : 'no model provider for this run')
     if (complete && deps.score !== false) {
       try {
         const icpText = (icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`) + offerBlockFor(db, job.user_id)
-        await applyBuyerFitGate(db, job.id, providers_[vendor], key, icpText, { fetchPage: deps.fetchPage, fetchImpl: deps.fetchImpl })
-      } catch (e) { console.error('buyer-fit gate failed', e instanceof Error ? e.message : 'error') }
+        await applyBuyerFitGate(db, job.id, providers_[vendor], key, icpText, { fetchPage: deps.fetchPage, fetchImpl: deps.fetchImpl }); trace.note('buyer_fit', 'ok')
+      } catch (e) { const msg = e instanceof Error ? e.message : 'error'; let capped = 0; try { capped = failClosedBuyerFit(db, job.id, msg) } catch { /* the cap is best effort */ } trace.note('buyer_fit', 'failed', `${msg} - ${capped} hiring lead(s) capped below the qualified bar`); console.error('buyer-fit gate failed', msg) }
     }
     // Seed funding AND hiring sales: a lead that passed on the funding quote alone is moved to review unless sales / GTM hiring is evidenced
     // (its own quote, or a dated posting on a public job board bound to its domain). Before autopilot, so nothing is drafted on a half proof.
-    try { const g = await applySalesHiringGate(db, job, deps.fetchImpl ?? fetch, { quotes: outcome.quotes }); reconcileRunReport(db, job.id, job.attempts, g.demotions) } catch (e) { console.error('sales-hiring gate failed', e instanceof Error ? e.message : 'error') }
+    let heldByGate: Map<string, string> = new Map()
+    try {
+      const g = await (deps.salesHiringGate ?? applySalesHiringGate)(db, job, deps.fetchImpl ?? fetch, { quotes: outcome.quotes, careersGet: sitecrawlEnabled() ? (deps.crawlGet ?? defaultGet()) : undefined }); reconcileRunReport(db, job.id, job.attempts, g.demotions)
+      trace.note('sales_hiring_gate', g.required ? 'ok' : 'skipped', g.required ? null : 'the request does not need sales-hiring proof', g.required ? { checked: g.checked, passed: g.passed, held: g.demoted } : undefined)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'error'
+      // A REQUIRED gate that fails is a fail, never a pass: every lead still verified is held, the failure is its reason, and the report agrees.
+      let held: HeldLead[] = []
+      try { held = failClosedSalesHiring(db, job, msg); reconcileRunReport(db, job.id, job.attempts, held) } catch (e2) { console.error('sales-hiring fail-closed failed', e2 instanceof Error ? e2.message : 'error') }
+      heldByGate = new Map(held.map(h => [h.id, h.reason]))
+      persistHeldState(db, job, held.filter(h => !h.written), msg)   // surfaces that read only the lead row must not show an unwritten held lead as verified   // kept in memory: classification must not infer "passed" from a row whose write did not land
+
+      markHeldInProcess(job.user_id, held.map(h => h.id))   // kept in memory: classification must not infer "passed" from a row whose write did not land
+      trace.note('sales_hiring_gate', 'failed', `${msg} - ${held.length} lead(s) held as sales_hiring_check_failed${held.some(h => !h.written) ? ` (${held.filter(h => !h.written).length} write(s) rejected: held in memory)` : ''}`)
+      console.error('sales-hiring gate failed', msg)
+    }
+    // Actionable yield (domain + sales proof + named person + published contact) is measured here, at the END of enrichment, apart from the source-checked counts.
+    // The same facts go beside each lead and into the run report, so the card and the report agree.
+    try {
+      const y = recordActionability(db, job, heldByGate)
+      // A lead the gate passed whose durable pass record could not be saved is held by the draft guard (default-deny); the report says so too, with the same reason.
+      const extra = (y.held_leads ?? []).filter(h => !heldByGate.has(h.id))
+      if (extra.length) { markHeldInProcess(job.user_id, extra.map(h => h.id)); reconcileRunReport(db, job.id, job.attempts, extra.map(h => ({ company: h.company, url: h.url, reason: 'sales_hiring_check_failed' }))) }
+      mergeIntoRunReport(db, job.id, job.attempts, { enrichment: trace.stages, yield: y, held_lead_ids: [...heldByGate.keys(), ...extra.map(h => h.id)] })
+    } catch (e) { console.error('actionable yield failed', e instanceof Error ? e.message : 'error') }
     // Contacts, people, fit and the sales-hiring check are final: the stage ends before autopilot, whose drafting/sending is separate work, not enrichment.
     endEnrichment(db, job.id, job.attempts)
     // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.
@@ -1087,16 +1117,21 @@ export function postFinishBudgetMs(env: Record<string, string | undefined> = pro
 // work (outreach sends, e.g. Gmail per the runJob audit) and has no cancel
 // protocol, so it is awaited to completion - the slot is held through it,
 // never freed beneath it.
-export async function runPostFinishBounded(db: Database.Database, job: Job, deps: RunDeps): Promise<void> {
+export async function runPostFinishBounded(db: Database.Database, job: Job, deps: RunDeps, trace: EnrichmentTrace = new EnrichmentTrace()): Promise<void> {
   const postCtrl = new AbortController()
   const postTimer = setTimeout(() => postCtrl.abort(), postFinishBudgetMs())
   try {
     // Contact-page crawl enriches verified leads with role emails (robots.txt hard rule). Never affects the scan result.
-    await crawlJob(db, job.user_id, job.id, deps.crawlGet ? { get: deps.crawlGet, signal: postCtrl.signal } : { signal: postCtrl.signal })
+    if (!sitecrawlEnabled()) trace.note('crawl', 'skipped', 'SITECRAWL_ENABLED=0')
+    else { await crawlJob(db, job.user_id, job.id, deps.crawlGet ? { get: deps.crawlGet, signal: postCtrl.signal } : { signal: postCtrl.signal }); noteFromAudit(trace, db, job.user_id, job.id, 'crawl', 'sitecrawl') }
+    if (postCtrl.signal.aborted) trace.note('crawl', 'failed', `cut off at the post-finish budget (${postFinishBudgetMs()} ms): contacts and domains after that point were not read`)
     // Intent-signal enrichment (SEC Form D, public job boards). Bonus rows beside the
     // leads, never part of verification; failures are silent.
     const enrichFetch = (url: string, init?: RequestInit) => (deps.fetchImpl ?? fetch)(url, { ...init, signal: AbortSignal.any([init?.signal, postCtrl.signal].filter((x): x is AbortSignal => Boolean(x))) })
-    try { await enrichJobSignals(db, job.user_id, job.id, { fetchImpl: enrichFetch as typeof fetch, creditEnrichment: deps.creditEnrichment }) } catch (e) { console.error('signal enrichment failed', e instanceof Error ? e.message : 'error') }
+    if (process.env.SIGNALS_ENRICH === '0') trace.note('signals', 'skipped', 'SIGNALS_ENRICH=0')
+    else try { await enrichJobSignals(db, job.user_id, job.id, { fetchImpl: enrichFetch as typeof fetch, creditEnrichment: deps.creditEnrichment }); noteFromAudit(trace, db, job.user_id, job.id, 'signals', 'signals:%') } catch (e) { trace.note('signals', 'failed', e instanceof Error ? e.message : 'error'); console.error('signal enrichment failed', e instanceof Error ? e.message : 'error') }
+    if (deps.creditEnrichment === false) trace.note('paid_enrichment', 'skipped', 'this run adds no paid enrichment (run budget / no credits)')
+    else { const a = auditSummary(db, job.user_id, job.id, 'apollo%').total + auditSummary(db, job.user_id, job.id, 'pdl%').total; trace.note('paid_enrichment', a > 0 ? 'ok' : 'unavailable', a > 0 ? null : 'no Apollo / People Data Labs key configured for this tenant, or no eligible lead', { lookups: a }) }
   } finally {
     clearTimeout(postTimer)
   }

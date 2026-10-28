@@ -1,4 +1,4 @@
-import type Database from 'better-sqlite3'
+import type { Db } from '../db/client.ts'
 
 // Server-only, read-only. Whether the account's saved AI keys have open negative evidence: a scan that stopped because
 // its key was rejected (key_rejected) or could not be read (key_unreadable), with no positive acceptance since.
@@ -14,13 +14,15 @@ import type Database from 'better-sqlite3'
 //   cancelled or failed scan, a done scan or saving only one of several keys does not clear it.
 export interface KeyEvidence { error: 'key_rejected' | 'key_unreadable' }
 
-export function openKeyRejection(db: Database.Database, tenantId: string): KeyEvidence | null {
-  const keys = db.prepare('SELECT validated_at FROM tenant_llm_keys WHERE tenant_id = ?').all(tenantId) as { validated_at: number }[]
+// On the Db layer (SQLite or Postgres). A scan with no finished_at counts as ending now (the caller's clock, epoch
+// seconds); same-second scans are tie-broken by insert_seq, the order rowid gave.
+export async function openKeyRejection(db: Db, tenantId: string, nowS = Math.floor(Date.now() / 1000)): Promise<KeyEvidence | null> {
+  const keys = await db.all<{ validated_at: number }>('SELECT validated_at FROM tenant_llm_keys WHERE tenant_id = ?', [tenantId])
   if (!keys.length) return null
-  const oldestAcceptance = Math.min(...keys.map(k => k.validated_at))
-  const f = db.prepare(`SELECT error FROM scan_jobs
+  const oldestAcceptance = Math.min(...keys.map(k => Number(k.validated_at)))
+  const f = await db.get<{ error: KeyEvidence['error'] }>(`SELECT error FROM scan_jobs
     WHERE user_id = ? AND status = 'failed' AND error IN ('key_rejected', 'key_unreadable') AND funded_by != 'trial'
-      AND COALESCE(finished_at, CAST(strftime('%s','now') AS INTEGER)) >= ?
-    ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(tenantId, oldestAcceptance) as { error: KeyEvidence['error'] } | undefined
+      AND COALESCE(finished_at, ?) >= ?
+    ORDER BY created_at DESC, insert_seq DESC LIMIT 1`, [tenantId, nowS, oldestAcceptance])
   return f ? { error: f.error } : null
 }
