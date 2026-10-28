@@ -29,6 +29,7 @@ for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } ca
 const b = await chromium.launch()
 const JOB = 'c'.repeat(24)
 let state = 'running'
+let enrich = null
 const posts = []
 const ctx = await b.newContext({ viewport: { width: 1280, height: 1000 } })
 await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
@@ -41,7 +42,7 @@ await ctx.route('**/*', async route => {
   if (p === '/api/usage') return json({ plan: 'free', scans_used: 1, scan_limit: 10, has_key: true, trial: null })
   if (p === '/api/settings/advanced') return json({ available: true, platforms: [] })
   if (p === '/api/scan/jobs') return json({ jobs: [{ id: JOB, status: state, error: null, query: 'Dental practices in Ohio', business_name: 'Acme', csv_domain: null, created_at: 1, finished_at: null, candidates: null, verified: null, needs_review: null, dropped: null, lead_count: 0, test_only: false }] })
-  if (p === '/api/scan/status') return json({ job_id: JOB, status: state, lead_count: 0, attempts: 1, max_attempts: 3, claimed_at: 1, created_at: 1, error: state === 'failed' ? 'key_rejected' : null, quality: null })
+  if (p === '/api/scan/status') return json({ job_id: JOB, status: state, ...(enrich ? { enrichment: { state: enrich } } : {}), lead_count: 0, attempts: 1, max_attempts: 3, claimed_at: 1, created_at: 1, error: state === 'failed' ? 'key_rejected' : null, quality: null })
   if (p === '/api/leads') return json({ leads: [], hidden_count: 0 })
   return json({}, 404)
 })
@@ -64,6 +65,14 @@ try {
   state = 'done'
   await until(async () => await find().isEnabled(), 'Find leads enabled once the scan is done')
   assert.equal(await reason().count(), 0)
+  assert.equal(await page.getByTestId('enrich-interrupted').count(), 0, 'no interrupted notice on a normal done scan')
+  // done but the enrichment stage never ended (stale mark): must not read as fully finished. Polling stops at done, so reload.
+  enrich = 'interrupted'
+  await page.goto(`${base}/app/leads?job_id=${JOB}`, { waitUntil: 'networkidle' })
+  await until(async () => (await page.getByTestId('enrich-interrupted').count()) === 1, 'interrupted notice shown for stale enrichment')
+  assert.match(await page.getByTestId('enrich-interrupted').textContent(), /did not finish/)
+  assert.equal(await find().isEnabled(), true, 'an interrupted stage must not block a new scan')
+  enrich = null
   // failed (a new scan that failed): also enabled
   state = 'failed'
   await page.reload({ waitUntil: 'networkidle' })

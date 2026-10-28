@@ -572,6 +572,12 @@ CREATE TABLE source_reviews (
  company_named INTEGER NOT NULL, contact_match INTEGER NOT NULL, checked_at INTEGER NOT NULL
  );
 
+CREATE TABLE stripe_ended_subscriptions (
+      subscription_id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      ended_at INTEGER
+    );
+
 CREATE TABLE stripe_events (
       id TEXT PRIMARY KEY,
       type TEXT NOT NULL,
@@ -637,7 +643,7 @@ CREATE TABLE tenant_plans (
       plan TEXT NOT NULL DEFAULT 'free' CHECK (plan IN ('free','pro')),
       stripe_customer_id TEXT,
       stripe_subscription_id TEXT
-    );
+    , stripe_event_at INTEGER, stripe_reconcile_at INTEGER);
 
 CREATE TABLE tinyfish_usage (day TEXT NOT NULL, tenant_id TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('search','fetch')), n INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (day, tenant_id, kind));
 

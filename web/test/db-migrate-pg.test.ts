@@ -30,7 +30,7 @@ test('fresh database: the migrations create every app table; a second run applie
   const first = await runPgMigrations(db.pool)
   assert.deepEqual(first.applied, loadMigrations().map(m => m.version))
   const tables = (await db.all<{ t: string }>("SELECT table_name AS t FROM information_schema.tables WHERE table_schema = current_schema() AND table_name <> 'dazl_schema_migrations' ORDER BY 1")).map(r => r.t)
-  assert.equal(SQLITE_TABLES.length, 75)
+  assert.equal(SQLITE_TABLES.length, 76)
   assert.deepEqual(tables, SQLITE_TABLES)
   const second = await runPgMigrations(db.pool)
   assert.deepEqual(second.applied, [])
@@ -109,3 +109,11 @@ test('baseline guards: append-only, immutable, delete-only-expired, status trans
   await db.run("INSERT INTO outreach_llm_usage (tenant_id, purpose, outcome) VALUES ('t1', 'draft', 'ok')")
   assert.deepEqual((await db.all<{ id: number }>('SELECT id FROM outreach_llm_usage ORDER BY id')).map(r => r.id), [1, 2])
 }))
+
+// Parity with current main: stripe_event_order took 0007 (#253), so the enrichment columns are 0008. loadMigrations also
+// throws on a gap or duplicate version, so a second 0007 file would fail here before it could reach a database.
+test('enrichment migration is 0008, after main\'s 0007 stripe_event_order', () => {
+  const ms = loadMigrations()
+  assert.equal(ms.find(m => m.version === 7)?.name, 'stripe_event_order')
+  assert.equal(ms.find(m => m.version === 8)?.name, 'scan_job_enrichment')
+})

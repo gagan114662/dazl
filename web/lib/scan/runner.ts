@@ -25,6 +25,8 @@ import { placeAgreement } from './place-agreement.ts'
 import { HeldText, COPY_ORIGIN, type HeldPage } from './held-text.ts'
 import type { CandidateAudit, UrlRecord } from './run-report.ts'
 import { evidenceCopyRoom, storeEvidenceCopy } from './evidence-copies.ts'
+import { isJobPage, needsEventBeyondHiring } from '../search/page-class.ts'
+import { extractionNote } from './extraction-note.ts'
 import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { crawlJob } from '../connectors/sitecrawl.ts'
 import { anthropicCountTokens, guardProvider, ownerPool, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
@@ -33,6 +35,7 @@ import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngrade
 import { getMemory, isExcluded, memoryPromptBlock } from '../memory.ts'
 import { enrichJobSignals } from '../signals/index.ts'
 import { beginEnrichment, endEnrichment } from './enrichment.ts'
+import { regradeFromKeptContacts } from './contact-agreement.ts'
 import { primarySignalKind } from './score.ts'
 import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } from '../signals/competitor-reddit.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
@@ -616,10 +619,16 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   // Fetch slots are scarce (16 of ~80 results). Order by how likely a page can still pass the window gate: dated inside the
   // user's window first, undated next, dated outside the window (can never pass) after that, login-walled pages last.
   const hitByUrl = new Map(hits.map(h => [h.url, h]))
+  // A request that needs an event beyond hiring (seed funding, an opening) is not answered by job postings alone: within each window class
+  // the pages that can carry the event come before job-board / careers pages, which only corroborate the hiring half. Nothing is excluded.
+  const eventBeyondHiring = needsEventBeyondHiring(icp.signals, job.query ?? '')
   const fetchRank = (u: string): number => {
-    if (isLoginWalled(u)) return 3
+    if (isLoginWalled(u)) return 8
     const st = windowStatus(hitByUrl.get(u)?.date ?? null, icp.window_days ?? 365, new Date())
-    return st === 'inside' ? 0 : st === 'undated' ? 1 : 2
+    const cls = st === 'inside' ? 0 : st === 'undated' ? 1 : 2
+    // Compound request: non-job inside / undated, then job-page inside / undated, then outside-window pages (which can never pass the window gate).
+    if (eventBeyondHiring && isJobPage(u)) return cls === 2 ? 5 : 2 + cls
+    return cls === 2 ? 4 : cls
   }
   const urls = pickFetchUrls(hits.map(h => h.url), tfLimits().fetchesPerScan, fetchRank) // exact duplicates removed, breadth first by host, nothing excluded
   const f = await tfFetchMany(db, job.user_id, urls, spent, diag ? { trace: diag.trace } : {})
@@ -635,6 +644,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   const text = await ask(buildSourcePrompt(job.query!, icp, items), 3000)
   const parsed = parseLeads(text, items.map(i => i.url)) ?? null
   if (diag) diag.info.extracted_candidates = parsed ? parsed.length : null // null = the model reply was unusable, not zero
+  if (diag) diag.info.extraction = extractionNote({ results: new Set(hits.map(h => h.url)).size, requested: urls.length, fetchedPages: f.ok ? f.pages : [], fetchError: !f.ok, items, parsed })
   return parsed
 }
 
@@ -802,7 +812,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     const audit: CandidateAudit[] = [] // run report: the fate of every candidate the verifier saw (instrumentation only)
     const markDropped = (rows: { company: string; name: string; source_url: string }[], reason: string) => { for (const r of rows) { const k = `${dedupKey(r)}|${r.source_url}`; const e = audit.find(a => a.key === k && a.outcome !== 'dropped'); if (e) { e.outcome = 'dropped'; e.reason = reason } } } // a later gate removed a row the verifier had passed
     { const st = { ...summarizeTrace(diag.trace), ...diag.info }
-      ledger.report({ queries: st.queries, query_source: st.query_source ?? null, search: { attempted: st.searches_attempted, ok: st.searches_ok, hits_raw: st.hits_raw, hits_unique_urls: st.hits_unique_urls, hits_complete: st.hits_complete }, urls: diag.urls, evidence: { items: st.evidence_items ?? null, with_page_text: st.evidence_with_page_text ?? null, snippet_only: st.evidence_snippet_only ?? null }, extracted_candidates: st.extracted_candidates ?? null, audit, ownFetch: verifierFetch }) }
+      ledger.report({ queries: st.queries, query_source: st.query_source ?? null, search: { attempted: st.searches_attempted, ok: st.searches_ok, hits_raw: st.hits_raw, hits_unique_urls: st.hits_unique_urls, hits_complete: st.hits_complete }, urls: diag.urls, evidence: { items: st.evidence_items ?? null, with_page_text: st.evidence_with_page_text ?? null, snippet_only: st.evidence_snippet_only ?? null }, extracted_candidates: st.extracted_candidates ?? null, extraction: st.extraction ?? null, audit, ownFetch: verifierFetch }) }
     const fetchP = cachedFetcher(recordingFetcher(deps.fetchPage ?? fetchPageDetailed, verifierFetch))
     // TinyFish off, capped, failing or empty: try the free news search before the provider's paid web search. Not after
     // the run budget already refused a call (its own calls would be refused too); a refusal inside it stops the scan.
@@ -1023,6 +1033,8 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // People search (person-first): the right people at each lead's company from public profile SEARCH RESULTS, for
     // companies whose own site lists nobody. Never throws; never an address; kill switch PEOPLE_SEARCH_ENABLED=0.
     await findPeople(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl })
+    // Contacts refused for disagreeing with the lead (wrong place / wrong domain) leave nothing reachable: regrade the lead from the evidence actually kept.
+    try { regradeFromKeptContacts(db, job.user_id, job.id) } catch (e) { console.error('regrade from kept contacts failed', e instanceof Error ? e.message : 'error') }
     // Buyer-fit gate (after the crawl, which confirms each company's own site): a hiring lead keeps fit >= 4 only when
     // its own home page shows it fits, quoted verbatim. Fail closed; never fails the scan.
     if (complete && deps.score !== false) {

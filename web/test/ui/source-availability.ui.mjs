@@ -36,6 +36,11 @@ const ADV = { available: true, platforms: [
   { platform: 'x', allowed: true, consent: true, connected: true, enabled: true },
   { platform: 'linkedin', allowed: true, consent: true, connected: false, enabled: false },
   { platform: 'reddit', allowed: true, consent: false, connected: false, enabled: false },
+  // Offered here but turned off by the user; and two platforms this server does not offer at all (never listed, even
+  // though one of them was connected earlier).
+  { platform: 'facebook', allowed: true, consent: true, connected: true, enabled: false },
+  { platform: 'instagram', allowed: false, consent: true, connected: true, enabled: true },
+  { platform: 'bilibili', allowed: false, consent: false, connected: false, enabled: false },
 ] }
 const b = await chromium.launch()
 async function open({ server = { web_index: false, news: true, websites: true }, usage = { plan: 'free', scans_used: 1, scan_limit: 10, has_key: true, trial: null }, sourcesFail = false } = {}) {
@@ -72,6 +77,11 @@ try {
   assert.match(await page.getByTestId('source-off-social:linkedin').textContent(), /LinkedIn \(not connected, Set up\)/)
   assert.equal(await page.getByTestId('source-off-social:linkedin').getByRole('link', { name: 'Set up' }).getAttribute('href'), '/app/settings#social')
   assert.match(await page.getByTestId('source-off-social:reddit').textContent(), /Reddit \(consent needed, Set up\)/)
+  assert.match(await page.getByTestId('source-off-social:facebook').textContent(), /Facebook \(turned off, Set up\)/, 'proper name')
+  const unavailable = await page.getByTestId('sources-unavailable').textContent()
+  assert.doesNotMatch(unavailable, /instagram|bilibili|Instagram|Bilibili/, 'platforms the server does not offer are not listed')
+  assert.doesNotMatch(unavailable, /\b(instagram|facebook|xiaohongshu|bilibili|linkedin|reddit)\b/, 'no raw lowercase platform ids')
+  assert.equal(await page.getByTestId('more-sources').getByText(/Instagram|instagram/).count(), 0, 'a platform the server does not offer is never offered as a checkbox, even if connected earlier')
   assert.doesNotMatch(await page.getByTestId('sources-usable').textContent(), /Web search index|LinkedIn|Reddit|X posts/, 'opt-in X is not claimed as searched')
   // Instinct #255: enabled sources are capabilities, never a promise that a scan searches them.
   assert.equal(await page.getByText(/every scan searches|searches:/i).count(), 0, 'no "every scan searches" claim')

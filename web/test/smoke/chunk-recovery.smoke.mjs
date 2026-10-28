@@ -4,6 +4,8 @@
 // lib/chunk-recovery.ts end to end in Chromium: at most ONE automatic reload, then the "dazl was updated" notice with a
 // Reload button, no reload loop, and no write request (POST/PUT/PATCH/DELETE) from any of it. Without the recovery the
 // directly loaded page renders but never becomes interactive, and client navigation into it throws ChunkLoadError.
+// The same is checked for client navigation into Leads (another /app route) and into /sign-in (outside /app, covered by
+// app/error.tsx): the boundary message with Reload shows instead of a blank page.
 // Isolation and NOT RUN handling: see harness.mjs.
 import assert from 'node:assert/strict'
 import { readdirSync, readFileSync } from 'node:fs'
@@ -17,7 +19,8 @@ try {
   browser = await chromium.launch()
   // Link prefetching loads other routes' chunks too, so pick the Outreach chunk(s) by content instead of by request.
   const dir = path.join(root, '.next/static/chunks')
-  const missing = readdirSync(dir).filter(f => f.endsWith('.js') && readFileSync(path.join(dir, f), 'utf8').includes('Create 3-step sequence (templates)')).map(f => `/_next/static/chunks/${f}`)
+  const chunksWith = text => readdirSync(dir).filter(f => f.endsWith('.js') && readFileSync(path.join(dir, f), 'utf8').includes(text)).map(f => `/_next/static/chunks/${f}`)
+  const missing = chunksWith('Create 3-step sequence (templates)')
   assert.ok(missing.length > 0, 'found chunks only /app/outreach needs')
 
   async function scenario(name, { from, breakFirst }) {
@@ -58,6 +61,37 @@ try {
   // Client navigation into the missing chunk throws ChunkLoadError while rendering: the /app error boundary shows a
   // Reload message in the content area (the nav stays) instead of a blank page.
   assert.equal(a.boundary, true, 'error boundary message shown in <main>')
+
+  // Other lazy routes: client navigation into a page whose chunk is gone shows the boundary's Reload message, never a
+  // blank page, and writes nothing. Leads is inside /app (app/app/error.tsx); sign-in is outside it (app/error.tsx).
+  async function navInto(name, { gone, from, signedIn, click }) {
+    assert.ok(gone.length > 0, `found the chunk(s) for ${name}`)
+    const ctx = signedIn ? await newContext(browser, srv) : await browser.newContext()
+    if (!signedIn) await ctx.route('**/*', route => new URL(route.request().url()).origin === srv.base ? route.continue() : route.abort())
+    // Gone from the start (a deploy removed it): the link prefetch fails quietly (the head script ignores prefetches),
+    // and the click then needs the chunk.
+    const broken = true
+    await ctx.route('**/_next/static/chunks/**', route => broken && gone.includes(new URL(route.request().url()).pathname) ? route.fulfill({ status: 404, body: '' }) : route.fallback())
+    const page = await ctx.newPage(); const writes = []
+    page.on('request', r => { if (!['GET', 'HEAD'].includes(r.method())) writes.push(`${r.method()} ${new URL(r.url()).pathname}`) })
+    await page.goto(srv.base + from, { waitUntil: 'networkidle' })
+    await click(page)
+    await page.waitForTimeout(6000)
+    // The page's error boundary (in <main>), not only the <head> script's corner notice: the content area is never blank.
+    const alert = page.locator('main [role="alert"]').filter({ hasText: 'dazl was updated' }).first()
+    const shown = await alert.isVisible()
+    const reload = shown && await alert.getByRole('button', { name: 'Reload' }).isVisible()
+    const bodyText = ((await page.locator('body').innerText().catch(() => '')) || '').trim()
+    console.log(`${name}: update message=${shown}, Reload button=${reload}, writes=${writes.length}`)
+    if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/${name.split(' ')[0]}.png` })
+    await ctx.close()
+    assert.equal(shown, true, `${name}: the error boundary's "dazl was updated" message shown in <main>`)
+    assert.equal(reload, true, `${name}: Reload button`)
+    assert.ok(bodyText.length > 0, `${name}: never a blank page`)
+    assert.deepEqual(writes, [], `${name}: nothing written`)
+  }
+  await navInto('C Leads via client navigation', { gone: chunksWith('Who do you want to reach?'), from: '/app/settings', signedIn: true, click: p => p.locator('aside').getByRole('link', { name: 'Leads', exact: true }).click() })
+  await navInto('D sign-in via client navigation (outside /app)', { gone: chunksWith('Enter your email to continue'), from: '/', signedIn: false, click: p => p.getByRole('link', { name: 'Log in' }).first().click() })
   console.log(`\nChunk-load recovery is bounded on the production build (${missing.length} chunk(s) removed).`)
 } finally {
   await browser?.close(); srv.stop()

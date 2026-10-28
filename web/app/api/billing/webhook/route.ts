@@ -18,7 +18,11 @@ export async function POST(req: NextRequest) {
   }
   if (!event?.id || !event?.type) return NextResponse.json({ error: 'Bad payload' }, { status: 400 })
   try {
-    return NextResponse.json({ result: await applyStripeEvent(await getDb(), event) })
+    const result = await applyStripeEvent(await getDb(), event)
+    // 'held': a same-second tie Stripe could not settle yet; the restrictive plan is in place and the event is not
+    // marked processed, so answering 503 makes Stripe deliver it again
+    if (result === 'held') return NextResponse.json({ result }, { status: 503 })
+    return NextResponse.json({ result })
   } catch (e) {
     captureError(e, { source: 'route', where: '/api/billing/webhook', method: 'POST', ref: event.id })
     return NextResponse.json({ error: 'Could not process' }, { status: 500 }) // Stripe will retry
