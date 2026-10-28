@@ -101,6 +101,17 @@ export function geoTerms(where: string[]): string[] {
   return [...out]
 }
 export const namesPlace = (text: string, terms: string[]) => { const t = clean(text); return terms.some(x => has(t, x)) }
+// A funding / event quote that is JOINED to another candidate's hiring evidence must itself sit in the requested place. The page-level verdict above leaves a bare other-city mention
+// ("a Manchester startup") unconfirmed, which is fine for a page; for the quote that carries the event it is a conflict. Only capitalized city names, and not the words that are also common
+// English (Reading, Bath, York), so a quote is never held for an ordinary word.
+const BARE_UK = UK_CITIES.filter(c => !['reading', 'bath', 'york'].includes(c))
+export const namesOtherUkCity = (text: string): string | null => BARE_UK.map(c => c.replace(/\b\w/g, m => m.toUpperCase())).find(c => new RegExp(`\\b${c}\\b`).test(text)) ?? null
+export function eventPlaceOk(text: string, where: string[], company?: string): boolean {
+  if (where.length === 0) return true
+  if (placeAgreement(text, where, company) === 'mismatch') return false
+  if (where.some(w => /\blondon\b/i.test(w)) && !/\blondon\b/i.test(text) && namesOtherUkCity(text)) return false
+  return true
+}
 export type PlaceVerdict = 'agrees' | 'unconfirmed' | 'mismatch' | 'no_geography'
 // `company` (optional) is the candidate company's name: an address binds the company when its own sentence names it. Without it only first-person addresses bind.
 export function placeAgreement(text: string, where: string[], company?: string): PlaceVerdict {

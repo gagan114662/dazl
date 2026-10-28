@@ -23,16 +23,17 @@ const board: Record<string, unknown> = {
   'https://boards-api.greenhouse.io/v1/boards/clera/jobs': { jobs: [{ id: 1, title: 'Sales Account Executive', location: { name: 'London, UK' } }] },
   'https://boards-api.greenhouse.io/v1/boards/clera/jobs/1': { id: 1, title: 'Sales Account Executive', first_published: new Date(ms(9)).toISOString(), absolute_url: JOB, location: { name: 'London, UK' }, content: `&lt;p&gt;${HIRE}.&lt;/p&gt;` },
 }
-interface Opt { press?: boolean; board?: boolean; otherCompany?: boolean; paid?: boolean }
+interface Opt { press?: boolean; board?: boolean; otherCompany?: boolean; paid?: boolean; place?: string; fundDays?: number }
 function scenario(o: Opt) {
   const newsCalls: string[] = []
   const press = o.press !== false
   const newsHttp: SafeGet = async url => { newsCalls.push(url); return { status: 200, body: gdelt(press ? [PRESS] : []) } }
   const sourceHttp: SafeGet = async url => (new URL(url).hostname !== 'hn.algolia.com' && o.board && board[url] !== undefined ? { status: 200, body: JSON.stringify(board[url]) } : { status: 404, body: '' })
-  const pressText = o.otherCompany ? 'Orbitly, a London B2B SaaS startup, raised a 2m GBP seed round this month' : FUND
+  const fundDays = o.fundDays ?? 10
+  const pressText = o.otherCompany ? 'Orbitly, a London B2B SaaS startup, raised a 2m GBP seed round this month' : o.place ? FUND.replace('London', o.place) : FUND
   const f: Fixture = { request: REQUEST, modelIcp: ICP, modelQueries: ['london saas startup seed round'], hits: [{ url: BLOG, title: 'Clera raises seed', snippet: FUND, date: daysAgo(10) }], tfPages: {},
-    own: { [BLOG]: 'blocked', [PRESS]: { title: 'Clera raises seed round', text: `Published ${daysAgo(10)}. ${pressText}.${filler}` }, [JOB]: { title: 'Sales Account Executive at Clera', text: `Posted ${daysAgo(9)}. ${HIRE}.${filler}` } },
-    extraction: [seedCand, o.otherCompany ? { ...pressCand, company: 'Orbitly', excerpt: pressText } : pressCand, jobCand], deps: { sourceHttp, newsHttp, ...(o.paid === false ? { paidFallback: false } : {}) } }
+    own: { [BLOG]: 'blocked', [PRESS]: { title: 'Clera raises seed round', text: `Published ${daysAgo(fundDays)}. ${pressText}.${filler}` }, [JOB]: { title: 'Sales Account Executive at Clera', text: `Posted ${daysAgo(9)}. ${HIRE}.${filler}` } },
+    extraction: [seedCand, o.otherCompany ? { ...pressCand, company: 'Orbitly', excerpt: pressText } : { ...pressCand, excerpt: pressText, event_date: daysAgo(fundDays) }, jobCand], deps: { sourceHttp, newsHttp, ...(o.paid === false ? { paidFallback: false } : {}) } }
   return { f, newsCalls }
 }
 async function run(o: Opt) {
@@ -80,4 +81,24 @@ test('fallbackTargets: only blocked review rows, one per company, at most 3; mer
   const outcome = { leads: [] as { company: string; source_url: string }[], review: [{ company: 'Clera', source_url: 'https://clera.example/x' }, { company: 'Omni', source_url: 'https://omni.example/x' }], dropped: {} as Record<string, number>, quotes: new Map() }
   const notes = mergeFallback(outcome, { leads: [{ company: 'Clera', source_url: 'https://press.example/clera' }, { company: 'Stranger', source_url: 'https://press.example/s' }], dropped: { stale: 1 } }, t)
   assert.deepEqual(notes.map(n => n.company), ['Clera']); assert.deepEqual(outcome.leads.map(l => l.company), ['Clera']); assert.deepEqual(outcome.review.map(r => r.company), ['Omni']); assert.equal(outcome.dropped.stale, 1)
+})
+
+// ---- #327 review (head c3f12b6): BOTH evidence halves present. The funding event itself must agree on the requested place and sit inside the window; a current London job never rescues it. ----
+test('JOINED EVIDENCE, wrong place: fallback funding press says Manchester, the sales posting is a London job -> HELD (no_event_evidence), never verifier-passed', async () => {
+  const r = await run({ board: true, place: 'Manchester' })
+  assert.equal(state(r.lead), 'held:no_event_evidence', JSON.stringify([r.lead, r.rows]))
+  const sansJob = await run({ board: false, place: 'Manchester' }); assert.notEqual(state(sansJob.lead), 'verifier-passed')
+})
+test('JOINED EVIDENCE, stale funding: the funding is dated 200 days ago (window 90), the sales posting is recent -> HELD, a recent job does not supply the funding date', async () => {
+  const r = await run({ board: true, fundDays: 200 })
+  assert.notEqual(state(r.lead), 'verifier-passed', JSON.stringify([r.lead, r.rows])); assert.match(state(r.lead), /^held:/)
+})
+test('JOINED EVIDENCE, positive control: London funding 10 days ago + a London sales job -> verifier-passed (not scoreboard-qualified); inside the window at 80 days too, out at 100', async () => {
+  assert.equal(state((await run({ board: true })).lead), 'verifier-passed')
+  assert.equal(state((await run({ board: true, fundDays: 80 })).lead), 'verifier-passed')
+  assert.match(state((await run({ board: true, fundDays: 100 })).lead), /^held:/)
+})
+test('JOINED EVIDENCE, controls: a country-level conflict (Canada) and an absent event stay held', async () => {
+  assert.match(state((await run({ board: true, place: 'Toronto, Canada' })).lead), /^held:/)
+  assert.match(state((await run({ board: true, press: false })).lead), /^held:/)
 })
