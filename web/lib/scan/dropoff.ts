@@ -16,10 +16,14 @@ export function dropoffOf(report: R | null | undefined): Dropoff {
   add('search -> urls selected for reading', hits, urls.length ? urls.filter(u => u.selected).length : null)
   const selected = urls.filter(u => u.selected)
   const fetchReasons: Record<string, number> = {}
+  const walled = urls.filter(u => u.walled).length
   for (const u of selected) if (u.own_fetch && u.own_fetch !== 'ok') fetchReasons[`own fetch ${u.own_fetch}`] = (fetchReasons[`own fetch ${u.own_fetch}`] ?? 0) + 1
   add('urls read -> own page fetched', urls.length ? selected.length : null, urls.length ? selected.filter(u => !u.own_fetch || u.own_fetch === 'ok').length : null, fetchReasons)
   const extracted = num(rep.extracted_candidates)
-  add('pages -> candidates extracted', urls.length ? selected.length : null, extracted)
+  const ex: R = rep.extraction ?? {}
+  // What the model was actually shown vs what it returned: the evidence items (page text + snippet-only) offered to extraction -> candidates returned.
+  if (num(ex.offered) !== null && num(ex.returned) !== null) add('evidence offered to extraction -> candidates returned', num(ex.offered), num(ex.returned), { [`${num(ex.snippet_only) ?? 'n/r'} of the items were snippet-only`]: 0 })
+  else add('pages -> candidates extracted', urls.length ? selected.length : null, extracted)
   const funnel: R = rep.funnel ?? {}
   const verified = num(funnel.verified), review = num(funnel.needs_review), dropped = num(funnel.dropped)
   const gateReasons: Record<string, number> = {}
@@ -38,7 +42,7 @@ export function dropoffOf(report: R | null | undefined): Dropoff {
 }
 export function formatDropoff(d: Dropoff): string {
   const n = (v: number | null) => (v === null ? 'n/r' : String(v))   // n/r = not recorded
-  const lines = d.stages.map(s => `${s.stage.padEnd(66)} ${n(s.in).padStart(4)} -> ${n(s.out).padStart(4)}   lost ${n(s.lost).padStart(3)}${Object.keys(s.reasons).length ? '   ' + Object.entries(s.reasons).map(([k, v]) => `${k} x${v}`).join('; ') : ''}`)
+  const lines = d.stages.map(s => `${s.stage.padEnd(66)} ${n(s.in).padStart(4)} -> ${n(s.out).padStart(4)}   lost ${n(s.lost).padStart(3)}${Object.keys(s.reasons).length ? '   ' + Object.entries(s.reasons).map(([k, v]) => (v ? `${k} x${v}` : k)).join('; ') : ''}`)
   lines.push(d.biggest ? `\nBIGGEST DROP-OFF: ${d.biggest.stage} (lost ${d.biggest.lost}${d.biggest.top_reason ? `, mostly: ${d.biggest.top_reason}` : ''})` : '\nno drop-off recorded')
   lines.push(`final: verified ${n(d.final.verified)}, needs review ${n(d.final.needs_review)}, actionable ${n(d.final.actionable)}, resolved ${n(d.final.resolved)}`)
   return lines.join('\n')

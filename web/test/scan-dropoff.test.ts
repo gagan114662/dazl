@@ -17,3 +17,10 @@ test('every saved scan fixture under test/fixtures/scan-runs replays offline', (
     assert.ok(d.stages.length > 0 && formatDropoff(d).includes('final:'), f)
   }
 })
+test('SCAN 7 (live, London, exact criteria): the recorded run report shows where the 74 results went', () => {
+  const raw = JSON.parse(readFileSync(new URL('./fixtures/scan-runs/scan7-london-live.json', import.meta.url), 'utf8')); const d = dropoffOf(raw.at(-1))
+  const by = Object.fromEntries(d.stages.map(s => [s.stage, [s.in, s.out, s.lost]]))
+  assert.deepEqual(by['search -> urls selected for reading'], [74, 16, 58]); assert.deepEqual(by['urls read -> own page fetched'], [16, 15, 1])
+  assert.deepEqual(by['evidence offered to extraction -> candidates returned'], [30, 1, 29]); assert.deepEqual(by['candidates -> verified (identity / quote / date / sales-hiring gates)'], [1, 0, 1])
+  assert.equal(d.biggest?.stage, 'search -> urls selected for reading'); assert.deepEqual([d.final.verified, d.final.needs_review, d.final.actionable], [0, 1, 0])
+})
