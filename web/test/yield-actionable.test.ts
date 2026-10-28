@@ -19,8 +19,13 @@ const resp = (body: string, url: string) => ({ status: 200, body, finalUrl: url 
 const nf = (url: string) => ({ status: 404, body: '', finalUrl: url })
 
 interface Site { home?: string; team?: string; careers?: string; contact?: string; job?: string }
-function fixture(opts: { quote?: string; company?: string; articleLinks?: string | null; site?: Site | null }): Fixture {
-  const company = opts.company ?? 'Brightloop', quote = opts.quote ?? QUOTE
+const scoringProviders = (fit: number, extraction: unknown[]) => {
+  const reply = (p: string, maxTokens?: number) => p.includes('LEAD <n> | fit') ? `LEAD 1 | fit ${fit} | intent 4 | action 4 | match yyyy | signals seed_round | why London seed-funded SaaS.` : maxTokens === 300 ? JSON.stringify(['London SaaS startup seed round']) : JSON.stringify(extraction)
+  const p = { research: async () => ({ text: '[]', citedUrls: [] }), complete: async (_k: string, pr: string, _f?: typeof fetch, mt?: number) => reply(pr, mt), completeDetailed: async (_k: string, pr: string, _f?: typeof fetch, mt?: number) => ({ text: reply(pr, mt), model: 'stub', usage: { input_tokens: 10, output_tokens: 1 } }), configuredModel: () => 'stub' }
+  return { anthropic: p, openai: { research: async () => ({ text: '', citedUrls: [] }) } } as never
+}
+function fixture(opts: { fit?: number; extraction?: unknown[]; quote?: string; company?: string; articleLinks?: string | null; site?: Site | null }): Fixture {
+  const company = opts.company ?? 'Brightloop', quote = opts.quote ?? QUOTE, fit = opts.fit ?? 5
   const page = { title: `${company} raises seed round`, text: pad(`Published ${daysAgo(12)}. ${quote}.`) }
   const crawl = async (url: string) => {
     const u = new URL(url)
@@ -35,7 +40,8 @@ function fixture(opts: { quote?: string; company?: string; articleLinks?: string
   return {
     request: REQUEST, modelIcp: ICP, modelQueries: ['London SaaS startup seed round'], hits: [{ url: NEWS, title: page.title, snippet: quote, date: daysAgo(12) }], tfPages: { [NEWS]: page }, own: { [NEWS]: page },
     extraction: [{ company, signal: 'raised a seed round', source_url: NEWS, excerpt: quote, event_date: daysAgo(12) }],
-    deps: { crawlGet: crawl as never, fetchImpl: (async (u: RequestInfo | URL) => { const k = String(u); return k.includes('greenhouse.io') || k.includes('lever.co') || k.includes('ashbyhq.com') ? new Response('nope', { status: 404 }) : globalThis.fetch(u, undefined) }) as never },
+    // scoring ON: the actionable yield requires a graded fit >= 4, so the stub grades the lead (fit 5) when asked and answers everything else like the harness
+    deps: { score: true, providers: scoringProviders(fit, opts.extraction ?? [{ company, signal: 'raised a seed round', source_url: NEWS, excerpt: quote, event_date: daysAgo(12) }]), crawlGet: crawl as never, fetchImpl: (async (u: RequestInfo | URL) => { const k = String(u); return k.includes('greenhouse.io') || k.includes('lever.co') || k.includes('ashbyhq.com') ? new Response('nope', { status: 404 }) : globalThis.fetch(u, undefined) }) as never },
   }
 }
 const HOME = pad('<html><body><h1>Brightloop</h1> <p>London SaaS platform at 1 Old Street, London EC1V 9HX.</p> <a href="/team">Team</a> <a href="/careers">Careers</a> <a href="/contact">Contact</a>')
