@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
-import { getScanDb, requireUser } from '@/lib/scan/service'
+import { requireUser } from '@/lib/scan/service'
+import { getDb } from '@/lib/db/client'
 import { campaignDetail } from '@/lib/outreach/campaign-detail'
 import { recordedEmptyReason } from '@/lib/scan/outcome-detail'
 
@@ -9,8 +10,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const { id } = await params
-  const db = getScanDb()
-  const d = /^[a-f0-9]{24}$/.test(id) ? campaignDetail(db, user.id, id) : null
+  const db = await getDb()
+  const d = /^[a-f0-9]{24}$/.test(id) ? await campaignDetail(db, user.id, id) : null
   if (!d) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  return NextResponse.json({ ...d, job: { ...d.job, empty_reason: recordedEmptyReason(db, user.id, d.job) } })
+  return NextResponse.json({ ...d, job: { ...d.job, empty_reason: await recordedEmptyReason(db, user.id, d.job) } })
 }

@@ -63,6 +63,11 @@ function evalString(e: ts.Expression, consts: Map<string, ts.Expression>, depth 
     }
     return { text, dynamic }
   }
+  // insertionOrder(kind, 'alias') (lib/db/order.ts): the Postgres form, which is what this audit checks
+  if (ts.isCallExpression(e) && ts.isIdentifier(e.expression) && e.expression.text === 'insertionOrder') {
+    const alias = e.arguments[1]
+    return { text: alias && ts.isStringLiteral(alias) ? `${alias.text}.id` : 'id', dynamic: false }
+  }
   if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.PlusToken) {
     const l = evalString(e.left, consts, depth + 1), r = evalString(e.right, consts, depth + 1)
     if (!l && !r) return null
@@ -153,6 +158,12 @@ export function rawSqliteModules(root: string): string[] {
     if (/\bget(Auth|Scan)Db\b/.test(src)) out.add(relative(root, f))
   }
   return [...out].filter(f => !ENGINE_FILES.has(f)).sort()
+}
+
+// Modules whose ported queries break same-second ties with insertionOrder() (lib/db/order.ts): rowid on SQLite, but
+// only id on Postgres. Each is a cutover gap until its table has a real insertion-order column.
+export function insertionOrderUsers(root: string): string[] {
+  return sourceFiles(root).filter(f => !ENGINE_FILES.has(relative(root, f)) && !['lib/db/order.ts', 'lib/db/pg-port-status.ts'].includes(relative(root, f)) && /\binsertionOrder\(/.test(readFileSync(f, 'utf8'))).map(f => relative(root, f)).sort()
 }
 
 export interface PgFinding { site: SqlSite; error: string }

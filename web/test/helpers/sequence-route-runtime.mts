@@ -1,4 +1,5 @@
 import { test } from 'node:test'
+import { sqliteDb } from '../../lib/db/client.ts'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
@@ -37,7 +38,7 @@ test('route create action bills no provider and stores draft templates', async (
   db.prepare('INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence, review_reason, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
     lead, job, 'Acme Roofing', 'lead@acme.example', 'Acme Roofing is hiring five roofers', 'https://news.example/a',
     'Acme Roofing is hiring five roofers', null, 'quote_unconfirmed', 70)
-  confirmLeadReview(db, 'A', lead)
+  await confirmLeadReview(sqliteDb(db), 'A', lead)
   const draftId = createDraft(db, 'A', lead, 'Acme')
   const draftBody = (db.prepare('SELECT body FROM outreach_messages WHERE id = ?').get(draftId) as { body: string }).body
   // A configured BYOK key: if creation secretly drafted with AI, a provider would be called NOW.
