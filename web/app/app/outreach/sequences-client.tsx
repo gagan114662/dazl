@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import Caveat from '@/app/app/caveat'
 
 type Step = { step: number; subject: string; body: string; status: string }
 type Sequence = { currentness_held?: boolean; id: string; message_id: string; lead_id: string; to_email: string; status: string; stop_reason: string | null; evidence_state?: 'machine' | 'human' | 'unverified'; steps: Step[] }
@@ -47,7 +48,7 @@ export default function SequencesClient() {
   }
   return <section className="mt-10 border-t border-black/20 pt-6">
     <h2 className="text-lg font-semibold">Cold sequences</h2>
-    <p className="text-sm text-[#555] mt-2">Create a three-step sequence from a draft above. Review and edit every word, then approve the set once. Send step 1 yourself. If there is no reply, steps 2 and 3 send automatically at 3 and 7 days after step 1. Any human reply, bounce or opt-out stops the sequence. No content is generated after approval.</p>
+    <Caveat className="text-sm text-[#555] mt-2" summary="Approve a three-step sequence once and send step 1 yourself; steps 2 and 3 send automatically unless someone replies, bounces or opts out.">Create a three-step sequence from a draft above. Review and edit every word, then approve the set once. Send step 1 yourself. If there is no reply, steps 2 and 3 send automatically at 3 and 7 days after step 1. Any human reply, bounce or opt-out stops the sequence. No content is generated after approval.</Caveat>
     <p className="text-xs text-[#666] mt-2">Every step includes your sender details and unsubscribe link. One shared limit of 20 emails per account in 24 hours. Reply reading must stay connected. Scheduled sends require the sequence scheduler to be enabled by the site operator.</p>
     {data?.scheduler&&data.scheduler!=='configured_on'&&<p className="text-xs mt-2 border border-[#999] rounded p-2" role="status">{data.scheduler==='operator_off'?'Scheduled steps are switched off by the site operator right now. Approved steps 2 and 3 will not send until it is switched on.':data.scheduler==='kill_switch'?'Scheduled sending is stopped by the operator kill switch. Approved steps 2 and 3 will not send.':'Your scheduled sending is paused. Approved steps 2 and 3 will not send until you resume it.'}</p>}
     {data?.scheduler==='configured_on'&&<p className="text-xs text-[#666] mt-2" role="status">Scheduler configuration is on (operator switch, kill switch and your pause). This is not a heartbeat: it does not confirm the scheduler is running, that a step is due, or that Gmail, reply reading and the sender account are healthy.</p>}
