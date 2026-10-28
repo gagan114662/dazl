@@ -23,9 +23,17 @@ const webhook = await import('../../app/api/billing/webhook/route.ts')
 const usage = await import('../../app/api/usage/route.ts')
 
 const stripeCalls: { path: string; form: URLSearchParams; auth: string | null }[] = []
+const statusReads: string[] = [] // GET /v1/subscriptions/:id (read only; answered from subscriptionNow)
+let subscriptionNow = 'active'
 globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
   const u = new URL(String(input))
   if (u.hostname !== 'api.stripe.com') throw new Error(`Unexpected network call to ${u.hostname}`)
+  if ((init?.method ?? 'GET') === 'GET' && u.pathname.startsWith('/v1/subscriptions/')) {
+    assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer sk_test_fixture')
+    statusReads.push(u.pathname)
+    if (subscriptionNow === 'down') return new Response('{}', { status: 503 })
+    return new Response(JSON.stringify({ id: u.pathname.split('/').pop(), status: subscriptionNow }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
   const form = new URLSearchParams(String(init?.body ?? ''))
   stripeCalls.push({ path: u.pathname, form, auth: new Headers(init?.headers).get('authorization') })
   const url = u.pathname.endsWith('/checkout/sessions') ? 'https://checkout.stripe.test/c/pay/cs_test_fixture' : 'https://billing.stripe.test/p/session/bps_fixture'
@@ -132,6 +140,33 @@ test('Stripe test mode end to end: checkout, signed webhook, Pro, portal, cancel
   assert.equal((await plan()).plan, 'pro')
   const oldEnds = deleted.replace(/"id": "evt_[^"]+"/, '"id": "evt_test_old_sub_ends"').replace(/"created": \d+/, '"created": 1793000400')
   assert.deepEqual(await (await deliver(oldEnds, sign(oldEnds))).json(), { result: 'ignored' })
+  assert.equal((await plan()).plan, 'pro')
+
+  // 10. Two updates of the new subscription in the same second (unpaid, then a delayed active): the webhook reads the
+  // subscription's status from Stripe (stubbed GET, test key, no charge) instead of trusting delivery order
+  const upd = (id: string, status: string) => cancelAtEnd.replace(/"id": "evt_[^"]+"/, `"id": "${id}"`).replace(/"created": \d+/, '"created": 1793000500')
+    .replace(`"id": "${vars.SUBSCRIPTION}"`, `"id": "${NEW_SUB}"`).replace('"status": "active"', `"status": "${status}"`)
+  const unpaid = upd('evt_test_unpaid', 'unpaid'), active = upd('evt_test_late_active', 'active')
+  assert.deepEqual(await (await deliver(unpaid, sign(unpaid))).json(), { result: 'applied' })
+  assert.equal((await plan()).plan, 'free')
+  subscriptionNow = 'unpaid'
+  assert.deepEqual(await (await deliver(active, sign(active))).json(), { result: 'reconciled' })
+  assert.equal((await plan()).plan, 'free') // Stripe says unpaid: delivery order did not decide
+  assert.deepEqual(statusReads, [`/v1/subscriptions/${NEW_SUB}`])
+
+  // 11. Reverse order (active, then a delayed unpaid of the same second) while Stripe cannot be read: the webhook
+  // applies the restrictive state, answers 503 and leaves the event unprocessed; the redelivery is settled by the read
+  const upd2 = (id: string, status: string) => upd(id, status).replace(/"created": \d+/, '"created": 1793000600')
+  const active2 = upd2('evt_test_active2', 'active'), unpaid2 = upd2('evt_test_unpaid2', 'unpaid')
+  assert.deepEqual(await (await deliver(active2, sign(active2))).json(), { result: 'applied' })
+  assert.equal((await plan()).plan, 'pro')
+  subscriptionNow = 'down'
+  const held = await deliver(unpaid2, sign(unpaid2))
+  assert.equal(held.status, 503)
+  assert.deepEqual(await held.json(), { result: 'held' })
+  assert.equal((await plan()).plan, 'free')
+  subscriptionNow = 'active'
+  assert.deepEqual(await (await deliver(unpaid2, sign(unpaid2))).json(), { result: 'reconciled' }) // Stripe's redelivery
   assert.equal((await plan()).plan, 'pro')
   console.log('STRIPE_E2E', stripeCalls.length)
 })

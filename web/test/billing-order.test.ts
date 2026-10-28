@@ -36,9 +36,6 @@ bothEngines('out of order without ending: a delayed older "unpaid" never undoes 
   assert.equal(await applyStripeEvent(db, sub('e5', 'customer.subscription.updated', 500, 'sub_1', 'cus_t', 'active')), 'applied') // paid: back to Pro
   assert.equal(await applyStripeEvent(db, sub('e4', 'customer.subscription.updated', 400, 'sub_1', 'cus_t', 'unpaid')), 'stale')
   assert.equal(await readPlan(db, T), 'pro')
-  // two non-ending events of the same second apply in arrival order (documented; Stripe's next invoice event settles it)
-  assert.equal(await applyStripeEvent(db, sub('e6', 'customer.subscription.updated', 500, 'sub_1', 'cus_t', 'unpaid')), 'applied')
-  assert.equal(await readPlan(db, T), 'free')
 })
 
 // Review repro: created is in whole seconds, so a delayed "active" of the SAME second as the cancellation must not
@@ -121,3 +118,87 @@ bothEngines('an event without a created time still applies (and does not move th
   assert.equal(await readPlan(db, T), 'free')
   assert.equal(await applyStripeEvent(db, sub('e3', 'customer.subscription.updated', 50, 'sub_1', 'cus_t', 'active')), 'stale') // still older than 100
 })
+
+// Review repro: two non-ending events of the same second (unpaid, active) cannot be ordered by created. The plan comes
+// from the subscription's current status at Stripe (stubbed here; no network, no charge), never from delivery order.
+const stripeSays = (status: string, calls: string[] = []) => ({ calls, subscriptionStatus: async (id: string) => { calls.push(id); return status } })
+const never = { subscriptionStatus: async (): Promise<string> => { throw new Error('must not ask Stripe') } }
+
+bothEngines('same-second tie, unpaid then active: the plan is what Stripe says now, in either answer', async ({ db }) => {
+  for (const [tenant, now, plan] of [[T, 'unpaid', 'free'], [U, 'active', 'pro']] as const) {
+    await applyStripeEvent(db, checkout(`co-${tenant}`, 100, tenant, `cus-${tenant}`, `sub-${tenant}`))
+    assert.equal(await applyStripeEvent(db, sub(`unpaid-${tenant}`, 'customer.subscription.updated', 200, `sub-${tenant}`, `cus-${tenant}`, 'unpaid'), never), 'applied') // not a tie: newer
+    const s = stripeSays(now)
+    assert.equal(await applyStripeEvent(db, sub(`active-${tenant}`, 'customer.subscription.updated', 200, `sub-${tenant}`, `cus-${tenant}`, 'active'), s), 'reconciled')
+    assert.deepEqual(s.calls, [`sub-${tenant}`])
+    assert.equal(await readPlan(db, tenant), plan)
+  }
+})
+
+bothEngines('same-second tie, active then unpaid (the reverse order): the plan is what Stripe says now, in either answer', async ({ db }) => {
+  for (const [tenant, now, plan] of [[T, 'active', 'pro'], [U, 'unpaid', 'free']] as const) {
+    await applyStripeEvent(db, checkout(`co-${tenant}`, 100, tenant, `cus-${tenant}`, `sub-${tenant}`))
+    assert.equal(await applyStripeEvent(db, sub(`active-${tenant}`, 'customer.subscription.updated', 200, `sub-${tenant}`, `cus-${tenant}`, 'active'), never), 'applied')
+    assert.equal(await applyStripeEvent(db, sub(`unpaid-${tenant}`, 'customer.subscription.updated', 200, `sub-${tenant}`, `cus-${tenant}`, 'unpaid'), stripeSays(now)), 'reconciled')
+    assert.equal(await readPlan(db, tenant), plan)
+  }
+})
+
+bothEngines('tie without an answer from Stripe: restrictive (Free) at once, event left unprocessed, redelivery settles it', async ({ db }) => {
+  // review sequence: unpaid, then a delayed active of the same second, and Stripe cannot be read
+  await applyStripeEvent(db, checkout('e1', 100, T, 'cus_t', 'sub_1'))
+  await applyStripeEvent(db, sub('e2', 'customer.subscription.updated', 200, 'sub_1', 'cus_t', 'unpaid'))
+  const tie = sub('e3', 'customer.subscription.updated', 200, 'sub_1', 'cus_t', 'active')
+  const down = { subscriptionStatus: async (): Promise<string> => { throw new Error('stripe_503') } }
+  assert.equal(await applyStripeEvent(db, tie, down), 'held')
+  assert.equal(await readPlan(db, T), 'free') // not Pro
+  assert.equal(await db.get("SELECT 1 AS x FROM stripe_events WHERE id = 'e3'"), undefined) // not marked processed: Stripe redelivers
+  assert.equal(await applyStripeEvent(db, tie, stripeSays('active')), 'reconciled') // redelivery, Stripe answers: paid
+  assert.equal(await readPlan(db, T), 'pro')
+  // reverse order (active, then a delayed unpaid of the same second), Stripe cannot be read: restrictive at once
+  await applyStripeEvent(db, checkout('u1', 100, U, 'cus_u', 'sub_u'))
+  await applyStripeEvent(db, sub('u2', 'customer.subscription.updated', 200, 'sub_u', 'cus_u', 'active'))
+  const late = sub('u3', 'customer.subscription.updated', 200, 'sub_u', 'cus_u', 'unpaid')
+  assert.equal(await applyStripeEvent(db, late, down), 'held')
+  assert.equal(await readPlan(db, U), 'free')
+  // the redelivery is still settled by Stripe's answer, though the plan already reads Free
+  assert.equal(await applyStripeEvent(db, late, stripeSays('active')), 'reconciled')
+  assert.equal(await readPlan(db, U), 'pro')
+  // and a settled second is not asked again
+  assert.equal(await applyStripeEvent(db, sub('u4', 'customer.subscription.updated', 200, 'sub_u', 'cus_u', 'active'), never), 'applied')
+})
+
+bothEngines('no question to Stripe when the same-second event would not change the plan, or is not a tie', async ({ db }) => {
+  await applyStripeEvent(db, checkout('e1', 100, T, 'cus_t', 'sub_1'))
+  assert.equal(await applyStripeEvent(db, sub('e2', 'customer.subscription.updated', 100, 'sub_1', 'cus_t', 'active'), never), 'applied') // same second, same plan
+  assert.equal(await applyStripeEvent(db, sub('e3', 'customer.subscription.updated', 300, 'sub_1', 'cus_t', 'unpaid'), never), 'applied') // newer
+  assert.equal(await applyStripeEvent(db, sub('e4', 'customer.subscription.updated', 250, 'sub_1', 'cus_t', 'active'), never), 'stale') // older
+  assert.equal(await readPlan(db, T), 'free')
+})
+
+bothEngines('tie: Stripe saying the subscription has ended ends it for good', async ({ db }) => {
+  await applyStripeEvent(db, checkout('e1', 100, T, 'cus_t', 'sub_1'))
+  await applyStripeEvent(db, sub('e2', 'customer.subscription.updated', 200, 'sub_1', 'cus_t', 'unpaid'))
+  assert.equal(await applyStripeEvent(db, sub('e3', 'customer.subscription.updated', 200, 'sub_1', 'cus_t', 'active'), stripeSays('canceled')), 'reconciled')
+  assert.equal(await readPlan(db, T), 'free')
+  assert.equal(await applyStripeEvent(db, sub('e4', 'customer.subscription.updated', 300, 'sub_1', 'cus_t', 'active'), never), 'stale') // ended stays ended
+})
+
+// Both deliveries of a same-second pair in flight at once: whichever commits first, the other one is either settled
+// by Stripe's answer or held (restrictive, left unprocessed) and settled on redelivery. Never by commit order.
+bothEngines('concurrent same-second pair: the end state is what Stripe says, whatever the commit order', async ({ db }) => {
+  const tenants = Array.from({ length: 10 }, (_, i) => String(i).padStart(32, 'e'))
+  await Promise.all(tenants.map(t => applyStripeEvent(db, checkout(`co-${t}`, 100, t, `cus-${t}`, `sub-${t}`))))
+  const deliver = async (ev: StripeEvent) => {
+    for (let i = 0; i < 6; i++) {
+      const r = await applyStripeEvent(db, ev, stripeSays('unpaid'))
+      if (r !== 'held') return r // held: Stripe redelivers
+    }
+    throw new Error('never settled')
+  }
+  await Promise.all(tenants.flatMap(t => [
+    deliver(sub(`u-${t}`, 'customer.subscription.updated', 200, `sub-${t}`, `cus-${t}`, 'unpaid')),
+    deliver(sub(`a-${t}`, 'customer.subscription.updated', 200, `sub-${t}`, `cus-${t}`, 'active')),
+  ]))
+  for (const t of tenants) assert.equal(await readPlan(db, t), 'free', t)
+}, { pgMax: 8 })
