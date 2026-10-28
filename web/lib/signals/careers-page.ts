@@ -14,8 +14,7 @@ export interface CareersResult { vacancy: CareersVacancy | null; reason: Careers
 const PATHS = ['/careers', '/jobs', '/join-us', '/join', '/about/careers', '/company/careers', '/work-with-us']
 const MAX_PAGES = 4
 const ROLE_NOUN = /\b(?:executive|manager|representative|rep|sdr|bdr|director|head|lead|specialist|associate|officer|vp|vice president|consultant|engineer|partner|advisor|owner)\b/i
-const APPLY = /\b(?:apply|view (?:role|job|position)|job description|read more|learn more|see role|open (?:roles?|positions?)|current (?:openings|vacancies))\b/i
-const CLOSED = /\b(?:no (?:current |open )?(?:openings|vacancies|positions|roles)|not (?:currently )?hiring|no longer (?:accepting|available|open)|position (?:has been|is) filled|(?:role|position|job) (?:is )?closed|applications? (?:are )?closed)\b/i
+const CLOSED = /\b(?:no (?:current |open |active )?(?:openings|vacancies|positions|roles|jobs)|not (?:currently |actively )?(?:hiring|recruiting)|no longer (?:accepting|available|open|hiring)|(?:position|role|job|vacancy)s? (?:has been |have been |is |are |was )?(?:filled|closed|taken)|applications? (?:are |is )?closed|past (?:positions|roles|openings|jobs)|previous (?:positions|roles|openings)|currently closed|nothing (?:open|available)|check back (?:later|soon))\b/i
 const registrable = (h: string) => { const l = h.toLowerCase().replace(/^www\./, '').split('.'); return l.length >= 3 && /^(?:co|com|org|ac)$/.test(l[l.length - 2]) ? l.slice(-3).join('.') : l.slice(-2).join('.') }
 const visible = (html: string) => html.replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, ' ').replace(/<!--[\s\S]*?-->/g, ' ')
 const decode = (s: string) => s.replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ').replace(/&#39;|&apos;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
@@ -31,6 +30,43 @@ export function salesRoleTitles(html: string): string[] {
     if (!out.includes(t)) out.push(t)
   }
   return out
+}
+
+// A role counts as an OPEN JOB only when it is tied to that specific job's page: the title itself is a link to the posting, or the title is followed by an
+// apply / view-role link to it. A posting URL is either on the company's own domain below the careers index (/careers/account-executive, /jobs/123) or a
+// public Greenhouse / Lever / Ashby posting. "Apply for job alerts", "Apply for our newsletter", a bare "Apply" with no link, mailto: and the careers index
+// itself are not job routes.
+const ATS_HOST = /^(?:boards\.greenhouse\.io|job-boards\.greenhouse\.io|jobs\.lever\.co|jobs\.ashbyhq\.com)$/
+const NOT_A_JOB_ROUTE = /alert|newsletter|subscribe|notify|talent[-_ ]?(?:network|pool|community)|spontaneous|general[-_ ]?application|mailto:|^#|javascript:/i
+const APPLY_TEXT = /^(?:apply(?: now| here| today| for (?:this|the) (?:job|role|position))?|view (?:role|job|position|details)|see (?:role|job|details)|read more|learn more|details)$/i
+function specificJobUrl(href: string, base: string, site: string): string | null {
+  if (!href || NOT_A_JOB_ROUTE.test(href)) return null
+  let u: URL; try { u = new URL(href, base) } catch { return null }
+  if (u.protocol !== 'https:' || u.username || u.password) return null
+  const segs = u.pathname.split('/').filter(Boolean)
+  if (ATS_HOST.test(u.hostname.toLowerCase())) return segs.length >= 2 ? u.toString() : null
+  if (registrable(u.hostname) !== registrable(site)) return null
+  let b: URL; try { b = new URL(base) } catch { return null }
+  if (u.pathname.replace(/\/$/, '') === b.pathname.replace(/\/$/, '')) return null // the page itself / the index
+  if (/alert|newsletter|subscribe|notify|login|signin|contact|about|team|blog|press/i.test(u.pathname)) return null
+  return segs.length >= 2 || /job|role|position|opening|vacanc/i.test(u.pathname) ? u.toString() : null
+}
+export function openJobFor(html: string, pageUrl: string, site: string): { title: string; jobUrl: string } | null {
+  const body = visible(html)
+  const anchors = [...body.matchAll(/<a\b[^>]*?href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)].map(m => ({ href: decode(m[1]), text: decode(m[2].replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim(), end: (m.index ?? 0) + m[0].length, start: m.index ?? 0 }))
+  const titles = salesRoleTitles(html)
+  for (const t of titles) {
+    // (a) the title is itself a link to that job
+    const own = anchors.find(a => a.text === t)
+    const ownUrl = own ? specificJobUrl(own.href, pageUrl, site) : null
+    if (ownUrl) return { title: t, jobUrl: ownUrl }
+    // (b) the title is followed (before the next role-like title) by an apply / view-role link to that job
+    const at = body.indexOf(t); if (at < 0) continue
+    const nextTitle = titles.map(x => body.indexOf(x, at + t.length)).filter(i => i > 0).sort((x, y) => x - y)[0] ?? Infinity
+    const apply = anchors.find(a => a.start >= at && a.start < Math.min(at + t.length + 400, nextTitle) && APPLY_TEXT.test(a.text) && specificJobUrl(a.href, pageUrl, site))
+    if (apply) return { title: t, jobUrl: specificJobUrl(apply.href, pageUrl, site)! }
+  }
+  return null
 }
 
 export async function careersSalesVacancy(domain: string, get: Get, opts: { now?: number; signal?: AbortSignal } = {}): Promise<CareersResult> {
@@ -56,15 +92,12 @@ export async function careersSalesVacancy(domain: string, get: Get, opts: { now?
     if (registrable(host) !== registrable(site)) { wrongDomain = true; continue } // redirected to another site (an ATS board is checked by ats-gtm.ts)
     sawPage = true
     const text = flat(r.body)
-    const titles = salesRoleTitles(r.body)
-    if (CLOSED.test(text) && titles.length === 0) { closed = true; continue }
-    for (const title of titles) {
-      const at = text.indexOf(title); if (at < 0) continue
-      const around = text.slice(Math.max(0, at - 60), at + title.length + 160)
-      if (CLOSED.test(text.slice(at, at + title.length + 200))) { closed = true; continue } // this role is marked closed / filled
-      if (!APPLY.test(text.slice(at, at + title.length + 400))) continue // a title with no way to apply is a mention, not a vacancy
-      return { vacancy: { url: r.finalUrl.slice(0, 500), title: title.slice(0, 120), quote: around.slice(0, 300), retrievedAt: Math.floor((opts.now ?? Date.now()) / 1000), pageText: text.slice(0, 6000) }, reason: 'found', pages }
-    }
+    // Closed-status wording is checked BEFORE any title is accepted: a page that says it is not hiring does not have a vacancy, whatever else it lists.
+    if (CLOSED.test(text)) { closed = true; continue }
+    const hit = openJobFor(r.body, r.finalUrl, site)
+    if (!hit) continue // titles with no link to that specific job (team listings, alerts, newsletters) are mentions, not vacancies
+    const at = text.indexOf(hit.title)
+    return { vacancy: { url: hit.jobUrl.slice(0, 500), title: hit.title.slice(0, 120), quote: (at >= 0 ? text.slice(Math.max(0, at - 60), at + hit.title.length + 160) : hit.title).slice(0, 300), retrievedAt: Math.floor((opts.now ?? Date.now()) / 1000), pageText: text.slice(0, 6000) }, reason: 'found', pages }
   }
   return { vacancy: null, reason: closed ? 'closed_marker' : sawPage ? 'no_open_sales_role' : wrongDomain ? 'wrong_domain' : 'no_careers_page', pages }
 }
