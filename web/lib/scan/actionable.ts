@@ -12,6 +12,7 @@ import { titleMatches } from '../people/rank.ts'
 import { salesHiringRequired } from './sales-hiring-gate.ts'
 import { FIT_MIN } from './scoreboard.ts'
 import { getMemory, isExcluded } from '../memory.ts'
+import { requiredGateHeld } from './held-state.ts'
 
 const GATES = new Set<string>(['sales_hiring_check_failed', 'quarantined', 'excluded', 'fit_below_threshold', 'not_graded'])
 export const ACTIONABLE_CONNECTOR = 'scan:actionable'
@@ -20,15 +21,15 @@ export type Missing = 'sales_hiring_check_failed' | 'quarantined' | 'excluded' |
 export const NOT_A_FOUNDER_ROUTE = /^(?:support|help|privacy|legal|dpo|security|abuse|careers?|jobs?|recruit\w*|hiring|talent|hr|people|press|media|pr|billing|accounts?|invoices?|noreply|no-reply|donotreply|webmaster|postmaster|compliance|gdpr)$/i
 const FOUNDER = /\b(?:founder|co-?founder|ceo|chief executive|managing director|owner|president)\b/i
 
-export interface LeadYield { lead_id: string; company: string; actionable: boolean; missing: Missing[]; person: string | null; route: string | null }
-export interface YieldSummary { source_checked: number; verified: number; actionable: number; missing: Record<string, number>; leads: { company: string; actionable: boolean; missing: Missing[] }[] }
+export interface LeadYield { held?: boolean; url?: string; lead_id: string; company: string; actionable: boolean; missing: Missing[]; person: string | null; route: string | null }
+export interface YieldSummary { held_leads?: { id: string; company: string; url: string }[]; source_checked: number; verified: number; actionable: number; missing: Record<string, number>; leads: { company: string; actionable: boolean; missing: Missing[] }[] }
 
 const whoOf = (icp: string | null | undefined): string => { try { const j = icp ? JSON.parse(icp) as { who?: unknown } : null; return Array.isArray(j?.who) ? j!.who.filter((x): x is string => typeof x === 'string').join(' ') : '' } catch { return '' } }
 
 // `held`: leads a REQUIRED gate failed on, kept in memory by the caller. They are held even when the database still says verified (the recovery write was rejected too).
 export type HeldIds = ReadonlyMap<string, string>   // lead id -> reason
 export function classifyLeads(db: Database.Database, job: { id: string; user_id: string; query?: string | null; icp?: string | null }, held: HeldIds = new Map()): LeadYield[] {
-  const leads = db.prepare("SELECT id, company, company_domain, contact, fit, quarantined_at FROM leads WHERE scan_job_id = ? AND review_reason IS NULL AND confidence IS NOT NULL AND company <> '' ORDER BY score DESC").all(job.id) as { id: string; company: string; company_domain: string | null; contact: string | null; fit: number | null; quarantined_at: number | null }[]
+  const leads = db.prepare("SELECT id, company, company_domain, contact, fit, quarantined_at, source_url FROM leads WHERE scan_job_id = ? AND review_reason IS NULL AND confidence IS NOT NULL AND company <> '' ORDER BY score DESC").all(job.id) as { id: string; company: string; company_domain: string | null; contact: string | null; fit: number | null; quarantined_at: number | null; source_url: string }[]
   let memory: ReturnType<typeof getMemory> | null = null
   try { memory = getMemory(db, job.user_id) } catch { memory = null } // the table may predate this deploy
   const needVacancy = salesHiringRequired(job.query, job.icp), who = whoOf(job.icp) || 'founder'
@@ -37,8 +38,9 @@ export function classifyLeads(db: Database.Database, job: { id: string; user_id:
     const rows = enr.all(l.id, job.user_id) as { connector: string; kind: string; value: string; source_url: string }[]
     const missing: Missing[] = []
     // Buyer gates first: a quarantined, excluded or low-fit lead is not actionable whatever domain or contact fields it has.
-    const gate: Missing | null = held.has(l.id) ? 'sales_hiring_check_failed' : l.quarantined_at != null ? 'quarantined' : isExcluded(memory, l) ? 'excluded' : l.fit == null ? 'not_graded' : l.fit < FIT_MIN ? 'fit_below_threshold' : null
-    if (gate) return { lead_id: l.id, company: l.company, actionable: false, missing: [gate], person: null, route: null }
+    const gateHeld = held.has(l.id) || requiredGateHeld(db, job.user_id, l.id) !== null   // the SAME check the draft guard uses: a lead whose pass record could not be saved is held here too
+    const gate: Missing | null = gateHeld ? 'sales_hiring_check_failed' : l.quarantined_at != null ? 'quarantined' : isExcluded(memory, l) ? 'excluded' : l.fit == null ? 'not_graded' : l.fit < FIT_MIN ? 'fit_below_threshold' : null
+    if (gate) return { lead_id: l.id, company: l.company, actionable: false, missing: [gate], person: null, route: null, held: gate === 'sales_hiring_check_failed', url: l.source_url }
     if (!l.company_domain) missing.push('no_domain')
     // The sales-hiring half is enforced by the gate (applySalesHiringGate runs before this): a lead that is still verified has the proof.
     void needVacancy
@@ -64,5 +66,5 @@ export function recordActionability(db: Database.Database, job: { id: string; us
     for (const m of r.missing) missing[m] = (missing[m] ?? 0) + 1
   }
   const total = (db.prepare("SELECT count(*) AS n FROM leads WHERE scan_job_id = ? AND company <> ''").get(job.id) as { n: number }).n
-  return { source_checked: total, verified: rows.filter(r => !held.has(r.lead_id)).length, actionable: rows.filter(r => r.actionable).length, missing, leads: rows.slice(0, 30).map(r => ({ company: r.company, actionable: r.actionable, missing: r.missing })) }
+  return { source_checked: total, verified: rows.filter(r => !r.held).length, held_leads: rows.filter(r => r.held).map(r => ({ id: r.lead_id, company: r.company, url: r.url ?? '' })), actionable: rows.filter(r => r.actionable).length, missing, leads: rows.slice(0, 30).map(r => ({ company: r.company, actionable: r.actionable, missing: r.missing })) }
 }

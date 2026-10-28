@@ -160,6 +160,8 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
   const counts = db.prepare('UPDATE scan_jobs SET verified = MAX(COALESCE(verified, 0) - 1, 0), needs_review = COALESCE(needs_review, 0) + 1 WHERE id = ?')
   let passed = 0, demoted = 0, lookups = 0
   const passedIds: string[] = []
+  // A durable RUN record, written before any lead is judged: from now on a lead without a pass record is held whatever its creation date (held-state.ts).
+  for (const l of leads) { try { addEnrichment(db, job.user_id, l.id, { connector: 'scan:gate', kind: 'gate_run', value: 'sales_hiring', label: 'The required sales-hiring check ran', confidence: null, source_url: 'https://invalid.example/', source_date: new Date().toISOString().slice(0, 10), retrieved_at: Math.floor(Date.now() / 1000) }) } catch { /* no record: the creation-date rule still applies */ } }
   for (const l of leads) {
     try {
     // Evidence for THIS lead: its own saved quote, plus other verified candidates' quotes for the same company that are identity-compatible (see evidenceCompatible).

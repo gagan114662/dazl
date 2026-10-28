@@ -46,14 +46,17 @@ export function requiredGateHeld(db: Database.Database, tenantId: string, leadId
   const row = db.prepare('SELECT l.review_reason, l.human_confirmed_from, l.confidence, l.company, l.created_at, j.query, j.icp FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as { review_reason: string | null; human_confirmed_from: string | null; confidence: number | null; company: string | null; created_at: number | null; query: string | null; icp: string | null } | undefined
   if (!row) return null
   if (row.review_reason === SALES_GATE_HELD || row.human_confirmed_from === SALES_GATE_HELD) return SALES_GATE_HELD
-  let passed = false
+  let passed = false, ran = false
   try {
     if (db.prepare("SELECT 1 FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'scan:gate' AND kind = 'gate_failed' LIMIT 1").get(leadId, tenantId)) return SALES_GATE_HELD
     passed = !!db.prepare("SELECT 1 FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'scan:gate' AND kind = 'gate_passed' LIMIT 1").get(leadId, tenantId)
+    ran = !!db.prepare("SELECT 1 FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'scan:gate' AND kind = 'gate_run' LIMIT 1").get(leadId, tenantId)
   } catch { /* no enrichments table: nothing was marked */ }
   if (reportHolds(db, tenantId, leadId)) return SALES_GATE_HELD
   // DEFAULT-DENY, durable across processes: when the request needs the sales-hiring proof, a machine-verified lead is usable only with a recorded PASS. A lead with no pass record
   // (the gate failed, was cut off, or every write of its failure was rejected, and the process was restarted) is held, whatever human confirmation was given.
-  if (!passed && row.review_reason === null && row.confidence !== null && !!row.company && (row.created_at ?? 0) >= GATE_PASS_RECORDS_SINCE && salesHiringRequired(row.query, row.icp)) return SALES_GATE_HELD
+  // Leads created before GATE_PASS_RECORDS_SINCE are not denied merely for predating the record - but a lead the gate has RUN on (a durable gate_run record, written before it is
+  // judged) and never passed is held whatever its creation date: grandfathering never bypasses an actual rerun.
+  if (!passed && row.review_reason === null && row.confidence !== null && !!row.company && ((row.created_at ?? 0) >= GATE_PASS_RECORDS_SINCE || ran) && salesHiringRequired(row.query, row.icp)) return SALES_GATE_HELD
   return null
 }
