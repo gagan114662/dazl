@@ -3,6 +3,7 @@ import { Geist } from 'next/font/google'
 import './globals.css'
 import { chunkRecoveryScript } from '@/lib/chunk-recovery'
 import { isStaging, STAGING_BANNER } from '@/lib/staging'
+import ClientErrorReporter from './client-error-reporter'
 
 const geist = Geist({ subsets: ['latin'] })
 
@@ -22,6 +23,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body className={`${geist.className} antialiased`}>
         {isStaging() && <div role="note" data-testid="staging-banner" className="bg-[#fde68a] text-[#111] text-center text-xs font-mono uppercase tracking-wider py-1">{STAGING_BANNER}</div>}
+        <ClientErrorReporter />
         {children}
       </body>
     </html>

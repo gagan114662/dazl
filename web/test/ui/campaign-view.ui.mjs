@@ -102,6 +102,7 @@ try {
   await page.getByText('This campaign was not found.').waitFor()
   // Home: the play in "Your plays" opens its campaign page.
   await page.goto(`${base}/app`, { waitUntil: 'networkidle' })
+  await page.getByTestId('setup-details').evaluate(d => { d.open = true }, null, { timeout: 15000 }) // "Your plays" is secondary, under Setup details
   const fromHome = page.getByTestId('play-campaign-link').first(); await fromHome.waitFor({ timeout: 15000 })
   await fromHome.click()
   await page.waitForURL(`**/app/campaigns/${JOB}`)

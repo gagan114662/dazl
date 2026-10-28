@@ -1,4 +1,6 @@
 import Link from 'next/link'
+import InfoTip from './ui/info-tip'
+import { Icon } from './ui/icons'
 
 // Existing capabilities, with a setup path and limits. No claims of a live connection
 // or guaranteed signal coverage: these cards explain what the owner can turn on.
@@ -12,13 +14,11 @@ export const DISCOVERY_FEATURES = [
 
 export default function FeatureDiscovery() {
   return <section className="mt-10" aria-labelledby="discover-heading">
-    <h2 id="discover-heading" className="text-xl font-semibold">More you can do with dazl</h2>
-    <p className="text-sm text-[#555] mt-2 mb-4">Start with a scan, then connect the parts that fit your workflow.</p>
-    <div className="grid sm:grid-cols-2 gap-4">
-      {DISCOVERY_FEATURES.map(f => <article key={f.title} className="card p-5 flex flex-col">
-        <h3 className="font-semibold mb-2">{f.title}</h3>
-        <p className="text-sm text-[#555] mb-4 flex-1">{f.body}</p>
-        <Link className="text-sm underline underline-offset-2" href={f.href}>{f.cta} &rarr;</Link>
+    <h2 id="discover-heading" className="text-lg font-bold tracking-tight mb-3">More you can do with dazl<InfoTip>Start with a scan, then connect the parts that fit your workflow.</InfoTip></h2>
+    <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+      {DISCOVERY_FEATURES.map(f => <article key={f.title} className="card p-4 flex flex-col gap-3">
+        <h3 className="font-semibold">{f.title}<InfoTip>{f.body}</InfoTip></h3>
+        <Link className="btn-ghost btn-sm self-start mt-auto" href={f.href}>{f.cta}<Icon name="arrow" className="w-3.5 h-3.5" /></Link>
       </article>)}
     </div>
   </section>

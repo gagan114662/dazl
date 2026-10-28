@@ -2,8 +2,8 @@
 // Run:  cd web && npm run build && node test/ui/readiness-new.ui.mjs   (SHOTS=<dir> also saves screenshots)
 // Real production build, throwaway database, server under test/helpers/net-fence.ts, every /api/* call stubbed in the
 // browser (no scan, no key check, no email). It proves:
-//   1. a new account (no searches, nothing set up) sees the card at the top of /app, above the setup steps, with every
-//      step open: website and business details, buyer profile (brain), first play, AI key, lead sources, Gmail, sender;
+//   1. a new account (no searches, nothing set up) sees the website-first steps and no checklist; after "Skip setup",
+//      the checklist (secondary, under Setup details) has every step open: website and business details, buyer profile (brain), first play, AI key, lead sources, Gmail, sender;
 //      each with its fix; only the daily limit (a fixed server cap) is reported as set; no empty "Your plays";
 //   2. a finished account (all of it done, one search) sees no card at all;
 //   3. loading Home writes nothing.
@@ -60,11 +60,12 @@ const shot = async (page, name) => { if (process.env.SHOTS) await page.screensho
 try {
   const n = await open(NEW)
   const row = id => n.page.getByTestId(`ready-${id}`)
+  await n.page.getByText("What's your website?").waitFor({ timeout: 15000 })
+  // Website first: no checklist before onboarding (it is secondary, under Setup details, once Home shows).
+  assert.equal(await n.page.getByTestId('readiness-checklist').count(), 0, 'no checklist before the website step')
+  await n.page.getByRole('button', { name: 'Skip setup and show all options' }).click()
+  await n.page.getByTestId('setup-details').evaluate(d => { d.open = true })
   await row('site').waitFor({ timeout: 15000 })
-  await n.page.getByText("What's your website?").waitFor()
-  // The card is above the setup steps.
-  const cardY = (await n.page.getByTestId('readiness-checklist').boundingBox()).y, setupY = (await n.page.getByText("What's your website?").boundingBox()).y
-  assert.ok(cardY < setupY, 'the checklist is at the top, above the setup steps')
   const states = await n.page.locator('li[data-testid^="ready-"]').evaluateAll(e => e.map(x => [x.dataset.testid.slice(6), x.textContent.includes('✓') ? 'done' : 'open']))
   assert.deepEqual(states, [['site', 'open'], ['brain', 'open'], ['key', 'open'], ['sources', 'open'], ['play', 'open'], ['scan', 'open'], ['review', 'open'], ['gmail', 'open'], ['sender', 'open'], ['approved', 'open'], ['limit', 'done']])
   assert.equal(await n.page.getByTestId('ready-progress').textContent(), '1 of 11 done')
@@ -83,6 +84,7 @@ try {
   await n.ctx.close()
 
   const d = await open(DONE)
+  await d.page.getByTestId('setup-details').evaluate(d => { d.open = true }, null, { timeout: 15000 })
   await d.page.getByRole('list', { name: 'Your plays' }).waitFor({ timeout: 15000 })
   assert.equal(await d.page.getByTestId('readiness-checklist').count(), 0, 'finished account: no card')
   assert.equal(await d.page.getByText('Before your first scan and send').count(), 0)
@@ -96,7 +98,7 @@ try {
   assert.deepEqual(d.writes, [])
   await shot(d.page, 'finished-account')
   await d.ctx.close()
-  console.log('readiness new/finished UI check passed: new account sees every step open at the top; finished account sees no card; no writes')
+  console.log('readiness new/finished UI check passed: new account sees the website step first, then every step open under Setup details; finished account sees no card; no writes')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }
