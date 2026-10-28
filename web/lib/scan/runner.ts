@@ -280,7 +280,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
       if (copy?.ok) {
         const cp: Page = { text: copy.page.text, title: copy.page.title, retrievedAt: copy.page.heldAt }
         const v2 = !closedJobEvidence(c, cp) ? verifyEvidence(c, cp, now) : null
-        if (v2?.ok && !counterpartySignal(c, cp, '') && placeAgreement(`${cp.title} ${cp.text}`, geo) !== 'mismatch') { passed.push({ c, v: v2, copy: { failure: why, sha256: copy.page.sha256, page: copy.page } }); note(c, 'passed', null, COPY_ORIGIN); continue }
+        if (v2?.ok && !counterpartySignal(c, cp, '') && placeAgreement(`${cp.title} ${cp.text}`, geo, c.company) !== 'mismatch') { passed.push({ c, v: v2, copy: { failure: why, sha256: copy.page.sha256, page: copy.page } }); note(c, 'passed', null, COPY_ORIGIN); continue }
       }
       if (why) toReview(c, why)
       else { const r = page.fail === 'not_found' ? 'page_not_found' : page.fail === 'refused' ? 'url_refused' : 'page_unreachable'; drop(r); note(c, 'dropped', r) }
@@ -310,7 +310,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     // Location agreement: when the request names a place, a cited page that names a DIFFERENT place (and not ours) is a mismatch and stays
     // in review (kept, labelled, never qualified or drafted). A page that names no place at all is not rejected here (small-business pages
     // often name only a street or neighbourhood); contacts are stricter: profile results and linked domains must name the place.
-    const where = placeAgreement(`${page.title} ${page.text}`, geo)
+    const where = placeAgreement(`${page.title} ${page.text}`, geo, c.company)
     if (where === 'mismatch') {
       const k = dedupKey(c); const why = `location_${where}`
       if (!review.has(k)) review.set(k, { ...c, contact: null, review_reason: why })
