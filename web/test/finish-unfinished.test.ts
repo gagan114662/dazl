@@ -51,7 +51,8 @@ test('resolveStructuredDate: @graph and nested nodes are read; kind must fit the
   assert.deepEqual(resolveStructuredDate([g], 'Embedd Ltd', 'opened a new office in London'), { date: '2026-10-01', kind: 'Event' })
   assert.equal(resolveStructuredDate([g], 'Embedd', 'raised a seed round'), null, 'a funding claim is never dated by an Event')
   const jp = ld({ '@type': 'JobPosting', title: 'Sales Account Executive', datePosted: '2026-10-02', hiringOrganization: { name: 'Embedd' } })
-  assert.deepEqual(resolveStructuredDate([jp], 'Embedd', 'is hiring an account executive'), { date: '2026-10-02', kind: 'JobPosting' })
+  assert.deepEqual(resolveStructuredDate([jp], 'Embedd', 'is hiring a sales account executive'), { date: '2026-10-02', kind: 'JobPosting' })
+  assert.equal(resolveStructuredDate([jp], 'Embedd', 'is hiring an account executive'), null, 'one word of the title missing from the claim: the role is not confirmed')
   assert.equal(resolveStructuredDate([jp], 'Embedd', 'is hiring a backend engineer'), null, 'a posting for another role is not this claim')
   assert.equal(resolveStructuredDate([jp], 'Embedd', 'opened a new office'), null)
   assert.equal(resolveStructuredDate([ld({ '@type': 'Event', name: 'Embedd', startDate: '2026-02-30' })], 'Embedd', 'opened'), null, 'not a real calendar day')
@@ -175,4 +176,53 @@ test('FULL RUN, lowercase claim: a Camden event leaves "opened a new office in s
   assert.equal(held.r.event_date, null); assert.equal(held.r.review_reason, 'outside_window_undated'); assert.equal(held.r.timing_note, null)
   const ok = await row(fx([PLACE('Embedd Shoreditch', 'London', 'United Kingdom', 'England', daysAgo(9))], { quote: lower }))
   assert.equal(ok.r.event_date, daysAgo(9)); assert.equal(ok.r.review_reason, null)
+})
+
+// ---- #307 review 4: whole place names, not shared words ----
+const CASINGS = (s: string) => [s, s.toLowerCase(), s.toUpperCase(), s.replace(/\b(\w)(\w*)/g, (_, a, b) => a.toLowerCase() + b.toUpperCase())]
+const EV = (placeName: string, locality = 'London', country = 'United Kingdom') => PLACE(`Embedd ${placeName}`, locality, country)
+const CLAIM_OF = (place: string) => `opened a new office in ${place}, London`
+test('INSTINCT REPRO 4: an East Kensington claim is never dated by a West Kensington event (or a bare Kensington one) - whole place names, qualifiers included, in every casing', () => {
+  for (const claimPlace of CASINGS('East Kensington')) for (const w of WHERES) {
+    for (const evPlace of CASINGS('West Kensington')) assert.equal(resolveStructuredDate([EV(evPlace)], 'Embedd', CLAIM_OF(claimPlace), w), null, `${claimPlace} vs ${evPlace}`)
+    for (const evPlace of CASINGS('Kensington')) assert.equal(resolveStructuredDate([EV(evPlace)], 'Embedd', CLAIM_OF(claimPlace), w), null, `bare ${evPlace} is not ${claimPlace}`)
+    for (const evPlace of CASINGS('South Kensington')) assert.equal(resolveStructuredDate([EV(evPlace)], 'Embedd', CLAIM_OF(claimPlace), w), null)
+  }
+  // and the reverse: a bare Kensington claim is not dated by East or West Kensington
+  assert.equal(resolveStructuredDate([EV('East Kensington')], 'Embedd', CLAIM_OF('Kensington'), ['London, UK']), null)
+  assert.equal(resolveStructuredDate([EV('West Kensington')], 'Embedd', CLAIM_OF('Kensington'), ['London, UK']), null)
+})
+test('directional / qualifier variants never match each other, in every casing: North vs South Shields, Upper vs Lower Manhattan, New vs Old, East vs West', () => {
+  const pairs: [string, string, string, string][] = [['North Shields', 'South Shields', 'Newcastle', 'United Kingdom'], ['Upper Manhattan', 'Lower Manhattan', 'New York', 'United States'], ['New Cross', 'Old Cross', 'London', 'United Kingdom'], ['East Village', 'West Village', 'New York', 'United States'], ['Upper Norwood', 'Lower Norwood', 'London', 'United Kingdom']]
+  for (const [a, b, city, country] of pairs) for (const ca of CASINGS(a)) for (const cb of CASINGS(b)) {
+    const claim = `opened a new office in ${ca}, ${city}`
+    assert.equal(resolveStructuredDate([EV(cb, city, country)], 'Embedd', claim, [`${city}, ${country}`]), null, `${ca} vs ${cb}`)
+    assert.equal(resolveStructuredDate([EV(cb, city, country)], 'Embedd', claim, []), null, `${ca} vs ${cb} (no request place)`)
+  }
+})
+test('MATCHING multiword places still date the claim, in every casing on both sides: East Kensington = East Kensington, North Shields = North Shields, Lower Manhattan, New Cross, Shoreditch', () => {
+  const same: [string, string, string][] = [['East Kensington', 'London', 'United Kingdom'], ['North Shields', 'Newcastle', 'United Kingdom'], ['Lower Manhattan', 'New York', 'United States'], ['New Cross', 'London', 'United Kingdom'], ['Shoreditch', 'London', 'United Kingdom']]
+  for (const [place, city, country] of same) for (const cc of CASINGS(place)) for (const ce of CASINGS(place)) for (const w of [[`${city}, ${country}`], []]) {
+    const claim = `opened a new office in ${cc}, ${city}`
+    assert.deepEqual(resolveStructuredDate([EV(ce, city, country)], 'Embedd', claim, w), { date: '2026-10-19', kind: 'Event' }, `${cc} = ${ce} ${JSON.stringify(w)}`)
+  }
+  // a claim written without a comma still binds the whole phrase
+  assert.deepEqual(resolveStructuredDate([EV('East Kensington')], 'Embedd', 'opened a new office in east kensington london for its growing team', ['London, UK']), { date: '2026-10-19', kind: 'Event' })
+  assert.equal(resolveStructuredDate([EV('West Kensington')], 'Embedd', 'opened a new office in east kensington london for its growing team', ['London, UK']), null)
+})
+test('FULL RUN: a West Kensington event leaves the East Kensington claim undated and held; the East Kensington event dates it', async () => {
+  const claim = 'Embedd opened a new office in East Kensington, London for its growing engineering team'
+  const held = await row(fx([PLACE('Embedd West Kensington', 'London')], { quote: claim }))
+  assert.equal(held.r.event_date, null); assert.equal(held.r.review_reason, 'outside_window_undated'); assert.equal(held.r.timing_note, null)
+  const ok = await row(fx([PLACE('Embedd East Kensington', 'London', 'United Kingdom', 'England', daysAgo(9))], { quote: claim }))
+  assert.equal(ok.r.event_date, daysAgo(9)); assert.equal(ok.r.review_reason, null)
+})
+test('ROLE identity (Instinct note): one shared generic role word is not the posting - Account Manager does not date an Account Executive claim', () => {
+  const jp = (title: string) => ld({ '@type': 'JobPosting', title, datePosted: '2026-10-02', hiringOrganization: { name: 'Embedd' } })
+  assert.equal(resolveStructuredDate([jp('Account Manager')], 'Embedd', 'is hiring an account executive'), null)
+  assert.equal(resolveStructuredDate([jp('Sales Manager')], 'Embedd', 'is hiring a sales executive'), null)
+  assert.equal(resolveStructuredDate([jp('Senior Account Executive')], 'Embedd', 'is hiring an account executive'), null, 'seniority is part of the role: ambiguous, so undated')
+  assert.deepEqual(resolveStructuredDate([jp('Account Executive')], 'Embedd', 'is hiring an account executive'), { date: '2026-10-02', kind: 'JobPosting' })
+  assert.deepEqual(resolveStructuredDate([jp('Account Executive - London')], 'Embedd', 'is hiring an account executive in London'), { date: '2026-10-02', kind: 'JobPosting' }, 'a location tag after a dash is not part of the role')
+  assert.deepEqual(resolveStructuredDate([jp('ACCOUNT EXECUTIVES')], 'Embedd', 'is hiring account executive'), { date: '2026-10-02', kind: 'JobPosting' })
 })

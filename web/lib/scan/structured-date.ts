@@ -60,28 +60,44 @@ const typesOf = (o: Record<string, unknown>): string[] => (Array.isArray(o['@typ
 
 // Words that name a country / region / address furniture, never a city or neighbourhood: a shared "United Kingdom" is not a shared place.
 const PLACE_STOP = new Set(['united', 'kingdom', 'states', 'america', 'england', 'scotland', 'wales', 'britain', 'great', 'northern', 'ireland', 'street', 'road', 'floor', 'suite', 'avenue', 'lane', 'place', 'square', 'building', 'house', 'postaladdress', 'virtuallocation', 'office', 'offices', 'headquarters', 'branch', 'clinic', 'studio', 'store'])
-// What an Event's location states: `city` = its addressLocality words, `local` = its place-name words (neighbourhood / site). Street, region, country and postal code are not place terms.
-function eventPlaceTerms(location: unknown, key: string): { city: Set<string>; local: Set<string> } {
-  const city = new Set<string>(), local = new Set<string>()
-  const add = (v: unknown, into: Set<string>) => { if (typeof v === 'string') for (const w of words(v)) if (w !== key && !PLACE_STOP.has(w) && !GENERIC_WORDS.has(w) && !/^\d/.test(w)) into.add(w) }
+// ---- places are compared as WHOLE normalised phrases (token sequences), never by shared words ----
+// East Kensington is not West Kensington, North is not South Shields, Upper is not Lower Manhattan, and a bare "Kensington" is not "East Kensington": a qualifier is part of the name.
+const tokensOf = (text: string): string[] => norm(text).replace(/[.@+]+/g, ' ').split(' ').filter(Boolean)
+const PLACE_FILLER = new Set(['office', 'offices', 'location', 'branch', 'clinic', 'studio', 'store', 'hub', 'headquarters', 'opening', 'event', 'the', 'new', 'second', 'third', 'at'].filter(w => w !== 'new'))   // "new" is kept: New Cross, New Malden
+const stripPlace = (toks: string[], key: string, extra: Set<string> = new Set()): string[] => toks.filter(t => t !== key && !PLACE_FILLER.has(t) && !PLACE_STOP.has(t) && !extra.has(t) && !/^\d/.test(t))
+const sameSeq = (a: string[], b: string[]) => a.length === b.length && a.every((t, i) => t === b[i])
+const hasSeq = (hay: string[], needle: string[]) => needle.length > 0 && hay.some((_, i) => needle.every((t, j) => hay[i + j] === t))
+// What an Event's location states: `city` = each addressLocality as a token phrase, `local` = the place-name phrase(s) (neighbourhood / site) with the city words taken off. Street, region, country and postal code are not place terms.
+function eventPlace(location: unknown, key: string): { city: string[][]; local: string[][] } {
+  const city: string[][] = [], names: string[][] = []
   const take = (l: unknown, depth = 0) => {
     if (depth > 2 || l == null) return
-    if (typeof l === 'string') { add(l, local); return }
+    if (typeof l === 'string') { names.push(tokensOf(l)); return }
     if (Array.isArray(l)) { for (const x of l.slice(0, 5)) take(x, depth + 1); return }
-    if (typeof l === 'object') { const o = l as Record<string, unknown>; add(o.name, local); add(o.addressLocality, city); take(o.address, depth + 1) }
+    if (typeof l === 'object') {
+      const o = l as Record<string, unknown>
+      if (typeof o.name === 'string') names.push(tokensOf(o.name))
+      if (typeof o.addressLocality === 'string') { const t = stripPlace(tokensOf(o.addressLocality), key); if (t.length) city.push(t) }
+      take(o.address, depth + 1)
+    }
   }
   take(location)
+  const cityWords = new Set(city.flat())
+  const local = names.map(n => stripPlace(n, key, cityWords)).filter(n => n.length > 0)
   return { city, local }
 }
-// The place phrases a claim writes after "in / at / near / on" ("in Shoreditch, London" -> "Shoreditch"). Case-blind: "in shoreditch, london", "IN SHOREDITCH LONDON" and "in Shoreditch" read the same;
-// a phrase runs up to 4 words and stops at punctuation or the first function word ("for its growing team").
-const PHRASE_END = new Set(['for', 'with', 'to', 'and', 'which', 'as', 'the', 'its', 'our', 'their', 'from', 'since', 'that', 'where', 'while', 'after', 'before', 'this', 'last', 'next', 'a', 'an', 'is', 'are', 'was', 'has', 'have', 'will', 'under', 'over', 'by', 'of', 'in', 'at', 'on', 'near', 'new', 'second', 'third', 'first'])
-function claimPlacePhrases(claim: string): string[] {
-  const out: string[] = []
-  for (const m of claim.matchAll(/\b(?:in|at|near|on)\s+([\p{L}][\p{L}'\u2019-]*(?:[ \t]+[\p{L}][\p{L}'\u2019-]*){0,3})/giu)) {
+// The place phrases a claim writes after "in / at / near / on" ("in East Kensington, London" -> "East Kensington"). Case-blind. A phrase runs up to 5 words and stops at punctuation or the first
+// function word (never at its first word: "in New Cross").
+const PHRASE_END = new Set(['for', 'with', 'to', 'and', 'which', 'as', 'its', 'our', 'their', 'from', 'since', 'that', 'where', 'while', 'after', 'before', 'this', 'last', 'next', 'is', 'are', 'was', 'has', 'have', 'will', 'under', 'over', 'by', 'of', 'in', 'at', 'on', 'near'])
+const PHRASE_NOT_FIRST = new Set(['the', 'a', 'an', 'its', 'our', 'their', 'this', 'that', 'one', 'another', 'second', 'third', 'first', 'new'].filter(w => w !== 'new'))
+function claimPlacePhrases(claim: string): string[][] {
+  const out: string[][] = []
+  for (const m of claim.matchAll(/\b(?:in|at|near|on)\s+([\p{L}][\p{L}'\u2019-]*(?:[ \t]+[\p{L}][\p{L}'\u2019-]*){0,4})/giu)) {
+    const ws = m[1].split(/\s+/).map(w => w.toLowerCase().replace(/['\u2019]s$/, ''))
+    if (PHRASE_NOT_FIRST.has(ws[0])) continue
     const kept: string[] = []
-    for (const w of m[1].split(/\s+/)) { if (PHRASE_END.has(w.toLowerCase())) break; kept.push(w) }
-    if (kept.length) out.push(kept.join(' '))
+    for (const [i, w] of ws.entries()) { if (i > 0 && PHRASE_END.has(w)) break; kept.push(w) }
+    if (kept.length) out.push(kept)
   }
   return out
 }
@@ -97,26 +113,32 @@ function eventMatches(o: Record<string, unknown>, claim: string, where: string[]
   const virtual = locVals.some(v => /^VirtualLocation$/i.test(v))
   if (virtual && !claimTypes.has('webinar')) return false
   // The event's OWN place has to agree with the claim's place - same city / neighbourhood (or the request's place), never merely a shared country, region or the word "London".
-  const { city, local } = eventPlaceTerms(o.location, key)
-  if (city.size + local.size > 0) {
-    const wh = new Set(where.flatMap(w => [...words(w)]))
-    const claimWords = new Set([...words(claim), ...wh])
-    // 1. the CITY must be the claim's / request's city (Manchester is not London, whatever country they share). With no addressLocality the place name has to be that city.
-    for (const t of city.size ? city : local) if (!claimWords.has(t)) return false
-    // 2. if the claim names a finer place than the city ("in Shoreditch"), the event must name that same place: a Camden office, or an event that only says "London", is a different / unconfirmed place -> undated and held.
-    // Words the event's own city already accounts for (step 1) are not "finer": in "shoreditch london" only shoreditch is.
-    const finer = claimPlacePhrases(claim).flatMap(p => [...words(p)]).filter(w => !wh.has(w) && !city.has(w) && w !== key && !PLACE_STOP.has(w) && !GENERIC_WORDS.has(w))
-    if (finer.length > 0 && !finer.some(w => local.has(w))) return false
+  const { city, local } = eventPlace(o.location, key)
+  if (city.length + local.length > 0) {
+    const whereToks = where.map(tokensOf), claimToks = tokensOf(claim)
+    const known = (phrase: string[]) => hasSeq(claimToks, phrase) || whereToks.some(w => hasSeq(w, phrase))
+    // 1. the CITY must be the claim's / request's city, as a whole phrase (Manchester is not London, whatever country they share). With no addressLocality the place name has to be that city.
+    for (const c of city.length ? city : local) if (!known(c)) return false
+    // 2. if the claim names a finer place than the city ("in East Kensington"), the event must name EXACTLY that place - the same words, qualifiers included. West Kensington, a bare Kensington,
+    //    Camden, or an event that only says "London", is a different or unconfirmed place -> undated and held. Words the city / request already account for are not "finer".
+    const cityWords = new Set([...city.flat(), ...whereToks.flat()])
+    const finer = claimPlacePhrases(claim).map(p => stripPlace(p, key, cityWords)).filter(p => p.length > 0)
+    if (finer.length > 0 && !finer.some(f => local.some(l => sameSeq(l, f)) || city.some(c => sameSeq(c, f)))) return false
     return true
   }
   return claimTypes.has('webinar') || claimTypes.has('conference')                       // no place at all: only an online / conference claim can be dated by it
 }
 // Does this JobPosting describe what the claim says is being hired? A shared role word (sales, account, executive ...).
 function postingMatches(o: Record<string, unknown>, claim: string, key: string): boolean {
-  const title = [typeof o.title === 'string' ? o.title : '', ...namesOf(o.name)].join(' ')
-  const claimWords = words(claim); claimWords.delete(key)
-  return overlap(words(title), claimWords, new Set([...GENERIC_WORDS, 'staff', 'senior', 'junior', 'manager']))
+  // The posting's role must be what the claim says is being hired: EVERY meaningful word of the posting's title is in the claim ("Account Executive" is not "Account Manager"; one shared generic
+  // word like "account" or "sales" proves nothing). Anything after a dash / comma / pipe / parenthesis in the title is a location or team tag, not the role.
+  const title = [typeof o.title === 'string' ? o.title : '', ...namesOf(o.name)][0] ?? ''
+  const role = tokensOf(title.split(/\s[-\u2013|]\s|[,|(]/)[0]).filter(t => t !== key && !ROLE_FILLER.has(t) && !/^\d/.test(t))
+  if (role.length === 0) return false
+  const claimToks = new Set(tokensOf(claim))
+  return role.every(t => claimToks.has(t) || claimToks.has(t.replace(/s$/, '')) || claimToks.has(`${t}s`))
 }
+const ROLE_FILLER = new Set(['a', 'an', 'the', 'of', 'and', 'for', 'in', 'at', 'to', 'with', 'm', 'f', 'd', 'w'])
 export function resolveStructuredDate(blocks: string[] | undefined, company: string, claim: string, where: string[] = []): StructuredDate | null {
   const kinds = kindsFor(claim), key = companyKey(company)
   if (!blocks?.length || kinds.length === 0 || key.length < 2) return null
