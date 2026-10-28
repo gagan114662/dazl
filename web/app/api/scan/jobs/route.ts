@@ -7,8 +7,13 @@ import { listJobs } from '@/lib/scan/store'
 export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  const jobs = listJobs(getScanDb(), user.id).map(j => ({
+  const db = getScanDb()
+  // Who paid for each scan, so a rejected key is attributed honestly: the shared free-search key ('trial') or the
+  // account's own key ('user'). Owner-scoped read only.
+  const trial = new Set((db.prepare("SELECT id FROM scan_jobs WHERE user_id = ? AND funded_by = 'trial'").all(user.id) as { id: string }[]).map(r => r.id))
+  const jobs = listJobs(db, user.id).map(j => ({
     ...j,
+    funded_by: trial.has(j.id) ? 'trial' : 'user',
     // Fixture jobs carry the inserters' own job-level marker (industry/location
     // 'test only') - the same provenance the export filter uses - so a genuine
     // business whose name contains '(test only)' is never mislabeled or hidden.

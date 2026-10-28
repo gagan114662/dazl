@@ -5,10 +5,14 @@ import { scanOutcome } from '../lib/scan/scan-outcome.ts'
 const done = (o: object) => scanOutcome({ id: 'j1', status: 'done', error: null, ...o })
 const failed = (error: string | null, o: object = {}) => scanOutcome({ id: 'j1', status: 'failed', error, ...o })
 
-test('failed, zero-match and all-rejected scans are distinct outcomes, each with one next step', () => {
+test('failed, none-extracted and all-rejected scans are distinct outcomes, each with one next step', () => {
   const zero = failed('no_candidates', { candidates: 0 })
-  assert.equal(zero.kind, 'zero_match')
-  assert.deepEqual(zero.next, { text: 'Rephrase or broaden the search', href: '/app/leads' })
+  assert.equal(zero.kind, 'none_extracted')
+  // Instinct #274: no extracted candidates is not proof the search found no matching companies.
+  assert.equal(zero.label, 'No candidates were extracted - this does not show that no matching companies exist')
+  assert.doesNotMatch(zero.label, /^No matches|found no companies/i)
+  assert.deepEqual(zero.next, { text: 'See what the scan read', href: '/app/leads?job_id=j1' }, 'the scan page shows the recorded extraction diagnostic')
+  assert.equal(done({ candidates: 0, verified: 0, needs_review: 0, dropped: 0 }).kind, 'none_extracted')
 
   const dropped = done({ candidates: 7, verified: 0, needs_review: 0, dropped: 7 })
   assert.equal(dropped.kind, 'all_dropped')
@@ -32,11 +36,21 @@ test('a stop is never reported as an empty search', () => {
   assert.match(failed('budget_stopped').label, /not an empty search/)
 })
 
+// Instinct #274: key_rejected is stored for the user's own key too; only a trial-funded job is the service's key.
+test('a rejected key is attributed from the record: own key, free-search key, or neutral when funding is unknown', () => {
+  const own = failed('key_rejected', { funded_by: 'user' })
+  assert.deepEqual([own.label, own.next], ['Failed - your AI provider rejected your key', { text: 'Check your AI key in Settings', href: '/app/settings' }])
+  const trial = failed('key_rejected', { funded_by: 'trial' })
+  assert.deepEqual([trial.label, trial.next?.text], ['Failed - the free-search key had trouble (not your key)', 'Try again later'])
+  assert.deepEqual(failed('trial_key_invalid'), trial)
+  const unknown = failed('key_rejected')
+  assert.deepEqual([unknown.label, unknown.next?.href], ['Failed - the AI key used for this scan was rejected', '/app/settings'])
+  for (const o of [own, unknown]) assert.doesNotMatch(o.label, /service/, 'never invents a service failure')
+})
+
 test('key problems point at Settings or a retry; free-text errors stay a plain failure', () => {
   assert.equal(failed('key_unreadable').next?.href, '/app/settings')
   assert.equal(failed('no_api_key').next?.href, '/app/settings')
-  assert.equal(failed('trial_key_invalid').next?.text, 'Try again later')
-  assert.equal(failed('key_rejected').next?.text, 'Try again later')
   assert.equal(failed(null).label, 'Failed')
 })
 

@@ -98,7 +98,7 @@ try {
   const plays = page.getByRole('list', { name: 'Your plays' }).getByRole('listitem')
   assert.deepEqual(await plays.allTextContents(), [
     'Cancelled searchcancelled',
-    'Orthodontists in Austinno matches',
+    'Orthodontists in Austinno candidates extracted',
     'Clinic administrators in NYC - hiring front-desk staff0 source-checked, 5 need your review',
     'Dental practice owners in Ohio - opened a new location2 source-checked, 1 needs your review',
     'Old search from before the counts' + 'counts unavailable',

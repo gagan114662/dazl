@@ -80,7 +80,7 @@ export function capNotice(o: ReadinessInput['outreach']): string | null {
   return `Today's ${cap}-email limit is used up (${used} sent in the last 24 hours). Sending resumes as those sends pass 24 hours old.`
 }
 
-export interface JobRow { id: string; status: string; error: string | null; query: string | null; csv_domain: string | null; created_at: number; lead_count: number; candidates?: number | null; verified?: number | null; needs_review?: number | null; dropped?: number | null; test_only?: boolean }
+export interface JobRow { id: string; status: string; error: string | null; query: string | null; csv_domain: string | null; created_at: number; lead_count: number; funded_by?: string | null; candidates?: number | null; verified?: number | null; needs_review?: number | null; dropped?: number | null; test_only?: boolean }
 export interface Play { id: string; query: string; outcome: string }
 
 // The account's own searches, newest first, with what each produced. Imports and test fixtures are not plays.
@@ -99,7 +99,7 @@ function outcomeOf(j: JobRow): string {
   if (o.kind === 'running') return 'running'
   if (o.kind === 'stopped') return j.error === 'cancelled' ? 'cancelled' : 'stopped'
   if (o.kind === 'failed') return 'failed'
-  if (o.kind === 'zero_match') return 'no matches'
+  if (o.kind === 'none_extracted') return 'no candidates extracted'
   // Older records never stored the check counts: say so, and never call what they found "leads".
   if (o.kind === 'unrecorded') return 'counts unavailable'
   if (o.kind === 'all_dropped') return `${j.candidates} found, all dropped by the checks`
