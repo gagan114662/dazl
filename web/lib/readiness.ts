@@ -20,28 +20,37 @@ export interface ReadinessInput {
   rejection?: { error: 'key_rejected' | 'key_unreadable' } | null
   // The account's social sources (GET /api/settings/advanced); null when not loaded.
   advanced?: Advanced | null
+  // This account's emails (GET /api/outreach: the newest 200 only) and its recent campaigns (GET /api/campaigns: the
+  // last 10 searches, with complete per-scan rejected and email counts). null when they could not be loaded; omitted by
+  // callers that only check other rows.
+  messages?: { status: string; lead_id?: string }[] | null
+  campaigns?: { id: string; qualification: { rejected: number }; outreach?: { drafts: number; approved: number; sent: number } }[] | null
 }
 export type Fix = { kind: 'link'; href: string; label: string } | { kind: 'inline'; label: string }
-export interface Row { id: 'site' | 'brain' | 'play' | 'key' | 'sources' | 'gmail' | 'sender' | 'limit'; label: string; state: 'done' | 'todo' | 'unknown'; detail: string; fix: Fix | null }
+export interface Row { id: 'site' | 'brain' | 'play' | 'key' | 'sources' | 'scan' | 'review' | 'gmail' | 'sender' | 'approved' | 'limit'; label: string; state: 'done' | 'todo' | 'unknown'; detail: string; fix: Fix | null; next?: boolean }
+
+// The reads' caps (lib/outreach/service.ts listMessages, lib/outreach/campaigns.ts listCampaigns): a list this long may
+// be missing older history.
+const MESSAGES_CAP = 200, CAMPAIGNS_CAP = 10
 
 export function readinessRows(i: ReadinessInput): Row[] {
   const p = i.profile, u = i.usage, o = i.outreach
   const missing = p ? [!p.business_name && 'business name', !p.sells && 'what you sell', !p.website && 'website'].filter(Boolean) as string[] : []
   // Business details only (name, what it sells, website): the buyer profile is not checked here.
   const SITE = 'Website and business details'
-  const site: Row = !p ? { id: 'site', label: SITE, state: 'unknown', detail: 'could not check', fix: null }
+  const site: Row = !p ? { id: 'site', label: SITE, state: 'unknown', detail: 'could not check - your profile did not load', fix: null }
     : missing.length === 0 ? { id: 'site', label: SITE, state: 'done', detail: `${p.business_name} - ${p.sells} (${p.website!.replace(/^https:\/\//, '')})`, fix: null }
     : { id: 'site', label: SITE, state: 'todo', detail: `missing ${missing.join(', ')}`, fix: { kind: 'inline', label: 'Add' } }
   // The brain: the saved buyer profile (who buys it), which the first search is built on. It is built and edited in the
   // Home setup steps, which the fix link reopens at that step.
   const BRAIN = 'Buyer profile (who buys from you)'
   const b = p?.buyer
-  const brain: Row = !p ? { id: 'brain', label: BRAIN, state: 'unknown', detail: 'could not check', fix: null }
+  const brain: Row = !p ? { id: 'brain', label: BRAIN, state: 'unknown', detail: 'could not check - your profile did not load', fix: null }
     : b && ((b.who?.length ?? 0) > 0 || !!b.summary?.trim()) ? { id: 'brain', label: BRAIN, state: 'done', detail: b.summary?.trim() || (b.who ?? []).join(', '), fix: null }
     : { id: 'brain', label: BRAIN, state: 'todo', detail: 'not built yet: dazl drafts it from your website, you edit it', fix: { kind: 'link', href: '/app?setup=brain', label: 'Build' } }
   // Any search the account wrote itself counts, whatever it found; imports and test fixtures are not plays.
   const own = i.jobs ? i.jobs.filter(j => j.query && !j.csv_domain && !j.test_only).length : 0
-  const play: Row = !i.jobs ? { id: 'play', label: 'First play', state: 'unknown', detail: 'could not check', fix: null }
+  const play: Row = !i.jobs ? { id: 'play', label: 'First play', state: 'unknown', detail: 'could not check - your searches did not load', fix: null }
     : own > 0 ? { id: 'play', label: 'First play', state: 'done', detail: `${own} search${own === 1 ? '' : 'es'} written`, fix: null }
     : { id: 'play', label: 'First play', state: 'todo', detail: 'describe who you want to find, in one sentence', fix: { kind: 'link', href: '/app/leads', label: 'Write a play' } }
   const trialLeft = u?.trial?.funded ? u.trial.remaining ?? 0 : 0
@@ -55,7 +64,7 @@ export function readinessRows(i: ReadinessInput): Row[] {
   const rejDetail = !rej ? '' : rej.error === 'key_rejected'
     ? `a scan stopped because the AI provider rejected its key, after your key${(i.keys?.length ?? 0) > 1 ? 's were' : ' was'} last saved - ${again}`
     : `a scan could not read its AI key after your key${(i.keys?.length ?? 0) > 1 ? 's were' : ' was'} last saved - ${again}`
-  const key: Row = !u ? { id: 'key', label: 'AI key', state: 'unknown', detail: 'could not check', fix: null }
+  const key: Row = !u ? { id: 'key', label: 'AI key', state: 'unknown', detail: 'could not check - your plan and key status did not load', fix: null }
     : keyError ? { id: 'key', label: 'AI key', state: 'todo', detail: rejDetail, fix: { kind: 'inline', label: 'Replace key' } }
     : u.has_key ? { id: 'key', label: 'AI key', state: 'done', detail: i.keys?.length ? `saved${last4}; your provider accepted it when it was saved` : 'saved', fix: null }
     // Free searches cover the first scan; the row comes back as a to-do when they run out.
@@ -73,23 +82,57 @@ export function readinessRows(i: ReadinessInput): Row[] {
   const off = all.filter(r => !r.usable && r.id !== 'research')
   const offText = off.length ? `. Not available: ${off.map(r => `${r.label} (${r.reason})`).join(', ')}` : ''
   const offFix = off.find(r => r.fix)?.fix
-  const sources: Row = !core ? { id: 'sources', label: 'Lead sources', state: 'unknown', detail: 'could not check', fix: null }
+  const sources: Row = !core ? { id: 'sources', label: 'Lead sources', state: 'unknown', detail: 'could not check - the source settings did not load', fix: null }
     // The key row's evidence that the saved key stopped working means web research cannot run either.
     : keyError ? { id: 'sources', label: 'Lead sources', state: 'todo', detail: `a scan may not run until you save your AI key again${offText}`, fix: { kind: 'link', href: '/app/settings#model-key', label: 'Replace key' } }
     : !research?.usable ? { id: 'sources', label: 'Lead sources', state: 'todo', detail: `a scan cannot start until you add an AI key${offText}`, fix: research?.fix ? { kind: 'link', href: research.fix.href, label: research.fix.label } : null }
     : { id: 'sources', label: 'Lead sources', state: 'done', detail: `a scan can use ${usableSources.map(r => r.label).join(', ')}${offText}`, fix: offFix ? { kind: 'link', href: offFix.href, label: offFix.label } : null }
-  const gmail: Row = !o ? { id: 'gmail', label: 'Gmail', state: 'unknown', detail: 'could not check', fix: null }
+  const gmail: Row = !o ? { id: 'gmail', label: 'Gmail', state: 'unknown', detail: 'could not check - your sending settings did not load', fix: null }
     : o.gmail?.status === 'active' ? { id: 'gmail', label: 'Gmail', state: 'done', detail: `sending from ${o.gmail.email ?? 'your Gmail'}`, fix: null }
     : { id: 'gmail', label: 'Gmail', state: 'todo', detail: o.gmail ? 'needs reconnecting' : 'not connected (signing in with Google does not connect it)', fix: { kind: 'link', href: '/app/settings#gmail', label: o.gmail ? 'Reconnect' : 'Connect' } }
   const senderOk = !!o?.sender?.sender_name && !!o?.sender?.postal_address
-  const sender: Row = !o ? { id: 'sender', label: 'Sender name and mailing address', state: 'unknown', detail: 'could not check', fix: null }
+  const sender: Row = !o ? { id: 'sender', label: 'Sender name and mailing address', state: 'unknown', detail: 'could not check - your sending settings did not load', fix: null }
     : senderOk ? { id: 'sender', label: 'Sender name and mailing address', state: 'done', detail: o.sender!.sender_name!, fix: null }
     : { id: 'sender', label: 'Sender name and mailing address', state: 'todo', detail: 'added to every email; required before sending', fix: { kind: 'inline', label: 'Add' } }
   // The daily limit is the server's send cap (an operator setting, at most 20), not a per-workspace choice: this row reports it.
   const cap = o?.daily_cap, used = sentToday(o)
-  const limit: Row = typeof cap !== 'number' ? { id: 'limit', label: 'Daily sending limit', state: 'unknown', detail: 'could not check', fix: null }
+  const limit: Row = typeof cap !== 'number' ? { id: 'limit', label: 'Daily sending limit', state: 'unknown', detail: 'could not check - your sending settings did not load', fix: null }
     : { id: 'limit', label: 'Daily sending limit', state: 'done', detail: `up to ${cap} emails a day${used !== null ? `; ${used} sent in the last 24 hours` : ''}`, fix: null }
-  return [site, brain, play, key, sources, gmail, sender, limit]
+  // The Pancake path after setup: a finished scan, leads looked at, an email approved. Each counts only on positive
+  // evidence; a read that failed is "could not check", never a check.
+  const ownJobs = i.jobs?.filter(j => j.query && !j.csv_domain && !j.test_only) ?? []
+  const finished = ownJobs.filter(j => j.status === 'done').sort((a, b) => b.created_at - a.created_at)
+  const runningNow = ownJobs.some(j => ['pending', 'running', 'enriching'].includes(j.status))
+  const scan: Row = !i.jobs ? { id: 'scan', label: 'First scan', state: 'unknown', detail: 'could not check - your searches did not load', fix: null }
+    : finished.length > 0 ? { id: 'scan', label: 'First scan', state: 'done', detail: `${finished.length} finished; latest: ${recentPlays(finished, 1)[0]?.outcome ?? 'finished'}`, fix: null }
+    : runningNow ? { id: 'scan', label: 'First scan', state: 'todo', detail: 'running now', fix: { kind: 'link', href: '/app/leads', label: 'See progress' } }
+    : { id: 'scan', label: 'First scan', state: 'todo', detail: 'no scan has finished yet', fix: { kind: 'link', href: '/app/leads', label: 'Find leads' } }
+  // Reviewed = a lead approved (an email made from it) or rejected. Both reads are capped (the newest 200 emails, the
+  // last 10 campaigns), so finding one proves it, but finding none proves nothing unless the read was complete: then
+  // the row is "?", never a to-do built on missing history.
+  const msgs = i.messages ?? null, camps = i.campaigns ?? null
+  const msgsComplete = !!msgs && msgs.length < MESSAGES_CAP, campsComplete = !!camps && camps.length < CAMPAIGNS_CAP
+  const made = msgs ? msgs.filter(m => m.status !== 'skipped').length : 0
+  const campMade = camps ? camps.reduce((n, c) => n + (c.outreach ? c.outreach.drafts + c.outreach.approved + c.outreach.sent : 0), 0) : 0
+  const rejected = camps ? camps.reduce((n, c) => n + (c.qualification?.rejected ?? 0), 0) : 0
+  const latest = finished[0]
+  const reviewFix: Fix = { kind: 'link', href: latest ? `/app/leads?job_id=${latest.id}` : '/app/leads', label: 'Review leads' }
+  const unread = (what: string[]) => `could not check - ${what.join(' and ')}`
+  const reviewGap = [!msgs ? 'your emails did not load' : !msgsComplete ? `only your latest ${MESSAGES_CAP} emails could be checked` : '', !camps ? 'your campaigns did not load' : !campsComplete ? `only your latest ${CAMPAIGNS_CAP} searches could be checked` : ''].filter(Boolean)
+  const review: Row = made + campMade + rejected > 0 ? { id: 'review', label: 'Leads reviewed', state: 'done', detail: rejected > 0 ? `leads approved into drafts or rejected (${rejected} rejected)` : 'leads approved into drafts', fix: null }
+    : reviewGap.length ? { id: 'review', label: 'Leads reviewed', state: 'unknown', detail: unread(reviewGap), fix: null }
+    : { id: 'review', label: 'Leads reviewed', state: 'todo', detail: 'approve or reject the leads of a finished scan', fix: reviewFix }
+  const approvedFound = (msgs ? msgs.filter(m => m.status === 'approved' || m.status === 'sent').length : 0) + (camps ? camps.reduce((n, c) => n + (c.outreach ? c.outreach.approved + c.outreach.sent : 0), 0) : 0)
+  const approved: Row = approvedFound > 0 ? { id: 'approved', label: 'First email approved in Outreach', state: 'done', detail: 'an email approved or sent', fix: null }
+    : !msgs ? { id: 'approved', label: 'First email approved in Outreach', state: 'unknown', detail: unread(['your emails did not load']), fix: null }
+    : !msgsComplete ? { id: 'approved', label: 'First email approved in Outreach', state: 'unknown', detail: unread([`only your latest ${MESSAGES_CAP} emails could be checked`]), fix: null }
+    : { id: 'approved', label: 'First email approved in Outreach', state: 'todo', detail: made ? 'a draft is waiting for your review' : 'approve a lead first, then review its draft', fix: { kind: 'link', href: '/app/outreach', label: 'Open Outreach' } }
+  const rows = [site, brain, key, sources, play, scan, review, gmail, sender, approved, limit]
+  // The next step: the first row that is still to do. A row that could not be checked is not skipped over silently,
+  // but it is not "next" either (there is nothing to press).
+  const nextRow = rows.find(r => r.state === 'todo')
+  if (nextRow) nextRow.next = true
+  return rows
 }
 
 // Sends counted against the cap: the whole account budget when reported, else first touches only (a lower bound).

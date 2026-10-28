@@ -101,7 +101,7 @@ test('profile save returns canonical stored values; business name round-trips; k
   assert.match(rd('../app/app/readiness.tsx'), /setOpen\(null\); void load\(\)/)
   const { readinessRows } = await import('../lib/readiness.ts')
   const key = readinessRows({ profile: null, usage: null, outreach: null }).find(x => x.id === 'key')!
-  assert.deepEqual([key.state, key.detail, key.fix], ['unknown', 'could not check', null])
+  assert.deepEqual([key.state, key.detail, key.fix], ['unknown', 'could not check - your plan and key status did not load', null])
 })
 
 test('contact search note states eligibility and stored facts only, never completion or absence', async () => {

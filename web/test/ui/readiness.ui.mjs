@@ -68,6 +68,9 @@ await ctx.route('**/*', async route => {
   if (p === '/api/scan/sources') return state.sourcesFail ? json({ error: 'unavailable' }, 503) : json({ web_index: false, news: false, websites: false })
   if (p === '/api/outreach/settings' && m === 'GET') return json({ gmail: state.gmail, sender: state.sender, daily_cap: 20, sent_24h: Math.min(state.sent, 12), account_sent_24h: state.sent })
   if (p === '/api/outreach/settings' && m === 'PUT') { state.sender = JSON.parse(req.postData()); return json({ ok: true }) }
+  // An approved email and no rejections: the first-scan, leads-reviewed and first-approved rows are done here.
+  if (p === '/api/outreach' && m === 'GET') return json({ messages: [{ id: 'm1', lead_id: 'x', status: 'approved' }] })
+  if (p === '/api/campaigns') return json({ campaigns: [] })
   return json({}, 404)
 })
 const page = await ctx.newPage()
@@ -79,8 +82,8 @@ try {
   await row('site').waitFor({ timeout: 15000 })
   await shot('home')
   assert.equal(await page.getByText("What's your website?").count(), 0, 'not the first-run flow')
-  assert.deepEqual(await page.locator('li[data-testid^="ready-"]').evaluateAll(e => e.map(x => x.dataset.testid)), ['ready-site', 'ready-brain', 'ready-play', 'ready-key', 'ready-sources', 'ready-gmail', 'ready-sender', 'ready-limit'])
-  assert.equal(await page.getByTestId('ready-progress').textContent(), '2 of 8 done')
+  assert.deepEqual(await page.locator('li[data-testid^="ready-"]').evaluateAll(e => e.map(x => x.dataset.testid)), ['ready-site', 'ready-brain', 'ready-key', 'ready-sources', 'ready-play', 'ready-scan', 'ready-review', 'ready-gmail', 'ready-sender', 'ready-approved', 'ready-limit'])
+  assert.equal(await page.getByTestId('ready-progress').textContent(), '5 of 11 done')
   assert.match(await row('site').textContent(), /Website and business details - missing business name, what you sell, website/)
   assert.match(await row('brain').textContent(), /Buyer profile \(who buys from you\) - not built yet/)
   assert.equal(await row('brain').getByRole('link', { name: 'Build' }).getAttribute('href'), '/app?setup=brain')
@@ -137,7 +140,7 @@ try {
   await shot('after-fixes')
   assert.equal(await row('gmail').getByText('✓').count(), 0, 'Gmail stays a to-do until connected in Settings')
   assert.deepEqual(writes, ['POST /api/settings/profile', 'PUT /api/settings/llm-key', 'PUT /api/outreach/settings', 'POST /api/settings/profile'])
-  assert.equal(await page.getByTestId('ready-progress').textContent(), '7 of 8 done')
+  assert.equal(await page.getByTestId('ready-progress').textContent(), '10 of 11 done')
 
   // Gmail connected (in Settings; here the stubbed status says so): everything is done, so the checklist goes away.
   state.gmail = { email: 'dana@brightsmile.example', status: 'active' }
@@ -163,7 +166,7 @@ try {
   await page.getByTestId('readiness-checklist').waitFor()
   assert.match(await row('sources').textContent(), /Lead sources - could not check/)
   assert.equal(await row('sources').getByText('✓').count(), 0)
-  assert.equal(await page.getByTestId('ready-progress').textContent(), '7 of 8 done')
+  assert.equal(await page.getByTestId('ready-progress').textContent(), '10 of 11 done')
   await shot('sources-unknown')
   console.log('readiness UI check passed:', writes.join(', '))
 } finally {
