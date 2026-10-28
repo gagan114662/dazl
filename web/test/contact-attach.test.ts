@@ -98,3 +98,22 @@ test('score recompute: a contact refused by the agreement checks stops contribut
   await enrichCommenters(none, 'A', 'b1', { fetchImpl: apollo(null, P), master })
   assert.equal(grade(none).action, 2)
 })
+
+// ---- Instinct review of 86e49bd: a name-only company match must never supply the lead's identity ----
+test('a no-domain NYC lead + Apollo returns a plausible same-name company in Pico Rivera CA with a website and a person -> nothing attached, marked unconfirmed (fails on 86e49bd)', async () => {
+  const db = importDb(null); db.prepare("UPDATE leads SET fit = 4, intent = 3, action = 4, why = 'NYC dental group.' WHERE id = 'l1'").run()
+  saveCredential(db, 'A', 'enrich:apollo', 'test-apollo-key-1234', master)
+  const searched: string[] = []
+  const f = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(url)
+    if (u.includes('organizations/enrich')) return ok({ organization: PICO })
+    if (u.includes('mixed_people')) { searched.push(String(init?.body ?? '')); return ok({ people: [{ ...P[0], organization: { name: 'Smile Avenue Dental Group', website_url: 'https://smileavenue-pr.com' } }] }) }
+    return new Response('no', { status: 404 })
+  }) as never
+  await enrichCommenters(db, 'A', 'b1', { fetchImpl: f, master })
+  assert.deepEqual(attached(db), [], 'no contact and no firmographic from the same-name company'); assert.ok(refused(db).includes('contact_unconfirmed'), JSON.stringify(refused(db)))
+  assert.deepEqual(searched, [], 'the same-name company’s website never keyed a people search')
+  assert.equal((db.prepare("SELECT company_domain FROM leads WHERE id = 'l1'").get() as { company_domain: string | null }).company_domain, null, 'the lead’s identity was not set from the name match')
+  const g = db.prepare("SELECT fit, intent, action, why FROM leads WHERE id = 'l1'").get() as { fit: number; intent: number; action: number; why: string }
+  assert.deepEqual([g.fit, g.intent, g.action], [4, 3, 2]); assert.match(g.why, /^Contact unconfirmed: no domain to confirm the company\./)
+})

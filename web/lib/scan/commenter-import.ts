@@ -234,7 +234,8 @@ async function enrichCommentersInner(db: Database.Database, tenantId: string, ba
         if (e instanceof EnrichError && e.code === 'auth') return
       }
       try {
-        const orgDomain = g.domain ?? (/^[a-z]+:\/\/([^/?#]+)/i.exec(org?.website ?? '')?.[1]?.replace(/^www\./, '') || null)
+        // A name-only organisation match NEVER supplies the lead's domain: its website is the other company's. Only the lead's own known domain keys the people search.
+        const orgDomain = g.domain
         // A commenter's company is found by NAME, and a same-name company elsewhere shares it. Contacts attach only when the company's domain is known (the lead's own, or the one
         // Apollo's organisation record gives) and the person's own organisation agrees with it; otherwise nothing is attached and the refusal is recorded on the lead.
         if (!orgDomain) {
