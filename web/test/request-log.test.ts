@@ -42,7 +42,8 @@ test('proxy.ts: ids, log lines and the /app redirect through the real file', () 
   const env = { ...process.env }; delete env.NODE_TEST_CONTEXT
   const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts',
     '--loader', './test/helpers/health-route-loader.mjs', '--test', './test/helpers/proxy-runtime.mts'],
-  { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 60000 })
+  { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 120000 }) // as the other child-process route tests: the full suite runs files in parallel
+  assert.equal(r.error, undefined, String(r.error)) // a spawn failure or timeout names itself
   assert.equal(r.status, 0, r.stdout + r.stderr)
   assert.match(r.stdout, /# pass 2\b/)
   assert.match(r.stdout, /PROXY_OK/)
