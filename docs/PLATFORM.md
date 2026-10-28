@@ -28,6 +28,12 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
   - `test/multi-instance.test.ts` runs the contract on both engines, then on Postgres:
     - Two instances, as separate processes with their own pools, drain 60 jobs. Each runs exactly once, both take jobs, and one 24h limit is shared across them.
     - An instance killed mid-job loses its claim at lease end. The job runs once more on the survivor, or fails past max attempts.
+  - `test/two-instance-scan.test.ts` adds the scan rows the queue schedules, on Postgres, two instances as separate processes. The scan is a stub (no provider, no fetch, no spend); the storage is the real `DbQueue`, the runner's conditional bind (pending to running, attempts + 1) and `store-db.ts`'s fenced `finishJob`:
+    - Draining one queue, each of 30 scans is claimed, bound and run once, by both instances. Racing the bind with no queue, each of 40 scans goes to one instance.
+    - An instance killed with SIGKILL mid-scan: after the lease and the stale reaper, the other runs it as attempt 2. Each job ends with exactly its leads, none written twice.
+    - An attempt that lost its scan (stalled past its lease while the other instance re-ran it) cannot finish it: no leads, no status change, its queue token is stale.
+    - Tenant isolation through the real routes (scan history, campaign, export, confirm, quarantine, cancel), one instance per tenant: each sees only its own scans and leads, and every action on the other tenant's ids is a 404 that changes nothing. The SQLite handle is a trap in those processes.
+    - Mutation-checked: dropping the bind's `status = 'pending'` guard, or `finishJob`'s attempt fence, fails it.
   - **Not wired yet:** scan jobs still claim through `claimKeyedJob` on the SQLite `scan_jobs` table, single writer per file. Moving scan claiming onto `DbQueue` needs `scan_jobs` on Postgres. That is the next slice, with the yield owners. The other per-process state is listed in the table below.
 - **Step 6a (health and error capture):**
   - `GET /api/health/live` answers without touching any store. Use it as the liveness probe.
@@ -278,7 +284,7 @@ These steps are development work behind flags and tests. Merging them does not c
        - Without a usable answer (the read failed, Stripe returned an unknown status, or the tie appeared only under the row lock), the tie goes to the restrictive state, Free, at once. `tenant_plans.stripe_reconcile_at` records the unsettled second, and the event is left unprocessed: the webhook answers 503 (`held`).
        - Stripe's redelivery is then settled by the read, whatever the plan reads meanwhile.
        - A delayed `active` never grants Pro without Stripe confirming it.
-       - Invoice events (`invoice.paid`, `invoice.payment_failed`) are not handled, and nothing relies on them.
+       - `invoice.payment_failed` (step 5d) marks the tenant's current subscription `past_due` while it is Pro, so the billing status says so even when Stripe's `subscription.updated` is late. It never changes the plan: a failed payment never grants Pro, and Stripe giving up arrives as `subscription.updated` (`unpaid`) or `deleted`. An invoice of another or an ended subscription is `ignored`/`stale`, as is one created before the event that last set the plan. Both invoice shapes are read: `subscription` at the top level, and `parent.subscription_details.subscription` (API 2025-03-31 and later). `invoice.paid` is not handled; `subscription.updated` carries the recovery.
      - The plan row is locked (`FOR UPDATE` on PG) before the checks, so concurrent deliveries follow these rules, not commit order.
      - PG: `0007_stripe_event_order.sql`.
    - **Plan limits and billing status (step 5c):**
@@ -292,6 +298,7 @@ These steps are development work behind flags and tests. Merging them does not c
        3. Failed payment: `past_due`, still Pro.
        4. Subscription deleted: Free, `canceled`, and the next scan returns 402.
      - The scan runner is never started in that test.
+     - `test/billing-events.test.ts` (step 5d) drives the webhook route with two tenants on both engines: checkout, `invoice.payment_failed`, recovery, `unpaid`, `deleted`. After each event it checks the plan, limit and billing status, and that the other tenant's row is byte for byte unchanged, both ways. It also checks that unsigned and wrongly signed deliveries are refused, that replays are duplicates, that one event delivered five times at once is applied once, and that stale, crossed and ended-subscription invoices change nothing.
      - Covered by `test/billing-order.test.ts` on both engines: same second, opposite order, resubscribe, ties settled from Stripe's answer, a failed read retried, and concurrent deliveries. It is also covered by signed deliveries through the real webhook in `billing-e2e`, including a tie read from the stubbed Stripe API.
    - **Pricing is inconsistent. This is for the owner to decide, not for code:**
      - The landing page Free card says "3 trial scans, then your own AI key". It does not mention the 50-scans-a-month cap the code enforces (`PLAN_LIMITS.free`).
