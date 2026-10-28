@@ -9,7 +9,7 @@
 //   - a step that needs a typed URL (there is no page.goto after the first);
 //   - an empty or blocked state with no next step;
 //   - a chunk-load error or the app error screen at any point.
-// Steps: website -> profile (brain) -> one-sentence play from 3 one-click suggestions -> live progress (queued,
+// Steps: website -> brain ready (profile inferred and saved) -> first play in one click -> live progress (queued,
 // running, done) -> lead cards (Approve one, Reject one with a reason) -> Review drafts -> Outreach draft -> Approve
 // -> sender details inline -> Connect Gmail (Settings) -> back to Outreach -> Send now -> sent.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
@@ -103,15 +103,15 @@ try {
     await page.getByRole('button', { name: 'Read my site' }).click()
   })
   await step('brain', async () => {
-    await page.getByText("Here's what we think you sell").waitFor(T)
-    assert.equal(await page.getByLabel('What you sell').inputValue(), 'Online booking and reminders for dental practices')
-    await page.getByRole('button', { name: 'Looks right, continue' }).click()
+    // The read builds the brain, saves what it inferred and opens "Your brain is ready." - nothing else is asked.
+    await page.getByTestId('ready-step').waitFor(T)
+    assert.ok(await page.getByTestId('brain-node').count() > 0, 'the brain shows what the read inferred')
   })
   await step('play', async () => {
-    const plays = page.getByRole('group', { name: 'Suggested plays' }).getByRole('button')
-    await plays.first().waitFor(T)
-    assert.equal(await plays.count(), 3, 'three suggested plays')
-    await plays.nth(0).click() // one click on a suggested play starts the scan
+    assert.equal(await page.getByTestId('first-play').count(), 3, 'three suggested plays')
+    await page.getByRole('button', { name: 'Find my first customers' }).click() // one click starts the first play
+    await page.getByTestId('first-progress').waitFor(T)
+    await page.getByRole('link', { name: 'Watch it live' }).click()
     await page.waitForURL(/\/app\/leads\?job_id=/, T)
   })
   await step('progress', async () => {

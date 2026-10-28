@@ -6,11 +6,19 @@ import { normalizeWebsite, suggestPlays, type Brain } from '@/lib/onboarding'
 import { knownErrorCopy } from '@/lib/error-copy'
 import InfoTip from './ui/info-tip'
 import { Icon } from './ui/icons'
+import { Avatar, Pill, Stepper } from './ui/bits'
+import BrainGraph from './onboarding/brain-graph'
+import { brainFacts, type BrainFact } from '@/lib/brain'
+import { previewSplit, type PreviewLead } from '@/lib/journey'
+import { leadCardSummary } from '@/lib/scan/lead-card'
 
-type Step = 'site' | 'brain' | 'ask'
+type Step = 'site' | 'building' | 'ready' | 'brain' | 'ask'
 interface Usage { has_key: boolean; trial: { funded: boolean; remaining: number } | null }
 
 const list = (s: string) => s.split(',').map(x => x.trim()).filter(Boolean)
+const REVEAL_MS = 180
+const POLL_MS = 3000
+const FIRST = 5
 const SITE_ERR: Record<string, string> = {
   invalid: 'That address is not a public website.', not_public: 'That address is not a public website.',
   js_only: 'We could not read enough text from that page (it may need JavaScript). Try your about page, or fill in the profile yourself.',
@@ -43,6 +51,11 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [needKey, setNeedKey] = useState(false)
+  // The brain: facts from the website read, revealed one by one while it builds.
+  const [facts, setFacts] = useState<BrainFact[]>([])
+  const [shown, setShown] = useState(0)
+  // The first play started from the ready screen, watched in place: its status and, once done, its ready leads.
+  const [first, setFirst] = useState<{ id: string; status: string; leads: PreviewLead[] | null } | null>(null)
 
   // Fills the step-2 buyer fields from a profile (the saved one on load, or a fresh website read).
   const fillBuyer = (b: Partial<Brain> & { sizes?: string[]; exclude?: string[] }) => {
@@ -78,29 +91,58 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   // The reviewed profile exactly as shown in step 2; it goes to the search with the sentence (no hidden fields).
   const profile = { summary: (summary || sells).trim(), who: list(who), industries: list(industries), sizes: list(sizes), where: list(where), signals: list(signals), exclude: list(exclude) }
 
+  // Watch the first play: its status every few seconds until it settles, then its ready leads (the same gates as Home).
+  const firstId = first?.id ?? null, firstStatus = first?.status ?? null
+  useEffect(() => {
+    if (!firstId || !firstStatus) return
+    if (firstStatus === 'done') {
+      void fetch(`/api/leads?job_id=${firstId}`).then(r => r.ok ? r.json() : null).catch(() => null).then(j => setFirst(f => f && f.id === firstId ? { ...f, leads: Array.isArray(j?.leads) ? j.leads : [] } : f))
+      return
+    }
+    if (firstStatus === 'failed') return
+    const t = setInterval(() => {
+      void fetch(`/api/scan/status?job_id=${firstId}`).then(r => r.ok ? r.json() : null).catch(() => null).then(j => { if (j?.status) setFirst(f => f && f.id === firstId ? { ...f, status: j.status } : f) })
+    }, POLL_MS)
+    return () => clearInterval(t)
+  }, [firstId, firstStatus])
+
   if (ready === 'loading') return null
   if (ready === 'home') return <>{children}</>
 
   const hasKey = !!usage?.has_key
   const trialLeft = !hasKey && usage?.trial?.funded ? usage.trial.remaining : 0
 
+  // Website only: dazl reads it, shows each inferred fact landing on the brain, saves the profile it inferred (the user
+  // can edit it any time; nothing is asked up front) and opens the ready screen.
   async function readSite(e?: React.FormEvent) {
     e?.preventDefault(); setError('')
     const url = normalizeWebsite(website)
     if (!url) return setError('Enter your website, like acme.com.')
-    setBusy(true)
+    setBusy(true); setFacts([]); setShown(0); setStep('building')
     try {
       const r = await fetch('/api/scan/icp-from-url', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url }) })
       const j = await r.json().catch(() => ({}))
       if (!r.ok) {
+        setStep('site')
         if (j.error === 'no_api_key') { setNeedKey(true); return }
         return setError(knownErrorCopy(j.error) ?? SITE_ERR[j.error] ?? (r.status === 429 ? 'Too many website reads. Try again later, or fill in the profile yourself.' : 'Could not read that site. Fill in the profile yourself instead.'))
       }
       if (j.sells) setSells(String(j.sells))
-      fillBuyer(j.icp)
+      fillBuyer(j.icp ?? {})
       try { setReadFrom(new URL(j.source).hostname) } catch { setReadFrom('your website') }
-      setWebsite(url); setStep('brain')
-    } catch { setError('Could not reach the server. Check your connection and try again.') } finally { setBusy(false) }
+      setWebsite(url)
+      const f = brainFacts({ ...j, business_name: bizName })
+      setFacts(f)
+      for (let i = 1; i <= f.length; i++) { setShown(i); await new Promise(res => setTimeout(res, REVEAL_MS)) }
+      // Saved exactly as read (the same POST the profile form uses); edited later from Home or "Edit what dazl inferred".
+      const b = j.icp ?? {}
+      const arr = (v: unknown) => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+      const buyer = { summary: String(b.summary ?? j.sells ?? '').trim(), who: arr(b.who), industries: arr(b.industries), sizes: arr(b.sizes), where: arr(b.where), signals: arr(b.signals), exclude: arr(b.exclude) }
+      const sr = await fetch('/api/settings/profile', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sells: String(j.sells ?? ''), website: url, business_name: bizName, buyer }) }).catch(() => null)
+      if (!sr?.ok) { const sj = await sr?.json().catch(() => ({})); setError(sj?.error || 'Could not save what dazl inferred. Check it and save it yourself.'); setStep('brain'); return }
+      window.dispatchEvent(new Event('profile-updated'))
+      setStep('ready')
+    } catch { setStep('site'); setError('Could not reach the server. Check your connection and try again.') } finally { setBusy(false) }
   }
 
   async function saveBrain(e: React.FormEvent) {
@@ -118,7 +160,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
 
   // One scan from one sentence: the box, or a suggested play picked with one click (it goes in the box and starts at once).
   async function run(e: React.FormEvent) { e.preventDefault(); await start(ask) }
-  async function start(sentence: string) {
+  async function start(sentence: string, stay = false) {
     if (busy || sentence.trim().length < 3) return
     setError(''); setBusy(true)
     try {
@@ -126,10 +168,111 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       // nothing here changes what a scan checks.
       const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: sentence.trim(), icp: profile }) })
       const j = await r.json().catch(() => ({}))
-      if (r.ok && j.job_id) { router.push(`/app/leads?job_id=${encodeURIComponent(j.job_id)}`); return }
+      if (r.ok && j.job_id) {
+        // From the ready screen the first play is watched in place; from the play step it opens its live progress.
+        if (stay) { setFirst({ id: j.job_id, status: 'pending', leads: null }); return }
+        router.push(`/app/leads?job_id=${encodeURIComponent(j.job_id)}`); return
+      }
       if (j.error === 'no_api_key' || j.error === 'trial_exhausted') { setNeedKey(true); return setError(j.error === 'trial_exhausted' ? 'Your free scans are used up. Add your AI key to keep going.' : '') }
       setError(knownErrorCopy(j.error) ?? (j.error === 'quota_exceeded' ? `You have used ${j.used} of ${j.limit} scans on your plan.` : j.error || 'Could not start the search.'))
     } catch { setError('Could not reach the server. Check your connection and try again.') } finally { setBusy(false) }
+  }
+
+  // Website, building and ready are one full-screen flow (no menu, the brain behind it); editing the profile and the
+  // play step stay as regular pages for anyone who wants them.
+  if (step === 'site' || step === 'building' || step === 'ready') {
+    const split = first?.leads ? previewSplit(first.leads as PreviewLead[]) : null
+    const readyLeads = split?.opportunities ?? []
+    const active = first && first.status !== 'done' && first.status !== 'failed'
+    const person = (l: PreviewLead) => {
+      const c = leadCardSummary(l)
+      // "Name, Title - email": the title may itself contain a hyphen ("Co-founder"); only " - " separates the address.
+      const m = /^([^,]+), (.+?)(?: - .*)?$/.exec(c.contact ?? '')
+      return { name: m ? m[1].trim() : c.company, line: [m ? m[2].trim() : null, m ? c.company : null].filter(Boolean).join(' · ') || c.sourceHost, company: c.company }
+    }
+    return (
+      <div className="fixed inset-0 z-50 overflow-y-auto bg-[var(--canvas)] app-ui" data-testid="onboarding-screen" data-step={step}>
+        {step !== 'site' && <BrainGraph facts={facts} shown={step === 'ready' ? facts.length : shown} faint={step === 'ready'} reading={step === 'building'} />}
+        <ul className="sr-only" aria-label="What dazl inferred">{facts.slice(0, step === 'ready' ? facts.length : shown).map(f => <li key={f.kind + f.text}>{f.label}: {f.text}</li>)}</ul>
+        <div className="relative min-h-full flex flex-col">
+          <div className="px-5 sm:px-10 py-5 flex items-center justify-between">
+            <span className="text-xl font-bold tracking-tight">dazl<span className="text-[var(--pink)]">.</span></span>
+            {step === 'ready' && <button type="button" className="text-sm text-[var(--ink-2)] hover:text-[var(--ink)]" onClick={() => setReady('home')}>Skip to Home</button>}
+          </div>
+          <div className="flex-1 flex items-center justify-center px-4 pb-16">
+            {step === 'site' && <div className="w-full max-w-xl text-center" data-testid="site-step">
+              <h1 className="text-3xl sm:text-5xl font-bold tracking-tight text-[var(--ink)]">What&apos;s your website?</h1>
+              <p className="text-[var(--ink-2)] mt-3">dazl learns your business from it and finds your first customers.</p>
+              {error && <p className="text-sm mt-4 text-[var(--pink)]" role="alert">{error}</p>}
+              {needKey && !hasKey && <div className="mt-5 text-left card p-4"><KeyInline reason="Reading your site runs on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); void loadUsage().then(() => readSite()) }} /></div>}
+              <form onSubmit={readSite} className="mt-7 flex gap-2 rounded-2xl bg-white border border-[var(--line-2)] p-2 shadow-[0_12px_30px_-18px_rgba(42,10,36,.35)]">
+                <input className="flex-1 min-w-0 bg-transparent px-3 text-lg outline-none" aria-label="Your website" placeholder="yourcompany.com" maxLength={200} value={website} onChange={e => setWebsite(e.target.value)} autoFocus />
+                <button className="btn-primary btn-lg" disabled={busy || website.trim().length < 4}>{busy ? 'Reading your site...' : 'Read my site'}</button>
+              </form>
+              <div className="mt-5 flex flex-col items-center gap-2 text-sm text-[var(--ink-2)]">
+                <button type="button" className="hover:text-[var(--ink)]" onClick={() => { setError(''); setStep('brain') }}>No website? Describe your business yourself</button>
+                <button type="button" className="text-xs text-[var(--ink-3)] hover:text-[var(--ink)]" onClick={() => setReady('home')}>Skip setup and show all options</button>
+              </div>
+            </div>}
+
+            {step === 'building' && <div className="text-center" role="status" data-testid="building-step">
+              <span className="inline-flex w-12 h-12 rounded-full bg-white border border-[var(--line)] items-center justify-center shadow-sm"><Icon name="spark" className="w-5 h-5 text-[var(--lav)] step-live" /></span>
+              <p className="text-2xl sm:text-3xl font-bold tracking-tight mt-4">Building your brain</p>
+              <p className="text-[var(--ink-2)] mt-1" data-testid="building-count">{shown > 0 ? `${shown} fact${shown === 1 ? '' : 's'} from ${readFrom || 'your site'}` : `Reading ${website.replace(/^https?:\/\//, '')}...`}</p>
+            </div>}
+
+            {step === 'ready' && <div className="w-full max-w-5xl" data-testid="ready-step">
+              <div className="text-center">
+                <span className="inline-flex w-14 h-14 rounded-full bg-[var(--lav-bg)] items-center justify-center"><Icon name="spark" className="w-6 h-6 text-[var(--lav)]" /></span>
+                <h1 className="text-4xl sm:text-[52px] leading-tight font-bold tracking-tight mt-4 text-[#2a0a24]">Your brain is ready.</h1>
+                <p className="text-[var(--ink-2)] text-lg mt-2" data-testid="ready-subhead">{first?.status === 'done' ? (readyLeads.length ? `dazl found ${readyLeads.length} lead${readyLeads.length === 1 ? '' : 's'} ready for your review.` : 'Your first play is done. See what it found.') : active ? 'dazl is finding your first customers now.' : `dazl knows ${sells ? 'what you sell and ' : ''}who buys it. Now find your first customers.`}</p>
+              </div>
+              {error && <p className="text-sm mt-4 text-center text-[var(--pink)]" role="alert">{error}</p>}
+              <div className="grid md:grid-cols-2 gap-5 mt-9">
+                <section className="onb-card p-6 sm:p-8 flex flex-col" data-testid="ready-plan">
+                  <h2 className="text-xl font-bold tracking-tight">{trialLeft > 0 ? `${trialLeft} free search${trialLeft === 1 ? '' : 'es'} to start` : hasKey ? 'Runs on your own AI key' : 'Add your AI key to start'}</h2>
+                  <ul className="mt-5 space-y-3 text-[15px]">
+                    {['Finds companies with a dated, public reason to buy', 'Every lead links to the page it came from', 'Leads that fail a check are held for your review', 'Emails go from your own Gmail; autopilot is off unless you turn it on'].map(t => <li key={t} className="flex gap-3"><span className="mt-0.5 inline-flex w-5 h-5 shrink-0 rounded-full bg-[var(--mint-bg)] items-center justify-center"><Icon name="check" className="w-3 h-3 text-[var(--live)]" /></span>{t}</li>)}
+                  </ul>
+                  {needKey && !hasKey && <div className="mt-5"><KeyInline reason="Searches run on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); setError(''); void loadUsage() }} /></div>}
+                  <div className="mt-auto pt-7">
+                    {!first ? <button type="button" className="btn-primary btn-lg w-full justify-center" disabled={busy || !plays[0]} onClick={() => void start(plays[0], true)} data-testid="ready-cta">{busy ? 'Starting...' : 'Find my first customers'}</button>
+                      : <a className="btn-primary btn-lg w-full justify-center" href={`/app/leads?job_id=${first.id}`} data-testid="ready-cta">{first.status === 'done' ? 'Start reaching out' : 'Watch it live'}</a>}
+                    <button type="button" className="w-full mt-3 text-sm text-[var(--ink-2)] hover:text-[var(--ink)]" onClick={() => setStep('brain')}>Edit what dazl inferred</button>
+                  </div>
+                </section>
+                <section className="onb-card p-6 sm:p-8" data-testid="first-customers">
+                  <h2 className="text-xl font-bold tracking-tight">Your first customers, ready to reach out</h2>
+                  {!first && <>
+                    <p className="text-sm text-[var(--ink-2)] mt-1">dazl starts with one of these plays:</p>
+                    <ul className="mt-4 divide-y divide-[var(--line)] border-y border-[var(--line)]">
+                      {plays.slice(0, 3).map(p => <li key={p}><button type="button" disabled={busy} className="w-full flex items-center gap-3 py-3 text-left text-sm hover:text-[var(--ink)]" onClick={() => void start(p, true)} data-testid="first-play"><Icon name="spark" className="w-4 h-4 shrink-0 text-[var(--lav)]" /><span className="flex-1 truncate">{p}</span><Icon name="arrow" className="w-4 h-4 text-[var(--ink-3)]" /></button></li>)}
+                    </ul>
+                  </>}
+                  {active && <div className="mt-4" data-testid="first-progress"><Stepper steps={[
+                    { label: 'Read your brain and play', state: first!.status === 'pending' ? 'live' : 'done', note: first!.status === 'pending' ? 'Queued' : undefined },
+                    { label: 'Search and read sources', state: first!.status === 'running' ? 'live' : first!.status === 'pending' ? 'todo' : 'done', note: first!.status === 'running' ? 'Searching...' : undefined },
+                    { label: 'Check fit and find contacts', state: first!.status === 'enriching' ? 'live' : 'todo' },
+                  ]} /></div>}
+                  {first?.status === 'done' && !first.leads && <p className="text-sm text-[var(--ink-2)] mt-4">Loading your customers...</p>}
+                  {first?.status === 'done' && first.leads && <>
+                    {readyLeads.length > 0 ? <ul className="mt-4 divide-y divide-[var(--line)]" aria-label="First customers">
+                      {readyLeads.slice(0, FIRST).map(l => { const p = person(l); return <li key={l.id} className="flex items-center gap-3 py-3" data-testid="first-lead">
+                        <Avatar name={p.name} size={36} />
+                        <span className="min-w-0 flex-1"><span className="block font-semibold text-sm truncate">{p.name}</span><span className="block text-xs text-[var(--ink-2)] truncate">{p.line}</span></span>
+                        {l.fit != null && <Pill tone="mint">fit {l.fit}/5</Pill>}
+                      </li> })}
+                    </ul> : <p className="text-sm text-[var(--ink-2)] mt-4">No customer passed every check in this first play yet.</p>}
+                    {readyLeads.length < FIRST && <p className="text-xs text-[var(--ink-2)] mt-3">{readyLeads.length} ready{split && split.held.length ? `, ${split.held.length} held for your review` : ''}. <a className="underline" href={`/app/leads?job_id=${first.id}`}>See them in Leads</a></p>}
+                  </>}
+                  {first?.status === 'failed' && <p className="text-sm mt-4">This play could not finish. <button type="button" className="underline" onClick={() => setFirst(null)}>Try another</button></p>}
+                </section>
+              </div>
+            </div>}
+          </div>
+        </div>
+      </div>
+    )
   }
 
   const dot = (s: Step, n: number, label: string) => <li className={`flex items-center gap-2 ${step === s ? 'text-[#111] font-medium' : 'text-[#888]'}`}><span className={`w-6 h-6 rounded-full text-xs flex items-center justify-center ${step === s ? 'bg-[#111] text-white' : 'bg-black/5'}`}>{n}</span>{label}</li>
@@ -137,17 +280,6 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
     <div className="max-w-2xl">
       <ol className="flex flex-wrap gap-x-6 gap-y-2 text-sm mb-6" aria-label="Setup steps">{dot('site', 1, 'Your website')}{dot('brain', 2, 'What you sell')}{dot('ask', 3, 'Who to find')}</ol>
       {error && <p className="text-sm text-[#111] border-l-2 border-[#111] pl-3 mb-4" role="alert">{error}</p>}
-
-      {step === 'site' && <div className="card p-6">
-        <h2 className="text-xl font-semibold mb-1">What&apos;s your website?</h2>
-        <p className="text-sm text-[#555] mb-4">dazl reads your homepage and drafts what you sell and who buys it. You can edit everything.</p>
-        {needKey && !hasKey ? <KeyInline reason="Reading your site runs on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); void loadUsage().then(() => readSite()) }} /> : null}
-        <form onSubmit={readSite} className="flex gap-2 mt-3">
-          <input className="field flex-1" aria-label="Your website" placeholder="acme.com" maxLength={200} value={website} onChange={e => setWebsite(e.target.value)} />
-          <button className="btn-primary" disabled={busy || website.trim().length < 4}>{busy ? 'Reading your site...' : 'Read my site'}</button>
-        </form>
-        <button type="button" className="text-xs underline text-[#555] mt-3" onClick={() => { setError(''); setStep('brain') }}>No website? Describe your business yourself</button>
-      </div>}
 
       {step === 'brain' && <form onSubmit={saveBrain} className="card p-6 flex flex-col gap-3 text-sm">
         <h2 className="text-xl font-semibold">Here&apos;s what we think you sell and who buys it</h2>

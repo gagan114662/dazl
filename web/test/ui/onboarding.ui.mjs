@@ -4,7 +4,8 @@
 // temporary database); every other /api/* call is answered from a stub in the browser: no scan, no model call, no key
 // check, no email. Off-host requests are aborted. It proves:
 //   1. a first-run account sees the website step, and a keyless site read asks for the key inline (one field);
-//   2. the editable profile is filled from the site read, including "what you sell";
+//   2. the site read builds the brain and opens "Your brain is ready." (no scan starts on its own); "Edit what dazl
+//      inferred" opens the editable profile, filled from the read, including "what you sell";
 //   3. the play step is one "Who do you want to find?" box and three one-click suggested plays, with no caveat paragraphs;
 //      after Back -> Ohio changed to NYC -> continue, the plays and the sentence are the NYC ones, and ONE click on a
 //      suggestion sends exactly one POST /api/scan with that sentence and the edited profile, then lands on live progress;
@@ -76,6 +77,10 @@ await page.getByText("What's your website?").waitFor()
 await page.getByLabel('Your website').fill('brightsmile.example'); await page.getByRole('button', { name: 'Read my site' }).click(); await page.getByLabel('Your AI key').waitFor(); await shot('key-needed')
 assert.ok(!calls.includes('POST /api/scan'), 'nothing is scanned before Find leads')
 await page.getByLabel('Your AI key').fill('sk-ant-api03-' + 'x'.repeat(30)); await page.getByRole('button', { name: 'Save key' }).click()
+// The read builds the brain, saves what it inferred and opens "Your brain is ready."; the profile stays editable.
+await page.getByTestId('ready-step').waitFor({ timeout: 15000 }); await shot('ready')
+assert.ok(!calls.includes('POST /api/scan'), 'the ready screen starts nothing on its own')
+await page.getByRole('button', { name: 'Edit what dazl inferred' }).click()
 await page.getByText("Here's what we think you sell").waitFor(); await shot('brain')
 assert.equal(await page.getByLabel('What you sell').inputValue(), 'Online booking and reminders for dental practices')
 await cont(); await shot('ask')
@@ -103,6 +108,7 @@ await page.getByTestId('journey-understanding').waitFor({ timeout: 15000 })
 assert.equal(await page.getByText("What's your website?").count(), 0)
 await page.goto(base + '/app?setup=site', { waitUntil: 'networkidle' })
 await page.getByLabel('Your website').fill('brightsmile.example'); await page.getByRole('button', { name: 'Read my site' }).click()
+await page.getByTestId('ready-step').waitFor({ timeout: 15000 }); await page.getByRole('button', { name: 'Edit what dazl inferred' }).click()
 await page.getByText("Here's what we think you sell").waitFor()
 await page.getByLabel('Who buys it').fill('Group dental practices opening new offices')
 await page.getByLabel('Buyer roles').fill('Practice owners, COO')
