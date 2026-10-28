@@ -4,6 +4,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { classifyLeads, recordActionability } from '../lib/scan/actionable.ts'
+import { failClosedBuyerFit } from '../lib/scan/buyer-fit.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, enrichmentsForLeads } from '../lib/connectors/store.ts'
 import { migrateMemory, saveMemory } from '../lib/memory.ts'
@@ -51,4 +52,13 @@ test('the summary and the card agree: only the qualifying lead counts; gated lea
   assert.match(row('ok').value, /^Actionable:/)
   for (const id of ['fit0', 'fit3', 'ungraded', 'quar', 'excl']) { const r = row(id); assert.match(r.value, /^Not actionable yet: /, id); assert.match(r.label ?? '', /^Not a qualified buyer/, id) }
   assert.match(row('quar').value, /quarantined/); assert.match(row('excl').value, /excluded/); assert.match(row('fit0').value, /fit below threshold/)
+})
+
+test('FAIL-CLOSED buyer fit: when the fit check itself fails, hiring leads graded >= 4 are capped below the bar, so they are not actionable', () => {
+  const { db, job } = seed()
+  db.prepare("UPDATE leads SET signal = 'is hiring an account executive' WHERE id IN ('ok', 'fit3')").run()
+  assert.equal(failClosedBuyerFit(db, job.id, 'database is locked'), 1, 'only the hiring lead graded >= 4 (fit3 was already below the bar)')
+  const by = Object.fromEntries(classifyLeads(db, job).map(r => [r.lead_id, r]))
+  assert.deepEqual([by.ok.actionable, by.ok.missing], [false, ['fit_below_threshold']])
+  assert.match((db.prepare("SELECT why FROM leads WHERE id = 'ok'").get() as { why: string }).why, /Buyer fit unconfirmed: the check failed \(database is locked\)/)
 })

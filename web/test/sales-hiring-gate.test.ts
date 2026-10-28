@@ -4,7 +4,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { applySalesHiringGate, salesHiringRequired, quoteNamesSalesHiring } from '../lib/scan/sales-hiring-gate.ts'
+import { applySalesHiringGate, failClosedSalesHiring, salesHiringRequired, quoteNamesSalesHiring } from '../lib/scan/sales-hiring-gate.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, enrichmentsForLeads } from '../lib/connectors/store.ts'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
@@ -315,4 +315,20 @@ test('appositive subject: "Brightloop, a London B2B SaaS startup with 24 employe
   const { db, job } = seed({ domain: null, excerpt: good }); assert.equal((await applySalesHiringGate(db, job, serve({}), { now: NOW })).passed, 1)
   const bad = seed({ domain: null, excerpt: 'othercorp, a London B2B SaaS startup with 24 employees, raised a 3m GBP seed round this month and is hiring two account executives' })
   assert.equal((await applySalesHiringGate(bad.db, bad.job, serve({}), { now: NOW })).passed, 0)
+})
+
+test('FAIL-CLOSED per lead: an error while a lead is being proven holds that lead (sales_hiring_check_failed); it is never passed', async () => {
+  const { db, job } = seed({ domain: 'brightloop.io', excerpt: QUOTE })
+  db.exec('DROP TABLE lead_enrichments')   // the evidence write for a board pass now throws
+  const r = await applySalesHiringGate(db, job, serve(board()), { now: NOW })
+  assert.deepEqual([r.passed, r.demoted], [0, 1]); assert.equal(lead(db).review_reason, 'sales_hiring_check_failed'); assert.equal(lead(db).confidence, null)
+  assert.match(lead(db).why, /^Sales-hiring check failed \(/); assert.deepEqual(counts(db), { verified: 0, needs_review: 1 })
+  assert.deepEqual(r.demotions.map(d => d.reason), ['sales_hiring_check_failed'])
+})
+test('FAIL-CLOSED whole gate: failClosedSalesHiring holds every lead still verified, only when the request needs the proof', () => {
+  const { db, job } = seed({ domain: 'brightloop.io', excerpt: QUOTE })
+  const held = failClosedSalesHiring(db, job, 'database is locked')
+  assert.deepEqual(held.map(h => h.reason), ['sales_hiring_check_failed']); assert.equal(lead(db).review_reason, 'sales_hiring_check_failed'); assert.deepEqual(counts(db), { verified: 0, needs_review: 1 })
+  const seedOnly = seed({ query: 'Find London UK SaaS startups that announced seed funding.', icp: JSON.stringify({ summary: 's', where: ['London, UK'], who: ['Founder'], signals: ['announced seed funding'], exclude: [] }) })
+  assert.deepEqual(failClosedSalesHiring(seedOnly.db, seedOnly.job, 'x'), [], 'no sales proof required: nothing to fail'); assert.equal(lead(seedOnly.db).review_reason, null)
 })

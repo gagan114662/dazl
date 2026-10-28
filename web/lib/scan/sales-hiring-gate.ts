@@ -19,6 +19,7 @@ import { WHY_MAX } from './score.ts'
 
 export const NO_SALES_HIRING = 'no_sales_hiring_evidence'
 export const NO_EVENT = 'no_event_evidence'
+export const SALES_GATE_FAILED = 'sales_hiring_check_failed'
 const HIRING_WORDS = /\bhir(?:e|es|ed|ing)\b|\brecruit\w*|\b(?:new|open|several|two|three|\d+)\s+(?:sales\s+|gtm\s+)?(?:role|position|opening)s?\b|\bjoin(?:ing)?\s+(?:our|the)\s+(?:sales|gtm)/i
 const MAX_BOARD_LOOKUPS = 20 // network lookups per run; a lead beyond it is NOT passed, it is held as unchecked
 
@@ -158,66 +159,82 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
   const counts = db.prepare('UPDATE scan_jobs SET verified = MAX(COALESCE(verified, 0) - 1, 0), needs_review = COALESCE(needs_review, 0) + 1 WHERE id = ?')
   let passed = 0, demoted = 0, lookups = 0
   for (const l of leads) {
+    try {
     // Evidence for THIS lead: its own saved quote, plus other verified candidates' quotes for the same company that are identity-compatible (see evidenceCompatible).
-    const others = (l.dedup_key ? opts.quotes?.get(l.dedup_key) ?? [] : []).filter(q => evidenceCompatible(q.url, l.company, l.company_domain))
-    const quotes: QuoteEvidence[] = [{ url: l.source_url, excerpt: l.evidence_excerpt ?? '', date: null }, ...others]
-    const demoteFor = (reason: string, why: string) => { if (demote.run(reason, (why + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id).changes) { counts.run(job.id); demoted++; demotions.push({ company: l.company, url: l.source_url, reason }) } }
-    // The event half first: a hiring page alone (a job ad) does not show seed funding / an opening, whatever it says about the company.
-    if (!quotes.some(q => quoteShowsEvent(q.excerpt, l.signal, fundingAsked, l.company, stage))) {
-      demoteFor(NO_EVENT, stage && fundingAsked ? `No event evidence: no source quote affirms this company raised a ${stage} round (a different stage, a negated or planned raise, or another company's raise does not count). ` : `No event evidence: the source quote shows hiring but not the funding or event the request asks for. `)
-      continue
-    }
-    if (quotes.some(q => quoteNamesSalesHiring(q.excerpt, l.signal, l.company))) {
-      const o = others.find(q => quoteNamesSalesHiring(q.excerpt, l.signal, l.company))
-      if (!quoteNamesSalesHiring(l.evidence_excerpt, l.signal, l.company) && o) {
-        let host = ''; try { host = new URL(o.url).hostname.replace(/^www\./, '') } catch { /* keep blank */ }
-        setWhy.run((`Hiring sales: named in a verified source${host ? ` (${host})` : ''}${o.date ? `, dated ${o.date}` : ''}. ${l.why ?? ''}`).trim().slice(0, WHY_MAX), l.id)
+      const others = (l.dedup_key ? opts.quotes?.get(l.dedup_key) ?? [] : []).filter(q => evidenceCompatible(q.url, l.company, l.company_domain))
+      const quotes: QuoteEvidence[] = [{ url: l.source_url, excerpt: l.evidence_excerpt ?? '', date: null }, ...others]
+      const demoteFor = (reason: string, why: string) => { if (demote.run(reason, (why + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id).changes) { counts.run(job.id); demoted++; demotions.push({ company: l.company, url: l.source_url, reason }) } }
+      // The event half first: a hiring page alone (a job ad) does not show seed funding / an opening, whatever it says about the company.
+      if (!quotes.some(q => quoteShowsEvent(q.excerpt, l.signal, fundingAsked, l.company, stage))) {
+        demoteFor(NO_EVENT, stage && fundingAsked ? `No event evidence: no source quote affirms this company raised a ${stage} round (a different stage, a negated or planned raise, or another company's raise does not count). ` : `No event evidence: the source quote shows hiring but not the funding or event the request asks for. `)
+        continue
       }
-      passed++; continue
-    }
-    if (l.company_domain && lookups >= MAX_BOARD_LOOKUPS) {
-      // A processing limit never lets a lead through unproven: it is held, and the card says it was not checked (unknown, not absent).
-      demoteFor(NO_SALES_HIRING, `No sales-hiring evidence: not checked - this scan had more leads than the job-board lookup limit (${MAX_BOARD_LOOKUPS}). `)
-      continue
-    }
-    if (l.company_domain) lookups++
-    const g = l.company_domain ? await atsGtmHiring(l.company, l.company_domain, fetchImpl, { windowDays, now: (opts.now ?? Date.now()) }).catch(() => null) : null
-    // The board must be the lead's OWN: under a domain the cited page is hosted on (or the user confirmed). A board found through a domain matched only
-    // by company name (a probe, a link label) could belong to a larger same-name company: its roles are not this lead's hiring.
-    // The board is bound to the lead's domain when the cited page is hosted on it / the user confirmed it, or when the board's OWN postings name that same
-    // domain (a company-site address or link inside the posting text).
-    const heuristic = !!g && g.via === 'domain' && domainRelationship(db, job.user_id, l.id, l.company_domain) !== 'established' && !(g.domain && l.company_domain && g.domain.replace(/^www\./, '') === l.company_domain.replace(/^www\./, ''))
-    if (g && g.via === 'domain' && !heuristic) {
-      const p = g.postings[0]
-      const line = `Hiring sales: ${p.title} posted ${p.date} on its ${BOARD_LABEL[g.board]} job board (${l.company_domain}). `
-      setWhy.run((line + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
-      addEnrichment(db, job.user_id, l.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${g.postings.length} sales/GTM role${g.postings.length === 1 ? '' : 's'} posted, newest ${g.newest}`, label: g.postings.map(x => x.title).slice(0, 3).join('; ').slice(0, 200) || null, confidence: 70, source_url: g.url, source_date: g.newest, retrieved_at: now })
-      passed++; continue
-    }
-    // No usable job board: the company's OWN careers page (https, robots.txt obeyed, same domain) may list an open sales role. The domain must be established, or the careers
-    // page itself must name the company and agree on the requested place (a same-name company elsewhere does not). Saved: URL, quote, retrieval time (not a posting date).
-    let careersNote = ''
-    if (l.company_domain && opts.careersGet) {
-      const c = await careersSalesVacancy(l.company_domain, opts.careersGet, { now: opts.now, company: l.company }).catch(() => null)
-      if (c?.vacancy) {
-        const v = c.vacancy
-        const established = domainRelationship(db, job.user_id, l.id, l.company_domain) === 'established'
-        const namesCompany = norm(v.pageText).includes(norm(l.company).replace(/\s/g, '')) || norm(v.pageText).replace(/\s/g, '').includes(norm(l.company).replace(/\s/g, ''))
-        const place = whereOf(job.icp).length ? placeAgreement(v.pageText, whereOf(job.icp), l.company) : 'no_geography'
-        if (established || (namesCompany && (place === 'agrees' || place === 'no_geography'))) {
-          const day = new Date(v.retrievedAt * 1000).toISOString().slice(0, 10)
-          setWhy.run((`Hiring sales: ${v.title} listed on its careers page (${l.company_domain}), checked ${day}. ` + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
-          addEnrichment(db, job.user_id, l.id, { connector: 'signals:careers-gtm', kind: 'hiring', value: `Open sales role on its careers page: ${v.title}`.slice(0, 254), label: v.quote.slice(0, 200), confidence: 60, source_url: v.url, source_date: day, retrieved_at: v.retrievedAt })
-          passed++; continue
+      if (quotes.some(q => quoteNamesSalesHiring(q.excerpt, l.signal, l.company))) {
+        const o = others.find(q => quoteNamesSalesHiring(q.excerpt, l.signal, l.company))
+        if (!quoteNamesSalesHiring(l.evidence_excerpt, l.signal, l.company) && o) {
+          let host = ''; try { host = new URL(o.url).hostname.replace(/^www\./, '') } catch { /* keep blank */ }
+          setWhy.run((`Hiring sales: named in a verified source${host ? ` (${host})` : ''}${o.date ? `, dated ${o.date}` : ''}. ${l.why ?? ''}`).trim().slice(0, WHY_MAX), l.id)
         }
-        careersNote = `its careers page lists ${v.title} but the page is not established as this company's (${namesCompany ? 'place not confirmed' : 'company not named'}). `
-      } else if (c) careersNote = `its careers page was checked: ${c.reason.replace(/_/g, ' ')}. `
+        passed++; continue
+      }
+      if (l.company_domain && lookups >= MAX_BOARD_LOOKUPS) {
+        // A processing limit never lets a lead through unproven: it is held, and the card says it was not checked (unknown, not absent).
+        demoteFor(NO_SALES_HIRING, `No sales-hiring evidence: not checked - this scan had more leads than the job-board lookup limit (${MAX_BOARD_LOOKUPS}). `)
+        continue
+      }
+      if (l.company_domain) lookups++
+      const g = l.company_domain ? await atsGtmHiring(l.company, l.company_domain, fetchImpl, { windowDays, now: (opts.now ?? Date.now()) }).catch(() => null) : null
+      // The board must be the lead's OWN: under a domain the cited page is hosted on (or the user confirmed). A board found through a domain matched only
+      // by company name (a probe, a link label) could belong to a larger same-name company: its roles are not this lead's hiring.
+      // The board is bound to the lead's domain when the cited page is hosted on it / the user confirmed it, or when the board's OWN postings name that same
+      // domain (a company-site address or link inside the posting text).
+      const heuristic = !!g && g.via === 'domain' && domainRelationship(db, job.user_id, l.id, l.company_domain) !== 'established' && !(g.domain && l.company_domain && g.domain.replace(/^www\./, '') === l.company_domain.replace(/^www\./, ''))
+      if (g && g.via === 'domain' && !heuristic) {
+        const p = g.postings[0]
+        const line = `Hiring sales: ${p.title} posted ${p.date} on its ${BOARD_LABEL[g.board]} job board (${l.company_domain}). `
+        setWhy.run((line + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
+        addEnrichment(db, job.user_id, l.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${g.postings.length} sales/GTM role${g.postings.length === 1 ? '' : 's'} posted, newest ${g.newest}`, label: g.postings.map(x => x.title).slice(0, 3).join('; ').slice(0, 200) || null, confidence: 70, source_url: g.url, source_date: g.newest, retrieved_at: now })
+        passed++; continue
+      }
+      // No usable job board: the company's OWN careers page (https, robots.txt obeyed, same domain) may list an open sales role. The domain must be established, or the careers
+      // page itself must name the company and agree on the requested place (a same-name company elsewhere does not). Saved: URL, quote, retrieval time (not a posting date).
+      let careersNote = ''
+      if (l.company_domain && opts.careersGet) {
+        const c = await careersSalesVacancy(l.company_domain, opts.careersGet, { now: opts.now, company: l.company }).catch(() => null)
+        if (c?.vacancy) {
+          const v = c.vacancy
+          const established = domainRelationship(db, job.user_id, l.id, l.company_domain) === 'established'
+          const namesCompany = norm(v.pageText).includes(norm(l.company).replace(/\s/g, '')) || norm(v.pageText).replace(/\s/g, '').includes(norm(l.company).replace(/\s/g, ''))
+          const place = whereOf(job.icp).length ? placeAgreement(v.pageText, whereOf(job.icp), l.company) : 'no_geography'
+          if (established || (namesCompany && (place === 'agrees' || place === 'no_geography'))) {
+            const day = new Date(v.retrievedAt * 1000).toISOString().slice(0, 10)
+            setWhy.run((`Hiring sales: ${v.title} listed on its careers page (${l.company_domain}), checked ${day}. ` + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
+            addEnrichment(db, job.user_id, l.id, { connector: 'signals:careers-gtm', kind: 'hiring', value: `Open sales role on its careers page: ${v.title}`.slice(0, 254), label: v.quote.slice(0, 200), confidence: 60, source_url: v.url, source_date: day, retrieved_at: v.retrievedAt })
+            passed++; continue
+          }
+          careersNote = `its careers page lists ${v.title} but the page is not established as this company's (${namesCompany ? 'place not confirmed' : 'company not named'}). `
+        } else if (c) careersNote = `its careers page was checked: ${c.reason.replace(/_/g, ' ')}. `
+      }
+      const line = heuristic
+        ? `No sales-hiring evidence: a job board was found only through ${l.company_domain}, a domain matched by company name, so it is not established as this company's board. `
+        : `No sales-hiring evidence: no sales or GTM posting dated in the last ${windowDays} days was found on a public job board tied to ${l.company_domain ?? 'a confirmed company domain (none found)'} (a board that could not be reached looks the same as none, so this is unconfirmed, not proof the company is not hiring). `
+      demoteFor(NO_SALES_HIRING, line + careersNote)
+    } catch (e) {
+      // A required gate that errors on a lead is a FAIL, never a pass: the lead is held with the failure as its reason.
+      if (demote.run(SALES_GATE_FAILED, `Sales-hiring check failed (${(e instanceof Error ? e.message : 'error').slice(0, 80)}): not verified. ${l.why ?? ''}`.trim().slice(0, WHY_MAX), l.id).changes) { counts.run(job.id); demoted++; demotions.push({ company: l.company, url: l.source_url, reason: SALES_GATE_FAILED }) }
     }
-    const line = heuristic
-      ? `No sales-hiring evidence: a job board was found only through ${l.company_domain}, a domain matched by company name, so it is not established as this company's board. `
-      : `No sales-hiring evidence: no sales or GTM posting dated in the last ${windowDays} days was found on a public job board tied to ${l.company_domain ?? 'a confirmed company domain (none found)'} (a board that could not be reached looks the same as none, so this is unconfirmed, not proof the company is not hiring). `
-    demoteFor(NO_SALES_HIRING, line + careersNote)
   }
   audit(db, { tenantId: job.user_id, connector: 'scan:sales-hiring-gate', jobId: job.id, lookup: `${leads.length} leads, window ${windowDays}d`.slice(0, 200), status: demoted ? 'demoted' : 'ok', results: passed })
   return { required: true, checked: leads.length, passed, demoted, demotions }
+}
+
+// The required gate itself failed (it threw before or between leads): every lead still verified is held. Never a pass. Returns the demotions for the run report.
+export function failClosedSalesHiring(db: Database.Database, job: JobLike, message: string): { company: string; url: string; reason: string }[] {
+  if (!salesHiringRequired(job.query, job.icp)) return []
+  const rows = db.prepare("SELECT id, company, source_url, why FROM leads WHERE scan_job_id = ? AND review_reason IS NULL AND confidence IS NOT NULL AND human_confirmed_at IS NULL AND company <> ''").all(job.id) as { id: string; company: string; source_url: string; why: string | null }[]
+  const demote = db.prepare('UPDATE leads SET review_reason = ?, confidence = NULL, why = ? WHERE id = ? AND review_reason IS NULL')
+  const counts = db.prepare('UPDATE scan_jobs SET verified = MAX(COALESCE(verified, 0) - 1, 0), needs_review = COALESCE(needs_review, 0) + 1 WHERE id = ?')
+  const out: { company: string; url: string; reason: string }[] = []
+  for (const l of rows) if (demote.run(SALES_GATE_FAILED, `Sales-hiring check failed (${message.slice(0, 80)}): not verified. ${l.why ?? ''}`.trim().slice(0, WHY_MAX), l.id).changes) { counts.run(job.id); out.push({ company: l.company, url: l.source_url, reason: SALES_GATE_FAILED }) }
+  return out
 }
