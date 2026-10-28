@@ -58,3 +58,9 @@ test('bounded: guessed boards share the adapter\'s one cap of 10 board lists, an
   assert.ok(seen.length === 10, `probed ${seen.length}`); assert.ok(!seen.some(u => u.includes('company9x')), 'later companies are not probed once the cap is used')
   const none = stub({}); await run([], none.http); assert.equal(none.seen.length, 0)
 })
+
+test('a guessed board answering HTTP 200 with {} / no jobs array is a parse failure (partial), never a healthy empty board; a plain 404 stays silent', async () => {
+  const http: SafeGet = async url => (new URL(url).hostname === 'hn.algolia.com' ? { status: 404, body: '' } : url.includes('greenhouse') ? { status: 200, body: '{}' } : { status: 404, body: '' })
+  const r = await run([{ name: 'Brightloop' }], http)
+  assert.equal(r.runs[0].status, 'partial'); assert.ok(r.runs[0].notes?.unparseable)
+})
