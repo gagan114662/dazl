@@ -37,6 +37,8 @@ async function sharedSchema() {
   await db.run('CREATE TABLE scan_test_runs (job_id TEXT NOT NULL, attempt INTEGER NOT NULL, instance TEXT NOT NULL)')
   await db.run('CREATE TABLE scan_test_ready (instance TEXT NOT NULL)')
   for (const t of [A, B]) await db.run("INSERT INTO users (id, email, password_hash, salt, business_name, created_at) VALUES (?, ?, 'h', 's', 'Co', ?)", [t, `${t.slice(0, 4)}@example.test`, nowS()])
+  // a saved key each, so the production claimer's funding filter (as claimKeyedJob's) takes their scans
+  for (const t of [A, B]) await db.run("INSERT INTO tenant_llm_keys (tenant_id, vendor, ciphertext, last4, validated_at, created_at) VALUES (?, 'anthropic', 'x', '1234', 1, 1)", [t])
   return { s, db }
 }
 const newJob = async (db: Db, tenant: string, q?: DbQueue) => {
@@ -169,5 +171,48 @@ test('[pg] tenant isolation across instances through the real routes: each sees 
       assert.ok(!r.otherExport.includes('Company '), 'export of the other tenant\'s job id returns no rows')
     }
     assert.equal(await snapshot(), before, 'no action changed the other tenant\'s rows')
+  } finally { await db.close(); await s.drop() }
+})
+
+// The production claimer (lib/queue/scan-claimer.ts, behind DAZL_SCAN_SHARED_QUEUE): scans are only created as rows, as
+// the scan route creates them; each instance's claimer mirrors them into the queue itself.
+test('[pg] the shared-queue claimer on two instances: every scan created is mirrored once, run once, by both instances', { skip: pgSkip }, async () => {
+  const { s, db } = await sharedSchema()
+  try {
+    const ids: string[] = []
+    for (let i = 0; i < 30; i++) ids.push(await newJob(db, i % 2 ? A : B)) // no enqueue here: the claimers mirror
+    const [a, b] = await Promise.all(['A', 'B'].map(n => scanInstance({ SI_NAME: n, SI_MODE: 'shared', SI_SCHEMA: s.schema })))
+    assert.equal(a.ran + b.ran, 30)
+    assert.ok(a.ran > 0 && b.ran > 0, `both instances ran scans (A ${a.ran}, B ${b.ran})`)
+    const runs = await db.all<{ n: number }>('SELECT count(*)::int AS n FROM scan_test_runs GROUP BY job_id')
+    assert.equal(runs.length, 30)
+    assert.ok(runs.every(r => r.n === 1), 'no scan ran twice')
+    assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM work_queue'))!.n), 30, 'one queue item per scan, mirrored once')
+    assert.equal(await new DbQueue(db).depth({ status: 'done' }), 30)
+    await assertRunOnce(db, ids)
+  } finally { await db.close(); await s.drop() }
+})
+
+test('[pg] the shared-queue claimer recovers a scan from a killed instance: the other takes it over after the lease, once', { skip: pgSkip }, async () => {
+  const { s, db } = await sharedSchema()
+  try {
+    const victim = await newJob(db, A)
+    const child = spawn(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts', './test/helpers/scan-instance.mts'],
+      { cwd: web, env: childEnv({ SI_NAME: 'A', SI_MODE: 'shared-crash', SI_SCHEMA: s.schema, SI_LEASE_S: '2' }) })
+    let stdout = ''
+    child.stdout.on('data', d => { stdout += d })
+    while (!stdout.includes('holding')) await new Promise(r => setTimeout(r, 20))
+    assert.deepEqual(last(stdout), { holding: victim, attempt: 1 })
+    child.kill('SIGKILL')
+    await new Promise(r => child.once('exit', r))
+    const other = await newJob(db, B) // created after the crash
+    await new Promise(r => setTimeout(r, 3200)) // past the 2 s lease (whole seconds, strictly older): no separate reaper call, the claimer reaps it
+    await db.run("INSERT INTO scan_test_ready (instance) VALUES ('stand-in')")
+    const b = await scanInstance({ SI_NAME: 'B', SI_MODE: 'shared', SI_SCHEMA: s.schema, SI_LEASE_S: '2' })
+    assert.equal(b.ran, 2)
+    const runs = await db.all<{ job_id: string; attempt: number; instance: string }>('SELECT job_id, attempt, instance FROM scan_test_runs ORDER BY job_id, attempt')
+    assert.deepEqual(runs.filter(r => r.job_id === victim).map(r => `${r.attempt}@${r.instance}`), ['1@A', '2@B'])
+    assert.deepEqual(runs.filter(r => r.job_id === other).map(r => `${r.attempt}@${r.instance}`), ['1@B'])
+    await assertRunOnce(db, [victim, other])
   } finally { await db.close(); await s.drop() }
 })

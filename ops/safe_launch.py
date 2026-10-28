@@ -90,9 +90,10 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+# Readiness (/api/ready): 200 with ok and the commit the new process serves. /api/health is liveness only.
 def health(port):
     try:
-        with urllib.request.build_opener(NoRedirect()).open(f'http://127.0.0.1:{port}/api/health', timeout=2) as r:
+        with urllib.request.build_opener(NoRedirect()).open(f'http://127.0.0.1:{port}/api/ready', timeout=2) as r:
             data = json.load(r)
         return data.get('commit') if data.get('ok') is True else None
     except Exception:

@@ -1,7 +1,8 @@
 // Liveness and readiness (docs/PLATFORM.md step 6).
 // Liveness: the process answers. No dependency is touched, so a slow database never gets a healthy process restarted.
 // Readiness: this instance can serve: the store answers (Postgres when DATABASE_URL is set, else SQLite), its schema
-// has every migration this build ships (Postgres), and the SQLite file the raw-handle modules still use answers.
+// has every migration this build ships (Postgres), the scan work queue (work_queue, lib/queue) answers in that store,
+// and the SQLite file the raw-handle modules still use answers.
 // Each check has a 2 s budget (timed() says what it can and cannot interrupt). The response names which check failed,
 // never why: the error itself goes to captureError (stderr / alert hook), since /api/health is public.
 // store: which engine this instance serves from and its migration version, so a deploy can be verified from outside
@@ -18,6 +19,7 @@ export interface Readiness {
   checks: {
     store: CheckResult & { engine: Db['kind'] | 'unknown' }
     schema: CheckResult | { ok: true; skipped: 'sqlite' }
+    queue: CheckResult
     sqlite: CheckResult
     split: { ok: true; skipped: 'sqlite' } | { ok: boolean; raw_sqlite_modules: number }
   }
@@ -70,12 +72,15 @@ export async function readiness(d: ReadinessDeps): Promise<Readiness> {
       applied = Number(row?.v ?? 0)
       return applied >= shipped ? 'ok' : 'behind'
     }, timeoutMs, clock)
+  // the shared scan queue: its table answers in the configured store (reachability only; no tenant row is returned)
+  const queue: CheckResult = !store.ok ? { ok: false, ms: 0, reason: store.reason === 'timeout' ? 'timeout' : 'error' }
+    : await timed('queue', async () => { await db!.get('SELECT 1 AS x FROM work_queue LIMIT 1'); return 'ok' }, timeoutMs, clock)
   const sqlite = await timed('sqlite', async () => { d.sqlite().prepare('SELECT 1').get(); return 'ok' }, timeoutMs, clock)
   const raw = d.rawSqliteModules?.() ?? 0
   const split = engine === 'sqlite' ? { ok: true as const, skipped: 'sqlite' as const } : { ok: raw === 0, raw_sqlite_modules: raw }
   return {
-    ok: store.ok && schema.ok && sqlite.ok && split.ok,
+    ok: store.ok && schema.ok && queue.ok && sqlite.ok && split.ok,
     store: { engine, migrations: { shipped, applied }, raw_sqlite_modules: raw },
-    checks: { store: { ...store, engine }, schema, sqlite, split },
+    checks: { store: { ...store, engine }, schema, queue, sqlite, split },
   }
 }

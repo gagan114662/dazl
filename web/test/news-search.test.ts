@@ -38,8 +38,8 @@ test('requests are spaced by the shared queue (GDELT: one per 5 s), deduped, and
   const waits: number[] = []
   const body = gdelt([{ url: 'https://news.example.com/acme', title: 'Acme Dental opens second clinic' }])
   const http: SafeGet = async url => (url.includes('fail') ? { status: 429, body: 'Please limit requests' } : { status: 200, body })
-  const hits = await newsSearch(http, ['a', 'fail', 'b'], 'en', { gapMs: 5100, sleep: async ms => { waits.push(ms) } })
-  assert.equal(hits.length, 1)
+  const r = await newsSearch(http, ['a', 'fail', 'b'], 'en', { gapMs: 5100, sleep: async ms => { waits.push(ms) } })
+  assert.equal(r.hits.length, 1); assert.deepEqual([r.attempted, r.failed], [3, 1], 'request failures are reported apart from the hits')
   assert.equal(waits.length, 2) // the 2nd and 3rd requests waited; the 1st did not
   assert.ok(waits.every(w => w > 0 && w <= 5100))
 })

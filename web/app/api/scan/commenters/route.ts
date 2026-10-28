@@ -2,7 +2,8 @@ import { after, NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
-import { getPlan } from '@/lib/plans'
+import { readPlan } from '@/lib/plans'
+import { getDb } from '@/lib/db/client'
 import { crawlJob } from '@/lib/connectors/sitecrawl'
 import { enrichJobSignals } from '@/lib/signals'
 import { commenterBatchStatus, enrichCommenters, importCommenters, MAX_PROFILES, parseImport } from '@/lib/scan/commenter-import'
@@ -24,7 +25,7 @@ export async function POST(req: NextRequest) {
   if (text.length > MAX_UPLOAD) return NextResponse.json({ error: 'That file is too large' }, { status: 400 })
 
   const db = getScanDb()
-  if (getPlan(db, user.id) !== 'pro') return NextResponse.json({ error: 'pro_only' }, { status: 402 })
+  if ((await readPlan(await getDb(), user.id)) !== 'pro') return NextResponse.json({ error: 'pro_only' }, { status: 402 })
 
   const parsed = parseImport(text)
   if (parsed.valid.length === 0) return NextResponse.json({ error: 'No valid profile URLs found', invalid: parsed.invalid }, { status: 400 })

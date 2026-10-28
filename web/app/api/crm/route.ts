@@ -3,6 +3,8 @@ import { getScanDb, requireUser } from '@/lib/scan/service'
 import { auditPush, disconnectCrm, getCrmConfig, pushLead, saveCrmConfig } from '@/lib/crm/index'
 import { defaultLookup, resolvePublic } from '@/lib/net/public-fetch'
 import { sameOriginJson } from '@/lib/same-origin'
+import { captureError } from '@/lib/ops/errors'
+import { requestIdOf } from '@/lib/ops/request-log'
 import { rateLimit } from '@/lib/rate-limit'
 
 export async function GET() {
@@ -54,6 +56,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true, message: msg })
       } catch (e) {
         auditPush(db, user.id, cfg.provider, lead.company, false)
+        captureError(e, { source: 'route', where: '/api/crm', method: 'POST', tenantId: user.id, requestId: requestIdOf(req) })
         return NextResponse.json({ error: e instanceof Error ? e.message : 'Push failed' }, { status: 502 })
       }
     }

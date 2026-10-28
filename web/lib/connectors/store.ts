@@ -83,12 +83,17 @@ export async function removeCredential(db: Db, tenantId: string, connector: stri
 }
 
 // Server-side only. Returns null unless the tenant has the connector saved and enabled.
+const ENABLED_CREDENTIAL_SQL = 'SELECT ciphertext FROM tenant_connectors WHERE tenant_id = ? AND connector = ? AND enabled = 1'
 export function getEnabledCredential(db: Database.Database, tenantId: string, connector: string, master?: Buffer): string | null {
-  const r = db.prepare('SELECT ciphertext FROM tenant_connectors WHERE tenant_id = ? AND connector = ? AND enabled = 1').get(tenantId, connector) as { ciphertext: string } | undefined
+  const r = db.prepare(ENABLED_CREDENTIAL_SQL).get(tenantId, connector) as { ciphertext: string } | undefined
+  return r ? decryptSecret(r.ciphertext, ctx(tenantId, connector), master) : null
+}
+export async function readEnabledCredential(db: Db, tenantId: string, connector: string, master?: Buffer): Promise<string | null> {
+  const r = await db.get<{ ciphertext: string }>(ENABLED_CREDENTIAL_SQL, [tenantId, connector])
   return r ? decryptSecret(r.ciphertext, ctx(tenantId, connector), master) : null
 }
 
-type AuditEntry = { tenantId: string; connector: string; jobId?: string | null; lookup: string; status: string; results: number }
+export type AuditEntry = { tenantId: string; connector: string; jobId?: string | null; lookup: string; status: string; results: number }
 const AUDIT_SQL = 'INSERT INTO connector_audit (id, tenant_id, connector, scan_job_id, lookup, status, results) VALUES (?, ?, ?, ?, ?, ?, ?)'
 const auditArgs = (a: AuditEntry) => [randomBytes(12).toString('hex'), a.tenantId, a.connector, a.jobId ?? null, a.lookup.slice(0, 200), a.status, a.results]
 export function audit(db: Database.Database, a: AuditEntry): void {
