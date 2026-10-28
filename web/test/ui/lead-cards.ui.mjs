@@ -11,8 +11,8 @@
 //      even on a double click against a slow server; after a failure it can be retried; nothing else is written;
 //   3. Approve is disabled with the reason on leads the existing gates hold (no email, window, timing);
 //   4. Reject opens an optional-reason step (presets, free text, Cancel/Escape writes nothing); Confirm reject sends the
-//      existing quarantine POST with "Rejected: <reason>" (or just "Rejected" with none) and the card says so; Undo sends
-//      its DELETE.
+//      existing quarantine POST with "Rejected: <reason>" (or just "Rejected" with none); the card leaves To review, the
+//      result line says so and the card shows its reason under Rejected; Undo (on the card or the result) sends its DELETE.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -121,14 +121,18 @@ try {
   assert.equal(outreachBodies.length, 1, 'a double click while the request is in flight sends one request')
   assert.equal(await bright.getByRole('button', { name: 'Approve' }).isEnabled(), true, 'retry is possible after a failure')
   await bright.getByRole('button', { name: 'Approve' }).dblclick()
-  await bright.getByText(/Draft created/).waitFor()
+  // Success: a one-line result, and the card moves from To review to Approved (it is a draft now).
+  await page.getByTestId('card-result').getByText(/Bright Dental: draft created/).waitFor()
   assert.deepEqual(outreachBodies, [{ lead_id: 'a'.repeat(24) }, { lead_id: 'a'.repeat(24) }], 'one request per attempt: the failed one and the retry')
+  await page.waitForFunction(() => ![...document.querySelectorAll('[data-testid=lead-card]')].some(c => c.textContent.includes('Bright Dental')))
+  await page.getByTestId('tab-approved').click()
   assert.equal(await bright.getByRole('button', { name: 'Approve' }).isDisabled(), true, 'cannot approve again after success')
+  await page.getByTestId('tab-review').click()
 
   // Reject asks for an optional reason; Cancel and Escape write nothing.
   await lakeside.getByRole('button', { name: 'Reject' }).click()
   const reasonRow = lakeside.getByTestId('reject-reason'); await reasonRow.waitFor()
-  assert.deepEqual(await reasonRow.getByRole('button').allTextContents(), ['Not a fit', 'Wrong company', 'Wrong contact', 'Already a customer', 'Confirm reject', 'Cancel'])
+  assert.deepEqual(await reasonRow.getByRole('button').allTextContents(), ['i', 'Not a fit', 'Wrong company', 'Wrong contact', 'Already a customer', 'Confirm reject', 'Cancel']) // the (i) holds what rejecting does
   await reasonRow.getByRole('button', { name: 'Cancel' }).click()
   assert.equal(await lakeside.getByTestId('reject-reason').count(), 0)
   await lakeside.getByRole('button', { name: 'Reject' }).click()
@@ -140,15 +144,21 @@ try {
   await lakeside.getByTestId('reject-reason').getByRole('button', { name: 'Wrong company' }).click()
   await shot('reject-reason')
   await lakeside.getByRole('button', { name: 'Confirm reject' }).click()
-  await lakeside.getByText(/^Rejected: Wrong company\. Kept with its evidence/).waitFor()
+  // The rejected card leaves the list; the result line says so, and the card is under Rejected with its reason.
+  const result = page.getByTestId('card-result')
+  await result.getByText(/Lakeside Smiles \(Wrong company\) left the list\./).waitFor()
+  assert.equal(await lakeside.count(), 0)
+  await page.getByTestId('tab-rejected').click()
+  assert.match(await lakeside.textContent(), /^LSLakeside SmilesRejected[\s\S]*Rejected: Wrong companyiKept with its evidence; it will not be drafted, sent or exported\./)
   await shot('after-actions')
   await lakeside.getByRole('button', { name: 'Undo' }).click()
+  await page.getByTestId('tab-review').click()
   await lakeside.getByRole('button', { name: 'Reject' }).waitFor()
-  // No reason at all: just "Rejected" (Enter in the box confirms).
+  // No reason at all: just "Rejected" (Enter in the box confirms); Undo from the result line.
   await lakeside.getByRole('button', { name: 'Reject' }).click()
   await lakeside.getByLabel('Reason (optional)').press('Enter')
-  await lakeside.getByText(/^Rejected\. Kept with its evidence/).waitFor()
-  await lakeside.getByRole('button', { name: 'Undo' }).click()
+  await result.getByText(/^Lakeside Smiles left the list\./).waitFor()
+  await result.getByRole('button', { name: 'Undo' }).click()
   await lakeside.getByRole('button', { name: 'Reject' }).waitFor()
   const C = 'c'.repeat(24)
   assert.deepEqual(quarantineCalls, [
@@ -157,6 +167,7 @@ try {
   ])
   assert.deepEqual(writes, ['POST /api/outreach', 'POST /api/outreach', `POST /api/leads/${C}/quarantine`, `DELETE /api/leads/${C}/quarantine`, `POST /api/leads/${C}/quarantine`, `DELETE /api/leads/${C}/quarantine`], 'no other writes')
 
+  await page.getByTestId('tab-approved').click() // Bright Dental is under Approved now
   await page.locator('summary:not([data-testid=caveat] summary)', { hasText: 'Details' }).first().click() // a lead's Details, not a page caveat's
   assert.equal(await page.getByText('Saved signal claim: Bright Dental opened a second office').isVisible(), true, 'everything else is still there under Details')
   console.log('lead cards UI check passed:', writes.join(', '))
