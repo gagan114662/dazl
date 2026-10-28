@@ -139,7 +139,7 @@ test('alert hook: off without an https URL; one alert per fingerprint per window
   await new Promise(r => setImmediate(r))
   assert.deepEqual(sent.map(s => s.body.where), ['/a', '/b'], 'repeat of /a throttled, /c over the cap')
   assert.equal(sent[0].url, 'https://hooks.example.test/x')
-  assert.equal(sent[0].body.tenant, TA)
+  assert.equal('tenant' in sent[0].body, false, 'the tenant stays in the local log; it is not on the allowlist')
   now = 1000
   hook(rec('/a'))
   await new Promise(r => setImmediate(r))

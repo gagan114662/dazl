@@ -13,6 +13,7 @@
     "prebuild": "git rev-parse HEAD > .build-commit 2>/dev/null || rm -f .build-commit",
     "test:smoke": "node test/smoke/app-pages.smoke.mjs",
     "test:smoke:chunks": "node test/smoke/chunk-recovery.smoke.mjs",
+    "test:smoke:client-errors": "node test/smoke/client-errors.smoke.mjs",
     "preview:shots": "node test/smoke/preview.mjs",
     "test:smoke:auth": "node test/smoke/app-auth.smoke.mjs"
   },
