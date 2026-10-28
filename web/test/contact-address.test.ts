@@ -97,3 +97,19 @@ test('CRAWLER: two same-name sites - the Pico Rivera, CA homepage (other street 
   assert.equal((db.prepare("SELECT company_domain FROM leads WHERE id = 'right'").get() as { company_domain: string | null }).company_domain, 'smileavenuedental.com')
   assert.ok((db.prepare("SELECT status FROM connector_audit").all() as { status: string }[]).some(a => /address mismatch/.test(a.status)))
 })
+
+test('REGRESSION: a matching street number/name never bypasses a contradicting city/state — "57 W 57th St, New York" vs "57 W 57th St, Pico Rivera, CA", no matching domain', async () => {
+  const W = ['New York City']
+  for (const c of [{ address: '57 W 57th St', place: 'Pico Rivera, CA' }, { address: '57 W 57th St, Pico Rivera, CA 90660' }, { address: '57 West 57th Street', place: 'Pico Rivera, California' }]) {
+    const r = contactAgreement({ where: W, evidence: EVIDENCE }, c)
+    assert.equal(r.ok, false, JSON.stringify(c)); assert.match((r as { reason: string }).reason, /location mismatch Pico Rivera/)
+    assert.equal(contactRejectionCode((r as { reason: string }).reason), 'contact_location_mismatch')
+  }
+  assert.deepEqual(contactAgreement({ where: W, evidence: EVIDENCE }, { address: '57 W 57th St, New York, NY 10019', place: 'New York, NY' }), { ok: true, via: 'address' }, 'same street AND the same city still attaches')
+  assert.deepEqual(contactAgreement({ where: W, evidence: EVIDENCE }, { address: '57 W 57th St' }), { ok: true, via: 'address' }, 'same street, no city stated: nothing contradicts')
+  // through the Apollo path: no domain on the lead, the org at the same street text in Pico Rivera
+  const s = seed()
+  await enrichLeadContacts(s.db, 'u1', s.jobId, [s.lead], { fetchImpl: apollo({ ...PICO, street_address: '57 W 57th St' }), master })
+  assert.deepEqual(attached(s.db), [], 'nothing from the Pico Rivera record attaches')
+  assert.deepEqual(refusals(s.db).map(r => r[0]), ['contact_location_mismatch'], JSON.stringify(refusals(s.db)))
+})

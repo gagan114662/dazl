@@ -60,7 +60,14 @@ export function contactAgreement(lead: LeadSide, c: Candidate): Agreement {
   if (ld && !cd && c.keyedOnLeadDomain) return { ok: true, via: 'domain' }
   // A street address in the lead's own evidence is a basis: the same address agrees; a DIFFERENT one conflicts (unresolved, not attached) unless the domain already agreed.
   const addr = addressAgreement(c.address, lead.evidence)
-  if (addr === 'agrees') return { ok: true, via: 'address' }
+  if (addr === 'agrees') {
+    // A matching street number/name is NOT enough on its own: a city / state / country the record states (its place, or the one written in its address) that contradicts the lead's place always blocks.
+    const wh = lead.where.filter(w => w.trim())
+    if (wh.length) for (const stated of [(c.place ?? '').trim(), firstPlaceLabel(c.address ?? '') ?? '']) {
+      if (stated && placeAgreement(stated, wh) === 'mismatch') return { ok: false, reason: `contact rejected: location mismatch ${stated.slice(0, 60)} vs ${leadPlaceLabel(wh).slice(0, 60)} (the street text matches, the city does not)` }
+    }
+    return { ok: true, via: 'address' }
+  }
   if (addr === 'conflict') return { ok: false, reason: `contact rejected: address mismatch ${(streetKeys(c.address)[0] ?? 'another address').slice(0, 60)} vs ${(streetKeys(lead.evidence)[0] ?? 'the lead\'s address').slice(0, 60)}` }
   const place = (c.place ?? '').trim()
   const where = lead.where.filter(w => w.trim())
