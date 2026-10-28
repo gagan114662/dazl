@@ -1,0 +1,48 @@
+name: web-preview
+# A preview of each pull request before it reaches production: the PR's production build is started with a throwaway
+# SQLite database and one seeded test account (test/smoke/harness.mjs), the existing production smoke checks run against
+# it, and every page is screenshotted signed in at desktop and mobile width. The screenshots and an index.html are the
+# run's "preview" artifact (Summary page of the run -> Artifacts). No secrets are used: the server runs under the test
+# network fence, so nothing is scanned, sent, billed or fetched from a provider. Not a hosted URL; see web/docs/DEPLOY.md.
+on:
+  pull_request:
+    paths: ["web/**", ".github/workflows/web-preview.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: web-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      # Playwright is not an app dependency: installed for this job only, the lockfile untouched
+      - run: npm install --no-save playwright@1.63.0 && npx playwright install --with-deps chromium
+      - name: Screenshots of every page
+        run: npm run preview:shots -- preview
+        env:
+          PREVIEW_COMMIT: ${{ github.event.pull_request.head.sha }}
+      - name: Production smoke checks against the same build
+        if: success() || failure()
+        run: npm run test:smoke && npm run test:smoke:chunks
+      - uses: actions/upload-artifact@v4
+        if: success() || failure()
+        with:
+          name: preview-pr${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: web/preview/
+          retention-days: 14
+          if-no-files-found: error

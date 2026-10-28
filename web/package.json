@@ -12,7 +12,9 @@
     "db:migrate": "node --experimental-strip-types --no-warnings scripts/db-migrate.mts",
     "prebuild": "git rev-parse HEAD > .build-commit 2>/dev/null || rm -f .build-commit",
     "test:smoke": "node test/smoke/app-pages.smoke.mjs",
-    "test:smoke:chunks": "node test/smoke/chunk-recovery.smoke.mjs"
+    "test:smoke:chunks": "node test/smoke/chunk-recovery.smoke.mjs",
+    "preview:shots": "node test/smoke/preview.mjs",
+    "test:smoke:auth": "node test/smoke/app-auth.smoke.mjs"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.84",
