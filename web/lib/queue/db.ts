@@ -149,6 +149,12 @@ export class DbQueue {
     return this.db.tx(function* (t) { return yield* reapIn(t, now ?? nowS(), backoff, rng) })
   }
 
+  // Remove a terminal (done/failed) item so the same id can be enqueued again (a new scheduling epoch). Fencing tokens
+  // come from work_queue_meta, so a retired item's tokens stay dead.
+  async retire(id: string): Promise<boolean> {
+    return (await this.db.run("DELETE FROM work_queue WHERE id = ? AND status IN ('done', 'failed')", [id])).changes === 1
+  }
+
   async get(id: string): Promise<WorkItem | undefined> {
     const r = await this.db.get<Row>('SELECT * FROM work_queue WHERE id = ?', [id])
     return r ? toItem(r) : undefined

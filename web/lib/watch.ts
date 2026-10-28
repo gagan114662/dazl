@@ -6,6 +6,7 @@
 // - results surface in-app only
 import { countActiveJobs } from './scan/store.ts'
 import type Database from 'better-sqlite3'
+import type { Db, Tx, TxBody } from './db/client.ts'
 import { randomBytes } from 'node:crypto'
 import { createQueryJob } from './scan/store.ts'
 import { hasKey } from './llm/key-store.ts'
@@ -72,19 +73,39 @@ export function seenKey(company: string, domain: string | null): string {
   return company.toLowerCase().replace(/[^a-z0-9]/g, '')
 }
 
-// After a watch run finishes: flag leads this watch has never surfaced, and remember them.
+// After a watch run finishes: flag leads this watch has never surfaced, and remember them. Sync on the raw handle (the
+// runner today); writeWatchLeads is the same on the Db layer, in one transaction. A lead is new when its key was not
+// seen before this run, so two leads of one company in one run are both new, in either version.
+const WATCH_LEADS_SQL = 'SELECT id, company, company_domain FROM leads WHERE scan_job_id = ?'
+const WATCH_SEEN_SQL = 'SELECT seen_key FROM watch_seen WHERE watch_id = ?'
+const MARK_NEW_SQL = 'UPDATE leads SET watch_new = 1 WHERE id = ?'
+// only the primary key can conflict here (the watch id is the caller's, from a live watch), as with INSERT OR IGNORE
+const REMEMBER_SQL = 'INSERT INTO watch_seen (watch_id, seen_key) VALUES (?, ?) ON CONFLICT (watch_id, seen_key) DO NOTHING'
+type WatchLead = { id: string; company: string; company_domain: string | null }
+const freshLeads = (leads: WatchLead[], seen: Set<string>) => leads.map(l => ({ id: l.id, key: seenKey(l.company, l.company_domain) })).map(x => ({ ...x, fresh: !!x.key && !seen.has(x.key) }))
 export function markWatchLeads(db: Database.Database, watchId: string, jobId: string): number {
-  const leads = db.prepare('SELECT id, company, company_domain FROM leads WHERE scan_job_id = ?').all(jobId) as { id: string; company: string; company_domain: string | null }[]
-  const seen = new Set((db.prepare('SELECT seen_key FROM watch_seen WHERE watch_id = ?').all(watchId) as { seen_key: string }[]).map(r => r.seen_key))
+  const leads = db.prepare(WATCH_LEADS_SQL).all(jobId) as WatchLead[]
+  const seen = new Set((db.prepare(WATCH_SEEN_SQL).all(watchId) as { seen_key: string }[]).map(r => r.seen_key))
   let fresh = 0
-  const mark = db.prepare('UPDATE leads SET watch_new = 1 WHERE id = ?')
-  const remember = db.prepare('INSERT OR IGNORE INTO watch_seen (watch_id, seen_key) VALUES (?, ?)')
-  for (const l of leads) {
-    const k = seenKey(l.company, l.company_domain)
-    if (!seen.has(k) && k) { mark.run(l.id); fresh++ }
-    remember.run(watchId, k)
+  const mark = db.prepare(MARK_NEW_SQL)
+  const remember = db.prepare(REMEMBER_SQL)
+  for (const l of freshLeads(leads, seen)) {
+    if (l.fresh) { mark.run(l.id); fresh++ }
+    remember.run(watchId, l.key)
   }
   return fresh
+}
+export function writeWatchLeads(db: Db, watchId: string, jobId: string): Promise<number> {
+  return db.tx(function* (t: Tx): TxBody<number> {
+    const leads = yield* t.all<WatchLead>(WATCH_LEADS_SQL, [jobId])
+    const seen = new Set((yield* t.all<{ seen_key: string }>(WATCH_SEEN_SQL, [watchId])).map(r => r.seen_key))
+    let fresh = 0
+    for (const l of freshLeads(leads, seen)) {
+      if (l.fresh) { yield* t.run(MARK_NEW_SQL, [l.id]); fresh++ }
+      yield* t.run(REMEMBER_SQL, [watchId, l.key])
+    }
+    return fresh
+  })
 }
 
 // Due watches -> one scan job each, funded by the user's own key only. Never trial-funded:
