@@ -16,6 +16,8 @@ test('a lead with an email: the email decides (draft, approved-not-sent, sending
 test('without an email: rejected, then review, then evidence state; never "verified" for an unverified lead', () => {
   assert.deepEqual(leadStatus(lead('a', { quarantined_at: 1, quarantine_reason: 'Rejected: not a fit' }), [msg('a', 'draft')]), { stage: 'rejected', text: 'Rejected: not a fit' }, 'a rejection wins over a stale draft')
   assert.equal(leadStatus(lead('a', { quarantined_at: 1, quarantine_reason: null }), []).text, 'Rejected')
+  assert.equal(leadStatus(lead('a', { quarantined_at: 1, quarantine_reason: 'Rejected' }), []).text, 'Rejected', 'a reject with no reason')
+  assert.equal(leadStatus(lead('a', { quarantined_at: 1, quarantine_reason: 'Rejected: Wrong company' }), []).text, 'Rejected: Wrong company')
   assert.deepEqual(leadStatus(lead('a', { review_reason: 'no_quote' }), []), { stage: 'review', text: 'Needs your review' })
   assert.deepEqual(leadStatus(lead('a'), []), { stage: 'qualified', text: 'Source-checked, not drafted' })
   assert.deepEqual(leadStatus(lead('a', { evidence_excerpt: null, human_confirmed_at: 5 }), []), { stage: 'qualified', text: 'Confirmed by you, not drafted' })
