@@ -1,3 +1,5 @@
+import { coreSources, type ServerSources } from './scan/source-availability.ts'
+
 // Home readiness checklist and recent plays. Pure and client-safe: it only reads the existing status endpoints'
 // responses (profile, usage, outreach settings, scan jobs) and never decides anything the server enforces.
 // The checklist is the steps a new workspace finishes before its first useful scan and send; Home hides it once every row is done.
@@ -8,9 +10,11 @@ export interface ReadinessInput {
   outreach: { gmail?: { email?: string; status?: string } | null; sender?: { sender_name?: string; postal_address?: string; booking_url?: string | null } | null; daily_cap?: number; sent_24h?: number; account_sent_24h?: number } | null
   // The account's scan jobs; null when they could not be loaded, omitted by callers that only check the other rows.
   jobs?: JobRow[] | null
+  // The server's source switches (GET /api/scan/sources); null when they could not be loaded.
+  sources?: ServerSources | null
 }
 export type Fix = { kind: 'link'; href: string; label: string } | { kind: 'inline'; label: string }
-export interface Row { id: 'site' | 'play' | 'key' | 'gmail' | 'sender' | 'limit'; label: string; state: 'done' | 'todo' | 'unknown'; detail: string; fix: Fix | null }
+export interface Row { id: 'site' | 'play' | 'key' | 'sources' | 'gmail' | 'sender' | 'limit'; label: string; state: 'done' | 'todo' | 'unknown'; detail: string; fix: Fix | null }
 
 export function readinessRows(i: ReadinessInput): Row[] {
   const p = i.profile, u = i.usage, o = i.outreach
@@ -31,6 +35,15 @@ export function readinessRows(i: ReadinessInput): Row[] {
     // Free searches cover the first scan; the row comes back as a to-do when they run out.
     : trialLeft > 0 ? { id: 'key', label: 'AI key', state: 'done', detail: `using free searches (${trialLeft} left)`, fix: null }
     : { id: 'key', label: 'AI key', state: 'todo', detail: 'needed for searches', fix: { kind: 'inline', label: 'Add key' } }
+  // At least one source a scan here can use (capabilities, as Leads shows them; a scan may still skip one). Without a
+  // usable AI key no scan can start, so that is a to-do whatever else is switched on. Unknown unless both checks loaded;
+  // adding a key is the only fix a user can make, so it is the one link offered.
+  const core = coreSources(i.sources ?? null, u ? { has_key: u.has_key, trial: u.trial } : null)
+  const research = core?.find(r => r.id === 'research')
+  const usableSources = core?.filter(r => r.usable) ?? []
+  const sources: Row = !core ? { id: 'sources', label: 'Lead sources', state: 'unknown', detail: 'could not check', fix: null }
+    : !research?.usable ? { id: 'sources', label: 'Lead sources', state: 'todo', detail: 'a scan cannot start until you add an AI key', fix: research?.fix ? { kind: 'link', href: research.fix.href, label: research.fix.label } : null }
+    : { id: 'sources', label: 'Lead sources', state: 'done', detail: `a scan can use ${usableSources.map(r => r.label).join(', ')}`, fix: null }
   const gmail: Row = !o ? { id: 'gmail', label: 'Gmail', state: 'unknown', detail: 'could not check', fix: null }
     : o.gmail?.status === 'active' ? { id: 'gmail', label: 'Gmail', state: 'done', detail: `sending from ${o.gmail.email ?? 'your Gmail'}`, fix: null }
     : { id: 'gmail', label: 'Gmail', state: 'todo', detail: o.gmail ? 'needs reconnecting' : 'not connected (signing in with Google does not connect it)', fix: { kind: 'link', href: '/app/settings#gmail', label: o.gmail ? 'Reconnect' : 'Connect' } }
@@ -42,7 +55,7 @@ export function readinessRows(i: ReadinessInput): Row[] {
   const cap = o?.daily_cap, used = sentToday(o)
   const limit: Row = typeof cap !== 'number' ? { id: 'limit', label: 'Daily sending limit', state: 'unknown', detail: 'could not check', fix: null }
     : { id: 'limit', label: 'Daily sending limit', state: 'done', detail: `up to ${cap} emails a day${used !== null ? `; ${used} sent in the last 24 hours` : ''}`, fix: null }
-  return [site, play, key, gmail, sender, limit]
+  return [site, play, key, sources, gmail, sender, limit]
 }
 
 // Sends counted against the cap: the whole account budget when reported, else first touches only (a lower bound).

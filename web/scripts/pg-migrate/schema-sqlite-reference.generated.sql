@@ -239,7 +239,7 @@ CREATE TABLE leads (
       signal      TEXT NOT NULL CHECK (length(signal) BETWEEN 1 AND 500),
       source_url  TEXT NOT NULL CHECK (length(source_url) <= 500 AND (source_url LIKE 'https://%' OR source_url LIKE 'http://%')),
       score       INTEGER NOT NULL DEFAULT 50 CHECK (score BETWEEN 0 AND 100),
-      created_at  INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), stage TEXT, watch_new INTEGER NOT NULL DEFAULT 0, evidence_excerpt TEXT CHECK (evidence_excerpt IS NULL OR length(evidence_excerpt) <= 400), icp_match TEXT CHECK (icp_match IS NULL OR length(icp_match) <= 400), event_date TEXT, date_status TEXT CHECK (date_status IS NULL OR date_status IN ('verified','unverified','undated')), retrieved_at INTEGER, confidence INTEGER CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 100), dedup_key TEXT, review_reason TEXT, evidence_origin TEXT CHECK (evidence_origin IS NULL OR evidence_origin IN ('tinyfish_copy')), own_fetch_failure TEXT, evidence_copy_sha256 TEXT, evidence_purged_at INTEGER, evidence_copy_id TEXT, human_confirmed_at INTEGER, human_confirmed_from TEXT, company_domain TEXT CHECK (company_domain IS NULL OR length(company_domain) <= 253), quarantined_at INTEGER, quarantine_reason TEXT CHECK (quarantine_reason IS NULL OR length(quarantine_reason) <= 300), fit INTEGER CHECK (fit IS NULL OR fit BETWEEN 0 AND 5), intent INTEGER CHECK (intent IS NULL OR intent BETWEEN 0 AND 5), action INTEGER CHECK (action IS NULL OR action BETWEEN 0 AND 5), why TEXT CHECK (why IS NULL OR length(why) <= 600), signals TEXT CHECK (signals IS NULL OR length(signals) <= 1000), seen_before INTEGER NOT NULL DEFAULT 0, signal_kind TEXT, source_kind TEXT,
+      created_at  INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), stage TEXT, watch_new INTEGER NOT NULL DEFAULT 0, evidence_excerpt TEXT CHECK (evidence_excerpt IS NULL OR length(evidence_excerpt) <= 400), icp_match TEXT CHECK (icp_match IS NULL OR length(icp_match) <= 400), event_date TEXT, date_status TEXT CHECK (date_status IS NULL OR date_status IN ('verified','unverified','undated')), retrieved_at INTEGER, confidence INTEGER CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 100), dedup_key TEXT, review_reason TEXT, evidence_origin TEXT CHECK (evidence_origin IS NULL OR evidence_origin IN ('tinyfish_copy')), own_fetch_failure TEXT, evidence_copy_sha256 TEXT, evidence_purged_at INTEGER, timing_note TEXT CHECK (timing_note IS NULL OR length(timing_note) <= 300), published_at TEXT, evidence_copy_id TEXT, human_confirmed_at INTEGER, human_confirmed_from TEXT, company_domain TEXT CHECK (company_domain IS NULL OR length(company_domain) <= 253), quarantined_at INTEGER, quarantine_reason TEXT CHECK (quarantine_reason IS NULL OR length(quarantine_reason) <= 300), fit INTEGER CHECK (fit IS NULL OR fit BETWEEN 0 AND 5), intent INTEGER CHECK (intent IS NULL OR intent BETWEEN 0 AND 5), action INTEGER CHECK (action IS NULL OR action BETWEEN 0 AND 5), why TEXT CHECK (why IS NULL OR length(why) <= 600), signals TEXT CHECK (signals IS NULL OR length(signals) <= 1000), seen_before INTEGER NOT NULL DEFAULT 0, signal_kind TEXT, source_kind TEXT,
       CHECK (name <> '' OR company <> '')
     );
 
@@ -572,6 +572,12 @@ CREATE TABLE source_reviews (
  company_named INTEGER NOT NULL, contact_match INTEGER NOT NULL, checked_at INTEGER NOT NULL
  );
 
+CREATE TABLE stripe_ended_subscriptions (
+      subscription_id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      ended_at INTEGER
+    );
+
 CREATE TABLE stripe_events (
       id TEXT PRIMARY KEY,
       type TEXT NOT NULL,
@@ -637,7 +643,7 @@ CREATE TABLE tenant_plans (
       plan TEXT NOT NULL DEFAULT 'free' CHECK (plan IN ('free','pro')),
       stripe_customer_id TEXT,
       stripe_subscription_id TEXT
-    );
+    , stripe_event_at INTEGER, stripe_reconcile_at INTEGER);
 
 CREATE TABLE tinyfish_usage (day TEXT NOT NULL, tenant_id TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('search','fetch')), n INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (day, tenant_id, kind));
 

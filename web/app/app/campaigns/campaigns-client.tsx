@@ -23,7 +23,7 @@ export default function CampaignsClient() {
           <article key={c.id} className="card p-4" data-testid="campaign">
             <div className="flex items-start justify-between gap-3 mb-3">
               <div className="min-w-0">
-                <div className="font-medium truncate" title={c.query}>{c.query}</div>
+                <Link className="font-medium truncate block underline-offset-4 hover:underline" title={c.query} href={`/app/campaigns/${c.id}`} data-testid="campaign-link">{c.query}</Link>
                 <div className="text-xs text-[#777]">{new Date(c.created_at * 1000).toLocaleDateString()}</div>
               </div>
               {c.next.href
