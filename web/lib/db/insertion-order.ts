@@ -5,13 +5,15 @@
 //     rows inserted without a value are stamped; a copied row keeps the value it brings.
 //   - Postgres: a sequence default (lib/db/migrations/pg/0010_insertion_order.sql; translate-schema.ts maps the SQLite
 //     trigger to it). lib/db/copy-store.ts moves the sequence past the copied values.
+// Each table's own migration (migrateScan, migrateOutreach, migrateConnectors) calls this for its tables, so any store
+// that has the table has the column; migrateAllSqlite and getScanDb call it once more for all four.
 // Idempotent: safe on every start, on a fresh store and on an existing one.
 import type Database from 'better-sqlite3'
 
 export const INSERTION_ORDER_TABLES = ['scan_jobs', 'leads', 'outreach_messages', 'lead_enrichments'] as const
 
-export function migrateInsertionOrder(db: Database.Database): void {
-  for (const t of INSERTION_ORDER_TABLES) {
+export function migrateInsertionOrder(db: Database.Database, tables: readonly (typeof INSERTION_ORDER_TABLES)[number][] = INSERTION_ORDER_TABLES): void {
+  for (const t of tables) {
     const cols = db.prepare('SELECT name FROM pragma_table_info(?)').all(t) as { name: string }[]
     if (cols.length === 0) continue // the owning module's migration has not run on this handle
     db.transaction(() => {

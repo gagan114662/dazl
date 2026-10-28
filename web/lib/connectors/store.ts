@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { migrateInsertionOrder } from '../db/insertion-order.ts'
 import type Database from 'better-sqlite3'
 import { decryptSecret, encryptSecret } from '../secrets.ts'
 
@@ -43,6 +44,7 @@ export function migrateConnectors(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS lead_enrichments_lead ON lead_enrichments (lead_id);
   `)
+  migrateInsertionOrder(db, ['lead_enrichments']) // insert_seq (lib/db/insertion-order.ts)
 }
 
 const ctx = (tenantId: string, connector: string) => `connector:${tenantId}:${connector}`

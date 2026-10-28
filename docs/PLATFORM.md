@@ -140,7 +140,7 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
 - **Insertion order on both engines (`insert_seq`):**
   - What it fixes: SQLite's `rowid` gave `scan_jobs`, `leads`, `outreach_messages` and `lead_enrichments` an implicit insertion order, which same-second ties relied on. Postgres has none.
   - `insert_seq` makes that order a column on both engines:
-    - **SQLite** (`lib/db/insertion-order.ts`, run last in `migrateAllSqlite` and `getScanDb`): existing rows are backfilled from `rowid`. An AFTER INSERT trigger then gives each new row `max(insert_seq) + 1`. Using max rather than `rowid` keeps the order increasing after a copy back from Postgres. A row that brings its own value keeps it.
+    - **SQLite** (`lib/db/insertion-order.ts`, called by each table's own migration (`migrateScan`, `migrateOutreach`, `migrateConnectors`) and once more at the end of `migrateAllSqlite` and `getScanDb`): existing rows are backfilled from `rowid`. An AFTER INSERT trigger then gives each new row `max(insert_seq) + 1`. Using max rather than `rowid` keeps the order increasing after a copy back from Postgres. A row that brings its own value keeps it.
     - **Postgres** (`0010_insertion_order.sql`): a sequence default. `translate-schema.ts` maps the SQLite trigger to it, so the drift test holds.
   - The ported queries (`store-db.ts`, `campaign-detail.ts`, `best-person.ts`) order ties by `insert_seq` on both engines, and the insertion-order gap list is gone.
   - A `rowid` left in `Db`-layer SQL fails the audit, because Postgres rejects it in `PREPARE`.

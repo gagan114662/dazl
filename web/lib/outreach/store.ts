@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import { migrateInsertionOrder } from '../db/insertion-order.ts'
 import { migrateAttribution } from './attribution.ts'
 
 export const norm = (email: string) => email.trim().toLowerCase()
@@ -88,4 +89,5 @@ export function migrateOutreach(db: Database.Database): void {
     if (!have.has('cache_creation_input_tokens')) db.exec('ALTER TABLE outreach_llm_usage ADD COLUMN cache_creation_input_tokens INTEGER')
   }
   migrateAttribution(db)
+  migrateInsertionOrder(db, ['outreach_messages']) // insert_seq (lib/db/insertion-order.ts)
 }

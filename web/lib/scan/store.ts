@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { migrateInsertionOrder } from '../db/insertion-order.ts'
 import type Database from 'better-sqlite3'
 import { primarySignalKind } from './score.ts'
 import { migrateSourceRuns } from './source-runs.ts'
@@ -79,6 +80,7 @@ export function migrateScan(db: Database.Database): void {
   migrateSourceRuns(db)
   migrateEvidenceCopies(db)
   migrateRunReport(db)
+  migrateInsertionOrder(db, ['scan_jobs', 'leads']) // insert_seq (lib/db/insertion-order.ts); after any table rebuild above
 }
 
 // Evidence columns. Nullable, so rows written by other workers (Hermes) stay valid:
