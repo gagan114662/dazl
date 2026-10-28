@@ -2,7 +2,8 @@ import { after, NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
-import { getPlan } from '@/lib/plans'
+import { readPlan } from '@/lib/plans'
+import { getDb } from '@/lib/db/client'
 import { hasKey } from '@/lib/llm/key-store'
 import { kickRunner } from '@/lib/scan/runner'
 import { batchStatus, queuePendingRows } from '@/lib/scan/csv-import'
@@ -33,7 +34,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ bat
   const rl = (await rateLimit(`csv-resume:${r.user.id}`, 20, 24 * 60 * 60 * 1000))
   if (!rl.ok) return NextResponse.json({ error: 'Too many resumes. Try again tomorrow.' }, { status: 429, headers: { 'Retry-After': String(rl.retryAfterS) } })
   const db = getScanDb()
-  if (getPlan(db, r.user.id) !== 'pro') return NextResponse.json({ error: 'pro_only' }, { status: 402 })
+  if ((await readPlan(await getDb(), r.user.id)) !== 'pro') return NextResponse.json({ error: 'pro_only' }, { status: 402 })
   if (!hasKey(db, r.user.id)) return NextResponse.json({ error: 'no_api_key' }, { status: 400 })
   const { quotaStop } = queuePendingRows(db, r.user.id, batch)
   after(() => kickRunner(db))

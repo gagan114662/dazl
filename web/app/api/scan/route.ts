@@ -6,7 +6,8 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { MAX_QUERY, normalizeIcp } from '@/lib/scan/icp'
 import { countActiveJobs, createJob, createQueryJob } from '@/lib/scan/store'
 import { hasKey } from '@/lib/llm/key-store'
-import { scanQuota } from '@/lib/plans'
+import { planQuota, readPlan, scansThisMonth } from '@/lib/plans'
+import { getDb } from '@/lib/db/client'
 import { normalizeSources } from '@/lib/sources'
 import { kickRunner } from '@/lib/scan/runner'
 import { recordTrialScan, trialStatus } from '@/lib/scan/trial'
@@ -60,7 +61,8 @@ export async function POST(req: NextRequest) {
   if (countActiveJobs(db, user.id) >= 1) {
     return NextResponse.json({ error: 'scan_active', message: 'A scan is still running or finishing. Wait for it to end before starting another.' }, { status: 409 })
   }
-  const q = scanQuota(db, user.id)
+  // the plan from the shared store (the Stripe webhook writes it there); the count from where this route writes scans
+  const q = planQuota(await readPlan(await getDb(), user.id), scansThisMonth(db, user.id))
   if (!q.allowed) {
     return NextResponse.json({ error: 'quota_exceeded', plan: q.plan, used: q.used, limit: q.limit }, { status: 402 })
   }
