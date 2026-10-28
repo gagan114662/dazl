@@ -5,7 +5,7 @@
 export interface ReadinessInput {
   profile: { sells?: string; website?: string; business_name?: string } | null
   usage: { has_key?: boolean; trial?: { funded?: boolean; remaining?: number } | null } | null
-  outreach: { gmail?: { email?: string; status?: string } | null; sender?: { sender_name?: string; postal_address?: string; booking_url?: string | null } | null; daily_cap?: number; sent_24h?: number } | null
+  outreach: { gmail?: { email?: string; status?: string } | null; sender?: { sender_name?: string; postal_address?: string; booking_url?: string | null } | null; daily_cap?: number; sent_24h?: number; account_sent_24h?: number } | null
   // The account's scan jobs; null when they could not be loaded, omitted by callers that only check the other rows.
   jobs?: JobRow[] | null
 }
@@ -15,7 +15,8 @@ export interface Row { id: 'site' | 'play' | 'key' | 'gmail' | 'sender' | 'limit
 export function readinessRows(i: ReadinessInput): Row[] {
   const p = i.profile, u = i.usage, o = i.outreach
   const missing = p ? [!p.business_name && 'business name', !p.sells && 'what you sell', !p.website && 'website'].filter(Boolean) as string[] : []
-  const SITE = 'Website and business brain'
+  // Business details only (name, what it sells, website): the buyer profile is not checked here.
+  const SITE = 'Website and business details'
   const site: Row = !p ? { id: 'site', label: SITE, state: 'unknown', detail: 'could not check', fix: null }
     : missing.length === 0 ? { id: 'site', label: SITE, state: 'done', detail: `${p.business_name} - ${p.sells} (${p.website!.replace(/^https:\/\//, '')})`, fix: null }
     : { id: 'site', label: SITE, state: 'todo', detail: `missing ${missing.join(', ')}`, fix: { kind: 'inline', label: 'Add' } }
@@ -38,10 +39,24 @@ export function readinessRows(i: ReadinessInput): Row[] {
     : senderOk ? { id: 'sender', label: 'Sender name and mailing address', state: 'done', detail: o.sender!.sender_name!, fix: null }
     : { id: 'sender', label: 'Sender name and mailing address', state: 'todo', detail: 'added to every email; required before sending', fix: { kind: 'inline', label: 'Add' } }
   // The daily limit is the server's send cap (an operator setting, at most 20), not a per-workspace choice: this row reports it.
-  const cap = o?.daily_cap
+  const cap = o?.daily_cap, used = sentToday(o)
   const limit: Row = typeof cap !== 'number' ? { id: 'limit', label: 'Daily sending limit', state: 'unknown', detail: 'could not check', fix: null }
-    : { id: 'limit', label: 'Daily sending limit', state: 'done', detail: `up to ${cap} emails a day${typeof o!.sent_24h === 'number' ? `; ${o!.sent_24h} sent in the last 24 hours` : ''}`, fix: null }
+    : { id: 'limit', label: 'Daily sending limit', state: 'done', detail: `up to ${cap} emails a day${used !== null ? `; ${used} sent in the last 24 hours` : ''}`, fix: null }
   return [site, play, key, gmail, sender, limit]
+}
+
+// Sends counted against the cap: the whole account budget when reported, else first touches only (a lower bound).
+function sentToday(o: ReadinessInput['outreach']): number | null {
+  const n = [o?.account_sent_24h, o?.sent_24h].filter((x): x is number => typeof x === 'number')
+  return n.length ? Math.max(...n) : null
+}
+
+// Shown on Home whether or not the checklist is complete: a finished setup must never hide why sending has stopped.
+// The budget is a rolling 24 hours, so it frees up as earlier sends age out (not at midnight).
+export function capNotice(o: ReadinessInput['outreach']): string | null {
+  const cap = o?.daily_cap, used = sentToday(o)
+  if (typeof cap !== 'number' || used === null || used < cap) return null
+  return `Today's ${cap}-email limit is used up (${used} sent in the last 24 hours). Sending resumes as those sends pass 24 hours old.`
 }
 
 export interface JobRow { id: string; status: string; error: string | null; query: string | null; csv_domain: string | null; created_at: number; lead_count: number; verified?: number | null; needs_review?: number | null; test_only?: boolean }

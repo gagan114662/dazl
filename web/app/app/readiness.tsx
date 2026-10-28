@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import KeyInline from './key-inline'
 import SenderInline from './sender-inline'
 import { normalizeWebsite } from '@/lib/onboarding'
-import { readinessRows, recentPlays, type ReadinessInput, type Play } from '@/lib/readiness'
+import { capNotice, readinessRows, recentPlays, type ReadinessInput, type Play } from '@/lib/readiness'
 
 // Home after the first search: the steps left before a useful scan and send, each with its fix (in place, or a link to
 // the page that fixes it). Gmail stays in Settings: connecting is an explicit Google grant whose read-access terms are
@@ -37,8 +37,10 @@ export default function Readiness() {
   if (!input) return null
   const rows = readinessRows(input)
   const done = rows.filter(r => r.state === 'done').length
+  const capped = capNotice(input.outreach)
   return (
     <section className="mb-10">
+      {capped && <p role="status" data-testid="cap-notice" className="card p-4 mb-6 text-sm border-l-2 border-black">{capped} <Link className="underline" href="/app/outreach">Outreach</Link></p>}
       {done < rows.length && <div data-testid="readiness-checklist">
       <h2 id="ready-heading" className="text-lg font-semibold mb-1">Before your first scan and send</h2>
       <p className="text-sm text-[#555] mb-3" data-testid="ready-progress">{done} of {rows.length} done</p>

@@ -11,7 +11,8 @@
 //   4. "Your plays" lists own searches newest first with their outcome, linked to their leads: source-checked and
 //      needs-review counts separately (a done search with 0 verified / 5 needing review never reads "5 leads"), old
 //      records without counts say "counts unavailable" (never leads), cancelled runs say "cancelled";
-//   5. once every step is done (Gmail connected, from the stubbed status) the checklist is hidden and the plays stay.
+//   5. once every step is done (Gmail connected, from the stubbed status) the checklist is hidden and the plays stay;
+//   6. all steps done but the daily limit used up: the checklist stays hidden and Home still says why sending stopped.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -46,7 +47,7 @@ const JOBS = [
   job('f', 'Cancelled search', now - 200, { status: 'failed', error: 'cancelled', lead_count: 0 }),
   job('d', null, now - 100, { csv_domain: 'acme.com' }),
 ]
-const state = { hasKey: false, sender: null, gmail: null }
+const state = { hasKey: false, sender: null, gmail: null, sent: 0 }
 const writes = []
 const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: 1280, height: 1000 } })
 await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
@@ -60,7 +61,7 @@ await ctx.route('**/*', async route => {
   if (p === '/api/scan/jobs') return json({ jobs: JOBS })
   if (p === '/api/usage') return json({ plan: 'free', scans_used: 3, scan_limit: 10, has_key: state.hasKey, trial: state.hasKey ? null : { funded: true, remaining: 0, cap: 3 } })
   if (p === '/api/settings/llm-key' && m === 'PUT') { state.hasKey = true; return json({ ok: true, vendor: 'anthropic', last4: 'abcd' }) }
-  if (p === '/api/outreach/settings' && m === 'GET') return json({ gmail: state.gmail, sender: state.sender, daily_cap: 20, sent_24h: 0 })
+  if (p === '/api/outreach/settings' && m === 'GET') return json({ gmail: state.gmail, sender: state.sender, daily_cap: 20, sent_24h: Math.min(state.sent, 12), account_sent_24h: state.sent })
   if (p === '/api/outreach/settings' && m === 'PUT') { state.sender = JSON.parse(req.postData()); return json({ ok: true }) }
   return json({}, 404)
 })
@@ -75,7 +76,7 @@ try {
   assert.equal(await page.getByText("What's your website?").count(), 0, 'not the first-run flow')
   assert.deepEqual(await page.locator('li[data-testid^="ready-"]').evaluateAll(e => e.map(x => x.dataset.testid)), ['ready-site', 'ready-play', 'ready-key', 'ready-gmail', 'ready-sender', 'ready-limit'])
   assert.equal(await page.getByTestId('ready-progress').textContent(), '2 of 6 done')
-  assert.match(await row('site').textContent(), /Website and business brain - missing business name, what you sell, website/)
+  assert.match(await row('site').textContent(), /Website and business details - missing business name, what you sell, website/)
   assert.match(await row('play').textContent(), /First play - 5 searches written/)
   assert.match(await row('key').textContent(), /AI key - needed for searches/)
   assert.match(await row('gmail').textContent(), /Gmail - not connected/)
@@ -122,7 +123,17 @@ try {
   await page.getByRole('list', { name: 'Your plays' }).waitFor()
   assert.equal(await page.getByTestId('readiness-checklist').count(), 0, 'all done: checklist hidden')
   assert.equal(await page.getByText('Before your first scan and send').count(), 0)
+  assert.equal(await page.getByTestId('cap-notice').count(), 0, 'no limit notice under the cap')
   await shot('all-done')
+
+  // Same finished setup, but today's sends (first touches plus follow-ups) reached the cap: Home says so.
+  state.sent = 20
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.getByTestId('cap-notice').waitFor()
+  assert.equal(await page.getByTestId('readiness-checklist').count(), 0, 'checklist still hidden: every step is done')
+  assert.match(await page.getByTestId('cap-notice').textContent(), /^Today's 20-email limit is used up \(20 sent in the last 24 hours\)\. Sending resumes as those sends pass 24 hours old\./)
+  assert.equal(await page.getByTestId('cap-notice').getByRole('link', { name: 'Outreach' }).getAttribute('href'), '/app/outreach')
+  await shot('cap-used-up')
   console.log('readiness UI check passed:', writes.join(', '))
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })

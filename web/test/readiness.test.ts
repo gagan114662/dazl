@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readinessRows, recentPlays } from '../lib/readiness.ts'
+import { capNotice, readinessRows, recentPlays } from '../lib/readiness.ts'
 
 const byId = (rows: ReturnType<typeof readinessRows>) => Object.fromEntries(rows.map(r => [r.id, r]))
 
@@ -10,7 +10,7 @@ test('a new account: the steps in order, each to-do with its fix; Gmail goes to 
   const r = byId(readinessRows({ profile: { sells: '', website: '' }, usage: { has_key: false, trial: null }, outreach: { gmail: null, sender: null, daily_cap: 20, sent_24h: 0 }, jobs: [] }))
   assert.deepEqual(Object.keys(r), ['site', 'play', 'key', 'gmail', 'sender', 'limit'])
   assert.deepEqual(Object.values(r).map(x => x.state), ['todo', 'todo', 'todo', 'todo', 'todo', 'done'])
-  assert.equal(r.site.label, 'Website and business brain')
+  assert.equal(r.site.label, 'Website and business details', 'business details only: the buyer profile is not checked')
   assert.deepEqual(r.play.fix, { kind: 'link', href: '/app/leads', label: 'Write a play' })
   assert.equal(r.key.detail, 'needed for searches')
   assert.deepEqual(r.gmail.fix, { kind: 'link', href: '/app/settings#gmail', label: 'Connect' })
@@ -72,4 +72,27 @@ test('plays never present research-only leads as yield; old records and cancelle
   assert.equal(j({ verified: null, needs_review: null, lead_count: 0 }), 'counts unavailable')
   assert.equal(j({ status: 'failed', error: 'cancelled' }), 'cancelled')
   assert.equal(j({ status: 'failed', error: 'no_candidates' }), 'failed')
+})
+
+// Instinct #246: a finished setup hid the checklist, and with it why sending had stopped.
+test('an exhausted daily limit is a notice of its own, shown even when every step is done', () => {
+  const ready = { profile: { sells: 'Booking software', website: 'https://acme.example', business_name: 'Acme' }, usage: { has_key: true, trial: null }, jobs: [job()] }
+  const outreach = { gmail: { email: 'me@acme.example', status: 'active' }, sender: { sender_name: 'Dana', postal_address: '1 Main St, Columbus OH' }, daily_cap: 20, sent_24h: 14, account_sent_24h: 20 }
+  assert.ok(readinessRows({ ...ready, outreach }).every(x => x.state === 'done'), 'the checklist is complete (and hidden)')
+  assert.equal(capNotice(outreach), "Today's 20-email limit is used up (20 sent in the last 24 hours). Sending resumes as those sends pass 24 hours old.")
+  assert.equal(byId(readinessRows({ ...ready, outreach })).limit.detail, 'up to 20 emails a day; 20 sent in the last 24 hours', 'the row counts the whole account budget')
+})
+
+test('the cap notice: follow-ups count, first touches alone are a lower bound, under the cap or unknown says nothing', () => {
+  assert.match(capNotice({ daily_cap: 20, sent_24h: 3, account_sent_24h: 21 })!, /used up \(21 sent/, 'follow-ups and sequence steps use the same budget')
+  assert.match(capNotice({ daily_cap: 12, sent_24h: 12 })!, /^Today's 12-email limit is used up/, 'older server without the account count')
+  assert.equal(capNotice({ daily_cap: 20, sent_24h: 5, account_sent_24h: 19 }), null)
+  assert.equal(capNotice({ daily_cap: 20 }), null, 'no count: never claimed as used up')
+  assert.equal(capNotice(null), null)
+})
+
+test('the outreach settings GET reports the whole account budget, read-only', async () => {
+  const { readFileSync } = await import('node:fs')
+  const route = readFileSync(new URL('../app/api/outreach/settings/route.ts', import.meta.url), 'utf8')
+  assert.match(route, /account_sent_24h: accountSendCount\(db, user\.id, /)
 })

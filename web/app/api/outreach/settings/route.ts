@@ -4,12 +4,15 @@ import { gmailStatus } from '@/lib/gmail/oauth'
 import { READ_CONSENT_TEXT } from '@/lib/outreach/replies'
 import { DAILY_CAP, getSettings, OutreachError, saveSettings, sentLast24h } from '@/lib/outreach/service'
 import { sameOriginJson } from '@/lib/same-origin'
+import { accountSendCount } from '@/lib/outreach/send-budget'
 
+// account_sent_24h is the whole rolling budget the daily cap is checked against (first touches, follow-ups, sequence steps,
+// re-opens); sent_24h is first touches only. Read-only.
 export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const db = getScanDb()
-  return NextResponse.json({ gmail: gmailStatus(db, user.id), sender: getSettings(db, user.id) ?? null, daily_cap: DAILY_CAP, sent_24h: sentLast24h(db, user.id), read_notice: READ_CONSENT_TEXT })
+  return NextResponse.json({ gmail: gmailStatus(db, user.id), sender: getSettings(db, user.id) ?? null, daily_cap: DAILY_CAP, sent_24h: sentLast24h(db, user.id), account_sent_24h: accountSendCount(db, user.id, Math.floor(Date.now() / 1000)), read_notice: READ_CONSENT_TEXT })
 }
 
 export async function PUT(req: NextRequest) {
