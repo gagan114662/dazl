@@ -58,6 +58,25 @@ function* nodes(v: unknown, depth = 0, budget = { n: 400 }): Generator<Record<st
 }
 const typesOf = (o: Record<string, unknown>): string[] => (Array.isArray(o['@type']) ? o['@type'] : [o['@type']]).filter((x): x is string => typeof x === 'string')
 
+// Words that name a country / region / address furniture, never a city or neighbourhood: a shared "United Kingdom" is not a shared place.
+const PLACE_STOP = new Set(['united', 'kingdom', 'states', 'america', 'england', 'scotland', 'wales', 'britain', 'great', 'northern', 'ireland', 'street', 'road', 'floor', 'suite', 'avenue', 'lane', 'place', 'square', 'building', 'house', 'postaladdress', 'virtuallocation', 'office', 'offices', 'headquarters', 'branch', 'clinic', 'studio', 'store'])
+// What an Event's location states: `city` = its addressLocality words, `local` = its place-name words (neighbourhood / site). Street, region, country and postal code are not place terms.
+function eventPlaceTerms(location: unknown, key: string): { city: Set<string>; local: Set<string> } {
+  const city = new Set<string>(), local = new Set<string>()
+  const add = (v: unknown, into: Set<string>) => { if (typeof v === 'string') for (const w of words(v)) if (w !== key && !PLACE_STOP.has(w) && !GENERIC_WORDS.has(w) && !/^\d/.test(w)) into.add(w) }
+  const take = (l: unknown, depth = 0) => {
+    if (depth > 2 || l == null) return
+    if (typeof l === 'string') { add(l, local); return }
+    if (Array.isArray(l)) { for (const x of l.slice(0, 5)) take(x, depth + 1); return }
+    if (typeof l === 'object') { const o = l as Record<string, unknown>; add(o.name, local); add(o.addressLocality, city); take(o.address, depth + 1) }
+  }
+  take(location)
+  return { city, local }
+}
+// The place phrases a claim writes after "in / at / near" ("in Shoreditch, London" -> "Shoreditch").
+function claimPlacePhrases(claim: string): string[] {
+  return [...claim.matchAll(/\b(?:in|at|near|on)\s+((?:[A-Z][\p{L}'-]+)(?:\s+[A-Z][\p{L}'-]+)*)/gu)].map(m => m[1])
+}
 // Does this Event node describe the SAME event the claim is about? Type and place, not just the company.
 function eventMatches(o: Record<string, unknown>, claim: string, where: string[], key: string): boolean {
   const attendanceOnline = typeof o.eventAttendanceMode === 'string' && /Online/.test(o.eventAttendanceMode) && !/Mixed|Offline/.test(o.eventAttendanceMode)
@@ -68,11 +87,19 @@ function eventMatches(o: Record<string, unknown>, claim: string, where: string[]
   if (nodeTypes.has('webinar') && !claimTypes.has('webinar')) return false              // an online event never dates an in-person claim, even one that also says "opening"
   const locVals = stringValuesOf(o.location)
   const virtual = locVals.some(v => /^VirtualLocation$/i.test(v))
-  if (virtual) nodeTypes.add('webinar')
   if (virtual && !claimTypes.has('webinar')) return false
-  const claimWords = new Set([...words(claim), ...where.flatMap(w => [...words(w)])]); claimWords.delete(key)
-  const locWords = words(locVals.filter(v => !/^(?:Place|PostalAddress|VirtualLocation|https?:)/i.test(v)).join(' '))
-  if (locWords.size > 0) return overlap(locWords, claimWords)                         // its place must be the claim's place (or the request's)
+  // The event's OWN place has to agree with the claim's place - same city / neighbourhood (or the request's place), never merely a shared country, region or the word "London".
+  const { city, local } = eventPlaceTerms(o.location, key)
+  if (city.size + local.size > 0) {
+    const wh = new Set(where.flatMap(w => [...words(w)]))
+    const claimWords = new Set([...words(claim), ...wh])
+    // 1. the CITY must be the claim's / request's city (Manchester is not London, whatever country they share). With no addressLocality the place name has to be that city.
+    for (const t of city.size ? city : local) if (!claimWords.has(t)) return false
+    // 2. if the claim names a finer place than the city ("in Shoreditch"), the event must name that same place: a Camden office, or an event that only says "London", is a different / unconfirmed place -> undated and held.
+    const finer = claimPlacePhrases(claim).flatMap(p => [...words(p)]).filter(w => !wh.has(w) && w !== key && !PLACE_STOP.has(w) && !GENERIC_WORDS.has(w))
+    if (finer.length > 0 && !finer.some(w => local.has(w) || city.has(w))) return false
+    return true
+  }
   return claimTypes.has('webinar') || claimTypes.has('conference')                       // no place at all: only an online / conference claim can be dated by it
 }
 // Does this JobPosting describe what the claim says is being hired? A shared role word (sales, account, executive ...).

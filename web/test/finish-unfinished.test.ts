@@ -118,3 +118,34 @@ test('an online webinar claim IS dated by the webinar Event (same type); a confe
   const conf = ld({ '@type': 'Event', name: 'Embedd developer summit', startDate: '2026-10-12', organizer: { name: 'Embedd' } })
   assert.deepEqual(resolveStructuredDate([conf], 'Embedd', 'is running a developer summit'), { date: '2026-10-12', kind: 'Event' })
 })
+
+// ---- #307 review 2: the event's own place has to agree with the claim's place; a shared country / region / city word is not enough ----
+const CLAIM = 'opened a new office in Shoreditch, London'
+const PLACE = (name: string, locality: string, country = 'United Kingdom', region = 'England', startDate = '2026-10-19') => ld({ '@context': 'https://schema.org', '@type': 'Event', name: `${name} office opening`, startDate, organizer: { '@type': 'Organization', name: 'Embedd' }, location: { '@type': 'Place', name: `${name} office`, address: { '@type': 'PostalAddress', streetAddress: '1 High Street', addressLocality: locality, addressRegion: region, postalCode: 'N1 1AA', addressCountry: country } } })
+test('INSTINCT REPRO 1: a Manchester office opening (addressCountry "United Kingdom") never dates a Shoreditch, London claim - a shared country is not a shared place', () => {
+  assert.equal(resolveStructuredDate([PLACE('Embedd Manchester', 'Manchester')], 'Embedd', CLAIM, ['London, United Kingdom']), null)
+  assert.equal(resolveStructuredDate([PLACE('Embedd Manchester', 'Manchester', 'GB', 'Greater Manchester')], 'Embedd', CLAIM, ['London, UK']), null)
+  assert.equal(resolveStructuredDate([PLACE('Embedd Edinburgh', 'Edinburgh', 'United Kingdom', 'Scotland')], 'Embedd', 'opened a new office in London', ['London, United Kingdom']), null)
+})
+test('INSTINCT REPRO 2: a Camden, London office never dates a Shoreditch, London opening - a shared city word is not a shared neighbourhood', () => {
+  assert.equal(resolveStructuredDate([PLACE('Embedd Camden', 'London')], 'Embedd', CLAIM, ['London, United Kingdom']), null)
+  assert.equal(resolveStructuredDate([PLACE('Embedd Camden', 'London')], 'Embedd', CLAIM, []), null)
+})
+test('AMBIGUOUS: an event that says only "London" cannot confirm a claim that names Shoreditch -> undated and held; the same event does date a claim that says only London', () => {
+  assert.equal(resolveStructuredDate([PLACE('Embedd', 'London')], 'Embedd', CLAIM, ['London, United Kingdom']), null)
+  assert.deepEqual(resolveStructuredDate([PLACE('Embedd', 'London')], 'Embedd', 'opened a new office in London', ['London, United Kingdom']), { date: '2026-10-19', kind: 'Event' })
+})
+test('POSITIVES: the Shoreditch event dates the Shoreditch claim (with or without the request place, any country spelling); the request\'s place stands in for a claim that names none', () => {
+  for (const country of ['United Kingdom', 'GB', 'UK']) assert.deepEqual(resolveStructuredDate([PLACE('Embedd Shoreditch', 'London', country)], 'Embedd', CLAIM, ['London, United Kingdom']), { date: '2026-10-19', kind: 'Event' }, country)
+  assert.deepEqual(resolveStructuredDate([PLACE('Embedd Shoreditch', 'London')], 'Embedd', CLAIM, []), { date: '2026-10-19', kind: 'Event' })
+  assert.deepEqual(resolveStructuredDate([PLACE('Embedd Shoreditch', 'London')], 'Embedd', 'opened a new office', ['London, United Kingdom']), { date: '2026-10-19', kind: 'Event' }, 'a claim with no place of its own: the request place (London) is the claim place')
+  // with both offices declared on the page, only the matching one dates the claim
+  assert.deepEqual(resolveStructuredDate([PLACE('Embedd Manchester', 'Manchester', 'United Kingdom', 'England', '2026-09-01'), PLACE('Embedd Shoreditch', 'London')], 'Embedd', CLAIM, ['London, United Kingdom']), { date: '2026-10-19', kind: 'Event' })
+})
+test('FULL RUN: Manchester and Camden events on the page leave the Shoreditch claim undated and held (no timing note); the Shoreditch event dates it', async () => {
+  for (const structured of [[PLACE('Embedd Manchester', 'Manchester')], [PLACE('Embedd Camden', 'London')], [PLACE('Embedd Manchester', 'Manchester'), PLACE('Embedd Camden', 'London')]]) {
+    const { r } = await row(fx(structured)); assert.equal(r.event_date, null); assert.equal(r.review_reason, 'outside_window_undated'); assert.equal(r.timing_note, null)
+  }
+  const ok = await row(fx([PLACE('Embedd Shoreditch', 'London', 'United Kingdom', 'England', daysAgo(9))]))
+  assert.equal(ok.r.event_date, daysAgo(9)); assert.equal(ok.r.review_reason, null)
+})
