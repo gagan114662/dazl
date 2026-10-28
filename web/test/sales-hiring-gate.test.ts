@@ -262,3 +262,24 @@ test('gate negative controls: lowercase other company, negated seed, wrong stage
     assert.equal(r.passed, passes, `${url} for ${domain}`); if (!passes) assert.equal(lead(x.db).review_reason, 'no_sales_hiring_evidence')
   }
 })
+
+test('#276 review: planned / ongoing fundraising is never a completed seed raise, and a partner\'s hiring is not the lead\'s (gate level, exact sentences)', async () => {
+  const held: [string, string][] = [
+    ['Brightloop is raising a seed round in London. Brightloop is hiring sales staff.', 'no_event_evidence'],
+    ['Brightloop is in talks to raise a seed round in London. Brightloop is hiring sales staff.', 'no_event_evidence'],
+    ['Brightloop is set to raise a seed round in London. Brightloop is hiring sales staff.', 'no_event_evidence'],
+    ['Brightloop is expected to close a seed round in London. Brightloop is hiring sales staff.', 'no_event_evidence'],
+    ['Brightloop has an ongoing seed round in London. Brightloop is hiring sales staff.', 'no_event_evidence'],
+    ['Brightloop will close a seed round in London next month. Brightloop is hiring sales staff.', 'no_event_evidence'],
+    ['Brightloop is closing a seed round in London. Brightloop is hiring sales staff.', 'no_event_evidence'],
+    ['Brightloop raised a seed round in London. Brightloop partners with othercorp, which is hiring sales staff.', 'no_sales_hiring_evidence'],
+    ['Brightloop raised a seed round in London and partners with othercorp, which is hiring sales staff.', 'no_sales_hiring_evidence'],
+  ]
+  for (const [excerpt, reason] of held) {
+    const { db, job } = seed({ domain: null, excerpt }); const r = await applySalesHiringGate(db, job, serve({}), { now: NOW })
+    assert.deepEqual([r.passed, r.demoted], [0, 1], excerpt); assert.equal(lead(db).review_reason, reason, excerpt); assert.equal(lead(db).confidence, null, excerpt)
+  }
+  for (const excerpt of ['Brightloop raised a seed round in London and will use it to hire sales staff. Brightloop is hiring two account executives.', 'Brightloop raised a seed round in London, which is hiring sales reps.', 'Brightloop raised a seed round in London and partners with othercorp. Brightloop is hiring sales staff.', 'Brightloop closed a seed round in London and is hiring sales staff.']) {
+    const { db, job } = seed({ domain: null, excerpt }); assert.equal((await applySalesHiringGate(db, job, serve({}), { now: NOW })).passed, 1, excerpt)
+  }
+})

@@ -39,9 +39,9 @@ export function requestedStage(query: string | null | undefined, icp: string | n
   if (/\bseed\b/i.test(t) && !series) return 'seed'
   return series ? `series ${series[1].toLowerCase()}` : /\bseed\b/i.test(t) ? 'seed' : null
 }
-const RAISE_VERB = /\b(?:rais(?:ed|es|ing)|clos(?:ed|es|ing)|secur(?:ed|es|ing)|announc(?:ed|es|ing)|land(?:ed|s)|complet(?:ed|es)|bagg?(?:ed|s)|receiv(?:ed|es)|won|gets|got|backed|funded|seed-funded|unveil(?:ed|s))\b/i
+const RAISE_VERB = /\b(?:rais(?:ed|es)|clos(?:ed|es)|secur(?:ed|es)|announc(?:ed|es)|land(?:ed|s)|complet(?:ed|es)|bagg?(?:ed|s)|receiv(?:ed|es)|won|gets|got|backed|funded|seed-funded|unveil(?:ed|s))\b/i
 const FUNDING_NEG = /\b(?:not|no|never|didn'?t|hasn'?t|haven'?t|wasn'?t|without|failed\s+to|unable\s+to|yet\s+to|den(?:y|ies|ied)|reject\w*|refut\w+|cancel\w*|withdr\w+|collaps\w+|fell\s+through|ruled?\s+out|untrue|false)\b/i
-const FUNDING_HYPO = /\b(?:if|unless|would|could|may|might|plans?\s+to|planning\s+to|hopes?\s+to|aims?\s+to|intends?\s+to|looking\s+to|seeking\s+to|in\s+talks|expects?\s+to|expected\s+to|reportedly|rumou?r\w*|allegedly)\b/i
+const FUNDING_HYPO = /\b(?:(?:to|will|shall|would|set\s+to|about\s+to|poised\s+to|slated\s+to|due\s+to|preparing\s+to|expected\s+to|likely\s+to|ready\s+to|going\s+to)\s+(?:raise|close|secure|announce|complete|finali[sz]e|land)|raising|closing|securing|finali[sz]\w+|negotiat\w+|pursuing|targeting|nearing|ongoing|in\s+the\s+process|open\s+round|if|unless|would|could|may|might|plans?\s+to|planning\s+to|hopes?\s+to|aims?\s+to|intends?\s+to|looking\s+to|seeking\s+to|in\s+talks|expects?\s+to|expected\s+to|reportedly|rumou?r\w*|allegedly)\b/i
 export function stageOk(clause: string, stage: Stage): boolean {
   if (!stage) return true
   const series = /\bseries\s+([a-z])\b|\b(?:growth|bridge)\s+(?:round|equity)\b/i.exec(clause)
@@ -88,13 +88,24 @@ export function subjectIsOther(prefix: string, company: string | null | undefine
   if (!company) return false
   const own = new Set(wordsOf(company).filter(w => !['inc', 'ltd', 'llc', 'limited', 'plc', 'the', 'co', 'corp', 'group'].includes(w)))
   if (own.size === 0) return false
-  const segs = prefix.split(/,|;|\band\b|\bwhile\b|\bwhich\b|\bwho\b|\bas\b/i).map(wordsOf)
-  for (let i = segs.length - 1; i >= 0; i--) {
-    const ws = segs[i].filter(w => !(NOT_ENTITY.has(w) && !own.has(w)) && !/^\d/.test(w))
-    const sayings = segs[i].filter(w => !['is', 'are', 'was', 'were', 'has', 'have', 'been', 'now', 'also', 'still', 'currently', 'actively', 'recently', 'just', 'already'].includes(w))
-    if (sayings.length === 0) continue // only auxiliaries: the subject is carried from the earlier segment
-    if (segs[i].some((w, k) => own.has(w) && !(k > 0 && PREPOSITION.has(segs[i][k - 1])))) return false
-    return ws.length > 0 // another company's name; only generic words left = still about the lead
+  // alternating [segment, delimiter, segment, ...]; a relative pronoun (which / who / that) makes the nearest noun in front of it the subject ("partners with othercorp, which is hiring")
+  const parts = prefix.split(/(,|;|\band\b|\bwhile\b|\bwhich\b|\bwho\b|\bas\b|\bthat\b)/i)
+  const AUX = ['is', 'are', 'was', 'were', 'has', 'have', 'been', 'now', 'also', 'still', 'currently', 'actively', 'recently', 'just', 'already']
+  for (let i = parts.length - 1; i >= 0; i -= 2) {
+    const seg = wordsOf(parts[i])
+    const sayings = seg.filter(w => !AUX.includes(w))
+    if (sayings.length === 0) {
+      const delim = (parts[i - 1] ?? '').trim().toLowerCase()
+      if (delim === 'which' || delim === 'who' || delim === 'that') {
+        const before = parts.slice(0, Math.max(0, i - 1)).filter((_, k) => k % 2 === 0).map(wordsOf).reverse().find(w => w.length > 0)
+        const ante = before ? before[before.length - 1] : undefined
+        if (ante === undefined) return false
+        return !own.has(ante) && !NOT_ENTITY.has(ante) && !/^\d/.test(ante)
+      }
+      continue // only auxiliaries after and / a comma: the subject is carried from the earlier segment
+    }
+    if (seg.some((w, k) => own.has(w) && !(k > 0 && PREPOSITION.has(seg[k - 1])))) return false
+    return seg.filter(w => !(NOT_ENTITY.has(w) && !own.has(w)) && !/^\d/.test(w)).length > 0
   }
   return false
 }
