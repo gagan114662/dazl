@@ -10,6 +10,7 @@ import { migrateConnectors } from '../lib/connectors/store.ts'
 import { seedOffers } from './helpers/seed-offer.ts'
 import { confirmLeadReview } from '../lib/scan/review-confirm.ts'
 import { setDomainReview } from '../lib/scan/domain-review-action.ts'
+import { sqliteDb } from '../lib/db/client.ts'
 import { createDraft } from '../lib/outreach/service.ts'
 import { currentnessHeld } from '../lib/outreach/currentness.ts'
 import { requiredGateHeld, markHeldInProcess, releaseHeld } from '../lib/scan/held-state.ts'
@@ -26,29 +27,29 @@ function addLead(db: Database.Database, o: { reason: string | null; confidence?:
 }
 const mark = (db: Database.Database, leadId: string) => db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, 'A', 'scan:gate', 'gate_failed', 'sales_hiring_check_failed', 'x', NULL, 'https://invalid.example/', '2026-10-28', 1)").run(randomBytes(12).toString('hex'), leadId)
 
-test('CONTROL: a lead in ordinary review becomes draftable after the user confirms it', () => {
+test('CONTROL: a lead in ordinary review becomes draftable after the user confirms it', async () => {
   const db = setup(); const id = addLead(db, { reason: 'quote_unconfirmed' })
   assert.equal(requiredGateHeld(db, 'A', id), null); assert.throws(() => createDraft(db, 'A', id, 'Acme'), /lead_not_verified/)
-  assert.equal(confirmLeadReview(db, 'A', id), true)
+  assert.equal(await confirmLeadReview(sqliteDb(db), 'A', id), true)
   assert.equal(typeof createDraft(db, 'A', id, 'Acme'), 'string', 'confirmation unblocks drafting when no required gate failed')
 })
 
-test('a lead held by the FAILED sales-hiring gate stays blocked through lead confirmation and domain confirmation', () => {
+test('a lead held by the FAILED sales-hiring gate stays blocked through lead confirmation and domain confirmation', async () => {
   const db = setup(); const id = addLead(db, { reason: 'sales_hiring_check_failed' })
   assert.throws(() => createDraft(db, 'A', id, 'Acme'), /lead_not_verified|sales_hiring_check_failed/)
-  assert.equal(confirmLeadReview(db, 'A', id), true, 'the user can still confirm the lead (it moves out of review)')
+  assert.equal(await confirmLeadReview(sqliteDb(db), 'A', id), true, 'the user can still confirm the lead (it moves out of review)')
   assert.equal(requiredGateHeld(db, 'A', id), 'sales_hiring_check_failed', 'the reason it was confirmed FROM still holds')
   try { setDomainReview(db, 'A', id, 'confirm') } catch { /* the website confirmation may be refused for other reasons: the hold must hold either way */ }
   assert.throws(() => createDraft(db, 'A', id, 'Acme'), /sales_hiring_check_failed/, 'drafting stays blocked with the failed gate as the reason')
   assert.equal(currentnessHeld(db, 'A', id), true, 'approve / send / sequences / follow-ups use the same hold')
 })
 
-test('WRITE-REJECTED: the row still reads verified, only the gate_failed marker holds it - confirmation (lead and domain) still cannot unblock drafting', () => {
+test('WRITE-REJECTED: the row still reads verified, only the gate_failed marker holds it - confirmation (lead and domain) still cannot unblock drafting', async () => {
   const db = setup(); const id = addLead(db, { reason: null, confidence: 80 })
   mark(db, id)
   assert.equal(requiredGateHeld(db, 'A', id), 'sales_hiring_check_failed')
   assert.throws(() => createDraft(db, 'A', id, 'Acme'), /sales_hiring_check_failed/, 'verified-looking row, held by the marker')
-  assert.equal(confirmLeadReview(db, 'A', id), true)   // a verified row can be human-confirmed too
+  assert.equal(await confirmLeadReview(sqliteDb(db), 'A', id), true)   // a verified row can be human-confirmed too
   try { setDomainReview(db, 'A', id, 'confirm') } catch { /* see above */ }
   assert.throws(() => createDraft(db, 'A', id, 'Acme'), /sales_hiring_check_failed/)
   assert.equal(currentnessHeld(db, 'A', id), true)
@@ -59,14 +60,14 @@ test('tenant scope: another tenant’s lead id is never reported held', () => {
   assert.equal(requiredGateHeld(db, 'B', id), null)
 })
 
-test('STANDS ALONE: the run report’s held_lead_ids (the run’s own record) holds the lead when the review write AND any marker are gone - lead and domain confirmation cannot unblock drafting', () => {
+test('STANDS ALONE: the run report’s held_lead_ids (the run’s own record) holds the lead when the review write AND any marker are gone - lead and domain confirmation cannot unblock drafting', async () => {
   const db = setup(); const id = addLead(db, { reason: null, confidence: 80 })   // the row still reads verified
   const jobId = (db.prepare('SELECT scan_job_id AS j FROM leads WHERE id = ?').get(id) as { j: string }).j
   assert.equal(requiredGateHeld(db, 'A', id), null, 'nothing records a failure yet')
   migrateRunReport(db)
   db.prepare('INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, 1, ?)').run(jobId, JSON.stringify({ held_lead_ids: [id] }))
   assert.equal(requiredGateHeld(db, 'A', id), 'sales_hiring_check_failed')
-  confirmLeadReview(db, 'A', id); try { setDomainReview(db, 'A', id, 'confirm') } catch { /* see above */ }
+  await confirmLeadReview(sqliteDb(db), 'A', id); try { setDomainReview(db, 'A', id, 'confirm') } catch { /* see above */ }
   assert.throws(() => createDraft(db, 'A', id, 'Acme'), /sales_hiring_check_failed/)
   assert.equal(currentnessHeld(db, 'A', id), true)
   // the gate running again and passing releases it
