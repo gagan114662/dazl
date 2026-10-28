@@ -25,6 +25,7 @@ import BudgetPanel from './budget-panel'
 import { budgetFromForm, EMPTY_BUDGET_FORM, type BudgetForm } from '@/lib/scan/run-budget-form'
 import { evidenceOriginLabel, purgedNote } from '@/lib/scan/evidence-origin'
 import { playSuggestions, type PlaySuggestions } from '@/lib/play-suggestions'
+import { scanOutcome } from '@/lib/scan/scan-outcome'
 
 // Reject on the card is the existing reversible quarantine, with its own reason so the card can say "Rejected".
 // Reject asks for an optional reason (a preset or a few words); it is stored as "Rejected" or "Rejected: <reason>".
@@ -725,22 +726,22 @@ export default function LeadsClient() {
             <h2 className="text-sm font-semibold">Past scans</h2>
             <p className="text-gray-500 text-xs mt-0.5">Pick one to review its leads. Nothing runs until you start a new scan above.</p>
           </div>
-          {pastJobs.map(j => (
-            <a key={j.id} href={`/app/leads?job_id=${j.id}`} className="block p-4 hover:bg-white/5">
-              <div className="text-sm font-medium">
-                {j.test_only && <span className="text-gray-500">test only · </span>}
-                {j.query ?? (j.csv_domain ? `CSV import: ${j.csv_domain}` : j.business_name)}
+          {pastJobs.map(j => {
+            // What the scan record says it ended as (lib/scan/scan-outcome.ts), with its one next step beside it.
+            const o = scanOutcome(j)
+            return (
+              <div key={j.id} className="p-4 hover:bg-white/5" data-testid="past-scan" data-outcome={o.kind}>
+                <a href={`/app/leads?job_id=${j.id}`} className="block">
+                  <div className="text-sm font-medium">
+                    {j.test_only && <span className="text-gray-500">test only · </span>}
+                    {j.query ?? (j.csv_domain ? `CSV import: ${j.csv_domain}` : j.business_name)}
+                  </div>
+                  <div className="text-gray-500 text-xs mt-0.5">{new Date(j.created_at * 1000).toLocaleDateString()} · {o.label}</div>
+                </a>
+                {o.next && <a className="underline text-[#111] text-xs" href={o.next.href} data-testid="next-step">{o.next.text}</a>}
               </div>
-              <div className="text-gray-500 text-xs mt-0.5">
-                {new Date(j.created_at * 1000).toLocaleDateString()} · {j.status === 'done'
-                  ? (j.candidates !== null
-                      ? `${j.candidates} found: ${j.verified ?? 0} source-checked, ${j.needs_review ?? 0} need${(j.needs_review ?? 0) === 1 ? 's' : ''} your review, ${j.dropped ?? 0} dropped`
-                      : `${j.lead_count} lead${j.lead_count === 1 ? '' : 's'}`)
-                  : j.status === 'failed' ? 'failed'
-                  : 'still running'}
-              </div>
-            </a>
-          ))}
+            )
+          })}
         </div>
       )}
       {jobId && leads.length > 0 && scanDrafts && barCopy(scanDrafts) && (

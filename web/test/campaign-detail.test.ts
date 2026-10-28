@@ -55,3 +55,15 @@ test('reading a campaign never writes: a stale running job stays exactly as it w
   getJob(db, 'A', a)
   assert.equal((db.prepare('SELECT status FROM scan_jobs WHERE id = ?').get(stale) as { status: string }).status, 'pending', 'control: getJob reaped the stale job')
 })
+
+test('the campaign read carries the counts the runner recorded, so the page can tell zero-match, all-dropped and failed apart', async () => {
+  const { scanOutcome } = await import('../lib/scan/scan-outcome.ts')
+  const { db, job } = fixture()
+  const dropped = job('A', 'All dropped'), zero = job('A', 'Zero'), broke = job('A', 'Broke')
+  db.prepare("UPDATE scan_jobs SET status='done', candidates=6, verified=0, needs_review=0, dropped=6 WHERE id=?").run(dropped)
+  db.prepare("UPDATE scan_jobs SET status='failed', error='no_candidates', candidates=0 WHERE id=?").run(zero)
+  db.prepare("UPDATE scan_jobs SET status='failed', error='upstream 500' WHERE id=?").run(broke)
+  const kind = (id: string) => { const d = campaignDetail(db, 'A', id)!; return scanOutcome({ ...d.job, lead_count: d.leads.length }).kind }
+  assert.deepEqual(campaignDetail(db, 'A', dropped)!.job, { ...campaignDetail(db, 'A', dropped)!.job, candidates: 6, verified: 0, needs_review: 0, dropped: 6 })
+  assert.deepEqual([kind(dropped), kind(zero), kind(broke)], ['all_dropped', 'zero_match', 'failed'])
+})
