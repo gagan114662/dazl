@@ -1,4 +1,5 @@
 import { migrateConnectors } from '../lib/connectors/store.ts'
+import { sqliteDb } from '../lib/db/client.ts'
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
 import {contactContext,contextLabel,readContextLabel} from '../lib/outreach/contact-context.ts'
@@ -33,7 +34,7 @@ test('source context persists and human review never upgrades recruitment to sal
  const email='sales@acme.example',source_url='https://acme.example/contact',excerpt='Acme is hiring an outbound sales representative.'
  const r=await createSourceReview(db,'A',{company:'Acme',signal:'A supplied hiring claim',excerpt,contact:email,source_url,event_date:null},async()=>({title:'Acme',text:excerpt+' Send your CV to '+email,retrievedAt:1800000000}))
  assert.equal(contactPurposeRestricted(db,'A',r.lead_id,email),true);assert.equal(contactPurposeRestricted(db,'B',r.lead_id,email),false)
- confirmLeadReview(db,'A',r.lead_id)
+ await confirmLeadReview(sqliteDb(db),'A',r.lead_id)
  assert.throws(()=>createDraft(db,'A',r.lead_id,'Seller'),/not_sales_contact/)
  const msg='m'.repeat(24);db.prepare("INSERT INTO outreach_messages(id,tenant_id,lead_id,to_email,subject,body,status,approved_hash) VALUES(?,'A',?,?,'Saved words','These original words must remain untouched.','approved','old-hash')").run(msg,r.lead_id,email)
  const original=db.prepare('SELECT * FROM outreach_messages').get()

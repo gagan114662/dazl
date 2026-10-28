@@ -76,6 +76,7 @@ await ctx.route('**/*', async route => {
     if (action === 'send') { if (state.gmail?.status !== 'active' || !state.sender) return json({ error: 'gmail_not_connected' }, 409); state.msgs[0].status = 'sent'; state.msgs[0].sent_at = Math.floor(Date.now() / 1000) }
     return json({ ok: true })
   }
+  if (p === `/api/campaigns/${JOB}`) return json({ job: { id: JOB }, leads: [], messages: state.msgs })
   if (p === '/api/outreach/sequences') return json({ sequences: [], test_addresses: [], status: {}, campaigns: [] })
   if (p === '/api/outreach/settings' && m === 'GET') return json({ gmail: state.gmail, sender: state.sender, daily_cap: 20, sent_24h: 0, account_sent_24h: 0, read_notice: [] })
   if (p === '/api/outreach/settings' && m === 'PUT') { state.sender = JSON.parse(req.postData()); return json({ ok: true }) }

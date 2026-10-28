@@ -6,7 +6,7 @@ import pg from 'pg'
 import { randomBytes } from 'node:crypto'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { sqlInventory, rawSqliteModules, pgRejects, portStatus } from '../../lib/db/sql-audit.ts'
+import { sqlInventory, rawSqliteModules, pgRejects, portStatus, insertionOrderUsers } from '../../lib/db/sql-audit.ts'
 import { runPgMigrations } from '../../lib/db/migrate-pg.ts'
 
 const url = process.env.DAZL_AUDIT_PG_URL
@@ -34,6 +34,12 @@ try {
 export const RAW_SQLITE_MODULES: Record<string, number> = {
 ${body}
 }
+
+// Ported modules that break same-second ties with insertionOrder() (lib/db/order.ts): SQLite's rowid there, but only
+// the row id on Postgres, which is not insertion order. A cutover gap until each table has an insertion-order column.
+export const PG_INSERTION_ORDER_GAPS: string[] = [
+${insertionOrderUsers(root).map(f => `  '${f}',`).join('\n')}
+]
 `)
     console.log('wrote lib/db/pg-port-status.ts')
   }

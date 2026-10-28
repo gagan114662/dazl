@@ -1,4 +1,5 @@
-import type Database from 'better-sqlite3'
+import type { Db } from '../db/client.ts'
+import { insertionOrder } from '../db/order.ts'
 
 // Everything the one-campaign page shows, for ONE scan of ONE tenant, read in full: the job, every lead of the scan and
 // every email drafted from those leads. Plain SELECTs only - unlike the scan status read (getJob reaps stale jobs) and
@@ -10,14 +11,16 @@ export interface CampaignDetail {
   messages: { id: string; lead_id: string; to_email: string; subject: string; status: string; created_at: number; sent_at: number | null }[]
 }
 
-export function campaignDetail(db: Database.Database, tenantId: string, jobId: string): CampaignDetail | null {
-  const job = db.prepare("SELECT id, query, status, error, CASE WHEN funded_by = 'trial' THEN 'trial' END AS funded_by, created_at, candidates, verified, needs_review, dropped, enrich_started_at, enrich_finished_at FROM scan_jobs WHERE id = ? AND user_id = ?").get(jobId, tenantId) as CampaignDetail['job'] | undefined
+// On the Db layer (SQLite or Postgres). Leads list in insertion order and messages newest first with insertion order
+// breaking same-second ties, as the raw queries did (insertionOrder: rowid on SQLite).
+export async function campaignDetail(db: Db, tenantId: string, jobId: string): Promise<CampaignDetail | null> {
+  const job = await db.get<CampaignDetail['job']>("SELECT id, query, status, error, CASE WHEN funded_by = 'trial' THEN 'trial' END AS funded_by, created_at, candidates, verified, needs_review, dropped, enrich_started_at, enrich_finished_at FROM scan_jobs WHERE id = ? AND user_id = ?", [jobId, tenantId])
   if (!job) return null
-  const leads = db.prepare(`SELECT id, company, name, evidence_excerpt, confidence, human_confirmed_at, review_reason, quarantined_at, quarantine_reason
-    FROM leads WHERE scan_job_id = ? ORDER BY rowid`).all(job.id) as CampaignDetail['leads']
+  const leads = await db.all<CampaignDetail['leads'][number]>(`SELECT id, company, name, evidence_excerpt, confidence, human_confirmed_at, review_reason, quarantined_at, quarantine_reason
+    FROM leads WHERE scan_job_id = ? ORDER BY ${insertionOrder(db.kind)}`, [job.id])
   // Newest first, so the first message per lead is its latest.
-  const messages = db.prepare(`SELECT m.id, m.lead_id, m.to_email, m.subject, m.status, m.created_at, m.sent_at
+  const messages = await db.all<CampaignDetail['messages'][number]>(`SELECT m.id, m.lead_id, m.to_email, m.subject, m.status, m.created_at, m.sent_at
     FROM outreach_messages m JOIN leads l ON l.id = m.lead_id
-    WHERE m.tenant_id = ? AND l.scan_job_id = ? ORDER BY m.created_at DESC, m.rowid DESC`).all(tenantId, job.id) as CampaignDetail['messages']
+    WHERE m.tenant_id = ? AND l.scan_job_id = ? ORDER BY m.created_at DESC, ${insertionOrder(db.kind, 'm')} DESC`, [tenantId, job.id])
   return { job, leads, messages }
 }

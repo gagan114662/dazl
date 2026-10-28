@@ -1,4 +1,5 @@
 import { test } from 'node:test'
+import { sqliteDb } from '../lib/db/client.ts'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateScan } from '../lib/scan/store.ts'
@@ -31,11 +32,11 @@ test('supported fixture is gated, idempotent, never confirms human evidence or a
   assert.match(lead.contact,/@dazl\.invalid$/)
   assert.equal(lead.confidence,null);assert.equal(lead.human_confirmed_at,null);assert.equal(lead.review_reason,'quote_unconfirmed')
   assert.equal(leadEvidenceState(db,tenant,f.leadId),'unverified')
-  assert.equal(confirmLeadReview(db,tenant,f.leadId),true)
+  assert.equal(await confirmLeadReview(sqliteDb(db),tenant,f.leadId),true)
   assert.equal(leadEvidenceState(db,tenant,f.leadId),'human')
   const msg=(listMessages(db,tenant) as {lead_id:string;evidence_state:string;status:string;test:number}[]).find(m=>m.lead_id===f.leadId)!
   assert.equal(msg.evidence_state,'human');assert.equal(msg.status,'draft');assert.equal(msg.test,0)
-  assert.equal(unconfirmLeadReview(db,tenant,f.leadId),true)
+  assert.equal(await unconfirmLeadReview(sqliteDb(db),tenant,f.leadId),true)
   assert.equal(leadEvidenceState(db,tenant,f.leadId),'unverified')
   assert.equal((db.prepare('SELECT count(*) n FROM sequence_steps WHERE approved_hash IS NOT NULL').get() as {n:number}).n,0)
   let network=0
@@ -43,10 +44,10 @@ test('supported fixture is gated, idempotent, never confirms human evidence or a
   assert.equal(network,0)
   db.close()
 })
-test('confirmed display fixture remains suppressed, and cleanup removes its exact drafts/steps but never unsuppresses',()=>{
+test('confirmed display fixture remains suppressed, and cleanup removes its exact drafts/steps but never unsuppresses',async () =>{
   const db=setup(),f=createReviewDraftFixture(db,tenant)
   const email=(db.prepare('SELECT contact FROM leads WHERE id=?').get(f.leadId) as {contact:string}).contact
-  confirmLeadReview(db,tenant,f.leadId)
+  await confirmLeadReview(sqliteDb(db),tenant,f.leadId)
   saveSettings(db,tenant,{sender_name:'Test',postal_address:'Synthetic test mailing address'})
   db.prepare("INSERT INTO gmail_accounts(tenant_id,email,refresh_ct) VALUES(?,?,'not-a-token')").run(tenant,'test@example.invalid')
   assert.throws(()=>approve(db,tenant,f.messageId!,true),/suppressed/)
