@@ -8,7 +8,7 @@ import { eventTypeLabel } from '@/lib/events/labels'
 import { companySearchEligible } from '@/lib/scan/find-contact-eligible'
 import { contactsFromEnrichments, PEOPLE_SOURCE } from '@/lib/people/rank'
 import { OpportunityCardView } from './opportunity-card'
-import { leadCardSummary } from '@/lib/scan/lead-card'
+import { cardCounts, leadCardSummary } from '@/lib/scan/lead-card'
 import { reviewAction } from '@/lib/scan/review-action'
 import { coreSources, socialLabel, socialSources, usableLabels, type Advanced, type KeyState, type ServerSources, type SourceRow } from '@/lib/scan/source-availability'
 import { barCopy, scanCounts } from '@/lib/outreach/scan-drafts'
@@ -414,12 +414,21 @@ export default function LeadsClient() {
   // The Review drafts bar: this scan's unsent emails by state (drafts to review, approved not sent), read back from
   // Outreach so it survives a reload and counts drafts made with Draft email too. Read-only; null when it could not load.
   const [scanDrafts, setScanDrafts] = useState<{ drafts: number; approved: number } | null>(null)
+  // Leads of this scan that have an email made from them (any status but skipped): the cards' "Approved" count.
+  const [draftedLeads, setDraftedLeads] = useState<Set<string> | null>(null)
+  // Read from this scan's campaign record (GET /api/campaigns/<job>: every email made from this scan's leads, no cap),
+  // not the account-wide Outreach list, which holds only the newest 200 and can miss an older scan's drafts.
   const loadScanDrafts = async () => {
-    const r = await fetch('/api/outreach').catch(() => null)
+    const id = jobIdRef.current
+    const r = id ? await fetch(`/api/campaigns/${id}`).catch(() => null) : null
     const j = r?.ok ? await r.json().catch(() => null) : null
     setScanDrafts(j?.messages ? scanCounts(j.messages, leadIdsRef.current) : null)
+    const ids = new Set(leadIdsRef.current)
+    setDraftedLeads(Array.isArray(j?.messages) ? new Set((j.messages as { lead_id: string; status: string }[]).filter(m => ids.has(m.lead_id) && m.status !== 'skipped').map(m => m.lead_id)) : null)
   }
   const leadIdsRef = useRef<string[]>([])
+  const jobIdRef = useRef<string | null>(null)
+  jobIdRef.current = jobId
   leadIdsRef.current = leads.map(l => l.id)
   const leadKey = leads.map(l => l.id).join(',')
   useEffect(() => { if (leadKey) void loadScanDrafts() }, [leadKey]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -782,6 +791,15 @@ export default function LeadsClient() {
           <a className="btn-primary text-xs px-3 py-1.5 shrink-0" href={`/app/outreach?job_id=${jobId}`}>{scanDrafts.drafts > 0 ? 'Review drafts' : 'Open in Outreach'}</a>
         </div>
       )}
+      {jobId && visibleLeads.length > 0 && (() => {
+        const n = cardCounts(visibleLeads, draftedLeads, approved)
+        // "Approved" on a card only makes a draft: the email itself is still approved in Outreach before anything sends.
+        return <p className="text-xs text-[#555] mb-2">
+          <span data-testid="card-counts-scope">Cards shown below (not counting Needs your review{!showSeen && leads.some(l => l.seen_before && !l.review_reason) ? ' or hidden already-seen leads' : ''}): </span>
+          <span data-testid="card-counts"><span className="text-[#111] font-medium">Approved {n.approved ?? '?'}</span> · <span className="text-[#111] font-medium">Rejected {n.rejected}</span> · <span className="text-[#111] font-medium">To review {n.toReview ?? '?'}</span></span>
+          {n.approved === null ? <span data-testid="card-counts-note"> (drafts could not be loaded, so Approved is unknown)</span> : <span data-testid="card-counts-note"> - approving a card makes a draft; each email is still approved in Outreach before it sends.</span>}
+        </p>
+      })()}
       <div className="card divide-y divide-white/5">
         {visibleLeads.length === 0 ? (
           // Loading, failed and status-error states have their own truthful copy above.

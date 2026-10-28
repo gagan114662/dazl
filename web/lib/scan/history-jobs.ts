@@ -23,3 +23,14 @@ export async function historyJobs(db: Db, userId: string) {
     test_only: j.industry === 'test only' && j.location === 'test only',
   })))
 }
+
+// Home's checklist needs "has any own search been written / finished", which the newest-20 list above cannot prove
+// when it is full (20 recent failures can hide an older finished scan). One aggregate over ALL of the tenant's own
+// searches: imports (csv_domain) and test fixtures are not plays. Read-only.
+export async function historyTotals(db: Db, userId: string): Promise<{ searches: number; finished: number }> {
+  const r = await db.get<{ searches: number | string | null; finished: number | string | null }>(
+    `SELECT count(*) AS searches, sum(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS finished FROM scan_jobs
+     WHERE user_id = ? AND query IS NOT NULL AND query <> '' AND csv_domain IS NULL
+       AND NOT (coalesce(industry, '') = 'test only' AND coalesce(location, '') = 'test only')`, [userId])
+  return { searches: Number(r?.searches ?? 0), finished: Number(r?.finished ?? 0) }
+}
