@@ -9,13 +9,24 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import net from 'node:net'
 import path from 'node:path'
 
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(path.join(root, 'package.json'))
+
+// Every page under app/app, so a new page is covered without editing a smoke check. Dynamic segments are skipped.
+export function appRoutes(dir = path.join(root, 'app/app'), route = '/app') {
+  const out = []
+  for (const name of readdirSync(dir)) {
+    const full = path.join(dir, name)
+    if (statSync(full).isDirectory()) { if (!name.startsWith('[') && !name.startsWith('_')) out.push(...appRoutes(full, `${route}/${name}`)) }
+    else if (name === 'page.tsx') out.push(route)
+  }
+  return out.sort()
+}
 
 export function notRun(reason) {
   if (process.env.SMOKE_ALLOW_SKIP === '1') { console.log(`NOT RUN (allowed by SMOKE_ALLOW_SKIP=1): ${reason}`); process.exit(0) }

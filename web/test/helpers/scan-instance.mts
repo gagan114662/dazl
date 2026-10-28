@@ -97,8 +97,10 @@ if (mode === 'crash' || mode === 'stall') {
   }
   if (mode === 'shared') { await db.close(); out({ ran }) }
 } else if (mode === 'race') {
-  await barrier()
+  // the list is read before the barrier: read after it, the faster instance could bind (or finish) a job before the
+  // other had listed it, which then never tried that job
   const ids = (await db.all<{ id: string }>("SELECT id FROM scan_jobs WHERE status = 'pending'")).map(r => r.id).sort(() => Math.random() - 0.5)
+  await barrier()
   let won = 0, lost = 0
   await Promise.all([0, 1].map(async w => {
     for (const id of ids.filter((_, i) => i % 2 === w)) {
