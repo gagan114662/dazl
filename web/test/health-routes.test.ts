@@ -4,9 +4,17 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { pgSkip } from './helpers/pg-test.ts'
 
-for (const mode of ['sqlite', 'pg-down']) {
-  test(`health routes: ${mode === 'sqlite' ? 'SQLite store answers: 200 ready' : 'Postgres unreachable: 503 not ready, liveness still 200'}`, () => {
+const TITLES: Record<string, string> = {
+  'sqlite': 'SQLite store answers: 200 ready',
+  'pg-down': 'Postgres unreachable: 503 not ready, liveness still 200',
+  'pg': 'Postgres reachable with every shipped migration: store and schema ready',
+  'pg-behind': 'Postgres missing a shipped migration: 503 not ready (schema behind)',
+}
+
+for (const mode of ['sqlite', 'pg-down', 'pg', 'pg-behind']) {
+  test(`health routes: ${TITLES[mode]}`, { skip: mode === 'pg' || mode === 'pg-behind' ? pgSkip : false }, () => {
     const env: NodeJS.ProcessEnv = { ...process.env, HEALTH_MODE: mode }
     delete env.NODE_TEST_CONTEXT
     // the net-fence preload scrubs DATABASE_URL, so the runtime sets it from this

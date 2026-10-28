@@ -11,7 +11,7 @@
 //                            scrub leaves unchanged and that has no run of 4+ digits
 // Never read: request bodies, headers, cookies, query strings. The scrub (emails, keys, tokens, IPs, phone numbers,
 // DB URLs, URL queries) is a backstop for free text, not a licence: callers pass the error and the tenant id only.
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 
 export interface ErrorContext {
   source: 'route' | 'render' | 'worker' | 'health' | 'process'
@@ -121,18 +121,16 @@ export function captureError(e: unknown, ctx: ErrorContext): ErrorRecord | null 
   let r: ErrorRecord
   try { r = toRecord(e, ctx) } catch { return null }
   for (const s of sinks) { try { s(r) } catch { /* a broken sink never breaks the caller */ } }
-  try { alertHook()(r) } catch { /* same */ }
+  for (const h of alertHooks()) { try { h(r) } catch { /* same */ } }
   return r
 }
 
-// Alert hook: when OPS_ALERT_WEBHOOK_URL is set (https only), POST the scrubbed record there. Throttled to one alert
-// per fingerprint per window and a global cap per window, so an error loop cannot flood the hook. Fire and forget,
-// with a timeout; a failing hook is dropped silently (it must not log through captureError and loop).
+// Alert hooks. Both are throttled the same way: one alert per fingerprint per window and a global cap per window, so an
+// error loop cannot flood them. Fire and forget, with a timeout; a failing hook is dropped silently (it must not log
+// through captureError and loop). Each sends the scrubbed record only, never anything the record does not hold.
 export interface AlertOptions { url?: string; fetchImpl?: typeof fetch; windowMs?: number; maxPerWindow?: number; timeoutMs?: number; clock?: () => number }
 
-export function makeAlertHook(o: AlertOptions): ErrorSink {
-  const url = o.url
-  if (!url || !/^https:\/\//.test(url)) return () => {}
+function throttled(o: AlertOptions, send: (r: ErrorRecord, f: typeof fetch, signal: AbortSignal) => Promise<unknown>): ErrorSink {
   const windowMs = o.windowMs ?? 10 * 60_000, max = o.maxPerWindow ?? 20, clock = o.clock ?? Date.now
   const lastSent = new Map<string, number>()
   let windowStart = 0, sentInWindow = 0
@@ -146,15 +144,64 @@ export function makeAlertHook(o: AlertOptions): ErrorSink {
     sentInWindow++
     if (lastSent.size > 1000) lastSent.delete(lastSent.keys().next().value!)
     const f = o.fetchImpl ?? fetch
-    void Promise.resolve().then(() => f(url, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(r), signal: AbortSignal.timeout(o.timeoutMs ?? 3000),
-    })).catch(() => {})
+    void Promise.resolve().then(() => send(r, f, AbortSignal.timeout(o.timeoutMs ?? 3000))).catch(() => {})
   }
 }
 
-let hook: { url: string | undefined; sink: ErrorSink } | null = null
-function alertHook(): ErrorSink {
-  const url = process.env.OPS_ALERT_WEBHOOK_URL
-  if (!hook || hook.url !== url) hook = { url, sink: makeAlertHook({ url }) }
-  return hook.sink
+// OPS_ALERT_WEBHOOK_URL (https only): POST the scrubbed record as JSON.
+export function makeAlertHook(o: AlertOptions): ErrorSink {
+  const url = o.url
+  if (!url || !/^https:\/\//.test(url)) return () => {}
+  return throttled(o, (r, f, signal) => f(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(r), signal }))
+}
+
+// SENTRY_DSN (https only): the record as a Sentry event, in an envelope POSTed to the DSN's project. Any service that
+// takes Sentry's ingestion protocol works (Sentry, GlitchTip, a self-hosted relay); no SDK is loaded. Without a DSN, or
+// with one that does not parse, nothing is sent.
+export interface SentryDsn { endpoint: string; publicKey: string; dsn: string }
+export function parseSentryDsn(dsn: string | undefined): SentryDsn | null {
+  if (!dsn) return null
+  let u: URL
+  try { u = new URL(dsn) } catch { return null }
+  const parts = u.pathname.split('/').filter(Boolean)
+  const project = parts.pop()
+  if (u.protocol !== 'https:' || !u.username || !project || !/^\d+$/.test(project)) return null
+  const prefix = parts.length ? `/${parts.join('/')}` : ''
+  return { endpoint: `https://${u.host}${prefix}/api/${project}/envelope/`, publicKey: decodeURIComponent(u.username), dsn: `https://${u.username}@${u.host}${prefix}/${project}` }
+}
+
+// One Sentry event per record. Grouping uses the record's own fingerprint; the stack stays as scrubbed text lines.
+export function toSentryEnvelope(r: ErrorRecord, d: SentryDsn, env: { environment?: string; release?: string } = {}, sentAt = new Date()): string {
+  const eventId = randomUUID().replace(/-/g, '')
+  const tags: Record<string, string> = { source: r.source, where: r.where }
+  if (r.method) tags.method = r.method
+  if (r.request_id) tags.request_id = r.request_id
+  const event = {
+    event_id: eventId, timestamp: Date.parse(r.ts) / 1000, platform: 'node', level: 'error', logger: r.source, transaction: r.where,
+    fingerprint: [r.fingerprint], tags, ...(r.tenant ? { user: { id: r.tenant } } : {}),
+    ...(env.environment ? { environment: env.environment } : {}), ...(env.release ? { release: env.release } : {}),
+    exception: { values: [{ type: r.error.name, value: r.error.message }] },
+    extra: { stack: r.error.stack, ...(r.error.cause ? { cause: r.error.cause } : {}), ...(r.ref ? { ref: r.ref } : {}) },
+  }
+  return [JSON.stringify({ event_id: eventId, sent_at: sentAt.toISOString(), dsn: d.dsn }), JSON.stringify({ type: 'event' }), JSON.stringify(event)].join('\n')
+}
+
+export function makeSentryHook(o: Omit<AlertOptions, 'url'> & { dsn?: string; environment?: string; release?: string }): ErrorSink {
+  const d = parseSentryDsn(o.dsn)
+  if (!d) return () => {}
+  const auth = `Sentry sentry_version=7, sentry_key=${d.publicKey}, sentry_client=dazl-ops/1.0`
+  return throttled(o, (r, f, signal) => f(d.endpoint, {
+    method: 'POST', headers: { 'content-type': 'application/x-sentry-envelope', 'x-sentry-auth': auth },
+    body: toSentryEnvelope(r, d, { environment: o.environment, release: o.release }), signal,
+  }))
+}
+
+let hook: { key: string; sinks: ErrorSink[] } | null = null
+function alertHooks(): ErrorSink[] {
+  const e = process.env
+  const key = [e.OPS_ALERT_WEBHOOK_URL, e.SENTRY_DSN, e.SENTRY_ENVIRONMENT, e.DAZL_COMMIT_SHA].join('\n')
+  if (!hook || hook.key !== key) {
+    hook = { key, sinks: [makeAlertHook({ url: e.OPS_ALERT_WEBHOOK_URL }), makeSentryHook({ dsn: e.SENTRY_DSN, environment: e.SENTRY_ENVIRONMENT, release: e.DAZL_COMMIT_SHA })] }
+  }
+  return hook.sinks
 }

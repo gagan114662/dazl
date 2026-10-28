@@ -64,7 +64,10 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
       - Health probes write no line.
     - The proxy runs before the route, so the line has no status or duration. Failures appear as error records carrying the same `request_id`.
     - `middleware.ts` moved to `proxy.ts`: the Next 16 name, Node runtime. The `/app` sign-in redirect is unchanged.
-  - Alert hook (the error reporter's DSN): with `OPS_ALERT_WEBHOOK_URL` (https only) set, the same scrubbed record is POSTed. It is throttled to one per fingerprint per 10 min and 20 per 10 min overall, fire and forget.
+  - Alert hooks, both off unless configured, both throttled to one per fingerprint per 10 min and 20 per 10 min overall, fire and forget:
+    - `OPS_ALERT_WEBHOOK_URL` (https only): the scrubbed record is POSTed as JSON.
+    - `SENTRY_DSN` (https only): the scrubbed record goes as a Sentry event, in an envelope to the DSN's project (`/api/<project>/envelope/`), so Sentry, GlitchTip or a Sentry relay can receive it. No SDK is loaded. Grouping uses the record's fingerprint; the tenant id is the event user; `SENTRY_ENVIRONMENT` and `DAZL_COMMIT_SHA` set environment and release. Without a DSN, or with one that does not parse, nothing is sent (`test/ops-sentry.test.ts`).
+  - Health on both engines: `test/health-routes.test.ts` runs the real `/api/health`, `/api/health/live`, `/api/health/ready` and `/api/ready` handlers on SQLite, on an unreachable Postgres, and (with `DAZL_TEST_PG_URL`) on a Postgres with every shipped migration and on one missing the newest (503, schema `behind`).
   - Not yet: other diagnostic `console.error` calls inside the scan pipeline (handled per-step failures, not crashes). Also not done yet: the backup restore drill and the deploy checklist (step 6b).
 - **Scan jobs to Postgres, step 1 (platform part):**
   - `lib/scan/store-db.ts` has `Db` versions of the scan job store: create, query-create, get, count-active, list leads, count hidden, latest, list jobs, export, cancel and the stale reaper.
