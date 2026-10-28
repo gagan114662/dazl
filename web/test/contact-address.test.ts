@@ -158,3 +158,20 @@ test('casing controls on the place field too: lowercase / ALL CAPS "pico rivera,
   for (const c of [{ place: 'pico rivera, california', address: '57 w 57th st' }, { place: 'PICO RIVERA, CA', address: '57 W 57TH ST' }, { place: 'pico rivera, ca' }, { place: 'PICO RIVERA, CALIFORNIA' }])
     for (const where of [['New York City'], []]) assert.equal(contactAgreement({ where, evidence: E }, c).ok, false, JSON.stringify([c, where]))
 })
+
+test('REGRESSION (structured address, no ZIP): a lowercase / ALL CAPS two-letter state code as the LAST segment is recognised without a ZIP; running text still needs one', async () => {
+  const W = ['New York City']
+  for (const addr of ['57 W 57th St, pico rivera, ca', '57 W 57TH ST, PICO RIVERA, CA', '57 w 57th st, pico rivera, ca', '57 W 57th St, pico rivera, ca 90660', '57 W 57th St, pico rivera, ca, usa']) {
+    for (const where of [W, []]) { const r = contactAgreement({ where, evidence: EVIDENCE }, { address: addr }); assert.equal(r.ok, false, addr + JSON.stringify(where)); assert.match((r as { reason: string }).reason, /location mismatch Pico Rivera/i, addr) }
+    assert.equal(firstPlaceLabel(addr, { structured: true })?.toLowerCase(), 'pico rivera, ca', addr)
+  }
+  assert.equal(firstPlaceLabel('we sell in pico rivera, ca and nearby'), null, 'running text without a ZIP is not read as a state')
+  assert.equal(firstPlaceLabel('call us or visit in person, or'), null)
+  assert.equal(firstPlaceLabel('visit us in pico rivera, ca 90660'), 'Pico Rivera, CA', 'running text WITH a ZIP still is')
+  assert.deepEqual(contactAgreement({ where: W, evidence: EVIDENCE }, { address: '57 W 57th St, new york, ny' }), { ok: true, via: 'address' }, 'same street and same city still attaches')
+  for (const raw of ['57 W 57th St, pico rivera, ca', '57 W 57TH ST, PICO RIVERA, CA']) {
+    const s = seed()
+    await enrichLeadContacts(s.db, 'u1', s.jobId, [s.lead], { fetchImpl: apollo({ ...PICO, city: undefined, state: undefined, street_address: undefined, raw_address: raw }), master })
+    assert.deepEqual(attached(s.db), [], raw); assert.deepEqual(refusals(s.db).map(r => r[0]), ['contact_location_mismatch'], raw + JSON.stringify(refusals(s.db)))
+  }
+})

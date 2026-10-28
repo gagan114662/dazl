@@ -75,7 +75,7 @@ export function contactAgreement(lead: LeadSide, c: Candidate): Agreement {
   if (addr === 'agrees') {
     // A matching street number/name is NOT enough on its own: a city / state / country the record states (its place, or the one written in its address) that contradicts the lead's place always blocks.
     const wh = effectiveWhere(lead)
-    if (wh.length) for (const stated of [(c.place ?? '').trim(), firstPlaceLabel(c.address ?? '') ?? '']) {
+    if (wh.length) for (const stated of [(c.place ?? '').trim(), firstPlaceLabel(c.address ?? '', { structured: true }) ?? '']) {
       if (stated && placeAgreement(stated, wh) === 'mismatch') return { ok: false, reason: `contact rejected: location mismatch ${stated.slice(0, 60)} vs ${leadPlaceLabel(wh).slice(0, 60)} (the street text matches, the city does not)` }
     }
     return { ok: true, via: 'address' }
@@ -101,14 +101,15 @@ const titleCase = (t: string) => t.replace(/(^|[\s-])(\p{L})/gu, (_, sp, c) => s
 const LEAD_NOISE = /^(?:in|at|of|the|near|from|on|and|a|an|to|by)$/
 const STATE_FULL = [...Object.values(US_STATES)].sort((x, y) => y.length - x.length).join('|')
 const STATE_CODE_LC = Object.keys(US_STATES).map(k => k.toLowerCase()).join('|')
-export function firstPlaceLabel(rawText: string): string | null {
+export function firstPlaceLabel(rawText: string, opts: { structured?: boolean } = {}): string | null {
   const text = rawText.replace(STREET, ' ')   // the street part ("57 W 57th St") is not a city: "St, Washington, District of Columbia" must read as Washington, District of Columbia
   const m = new RegExp(`\\b([A-Z][\\p{L}'.-]+(?: [A-Z][\\p{L}'.-]+){0,2}),\\s*(${ST_ALT})\\b(?:\\s+\\d{5})?`, 'u').exec(text)
   if (m) { const w = m[1].split(' '); while (w.length > 1 && /[a-z][A-Z]/.test(w[0])) w.shift(); return `${w.join(' ')}, ${m[2]}` }   // a leading camel-case word ("LinkedIn Pico Rivera") is page chrome, not part of the city
   // Casing never changes where a company is: the same address in lowercase or ALL CAPS is read the same. A spelled-out state name matches in any case; a two-letter code only when
-  // upper-case above or, in lower case, when a ZIP follows (so "or" / "in" / "me" in running text are never read as a state).
+  // upper-case above or, in lower case, when a ZIP follows (so "or" / "in" / "me" in running text are never read as a state). In a STRUCTURED address field (comma-separated, the
+  // code is the last segment, optionally followed by a ZIP / USA) the lowercase code needs no ZIP: "57 w 57th st, pico rivera, ca".
   const lc = text.toLowerCase()
-  const l = new RegExp(`(?<![\\p{L}])([\\p{L}'.-]+(?: [\\p{L}'.-]+){0,2}),\\s*(${STATE_FULL}|(?:${STATE_CODE_LC})(?=\\s+\\d{5}\\b))(?![\\p{L}])`, 'u').exec(lc)
+  const l = new RegExp(`(?<![\\p{L}])([\\p{L}'.-]+(?: [\\p{L}'.-]+){0,2}),\\s*(${STATE_FULL}|(?:${STATE_CODE_LC})(?=${opts.structured ? '\\s*(?:\\d{5}(?:-\\d{4})?\\s*)?(?:,\\s*(?:usa?|united states)\\s*)?$|\\s+\\d{5}\\b' : '\\s+\\d{5}\\b'}))(?![\\p{L}])`, 'u').exec(lc)
   if (l) { const w = l[1].split(' '); while (w.length > 1 && LEAD_NOISE.test(w[0])) w.shift(); const st = l[2].length === 2 ? l[2].toUpperCase() : titleCase(l[2]); return `${titleCase(w.join(' '))}, ${st}` }
   const u = /\b([A-Z][\p{L}'.-]+(?: [A-Z][\p{L}'.-]+){0,2}),\s*(England|Scotland|Wales|Northern Ireland|UK|United Kingdom|South Africa|Canada|Ontario)\b/u.exec(text)
   return u ? `${u[1]}, ${u[2]}` : null
