@@ -50,6 +50,9 @@ export function domainsInText(text: string, slug: string): string[] {
   }
   return [...out]
 }
+// Every representation a posting supplies (plain text AND html, whatever the board calls them) is read and the domains are unioned: HTML is never only a
+// fallback for a missing plain field, so a link that disagrees with the plain text is still seen.
+const fieldDomains = (fields: unknown[], slug: string): string[] => [...new Set(fields.flatMap(f => (typeof f === 'string' ? domainsInText(f, slug) : [])))]
 export const domainInText = (text: string, slug: string): string | null => domainsInText(text, slug)[0] ?? null
 // The domains the included postings named: none = no claim; exactly one that agrees with the lead's (or the lead has none) = that domain; more than one,
 // or one that is not the lead's = contradictory (false): the board cannot corroborate this company.
@@ -85,7 +88,7 @@ export async function atsGtmBoard(company: string, domain: string | null, fetchI
           const det = await get(`https://boards-api.greenhouse.io/v1/boards/${token}/jobs/${j.id}`, fetchImpl)
           const date = day(det?.first_published), url = typeof det?.absolute_url === 'string' ? det.absolute_url : ''
           if (!fresh(date) || !url.startsWith('https://')) continue
-          for (const d of domainsInText(String(det.content ?? ''), token)) seen.add(d)   // every included posting is examined, and every domain in it
+          for (const d of fieldDomains([det.content, det.description], token)) seen.add(d)   // every included posting is examined, and every domain in it
           postings.push({ title: String(det.title ?? j.title).slice(0, 120), date: date!, url, location: typeof det?.location?.name === 'string' ? det.location.name : null })
         }
         const found = settle(seen, domain); if (found === false) return { hiring: null, contradictory: true } // the postings name more than one company site, or another company's: contradictory, fail closed
@@ -98,7 +101,7 @@ export async function atsGtmBoard(company: string, domain: string | null, fetchI
     if (Array.isArray(lever) && lever.length > 0) {
       const seen = new Set<string>()
       const postings = dedupe(lever.filter((j: any) => typeof j?.text === 'string' && isGtmRole(j.text) && typeof j.hostedUrl === 'string' && j.hostedUrl.startsWith('https://') && fresh(day(j.createdAt)))
-        .slice(0, MAX_DETAIL).map((j: any) => { for (const d of domainsInText(String(j.descriptionPlain ?? j.description ?? ''), token)) seen.add(d); return { title: j.text.slice(0, 120), date: day(j.createdAt)!, url: j.hostedUrl, location: typeof j?.categories?.location === 'string' ? j.categories.location : null } }))
+        .slice(0, MAX_DETAIL).map((j: any) => { for (const d of fieldDomains([j.descriptionPlain, j.description, j.additionalPlain, j.additional, ...(Array.isArray(j.lists) ? j.lists.flatMap((l: any) => [l?.text, l?.content]) : [])], token)) seen.add(d); return { title: j.text.slice(0, 120), date: day(j.createdAt)!, url: j.hostedUrl, location: typeof j?.categories?.location === 'string' ? j.categories.location : null } }))
       const found = settle(seen, domain); if (found === false) return { hiring: null, contradictory: true }
       if (postings.length) return { hiring: build('lever', postings, `https://jobs.lever.co/${token}`, found, 'domain'), contradictory: false }
     }
@@ -106,7 +109,7 @@ export async function atsGtmBoard(company: string, domain: string | null, fetchI
     if (Array.isArray(ashby?.jobs) && ashby.jobs.length > 0) {
       const seen = new Set<string>()
       const postings = dedupe(ashby.jobs.filter((j: any) => j?.isListed === true && typeof j.title === 'string' && isGtmRole(j.title) && typeof j.jobUrl === 'string' && j.jobUrl.startsWith('https://') && fresh(day(j.publishedAt)))
-        .slice(0, MAX_DETAIL).map((j: any) => { for (const d of domainsInText(String(j.descriptionPlain ?? j.descriptionHtml ?? ''), token)) seen.add(d); return { title: j.title.slice(0, 120), date: day(j.publishedAt)!, url: j.jobUrl, location: typeof j.location === 'string' ? j.location : null } }))
+        .slice(0, MAX_DETAIL).map((j: any) => { for (const d of fieldDomains([j.descriptionPlain, j.descriptionHtml, j.description], token)) seen.add(d); return { title: j.title.slice(0, 120), date: day(j.publishedAt)!, url: j.jobUrl, location: typeof j.location === 'string' ? j.location : null } }))
       const found = settle(seen, domain); if (found === false) return { hiring: null, contradictory: true }
       if (postings.length) return { hiring: build('ashby', postings, `https://jobs.ashbyhq.com/${token}`, found, 'domain'), contradictory: false }
     }

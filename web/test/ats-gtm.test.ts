@@ -188,3 +188,20 @@ test('HTML link: a posting that SAYS brightloop.io while its company-website lin
   const ashby = await atsGtmBoard('Brightloop', 'brightloop.io', route({ 'https://api.ashbyhq.com/posting-api/job-board/brightloop': { jobs: [{ title: 'Account Executive', jobUrl: 'https://jobs.ashbyhq.com/brightloop/1', isListed: true, publishedAt: d(7), descriptionHtml: html }] } }), { now: NOW })
   assert.deepEqual(ashby, { hiring: null, contradictory: true })
 })
+
+test('plain text AND html both supplied: the plain text says brightloop.io, the HTML link says brightloop.com -> contradictory on Lever and Ashby (and Greenhouse content+description), through real enrichment', async () => {
+  const plain = 'Apply at brightloop.io Company website', html = '<p>Apply at brightloop.io</p><a href="https://brightloop.com">Company website</a>'
+  const lever = { 'https://api.lever.co/v0/postings/brightloop?mode=json': [{ text: 'Account Executive', hostedUrl: 'https://jobs.lever.co/brightloop/a', createdAt: NOW - 5 * 86_400_000, descriptionPlain: plain, description: html }] }
+  const ashby = { 'https://api.ashbyhq.com/posting-api/job-board/brightloop': { jobs: [{ title: 'Account Executive', jobUrl: 'https://jobs.ashbyhq.com/brightloop/1', isListed: true, publishedAt: d(7), descriptionPlain: plain, descriptionHtml: html }] } }
+  const green = gh('&lt;p&gt;Apply at brightloop.io&lt;/p&gt;'); (green[`${GH}/jobs/1`] as Record<string, unknown>).description = html
+  for (const [name, board] of [['lever', lever], ['ashby', ashby], ['greenhouse', green]] as const) {
+    assert.deepEqual(await atsGtmBoard('Brightloop', 'brightloop.io', route(board), { now: NOW }), { hiring: null, contradictory: true }, name)
+    for (const basis of ['evidence_own_domain', 'name_probe', null]) {
+      const { db, jobId } = leadDb('brightloop.io', basis); const r = await enrich(db, jobId, board)
+      assert.deepEqual(r.gtm, [], `${name}/${basis}: a contradictory board writes nothing`); assert.equal(r.events, 0)
+    }
+  }
+  // the same payloads with an AGREEING html link are not a conflict
+  const ok = { 'https://api.lever.co/v0/postings/brightloop?mode=json': [{ text: 'Account Executive', hostedUrl: 'https://jobs.lever.co/brightloop/a', createdAt: NOW - 5 * 86_400_000, descriptionPlain: plain, description: html.replace('brightloop.com', 'brightloop.io') }] }
+  assert.equal((await atsGtmBoard('Brightloop', 'brightloop.io', route(ok), { now: NOW })).contradictory, false)
+})
