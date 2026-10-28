@@ -4,8 +4,9 @@ import Provenance from './provenance'
 import type { OutreachProvenance } from '@/lib/outreach/provenance'
 import SequencesClient from './sequences-client'
 import SendReadiness from './send-readiness'
+import { forScan, isJobId } from '@/lib/outreach/scan-drafts'
 
-interface Msg { send_footer?: string | null; currentness_held?: boolean; provenance?: OutreachProvenance | null; id: string; to_email: string; subject: string; body: string; status: string; error: string | null; sent_at: number | null; test?: number; evidence_state?: 'machine' | 'human' | 'unverified' }
+interface Msg { lead_id: string; send_footer?: string | null; currentness_held?: boolean; provenance?: OutreachProvenance | null; id: string; to_email: string; subject: string; body: string; status: string; error: string | null; sent_at: number | null; test?: number; evidence_state?: 'machine' | 'human' | 'unverified' }
 
 const ERR: Record<string, string> = {
   not_sales_contact: 'The published address is for recruitment, support, privacy or another restricted purpose. Saved words remain unchanged; approval and sending are blocked.',
@@ -33,11 +34,20 @@ export default function OutreachClient() {
   const [loaded, setLoaded] = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
 
+  // ?job_id=<scan> (from "Review drafts" on Leads): only that scan's emails. The scan's leads are read from the existing
+  // leads endpoint (all=1: a hidden or rejected lead's draft still belongs to the scan). null = no filter.
+  const [scan, setScan] = useState<{ id: string; leadIds: string[] | null } | null>(null)
   async function load() {
+    const jobId = new URLSearchParams(window.location.search).get('job_id')
+    if (isJobId(jobId)) {
+      const lr = await fetch(`/api/leads?job_id=${jobId}&all=1`).catch(() => null)
+      const lj = lr?.ok ? await lr.json().catch(() => null) : null
+      setScan({ id: jobId, leadIds: lj?.leads ? lj.leads.map((l: { id: string }) => l.id) : null })
+    }
     try { const r = await fetch('/api/outreach'); if (r.ok) { setMsgs((await r.json()).messages); setLoadFailed(false) } else setLoadFailed(true) } catch { setLoadFailed(true) } finally { setLoaded(true) }
     try { const seq=await fetch('/api/outreach/sequences'); if(seq.ok) setSequenceMessages((await seq.json()).sequences.map((s:{message_id:string})=>s.message_id)) } catch { /* sequence markers are optional; the email list above still stands */ }
   }
-  useEffect(() => { void load(); const refresh=()=>void load(); window.addEventListener('sequences-updated',refresh); window.addEventListener('sender-updated',refresh); return ()=>{ window.removeEventListener('sequences-updated',refresh); window.removeEventListener('sender-updated',refresh) } }, [])
+  useEffect(() => { void load(); const refresh=()=>void load(); window.addEventListener('sequences-updated',refresh); window.addEventListener('sender-updated',refresh); return ()=>{ window.removeEventListener('sequences-updated',refresh); window.removeEventListener('sender-updated',refresh) } }, []) // eslint-disable-line react-hooks/set-state-in-effect -- every setState in load() follows an await
 
   async function createSequence(id:string) {
     setCreating(true);setNote('Preparing template sequence...')
@@ -68,6 +78,7 @@ export default function OutreachClient() {
   }
 
   const btn = 'btn-ghost text-xs px-3 py-1.5'
+  const shown = scan?.leadIds ? forScan(msgs, scan.leadIds) : msgs
   return (
     <div className="p-8 max-w-3xl">
       <h1 className="text-2xl font-bold mb-1">Outreach</h1>
@@ -76,9 +87,13 @@ export default function OutreachClient() {
       {note && <p className="text-sm text-[#111] border-l-2 border-[#111] pl-3 mb-4" role="status">{note}</p>}
       {!loaded && <p className="text-[#666] text-sm" role="status">Loading your emails...</p>}
       {loaded && loadFailed && <p className="text-sm text-[#111] border-l-2 border-black pl-3 mb-4" role="alert">Could not load your emails. Refresh to retry.</p>}
+      {scan && <p className="text-sm border-l-2 border-black pl-3 mb-4" data-testid="scan-filter">{scan.leadIds === null
+        ? <>Could not load that scan&apos;s leads, so all your emails are shown.</>
+        : <>Showing the {shown.length} email{shown.length === 1 ? '' : 's'} from one scan. </>}
+        {scan.leadIds !== null && <a className="underline" href="/app/outreach">Show all emails</a>} <a className="underline" href={`/app/leads?job_id=${scan.id}`}>Back to its leads</a></p>}
       {loaded && !loadFailed && msgs.length === 0 && <p className="text-[#666] text-sm">No emails yet. Open Leads and choose Draft email on a lead with a published address.</p>}
       <div className="flex flex-col gap-3">
-        {msgs.map(m => {
+        {shown.map(m => {
           const e = edit[m.id]
           return (
             <div key={m.id} className="card p-4 text-sm">
