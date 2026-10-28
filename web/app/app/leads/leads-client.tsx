@@ -77,15 +77,19 @@ function extraLabels(body: Record<string, unknown> | null): string[] {
 }
 
 // What a scan here can search, and each source it cannot, with the reason and the page that fixes it.
-// "Searches" names only what every scan here uses (the core sources); a usable social source is opt-in under More
-// sources, so it is never listed as searched. Unavailable core and social sources are both listed, with their reason.
+// Capabilities, never a promise: a scan may skip an enabled source (news when another backend already found leads,
+// website reads when no lead qualifies), so the entry names what a scan here CAN use. Without an AI key no scan can
+// start at all, so that prerequisite comes first. Opt-in social sources are never listed; unavailable core and social
+// sources are listed with their reason, and a fix link only where the user can fix it.
 function SourceAvailability({ core, social }: { core: SourceRow[] | null; social: SourceRow[] }) {
   if (!core) return <p className="text-xs text-[#555] mt-2" data-testid="source-availability">Could not check which sources are available. Reload to retry.</p>
   const off = [...core, ...social].filter(r => !r.usable)
   const on = usableLabels(core)
   return (
     <div className="text-xs text-[#555] mt-2 space-y-1" data-testid="source-availability">
-      <p data-testid="sources-usable">{on ? <>Every scan searches: {on}. Extra sources are optional, under More sources.</> : <>No source is available for a scan yet.</>}</p>
+      <p data-testid="sources-usable">{!core.find(r => r.id === 'research')?.usable
+        ? <>A scan cannot start until you add an AI key{on ? <>. Then it can use: {on}</> : ''}.</>
+        : on ? <>Sources a scan here can use: {on}. Extra sources are optional, under More sources.</> : <>No source is available for a scan yet.</>}</p>
       {off.length > 0 && <p data-testid="sources-unavailable">Not available: {off.map((r, i) => <span key={r.id} data-testid={`source-off-${r.id}`}>{i > 0 && '; '}{r.label} ({r.reason}{r.fix && <>, <a className="underline text-[#111]" href={r.fix.href}>{r.fix.label}</a></>})</span>)}.</p>}
     </div>
   )
