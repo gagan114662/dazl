@@ -35,6 +35,7 @@ import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngrade
 import { getMemory, isExcluded, memoryPromptBlock } from '../memory.ts'
 import { enrichJobSignals } from '../signals/index.ts'
 import { applySalesHiringGate, quoteNamesSalesHiring, quoteShowsEvent } from './sales-hiring-gate.ts'
+import { regradeFromKeptContacts } from './contact-agreement.ts'
 import { primarySignalKind } from './score.ts'
 import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } from '../signals/competitor-reddit.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
@@ -1037,6 +1038,8 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // People search (person-first): the right people at each lead's company from public profile SEARCH RESULTS, for
     // companies whose own site lists nobody. Never throws; never an address; kill switch PEOPLE_SEARCH_ENABLED=0.
     await findPeople(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl })
+    // Contacts refused for disagreeing with the lead (wrong place / wrong domain) leave nothing reachable: regrade the lead from the evidence actually kept.
+    try { regradeFromKeptContacts(db, job.user_id, job.id) } catch (e) { console.error('regrade from kept contacts failed', e instanceof Error ? e.message : 'error') }
     // Buyer-fit gate (after the crawl, which confirms each company's own site): a hiring lead keeps fit >= 4 only when
     // its own home page shows it fits, quoted verbatim. Fail closed; never fails the scan.
     if (complete && deps.score !== false) {
