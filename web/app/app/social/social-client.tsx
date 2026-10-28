@@ -1,6 +1,9 @@
 'use client'
 import { useEffect, useState } from 'react'
 import ThreadMetrics from './thread-metrics'
+import { Pill } from '../ui/bits'
+
+const STATUS = { draft: 'Draft ready', edited: 'Edited', copied: 'Copied', posted: 'Posted by you' } as const
 
 type Thread = {
   id: string; platform: 'reddit' | 'x'; url: string; title: string; quote: string; query: string
@@ -16,6 +19,7 @@ export default function SocialClient() {
   const [msg, setMsg] = useState('')
   const [copied, setCopied] = useState('')
   const [edits, setEdits] = useState<Record<string, string>>({})
+  const [editing, setEditing] = useState<string | null>(null)
 
   async function load() { const r = await fetch('/api/replies'); if (r.ok) setState(await r.json()) }
   useEffect(() => { void load() }, [])
@@ -133,50 +137,42 @@ export default function SocialClient() {
       {state.threads.length === 0 ? (
         anyPlatform && <p className="text-sm text-[#999]">No threads yet. Add a search above and check for new threads.</p>
       ) : state.threads.map(t => (
-        <div key={t.id} className="card p-6 mb-4">
-          <div className="flex items-center gap-2 mb-1 text-xs">
-            <span className="border border-black/15 rounded-full px-2 py-0.5">{t.platform === 'x' ? 'X' : 'Reddit'}</span>
-            {t.date && <span className="text-[#999]">{t.date}</span>}
-            <span className="text-[#999]">found by &quot;{t.query}&quot;</span>
-            {t.buyer_intent === 'yes' && <span className="text-[#999]">buyer intent: model-graded - heuristic, review yourself</span>}
-            {t.buyer_intent === 'uncertain' && <span className="text-[#999]">buyer intent: unverified</span>}
-            {t.draft_status && <span className={t.draft_status === 'posted' ? 'text-green-700' : 'text-[#999]'}>{t.draft_status === 'posted' ? 'posted by you' : t.draft_status === 'copied' ? 'copied' : t.draft_status}</span>}
+        // One card per thread. One primary action, Approve: before a draft it writes one on your AI key; with a draft it
+        // copies the reply and opens the thread so you post it yourself (dazl never posts). Edit draft and Reject beside it.
+        <div key={t.id} className="card p-5 sm:p-6 mb-4" data-testid="thread-card">
+          <div className="flex flex-wrap items-center gap-2 mb-2 text-xs">
+            <Pill tone="plain">{t.platform === 'x' ? 'X' : 'Reddit'}</Pill>
+            {t.date && <span className="text-[var(--ink-3)]">{t.date}</span>}
+            <span className="text-[var(--ink-3)]">found by &quot;{t.query}&quot;</span>
+            {t.buyer_intent === 'yes' && <span className="text-[var(--ink-3)]">buyer intent: model-graded - heuristic, review yourself</span>}
+            {t.buyer_intent === 'uncertain' && <span className="text-[var(--ink-3)]">buyer intent: unverified</span>}
+            {t.draft_status && <span className="ml-auto" data-testid="draft-status"><Pill tone={t.draft_status === 'posted' ? 'mint' : 'plain'}>{STATUS[t.draft_status]}</Pill></span>}
           </div>
-          <a className="font-medium underline" href={t.url} target="_blank" rel="noopener noreferrer">{t.title}</a>
-          <p className="text-sm text-[#555] mt-1">{t.quote}</p>
+          <a className="font-semibold text-base hover:underline break-words" href={t.url} target="_blank" rel="noopener noreferrer">{t.title}</a>
+          <p className="text-sm text-[var(--ink-2)] mt-1 break-words">{t.quote}</p>
+          {t.draft !== null && (editing === t.id
+            ? <div className="mt-3">
+              <textarea className="field w-full text-sm" rows={5} aria-label="Your reply" value={edits[t.id] ?? t.draft} onChange={e => setEdits({ ...edits, [t.id]: e.target.value })} maxLength={4000} autoFocus />
+              <div className="flex flex-wrap items-center gap-2 mt-2">
+                <button className="btn-ghost btn-sm" onClick={async () => { await saveEdit(t.id); setEditing(null) }}>Save</button>
+                <button className="btn-ghost btn-sm" onClick={() => { setEdits({ ...edits, [t.id]: t.draft ?? '' }); setEditing(null) }}>Cancel</button>
+                <button className="text-xs underline text-[var(--ink-2)] ml-auto" disabled={busy === t.id || !state.has_key} onClick={() => draft(t.id)}>{busy === t.id ? 'Drafting...' : 'Write a new draft on your AI key'}</button>
+              </div>
+            </div>
+            : <p className="mt-3 text-sm whitespace-pre-wrap break-words rounded-[10px] bg-[#f8f4f0] px-3 py-2.5" data-testid="draft-text">{edits[t.id] ?? t.draft}</p>)}
           <div className="mt-3" data-testid="thread-actions">
-            {t.draft === null ? (
-              <>
-                <div className="flex flex-wrap items-center gap-2">
-                  <button className="btn-primary text-sm" disabled={busy === t.id || !state.has_key} onClick={() => draft(t.id)}>
-                    {busy === t.id ? 'Drafting...' : 'Draft reply'}
-                  </button>
-                  <button className="btn-ghost text-sm" onClick={() => dismiss(t.id)}>Dismiss</button>
-                </div>
-                <p className="text-xs text-[#555] mt-2" data-testid="action-hint">{state.has_key
-                  ? 'Draft reply writes a suggested reply on your AI key for you to edit. Nothing is posted. Dismiss hides this thread.'
-                  : 'Drafting needs your AI key (add one in Settings). Dismiss hides this thread.'}</p>
-              </>
-            ) : (
-              <>
-                <textarea
-                  className="field w-full text-sm"
-                  rows={4}
-                  aria-label="Your reply"
-                  value={edits[t.id] ?? t.draft}
-                  onChange={e => setEdits({ ...edits, [t.id]: e.target.value })}
-                  maxLength={4000}
-                />
-                <div className="flex flex-wrap items-center gap-2 mt-2">
-                  <button className="btn-primary text-sm" onClick={() => copyAndOpen(t)}>{copied === t.id ? 'Copied - paste it in the thread' : 'Copy reply & open thread'}</button>
-                  <button className="btn-ghost text-sm" onClick={() => saveEdit(t.id)}>Save edit</button>
-                  <button className="btn-ghost text-sm" disabled={busy === t.id} onClick={() => draft(t.id)}>{busy === t.id ? 'Drafting...' : 'Redraft'}</button>
-                  {t.draft_status !== 'posted' && <button className="btn-ghost text-sm" onClick={() => markPosted(t.id)}>Mark as posted</button>}
-                  <button className="btn-ghost text-sm" onClick={() => dismiss(t.id)}>Dismiss</button>
-                </div>
-                <p className="text-xs text-[#555] mt-2" data-testid="action-hint">dazl never posts. Copy puts your reply on the clipboard and opens the thread so you can post it from your own account; Mark as posted only records that you did. Redraft replaces the text on your AI key.</p>
-              </>
-            )}
+            {editing !== t.id && <div className="flex flex-wrap items-center gap-2">
+              {t.draft === null
+                ? <button className="btn-primary btn-sm" disabled={busy === t.id || !state.has_key} onClick={() => draft(t.id)}>{busy === t.id ? 'Drafting...' : 'Approve'}</button>
+                : <button className="btn-primary btn-sm" onClick={() => copyAndOpen(t)}>{copied === t.id ? 'Copied - paste it in the thread' : 'Approve'}</button>}
+              {t.draft !== null && <button className="btn-ghost btn-sm" onClick={() => setEditing(t.id)}>Edit draft</button>}
+              <button className="btn-ghost btn-sm" onClick={() => dismiss(t.id)}>Reject</button>
+              {t.draft !== null && t.draft_status !== 'posted' && <button className="text-xs underline text-[var(--ink-2)] ml-auto" onClick={() => markPosted(t.id)}>I posted it</button>}
+            </div>}
+            <p className="text-xs text-[var(--ink-2)] mt-2" data-testid="action-hint">{t.draft === null
+              ? state.has_key ? 'Approve writes a suggested reply on your AI key for you to check. Nothing is posted. Reject hides this thread.'
+                : 'Approve needs your AI key to write the reply (add one in Settings). Reject hides this thread.'
+              : 'dazl never posts. Approve copies your reply and opens the thread so you post it from your own account. Reject hides this thread.'}</p>
           </div>
         </div>
       ))}

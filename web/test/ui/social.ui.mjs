@@ -5,10 +5,11 @@
 // /app/replies redirects there,
 // its heading matches, it points email replies to Inbox, and the Inbox nav entry is unchanged. And availability:
 // with Reddit/X not enabled, only a "Coming soon on this workspace" notice shows (no search box, no Add/Check buttons,
-// no key prompt, no metrics); with it enabled, the searches card is there and the notice is not. Thread cards: every
-// action is a labelled button (Draft reply / Dismiss before a draft; Copy reply & open thread / Save edit / Redraft /
-// Mark as posted / Dismiss after), each card has a one-line "what happens" hint (dazl never posts), and without a key
-// Draft reply is disabled with the reason. Clicks reach only the stubbed /api/replies routes.
+// no key prompt, no metrics); with it enabled, the searches card is there and the notice is not. Thread cards: one
+// primary action per card, Approve, with Edit draft and Reject beside it (Approve / Reject before a draft); Approve
+// writes a draft on the AI key, or with a draft copies it and opens the thread (dazl never posts); Edit draft opens the
+// text with Save / Cancel; each card has a one-line "what happens" hint; without a key Approve is disabled with the
+// reason. Clicks reach only the existing stubbed /api/replies routes. Desktop and 390px (no horizontal scroll).
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -34,16 +35,17 @@ for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } ca
 const b = await chromium.launch()
 try {
   let enabled = false, hasKey = false
-  const writes = []
+  const writes = [], offHost = []
   const THREADS = [
     { id: 't1', platform: 'reddit', url: 'https://www.reddit.com/r/dentistry/comments/abc', title: 'Which booking tool do you use?', quote: 'Looking for an online booking tool for a two-chair practice.', date: '2026-10-20', query: 'booking tool', buyer_intent: 'uncertain', draft: null, draft_status: null },
     { id: 't2', platform: 'x', url: 'https://x.com/someone/status/1', title: 'Need a scheduling app', quote: 'Any recommendations for dental scheduling?', date: '2026-10-21', query: 'booking tool', buyer_intent: null, draft: 'We built a booking tool for small practices - happy to share how it works.', draft_status: 'copied' },
+    { id: 't3', platform: 'reddit', url: 'https://www.reddit.com/r/Dentists/comments/def', title: 'Patients keep missing appointments - what reminder system works?', quote: 'Two no-shows a day at our Park Slope office. Texts from the front desk are not cutting it.', date: '2026-10-24', query: 'appointment reminders', buyer_intent: 'yes', draft: 'Automated text + email reminders 48h and 2h before cut our no-shows roughly in half. Happy to share the setup.', draft_status: 'draft' },
   ]
   const ctx = await b.newContext({ viewport: { width: 1280, height: 800 } })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
   await ctx.route('**/*', async route => {
     const req = route.request(); const u = new URL(req.url())
-    if (u.origin !== base) return route.abort()
+    if (u.origin !== base) { offHost.push(u.href); return route.abort() }
     if (!u.pathname.startsWith('/api/')) return route.continue()
     if (req.method() !== 'GET') { writes.push(`${req.method()} ${u.pathname} ${req.postData()}`); return route.fulfill({ contentType: 'application/json', body: '{"ok":true}' }) }
     if (u.pathname === '/api/replies') return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ queries: enabled ? ['booking tool'] : [], threads: enabled ? THREADS : [], platforms: { reddit: enabled, x: false }, consent: enabled, has_key: hasKey }) })
@@ -77,22 +79,51 @@ try {
   assert.equal(await main.getByRole('button', { name: 'Remove search "booking tool"' }).count(), 1, 'the remove control is labelled')
   // Thread cards: labelled actions and a "what happens" hint on each.
   const cards = main.getByTestId('thread-actions')
-  assert.equal(await cards.count(), 2)
+  assert.equal(await cards.count(), 3)
   const first = cards.nth(0), second = cards.nth(1)
-  assert.deepEqual(await first.getByRole('button').allTextContents(), ['Draft reply', 'Dismiss'])
-  assert.equal(await first.getByRole('button', { name: 'Draft reply' }).isDisabled(), true, 'no key: drafting is off')
-  assert.equal(await first.getByTestId('action-hint').textContent(), 'Drafting needs your AI key (add one in Settings). Dismiss hides this thread.')
-  assert.deepEqual(await second.getByRole('button').allTextContents(), ['Copy reply & open thread', 'Save edit', 'Redraft', 'Mark as posted', 'Dismiss'])
-  assert.match(await second.getByTestId('action-hint').textContent(), /^dazl never posts\. Copy puts your reply on the clipboard and opens the thread so you can post it from your own account; Mark as posted only records that you did\./)
+  assert.deepEqual(await first.getByRole('button').allTextContents(), ['Approve', 'Reject'])
+  assert.equal(await first.getByRole('button', { name: 'Approve' }).isDisabled(), true, 'no key: Approve cannot write the reply')
+  assert.equal(await first.getByTestId('action-hint').textContent(), 'Approve needs your AI key to write the reply (add one in Settings). Reject hides this thread.')
+  assert.deepEqual(await second.getByRole('button').allTextContents(), ['Approve', 'Edit draft', 'Reject', 'I posted it'])
+  assert.equal(await second.getByTestId('action-hint').textContent(), 'dazl never posts. Approve copies your reply and opens the thread so you post it from your own account. Reject hides this thread.')
+  for (const c of await cards.all()) assert.equal(await c.locator('.btn-primary').count(), 1, 'one primary action per card')
+  assert.equal(await main.getByTestId('thread-card').nth(1).getByTestId('draft-text').textContent(), THREADS[1].draft, 'the draft is shown before you approve it')
   for (const btn of await main.getByTestId('thread-actions').getByRole('button').all()) assert.ok((await btn.textContent()).trim().length >= 4, 'no icon-only or one-letter action')
-  if (process.env.SHOTS) { await page.screenshot({ path: path.join(process.env.SHOTS, 'social-enabled.png') }); await second.locator('xpath=..').screenshot({ path: path.join(process.env.SHOTS, 'social-drafted-card.png') }) }
+  if (process.env.SHOTS) { await main.getByTestId('thread-card').first().scrollIntoViewIfNeeded(); await page.screenshot({ path: path.join(process.env.SHOTS, 'social-enabled.png') }); await second.locator('xpath=..').screenshot({ path: path.join(process.env.SHOTS, 'social-drafted-card.png') }) }
+  // Edit draft: the text opens with Save / Cancel; Cancel writes nothing, Save uses the existing save action.
+  await second.getByRole('button', { name: 'Edit draft' }).click()
+  const box = main.getByTestId('thread-card').nth(1).getByRole('textbox', { name: 'Your reply' })
+  await box.fill('Edited reply')
+  await main.getByTestId('thread-card').nth(1).getByRole('button', { name: 'Cancel' }).click()
+  assert.equal(await main.getByTestId('thread-card').nth(1).getByTestId('draft-text').textContent(), THREADS[1].draft, 'Cancel restores the draft')
+  await second.getByRole('button', { name: 'Edit draft' }).click()
+  await box.fill('Edited reply')
+  await main.getByTestId('thread-card').nth(1).getByRole('button', { name: 'Save' }).click()
+  await page.waitForTimeout(400)
+  assert.deepEqual(writes.splice(0), ['POST /api/replies/t2 {"action":"save","draft":"Edited reply"}'])
+  // Approve with a draft: copies and opens the thread (the popup is aborted off-host), recorded as copied; nothing posted.
+  await ctx.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: base })
+  const popup = page.waitForEvent('popup')
+  await cards.nth(2).getByRole('button', { name: 'Approve' }).click()
+  await (await popup).close()
+  await page.waitForTimeout(400)
+  assert.ok(offHost.includes(THREADS[2].url), 'Approve opened the thread itself')
+  assert.deepEqual(writes.splice(0), ['POST /api/replies/t3 {"action":"mark","status":"copied"}'])
+  // 390px: the same cards, readable, no horizontal scroll.
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.reload({ waitUntil: 'networkidle' }); await cards.first().waitFor()
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'no horizontal scroll at 390px')
+  for (const c of await cards.all()) for (const btn of await c.getByRole('button').all()) { const bb = await btn.boundingBox(); assert.ok(bb.x >= 0 && bb.x + bb.width <= 390, 'every action on screen') }
+  if (process.env.SHOTS) { await main.getByTestId('thread-card').nth(2).scrollIntoViewIfNeeded(); await page.screenshot({ path: path.join(process.env.SHOTS, 'social-390.png') }) }
+  await page.setViewportSize({ width: 1280, height: 800 })
   // With a key: Draft reply works; it and Dismiss reach only the existing endpoints (stubbed).
   hasKey = true
   await page.reload({ waitUntil: 'networkidle' })
   await cards.first().waitFor()
-  assert.equal(await cards.nth(0).getByTestId('action-hint').textContent(), 'Draft reply writes a suggested reply on your AI key for you to edit. Nothing is posted. Dismiss hides this thread.')
-  await cards.nth(0).getByRole('button', { name: 'Draft reply' }).click()
-  await cards.nth(0).getByRole('button', { name: 'Dismiss' }).click()
+  if (process.env.SHOTS) { await main.getByTestId('thread-card').first().scrollIntoViewIfNeeded(); await page.screenshot({ path: path.join(process.env.SHOTS, 'social-desktop.png') }) }
+  assert.equal(await cards.nth(0).getByTestId('action-hint').textContent(), 'Approve writes a suggested reply on your AI key for you to check. Nothing is posted. Reject hides this thread.')
+  await cards.nth(0).getByRole('button', { name: 'Approve' }).click()
+  await cards.nth(0).getByRole('button', { name: 'Reject' }).click()
   await page.waitForTimeout(500)
   assert.deepEqual(writes, ['POST /api/replies/t1 {"action":"draft"}', 'POST /api/replies {"action":"dismiss","id":"t1"}'])
   // An old bookmark (with a query string) still lands on the renamed page, signed in.
