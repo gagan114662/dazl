@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { createDraft, listMessages, OutreachError } from '@/lib/outreach/service'
 import { draftFailure } from '@/lib/outreach/draft-error'
+import { captureError } from '@/lib/ops/errors'
+import { requestIdOf } from '@/lib/ops/request-log'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 
@@ -43,7 +45,7 @@ export async function POST(req: NextRequest) {
     if (e instanceof OutreachError) { const [s, m] = MSG[e.code] ?? [400, 'Could not create the draft']; return NextResponse.json({ error: m, code: e.code }, { status: s }) }
     // Not a known business refusal (for example SQLITE_BUSY under a second writer). Fixed body, so the client always gets JSON.
     const f = draftFailure(e)
-    console.error('draft create failed', f.body.code)
+    captureError(e, { source: 'route', where: '/api/outreach', method: 'POST', tenantId: user.id, requestId: requestIdOf(req) })
     return NextResponse.json(f.body, { status: f.status })
   }
 }

@@ -90,7 +90,7 @@ never been drilled is a rumor. Run the drill on every backup - it is millisecond
    `restore-drill.ts --backup <file> --keep-work-dir --work-dir <scratch>` then copy the
    verified `restored.db` to `$DB_PATH` (the app re-enables WAL on open).
 3. Confirm `DAZL_MASTER_KEY` and the other env vars are the originals.
-4. Start the app, `curl localhost:3100/api/health`, log in, open a leads page.
+4. Start the app, `curl localhost:3100/api/ready` (200, `ok:true`), log in, open a leads page.
 5. Scan jobs captured mid-`running` self-heal: the existing stale-job reaper
    (`SCAN_STALE_RUNNING_S`) flips them to pending/failed. No manual cleanup.
 

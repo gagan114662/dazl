@@ -25,7 +25,18 @@ bothEngines('readiness: ready when the store, its schema and the SQLite file ans
   assert.equal(r.checks.store.ok, true)
   assert.deepEqual(kind === 'sqlite' ? r.checks.schema : { ok: r.checks.schema.ok }, kind === 'sqlite' ? { ok: true, skipped: 'sqlite' } : { ok: true })
   assert.equal(r.checks.sqlite.ok, true)
+  assert.equal(r.checks.queue.ok, true, 'the scan queue answers in the configured store')
 })
+
+bothEngines('readiness: a store without a reachable scan queue is not ready, and the body says only which check failed', async ({ db }) => capturing(async got => {
+  await db.run('DROP TABLE work_queue')
+  const r = await readiness({ db: async () => db, sqlite: okSqlite, migrations: shipped })
+  assert.equal(r.ok, false)
+  assert.deepEqual({ ...r.checks.queue, ms: 0 }, { ok: false, ms: 0, reason: 'error' })
+  assert.equal(r.checks.store.ok, true, 'the store itself still answers')
+  assert.ok(!/work_queue|no such table|does not exist/i.test(JSON.stringify(r)), 'no error text in the response')
+  assert.equal(got.at(-1)?.where, 'readiness:queue', 'the error went to the reporter instead')
+}))
 
 bothEngines('readiness: a Postgres schema missing a migration this build ships is not ready', async ({ db, kind }) => {
   if (kind === 'sqlite') return // the SQLite schema is migrated in-process at open

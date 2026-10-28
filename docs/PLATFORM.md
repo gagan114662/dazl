@@ -36,14 +36,16 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
     - Mutation-checked: dropping the bind's `status = 'pending'` guard, or `finishJob`'s attempt fence, fails it.
   - **Not wired yet:** scan jobs still claim through `claimKeyedJob` on the SQLite `scan_jobs` table, single writer per file. Moving scan claiming onto `DbQueue` needs `scan_jobs` on Postgres. That is the next slice, with the yield owners. The other per-process state is listed in the table below.
 - **Step 6a (health and error capture):**
-  - `GET /api/health/live` answers without touching any store. Use it as the liveness probe.
-  - `GET /api/ready`, `GET /api/health/ready` and `GET /api/health` are the readiness probe. They are unauthenticated and carry no tenant data. `/api/health` stays readiness rather than liveness, because `ops/safe_launch.py` and the deploy checklist use it to confirm a new process can serve.
+  - `GET /api/health` and `GET /api/health/live` are the liveness probe: `{ok: true, commit}`, without touching any store, so a slow database never gets a healthy process restarted. (Until step 6b `/api/health` was readiness.)
+  - `GET /api/ready` and `GET /api/health/ready` are the readiness probe. `ops/safe_launch.py` and the deploy checklist wait on `/api/ready` (`ok` and the served `commit`) before a cutover. All four are unauthenticated and carry no tenant data.
   - Readiness: Each check has a 2 s budget. They return 503 when any of these fails or goes over budget:
     - the store does not answer (Postgres when `DATABASE_URL` is set, else SQLite);
     - on Postgres, `dazl_schema_migrations` is behind the migrations this build ships;
+    - the scan work queue (`work_queue`, `lib/queue`) does not answer in that store;
     - the SQLite file the raw-handle modules use does not answer.
   - The budget is a hard cut-off only for asynchronous waits (the Postgres pool). Synchronous better-sqlite3 work (a query, or the first open and migrate) cannot be preempted on the event loop. The probe waits for it, for up to the 5 s busy timeout on a locked file, and then reports that check as `timeout` if it went over budget.
-  - The body names the failed check and the engine, never the error text. `/api/health` keeps `ok` and `commit` for `ops/safe_launch.py`.
+  - The body names the failed check and the engine, never the error text. `/api/ready` carries `ok` and `commit` for `ops/safe_launch.py`.
+  - Every API route that answers a 5xx from its own `catch` reports the error (`test/route-error-capture.test.ts` reads the route sources and fails on one that does not); the rest rethrow to Next's `onRequestError`. Step 6b added the outreach draft route and the CRM push.
   - Errors are captured by `lib/ops/errors.ts` as one JSON line on stderr. Every field is built in code, scrubbed free text, or checked against its exact shape and replaced when it does not match:
     - `where`: a route template or worker name, never a concrete path.
     - `tenant`: a `users.id`, 32 lowercase hex characters.
@@ -304,7 +306,7 @@ These steps are development work behind flags and tests. Merging them does not c
      - The landing page Free card says "3 trial scans, then your own AI key". It does not mention the 50-scans-a-month cap the code enforces (`PLAN_LIMITS.free`).
      - The sign-up page says "Free plan: 50 scans a month with your own AI key. New accounts may get 3 trial scans first".
      - Pro ($49/mo) says "Fair-use limits apply", but the code has no Pro limit (`scansPerMonth: null`), and Settings shows "unlimited".
-6. **Ops.** `/api/health` checks the DB and the worker heartbeat. Add a structured error log with an alert hook, a scheduled backup restore drill (extends `scripts/backup/restore-drill.ts`), and a deploy checklist in `web/docs/DEPLOY.md`.
+6. **Ops.** `/api/ready` checks the store, its schema and the scan queue; `/api/health` is liveness. Add a structured error log with an alert hook, a scheduled backup restore drill (extends `scripts/backup/restore-drill.ts`), and a deploy checklist in `web/docs/DEPLOY.md`.
 
 ## Plan: scan jobs to Postgres (for coordination with the yield session; no code yet)
 
@@ -344,7 +346,7 @@ Nothing here has been run against production. The tool and the steps are ready f
 
 **Gate.** `lib/db/pg-port-status.ts` must be empty. A module on the raw SQLite handle keeps reading and writing the SQLite file whatever `DATABASE_URL` says. With the list non-empty, a cutover would split the data between two stores. `scripts/pg-cutover.mts` refuses to copy into Postgres while the list is non-empty, unless `--rehearsal` is passed.
 
-**Verify which store an instance serves from.** `/api/ready` and `/api/health`, both unauthenticated, return:
+**Verify which store an instance serves from.** `/api/ready` (and `/api/health/ready`), unauthenticated, returns:
 - `store`:
   - `engine`: `sqlite` or `pg`;
   - `migrations.shipped`: the highest PG migration this build ships;
