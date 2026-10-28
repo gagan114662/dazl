@@ -75,7 +75,7 @@ test('plays never present research-only leads as yield; old records and cancelle
   assert.equal(j({ verified: null, needs_review: null, lead_count: 0 }), 'counts unavailable')
   assert.equal(j({ status: 'failed', error: 'cancelled' }), 'cancelled')
   assert.equal(j({ status: 'failed', error: 'no_candidates' }), 'no candidates extracted', 'not a failure, and not proof of no matches')
-  assert.equal(j({ status: 'failed', error: 'key_rejected', funded_by: 'user' }), 'failed: your AI key was rejected')
+  assert.equal(j({ status: 'failed', error: 'key_rejected', funded_by: 'user' }), 'failed: AI key rejected', "'user' is the column default, not proof")
   assert.equal(j({ status: 'failed', error: 'key_rejected', funded_by: 'trial' }), 'failed: free-search key trouble')
   assert.equal(j({ status: 'failed', error: 'key_rejected' }), 'failed: AI key rejected', 'unknown funding: neutral, never a service outage')
   assert.equal(j({ status: 'enriching' }), 'finishing')

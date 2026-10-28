@@ -37,16 +37,16 @@ test('a stop is never reported as an empty search', () => {
   assert.match(failed('budget_stopped').label, /not an empty search/)
 })
 
-// Instinct #274: key_rejected is stored for the user's own key too; only a trial-funded job is the service's key.
-test('a rejected key is attributed from the record: own key, free-search key, or neutral when funding is unknown', () => {
+// Instinct #274: key_rejected is stored for the user's own key too; only a known trial-funded job is the free-search
+// key's. funded_by 'user' is the column default (also for rows from before it existed), so it proves no owner.
+test('a rejected key: the free-search key only when known trial-funded; otherwise neutral, never an owner or an outage', () => {
   const own = failed('key_rejected', { funded_by: 'user' })
-  assert.deepEqual([own.label, own.next], ['Failed - your AI provider rejected your key', { text: 'Check your AI key in Settings', href: '/app/settings' }])
+  assert.deepEqual([own.label, own.next], ['Failed - the AI provider rejected the key this scan used', { text: 'Check your AI key in Settings', href: '/app/settings' }])
   const trial = failed('key_rejected', { funded_by: 'trial' })
   assert.deepEqual([trial.label, trial.next?.text], ['Failed - the free-search key had trouble (not your key)', 'Try again later'])
   assert.deepEqual(failed('trial_key_invalid'), trial)
-  const unknown = failed('key_rejected')
-  assert.deepEqual([unknown.label, unknown.next?.href], ['Failed - the AI key used for this scan was rejected', '/app/settings'])
-  for (const o of [own, unknown]) assert.doesNotMatch(o.label, /service/, 'never invents a service failure')
+  for (const f of [undefined, null, 'user', 'something-else']) assert.deepEqual(failed('key_rejected', { funded_by: f }), own, String(f))
+  assert.doesNotMatch(own.label, /service|your key/, 'never invents an owner or a service failure')
 })
 
 test('key problems point at Settings or a retry; free-text errors stay a plain failure', () => {

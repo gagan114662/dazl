@@ -67,7 +67,8 @@ test('the campaign read carries the counts the runner recorded, so the page can 
   db.prepare("UPDATE scan_jobs SET status='failed', error='key_rejected' WHERE id=?").run(ownKey)
   db.prepare("UPDATE scan_jobs SET status='failed', error='key_rejected', funded_by='trial' WHERE id=?").run(trialKey)
   const label = (id: string) => scanOutcome(campaignDetail(db, 'A', id)!.job).label
-  assert.deepEqual([label(ownKey), label(trialKey)], ['Failed - your AI provider rejected your key', 'Failed - the free-search key had trouble (not your key)'], 'funding identity comes from the record')
+  assert.deepEqual([label(ownKey), label(trialKey)], ['Failed - the AI provider rejected the key this scan used', 'Failed - the free-search key had trouble (not your key)'], 'only a known trial job is attributed')
+  assert.equal(campaignDetail(db, 'A', ownKey)!.job.funded_by, null, "the 'user' column default is not reported as an owner")
   const kind = (id: string) => { const d = campaignDetail(db, 'A', id)!; return scanOutcome({ ...d.job, lead_count: d.leads.length }).kind }
   assert.deepEqual(campaignDetail(db, 'A', dropped)!.job, { ...campaignDetail(db, 'A', dropped)!.job, candidates: 6, verified: 0, needs_review: 0, dropped: 6 })
   assert.deepEqual([kind(dropped), kind(zero), kind(broke)], ['all_dropped', 'none_extracted', 'failed'])

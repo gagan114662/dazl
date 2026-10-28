@@ -13,8 +13,9 @@ import { enrichState } from './enrichment.ts'
 //   report: no search hits, no page text offered, or text offered and zero extracted) is shown when there is one;
 // - a finished scan whose enrichment stage (contacts, fit) is still running reads as finishing (#254), and one whose
 //   enrichment never ended says so;
-// - a rejected key is the scan service's only when the job was trial-funded (funded_by 'trial'); a job funded by the
-//   user is their own key; a record without funding identity gets neutral key wording, never a service failure.
+// - a rejected key is the free-search key's only when the job is known to be trial-funded (funded_by 'trial'). Nothing
+//   in the record proves a scan used the user's own key (the column defaults to 'user', also for rows from before it
+//   existed), so every other rejection gets neutral wording: no owner and no service outage is claimed.
 export type ScanOutcomeKind = 'running' | 'enriching' | 'leads' | 'review_only' | 'all_dropped' | 'none_extracted' | 'unrecorded' | 'stopped' | 'failed'
 export interface ScanOutcome { kind: ScanOutcomeKind; label: string; detail?: string; next: { text: string; href: string } | null }
 export interface ScanRecord {
@@ -41,10 +42,8 @@ export function scanOutcome(j: ScanRecord): ScanOutcome {
       case 'key_unreadable': case 'no_api_key': return { kind: 'failed', label: 'Failed - your AI key could not be used', next: { text: 'Check your AI key in Settings', href: '/app/settings' } }
       case 'trial_key_invalid': return TRIAL_KEY
       case 'key_rejected':
-        if (j.funded_by === 'trial') return TRIAL_KEY
-        return j.funded_by === 'user'
-          ? { kind: 'failed', label: 'Failed - your AI provider rejected your key', next: { text: 'Check your AI key in Settings', href: '/app/settings' } }
-          : { kind: 'failed', label: 'Failed - the AI key used for this scan was rejected', next: { text: 'Check your AI key in Settings', href: '/app/settings' } }
+        return j.funded_by === 'trial' ? TRIAL_KEY
+          : { kind: 'failed', label: 'Failed - the AI provider rejected the key this scan used', next: { text: 'Check your AI key in Settings', href: '/app/settings' } }
       default: return { kind: 'failed', label: 'Failed', next: { text: 'Try again', href: NEW_SCAN } }
     }
   }

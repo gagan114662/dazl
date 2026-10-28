@@ -102,7 +102,7 @@ function outcomeOf(j: JobRow): string {
   if (o.kind === 'failed') {
     // A rejected key says whose it was, exactly as the history and campaign page do (funded_by from the scan record).
     if (j.error === 'trial_key_invalid' || (j.error === 'key_rejected' && j.funded_by === 'trial')) return 'failed: free-search key trouble'
-    if (j.error === 'key_rejected') return j.funded_by === 'user' ? 'failed: your AI key was rejected' : 'failed: AI key rejected'
+    if (j.error === 'key_rejected') return 'failed: AI key rejected'
     return 'failed'
   }
   if (o.kind === 'none_extracted') return 'no candidates extracted'

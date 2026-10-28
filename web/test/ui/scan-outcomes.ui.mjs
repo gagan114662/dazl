@@ -5,10 +5,10 @@
 // FROM A STUB in the browser: no scan runs, nothing is drafted or sent. Off-host requests are aborted. It proves:
 //   1. a failed scan, a none-extracted scan (never called "no matches"; the recorded diagnostic kept, so pages read but
 //      nothing extracted differs from no search hits), an all-dropped scan, a budget stop, an older scan without
-//      counts, an interrupted enrichment and a rejected key (own key, free-search key, unknown funding) each read as
+//      counts, an interrupted enrichment and a rejected key (known free-search key vs. neutral otherwise) each read as
 //      their own outcome in Past scans, each with one next-step link;
 //   2. the campaign page shows the same outcome, next step and diagnostic, including a scan still enriching (#254);
-//   3. Home's plays use short words for the same outcomes (key rejections attributed the same way);
+//   3. Home's plays use short words for the same outcomes (key rejections worded the same way);
 //   4. nothing is written.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
@@ -80,9 +80,10 @@ const EXPECT = {
   budget: ['stopped', /Stopped by its budget - not an empty search/, 'Run it again with a larger budget', '/app/leads'],
   failed: ['failed', /Failed/, 'Try again', '/app/leads'],
   old: ['unrecorded', /did not record whether nothing matched or everything was dropped/, 'Run the search again', '/app/leads'],
-  ownKey: ['failed', /Failed - your AI provider rejected your key/, 'Check your AI key in Settings', '/app/settings'],
+  // The jobs read never reports 'user' (it is the column default, not proof); even if it did, the wording stays neutral.
+  ownKey: ['failed', /Failed - the AI provider rejected the key this scan used/, 'Check your AI key in Settings', '/app/settings'],
   trialKey: ['failed', /Failed - the free-search key had trouble \(not your key\)/, 'Try again later', '/app/leads'],
-  unknownKey: ['failed', /Failed - the AI key used for this scan was rejected/, 'Check your AI key in Settings', '/app/settings'],
+  unknownKey: ['failed', /Failed - the AI provider rejected the key this scan used/, 'Check your AI key in Settings', '/app/settings'],
   enriching: ['enriching', /Finishing - finding contacts and checking fit/, null, null],
   interrupted: ['leads', /5 found: 2 source-checked, 0 need your review, 3 dropped; contacts and fit checks did not finish/, null, null],
 }
@@ -104,7 +105,7 @@ try {
     const row = k => rows.find(x => x.q === ALL[k].query)
     assert.equal(row('readNone').detail, READ_NONE, 'the recorded diagnostic is kept: pages were read, nothing extracted')
     assert.equal(row('noHits').detail, NO_HITS, 'truly no search hits reads differently')
-    assert.doesNotMatch(rows.map(r => r.text).join(' '), /No matches|scan service had trouble|found no companies/)
+    assert.doesNotMatch(rows.map(r => r.text).join(' '), /No matches|scan service had trouble|found no companies|rejected your key/)
   }
   // Campaign page: same outcome, next step and diagnostic, from the campaign read.
   for (const k of ['dropped', 'readNone', 'noHits', 'ownKey', 'trialKey', 'unknownKey', 'enriching', 'interrupted']) {
@@ -128,7 +129,7 @@ try {
   await home(['readNone', 'budget', 'dropped', 'failed', 'interrupted'], ['no candidates extracted', 'stopped', '6 found, all dropped by the checks', 'failed', '2 source-checked, 0 need your review'])
   await page.getByTestId('play-campaign-link').first().scrollIntoViewIfNeeded()
   await shot('home-plays')
-  await home(['ownKey', 'trialKey', 'unknownKey', 'enriching', 'noHits'], ['failed: your AI key was rejected', 'failed: free-search key trouble', 'failed: AI key rejected', 'finishing', 'no candidates extracted'])
+  await home(['ownKey', 'trialKey', 'unknownKey', 'enriching', 'noHits'], ['failed: AI key rejected', 'failed: free-search key trouble', 'failed: AI key rejected', 'finishing', 'no candidates extracted'])
   await page.getByTestId('play-campaign-link').first().scrollIntoViewIfNeeded()
   await shot('home-plays-keys')
   assert.deepEqual(writes, [], 'loading writes nothing')
