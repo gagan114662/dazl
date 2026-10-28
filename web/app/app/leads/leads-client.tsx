@@ -110,6 +110,10 @@ export default function LeadsClient() {
   const [budgetForm, setBudgetForm] = useState<BudgetForm>(EMPTY_BUDGET_FORM)
   const budgetCheck = budgetFromForm(budgetForm)
   const [icp, setIcp] = useState<{ icp: Icp; source: string } | null>(null)
+  // The sentence the held profile belongs to. A REVIEWED profile ('user' source) is sent again only for that exact sentence; for any other
+  // sentence it is dropped with a visible notice (it described a different request). Never merged, never widened.
+  const [icpQuery, setIcpQuery] = useState<string | null>(null)
+  const [profileNote, setProfileNote] = useState<string | null>(null)
   const [jobId, setJobId] = useState<string | null>(null)
   viewedJob.current = jobId ?? ''
   const [status, setStatus] = useState<string>('')
@@ -345,6 +349,17 @@ export default function LeadsClient() {
 
   // Extra sources this page asked the run for (unknown for a scan adopted after a reload: null).
   const [runExtras, setRunExtras] = useState<string[] | null>(null)
+  const sameRequest = (a: string | null, b: string) => a !== null && a.trim().replace(/\s+/g, ' ') === b.trim().replace(/\s+/g, ' ')
+  // The profile Find leads sends: the reviewed profile, unchanged, for an unchanged sentence; nothing otherwise (the server then works one
+  // out, exactly as before). A reviewed profile held for a DIFFERENT sentence is dropped and the user is told.
+  function reviewedProfileFor(q: string): Icp | null {
+    if (!icp || icp.source !== 'user') return null
+    if (sameRequest(icpQuery, q)) return icp.icp
+    setIcp(null); setIcpQuery(null)
+    setProfileNote('You changed the request, so the profile you reviewed earlier no longer applies. dazl will work out a new profile from this sentence. Use "Review profile first" to check it before it runs.')
+    return null
+  }
+  const reusingReviewed = !!icp && icp.source === 'user' && sameRequest(icpQuery, query)
   async function run(withIcp: Icp | null) {
     if (budgetCheck.error) { setError(budgetCheck.error); return } // an enabled but invalid spend limit never starts a run
     setError(''); setStarting(true)
@@ -353,7 +368,7 @@ export default function LeadsClient() {
       const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) }) })
       const j = await r.json().catch(() => ({}))
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : j.error === 'trial_exhausted' ? 'Your 3 free scans are used up. Add your own AI key in Settings to keep scanning.' : j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')); if (j.error === 'invalid_budget' && j.detail) setError(`The spend limit was not accepted: ${String(j.detail).slice(0, 200)}`); return }
-      setRunExtras(extraLabels(srcBody)); passiveJob.current = false; setJobId(j.job_id); setStatus('pending'); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0
+      setRunExtras(extraLabels(srcBody)); passiveJob.current = false; setProfileNote(null); setJobId(j.job_id); setStatus('pending'); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0
     } catch {
       // A rejected fetch (offline, aborted) used to fail silently - the click looked dead.
       setError('Could not reach the server. Check your connection and try again.')
@@ -381,7 +396,7 @@ export default function LeadsClient() {
       const s = await r.json()
       setStatus(s.status); setEmptyReason(typeof s.empty_reason === 'string' ? s.empty_reason : null); setJobError(s.error ?? ''); setLeadsSoFar(s.lead_count ?? 0); setStartedAt(s.claimed_at ?? null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
       setQuality(s.quality ?? null)
-      if (s.icp) setIcp({ icp: s.icp, source: s.icp_source })
+      if (s.icp) { setIcp({ icp: s.icp, source: s.icp_source }); setIcpQuery(typeof s.query === 'string' ? s.query : null) }
       if (typeof s.query === 'string' && s.query && queryShownFor.current !== jobId) { queryShownFor.current = jobId; setQuery(s.query) }
     }
     void tick() // immediate first check: a done deep link must not sit on a loading state for a full interval
@@ -448,7 +463,7 @@ export default function LeadsClient() {
       // Either order of responses: a job is being viewed (adopted, or named by the URL) => keep ITS query and profile.
       if (viewedJob.current || /^[a-f0-9]{24}$/.test(new URLSearchParams(window.location.search).get('job_id') ?? '')) return
       if (j.query && !query) setQuery(j.query)
-      if (j.icp) setIcp({ icp: j.icp, source: j.icp_source ?? 'user' })
+      if (j.icp) { setIcp({ icp: j.icp, source: j.icp_source ?? 'user' }); setIcpQuery(typeof j.query === 'string' ? j.query : null) }
     }).catch(() => {})
   }, [])
 
@@ -473,7 +488,7 @@ export default function LeadsClient() {
       </div>
       {/* Submitting the sentence runs the scan (the server works out the profile, as the run-without-review path always did)
           and lands on live progress; reviewing the profile first is optional. */}
-      <form onSubmit={e => { e.preventDefault(); void run(null) }} className="mb-4">
+      <form onSubmit={e => { e.preventDefault(); void run(reviewedProfileFor(query)) }} className="mb-4">
         <label htmlFor="play" className="block text-base font-semibold mb-2">Who do you want to reach?</label>
         <textarea id="play" className={`${input} w-full`} rows={3} required minLength={3} maxLength={600} value={query} onChange={e => setQuery(e.target.value)}
           placeholder="One sentence: who, where, and what just happened. e.g. Seed-stage fintech founders in Europe who just hired their first sales rep" />
@@ -487,7 +502,9 @@ export default function LeadsClient() {
         <div className="flex gap-3 mt-2 items-center">
           <button disabled={busy || starting || scanActive} title={scanActive ? 'A scan is already running below' : undefined} className="btn-primary">{starting ? 'Starting...' : 'Find leads'}</button>
           <button type="button" disabled={query.trim().length < 3 || busy || starting || scanActive} onClick={() => void preview()} className="text-xs text-[#555] underline disabled:opacity-40 disabled:no-underline">{busy ? 'Working out your profile...' : 'Review profile first'}</button>
+          {reusingReviewed && !scanActive && <span className="text-xs text-gray-500" data-testid="profile-reused">Using the profile you reviewed.</span>}
         </div>
+        {profileNote && <p className="text-xs text-amber-700 mt-1" data-testid="profile-invalidated">{profileNote}</p>}
         {!jobId && <SourceAvailability core={core} social={socialSources(advanced)} />}
       </form>
       <details className="mb-4 text-sm" data-testid="more-sources">
