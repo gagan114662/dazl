@@ -950,7 +950,7 @@ export default function LeadsClient() {
                   <div className="text-xs text-gray-500 mt-1">{quoteNote(l.source_check?.quote_match).prefix}"{l.evidence_excerpt}"</div>
                 )}
                 {/* Labelled actions: check the source first, then confirm - worded for what confirming unlocks for this lead. */}
-                {(() => { const a = reviewAction(l.review_reason, !!l.window_held); return <div className="mt-3" data-testid="review-actions">
+                {(() => { const a = reviewAction(l); return <div className="mt-3" data-testid="review-actions">
                   <div className="flex flex-wrap gap-2">
                     <a className="btn-ghost text-xs px-3 py-1.5" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">Open source</a>
                     <button onClick={() => confirmReview(l.id)} className="btn-primary text-xs px-3 py-1.5">{a.label}</button>

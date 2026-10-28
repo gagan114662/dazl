@@ -5,8 +5,9 @@
 //   1. each review card has two labelled actions - Open source (its own source link) and a confirm button - and a hint
 //      saying exactly what confirming unlocks for that lead;
 //   2. a quote problem: "I checked the source - use it" (confirmed by you, never source-checked, can be drafted);
-//      a date problem: "I checked the date - use it" (dazl has not verified the date); outside the time window:
-//      "Keep as research" (stays out of drafting);
+//      a date problem: "I checked the date - use it" (dazl has not verified the date); held by the time window:
+//      "Keep as research" - an older dated lead says only a NEW wider-window scan (usual budget) can find it as current,
+//      and an undated or future-dated lead says no window changes it (widening is never offered as its cure);
 //   3. confirming sends only the existing POST /api/leads/<id>/confirm.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
@@ -38,6 +39,9 @@ const LEADS = [
   lead('1'.repeat(24), 'Quote Dental', { review_reason: 'quote_unconfirmed', source_url: 'https://news.example/quote' }),
   lead('2'.repeat(24), 'Stale Dental', { review_reason: 'event_date_stale', event_date: '2026-09-15', source_url: 'https://news.example/stale' }),
   lead('3'.repeat(24), 'Window Dental', { review_reason: 'outside_window', window_held: true, event_date: '2025-01-01', source_url: 'https://news.example/window' }),
+  // The real undated research case (Instinct #271): no event date at all.
+  lead('4'.repeat(24), 'Undated Juicebox', { review_reason: 'outside_window_undated', window_held: true, event_date: null, source_url: 'https://news.example/undated' }),
+  lead('5'.repeat(24), 'Future Dental', { review_reason: 'event_date_future_date', window_held: true, event_date: '2027-03-01', source_url: 'https://news.example/future' }),
 ]
 const writes = []
 const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: 1280, height: 1200 } })
@@ -60,13 +64,18 @@ try {
   await page.goto(`${base}/app/leads?job_id=${JOB}&passive=1`, { waitUntil: 'networkidle' })
   if (process.env.BEFORE_ONLY) { await page.getByText('Needs your review').waitFor({ timeout: 15000 }); await page.getByText('Needs your review').scrollIntoViewIfNeeded(); await shot('review'); console.log('before shot'); process.exit(0) }
   const actions = page.getByTestId('review-actions'); await actions.first().waitFor({ timeout: 15000 })
-  assert.equal(await actions.count(), 3)
+  assert.equal(await actions.count(), 5)
   const rows = await actions.evaluateAll(els => els.map(e => [[...e.querySelectorAll('a,button')].map(x => x.textContent), e.querySelector('a').getAttribute('href'), e.querySelector('[data-testid=review-hint]').textContent]))
-  assert.deepEqual(rows.map(r => r[0]), [['Open source', 'I checked the source - use it'], ['Open source', 'I checked the date - use it'], ['Open source', 'Keep as research']])
-  assert.deepEqual(rows.map(r => r[1]), ['https://news.example/quote', 'https://news.example/stale', 'https://news.example/window'])
+  assert.deepEqual(rows.map(r => r[0]), [['Open source', 'I checked the source - use it'], ['Open source', 'I checked the date - use it'], ['Open source', 'Keep as research'], ['Open source', 'Keep as research'], ['Open source', 'Keep as research']])
+  assert.deepEqual(rows.map(r => r[1]), ['https://news.example/quote', 'https://news.example/stale', 'https://news.example/window', 'https://news.example/undated', 'https://news.example/future'])
   assert.match(rows[0][2], /never shown as source-checked/)
   assert.match(rows[1][2], /dazl has not verified the date or current need/)
-  assert.match(rows[2][2], /research only: it stays out of drafting/)
+  assert.match(rows[2][2], /older than the time window you asked for.*only a new scan with a wider window can find it as current \(it uses your usual scan budget\)/)
+  for (const i of [3, 4]) {
+    assert.match(rows[i][2], /no valid event date \(missing, invalid or in the future\), so it stays out of drafting\. A wider time window does not change that\./)
+    assert.doesNotMatch(rows[i][2], /Widen the window|new scan/, 'widening is never offered as a cure for an undated or future-dated lead')
+  }
+  assert.ok(rows.every(r => !/Widen the window to draft it/.test(r[2])), 'the old false promise is gone everywhere')
   await page.getByText('Needs your review').scrollIntoViewIfNeeded()
   await shot('review')
   await actions.nth(1).getByRole('button', { name: 'I checked the date - use it' }).click()
