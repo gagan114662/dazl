@@ -86,8 +86,8 @@ test('advanced connectors: the same gates, sessions, budget and audit rows from 
   const now = Math.floor(Date.now() / 1000)
   const outs: unknown[] = []
   const variants: { name: string; open: () => Promise<{ store: Db | Database.Database; db: Db; raw?: Database.Database; done: () => Promise<void> }> }[] = [
-    { name: 'sqlite raw handle', open: async () => { const raw = new Database(':memory:'); migrateAllSqlite(raw); return { store: raw, db: sqliteDb(raw), raw, done: async () => raw.close() } } },
-    { name: 'sqlite Db', open: async () => { const raw = new Database(':memory:'); migrateAllSqlite(raw); return { store: sqliteDb(raw), db: sqliteDb(raw), raw, done: async () => raw.close() } } },
+    { name: 'sqlite raw handle', open: async () => { const raw = new Database(':memory:'); migrateAllSqlite(raw); return { store: raw, db: sqliteDb(raw), raw, done: async () => { raw.close() } } } },
+    { name: 'sqlite Db', open: async () => { const raw = new Database(':memory:'); migrateAllSqlite(raw); return { store: sqliteDb(raw), db: sqliteDb(raw), raw, done: async () => { raw.close() } } } },
     ...(PG_URL ? [{ name: 'pg Db', open: async () => { const s = await freshSchema(); const db = pgDb({ connectionString: PG_URL!, searchPath: s.schema, max: 2 }); await runPgMigrations(db.pool); return { store: db, db, done: async () => { await db.close(); await s.drop() } } } }] : []),
   ]
   for (const v of variants) {
