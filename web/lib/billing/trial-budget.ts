@@ -32,7 +32,6 @@ export function migrateTrialBudget(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS trial_reservations_day ON trial_reservations (day, tenant_id);
     CREATE TABLE IF NOT EXISTS trial_budget_lock (id INTEGER PRIMARY KEY CHECK (id = 1), n INTEGER NOT NULL DEFAULT 0);
-    INSERT OR IGNORE INTO trial_budget_lock (id, n) VALUES (1, 0);
   `)
 }
 
@@ -110,8 +109,9 @@ export async function admitTrialScan(db: Db, user: { id: string; email: string }
   if (!caps) return { ok: false, reason: 'not_configured' }
   const now = o.now ?? Math.floor(Date.now() / 1000), day = utcDay(now)
   return db.tx(function* (t: Tx): TxBody<Admission> {
-    // every admission takes this row first, so two instances cannot both admit against the same remaining budget
-    yield* t.run('UPDATE trial_budget_lock SET n = n + 1 WHERE id = 1')
+    // every admission takes this row first (created by the first admission, so a freshly migrated store stays empty), so
+    // two instances cannot both admit against the same remaining budget: the upsert locks the row until this commits
+    yield* t.run('INSERT INTO trial_budget_lock (id, n) VALUES (1, 1) ON CONFLICT (id) DO UPDATE SET n = trial_budget_lock.n + 1')
     const why = yield* refusal(t, user, caps, day)
     if (why) return { ok: false, reason: why }
     const id = randomBytes(12).toString('hex')
