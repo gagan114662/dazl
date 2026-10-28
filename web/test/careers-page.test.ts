@@ -1,7 +1,7 @@
 // Open sales role on the company's own careers page. Stubbed pages, invented companies, no network.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { careersSalesVacancy, salesRoleTitles } from '../lib/signals/careers-page.ts'
+import { careersSalesVacancy, salesRoleTitles, roleAgrees } from '../lib/signals/careers-page.ts'
 
 const page = (body: string) => `<html><body>${body}</body></html>`
 const site = (pages: Record<string, string>, over: Record<string, { status: number; body: string; finalUrl?: string } | null> = {}) => async (url: string) => {
@@ -75,7 +75,7 @@ test('a stale careers-index link: the job page says "This position is closed." (
   assert.equal((await run(undefined)).reason, 'job_closed', '404 job page')
   assert.equal((await run(undefined, { '/careers/ae': { status: 410, body: '' } })).reason, 'job_closed', '410 job page')
   assert.equal((await run(undefined, { '/careers/ae': { status: 200, body: '<h1>All open roles</h1>', finalUrl: 'https://brightloop.io/careers' } })).reason, 'job_closed', 'redirected to a listing that no longer shows the role')
-  assert.equal((await run('<h1>Careers</h1><p>Browse all roles</p>')).reason, 'job_closed', 'the job page does not show the role')
+  assert.equal((await run('<h1>Careers</h1><p>Browse all roles</p>')).reason, 'job_role_mismatch', 'the job page does not show the role')
   assert.equal((await run(undefined, { '/careers/ae': { status: 200, body: '<h1>Account Executive</h1>', finalUrl: 'https://othercorp.com/x' } })).reason, 'job_company_mismatch')
   assert.equal((await run(JOB('Account Executive'))).reason, 'found', 'control: the same index with an open, company-named job page is a vacancy')
 })
@@ -107,4 +107,33 @@ test('ATS links are fetched and verified: another company\'s Lever / Greenhouse 
   const abOwn = 'https://jobs.ashbyhq.com/brightloop/abcd1234'
   assert.equal((await run(abOwn, board('brightloop', [{ title: 'Account Executive', jobUrl: abOwn, isListed: false }]))).reason, 'job_closed', 'unlisted')
   assert.equal((await run(abOwn, board('brightloop', [{ title: 'Account Executive', jobUrl: abOwn, isListed: true, descriptionPlain: 'Brightloop' }]))).vacancy?.url, abOwn)
+})
+
+// ---- Instinct review of a74f8a6: the role comes from the fetched posting, and it must be a sales / GTM role that agrees with the index claim ----
+test('wrong role behind a sales label: the index says Account Executive, the company-owned posting is a Backend Engineer -> rejected on every adapter (failing on a74f8a6); matching sales postings accepted', async () => {
+  const UUID = '6f1e0c2a-1111-2222-3333-444455556666'
+  const run = (link: string, over: Record<string, { status: number; body: string } | null>, pages: Record<string, string> = {}) => careersSalesVacancy('brightloop.io', site({ '/careers': `<h1>Careers</h1><li><a href="${link}">Account Executive</a></li>`, ...pages }, over), { now: NOW, company: 'Brightloop' })
+  // same-domain detail page
+  const wrong = await run('/careers/ae', {}, { '/careers/ae': JOB('Backend Engineer') })
+  assert.equal(wrong.vacancy, null); assert.equal(wrong.reason, 'job_role_mismatch')
+  assert.equal((await run('/careers/ae', {}, { '/careers/ae': JOB('Senior Account Executive, EMEA') })).vacancy?.title, 'Senior Account Executive, EMEA', 'control: the posting\'s own title is saved, and a level / region of the same role agrees')
+  assert.equal((await run('/careers/ae', {}, { '/careers/ae': JOB('Sales Operations Analyst') })).reason, 'job_role_mismatch', 'a different sales-adjacent role is not the claimed Account Executive')
+  assert.equal((await run('/careers/ae', {}, { '/careers/ae': '<html><body><p>Join Brightloop.</p></body></html>' })).reason, 'job_unverified', 'no heading to read the role from')
+  // Lever
+  const lever = `https://jobs.lever.co/brightloop/${UUID}`, LV = `api.lever.co/v0/postings/brightloop/${UUID}`
+  assert.equal((await run(lever, { [LV]: ok({ id: UUID, text: 'Backend Engineer', hostedUrl: lever, descriptionPlain: 'Join Brightloop.' }) })).reason, 'job_role_mismatch', 'Lever')
+  const lok = await run(lever, { [LV]: ok({ id: UUID, text: 'Account Executive', hostedUrl: lever, descriptionPlain: 'Join Brightloop.' }) })
+  assert.deepEqual([lok.vacancy?.title, lok.vacancy?.url], ['Account Executive', lever])
+  // Greenhouse
+  const gh = 'https://boards.greenhouse.io/brightloop/jobs/321'
+  assert.equal((await run(gh, { [`${GHJ}/brightloop/jobs/321`]: ok({ id: 321, title: 'Backend Engineer', content: '&lt;p&gt;Join Brightloop&lt;/p&gt;' }) })).reason, 'job_role_mismatch', 'Greenhouse')
+  assert.equal((await run(gh, { [`${GHJ}/brightloop/jobs/321`]: ok({ id: 321, title: 'Account Executive - London', content: '&lt;p&gt;Join Brightloop&lt;/p&gt;' }) })).vacancy?.title, 'Account Executive - London')
+  // Ashby
+  const ab = 'https://jobs.ashbyhq.com/brightloop/abcd1234', board = (title: string) => ({ 'api.ashbyhq.com/posting-api/job-board/brightloop': ok({ jobs: [{ title, jobUrl: ab, isListed: true, descriptionPlain: 'Brightloop' }] }) })
+  assert.equal((await run(ab, board('Backend Engineer'))).reason, 'job_role_mismatch', 'Ashby')
+  assert.equal((await run(ab, board('Account Executive'))).vacancy?.title, 'Account Executive')
+  // role agreement itself
+  assert.equal(roleAgrees('Account Executive', 'Backend Engineer'), false); assert.equal(roleAgrees('Account Executive', 'Account Executive - London'), true)
+  assert.equal(roleAgrees('Backend Engineer', 'Backend Engineer'), false, 'agreeing but not a sales / GTM role')
+  assert.equal(roleAgrees('Head of Sales', 'Account Executive'), false)
 })
