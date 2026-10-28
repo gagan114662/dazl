@@ -25,7 +25,7 @@ const REQUEST = 'Find London UK B2B SaaS startups that announced seed funding wi
 const ICP = JSON.stringify({ summary: 's', where: ['London, UK'], who: ['Founder'], signals: ['announced seed funding', 'hiring sales staff'], exclude: [] })
 const QUOTE = 'Brightloop, a London B2B SaaS startup, raised a 3m GBP seed round this month'
 
-function seed(over: { domain?: string | null; excerpt?: string; query?: string; icp?: string; basis?: string | null } = {}) {
+function seed(over: { extra?: number; domain?: string | null; excerpt?: string; query?: string; icp?: string; basis?: string | null } = {}) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
   const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
   db.prepare("UPDATE scan_jobs SET status = 'running', query = ?, icp = ? WHERE id = ?").run(over.query ?? REQUEST, over.icp ?? ICP, jobId)
@@ -33,7 +33,8 @@ function seed(over: { domain?: string | null; excerpt?: string; query?: string; 
     .run(jobId, over.domain === undefined ? 'brightloop.io' : over.domain, over.excerpt ?? QUOTE, d(12).slice(0, 10))
   const basis = over.basis === undefined ? 'evidence_own_domain' : over.basis   // how the crawl chose the lead's domain (own = the cited page is hosted on it)
   if (basis && (over.domain === undefined || over.domain)) db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES ('D1', 'L1', 'u1', 'sitecrawl', 'domain', ?, 'x', NULL, 'https://brightloop.io/', '2026-10-28', 1)").run(`${over.domain ?? 'brightloop.io'}|${basis}`)
-  db.prepare("UPDATE scan_jobs SET status = 'done', verified = 1, needs_review = 0 WHERE id = ?").run(jobId)
+  for (let i = 2; i <= 1 + (over.extra ?? 0); i++) db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, evidence_excerpt, confidence, score, why, event_date, date_status) VALUES (?, ?, '', ?, 'brightloop.io', 'raised a seed round', 'https://news.example/1', ?, 80, ?, 'Seed-funded.', ?, 'verified')").run(`L${i}`, jobId, `Brightloop${i}`, `Brightloop${i} raised a seed round in London`, 80 - i, d(12).slice(0, 10))
+  db.prepare("UPDATE scan_jobs SET status = 'done', verified = ?, needs_review = 0 WHERE id = ?").run(1 + (over.extra ?? 0), jobId)
   return { db, job: { id: jobId, user_id: 'u1', query: over.query ?? REQUEST, icp: over.icp ?? ICP } }
 }
 const lead = (db: Database.Database) => db.prepare("SELECT review_reason, confidence, why FROM leads WHERE id = 'L1'").get() as { review_reason: string | null; confidence: number | null; why: string }
@@ -72,7 +73,7 @@ test('STALE: a sales posting older than the 90-day window is not evidence; the l
   const r = await applySalesHiringGate(db, job, serve(stale), { now: NOW })
   assert.deepEqual([r.passed, r.demoted], [0, 1])
   const l = lead(db); assert.equal(l.review_reason, 'no_sales_hiring_evidence'); assert.equal(l.confidence, null)
-  assert.match(l.why, /^No sales-hiring evidence: no sales or GTM posting dated in the last 90 days on a public job board tied to brightloop\.io\./)
+  assert.match(l.why, /^No sales-hiring evidence: no sales or GTM posting dated in the last 90 days was found on a public job board tied to brightloop\.io \(a board that could not be reached looks the same as none/)
   assert.deepEqual(counts(db), { verified: 0, needs_review: 1 })
 })
 
@@ -177,8 +178,14 @@ test('affirmative hiring only: negated or near-miss sentences are NOT sales-hiri
     'Brightloop raised a seed round. Its sales team is based in London.',
     'Brightloop raised a seed round and cancelled its open sales roles.',
     'Brightloop raised seed funding and is hiring a recruiter.',
+    // denial / refutation
+    'Brightloop denies hiring sales staff.', 'Brightloop rules out hiring sales reps.', 'Brightloop refutes reports it is hiring account executives.', 'Brightloop rejects reports of hiring SDRs.', 'Brightloop dismissed rumours it is hiring sales staff.',
+    // sales as a modifier of another role
+    'Brightloop is hiring sales tax accountants.', 'Brightloop is hiring a sales operations accountant.', 'Brightloop is hiring sales tax counsel.', 'Brightloop is hiring a sales compliance lawyer.',
+    // conditional / hypothetical / planned / hearsay / past
+    'Brightloop is hiring sales staff only if funding closes.', 'Brightloop will hire sales staff once the round closes.', 'Brightloop would hire account executives if it hits revenue targets.', 'Brightloop may hire SDRs later this year.', 'Brightloop plans to hire a Head of Sales.', 'Brightloop could be hiring sales reps when it scales.', 'Brightloop was hiring sales reps last year.', 'Brightloop is reportedly hiring account executives.', 'Brightloop previously hired a VP of Sales.',
   ]
-  for (const t of no) assert.equal(quoteNamesSalesHiring(t, null), false, t)
+  for (const t of no) { assert.equal(quoteNamesSalesHiring(t, null), false, t); assert.equal(quoteNamesSalesHiring(t, null, 'Brightloop'), false, `${t} (with company)`) }
   const yes = [
     'Brightloop raised a seed round and is hiring two account executives.',
     'Brightloop raised a $3M seed round, and is now hiring SDRs in London.',
@@ -186,6 +193,30 @@ test('affirmative hiring only: negated or near-miss sentences are NOT sales-hiri
     'Brightloop raised a seed round; it has two open sales roles in London.',
     'Brightloop raised seed funding but is still hiring a Head of Sales.',
     'Brightloop raised a seed round and is hiring across sales and customer success.',
+    'Brightloop raised a seed round. The London startup is now hiring sales reps.',
+    'Brightloop raised a seed round and is hiring a Head of Sales to lead its team.',
   ]
-  for (const t of yes) assert.equal(quoteNamesSalesHiring(t, null), true, t)
+  for (const t of yes) { assert.equal(quoteNamesSalesHiring(t, null), true, t); assert.equal(quoteNamesSalesHiring(t, null, 'Brightloop Ltd'), true, `${t} (with company)`) }
+})
+
+test('through applySalesHiringGate: denied / modifier / conditional / other-company hiring quotes are demoted; attribution binds BOTH halves to the lead', async () => {
+  for (const hiring of ['Brightloop denies hiring sales staff.', 'Brightloop is hiring sales tax accountants.', 'Brightloop is hiring sales staff only if funding closes.', 'Separately, Othercorp is hiring sales staff.', 'Brightloop raised a seed round but is not hiring any sales staff.']) {
+    const { db, job } = seed({ domain: null, excerpt: `Brightloop raised a seed round in London. ${hiring}` })
+    const r = await applySalesHiringGate(db, job, serve({}), { now: NOW })
+    assert.deepEqual([r.passed, r.demoted], [0, 1], hiring); assert.equal(lead(db).review_reason, 'no_sales_hiring_evidence', hiring); assert.equal(lead(db).confidence, null)
+  }
+  const okQ = seed({ domain: null, excerpt: 'Brightloop raised a seed round in London. Brightloop is hiring two account executives.' })
+  assert.equal((await applySalesHiringGate(okQ.db, okQ.job, serve({}), { now: NOW })).passed, 1, 'a plain affirmative own-company clause still passes')
+  const ev = seed({ domain: null, excerpt: 'Othercorp raised a seed round in London. Brightloop is hiring two account executives.' })
+  await applySalesHiringGate(ev.db, ev.job, serve({}), { now: NOW }); assert.equal(lead(ev.db).review_reason, 'no_event_evidence', 'the funding sentence is another company\'s')
+})
+
+test('no processing cap bypasses the gate: with 21 source-checked leads every one is passed or held, the 21st is held as NOT CHECKED', async () => {
+  const { db, job } = seed({ extra: 20 })
+  const r = await applySalesHiringGate(db, job, serve(board()), { now: NOW })
+  assert.equal(r.checked, 21); assert.equal(r.passed + r.demoted, 21, 'no lead is left unexamined')
+  const rows = db.prepare("SELECT id, review_reason, confidence, why FROM leads ORDER BY score DESC").all() as { id: string; review_reason: string | null; confidence: number | null; why: string }[]
+  assert.equal(rows.filter(x => x.review_reason === null).length, r.passed)
+  const held = rows.filter(x => x.review_reason === 'no_sales_hiring_evidence'); assert.equal(held.length, 1); assert.equal(held[0].confidence, null)
+  assert.match(held[0].why, /not checked - this scan had more leads than the job-board lookup limit \(20\)/)
 })

@@ -342,9 +342,9 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     if (confidence < MIN_CONFIDENCE) { const r = j === 'unclear' ? 'claim_unclear' : 'low_confidence'; drop(r); note(c, 'dropped', r); return }
     const lead: VerifiedLead = { ...c, contact: v.contact, confidence, date_status: v.dateStatus, retrieved_at: v.retrievedAt, ...(copy ? { evidence_origin: COPY_ORIGIN, own_fetch_failure: copy.failure, evidence_copy_sha256: copy.sha256, evidence_copy_page: copy.page } : {}) }
     const key = dedupKey(c)
-    if (!hiringKeys.has(key) && quoteNamesSalesHiring(c.excerpt, c.signal)) hiringKeys.set(key, { url: c.source_url, date: c.event_date })
-    if (quoteShowsEvent(c.excerpt, c.signal)) eventKeys.add(key)
-    if (quoteShowsEvent(c.excerpt, c.signal, true)) fundingKeys.add(key)
+    if (!hiringKeys.has(key) && quoteNamesSalesHiring(c.excerpt, c.signal, c.company)) hiringKeys.set(key, { url: c.source_url, date: c.event_date })
+    if (quoteShowsEvent(c.excerpt, c.signal, false, c.company)) eventKeys.add(key)
+    if (quoteShowsEvent(c.excerpt, c.signal, true, c.company)) fundingKeys.add(key)
     const prev = best.get(key)
     if (prev) drop('duplicate')
     if (!prev || lead.confidence > prev.confidence) { if (prev) note(bestSrc.get(key)!, 'dropped', 'duplicate'); best.set(key, lead); bestSrc.set(key, c); origin.set(lead, c) }
