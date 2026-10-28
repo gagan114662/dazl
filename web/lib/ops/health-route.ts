@@ -6,6 +6,7 @@ import { getDb } from '../db/client.ts'
 import { getAuthDb } from '../auth-db.ts'
 import { resolveServedCommit } from '../commit-marker.ts'
 import { readiness } from './health.ts'
+import { RAW_SQLITE_MODULES } from '../db/pg-port-status.ts'
 
 // The server runs from web/ (ops/safe_launch.py); list the migration files in the source tree, not the bundle. The path
 // is statically scoped (a dynamic one makes the bundler trace the whole project) and only the NNNN_ prefixes are read;
@@ -15,6 +16,6 @@ const migrations = () => (shipped ??= readdirSync(path.join(process.cwd(), 'lib'
   .map(f => /^(\d{4})_[a-z0-9_]+\.sql$/.exec(f)?.[1]).filter((v): v is string => !!v).map(Number))
 
 export async function readyResponse(): Promise<NextResponse> {
-  const r = await readiness({ db: getDb, sqlite: getAuthDb, migrations })
+  const r = await readiness({ db: getDb, sqlite: getAuthDb, migrations, rawSqliteModules: () => Object.keys(RAW_SQLITE_MODULES).length })
   return NextResponse.json({ ...r, commit: resolveServedCommit() }, { status: r.ok ? 200 : 503, headers: { 'Cache-Control': 'no-store' } })
 }
