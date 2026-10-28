@@ -23,7 +23,7 @@ import { placeIn } from '../sources/jobboards.ts'
 import { resolveTiming } from './page-timing.ts'
 import { ownPlaceAgreement } from './own-block.ts'
 import { HeldText, COPY_ORIGIN, type HeldPage } from './held-text.ts'
-import type { CandidateAudit, UrlRecord } from './run-report.ts'
+import { reconcileRunReport, type CandidateAudit, type UrlRecord } from './run-report.ts'
 import { evidenceCopyRoom, storeEvidenceCopy } from './evidence-copies.ts'
 import { isJobPage, needsEventBeyondHiring } from '../search/page-class.ts'
 import { extractionNote } from './extraction-note.ts'
@@ -34,6 +34,7 @@ import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './veri
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
 import { getMemory, isExcluded, memoryPromptBlock } from '../memory.ts'
 import { enrichJobSignals } from '../signals/index.ts'
+import { applySalesHiringGate, type QuoteEvidence } from './sales-hiring-gate.ts'
 import { beginEnrichment, endEnrichment } from './enrichment.ts'
 import { regradeFromKeptContacts } from './contact-agreement.ts'
 import { primarySignalKind } from './score.ts'
@@ -145,7 +146,7 @@ export interface ReviewLead extends LeadDraft { review_reason: string }
 export function offerBlockFor(db: Database.Database, userId: string): string {
   try { return sellerOfferBlock((db.prepare('SELECT sells FROM users WHERE id = ?').get(userId) as { sells?: string } | undefined)?.sells) } catch { return '' }
 }
-export interface VerifyOutcome { leads: VerifiedLead[]; review: ReviewLead[]; dropped: Record<string, number> }
+export interface VerifyOutcome { leads: VerifiedLead[]; review: ReviewLead[]; dropped: Record<string, number>; quotes?: Map<string, QuoteEvidence[]> } // quotes: every VERIFIED candidate's quote by company key, even when a duplicate candidate was the one kept; the sales-hiring gate reads them only through its identity-compatibility check
 
 export function judgePrompt(c: Pick<LeadDraft, 'company' | 'signal'>, passage: string): string {
   const safe = passage.replace(/<<<|>>>/g, ' ').slice(0, 1800)
@@ -249,6 +250,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     const n: CandidateAudit = { key: `${dedupKey(c)}|${c.source_url}`, company: c.company, url: c.source_url, outcome, reason, evidence_origin: origin ?? null }; noted.set(c, n); audit.push(n)
   }
   const best = new Map<string, VerifiedLead>()
+  const quotes = new Map<string, QuoteEvidence[]>()
   const review = new Map<string, ReviewLead>()
   // Which candidate each surviving row came from (rows are clones), so a LATER drop (duplicate, source cap) is recorded against the right occurrence.
   const bestSrc = new Map<string, LeadDraft>(); const reviewSrc = new Map<string, LeadDraft>(); const origin = new WeakMap<object, LeadDraft>()
@@ -339,6 +341,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     if (confidence < MIN_CONFIDENCE) { const r = j === 'unclear' ? 'claim_unclear' : 'low_confidence'; drop(r); note(c, 'dropped', r); return }
     const lead: VerifiedLead = { ...c, contact: v.contact, confidence, date_status: v.dateStatus, retrieved_at: v.retrievedAt, ...(copy ? { evidence_origin: COPY_ORIGIN, own_fetch_failure: copy.failure, evidence_copy_sha256: copy.sha256, evidence_copy_page: copy.page } : {}) }
     const key = dedupKey(c)
+    quotes.set(key, [...(quotes.get(key) ?? []), { url: c.source_url, excerpt: c.excerpt, date: c.event_date }])
     const prev = best.get(key)
     if (prev) drop('duplicate')
     if (!prev || lead.confidence > prev.confidence) { if (prev) note(bestSrc.get(key)!, 'dropped', 'duplicate'); best.set(key, lead); bestSrc.set(key, c); origin.set(lead, c) }
@@ -362,6 +365,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     leads: capPer([...best.values()], (a, b) => (b.confidence ?? 0) - (a.confidence ?? 0)),
     review: capPer([...review.values()], (a, b) => b.score - a.score),
     dropped,
+    quotes,
   }
 }
 
@@ -1043,7 +1047,10 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         await applyBuyerFitGate(db, job.id, providers_[vendor], key, icpText, { fetchPage: deps.fetchPage, fetchImpl: deps.fetchImpl })
       } catch (e) { console.error('buyer-fit gate failed', e instanceof Error ? e.message : 'error') }
     }
-    // Contacts, people and fit are final: the stage ends before autopilot, whose drafting/sending is separate work, not enrichment.
+    // Seed funding AND hiring sales: a lead that passed on the funding quote alone is moved to review unless sales / GTM hiring is evidenced
+    // (its own quote, or a dated posting on a public job board bound to its domain). Before autopilot, so nothing is drafted on a half proof.
+    try { const g = await applySalesHiringGate(db, job, deps.fetchImpl ?? fetch, { quotes: outcome.quotes }); reconcileRunReport(db, job.id, job.attempts, g.demotions) } catch (e) { console.error('sales-hiring gate failed', e instanceof Error ? e.message : 'error') }
+    // Contacts, people, fit and the sales-hiring check are final: the stage ends before autopilot, whose drafting/sending is separate work, not enrichment.
     endEnrichment(db, job.id, job.attempts)
     // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.
     // A job that carries a budget never starts autopilot: its model drafting and sends are outside the budget (run-budget.ts).

@@ -21,3 +21,10 @@ export function needsEventBeyondHiring(signals: string[] | undefined, query: str
   const text = [...(signals ?? []), query].join(' . ')
   return EVENT_SIGNAL.test(text.replace(HIRING_ONLY, ' '))
 }
+
+// The text shows an event beyond hiring (funding, an opening, an expansion, a launch ...), ignoring the hiring words themselves.
+export const showsEventBeyondHiring = (text: string): boolean => EVENT_SIGNAL.test(text.replace(HIRING_ONLY, ' '))
+
+// Funding specifically (a request for "seed funding" is not met by "opening a second office").
+const FUNDING = /\b(?:fund(?:ing|ed|raise|raising)?|raise[sd]?|raising|seed|pre-?seed|series\s+[a-e]|round|invest(?:ment|ed|or|ors)?|valuation)\b/i
+export const mentionsFunding = (text: string): boolean => FUNDING.test(text)
