@@ -16,6 +16,19 @@ for (const name of Object.keys(process.env)) {
 // with DAZL_PG_ADMIN set explicitly - outside this harness, still loopback-only
 // and marker-guarded by scripts/pg-migrate/guard.ts.
 for (const name of ['DAZL_PG_ADMIN', 'DATABASE_URL']) delete process.env[name]
+// 1b) Store fence: code under test that reaches the app's own store (getAuthDb / getDb, e.g. the shared rate limiter in
+//     a route) must never open the default production path. A test that did not choose a DB_PATH gets a throwaway
+//     SQLite file for this process, removed on exit.
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+if (!process.env.DB_PATH) {
+  const dir = mkdtempSync(join(tmpdir(), 'dazl-test-db-'))
+  process.env.DB_PATH = join(dir, 'app.db')
+  process.on('exit', () => { try { rmSync(dir, { recursive: true, force: true }) } catch { /* best effort */ } })
+}
+// DAZL_TEST_PG_URL is kept on purpose: test/helpers/pg-test.ts accepts only a loopback URL and gives each test a fresh
+// schema that it drops afterwards (the CI postgres service container).
 
 // 2) Network fence: synthetic tests must not attempt real outbound
 //    connections at all - not provider APIs, not lead/company websites

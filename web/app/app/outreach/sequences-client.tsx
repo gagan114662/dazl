@@ -8,7 +8,7 @@ type Data = { gates?: {id:string;ok:boolean;scope:string}[]; scheduler?: 'config
 const COPY: Record<string,string> = {
   not_sales_contact: 'The published address is for recruitment, support, privacy or another restricted purpose. Saved words remain unchanged; approval and sending are blocked.',
   reading_not_enabled:'Enable reply reading in Settings before approving a sequence. Without it, sequences cannot stop on replies.',
-  sender_identity_missing:'Add your sender name and mailing address in Settings.',
+  sender_identity_missing:'Add your sender name and mailing address in the form at the top of this page.',
   gmail_not_connected:'Connect Gmail in Settings.',
   not_editable:'This sequence has started. Stop it instead of editing sent content.',
   already_exists:'A sequence already exists for this lead.',

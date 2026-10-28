@@ -5,8 +5,8 @@ import { clientIp, rateLimit } from '@/lib/rate-limit'
 
 // Public, no login. Mail clients call POST (RFC 8058 one-click); people click the link (GET).
 // Both act at once: an unsubscribe is never delayed or made conditional.
-function handle(req: NextRequest, html: boolean) {
-  if (!rateLimit(`unsub:${clientIp(req)}`, 30, 60 * 60 * 1000).ok) return new NextResponse('Too many requests', { status: 429 })
+async function handle(req: NextRequest, html: boolean) {
+  if (!(await rateLimit(`unsub:${clientIp(req)}`, 30, 60 * 60 * 1000)).ok) return new NextResponse('Too many requests', { status: 429 })
   const ok = unsubscribeByToken(getScanDb(), req.nextUrl.searchParams.get('t') ?? '')
   if (!html) return new NextResponse(ok ? 'Unsubscribed' : 'Invalid link', { status: ok ? 200 : 400 })
   const msg = ok ? 'You have been unsubscribed and will not get more emails from this sender through dazl.' : 'This unsubscribe link is not valid.'

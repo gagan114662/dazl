@@ -14,7 +14,7 @@ export async function GET(req:NextRequest){
  if(!user)return NextResponse.json({error:'Not signed in'},{status:401})
  const id=req.nextUrl.searchParams.get('lead_id')??''
  if(!/^[0-9a-f]{24}$/.test(id))return NextResponse.json({error:'Bad request'},{status:400})
- if(!rateLimit(`qualify-preview:${user.id}`,20,60*60*1000).ok)return NextResponse.json({error:'Too many previews. Try again later.'},{status:429})
+ if(!(await rateLimit(`qualify-preview:${user.id}`,20,60*60*1000)).ok)return NextResponse.json({error:'Too many previews. Try again later.'},{status:429})
  const vendor=pickVendor(getScanDb(),user.id)
  const p=await qualifyPreview(getScanDb(),user.id,id,sellerProfile(getAuthDb(),user.id),fetchPageDetailed,vendor,vendor?providers[vendor].configuredModel?.()??null:null)
  if(!p)return NextResponse.json({error:'Not found'},{status:404})

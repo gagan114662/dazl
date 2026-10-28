@@ -7,9 +7,10 @@ import { getSessionUser } from '@/lib/auth-db'
 const NAV = [
   { href: '/app', label: 'Home' },
   { href: '/app/leads', label: 'Leads' },
+  { href: '/app/campaigns', label: 'Campaigns' },
   { href: '/app/outreach', label: 'Outreach' },
   { href: '/app/follow-ups', label: 'Follow-ups' },
-  { href: '/app/replies', label: 'Replies' },
+  { href: '/app/replies', label: 'Social opportunities' },
   { href: '/app/inbox', label: 'Inbox' },
   { href: '/app/seo', label: 'SEO' },
   { href: '/app/settings', label: 'Settings' },
@@ -17,7 +18,7 @@ const NAV = [
 
 async function AuthGate({ children }: { children: React.ReactNode }) {
   const token = (await cookies()).get('dazl_session')?.value
-  if (!getSessionUser(token)) redirect('/sign-in')
+  if (!(await getSessionUser(token))) redirect('/sign-in')
   return <>{children}</>
 }
 

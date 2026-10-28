@@ -21,7 +21,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
   const { lead } = await params
   const g = await guard(req, lead)
   if (g.res) return g.res
-  if (!rateLimit(`confirm-lead:${g.user!.id}`, 60, 60_000).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!(await rateLimit(`confirm-lead:${g.user!.id}`, 60, 60_000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   const confirmed = confirmLeadReview(getScanDb(), g.user!.id, lead)
   if (!confirmed) return NextResponse.json({ error: 'Lead not found in your review list' }, { status: 404 })
   return NextResponse.json({ confirmed: true })
@@ -31,7 +31,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ l
   const { lead } = await params
   const g = await guard(req, lead)
   if (g.res) return g.res
-  if (!rateLimit(`confirm-lead:${g.user!.id}`, 60, 60_000).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!(await rateLimit(`confirm-lead:${g.user!.id}`, 60, 60_000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   const withdrawn = unconfirmLeadReview(getScanDb(), g.user!.id, lead)
   if (!withdrawn) return NextResponse.json({ error: 'No confirmation to withdraw' }, { status: 404 })
   return NextResponse.json({ confirmed: false })
