@@ -55,3 +55,15 @@ test('ATS EVIDENCE SHAPE: a posting from a board that was only DISCOVERED (a lin
   const guessed = await collectEvidenceReport(sel, STAFF, http, 5000, [], undefined, [{ name: 'Orbitlabs' }])
   assert.equal(guessed.items.length, 0, 'a guessed board whose posting does not name the company is dropped (the identity rule)')
 })
+
+test('SCAN 8 URL LIST (75 URLs, Instinct\'s paste; list order taken as search order, dates NOT in the paste so every URL is treated as undated): what 16 fetch slots would have read', async () => {
+  const { readFileSync } = await import('node:fs')
+  const urls = readFileSync(new URL('./fixtures/scan8-urls.txt', import.meta.url), 'utf8').split('\n').filter(Boolean)
+  assert.equal(urls.length, 75)
+  const rank = fetchRankFor(new Map(urls.map(u => [u, { date: null }])), 90, true); const sel = pickFetchUrls(urls, 16, rank)
+  const ats = (u: string) => /greenhouse\.io|ashbyhq\.com|jobs\.lever\.co/.test(u)
+  const funding = (u: string) => /sesamers|law\.com\/legaltechnews|siliconrepublic|eu-startups/.test(u)
+  console.log(`# scan8 list: ${urls.filter(ats).length} ATS urls, ${urls.filter(funding).length} funding-article urls (positions ${urls.map((u, i) => funding(u) ? i : -1).filter(i => i >= 0)}); of 16 slots: ATS ${sel.filter(ats).length}, funding ${sel.filter(funding).length}, rest aggregator / roundup / job-listing pages ${sel.filter(u => !ats(u) && !funding(u)).length}`)
+  assert.equal(sel.filter(ats).length, 0, 'ATS job pages are behind every non-job page for a compound request (the ATS adapter reads those boards separately)')
+  assert.ok(urls.filter(funding).length === 4 && sel.filter(funding).length < urls.filter(funding).length, 'with search order alone the funding articles at the end of the list lose slots to roundups and listings')
+})
