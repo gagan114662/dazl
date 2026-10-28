@@ -15,8 +15,8 @@ export class EnrichError extends Error {
 const BASE = 'https://api.apollo.io'
 const TIMEOUT_MS = 15_000
 
-export interface ApolloOrg { name: string | null; employees: number | null; industry: string | null; founded: number | null; website: string | null; linkedin: string | null; place: string | null }
-export interface ApolloPerson { name: string; title: string | null; linkedin: string | null; place?: string | null; domain?: string | null; organization?: { name: string | null; domain: string | null } | null } // organization: the company the RESULT says the person works for (kept so a contradicting one can be refused)
+export interface ApolloOrg { name: string | null; employees: number | null; industry: string | null; founded: number | null; website: string | null; linkedin: string | null; place: string | null; address?: string | null }
+export interface ApolloPerson { name: string; title: string | null; linkedin: string | null; place?: string | null; address?: string | null; domain?: string | null; organization?: { name: string | null; domain: string | null } | null } // organization: the company the RESULT says the person works for (kept so a contradicting one can be refused)
 
 async function call(apiKey: string, path: string, body: Record<string, unknown>, fetchImpl: typeof fetch): Promise<unknown> {
   const ctrl = new AbortController()
@@ -55,6 +55,7 @@ export async function apolloOrgEnrich(apiKey: string, org: { domain?: string | n
     website: clean(o.website_url),
     linkedin: clean(o.linkedin_url),
     place: formatPlace(clean(o.city, 80), clean(o.state, 80), clean(o.country, 80)),
+    address: clean(o.street_address, 120) ?? clean(o.raw_address, 160),
   }
 }
 

@@ -6,9 +6,9 @@ import { placeAgreement, cityScoped, US_STATES } from './place-agreement.ts'
 import { addEnrichment } from '../connectors/store.ts'
 import { WHY_MAX } from './score.ts'
 
-export interface Candidate { domain?: string | null; place?: string | null; keyedOnLeadDomain?: boolean } // keyedOnLeadDomain: the lookup was made BY the lead's own domain       // place: "City, ST" (or free text) as the source reports it
-export interface LeadSide { company_domain?: string | null; where: string[] }
-export type Agreement = { ok: true; via: 'domain' | 'location' | 'no_geography' } | { ok: false; reason: string }
+export interface Candidate { domain?: string | null; place?: string | null; address?: string | null; keyedOnLeadDomain?: boolean } // keyedOnLeadDomain: the lookup was made BY the lead's own domain       // place: "City, ST" (or free text) as the source reports it
+export interface LeadSide { company_domain?: string | null; where: string[]; evidence?: string | null } // evidence: the lead's OWN evidence text (its quote, its cited page): a street address in it is a basis
+export type Agreement = { ok: true; via: 'domain' | 'location' | 'address' | 'no_geography' } | { ok: false; reason: string }
 
 const registrable = (d: string | null | undefined): string | null => {
   if (!d) return null
@@ -33,10 +33,35 @@ export function leadPlaceLabel(where: string[]): string {
   return w.trim()
 }
 
+// ---- street addresses: "57 W 57th St" == "57 West 57th Street" ----
+const DIR: Record<string, string> = { north: 'n', south: 's', east: 'e', west: 'w', northeast: 'ne', northwest: 'nw', southeast: 'se', southwest: 'sw' }
+const SUFFIX: Record<string, string> = { street: 'st', st: 'st', avenue: 'ave', ave: 'ave', av: 'ave', boulevard: 'blvd', blvd: 'blvd', road: 'rd', rd: 'rd', drive: 'dr', dr: 'dr', lane: 'ln', ln: 'ln', place: 'pl', pl: 'pl', parkway: 'pkwy', pkwy: 'pkwy', court: 'ct', ct: 'ct', square: 'sq', sq: 'sq', way: 'way', broadway: 'broadway', highway: 'hwy', hwy: 'hwy' }
+const STREET = /\b(\d{1,5}(?:-\d{1,4})?)\s+((?:[NSEW]\.?|North|South|East|West|Northeast|Northwest|Southeast|Southwest)\s+)?([A-Za-z0-9'\u2019. -]{1,40}?)\s*\b(Street|St|Avenue|Ave|Av|Boulevard|Blvd|Road|Rd|Drive|Dr|Lane|Ln|Place|Pl|Parkway|Pkwy|Court|Ct|Square|Sq|Way|Broadway|Highway|Hwy)\b\.?/gi
+export function streetKeys(text: string | null | undefined): string[] {
+  const out = new Set<string>()
+  for (const m of (text ?? '').matchAll(STREET)) {
+    const dir = (m[2] ?? '').replace(/[.\s]/g, '').toLowerCase()
+    const name = m[3].toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim()
+    if (!name || name.split(' ').length > 4) continue
+    out.add(`${m[1]} ${DIR[dir] ?? dir} ${name} ${SUFFIX[m[4].toLowerCase()] ?? m[4].toLowerCase()}`.replace(/\s+/g, ' '))
+  }
+  return [...out]
+}
+// agrees: the same street address; conflict: both sides name a street address and none is the same; unknown: one side names none.
+export function addressAgreement(candidateAddress: string | null | undefined, leadEvidence: string | null | undefined): 'agrees' | 'conflict' | 'unknown' {
+  const a = streetKeys(candidateAddress), b = streetKeys(leadEvidence)
+  if (a.length === 0 || b.length === 0) return 'unknown'
+  return a.some(x => b.includes(x)) ? 'agrees' : 'conflict'
+}
+
 export function contactAgreement(lead: LeadSide, c: Candidate): Agreement {
   const ld = registrable(lead.company_domain), cd = registrable(c.domain)
   if (ld && cd) return ld === cd ? { ok: true, via: 'domain' } : { ok: false, reason: `contact rejected: domain mismatch ${cd} vs ${ld}` }
   if (ld && !cd && c.keyedOnLeadDomain) return { ok: true, via: 'domain' }
+  // A street address in the lead's own evidence is a basis: the same address agrees; a DIFFERENT one conflicts (unresolved, not attached) unless the domain already agreed.
+  const addr = addressAgreement(c.address, lead.evidence)
+  if (addr === 'agrees') return { ok: true, via: 'address' }
+  if (addr === 'conflict') return { ok: false, reason: `contact rejected: address mismatch ${(streetKeys(c.address)[0] ?? 'another address').slice(0, 60)} vs ${(streetKeys(lead.evidence)[0] ?? 'the lead\'s address').slice(0, 60)}` }
   const place = (c.place ?? '').trim()
   const where = lead.where.filter(w => w.trim())
   if (where.length === 0) return { ok: true, via: 'no_geography' } // a request with no place makes no place demand (a domain that DISAGREES was refused above)
@@ -61,8 +86,9 @@ export function firstPlaceLabel(text: string): string | null {
 // ---- the refusal is recorded on the lead, and the lead is regraded from the evidence actually kept ----
 export const REJECTED_KIND = 'contact_rejected'
 // The structured marker stored beside a refusal (the enrichment's label): why the record was not attached.
-export type RejectionCode = 'contact_location_mismatch' | 'contact_location_unconfirmed' | 'contact_domain_mismatch' | 'contact_unconfirmed'
+export type RejectionCode = 'contact_address_mismatch' | 'contact_location_mismatch' | 'contact_location_unconfirmed' | 'contact_domain_mismatch' | 'contact_unconfirmed'
 export function contactRejectionCode(reason: string): RejectionCode {
+  if (/address mismatch/i.test(reason)) return 'contact_address_mismatch'
   if (/location mismatch/i.test(reason)) return 'contact_location_mismatch'
   if (/location unconfirmed/i.test(reason)) return 'contact_location_unconfirmed'
   if (/domain mismatch|organization mismatch/i.test(reason)) return 'contact_domain_mismatch'
