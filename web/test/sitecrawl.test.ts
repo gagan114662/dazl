@@ -269,3 +269,26 @@ test('a lead whose name the homepage does not show cannot reuse a crawl; a later
   assert.deepEqual([emails('a'), emails('b')], [0, 1])
   assert.equal(hits.filter(h => h === 'acmeroofing.test/').length, 2, 'the first read stopped at the identity check, so exactly one more read for the lead whose name matches')
 })
+
+test('crawlJob also researches unfinished candidates (undated or quote-unconfirmed review) after verified leads; closed / counterparty / stale review leads are not crawled', async () => {
+  const db = new Database(':memory:'); migrateConnectors(db)
+  db.exec("CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT)")
+  db.prepare("INSERT INTO leads VALUES ('v1','j1','Verified Co','https://news.example/v',NULL,90,10,NULL),('u1','j1','Undated Co','https://news.example/u','outside_window_undated',NULL,99,NULL),('q1','j1','Quote Co','https://news.example/q','quote_unconfirmed',NULL,50,NULL),('c1','j1','Closed Co','https://news.example/c','job_closed',NULL,99,NULL),('s1','j1','Stale Co','https://news.example/s','outside_window',NULL,99,NULL)").run()
+  const link = (d: string, n: string) => html(`<a href="https://${d}.com">${n}</a>`)
+  const pages: Record<string, string> = { '/v': link('verified', 'Verified Co'), '/u': link('undated', 'Undated Co'), '/q': link('quote', 'Quote Co'), '/c': link('closed', 'Closed Co'), '/s': link('stale', 'Stale Co'), '/robots.txt': '' }
+  const homes: Record<string, string> = { 'verified.com': 'Verified Co', 'undated.com': 'Undated Co', 'quote.com': 'Quote Co', 'closed.com': 'Closed Co', 'stale.com': 'Stale Co' }
+  const reads: string[] = []
+  const get: Get = async url => {
+    const u = new URL(url); reads.push(u.hostname + u.pathname)
+    if (u.pathname === '/robots.txt') return { status: 200, body: '', finalUrl: url }
+    if (u.hostname === 'news.example') return pages[u.pathname] ? { status: 200, body: pages[u.pathname], finalUrl: url } : { status: 404, body: '', finalUrl: url }
+    if (u.pathname === '/') return { status: 200, body: html(`${homes[u.hostname]} home <a href="/locations">l</a>`), finalUrl: url }
+    if (u.pathname === '/locations') return { status: 200, body: html(`Email: hello@${u.hostname}`), finalUrl: url }
+    return { status: 404, body: '', finalUrl: url }
+  }
+  await crawlJob(db, 't1', 'j1', { get, gapMs: 0, env: {}, now: Date.parse('2026-10-20T12:00:00Z') })
+  const got = (db.prepare("SELECT lead_id, value FROM lead_enrichments WHERE kind = 'email' ORDER BY lead_id").all() as { lead_id: string; value: string }[])
+  assert.deepEqual(got.map(g => g.lead_id), ['q1', 'u1', 'v1'], JSON.stringify(got))
+  assert.ok(!reads.some(r => r.startsWith('closed.com') || r.startsWith('stale.com')), 'closed / outside-window review leads are never crawled')
+  assert.ok(reads.includes('undated.com/locations'), 'the /locations page is read')
+})
