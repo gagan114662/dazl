@@ -107,6 +107,7 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/scan/quarantine.ts': 0,
   'lib/scan/queue-runner.ts': 1,
   'lib/scan/ranking-fixture.ts': 0,
+  'lib/scan/resolution.ts': 0,
   'lib/scan/review-draft-fixture.ts': 0,
   'lib/scan/run-report.ts': 1,
   'lib/scan/runner.ts': 5,
