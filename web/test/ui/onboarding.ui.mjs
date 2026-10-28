@@ -5,8 +5,9 @@
 // check, no email. Off-host requests are aborted. It proves:
 //   1. a first-run account sees the website step, and a keyless site read asks for the key inline (one field);
 //   2. the editable profile is filled from the site read, including "what you sell";
-//   3. three suggested plays; after Back -> Ohio changed to NYC -> continue, the plays and the sentence are the NYC ones
-//      and Find leads sends exactly one POST /api/scan with that sentence and the edited profile, then lands on Leads;
+//   3. the play step is one "Who do you want to find?" box and three one-click suggested plays, with no caveat paragraphs;
+//      after Back -> Ohio changed to NYC -> continue, the plays and the sentence are the NYC ones, and ONE click on a
+//      suggestion sends exactly one POST /api/scan with that sentence and the edited profile, then lands on live progress;
 //   3b. every edited profile field (who buys, roles, industries, where, signals, sizes, skip) reaches that request,
 //      and a sentence the user typed is kept as typed;
 //   3c. the reviewed profile is saved by the real profile route: after a full reload, "Describe your business" shows
@@ -63,8 +64,8 @@ await ctx.route('**/*', async route => {
 const page = await ctx.newPage()
 const shot = async name => { await page.waitForTimeout(400); if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`) }) }
 const plays = () => page.getByRole('group', { name: 'Suggested plays' }).getByRole('button')
-const sentence = () => page.getByLabel('Who do you want to reach')
-const cont = async () => { await page.getByRole('button', { name: 'Looks right, continue' }).click(); await page.getByText('Who do you want to reach?').waitFor() }
+const sentence = () => page.getByLabel('Who do you want to find?')
+const cont = async () => { await page.getByRole('button', { name: 'Looks right, continue' }).click(); await page.getByText('Who do you want to find?').waitFor() }
 const back = async () => { await page.getByRole('button', { name: 'Back' }).click(); await page.getByText("Here's what we think you sell").waitFor() }
 const findLeads = async () => { await page.getByRole('button', { name: 'Find leads' }).click(); await page.waitForURL(/\/app\/leads\?job_id=/) }
 const PROFILE = { summary: ICP.summary, who: ICP.who, industries: ICP.industries, sizes: [], where: ['Ohio'], signals: ICP.signals, exclude: [] }
@@ -79,17 +80,20 @@ await page.getByText("Here's what we think you sell").waitFor(); await shot('bra
 assert.equal(await page.getByLabel('What you sell').inputValue(), 'Online booking and reminders for dental practices')
 await cont(); await shot('ask')
 assert.equal(await plays().count(), 3)
-assert.equal(await sentence().inputValue(), 'Practice owners in Ohio - opened a new location')
-await plays().nth(1).click()
-assert.equal(await sentence().inputValue(), 'Office managers in Ohio - hiring front-desk staff')
+assert.equal(await sentence().inputValue(), '', 'the box starts empty under its three suggestions')
+// One input, three plays, no caveat paragraphs on this screen (the profile summary sits behind its (i)).
+assert.equal(await page.locator('form:has(#ask) p:visible').count(), 0, 'no paragraphs on the play step')
+assert.equal(await page.getByText('Leads arrive on the Leads page').count(), 0)
+assert.equal(await page.locator('form:has(#ask) textarea').count(), 1, 'one input')
 await back()
 await page.getByLabel('Where').fill('NYC')
 await cont()
 assert.deepEqual(await plays().allTextContents(), ['Practice owners in NYC - opened a new location', 'Office managers in NYC - hiring front-desk staff', 'Practice owners in NYC - switched practice software'])
-assert.equal(await sentence().inputValue(), 'Practice owners in NYC - opened a new location', 'a suggestion from the old profile is replaced, never kept')
+assert.equal(await sentence().inputValue(), '', 'nothing from the old profile is kept in the box')
 assert.match(await page.getByLabel('Search profile').textContent(), /in NYC/)
-await findLeads()
-assert.deepEqual(scanBodies, [{ query: 'Practice owners in NYC - opened a new location', icp: { ...PROFILE, where: ['NYC'] } }], 'exactly one request: the sentence on screen and the edited profile')
+// One click on a suggested play starts the scan and goes straight to its live progress.
+await plays().nth(1).click(); await page.waitForURL(/\/app\/leads\?job_id=/)
+assert.deepEqual(scanBodies, [{ query: 'Office managers in NYC - hiring front-desk staff', icp: { ...PROFILE, where: ['NYC'] } }], 'exactly one request: the picked play and the edited profile')
 
 // Scenario 2: every edited profile field reaches the request; a sentence the user typed survives Back/continue as typed.
 scanBodies.length = 0
