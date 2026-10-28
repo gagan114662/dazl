@@ -444,16 +444,38 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
 // Nothing here is a fixed list of places; the places come from the scan and the evidence.
 const PLACE_SUFFIX = /\s+(city|metro|metropolitan area|area|region|county|state|province|district)$/i
 const PLACE_AFTER = /\b(?:in|at|on|em|en|no|na|à|au|bei|im|nel|nella|op|w|в)\s+((?:[A-Z][\p{L}'’.-]+)(?:\s+[A-Z][\p{L}'’.-]+){0,2})/gu
-export function placeTerms(where: string[], evidenceText: string): string[] {
-  const out = new Set<string>()
+// Words the evidence puts after "on / in / at" that are NOT places: weekdays, months and the company's own name ("open on Monday", "founded in March", "book at Smile Avenue Dental"). Any business page
+// mentions them, so counting them as places let a same-name site in another city look "consistent".
+const NOT_PLACE = new Set(['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december', 'today', 'tomorrow', 'yesterday', 'the', 'our', 'your', 'this', 'that', 'twitter', 'facebook', 'instagram', 'linkedin', 'youtube', 'google'])
+export function placeTerms(where: string[], evidenceText: string, company = ''): string[] {
+  const own = norm(company).split(' ').filter(Boolean), out = new Set<string>()
   const add = (s: string) => { const t = norm(s); if (t.length >= 4) out.add(t) }
   for (const w of where) {
     const clean = w.replace(/[()"]/g, ' ').replace(/\s+/g, ' ').trim()
     add(clean); add(clean.replace(PLACE_SUFFIX, ''))
     for (const part of clean.split(',')) { add(part); add(part.trim().replace(PLACE_SUFFIX, '')) }
   }
-  for (const m of evidenceText.slice(0, 6000).matchAll(PLACE_AFTER)) add(m[1])
+  for (const m of evidenceText.slice(0, 6000).matchAll(PLACE_AFTER)) { const t = norm(m[1]); const ws = t.split(' ').filter(Boolean); if (ws.length === 0 || ws.every(w => NOT_PLACE.has(w) || own.includes(w))) continue; add(m[1]) }
   return [...out]
+}
+// A domain taken from a NAME-ONLY guess (probeDomains) is not an identity: any same-name business anywhere passes the homepage name check, and its contacts sit on that same domain, so the domain and the
+// contacts "agree" with each other. Only the site's OWN location can tell the lead's company from a namesake: the homepage must state a place that POSITIVELY agrees with the scan's geography, or a street
+// address that is the lead's own (from its evidence). Words the lead's evidence merely puts after "on / in / at" ("on Monday", "in March", "at Smile Avenue Dental") are not places and no longer count.
+// With no scan geography, a place the lead's own evidence names (filtered as below) that the homepage repeats, or an address match, accepts the guess. Anything else: the domain is not saved and no contact is attached.
+export function probeLocationAgrees(home: string | undefined, where: string[], lead: { company: string; signal?: string | null; evidence_excerpt?: string | null }, evidence?: { homeNorm: string | undefined; places: string[] }): boolean {
+  const text = home ?? ''
+  if (!text) return false
+  if (where.length > 0 && placeAgreement(text, where, lead.company) === 'agrees') return true
+  // A scan that declares NO geography has only the lead's evidence to say where it is: a place that evidence names (weekdays, months, social names and the company's own name excluded) and the site's homepage repeats.
+  if (where.length === 0 && evidence && placeConsistent(evidence.homeNorm, evidence.places)) return true
+  return addressAgreement(text, `${lead.evidence_excerpt ?? ''} ${lead.signal ?? ''}`) === 'agrees'
+}
+function locationRefusal(probe: boolean, havePlaces: boolean, home: string | undefined, where: string[]): string {
+  if (probe) {
+    const label = firstPlaceLabel(home ?? '')
+    return (where.length > 0 && home && placeAgreement(home, where) === 'mismatch' ? `contact rejected: location mismatch ${label ?? 'another place'} vs ${leadPlaceLabel(where)}` : where.length > 0 ? `contact rejected: location unconfirmed ${label ?? 'no place stated'} vs ${leadPlaceLabel(where)} (a guessed domain needs the site's own location)` : 'contact rejected: no location to confirm the company').slice(0, 180)
+  }
+  return havePlaces ? `contact rejected: location mismatch ${firstPlaceLabel(home ?? '') ?? 'another place'} vs ${leadPlaceLabel(where)}` : 'contact rejected: no location to confirm the company'
 }
 export const placeConsistent = (homeNorm: string | undefined, places: string[]) => !!homeNorm && places.some(p => homeNorm.includes(p))
 
@@ -514,15 +536,15 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       }
       let r: Awaited<ReturnType<typeof crawlSite>> = { found: [], reason: 'name_mismatch', pages: 0 }; let site = sites[0]
       // Places this lead is about: the scan geography plus places its own evidence names (signal, quote, cited page).
-      const places = placeTerms(where, [l.signal ?? '', l.evidence_excerpt ?? '', ev?.body ? ev.body.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ') : ''].join(' '))
+      const places = placeTerms(where, [l.signal ?? '', l.evidence_excerpt ?? '', ev?.body ? ev.body.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ') : ''].join(' '), l.company)
       for (const cand of sites) {
         site = cand
         r = await readSite(cand, l.company)
-        if (r.reason !== 'name_mismatch' && r.reason !== 'site_unreachable' && ((basisOf.get(cand) === 'name_probe' && !placeConsistent(r.homeNorm, places)) || (basisOf.get(cand) !== 'name_probe' && basisOf.get(cand) !== 'evidence_own_domain' && places.length > 0 && !placeConsistent(r.homeNorm, places)))) {
+        if (r.reason !== 'name_mismatch' && r.reason !== 'site_unreachable' && ((basisOf.get(cand) === 'name_probe' && !probeLocationAgrees(r.homeText, where, l, { homeNorm: r.homeNorm, places })) || (basisOf.get(cand) !== 'name_probe' && basisOf.get(cand) !== 'evidence_own_domain' && places.length > 0 && !placeConsistent(r.homeNorm, places)))) {
           // Same name, but the homepage names none of the lead's places (or no place is known): not this company.
-          audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: (places.length ? `contact rejected: location mismatch ${firstPlaceLabel(r.homeText ?? '') ?? 'another place'} vs ${leadPlaceLabel(where)}` : 'contact rejected: no location to confirm the company').slice(0, 180), results: 0 })
+          audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: (locationRefusal(basisOf.get(cand) === 'name_probe', places.length > 0, r.homeText, where)).slice(0, 180), results: 0 })
           // a refusal is recorded on the lead only when a homepage was actually read (an unreachable probe is not a wrong-company record)
-          if (r.homeText) recordContactRejection(db, tenantId, l.id, { connector: 'sitecrawl', reason: ((places.length ? `contact rejected: location mismatch ${firstPlaceLabel(r.homeText ?? '') ?? 'another place'} vs ${leadPlaceLabel(where)}` : 'contact rejected: no location to confirm the company').slice(0, 180)).slice(0, 180), sourceUrl: `https://${cand}/` })
+          if (r.homeText) recordContactRejection(db, tenantId, l.id, { connector: 'sitecrawl', reason: ((locationRefusal(basisOf.get(cand) === 'name_probe', places.length > 0, r.homeText, where)).slice(0, 180)).slice(0, 180), sourceUrl: `https://${cand}/` })
           r = { found: [], reason: 'name_mismatch', pages: 0 }
           continue
         }
