@@ -87,28 +87,41 @@ function requestPlaces(where: string[], eventCity: string[][]): { city: string[]
   }
   return { city, finer }
 }
-// The country / region an Event's address states in its STRUCTURED fields (addressCountry, addressRegion). A region implies its country.
-function eventGeo(location: unknown): { countries: Set<string>; regions: Set<string> } {
-  const countries = new Set<string>(), regions = new Set<string>()
+// The country / region an Event's address states in its STRUCTURED fields (addressCountry, addressRegion). A region implies its country. `contradictory`: the event contradicts itself - an explicit
+// country that is not the country its own region implies (Canada + England), or fields that imply disjoint countries - so it describes no real place and can date nothing (fail closed).
+interface Geo { countries: Set<string>; regions: Set<string>; contradictory: boolean }
+function geoConsistency(explicit: Set<string>, implied: Set<string>): boolean {
+  if (implied.size > 1 || explicit.size > 1) return true
+  if (implied.size === 1 && explicit.size === 1 && [...implied][0] !== [...explicit][0]) return true
+  return false
+}
+function eventGeo(location: unknown): Geo {
+  const explicit = new Set<string>(), implied = new Set<string>(), regions = new Set<string>()
   const take = (l: unknown, depth = 0) => {
     if (depth > 3 || l == null || typeof l !== 'object') return
     if (Array.isArray(l)) { for (const x of l.slice(0, 5)) take(x, depth + 1); return }
     const o = l as Record<string, unknown>
-    const c = countryFromField(o.addressCountry); if (c) countries.add(c)
-    const r = typeof o.addressRegion === 'string' ? regionOf(o.addressRegion) : null; if (r) { regions.add(r); countries.add(countryOfRegion(r)) }
+    const c = countryFromField(o.addressCountry); if (c) explicit.add(c)
+    const r = typeof o.addressRegion === 'string' ? regionOf(o.addressRegion) : null; if (r) { regions.add(r); implied.add(countryOfRegion(r)) }
     take(o.address, depth + 1)
   }
   take(location)
-  return { countries, regions }
+  return { countries: new Set([...explicit, ...implied]), regions, contradictory: geoConsistency(explicit, implied) }
 }
-// The countries / regions the CLAIM and the REQUEST state (comma segments only, so "in" / "on" / "or" in running text are never read as a province or state).
-function claimGeo(claim: string, where: string[]): { countries: Set<string>; regions: Set<string> } {
-  const countries = new Set<string>(), regions = new Set<string>()
+// The countries / regions the CLAIM and the REQUEST state (comma segments only, so "in" / "on" / "or" in running text are never read as a province or state). Each request entry, and the claim,
+// must be consistent in itself ("London, Ontario, UK" is not), or nothing can date the claim.
+function claimGeo(claim: string, where: string[]): Geo {
+  const countries = new Set<string>(), regions = new Set<string>(), reqCountries = new Set<string>(), claimCountries = new Set<string>()
+  let contradictory = false
   for (const text of [...where, claim]) {
-    for (const c of countriesIn(text)) countries.add(c)
-    for (const r of regionsIn(text)) { regions.add(r); countries.add(countryOfRegion(r)) }
+    const explicit = new Set(countriesIn(text)), implied = new Set<string>()
+    for (const r of regionsIn(text)) { regions.add(r); implied.add(countryOfRegion(r)) }
+    if (text !== claim ? geoConsistency(explicit, implied) : explicit.size > 0 && implied.size > 0 && ![...explicit].some(c => implied.has(c)) || implied.size > 1) contradictory = true
+    for (const c of [...explicit, ...implied]) { countries.add(c); (text === claim ? claimCountries : reqCountries).add(c) }
   }
-  return { countries, regions }
+  // the claim and the request name countries with nothing in common (claim: London, England; request: London, Ontario): the place is unconfirmed
+  if (reqCountries.size > 0 && claimCountries.size > 0 && ![...claimCountries].some(c => reqCountries.has(c))) contradictory = true
+  return { countries, regions, contradictory }
 }
 // What an Event's location states: `city` = each addressLocality as a token phrase, `local` = the place-name phrase(s) (neighbourhood / site) with the city words taken off. Street, region, country and postal code are not place terms.
 function eventPlace(location: unknown, key: string): { city: string[][]; local: string[][] } {
@@ -158,6 +171,7 @@ function eventMatches(o: Record<string, unknown>, claim: string, where: string[]
   // The event's OWN place has to agree with the claim's place - same city / neighbourhood (or the request's place), never merely a shared country, region or the word "London".
   // The event's STRUCTURED country / region must agree with what the claim / request states: London, Ontario (CA, Ontario) is not London, UK. Both sides stating one and no overlap = a different place.
   const geoE = eventGeo(o.location), geoC = claimGeo(claim, where)
+  if (geoE.contradictory || geoC.contradictory) return false                                 // Canada + England, US + Ontario: a place that contradicts itself dates nothing
   if (geoE.countries.size > 0 && geoC.countries.size > 0 && ![...geoE.countries].some(c => geoC.countries.has(c))) return false
   if (geoE.regions.size > 0 && geoC.regions.size > 0 && ![...geoE.regions].some(r => geoC.regions.has(r))) return false
   const { city, local } = eventPlace(o.location, key)

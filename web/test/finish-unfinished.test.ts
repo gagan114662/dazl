@@ -299,3 +299,42 @@ test('FULL RUN: a London, Ontario event leaves the London, UK claim undated and 
   const ok = await row(fx([ev('GB', 'England', daysAgo(9))], { quote: claim }))
   assert.equal(ok.r.event_date, daysAgo(9)); assert.equal(ok.r.review_reason, null)
 })
+
+// ---- #307 review 7: an event (or request) whose own country and region contradict each other describes no real place and dates nothing ----
+test('INSTINCT REPRO 7: an event that contradicts itself (Canada + England, US + Ontario, UK + NY, CA + Scotland) never dates a claim; agreeing pairs still do', () => {
+  const ev = (country: unknown, region: unknown, locality = 'London') => ld({ '@type': 'Event', name: 'Embedd office opening', startDate: '2026-10-19', organizer: { name: 'Embedd' }, location: { '@type': 'Place', name: `Embedd ${locality} office`, address: { '@type': 'PostalAddress', addressLocality: locality, addressCountry: country, addressRegion: region } } })
+  const claims: [string, string[]][] = [['Embedd opened a new office in London, UK', ['London, UK']], ['Embedd opened a new office in London', []], ['Embedd opened a new office in London, Ontario', ['London, Ontario, Canada']], ['Embedd opened a new office in London, Canada', ['London, Canada']], ['Embedd opened a new office in London', ['London']]]
+  const contradictory: [unknown, unknown][] = [['Canada', 'England'], ['CA', 'England'], ['CANADA', 'ENGLAND'], ['US', 'Ontario'], ['United States', 'ON'], ['UK', 'NY'], ['GB', 'New York'], ['CA', 'Scotland'], ['Canada', 'Scotland'], ['GB', 'Ontario'], ['FR', 'England'], [{ name: 'Canada' }, 'england']]
+  for (const [country, region] of contradictory) for (const [claim, where] of claims) assert.equal(resolveStructuredDate([ev(country, region)], 'Embedd', claim, where), null, `${JSON.stringify([country, region])} | ${claim} | ${JSON.stringify(where)}`)
+  // agreeing pairs date their own claims
+  assert.deepEqual(resolveStructuredDate([ev('GB', 'England')], 'Embedd', 'Embedd opened a new office in London, UK', ['London, UK']), { date: '2026-10-19', kind: 'Event' })
+  assert.deepEqual(resolveStructuredDate([ev('Canada', 'ON')], 'Embedd', 'Embedd opened a new office in London, Ontario', ['London, Ontario, Canada']), { date: '2026-10-19', kind: 'Event' })
+  assert.deepEqual(resolveStructuredDate([ev('US', 'NY', 'New York')], 'Embedd', 'Embedd opened a new office in New York, NY', ['New York, NY, USA']), { date: '2026-10-19', kind: 'Event' })
+  for (const [country, region] of [['GB', 'England'], ['UK', 'england'], ['United Kingdom', 'ENGLAND'], ['CA', 'Ontario'], ['Canada', 'ON'], ['US', 'NY']] as const) assert.notEqual(country, null)
+})
+test('an event whose address list implies disjoint countries (a region list across two countries) dates nothing', () => {
+  const two = ld({ '@type': 'Event', name: 'Embedd office opening', startDate: '2026-10-19', organizer: { name: 'Embedd' }, location: [{ '@type': 'Place', name: 'Embedd London office', address: { addressLocality: 'London', addressRegion: 'England', addressCountry: 'GB' } }, { '@type': 'Place', name: 'Embedd London office', address: { addressLocality: 'London', addressRegion: 'Ontario', addressCountry: 'CA' } }] })
+  assert.equal(resolveStructuredDate([two], 'Embedd', 'Embedd opened a new office in London, UK', ['London, UK']), null)
+  const regionsOnly = ld({ '@type': 'Event', name: 'Embedd office opening', startDate: '2026-10-19', organizer: { name: 'Embedd' }, location: { '@type': 'Place', name: 'Embedd London office', address: [{ addressLocality: 'London', addressRegion: 'England' }, { addressLocality: 'London', addressRegion: 'Ontario' }] } })
+  assert.equal(resolveStructuredDate([regionsOnly], 'Embedd', 'Embedd opened a new office in London, UK', ['London, UK']), null)
+})
+test('the same check on the claim / request side: a request that contradicts itself ("London, Ontario, UK", "New York, NY, Canada", "London, England, Canada") dates nothing - even for an event that agrees with one half', () => {
+  const ev = (country: string, region: string, locality = 'London') => ld({ '@type': 'Event', name: 'Embedd office opening', startDate: '2026-10-19', organizer: { name: 'Embedd' }, location: { '@type': 'Place', name: `Embedd ${locality} office`, address: { '@type': 'PostalAddress', addressLocality: locality, addressCountry: country, addressRegion: region } } })
+  for (const req of ['London, Ontario, UK', 'LONDON, ONTARIO, UNITED KINGDOM', 'London, England, Canada', 'London, Scotland, Canada']) {
+    for (const e of [ev('GB', 'England'), ev('CA', 'Ontario')]) assert.equal(resolveStructuredDate([e], 'Embedd', 'Embedd opened a new office in London', [req]), null, `${req}`)
+  }
+  assert.equal(resolveStructuredDate([ev('US', 'NY', 'New York')], 'Embedd', 'Embedd opened a new office in New York', ['New York, NY, Canada']), null)
+  assert.equal(resolveStructuredDate([ev('GB', 'England')], 'Embedd', 'Embedd opened a new office in London, England', ['London, Ontario']), null, 'a request region from another country than the claim\'s own')
+  // consistent requests still work
+  assert.deepEqual(resolveStructuredDate([ev('GB', 'England')], 'Embedd', 'Embedd opened a new office in London', ['London, England, UK']), { date: '2026-10-19', kind: 'Event' })
+})
+test('FULL RUN: an internally contradictory event (Canada + England) leaves the London, UK claim undated and held', async () => {
+  const ev = (country: string, region: string, startDate: string) => ld({ '@context': 'https://schema.org', '@type': 'Event', name: 'Embedd office opening', startDate, organizer: { '@type': 'Organization', name: 'Embedd' }, location: { '@type': 'Place', name: 'Embedd London office', address: { '@type': 'PostalAddress', addressLocality: 'London', addressCountry: country, addressRegion: region } } })
+  const claim = 'Embedd opened a new office in London, UK for its growing engineering team'
+  for (const [c, r] of [['Canada', 'England'], ['US', 'Ontario'], ['CA', 'Scotland']] as const) {
+    const held = await row(fx([ev(c, r, daysAgo(9))], { quote: claim }))
+    assert.equal(held.r.event_date, null, `${c}+${r}`); assert.equal(held.r.review_reason, 'outside_window_undated'); assert.equal(held.r.timing_note, null)
+  }
+  const ok = await row(fx([ev('GB', 'England', daysAgo(9))], { quote: claim }))
+  assert.equal(ok.r.event_date, daysAgo(9)); assert.equal(ok.r.review_reason, null)
+})
