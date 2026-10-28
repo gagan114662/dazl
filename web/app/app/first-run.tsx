@@ -17,7 +17,7 @@ const SITE_ERR: Record<string, string> = {
 }
 
 // First run on Home: website -> editable "what you sell and who buys it" -> one sentence (3 suggested plays) -> Run.
-// Shown until the account has run its first scan; after that Home shows the usual steps (the `rest` children).
+// Shown to a new account (no business details, no searches); after that Home shows the journey (the children).
 export default function FirstRun({ children }: { children: React.ReactNode }) {
   const router = useRouter()
   const [ready, setReady] = useState<'loading' | 'wizard' | 'home'>('loading')
@@ -58,10 +58,16 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         setWebsite(String(profile.website ?? '')); setSells(String(profile.sells ?? '')); setBizName(String(profile.business_name ?? ''))
         if (profile.buyer) fillBuyer(profile.buyer)
       }
-      // ?setup=brain (the Home checklist's "Build" link) reopens these steps at the buyer profile for any account.
-      if (new URLSearchParams(window.location.search).get('setup') === 'brain') { setStep(profile?.website || profile?.sells ? 'brain' : 'site'); setReady('wizard'); return }
-      // Anything unreadable falls back to the normal Home rather than trapping a returning user in the wizard.
-      setReady(jobs && Array.isArray(jobs.jobs) && jobs.jobs.length === 0 ? 'wizard' : 'home')
+      // ?setup=brain (the Home checklist's "Build" link) reopens these steps at the buyer profile for any account;
+      // ?setup=site starts them at the website.
+      const setup = new URLSearchParams(window.location.search).get('setup')
+      if (setup === 'brain') { setStep(profile?.website || profile?.sells ? 'brain' : 'site'); setReady('wizard'); return }
+      if (setup === 'site') { setReady('wizard'); return }
+      // A new account (nothing known about the business, no searches) gets the steps; every other account gets the
+      // journey, which asks for the business itself when it is missing. Anything unreadable falls back to the normal
+      // Home rather than trapping a returning user in the wizard.
+      const known = !!(profile && (profile.website || profile.sells || profile.buyer))
+      setReady(profile && !known && jobs && Array.isArray(jobs.jobs) && jobs.jobs.length === 0 ? 'wizard' : 'home')
     })
   }, [])
 

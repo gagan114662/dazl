@@ -58,6 +58,7 @@ async function open(plan) {
   })
   const page = await ctx.newPage()
   await page.goto(`${base}/app/leads`, { waitUntil: 'networkidle' })
+  await page.getByTestId('play-settings').locator('summary').first().click() // sources live in the closed "Settings for this play" drawer
   return { ctx, page, writes, scanBodies }
 }
 const shot = async (page, name) => { if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`) }) }
