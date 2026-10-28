@@ -29,12 +29,12 @@ async function view(f: Fixture) {
   const progress = progressOf(rows, String(job.status)); const outcome = scanOutcome({ ...job, ...outcomeInputs(rep, rows, String(job.status)) } as never)
   return { r, ms, jobId, v: first5Of({ status: String(job.status), leads: verifiedLeads(r.db, 'A', jobId), progress, outcome }), progress, outcome }
 }
-const lead = (i: number): First5Lead => ({ id: `l${i}`, company: `Co${i}`, name: null, signal: 's', source_url: 'https://x.example/1', date: null, fit_pct: null })
+const lead = (i: number): First5Lead => ({ id: `l${i}`, company: `Co${i}`, name: null, signal: 's', source_url: 'https://x.example/1', date: null, fit_pct: null, person: null, person_state: 'none_published', provisional: false })
 const noOutcome = scanOutcome({ id: 'j', status: 'done', error: null })
 
 test('pure: the view is never empty — finding / partial / ready / stopped_empty each carry a message, the sources and what to do next', () => {
   const running = first5Of({ status: 'running', leads: [], progress: [], outcome: noOutcome }); assert.deepEqual([running.state, running.finding_more, running.can_continue], ['finding', true, false]); assert.match(running.message, /Searching/)
-  const some = first5Of({ status: 'running', leads: [lead(1), lead(2)], progress: [], outcome: noOutcome }); assert.equal(some.state, 'finding'); assert.match(some.message, /2 found so far, finding more/)
+  const some = first5Of({ status: 'enriching', leads: [lead(1), lead(2)], progress: [], outcome: noOutcome }); assert.deepEqual([some.state, some.found, some.verified, some.enriching, some.leads.every(l => l.provisional)], ['finding', 2, 0, true, true]); assert.match(some.message, /2 found. Checking each one/); assert.equal(some.leads[0].person_state, 'looking')
   const part = first5Of({ status: 'done', leads: [lead(1), lead(2), lead(3)], progress: [], outcome: noOutcome }); assert.deepEqual([part.state, part.finding_more, part.can_continue, part.verified], ['partial', true, true, 3]); assert.match(part.message, /3 verified so far. Finding more/)
   const ready = first5Of({ status: 'done', leads: [1, 2, 3, 4, 5, 6, 7].map(lead), progress: [], outcome: noOutcome }); assert.deepEqual([ready.state, ready.finding_more, ready.verified, ready.leads.length], ['ready', false, FIRST5_TARGET, FIRST5_TARGET])
 })
