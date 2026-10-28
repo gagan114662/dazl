@@ -13,6 +13,7 @@ import { kickRunner } from '@/lib/scan/runner'
 import { recordTrialScan, trialStatus } from '@/lib/scan/trial'
 import { getAuthDb, sellerProfile } from '@/lib/auth-db'
 import { describeRunBudget, normalizeScanBudget } from '@/lib/scan/run-budget'
+import { admitTrialScan, linkTrialReservation } from '@/lib/billing/trial-budget'
 
 export async function POST(req: NextRequest) {
   const user = await requireUser()
@@ -66,11 +67,20 @@ export async function POST(req: NextRequest) {
   if (!q.allowed) {
     return NextResponse.json({ error: 'quota_exceeded', plan: q.plan, used: q.used, limit: q.limit }, { status: 402 })
   }
+  // A trial scan runs on dazl's own key: it must also fit dazl's daily trial budget and abuse limits
+  // (lib/billing/trial-budget.ts). Checked last, so a refused request above never holds a reservation.
+  let reservation: string | null = null
+  if (funded === 'trial') {
+    const a = await admitTrialScan(await getDb(), { id: user.id, email: user.email })
+    if (!a.ok) return NextResponse.json({ error: 'trial_unavailable', reason: a.reason }, { status: 402 })
+    reservation = a.reservation
+  }
   const sel = body?.sources ? normalizeSources(body.sources) : null
   const job_id = query.length >= 3 ? createQueryJob(db, user.id, { query, icp: icp ? JSON.stringify(icp) : null, sources: sel ? JSON.stringify(sel) : null, seller: sellerProfile(getAuthDb(), user.id), runBudget: nb.value }) : createJob(db, user.id, { business_name, industry, location }, nb.value)
   if (funded === 'trial') {
     db.prepare("UPDATE scan_jobs SET funded_by = 'trial' WHERE id = ?").run(job_id)
     recordTrialScan(db, user.id, job_id, ip)
+    if (reservation) await linkTrialReservation(await getDb(), user.id, reservation, job_id)
   }
   after(() => kickRunner(db))
   // A supplied budget is answered with exactly which paid surfaces it allows or refuses and what the limit is NOT.

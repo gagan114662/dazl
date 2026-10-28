@@ -647,6 +647,17 @@ CREATE TABLE tenant_plans (
 
 CREATE TABLE tinyfish_usage (day TEXT NOT NULL, tenant_id TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('search','fetch')), n INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (day, tenant_id, kind));
 
+CREATE TABLE trial_budget_lock (id INTEGER PRIMARY KEY CHECK (id = 1), n INTEGER NOT NULL DEFAULT 0);
+
+CREATE TABLE trial_reservations (
+      id          TEXT PRIMARY KEY,
+      tenant_id   TEXT NOT NULL,
+      job_id      TEXT,
+      reserve_usd REAL NOT NULL CHECK (reserve_usd > 0),
+      day         INTEGER NOT NULL,
+      created_at  INTEGER NOT NULL
+    );
+
 CREATE TABLE trial_scans (
       tenant_id TEXT NOT NULL,
       job_id TEXT NOT NULL,
@@ -785,6 +796,8 @@ CREATE INDEX source_reviews_tenant ON source_reviews(tenant_id,lead_id);
 CREATE INDEX tenant_connections_tenant ON tenant_connections (tenant_id);
 
 CREATE INDEX tenant_plans_customer ON tenant_plans (stripe_customer_id);
+
+CREATE INDEX trial_reservations_day ON trial_reservations (day, tenant_id);
 
 CREATE INDEX trial_scans_ip ON trial_scans (ip_hash, created_at);
 
