@@ -88,3 +88,21 @@ test('readiness: a synchronous SQLite check over budget blocks the probe until i
   assert.equal(r.checks.store.ok, true)
   assert.deepEqual(got.map(g => g.where), ['readiness:sqlite'])
 }))
+
+// The store summary a deploy is verified with (docs/PLATFORM.md "Postgres cutover"), and the split-store guard.
+bothEngines('readiness reports the engine and migration version; on Postgres, modules left on raw SQLite make it not ready', async ({ db, kind }) => {
+  const want = Math.max(...shipped())
+  const r = await readiness({ db: async () => db, sqlite: okSqlite, migrations: shipped, rawSqliteModules: () => 3 })
+  assert.deepEqual(r.store, { engine: kind, migrations: { shipped: want, applied: kind === 'pg' ? want : null }, raw_sqlite_modules: 3 })
+  if (kind === 'sqlite') {
+    // today's production: the raw modules share the one SQLite file, nothing is split
+    assert.equal(r.ok, true)
+    assert.deepEqual(r.checks.split, { ok: true, skipped: 'sqlite' })
+  } else {
+    assert.equal(r.ok, false, 'Postgres with raw-SQLite modules left would split the data between two stores')
+    assert.deepEqual(r.checks.split, { ok: false, raw_sqlite_modules: 3 })
+    const clean = await readiness({ db: async () => db, sqlite: okSqlite, migrations: shipped, rawSqliteModules: () => 0 })
+    assert.equal(clean.ok, true)
+    assert.deepEqual(clean.checks.split, { ok: true, raw_sqlite_modules: 0 })
+  }
+})
