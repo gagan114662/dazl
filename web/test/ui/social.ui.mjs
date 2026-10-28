@@ -95,6 +95,11 @@ try {
   await cards.nth(0).getByRole('button', { name: 'Dismiss' }).click()
   await page.waitForTimeout(500)
   assert.deepEqual(writes, ['POST /api/replies/t1 {"action":"draft"}', 'POST /api/replies {"action":"dismiss","id":"t1"}'])
+  // An old bookmark (with a query string) still lands on the renamed page, signed in.
+  await page.goto(`${base}/app/replies?from=bookmark`, { waitUntil: 'networkidle' })
+  await page.waitForURL('**/app/social')
+  assert.equal(new URL(page.url()).pathname, '/app/social')
+  assert.equal((await page.locator('main h1').first().textContent()).trim(), 'Social opportunities')
   console.log('social opportunities UI check passed')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
