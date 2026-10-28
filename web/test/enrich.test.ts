@@ -27,7 +27,7 @@ test('apolloOrgEnrich: posts domain to /organizations/enrich with x-api-key, map
   assert.equal(seen[0].url, 'https://api.apollo.io/api/v1/organizations/enrich')
   assert.equal(seen[0].key, 'test-apollo-key')
   assert.match(seen[0].body, /"domain":"acme.com"/)
-  assert.deepEqual(f, { name: 'Acme Inc', employees: 86, industry: 'Computer Software', founded: 2019, website: 'https://acme.com', linkedin: 'https://linkedin.com/company/acme' })
+  assert.deepEqual(f, { name: 'Acme Inc', employees: 86, industry: 'Computer Software', founded: 2019, website: 'https://acme.com', linkedin: 'https://linkedin.com/company/acme', place: null })
 })
 
 test('apolloPeopleSearch: uses the 0-credit search endpoint, never returns emails/phones', async () => {
