@@ -9,6 +9,7 @@ import { companySearchEligible } from '@/lib/scan/find-contact-eligible'
 import { contactsFromEnrichments, PEOPLE_SOURCE } from '@/lib/people/rank'
 import { OpportunityCardView } from './opportunity-card'
 import { leadCardSummary } from '@/lib/scan/lead-card'
+import { coreSources, socialSources, usableLabels, type Advanced, type KeyState, type ServerSources, type SourceRow } from '@/lib/scan/source-availability'
 import { barCopy, scanCounts } from '@/lib/outreach/scan-drafts'
 import { publishedEmail, publishedContact, contactSearchNote, domainBasisNote, domainBasisText } from '@/lib/outreach/published-email'
 import { domainReviewFor } from '@/lib/outreach/domain-review'
@@ -63,6 +64,35 @@ function dedupeLabel(label: string): string {
     seen.add(k)
     return true
   }).join('; ')
+}
+
+// Names of the extra sources a run request carried (the body buildSources made), in the words More sources uses.
+const EXTRA_LABEL: Record<string, string> = { github: 'GitHub', youtube: 'YouTube', v2ex: 'V2EX', jobboards: 'Job postings', rss: 'Your feeds', web: 'Your web pages' }
+const SOCIAL_NAME: Record<string, string> = { x: 'X posts', linkedin: 'LinkedIn', reddit: 'Reddit' }
+function extraLabels(body: Record<string, unknown> | null): string[] {
+  if (!body) return []
+  const adapters = Array.isArray(body.adapters) ? body.adapters as string[] : []
+  const advanced = Array.isArray(body.advanced) ? body.advanced as string[] : []
+  return [...adapters.map(a => EXTRA_LABEL[a] ?? a), ...advanced.map(a => SOCIAL_NAME[a] ?? a)]
+}
+
+// What a scan here can search, and each source it cannot, with the reason and the page that fixes it.
+// Capabilities, never a promise: a scan may skip an enabled source (news when another backend already found leads,
+// website reads when no lead qualifies), so the entry names what a scan here CAN use. Without an AI key no scan can
+// start at all, so that prerequisite comes first. Opt-in social sources are never listed; unavailable core and social
+// sources are listed with their reason, and a fix link only where the user can fix it.
+function SourceAvailability({ core, social }: { core: SourceRow[] | null; social: SourceRow[] }) {
+  if (!core) return <p className="text-xs text-[#555] mt-2" data-testid="source-availability">Could not check which sources are available. Reload to retry.</p>
+  const off = [...core, ...social].filter(r => !r.usable)
+  const on = usableLabels(core)
+  return (
+    <div className="text-xs text-[#555] mt-2 space-y-1" data-testid="source-availability">
+      <p data-testid="sources-usable">{!core.find(r => r.id === 'research')?.usable
+        ? <>A scan cannot start until you add an AI key{on ? <>. Then it can use: {on}</> : ''}.</>
+        : on ? <>Sources a scan here can use: {on}. Extra sources are optional, under More sources.</> : <>No source is available for a scan yet.</>}</p>
+      {off.length > 0 && <p data-testid="sources-unavailable">Not available: {off.map((r, i) => <span key={r.id} data-testid={`source-off-${r.id}`}>{i > 0 && '; '}{r.label} ({r.reason}{r.fix && <>, <a className="underline text-[#111]" href={r.fix.href}>{r.fix.label}</a></>})</span>)}.</p>}
+    </div>
+  )
 }
 
 export default function LeadsClient() {
@@ -304,10 +334,17 @@ export default function LeadsClient() {
   // The account's plan, for showing only the imports it can use. Unknown (load failed) keeps them visible: the server
   // refuses a free account with pro_only either way.
   const [plan, setPlan] = useState<'free' | 'pro' | null>(null)
-  useEffect(() => { void fetch('/api/usage').then(r => r.ok ? r.json() : null).then(j => { if (j?.plan === 'free' || j?.plan === 'pro') setPlan(j.plan) }).catch(() => {}) }, [])
+  // Source availability (what a scan here can search, and why the rest cannot): operator switches, key state, socials.
+  const [serverSrc, setServerSrc] = useState<ServerSources | null>(null)
+  const [keyState, setKeyState] = useState<KeyState | null>(null)
+  const [advanced, setAdvanced] = useState<Advanced | null>(null)
+  useEffect(() => { void fetch('/api/usage').then(r => r.ok ? r.json() : null).then(j => { if (j?.plan === 'free' || j?.plan === 'pro') setPlan(j.plan); if (j) setKeyState({ has_key: j.has_key, trial: j.trial }) }).catch(() => {}) }, [])
+  useEffect(() => { void fetch('/api/scan/sources').then(r => r.ok ? r.json() : null).then(j => { if (j) setServerSrc(j) }).catch(() => {}) }, [])
   const [advPick, setAdvPick] = useState<string[]>([])
-  useEffect(() => { void fetch('/api/settings/advanced').then(r => r.ok ? r.json() : null).then(j => { if (j?.available) setAdvReady(j.platforms.filter((p: { consent: boolean; connected: boolean; enabled: boolean; operator_index?: boolean }) => p.consent && ((p.connected && p.enabled) || p.operator_index)).map((p: { platform: string }) => p.platform)) }).catch(() => {}) }, [])
+  useEffect(() => { void fetch('/api/settings/advanced').then(r => r.ok ? r.json() : null).then(j => { if (j && Array.isArray(j.platforms)) setAdvanced(j); if (j?.available) setAdvReady(j.platforms.filter((p: { consent: boolean; connected: boolean; enabled: boolean; operator_index?: boolean }) => p.consent && ((p.connected && p.enabled) || p.operator_index)).map((p: { platform: string }) => p.platform)) }).catch(() => {}) }, [])
 
+  // Extra sources this page asked the run for (unknown for a scan adopted after a reload: null).
+  const [runExtras, setRunExtras] = useState<string[] | null>(null)
   async function run(withIcp: Icp | null) {
     if (budgetCheck.error) { setError(budgetCheck.error); return } // an enabled but invalid spend limit never starts a run
     setError(''); setStarting(true)
@@ -316,7 +353,7 @@ export default function LeadsClient() {
       const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) }) })
       const j = await r.json().catch(() => ({}))
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : j.error === 'trial_exhausted' ? 'Your 3 free scans are used up. Add your own AI key in Settings to keep scanning.' : j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')); if (j.error === 'invalid_budget' && j.detail) setError(`The spend limit was not accepted: ${String(j.detail).slice(0, 200)}`); return }
-      passiveJob.current = false; setJobId(j.job_id); setStatus('pending'); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0
+      setRunExtras(extraLabels(srcBody)); passiveJob.current = false; setJobId(j.job_id); setStatus('pending'); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0
     } catch {
       // A rejected fetch (offline, aborted) used to fail silently - the click looked dead.
       setError('Could not reach the server. Check your connection and try again.')
@@ -420,6 +457,8 @@ export default function LeadsClient() {
   const [plays, setPlays] = useState<PlaySuggestions | null>(null)
   useEffect(() => { void fetch('/api/settings/profile').then(r => r.ok ? r.json() : null).catch(() => null).then(p => setPlays(playSuggestions(p))) }, [])
 
+  const core = coreSources(serverSrc, keyState)
+
   const input = 'field'
   const visibleLeads = leads.filter(l => !l.review_reason && (showSeen || !l.seen_before))
 
@@ -449,6 +488,7 @@ export default function LeadsClient() {
           <button disabled={busy || starting || scanActive} title={scanActive ? 'A scan is already running below' : undefined} className="btn-primary">{starting ? 'Starting...' : 'Find leads'}</button>
           <button type="button" disabled={query.trim().length < 3 || busy || starting || scanActive} onClick={() => void preview()} className="text-xs text-[#555] underline disabled:opacity-40 disabled:no-underline">{busy ? 'Working out your profile...' : 'Review profile first'}</button>
         </div>
+        {!jobId && <SourceAvailability core={core} social={socialSources(advanced)} />}
       </form>
       <details className="mb-4 text-sm" data-testid="more-sources">
         <summary className="cursor-pointer text-[#555]">More sources</summary>
@@ -614,7 +654,8 @@ export default function LeadsClient() {
           <span className="inline-block h-4 w-4 rounded-full border-2 border-gray-500 border-t-white animate-spin" aria-hidden />
           <div className="text-sm">
             <div>{status === 'pending' ? 'Queued - waiting to start.' : 'Scanning - this can take a few minutes.'}</div>
-            <div className="text-gray-400 text-xs">{leadsSoFar > 0 ? `${leadsSoFar} lead${leadsSoFar === 1 ? '' : 's'} so far` : status === 'pending' ? 'Not started' : 'Searching sources...'}{status === 'pending' ? (createdAt ? ` - queued ${Math.max(0, Math.floor((now - createdAt) / 60))} min ago` : '') : startedAt ? ` - running ${Math.max(0, Math.floor((now - startedAt) / 60))} min` : ''}{attempt ? ` - attempt ${attempt[0]} of ${attempt[1]}` : ''}</div>
+            <div className="text-gray-400 text-xs">{leadsSoFar > 0 ? `${leadsSoFar} lead${leadsSoFar === 1 ? '' : 's'} so far` : status === 'pending' ? 'Not started' : 'Running'}{status === 'pending' ? (createdAt ? ` - queued ${Math.max(0, Math.floor((now - createdAt) / 60))} min ago` : '') : startedAt ? ` - running ${Math.max(0, Math.floor((now - startedAt) / 60))} min` : ''}{attempt ? ` - attempt ${attempt[0]} of ${attempt[1]}` : ''}</div>
+            <div className="text-gray-400 text-xs" data-testid="run-sources">{core ? `Sources this scan can use: ${[usableLabels(core), ...(runExtras ?? [])].filter(Boolean).join(', ') || 'none'}${runExtras === null ? ' (plus any extra sources chosen when it started)' : ''}.` : 'Could not check which sources this scan can use.'}</div>
             <div className="text-gray-400 text-xs">dazl cannot show a per-source count yet. A scan that stops responding is retried automatically, up to {attempt?.[1] ?? 3} attempts.</div>
             <button type="button" className="underline text-[#111] text-xs mt-1" onClick={async () => { const r = await fetch('/api/scan/cancel', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ job_id: jobId }) }); const j = await r.json().catch(() => ({})); setCancelNote(r.ok ? (j.note ?? 'Stop requested.') : 'Could not cancel: ' + (j.error ?? 'try again')); if (r.ok) setStatus('failed'); if (r.ok) setJobError('cancelled') }}>Stop this scan</button>
             {cancelNote && <div className="text-gray-400 text-xs">{cancelNote}</div>}
