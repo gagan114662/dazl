@@ -2,7 +2,8 @@
 // Run:  cd web && npm run build && node test/ui/source-availability.ui.mjs   (SHOTS=<dir> also saves screenshots)
 // Real production build, throwaway database, server under test/helpers/net-fence.ts, EVERY /api/* call answered from a
 // stub in the browser: no scan runs, no key check. Off-host requests are aborted. It proves:
-//   1. the play entry lists only the sources every scan here uses; a usable opt-in social source is not listed as searched;
+//   1. the play entry lists only the sources a scan here CAN use (capability wording, never "every scan searches");
+//      a usable opt-in social source is not listed; with no key it says a scan cannot start until a key is added;
 //   2. each unavailable source is marked with its reason, and a link to fix it when the user can (no key -> Add key,
 //      social not connected / no consent -> Set up); operator-off sources say "not set up on this server", no link;
 //   3. the progress view names only usable sources plus the extras this run asked for, never an unavailable one, and
@@ -65,13 +66,15 @@ try {
   if (process.env.BEFORE_ONLY) { const { page } = await open(); await page.waitForTimeout(800); await shot(page, 'leads'); console.log('before shot'); process.exit(0) }
   const { ctx, page, writes, scanBodies } = await open()
   const box = page.getByTestId('source-availability'); await page.getByTestId('sources-usable').waitFor()
-  assert.equal(await page.getByTestId('sources-usable').textContent(), 'Every scan searches: Web research with your AI key, News articles, Company websites. Extra sources are optional, under More sources.')
+  assert.equal(await page.getByTestId('sources-usable').textContent(), 'Sources a scan here can use: Web research with your AI key, News articles, Company websites. Extra sources are optional, under More sources.')
   assert.equal(await page.getByTestId('source-off-web_index').textContent(), 'Web search index (not set up on this server)')
   assert.equal(await page.getByTestId('source-off-web_index').getByRole('link').count(), 0, 'operator switch: no user link')
   assert.match(await page.getByTestId('source-off-social:linkedin').textContent(), /LinkedIn \(not connected, Set up\)/)
   assert.equal(await page.getByTestId('source-off-social:linkedin').getByRole('link', { name: 'Set up' }).getAttribute('href'), '/app/settings#social')
   assert.match(await page.getByTestId('source-off-social:reddit').textContent(), /Reddit \(consent needed, Set up\)/)
   assert.doesNotMatch(await page.getByTestId('sources-usable').textContent(), /Web search index|LinkedIn|Reddit|X posts/, 'opt-in X is not claimed as searched')
+  // Instinct #255: enabled sources are capabilities, never a promise that a scan searches them.
+  assert.equal(await page.getByText(/every scan searches|searches:/i).count(), 0, 'no "every scan searches" claim')
   await shot(page, 'leads')
   // Run with GitHub ticked: progress names usable sources and that extra only.
   await page.getByLabel('Who do you want to reach?').fill('Dental practice owners in Ohio - opened a new location')
@@ -91,7 +94,8 @@ try {
   // No key and the free searches used up: research is unavailable, with Add key.
   const nokey = await open({ server: { web_index: true, news: true, websites: true }, usage: { plan: 'free', scans_used: 3, scan_limit: 10, has_key: false, trial: { funded: true, remaining: 0, cap: 3 } } })
   await nokey.page.getByTestId('sources-usable').waitFor()
-  assert.equal(await nokey.page.getByTestId('sources-usable').textContent(), 'Every scan searches: Web search index, News articles, Company websites. Extra sources are optional, under More sources.')
+  assert.equal(await nokey.page.getByTestId('sources-usable').textContent(), 'A scan cannot start until you add an AI key. Then it can use: Web search index, News articles, Company websites.')
+  assert.equal(await nokey.page.getByText(/every scan searches|searches:/i).count(), 0, 'no-key: nothing is claimed as searched')
   assert.match(await nokey.page.getByTestId('source-off-research').textContent(), /Web research with your AI key \(free searches used up; no key, Add key\)/)
   assert.equal(await nokey.page.getByTestId('source-off-research').getByRole('link', { name: 'Add key' }).getAttribute('href'), '/app/settings#model-key')
   await shot(nokey.page, 'no-key')
