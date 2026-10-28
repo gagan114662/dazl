@@ -35,7 +35,8 @@ export default function OutreachClient() {
   const [loadFailed, setLoadFailed] = useState(false)
 
   // ?job_id=<scan> (from "Review drafts" on Leads): only that scan's emails. The scan's leads are read from the existing
-  // leads endpoint (all=1: a hidden or rejected lead's draft still belongs to the scan). null = no filter.
+  // leads endpoint (all=1: a hidden or rejected lead's draft still belongs to the scan). If they cannot be read the filter
+  // fails closed: no emails are listed (never another scan's under this scan's link), with a link to show all.
   const [scan, setScan] = useState<{ id: string; leadIds: string[] | null } | null>(null)
   async function load() {
     const jobId = new URLSearchParams(window.location.search).get('job_id')
@@ -78,7 +79,7 @@ export default function OutreachClient() {
   }
 
   const btn = 'btn-ghost text-xs px-3 py-1.5'
-  const shown = scan?.leadIds ? forScan(msgs, scan.leadIds) : msgs
+  const shown = scan ? (scan.leadIds ? forScan(msgs, scan.leadIds) : []) : msgs
   return (
     <div className="p-8 max-w-3xl">
       <h1 className="text-2xl font-bold mb-1">Outreach</h1>
@@ -88,9 +89,9 @@ export default function OutreachClient() {
       {!loaded && <p className="text-[#666] text-sm" role="status">Loading your emails...</p>}
       {loaded && loadFailed && <p className="text-sm text-[#111] border-l-2 border-black pl-3 mb-4" role="alert">Could not load your emails. Refresh to retry.</p>}
       {scan && <p className="text-sm border-l-2 border-black pl-3 mb-4" data-testid="scan-filter">{scan.leadIds === null
-        ? <>Could not load that scan&apos;s leads, so all your emails are shown.</>
+        ? <>Could not load that scan&apos;s emails. Reload to retry, or </>
         : <>Showing the {shown.length} email{shown.length === 1 ? '' : 's'} from one scan. </>}
-        {scan.leadIds !== null && <a className="underline" href="/app/outreach">Show all emails</a>} <a className="underline" href={`/app/leads?job_id=${scan.id}`}>Back to its leads</a></p>}
+        <a className="underline" href="/app/outreach">{scan.leadIds === null ? 'show all emails' : 'Show all emails'}</a>{scan.leadIds === null ? '.' : ''} <a className="underline" href={`/app/leads?job_id=${scan.id}`}>Back to its leads</a></p>}
       {loaded && !loadFailed && msgs.length === 0 && <p className="text-[#666] text-sm">No emails yet. Open Leads and choose Draft email on a lead with a published address.</p>}
       <div className="flex flex-col gap-3">
         {shown.map(m => {

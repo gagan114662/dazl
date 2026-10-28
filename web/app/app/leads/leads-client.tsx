@@ -9,7 +9,7 @@ import { companySearchEligible } from '@/lib/scan/find-contact-eligible'
 import { contactsFromEnrichments, PEOPLE_SOURCE } from '@/lib/people/rank'
 import { OpportunityCardView } from './opportunity-card'
 import { leadCardSummary } from '@/lib/scan/lead-card'
-import { waitingCount } from '@/lib/outreach/scan-drafts'
+import { barCopy, scanCounts } from '@/lib/outreach/scan-drafts'
 import { publishedEmail, publishedContact, contactSearchNote, domainBasisNote, domainBasisText } from '@/lib/outreach/published-email'
 import { domainReviewFor } from '@/lib/outreach/domain-review'
 import SourceReview from './source-review'
@@ -358,13 +358,13 @@ export default function LeadsClient() {
     if (l.ok) { const j = await l.json(); setLeads(j.leads); setHiddenCount(j.hidden_count ?? 0) }
   }
   useEffect(() => { if (status === 'done') void loadLeads() }, [jobId, status, showHidden])
-  // "N approved -> Review drafts": this scan's drafts still waiting on the user, read back from Outreach (so it survives a
-  // reload and counts drafts made with Draft email too). Read-only; null when the list could not be loaded.
-  const [scanDrafts, setScanDrafts] = useState<number | null>(null)
+  // The Review drafts bar: this scan's unsent emails by state (drafts to review, approved not sent), read back from
+  // Outreach so it survives a reload and counts drafts made with Draft email too. Read-only; null when it could not load.
+  const [scanDrafts, setScanDrafts] = useState<{ drafts: number; approved: number } | null>(null)
   const loadScanDrafts = async () => {
     const r = await fetch('/api/outreach').catch(() => null)
     const j = r?.ok ? await r.json().catch(() => null) : null
-    setScanDrafts(j?.messages ? waitingCount(j.messages, leadIdsRef.current) : null)
+    setScanDrafts(j?.messages ? scanCounts(j.messages, leadIdsRef.current) : null)
   }
   const leadIdsRef = useRef<string[]>([])
   leadIdsRef.current = leads.map(l => l.id)
@@ -680,10 +680,10 @@ export default function LeadsClient() {
           ))}
         </div>
       )}
-      {jobId && leads.length > 0 && scanDrafts !== null && scanDrafts > 0 && (
+      {jobId && leads.length > 0 && scanDrafts && barCopy(scanDrafts) && (
         <div className="card p-4 mb-4 flex items-center justify-between gap-3 text-sm" data-testid="approved-bar" role="status">
-          <span>{scanDrafts} approved - {scanDrafts === 1 ? 'its draft is' : 'their drafts are'} waiting in Outreach. Nothing is sent until you approve each email there.</span>
-          <a className="btn-primary text-xs px-3 py-1.5 shrink-0" href={`/app/outreach?job_id=${jobId}`}>Review drafts</a>
+          <span>{barCopy(scanDrafts)}</span>
+          <a className="btn-primary text-xs px-3 py-1.5 shrink-0" href={`/app/outreach?job_id=${jobId}`}>{scanDrafts.drafts > 0 ? 'Review drafts' : 'Open in Outreach'}</a>
         </div>
       )}
       <div className="card divide-y divide-white/5">

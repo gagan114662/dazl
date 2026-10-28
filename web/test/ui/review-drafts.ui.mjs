@@ -5,11 +5,13 @@
 // FROM A STUB in the browser: no scan, no draft is really created, nothing is sent. Off-host requests are aborted.
 // It proves:
 //   1. no bar before anything from this scan is drafted (another scan's draft does not count);
-//   2. each Approve sends the existing POST /api/outreach { lead_id } and the bar counts this scan's waiting drafts,
-//      read back from GET /api/outreach ("1 approved", then "2 approved");
-//   3. after a reload the bar still counts them (read from Outreach, not page memory);
+//   2. each Approve sends the existing POST /api/outreach { lead_id } and the bar counts this scan's drafts, read back
+//      from GET /api/outreach ("1 draft ... waiting for your review", then "2 drafts"); a draft is never called approved;
+//   3. after a reload the bar still counts them; with one of them approved in Outreach (not sent), the bar shows the
+//      two states apart and does not ask for a second approval; approved-only says "approved and not sent yet";
 //   4. Review drafts opens /app/outreach?job_id=<scan>, which lists only that scan's emails, with "Show all emails";
-//   5. the only writes are the two draft requests: nothing is approved for sending or sent.
+//   5. if that scan's leads cannot be read, the filter fails closed: no emails listed, an error and "show all emails";
+//   6. the only writes are the two draft requests: nothing is approved for sending or sent.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -41,6 +43,7 @@ const LEADS = [lead(A, 'Bright Dental', { contact: 'hello@brightdental.example' 
 const msg = (lead_id, to_email, status = 'draft') => ({ id: lead_id.slice(0, 6) + 'm', lead_id, to_email, subject: `Hello ${to_email}`, body: 'Hi there', status, error: null, created_at: 1, sent_at: null, test: 0, evidence_state: 'machine', currentness_held: false, provenance: null, send_footer: null })
 // Another scan's draft is already in Outreach: it must not count for this scan, and the filter must hide it.
 const MSGS = [msg(OTHER, 'hello@elsewhere.example')]
+let leadsFail = false
 const writes = []
 const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: 1280, height: 1000 } })
 await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
@@ -51,6 +54,7 @@ await ctx.route('**/*', async route => {
   const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
   if (m !== 'GET') writes.push(`${m} ${u.pathname}`)
   if (u.pathname === '/api/scan/status') return json({ status: 'done', lead_count: LEADS.length, icp: ICP, icp_source: 'user', attempts: 1, max_attempts: 3, query: 'Dental practice owners in Ohio opening a new location' })
+  if (u.pathname === '/api/leads' && leadsFail) return json({ error: 'unavailable' }, 503)
   if (u.pathname === '/api/leads' && u.searchParams.get('job_id') === JOB) return json({ job_id: JOB, status: 'done', hidden_count: 0, leads: LEADS })
   if (u.pathname === '/api/scan/jobs') return json({ jobs: [] })
   if (u.pathname === '/api/outreach' && m === 'GET') return json({ messages: MSGS })
@@ -71,13 +75,27 @@ try {
   await card('Bright Dental').getByRole('button', { name: 'Approve' }).click()
   const bar = page.getByTestId('approved-bar')
   await bar.waitFor()
-  assert.match(await bar.textContent(), /^1 approved - its draft is waiting in Outreach\. Nothing is sent until you approve each email there\./)
+  const BAR2 = '2 drafts from this scan are waiting for your review in Outreach. Nothing is sent until you approve each one there.'
+  assert.equal(await bar.textContent().then(t => t.startsWith('1 draft from this scan is waiting for your review in Outreach. Nothing is sent until you approve it there.')), true)
   await card('Grove Dental').getByRole('button', { name: 'Approve' }).click()
-  await page.getByText('2 approved - their drafts are waiting in Outreach.').waitFor()
+  await page.getByText(BAR2).waitFor()
+  assert.doesNotMatch(await bar.textContent(), /\bapproved\b/, 'drafts are never called approved')
   await shot('leads')
   // Read back from Outreach: a reload keeps the count.
   await page.reload({ waitUntil: 'networkidle' })
-  await page.getByText('2 approved - their drafts are waiting in Outreach.').waitFor()
+  await page.getByText(BAR2).waitFor()
+  // One of them approved in Outreach, not sent yet: the two states are shown apart, no second approval asked.
+  MSGS.find(x => x.lead_id === G).status = 'approved'
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.getByText('1 draft from this scan is waiting for your review in Outreach. Nothing is sent until you approve it there. 1 email from this scan is approved and not sent yet.').waitFor()
+  await shot('leads-mixed')
+  MSGS.find(x => x.lead_id === A).status = 'approved'
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.getByText('2 emails from this scan are approved and not sent yet.').waitFor()
+  assert.equal(await page.getByTestId('approved-bar').getByRole('link', { name: 'Open in Outreach' }).count(), 1, 'approved-only: no "Review drafts"')
+  MSGS.find(x => x.lead_id === A).status = 'draft'; MSGS.find(x => x.lead_id === G).status = 'draft'
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.getByText(BAR2).waitFor()
   const review = page.getByTestId('approved-bar').getByRole('link', { name: 'Review drafts' })
   assert.equal(await review.getAttribute('href'), `/app/outreach?job_id=${JOB}`)
   await review.click()
@@ -93,8 +111,16 @@ try {
   await page.waitForURL('**/app/outreach')
   await page.getByText('hello@elsewhere.example').first().waitFor()
   assert.equal(await page.getByTestId('scan-filter').count(), 0)
+  // The scan's leads cannot be read: fail closed, never another scan's emails under this scan's link.
+  leadsFail = true
+  await page.goto(`${base}/app/outreach?job_id=${JOB}`, { waitUntil: 'networkidle' })
+  const failed = page.getByTestId('scan-filter'); await failed.waitFor()
+  assert.match(await failed.textContent(), /^Could not load that scan's emails\. Reload to retry, or show all emails\./)
+  assert.equal(await page.getByText('hello@elsewhere.example').count(), 0, 'no unrelated emails')
+  assert.equal(await page.getByText('hello@brightdental.example').count(), 0)
+  await shot('outreach-fail-closed')
   assert.deepEqual(writes, ['POST /api/outreach', 'POST /api/outreach'], 'only the two draft requests: nothing approved for sending or sent')
-  console.log('review drafts UI check passed: bar counts this scan only, survives reload, Outreach filtered to the scan, only draft writes')
+  console.log('review drafts UI check passed: bar counts drafts and approved apart, this scan only, survives reload, fail-closed filter, Outreach filtered to the scan, only draft writes')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }
