@@ -206,7 +206,7 @@ test('[pg] the shared-queue claimer recovers a scan from a killed instance: the 
     child.kill('SIGKILL')
     await new Promise(r => child.once('exit', r))
     const other = await newJob(db, B) // created after the crash
-    await new Promise(r => setTimeout(r, 2200)) // the 2 s lease runs out: no reaper call, the claimer's own rules recover it
+    await new Promise(r => setTimeout(r, 3200)) // past the 2 s lease (whole seconds, strictly older): no separate reaper call, the claimer reaps it
     await db.run("INSERT INTO scan_test_ready (instance) VALUES ('stand-in')")
     const b = await scanInstance({ SI_NAME: 'B', SI_MODE: 'shared', SI_SCHEMA: s.schema, SI_LEASE_S: '2' })
     assert.equal(b.ran, 2)

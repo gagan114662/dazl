@@ -98,6 +98,41 @@ bothEngines('a scan whose worker died (running past the lease) is taken over as 
   assert.deepEqual([(await status(db, id)).status, (await status(db, id)).attempts], ['done', 2])
 })
 
+// Review on #301: a stale reclaim must respect the retry cap exactly as the legacy reaper does (reapStaleJobs): at
+// MAX_ATTEMPTS (3) the scan fails as 'timeout' and is never run a fourth time; below it, it runs as the next attempt.
+for (const withItem of [false, true]) {
+  bothEngines(`retry cap: a stale scan at attempt 3 fails as timeout and never runs as attempt 4; at attempt 2 it runs as attempt 3 (${withItem ? 'its queue item claimed by the dead instance' : 'no queue item yet'})`, async ({ db }) => {
+    const { job } = await seed(db)
+    const atCap = await job(A), below = await job(B)
+    const q = new DbQueue(db)
+    const now = Math.floor(Date.now() / 1000)
+    if (withItem) {
+      // mirrored and claimed by an instance that then died: the claims' leases have run out
+      await kickSharedScanQueue({ ...harness(db, 0).deps() })
+      for (let i = 0; i < 2; i++) assert.ok(await q.claim({ kinds: ['scan'], leaseSeconds: LEASE, perTenantInFlight: 9, maxInFlight: 9 }))
+      await db.run("UPDATE work_queue SET lease_expires_at = ? WHERE status = 'claimed'", [now - 5])
+    }
+    for (const [id, attempts] of [[atCap, 3], [below, 2]] as const) await db.run("UPDATE scan_jobs SET status = 'running', attempts = ?, claimed_at = ? WHERE id = ?", [attempts, now - LEASE - 5, id])
+    const h = harness(db)
+    // an expired claim is reaped by the next claim and goes back to pending after the queue's retry backoff
+    // (DEFAULT_BACKOFF): one kick reaps it, the next one after the backoff runs it
+    const later = withItem ? { now: () => Math.floor(Date.now() / 1000) + 7200 } : {}
+    if (withItem) { await kickSharedScanQueue({ ...h.deps(), now: () => Math.floor(Date.now() / 1000) + 3600 }); await until(() => h.inFlight() === 0); assert.deepEqual(h.ran, []) }
+    await kickSharedScanQueue({ ...h.deps(), ...later }); await until(() => h.inFlight() === 0)
+    assert.deepEqual(h.ran, [`${below}@3`], 'only the scan below the cap ran, as attempt 3')
+    const capped = await db.get<{ status: string; error: string; attempts: number; claimed_at: number | null; finished_at: number | null }>('SELECT status, error, attempts, claimed_at, finished_at FROM scan_jobs WHERE id = ?', [atCap])
+    assert.deepEqual({ ...capped!, attempts: Number(capped!.attempts), finished_at: capped!.finished_at !== null }, { status: 'failed', error: 'timeout', attempts: 3, claimed_at: null, finished_at: true }, 'the legacy reaper\'s outcome')
+    assert.deepEqual([(await status(db, below)).status, (await status(db, below)).attempts], ['done', 3])
+    // a second kick changes nothing: the capped scan stays failed, never attempt 4
+    await kickSharedScanQueue({ ...h.deps(), ...later }); await until(() => h.inFlight() === 0)
+    assert.equal(h.ran.length, 1)
+    assert.equal((await status(db, atCap)).attempts, 3)
+    const item = await q.get(atCap)
+    if (withItem) assert.equal(item!.status, 'done', 'its queue item is settled without running')
+    else assert.equal(item, undefined, 'a failed scan is never mirrored')
+  })
+}
+
 bothEngines('a crash fails the item (not retried) and goes to onCrash; a retry outcome puts the item back; a scan pending again after a terminal item is re-enqueued', async ({ db }) => {
   const { job } = await seed(db)
   const boom = await job(A)

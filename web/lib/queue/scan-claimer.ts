@@ -9,18 +9,21 @@
 //            queue is shared but the scan rows are still per instance; the runner's storage port (next step) makes it
 //            getDb() too. The claim rules do not change between the two.
 // One kick:
-//   1. Mirror: every pending scan the legacy claimer would take (the same funding filter as claimKeyedJob: the tenant
-//      has a saved key, or the scan is trial-funded), and every running scan stale past the lease (its worker died),
-//      gets a queue item with the scan's id. Idempotent; a terminal item for a scan that is pending again is retired
-//      and re-enqueued (a new scheduling epoch; scan_jobs.attempts keeps counting).
-//   2. While this instance has a free run slot: claim one item, then bind the scan row with the runner's own guard
-//      (pending -> running, attempts + 1; or a running row stale past the lease). A row that is already finished or
-//      cancelled completes the item without running; a fresh running row (a live attempt elsewhere) releases it for a
-//      retry. The bound scan runs; its outcome is mapped back onto the item by claim token, so a claim that was reaped
-//      and re-claimed meanwhile changes nothing.
+//   1. Reap: a running scan stale past the lease (its worker died) goes back to pending, or, at the attempt cap
+//      (MAX_ATTEMPTS), fails as 'timeout': the legacy reaper's own statement (reapStaleJobs), so a scan is never run a
+//      fourth time on either path.
+//   2. Mirror: every pending scan the legacy claimer would take (the same funding filter as claimKeyedJob: the tenant
+//      has a saved key, or the scan is trial-funded) gets a queue item with the scan's id. Idempotent; a terminal item
+//      for a scan that is pending again is retired and re-enqueued (a new scheduling epoch; scan_jobs.attempts keeps
+//      counting).
+//   3. While this instance has a free run slot: claim one item, then bind the scan row with the runner's own guard
+//      (pending -> running, attempts + 1). A row that is already finished, cancelled or failed completes the item
+//      without running; a running row (a live attempt elsewhere, or a dead one the reaper has not freed yet) releases it
+//      for a retry. The bound scan runs; its outcome is mapped back onto the item by claim token, so a claim that was
+//      reaped and re-claimed meanwhile changes nothing.
 import type { Db } from '../db/client.ts'
 import { captureError } from '../ops/errors.ts'
-import { STALE_RUNNING_S } from '../scan/store.ts'
+import { MAX_ATTEMPTS, STALE_RUNNING_S } from '../scan/store.ts'
 import { DbQueue } from './db.ts'
 
 export const sharedScanQueue = (env: Record<string, string | undefined> = process.env) => env.DAZL_SCAN_SHARED_QUEUE === '1'
@@ -43,12 +46,23 @@ export interface SharedScanDeps<J extends ClaimedScan> {
 
 const nowS = () => Math.floor(Date.now() / 1000)
 
-export async function mirrorScans(domain: Db, q: DbQueue, leaseSeconds: number, now: number): Promise<number> {
+// The legacy reaper (reapStaleJobs in lib/scan/store.ts and store-db.ts), with the lease as a parameter.
+export async function reapStaleScans(domain: Db, leaseSeconds: number, now: number): Promise<number> {
+  return (await domain.run(
+    `UPDATE scan_jobs SET status = CASE WHEN attempts >= ? THEN 'failed' ELSE 'pending' END,
+       error = CASE WHEN attempts >= ? THEN 'timeout' ELSE error END,
+       finished_at = CASE WHEN attempts >= ? THEN ? ELSE finished_at END,
+       claimed_at = NULL
+     WHERE status = 'running' AND claimed_at < ?`,
+    [MAX_ATTEMPTS, MAX_ATTEMPTS, MAX_ATTEMPTS, now, now - leaseSeconds])).changes
+}
+
+export async function mirrorScans(domain: Db, q: DbQueue, now: number): Promise<number> {
   const rows = await domain.all<{ id: string; user_id: string }>(
     `SELECT id, user_id FROM scan_jobs
-     WHERE (status = 'pending' OR (status = 'running' AND claimed_at <= ?))
+     WHERE status = 'pending'
        AND (user_id IN (SELECT tenant_id FROM tenant_llm_keys) OR funded_by = 'trial')
-     ORDER BY created_at, insert_seq`, [now - leaseSeconds])
+     ORDER BY created_at, insert_seq`)
   let n = 0
   for (const r of rows) {
     const existing = await q.get(r.id)
@@ -70,16 +84,16 @@ export async function kickSharedScanQueue<J extends ClaimedScan>(d: SharedScanDe
   const lease = d.leaseSeconds ?? STALE_RUNNING_S
   const clock = d.now ?? nowS
   const q = new DbQueue(d.queue)
-  await mirrorScans(d.domain, q, lease, clock())
+  await reapStaleScans(d.domain, lease, clock())
+  await mirrorScans(d.domain, q, clock())
   while (d.slots.available()) {
     // No per-tenant or global cap beyond this instance's run slots, as with the legacy claimer.
     const claim = await q.claim({ kinds: ['scan'], leaseSeconds: lease, now: clock(), perTenantInFlight: 1_000_000, maxInFlight: 1_000_000 })
     if (!claim) return
-    const now = clock()
     const job = await d.domain.get<J>(
       `UPDATE scan_jobs SET status = 'running', attempts = attempts + 1, claimed_at = ?
-       WHERE id = ? AND (status = 'pending' OR (status = 'running' AND claimed_at <= ?)) RETURNING ${JOB_COLUMNS}`,
-      [now, claim.item.id, now - lease])
+       WHERE id = ? AND status = 'pending' RETURNING ${JOB_COLUMNS}`,
+      [clock(), claim.item.id])
     if (!job) {
       const row = await d.domain.get<{ status: string }>('SELECT status FROM scan_jobs WHERE id = ?', [claim.item.id])
       if (!row || (row.status !== 'pending' && row.status !== 'running')) await q.complete(claim.token) // finished or cancelled: nothing to run
