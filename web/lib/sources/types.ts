@@ -26,6 +26,8 @@ export interface AdapterInput {
   page?: (url: string) => Promise<string | null> // the posting page's text via the scan's own page fetcher; null when it could not be fetched
   note?: (code: string) => void // an adapter reports a partial result (oversize, unparseable, unreachable, budget); a healthy empty reports nothing
   discovered?: string[] // URLs this scan's own search returned (raw hits and candidates); only the job-board adapter derives boards from them
+  companies?: { name: string; domain?: string | null }[] // companies this scan itself found (leads / seed): the job-board adapter probes their public boards by slug guess
+  tally?: Partial<Record<'greenhouse' | 'lever' | 'ashby', { probed: number; failed: number; evidence: number }>> // the job-board adapter reports how each public board API went (boards asked / failed / postings kept), for per-board progress
   http: SafeGet
   credential?: string // reserved for future user-approved connectors; no adapter below uses it
 }
