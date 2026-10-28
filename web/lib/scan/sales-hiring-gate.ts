@@ -11,6 +11,7 @@ import { addEnrichment, audit } from '../connectors/store.ts'
 import { atsGtmHiring, isGtmRole, postingEvidence, BOARD_LABEL } from '../signals/ats-gtm.ts'
 import { careersSalesVacancy } from '../signals/careers-page.ts'
 import { placeAgreement } from './place-agreement.ts'
+import { releaseHeld } from './held-state.ts'
 import { norm } from './evidence.ts'
 import type { Get } from '../connectors/sitecrawl.ts'
 import { domainRelationship } from '../signals/domain-basis.ts'
@@ -228,7 +229,7 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
     }
   }
   // The gate ran again and PASSED these leads: a failed-gate marker from an earlier run no longer holds them.
-  for (const id of passedIds) { try { db.prepare("DELETE FROM lead_enrichments WHERE lead_id = ? AND connector = 'scan:gate' AND kind = 'gate_failed'").run(id) } catch { /* no marker table */ } }
+  releaseHeld(db, job.user_id, job.id, passedIds)
   audit(db, { tenantId: job.user_id, connector: 'scan:sales-hiring-gate', jobId: job.id, lookup: `${leads.length} leads, window ${windowDays}d`.slice(0, 200), status: demoted ? 'demoted' : 'ok', results: passed })
   return { required: true, checked: leads.length, passed, demoted, demotions }
 }

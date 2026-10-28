@@ -13,7 +13,8 @@ import { sqliteDb } from '../lib/db/client.ts'
 import { setDomainReview } from '../lib/scan/domain-review-action.ts'
 import { createDraft } from '../lib/outreach/service.ts'
 import { currentnessHeld } from '../lib/outreach/currentness.ts'
-import { requiredGateHeld } from '../lib/scan/held-state.ts'
+import { requiredGateHeld, markHeldInProcess, releaseHeld } from '../lib/scan/held-state.ts'
+import { migrateRunReport } from '../lib/scan/run-report.ts'
 
 function setup() { const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateConnectors(db); seedOffers(db); return db }
 function addLead(db: Database.Database, o: { reason: string | null; confidence?: number | null }) {
@@ -73,4 +74,28 @@ test('the hold clears only when the gate RUNS AGAIN AND PASSES: a stale gate_fai
   await applySalesHiringGate(db, { id: job, user_id: 'A', query: 'Find London UK B2B SaaS startups that announced seed funding and are hiring sales staff.', icp: ICP }, noFetch, {})
   assert.equal(requiredGateHeld(db, 'A', 'pass'), null, 'the gate passed this lead: its stale marker is gone')
   assert.equal(requiredGateHeld(db, 'A', 'hold'), 'sales_hiring_check_failed', 'the gate demoted the other lead (no sales proof): still held')
+})
+
+test('STANDS ALONE: the run report’s held_lead_ids (the run’s own record) holds the lead when the review write AND any marker are gone - lead and domain confirmation cannot unblock drafting', async () => {
+  const db = setup(); const id = addLead(db, { reason: null, confidence: 80 })   // the row still reads verified
+  const jobId = (db.prepare('SELECT scan_job_id AS j FROM leads WHERE id = ?').get(id) as { j: string }).j
+  assert.equal(requiredGateHeld(db, 'A', id), null, 'nothing records a failure yet')
+  migrateRunReport(db)
+  db.prepare('INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, 1, ?)').run(jobId, JSON.stringify({ held_lead_ids: [id] }))
+  assert.equal(requiredGateHeld(db, 'A', id), 'sales_hiring_check_failed')
+  await confirmLeadReview(sqliteDb(db), 'A', id); try { setDomainReview(db, 'A', id, 'confirm') } catch { /* see above */ }
+  assert.throws(() => createDraft(db, 'A', id, 'Acme'), /sales_hiring_check_failed/)
+  assert.equal(currentnessHeld(db, 'A', id), true)
+  // the gate running again and passing releases it
+  releaseHeld(db, 'A', jobId, [id])
+  assert.equal(requiredGateHeld(db, 'A', id), null)
+})
+
+test('NOTHING PERSISTED: the process remembers the held lead; a gate pass releases it', () => {
+  const db = setup(); const id = addLead(db, { reason: null, confidence: 80 })
+  const jobId = (db.prepare('SELECT scan_job_id AS j FROM leads WHERE id = ?').get(id) as { j: string }).j
+  markHeldInProcess('A', [id])
+  assert.equal(requiredGateHeld(db, 'A', id), 'sales_hiring_check_failed'); assert.equal(requiredGateHeld(db, 'B', id), null)
+  assert.throws(() => createDraft(db, 'A', id, 'Acme'), /sales_hiring_check_failed/)
+  releaseHeld(db, 'A', jobId, [id]); assert.equal(requiredGateHeld(db, 'A', id), null)
 })

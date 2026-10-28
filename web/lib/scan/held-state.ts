@@ -1,18 +1,51 @@
 // A REQUIRED gate (the sales-hiring check) that failed is a hold no human confirmation can clear. Confirming the lead or its domain says "the source / company is
 // right"; it says nothing about the gate that could not run. Every drafting, approving and sending gate re-reads this state:
 //   - the lead's stored review reason, or the reason it was confirmed FROM (confirmLeadReview moves review_reason into human_confirmed_from),
-//   - the gate_failed marker beside the lead (written when the review write itself was rejected).
+//   - the gate_failed marker beside the lead (written when the review write itself was rejected),
+//   - the run report's `held_lead_ids` (the run keeps its own record even when both of the writes above were rejected),
+//   - this process's memory (when nothing at all could be persisted).
 // It clears only when the gate runs again and passes (applySalesHiringGate removes the marker for a lead it passes).
 import type Database from 'better-sqlite3'
 
 export const SALES_GATE_HELD = 'sales_hiring_check_failed'
 
+// Held in this process, for the case where nothing could be persisted. Bounded; cleared by a gate pass.
+const inProcess = new Set<string>()
+export function markHeldInProcess(tenantId: string, leadIds: string[]): void { for (const id of leadIds) { if (inProcess.size >= 10_000) inProcess.clear(); inProcess.add(`${tenantId}:${id}`) } }
+
+// The run report is a separate row, and the one place #282 itself writes the held leads: `held_lead_ids`. It survives a rejected review write AND a rejected marker write.
+function reportHolds(db: Database.Database, tenantId: string, leadId: string): boolean {
+  try {
+    const r = db.prepare('SELECT r.report FROM scan_run_report r JOIN leads l ON l.scan_job_id = r.job_id JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ? ORDER BY r.attempt DESC LIMIT 1').get(leadId, tenantId) as { report: string } | undefined
+    if (!r) return false
+    const ids = (JSON.parse(r.report) as { held_lead_ids?: unknown }).held_lead_ids
+    return Array.isArray(ids) && ids.includes(leadId)
+  } catch { return false }
+}
+
+// A gate that RAN AGAIN AND PASSED releases the lead: the marker, the report entry and the in-process entry all go.
+export function releaseHeld(db: Database.Database, tenantId: string, jobId: string, leadIds: string[]): void {
+  for (const id of leadIds) inProcess.delete(`${tenantId}:${id}`)
+  for (const id of leadIds) { try { db.prepare("DELETE FROM lead_enrichments WHERE lead_id = ? AND connector = 'scan:gate' AND kind = 'gate_failed'").run(id) } catch { /* no marker table */ } }
+  try {
+    const rows = db.prepare('SELECT attempt, report FROM scan_run_report WHERE job_id = ?').all(jobId) as { attempt: number; report: string }[]
+    for (const row of rows) {
+      const rep = JSON.parse(row.report) as { held_lead_ids?: unknown }
+      if (!Array.isArray(rep.held_lead_ids)) continue
+      const keep = rep.held_lead_ids.filter(x => !leadIds.includes(String(x)))
+      if (keep.length !== rep.held_lead_ids.length) { rep.held_lead_ids = keep; db.prepare('UPDATE scan_run_report SET report = ? WHERE job_id = ? AND attempt = ?').run(JSON.stringify(rep), jobId, row.attempt) }
+    }
+  } catch { /* no report table */ }
+}
+
 export function requiredGateHeld(db: Database.Database, tenantId: string, leadId: string): string | null {
+  if (inProcess.has(`${tenantId}:${leadId}`)) return SALES_GATE_HELD
   const row = db.prepare('SELECT l.review_reason, l.human_confirmed_from FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as { review_reason: string | null; human_confirmed_from: string | null } | undefined
   if (!row) return null
   if (row.review_reason === SALES_GATE_HELD || row.human_confirmed_from === SALES_GATE_HELD) return SALES_GATE_HELD
   try {
     if (db.prepare("SELECT 1 FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'scan:gate' AND kind = 'gate_failed' LIMIT 1").get(leadId, tenantId)) return SALES_GATE_HELD
   } catch { /* no enrichments table: nothing was marked */ }
+  if (reportHolds(db, tenantId, leadId)) return SALES_GATE_HELD
   return null
 }
