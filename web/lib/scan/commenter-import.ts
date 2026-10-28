@@ -16,7 +16,7 @@ import type Database from 'better-sqlite3'
 import { addEnrichment, audit, getEnabledCredential } from '../connectors/store.ts'
 import { apolloOrgEnrich, apolloPeopleSearch, EnrichError } from '../enrich/apollo.ts'
 import { pdlPeopleSearch } from '../enrich/pdl.ts'
-import { contactAgreement, organizationContradicts, recordContactRejection } from './contact-agreement.ts'
+import { contactAgreement, organizationContradicts, recordContactRejection, regradeFromKeptContacts } from './contact-agreement.ts'
 import { getMasterKey } from '../secrets.ts'
 
 export const MAX_PROFILES = 100
@@ -188,6 +188,12 @@ export function importCommenters(db: Database.Database, userId: string, rows: Im
 // stored - people results are name/title strings, same as the scan waterfall. Silent on
 // failure: a bonus, never the bar.
 export async function enrichCommenters(db: Database.Database, tenantId: string, batchId: string, deps: { fetchImpl?: typeof fetch; master?: Buffer } = {}): Promise<void> {
+  try { await enrichCommentersInner(db, tenantId, batchId, deps) } finally {
+    // The score follows the evidence kept: a contact refused by the agreement checks must not keep contributing to the lead's reachability grade.
+    try { const j = (db.prepare('SELECT job_id FROM commenter_batches WHERE id = ? AND user_id = ?').get(batchId, tenantId) as { job_id: string | null } | undefined)?.job_id; if (j) regradeFromKeptContacts(db, tenantId, j) } catch { /* the regrade never blocks the import */ }
+  }
+}
+async function enrichCommentersInner(db: Database.Database, tenantId: string, batchId: string, deps: { fetchImpl?: typeof fetch; master?: Buffer } = {}): Promise<void> {
   const batch = db.prepare('SELECT job_id FROM commenter_batches WHERE id = ? AND user_id = ?').get(batchId, tenantId) as { job_id: string | null } | undefined
   if (!batch?.job_id) return
   const leads = db.prepare("SELECT id, company, company_domain FROM leads WHERE scan_job_id = ? AND company <> ''").all(batch.job_id) as { id: string; company: string; company_domain: string | null }[]

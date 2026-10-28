@@ -79,3 +79,22 @@ test('commenter import / PDL: only a person whose employer domain equals the lea
   await enrichCommenters(nodom, 'A', 'b1', { fetchImpl: pdl([person('Match Person', 'smileavenue.com')]), master })
   assert.deepEqual(attached(nodom), [], 'a lead with no domain and no geography cannot be confirmed by a name match')
 })
+
+// ---- the score follows the evidence kept ----
+test('score recompute: a contact refused by the agreement checks stops contributing — the lead is regraded to what is actually reachable; a kept contact keeps its grade; idempotent', async () => {
+  const grade = (db: Database.Database) => db.prepare("SELECT fit, intent, action, why FROM leads WHERE id = 'l1'").get() as { fit: number; intent: number; action: number; why: string }
+  const withGrades = (domain: string | null) => { const db = importDb(domain); db.prepare("UPDATE leads SET fit = 4, intent = 3, action = 4, why = 'Dental group, reachable VP.' WHERE id = 'l1'").run(); return db }
+  // Pico Rivera same-name company: every contact refused -> action capped at 2 with the reason, fit and intent untouched
+  const wrong = withGrades('smileavenue.com'); saveCredential(wrong, 'A', 'enrich:apollo', 'test-apollo-key-1234', master)
+  await enrichCommenters(wrong, 'A', 'b1', { fetchImpl: apollo(PICO, [{ ...P[0], organization: { name: 'Smile Avenue Dental Group', website_url: 'https://smileavenue-pr.com' } }]), master })
+  let g = grade(wrong); assert.deepEqual([g.fit, g.intent, g.action], [4, 3, 2]); assert.match(g.why, /^Contact unconfirmed: domain mismatch smileavenue-pr\.com vs smileavenue\.com\. Dental group/)
+  await enrichCommenters(wrong, 'A', 'b1', { fetchImpl: apollo(PICO, []), master }); assert.equal(grade(wrong).why.match(/Contact unconfirmed/g)!.length, 1, 'idempotent')
+  // control: the lead's own domain keeps a contact -> grade unchanged
+  const right = withGrades('smileavenue.com'); saveCredential(right, 'A', 'enrich:apollo', 'test-apollo-key-1234', master)
+  await enrichCommenters(right, 'A', 'b1', { fetchImpl: apollo({ ...PICO, website_url: 'https://www.smileavenue.com', city: 'New York', state: 'New York' }, P), master })
+  g = grade(right); assert.deepEqual([g.fit, g.intent, g.action], [4, 3, 4]); assert.doesNotMatch(g.why, /Contact unconfirmed/)
+  // no domain: nothing confirms the company, nothing is kept -> capped
+  const none = withGrades(null); saveCredential(none, 'A', 'enrich:apollo', 'test-apollo-key-1234', master)
+  await enrichCommenters(none, 'A', 'b1', { fetchImpl: apollo(null, P), master })
+  assert.equal(grade(none).action, 2)
+})
