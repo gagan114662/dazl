@@ -40,7 +40,7 @@ import { getMemory, isExcluded, memoryPromptBlock } from '../memory.ts'
 import { enrichJobSignals } from '../signals/index.ts'
 import { applySalesHiringGate, failClosedSalesHiring, persistHeldState, type QuoteEvidence, type HeldLead } from './sales-hiring-gate.ts'
 import { beginEnrichment, endEnrichment } from './enrichment.ts'
-import { regradeFromKeptContacts } from './contact-agreement.ts'
+import { regradeFromKeptContacts, enforceContactSource } from './contact-agreement.ts'
 import { primarySignalKind } from './score.ts'
 import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } from '../signals/competitor-reddit.ts'
 import { finishUndatedLeads } from './structured-date.ts'
@@ -1106,6 +1106,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     const trace = new EnrichmentTrace()
     if (icpForSources?.window_days) trace.note('date_resolution', datesFinished.length ? 'ok' : 'attempted_no_result', datesFinished.length ? null : 'no undated candidate declared its own event date as structured data (schema.org Event / JobPosting)', datesFinished.length ? { resolved: datesFinished.length } : undefined)
     await runPostFinishBounded(db, job, deps, trace)
+    try { const c = enforceContactSource(db, job.user_id, job.id); if (c.removed > 0) trace.note('contact_source', 'ok', `${c.removed} site contact(s) removed: their source was not the lead's confirmed domain`) } catch (e) { console.error('contact source check failed', e instanceof Error ? e.message : 'error') }
     // People search (person-first): the right people at each lead's company from public profile SEARCH RESULTS, for
     // companies whose own site lists nobody. Never throws; never an address; kill switch PEOPLE_SEARCH_ENABLED=0.
     if (process.env.PEOPLE_SEARCH_ENABLED === '0') trace.note('people_search', 'skipped', 'PEOPLE_SEARCH_ENABLED=0')

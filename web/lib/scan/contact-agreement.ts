@@ -180,6 +180,32 @@ export function recordContactRejection(db: Database.Database, tenantId: string, 
   const url = /^https?:\/\//.test(r.sourceUrl) ? r.sourceUrl : 'https://invalid.example/'
   addEnrichment(db, tenantId, leadId, { connector: r.connector, kind: REJECTED_KIND, value: r.reason.slice(0, 254), label: contactRejectionCode(r.reason), confidence: null, source_url: url.slice(0, 500), source_date: new Date().toISOString().slice(0, 10), retrieved_at: Math.floor(Date.now() / 1000) })
 }
+// Last line of defence, run once enrichment has written its contacts: a contact that came from the company's OWN site (sitecrawl) is kept only while its SOURCE is the lead's confirmed domain - the page
+// is on that domain and a published email is at that domain. A lead with no confirmed domain keeps no site contact. Anything else is removed and the refusal is recorded beside the lead (a refused
+// record, never counted as a contact), so a same-name company's contact can never ride along on a lead it does not belong to. Other connectors (Apollo, People Data Labs, profile search) are
+// already refused at write time on the organization's domain / place and are left as they are.
+export function enforceContactSource(db: Database.Database, tenantId: string, jobId: string): { removed: number } {
+  const rows = db.prepare(
+    `SELECT e.id, e.lead_id, e.kind, e.value, e.source_url, l.company_domain FROM lead_enrichments e JOIN leads l ON l.id = e.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id
+     WHERE l.scan_job_id = ? AND j.user_id = ? AND e.tenant_id = ? AND e.connector = 'sitecrawl' AND e.kind IN ('email', 'phone', 'person', 'contact')`,
+  ).all(jobId, tenantId, tenantId) as { id: string; lead_id: string; kind: string; value: string; source_url: string; company_domain: string | null }[]
+  const del = db.prepare('DELETE FROM lead_enrichments WHERE id = ? AND tenant_id = ?')
+  let removed = 0
+  for (const r of rows) {
+    const ld = registrable(r.company_domain)
+    let host: string | null = null; try { host = registrable(new URL(r.source_url).hostname) } catch { host = null }
+    const emailDomain = r.kind === 'email' && r.value.includes('@') ? registrable(r.value.split('@').pop()) : null
+    let why: string | null = null
+    if (!ld) why = `contact rejected: domain mismatch ${host ?? 'unknown source'} vs no confirmed company domain`
+    else if (!host || host !== ld) why = `contact rejected: domain mismatch ${host ?? 'unknown source'} vs ${ld}`
+    else if (r.kind === 'email' && emailDomain !== ld) why = `contact rejected: domain mismatch ${emailDomain ?? 'unknown'} vs ${ld}`
+    if (!why) continue
+    del.run(r.id, tenantId); removed++
+    recordContactRejection(db, tenantId, r.lead_id, { connector: 'sitecrawl', reason: why, sourceUrl: r.source_url })
+  }
+  return { removed }
+}
+
 // "Can the seller act on it" (the action grade, 0-5) assumed a reachable company. When every contact found for a lead was refused (wrong place /
 // wrong domain) and nothing else reaches it, reachability is unconfirmed: the grade is capped at 2 (it only ever goes DOWN) and the card says why.
 // The list is ranked by fit, then action, so the lead drops below leads that do have a contact. Idempotent.

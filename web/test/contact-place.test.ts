@@ -60,3 +60,38 @@ test('UNCONFIRMED place anywhere: a linked same-name site that states no place a
   const x = await run({ home: NO_PLACE_HOME, contact: '<html><body><p>Bright Smile Dental. Call (562) 555-0188.</p><a href="mailto:hello@brightsmiledental.com">hello@brightsmiledental.com</a></body></html>', link: true })
   refused(x)
 })
+
+// ---- defence in depth: whatever wrote a contact, its SOURCE must be the lead's confirmed domain ----
+import { enforceContactSource } from '../lib/scan/contact-agreement.ts'
+import { addEnrichment } from '../lib/connectors/store.ts'
+const hostile = (db: import('better-sqlite3').Database, leadId: string, host: string, extra: { email?: string } = {}) => {
+  const base = { connector: 'sitecrawl', confidence: 60, source_url: `https://${host}/contact`, source_date: '2026-10-20', retrieved_at: 1 }
+  addEnrichment(db, 'A', leadId, { ...base, kind: 'email', value: extra.email ?? `hello@${host}`, label: 'contact-context-v1:x' })
+  addEnrichment(db, 'A', leadId, { ...base, kind: 'phone', value: '(562) 555-0188', label: 'phone' })
+  addEnrichment(db, 'A', leadId, { ...base, kind: 'person', value: 'Maria Lopez, Owner', label: 'listed' })
+}
+const kept = (db: import('better-sqlite3').Database, leadId: string) => (db.prepare("SELECT kind, value FROM lead_enrichments WHERE lead_id = ? AND connector = 'sitecrawl' AND kind IN ('email','phone','person','contact')").all(leadId) as { kind: string; value: string }[])
+
+test('SWEEP: a Pico Rivera practice\'s email / phone / person written onto the NYC lead is removed and the refusal recorded; the NYC practice\'s own contacts stay', async () => {
+  const x = await run({ home: NYC_HOME, contact: NYC_CONTACT, link: true }); const id = x.lead!.id
+  const before = kept(x.r.db, id).length; assert.ok(before >= 1)
+  hostile(x.r.db, id, 'brightsmile-picorivera.com')
+  assert.equal(kept(x.r.db, id).length, before + 3)
+  const out = enforceContactSource(x.r.db, 'A', (x.r.db.prepare('SELECT scan_job_id AS j FROM leads WHERE id = ?').get(id) as { j: string }).j)
+  assert.equal(out.removed, 3); const left = kept(x.r.db, id); assert.equal(left.length, before); assert.ok(left.every(k => !/picorivera|Maria/.test(k.value)) || left.some(k => k.value === 'hello@brightsmiledental.com'))
+  assert.ok(!left.some(k => k.kind === 'phone' && k.value.includes('562')))
+  const why = x.r.db.prepare("SELECT value, label FROM lead_enrichments WHERE lead_id = ? AND kind = 'contact_rejected' AND value LIKE '%brightsmile-picorivera.com%'").all(id) as { value: string; label: string }[]
+  assert.ok(why.length >= 1 && why.every(w => w.label === 'contact_domain_mismatch' && /domain mismatch brightsmile-picorivera\.com vs brightsmiledental\.com/.test(w.value)), JSON.stringify(why))
+})
+test('SWEEP: an email at another domain on the right page, and a lead with NO confirmed domain, keep no site contact; the matching case is untouched and idempotent', async () => {
+  const x = await run({ home: NYC_HOME, contact: NYC_CONTACT, link: true }); const id = x.lead!.id; const job = (x.r.db.prepare('SELECT scan_job_id AS j FROM leads WHERE id = ?').get(id) as { j: string }).j
+  addEnrichment(x.r.db, 'A', id, { connector: 'sitecrawl', kind: 'email', value: 'owner@somewhere-else.com', label: 'x', confidence: 60, source_url: 'https://brightsmiledental.com/contact', source_date: '2026-10-20', retrieved_at: 1 })
+  assert.equal(enforceContactSource(x.r.db, 'A', job).removed, 1); assert.ok(kept(x.r.db, id).some(k => k.value === 'hello@brightsmiledental.com'))
+  assert.equal(enforceContactSource(x.r.db, 'A', job).removed, 0, 'idempotent')
+  x.r.db.prepare('UPDATE leads SET company_domain = NULL WHERE id = ?').run(id)
+  assert.ok(enforceContactSource(x.r.db, 'A', job).removed >= 1); assert.deepEqual(kept(x.r.db, id), [])
+})
+test('END TO END: the real run keeps the correct NYC contacts (the sweep removes nothing) and refuses the Pico Rivera ones', async () => {
+  const good = await run({ home: NYC_HOME, contact: NYC_CONTACT, link: true }); assert.ok(good.attached.some(a => a.kind === 'email'))
+  const bad = await run({ home: PICO_HOME, contact: PICO_CONTACT, link: true }); assert.deepEqual(bad.attached, [])
+})
