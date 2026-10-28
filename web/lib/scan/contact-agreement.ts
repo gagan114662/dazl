@@ -66,6 +66,23 @@ function effectiveWhere(lead: LeadSide): string[] {
   const ev = evidencedPlace(lead.evidence)
   return ev ? [ev] : []
 }
+// Everything an address writes AFTER its street: "57 W 57th St, Toronto, ON M5V 2T6, Canada" -> "Toronto, ON M5V 2T6, Canada". Empty when it states no geography.
+export function addressGeography(address: string | null | undefined): string {
+  return (address ?? '').replace(STREET, ' ').split(',').map(x => x.trim()).filter(Boolean).join(', ')
+}
+// "57 W 57th St, New York" in the lead's evidence names the city; a stated geography that STARTS with that same city (and carries no foreign marker) is the same city.
+function sameCityAsEvidence(stated: string, evidence: string | null | undefined): boolean {
+  const m = new RegExp(`${STREET.source}\\s*,\\s*([\\p{L}][\\p{L} .'-]{1,40})`, 'iu').exec(evidence ?? '')
+  const city = m ? m[m.length - 1].trim().toLowerCase().replace(/\s+/g, ' ') : ''
+  return !!city && !foreignMarker(stated) && stated.toLowerCase().replace(/\s+/g, ' ').startsWith(city)
+}
+const CA_PROVINCES = new Set(['on', 'qc', 'bc', 'ab', 'mb', 'sk', 'ns', 'nb', 'nl', 'pe', 'yt', 'nt', 'nu', 'ontario', 'quebec', 'british columbia', 'alberta', 'manitoba', 'saskatchewan', 'nova scotia', 'new brunswick', 'newfoundland and labrador', 'prince edward island'])
+const FOREIGN_COUNTRY = /\b(?:canada|mexico|united kingdom|great britain|england|scotland|wales|northern ireland|ireland|australia|new zealand|germany|france|spain|italy|netherlands|india|china|japan|brazil|south africa)\b/i
+const CA_POSTAL = /\b[a-z]\d[a-z]\s?\d[a-z]\d\b/i
+// A province, a Canadian postal code or a non-US/non-UK country name written in a stated place: the record is not in the lead's US city unless placeAgreement positively says otherwise.
+function foreignMarker(stated: string): boolean {
+  return CA_POSTAL.test(stated) || FOREIGN_COUNTRY.test(stated) || stated.split(/[,\s]+/).some((w, i, all) => i > 0 && CA_PROVINCES.has(w.toLowerCase()) && !(w.toLowerCase() === 'on' && all.length > 4)) || stated.split(',').some(seg => CA_PROVINCES.has(seg.trim().toLowerCase().replace(/\s+[a-z]\d[a-z].*$/i, '')))
+}
 export function contactAgreement(lead: LeadSide, c: Candidate): Agreement {
   const ld = registrable(lead.company_domain), cd = registrable(c.domain)
   if (ld && cd) return ld === cd ? { ok: true, via: 'domain' } : { ok: false, reason: `contact rejected: domain mismatch ${cd} vs ${ld}` }
@@ -73,10 +90,17 @@ export function contactAgreement(lead: LeadSide, c: Candidate): Agreement {
   // A street address in the lead's own evidence is a basis: the same address agrees; a DIFFERENT one conflicts (unresolved, not attached) unless the domain already agreed.
   const addr = addressAgreement(c.address, lead.evidence)
   if (addr === 'agrees') {
-    // A matching street number/name is NOT enough on its own: a city / state / country the record states (its place, or the one written in its address) that contradicts the lead's place always blocks.
+    // A matching street number/name is NOT enough: whatever geography the record states (its place field, and everything the address writes after the street - city, region, postal code,
+    // country) must AGREE with the lead's place, positively. A contradicting or merely unconfirmed city / region / country refuses ("57 W 57th St, Toronto, ON M5V 2T6, Canada" for a New York lead).
+    // Only a record stating no geography at all falls back on the street match.
     const wh = effectiveWhere(lead)
-    if (wh.length) for (const stated of [(c.place ?? '').trim(), firstPlaceLabel(c.address ?? '', { structured: true }) ?? '']) {
-      if (stated && placeAgreement(stated, wh) === 'mismatch') return { ok: false, reason: `contact rejected: location mismatch ${stated.slice(0, 60)} vs ${leadPlaceLabel(wh).slice(0, 60)} (the street text matches, the city does not)` }
+    if (wh.length) for (const stated of [(c.place ?? '').trim(), addressGeography(c.address)]) {
+      if (!stated) continue
+      let v: 'agrees' | 'mismatch' | 'unconfirmed' | 'no_geography' = placeAgreement(stated, wh)
+      if (v !== 'agrees' && foreignMarker(stated)) v = 'mismatch'
+      // The same city the lead's own evidence writes after the same street ("57 W 57th St, New York"): a city agreement from the lead's evidence, when nothing contradicts it.
+      else if (v === 'unconfirmed' && sameCityAsEvidence(stated, lead.evidence)) v = 'agrees'
+      if (v !== 'agrees') return { ok: false, reason: `contact rejected: location ${v === 'mismatch' ? 'mismatch' : 'unconfirmed'} ${stated.slice(0, 60)} vs ${leadPlaceLabel(wh).slice(0, 60)} (the street text matches, the city / region / country does not)` }
     }
     return { ok: true, via: 'address' }
   }

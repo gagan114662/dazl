@@ -175,3 +175,19 @@ test('REGRESSION (structured address, no ZIP): a lowercase / ALL CAPS two-letter
     assert.deepEqual(attached(s.db), [], raw); assert.deepEqual(refusals(s.db).map(r => r[0]), ['contact_location_mismatch'], raw + JSON.stringify(refusals(s.db)))
   }
 })
+
+test('REGRESSION (Toronto): the same street in another country never attaches to the NYC lead - city AND region/country must agree; provinces, Canadian postal codes and "Canada" are read; same street + same city still attaches', async () => {
+  const W = ['New York City']
+  for (const addr of ['57 W 57th St, Toronto, ON', '57 W 57th St, Toronto, ON M5V 2T6', '57 W 57th St, Toronto, ON, Canada', '57 W 57th St, Toronto, Ontario, Canada', '57 W 57th St, toronto, on', '57 W 57TH ST, TORONTO, ON M5V 2T6, CANADA', '57 W 57th St, Toronto', '57 W 57th St, Vancouver, BC V6B 1A1', '57 W 57th St, Montreal, QC H3B 2Y5, Canada', '57 W 57th St, London, England']) {
+    for (const where of [W, []]) { const r = contactAgreement({ where, evidence: EVIDENCE }, { address: addr }); assert.equal(r.ok, false, addr + JSON.stringify(where)); assert.match((r as { reason: string }).reason, /^contact rejected: location (?:mismatch|unconfirmed) /, addr) }
+  }
+  for (const place of ['Toronto, ON', 'Toronto, Ontario, Canada', 'toronto, on']) assert.equal(contactAgreement({ where: W, evidence: EVIDENCE }, { address: '57 W 57th St', place }).ok, false, `the place field too: ${place}`)
+  // same street + same city (any honest spelling) attaches
+  for (const addr of ['57 W 57th St, New York, NY 10019', '57 W 57th St, New York', '57 W 57th St, Manhattan, NY', '57 West 57th Street, New York, New York 10019', '57 W 57th St']) assert.equal(contactAgreement({ where: W, evidence: EVIDENCE }, { address: addr }).ok, true, addr)
+  // a Toronto lead is the one place that street in Toronto agrees with
+  assert.equal(contactAgreement({ where: ['Toronto, ON'], evidence: 'Maple Dental is opening at 57 W 57th St, Toronto' }, { address: '57 W 57th St, Toronto, ON M5V 2T6, Canada' }).ok, true, 'a Toronto lead accepts its own Toronto address')
+  // through Apollo: org record = Toronto, Ontario on the same street text, no domain
+  const s = seed()
+  await enrichLeadContacts(s.db, 'u1', s.jobId, [s.lead], { fetchImpl: apollo({ ...PICO, name: 'Smile Avenue Dental', website_url: undefined, city: 'Toronto', state: 'Ontario', country: 'Canada', street_address: '57 W 57th St' }), master })
+  assert.deepEqual(attached(s.db), [], 'nothing from the Toronto record attaches'); assert.equal(refusals(s.db).length, 1, JSON.stringify(refusals(s.db)))
+})
