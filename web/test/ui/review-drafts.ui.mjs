@@ -11,6 +11,8 @@
 //      two states apart and does not ask for a second approval; approved-only says "approved and not sent yet";
 //   4. Review drafts opens /app/outreach?job_id=<scan>, which lists only that scan's emails, with "Show all emails";
 //   5. if that scan's leads cannot be read, the filter fails closed: no emails listed, an error and "show all emails";
+//   5b. the one-scan view never shows the workspace-wide Cold sequences (a sequence from another scan is in the fixture),
+//      neither when the filter works nor when it fails; the full view still shows them;
 //   6. the only writes are the two draft requests: nothing is approved for sending or sent.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
@@ -57,6 +59,8 @@ await ctx.route('**/*', async route => {
   if (u.pathname === '/api/leads' && leadsFail) return json({ error: 'unavailable' }, 503)
   if (u.pathname === '/api/leads' && u.searchParams.get('job_id') === JOB) return json({ job_id: JOB, status: 'done', hidden_count: 0, leads: LEADS })
   if (u.pathname === '/api/scan/jobs') return json({ jobs: [] })
+  // A live cold sequence from ANOTHER scan: it must never appear in this scan's view.
+  if (u.pathname === '/api/outreach/sequences' && m === 'GET') return json({ sequences: [{ id: 's1', message_id: 'm-other', lead_id: OTHER, to_email: 'seq@elsewhere.example', status: 'active', stop_reason: null, evidence_state: 'machine', currentness_held: false, steps: [{ step: 1, subject: 'Step one', body: 'Hi', status: 'sent', due_at: 1, sent_at: 1 }] }], status: {}, test_addresses: [], campaigns: [] })
   if (u.pathname === '/api/outreach' && m === 'GET') return json({ messages: MSGS })
   if (u.pathname === '/api/outreach' && m === 'POST') {
     const { lead_id } = JSON.parse(req.postData()); const l = LEADS.find(x => x.id === lead_id)
@@ -106,11 +110,17 @@ try {
   assert.equal(await page.getByText('hello@grovedental.example').count() > 0, true)
   assert.equal(await page.getByText('hello@elsewhere.example').count(), 0, "the other scan's draft is not listed")
   assert.equal(await filter.getByRole('link', { name: 'Back to its leads' }).getAttribute('href'), `/app/leads?job_id=${JOB}`)
+  assert.equal(await page.getByText('seq@elsewhere.example').count(), 0, "another scan's sequence is not shown")
+  assert.equal(await page.getByRole('heading', { name: 'Cold sequences' }).count(), 0)
+  assert.match(await page.getByTestId('sequences-hidden').textContent(), /not shown in this one-scan view/)
   await shot('outreach-filtered')
   await filter.getByRole('link', { name: 'Show all emails' }).click()
   await page.waitForURL('**/app/outreach')
   await page.getByText('hello@elsewhere.example').first().waitFor()
   assert.equal(await page.getByTestId('scan-filter').count(), 0)
+  await page.getByRole('heading', { name: 'Cold sequences' }).waitFor()
+  await page.getByText('seq@elsewhere.example').first().waitFor()
+  assert.equal(await page.getByTestId('sequences-hidden').count(), 0, 'the full view keeps its sequences')
   // The scan's leads cannot be read: fail closed, never another scan's emails under this scan's link.
   leadsFail = true
   await page.goto(`${base}/app/outreach?job_id=${JOB}`, { waitUntil: 'networkidle' })
@@ -118,6 +128,9 @@ try {
   assert.match(await failed.textContent(), /^Could not load that scan's emails\. Reload to retry, or show all emails\./)
   assert.equal(await page.getByText('hello@elsewhere.example').count(), 0, 'no unrelated emails')
   assert.equal(await page.getByText('hello@brightdental.example').count(), 0)
+  assert.equal(await page.getByText('seq@elsewhere.example').count(), 0, 'failed lookup: no sequence recipients either')
+  assert.equal(await page.getByRole('heading', { name: 'Cold sequences' }).count(), 0)
+  await page.getByTestId('sequences-hidden').waitFor()
   await shot('outreach-fail-closed')
   assert.deepEqual(writes, ['POST /api/outreach', 'POST /api/outreach'], 'only the two draft requests: nothing approved for sending or sent')
   console.log('review drafts UI check passed: bar counts drafts and approved apart, this scan only, survives reload, fail-closed filter, Outreach filtered to the scan, only draft writes')

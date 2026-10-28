@@ -38,8 +38,12 @@ export default function OutreachClient() {
   // leads endpoint (all=1: a hidden or rejected lead's draft still belongs to the scan). If they cannot be read the filter
   // fails closed: no emails are listed (never another scan's under this scan's link), with a link to show all.
   const [scan, setScan] = useState<{ id: string; leadIds: string[] | null } | null>(null)
+  // Sequences and campaign analytics cover the whole workspace, so a one-scan view never renders them (not even before
+  // the scan's leads load, or after that load fails). null until the URL has been read.
+  const [mode, setMode] = useState<'all' | 'scan' | null>(null)
   async function load() {
     const jobId = new URLSearchParams(window.location.search).get('job_id')
+    setMode(isJobId(jobId) ? 'scan' : 'all')
     if (isJobId(jobId)) {
       const lr = await fetch(`/api/leads?job_id=${jobId}&all=1`).catch(() => null)
       const lj = lr?.ok ? await lr.json().catch(() => null) : null
@@ -129,7 +133,8 @@ export default function OutreachClient() {
           )
         })}
       </div>
-      <SequencesClient />
+      {mode === 'all' && <SequencesClient />}
+      {mode === 'scan' && <p className="text-sm text-[#555] mt-8" data-testid="sequences-hidden">Cold sequences and campaign analytics cover all your scans, so they are not shown in this one-scan view. <a className="underline text-[#111]" href="/app/outreach">See all emails and sequences</a></p>}
     </div>
   )
 }
