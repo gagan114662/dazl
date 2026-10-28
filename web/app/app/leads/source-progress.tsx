@@ -1,6 +1,6 @@
 'use client'
 import type { SourceProgress } from '@/lib/scan/progress'
-import { countsText, sourceName, stateText } from '@/lib/scan/source-progress-copy'
+import { countsText, sourceName, stateText } from '@/lib/source-progress-copy'
 
 // Live per-source progress while a scan runs: one row per source that has started, with its state and, once it has
 // reported them, how many companies it found and what the checks made of them. Read from the status poll (the route's

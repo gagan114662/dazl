@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { countsText, sourceName, stateText } from '../lib/scan/source-progress-copy.ts'
+import { countsText, sourceName, stateText } from '../lib/source-progress-copy.ts'
 import { progressOf } from '../lib/scan/progress.ts'
 
 test('source names are plain words; unknown sources are readable', () => {

@@ -1,6 +1,6 @@
 // Words for the live per-source progress the status route serves (lib/scan/progress.ts). Display only: every count is
 // shown as recorded, and a count that is not known yet (null) reads as "-", never as 0.
-import type { SourceProgress } from './progress.ts'
+import type { SourceProgress } from './scan/progress.ts'
 
 const NAMES: Record<string, string> = {
   'search:tinyfish': 'Web search', 'search:news': 'News articles', 'search:anthropic': 'Web research with your AI key', 'search:openai': 'Web research with your AI key',
