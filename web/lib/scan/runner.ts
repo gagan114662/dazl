@@ -53,6 +53,7 @@ import { meterProvider, writeModelCalls, type ModelCall } from './model-usage.ts
 import { findPeople } from '../people/people-search.ts'
 import { EnrichmentTrace, noteFromAudit, auditSummary, mergeIntoRunReport } from './enrichment-trace.ts'
 import { recordActionability } from './actionable.ts'
+import { resolveBounded } from './resolution.ts'
 import { parseWindowDays, splitByWindow, windowStatus } from './window.ts'
 import { applyBuyerFitGate, failClosedBuyerFit } from './buyer-fit.ts'
 
@@ -1101,7 +1102,13 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       // A lead the gate passed whose durable pass record could not be saved is held by the draft guard (default-deny); the report says so too, with the same reason.
       const extra = (y.held_leads ?? []).filter(h => !heldByGate.has(h.id))
       if (extra.length) { markHeldInProcess(job.user_id, extra.map(h => h.id)); reconcileRunReport(db, job.id, job.attempts, extra.map(h => ({ company: h.company, url: h.url, reason: 'sales_hiring_check_failed' }))) }
-      mergeIntoRunReport(db, job.id, job.attempts, { enrichment: trace.stages, yield: y, held_lead_ids: [...heldByGate.keys(), ...extra.map(h => h.id)] })
+      // Code decides done: every candidate is checked for date / identity / contact; the unresolved carry specific reasons after bounded targeted lookups (lib/scan/resolution.ts).
+      let resolution: Awaited<ReturnType<typeof resolveBounded>> | null = null
+      // ONE overall deadline and the job's own cancellation cover every lookup; a cancel destroys the request in flight (fetchPageDetailed takes the signal). Nothing here renders (no render service).
+      const resCtrl = new AbortController()
+      const poll = setInterval(() => { if (!postFinishAlive(db, job)) resCtrl.abort() }, 500)   // post-finish rule: the row is still THIS attempt's and still done / running (assertOwned needs status 'running' and would cancel every normal lookup)
+      try { resolution = await resolveBounded(db, job, { fetchPage: (u, signal) => (deps.fetchPage ? (deps.fetchPage as (u: string, s?: AbortSignal) => ReturnType<typeof fetchPageDetailed>)(u, signal) : fetchPageDetailed(u, async () => null, signal)), where: icpForSources?.where ?? [], signal: resCtrl.signal }) } catch (e) { console.error('resolution failed', e instanceof Error ? e.message : 'error') } finally { clearInterval(poll) }
+      mergeIntoRunReport(db, job.id, job.attempts, { enrichment: trace.stages, yield: y, ...(resolution ? { resolution } : {}), held_lead_ids: [...heldByGate.keys(), ...extra.map(h => h.id)] })
     } catch (e) { console.error('actionable yield failed', e instanceof Error ? e.message : 'error') }
     // Contacts, people, fit and the sales-hiring check are final: the stage ends before autopilot, whose drafting/sending is separate work, not enrichment.
     endEnrichment(db, job.id, job.attempts)
@@ -1118,6 +1125,11 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
 // Post-processing budget config: finite positive ms, else the 90s default.
 // NaN/negative/Infinity would make setTimeout fire immediately (aborting all
 // post-work on every scan) or never - fail safe to the default and log why.
+// After finish() the job row is status 'done' (enrichment is the 'enriching' view of it): still ours while it is the same attempt and not failed / re-pended / deleted. This is NOT assertOwned, which
+// requires status 'running'. A real cancellation or a re-claim by a newer attempt changes the row; a lookup that is merely slow does not.
+export function postFinishAlive(db: Database.Database, job: { id: string; attempts: number }): boolean {
+  try { const r = db.prepare('SELECT status, attempts FROM scan_jobs WHERE id = ?').get(job.id) as { status: string; attempts: number } | undefined; return !!r && r.attempts === job.attempts && (r.status === 'done' || r.status === 'running') } catch { return true }
+}
 export function postFinishBudgetMs(env: Record<string, string | undefined> = process.env): number {
   const raw = env.SCAN_POST_FINISH_BUDGET_MS
   if (raw === undefined) return 90_000

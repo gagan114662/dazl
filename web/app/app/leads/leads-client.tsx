@@ -498,11 +498,15 @@ export default function LeadsClient() {
   // Restore the last profile so a reload never loses it (item: ICP persistence).
   useEffect(() => {
     if (jobId) return
+    // ?q= (Home's "Widen to 180 days" / "Add a city") only prefills the box; nothing runs until Find leads. A prefilled
+    // sentence differs from the last one, so the last reviewed profile is not reused for it.
+    const prefill = new URLSearchParams(window.location.search).get('q')
+    if (prefill) setQuery(prefill.slice(0, 600))
     void fetch('/api/scan/latest').then(r => r.ok ? r.json() : null).then(j => {
       if (!j) return
       // Either order of responses: a job is being viewed (adopted, or named by the URL) => keep ITS query and profile.
       if (viewedJob.current || /^[a-f0-9]{24}$/.test(new URLSearchParams(window.location.search).get('job_id') ?? '')) return
-      if (j.query && !query) setQuery(j.query)
+      if (!prefill && j.query && !query) setQuery(j.query)
       if (j.icp) setIcp({ icp: j.icp, source: j.icp_source ?? 'user', query: typeof j.query === 'string' ? j.query : null })
     }).catch(() => {})
   }, [])
