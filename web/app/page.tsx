@@ -14,12 +14,12 @@ export const metadata: Metadata = {
 
 const STEPS = [
   { n: '1', title: 'Paste your website', desc: 'That is the only thing you type. dazl reads your site and works out who buys from you and which signals to watch for. You can edit it.' },
-  { n: '2', title: 'Get verified leads daily', desc: 'Your Play searches hiring, funding and expansion news every day. Each lead comes with the line that shows the signal, linked to its source.' },
+  { n: '2', title: 'Get new leads every week', desc: 'Your Play runs again each week, searching hiring, funding and expansion news. Each lead comes with the line that shows the signal, linked to its source.' },
   { n: '3', title: 'Approve and send', desc: 'dazl drafts the message. You approve each one, and it goes from your own Gmail.' },
 ]
 const PROOF = [
   ['Quoted and linked', 'Every lead shows the exact line from its source page, with the link.'],
-  ['Company and date checked', 'dazl confirms the page names the company and that the date is recent. Leads that fail are dropped.'],
+  ['Company and date checked', 'dazl confirms the page names the company and that the date is recent. Leads that fail a check are held for your review, out of the ready-to-contact list.'],
   ['You approve each send', 'Email goes from your own Gmail after you approve the text. Autopilot is off unless you turn it on.'],
 ]
 
@@ -78,7 +78,7 @@ export default function Home() {
 
       <section id="pricing" className="px-4 sm:px-6 py-16 max-w-6xl mx-auto w-full">
         <h2 className="lp-h2 text-center mb-2">Simple pricing</h2>
-        <p className="text-[var(--ink-2)] text-center mb-10">One flat price. No credits, no per-lead fees.</p>
+        <p className="text-[var(--ink-2)] text-center mb-10">One flat price for dazl. No credits, no per-lead fees. Searches run on your own AI key, billed by your provider.</p>
         <div className="grid sm:grid-cols-2 gap-4 max-w-2xl mx-auto">
           <div className="lp-card p-7">
             <div className="text-sm font-medium text-[var(--ink-2)] mb-1">Free</div>
@@ -89,7 +89,7 @@ export default function Home() {
           <div className="lp-card p-7">
             <div className="text-sm font-medium mb-1">Pro</div>
             <div className="text-4xl font-semibold mb-2">$49<span className="text-base font-medium text-[var(--ink-2)]">/mo</span></div>
-            <p className="text-[var(--ink-2)] text-sm mb-6">No credits, no overages, no per-lead fees. Fair-use limits apply.</p>
+            <p className="text-[var(--ink-2)] text-sm mb-6">No credits, no per-lead fees. Runs on your own AI key: your provider bills that usage separately. Fair-use limits apply.</p>
             <a href="/api/auth/google" className="btn-primary w-full text-center block">Start free, upgrade any time</a>
           </div>
         </div>

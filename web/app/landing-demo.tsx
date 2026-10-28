@@ -1,7 +1,7 @@
 "use client"
 import { useEffect, useState } from 'react'
 
-// The homepage demo: the real flow, played on a loop. A website is typed, the checks tick through,
+// The homepage demo: the real flow, played on a loop, labelled as an illustrative example (made-up data). A website is typed, the checks tick through,
 // five leads are found (three shown) and the Play goes live. Reduced motion shows the finished state.
 const URL_TEXT = 'brightsmile-dental.com'
 const CHECKS = ['Reading your site', 'Building your profile', 'Searching hiring & funding news', 'Checking evidence']
@@ -19,14 +19,15 @@ const initials = (n: string) => n.split(' ').map(w => w[0]).join('').slice(0, 2)
 export default function LandingDemo() {
   const [t, setT] = useState(0)
   useEffect(() => {
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { setT(PLAY_AT); return }
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { setT(PLAY_AT); return } // eslint-disable-line react-hooks/set-state-in-effect
     const id = setInterval(() => setT(x => (x + 1) % LOOP), TICK)
     return () => clearInterval(id)
   }, [])
   const typed = t >= TYPE_END ? URL_TEXT : URL_TEXT.slice(0, Math.ceil((URL_TEXT.length * t) / TYPE_END))
   const done = t >= LEADS_AT
   return (
-    <div className="lp-demo" data-testid="landing-demo" data-step={t >= PLAY_AT ? 'live' : done ? 'leads' : t >= TYPE_END ? 'checks' : 'typing'} aria-label="How a dazl run goes: a website in, checks, five leads found, a Play running daily">
+    <div className="lp-demo" data-testid="landing-demo" data-step={t >= PLAY_AT ? 'live' : done ? 'leads' : t >= TYPE_END ? 'checks' : 'typing'} aria-label="Illustrative example of a dazl run, with made-up companies and people: a website in, checks, leads found, a Play that runs weekly">
+      <div className="text-xs font-medium text-[var(--ink-3)] mb-2 text-center" data-testid="demo-label">Illustrative example · made-up companies and people</div>
       <div className="lp-card p-4 sm:p-5">
         <div className="text-xs font-medium text-[var(--ink-3)] mb-2">Your website</div>
         <div className="lp-url">{typed}<span className="lp-caret" aria-hidden /></div>
@@ -64,7 +65,7 @@ export default function LandingDemo() {
       </div>
       <div className={`lp-card mt-3 p-4 flex items-center justify-between gap-3 lp-fade ${t >= PLAY_AT ? 'lp-in' : ''}`} data-testid="demo-play">
         <div className="min-w-0"><div className="font-semibold">Dental practices opening a new location</div><div className="text-sm text-[var(--ink-2)]">Ohio · hiring or expansion news</div></div>
-        <span className="live-dot shrink-0">Live · runs daily</span>
+        <span className="live-dot shrink-0">Live · runs weekly</span>
       </div>
     </div>
   )
