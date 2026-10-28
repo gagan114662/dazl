@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { coreSources, socialSources, usableLabels, type SourceRow } from '../lib/scan/source-availability.ts'
+import { coreSources, socialLabel, socialSources, usableLabels, type SourceRow } from '../lib/scan/source-availability.ts'
 
 const ALL_ON = { web_index: true, news: true, websites: true }
 const byId = (rows: SourceRow[]): Record<string, SourceRow> => Object.fromEntries(rows.map(r => [r.id, r]))
@@ -26,22 +26,30 @@ test('nothing is claimed when the checks could not load', () => {
   assert.deepEqual(socialSources(null), [])
 })
 
-test('social sources: usable exactly when the Leads checkbox is offered; otherwise the first missing step, with a fix', () => {
-  const rows = byId(socialSources({ available: true, platforms: [
-    { platform: 'x', consent: true, connected: true, enabled: true },
-    { platform: 'linkedin', consent: true, connected: false, enabled: false },
-    { platform: 'reddit', consent: false, connected: true, enabled: true },
-    { platform: 'xx', consent: true, connected: true, enabled: false },
+test('social sources: only platforms the server offers; usable exactly when the Leads checkbox is offered; otherwise the first missing step, with a fix', () => {
+  const rows = socialSources({ available: true, platforms: [
+    { platform: 'x', allowed: true, consent: true, connected: true, enabled: true },
+    { platform: 'linkedin', allowed: true, consent: true, connected: false, enabled: false },
+    { platform: 'reddit', allowed: true, consent: false, connected: true, enabled: true },
+    { platform: 'facebook', allowed: true, consent: true, connected: true, enabled: false },
     { platform: 'yy', consent: true, connected: false, enabled: false, operator_index: true },
-    { platform: 'zz', allowed: false, consent: true, connected: true, enabled: true },
-  ] }))
-  assert.equal(rows['social:x'].usable, true)
-  assert.deepEqual([rows['social:linkedin'].reason, rows['social:linkedin'].fix], ['not connected', { href: '/app/settings#social', label: 'Set up' }])
-  assert.equal(rows['social:reddit'].reason, 'consent needed')
-  assert.equal(rows['social:xx'].reason, 'turned off')
-  assert.equal(rows['social:yy'].usable, true, 'operator web index needs consent only')
-  assert.deepEqual([rows['social:zz'].reason, rows['social:zz'].fix], ['not set up on this server', undefined])
-  assert.ok(socialSources({ available: false, platforms: [{ platform: 'x', consent: true, connected: true, enabled: true }] }).every(r => !r.usable && r.reason === 'not set up on this server'))
+    { platform: 'instagram', allowed: false, consent: true, connected: true, enabled: true },
+    { platform: 'bilibili', allowed: false, consent: false, connected: false, enabled: false },
+  ] })
+  const r = byId(rows)
+  assert.deepEqual(Object.keys(r), ['social:x', 'social:linkedin', 'social:reddit', 'social:facebook', 'social:yy'], 'platforms the server does not offer are not listed at all')
+  assert.equal(r['social:x'].usable, true)
+  assert.deepEqual([r['social:linkedin'].reason, r['social:linkedin'].fix], ['not connected', { href: '/app/settings#social', label: 'Set up' }])
+  assert.equal(r['social:reddit'].reason, 'consent needed')
+  assert.deepEqual([r['social:facebook'].label, r['social:facebook'].reason], ['Facebook', 'turned off'])
+  assert.equal(r['social:yy'].usable, true, 'operator web index needs consent only')
+  // Instinct-reported live copy: "instagram (not set up on this server); ... bilibili (...)" - the tier off lists nothing.
+  assert.deepEqual(socialSources({ available: false, platforms: [{ platform: 'x', consent: true, connected: true, enabled: true }, { platform: 'instagram', consent: false, connected: false, enabled: false }] }), [])
+  for (const row of rows) assert.doesNotMatch(row.reason ?? '', /not set up on this server/, 'no "not on this server" social rows')
+})
+
+test('social platform names are proper names, never raw ids', () => {
+  assert.deepEqual(['x', 'linkedin', 'reddit', 'instagram', 'facebook', 'xiaohongshu', 'bilibili', 'mastodon'].map(socialLabel), ['X posts', 'LinkedIn', 'Reddit', 'Instagram', 'Facebook', 'Xiaohongshu', 'Bilibili', 'Mastodon'])
 })
 
 test('usable labels list only usable sources, in order', () => {
