@@ -18,7 +18,7 @@ const MSG: Record<string, [Stage, string]> = {
 
 // A lead's latest email decides once one exists; before that, its rejection, review or evidence state does.
 export function leadStatus(l: ViewLead, msgs: ViewMsg[]): LeadStatus {
-  if (l.quarantined_at) return { stage: 'rejected', text: `Rejected${l.quarantine_reason ? `: ${l.quarantine_reason.replace(/^Rejected: /, '')}` : ''}` }
+  if (l.quarantined_at) { const why = (l.quarantine_reason ?? '').replace(/^Rejected(: )?/, '').trim(); return { stage: 'rejected', text: why ? `Rejected: ${why}` : 'Rejected' } }
   const m = msgs.find(x => x.lead_id === l.id)
   if (m) { const [stage, text] = MSG[m.status] ?? ['other', `Email ${m.status}`]; return { stage, text } }
   if (l.review_reason) return { stage: 'review', text: 'Needs your review' }
