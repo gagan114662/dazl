@@ -76,3 +76,91 @@ test('a staging env file passes; anything that could touch production or send fo
     assert.ok(!r.out.includes('sk_live_abc') && !r.out.includes('AAAA'), 'values are never printed')
   }
 })
+
+// The cutover (review hold): the real deploy.sh, as the current user, against a local repo, with a stub build, a stub
+// restart and a tiny health server standing in for the service. Faults are injected per commit:
+//   fail-restart-<sha>  the restart command exits non-zero while <sha> is current
+//   unready-<sha>       the service never reports <sha> on /api/health
+// After any failed cutover the previous complete release must be current, release.env must name it, it must be
+// serving again, and the failed release must be gone. A failed first deployment must leave no current pointer.
+test('cutover: a failed restart or readiness restores and re-checks the previous release; a failed first deploy leaves no live pointer', async () => {
+  const { execFileSync, spawn } = await import('node:child_process')
+  const { existsSync, readlinkSync, readdirSync, rmSync } = await import('node:fs')
+  const net = await import('node:net')
+  const port = await new Promise<number>(r => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = (s.address() as { port: number }).port; s.close(() => r(p)) }) })
+  const T = mkdtempSync(path.join(tmpdir(), 'staging-cutover-'))
+  const root = path.join(T, 'root'), repo = path.join(T, 'repo')
+  // git with no inherited GIT_CONFIG_* (the test fence strips *KEY* variables and can leave a dangling count)
+  const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_CONFIG_'))) as NodeJS.ProcessEnv
+  const git = (...a: string[]) => execFileSync('git', ['-C', repo, '-c', 'user.email=t@example.test', '-c', 'user.name=t', ...a], { encoding: 'utf8', env: gitEnv }).trim()
+  mkdirSync(path.join(repo, 'web'), { recursive: true })
+  execFileSync('git', ['init', '-q', '-b', 'main', repo], { env: gitEnv })
+  writeFileSync(path.join(repo, 'web', 'package-lock.json'), '{}')
+  const commit = (n: string) => { writeFileSync(path.join(repo, 'README.md'), n); git('add', '-A'); git('commit', '-qm', n); return git('rev-parse', 'HEAD') }
+  const env = path.join(T, 'env'); writeFileSync(env, good)
+  // the "service": serves the commit the last successful restart started
+  const served = path.join(T, 'served')
+  writeFileSync(path.join(T, 'health.mjs'), `import http from 'node:http'; import fs from 'node:fs'
+http.createServer((q, s) => { let c = ''; try { c = fs.readFileSync(${JSON.stringify(served)}, 'utf8').trim() } catch {} s.end(JSON.stringify({ ok: true, commit: c })) }).listen(${port}, '127.0.0.1')`)
+  const server = spawn(process.execPath, [path.join(T, 'health.mjs')], { stdio: 'ignore' })
+  const restart = path.join(T, 'restart.sh')
+  writeFileSync(restart, `#!/usr/bin/env bash
+sha=$(basename "$(readlink -f ${root}/current)")
+[ -e ${T}/fail-restart-$sha ] && exit 1
+if [ -e ${T}/unready-$sha ]; then echo starting > ${served}; else echo "$sha" > ${served}; fi\n`)
+  execFileSync('chmod', ['+x', restart])
+  const deploy = () => {
+    const r = spawnSync('bash', [script], { encoding: 'utf8', env: {
+      PATH: process.env.PATH, HOME: process.env.HOME, STAGING_ROOT: root, STAGING_ENV_FILE: env, STAGING_PORT: String(port),
+      STAGING_USER: execFileSync('id', ['-un'], { encoding: 'utf8' }).trim(), STAGING_REPO_URL: `file://${repo}`, STAGING_RESTART: restart,
+      STAGING_BUILD: 'true', STAGING_HEALTH_TRIES: '2', PROD_DB_PATH: prodDb, MIN_FREE_BYTES: '1', FIRST_RELEASE_BYTES: '1',
+    } as unknown as NodeJS.ProcessEnv })
+    return { code: r.status, out: r.stdout + r.stderr }
+  }
+  const current = () => existsSync(path.join(root, 'current')) ? path.basename(readlinkSync(path.join(root, 'current'))) : null
+  const releaseEnv = () => existsSync(path.join(root, 'release.env')) ? readFileSync(path.join(root, 'release.env'), 'utf8').trim() : null
+  const releases = () => readdirSync(path.join(root, 'releases')).sort()
+  const servedNow = () => readFileSync(served, 'utf8').trim()
+  try {
+    mkdirSync(root)
+    // a failed FIRST deployment: nothing to go back to, and no pointer left at the failed release
+    const s0 = commit('first')
+    writeFileSync(path.join(T, `fail-restart-${s0}`), '')
+    let r = deploy()
+    assert.equal(r.code, 1); assert.match(r.out, /first deployment failed: NO LIVE STAGING SERVICE/)
+    assert.deepEqual([current(), releaseEnv(), releases()], [null, null, []])
+    rmSync(path.join(T, `fail-restart-${s0}`))
+
+    // the first deployment that works
+    r = deploy(); assert.equal(r.code, 0, r.out); assert.match(r.out, /live: /)
+    assert.deepEqual([current(), releaseEnv(), servedNow()], [s0, `DAZL_COMMIT_SHA=${s0}`, s0])
+
+    // the restart command fails at once for the new release (the earlier code exited here, current left on it)
+    const s1 = commit('restart fails')
+    writeFileSync(path.join(T, `fail-restart-${s1}`), '')
+    r = deploy()
+    assert.equal(r.code, 1); assert.match(r.out, /the restart command failed/); assert.match(r.out, new RegExp(`rolled back: ${s0} is live again`))
+    assert.deepEqual([current(), releaseEnv(), servedNow(), releases()], [s0, `DAZL_COMMIT_SHA=${s0}`, s0, [s0]])
+
+    // the new release starts but never becomes ready
+    const s2 = commit('never ready')
+    writeFileSync(path.join(T, `unready-${s2}`), '')
+    r = deploy()
+    assert.equal(r.code, 1); assert.match(r.out, /never reported commit/); assert.match(r.out, /is live again/)
+    assert.deepEqual([current(), releaseEnv(), servedNow(), releases()], [s0, `DAZL_COMMIT_SHA=${s0}`, s0, [s0]])
+
+    // the new release fails AND the rollback's own restart fails: reported as no live service, not as recovered
+    const s3 = commit('rollback fails too')
+    writeFileSync(path.join(T, `fail-restart-${s3}`), ''); writeFileSync(path.join(T, `fail-restart-${s0}`), '')
+    r = deploy()
+    assert.equal(r.code, 1); assert.match(r.out, /did not come up healthy: NO LIVE STAGING SERVICE/)
+    assert.doesNotMatch(r.out, /is live again/)
+    assert.deepEqual([current(), releases()], [s0, [s0]])
+    rmSync(path.join(T, `fail-restart-${s0}`))
+
+    // and a good commit after all that deploys normally
+    const s4 = commit('good')
+    r = deploy(); assert.equal(r.code, 0, r.out)
+    assert.deepEqual([current(), servedNow(), releases()], [s4, s4, [s0, s4].sort()])
+  } finally { server.kill() }
+})

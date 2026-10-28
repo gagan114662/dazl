@@ -27,6 +27,9 @@ FIRST_RELEASE_BYTES=${FIRST_RELEASE_BYTES:-1200000000}
 # Production's database: given as its path, or read from production's env file. Fail closed when neither is known.
 PROD_DB_PATH=${PROD_DB_PATH:-}
 PROD_ENV_FILE=${PROD_ENV_FILE:-}
+# The build, run in the release's web/ directory as the service user with the env file's values. Tests replace it.
+BUILD=${STAGING_BUILD:-'{ [ -d node_modules ] || npm ci --no-audit --no-fund --loglevel=error; } && NODE_OPTIONS=--max-old-space-size=2048 nice -n 10 npx next build && rm -rf .next/cache && npm run -s db:migrate && node --experimental-strip-types --no-warnings scripts/staging-seed.mts'}
+HEALTH_TRIES=${STAGING_HEALTH_TRIES:-60}
 
 log() { echo "staging-deploy: $*"; }
 fail() { echo "staging-deploy: $*" >&2; exit 1; }
@@ -62,11 +65,12 @@ if [ "${1:-}" = --check-env ]; then check_env "${2:?usage: deploy.sh --check-env
 check_env "$ENV_FILE"
 mkdir -p "$ROOT/releases"
 exec 9>"$ROOT/.deploy.lock"; flock -n 9 || { log "another deploy is running"; exit 0; }
-as() { runuser -u "$RUN_AS" -- "$@"; }
+as() { if [ "$(id -un)" = "$RUN_AS" ]; then "$@"; else runuser -u "$RUN_AS" -- "$@"; fi; }
 free_bytes() { df -B1 --output=avail "$ROOT" | tail -n 1 | tr -d ' '; }
 
 # leftovers of an interrupted deploy (no completion mark) go first
-for d in "$ROOT"/releases/*/; do [ -d "$d" ] && [ ! -e "$d/.complete" ] && [ "$(readlink -f "$ROOT/current" 2>/dev/null)" != "$(readlink -f "$d")" ] && rm -rf "$d"; done
+live_now=; [ -L "$ROOT/current" ] && live_now=$(readlink -f "$ROOT/current")
+for d in "$ROOT"/releases/*/; do [ -d "$d" ] && [ ! -e "$d/.complete" ] && [ "$live_now" != "$(readlink -f "$d")" ] && rm -rf "$d"; done
 
 [ -d "$ROOT/repo/.git" ] || as git clone -q --no-checkout "$REPO_URL" "$ROOT/repo"
 as git -C "$ROOT/repo" fetch -q origin main
@@ -74,7 +78,8 @@ new=$(as git -C "$ROOT/repo" rev-parse origin/main)
 cur=$(cat "$ROOT/current-sha" 2>/dev/null || true)
 [ "$new" != "$cur" ] || exit 0
 
-live=$(readlink -f "$ROOT/current" 2>/dev/null || true)
+# the live release: only when `current` is a symlink (readlink -f of a missing path returns the path itself)
+live=; [ -L "$ROOT/current" ] && live=$(readlink -f "$ROOT/current")
 reuse=0
 if [ -n "$live" ] && [ -d "$live/web/node_modules" ] && as git -C "$ROOT/repo" diff --quiet "$cur" "$new" -- web/package-lock.json 2>/dev/null; then reuse=1; fi
 if [ -n "$live" ] && [ -d "$live/web" ]; then
@@ -97,12 +102,8 @@ as sh -c "git -C '$ROOT/repo' archive '$new' | tar -x -C '$rel'"
 
 # The build runs in its own process group; a watcher stops it if free space reaches the floor.
 ( set -a; . "$ENV_FILE"; set +a
-  exec setsid runuser -u "$RUN_AS" -- bash -c "cd '$rel/web' && echo '$new' > .build-commit \
-    && { [ -d node_modules ] || npm ci --no-audit --no-fund --loglevel=error; } \
-    && NODE_OPTIONS=--max-old-space-size=2048 nice -n 10 npx next build \
-    && rm -rf .next/cache \
-    && npm run -s db:migrate \
-    && node --experimental-strip-types --no-warnings scripts/staging-seed.mts" ) &
+  exec setsid bash -c 'if [ "$(id -un)" = "$0" ]; then exec "$@"; else exec runuser -u "$0" -- "$@"; fi' "$RUN_AS" \
+    bash -c "cd '$rel/web' && echo '$new' > .build-commit && $BUILD" ) &
 build_pid=$!
 low=0
 while kill -0 "$build_pid" 2>/dev/null; do
@@ -115,20 +116,37 @@ build_pid=
 [ $status = 0 ] || { cleanup; fail "build or seed of $new failed (exit $status); release removed"; }
 trap - ERR
 
+# Cutover. From here until the new release is healthy, any failure (the switch, the restart command, readiness)
+# goes to cutover_fail, which puts the previous complete release back and checks it is really serving again.
 prev=$live
-ln -sfn "$rel" "$ROOT/current"; echo "DAZL_COMMIT_SHA=$new" > "$ROOT/release.env"
-$RESTART 9>&- # the service must not inherit the deploy lock
-for _ in $(seq 1 60); do
-  if curl -fsS "http://127.0.0.1:$PORT/api/health" 2>/dev/null | grep -q "\"commit\":\"$new\""; then
-    touch "$rel/.complete"; echo "$new" > "$ROOT/current-sha"
-    log "live: $new"
-    # keep the live release and the two complete ones before it
-    ls -1dt "$ROOT"/releases/*/ | while read -r d; do [ -e "$d/.complete" ] && echo "$d"; done | tail -n +4 | xargs -r rm -rf
-    exit 0
+healthy() { # the service on PORT reports commit $1
+  for _ in $(seq 1 "$HEALTH_TRIES"); do
+    curl -fsS "http://127.0.0.1:$PORT/api/health" 2>/dev/null | grep -q "\"commit\":\"$1\"" && return 0
+    sleep 2
+  done
+  return 1
+}
+cutover_fail() {
+  trap - ERR
+  log "cutover of $new failed ($1); restoring the previous release"
+  rm -rf "$rel"
+  if [ -n "$prev" ]; then
+    local p; p=$(basename "$prev")
+    ln -sfn "$prev" "$ROOT/current"; echo "DAZL_COMMIT_SHA=$p" > "$ROOT/release.env"
+    if $RESTART 9>&- && healthy "$p"; then fail "rolled back: $p is live again"; fi
+    fail "rollback to $p did not come up healthy: NO LIVE STAGING SERVICE (current points at $p)"
   fi
-  sleep 2
-done
-log "health check failed for $new; rolling back"
-if [ -n "$prev" ]; then ln -sfn "$prev" "$ROOT/current"; echo "DAZL_COMMIT_SHA=$(basename "$prev")" > "$ROOT/release.env"; $RESTART 9>&-; fi
-rm -rf "$rel"
-exit 1
+  # a first deployment has nothing to go back to: leave no pointer at the failed release
+  rm -f "$ROOT/current" "$ROOT/release.env"
+  fail "first deployment failed: NO LIVE STAGING SERVICE"
+}
+trap 'cutover_fail "a cutover step failed"' ERR
+ln -sfn "$rel" "$ROOT/current"; echo "DAZL_COMMIT_SHA=$new" > "$ROOT/release.env"
+$RESTART 9>&- || cutover_fail "the restart command failed" # the service must not inherit the deploy lock
+healthy "$new" || cutover_fail "it never reported commit $new on /api/health"
+trap - ERR
+touch "$rel/.complete"; echo "$new" > "$ROOT/current-sha"
+log "live: $new"
+# keep the live release and the two complete ones before it
+ls -1dt "$ROOT"/releases/*/ | while read -r d; do [ -e "$d/.complete" ] && echo "$d"; done | tail -n +4 | xargs -r rm -rf
+exit 0
