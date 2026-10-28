@@ -76,3 +76,15 @@ test('POST /api/watch: a supplied budget is validated like the scan route and sa
   as(db); assert.equal((await wpost({ query: 'dental practices in Ohio hiring', icp: ICP_JSON })).status, 200)
   assert.deepEqual(wrow().map(w => w.run_budget === null ? null : JSON.parse(w.run_budget)), [{ max_usd: 0.25, judge: false }, null])
 })
+
+test('POST /api/scan stores a reviewed profile exactly as sent (icp_inferred 0) and a sentence-only request stores none (the server infers later)', async () => {
+  const REVIEWED = { summary: 'Seed-funded London B2B SaaS startups that are also hiring sales', who: ['Founder', 'Co-founder', 'CEO'], industries: ['B2B SaaS'], sizes: ['10-50 employees'], where: ['London, UK'], signals: ['announced seed funding within the past 90 days AND currently hiring sales staff'], exclude: ['agencies', 'recruiters'], country: 'GB', language: 'en', window_days: 90 }
+  const db = setup(); as(db)
+  const r = await post({ query: Q, icp: REVIEWED }); assert.equal(r.status, 202)
+  const row = db.prepare('SELECT icp, icp_inferred FROM scan_jobs').get() as { icp: string; icp_inferred: number }
+  assert.deepEqual(JSON.parse(row.icp), REVIEWED, 'stored as reviewed: nothing added, widened or split'); assert.equal(row.icp_inferred, 0)
+  const db2 = setup(); as(db2)
+  assert.equal((await post({ query: Q })).status, 202)
+  const none = db2.prepare('SELECT icp, icp_inferred FROM scan_jobs').get() as { icp: string | null; icp_inferred: number | null }
+  assert.deepEqual([none.icp, none.icp_inferred], [null, null])
+})
