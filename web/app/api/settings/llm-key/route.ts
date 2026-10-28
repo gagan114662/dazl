@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getScanDb, requireUser } from '@/lib/scan/service'
-import { deleteKey, keyStatus, saveKey } from '@/lib/llm/key-store'
+import { requireUser } from '@/lib/scan/service'
+import { getDb } from '@/lib/db/client'
+import { removeKey, readKeyStatus, writeKey } from '@/lib/llm/key-store'
 import { openKeyRejection } from '@/lib/llm/key-evidence'
 import { isVendor, looksLikeKey, validateKey } from '@/lib/llm/vendors'
 import { rateLimit } from '@/lib/rate-limit'
@@ -11,8 +12,8 @@ import { sameOriginJson } from '@/lib/same-origin'
 export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  const db = getScanDb()
-  return NextResponse.json({ keys: keyStatus(db, user.id), rejection: openKeyRejection(db, user.id) })
+  const db = await getDb()
+  return NextResponse.json({ keys: await readKeyStatus(db, user.id), rejection: await openKeyRejection(db, user.id) })
 }
 
 export async function PUT(req: NextRequest) {
@@ -37,7 +38,7 @@ export async function PUT(req: NextRequest) {
   if (check === 'rejected') return NextResponse.json({ error: `The provider could not use this key${detail.message ? ': ' + detail.message : '.'}` }, { status: 400 })
   if (check === 'unavailable') return NextResponse.json({ error: 'Could not reach the provider to check the key. Try again.' }, { status: 502 })
 
-  saveKey(getScanDb(), user.id, vendor, apiKey)
+  await writeKey(await getDb(), user.id, vendor, apiKey)
   return NextResponse.json({ ok: true, vendor, last4: apiKey.slice(-4) })
 }
 
@@ -46,5 +47,5 @@ export async function DELETE(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const vendor = req.nextUrl.searchParams.get('vendor')
   if (!isVendor(vendor)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
-  return NextResponse.json({ ok: deleteKey(getScanDb(), user.id, vendor) })
+  return NextResponse.json({ ok: await removeKey(await getDb(), user.id, vendor) })
 }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getScanDb, requireUser } from '@/lib/scan/service'
+import { requireUser } from '@/lib/scan/service'
+import { getDb } from '@/lib/db/client'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { addUserReportedPath, removeUserReportedPath, warmPathsForLead } from '@/lib/warm/connections'
@@ -20,7 +21,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ lead
   const { lead } = await params
   const g = await guard(req, lead)
   if (g.res) return g.res
-  return NextResponse.json(warmPathsForLead(getScanDb(), g.user!.id, lead))
+  return NextResponse.json(await warmPathsForLead(await getDb(), g.user!.id, lead))
 }
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ lead: string }> }) {
@@ -30,7 +31,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
   if (!(await rateLimit(`warm-report:${g.user!.id}`, 20, 60_000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   const body = await req.json().catch(() => null) as { contact_url?: string; mutual_name?: string; note?: string } | null
   if (!body || typeof body.contact_url !== 'string' || typeof body.mutual_name !== 'string') return NextResponse.json({ error: 'contact_url_and_mutual_name_required' }, { status: 400 })
-  const path = addUserReportedPath(getScanDb(), g.user!.id, lead, body.contact_url, body.mutual_name, body.note)
+  const path = await addUserReportedPath(await getDb(), g.user!.id, lead, body.contact_url, body.mutual_name, body.note)
   if (!path) return NextResponse.json({ error: 'invalid_contact_url_or_name' }, { status: 422 })
   return NextResponse.json({ path, provenance: 'user_reported' })
 }
@@ -41,5 +42,5 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ l
   if (g.res) return g.res
   const body = await req.json().catch(() => null) as { id?: string } | null
   if (!body || typeof body.id !== 'string') return NextResponse.json({ error: 'id_required' }, { status: 400 })
-  return NextResponse.json({ deleted: removeUserReportedPath(getScanDb(), g.user!.id, body.id) })
+  return NextResponse.json({ deleted: await removeUserReportedPath(await getDb(), g.user!.id, body.id) })
 }
