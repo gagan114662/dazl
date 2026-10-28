@@ -12,6 +12,7 @@
 // and writing the SQLite file, splitting the data between two stores, so the instance is not ready while any remain.
 import type { Db } from '../db/client.ts'
 import { captureError } from './errors.ts'
+import { getMasterKey } from '../secrets.ts'
 
 export type CheckResult = { ok: true; ms: number } | { ok: false; ms: number; reason: 'error' | 'timeout' | 'behind' }
 export interface Readiness {
@@ -45,12 +46,22 @@ export interface ReadinessDeps {
 // as an empty one, e.g. a publishable key where the secret key belongs, or a master key that is not 32 bytes).
 export const REQUIRED_ENV: readonly (readonly [string, (v: string) => boolean])[] = [
   ['DB_PATH', v => v.trim().length > 0],
-  ['DAZL_MASTER_KEY', v => Buffer.from(v, 'base64').length === 32],
-  ['PUBLIC_BASE_URL', v => /^https?:\/\/[^\s/]+/.test(v)],
+  // exactly what the key's consumer accepts (lib/secrets.ts getMasterKey: decodes to 32 bytes), so readiness never
+  // disagrees with the app about a key; it is not a strict base64 check, by intent
+  ['DAZL_MASTER_KEY', v => { try { getMasterKey({ DAZL_MASTER_KEY: v } as unknown as NodeJS.ProcessEnv); return true } catch { return false } }],
+  ['PUBLIC_BASE_URL', v => absoluteHttpUrl(v)],
   ['STRIPE_SECRET_KEY', v => /^(sk|rk)_(test|live)_[A-Za-z0-9]+$/.test(v)],
   ['STRIPE_PRICE_PRO', v => /^price_[A-Za-z0-9]+$/.test(v)],
   ['STRIPE_WEBHOOK_SECRET', v => /^whsec_[A-Za-z0-9]+$/.test(v)],
 ]
+// A usable absolute http(s) base for generated links: the whole value parses as a URL, with a real host, no
+// credentials, no query or fragment, and no whitespace anywhere (new URL would quietly trim or encode it).
+export function absoluteHttpUrl(v: string): boolean {
+  if (/\s/.test(v)) return false
+  let u: URL
+  try { u = new URL(v) } catch { return false }
+  return (u.protocol === 'https:' || u.protocol === 'http:') && u.hostname.length > 0 && !u.username && !u.password && !u.search && !u.hash
+}
 export function missingEnv(env: Record<string, string | undefined>): string[] {
   return REQUIRED_ENV.filter(([name, ok]) => { const v = env[name]; return !v || !ok(v) }).map(([name]) => name)
 }

@@ -155,3 +155,28 @@ test('readiness: required environment present and well-formed is ready; missing 
   // unwired (unit callers): skipped, does not affect the result
   assert.deepEqual((await readiness({ db: async () => sqliteDb(lite), sqlite: okSqlite, migrations: shipped })).checks.env, { ok: true, skipped: 'not_wired' })
 }))
+
+// Review on #308: the URL must parse as a usable absolute http(s) base, and the master key check is the key consumer's
+// own contract (getMasterKey), not a looser or stricter one.
+test('readiness env: PUBLIC_BASE_URL must parse as an absolute http(s) URL with a real host', async () => {
+  const { absoluteHttpUrl, missingEnv } = await import('../lib/ops/health.ts')
+  for (const bad of ['https://?', 'https://dazl.ai bad value', ' https://dazl.ai', 'https://', 'dazl.ai', 'ftp://dazl.ai', 'https://user:pass@dazl.ai', 'https://dazl.ai/?x=1', 'https://dazl.ai/#top', 'javascript:alert(1)']) {
+    assert.equal(absoluteHttpUrl(bad), false, bad)
+    assert.ok(missingEnv({ ...goodEnv(), PUBLIC_BASE_URL: bad }).includes('PUBLIC_BASE_URL'), bad)
+  }
+  for (const ok of ['https://dazl.ai', 'https://dazl.ai/', 'http://localhost:3100', 'https://app.dazl.ai/base']) {
+    assert.equal(absoluteHttpUrl(ok), true, ok)
+    assert.deepEqual(missingEnv({ ...goodEnv(), PUBLIC_BASE_URL: ok }), [], ok)
+  }
+})
+
+test('readiness env: DAZL_MASTER_KEY passes exactly when the key consumer (getMasterKey) accepts it', async () => {
+  const { missingEnv } = await import('../lib/ops/health.ts')
+  const { getMasterKey } = await import('../lib/secrets.ts')
+  const valid = Buffer.alloc(32, 9).toString('base64')
+  for (const k of [valid, valid + '!!!!', valid.replace(/=+$/, ''), Buffer.alloc(16, 9).toString('base64'), Buffer.alloc(33, 9).toString('base64'), 'not-a-key', '']) {
+    let consumerAccepts = true
+    try { getMasterKey({ DAZL_MASTER_KEY: k } as unknown as NodeJS.ProcessEnv) } catch { consumerAccepts = false }
+    assert.equal(!missingEnv({ ...goodEnv(), DAZL_MASTER_KEY: k }).includes('DAZL_MASTER_KEY'), consumerAccepts, JSON.stringify(k))
+  }
+})
