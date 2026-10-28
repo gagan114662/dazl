@@ -2,7 +2,8 @@ import { after, NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
-import { getPlan } from '@/lib/plans'
+import { readPlan } from '@/lib/plans'
+import { getDb } from '@/lib/db/client'
 import { hasKey } from '@/lib/llm/key-store'
 import { kickRunner } from '@/lib/scan/runner'
 import { batchStatus, createBatch, MAX_DOMAINS, normalizeRunBudget, parseDomains, queuePendingRows } from '@/lib/scan/csv-import'
@@ -22,7 +23,7 @@ export async function POST(req: NextRequest) {
 
   const db = getScanDb()
   // Pro only, and never trial-funded: the tenant's own LLM key pays for every scan.
-  if (getPlan(db, user.id) !== 'pro') return NextResponse.json({ error: 'pro_only' }, { status: 402 })
+  if ((await readPlan(await getDb(), user.id)) !== 'pro') return NextResponse.json({ error: 'pro_only' }, { status: 402 })
   if (!hasKey(db, user.id)) return NextResponse.json({ error: 'no_api_key' }, { status: 400 })
 
   const parsed = parseDomains(text)
