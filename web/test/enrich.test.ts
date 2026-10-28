@@ -27,7 +27,12 @@ test('apolloOrgEnrich: posts domain to /organizations/enrich with x-api-key, map
   assert.equal(seen[0].url, 'https://api.apollo.io/api/v1/organizations/enrich')
   assert.equal(seen[0].key, 'test-apollo-key')
   assert.match(seen[0].body, /"domain":"acme.com"/)
-  assert.deepEqual(f, { name: 'Acme Inc', employees: 86, industry: 'Computer Software', founded: 2019, website: 'https://acme.com', linkedin: 'https://linkedin.com/company/acme', place: null })
+  assert.deepEqual(f, { name: 'Acme Inc', employees: 86, industry: 'Computer Software', founded: 2019, website: 'https://acme.com', linkedin: 'https://linkedin.com/company/acme', place: null, address: null })
+  // the org's street address (street_address, else raw_address) is part of the mapping: it is what the contact-address agreement compares
+  const g = await apolloOrgEnrich('k', { domain: 'acme.com' }, (async () => ok({ organization: { ...ORG_RESP.organization, city: 'New York', state: 'New York', country: 'United States', street_address: '57 W 57th St' } })) as never)
+  assert.deepEqual([g?.place, g?.address], ['New York, NY', '57 W 57th St'])
+  const h = await apolloOrgEnrich('k', { domain: 'acme.com' }, (async () => ok({ organization: { ...ORG_RESP.organization, raw_address: '57 W 57th St, New York, NY 10019' } })) as never)
+  assert.equal(h?.address, '57 W 57th St, New York, NY 10019')
 })
 
 test('apolloPeopleSearch: uses the 0-credit search endpoint, never returns emails/phones', async () => {
