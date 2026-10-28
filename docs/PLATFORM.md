@@ -86,7 +86,7 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
     - **What leaves the server is an allowlist, not the scrubbed record** (`outboundRecord`, `toSentryEnvelope` in `lib/ops/errors.ts`). The pattern scrub cannot recognise every name, secret or note, so no free text is sent at all.
       - Sent:
         - the error type: a built-in class or one of `APP_ERROR_CLASSES`, else `Error`;
-        - up to 8 stack frames, as file, line and column only, with no function names. A file is kept only if it is a code path or a `/_next/static/` URL with its query stripped;
+        - up to 8 stack frames, as file, line and column only, with no function names. A file is kept only when this build has it (`lib/ops/emitted.ts`): a server file that exists under the app root in `.next/server/` or `node_modules/`, sent relative to the root with no host or home prefix; a Node built-in; or a `/_next/static/` bundle this build emitted. A path that only looks like code (`/home/AliceSmith/password-….ts`) is dropped;
         - the route template, source, method, request id and fingerprint;
         - environment and release.
       - Never sent: messages, causes, the tenant, refs, request bodies, headers, cookies, query strings or other context.

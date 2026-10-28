@@ -12,6 +12,7 @@
 // Never read: request bodies, headers, cookies, query strings. The scrub (emails, keys, tokens, IPs, phone numbers,
 // DB URLs, URL queries) is a backstop for free text, not a licence: callers pass the error and the tenant id only.
 import { createHash, randomUUID } from 'node:crypto'
+import { appCodeFile, bundleFile } from './emitted.ts'
 
 export interface ErrorContext {
   source: 'route' | 'render' | 'worker' | 'health' | 'process'
@@ -128,9 +129,9 @@ export function captureError(e: unknown, ctx: ErrorContext): ErrorRecord | null 
 // What leaves the server (the alert webhook and Sentry) is an ALLOWLIST, not the scrubbed record: the scrub above is
 // pattern-based and cannot recognise every name, secret or note, so no free text is sent at all. Allowed:
 //   error type  - a built-in error class or one of this app's own error classes (APP_ERROR_CLASSES), else 'Error'
-//   frames      - file, line and column of up to 8 stack frames; no function names. A file is kept only if it is a
-//                 code path (node: internals, or a path of plain path characters) or a URL under /_next/static/ (the
-//                 browser's bundles), without its query; any other frame is dropped
+//   frames      - file, line and column of up to 8 stack frames; no function names. A file is kept only when this
+//                 build has it (lib/ops/emitted.ts): a server file under the app root, sent relative to it, a Node
+//                 built-in, or a /_next/static/ bundle this build emitted. Any other frame is dropped
 //   where, source, method, request_id, fingerprint - already fixed-shape in the record (see the top of this file)
 //   environment, release - from the deployment's own settings
 // Never sent: the error and cause messages, the tenant (user), ref, request bodies, headers, cookies, query strings or
@@ -143,25 +144,25 @@ export const APP_ERROR_CLASSES: ReadonlySet<string> = new Set(['CopyRefused', 'C
   'StaleLeaseWrite', 'StatementFailedInTx', 'Timeout'])
 export const outboundType = (name: string): string => BUILTIN_ERRORS.has(name) || APP_ERROR_CLASSES.has(name) ? name : 'Error'
 export interface OutboundFrame { filename: string; lineno: number; colno: number }
-function outboundFile(f: string): string | null {
-  if (/^node:[a-z_/]{1,80}$/.test(f)) return f
-  const path = f.replace(/^file:\/\//, '')
-  if (/^\/[A-Za-z0-9_./@+-]{1,300}$/.test(path) && !path.includes('..')) return path
-  let u: URL
-  try { u = new URL(f) } catch { return null }
-  return (u.protocol === 'https:' || u.protocol === 'http:') && /^\/_next\/static\/[A-Za-z0-9_./~-]{1,200}$/.test(u.pathname) ? u.pathname : null
+// A frame's file only when it is this build's own code (lib/ops/emitted.ts): a server file that exists under the app
+// root (sent relative to it), a Node built-in, or a /_next/static/ bundle this build emitted. Other frames are dropped.
+function outboundFile(f: string, root?: string): string | null {
+  if (/^https?:\/\//.test(f)) { try { return bundleFile(new URL(f).pathname, root) } catch { return null } }
+  if (f.startsWith('/_next/static/')) return bundleFile(f, root)
+  return appCodeFile(f, root)
 }
-export function outboundFrames(stack: string[]): OutboundFrame[] {
+export function outboundFrames(stack: string[], root?: string): OutboundFrame[] {
   const out: OutboundFrame[] = []
   for (const line of stack.slice(0, 8)) {
     // the location is the last "(file:line:col)" or the bare "file:line:col" after "at "
     const m = /(?:\(|^at (?:async )?)([^()\s]+):(\d{1,7}):(\d{1,7})\)?$/.exec(line.trim())
-    const file = m ? outboundFile(m[1].split(/[?#]/)[0]) : null
+    const file = m ? outboundFile(m[1].split(/[?#]/)[0], root) : null
     if (m && file) out.push({ filename: file, lineno: Number(m[2]), colno: Number(m[3]) })
   }
   return out
 }
-export interface Deployment { environment: string; release?: string }
+// root: the app root that frame files are checked against (default: the working directory; tests pass their own)
+export interface Deployment { environment: string; release?: string; root?: string }
 // environment: SENTRY_ENVIRONMENT when it is a plain word, else 'staging' when DAZL_ENV=staging, else 'production'
 export function deployment(env: Record<string, string | undefined> = process.env): Deployment {
   const named = env.SENTRY_ENVIRONMENT && /^[a-z0-9_-]{1,32}$/.test(env.SENTRY_ENVIRONMENT) ? env.SENTRY_ENVIRONMENT : null
@@ -172,7 +173,8 @@ export function deployment(env: Record<string, string | undefined> = process.env
 export function outboundRecord(r: ErrorRecord, d: Deployment) {
   return {
     level: r.level, ts: r.ts, source: r.source, where: r.where, ...(r.method ? { method: r.method } : {}), ...(r.request_id ? { request_id: r.request_id } : {}),
-    error: { type: outboundType(r.error.name), frames: outboundFrames(r.error.stack) }, fingerprint: r.fingerprint, ...d,
+    error: { type: outboundType(r.error.name), frames: outboundFrames(r.error.stack, d.root) }, fingerprint: r.fingerprint,
+    environment: d.environment, ...(d.release ? { release: d.release } : {}),
   }
 }
 
@@ -228,7 +230,7 @@ export function toSentryEnvelope(r: ErrorRecord, d: SentryDsn, dep: Deployment =
   const tags: Record<string, string> = { source: r.source, where: r.where }
   if (r.method) tags.method = r.method
   if (r.request_id) tags.request_id = r.request_id
-  const frames = outboundFrames(r.error.stack)
+  const frames = outboundFrames(r.error.stack, dep.root)
   const event = {
     event_id: eventId, timestamp: Date.parse(r.ts) / 1000, platform: 'node', level: 'error', logger: r.source, transaction: r.where,
     fingerprint: [r.fingerprint], tags, environment: dep.environment, ...(dep.release ? { release: dep.release } : {}),
