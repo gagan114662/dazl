@@ -2,7 +2,8 @@ name: web-preview
 # A preview of each pull request before it reaches production: the PR's production build is started with a throwaway
 # SQLite database and one seeded test account (test/smoke/harness.mjs), the existing production smoke checks run against
 # it, and every page is screenshotted signed in at desktop and mobile width. The screenshots and an index.html are the
-# run's "preview" artifact (Summary page of the run -> Artifacts). No secrets are used: the server runs under the test
+# run's "preview" artifact (Summary page of the run -> Artifacts); preview/billing shows Settings > Plan before and after
+# each signed Stripe test-mode webhook (test/smoke/billing.smoke.mjs). No secrets are used: the server runs under the test
 # network fence, so nothing is scanned, sent, billed or fetched from a provider. Not a hosted URL; see web/docs/DEPLOY.md.
 on:
   pull_request:
@@ -36,6 +37,9 @@ jobs:
         run: npm run preview:shots -- preview
         env:
           PREVIEW_COMMIT: ${{ github.event.pull_request.head.sha }}
+      - name: Billing in Settings through signed Stripe test-mode webhooks (screenshots into preview/billing)
+        if: success() || failure()
+        run: npm run test:smoke:billing -- preview/billing
       - name: Production smoke checks against the same build
         if: success() || failure()
         run: npm run test:smoke && npm run test:smoke:chunks
