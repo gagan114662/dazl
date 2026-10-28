@@ -91,7 +91,7 @@ try {
     assert.deepEqual(writes, [], `${name}: nothing written`)
   }
   await navInto('C Leads via client navigation', { gone: chunksWith('Who do you want to reach?'), from: '/app/settings', signedIn: true, click: p => p.locator('aside').getByRole('link', { name: 'Leads', exact: true }).click() })
-  await navInto('D sign-in via client navigation (outside /app)', { gone: chunksWith('Enter your email to continue'), from: '/', signedIn: false, click: p => p.getByRole('link', { name: 'Log in' }).first().click() })
+  await navInto('D sign-in via client navigation (outside /app)', { gone: chunksWith('Enter your email to continue'), from: '/', signedIn: false, click: p => p.getByRole('link', { name: 'Sign in' }).first().click() })
   console.log(`\nChunk-load recovery is bounded on the production build (${missing.length} chunk(s) removed).`)
 } finally {
   await browser?.close(); srv.stop()
