@@ -116,13 +116,16 @@ test('REGRESSION: a matching street number/name never bypasses a contradicting c
 
 test('REGRESSION (address-only, spelled-out state): "57 W 57th St, Pico Rivera, California" with no separate place field is refused for the NYC lead — every US state name and DC is parsed, not only two-letter codes', async () => {
   const W = ['New York City']
-  for (const addr of ['57 W 57th St, Pico Rivera, California', '57 W 57th St, Pico Rivera, California 90660', '57 W 57th St, Pico Rivera, CA 90660', '57 West 57th Street, Austin, Texas', '57 W 57th St, Washington, District of Columbia', '57 W 57th St, Albany, New York']) {
+  for (const addr of ['57 W 57th St, Pico Rivera, California', '57 W 57th St, Pico Rivera, California 90660', '57 W 57th St, Pico Rivera, CA 90660', '57 West 57th Street, Austin, Texas', '57 W 57th St, Washington, District of Columbia', '57 W 57th St, Albany, New York',
+    '57 w 57th st, pico rivera, california', '57 W 57TH ST, PICO RIVERA, CALIFORNIA', '57 w 57th st, pico rivera, ca 90660', '57 W 57TH ST, PICO RIVERA, CA', '57 west 57th street, austin, texas', '57 W 57TH ST, WASHINGTON, DISTRICT OF COLUMBIA']) {
     const r = contactAgreement({ where: W, evidence: EVIDENCE }, { address: addr })
     assert.equal(r.ok, false, addr); assert.equal(contactRejectionCode((r as { reason: string }).reason), 'contact_location_mismatch', addr)
   }
   assert.equal(firstPlaceLabel('8500 Whittier Blvd, Pico Rivera, California 90660'), 'Pico Rivera, California')
   assert.equal(firstPlaceLabel('1 Main St, Washington, District of Columbia'), 'Washington, District of Columbia')
   assert.equal(firstPlaceLabel('1 Main St, Jackson, Wyoming'), 'Jackson, Wyoming')
+  assert.equal(firstPlaceLabel('57 w 57th st, pico rivera, california'), 'Pico Rivera, California'); assert.equal(firstPlaceLabel('57 W 57TH ST, PICO RIVERA, CALIFORNIA'), 'Pico Rivera, California')
+  assert.equal(firstPlaceLabel('call us or visit in person, or by mail'), null, 'running text with "or" / "in" is not a state')
   // through Apollo: street text matches, the org record has no place field of its own
   const s = seed()
   await enrichLeadContacts(s.db, 'u1', s.jobId, [s.lead], { fetchImpl: apollo({ ...PICO, city: undefined, state: undefined, street_address: undefined, raw_address: '57 W 57th St, Pico Rivera, California' }), master })
@@ -140,4 +143,18 @@ test('REGRESSION (empty search location): the lead\'s OWN evidenced city/state i
   }
   assert.equal(contactAgreement({ where: [], evidence: 'Smile Avenue Dental, Pico Rivera, CA is hiring' }, { place: 'New York, NY' }).ok, false, 'a Pico Rivera lead refuses the New York record')
   assert.deepEqual(contactAgreement({ where: [], evidence: 'no place stated anywhere' }, { place: 'Pico Rivera, CA' }), { ok: true, via: 'no_geography' }, 'no search place AND no evidenced place: nothing to compare')
+})
+
+test('REGRESSION (casing): the address-only record in lowercase and ALL CAPS is refused through the Apollo path exactly like the title-case one', async () => {
+  for (const raw of ['57 w 57th st, pico rivera, california', '57 W 57TH ST, PICO RIVERA, CALIFORNIA']) {
+    const s = seed()
+    await enrichLeadContacts(s.db, 'u1', s.jobId, [s.lead], { fetchImpl: apollo({ ...PICO, city: undefined, state: undefined, street_address: undefined, raw_address: raw }), master })
+    assert.deepEqual(attached(s.db), [], raw); assert.deepEqual(refusals(s.db).map(r => r[0]), ['contact_location_mismatch'], raw + JSON.stringify(refusals(s.db)))
+  }
+})
+
+test('casing controls on the place field too: lowercase / ALL CAPS "pico rivera, california" is refused with or without a matching street, with or without a search location', () => {
+  const E = 'Smile Avenue Dental is opening a second practice at 57 W 57th St, New York'
+  for (const c of [{ place: 'pico rivera, california', address: '57 w 57th st' }, { place: 'PICO RIVERA, CA', address: '57 W 57TH ST' }, { place: 'pico rivera, ca' }, { place: 'PICO RIVERA, CALIFORNIA' }])
+    for (const where of [['New York City'], []]) assert.equal(contactAgreement({ where, evidence: E }, c).ok, false, JSON.stringify([c, where]))
 })

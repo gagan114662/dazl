@@ -97,10 +97,19 @@ export { cityScoped }
 // Two-letter codes AND spelled-out names (all 50 + DC): "Pico Rivera, CA" and "Pico Rivera, California" are the same place.
 const STATE_NAMES = [...Object.values(US_STATES)].map(n => n.replace(/\b\w/g, c => c.toUpperCase()).replace(/ Of /, ' of '))
 const ST_ALT = [...Object.keys(US_STATES), ...STATE_NAMES].sort((x, y) => y.length - x.length).join('|')
+const titleCase = (t: string) => t.replace(/(^|[\s-])(\p{L})/gu, (_, sp, c) => sp + c.toUpperCase()).replace(/ Of /, ' of ')
+const LEAD_NOISE = /^(?:in|at|of|the|near|from|on|and|a|an|to|by)$/
+const STATE_FULL = [...Object.values(US_STATES)].sort((x, y) => y.length - x.length).join('|')
+const STATE_CODE_LC = Object.keys(US_STATES).map(k => k.toLowerCase()).join('|')
 export function firstPlaceLabel(rawText: string): string | null {
   const text = rawText.replace(STREET, ' ')   // the street part ("57 W 57th St") is not a city: "St, Washington, District of Columbia" must read as Washington, District of Columbia
   const m = new RegExp(`\\b([A-Z][\\p{L}'.-]+(?: [A-Z][\\p{L}'.-]+){0,2}),\\s*(${ST_ALT})\\b(?:\\s+\\d{5})?`, 'u').exec(text)
   if (m) { const w = m[1].split(' '); while (w.length > 1 && /[a-z][A-Z]/.test(w[0])) w.shift(); return `${w.join(' ')}, ${m[2]}` }   // a leading camel-case word ("LinkedIn Pico Rivera") is page chrome, not part of the city
+  // Casing never changes where a company is: the same address in lowercase or ALL CAPS is read the same. A spelled-out state name matches in any case; a two-letter code only when
+  // upper-case above or, in lower case, when a ZIP follows (so "or" / "in" / "me" in running text are never read as a state).
+  const lc = text.toLowerCase()
+  const l = new RegExp(`(?<![\\p{L}])([\\p{L}'.-]+(?: [\\p{L}'.-]+){0,2}),\\s*(${STATE_FULL}|(?:${STATE_CODE_LC})(?=\\s+\\d{5}\\b))(?![\\p{L}])`, 'u').exec(lc)
+  if (l) { const w = l[1].split(' '); while (w.length > 1 && LEAD_NOISE.test(w[0])) w.shift(); const st = l[2].length === 2 ? l[2].toUpperCase() : titleCase(l[2]); return `${titleCase(w.join(' '))}, ${st}` }
   const u = /\b([A-Z][\p{L}'.-]+(?: [A-Z][\p{L}'.-]+){0,2}),\s*(England|Scotland|Wales|Northern Ireland|UK|United Kingdom|South Africa|Canada|Ontario)\b/u.exec(text)
   return u ? `${u[1]}, ${u[2]}` : null
 }
