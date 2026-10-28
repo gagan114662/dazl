@@ -1,0 +1,156 @@
+[
+ {
+  "v": 1,
+  "attempt": 1,
+  "generated_at": "2026-10-28T18:00:51.157Z",
+  "observed": {
+   "search": true,
+   "extraction": true,
+   "verification": true
+  },
+  "coverage": [
+   "urls: TinyFish search hits only. News-adapter, public-adapter and provider-fallback candidates have no search-result URL entry.",
+   "candidates: every candidate the verifier saw, plus login-wall and self-description holds. Candidates a model-search fallback returns are included once they reach the verifier.",
+   "model: requests dazl sent through the job provider before this report was written (all stages that ran, research calls included, which report no tokens). Steps after the scan finishes (buyer-fit) and profile generation are NOT included. Never a bill.",
+   "a stage that did not run is null, not 0"
+  ],
+  "queries": [
+   "(site:boards.greenhouse.io OR site:job-boards.greenhouse.io) \"sales\" London, UK",
+   "(site:jobs.ashbyhq.com OR site:jobs.lever.co) \"sales\" London, UK",
+   "london saas seed round London, UK"
+  ],
+  "query_source": "model",
+  "search": {
+   "attempted": 3,
+   "ok": 3,
+   "hits_raw": 3,
+   "hits_unique_urls": 1,
+   "hits_complete": true
+  },
+  "urls": [
+   {
+    "url": "https://clera.example/blog/seed-round",
+    "hit_date": "2026-10-18",
+    "walled": false,
+    "selected": true,
+    "tinyfish_text_chars": 455,
+    "own_fetch": "blocked"
+   }
+  ],
+  "evidence": {
+   "items": 1,
+   "with_page_text": 1,
+   "snippet_only": 0
+  },
+  "extracted_candidates": 1,
+  "extraction": {
+   "results": 1,
+   "requested": 1,
+   "fetched": 1,
+   "fetch_failed": 0,
+   "fetch_error": false,
+   "offered": 1,
+   "page_texts_given": 1,
+   "snippet_only": 0,
+   "fetched_unused": 0,
+   "fetched_too_short": 0,
+   "job_pages_fetched": 0,
+   "reply": "usable",
+   "returned": 1,
+   "reason": null
+  },
+  "candidates": [
+   {
+    "company": "Clera",
+    "url": "https://clera.example/blog/seed-round",
+    "fate": "review:no_sales_hiring_evidence",
+    "own_fetch": "blocked",
+    "evidence_origin": "tinyfish_copy"
+   }
+  ],
+  "funnel": {
+   "candidates": 1,
+   "verified": 0,
+   "needs_review": 1,
+   "dropped": 0,
+   "review_reasons": {
+    "no_sales_hiring_evidence": 1
+   },
+   "drop_reasons": {},
+   "verifier_drop_counts": {}
+  },
+  "model": {
+   "requests_recorded": 2,
+   "requests_with_reported_tokens": 2,
+   "input_tokens": 2000,
+   "output_tokens": 200,
+   "tokens_complete": true
+  },
+  "truncated": {
+   "urls": 0,
+   "candidates": 0
+  },
+  "final_gate": "sales_hiring",
+  "enrichment": [
+   {
+    "stage": "date_resolution",
+    "status": "attempted_no_result",
+    "reason": "no undated candidate declared its own event date as structured data (schema.org Event / JobPosting)"
+   },
+   {
+    "stage": "crawl",
+    "status": "skipped",
+    "reason": "SITECRAWL_ENABLED=0"
+   },
+   {
+    "stage": "signals",
+    "status": "attempted_no_result",
+    "reason": "empty x4",
+    "detail": {
+     "lookups": 4,
+     "with_results": 0
+    }
+   },
+   {
+    "stage": "paid_enrichment",
+    "status": "unavailable",
+    "reason": "no Apollo / People Data Labs key configured for this tenant, or no eligible lead",
+    "detail": {
+     "lookups": 0
+    }
+   },
+   {
+    "stage": "people_search",
+    "status": "attempted_no_result",
+    "reason": "no profile results named a role-matching person at a verified company, or no search key/quota",
+    "detail": {
+     "people_stored": 0
+    }
+   },
+   {
+    "stage": "buyer_fit",
+    "status": "skipped",
+    "reason": "scoring disabled for this run"
+   },
+   {
+    "stage": "sales_hiring_gate",
+    "status": "ok",
+    "reason": null,
+    "detail": {
+     "checked": 1,
+     "passed": 0,
+     "held": 1
+    }
+   }
+  ],
+  "yield": {
+   "source_checked": 1,
+   "verified": 0,
+   "held_leads": [],
+   "actionable": 0,
+   "missing": {},
+   "leads": []
+  },
+  "held_lead_ids": []
+ }
+]
