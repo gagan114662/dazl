@@ -12,6 +12,8 @@ import { atsGtmHiring, isGtmRole, postingEvidence, BOARD_LABEL } from '../signal
 import { careersSalesVacancy } from '../signals/careers-page.ts'
 import { placeAgreement } from './place-agreement.ts'
 import { releaseHeld } from './held-state.ts'
+import { salesHiringRequired } from './sales-hiring-required.ts'
+export { salesHiringRequired }
 import { norm } from './evidence.ts'
 import type { Get } from '../connectors/sitecrawl.ts'
 import { domainRelationship } from '../signals/domain-basis.ts'
@@ -22,17 +24,10 @@ import { WHY_MAX } from './score.ts'
 export const NO_SALES_HIRING = 'no_sales_hiring_evidence'
 export const NO_EVENT = 'no_event_evidence'
 export const SALES_GATE_FAILED = 'sales_hiring_check_failed'
-const HIRING_WORDS = /\bhir(?:e|es|ed|ing)\b|\brecruit\w*|\b(?:new|open|several|two|three|\d+)\s+(?:sales\s+|gtm\s+)?(?:role|position|opening)s?\b|\bjoin(?:ing)?\s+(?:our|the)\s+(?:sales|gtm)/i
 const MAX_BOARD_LOOKUPS = 20 // network lookups per run; a lead beyond it is NOT passed, it is held as unchecked
 
 interface JobLike { id: string; user_id: string; query?: string | null; icp?: string | null }
 
-export function salesHiringRequired(query: string | null | undefined, icp: string | null | undefined): boolean {
-  let signals: string[] = []
-  try { const j = icp ? JSON.parse(icp) as { signals?: unknown } : null; if (Array.isArray(j?.signals)) signals = j!.signals.filter((x): x is string => typeof x === 'string') } catch { /* no profile */ }
-  const text = [...signals, query ?? ''].join(' . ')
-  return needsEventBeyondHiring(signals, query ?? '') && HIRING_WORDS.test(text) && isGtmRole(text.replace(/\b(?:hir(?:e|es|ed|ing)|recruit\w*)\b/gi, ' '))
-}
 // The source quote itself says the company is hiring for a sales / GTM role.
 // The saved quote / claim itself shows the event half (funding, an opening ...): a job ad alone does not show that a company raised money.
 // When the request asks for FUNDING, only a funding mention counts (an office opening is not a raise); otherwise any event beyond hiring does.
