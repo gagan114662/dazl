@@ -34,17 +34,23 @@ export function progressOf(rows: SourceRunRow[], jobStatus: string): SourceProgr
 
 // Inputs for scanOutcome() from the run report and the source rows: which sources failed, the per-reason counts of everything rejected, and how many search results came back.
 export interface SourceFindings { evidence_sources: { source: string; evidence: number }[]; unknown_sources: string[] }
-// Per recorded source, beyond the search: returned evidence but extracted no candidates (NOT a zero result), or gave nothing usable / was not run (unknown). A source that genuinely
+// Per recorded source (a null evidence or candidate count is UNKNOWN, even on status ok; a queued source is unknown), beyond the search: returned evidence but extracted no candidates (NOT a zero result), or gave nothing usable / was not run (unknown). A source that genuinely
 // returned nothing is in neither list. Only search:tinyfish recorded 'unavailable' reads as "no results", and only when the run report shows ITS attempts all succeeded with 0 hits; the news fallback is judged by its own row ('empty' = zero hits, 'unavailable' = no queries or hits without usable page evidence = unknown).
 export function sourceFindings(rows: SourceRunRow[], jobStatus: string, searchEmptyOk: boolean): SourceFindings {
   const evidence_sources: SourceFindings['evidence_sources'] = [], unknown_sources: string[] = []
-  const raw = new Map(rows.map(r => [String(r.collector ?? ''), String(r.status ?? '')]))
   for (const p of progressOf(rows, jobStatus)) {
     const ev = num(rows.find(r => String(r.collector) === p.source)?.evidence_count)
     if (p.status === 'failed' || p.status === 'running') continue
-    if (p.status === 'unavailable' && !(searchEmptyOk && p.source === 'search:tinyfish')) { unknown_sources.push(p.source); continue }
     if (p.status === 'skipped') continue   // deliberately not asked (e.g. no hiring signal in the request): neither evidence nor a zero
-    if (ev !== null && ev > 0 && (p.candidates === null || p.candidates === 0) && raw.get(p.source) !== 'unavailable') evidence_sources.push({ source: p.source, evidence: ev })
+    if (p.state === 'queued') { unknown_sources.push(p.source); continue }   // not started: unknown, whatever its counts say
+    if (p.status === 'unavailable' && !(searchEmptyOk && p.source === 'search:tinyfish')) { unknown_sources.push(p.source); continue }
+    if (p.status === 'unavailable') continue   // TinyFish's own row, cleared by ITS report (a clean 0)
+    const cand = p.candidates
+    if (cand !== null && cand > 0) continue    // produced candidates: not an empty source
+    if (ev !== null && ev > 0) { evidence_sources.push({ source: p.source, evidence: ev }); continue }   // evidence, no candidates: said by name, never a zero
+    // A genuine nothing is stated, not assumed: 'empty', or an explicit 0 evidence AND 0 candidates. A null count (even on status ok) is unknown, never a zero.
+    if (p.status === 'empty' || (ev === 0 && cand === 0)) continue
+    unknown_sources.push(p.source)
   }
   return { evidence_sources, unknown_sources }
 }
