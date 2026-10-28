@@ -163,25 +163,21 @@ test('CONSISTENCY: the gate passed the lead but its durable pass record could no
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('BOUNDARY: a lead created one second BEFORE the cutoff is grandfathered only until the gate has run on it - after a failed rerun it stays held in a fresh process whatever its creation date', async () => {
-  const { applySalesHiringGate, failClosedSalesHiring } = await import('../lib/scan/sales-hiring-gate.ts'); const { GATE_PASS_RECORDS_SINCE } = await import('../lib/scan/held-state.ts'); const { rmSync } = await import('node:fs')
+test('BOUNDARY (no creation-date exemption): a lead created at cutoff minus 1s - the gate-run marker, the review write AND the failure marker are ALL rejected - a FRESH process still blocks createDraft through lead + domain confirmation', async () => {
+  const { applySalesHiringGate, failClosedSalesHiring } = await import('../lib/scan/sales-hiring-gate.ts'); const { rmSync } = await import('node:fs')
   const { dir, file, db } = await fileDb()
   try {
-    const old = GATE_PASS_RECORDS_SINCE - 1
-    const jobNever = salesLead(db, 'oldNever', { created: old, excerpt: 'Northside Builders raised a seed round in London.' })
+    const old = 1793145600 - 1   // one second before the date the pass records were introduced
     const job = salesLead(db, 'oldFailed', { created: old, excerpt: 'Northside Builders raised a seed round in London.' })
-    void jobNever
-    // the rerun fails: every write that would record the failure is rejected (review reason, failure marker); the gate's own RUN record is written first
+    db.exec("CREATE TRIGGER reject_run BEFORE INSERT ON lead_enrichments WHEN NEW.kind IN ('gate_run', 'gate_failed', 'gate_passed') BEGIN SELECT RAISE(ABORT, 'marker rejected'); END")
     db.exec("CREATE TRIGGER reject_review BEFORE UPDATE OF review_reason ON leads WHEN NEW.review_reason IS NOT NULL BEGIN SELECT RAISE(ABORT, 'write rejected'); END")
-    db.exec("CREATE TRIGGER reject_marker BEFORE INSERT ON lead_enrichments WHEN NEW.kind = 'gate_failed' BEGIN SELECT RAISE(ABORT, 'marker rejected'); END")
     await assert.rejects(applySalesHiringGate(db, job, noFetch, {}), /write rejected/)
-    const held = failClosedSalesHiring(db, job, 'write rejected'); assert.deepEqual(held.map(h => h.written), [false])
+    assert.deepEqual(failClosedSalesHiring(db, job, 'write rejected').map(h => h.written), [false])
+    assert.equal((db.prepare("SELECT count(*) AS n FROM lead_enrichments WHERE connector = 'scan:gate'").get() as { n: number }).n, 0, 'precondition: no marker of any kind was saved')
+    assert.equal((db.prepare('SELECT review_reason FROM leads').get() as { review_reason: string | null }).review_reason, null, 'precondition: the review write was rejected')
     db.close()
     const failed = await fresh(file, 'oldFailed')
-    assert.equal(failed.heldBefore, 'sales_hiring_check_failed', 'the gate ran on this lead and never passed it: held in a fresh process despite its age')
-    assert.match(failed.draftError ?? '', /sales_hiring_check_failed/); assert.equal(failed.draft, undefined)
-    // a legacy lead the gate never ran on stays grandfathered: confirmation makes it draftable as before
-    const legacy = await fresh(file, 'oldNever')
-    assert.equal(legacy.heldBefore, null); assert.equal(typeof legacy.draft, 'string', JSON.stringify(legacy))
+    assert.equal(failed.heldBefore, 'sales_hiring_check_failed', 'a fresh process forgets nothing: no durable pass, so held - whatever the lead\u2019s age')
+    assert.equal(failed.confirmed, true); assert.match(failed.draftError ?? '', /sales_hiring_check_failed/); assert.equal(failed.draft, undefined); assert.equal(failed.heldAfter, 'sales_hiring_check_failed')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
