@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { approveState, leadCardSummary } from '../lib/scan/lead-card.ts'
+import { approveState, cardCounts, cardDate, leadCardSummary } from '../lib/scan/lead-card.ts'
 import type { CardLead } from '../lib/scan/opportunity.ts'
 
 const base: CardLead = {
@@ -17,7 +17,7 @@ test('the card shows company, contact, one line of why, source host and the clai
   assert.equal(s.contact, 'hello@brightdental.example')
   assert.equal(s.why, 'Two-location practice that matches your dental owner profile.')
   assert.equal(s.sourceHost, 'news.example')
-  assert.equal(s.date, 'claimed event date 2026-10-01')
+  assert.equal(s.date, 'claimed event date 1 Oct 2026')
   assert.deepEqual(s.approve, { ok: true })
 })
 
@@ -25,7 +25,23 @@ test('without a rationale the why line is the saved signal claim; unknowns stay 
   const s = leadCardSummary({ ...base, why: null, contact: null, event_date: null })
   assert.equal(s.why, base.signal)
   assert.equal(s.contact, null)
-  assert.equal(s.date, 'event date unknown')
+  assert.equal(s.date, 'No dated source')
+})
+
+test('the date line never invents a date: claimed event date, else the published date, else "No dated source"', () => {
+  assert.equal(cardDate('2026-10-12'), 'claimed event date 12 Oct 2026')
+  assert.equal(cardDate(null, '2026-10-03'), 'published 3 Oct 2026, event date unknown')
+  assert.equal(cardDate(null, null), 'No dated source')
+  assert.equal(cardDate('2026-10'), 'claimed event date 2026-10', 'a partial date is shown as stored')
+  assert.equal(leadCardSummary({ ...base, event_date: null, published_at: '2026-09-30' } as CardLead).date, 'published 30 Sep 2026, event date unknown')
+})
+
+test('count bar: rejected cards, cards with a draft (from Outreach or approved now), and the rest to review', () => {
+  const L = [{ id: 'a' }, { id: 'b' }, { id: 'c', quarantined_at: 1 }, { id: 'd' }]
+  assert.deepEqual(cardCounts(L, new Set(['a']), {}), { approved: 1, rejected: 1, toReview: 2 })
+  assert.deepEqual(cardCounts(L, new Set(['a']), { b: true }), { approved: 2, rejected: 1, toReview: 1 })
+  assert.deepEqual(cardCounts(L, new Set(['c']), {}), { approved: 0, rejected: 1, toReview: 3 }, 'a rejected card is counted once, as rejected')
+  assert.deepEqual(cardCounts(L, null, { b: true }), { approved: null, rejected: 1, toReview: null }, 'drafts not loaded: Approved is unknown, not guessed')
 })
 
 test('Approve is offered only when every existing draft condition holds', () => {

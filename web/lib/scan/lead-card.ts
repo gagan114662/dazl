@@ -41,7 +41,28 @@ export function approveState(l: CardLead): ApproveState {
   return { ok: true }
 }
 
-export function leadCardSummary(l: CardLead & { name?: string }, buyerRoles = ''): LeadCardSummary {
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+// '2026-10-01' -> '1 Oct 2026'. Anything that is not a full date is shown as stored (never guessed into one).
+const dayMonth = (d: string) => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d); return m && +m[2] >= 1 && +m[2] <= 12 ? `${+m[3]} ${MONTHS[+m[2] - 1]} ${m[1]}` : d }
+// The card's date line: the claimed event date when there is one; else the page's published date, saying the event
+// date is unknown; else "No dated source". A date is never invented for an undated lead.
+export function cardDate(eventDate: string | null, publishedAt?: string | null): string {
+  if (eventDate) return `claimed event date ${dayMonth(eventDate)}`
+  if (publishedAt) return `published ${dayMonth(publishedAt)}, event date unknown`
+  return 'No dated source'
+}
+
+// The count bar over the cards. Rejected = rejected cards; Approved = cards with a draft made from them (from this scan's
+// Outreach emails, plus Approve clicks this session) - a draft is never sent by approving; To review = the rest.
+// When this scan's emails could not be read, Approved is unknown (null) rather than guessed from clicks alone.
+export function cardCounts(leads: { id: string; quarantined_at?: number | null }[], drafted: Set<string> | null, approvedNow: Record<string, boolean>): { approved: number | null; rejected: number; toReview: number | null } {
+  const rejected = leads.filter(l => l.quarantined_at).length
+  if (!drafted) return { approved: null, rejected, toReview: null }
+  const approved = leads.filter(l => !l.quarantined_at && (drafted.has(l.id) || approvedNow[l.id])).length
+  return { approved, rejected, toReview: leads.length - rejected - approved }
+}
+
+export function leadCardSummary(l: CardLead & { name?: string; published_at?: string | null }, buyerRoles = ''): LeadCardSummary {
   const card = opportunityCard(l, buyerRoles)
   const email = publishedEmail(l)
   const contact = card.who ? `${card.who.name}${card.who.title ? `, ${card.who.title}` : ''}${email ? ` - ${email}` : ''}` : email ?? (l.contact?.trim() || null)
@@ -56,7 +77,7 @@ export function leadCardSummary(l: CardLead & { name?: string }, buyerRoles = ''
     why: firstSentence(l.why?.trim() || l.signal),
     sourceUrl: l.source_url,
     sourceHost,
-    date: l.event_date ? `claimed event date ${l.event_date}` : 'event date unknown',
+    date: cardDate(l.event_date, l.published_at),
     approve: approveState(l),
   }
 }
