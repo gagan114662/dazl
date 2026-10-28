@@ -3,8 +3,8 @@
 // screenshots; BEFORE_ONLY=1 only takes them, for a build without this change).
 // Real production build, throwaway database, server under test/helpers/net-fence.ts, and EVERY /api/* CALL ANSWERED
 // FROM A STUB in the browser: no scan, no key check against a provider, nothing saved. It proves:
-//   1. a saved key whose latest scan (after it was saved) stopped with key_rejected reads as a to-do with "Replace key",
-//      which opens the key form in place; it is not shown as fine just because a key is saved;
+//   1. a key the server reports as rejected (with no acceptance of that same key since) reads as a to-do naming that key
+//      with "Replace key" (the key form in place); a later cancelled scan or another provider's save leaves it a to-do;
 //   2. the Lead sources row names only usable sources as usable and lists every other offered source as not available
 //      with its reason (server switch off, consent needed), with a one-click "Set up" link for the one a user can fix;
 //   3. while the key is refused no source is called usable; a platform this server does not offer is not listed;
@@ -41,6 +41,7 @@ const ADV = { available: true, version: 1, platforms: [
   { platform: 'reddit', allowed: false, consent: false, connected: false, enabled: false, operator_index: false },
 ] }
 const writes = []
+const state = { rejection: { error: 'key_rejected', vendor: 'anthropic' } }
 const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: 1280, height: 1100 } })
 await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
 await ctx.route('**/*', async route => {
@@ -52,7 +53,8 @@ await ctx.route('**/*', async route => {
   if (p === '/api/settings/profile') return json({ business_name: 'Brightsmile Supply', sells: 'Dental chairs', website: 'https://brightsmile.example', buyer: { summary: 'Independent dental practices', who: ['Practice owner'] } })
   if (p === '/api/scan/jobs') return json({ jobs: JOBS })
   if (p === '/api/usage') return json({ plan: 'free', scans_used: 2, scan_limit: 10, has_key: true, trial: null })
-  if (p === '/api/settings/llm-key') return json({ keys: [{ vendor: 'anthropic', last4: 'Ab12', validated_at: now - 5000 }] })
+  // Two keys: Anthropic is the one scans use; OpenAI was re-saved more recently. The server reports the open rejection.
+  if (p === '/api/settings/llm-key') return json({ keys: [{ vendor: 'anthropic', last4: 'Ab12', validated_at: now - 5000 }, { vendor: 'openai', last4: 'Zz99', validated_at: now - 50 }], rejection: state.rejection })
   if (p === '/api/settings/advanced') return json(ADV)
   if (p === '/api/scan/sources') return json({ web_index: false, news: true, websites: true })
   if (p === '/api/outreach/settings') return json({ gmail: null, sender: null, daily_cap: 20, sent_24h: 0, account_sent_24h: 0 })
@@ -67,18 +69,24 @@ try {
   await row('key').scrollIntoViewIfNeeded()
   await shot('readiness')
   if (process.env.BEFORE_ONLY !== '1') {
-    assert.match(await row('key').textContent(), /AI key - saved \(ending Ab12\), but your AI provider refused it on your latest scan/)
+    assert.match(await row('key').textContent(), /AI key - your Anthropic key \(ending Ab12\) was rejected by Anthropic on a scan after it was last saved - save it again to confirm it works/)
     assert.equal(await row('key').getByText('✓').count(), 0, 'a refused key is not shown as fine')
     // While the latest scan says the key was refused, no source is called usable: the fix is the key.
     assert.equal(await row('sources').textContent().then(t => t.replace(/^.*?Lead sources - /, '').replace(/Replace key$/, '')),
-      'a scan cannot run until you replace your AI key. Not available: Web search index (not set up on this server), LinkedIn (consent needed)')
+      'a scan may not run until you save your AI key again. Not available: Web search index (not set up on this server), LinkedIn (consent needed)')
     assert.equal(await row('sources').getByRole('link', { name: 'Replace key' }).getAttribute('href'), '/app/settings#model-key')
     assert.doesNotMatch(await row('sources').textContent(), /Reddit/)
     await row('key').getByRole('button', { name: 'Replace key' }).click()
     await row('key').locator('input').first().waitFor()
     await shot('replace-key-open')
-    // A later scan finished: the key works, so the sources row names what a scan can use and lists the rest with reasons.
-    JOBS.push(job('c', now - 10, {}))
+    // A later cancelled scan and the newer OpenAI save are not acceptance of the Anthropic key: still a to-do.
+    JOBS.push(job('c', now - 20, { status: 'failed', error: 'cancelled', lead_count: 0 }))
+    await page.reload({ waitUntil: 'networkidle' })
+    await row('key').waitFor({ timeout: 15000 })
+    assert.match(await row('key').textContent(), /your Anthropic key \(ending Ab12\) was rejected by Anthropic/)
+    assert.equal(await row('key').getByText('✓').count(), 0)
+    // The Anthropic key was saved again (the provider accepted it): the server reports no open rejection.
+    state.rejection = null
     await page.reload({ waitUntil: 'networkidle' })
     await row('sources').getByText('✓').waitFor({ timeout: 15000 })
     assert.equal(await row('key').getByText('✓').count(), 1)
@@ -89,7 +97,7 @@ try {
     await shot('sources-available')
   }
   assert.deepEqual(writes, [], 'loading and opening the key form write nothing')
-  console.log(process.env.BEFORE_ONLY === '1' ? 'screenshots taken (BEFORE_ONLY)' : 'readiness truth UI check passed: a refused key is a to-do with Replace key; only usable sources are named usable, the rest listed with reasons and a Set up link; no writes')
+  console.log(process.env.BEFORE_ONLY === '1' ? 'screenshots taken (BEFORE_ONLY)' : 'readiness truth UI check passed: a rejected key is a to-do naming that key, kept through a cancelled scan and another provider\'s save, cleared only by the server\'s key-specific acceptance; only usable sources are named usable, the rest listed with reasons and a Set up link; no writes')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }

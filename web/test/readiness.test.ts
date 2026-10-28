@@ -122,20 +122,24 @@ test('brain: done only with a saved buyer profile (who or a summary); the fix re
 })
 
 // Home readiness: "AI key valid" and truthful source availability.
-test('AI key: saved and accepted when saved is done; a later scan that stopped on a key error makes it a to-do', () => {
-  const key = (keys: object[] | null, jobs: object[] | null) => byId(readinessRows({ profile: null, usage: { has_key: true }, outreach: null, keys: keys as never, jobs: jobs as never })).key
+// Instinct #275: the evidence (and what clears it) is server-side and key-specific (test/key-evidence.test.ts); Home only
+// reports it, and never infers acceptance from other scans or another provider's key.
+test('AI key: done with no open rejection; a server-reported rejection of a known key names that key; unknown says so', () => {
+  const key = (keys: object[] | null, rejection: object | null, jobs: object[] = []) => byId(readinessRows({ profile: null, usage: { has_key: true }, outreach: null, keys: keys as never, rejection: rejection as never, jobs: jobs as never })).key
   const K = [{ vendor: 'anthropic', last4: 'Ab12', validated_at: 1000 }]
+  const K2 = [...K, { vendor: 'openai', last4: 'Zz99', validated_at: 5000 }]
+  assert.deepEqual(key(K, null), { id: 'key', label: 'AI key', state: 'done', detail: 'saved (ending Ab12); your provider accepted it when it was saved', fix: null })
+  const refused = key(K2, { error: 'key_rejected', vendor: 'anthropic' })
+  assert.deepEqual([refused.state, refused.detail, refused.fix], ['todo', 'your Anthropic key (ending Ab12) was rejected by Anthropic on a scan after it was last saved - save it again to confirm it works', { kind: 'inline', label: 'Replace key' }], "the other provider's newer save does not clear it")
+  assert.equal(key(K, { error: 'key_unreadable', vendor: 'anthropic' }).detail, 'dazl could not read your Anthropic key (ending Ab12) on a scan after it was last saved - save it again')
+  assert.equal(key(K, { error: 'key_rejected', vendor: null }).detail, 'a scan stopped because its AI key was rejected after your key was last saved - save your key again to confirm it works', 'unknown key identity: no key is named')
+  // Home never decides acceptance itself: a later done or cancelled scan in the jobs list changes nothing.
   const job = (created_at: number, status: string, error: string | null) => ({ id: String(created_at), status, error, query: 'q', csv_domain: null, created_at, lead_count: 0 })
-  assert.deepEqual(key(K, []), { id: 'key', label: 'AI key', state: 'done', detail: 'saved (ending Ab12); your provider accepted it when it was saved', fix: null })
-  const refused = key(K, [job(900, 'done', null), job(2000, 'failed', 'key_rejected')])
-  assert.deepEqual([refused.state, refused.detail, refused.fix], ['todo', 'saved (ending Ab12), but your AI provider refused it on your latest scan', { kind: 'inline', label: 'Replace key' }])
-  assert.match(key(K, [job(2000, 'failed', 'key_unreadable')]).detail, /could not read it on your latest scan - save it again/)
-  assert.equal(key(K, [job(500, 'failed', 'key_rejected')]).state, 'done', 'the key was saved again after that scan')
-  assert.equal(key(K, [job(2000, 'failed', 'key_rejected'), job(3000, 'done', null)]).state, 'done', 'a later scan worked')
-  assert.equal(key(K, [job(2000, 'failed', 'key_rejected'), job(3000, 'running', null)]).state, 'todo', 'a running scan proves nothing yet')
-  assert.equal(key(null, [job(2000, 'failed', 'key_rejected')]).detail, 'saved', 'key status not loaded: no claim either way')
-  const src = byId(readinessRows({ profile: null, usage: { has_key: true }, outreach: null, keys: K as never, jobs: [job(2000, 'failed', 'key_rejected')] as never, sources: { web_index: true, news: true, websites: true } })).sources
-  assert.deepEqual([src.state, src.detail, src.fix], ['todo', 'a scan cannot run until you replace your AI key', { kind: 'link', href: '/app/settings#model-key', label: 'Replace key' }], 'a refused key is not listed as a usable source')
+  assert.equal(key(K, { error: 'key_rejected', vendor: 'anthropic' }, [job(2000, 'failed', 'key_rejected'), job(3000, 'failed', 'cancelled'), job(4000, 'done', null)]).state, 'todo')
+  assert.equal(key(K, null, [job(2000, 'failed', 'key_rejected')]).state, 'done', 'the jobs list alone is not evidence; the server read is')
+  assert.equal(key(null, null).detail, 'saved', 'key status not loaded: no claim either way')
+  const src = byId(readinessRows({ profile: null, usage: { has_key: true }, outreach: null, keys: K as never, rejection: { error: 'key_rejected', vendor: 'anthropic' }, sources: { web_index: true, news: true, websites: true } })).sources
+  assert.deepEqual([src.state, src.detail, src.fix], ['todo', 'a scan may not run until you save your AI key again', { kind: 'link', href: '/app/settings#model-key', label: 'Replace key' }], 'a rejected key is not listed as a usable source')
 })
 
 test('lead sources: only usable sources are named as usable; social sources that are not set up are listed with their reason and fix', () => {
