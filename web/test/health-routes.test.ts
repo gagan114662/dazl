@@ -9,7 +9,7 @@ import { pgSkip } from './helpers/pg-test.ts'
 const TITLES: Record<string, string> = {
   'sqlite': 'SQLite store answers: 200 ready',
   'pg-down': 'Postgres unreachable: 503 not ready, liveness still 200',
-  'pg': 'Postgres reachable with every shipped migration: store and schema ready',
+  'pg': 'Postgres reachable with every shipped migration: store and schema ready (503 only while raw-SQLite modules remain)',
   'pg-behind': 'Postgres missing a shipped migration: 503 not ready (schema behind)',
 }
 

@@ -47,9 +47,12 @@ test(`health routes (${mode})`, async () => {
       assert.equal(body.checks.store.engine, 'pg')
       assert.equal(body.checks.store.ok, true, JSON.stringify(body))
       assert.equal(body.checks.schema.ok, true, 'every shipped migration applied')
-      assert.equal(res.status, body.ok ? 200 : 503)
-      // the store and its schema are ready; any other failing check is one this mode does not set up
-      assert.deepEqual(Object.entries(body.checks).filter(([k, c]) => !(c as { ok: boolean }).ok && !['split'].includes(k)), [], JSON.stringify(body))
+      assert.equal(body.checks.sqlite.ok, true)
+      // Store and schema are ready; while raw-SQLite modules remain, the split check alone holds the instance back
+      // (lib/ops/health.ts), so it reports 503 until the port is done, and 200 after.
+      const raw = Object.keys((await import('../../lib/db/pg-port-status.ts')).RAW_SQLITE_MODULES).length
+      assert.deepEqual(body.checks.split, { ok: raw === 0, raw_sqlite_modules: raw })
+      assert.deepEqual([res.status, body.ok], raw === 0 ? [200, true] : [503, false], JSON.stringify(body))
     } else if (mode === 'pg-behind') {
       assert.equal(res.status, 503, JSON.stringify(body))
       assert.equal(body.ok, false)
