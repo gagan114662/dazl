@@ -521,7 +521,7 @@ async function tinyfishCompany(db: Database.Database, job: Job, domain: string, 
 // CSV import job: research one known company domain through the same
 // research/ground/verify/enrich stages as a discovery scan. No ICP scoring (there is no
 // profile to fit against) and no autopilot: an uploaded account list never triggers outreach.
-async function runCompanyJob(db: Database.Database, job: Job, provider: Provider, vendor: Vendor, key: string, deps: RunDeps, ledger: SourceRunLedger = new SourceRunLedger()): Promise<'done' | 'failed' | 'retry'> {
+async function runCompanyJob(db: Database.Database, job: Job, provider: Provider, vendor: Vendor, key: string, deps: RunDeps, ledger: SourceRunLedger = (() => { const l = new SourceRunLedger(); l.attach(db, job.id, job.attempts); return l })()): Promise<'done' | 'failed' | 'retry'> {
   const domain = job.csv_domain!
   const request = `The company at https://${domain}`
   try {
@@ -616,7 +616,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   const geo = { ...(icp.country ? { location: icp.country } : {}), ...(icp.language ? { language: icp.language } : {}) }
   for (const query of q) { const r = await tfSearch(db, job.user_id, query, { afterDate: after, ...geo }, spent, diag ? { trace: diag.trace } : {}); if (!r.ok) { if (hits.length === 0) return null; break } hits.push(...r.hits) }
   // Free news search beside TinyFish (lib/search/news.ts): the same queries minus site: restrictions, the ICP's market.
-  if (newsHttp && hits.length > 0) { const seen = new Set(hits.map(h => h.url)); for (const h of await newsSearch(newsHttp, q.filter(x => !/site:/i.test(x)), icp.language)) if (!seen.has(h.url)) { seen.add(h.url); hits.push(h); diag?.newsUrls?.push(h.url) } }
+  if (newsHttp && hits.length > 0) { const seen = new Set(hits.map(h => h.url)); for (const h of (await newsSearch(newsHttp, q.filter(x => !/site:/i.test(x)), icp.language)).hits) if (!seen.has(h.url)) { seen.add(h.url); hits.push(h); diag?.newsUrls?.push(h.url) } }
   if (hits.length === 0) {
     // Every search answered and none returned a result: the evidence really is 0. If any search failed it stays unknown (null).
     if (diag && summarizeTrace(diag.trace).hits_complete === true) Object.assign(diag.info, { evidence_items: 0, evidence_with_page_text: 0, evidence_snippet_only: 0 })
@@ -659,12 +659,22 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
 // are labels, not quotable text, so the article pages are fetched with the verifier's own cached fetcher and the model
 // quotes from that page text: the verifier then checks the same text it was quoted from.
 export const NEWS_PAGES = 8
-async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, http: SafeGet, fetchPage: PageFetcher, fetchImpl?: typeof fetch): Promise<LeadDraft[] | null> {
+// The ledger status of the news fallback, from its OWN request outcomes. 'empty' needs a completed search with every request answered and zero hits; request failures are
+// kept apart from the hits array: all failed = 'error' (a failed source), some failed with no hits = 'error_partial:<failed>_of_<attempted>' (failed and named), and hits with no
+// usable page evidence or no query to run stay 'unavailable' (unknown).
+export function newsStatus(leads: LeadDraft[] | null, note: { searched: boolean; hits: number; attempted: number; failed: number; malformed?: number }): string {
+  if (leads) return leads.length ? ((note.malformed ?? 0) > 0 ? 'partial' : 'ok') : 'empty'   // invalid entries beside valid ones: the valid hits are kept and the source is marked partial
+  if (!note.searched) return 'unavailable'
+  if (note.hits === 0) return note.failed === 0 ? ((note.malformed ?? 0) > 0 ? 'unavailable' : 'empty') : note.failed >= note.attempted ? 'error' : `error_partial:${note.failed}_of_${note.attempted}`
+  return 'unavailable'
+}
+async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, http: SafeGet, fetchPage: PageFetcher, fetchImpl?: typeof fetch, note?: { searched: boolean; hits: number; attempted: number; failed: number; malformed?: number }): Promise<LeadDraft[] | null> {
   const complete = provider.complete!
   const plan = queryPlan(await complete.call(provider, key, queryPrompt(job.query!, icp, NEWS_PER_SCAN), fetchImpl, 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, NEWS_PER_SCAN)
   const q = withGeography(sanitizeQueries(plan.queries, job.query!), icp.where).filter(x => !/site:/i.test(x)) // news search has no site: operator
   if (q.length === 0) return null
-  const hits = await newsSearch(http, q, icp.language)
+  const found = await newsSearch(http, q, icp.language), hits = found.hits
+  if (note) { note.searched = true; note.hits = hits.length; note.attempted = found.attempted; note.failed = found.failed; note.malformed = found.malformed }
   if (hits.length === 0) return null
   const pages = (await Promise.all(hits.slice(0, NEWS_PAGES).map(async h => {
     const p = await fetchPage(h.url).catch(() => null)
@@ -727,6 +737,7 @@ export interface RunDeps {
 
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
   const ledger = new SourceRunLedger()
+  ledger.attach(db, job.id, job.attempts)   // live per-source progress for the status route
   const budget = job.csv_domain ? null : deps.jobBudgetMs ?? scanJobBudgetMs()
   if (budget) { const now = deps.clock ?? Date.now; jobDeadlines.set(job, { at: now() + budget, now }) }
   // Trial-funded jobs run on the shared operator key from the server environment; everything
@@ -827,8 +838,10 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       try {
         ledger.record('search:news', 'started')
         assertOwned(db, job)
-        leads = await newsLeads(job, icpForSources, providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl)
-        ledger.record('search:news', leads === null ? 'unavailable' : leads.length ? 'ok' : 'empty')
+        const note = { searched: false, hits: 0, attempted: 0, failed: 0, malformed: 0 }
+        leads = await newsLeads(job, icpForSources, providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl, note)
+        // 'empty' only when the news search ran and returned zero hits; hits with no usable page evidence, or no query to run, stay 'unavailable' (unknown, never a zero).
+        ledger.record('search:news', newsStatus(leads, note), note.searched ? note.hits : null)
         if (leads) { ledger.candidates('search:news', leads); ledger.candidates(NEWS_SOURCE, leads) }
       } catch (e) {
         if (e instanceof ScanStopped || e instanceof ScanTimedOut || e instanceof SpendRefused) throw e
