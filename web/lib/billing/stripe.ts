@@ -160,6 +160,12 @@ export async function applyStripeEvent(db: Db, event: StripeEvent, deps: StripeD
     const tenantId = yield* tenantFor(t, o)
     if (!tenantId) { ignoredWhy = 'unknown_tenant'; return 'ignored' }
     // One Stripe customer is one tenant's: an event that names this tenant with another tenant's customer changes nothing.
+    // The check and the link that follows must be atomic, or two different events naming the same unbound customer for
+    // two tenants both pass it at once. On Postgres every event naming this customer first takes a lock on it, held to
+    // commit, so the second waits and then reads the first's link (READ COMMITTED: each statement sees what committed
+    // before it). SQLite runs one write transaction at a time. A customer two tenants already share (rows from before
+    // this check) is refused for both.
+    if (o.customer && t.kind === 'pg') yield* t.get("SELECT pg_advisory_xact_lock(hashtextextended('stripe_customer:' || ?, 0)) AS x", [o.customer])
     if (o.customer && (yield* t.get('SELECT 1 AS x FROM tenant_plans WHERE stripe_customer_id = ? AND tenant_id <> ?', [o.customer, tenantId]))) { ignoredWhy = 'customer_conflict'; return 'ignored' }
     if (event.type === 'invoice.payment_failed') return yield* paymentFailed(t, tenantId, o.subscription ?? o.parent?.subscription_details?.subscription, created)
     if (!eventFx) return 'ignored'
