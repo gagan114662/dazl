@@ -9,6 +9,8 @@ export const KEY_UNREADABLE_COPY =
 // codes), so the caller keeps its specific fallback.
 export function knownErrorCopy(code: unknown): string | null {
   switch (code) {
+    case 'scan_active':
+      return 'A scan is still running or finishing. Wait for it to end before starting another.'
     case 'key_unreadable':
       return KEY_UNREADABLE_COPY
     case 'key_rejected':
