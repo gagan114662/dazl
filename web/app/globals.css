@@ -123,7 +123,7 @@ body { font-size: 16px; line-height: 1.5; }
 /* Pills: status and source chips. */
 .pill { display: inline-flex; align-items: center; gap: .35rem; font-size: .72rem; font-weight: 600; line-height: 1; padding: .3rem .55rem; border-radius: 6px; background: #f3eeea; color: var(--ink, #2c002a); white-space: nowrap; }
 .pill-mint { background: var(--mint-bg); color: #17694a; }
-.pill-peach { background: var(--peach-bg); color: #8a4a12; }
+.pill-peach { background: #f3eeea; color: var(--ink-3); }
 .pill-pink { background: var(--pink-bg); color: #a3173f; }
 .pill-lav { background: var(--lav-bg); color: #5b2ca8; }
 .pill-plain { background: #fff; border: 1px solid var(--line-2); font-weight: 500; }
@@ -174,9 +174,9 @@ body { font-size: 16px; line-height: 1.5; }
 .lp-fade.lp-in { opacity: 1; transform: none; }
 @media (prefers-reduced-motion: reduce) { .lp-fade, .lp-tick { transition: none; } .lp-caret, .lp-tick-now { animation: none; } }
 
-/* Home's "ready to run" card: two columns of items on wide screens, one on narrow. */
+/* Home's setup checklist (app/app/ready-card.tsx): one step per row. */
 .rc-grid { display: grid; gap: .5rem; }
-@media (min-width: 900px) { .rc-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem 1.25rem; } }
 .rc-item { display: flex; gap: .75rem; align-items: center; padding: .7rem .8rem; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
-.rc-dot { width: 1.75rem; height: 1.75rem; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-size: .78rem; font-weight: 700; flex-shrink: 0; background: var(--peach-bg); color: #8a4a12; }
+.rc-dot { width: 1.75rem; height: 1.75rem; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-size: .78rem; font-weight: 700; flex-shrink: 0; background: #f3eeea; color: var(--ink-3); }
 .rc-dot-done { background: var(--mint-bg); color: #17694a; }
+.rc-dot-next { background: var(--ink); color: #fff; }

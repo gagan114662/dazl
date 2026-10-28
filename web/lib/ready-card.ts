@@ -1,42 +1,84 @@
 import { readinessRows, type ReadinessInput, type Row } from './readiness.ts'
 import { coreSources, socialSources } from './scan/source-availability.ts'
 
-// Home's "ready to run" card: the four things a play needs to run well (website and brain, AI key, Gmail, lead
-// sources), read from the same rows as the full setup checklist (lib/readiness.ts), so the two never disagree. Pure and
-// client-safe. Each missing item has one link that goes straight to its fix; a row that could not be checked says so
-// and offers no fix. Sources are named only when a scan here can really use them.
+// Home's setup checklist toward the first useful result: business profile -> search can run -> first search ->
+// qualified lead -> contact -> draft -> sender setup. Read from the same tenant responses and rows as the full setup
+// checklist (lib/readiness.ts), so the two never disagree. Pure and client-safe. A step is done only on positive
+// evidence; a read that failed, or a capped read that found nothing, is "could not check" with no button. Each step
+// that is still to do has one button straight to its fix. Sources are named only when a scan here can use them.
 
-export type ReadyId = 'brain' | 'key' | 'gmail' | 'sources'
-export interface ReadyItem { id: ReadyId; label: string; state: Row['state']; detail: string; fix: { href: string; label: string } | null }
+export type ReadyId = 'profile' | 'search' | 'play' | 'qualified' | 'contact' | 'draft' | 'sender'
+export interface ReadyItem { id: ReadyId; label: string; state: Row['state']; detail: string; fix: { href: string; label: string } | null; next?: boolean }
 
-const KEY_FIX = '/app/settings#model-key'
+const KEY_FIX = '/app/settings#model-key', GMAIL_FIX = '/app/settings#gmail'
+// The reads' caps (lib/readiness.ts): a list this long may be missing older history.
+const CAMPAIGNS_CAP = 10, MESSAGES_CAP = 200, JOBS_CAP = 20
 
 export function readyItems(i: ReadinessInput): ReadyItem[] {
   const rows = readinessRows(i)
   const row = (id: Row['id']) => rows.find(r => r.id === id)!
-  const site = row('site'), brainRow = row('brain'), key = row('key'), gmail = row('gmail'), src = row('sources')
+  const site = row('site'), brainRow = row('brain'), key = row('key'), gmail = row('gmail'), sender = row('sender'), src = row('sources')
+  const unknown = (id: ReadyId, label: string, detail: string): ReadyItem => ({ id, label, state: 'unknown', detail, fix: null })
 
-  // Website and brain together: what dazl read from your site. The website is fixed first (the brain is drafted from it).
+  // 1. Business profile: the website, and the buyer profile drafted from it.
   const p = i.profile
-  const brain: ReadyItem = site.state === 'unknown' || brainRow.state === 'unknown' ? { id: 'brain', label: 'Website and brain', state: 'unknown', detail: site.detail, fix: null }
-    : !p?.website ? { id: 'brain', label: 'Website and brain', state: 'todo', detail: 'add your website so dazl can read who buys from you', fix: { href: '/app?setup=site', label: 'Add website' } }
-    : brainRow.state === 'todo' ? { id: 'brain', label: 'Website and brain', state: 'todo', detail: `${host(p.website)} saved; the buyer profile is not built yet`, fix: { href: '/app?setup=brain', label: 'Build brain' } }
-    : { id: 'brain', label: 'Website and brain', state: 'done', detail: `${host(p.website)} - ${brainRow.detail}`, fix: null }
+  const profile: ReadyItem = site.state === 'unknown' || brainRow.state === 'unknown' ? unknown('profile', 'Business profile', site.detail)
+    : !p?.website ? { id: 'profile', label: 'Business profile', state: 'todo', detail: 'add your website so dazl can read who buys from you', fix: { href: '/app?setup=site', label: 'Add website' } }
+    : brainRow.state === 'todo' ? { id: 'profile', label: 'Business profile', state: 'todo', detail: `${host(p.website)} saved; who buys from you is not built yet`, fix: { href: '/app?setup=brain', label: 'Build profile' } }
+    : { id: 'profile', label: 'Business profile', state: 'done', detail: `${host(p.website)} - ${brainRow.detail}`, fix: null }
 
-  const keyItem: ReadyItem = { id: 'key', label: 'AI key', state: key.state, detail: key.detail, fix: key.state === 'todo' ? { href: KEY_FIX, label: key.fix?.label ?? 'Add key' } : null }
-  const gmailItem: ReadyItem = { id: 'gmail', label: 'Gmail connected', state: gmail.state, detail: gmail.detail, fix: gmail.state === 'todo' && gmail.fix?.kind === 'link' ? { href: gmail.fix.href, label: gmail.fix.label } : null }
-
-  // Usable sources only. What cannot run is not listed here (the full checklist in Setup details explains it); when no
-  // source can run, the fix is the one thing the user can do: the AI key.
+  // 2. A search can run: a working AI key (or free searches) and the sources a scan here can use. Only usable ones named.
   const core = coreSources(i.sources ?? null, i.usage ? { has_key: i.usage.has_key, trial: i.usage.trial } : null)
   const usable = core ? [...core, ...socialSources(i.advanced ?? null)].filter(r => r.usable).map(r => r.label) : []
-  const sources: ReadyItem = src.state === 'unknown' ? { id: 'sources', label: 'Lead sources', state: 'unknown', detail: src.detail, fix: null }
-    : src.state === 'todo' ? { id: 'sources', label: 'Lead sources', state: 'todo', detail: 'none can run until your AI key works', fix: { href: KEY_FIX, label: key.fix?.label ?? 'Add key' } }
-    : { id: 'sources', label: 'Lead sources', state: 'done', detail: `${usable.length} available: ${usable.join(', ')}`, fix: null }
-  return [brain, keyItem, gmailItem, sources]
+  const search: ReadyItem = key.state === 'unknown' || src.state === 'unknown' ? unknown('search', 'Search can run', key.state === 'unknown' ? key.detail : src.detail)
+    : key.state === 'todo' || src.state === 'todo' ? { id: 'search', label: 'Search can run', state: 'todo', detail: key.state === 'todo' ? key.detail : 'no source can run until your AI key works', fix: { href: KEY_FIX, label: key.fix?.label ?? 'Add key' } }
+    : { id: 'search', label: 'Search can run', state: 'done', detail: `${key.detail}. Sources: ${usable.join(', ')}`, fix: null }
+
+  // 3. First search: a finished search of the account's own.
+  const own = i.jobs?.filter(j => j.query && !j.csv_domain && !j.test_only) ?? []
+  const finished = own.filter(j => j.status === 'done').sort((a, b) => b.created_at - a.created_at)
+  const running = own.find(j => ['pending', 'running', 'enriching'].includes(j.status))
+  const finishedN = Math.max(i.totals?.finished ?? 0, finished.length)
+  const latest = finished[0]
+  const leadsHref = latest ? `/app/leads?job_id=${latest.id}` : '/app/leads'
+  const play: ReadyItem = !i.jobs && !i.totals ? unknown('play', 'First search', 'could not check - your searches did not load')
+    : finishedN > 0 ? { id: 'play', label: 'First search', state: 'done', detail: `${finishedN} finished`, fix: null }
+    : running ? { id: 'play', label: 'First search', state: 'todo', detail: 'running now', fix: { href: `/app/leads?job_id=${running.id}`, label: 'Watch it live' } }
+    : !i.totals && (i.jobs?.length ?? 0) >= JOBS_CAP ? unknown('play', 'First search', `could not check - only your latest ${JOBS_CAP} scans could be checked`)
+    : { id: 'play', label: 'First search', state: 'todo', detail: 'describe who you want to find, or pick a suggested play', fix: { href: '/app/leads', label: 'Run a search' } }
+
+  // 4-6 from the campaigns read (the last 10 searches, with complete per-search counts) and the emails read.
+  const camps = i.campaigns ?? null, msgs = i.messages ?? null
+  const campsComplete = !!camps && camps.length < CAMPAIGNS_CAP
+  const sum = (f: (c: NonNullable<ReadinessInput['campaigns']>[number]) => number) => camps ? camps.reduce((n, c) => n + f(c), 0) : 0
+  const qualifiedN = sum(c => (c.qualification.sourceChecked ?? 0) + (c.qualification.confirmedByYou ?? 0))
+  const contactN = sum(c => c.contact?.withContact ?? 0)
+  const draftN = sum(c => c.outreach ? c.outreach.drafts + c.outreach.approved + c.outreach.sent : 0) + (msgs ? msgs.filter(m => m.status !== 'skipped').length : 0)
+  const campGap = !camps ? 'could not check - your searches\' results did not load' : `could not check - only your latest ${CAMPAIGNS_CAP} searches could be checked`
+  const noSearchYet = finishedN === 0
+  const qualified: ReadyItem = qualifiedN > 0 ? { id: 'qualified', label: 'Qualified lead', state: 'done', detail: `${qualifiedN} source-checked`, fix: null }
+    : !campsComplete ? unknown('qualified', 'Qualified lead', campGap)
+    : { id: 'qualified', label: 'Qualified lead', state: 'todo', detail: noSearchYet ? 'comes from your first search' : 'no lead has passed the source check yet', fix: noSearchYet ? null : { href: leadsHref, label: 'Review leads' } }
+  const contact: ReadyItem = contactN > 0 ? { id: 'contact', label: 'Contact found', state: 'done', detail: `${contactN} lead${contactN === 1 ? '' : 's'} with a contact`, fix: null }
+    : !campsComplete ? unknown('contact', 'Contact found', campGap)
+    : { id: 'contact', label: 'Contact found', state: 'todo', detail: qualifiedN > 0 ? 'none of your leads has a contact yet' : 'comes after a qualified lead', fix: qualifiedN > 0 ? { href: leadsHref, label: 'Find contact' } : null }
+  const draft: ReadyItem = draftN > 0 ? { id: 'draft', label: 'First draft', state: 'done', detail: `${draftN} email${draftN === 1 ? '' : 's'} drafted`, fix: null }
+    : !campsComplete || !msgs || msgs.length >= MESSAGES_CAP ? unknown('draft', 'First draft', !msgs ? 'could not check - your emails did not load' : campsComplete ? `could not check - only your latest ${MESSAGES_CAP} emails could be checked` : campGap)
+    : { id: 'draft', label: 'First draft', state: 'todo', detail: contactN > 0 ? 'approve a lead with a contact and dazl drafts the email' : 'comes after a lead with a contact', fix: contactN > 0 ? { href: leadsHref, label: 'Review leads' } : null }
+
+  // 7. Sender setup: Gmail connected, and the sender name and mailing address every email carries.
+  const senderItem: ReadyItem = gmail.state === 'unknown' || sender.state === 'unknown' ? unknown('sender', 'Sender setup', gmail.state === 'unknown' ? gmail.detail : sender.detail)
+    : gmail.state === 'todo' ? { id: 'sender', label: 'Sender setup', state: 'todo', detail: `Gmail ${gmail.detail}`, fix: { href: GMAIL_FIX, label: gmail.fix?.label ?? 'Connect' } }
+    : sender.state === 'todo' ? { id: 'sender', label: 'Sender setup', state: 'todo', detail: `${gmail.detail}; your sender name and mailing address are missing`, fix: { href: GMAIL_FIX, label: 'Add sender details' } }
+    : { id: 'sender', label: 'Sender setup', state: 'done', detail: `${gmail.detail}, as ${sender.detail}`, fix: null }
+
+  const items = [profile, search, play, qualified, contact, draft, senderItem]
+  const n = items.find(x => x.state === 'todo' && x.fix)
+  if (n) n.next = true
+  return items
 }
 
-// The card is shown until every item is done (a "could not check" item keeps it up).
+// The card is shown until every step is done (a "could not check" step keeps it up).
 export const readyComplete = (items: ReadyItem[]) => items.every(x => x.state === 'done')
 
 const host = (w: string) => w.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/$/, '')
