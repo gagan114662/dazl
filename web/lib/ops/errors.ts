@@ -125,10 +125,61 @@ export function captureError(e: unknown, ctx: ErrorContext): ErrorRecord | null 
   return r
 }
 
+// What leaves the server (the alert webhook and Sentry) is an ALLOWLIST, not the scrubbed record: the scrub above is
+// pattern-based and cannot recognise every name, secret or note, so no free text is sent at all. Allowed:
+//   error type  - a built-in error class or one of this app's own error classes (APP_ERROR_CLASSES), else 'Error'
+//   frames      - file, line and column of up to 8 stack frames; no function names. A file is kept only if it is a
+//                 code path (node: internals, or a path of plain path characters) or a URL under /_next/static/ (the
+//                 browser's bundles), without its query; any other frame is dropped
+//   where, source, method, request_id, fingerprint - already fixed-shape in the record (see the top of this file)
+//   environment, release - from the deployment's own settings
+// Never sent: the error and cause messages, the tenant (user), ref, request bodies, headers, cookies, query strings or
+// any other context. There is no Sentry SDK, so there are no breadcrumbs, default PII or request data to turn off: the
+// event is built field by field below. The full scrubbed record stays in the server's own log (stderr).
+const BUILTIN_ERRORS = new Set(['Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError', 'URIError', 'EvalError', 'AggregateError', 'AbortError', 'TimeoutError', 'DOMException', 'ChunkLoadError'])
+// This app's error classes (test/ops-sentry.test.ts fails when a class extending an Error in lib/ or app/ is missing).
+export const APP_ERROR_CLASSES: ReadonlySet<string> = new Set(['CopyRefused', 'CopyVerifyError', 'EnrichError', 'FixtureError', 'GmailError', 'GmailSendError', 'JobFeedError',
+  'LeaseLost', 'MemoryError', 'OutreachError', 'ProviderError', 'RaceLost', 'ScanStopped', 'ScanTimedOut', 'SequenceError', 'SourceReviewError', 'SpendRefused',
+  'StaleLeaseWrite', 'StatementFailedInTx', 'Timeout'])
+export const outboundType = (name: string): string => BUILTIN_ERRORS.has(name) || APP_ERROR_CLASSES.has(name) ? name : 'Error'
+export interface OutboundFrame { filename: string; lineno: number; colno: number }
+function outboundFile(f: string): string | null {
+  if (/^node:[a-z_/]{1,80}$/.test(f)) return f
+  const path = f.replace(/^file:\/\//, '')
+  if (/^\/[A-Za-z0-9_./@+-]{1,300}$/.test(path) && !path.includes('..')) return path
+  let u: URL
+  try { u = new URL(f) } catch { return null }
+  return (u.protocol === 'https:' || u.protocol === 'http:') && /^\/_next\/static\/[A-Za-z0-9_./~-]{1,200}$/.test(u.pathname) ? u.pathname : null
+}
+export function outboundFrames(stack: string[]): OutboundFrame[] {
+  const out: OutboundFrame[] = []
+  for (const line of stack.slice(0, 8)) {
+    // the location is the last "(file:line:col)" or the bare "file:line:col" after "at "
+    const m = /(?:\(|^at (?:async )?)([^()\s]+):(\d{1,7}):(\d{1,7})\)?$/.exec(line.trim())
+    const file = m ? outboundFile(m[1].split(/[?#]/)[0]) : null
+    if (m && file) out.push({ filename: file, lineno: Number(m[2]), colno: Number(m[3]) })
+  }
+  return out
+}
+export interface Deployment { environment: string; release?: string }
+// environment: SENTRY_ENVIRONMENT when it is a plain word, else 'staging' when DAZL_ENV=staging, else 'production'
+export function deployment(env: Record<string, string | undefined> = process.env): Deployment {
+  const named = env.SENTRY_ENVIRONMENT && /^[a-z0-9_-]{1,32}$/.test(env.SENTRY_ENVIRONMENT) ? env.SENTRY_ENVIRONMENT : null
+  const release = env.DAZL_COMMIT_SHA && /^[0-9a-f]{7,40}$/.test(env.DAZL_COMMIT_SHA) ? env.DAZL_COMMIT_SHA : undefined
+  return { environment: named ?? (env.DAZL_ENV === 'staging' ? 'staging' : 'production'), ...(release ? { release } : {}) }
+}
+// The alert webhook's body: the same allowlist.
+export function outboundRecord(r: ErrorRecord, d: Deployment) {
+  return {
+    level: r.level, ts: r.ts, source: r.source, where: r.where, ...(r.method ? { method: r.method } : {}), ...(r.request_id ? { request_id: r.request_id } : {}),
+    error: { type: outboundType(r.error.name), frames: outboundFrames(r.error.stack) }, fingerprint: r.fingerprint, ...d,
+  }
+}
+
 // Alert hooks. Both are throttled the same way: one alert per fingerprint per window and a global cap per window, so an
 // error loop cannot flood them. Fire and forget, with a timeout; a failing hook is dropped silently (it must not log
 // through captureError and loop). Each sends the scrubbed record only, never anything the record does not hold.
-export interface AlertOptions { url?: string; fetchImpl?: typeof fetch; windowMs?: number; maxPerWindow?: number; timeoutMs?: number; clock?: () => number }
+export interface AlertOptions { url?: string; fetchImpl?: typeof fetch; windowMs?: number; maxPerWindow?: number; timeoutMs?: number; clock?: () => number; deployment?: Deployment }
 
 function throttled(o: AlertOptions, send: (r: ErrorRecord, f: typeof fetch, signal: AbortSignal) => Promise<unknown>): ErrorSink {
   const windowMs = o.windowMs ?? 10 * 60_000, max = o.maxPerWindow ?? 20, clock = o.clock ?? Date.now
@@ -148,11 +199,12 @@ function throttled(o: AlertOptions, send: (r: ErrorRecord, f: typeof fetch, sign
   }
 }
 
-// OPS_ALERT_WEBHOOK_URL (https only): POST the scrubbed record as JSON.
+// OPS_ALERT_WEBHOOK_URL (https only): POST the allowlisted record (outboundRecord) as JSON.
 export function makeAlertHook(o: AlertOptions): ErrorSink {
   const url = o.url
   if (!url || !/^https:\/\//.test(url)) return () => {}
-  return throttled(o, (r, f, signal) => f(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(r), signal }))
+  const d = o.deployment ?? deployment()
+  return throttled(o, (r, f, signal) => f(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(outboundRecord(r, d)), signal }))
 }
 
 // SENTRY_DSN (https only): the record as a Sentry event, in an envelope POSTed to the DSN's project. Any service that
@@ -170,38 +222,40 @@ export function parseSentryDsn(dsn: string | undefined): SentryDsn | null {
   return { endpoint: `https://${u.host}${prefix}/api/${project}/envelope/`, publicKey: decodeURIComponent(u.username), dsn: `https://${u.username}@${u.host}${prefix}/${project}` }
 }
 
-// One Sentry event per record. Grouping uses the record's own fingerprint; the stack stays as scrubbed text lines.
-export function toSentryEnvelope(r: ErrorRecord, d: SentryDsn, env: { environment?: string; release?: string } = {}, sentAt = new Date()): string {
+// One Sentry event per record, built only from the allowlist above. Grouping uses the record's own fingerprint.
+export function toSentryEnvelope(r: ErrorRecord, d: SentryDsn, dep: Deployment = deployment(), sentAt = new Date()): string {
   const eventId = randomUUID().replace(/-/g, '')
   const tags: Record<string, string> = { source: r.source, where: r.where }
   if (r.method) tags.method = r.method
   if (r.request_id) tags.request_id = r.request_id
+  const frames = outboundFrames(r.error.stack)
   const event = {
     event_id: eventId, timestamp: Date.parse(r.ts) / 1000, platform: 'node', level: 'error', logger: r.source, transaction: r.where,
-    fingerprint: [r.fingerprint], tags, ...(r.tenant ? { user: { id: r.tenant } } : {}),
-    ...(env.environment ? { environment: env.environment } : {}), ...(env.release ? { release: env.release } : {}),
-    exception: { values: [{ type: r.error.name, value: r.error.message }] },
-    extra: { stack: r.error.stack, ...(r.error.cause ? { cause: r.error.cause } : {}), ...(r.ref ? { ref: r.ref } : {}) },
+    fingerprint: [r.fingerprint], tags, environment: dep.environment, ...(dep.release ? { release: dep.release } : {}),
+    // Sentry lists frames oldest first; a stack trace lists the newest first
+    exception: { values: [{ type: outboundType(r.error.name), ...(frames.length ? { stacktrace: { frames: [...frames].reverse() } } : {}) }] },
   }
   return [JSON.stringify({ event_id: eventId, sent_at: sentAt.toISOString(), dsn: d.dsn }), JSON.stringify({ type: 'event' }), JSON.stringify(event)].join('\n')
 }
 
-export function makeSentryHook(o: Omit<AlertOptions, 'url'> & { dsn?: string; environment?: string; release?: string }): ErrorSink {
+export function makeSentryHook(o: Omit<AlertOptions, 'url'> & { dsn?: string }): ErrorSink {
   const d = parseSentryDsn(o.dsn)
   if (!d) return () => {}
+  const dep = o.deployment ?? deployment()
   const auth = `Sentry sentry_version=7, sentry_key=${d.publicKey}, sentry_client=dazl-ops/1.0`
   return throttled(o, (r, f, signal) => f(d.endpoint, {
     method: 'POST', headers: { 'content-type': 'application/x-sentry-envelope', 'x-sentry-auth': auth },
-    body: toSentryEnvelope(r, d, { environment: o.environment, release: o.release }), signal,
+    body: toSentryEnvelope(r, d, dep), signal,
   }))
 }
 
 let hook: { key: string; sinks: ErrorSink[] } | null = null
 function alertHooks(): ErrorSink[] {
   const e = process.env
-  const key = [e.OPS_ALERT_WEBHOOK_URL, e.SENTRY_DSN, e.SENTRY_ENVIRONMENT, e.DAZL_COMMIT_SHA].join('\n')
+  const key = [e.OPS_ALERT_WEBHOOK_URL, e.SENTRY_DSN, e.SENTRY_ENVIRONMENT, e.DAZL_ENV, e.DAZL_COMMIT_SHA].join('\n')
   if (!hook || hook.key !== key) {
-    hook = { key, sinks: [makeAlertHook({ url: e.OPS_ALERT_WEBHOOK_URL }), makeSentryHook({ dsn: e.SENTRY_DSN, environment: e.SENTRY_ENVIRONMENT, release: e.DAZL_COMMIT_SHA })] }
+    const dep = deployment(e)
+    hook = { key, sinks: [makeAlertHook({ url: e.OPS_ALERT_WEBHOOK_URL, deployment: dep }), makeSentryHook({ dsn: e.SENTRY_DSN, deployment: dep })] }
   }
   return hook.sinks
 }
