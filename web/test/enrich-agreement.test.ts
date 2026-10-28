@@ -131,3 +131,46 @@ test('regrade control: the New York practice keeps its action grade; a refused r
   const other = seed({ domain: null }); recordContactRejection(other.db, 'u1', 'lead1', { connector: 'sitecrawl', reason: 'contact rejected: location mismatch Rome, NY vs New York, NY', sourceUrl: 'https://x.example/' })
   assert.equal(regradeFromKeptContacts(other.db, 'other-tenant', other.jobId), 0, 'tenant-scoped'); assert.equal(leadRow(other.db).action, 4)
 })
+
+test('PDL: a person’s own NYC residence is NOT the company’s location: no employer location and no domain match = not attached (employer location only)', async () => {
+  const { db, jobId, lead } = seed({ domain: null })
+  saveCredential(db, 'u1', 'enrich:pdl', 'test-pdl-key-5678', master)
+  const fetchImpl = (async () => ok({ data: [
+    // works for a same-name company with NO employer location, but LIVES in New York
+    { full_name: 'Carlos Vega', job_title: 'Office Manager', linkedin_url: 'https://linkedin.com/in/cv', location_locality: 'new york', location_region: 'new york', location_country: 'united states' },
+    // employer is in Pico Rivera although the person lives in New York
+    { full_name: 'Dana Ortiz', job_title: 'Dentist', location_locality: 'new york', location_region: 'new york', job_company_location_locality: 'pico rivera', job_company_location_region: 'california', job_company_location_country: 'united states' },
+    // control: the EMPLOYER is in New York
+    { full_name: 'Maya Chen', job_title: 'Practice Manager', job_company_location_locality: 'new york', job_company_location_region: 'new york', job_company_location_country: 'united states' },
+  ] })) as never
+  await enrichLeadContacts(db, 'u1', jobId, [lead], { fetchImpl, master })
+  assert.deepEqual(rows(db), ['contact:Maya Chen - Practice Manager'], 'only the person whose EMPLOYER is in New York')
+  const a = audits(db)
+  assert.ok(a.some(x => /no domain or location/.test(x)), JSON.stringify(a)); assert.ok(a.some(x => /location mismatch Pico Rivera, CA vs New York, NY/.test(x)), JSON.stringify(a))
+  assert.equal(await pdlPlaceOf({ full_name: 'x', location_locality: 'new york', location_region: 'new york' }), null, 'residence alone yields no place')
+})
+// the mapper's own view, exercised through the real pdlPeopleSearch
+async function pdlPlaceOf(rec: Record<string, unknown>) {
+  const { pdlPeopleSearch } = await import('../lib/enrich/pdl.ts')
+  const people = await pdlPeopleSearch('k', 'Acme', (async () => ok({ data: [rec] })) as never)
+  return people[0]?.place ?? null
+}
+
+test('Apollo: a returned person whose ORGANIZATION contradicts the requested company (other name or other domain) is not attached; matching or unstated organizations are', async () => {
+  const lead = (domain: string | null) => seed({ domain })
+  const people = [
+    { name: 'Eve Other', title: 'CEO', linkedin_url: 'https://linkedin.com/in/eo', organization: { name: 'Acme Robotics', primary_domain: 'acmerobotics.com' } },
+    { name: 'Dom Wrong', title: 'Manager', linkedin_url: 'https://linkedin.com/in/dw', organization: { name: 'Smile Avenue Dental', primary_domain: 'smileavenue-dental.io' } },
+    { name: 'Sophia Rozov', title: 'Practice Manager', linkedin_url: 'https://linkedin.com/in/sr', organization: { name: 'Smile Avenue Dental Group', primary_domain: 'smileavenuedental.com' } },
+    { name: 'No Org', title: 'Dentist', linkedin_url: 'https://linkedin.com/in/no' },
+  ]
+  const s = lead('smileavenuedental.com'); saveCredential(s.db, 'u1', 'enrich:apollo', 'test-apollo-key-1234', master)
+  await enrichLeadContacts(s.db, 'u1', s.jobId, [s.lead], { fetchImpl: apollo({ name: 'Smile Avenue Dental', estimated_num_employees: 12, website_url: 'https://smileavenuedental.com' }, people), master })
+  assert.deepEqual(rows(s.db).filter(r => r.startsWith('contact:')).sort(), ['contact:No Org - Dentist', 'contact:Sophia Rozov - Practice Manager'])
+  const a = audits(s.db)
+  assert.ok(a.some(x => /^contact rejected: organization mismatch Acme Robotics vs Smile Avenue Dental$|^contact rejected: organization mismatch acmerobotics\.com vs smileavenuedental\.com$/.test(x)), JSON.stringify(a))
+  assert.ok(a.some(x => /organization mismatch smileavenue-dental\.io vs smileavenuedental\.com/.test(x)), JSON.stringify(a))
+  assert.ok(!rows(s.db).some(r => /Eve Other|Dom Wrong/.test(r)))
+  // a refused person is recorded as a reason on the lead, never as a contact
+  assert.ok((enrichmentsForLeads(s.db, 'u1', ['lead1']).lead1 ?? []).some(e => e.kind === 'contact_rejected' && /organization mismatch/.test(e.value)))
+})

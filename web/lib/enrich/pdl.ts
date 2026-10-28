@@ -28,7 +28,8 @@ export async function pdlPeopleSearch(apiKey: string, orgName: string, fetchImpl
       title: typeof p.job_title === 'string' ? p.job_title.slice(0, 120) : null,
       linkedin: typeof p.linkedin_url === 'string' ? p.linkedin_url.slice(0, 200) : null,
       // Where the person works and the company's site, so a same-name company elsewhere can be told apart (lib/scan/contact-agreement.ts).
-      place: formatPlace(str(p.job_company_location_locality ?? p.location_locality), str(p.job_company_location_region ?? p.location_region), str(p.job_company_location_country ?? p.location_country)),
+      // EMPLOYER location only. A person's own residence (location_*) says nothing about where the company is: never a fallback.
+      place: formatPlace(str(p.job_company_location_locality), str(p.job_company_location_region), str(p.job_company_location_country)),
       domain: str(p.job_company_website),
     })).filter(p => p.name)
   } finally { clearTimeout(t) }

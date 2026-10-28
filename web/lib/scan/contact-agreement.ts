@@ -18,7 +18,8 @@ const registrable = (d: string | null | undefined): string | null => {
 const STATE_ABBR = Object.fromEntries(Object.entries(US_STATES).map(([ab, name]) => [name, ab]))
 // "Pico Rivera", "California" -> "Pico Rivera, CA"; anything else is kept as the source wrote it.
 export function formatPlace(city?: string | null, state?: string | null, country?: string | null): string | null {
-  const c = (city ?? '').trim(), st0 = (state ?? '').trim(), co = (country ?? '').trim()
+  const title = (x: string) => (x === x.toLowerCase() ? x.replace(/\b([a-z])/g, m => m.toUpperCase()) : x)   // PDL returns lower-case places
+  const c = title((city ?? '').trim()), st0 = (state ?? '').trim(), co = title((country ?? '').trim())
   const st = st0 ? (STATE_ABBR[st0.toLowerCase()] ?? st0) : ''
   const us = !co || /^(us|usa|united states)/i.test(co)
   const out = [c, st, !c && !st ? co : (us || !co ? '' : co)].filter(Boolean).join(', ')
@@ -84,4 +85,19 @@ export function regradeFromKeptContacts(db: Database.Database, tenantId: string,
     upd.run(UNCONFIRMED_ACTION_CAP, (note + (r.why ?? '')).slice(0, WHY_MAX), r.id); n++
   }
   return n
+}
+
+// A search result that says which company a person works for must name THIS company. A name that is neither contained in nor containing the
+// requested one, or a domain other than the one searched, contradicts it: the person is not attached. A result with no organization at all is not
+// a contradiction (the search itself was keyed on the company's domain or name).
+const compact = (x: string) => x.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/&/g, 'and').replace(/\b(inc|incorporated|ltd|limited|llc|llp|gmbh|corp|corporation|co|company|plc|pty|group|holdings|the)\b/g, ' ').replace(/[^a-z0-9]+/g, '')
+export function organizationContradicts(company: string, searchedDomain: string | null | undefined, org: { name: string | null; domain: string | null } | null | undefined): string | null {
+  if (!org) return null
+  const sd = registrable(searchedDomain), od = registrable(org.domain)
+  if (sd && od && sd !== od) return `contact rejected: organization mismatch ${od} vs ${sd}`
+  if (org.name) {
+    const a = compact(company), b = compact(org.name)
+    if (a.length >= 3 && b.length >= 3 && !a.includes(b) && !b.includes(a)) return `contact rejected: organization mismatch ${org.name.slice(0, 60)} vs ${company.slice(0, 60)}`
+  }
+  return null
 }
