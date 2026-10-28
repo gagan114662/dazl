@@ -48,3 +48,16 @@ test('contact: a same-name practice in another city is refused; a matching domai
   const none = contactAgreement({ company_domain: null, where: ['New York City'] }, {})
   assert.equal(none.ok, false); assert.match((none as { reason: string }).reason, /no domain or location/)
 })
+
+test('Instinct audit controls: another company\'s city on the same page never decides this company; wrong-city same-name and third-party addresses still hold', () => {
+  const pg = (text: string, title = 'Startup funding round-up') => ({ title, text, retrievedAt: 1 })
+  assert.equal(ownPlaceAgreement(pg('Obsero is based in London, UK. Other company: Revnu is based in Manchester, UK.'), ['London', 'UK'], 'Obsero'), 'agrees')
+  assert.equal(ownPlaceAgreement(pg('Obsero is based in London, UK. Other company: Revnu is based in Manchester, UK.'), ['London', 'UK'], 'Revnu'), 'mismatch', 'the neighbour is judged on ITS block and is held')
+  const aggregate = 'Opply, the London-based marketplace, closed an undisclosed round. Our office is at 1 Canal Way, London E2 7DJ. Fieldwork raised a seed round at its Macclesfield, UK base.'
+  assert.equal(ownPlaceAgreement(pg(aggregate), ['London', 'UK'], 'Opply'), 'agrees', 'Macclesfield belongs to Fieldwork')
+  // wrong-city same-name: the company\'s OWN block names another place -> still held
+  assert.equal(ownPlaceAgreement(pg('Dent Blanche Dental, 8500 Whittier Blvd, Pico Rivera, CA 90660. Other clinic: Smile Studio, 57 W 57th St, New York, NY 10019.'), ['New York City'], 'Dent Blanche'), 'mismatch')
+  assert.equal(ownPlaceAgreement(pg('Smile Studio, 57 W 57th St, New York, NY 10019. Dent Blanche Dental, 8500 Whittier Blvd, Pico Rivera, CA 90660.'), ['New York City'], 'Smile Studio'), 'agrees')
+  // third-party address inside the company's own sentence is not its address
+  assert.notEqual(ownPlaceAgreement(pg('Brightloop uses a supplier whose address is London EC1V 9HX. Brightloop is headquartered in Leeds, UK.'), ['London'], 'Brightloop'), 'agrees')
+})
