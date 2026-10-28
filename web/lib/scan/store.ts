@@ -4,6 +4,7 @@ import { primarySignalKind } from './score.ts'
 import { migrateSourceRuns } from './source-runs.ts'
 import { migrateEvidenceCopies } from './evidence-copies.ts'
 import { migrateRunReport } from './run-report.ts'
+import { ENRICH_STALE_S } from './enrichment.ts'
 
 export const STALE_RUNNING_S = Number(process.env.SCAN_STALE_RUNNING_S || 20 * 60)
 export const MAX_ATTEMPTS = 3
@@ -136,6 +137,8 @@ function addColumns(db: Database.Database): void {
   // researches and the batch it belongs to. NULL on every manual/watch scan.
   add('scan_jobs', 'csv_domain', 'TEXT CHECK (csv_domain IS NULL OR length(csv_domain) <= 253)')
   add('scan_jobs', 'batch_id', 'TEXT')
+  add('scan_jobs', 'enrich_started_at', 'INTEGER') // lib/scan/enrichment.ts: the contact/people/fit stage that runs after the rows are written
+  add('scan_jobs', 'enrich_finished_at', 'INTEGER')
   widenWhyCap(db)
   backfillKindTags(db)
 }
@@ -237,8 +240,8 @@ export function reapStaleJobs(db: Database.Database): void {
 export function getJob(db: Database.Database, userId: string, id: string) {
   reapStaleJobs(db)
   const job = db
-    .prepare('SELECT id, status, error, query, icp, icp_inferred, created_at, claimed_at, attempts, finished_at, candidates, verified, needs_review, dropped, drop_reasons, industry, location FROM scan_jobs WHERE id = ? AND user_id = ?')
-    .get(id, userId) as { id: string; status: string; error: string | null; query: string | null; icp: string | null; icp_inferred: number | null; created_at: number; claimed_at: number | null; attempts: number; finished_at: number | null; candidates: number | null; verified: number | null; needs_review: number | null; dropped: number | null; drop_reasons: string | null; industry: string | null; location: string | null } | undefined
+    .prepare('SELECT id, status, error, query, icp, icp_inferred, created_at, claimed_at, attempts, finished_at, candidates, verified, needs_review, dropped, drop_reasons, industry, location, enrich_started_at, enrich_finished_at FROM scan_jobs WHERE id = ? AND user_id = ?')
+    .get(id, userId) as { id: string; status: string; error: string | null; query: string | null; icp: string | null; icp_inferred: number | null; created_at: number; claimed_at: number | null; attempts: number; finished_at: number | null; candidates: number | null; verified: number | null; needs_review: number | null; dropped: number | null; drop_reasons: string | null; industry: string | null; location: string | null; enrich_started_at: number | null; enrich_finished_at: number | null } | undefined
   if (!job) return undefined
   const { n } = db.prepare('SELECT count(*) AS n FROM leads WHERE scan_job_id = ?').get(id) as { n: number }
   return { ...job, lead_count: n }
@@ -246,10 +249,11 @@ export function getJob(db: Database.Database, userId: string, id: string) {
 
 export function countActiveJobs(db: Database.Database, userId: string): number {
   // CSV import jobs do not count: a 50-domain batch must not lock the user out of manual scans.
+  // A done scan that is still enriching (contacts / people / fit) is active too: it is not finished, and a second scan must not start beside it.
   // A just-cancelled scan keeps its slot for CANCEL_HOLD_S: its in-flight provider phase cannot be interrupted
   // and may still be running, so freeing the slot at once would let a user stack paid work.
   const holdFrom = Math.floor(Date.now() / 1000) - CANCEL_HOLD_S
-  return (db.prepare("SELECT count(*) AS n FROM scan_jobs WHERE user_id = ? AND csv_domain IS NULL AND (status IN ('pending','running') OR (status = 'failed' AND error = 'cancelled' AND finished_at >= ?))").get(userId, holdFrom) as { n: number }).n
+  return (db.prepare(`SELECT count(*) AS n FROM scan_jobs WHERE user_id = ? AND csv_domain IS NULL AND (status IN ('pending','running') OR (status = 'done' AND enrich_started_at IS NOT NULL AND enrich_finished_at IS NULL AND enrich_started_at > CAST(strftime('%s','now') AS INTEGER) - ${ENRICH_STALE_S}) OR (status = 'failed' AND error = 'cancelled' AND finished_at >= ?))`).get(userId, holdFrom) as { n: number }).n
 }
 
 // Ranked: scored leads first by ICP fit, then intent, actionability and evidence confidence.
@@ -313,12 +317,14 @@ export interface JobSummary {
   needs_review: number | null
   dropped: number | null
   lead_count: number
+  enrich_started_at?: number | null
+  enrich_finished_at?: number | null
 }
 export function listJobs(db: Database.Database, userId: string, limit = 20): JobSummary[] {
   return db
     .prepare(
       `SELECT j.id, j.status, j.error, j.query, j.business_name, j.industry, j.location, j.csv_domain, j.created_at, j.finished_at,
-              j.candidates, j.verified, j.needs_review, j.dropped,
+              j.candidates, j.verified, j.needs_review, j.dropped, j.enrich_started_at, j.enrich_finished_at,
               (SELECT count(*) FROM leads l WHERE l.scan_job_id = j.id) AS lead_count
        FROM scan_jobs j
        WHERE j.user_id = ?

@@ -55,8 +55,10 @@ export async function POST(req: NextRequest) {
     }
     funded = 'trial'
   }
-  if (countActiveJobs(db, user.id) >= 2) {
-    return NextResponse.json({ error: 'You already have scans in progress. Wait for them to finish.' }, { status: 429 })
+  // One scan at a time per account: a scan that is running, queued OR still enriching (contacts, people, fit) is active. The Find leads button is
+  // disabled for the same reason, but this is the guard: a second paid scan must not start beside an unfinished one.
+  if (countActiveJobs(db, user.id) >= 1) {
+    return NextResponse.json({ error: 'scan_active', message: 'A scan is still running or finishing. Wait for it to end before starting another.' }, { status: 409 })
   }
   const q = scanQuota(db, user.id)
   if (!q.allowed) {
