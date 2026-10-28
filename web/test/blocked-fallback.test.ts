@@ -44,16 +44,16 @@ async function run(o: Opt) {
   const res = (runReportFor(x.db, 'A', jobId) as { resolution?: { leads: { company: string; reasons: string[]; fallbacks: string[] }[] } }[]).findLast(r => r.resolution)?.resolution?.leads.find(l => l.company === 'Clera')
   return { x, lead, rows, fb, res, newsCalls }
 }
-const state = (l?: { review_reason: string | null }) => (!l ? 'none' : l.review_reason === null ? 'qualified' : `held:${l.review_reason}`)
+const state = (l?: { review_reason: string | null }) => (!l ? 'none' : l.review_reason === null ? 'verifier-passed' : `held:${l.review_reason}`)
 
 test('BEFORE (nothing elsewhere): Clera\'s own site blocks fetches and no other source has it -> held with the specific reason blocked_by_site', async () => {
   const r = await run({ press: false, board: false })
   assert.equal(state(r.lead), 'held:blocked_by_site', JSON.stringify(r.lead))
   assert.equal(r.rows.find(x => x.collector === 'fallback:news')?.status, 'empty', JSON.stringify(r.rows)); assert.equal(r.fb, undefined)
 })
-test('AFTER (other press + ATS board by name): the funding quote verifies on other press and the sales posting on its public board -> Clera QUALIFIES; the record says which fallback was used', async () => {
+test('AFTER (other press + ATS board by name): the funding quote verifies on other press and the sales posting on its public board -> Clera is VERIFIER-PASSED (not scoreboard-qualified: no contact or fit grade); the record says which fallback was used', async () => {
   const r = await run({ board: true })
-  assert.equal(state(r.lead), 'qualified', JSON.stringify([r.lead, r.rows])); assert.notEqual(r.lead!.confidence, null)
+  assert.equal(state(r.lead), 'verifier-passed', JSON.stringify([r.lead, r.rows])); assert.notEqual(r.lead!.confidence, null)
   assert.notEqual(r.lead!.source_url, BLOG, 'the surviving lead no longer cites the blocked page')
   assert.match(r.fb!.value, /^Own site blocked \(blocked_by_site\): verified from other sources instead \(/); assert.notEqual(r.fb!.source_url, BLOG)
   assert.ok(r.rows.find(x => x.collector === 'ats:greenhouse')); assert.ok(r.rows.find(x => x.collector === 'corroborate:news' && x.status === 'ok'), JSON.stringify(r.rows))

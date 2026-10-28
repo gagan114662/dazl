@@ -41,7 +41,7 @@ async function run(o: Opt) {
   const res = (runReportFor(x.db, 'A', jobId) as { resolution?: { leads: { company: string; reasons: string[]; fallbacks: string[] }[] } }[]).findLast(r => r.resolution)?.resolution?.leads.find(l => l.company === 'Clera')
   return { x, lead, rows, fb, res, newsCalls }
 }
-const state = (l?: { review_reason: string | null }) => (!l ? 'none' : l.review_reason === null ? 'qualified' : `held:${l.review_reason}`)
+const state = (l?: { review_reason: string | null }) => (!l ? 'none' : l.review_reason === null ? 'verifier-passed' : `held:${l.review_reason}`)
 
 
 const rows: [string, string, string][] = []
@@ -53,4 +53,4 @@ await label("own site blocked; press is about another company", { press: false, 
 const w = Math.max(...rows.map(r => r[0].length))
 console.log(`${'scenario'.padEnd(w)}  before (no fallback sources)            after`)
 for (const [n, b, a] of rows) console.log(`${n.padEnd(w)}  ${b.padEnd(36)} ${a}`)
-console.log(`\nqualified: before ${rows.filter(r => r[1] === 'qualified').length} / ${rows.length}, after ${rows.filter(r => r[2] === 'qualified').length} / ${rows.length}`)
+console.log(`\nverifier-passed (NOT scoreboard-qualified): before ${rows.filter(r => r[1] === 'verifier-passed').length} / ${rows.length}, after ${rows.filter(r => r[2] === 'verifier-passed').length} / ${rows.length}`)
