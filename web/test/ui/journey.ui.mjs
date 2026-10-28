@@ -109,7 +109,7 @@ try {
   })
   await step('play', async () => {
     assert.equal(await page.getByTestId('first-play').count(), 3, 'three suggested plays')
-    await page.getByRole('button', { name: 'Find my first customers' }).click() // one click starts the first play
+    await page.getByRole('button', { name: 'Find my first leads' }).click() // one click starts the first play
     await page.getByTestId('first-progress').waitFor(T)
     await page.getByRole('link', { name: 'Watch it live' }).click()
     await page.waitForURL(/\/app\/leads\?job_id=/, T)

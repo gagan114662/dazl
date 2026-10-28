@@ -15,7 +15,9 @@ import { leadCardSummary } from '@/lib/scan/lead-card'
 type Step = 'site' | 'building' | 'ready' | 'brain' | 'ask'
 interface Usage { has_key: boolean; trial: { funded: boolean; remaining: number } | null }
 
-const list = (s: string) => s.split(',').map(x => x.trim()).filter(Boolean)
+// Lists are separated by semicolons, as in Home's profile editor (lib/journey.ts), so an item that contains a comma
+// ("London, UK", "Head of Sales, EMEA") stays one item from the read to the scan.
+const list = (s: string) => s.split(';').map(x => x.trim()).filter(Boolean)
 const REVEAL_MS = 180
 const POLL_MS = 3000
 const FIRST = 5
@@ -59,7 +61,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
 
   // Fills the step-2 buyer fields from a profile (the saved one on load, or a fresh website read).
   const fillBuyer = (b: Partial<Brain> & { sizes?: string[]; exclude?: string[] }) => {
-    const j = (v?: string[]) => (v ?? []).join(', ')
+    const j = (v?: string[]) => (v ?? []).join('; ')
     setSummary(b.summary ?? ''); setWho(j(b.who)); setIndustries(j(b.industries)); setWhere(j(b.where)); setSignals(j(b.signals)); setSizes(j(b.sizes)); setExclude(j(b.exclude))
   }
   const loadUsage = () => fetch('/api/usage').then(r => r.ok ? r.json() : null).then(j => { if (j) setUsage(j) }).catch(() => {})
@@ -202,7 +204,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
           <div className="flex-1 flex items-center justify-center px-4 pb-16">
             {step === 'site' && <div className="w-full max-w-xl text-center" data-testid="site-step">
               <h1 className="text-3xl sm:text-5xl font-bold tracking-tight text-[var(--ink)]">What&apos;s your website?</h1>
-              <p className="text-[var(--ink-2)] mt-3">dazl learns your business from it and finds your first customers.</p>
+              <p className="text-[var(--ink-2)] mt-3">dazl learns your business from it and finds your first leads.</p>
               {error && <p className="text-sm mt-4 text-[var(--pink)]" role="alert">{error}</p>}
               {needKey && !hasKey && <div className="mt-5 text-left card p-4"><KeyInline reason="Reading your site runs on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); void loadUsage().then(() => readSite()) }} /></div>}
               <form onSubmit={readSite} className="mt-7 flex gap-2 rounded-2xl bg-white border border-[var(--line-2)] p-2 shadow-[0_12px_30px_-18px_rgba(42,10,36,.35)]">
@@ -225,28 +227,39 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
               <div className="text-center">
                 <span className="inline-flex w-14 h-14 rounded-full bg-[var(--lav-bg)] items-center justify-center"><Icon name="spark" className="w-6 h-6 text-[var(--lav)]" /></span>
                 <h1 className="text-4xl sm:text-[52px] leading-tight font-bold tracking-tight mt-4 text-[#2a0a24]">Your brain is ready.</h1>
-                <p className="text-[var(--ink-2)] text-lg mt-2" data-testid="ready-subhead">{first?.status === 'done' ? (readyLeads.length ? `dazl found ${readyLeads.length} lead${readyLeads.length === 1 ? '' : 's'} ready for your review.` : 'Your first play is done. See what it found.') : active ? 'dazl is finding your first customers now.' : `dazl knows ${sells ? 'what you sell and ' : ''}who buys it. Now find your first customers.`}</p>
+                <p className="text-[var(--ink-2)] text-lg mt-2" data-testid="ready-subhead">{first?.status === 'done' ? (readyLeads.length ? `dazl found ${readyLeads.length} lead${readyLeads.length === 1 ? '' : 's'} ready for your review.` : 'Your first play is done. See what it found.') : active ? 'dazl is finding your first leads now.' : `dazl knows ${sells ? 'what you sell and ' : ''}who buys it. Review it, then find your first leads.`}</p>
               </div>
               {error && <p className="text-sm mt-4 text-center text-[var(--pink)]" role="alert">{error}</p>}
-              <div className="grid md:grid-cols-2 gap-5 mt-9">
-                <section className="onb-card p-6 sm:p-8 flex flex-col" data-testid="ready-plan">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mt-9">
+                <section className="onb-card p-5 sm:p-8 flex flex-col min-w-0" data-testid="ready-plan">
                   <h2 className="text-xl font-bold tracking-tight">{trialLeft > 0 ? `${trialLeft} free search${trialLeft === 1 ? '' : 'es'} to start` : hasKey ? 'Runs on your own AI key' : 'Add your AI key to start'}</h2>
                   <ul className="mt-5 space-y-3 text-[15px]">
                     {['Finds companies with a dated, public reason to buy', 'Every lead links to the page it came from', 'Leads that fail a check are held for your review', 'Emails go from your own Gmail; autopilot is off unless you turn it on'].map(t => <li key={t} className="flex gap-3"><span className="mt-0.5 inline-flex w-5 h-5 shrink-0 rounded-full bg-[var(--mint-bg)] items-center justify-center"><Icon name="check" className="w-3 h-3 text-[var(--live)]" /></span>{t}</li>)}
                   </ul>
                   {needKey && !hasKey && <div className="mt-5"><KeyInline reason="Searches run on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); setError(''); void loadUsage() }} /></div>}
                   <div className="mt-auto pt-7">
-                    {!first ? <button type="button" className="btn-primary btn-lg w-full justify-center" disabled={busy || !plays[0]} onClick={() => void start(plays[0], true)} data-testid="ready-cta">{busy ? 'Starting...' : 'Find my first customers'}</button>
+                    {!first ? <button type="button" className="btn-primary btn-lg w-full justify-center" disabled={busy || !plays[0]} onClick={() => void start(plays[0], true)} data-testid="ready-cta">{busy ? 'Starting...' : 'Find my first leads'}</button>
                       : <a className="btn-primary btn-lg w-full justify-center" href={`/app/leads?job_id=${first.id}`} data-testid="ready-cta">{first.status === 'done' ? 'Start reaching out' : 'Watch it live'}</a>}
                     <button type="button" className="w-full mt-3 text-sm text-[var(--ink-2)] hover:text-[var(--ink)]" onClick={() => setStep('brain')}>Edit what dazl inferred</button>
                   </div>
                 </section>
-                <section className="onb-card p-6 sm:p-8" data-testid="first-customers">
-                  <h2 className="text-xl font-bold tracking-tight">Your first customers, ready to reach out</h2>
+                <section className="onb-card p-5 sm:p-8 min-w-0" data-testid="first-customers">
+                  <h2 className="text-xl font-bold tracking-tight" data-testid="first-heading">{!first ? 'Pick your first play'
+                    : active ? 'Finding your first leads'
+                    : first.status === 'failed' ? 'This play could not finish'
+                    : !first.leads ? 'Loading your first leads'
+                    : readyLeads.length ? `${readyLeads.length} lead${readyLeads.length === 1 ? '' : 's'} ready for your review`
+                    : split && split.held.length ? 'Leads held for your review'
+                    : 'No leads in this first play'}</h2>
                   {!first && <>
-                    <p className="text-sm text-[var(--ink-2)] mt-1">dazl starts with one of these plays:</p>
+                    <p className="text-sm text-[var(--ink-2)] mt-1">It searches with what dazl inferred, exactly as shown. Edit it first if anything is off.</p>
+                    {/* The same profile object the scan is sent with: nothing here is widened or re-split. */}
+                    <dl className="mt-3 grid gap-1.5 text-xs" data-testid="ready-criteria">
+                      {([['Who', profile.who], ['Industry', profile.industries], ['Where', profile.where], ['Size', profile.sizes], ['Signals', profile.signals], ['Skip', profile.exclude]] as const).filter(([, v]) => v.length).map(([k, v]) => <div key={k} className="flex gap-2 min-w-0"><dt className="w-14 shrink-0 text-[var(--ink-3)] pt-0.5">{k}</dt><dd className="flex flex-wrap gap-1 min-w-0" data-testid={`criteria-${k.toLowerCase()}`}>{v.map(x => <span key={x} className="pill pill-plain whitespace-normal break-words">{x}</span>)}</dd></div>)}
+                    </dl>
+                    <p className="text-sm text-[var(--ink-2)] mt-4">Start with one of these plays:</p>
                     <ul className="mt-4 divide-y divide-[var(--line)] border-y border-[var(--line)]">
-                      {plays.slice(0, 3).map(p => <li key={p}><button type="button" disabled={busy} className="w-full flex items-center gap-3 py-3 text-left text-sm hover:text-[var(--ink)]" onClick={() => void start(p, true)} data-testid="first-play"><Icon name="spark" className="w-4 h-4 shrink-0 text-[var(--lav)]" /><span className="flex-1 truncate">{p}</span><Icon name="arrow" className="w-4 h-4 text-[var(--ink-3)]" /></button></li>)}
+                      {plays.slice(0, 3).map(p => <li key={p}><button type="button" disabled={busy} className="w-full flex items-center gap-3 py-3 text-left text-sm hover:text-[var(--ink)]" onClick={() => void start(p, true)} data-testid="first-play"><Icon name="spark" className="w-4 h-4 shrink-0 text-[var(--lav)]" /><span className="flex-1 min-w-0 break-words">{p}</span><Icon name="arrow" className="w-4 h-4 shrink-0 text-[var(--ink-3)]" /></button></li>)}
                     </ul>
                   </>}
                   {active && <div className="mt-4" data-testid="first-progress"><Stepper steps={[
@@ -254,15 +267,15 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                     { label: 'Search and read sources', state: first!.status === 'running' ? 'live' : first!.status === 'pending' ? 'todo' : 'done', note: first!.status === 'running' ? 'Searching...' : undefined },
                     { label: 'Check fit and find contacts', state: first!.status === 'enriching' ? 'live' : 'todo' },
                   ]} /></div>}
-                  {first?.status === 'done' && !first.leads && <p className="text-sm text-[var(--ink-2)] mt-4">Loading your customers...</p>}
+                  {first?.status === 'done' && !first.leads && <p className="text-sm text-[var(--ink-2)] mt-4">Loading your leads...</p>}
                   {first?.status === 'done' && first.leads && <>
-                    {readyLeads.length > 0 ? <ul className="mt-4 divide-y divide-[var(--line)]" aria-label="First customers">
+                    {readyLeads.length > 0 ? <ul className="mt-4 divide-y divide-[var(--line)]" aria-label="First leads">
                       {readyLeads.slice(0, FIRST).map(l => { const p = person(l); return <li key={l.id} className="flex items-center gap-3 py-3" data-testid="first-lead">
                         <Avatar name={p.name} size={36} />
                         <span className="min-w-0 flex-1"><span className="block font-semibold text-sm truncate">{p.name}</span><span className="block text-xs text-[var(--ink-2)] truncate">{p.line}</span></span>
                         {l.fit != null && <Pill tone="mint">fit {l.fit}/5</Pill>}
                       </li> })}
-                    </ul> : <p className="text-sm text-[var(--ink-2)] mt-4">No customer passed every check in this first play yet.</p>}
+                    </ul> : <p className="text-sm text-[var(--ink-2)] mt-4">No lead passed every check in this first play yet.</p>}
                     {readyLeads.length < FIRST && <p className="text-xs text-[var(--ink-2)] mt-3">{readyLeads.length} ready{split && split.held.length ? `, ${split.held.length} held for your review` : ''}. <a className="underline" href={`/app/leads?job_id=${first.id}`}>See them in Leads</a></p>}
                   </>}
                   {first?.status === 'failed' && <p className="text-sm mt-4">This play could not finish. <button type="button" className="underline" onClick={() => setFirst(null)}>Try another</button></p>}
@@ -287,12 +300,12 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         <label className="flex flex-col gap-1">Business name <span className="text-xs text-[#777]">used in your email drafts</span><input className="field" maxLength={150} value={bizName} onChange={e => setBizName(e.target.value)} /></label>
         <label className="flex flex-col gap-1">What you sell<input className="field" required minLength={3} maxLength={150} value={sells} onChange={e => setSells(e.target.value)} placeholder="e.g. Scheduling software for dental practices" /></label>
         <label className="flex flex-col gap-1">Who buys it<textarea className="field" rows={2} maxLength={400} value={summary} onChange={e => setSummary(e.target.value)} placeholder="e.g. Independent dental practices with 2-10 chairs" /></label>
-        <label className="flex flex-col gap-1">Buyer roles <span className="text-xs text-[#777]">comma separated</span><input className="field" value={who} onChange={e => setWho(e.target.value)} placeholder="Practice owner, Office manager" /></label>
+        <label className="flex flex-col gap-1">Buyer roles <span className="text-xs text-[#777]">separate with ;</span><input className="field" value={who} onChange={e => setWho(e.target.value)} placeholder="Practice owner, Office manager" /></label>
         <div className="grid sm:grid-cols-2 gap-3">
           <label className="flex flex-col gap-1">Industries<input className="field" value={industries} onChange={e => setIndustries(e.target.value)} placeholder="Dental" /></label>
           <label className="flex flex-col gap-1">Where<input className="field" value={where} onChange={e => setWhere(e.target.value)} placeholder="Ohio" /></label>
         </div>
-        <label className="flex flex-col gap-1">Signs they need you now <span className="text-xs text-[#777]">comma separated public events</span><input className="field" value={signals} onChange={e => setSignals(e.target.value)} placeholder="Opened a new location, hiring front-desk staff" /></label>
+        <label className="flex flex-col gap-1">Signs they need you now <span className="text-xs text-[#777]">public events, separate with ;</span><input className="field" value={signals} onChange={e => setSignals(e.target.value)} placeholder="Opened a new location, hiring front-desk staff" /></label>
         <div className="grid sm:grid-cols-2 gap-3">
           <label className="flex flex-col gap-1">Company sizes <span className="text-xs text-[#777]">optional</span><input className="field" value={sizes} onChange={e => setSizes(e.target.value)} placeholder="2-50 employees" /></label>
           <label className="flex flex-col gap-1">Skip <span className="text-xs text-[#777]">optional</span><input className="field" value={exclude} onChange={e => setExclude(e.target.value)} placeholder="Dental schools, chains" /></label>

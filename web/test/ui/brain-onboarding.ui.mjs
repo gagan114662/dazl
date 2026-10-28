@@ -6,7 +6,7 @@
 //   2. "Read my site" shows the brain building: one node per fact the read returned, nothing invented;
 //   3. the inferred profile is saved exactly as read (one POST /api/settings/profile), then "Your brain is ready." with
 //      the plan card (4 checks, one dark CTA) and the first-customers card; no scan has started on its own;
-//   4. one click on "Find my first customers" sends exactly one POST /api/scan with the first suggested play and the
+//   4. one click on "Find my first leads" sends exactly one POST /api/scan with the first suggested play and the
 //      inferred profile; progress shows in place; when it is done, the first 5 ready customers (initials, name,
 //      "Title · Company", fit) are listed and a held lead is not among them.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
@@ -34,7 +34,7 @@ for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } ca
 
 const J = 'f'.repeat(24)
 const READ = { source: 'https://www.dazl.ai/', sells: 'Signal-based prospecting for small B2B teams',
-  icp: { summary: 'B2B SaaS founders and agency owners, 1-50 employees', who: ['Founder', 'Head of Sales'], industries: ['B2B SaaS', 'Agencies', 'IT services'], where: ['US', 'Canada', 'UK'], sizes: ['1-50 employees'], signals: ['Hiring an SDR or AE', 'Raised a seed round'], exclude: ['Enterprises'] } }
+  icp: { summary: 'B2B SaaS founders and agency owners, 1-50 employees', who: ['Founder', 'Head of Sales, EMEA'], industries: ['B2B SaaS', 'IT services, consulting', 'Agencies'], where: ['London, UK', 'Toronto, Canada', 'New York, NY'], sizes: ['1-50 employees'], signals: ['Hiring an SDR or AE', 'Raised a seed round'], exclude: ['Enterprises'] } }
 const person = (n, url) => ({ connector: 'sitecrawl', kind: 'person', value: n, label: null, source_url: url, source_date: '2026-10-20', confidence: null })
 const lead = (id, company, who, o = {}) => ({ id, name: '', company, contact: `hi@${id.slice(0, 3)}.example`, signal: `${company} is hiring an SDR`, source_url: `https://boards.example/${id.slice(0, 4)}`, score: 70, evidence_excerpt: `${company} is hiring an SDR`, event_date: '2026-10-14', date_status: 'verified', published_at: null, confidence: 90, review_reason: null, company_domain: `${id.slice(0, 3)}.example`, human_confirmed_at: null, fit: 5, intent: 4, action: 3, why: `${company} posted its first SDR role this month.`, signals: null, icp_match: null, enrichments: [person(who, 'https://boards.example/x')], events: [], ...o })
 const LEADS = [
@@ -46,7 +46,7 @@ const LEADS = [
   lead('6'.repeat(24), 'Gramercy Partners', 'Pat Lee, Founder', { review_reason: 'identity_mismatch' }),
 ]
 const b = await chromium.launch()
-async function run(width, height, tag) {
+async function run(width, height, tag, leads = LEADS) {
   const st = { profile: { business_name: '', sells: '', website: '', buyer: null }, jobs: [], scanBodies: [], profileBodies: [], status: 'pending', polls: 0 }
   const ctx = await b.newContext({ viewport: { width, height } })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
@@ -62,7 +62,7 @@ async function run(width, height, tag) {
     if (p === '/api/settings/profile') return json(st.profile)
     if (p === '/api/scan' && m === 'POST') { st.scanBodies.push(JSON.parse(req.postData())); return json({ job_id: J }) }
     if (p === '/api/scan/status') { st.polls++; st.status = st.polls < 2 ? 'running' : 'done'; return json({ job_id: J, status: st.status, lead_count: st.status === 'done' ? 6 : 2 }) }
-    if (p === '/api/leads') return json({ leads: LEADS, hidden_count: 0 })
+    if (p === '/api/leads') return json({ leads, hidden_count: 0 })
     if (p === '/api/scan/jobs') return json({ jobs: st.jobs })
     if (p === '/api/usage') return json({ plan: 'free', scans_used: 0, scan_limit: 10, has_key: true, trial: null })
     return json({}, 404)
@@ -71,9 +71,15 @@ async function run(width, height, tag) {
   const shot = async name => { if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}-${tag}.png`) }) }
   await page.goto(`${base}/app`, { waitUntil: 'networkidle' })
   const screen = page.getByTestId('onboarding-screen')
+  // The fixed full-screen container is its own scroller: check it, not only the document (Instinct #332, 390px).
+  const fits = async what => {
+    const r = await screen.evaluate(e => ({ sw: e.scrollWidth, cw: e.clientWidth, out: [...e.querySelectorAll('[data-testid=ready-step] *, [data-testid=site-step] *')].filter(n => n.getBoundingClientRect().width > 0 && n.getBoundingClientRect().right > e.clientWidth + 0.5).length }))
+    assert.ok(r.sw <= r.cw && r.out === 0, `${what} fits at ${width}px (scrollWidth ${r.sw}, clientWidth ${r.cw}, ${r.out} elements past the edge)`)
+  }
   await page.getByTestId('site-step').waitFor({ timeout: 15000 })
   // 1. One input.
   assert.equal(await screen.locator('input:visible, textarea:visible, select:visible').count(), 1, 'the website is the only thing asked')
+  await fits('site step')
   await shot('1-site')
   await page.getByLabel('Your website').fill('dazl.ai')
   await page.getByRole('button', { name: 'Read my site' }).click()
@@ -89,31 +95,48 @@ async function run(width, height, tag) {
   assert.equal(await page.getByRole('heading', { name: 'Your brain is ready.' }).isVisible(), true)
   assert.equal(await page.getByTestId('ready-plan').locator('li').count(), 4)
   assert.equal(await page.getByTestId('first-play').count(), 3)
+  // The inferred criteria are shown before the click, item for item ("London, UK" is one place).
+  assert.equal(await page.getByTestId('first-heading').textContent(), 'Pick your first play')
+  for (const [k, v] of [['who', READ.icp.who], ['industry', READ.icp.industries], ['where', READ.icp.where], ['size', READ.icp.sizes], ['signals', READ.icp.signals], ['skip', READ.icp.exclude]]) assert.deepEqual(await page.getByTestId(`criteria-${k}`).locator('.pill').allTextContents(), v, `${k} shown exactly as inferred`)
   await page.waitForTimeout(600)
+  await fits('ready screen')
   await shot('3-ready')
+  if (process.env.SHOTS && tag !== 'held') for (const id of ['ready-plan', 'first-customers']) await page.getByTestId(id).screenshot({ path: path.join(process.env.SHOTS, `3-${id}-${tag}.png`) })
   // 4. One click starts the first play; customers appear in place.
   const firstPlay = await page.getByTestId('first-play').first().innerText()
   await page.getByTestId('ready-cta').click()
   await page.getByTestId('first-progress').waitFor()
-  await page.getByTestId('first-lead').first().waitFor({ timeout: 20000 })
-  assert.deepEqual(st.scanBodies, [{ query: firstPlay.trim(), icp: READ.icp }], 'exactly one scan: the first play and the inferred profile')
+  assert.equal(await page.getByTestId('first-heading').textContent(), 'Finding your first leads')
+  if (leads === LEADS) await page.getByTestId('first-lead').first().waitFor({ timeout: 20000 })
+  assert.deepEqual(st.scanBodies, [{ query: firstPlay.trim(), icp: READ.icp }], 'exactly one scan: the first play and the inferred profile, every list item as read')
+  if (leads !== LEADS) {
+    // Only held leads: the heading says so, no row presents a held lead as ready.
+    await page.waitForFunction(() => document.querySelector('[data-testid=first-heading]')?.textContent === 'Leads held for your review', null, { timeout: 20000 })
+    assert.equal(await page.getByTestId('first-lead').count(), 0)
+    assert.match(await page.getByTestId('first-customers').innerText(), /0 ready, 1 held for your review/)
+    await ctx.close(); return
+  }
   const rows = await page.getByTestId('first-lead').allInnerTexts()
   assert.equal(rows.length, 5)
   assert.match(rows[0], /Maya Chen\nFounder & CEO · Northwind Labs\nfit 5\/5/)
   assert.match(rows[1], /Omar Haddad\nCo-founder · Kitebase/, 'a hyphenated title is kept whole')
   assert.ok(!rows.some(r => /Gramercy|Pat Lee/.test(r)), 'a held lead is not a ready customer')
   assert.equal(await page.getByTestId('ready-subhead').textContent(), 'dazl found 5 leads ready for your review.')
+  assert.equal(await page.getByTestId('first-heading').textContent(), '5 leads ready for your review')
   assert.equal(await page.getByTestId('ready-cta').textContent(), 'Start reaching out')
   assert.equal(await page.getByTestId('ready-cta').getAttribute('href'), `/app/leads?job_id=${J}`)
   await page.waitForTimeout(400)
+  await fits('ready screen with leads')
   await shot('4-customers')
+  if (process.env.SHOTS) await page.getByTestId('first-customers').screenshot({ path: path.join(process.env.SHOTS, `4-first-customers-${tag}.png`) })
   assert.deepEqual(writes, ['POST /api/scan/icp-from-url', 'POST /api/settings/profile', 'POST /api/scan'])
   await ctx.close()
 }
 try {
   await run(1440, 900, 'desktop')
   await run(390, 844, 'mobile')
-  console.log('brain onboarding UI check passed: one input, brain built from the read (15 facts), profile saved as read, ready screen with plan + first customers, one click -> one scan -> 5 ready customers in place, held lead excluded')
+  await run(1440, 900, 'held', LEADS.filter(l => l.review_reason))
+  console.log('brain onboarding UI check passed: one input, comma-bearing criteria kept whole from read to scan, state headings (pick / finding / N ready / held only), no overflow at 390px, brain built from the read (15 facts), profile saved as read, ready screen with plan + first customers, one click -> one scan -> 5 ready customers in place, held lead excluded')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }

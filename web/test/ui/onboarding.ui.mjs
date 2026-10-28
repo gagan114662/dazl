@@ -111,8 +111,8 @@ await page.getByLabel('Your website').fill('brightsmile.example'); await page.ge
 await page.getByTestId('ready-step').waitFor({ timeout: 15000 }); await page.getByRole('button', { name: 'Edit what dazl inferred' }).click()
 await page.getByText("Here's what we think you sell").waitFor()
 await page.getByLabel('Who buys it').fill('Group dental practices opening new offices')
-await page.getByLabel('Buyer roles').fill('Practice owners, COO')
-await page.getByLabel('Industries').fill('Dental, Orthodontics')
+await page.getByLabel('Buyer roles').fill('Practice owners; COO')
+await page.getByLabel('Industries').fill('Dental; Orthodontics')
 await page.getByLabel('Where').fill('Austin, TX')
 await page.getByLabel('Signs they need you now').fill('Opened a new location')
 await page.getByLabel('Company sizes').fill('10-50 employees')
@@ -122,7 +122,7 @@ await sentence().fill('Orthodontists in Austin opening a second office')
 await back(); await cont()
 assert.equal(await sentence().inputValue(), 'Orthodontists in Austin opening a second office', "the user's own sentence is kept")
 await findLeads()
-assert.deepEqual(scanBodies, [{ query: 'Orthodontists in Austin opening a second office', icp: { summary: 'Group dental practices opening new offices', who: ['Practice owners', 'COO'], industries: ['Dental', 'Orthodontics'], sizes: ['10-50 employees'], where: ['Austin', 'TX'], signals: ['Opened a new location'], exclude: ['Dental schools'] } }])
+assert.deepEqual(scanBodies, [{ query: 'Orthodontists in Austin opening a second office', icp: { summary: 'Group dental practices opening new offices', who: ['Practice owners', 'COO'], industries: ['Dental', 'Orthodontics'], sizes: ['10-50 employees'], where: ['Austin, TX'], signals: ['Opened a new location'], exclude: ['Dental schools'] } }])
 
 // Scenario 3: full reload; the saved profile comes back from the real route, not from page memory.
 await page.goto(base + '/app?setup=site', { waitUntil: 'networkidle' })
@@ -132,7 +132,7 @@ await page.getByRole('button', { name: 'No website? Describe your business yours
 await page.getByText("Here's what we think you sell").waitFor()
 const val = l => page.getByLabel(l).inputValue()
 assert.deepEqual({ sells: await val('What you sell'), who: await val('Who buys it'), roles: await val('Buyer roles'), industries: await val('Industries'), where: await val('Where'), signals: await val('Signs they need you now'), sizes: await val('Company sizes'), skip: await val('Skip') },
-  { sells: 'Online booking and reminders for dental practices', who: 'Group dental practices opening new offices', roles: 'Practice owners, COO', industries: 'Dental, Orthodontics', where: 'Austin, TX', signals: 'Opened a new location', sizes: '10-50 employees', skip: 'Dental schools' })
+  { sells: 'Online booking and reminders for dental practices', who: 'Group dental practices opening new offices', roles: 'Practice owners; COO', industries: 'Dental; Orthodontics', where: 'Austin, TX', signals: 'Opened a new location', sizes: '10-50 employees', skip: 'Dental schools' })
 assert.ok(realProfile.includes('POST') && realProfile.filter(m => m === 'GET').length >= 3, 'the profile went through the real route')
 await page.goto(base + '/app/outreach', { waitUntil: 'networkidle' }); await shot('outreach')
 {
