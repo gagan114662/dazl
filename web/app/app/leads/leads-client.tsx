@@ -109,7 +109,8 @@ export default function LeadsClient() {
   // Optional per-run spend limit (same budget object as the API; partial, see budget-panel.tsx). Off by default.
   const [budgetForm, setBudgetForm] = useState<BudgetForm>(EMPTY_BUDGET_FORM)
   const budgetCheck = budgetFromForm(budgetForm)
-  const [icp, setIcp] = useState<{ icp: Icp; source: string } | null>(null)
+  // The profile shown as "Profile used", with the sentence it was used for (null when unknown).
+  const [icp, setIcp] = useState<{ icp: Icp; source: string; query?: string | null } | null>(null)
   const [jobId, setJobId] = useState<string | null>(null)
   viewedJob.current = jobId ?? ''
   const [status, setStatus] = useState<string>('')
@@ -381,7 +382,7 @@ export default function LeadsClient() {
       const s = await r.json()
       setStatus(s.status); setEmptyReason(typeof s.empty_reason === 'string' ? s.empty_reason : null); setJobError(s.error ?? ''); setLeadsSoFar(s.lead_count ?? 0); setStartedAt(s.claimed_at ?? null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
       setQuality(s.quality ?? null)
-      if (s.icp) setIcp({ icp: s.icp, source: s.icp_source })
+      if (s.icp) setIcp({ icp: s.icp, source: s.icp_source, query: typeof s.query === 'string' ? s.query : null })
       if (typeof s.query === 'string' && s.query && queryShownFor.current !== jobId) { queryShownFor.current = jobId; setQuery(s.query) }
     }
     void tick() // immediate first check: a done deep link must not sit on a loading state for a full interval
@@ -448,7 +449,7 @@ export default function LeadsClient() {
       // Either order of responses: a job is being viewed (adopted, or named by the URL) => keep ITS query and profile.
       if (viewedJob.current || /^[a-f0-9]{24}$/.test(new URLSearchParams(window.location.search).get('job_id') ?? '')) return
       if (j.query && !query) setQuery(j.query)
-      if (j.icp) setIcp({ icp: j.icp, source: j.icp_source ?? 'user' })
+      if (j.icp) setIcp({ icp: j.icp, source: j.icp_source ?? 'user', query: typeof j.query === 'string' ? j.query : null })
     }).catch(() => {})
   }, [])
 
@@ -458,6 +459,11 @@ export default function LeadsClient() {
   useEffect(() => { void fetch('/api/settings/profile').then(r => r.ok ? r.json() : null).catch(() => null).then(p => setPlays(playSuggestions(p))) }, [])
 
   const core = coreSources(serverSrc, keyState)
+
+  // Repeating a search: when the sentence is the one a profile YOU reviewed was used for, Find leads runs with that
+  // reviewed profile instead of letting the server work out a new one (which silently discarded the review). A changed
+  // sentence, or a profile dazl only inferred, still gets a fresh profile; Review profile first always rebuilds it.
+  const reuseIcp = icp && icp.source === 'user' && icp.query && icp.query.trim() === query.trim() ? icp.icp : null
 
   const input = 'field'
   const visibleLeads = leads.filter(l => !l.review_reason && (showSeen || !l.seen_before))
@@ -473,7 +479,7 @@ export default function LeadsClient() {
       </div>
       {/* Submitting the sentence runs the scan (the server works out the profile, as the run-without-review path always did)
           and lands on live progress; reviewing the profile first is optional. */}
-      <form onSubmit={e => { e.preventDefault(); void run(null) }} className="mb-4">
+      <form onSubmit={e => { e.preventDefault(); void run(reuseIcp) }} className="mb-4">
         <label htmlFor="play" className="block text-base font-semibold mb-2">Who do you want to reach?</label>
         <textarea id="play" className={`${input} w-full`} rows={3} required minLength={3} maxLength={600} value={query} onChange={e => setQuery(e.target.value)}
           placeholder="One sentence: who, where, and what just happened. e.g. Seed-stage fintech founders in Europe who just hired their first sales rep" />
@@ -488,6 +494,7 @@ export default function LeadsClient() {
           <button disabled={busy || starting || scanActive} title={scanActive ? 'A scan is already running below' : undefined} className="btn-primary">{starting ? 'Starting...' : 'Find leads'}</button>
           <button type="button" disabled={query.trim().length < 3 || busy || starting || scanActive} onClick={() => void preview()} className="text-xs text-[#555] underline disabled:opacity-40 disabled:no-underline">{busy ? 'Working out your profile...' : 'Review profile first'}</button>
         </div>
+        {reuseIcp && !scanActive && <p className="text-xs text-[#555] mt-2" data-testid="reuse-profile">Find leads runs with your reviewed profile: {reuseIcp.summary}. Change the sentence, or use Review profile first, to build a new one.</p>}
         {!jobId && <SourceAvailability core={core} social={socialSources(advanced)} />}
       </form>
       <details className="mb-4 text-sm" data-testid="more-sources">
