@@ -116,7 +116,7 @@ export async function fetchSubscriptionStatus(id: string, fetchImpl: typeof fetc
   return status
 }
 
-export interface StripeDeps { subscriptionStatus?: (id: string) => Promise<string> }
+export interface StripeDeps { subscriptionStatus?: (id: string) => Promise<string>; log?: (line: StripeLogLine) => void }
 
 // Apply a verified event. Each Stripe event id is processed once, in one transaction with its plan change: a concurrent
 // second delivery waits on the first's event row and then reports 'duplicate'.
@@ -154,10 +154,11 @@ export async function applyStripeEvent(db: Db, event: StripeEvent, deps: StripeD
       try { authoritative = await (deps.subscriptionStatus ?? (id => fetchSubscriptionStatus(id)))(eventFx.subscription) } catch { authoritative = undefined } // held below
     }
   }
-  return db.tx(function* (t): TxBody<ApplyResult> {
+  let unknownTenant = false
+  const result = await db.tx(function* (t): TxBody<ApplyResult> {
     if ((yield* t.run('INSERT INTO stripe_events (id, type) VALUES (?, ?) ON CONFLICT (id) DO NOTHING', [event.id, event.type])).changes === 0) return 'duplicate'
     const tenantId = yield* tenantFor(t, o)
-    if (!tenantId) return 'ignored'
+    if (!tenantId) { unknownTenant = true; return 'ignored' }
     if (event.type === 'invoice.payment_failed') return yield* paymentFailed(t, tenantId, o.subscription ?? o.parent?.subscription_details?.subscription, created)
     if (!eventFx) return 'ignored'
     yield* t.run('INSERT INTO tenant_plans (tenant_id) VALUES (?) ON CONFLICT (tenant_id) DO NOTHING', [tenantId])
@@ -190,7 +191,24 @@ export async function applyStripeEvent(db: Db, event: StripeEvent, deps: StripeD
     if (created !== null) yield* t.run('UPDATE tenant_plans SET stripe_event_at = ? WHERE tenant_id = ? AND (stripe_event_at IS NULL OR stripe_event_at < ?)', [created, tenantId, created])
     return tie ? 'reconciled' : 'applied'
   })
+  // A verified event naming no tenant this store knows (no client_reference_id or metadata.tenant_id, and a customer id
+  // no tenant has): nothing changes but the event's own processed record, so a replay stays a no-op. Logged, so a
+  // misconfigured price or a checkout made outside the app shows up instead of vanishing.
+  if (unknownTenant) (deps.log ?? logLine)(ignoredLine(event))
+  return result
 }
+
+export interface StripeLogLine { level: 'warn'; type: 'stripe_event'; ts: string; event_id: string; event_type: string; result: 'ignored'; reason: 'unknown_tenant' }
+// Only the event's own id and type, each checked against its shape; never a customer, email or amount.
+export function ignoredLine(event: StripeEvent, now = new Date()): StripeLogLine {
+  return {
+    level: 'warn', type: 'stripe_event', ts: now.toISOString(),
+    event_id: /^evt_[A-Za-z0-9]{1,64}$/.test(event.id) ? event.id : '[unrecognized]',
+    event_type: /^[a-z_]{1,40}(\.[a-z_]{1,40}){1,3}$/.test(event.type) ? event.type : '[unrecognized]',
+    result: 'ignored', reason: 'unknown_tenant',
+  }
+}
+const logLine = (l: StripeLogLine) => { process.stdout.write(JSON.stringify(l) + '\n') }
 
 // invoice.payment_failed: Stripe is retrying the payment. The plan never changes here (a failed payment never grants
 // Pro, and the policy keeps past_due on Pro until Stripe gives up, which arrives as subscription.updated/deleted); the
