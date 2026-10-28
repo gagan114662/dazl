@@ -15,10 +15,11 @@ test(`health routes (${mode})`, async () => {
   const { GET: live } = await import('../../app/api/health/live/route.ts')
   const { GET: health } = await import('../../app/api/health/route.ts')
   const { GET: ready } = await import('../../app/api/health/ready/route.ts')
+  const { GET: apiReady } = await import('../../app/api/ready/route.ts')
   const l = await live()
   assert.equal(l.status, 200)
   assert.deepEqual(await l.json(), { ok: true })
-  for (const get of [health, ready]) {
+  for (const get of [health, ready, apiReady]) {
     const res = await get()
     const body = await res.json()
     assert.equal(res.headers.get('cache-control'), 'no-store')
