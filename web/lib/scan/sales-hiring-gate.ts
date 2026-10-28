@@ -228,13 +228,21 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
   return { required: true, checked: leads.length, passed, demoted, demotions }
 }
 
-// The required gate itself failed (it threw before or between leads): every lead still verified is held. Never a pass. Returns the demotions for the run report.
-export function failClosedSalesHiring(db: Database.Database, job: JobLike, message: string): { company: string; url: string; reason: string }[] {
+// The required gate itself failed (it threw before or between leads): every lead still verified is held. Never a pass. The held set is returned IN MEMORY whether or not the
+// database write landed: "the row still says verified" is not proof the gate passed, so callers (the actionable classification, the run report) use this set, not the row.
+export interface HeldLead { id: string; company: string; url: string; reason: string; written: boolean }
+export function failClosedSalesHiring(db: Database.Database, job: JobLike, message: string): HeldLead[] {
   if (!salesHiringRequired(job.query, job.icp)) return []
-  const rows = db.prepare("SELECT id, company, source_url, why FROM leads WHERE scan_job_id = ? AND review_reason IS NULL AND confidence IS NOT NULL AND human_confirmed_at IS NULL AND company <> ''").all(job.id) as { id: string; company: string; source_url: string; why: string | null }[]
-  const demote = db.prepare('UPDATE leads SET review_reason = ?, confidence = NULL, why = ? WHERE id = ? AND review_reason IS NULL')
-  const counts = db.prepare('UPDATE scan_jobs SET verified = MAX(COALESCE(verified, 0) - 1, 0), needs_review = COALESCE(needs_review, 0) + 1 WHERE id = ?')
-  const out: { company: string; url: string; reason: string }[] = []
-  for (const l of rows) if (demote.run(SALES_GATE_FAILED, `Sales-hiring check failed (${message.slice(0, 80)}): not verified. ${l.why ?? ''}`.trim().slice(0, WHY_MAX), l.id).changes) { counts.run(job.id); out.push({ company: l.company, url: l.source_url, reason: SALES_GATE_FAILED }) }
+  let rows: { id: string; company: string; source_url: string; why: string | null }[] = []
+  try { rows = db.prepare("SELECT id, company, source_url, why FROM leads WHERE scan_job_id = ? AND review_reason IS NULL AND confidence IS NOT NULL AND human_confirmed_at IS NULL AND company <> ''").all(job.id) as typeof rows } catch { return [] }
+  const out: HeldLead[] = []
+  for (const l of rows) {
+    let written = false
+    try {
+      const ch = db.prepare('UPDATE leads SET review_reason = ?, confidence = NULL, why = ? WHERE id = ? AND review_reason IS NULL').run(SALES_GATE_FAILED, `Sales-hiring check failed (${message.slice(0, 80)}): not verified. ${l.why ?? ''}`.trim().slice(0, WHY_MAX), l.id).changes
+      if (ch) { db.prepare('UPDATE scan_jobs SET verified = MAX(COALESCE(verified, 0) - 1, 0), needs_review = COALESCE(needs_review, 0) + 1 WHERE id = ?').run(job.id); written = true }
+    } catch { /* the write was rejected: the lead is still held in memory */ }
+    out.push({ id: l.id, company: l.company, url: l.source_url, reason: SALES_GATE_FAILED, written })
+  }
   return out
 }

@@ -332,3 +332,11 @@ test('FAIL-CLOSED whole gate: failClosedSalesHiring holds every lead still verif
   const seedOnly = seed({ query: 'Find London UK SaaS startups that announced seed funding.', icp: JSON.stringify({ summary: 's', where: ['London, UK'], who: ['Founder'], signals: ['announced seed funding'], exclude: [] }) })
   assert.deepEqual(failClosedSalesHiring(seedOnly.db, seedOnly.job, 'x'), [], 'no sales proof required: nothing to fail'); assert.equal(lead(seedOnly.db).review_reason, null)
 })
+
+test('FAIL-CLOSED in memory: failClosedSalesHiring still returns the held lead when its own write is rejected', () => {
+  const { db, job } = seed({ domain: 'brightloop.io', excerpt: QUOTE })
+  db.exec("CREATE TRIGGER reject_review BEFORE UPDATE OF review_reason ON leads WHEN NEW.review_reason IS NOT NULL BEGIN SELECT RAISE(ABORT, 'write rejected'); END")
+  const held = failClosedSalesHiring(db, job, 'database is locked')
+  assert.deepEqual(held.map(h => [h.id, h.reason, h.written]), [['L1', 'sales_hiring_check_failed', false]])
+  assert.equal(lead(db).review_reason, null, 'the row did not change - the in-memory set is the truth')
+})
