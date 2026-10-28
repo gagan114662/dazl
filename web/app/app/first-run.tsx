@@ -239,7 +239,13 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                   {needKey && !hasKey && <div className="mt-5"><KeyInline reason="Searches run on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); setError(''); void loadUsage() }} /></div>}
                   <div className="mt-auto pt-7">
                     {!first ? <button type="button" className="btn-primary btn-lg w-full justify-center" disabled={busy || !plays[0]} onClick={() => void start(plays[0], true)} data-testid="ready-cta">{busy ? 'Starting...' : 'Find my first leads'}</button>
-                      : <a className="btn-primary btn-lg w-full justify-center" href={`/app/leads?job_id=${first.id}`} data-testid="ready-cta">{first.status === 'done' ? 'Start reaching out' : 'Watch it live'}</a>}
+                      // Reaching out is offered only for leads that passed every check; otherwise the button says what is there.
+                      : <a className="btn-primary btn-lg w-full justify-center" href={`/app/leads?job_id=${first.id}`} data-testid="ready-cta">{first.status === 'failed' ? 'See what happened'
+                        : first.status !== 'done' ? 'Watch it live'
+                        : !first.leads ? 'View results'
+                        : readyLeads.length ? 'Start reaching out'
+                        : split && split.held.length ? 'Review held leads'
+                        : 'View results'}</a>}
                     <button type="button" className="w-full mt-3 text-sm text-[var(--ink-2)] hover:text-[var(--ink)]" onClick={() => setStep('brain')}>Edit what dazl inferred</button>
                   </div>
                 </section>

@@ -46,7 +46,7 @@ const LEADS = [
   lead('6'.repeat(24), 'Gramercy Partners', 'Pat Lee, Founder', { review_reason: 'identity_mismatch' }),
 ]
 const b = await chromium.launch()
-async function run(width, height, tag, leads = LEADS) {
+async function run(width, height, tag, leads = LEADS, fail = false) {
   const st = { profile: { business_name: '', sells: '', website: '', buyer: null }, jobs: [], scanBodies: [], profileBodies: [], status: 'pending', polls: 0 }
   const ctx = await b.newContext({ viewport: { width, height } })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
@@ -61,7 +61,7 @@ async function run(width, height, tag, leads = LEADS) {
     if (p === '/api/settings/profile' && m === 'POST') { const body = JSON.parse(req.postData()); st.profileBodies.push(body); st.profile = { ...st.profile, ...body }; return json({ ok: true }) }
     if (p === '/api/settings/profile') return json(st.profile)
     if (p === '/api/scan' && m === 'POST') { st.scanBodies.push(JSON.parse(req.postData())); return json({ job_id: J }) }
-    if (p === '/api/scan/status') { st.polls++; st.status = st.polls < 2 ? 'running' : 'done'; return json({ job_id: J, status: st.status, lead_count: st.status === 'done' ? 6 : 2 }) }
+    if (p === '/api/scan/status') { st.polls++; st.status = st.polls < 2 ? 'running' : fail ? 'failed' : 'done'; return json({ job_id: J, status: st.status, lead_count: st.status === 'done' ? 6 : 2 }) }
     if (p === '/api/leads') return json({ leads, hidden_count: 0 })
     if (p === '/api/scan/jobs') return json({ jobs: st.jobs })
     if (p === '/api/usage') return json({ plan: 'free', scans_used: 0, scan_limit: 10, has_key: true, trial: null })
@@ -110,10 +110,15 @@ async function run(width, height, tag, leads = LEADS) {
   if (leads === LEADS) await page.getByTestId('first-lead').first().waitFor({ timeout: 20000 })
   assert.deepEqual(st.scanBodies, [{ query: firstPlay.trim(), icp: READ.icp }], 'exactly one scan: the first play and the inferred profile, every list item as read')
   if (leads !== LEADS) {
-    // Only held leads: the heading says so, no row presents a held lead as ready.
-    await page.waitForFunction(() => document.querySelector('[data-testid=first-heading]')?.textContent === 'Leads held for your review', null, { timeout: 20000 })
+    // Nothing ready (only held, none at all, or the play failed): heading and button say what is there, never "Start
+    // reaching out" (Instinct #332).
+    const [heading, cta] = fail ? ['This play could not finish', 'See what happened'] : leads.length ? ['Leads held for your review', 'Review held leads'] : ['No leads in this first play', 'View results']
+    await page.waitForFunction(h => document.querySelector('[data-testid=first-heading]')?.textContent === h, heading, { timeout: 20000 })
+    assert.equal(await page.getByTestId('ready-cta').textContent(), cta)
+    assert.equal(await page.getByTestId('ready-cta').getAttribute('href'), `/app/leads?job_id=${J}`)
     assert.equal(await page.getByTestId('first-lead').count(), 0)
-    assert.match(await page.getByTestId('first-customers').innerText(), /0 ready, 1 held for your review/)
+    if (!fail && leads.length) assert.match(await page.getByTestId('first-customers').innerText(), /0 ready, 1 held for your review/)
+    assert.doesNotMatch(await page.getByTestId('onboarding-screen').innerText(), /Start reaching out|Watch it live/)
     await ctx.close(); return
   }
   const rows = await page.getByTestId('first-lead').allInnerTexts()
@@ -136,7 +141,9 @@ try {
   await run(1440, 900, 'desktop')
   await run(390, 844, 'mobile')
   await run(1440, 900, 'held', LEADS.filter(l => l.review_reason))
-  console.log('brain onboarding UI check passed: one input, comma-bearing criteria kept whole from read to scan, state headings (pick / finding / N ready / held only), no overflow at 390px, brain built from the read (15 facts), profile saved as read, ready screen with plan + first customers, one click -> one scan -> 5 ready customers in place, held lead excluded')
+  await run(1440, 900, 'held', [])
+  await run(1440, 900, 'held', [], true)
+  console.log('brain onboarding UI check passed: one input, comma-bearing criteria kept whole from read to scan, state headings and buttons (pick / finding / N ready / held only / none / failed), no overflow at 390px, brain built from the read (15 facts), profile saved as read, ready screen with plan + first customers, one click -> one scan -> 5 ready customers in place, held lead excluded')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }
