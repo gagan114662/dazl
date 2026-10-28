@@ -18,9 +18,9 @@ test('client error endpoint', async () => {
   const token = await createSession(T, db)
   const got: ErrorRecord[] = []
   const restore = setErrorSinks([r => got.push(r)])
-  const report = { kind: 'error', name: 'TypeError', message: 'boom', stack: '    at f (https://dazl.test/_next/a.js:1:2)', path: '/app/leads', tenant: 'e'.repeat(32) }
-  const post = (body: string, h: Record<string, string> = {}, ip = '203.0.113.9') => route.POST(new NextRequest('https://dazl.test/api/client-errors', {
-    method: 'POST', body, headers: { 'content-type': 'application/json', host: 'dazl.test', origin: 'https://dazl.test', 'x-forwarded-for': ip, ...h } }))
+  const report = { kind: 'error', type: 'TypeError', frames: [{ file: '/_next/static/a.js', line: 1, col: 2 }], path: '/app/leads', tenant: 'e'.repeat(32), message: 'Priya Venkataraman q7Rk2mZp9XwB4vNf8LtY3sHd6JcE1aUo' }
+  const post = (body: string | ReadableStream, h: Record<string, string> = {}, ip = '203.0.113.9') => route.POST(new NextRequest('https://dazl.test/api/client-errors', {
+    method: 'POST', body, headers: { 'content-type': 'application/json', host: 'dazl.test', origin: 'https://dazl.test', 'x-forwarded-for': ip, ...h }, ...(typeof body === 'string' ? {} : { duplex: 'half' }) } as unknown as ConstructorParameters<typeof NextRequest>[1]))
   try {
     assert.equal((await post(JSON.stringify(report), { cookie: `dazl_session=${token}` })).status, 204)
     assert.equal((await post(JSON.stringify(report))).status, 204) // signed out: recorded without a tenant
@@ -28,7 +28,14 @@ test('client error endpoint', async () => {
     assert.equal((await post(JSON.stringify(report), { origin: 'https://evil.example' })).status, 403)
     assert.equal((await post(JSON.stringify(report), { origin: '' })).status, 403)
     assert.equal((await post(JSON.stringify(report), { origin: 'not a url' })).status, 403)
-    assert.equal((await post(JSON.stringify({ ...report, message: 'x'.repeat(9000) }))).status, 413)
+    assert.ok(!JSON.stringify(got).includes('Priya') && !JSON.stringify(got).includes('q7Rk2m'), 'a message field is never recorded')
+    // size: a declared length over 4 KB is refused before reading; an undeclared one stops being read past 4 KB
+    assert.equal((await post(JSON.stringify({ ...report, pad: 'x'.repeat(5000) }))).status, 413)
+    assert.equal((await post(JSON.stringify(report), { 'content-length': '999999' })).status, 413, 'declared too large: refused unread')
+    let pulled = 0
+    const endless = new ReadableStream({ pull(c) { pulled++; c.enqueue(new TextEncoder().encode('x'.repeat(1024))); if (pulled > 1000) c.close() } })
+    assert.equal((await post(endless)).status, 413)
+    assert.ok(pulled < 20, `stopped reading early (${pulled} KB pulled)`)
     assert.equal((await post('{not json')).status, 400)
     assert.equal((await post(JSON.stringify({ kind: 'nope', path: '/app' }))).status, 400)
     assert.equal(got.length, 2, 'refused reports record nothing')

@@ -74,9 +74,20 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
     - unhandled promise rejections (`lib/ops/process-errors.ts`). Next's own listener keeps the server up. If ours is the only listener, it rethrows after recording, so bare Node still exits;
     - scan runner and queue runner crashes (`lib/scan/crash.ts`). A rejection that escapes `runJob`'s own failure handling is recorded with the tenant and job id. The job is marked `failed` with `error = 'crashed'`, fenced on `status = 'running'` and the same `attempts`, instead of waiting in `running` for the stale-lease reaper. On the queue path the queue item is failed too, not retried, since a crash would repeat.
     - browser errors (`lib/client-error-report.ts`, mounted in the root layout): uncaught errors, unhandled rejections and errors caught by the three error boundaries are posted to `POST /api/client-errors` and recorded with `source: 'client'` and `where: '<kind>:<page route template>'`.
-      - The browser sends only the error's name, message and stack, its kind and the page path. The server keeps the path only as its route template.
+      - **Allowlist only, no error text.** The browser sends:
+        - the kind;
+        - a built-in error type, else `Error`;
+        - the page path;
+        - up to 8 frames as `/_next/static/` file:line:col.
+
+        It never sends the message or the stack text. The server reads only those fields, checks each one's shape and ignores everything else. The record's message is the fixed `browser error`.
       - The tenant comes from the session cookie, never from the body.
-      - Limits: same origin only, 8 KB, 30 per IP per 10 min, at most 5 per page load, each distinct error once.
+      - Limits:
+        - same origin only;
+        - the browser's report is at most 2 KB;
+        - the route refuses a declared length over 4 KB before reading, and stops reading past 4 KB;
+        - 30 reports per IP per 10 min;
+        - at most 5 per page load, each distinct report once.
       - A missing JavaScript chunk after a deploy is not reported (`lib/chunk-recovery.ts` handles it).
       - End to end on a production build: `npm run test:smoke:client-errors`.
   - **Request ids and JSON request logs** (`proxy.ts`, `lib/ops/request-log.ts`):
