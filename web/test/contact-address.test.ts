@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { enrichLeadContacts } from '../lib/enrich/index.ts'
-import { contactAgreement, streetKeys, addressAgreement, contactRejectionCode } from '../lib/scan/contact-agreement.ts'
+import { contactAgreement, streetKeys, addressAgreement, contactRejectionCode, firstPlaceLabel } from '../lib/scan/contact-agreement.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, saveCredential, enrichmentsForLeads } from '../lib/connectors/store.ts'
 
@@ -112,4 +112,32 @@ test('REGRESSION: a matching street number/name never bypasses a contradicting c
   await enrichLeadContacts(s.db, 'u1', s.jobId, [s.lead], { fetchImpl: apollo({ ...PICO, street_address: '57 W 57th St' }), master })
   assert.deepEqual(attached(s.db), [], 'nothing from the Pico Rivera record attaches')
   assert.deepEqual(refusals(s.db).map(r => r[0]), ['contact_location_mismatch'], JSON.stringify(refusals(s.db)))
+})
+
+test('REGRESSION (address-only, spelled-out state): "57 W 57th St, Pico Rivera, California" with no separate place field is refused for the NYC lead — every US state name and DC is parsed, not only two-letter codes', async () => {
+  const W = ['New York City']
+  for (const addr of ['57 W 57th St, Pico Rivera, California', '57 W 57th St, Pico Rivera, California 90660', '57 W 57th St, Pico Rivera, CA 90660', '57 West 57th Street, Austin, Texas', '57 W 57th St, Washington, District of Columbia', '57 W 57th St, Albany, New York']) {
+    const r = contactAgreement({ where: W, evidence: EVIDENCE }, { address: addr })
+    assert.equal(r.ok, false, addr); assert.equal(contactRejectionCode((r as { reason: string }).reason), 'contact_location_mismatch', addr)
+  }
+  assert.equal(firstPlaceLabel('8500 Whittier Blvd, Pico Rivera, California 90660'), 'Pico Rivera, California')
+  assert.equal(firstPlaceLabel('1 Main St, Washington, District of Columbia'), 'Washington, District of Columbia')
+  assert.equal(firstPlaceLabel('1 Main St, Jackson, Wyoming'), 'Jackson, Wyoming')
+  // through Apollo: street text matches, the org record has no place field of its own
+  const s = seed()
+  await enrichLeadContacts(s.db, 'u1', s.jobId, [s.lead], { fetchImpl: apollo({ ...PICO, city: undefined, state: undefined, street_address: undefined, raw_address: '57 W 57th St, Pico Rivera, California' }), master })
+  assert.deepEqual(attached(s.db), []); assert.deepEqual(refusals(s.db).map(r => r[0]), ['contact_location_mismatch'], JSON.stringify(refusals(s.db)))
+})
+
+test('REGRESSION (empty search location): the lead\'s OWN evidenced city/state is compared instead of skipping the check', () => {
+  const NYC_EVIDENCE = 'Smile Avenue Dental is opening a second practice at 57 W 57th St, New York'
+  for (const where of [[], ['']]) {
+    const bad = contactAgreement({ where, evidence: NYC_EVIDENCE }, { address: '57 W 57th St, Pico Rivera, California' })
+    assert.equal(bad.ok, false); assert.match((bad as { reason: string }).reason, /location mismatch Pico Rivera/)
+    const badPlace = contactAgreement({ where, evidence: NYC_EVIDENCE }, { place: 'Pico Rivera, CA' })
+    assert.equal(badPlace.ok, false, 'a record with only a place, no address, is compared too')
+    assert.deepEqual(contactAgreement({ where, evidence: NYC_EVIDENCE }, { place: 'New York, NY' }), { ok: true, via: 'location' })
+  }
+  assert.equal(contactAgreement({ where: [], evidence: 'Smile Avenue Dental, Pico Rivera, CA is hiring' }, { place: 'New York, NY' }).ok, false, 'a Pico Rivera lead refuses the New York record')
+  assert.deepEqual(contactAgreement({ where: [], evidence: 'no place stated anywhere' }, { place: 'Pico Rivera, CA' }), { ok: true, via: 'no_geography' }, 'no search place AND no evidenced place: nothing to compare')
 })

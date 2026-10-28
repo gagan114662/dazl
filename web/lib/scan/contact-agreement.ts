@@ -54,6 +54,18 @@ export function addressAgreement(candidateAddress: string | null | undefined, le
   return a.some(x => b.includes(x)) ? 'agrees' : 'conflict'
 }
 
+// The place the lead's OWN evidence states: "City, ST" / "City, State", else New York City / London named outright. Used when the search location is empty.
+export function evidencedPlace(text: string | null | undefined): string | null {
+  const t = text ?? ''
+  return firstPlaceLabel(t) ?? (/\b(?:New York(?: City)?|NYC|Manhattan|Brooklyn)\b/.test(t) ? 'New York City' : /\bLondon\b/.test(t) ? 'London' : null)
+}
+// The request's places; when the search location is empty, the lead's own evidenced city/state stands in (the check is never skipped just because the ask named no place).
+function effectiveWhere(lead: LeadSide): string[] {
+  const w = lead.where.filter(x => x.trim())
+  if (w.length) return w
+  const ev = evidencedPlace(lead.evidence)
+  return ev ? [ev] : []
+}
 export function contactAgreement(lead: LeadSide, c: Candidate): Agreement {
   const ld = registrable(lead.company_domain), cd = registrable(c.domain)
   if (ld && cd) return ld === cd ? { ok: true, via: 'domain' } : { ok: false, reason: `contact rejected: domain mismatch ${cd} vs ${ld}` }
@@ -62,7 +74,7 @@ export function contactAgreement(lead: LeadSide, c: Candidate): Agreement {
   const addr = addressAgreement(c.address, lead.evidence)
   if (addr === 'agrees') {
     // A matching street number/name is NOT enough on its own: a city / state / country the record states (its place, or the one written in its address) that contradicts the lead's place always blocks.
-    const wh = lead.where.filter(w => w.trim())
+    const wh = effectiveWhere(lead)
     if (wh.length) for (const stated of [(c.place ?? '').trim(), firstPlaceLabel(c.address ?? '') ?? '']) {
       if (stated && placeAgreement(stated, wh) === 'mismatch') return { ok: false, reason: `contact rejected: location mismatch ${stated.slice(0, 60)} vs ${leadPlaceLabel(wh).slice(0, 60)} (the street text matches, the city does not)` }
     }
@@ -70,7 +82,7 @@ export function contactAgreement(lead: LeadSide, c: Candidate): Agreement {
   }
   if (addr === 'conflict') return { ok: false, reason: `contact rejected: address mismatch ${(streetKeys(c.address)[0] ?? 'another address').slice(0, 60)} vs ${(streetKeys(lead.evidence)[0] ?? 'the lead\'s address').slice(0, 60)}` }
   const place = (c.place ?? '').trim()
-  const where = lead.where.filter(w => w.trim())
+  const where = effectiveWhere(lead)
   if (where.length === 0) return { ok: true, via: 'no_geography' } // a request with no place makes no place demand (a domain that DISAGREES was refused above)
   if (!place) return { ok: false, reason: 'contact rejected: no domain or location to confirm the company' }
   const v = placeAgreement(place, where)
@@ -82,10 +94,13 @@ export function contactAgreement(lead: LeadSide, c: Candidate): Agreement {
 export { cityScoped }
 
 // The first "City, ST" / "City, England" in a page, to name the other place in a refusal reason. Display only; never decides anything.
-const ST_ALT = Object.keys(US_STATES).join('|')
-export function firstPlaceLabel(text: string): string | null {
+// Two-letter codes AND spelled-out names (all 50 + DC): "Pico Rivera, CA" and "Pico Rivera, California" are the same place.
+const STATE_NAMES = [...Object.values(US_STATES)].map(n => n.replace(/\b\w/g, c => c.toUpperCase()).replace(/ Of /, ' of '))
+const ST_ALT = [...Object.keys(US_STATES), ...STATE_NAMES].sort((x, y) => y.length - x.length).join('|')
+export function firstPlaceLabel(rawText: string): string | null {
+  const text = rawText.replace(STREET, ' ')   // the street part ("57 W 57th St") is not a city: "St, Washington, District of Columbia" must read as Washington, District of Columbia
   const m = new RegExp(`\\b([A-Z][\\p{L}'.-]+(?: [A-Z][\\p{L}'.-]+){0,2}),\\s*(${ST_ALT})\\b(?:\\s+\\d{5})?`, 'u').exec(text)
-  if (m) return `${m[1]}, ${m[2]}`
+  if (m) { const w = m[1].split(' '); while (w.length > 1 && /[a-z][A-Z]/.test(w[0])) w.shift(); return `${w.join(' ')}, ${m[2]}` }   // a leading camel-case word ("LinkedIn Pico Rivera") is page chrome, not part of the city
   const u = /\b([A-Z][\p{L}'.-]+(?: [A-Z][\p{L}'.-]+){0,2}),\s*(England|Scotland|Wales|Northern Ireland|UK|United Kingdom|South Africa|Canada|Ontario)\b/u.exec(text)
   return u ? `${u[1]}, ${u[2]}` : null
 }
