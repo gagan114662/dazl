@@ -117,3 +117,41 @@ bothEngines('readiness reports the engine and migration version; on Postgres, mo
     assert.deepEqual(clean.checks.split, { ok: true, raw_sqlite_modules: 0 })
   }
 })
+
+// Required environment (web/docs/DEPLOY.md): present and well-formed, else not ready. The body never names a variable
+// or shows a value; the names go to the error reporter, once per change of the missing set.
+const goodEnv = () => ({
+  DB_PATH: '/var/lib/dazl/app.db', DAZL_MASTER_KEY: Buffer.alloc(32, 1).toString('base64'), PUBLIC_BASE_URL: 'https://dazl.example',
+  STRIPE_SECRET_KEY: 'sk_test_abc123', STRIPE_PRICE_PRO: 'price_abc123', STRIPE_WEBHOOK_SECRET: 'whsec_abc123',
+})
+test('readiness: required environment present and well-formed is ready; missing or malformed is not, by count only', () => capturing(async got => {
+  const { resetEnvReport } = await import('../lib/ops/health.ts')
+  resetEnvReport()
+  const lite = new Database(':memory:')
+  const { migrateAllSqlite } = await import('../lib/db/sqlite-migrations.ts')
+  const { sqliteDb } = await import('../lib/db/client.ts')
+  migrateAllSqlite(lite)
+  const run = (env: Record<string, string | undefined>) => readiness({ db: async () => sqliteDb(lite), sqlite: okSqlite, migrations: shipped, env: () => env })
+  const good = await run(goodEnv())
+  assert.equal(good.ok, true, JSON.stringify(good))
+  assert.deepEqual(good.checks.env, { ok: true, missing: 0 })
+  assert.equal(got.length, 0)
+  // two problems: one absent, one the wrong kind (a publishable key where the secret key belongs)
+  const bad = await run({ ...goodEnv(), STRIPE_WEBHOOK_SECRET: undefined, STRIPE_SECRET_KEY: 'pk_test_abc123' })
+  assert.equal(bad.ok, false)
+  assert.deepEqual(bad.checks.env, { ok: false, missing: 2 })
+  const body = JSON.stringify(bad)
+  for (const leak of ['STRIPE', 'pk_test', 'whsec', 'DAZL_MASTER_KEY']) assert.ok(!body.includes(leak), `${leak} in the public body`)
+  assert.equal(got.length, 1)
+  assert.equal(got[0].where, 'readiness:env')
+  assert.match(got[0].error.message, /STRIPE_SECRET_KEY,STRIPE_WEBHOOK_SECRET/)
+  // the same missing set on the next probes is not reported again; a change is
+  await run({ ...goodEnv(), STRIPE_WEBHOOK_SECRET: undefined, STRIPE_SECRET_KEY: 'pk_test_abc123' })
+  assert.equal(got.length, 1, 'no repeat report per probe')
+  const key = await run({ ...goodEnv(), DAZL_MASTER_KEY: Buffer.alloc(16, 1).toString('base64') })
+  assert.deepEqual(key.checks.env, { ok: false, missing: 1 }, 'a master key that is not 32 bytes fails')
+  assert.equal(got.length, 2)
+  assert.match(got[1].error.message, /DAZL_MASTER_KEY$/)
+  // unwired (unit callers): skipped, does not affect the result
+  assert.deepEqual((await readiness({ db: async () => sqliteDb(lite), sqlite: okSqlite, migrations: shipped })).checks.env, { ok: true, skipped: 'not_wired' })
+}))
