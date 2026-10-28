@@ -76,11 +76,22 @@ test('every emitted field is scrubbed or shape-checked: PII in a name, cause nam
   }))
 })
 
+// Review repro: a class-shaped name can still carry a sensitive value; shape alone is not enough, for the error and its cause.
+test('a class-shaped name carrying a phone-shaped number or a token is replaced, for the error and its cause', () => {
+  for (const n of ['Account1234567890Error', 'User4155550134Exception', `Tok${'a'.repeat(40)}Error`, 'Ip2030113Error']) {
+    const e = Object.assign(new Error('failure'), { name: n, cause: Object.assign(new Error('c'), { name: n }) })
+    const r = toRecord(e, { source: 'route', where: '/api/x' })
+    assert.equal(r.error.name, '[unrecognized-name]', n)
+    assert.equal(r.error.cause?.name, '[unrecognized-name]', n)
+    assert.ok(!JSON.stringify(r).includes(n), n)
+  }
+})
+
 test('valid shapes pass: error class names, this app\'s own error classes, users.id, Stripe event ids, methods, route templates', () => {
   const r = toRecord(Object.assign(new TypeError('x'), { cause: Object.assign(new Error('y'), { name: 'StaleLeaseWrite' }) }),
     { source: 'route', where: '/api/leads/[lead]/confirm', method: 'DELETE', tenantId: TA, ref: EVT })
   assert.deepEqual([r.error.name, r.error.cause?.name, r.where, r.method, r.tenant, r.ref], ['TypeError', 'StaleLeaseWrite', '/api/leads/[lead]/confirm', 'DELETE', TA, EVT])
-  for (const n of ['DatabaseError', 'AbortError', 'LeaseLost', 'Timeout']) assert.equal(toRecord(Object.assign(new Error('x'), { name: n }), { source: 'worker', where: 'tick' }).error.name, n)
+  for (const n of ['TypeError', 'RangeError', 'SyntaxError', 'ReferenceError', 'URIError', 'AggregateError', 'DOMException', 'DatabaseError', 'AbortError', 'TimeoutError', 'GmailSendError', 'LeaseLost', 'RaceLost', 'ScanStopped', 'ScanTimedOut', 'SpendRefused', 'StaleLeaseWrite', 'StatementFailedInTx', 'Timeout']) assert.equal(toRecord(Object.assign(new Error('x'), { name: n }), { source: 'worker', where: 'tick' }).error.name, n)
   assert.equal(toRecord(new Error('x'), { source: 'worker', where: 'tick:index-checks' }).where, 'tick:index-checks')
   assert.equal(toRecord(new Error('x'), { source: 'worker', where: 'tick', tenantId: TA.toUpperCase() }).tenant, null) // ids are lowercase hex
 })

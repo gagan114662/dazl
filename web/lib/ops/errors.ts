@@ -5,7 +5,8 @@
 //   where            - a route template or worker name: [A-Za-z0-9_-./[]:] only, at most 128 chars
 //   tenant           - a users.id: 32 lowercase hex characters (randomBytes(16), app/api/auth/signup, lib/auth-google.ts)
 //   ref              - a Stripe event id from a signature-verified webhook (evt_ + 24-64 base62, with a digit)
-//   error.name, cause.name - a class name ending in Error/Exception, or one of this app's own error classes
+//   error.name, cause.name - a class name ending in Error/Exception, or one of this app's own error classes, that the
+//                            scrub leaves unchanged and that has no run of 4+ digits
 // Never read: request bodies, headers, cookies, query strings. The scrub (emails, keys, tokens, IPs, phone numbers,
 // DB URLs, URL queries) is a backstop for free text, not a licence: callers pass the error and the tenant id only.
 import { createHash } from 'node:crypto'
@@ -55,8 +56,11 @@ export function scrub(s: string): string {
 
 // This app's error classes whose names do not end in Error (grep 'extends Error').
 const OWN_ERROR_NAMES = new Set(['LeaseLost', 'RaceLost', 'ScanStopped', 'ScanTimedOut', 'SpendRefused', 'StaleLeaseWrite', 'StatementFailedInTx', 'Timeout'])
+// A class-shaped name is not safe by its shape alone (Account1234567890Error): it must also come through the scrub
+// unchanged and carry no run of 4+ digits.
 export function errorName(n: unknown): string {
-  return typeof n === 'string' && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(n) && (/(?:Error|Exception)$/.test(n) || OWN_ERROR_NAMES.has(n)) ? n : '[unrecognized-name]'
+  return typeof n === 'string' && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(n) && (/(?:Error|Exception)$/.test(n) || OWN_ERROR_NAMES.has(n))
+    && !/[0-9]{4}/.test(n) && scrub(n) === n ? n : '[unrecognized-name]'
 }
 const SOURCES = new Set(['route', 'render', 'worker', 'health', 'process'])
 const METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'])
