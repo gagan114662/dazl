@@ -514,7 +514,7 @@ export default function LeadsClient() {
           <button type="button" disabled={query.trim().length < 3 || busy || starting || scanActive} onClick={() => void preview()} className="text-xs text-[#555] underline disabled:opacity-40 disabled:no-underline">{busy ? 'Working out your profile...' : 'Review profile first'}</button>
           {scanActive && <span className="text-xs text-gray-500" data-reason="scan-active">{status === 'enriching' ? 'The scan is finishing (contacts and fit checks). You can start another when it ends.' : 'A scan is already running. You can start another when it ends.'}</span>}
         </div>
-        {reuseIcp && !scanActive && <p className="text-xs text-[#555] mt-2" data-testid="reuse-profile">Find leads runs with your reviewed profile: {reuseIcp.summary}. Change the sentence, or use Review profile first, to build a new one.</p>}
+        {reuseIcp && !scanActive && <p className="text-xs text-[#555] mt-2" data-testid="reuse-profile">Find leads runs with your reviewed profile: {reuseIcp.summary.replace(/[.\s]+$/, '')}. Change the sentence, or use Review profile first, to build a new one.</p>}
         {!jobId && <SourceAvailability core={core} social={socialSources(advanced)} />}
       </form>
       <details className="mb-4 text-sm" data-testid="more-sources">
