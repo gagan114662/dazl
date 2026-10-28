@@ -394,7 +394,7 @@ export default function LeadsClient() {
     const l = await fetch(`/api/leads?job_id=${jobId}${showHidden ? '&all=1' : ''}`)
     if (l.ok) { const j = await l.json(); setLeads(j.leads); setHiddenCount(j.hidden_count ?? 0) }
   }
-  useEffect(() => { if (status === 'done') void loadLeads() }, [jobId, status, showHidden])
+  useEffect(() => { if (status === 'done' || status === 'enriching') void loadLeads() }, [jobId, status, showHidden])
   // The Review drafts bar: this scan's unsent emails by state (drafts to review, approved not sent), read back from
   // Outreach so it survives a reload and counts drafts made with Draft email too. Read-only; null when it could not load.
   const [scanDrafts, setScanDrafts] = useState<{ drafts: number; approved: number } | null>(null)
@@ -436,7 +436,7 @@ export default function LeadsClient() {
       setPastJobs(jobs)
       // A scan that is still queued/running is the one exception to "nothing autoselects": a reload or a
       // return from Home must show its progress and Stop control, not an enabled Find leads button.
-      const active = jobs.find(x => !x.csv_domain && (x.status === 'pending' || x.status === 'running'))
+      const active = jobs.find(x => !x.csv_domain && (x.status === 'pending' || x.status === 'running' || x.status === 'enriching'))
       if (active) { passiveJob.current = new URLSearchParams(window.location.search).get('passive') === '1'; setJobId(active.id); setStatus(active.status) }
     } }).catch(() => {})
   }, [jobId])
@@ -662,6 +662,15 @@ export default function LeadsClient() {
           </div>
         </div>
       )}
+      {jobId && status === 'enriching' && (
+        <div className="card p-4 mb-4 flex items-center gap-3" role="status">
+          <span className="inline-block h-4 w-4 rounded-full border-2 border-gray-500 border-t-white animate-spin" aria-hidden />
+          <div className="text-sm">
+            <div>Finishing - finding contacts and checking fit.</div>
+            <div className="text-gray-400 text-xs">The leads below are not final yet. The scan is not done until this ends.</div>
+          </div>
+        </div>
+      )}
       {jobId && status === 'failed' && <p className="text-gray-400 text-sm mb-4">{jobError === 'budget_stopped' ? 'This run stopped because its per-run budget refused the next paid step. That is a budget stop, not an empty search: nothing was concluded about whether leads exist. Run again without that budget control (or with a larger one) to search further.' : jobError === 'cancelled' ? 'Scan stopped. The step that was already running can continue for a while and may still be billed. Its results are discarded and this scan holds its slot for a few minutes.' : jobError === 'scan_timeout' ? 'This scan ran past its time limit and was stopped between steps. Nothing was saved. Steps that already ran may have been billed by your AI provider. Try again with a narrower search.' : jobError === 'no_candidates' ? 'No candidates found for that search. Try rephrasing or broadening it - this scan did not count toward your monthly scans.' : jobError === 'trial_key_invalid' ? 'The scan service is having trouble right now. Try again later - this scan did not count toward your free scans.' : jobError === 'key_unreadable' ? KEY_UNREADABLE_COPY.replace(/\.$/, ', then run the scan again.') : 'Scan failed. Try again.'}</p>}
       {jobId && statusError && (
         <p className="text-gray-400 text-sm mb-4">{statusError === 'not_found'
@@ -710,7 +719,7 @@ export default function LeadsClient() {
                 {j.query ?? (j.csv_domain ? `CSV import: ${j.csv_domain}` : j.business_name)}
               </div>
               <div className="text-gray-500 text-xs mt-0.5">
-                {new Date(j.created_at * 1000).toLocaleDateString()} · {j.status === 'done'
+                {new Date(j.created_at * 1000).toLocaleDateString()} · {j.status === 'enriching' ? 'finishing - finding contacts and checking fit' : j.status === 'done'
                   ? (j.candidates !== null
                       ? `${j.candidates} found: ${j.verified ?? 0} source-checked, ${j.needs_review ?? 0} need${(j.needs_review ?? 0) === 1 ? 's' : ''} your review, ${j.dropped ?? 0} dropped`
                       : `${j.lead_count} lead${j.lead_count === 1 ? '' : 's'}`)
