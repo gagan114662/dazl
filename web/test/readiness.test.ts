@@ -198,3 +198,25 @@ test('first scan, leads reviewed and first approved email: done only on evidence
   assert.deepEqual([rows({ messages: capped }).approved.state, rows({ messages: capped }).approved.detail], ['unknown', 'could not check - only your latest 200 emails could be checked'])
   assert.equal(rows({ messages: capped, campaigns: [{ id: 'x', qualification: { rejected: 0 }, outreach: { drafts: 0, approved: 1, sent: 0 } }] }).approved.state, 'done', 'an older approved email found through its campaign')
 })
+
+// Instinct #288: the jobs list is the newest 20. Twenty recent failures can hide an older finished scan and an older play.
+test('first play and first scan never claim absence from a full newest-20 list; complete totals decide', () => {
+  const rows = (o: object) => byId(readinessRows({ profile: null, usage: null, outreach: null, ...o } as never))
+  const failed = Array.from({ length: 20 }, (_, k) => job({ id: `f${k}`, created_at: 100 + k, status: 'failed', error: 'upstream 502' }))
+  // With complete totals: an older finished scan (not in the list) counts.
+  const withTotals = rows({ jobs: failed, totals: { searches: 21, finished: 1 } })
+  assert.deepEqual([withTotals.scan.state, withTotals.scan.detail], ['done', '1 finished'])
+  assert.equal(withTotals.play.state, 'done')
+  assert.deepEqual([rows({ jobs: failed, totals: { searches: 20, finished: 0 } }).scan.state, rows({ jobs: failed, totals: { searches: 20, finished: 0 } }).scan.detail], ['todo', 'no scan has finished yet'], 'complete totals can prove absence')
+  // Without totals, a full list proves nothing: "?", never "no scan has finished yet".
+  const noTotals = rows({ jobs: failed })
+  assert.deepEqual([noTotals.scan.state, noTotals.scan.detail], ['unknown', 'could not check - only your latest 20 scans could be checked'])
+  assert.notEqual(noTotals.scan.detail, 'no scan has finished yet')
+  // Twenty imports (not plays) fill the list: an older play is not ruled out.
+  const imports = Array.from({ length: 20 }, (_, k) => job({ id: `i${k}`, csv_domain: 'acme.com', created_at: k }))
+  assert.equal(rows({ jobs: imports }).play.state, 'unknown')
+  assert.equal(rows({ jobs: imports, totals: { searches: 1, finished: 1 } }).play.detail, '1 search written')
+  assert.equal(rows({ jobs: imports, totals: { searches: 0, finished: 0 } }).play.state, 'todo')
+  // A short list is complete: absence there is real.
+  assert.equal(rows({ jobs: failed.slice(0, 3) }).scan.detail, 'no scan has finished yet')
+})

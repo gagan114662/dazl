@@ -10,7 +10,8 @@
 //   3. a draft made: Leads reviewed done, "First email approved in Outreach" is next ("a draft is waiting"), Open Outreach;
 //   4. the emails read fails: those rows show "?" with "your emails did not load", never a check, and are not "next";
 //   5. the newest-200 email list is not treated as complete history: a full list without evidence is "?";
-//   6. nothing is written.
+//   6. 20 recent failed scans hiding an older finished scan and play: both read done from the complete totals;
+//   7. nothing is written.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -35,7 +36,7 @@ const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'sta
 for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
 
 const JOB = 'b'.repeat(24)
-const st = { jobStatus: 'running', messages: [], emailsFail: false, campaignsFail: false }
+const st = { jobStatus: 'running', messages: [], emailsFail: false, campaignsFail: false, boundary: false }
 const profile = { business_name: 'Bright Smile', sells: 'Online booking for dental practices', website: 'https://brightsmile.example', buyer: { summary: 'Independent dental practices', who: ['Practice owner'], industries: [], sizes: [], where: [], signals: [], exclude: [] } }
 const writes = []
 const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: 1280, height: 1300 } })
@@ -50,6 +51,8 @@ await ctx.route('**/*', async route => {
   if (p === '/api/usage') return json({ plan: 'free', scans_used: 1, scan_limit: 10, has_key: true, trial: null })
   if (p === '/api/settings/llm-key') return json({ keys: [{ vendor: 'anthropic', last4: 'Ab12', validated_at: 1 }], rejection: null })
   if (p === '/api/scan/sources') return json({ web_index: true, news: true, websites: true })
+  // Instinct #288 boundary: the newest-20 list holds 20 failed scans; an older play finished. Only totals know it.
+  if (p === '/api/scan/jobs' && st.boundary) return json({ jobs: Array.from({ length: 20 }, (_, k) => ({ id: String(k).padStart(24, 'f'), status: 'failed', error: 'upstream 502', query: `Failed search ${k}`, business_name: '', csv_domain: null, created_at: 1761600000 + k, finished_at: 1761600001 + k, candidates: null, verified: null, needs_review: null, dropped: null, lead_count: 0, test_only: false })), totals: { searches: 21, finished: 1 } })
   if (p === '/api/scan/jobs') return json({ jobs: [{ id: JOB, status: st.jobStatus, error: null, query: 'Dental practice owners in Ohio', business_name: '', csv_domain: null, created_at: 1761500000, finished_at: 1761500100, candidates: 5, verified: 2, needs_review: 1, dropped: 2, lead_count: 3, test_only: false }] })
   if (p === '/api/outreach/settings') return json({ gmail: { email: 'dana@brightsmile.example', status: 'active' }, sender: { sender_name: 'Dana', postal_address: '1 Main St, Columbus, OH 43004, USA' }, daily_cap: 20, sent_24h: 0, account_sent_24h: 0 })
   if (p === '/api/outreach') return st.emailsFail ? json({ error: 'unavailable' }, 503) : json({ messages: st.messages })
@@ -100,6 +103,14 @@ try {
   if (!before) {
     for (const id of ['review', 'approved']) assert.match(await row(id).textContent(), /^\?.* - could not check - only your latest 200 emails could be checked/, `${id}: a capped list is not complete history`)
     assert.deepEqual(await nextIds(), [])
+  }
+  // Instinct #288: 20 recent failed scans hide an older finished one. Home must not say "no scan has finished yet".
+  st.emailsFail = false; st.messages = []; st.boundary = true
+  await load(); await shot('6-twenty-failures')
+  if (!before) {
+    assert.match(await row('scan').textContent(), /^✓First scan - 1 finished$/)
+    assert.doesNotMatch(await page.getByTestId('readiness-checklist').textContent(), /no scan has finished yet/)
+    assert.match(await row('play').textContent(), /^✓First play - 21 searches written$/)
   }
   assert.deepEqual(writes, [], 'loading Home writes nothing')
   console.log(before ? 'screenshots taken (BEFORE_ONLY)' : 'readiness steps UI check passed: running scan, review and approve steps each become the single next step; failed reads show "?" with the reason; no writes')

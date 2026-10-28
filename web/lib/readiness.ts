@@ -11,6 +11,9 @@ export interface ReadinessInput {
   outreach: { gmail?: { email?: string; status?: string } | null; sender?: { sender_name?: string; postal_address?: string; booking_url?: string | null } | null; daily_cap?: number; sent_24h?: number; account_sent_24h?: number } | null
   // The account's scan jobs; null when they could not be loaded, omitted by callers that only check the other rows.
   jobs?: JobRow[] | null
+  // Complete counts over ALL of the account's own searches (GET /api/scan/jobs `totals`; the jobs list is the newest
+  // 20 only). null/omitted when not reported: absence is then claimed only from a list that was not full.
+  totals?: { searches: number; finished: number } | null
   // The server's source switches (GET /api/scan/sources); null when they could not be loaded.
   sources?: ServerSources | null
   // The saved AI keys' status (GET /api/settings/llm-key: vendor, last 4, when the provider accepted it); null when not loaded.
@@ -31,7 +34,8 @@ export interface Row { id: 'site' | 'brain' | 'play' | 'key' | 'sources' | 'scan
 
 // The reads' caps (lib/outreach/service.ts listMessages, lib/outreach/campaigns.ts listCampaigns): a list this long may
 // be missing older history.
-const MESSAGES_CAP = 200, CAMPAIGNS_CAP = 10
+// The jobs list (lib/scan/store-db.ts listJobs) is the newest 20.
+const MESSAGES_CAP = 200, CAMPAIGNS_CAP = 10, JOBS_CAP = 20
 
 export function readinessRows(i: ReadinessInput): Row[] {
   const p = i.profile, u = i.usage, o = i.outreach
@@ -49,9 +53,13 @@ export function readinessRows(i: ReadinessInput): Row[] {
     : b && ((b.who?.length ?? 0) > 0 || !!b.summary?.trim()) ? { id: 'brain', label: BRAIN, state: 'done', detail: b.summary?.trim() || (b.who ?? []).join(', '), fix: null }
     : { id: 'brain', label: BRAIN, state: 'todo', detail: 'not built yet: dazl drafts it from your website, you edit it', fix: { kind: 'link', href: '/app?setup=brain', label: 'Build' } }
   // Any search the account wrote itself counts, whatever it found; imports and test fixtures are not plays.
-  const own = i.jobs ? i.jobs.filter(j => j.query && !j.csv_domain && !j.test_only).length : 0
-  const play: Row = !i.jobs ? { id: 'play', label: 'First play', state: 'unknown', detail: 'could not check - your searches did not load', fix: null }
+  // Instinct #288: the jobs list is the newest 20. Its contents prove a play or a finished scan exists; its silence
+  // proves nothing when it is full, so absence comes from the complete totals, or is "?" when they are missing.
+  const listFull = (i.jobs?.length ?? 0) >= JOBS_CAP
+  const own = i.totals ? i.totals.searches : i.jobs ? i.jobs.filter(j => j.query && !j.csv_domain && !j.test_only).length : 0
+  const play: Row = !i.jobs && !i.totals ? { id: 'play', label: 'First play', state: 'unknown', detail: 'could not check - your searches did not load', fix: null }
     : own > 0 ? { id: 'play', label: 'First play', state: 'done', detail: `${own} search${own === 1 ? '' : 'es'} written`, fix: null }
+    : !i.totals && listFull ? { id: 'play', label: 'First play', state: 'unknown', detail: `could not check - only your latest ${JOBS_CAP} scans could be checked`, fix: null }
     : { id: 'play', label: 'First play', state: 'todo', detail: 'describe who you want to find, in one sentence', fix: { kind: 'link', href: '/app/leads', label: 'Write a play' } }
   const trialLeft = u?.trial?.funded ? u.trial.remaining ?? 0 : 0
   // A saved key was accepted by its provider when it was saved. After that, the server reports a rejection while any
@@ -103,8 +111,10 @@ export function readinessRows(i: ReadinessInput): Row[] {
   const ownJobs = i.jobs?.filter(j => j.query && !j.csv_domain && !j.test_only) ?? []
   const finished = ownJobs.filter(j => j.status === 'done').sort((a, b) => b.created_at - a.created_at)
   const runningNow = ownJobs.some(j => ['pending', 'running', 'enriching'].includes(j.status))
-  const scan: Row = !i.jobs ? { id: 'scan', label: 'First scan', state: 'unknown', detail: 'could not check - your searches did not load', fix: null }
-    : finished.length > 0 ? { id: 'scan', label: 'First scan', state: 'done', detail: `${finished.length} finished; latest: ${recentPlays(finished, 1)[0]?.outcome ?? 'finished'}`, fix: null }
+  const finishedCount = i.totals ? i.totals.finished : finished.length
+  const scan: Row = !i.jobs && !i.totals ? { id: 'scan', label: 'First scan', state: 'unknown', detail: 'could not check - your searches did not load', fix: null }
+    : finishedCount > 0 || finished.length > 0 ? { id: 'scan', label: 'First scan', state: 'done', detail: `${Math.max(finishedCount, finished.length)} finished${finished.length ? `; latest: ${recentPlays(finished, 1)[0]?.outcome ?? 'finished'}` : ''}`, fix: null }
+    : !i.totals && listFull && !runningNow ? { id: 'scan', label: 'First scan', state: 'unknown', detail: `could not check - only your latest ${JOBS_CAP} scans could be checked`, fix: null }
     : runningNow ? { id: 'scan', label: 'First scan', state: 'todo', detail: 'running now', fix: { kind: 'link', href: '/app/leads', label: 'See progress' } }
     : { id: 'scan', label: 'First scan', state: 'todo', detail: 'no scan has finished yet', fix: { kind: 'link', href: '/app/leads', label: 'Find leads' } }
   // Reviewed = a lead approved (an email made from it) or rejected. Both reads are capped (the newest 200 emails, the
