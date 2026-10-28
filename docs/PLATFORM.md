@@ -366,7 +366,7 @@ Nothing here has been run against production. The tool and the steps are ready f
 - Both directions are covered by `test/copy-store.test.ts` and `test/pg-cutover-cli.test.ts`. The CLI test also writes to Postgres after the copy and checks that the rollback carries the write back.
 
 **Still blocking the switch:**
-- 135 modules on the raw SQLite handle (`lib/db/pg-port-status.ts`): the gate. The largest groups:
+- 136 modules on the raw SQLite handle (`lib/db/pg-port-status.ts`): the gate. The largest groups:
   - the scan runner and pipeline (`lib/scan`, yield-owned);
   - outreach and the send gates (`lib/outreach`);
   - the leads routes, including `GET /api/leads`;
