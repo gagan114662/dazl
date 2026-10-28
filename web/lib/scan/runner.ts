@@ -659,12 +659,13 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
 // are labels, not quotable text, so the article pages are fetched with the verifier's own cached fetcher and the model
 // quotes from that page text: the verifier then checks the same text it was quoted from.
 export const NEWS_PAGES = 8
-async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, http: SafeGet, fetchPage: PageFetcher, fetchImpl?: typeof fetch): Promise<LeadDraft[] | null> {
+async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, http: SafeGet, fetchPage: PageFetcher, fetchImpl?: typeof fetch, note?: { searched: boolean; hits: number }): Promise<LeadDraft[] | null> {
   const complete = provider.complete!
   const plan = queryPlan(await complete.call(provider, key, queryPrompt(job.query!, icp, NEWS_PER_SCAN), fetchImpl, 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, NEWS_PER_SCAN)
   const q = withGeography(sanitizeQueries(plan.queries, job.query!), icp.where).filter(x => !/site:/i.test(x)) // news search has no site: operator
   if (q.length === 0) return null
   const hits = await newsSearch(http, q, icp.language)
+  if (note) { note.searched = true; note.hits = hits.length }
   if (hits.length === 0) return null
   const pages = (await Promise.all(hits.slice(0, NEWS_PAGES).map(async h => {
     const p = await fetchPage(h.url).catch(() => null)
@@ -828,8 +829,10 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       try {
         ledger.record('search:news', 'started')
         assertOwned(db, job)
-        leads = await newsLeads(job, icpForSources, providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl)
-        ledger.record('search:news', leads === null ? 'unavailable' : leads.length ? 'ok' : 'empty')
+        const note = { searched: false, hits: 0 }
+        leads = await newsLeads(job, icpForSources, providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl, note)
+        // 'empty' only when the news search ran and returned zero hits; hits with no usable page evidence, or no query to run, stay 'unavailable' (unknown, never a zero).
+        ledger.record('search:news', leads === null ? (note.searched && note.hits === 0 ? 'empty' : 'unavailable') : leads.length ? 'ok' : 'empty', note.searched ? note.hits : null)
         if (leads) { ledger.candidates('search:news', leads); ledger.candidates(NEWS_SOURCE, leads) }
       } catch (e) {
         if (e instanceof ScanStopped || e instanceof ScanTimedOut || e instanceof SpendRefused) throw e

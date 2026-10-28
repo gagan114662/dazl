@@ -116,8 +116,8 @@ test('MIXED: search 0 hits but the job-board adapter returned 8 evidence items a
   assert.notEqual(o.kind, 'zero_match'); assert.doesNotMatch(o.label + (o.detail ?? ''), /sources returned nothing|no results for this request/)
   assert.match(o.detail ?? '', /adapter:jobboards returned 8 items, none matched as candidates/)
 })
-test('MIXED: every recorded source returned nothing -> zero-match (the search collectors read as empty because the search report shows a clean 0)', () => {
-  assert.equal(outcomeOf([R('search:tinyfish', 'unavailable', null, null), R('search:news', 'unavailable', null, null), R('adapter:jobboards', 'ok', 0, 0)]).kind, 'zero_match')
+test('MIXED: every recorded source returned nothing -> zero-match (the TinyFish unavailable row reads as empty because ITS report shows a clean 0; the news fallback must say empty itself)', () => {
+  assert.equal(outcomeOf([R('search:tinyfish', 'unavailable', null, null), R('search:news', 'empty', 0, null), R('adapter:jobboards', 'ok', 0, 0)]).kind, 'zero_match')
 })
 test('MIXED: one unavailable (not run / not configured) source blocks the zero claim and is named', () => {
   const o = outcomeOf([R('search:tinyfish', 'unavailable', null, null), R('adapter:jobboards', 'unavailable', null, null)])
@@ -129,4 +129,21 @@ test('MIXED: an errored source is failed and named, not zero-match', () => {
 })
 test('MIXED: with no search report at all, unavailable search collectors are unknown, never a zero', () => {
   assert.notEqual(outcomeOf([R('search:tinyfish', 'unavailable', null, null)], null).kind, 'zero_match')
+})
+
+test('REGRESSION: a clean empty TinyFish report never clears the news fallback — news hits with no usable page evidence are unknown, not zero', () => {
+  const o = outcomeOf([R('search:tinyfish', 'unavailable', null, null), R('search:news', 'unavailable', 5, null)])
+  assert.notEqual(o.kind, 'zero_match'); assert.doesNotMatch(o.label + (o.detail ?? ''), /sources returned nothing|no results for this request/)
+  assert.match(o.detail ?? '', /search:news was unavailable or not run/)
+  assert.deepEqual(outcomeInputs(SEARCH0, [R('search:news', 'unavailable', 5, null)], 'failed').unknown_sources, ['search:news'])
+})
+test('REGRESSION: 3 search attempts with only 1 successful and 0 hits is not zero-match and not "none failed": the failed attempts are named', () => {
+  const rep = { search: { attempted: 3, ok: 1, hits_raw: 0, hits_unique_urls: 0, hits_complete: false } }
+  const rows = [R('search:tinyfish', 'unavailable', null, null), R('search:news', 'empty', 0, null)]
+  assert.deepEqual(outcomeInputs(rep, rows, 'failed').failed_sources, ['search:tinyfish (2 of 3 search attempts failed)'])
+  const o = outcomeOf(rows, rep)
+  assert.equal(o.kind, 'failed'); assert.match(o.label, /2 of 3 search attempts failed/); assert.doesNotMatch(o.detail ?? '', /none of them failed/)
+})
+test('a TinyFish source row that errored while its own attempts all failed is reported once', () => {
+  assert.deepEqual(outcomeInputs({ search: { attempted: 2, ok: 0, hits_unique_urls: 0 } }, [R('search:tinyfish', 'error', null, null)], 'failed').failed_sources, ['search:tinyfish'])
 })
