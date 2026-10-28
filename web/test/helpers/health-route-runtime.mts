@@ -6,13 +6,14 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { setScanDb } from './tenant-route-db.ts'
 import { setErrorSinks } from '../../lib/ops/errors.ts'
+import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { pgDb } from '../../lib/db/client.ts'
 import { runPgMigrations } from '../../lib/db/migrate-pg.ts'
 import { PG_URL, freshSchema } from './pg-test.ts'
 
 const mode = process.env.HEALTH_MODE
 if (mode === 'pg-down') process.env.DATABASE_URL = process.env.HEALTH_DATABASE_URL
-if (mode === 'sqlite') setScanDb(new Database(':memory:')) // pg-down must keep getDb() on DATABASE_URL
+if (mode === 'sqlite') { const lite = new Database(':memory:'); migrateAllSqlite(lite); setScanDb(lite) } // as getDb() opens it; pg-down must keep getDb() on DATABASE_URL
 const livePg = mode === 'pg' || mode === 'pg-behind'
 const schema = livePg ? await freshSchema() : null
 if (schema) {
@@ -30,10 +31,16 @@ test(`health routes (${mode})`, async () => {
   const { GET: health } = await import('../../app/api/health/route.ts')
   const { GET: ready } = await import('../../app/api/health/ready/route.ts')
   const { GET: apiReady } = await import('../../app/api/ready/route.ts')
-  const l = await live()
-  assert.equal(l.status, 200)
-  assert.deepEqual(await l.json(), { ok: true })
-  for (const get of [health, ready, apiReady]) {
+  // liveness, /api/health and /api/health/live: 200 in every mode, even with the store down; no check runs
+  for (const get of [live, health]) {
+    const l = await get()
+    assert.equal(l.status, 200)
+    assert.equal(l.headers.get('cache-control'), 'no-store')
+    const body = await l.json()
+    assert.deepEqual(Object.keys(body).sort(), ['commit', 'ok'])
+    assert.equal(body.ok, true)
+  }
+  for (const get of [ready, apiReady]) {
     const res = await get()
     const body = await res.json()
     assert.equal(res.headers.get('cache-control'), 'no-store')
@@ -43,10 +50,12 @@ test(`health routes (${mode})`, async () => {
       assert.equal(body.ok, true)
       assert.equal(body.checks.store.engine, 'sqlite')
       assert.deepEqual(body.checks.schema, { ok: true, skipped: 'sqlite' })
+      assert.equal(body.checks.queue.ok, true)
     } else if (mode === 'pg') {
       assert.equal(body.checks.store.engine, 'pg')
       assert.equal(body.checks.store.ok, true, JSON.stringify(body))
       assert.equal(body.checks.schema.ok, true, 'every shipped migration applied')
+      assert.equal(body.checks.queue.ok, true, 'the scan queue answers on Postgres')
       assert.equal(body.checks.sqlite.ok, true)
       // Store and schema are ready; while raw-SQLite modules remain, the split check alone holds the instance back
       // (lib/ops/health.ts), so it reports 503 until the port is done, and 200 after.

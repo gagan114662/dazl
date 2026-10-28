@@ -1,7 +1,9 @@
-import { NextResponse, connection } from 'next/server'
+import { connection } from 'next/server'
+import { liveResponse } from '@/lib/ops/health-route'
 
-// Liveness probe: the process answers. Touches no database, so a slow store never gets a healthy process restarted.
+// Liveness probe (same as /api/health): the process answers. Touches no database, so a slow store never gets a healthy
+// process restarted.
 export async function GET() {
   await connection()
-  return NextResponse.json({ ok: true }, { headers: { 'Cache-Control': 'no-store' } })
+  return liveResponse()
 }
