@@ -18,8 +18,8 @@ export default function Readiness() {
 
   async function load() {
     const get = (u: string) => fetch(u).then(r => r.ok ? r.json() : null).catch(() => null)
-    const [profile, usage, outreach, jobs] = await Promise.all([get('/api/settings/profile'), get('/api/usage'), get('/api/outreach/settings'), get('/api/scan/jobs')])
-    setInput({ profile, usage, outreach, jobs: jobs?.jobs ?? null })
+    const [profile, usage, outreach, jobs, sources] = await Promise.all([get('/api/settings/profile'), get('/api/usage'), get('/api/outreach/settings'), get('/api/scan/jobs'), get('/api/scan/sources')])
+    setInput({ profile, usage, outreach, jobs: jobs?.jobs ?? null, sources })
     setPlays(jobs?.jobs ? recentPlays(jobs.jobs) : null)
     if (profile) setSite({ website: String(profile.website ?? ''), sells: String(profile.sells ?? ''), business_name: String(profile.business_name ?? '') })
   }
