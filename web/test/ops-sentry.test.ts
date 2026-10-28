@@ -1,8 +1,12 @@
-// The Sentry-compatible alert hook (lib/ops/errors.ts, SENTRY_DSN): off without a DSN, the envelope it sends, and that
-// it carries the scrubbed record only. Stubbed fetch; nothing leaves the process.
+// The Sentry-compatible alert hook (lib/ops/errors.ts, SENTRY_DSN) and the alert webhook: off without a destination, the
+// envelope they send, and that what leaves is the ALLOWLIST only (error type, frames, route, release, environment), so
+// no message text, name, email, token or note reaches either. Stubbed fetch; nothing leaves the process.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { captureError, makeSentryHook, parseSentryDsn, setErrorSinks, toRecord, toSentryEnvelope } from '../lib/ops/errors.ts'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { APP_ERROR_CLASSES, captureError, deployment, makeAlertHook, makeSentryHook, outboundFrames, parseSentryDsn, setErrorSinks, toRecord, toSentryEnvelope } from '../lib/ops/errors.ts'
 
 const TA = '0123456789abcdef0123456789abcdef'
 const DSN = 'https://abc123public@o42.ingest.sentry.example.test/4507'
@@ -28,10 +32,11 @@ test('without a DSN (or with a bad one) the hook sends nothing', async () => {
   assert.equal(sent.length, 0)
 })
 
-test('the envelope: header, event item, the record mapped onto a Sentry event; no field the record does not hold', () => {
+test('the envelope: header, event item, and only the allowlisted fields of the record', () => {
   const e = new Error('db down for jane.doe@example.com', { cause: new TypeError('connect 203.0.113.7') })
   const r = toRecord(e, { source: 'route', where: '/api/leads/[lead]/confirm', method: 'POST', tenantId: TA, requestId: '0b9f3c2e-4d5a-4b6c-8d7e-9f0a1b2c3d4e' }, new Date(1_700_000_000_000))
   const [head, item, ev] = parse(toSentryEnvelope(r, parseSentryDsn(DSN)!, { environment: 'production', release: 'abc1234' }, new Date(1_700_000_001_000)))
+  assert.deepEqual(Object.keys(ev).sort(), ['environment', 'event_id', 'exception', 'fingerprint', 'level', 'logger', 'platform', 'release', 'tags', 'timestamp', 'transaction'])
   assert.match(head.event_id, /^[0-9a-f]{32}$/)
   assert.deepEqual(head, { event_id: head.event_id, sent_at: '2023-11-14T22:13:21.000Z', dsn: DSN })
   assert.deepEqual(item, { type: 'event' })
@@ -40,16 +45,13 @@ test('the envelope: header, event item, the record mapped onto a Sentry event; n
   assert.deepEqual([ev.level, ev.platform, ev.logger, ev.transaction, ev.environment, ev.release], ['error', 'node', 'route', '/api/leads/[lead]/confirm', 'production', 'abc1234'])
   assert.deepEqual(ev.fingerprint, [r.fingerprint], 'grouped by the record fingerprint')
   assert.deepEqual(ev.tags, { source: 'route', where: '/api/leads/[lead]/confirm', method: 'POST', request_id: '0b9f3c2e-4d5a-4b6c-8d7e-9f0a1b2c3d4e' })
-  assert.deepEqual(ev.user, { id: TA })
-  assert.deepEqual(ev.exception, { values: [{ type: 'Error', value: 'db down for [email]' }] })
-  assert.deepEqual(ev.extra.cause, { name: 'TypeError', message: 'connect [ip]' })
-  assert.deepEqual(ev.extra.stack, r.error.stack)
+  assert.equal(ev.exception.values.length, 1)
+  // no message value; this error's own frames are in test/, not in the build (.next/server), so only Node's are sent
+  assert.equal('value' in ev.exception.values[0], false)
+  assert.equal(ev.exception.values[0].type, 'Error')
+  for (const f of ev.exception.values[0].stacktrace?.frames ?? []) assert.match(f.filename, /^node:/)
   const all = JSON.stringify(ev)
-  for (const leak of ['jane', '203.0.113.7']) assert.ok(!all.includes(leak), `${leak} leaked`)
-  // no tenant, no user block
-  const anon = parse(toSentryEnvelope(toRecord(new Error('x'), { source: 'worker', where: 'tick' }), parseSentryDsn(DSN)!))[2]
-  assert.equal('user' in anon, false)
-  assert.equal('environment' in anon, false)
+  for (const leak of ['jane', 'down', 'connect', '203.0.113.7', TA]) assert.ok(!all.includes(leak), `${leak} leaked`)
 })
 
 test('the hook POSTs to the project envelope endpoint with Sentry auth, throttled like the webhook', async () => {
@@ -89,11 +91,128 @@ test('captureError reaches Sentry when SENTRY_DSN is set, and nothing is sent wh
     assert.equal(sent.length, 1)
     const ev = parse(sent[0].body)[2]
     assert.equal(ev.transaction, '/api/with')
-    assert.equal(ev.exception.values[0].value, 'with dsn for [email]')
+    assert.equal('value' in ev.exception.values[0], false)
+    assert.ok(!sent[0].body.includes('with dsn') && !sent[0].body.includes(TA))
+    assert.equal(ev.environment, 'production')
   } finally {
     globalThis.fetch = origFetch
     restoreSinks()
     if (saved.dsn === undefined) delete process.env.SENTRY_DSN; else process.env.SENTRY_DSN = saved.dsn
     if (saved.hook !== undefined) process.env.OPS_ALERT_WEBHOOK_URL = saved.hook
   }
+})
+
+// A fake build: the files a frame may name. Anything not in it is not this app's code.
+const ROOT = mkdtempSync(path.join(tmpdir(), 'dazl-build-'))
+for (const f of ['.next/server/chunks/1.js', '.next/server/app/page.js', '.next/server/app/api/leads/route.js', '.next/static/chunks/app/page-1a2b.js', 'node_modules/next/dist/server/base-server.js']) {
+  mkdirSync(path.dirname(path.join(ROOT, f)), { recursive: true }); writeFileSync(path.join(ROOT, f), '')
+}
+
+// Instinct's review (Sentry hold): the pattern scrub cannot recognise every name, secret or note, so test that arbitrary
+// ones never reach either outgoing destination, wherever they sit in the error.
+const NAME = 'Priya Venkataraman', EMAIL = 'priya.v@harbourdental.example', TOKEN = 'q7Rk2mZp9XwB4vNf8LtY3sHd6JcE1aUo'
+const NOTE = 'Lead note: owner said budget frees up after the merger, call Tuesday'
+const SENSITIVE = [NAME, 'Priya', 'Venkataraman', EMAIL, 'harbourdental', TOKEN, NOTE, 'merger', 'budget']
+const hostileErrors = (): Error[] => {
+  const inMessage = new Error(`draft failed for ${NAME} <${EMAIL}> key ${TOKEN}: ${NOTE}`)
+  const inCause = new Error('send failed', { cause: new Error(`${NAME} ${EMAIL} ${TOKEN} ${NOTE}`) })
+  const inName = Object.assign(new Error('x'), { name: 'PriyaVenkataramanError' })
+  const inStack = new TypeError('y')
+  inStack.stack = `TypeError: y\n    at ${NAME.replace(' ', '')} (${ROOT}/.next/server/chunks/1.js:10:5)\n    at notes (https://dazl.ai/notes/${encodeURIComponent(NOTE)}/a.js:1:2)\n    at ${TOKEN} (/home/${'priya'}/${TOKEN}.js:3:4)\n    at ${ROOT}/.next/server/app/page.js:7:9`
+  return [inMessage, inCause, inName, inStack]
+}
+
+test('an arbitrary name, an email, a token-like string and a lead note never reach Sentry or the alert webhook', async () => {
+  const bodies: string[] = []
+  const f = (async (_u: string, init: RequestInit) => { bodies.push(String(init.body)); return new Response('{}') }) as unknown as typeof fetch
+  const dep = { environment: 'staging', release: 'abc1234', root: ROOT }
+  const sentry = makeSentryHook({ dsn: DSN, fetchImpl: f, deployment: dep })
+  const webhook = makeAlertHook({ url: 'https://hooks.example.test/x', fetchImpl: f, deployment: dep })
+  for (const [i, e] of hostileErrors().entries()) {
+    const r = toRecord(e, { source: 'route', where: `/api/outreach/[id]`, method: 'POST', tenantId: TA })
+    // a distinct fingerprint each, so the throttle sends every one
+    sentry({ ...r, fingerprint: `f${i}` }); webhook({ ...r, fingerprint: `f${i}` })
+  }
+  await tick()
+  assert.equal(bodies.length, 8)
+  for (const b of bodies) {
+    for (const leak of SENSITIVE) assert.ok(!b.toLowerCase().includes(leak.toLowerCase()), `${leak} reached an outgoing body: ${b.slice(0, 300)}`)
+    assert.ok(!b.includes(TA), 'no tenant id')
+  }
+  // what does go: the type (an unknown class name becomes Error), the route and the code frames
+  const ev = parse(bodies[0])[2]
+  assert.deepEqual([ev.environment, ev.release, ev.transaction, ev.exception.values[0].type], ['staging', 'abc1234', '/api/outreach/[id]', 'Error'])
+  const stackEv = bodies.map(b => b.includes('x-sentry') ? null : b).filter(Boolean)
+  assert.ok(stackEv.length > 0)
+  const fromStack = parse(bodies.find(b => b.includes('"type":"TypeError"'))!)[2]
+  assert.deepEqual(fromStack.exception.values[0].stacktrace.frames.map((x: { filename: string }) => x.filename), ['.next/server/app/page.js', '.next/server/chunks/1.js'], 'only build files, relative to the app root, no function names')
+  for (const b of bodies) assert.ok(!b.includes(ROOT), 'no host or home prefix')
+})
+
+test('frames: only files this build has (server files relative to the app root, Node built-ins, emitted bundles)', () => {
+  assert.deepEqual(outboundFrames([
+    `at handler (${ROOT}/.next/server/app/api/leads/route.js:12:34)`,
+    'at async Promise.all (index 0)',
+    'at node:internal/process/task_queues:105:5',
+    'at node:fs:1:1',
+    `at x (file://${ROOT}/node_modules/next/dist/server/base-server.js:5:6)`,
+    'at u (https://dazl.ai/_next/static/chunks/app/page-1a2b.js?v=jane@example.com:1:999)',
+    'at x (https://evil.example/priya/notes.js:1:1)',
+    'free text that is not a frame',
+  ], ROOT), [
+    { filename: '.next/server/app/api/leads/route.js', lineno: 12, colno: 34 },
+    { filename: 'node:internal', lineno: 105, colno: 5 },
+    { filename: 'node:fs', lineno: 1, colno: 1 },
+    { filename: 'node_modules/next/dist/server/base-server.js', lineno: 5, colno: 6 },
+    { filename: '/_next/static/chunks/app/page-1a2b.js', lineno: 1, colno: 999 },
+  ])
+})
+
+// Instinct's review repro: paths that fit a code-path pattern but are made of a name and a secret
+test('frames whose path is a name or a secret are dropped, server and browser, for Sentry and the webhook', async () => {
+  const fakes = [
+    'at f (/home/AliceSmith/password-river-mint-secret.ts:1:2)',
+    'at f (https://dazl.ai/_next/static/AliceSmith/password-river-mint-secret.js:3:4)',
+    'at f (/_next/static/AliceSmith/password-river-mint-secret.js:3:4)',
+    `at f (${ROOT}/.next/server/AliceSmith/password-river-mint-secret.js:1:2)`, // under the root, right prefix, not built
+    `at f (${ROOT}/src/AliceSmith.ts:1:2)`,                                      // under the root, not build output
+    `at f (${ROOT}/../AliceSmith/.next/server/chunks/1.js:1:2)`,                // climbs out of the root
+    'at f (node:AliceSmith:1:2)',                                                  // not a Node built-in
+    'at f (/srv/other-app/.next/server/chunks/1.js:1:2)',                         // another root
+  ]
+  assert.deepEqual(outboundFrames(fakes, ROOT), [])
+  const real = `at g (${ROOT}/.next/server/chunks/1.js:7:8)` // the control: a real build file still goes
+  const e = new Error('x'); e.stack = ['Error: x', real, ...fakes.slice(0, 7)].join('\n') // 8 frames: the limit
+  const bodies: string[] = []
+  const f = (async (_u: string, init: RequestInit) => { bodies.push(String(init.body)); return new Response('{}') }) as unknown as typeof fetch
+  const dep = { environment: 'production', root: ROOT }
+  makeSentryHook({ dsn: DSN, fetchImpl: f, deployment: dep })(toRecord(e, { source: 'route', where: '/api/x' }))
+  makeAlertHook({ url: 'https://hooks.example.test/x', fetchImpl: f, deployment: dep })(toRecord(e, { source: 'route', where: '/api/x' }))
+  await tick()
+  assert.equal(bodies.length, 2)
+  for (const b of bodies) {
+    for (const leak of ['AliceSmith', 'river-mint', 'password', 'other-app']) assert.ok(!b.includes(leak), `${leak} reached an outgoing body`)
+    assert.ok(b.includes('.next/server/chunks/1.js'), 'the real build frame is kept')
+  }
+})
+
+test('environment: SENTRY_ENVIRONMENT when it is a plain word, else staging or production from DAZL_ENV; release only as a commit sha', () => {
+  assert.deepEqual(deployment({}), { environment: 'production' })
+  assert.deepEqual(deployment({ DAZL_ENV: 'staging' }), { environment: 'staging' })
+  assert.deepEqual(deployment({ SENTRY_ENVIRONMENT: 'production', DAZL_ENV: 'staging' }), { environment: 'production' })
+  assert.deepEqual(deployment({ SENTRY_ENVIRONMENT: 'jane@example.com', DAZL_COMMIT_SHA: 'abc1234' }), { environment: 'production', release: 'abc1234' })
+  assert.deepEqual(deployment({ DAZL_COMMIT_SHA: 'not a sha' }), { environment: 'production' })
+})
+
+test('every error class in lib/ and app/ is on the allowlist of error types (add new ones to APP_ERROR_CLASSES)', () => {
+  const found = new Set<string>()
+  const walk = (dir: string) => {
+    for (const f of readdirSync(dir)) {
+      const p = path.join(dir, f)
+      if (statSync(p).isDirectory()) walk(p)
+      else if (/\.tsx?$/.test(f)) for (const m of readFileSync(p, 'utf8').matchAll(/class ([A-Za-z0-9_]+) extends [A-Za-z0-9_]*(?:Error|Exception)\b/g)) found.add(m[1])
+    }
+  }
+  for (const d of ['../lib/', '../app/']) walk(new URL(d, import.meta.url).pathname)
+  assert.deepEqual([...found].filter(n => !APP_ERROR_CLASSES.has(n)), [])
 })

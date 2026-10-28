@@ -100,8 +100,22 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
     - The proxy runs before the route, so the line has no status or duration. Failures appear as error records carrying the same `request_id`.
     - `middleware.ts` moved to `proxy.ts`: the Next 16 name, Node runtime. The `/app` sign-in redirect is unchanged.
   - Alert hooks, both off unless configured, both throttled to one per fingerprint per 10 min and 20 per 10 min overall, fire and forget:
-    - `OPS_ALERT_WEBHOOK_URL` (https only): the scrubbed record is POSTed as JSON.
-    - `SENTRY_DSN` (https only): the scrubbed record goes as a Sentry event, in an envelope to the DSN's project (`/api/<project>/envelope/`), so Sentry, GlitchTip or a Sentry relay can receive it. No SDK is loaded. Grouping uses the record's fingerprint; the tenant id is the event user; `SENTRY_ENVIRONMENT` and `DAZL_COMMIT_SHA` set environment and release. Without a DSN, or with one that does not parse, nothing is sent (`test/ops-sentry.test.ts`).
+    - **What leaves the server is an allowlist, not the scrubbed record** (`outboundRecord`, `toSentryEnvelope` in `lib/ops/errors.ts`). The pattern scrub cannot recognise every name, secret or note, so no free text is sent at all.
+      - Sent:
+        - the error type: a built-in class or one of `APP_ERROR_CLASSES`, else `Error`;
+        - up to 8 stack frames, as file, line and column only, with no function names. A file is kept only when this build has it (`lib/ops/emitted.ts`): a server file that exists under the app root in `.next/server/` or `node_modules/`, sent relative to the root with no host or home prefix; a Node built-in; or a `/_next/static/` bundle this build emitted. A path that only looks like code (`/home/AliceSmith/password-….ts`) is dropped;
+        - the route template, source, method, request id and fingerprint;
+        - environment and release.
+      - Never sent: messages, causes, the tenant, refs, request bodies, headers, cookies, query strings or other context.
+      - No Sentry SDK is loaded, so there are no breadcrumbs, default PII or request data to turn off.
+      - The full scrubbed record stays in the server's own stderr log.
+      - Tested with an arbitrary name, an email, a token-like string and a free-text lead note placed in the message, the cause, the error name and the stack frames (`test/ops-sentry.test.ts`).
+    - `OPS_ALERT_WEBHOOK_URL` (https only): the allowlisted record is POSTed as JSON.
+    - `SENTRY_DSN` (https only): the allowlisted record goes as a Sentry event, in an envelope to the DSN's project (`/api/<project>/envelope/`), so Sentry, GlitchTip or a Sentry relay can receive it.
+      - Grouping uses the record's fingerprint.
+      - `environment` is `SENTRY_ENVIRONMENT` if it is a plain word, else `staging` when `DAZL_ENV=staging`, else `production`.
+      - `release` is `DAZL_COMMIT_SHA` when it is a commit sha.
+      - Without a DSN, or with one that does not parse, nothing is sent (`test/ops-sentry.test.ts`).
   - Health on both engines: `test/health-routes.test.ts` runs the real `/api/health`, `/api/health/live`, `/api/health/ready` and `/api/ready` handlers on SQLite, on an unreachable Postgres, and (with `DAZL_TEST_PG_URL`) on a Postgres with every shipped migration (store and schema ready; 503 from the `split` check alone while raw-SQLite modules remain) and on one missing the newest (503, schema `behind`).
   - Not yet: other diagnostic `console.error` calls inside the scan pipeline (handled per-step failures, not crashes). Also not done yet: the backup restore drill and the deploy checklist (step 6b).
 - **Scan jobs to Postgres, step 1 (platform part):**
