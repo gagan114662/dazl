@@ -1,0 +1,21 @@
+{
+  "id": "evt_test_checkout_completed",
+  "object": "event",
+  "api_version": "2024-06-20",
+  "created": 1793000000,
+  "livemode": false,
+  "type": "checkout.session.completed",
+  "data": {
+    "object": {
+      "id": "cs_test_fixture",
+      "object": "checkout.session",
+      "mode": "subscription",
+      "status": "complete",
+      "payment_status": "paid",
+      "client_reference_id": "{{TENANT}}",
+      "customer": "{{CUSTOMER}}",
+      "subscription": "{{SUBSCRIPTION}}",
+      "metadata": {}
+    }
+  }
+}

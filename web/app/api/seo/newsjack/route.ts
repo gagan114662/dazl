@@ -16,7 +16,7 @@ export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
-  if (!rateLimit(`newsjack:${user.id}`, 10, 60 * 60 * 1000).ok) return NextResponse.json({ error: 'Too many drafts this hour. Try later.' }, { status: 429 })
+  if (!(await rateLimit(`newsjack:${user.id}`, 10, 60 * 60 * 1000)).ok) return NextResponse.json({ error: 'Too many drafts this hour. Try later.' }, { status: 429 })
   const body = await req.json().catch(() => null)
   const db = getScanDb()
   migrateNewsjacks(db)

@@ -1,6 +1,8 @@
 import Database from 'better-sqlite3'
 import { createHash, randomBytes } from 'crypto'
 import path from 'path'
+import { getDb } from './db/client.ts'
+import type { Db } from './db/client.ts'
 
 let db: Database.Database | null = null
 
@@ -8,7 +10,12 @@ export function getAuthDb(): Database.Database {
   if (db) return db
   db = new Database(process.env.DB_PATH || path.join(process.cwd(), '..', '..', 'dazl-data', 'app.db'))
   db.pragma('journal_mode = WAL')
-  db.exec(`
+  migrateAuth(db)
+  return db
+}
+
+export function migrateAuth(d: Database.Database): void {
+  d.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       email TEXT UNIQUE NOT NULL,
@@ -27,9 +34,9 @@ export function getAuthDb(): Database.Database {
       expires_at INTEGER NOT NULL
     );
   `)
-    try { db.exec('ALTER TABLE users ADD COLUMN sells TEXT') } catch { /* exists */ }
-  try { db.exec('ALTER TABLE users ADD COLUMN website TEXT') } catch { /* exists */ }
-  return db
+  try { d.exec('ALTER TABLE users ADD COLUMN sells TEXT') } catch { /* exists */ }
+  try { d.exec('ALTER TABLE users ADD COLUMN website TEXT') } catch { /* exists */ }
+  try { d.exec('ALTER TABLE users ADD COLUMN buyer_profile TEXT') } catch { /* exists */ }
 }
 
 // Sessions are stored as a SHA-256 digest; the raw token only lives in the cookie.
@@ -39,18 +46,43 @@ export function hashToken(token: string): string {
 
 export const SESSION_TTL_S = 60 * 60 * 24 * 30
 
-export function createSession(userId: string): string {
+const nowS = () => Math.floor(Date.now() / 1000)
+
+// Sessions and sign-in run on the Db layer (docs/PLATFORM.md step 2). `d` defaults to the app's store.
+export async function createSession(userId: string, d?: Db): Promise<string> {
   const token = randomBytes(32).toString('hex')
-  getAuthDb()
-    .prepare('INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)')
-    .run(hashToken(token), userId, Math.floor(Date.now() / 1000) + SESSION_TTL_S)
+  await (d ?? await getDb()).run('INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)', [hashToken(token), userId, nowS() + SESSION_TTL_S])
   return token
+}
+
+// Password sign-in lookup. Unknown email -> undefined (the route still spends the same scrypt time).
+export async function findPasswordUser(email: string, d?: Db): Promise<{ id: string; password_hash: string; salt: string } | undefined> {
+  return (d ?? await getDb()).get('SELECT id, password_hash, salt FROM users WHERE email = ?', [email])
+}
+
+// 'exists' when the email is taken; the route must not reveal which.
+export async function createPasswordUser(u: { id: string; email: string; name: string; business_name: string; password_hash: string; salt: string }, d?: Db): Promise<'created' | 'exists'> {
+  const r = await (d ?? await getDb()).run(
+    'INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (email) DO NOTHING',
+    [u.id, u.email, u.name, u.business_name, u.password_hash, u.salt])
+  return r.changes === 1 ? 'created' : 'exists'
 }
 
 // What the seller sells + their site, collected once on the home page. Used to aim ICP inference.
 export function getSellerProfile(db: Database.Database, userId: string): { sells: string; website: string } {
   const r = db.prepare('SELECT sells, website FROM users WHERE id = ?').get(userId) as { sells: string | null; website: string | null } | undefined
   return { sells: r?.sells ?? '', website: r?.website ?? '' }
+}
+
+// Who the seller sells to, as reviewed in onboarding: a normalized Icp stored as JSON (validated by the caller with
+// normalizeIcp). Read back through normalizeIcp too, so a stored row can never return fields the profile does not allow.
+export function getBuyerProfile(db: Database.Database, userId: string): string | null {
+  const r = db.prepare('SELECT buyer_profile FROM users WHERE id = ?').get(userId) as { buyer_profile: string | null } | undefined
+  return r?.buyer_profile ?? null
+}
+
+export function setBuyerProfile(db: Database.Database, userId: string, json: string | null): void {
+  db.prepare('UPDATE users SET buyer_profile = ? WHERE id = ?').run(json, userId)
 }
 
 export function getBusinessName(db: Database.Database, userId: string): string {
@@ -71,18 +103,16 @@ export function setSellerProfile(db: Database.Database, userId: string, sells: s
   db.prepare('UPDATE users SET sells = ?, website = ? WHERE id = ?').run(sells.slice(0, 150), website.slice(0, 200), userId)
 }
 
-export function getSessionUser(token: string | undefined): { id: string; email: string; business_name: string } | null {
+export async function getSessionUser(token: string | undefined, d?: Db): Promise<{ id: string; email: string; business_name: string } | null> {
   if (!token || !/^[a-f0-9]{64}$/.test(token)) return null
-  const row = getAuthDb()
-    .prepare(
-      `SELECT u.id, u.email, u.business_name FROM sessions s JOIN users u ON u.id = s.user_id
-       WHERE s.id = ? AND s.expires_at > unixepoch()`
-    )
-    .get(hashToken(token)) as { id: string; email: string; business_name: string } | undefined
+  const row = await (d ?? await getDb()).get<{ id: string; email: string; business_name: string }>(
+    `SELECT u.id, u.email, u.business_name FROM sessions s JOIN users u ON u.id = s.user_id
+     WHERE s.id = ? AND s.expires_at > ?`,
+    [hashToken(token), nowS()])
   return row ?? null
 }
 
-export function deleteSession(token: string | undefined): void {
+export async function deleteSession(token: string | undefined, d?: Db): Promise<void> {
   if (!token) return
-  getAuthDb().prepare('DELETE FROM sessions WHERE id = ?').run(hashToken(token))
+  await (d ?? await getDb()).run('DELETE FROM sessions WHERE id = ?', [hashToken(token)])
 }

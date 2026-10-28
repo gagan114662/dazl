@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
-  const rl = rateLimit(`reopen:${user.id}`, 20, 60 * 60 * 1000)
+  const rl = (await rateLimit(`reopen:${user.id}`, 20, 60 * 60 * 1000))
   if (!rl.ok) return NextResponse.json({ error: 'Too many actions. Try again later.' }, { status: 429 })
   const body = await req.json().catch(() => null)
   const threadId = typeof body?.thread_id === 'string' ? body.thread_id : ''

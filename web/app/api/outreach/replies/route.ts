@@ -33,7 +33,7 @@ export async function POST(req: NextRequest) {
       setFollowups(db, user.id, true); return NextResponse.json({ ok: true })
     }
     case 'sync': {
-      if (!rateLimit(`sync:${user.id}`, 6, 60 * 60 * 1000).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+      if (!(await rateLimit(`sync:${user.id}`, 6, 60 * 60 * 1000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
       const r = await syncReplies(db, user.id)
       const f = !r.error && followupsEnabled(db, user.id) ? await runFollowups(db, user.id, user.business_name) : null
       return NextResponse.json({ ok: true, sync: r, followups: f })

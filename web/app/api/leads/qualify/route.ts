@@ -21,7 +21,7 @@ export async function POST(req:NextRequest){
  try{b=JSON.parse(raw)}catch{return NextResponse.json({error:'Bad request'},{status:400})}
  const a=b?.approval
  if(typeof b?.lead_id!=='string'||!/^[0-9a-f]{24}$/.test(b.lead_id)||!a||a.approved_by_user!==true||typeof a.vendor!=='string'||typeof a.model!=='string'||typeof a.max_usd_estimate!=="number"||!Number.isFinite(a.max_usd_estimate)||a.max_usd_estimate<0||typeof a.prompt_sha256!=='string'||!a.limits||typeof a.limits!=='object')return NextResponse.json({error:'Bad request'},{status:400})
- if(!rateLimit(`qualify:${user.id}`,5,60*60*1000).ok)return NextResponse.json({error:'Too many checks. Try again later.'},{status:429})
+ if(!(await rateLimit(`qualify:${user.id}`,5,60*60*1000)).ok)return NextResponse.json({error:'Too many checks. Try again later.'},{status:429})
  const db=getScanDb(),vendor=pickVendor(db,user.id)
  const k=vendor?readKey(db,user.id,vendor):{key:null,unreadable:false}
  const r=await runQualification(db,user.id,b.lead_id,a as never,{enabled:true,sellerText:sellerProfile(getAuthDb(),user.id),vendor,provider:vendor?providers[vendor]:null,apiKey:k.key})
