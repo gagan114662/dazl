@@ -202,3 +202,42 @@ bothEngines('concurrent same-second pair: the end state is what Stripe says, wha
   ]))
   for (const t of tenants) assert.equal(await readPlan(db, t), 'free', t)
 }, { pgMax: 8 })
+
+// Review repro (4ca4b5c): an answer from Stripe the policy does not map must never leave Pro in place. Known
+// non-entitling statuses settle to Free; unknown ones hold (restrictive, event unprocessed, redelivered) until Stripe
+// answers with a status the policy knows.
+bothEngines('tie: Stripe answering incomplete or paused settles to Free; an unknown status holds restrictively and retries', async ({ db }) => {
+  // checkout @100 -> same-second unpaid @100, Stripe says "incomplete"
+  await applyStripeEvent(db, checkout('e1', 100, T, 'cus_t', 'sub_1'))
+  assert.equal(await applyStripeEvent(db, sub('e2', 'customer.subscription.updated', 100, 'sub_1', 'cus_t', 'unpaid'), stripeSays('incomplete')), 'reconciled')
+  assert.equal(await readPlan(db, T), 'free')
+  // same with "paused"
+  await applyStripeEvent(db, checkout('p1', 100, U, 'cus_u', 'sub_u'))
+  assert.equal(await applyStripeEvent(db, sub('p2', 'customer.subscription.updated', 100, 'sub_u', 'cus_u', 'unpaid'), stripeSays('paused')), 'reconciled')
+  assert.equal(await readPlan(db, U), 'free')
+  // a status Stripe may add later: held, not ignored and final
+  const V = 'f'.repeat(32)
+  await applyStripeEvent(db, checkout('v1', 100, V, 'cus_v', 'sub_v'))
+  const tie = sub('v2', 'customer.subscription.updated', 100, 'sub_v', 'cus_v', 'unpaid')
+  assert.equal(await applyStripeEvent(db, tie, stripeSays('some_new_status')), 'held')
+  assert.equal(await readPlan(db, V), 'free')
+  assert.equal(await db.get("SELECT 1 AS x FROM stripe_events WHERE id = 'v2'"), undefined) // not processed
+  // after a held tie: the redelivery with an unknown answer holds again; a known answer settles it
+  assert.equal(await applyStripeEvent(db, tie, stripeSays('another_new_status')), 'held')
+  assert.equal(await readPlan(db, V), 'free')
+  assert.equal(await applyStripeEvent(db, tie, stripeSays('active')), 'reconciled')
+  assert.equal(await readPlan(db, V), 'pro')
+  assert.ok(await db.get("SELECT 1 AS x FROM stripe_events WHERE id = 'v2'"))
+})
+
+bothEngines('status policy outside ties: paused and incomplete downgrade (recoverable); an unknown status changes nothing', async ({ db }) => {
+  await applyStripeEvent(db, checkout('e1', 100, T, 'cus_t', 'sub_1'))
+  assert.equal(await applyStripeEvent(db, sub('e2', 'customer.subscription.updated', 200, 'sub_1', 'cus_t', 'paused'), never), 'applied')
+  assert.equal(await readPlan(db, T), 'free')
+  assert.equal(await applyStripeEvent(db, sub('e3', 'customer.subscription.updated', 300, 'sub_1', 'cus_t', 'active'), never), 'applied') // resumed
+  assert.equal(await readPlan(db, T), 'pro')
+  assert.equal(await applyStripeEvent(db, sub('e4', 'customer.subscription.updated', 400, 'sub_1', 'cus_t', 'incomplete'), never), 'applied')
+  assert.equal(await readPlan(db, T), 'free')
+  assert.equal(await applyStripeEvent(db, sub('e5', 'customer.subscription.updated', 500, 'sub_1', 'cus_t', 'some_new_status'), never), 'ignored')
+  assert.equal(await readPlan(db, T), 'free') // unknown never grants anything
+})
