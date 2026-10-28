@@ -29,8 +29,11 @@ export function outcomes(i: { jobId: string; scanFailed: string | null; leads: P
   const ids = i.leads ? new Set(i.leads.map(l => l.id)) : null
   const mine = i.messages && ids ? i.messages.filter(m => ids.has(m.lead_id)) : i.messages
   const by = (st: string) => mine ? mine.filter(m => m.status === st) : null
+  // One conversation per thread: its newest reply decides (a later "no" or opt-out closes an earlier "yes").
+  const newest = new Map<string, OutcomeReply>()
+  for (const r of i.replies ?? []) { const cur = newest.get(r.thread_id); if (!cur || r.received_at > cur.received_at) newest.set(r.thread_id, r) }
   const conversations = i.replies && ids
-    ? { rows: i.replies.filter(r => r.lead_id && ids.has(r.lead_id) && NEEDS_OWNER.has(r.classification) && !r.stopped), complete: i.replies.length < INBOX_CAP }
+    ? { rows: [...newest.values()].filter(r => r.lead_id && ids.has(r.lead_id) && NEEDS_OWNER.has(r.classification) && !r.stopped).sort((a, b) => b.received_at - a.received_at), complete: i.replies.length < INBOX_CAP }
     : null
   let exceptions: Outcomes['exceptions'] = []
   if (i.scanFailed) exceptions.push({ kind: 'scan', text: i.scanFailed, href: `/app/leads?job_id=${i.jobId}` })

@@ -9,7 +9,7 @@
 //   3. the outcomes view is reachable from Home and the nav, scoped to the play: opportunities, drafts, approved-unsent,
 //      conversations needing the owner and exceptions; another play's draft or reply is never counted; a failed read
 //      shows "?" (unknown), never 0; a stopped thread is not a conversation needing the owner; approved-but-unsent emails
-//      show even with zero drafts.
+//      show even with zero drafts; two replies in one thread count as one conversation.
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
@@ -45,6 +45,8 @@ const MSGS = [
 ]
 const REPLIES = [
   { gmail_id: 'g1', thread_id: 't1', lead_id: LEADS[0].id, from_email: 'ceo@1.example', excerpt: 'Sounds interesting - can we talk Thursday?', classification: 'positive', received_at: now, company: 'Northwind Labs', lead_name: null, followups_sent: 0, stopped: null },
+  // A second, earlier reply in the same thread as g1: one conversation, not two.
+  { gmail_id: 'g1b', thread_id: 't1', lead_id: LEADS[0].id, from_email: 'ceo@1.example', excerpt: 'Thanks for reaching out.', classification: 'other', received_at: now - 3600, company: 'Northwind Labs', lead_name: null, followups_sent: 0, stopped: null },
   { gmail_id: 'g2', thread_id: 't2', lead_id: LEADS[1].id, from_email: 'ops@2.example', excerpt: 'Please remove me', classification: 'opt_out', received_at: now, company: 'Kitebase', lead_name: null, followups_sent: 0, stopped: 'opt_out' },
   { gmail_id: 'g3', thread_id: 't3', lead_id: '9'.repeat(24), from_email: 'x@other.example', excerpt: 'Another play', classification: 'positive', received_at: now, company: 'Other Co', lead_name: null, followups_sent: 0, stopped: null },
 ]
@@ -149,7 +151,8 @@ try {
     assert.deepEqual([await tile('tile-opportunities'), await tile('tile-drafts'), await tile('tile-conversations'), await tile('tile-exceptions')], ['2', '1', '1', '2'])
     assert.match(await page.getByTestId('outcomes-play').textContent(), /Seed-stage SaaS founders in London hiring sales/)
     const conv = await page.getByTestId('outcomes-conversations').textContent()
-    assert.match(conv, /Northwind Labs.*can we talk Thursday/); assert.doesNotMatch(conv, /Other Co|remove me/, 'not another play, not an opt-out')
+    assert.match(conv, /Northwind Labs.*can we talk Thursday/); assert.doesNotMatch(conv, /Thanks for reaching out/, 'two replies in one thread are one conversation (the newest)')
+    assert.equal(await page.getByTestId('outcomes-conversations').locator('a').count(), 1); assert.doesNotMatch(conv, /Other Co|remove me/, 'not another play, not an opt-out')
     assert.doesNotMatch(await page.getByTestId('outcomes-drafts').textContent(), /other\.example/, 'another play\'s draft is not counted')
     assert.match(await page.getByTestId('outcomes-approved').textContent(), /^1 approved, not sent yet\./)
     const exc = await page.getByTestId('outcomes-exceptions').textContent()
@@ -169,7 +172,7 @@ try {
     await o2.ctx.close()
     // Instinct #305 review of 45d6d06: a stopped thread is not a conversation that needs the owner, and approved-but-unsent
     // emails show even when there are no drafts.
-    const z = { ...s, msgs: [{ ...MSGS[1] }], replies: [{ ...REPLIES[0], stopped: 'replied' }, { ...REPLIES[0], gmail_id: 'g4', lead_id: LEADS[1].id, from_email: 'ops@2.example', company: 'Kitebase', excerpt: 'Who is this for?', classification: 'other', stopped: null }] }
+    const z = { ...s, msgs: [{ ...MSGS[1] }], replies: [{ ...REPLIES[0], stopped: 'replied' }, { ...REPLIES[0], gmail_id: 'g4', thread_id: 't4', lead_id: LEADS[1].id, from_email: 'ops@2.example', company: 'Kitebase', excerpt: 'Who is this for?', classification: 'other', stopped: null }] }
     const o3 = await open(z, `/app/outcomes?job_id=${P}`)
     await o3.page.getByTestId('outcomes-conversations').locator('a').first().waitFor({ timeout: 15000 })
     const t3 = async t => (await o3.page.getByTestId(t).locator('div').first().textContent()).trim()
