@@ -7,8 +7,9 @@
 //   2. an empty brain gets the three static examples, labelled "Examples:"; a sparse profile shows only its own
 //      suggestion under "From your business details:" and the top-up examples in a separate "Examples:" group;
 //   3. clicking a suggestion only fills the box (no request is sent);
-//   4. submitting runs the existing flow unchanged: Find leads -> profile review -> one POST /api/scan carrying the
-//      suggestion as the query -> the live progress view, where the suggestions are no longer shown.
+//   4. Find leads goes straight from the sentence to live progress: exactly one POST /api/scan carrying the suggestion
+//      as the query (no profile step, no /api/scan/icp call), and the suggestions are no longer shown;
+//   5. "Review profile first" still works: one POST /api/scan/icp, the profile to edit, then one POST /api/scan with it.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -82,18 +83,31 @@ try {
   assert.equal(await box.inputValue(), 'Clinic administrators in Ohio - hiring front-desk staff')
   assert.deepEqual(writes, [], 'a suggestion only fills the box')
   await shot(page, 'filled')
-  // The existing flow: profile review first, then the one scan request, then live progress.
+  // Sentence -> live progress: one scan request, no profile step.
   await page.getByRole('button', { name: 'Find leads' }).click()
-  await page.getByRole('button', { name: 'Run scan with this profile' }).first().click()
   await page.getByText('Queued - waiting to start.').waitFor()
-  assert.deepEqual(writes, ['POST /api/scan/icp', 'POST /api/scan'])
+  assert.deepEqual(writes, ['POST /api/scan'])
   assert.equal(scanBodies.length, 1)
   assert.equal(scanBodies[0].query, 'Clinic administrators in Ohio - hiring front-desk staff')
-  assert.equal(scanBodies[0].icp.summary, ICP.summary)
+  assert.equal(scanBodies[0].icp, undefined, 'the server works out the profile, as the no-review path always did')
+  assert.equal(await page.getByRole('button', { name: 'Run scan with this profile' }).count(), 0, 'no profile review step')
   assert.equal(await page.getByText('Stop this scan').isVisible(), true)
   assert.equal(await page.getByTestId('play-suggestions').count(), 0, 'no suggestions over a running scan')
   await shot(page, 'progress')
   await ctx.close()
+  // Optional review: the profile is worked out for editing, then the scan runs with it.
+  const rv = await open(PROFILE)
+  await rv.page.getByTestId('play-suggestion').nth(1).click()
+  await rv.page.getByRole('button', { name: 'Review profile first' }).click()
+  await rv.page.getByRole('button', { name: 'Run scan with this profile' }).first().waitFor()
+  assert.deepEqual(rv.writes, ['POST /api/scan/icp'], 'reviewing starts nothing')
+  await shot(rv.page, 'review')
+  await rv.page.getByRole('button', { name: 'Run scan with this profile' }).first().click()
+  await rv.page.getByText('Queued - waiting to start.').waitFor()
+  assert.deepEqual(rv.writes, ['POST /api/scan/icp', 'POST /api/scan'])
+  assert.equal(rv.scanBodies.length, 1)
+  assert.equal(rv.scanBodies[0].icp.summary, ICP.summary)
+  await rv.ctx.close()
   // Empty brain: three static examples, labelled as examples.
   const empty = await open(EMPTY)
   const ex = empty.page.getByTestId('play-suggestion'); await ex.first().waitFor()
@@ -113,7 +127,7 @@ try {
   assert.match(await sparse.page.getByTestId('play-suggestions-examples').textContent(), /^Examples:/)
   await shot(sparse.page, 'sparse')
   await sparse.ctx.close()
-  console.log('play step UI check passed: suggestions from the business details (examples labelled apart), click fills only, one scan, live progress')
+  console.log('play step UI check passed: suggestions from the business details (examples labelled apart), click fills only, Find leads -> one scan -> live progress, optional review still runs')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }

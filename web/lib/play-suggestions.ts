@@ -14,7 +14,8 @@ export const EXAMPLE_PLAYS = [
   'B2B SaaS founders in the US - hiring their first sales rep',
   'Restaurant owners in Austin - started taking online orders',
 ]
-const SELLS_SIGNALS = ['opened a new location', 'hiring for a role this helps with', 'complaining publicly about their current tool']
+// Only concrete events: the business details name no hiring role, so a "hiring for a role" play would be a placeholder.
+const SELLS_SIGNALS = ['opened a new location', 'complaining publicly about their current tool']
 const MAX = 600 // the scan request cap (lib/scan/icp.ts MAX_QUERY)
 
 const tidy = (s: unknown) => typeof s === 'string' ? s.replace(/\s+/g, ' ').trim() : ''

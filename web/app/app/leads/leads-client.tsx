@@ -265,8 +265,8 @@ export default function LeadsClient() {
     return ok
   }
 
-  async function preview(e: React.FormEvent) {
-    e.preventDefault()
+  // Optional: work out the profile for review before running. The sentence alone runs straight away (submit below).
+  async function preview() {
     setError(''); setDraft(null); setBusy(true)
     try {
       const r = await fetch('/api/scan/icp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query }) })
@@ -432,7 +432,9 @@ export default function LeadsClient() {
         </div>
         <a className="text-sm text-gray-300 underline underline-offset-4 hover:text-white" href={jobId ? `/api/leads/export?job_id=${jobId}` : '/api/leads/export'}>Download CSV</a>
       </div>
-      <form onSubmit={preview} className="mb-4">
+      {/* Submitting the sentence runs the scan (the server works out the profile, as the run-without-review path always did)
+          and lands on live progress; reviewing the profile first is optional. */}
+      <form onSubmit={e => { e.preventDefault(); void run(null) }} className="mb-4">
         <label htmlFor="play" className="block text-base font-semibold mb-2">Who do you want to reach?</label>
         <textarea id="play" className={`${input} w-full`} rows={3} required minLength={3} maxLength={600} value={query} onChange={e => setQuery(e.target.value)}
           placeholder="One sentence: who, where, and what just happened. e.g. Seed-stage fintech founders in Europe who just hired their first sales rep" />
@@ -444,8 +446,8 @@ export default function LeadsClient() {
             </div>)}
         </div>}
         <div className="flex gap-3 mt-2 items-center">
-          <button disabled={busy || scanActive} title={scanActive ? 'A scan is already running below' : undefined} className="btn-primary">{busy ? 'Working out your profile...' : 'Find leads'}</button>
-          <button type="button" disabled={query.trim().length < 3 || starting || scanActive} onClick={() => run(null)} className="text-xs text-[#555] underline disabled:opacity-40 disabled:no-underline">{starting ? 'Starting...' : 'or run without reviewing the profile'}</button>
+          <button disabled={busy || starting || scanActive} title={scanActive ? 'A scan is already running below' : undefined} className="btn-primary">{starting ? 'Starting...' : 'Find leads'}</button>
+          <button type="button" disabled={query.trim().length < 3 || busy || starting || scanActive} onClick={() => void preview()} className="text-xs text-[#555] underline disabled:opacity-40 disabled:no-underline">{busy ? 'Working out your profile...' : 'Review profile first'}</button>
         </div>
       </form>
       <details className="mb-4 text-sm" data-testid="more-sources">
