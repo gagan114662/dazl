@@ -4,6 +4,8 @@ import { useRouter } from 'next/navigation'
 import KeyInline from './key-inline'
 import { normalizeWebsite, suggestPlays, type Brain } from '@/lib/onboarding'
 import { knownErrorCopy } from '@/lib/error-copy'
+import InfoTip from './ui/info-tip'
+import { Icon } from './ui/icons'
 
 type Step = 'site' | 'brain' | 'ask'
 interface Usage { has_key: boolean; trial: { funded: boolean; remaining: number } | null }
@@ -108,17 +110,21 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       const j = await r.json().catch(() => ({}))
       if (!r.ok) return setError(j.error || 'Could not save')
       window.dispatchEvent(new Event('profile-updated')) // the Home checklist re-reads the saved profile
-      if (askIsSuggestion || !ask.trim()) { setAsk(plays[0] || ''); setAskIsSuggestion(true) }
+      // The box starts empty under its three suggestions; a sentence the user typed is kept, a picked suggestion is not.
+      if (askIsSuggestion || !ask.trim()) { setAsk(''); setAskIsSuggestion(true) }
       setStep('ask')
     } catch { setError('Could not reach the server. Try again.') } finally { setBusy(false) }
   }
 
-  async function run(e: React.FormEvent) {
-    e.preventDefault(); setError(''); setBusy(true)
+  // One scan from one sentence: the box, or a suggested play picked with one click (it goes in the box and starts at once).
+  async function run(e: React.FormEvent) { e.preventDefault(); await start(ask) }
+  async function start(sentence: string) {
+    if (busy || sentence.trim().length < 3) return
+    setError(''); setBusy(true)
     try {
-      // The sentence on screen and the profile from step 2, as the Leads page sends a reviewed profile. The server
-      // validates both; nothing here changes what a scan checks.
-      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: ask.trim(), icp: profile }) })
+      // The sentence and the profile from step 2, as the Leads page sends a reviewed profile. The server validates both;
+      // nothing here changes what a scan checks.
+      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: sentence.trim(), icp: profile }) })
       const j = await r.json().catch(() => ({}))
       if (r.ok && j.job_id) { router.push(`/app/leads?job_id=${encodeURIComponent(j.job_id)}`); return }
       if (j.error === 'no_api_key' || j.error === 'trial_exhausted') { setNeedKey(true); return setError(j.error === 'trial_exhausted' ? 'Your free scans are used up. Add your AI key to keep going.' : '') }
@@ -129,7 +135,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   const dot = (s: Step, n: number, label: string) => <li className={`flex items-center gap-2 ${step === s ? 'text-[#111] font-medium' : 'text-[#888]'}`}><span className={`w-6 h-6 rounded-full text-xs flex items-center justify-center ${step === s ? 'bg-[#111] text-white' : 'bg-black/5'}`}>{n}</span>{label}</li>
   return (
     <div className="max-w-2xl">
-      <ol className="flex flex-wrap gap-x-6 gap-y-2 text-sm mb-6" aria-label="Setup steps">{dot('site', 1, 'Your website')}{dot('brain', 2, 'What you sell')}{dot('ask', 3, 'Who to reach')}</ol>
+      <ol className="flex flex-wrap gap-x-6 gap-y-2 text-sm mb-6" aria-label="Setup steps">{dot('site', 1, 'Your website')}{dot('brain', 2, 'What you sell')}{dot('ask', 3, 'Who to find')}</ol>
       {error && <p className="text-sm text-[#111] border-l-2 border-[#111] pl-3 mb-4" role="alert">{error}</p>}
 
       {step === 'site' && <div className="card p-6">
@@ -165,21 +171,22 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         </div>
       </form>}
 
-      {step === 'ask' && <form onSubmit={run} className="card p-6 flex flex-col gap-3 text-sm">
-        <h2 className="text-xl font-semibold">Who do you want to reach?</h2>
-        <p className="text-[#555]">One sentence. Pick a suggestion or write your own.</p>
+      {step === 'ask' && <form onSubmit={run} className="card px-5 py-8 sm:px-10 sm:py-10 flex flex-col gap-4 text-sm">
+        <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-center"><label htmlFor="ask">Who do you want to find?</label></h2>
+        <div className="ask">
+          <textarea id="ask" rows={2} required minLength={3} maxLength={600} placeholder="Find people who..." value={ask} onChange={e => { setAsk(e.target.value); setAskIsSuggestion(false) }} />
+          <button className="btn-primary send" disabled={busy || ask.trim().length < 3}><Icon name="arrow" className="w-4 h-4 -rotate-90" /><span className="sr-only">{busy ? 'Starting...' : 'Find leads'}</span></button>
+        </div>
         <div className="flex flex-col gap-2" role="group" aria-label="Suggested plays">
-          {plays.map(p => <button type="button" key={p} aria-pressed={ask === p} onClick={() => { setAsk(p); setAskIsSuggestion(true) }} className={`text-left border rounded-lg px-3 py-2 ${ask === p ? 'border-[#111] bg-black/5' : 'border-black/15 hover:border-black/40'}`}>{p}</button>)}
+          {plays.map(p => <button type="button" key={p} disabled={busy} onClick={() => { setAsk(p); setAskIsSuggestion(true); void start(p) }} className="chip justify-between">{p}<Icon name="arrow" className="w-4 h-4 shrink-0 text-[var(--ink-3)]" /></button>)}
         </div>
-        <textarea className="field" rows={2} required minLength={3} maxLength={600} aria-label="Who do you want to reach" value={ask} onChange={e => { setAsk(e.target.value); setAskIsSuggestion(false) }} />
-        <p className="text-xs text-[#555]" aria-label="Search profile">Searched with your profile: {[profile.who.join(', '), profile.industries.join(', '), profile.where.length ? `in ${profile.where.join(', ')}` : 'any location', profile.sizes.join(', '), profile.exclude.length ? `skipping ${profile.exclude.join(', ')}` : ''].filter(Boolean).join(' · ')}. <button type="button" className="underline" onClick={() => setStep('brain')}>Edit</button></p>
-        {needKey && !hasKey ? <KeyInline reason="Searches run on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); setError(''); void loadUsage() }} />
-          : !hasKey && trialLeft > 0 ? <p className="text-xs text-[#555]">Your first {trialLeft} search{trialLeft === 1 ? '' : 'es'} are on us. No AI key needed yet.</p> : null}
-        <div className="flex gap-3 items-center">
-          <button className="btn-primary" disabled={busy || ask.trim().length < 3}>{busy ? 'Starting...' : 'Find leads'}</button>
-          <button type="button" className="text-xs underline text-[#555]" onClick={() => setStep('brain')}>Back</button>
+        {needKey && !hasKey && <KeyInline reason="Searches run on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); setError(''); void loadUsage() }} />}
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <button type="button" className="btn-ghost btn-sm" onClick={() => setStep('brain')}>Back</button>
+          <button type="button" className="btn-ghost btn-sm" onClick={() => setStep('brain')}>Edit profile</button>
+          <InfoTip label="The profile this search uses"><span aria-label="Search profile">Searched with your profile: {[profile.who.join(', '), profile.industries.join(', '), profile.where.length ? `in ${profile.where.join(', ')}` : 'any location', profile.sizes.join(', '), profile.exclude.length ? `skipping ${profile.exclude.join(', ')}` : ''].filter(Boolean).join(' · ')}.</span></InfoTip>
+          {!needKey && !hasKey && trialLeft > 0 && <span className="pill pill-mint ml-auto" data-testid="trial-left">{trialLeft} free search{trialLeft === 1 ? '' : 'es'}</span>}
         </div>
-        <p className="text-xs text-[#777]">Leads arrive on the Leads page with their sources. Nothing is emailed until you approve it.</p>
       </form>}
 
       <button type="button" className="text-xs text-[#777] underline mt-6" onClick={() => setReady('home')}>Skip setup and show all options</button>

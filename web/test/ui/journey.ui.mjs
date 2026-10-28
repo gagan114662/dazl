@@ -9,7 +9,7 @@
 //   - a step that needs a typed URL (there is no page.goto after the first);
 //   - an empty or blocked state with no next step;
 //   - a chunk-load error or the app error screen at any point.
-// Steps: website -> profile (brain) -> one-sentence play from 3 suggestions -> Find leads -> live progress (queued,
+// Steps: website -> profile (brain) -> one-sentence play from 3 one-click suggestions -> live progress (queued,
 // running, done) -> lead cards (Approve one, Reject one with a reason) -> Review drafts -> Outreach draft -> Approve
 // -> sender details inline -> Connect Gmail (Settings) -> back to Outreach -> Send now -> sent.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
@@ -111,9 +111,7 @@ try {
     const plays = page.getByRole('group', { name: 'Suggested plays' }).getByRole('button')
     await plays.first().waitFor(T)
     assert.equal(await plays.count(), 3, 'three suggested plays')
-    await plays.nth(0).click()
-    assert.equal(await page.getByLabel('Who do you want to reach').inputValue(), 'Practice owners in Ohio - opened a new location')
-    await page.getByRole('button', { name: 'Find leads' }).click()
+    await plays.nth(0).click() // one click on a suggested play starts the scan
     await page.waitForURL(/\/app\/leads\?job_id=/, T)
   })
   await step('progress', async () => {
