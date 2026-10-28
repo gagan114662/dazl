@@ -4,7 +4,8 @@ import Database from 'better-sqlite3'
 import { sqliteDb, type Db } from '../lib/db/client.ts'
 import { migrateMonitors, createMonitor, listMonitors, runDueMonitors, collectMonitorResults, setMonitorEnabled, deleteMonitor, MONITOR_LIMITS } from '../lib/monitors.ts'
 import { migrateScan } from '../lib/scan/store.ts'
-import { migratePlans, setPlan } from '../lib/plans.ts'
+import { migratePlans } from '../lib/plans.ts'
+import { setPlan } from './helpers/plan-fixture.ts'
 const dbs = new WeakMap<Database.Database, Db>()
 const D = (db: Database.Database) => { let d = dbs.get(db); if (!d) dbs.set(db, d = sqliteDb(db)); return d }
 
