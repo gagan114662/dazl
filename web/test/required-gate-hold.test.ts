@@ -83,3 +83,34 @@ test('NOTHING PERSISTED: the process remembers the held lead; a gate pass releas
   assert.throws(() => createDraft(db, 'A', id, 'Acme'), /sales_hiring_check_failed/)
   releaseHeld(db, 'A', jobId, [id]); assert.equal(requiredGateHeld(db, 'A', id), null)
 })
+
+test('DURABLE across a restart: every write of the failure rejected (no review reason, no marker, no report entry) and no pass record -> a FRESH process still holds the lead through lead + domain confirmation; with a durable pass record it is draftable', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs'); const { tmpdir } = await import('node:os'); const { join } = await import('node:path'); const { spawnSync } = await import('node:child_process'); const { fileURLToPath } = await import('node:url')
+  const dir = mkdtempSync(join(tmpdir(), 'gate-hold-'))
+  try {
+    const file = join(dir, 'scan.db')
+    const db = new Database(file); migrateScan(db); migrateOutreach(db); migrateConnectors(db); seedOffers(db)
+    const ICP = JSON.stringify({ summary: 's', where: ['London, UK'], who: ['Founder'], signals: ['announced seed funding', 'hiring sales staff'], exclude: [] })
+    const mkLead = (id: string) => {
+      const job = createJob(db, 'A', { business_name: 'Acme', industry: 'SaaS', location: 'London' })
+      db.prepare("UPDATE scan_jobs SET status = 'running', query = ?, icp = ? WHERE id = ?").run('Find London UK B2B SaaS startups that announced seed funding and are hiring sales staff.', ICP, job)
+      db.prepare('INSERT INTO leads (id, scan_job_id, company, company_domain, contact, signal, source_url, evidence_excerpt, confidence, review_reason, score, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 80, NULL, 70, ?)')
+        .run(id, job, 'Northside Builders', 'northside.example', 'info@northside.example', 'raised a seed round', 'https://news.example/a', 'Northside Builders raised a seed round', Math.floor(Date.now() / 1000))
+    }
+    mkLead('held1'); mkLead('passed1')
+    // only the lead the gate actually passed carries the durable record
+    db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, 'passed1', 'A', 'scan:gate', 'gate_passed', 'sales_hiring', 'x', NULL, 'https://invalid.example/', '2026-10-28', 1)").run(randomBytes(12).toString('hex'))
+    db.close()
+    const run = (leadId: string) => {
+      const env = { ...process.env }; delete env.NODE_TEST_CONTEXT
+      const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts', './test/helpers/fresh-process-hold.mts', file, leadId], { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 60000 })
+      assert.equal(r.status, 0, r.stdout + r.stderr)
+      return JSON.parse(/RESULT (.*)/.exec(r.stdout)![1]) as { heldBefore: string | null; confirmed: boolean; draft?: string; draftError?: string; heldAfter: string | null }
+    }
+    const held = run('held1')
+    assert.equal(held.heldBefore, 'sales_hiring_check_failed', 'a fresh process forgets nothing: no pass record means held'); assert.equal(held.confirmed, true)
+    assert.match(held.draftError ?? '', /sales_hiring_check_failed/, JSON.stringify(held)); assert.equal(held.draft, undefined); assert.equal(held.heldAfter, 'sales_hiring_check_failed')
+    const passed = run('passed1')
+    assert.equal(passed.heldBefore, null); assert.equal(typeof passed.draft, 'string', `a lead with a durable pass record is draftable after confirmation: ${JSON.stringify(passed)}`)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})

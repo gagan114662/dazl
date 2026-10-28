@@ -228,6 +228,10 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
   }
   // The gate ran again and PASSED these leads: a failed-gate marker from an earlier run no longer holds them.
   releaseHeld(db, job.user_id, job.id, passedIds)
+  // The DURABLE pass record. A lead the gate passed but whose record could not be written is held by default (held-state.ts), never assumed passed.
+  for (const id of passedIds) {
+    try { addEnrichment(db, job.user_id, id, { connector: 'scan:gate', kind: 'gate_passed', value: 'sales_hiring', label: 'The required sales-hiring check passed', confidence: null, source_url: 'https://invalid.example/', source_date: new Date().toISOString().slice(0, 10), retrieved_at: Math.floor(Date.now() / 1000) }) } catch { /* no record: the lead stays held */ }
+  }
   audit(db, { tenantId: job.user_id, connector: 'scan:sales-hiring-gate', jobId: job.id, lookup: `${leads.length} leads, window ${windowDays}d`.slice(0, 200), status: demoted ? 'demoted' : 'ok', results: passed })
   return { required: true, checked: leads.length, passed, demoted, demotions }
 }
