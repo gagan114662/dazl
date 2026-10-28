@@ -80,6 +80,8 @@ test('enrichJobSignals: a seed-funded lead gets a dated "N sales/GTM roles poste
   const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
   db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(jobId)
   db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url) VALUES ('lead1', ?, '', 'Brightloop', 'brightloop.io', 'raised a seed round', 'https://news.example/1')").run(jobId)
+  // The domain was chosen from the cited page itself (its own domain): the board under it is the company's own.
+  db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES ('D1', 'lead1', 'u1', 'sitecrawl', 'domain', 'brightloop.io|evidence_own_domain', 'x', NULL, 'https://brightloop.io/', '2026-10-28', 1)").run()
   const realNow = Date.now; Date.now = () => NOW
   try { await enrichJobSignals(db, 'u1', jobId, { fetchImpl: route(ghBoard) }) } finally { Date.now = realNow }
   const rows = db.prepare("SELECT connector, kind, value, label, source_url, source_date FROM lead_enrichments WHERE connector = 'signals:greenhouse-gtm'").all() as { connector: string; kind: string; value: string; label: string; source_url: string; source_date: string }[]
@@ -92,4 +94,27 @@ test('enrichJobSignals: a seed-funded lead gets a dated "N sales/GTM roles poste
   db2.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url) VALUES ('l2', ?, '', 'Other Co', 'other.example', 'raised a seed round', 'https://news.example/2')").run(j2)
   await enrichJobSignals(db2, 'u1', j2, { fetchImpl: (async () => no()) as never })
   assert.equal((db2.prepare("SELECT count(*) AS n FROM lead_enrichments WHERE connector LIKE '%gtm'").get() as { n: number }).n, 0)
+})
+
+test('Juicebox-type identity: a board found under a domain matched only by NAME (probe / link) is shown as unconfirmed, unscored, and never written to the company\u2019s hiring history', async () => {
+  const mk = (basis: string | null) => {
+    const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db); migrateEvents(db)
+    const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' }); db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(jobId)
+    db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url) VALUES ('lead1', ?, '', 'Brightloop', 'brightloop.io', 'second office in London', 'https://jobs.example/1')").run(jobId)
+    if (basis) db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES ('D1', 'lead1', 'u1', 'sitecrawl', 'domain', ?, 'x', NULL, 'https://brightloop.io/', '2026-10-28', 1)").run(`brightloop.io|${basis}`)
+    return { db, jobId }
+  }
+  const board = { 'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs': { jobs: [{ title: 'Head of Sales', absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/1' }, { title: 'Backend Engineer' }] }, ...ghBoard }
+  for (const basis of ['name_probe', 'evidence_link_text', null]) {
+    const { db, jobId } = mk(basis); const realNow = Date.now; Date.now = () => NOW
+    try { await enrichJobSignals(db, 'u1', jobId, { fetchImpl: route(board) }) } finally { Date.now = realNow }
+    const rows = db.prepare("SELECT connector, value, label, confidence FROM lead_enrichments WHERE kind = 'hiring'").all() as { connector: string; value: string; label: string; confidence: number | null }[]
+    assert.ok(rows.length >= 1, String(basis))
+    for (const r of rows) { assert.match(r.value, /^Unconfirmed: /, `${basis}: ${r.value}`); assert.equal(r.confidence, null); assert.match(r.label, /company-to-board relationship is not established/) }
+    assert.equal((db.prepare("SELECT count(*) AS n FROM company_events WHERE event_type = 'hiring_surge'").get() as { n: number }).n, 0, `${basis}: no hiring-growth event for an unconfirmed board`)
+  }
+  const own = mk('evidence_own_domain'); const realNow = Date.now; Date.now = () => NOW
+  try { await enrichJobSignals(own.db, 'u1', own.jobId, { fetchImpl: route(board) }) } finally { Date.now = realNow }
+  const r2 = own.db.prepare("SELECT value, confidence FROM lead_enrichments WHERE kind = 'hiring' ORDER BY value").all() as { value: string; confidence: number | null }[]
+  assert.ok(r2.length >= 1 && r2.every(r => !r.value.startsWith('Unconfirmed') && r.confidence !== null), JSON.stringify(r2))
 })

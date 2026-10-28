@@ -4,6 +4,7 @@
 //   source, method   - fixed sets
 //   where            - a route template or worker name: [A-Za-z0-9_-./[]:] only, at most 128 chars
 //   tenant           - a users.id: 32 lowercase hex characters (randomBytes(16), app/api/auth/signup, lib/auth-google.ts)
+//   request_id       - the random UUIDv4 proxy.ts gave the request
 //   ref              - a Stripe event id from a signature-verified webhook (evt_ + 24-64 base62, with a digit), or a
 //                      scan_jobs.id (24 lowercase hex, randomBytes(12) in lib/scan/store.ts)
 //   error.name, cause.name - a class name ending in Error/Exception, or one of this app's own error classes, that the
@@ -20,6 +21,8 @@ export interface ErrorContext {
   tenantId?: string | null
   // a Stripe event id (signature-verified webhook) or a scan job id; dropped unless it has one of those shapes
   ref?: string
+  // the request id proxy.ts gave the request (lib/ops/request-log.ts): a random UUIDv4, dropped unless it has that shape
+  requestId?: string | null
 }
 
 export interface ErrorRecord {
@@ -30,6 +33,7 @@ export interface ErrorRecord {
   method?: string
   tenant: string | null
   ref?: string
+  request_id?: string
   error: { name: string; message: string; stack: string[]; cause?: { name: string; message: string } }
   fingerprint: string
 }
@@ -95,6 +99,7 @@ export function toRecord(e: unknown, ctx: ErrorContext, now = new Date()): Error
     level: 'error', ts: now.toISOString(), source, where, ...(ctx.method && METHODS.has(ctx.method) ? { method: ctx.method } : {}),
     tenant: isTenantId(ctx.tenantId) ? ctx.tenantId : null,
     ...(isStripeEventId(ctx.ref) || isScanJobId(ctx.ref) ? { ref: ctx.ref } : {}),
+    ...(typeof ctx.requestId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(ctx.requestId) ? { request_id: ctx.requestId } : {}),
     error: { ...d, ...(cause ? { cause: { name: cause.name, message: cause.message } } : {}) },
     fingerprint,
   }

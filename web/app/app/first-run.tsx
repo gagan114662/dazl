@@ -58,6 +58,8 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         setWebsite(String(profile.website ?? '')); setSells(String(profile.sells ?? '')); setBizName(String(profile.business_name ?? ''))
         if (profile.buyer) fillBuyer(profile.buyer)
       }
+      // ?setup=brain (the Home checklist's "Build" link) reopens these steps at the buyer profile for any account.
+      if (new URLSearchParams(window.location.search).get('setup') === 'brain') { setStep(profile?.website || profile?.sells ? 'brain' : 'site'); setReady('wizard'); return }
       // Anything unreadable falls back to the normal Home rather than trapping a returning user in the wizard.
       setReady(jobs && Array.isArray(jobs.jobs) && jobs.jobs.length === 0 ? 'wizard' : 'home')
     })
@@ -99,6 +101,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       const r = await fetch('/api/settings/profile', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sells, website: normalizeWebsite(website), business_name: bizName, buyer: profile }) })
       const j = await r.json().catch(() => ({}))
       if (!r.ok) return setError(j.error || 'Could not save')
+      window.dispatchEvent(new Event('profile-updated')) // the Home checklist re-reads the saved profile
       if (askIsSuggestion || !ask.trim()) { setAsk(plays[0] || ''); setAskIsSuggestion(true) }
       setStep('ask')
     } catch { setError('Could not reach the server. Try again.') } finally { setBusy(false) }
