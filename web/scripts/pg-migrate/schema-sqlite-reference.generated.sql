@@ -433,6 +433,14 @@ CREATE TABLE scan_model_calls (
     recorded_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
   );
 
+CREATE TABLE scan_run_report (
+    job_id TEXT NOT NULL REFERENCES scan_jobs(id) ON DELETE CASCADE,
+    attempt INTEGER NOT NULL,
+    report TEXT NOT NULL CHECK (length(report) <= 120000),
+    created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
+    PRIMARY KEY (job_id, attempt)
+  );
+
 CREATE TABLE scan_source_runs (
       job_id TEXT NOT NULL REFERENCES scan_jobs(id) ON DELETE CASCADE,
       attempt INTEGER NOT NULL,

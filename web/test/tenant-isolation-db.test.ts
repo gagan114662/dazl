@@ -19,6 +19,7 @@ const NOT_DIRECT: Record<string, { via: [string, string] } | { global: string }>
   lead_sources: { via: ['lead_id', 'leads'] },
   scan_source_runs: { via: ['job_id', 'scan_jobs'] },
   scan_source_stats: { via: ['job_id', 'scan_jobs'] },
+  scan_run_report: { via: ['job_id', 'scan_jobs'] },
   commenter_rows: { via: ['batch_id', 'commenter_batches'] },
   csv_rows: { via: ['batch_id', 'csv_batches'] },
   monitor_runs: { via: ['monitor_id', 'monitors'] },
