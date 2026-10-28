@@ -18,7 +18,8 @@ import { markWatchLeads } from '../watch.ts'
 import type { AdvPlatform } from '../advanced/config.ts'
 import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, selfDescribedUrls } from '../sources/index.ts'
 import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '../search/trace.ts'
-import { directQueries } from '../search/direct-queries.ts'
+import { directQueries, hasHiringSignal } from '../search/direct-queries.ts'
+import { placeIn } from '../sources/jobboards.ts'
 import { HeldText, COPY_ORIGIN, type HeldPage } from './held-text.ts'
 import type { CandidateAudit, UrlRecord } from './run-report.ts'
 import { evidenceCopyRoom, storeEvidenceCopy } from './evidence-copies.ts'
@@ -808,7 +809,14 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     if (ledger.has(`search:${vendor}`)) { ledger.record(`search:${vendor}`, leads.length ? 'ok' : 'empty'); ledger.candidates(`search:${vendor}`, leads) }
     // Optional per-scan sources: public evidence is collected without any key or DB access, then the user's own model
     // turns it into candidates. They go through the same verifier as web-search leads.
-    const sel = job.query && job.sources ? normalizeSources(safeJson(job.sources)) : null
+    // Hiring requests also read the public ATS boards (Greenhouse, Lever, Ashby JSON: dated, readable postings that name the company),
+    // using board links this scan's own searches returned; free, no key. A job's explicit sources win. The postings still go through
+    // the same extraction and verifier as every other candidate.
+    const hiringRequest = !!(job.query && icpForSources && hasHiringSignal(job.query, icpForSources.signals))
+    const autoBoards = !!(job.query && !job.sources && hiringRequest && placeIn(job.query))
+    // Source status is attempted-or-skipped, never silent: a board source that was not selected says why (stored as the collector status).
+    if (job.query && icpForSources && !autoBoards) ledger.record('adapter:jobboards', job.sources ? 'skipped_explicit_sources' : !hiringRequest ? 'skipped_no_hiring_signal' : 'skipped_no_place')
+    const sel = job.query && job.sources ? normalizeSources(safeJson(job.sources)) : autoBoards ? { adapters: ['jobboards'], feeds: [] as string[], pages: [] as string[] } : null
     const walledLeads: LeadDraft[] = []
     const selfDescribedLeads: LeadDraft[] = []
     let complaints: ComplaintItem[] = []
