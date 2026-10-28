@@ -84,7 +84,7 @@ test('enrichJobSignals: a seed-funded lead gets a dated "N sales/GTM roles poste
   db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES ('D1', 'lead1', 'u1', 'sitecrawl', 'domain', 'brightloop.io|evidence_own_domain', 'x', NULL, 'https://brightloop.io/', '2026-10-28', 1)").run()
   const realNow = Date.now; Date.now = () => NOW
   try { await enrichJobSignals(db, 'u1', jobId, { fetchImpl: route(ghBoard) }) } finally { Date.now = realNow }
-  const rows = db.prepare("SELECT connector, kind, value, label, source_url, source_date FROM lead_enrichments WHERE connector = 'signals:greenhouse-gtm'").all() as { connector: string; kind: string; value: string; label: string; source_url: string; source_date: string }[]
+  const rows = db.prepare("SELECT connector, kind, value, label, source_url, source_date FROM lead_enrichments WHERE connector = 'signals:greenhouse-gtm' AND value LIKE '%sales/GTM role%'").all() as { connector: string; kind: string; value: string; label: string; source_url: string; source_date: string }[]
   assert.equal(rows.length, 1); assert.equal(rows[0].kind, 'hiring'); assert.equal(rows[0].value, `2 sales/GTM roles posted, newest ${d(12).slice(0, 10)}`)
   assert.equal(rows[0].source_date, d(12).slice(0, 10)); assert.equal(rows[0].source_url, 'https://boards.greenhouse.io/brightloop'); assert.match(rows[0].label, /Account Executive; Head of Sales/)
   assert.ok((recentAudit(db, 'u1', 20) as { connector: string; status: string }[]).some(a => a.connector === 'signals:ats-gtm' && a.status === 'ok'))
@@ -135,7 +135,7 @@ async function enrich(db: Database.Database, jobId: string, board: Record<string
   const realNow = Date.now; Date.now = () => NOW
   try { await enrichJobSignals(db, 'u1', jobId, { fetchImpl: route(board) }) } finally { Date.now = realNow }
   return {
-    gtm: db.prepare("SELECT value, label, confidence FROM lead_enrichments WHERE connector LIKE 'signals:%-gtm'").all() as { value: string; label: string; confidence: number | null }[],
+    gtm: db.prepare("SELECT value, label, confidence FROM lead_enrichments WHERE connector LIKE 'signals:%-gtm' AND value LIKE '%sales/GTM role%'").all() as { value: string; label: string; confidence: number | null }[],
     events: (db.prepare("SELECT count(*) AS n FROM company_events WHERE event_type = 'hiring_surge'").get() as { n: number }).n,
   }
 }
@@ -204,4 +204,22 @@ test('plain text AND html both supplied: the plain text says brightloop.io, the 
   // the same payloads with an AGREEING html link are not a conflict
   const ok = { 'https://api.lever.co/v0/postings/brightloop?mode=json': [{ text: 'Account Executive', hostedUrl: 'https://jobs.lever.co/brightloop/a', createdAt: NOW - 5 * 86_400_000, descriptionPlain: plain, description: html.replace('brightloop.com', 'brightloop.io') }] }
   assert.equal((await atsGtmBoard('Brightloop', 'brightloop.io', route(ok), { now: NOW })).contradictory, false)
+})
+
+test('per-posting evidence: role title, the posting URL, its publish date, board + location and the retrieval time are saved per posting; the board update date is only a label', async () => {
+  const { db, jobId } = leadDb('brightloop.io', 'evidence_own_domain'); await enrich(db, jobId, ghBoard)
+  const rows = db.prepare("SELECT value, label, confidence, source_url, source_date, retrieved_at FROM lead_enrichments WHERE connector = 'signals:greenhouse-gtm' AND value LIKE '% - posted %' ORDER BY value").all() as { value: string; label: string; confidence: number | null; source_url: string; source_date: string; retrieved_at: number }[]
+  assert.ok(rows.length >= 1, JSON.stringify(rows))
+  const ae = rows.find(r => r.value.startsWith('Account Executive'))!
+  assert.equal(ae.value, `Account Executive - posted ${d(12).slice(0, 10)}`); assert.equal(ae.source_url, 'https://boards.greenhouse.io/brightloop/jobs/1'); assert.equal(ae.source_date, d(12).slice(0, 10))
+  assert.equal(ae.label, `London, UK; Greenhouse; board updated ${d(1).slice(0, 10)}`); assert.equal(ae.confidence, 70); assert.ok(ae.retrieved_at > 0)
+  assert.ok(rows.every(r => r.source_date !== d(1).slice(0, 10)), 'updated_at is never the posting date')
+  const u = leadDb('brightloop.io', 'name_probe'); await enrich(u.db, u.jobId, gh('Join Brightloop in London', 'Lead sales'))
+  const un = u.db.prepare("SELECT value, confidence FROM lead_enrichments WHERE connector = 'signals:greenhouse-gtm' AND value LIKE '%- posted %'").all() as { value: string; confidence: number | null }[]
+  assert.ok(un.length >= 1 && un.every(r => r.value.startsWith('Unconfirmed: ') && r.confidence === null), 'a board not established as the lead’s stays unconfirmed per posting too')
+})
+
+test('a contradictory board writes no per-posting evidence either', async () => {
+  const { db, jobId } = leadDb('brightloop.io', 'evidence_own_domain'); await enrich(db, jobId, gh('Write to jobs@brightloop.io', 'Write to jobs@brightloop.com'))
+  assert.equal((db.prepare("SELECT count(*) AS n FROM lead_enrichments WHERE value LIKE '% - posted %'").get() as { n: number }).n, 0)
 })

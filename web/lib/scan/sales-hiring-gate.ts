@@ -7,7 +7,7 @@
 // the quote, date, identity and place gates that put the lead there are not touched, and nothing here promotes a review row.
 import type Database from 'better-sqlite3'
 import { addEnrichment, audit } from '../connectors/store.ts'
-import { atsGtmHiring, isGtmRole, BOARD_LABEL } from '../signals/ats-gtm.ts'
+import { atsGtmHiring, isGtmRole, postingEvidence, BOARD_LABEL } from '../signals/ats-gtm.ts'
 import { careersSalesVacancy } from '../signals/careers-page.ts'
 import { placeAgreement } from './place-agreement.ts'
 import { norm } from './evidence.ts'
@@ -192,6 +192,7 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
       const line = `Hiring sales: ${p.title} posted ${p.date} on its ${BOARD_LABEL[g.board]} job board (${l.company_domain}). `
       setWhy.run((line + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
       addEnrichment(db, job.user_id, l.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${g.postings.length} sales/GTM role${g.postings.length === 1 ? '' : 's'} posted, newest ${g.newest}`, label: g.postings.map(x => x.title).slice(0, 3).join('; ').slice(0, 200) || null, confidence: 70, source_url: g.url, source_date: g.newest, retrieved_at: now })
+      for (const e of postingEvidence(g, now, null)) addEnrichment(db, job.user_id, l.id, e)
       passed++; continue
     }
     // No usable job board: the company's OWN careers page (https, robots.txt obeyed, same domain) may list an open sales role. The domain must be established, or the careers

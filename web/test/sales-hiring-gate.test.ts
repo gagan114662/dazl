@@ -316,3 +316,12 @@ test('appositive subject: "Brightloop, a London B2B SaaS startup with 24 employe
   const bad = seed({ domain: null, excerpt: 'othercorp, a London B2B SaaS startup with 24 employees, raised a 3m GBP seed round this month and is hiring two account executives' })
   assert.equal((await applySalesHiringGate(bad.db, bad.job, serve({}), { now: NOW })).passed, 0)
 })
+
+test('a lead kept on a dated board posting stores per-posting evidence: role title, posting URL, publish date, board + location, retrieval time', async () => {
+  const { db, job } = seed({ domain: 'brightloop.io', excerpt: QUOTE })
+  assert.equal((await applySalesHiringGate(db, job, serve(board()), { now: NOW })).passed, 1)
+  const rows = db.prepare("SELECT value, label, source_url, source_date, retrieved_at, confidence FROM lead_enrichments WHERE value LIKE '% - posted %'").all() as { value: string; label: string; source_url: string; source_date: string; retrieved_at: number; confidence: number }[]
+  assert.equal(rows.length, 1)
+  assert.deepEqual([rows[0].value, rows[0].source_url, rows[0].source_date, rows[0].confidence], [`Account Executive - posted ${d(12).slice(0, 10)}`, 'https://boards.greenhouse.io/brightloop/jobs/1', d(12).slice(0, 10), 70])
+  assert.equal(rows[0].label, 'London, UK; Greenhouse'); assert.equal(rows[0].retrieved_at, Math.floor(NOW / 1000))
+})

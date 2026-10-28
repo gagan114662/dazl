@@ -15,7 +15,7 @@ const NOT_GTM = /\b(?:salesforce\s+(?:developer|engineer|architect|admin(?:istra
 export const isGtmRole = (title: string): boolean => GTM.test(title) && !NOT_GTM.test(title)
 export const BOARD_LABEL = { greenhouse: 'Greenhouse', lever: 'Lever', ashby: 'Ashby' } as const
 
-export interface GtmPosting { title: string; date: string; url: string; location: string | null }
+export interface GtmPosting { title: string; date: string; url: string; location: string | null; updated?: string | null } // date = the posting's own publish date; updated = the board's last-edited date, shown as a label and never used as a date
 export interface GtmHiring { board: 'greenhouse' | 'lever' | 'ashby'; postings: GtmPosting[]; newest: string; url: string; domain: string | null; via: 'domain' | 'board_name' }
 
 const get = async (url: string, fetchImpl: typeof fetch): Promise<any> => {
@@ -90,7 +90,7 @@ export async function atsGtmBoard(company: string, domain: string | null, fetchI
           const date = day(det?.first_published), url = typeof det?.absolute_url === 'string' ? det.absolute_url : ''
           if (!fresh(date) || !url.startsWith('https://')) continue
           for (const d of fieldDomains([det.content, det.description], token)) seen.add(d)   // every included posting is examined, and every domain in it
-          postings.push({ title: String(det.title ?? j.title).slice(0, 120), date: date!, url, location: typeof det?.location?.name === 'string' ? det.location.name : null })
+          postings.push({ title: String(det.title ?? j.title).slice(0, 120), date: date!, url, location: typeof det?.location?.name === 'string' ? det.location.name : null, updated: day(det?.updated_at) })
         }
         const found = settle(seen, domain); if (found === false) return { hiring: null, contradictory: true } // the postings name more than one company site, or another company's: contradictory, fail closed
         if (postings.length) return { hiring: build('greenhouse', postings, `https://boards.greenhouse.io/${token}`, found, viaDomain ? 'domain' : 'board_name'), contradictory: false }
@@ -102,7 +102,7 @@ export async function atsGtmBoard(company: string, domain: string | null, fetchI
     if (Array.isArray(lever) && lever.length > 0) {
       const seen = new Set<string>()
       const postings = dedupe(lever.filter((j: any) => typeof j?.text === 'string' && isGtmRole(j.text) && typeof j.hostedUrl === 'string' && j.hostedUrl.startsWith('https://') && fresh(day(j.createdAt)))
-        .slice(0, MAX_DETAIL).map((j: any) => { for (const d of fieldDomains([j.descriptionPlain, j.description, j.additionalPlain, j.additional, ...(Array.isArray(j.lists) ? j.lists.flatMap((l: any) => [l?.text, l?.content]) : [])], token)) seen.add(d); return { title: j.text.slice(0, 120), date: day(j.createdAt)!, url: j.hostedUrl, location: typeof j?.categories?.location === 'string' ? j.categories.location : null } }))
+        .slice(0, MAX_DETAIL).map((j: any) => { for (const d of fieldDomains([j.descriptionPlain, j.description, j.additionalPlain, j.additional, ...(Array.isArray(j.lists) ? j.lists.flatMap((l: any) => [l?.text, l?.content]) : [])], token)) seen.add(d); return { title: j.text.slice(0, 120), date: day(j.createdAt)!, url: j.hostedUrl, location: typeof j?.categories?.location === 'string' ? j.categories.location : null, updated: day(j.updatedAt) } }))
       const found = settle(seen, domain); if (found === false) return { hiring: null, contradictory: true }
       if (postings.length) return { hiring: build('lever', postings, `https://jobs.lever.co/${token}`, found, 'domain'), contradictory: false }
     }
@@ -110,7 +110,7 @@ export async function atsGtmBoard(company: string, domain: string | null, fetchI
     if (Array.isArray(ashby?.jobs) && ashby.jobs.length > 0) {
       const seen = new Set<string>()
       const postings = dedupe(ashby.jobs.filter((j: any) => j?.isListed === true && typeof j.title === 'string' && isGtmRole(j.title) && typeof j.jobUrl === 'string' && j.jobUrl.startsWith('https://') && fresh(day(j.publishedAt)))
-        .slice(0, MAX_DETAIL).map((j: any) => { for (const d of fieldDomains([j.descriptionPlain, j.descriptionHtml, j.description], token)) seen.add(d); return { title: j.title.slice(0, 120), date: day(j.publishedAt)!, url: j.jobUrl, location: typeof j.location === 'string' ? j.location : null } }))
+        .slice(0, MAX_DETAIL).map((j: any) => { for (const d of fieldDomains([j.descriptionPlain, j.descriptionHtml, j.description], token)) seen.add(d); return { title: j.title.slice(0, 120), date: day(j.publishedAt)!, url: j.jobUrl, location: typeof j.location === 'string' ? j.location : null, updated: day(j.updatedAt) } }))
       const found = settle(seen, domain); if (found === false) return { hiring: null, contradictory: true }
       if (postings.length) return { hiring: build('ashby', postings, `https://jobs.ashbyhq.com/${token}`, found, 'domain'), contradictory: false }
     }
@@ -121,4 +121,16 @@ export async function atsGtmBoard(company: string, domain: string | null, fetchI
 function build(board: GtmHiring['board'], postings: GtmPosting[], boardUrl: string, domain: string | null, via: GtmHiring['via']): GtmHiring {
   const sorted = [...postings].sort((a, b) => (a.date < b.date ? 1 : -1))
   return { board, postings: sorted, newest: sorted[0].date, url: sorted.length === 1 ? sorted[0].url : boardUrl, domain, via }
+}
+
+// One evidence row PER posting (up to 3, newest first): role title, the posting's own URL, its publish date, the board and location, and when dazl read it.
+// `unconfirmedNote` (set when the board is not established as the lead's) prefixes the value, leads the label and drops the confidence, exactly like the aggregate row. The update date, if the
+// board has one, only appears in the label.
+export function postingEvidence(g: GtmHiring, retrievedAt: number, unconfirmedNote: string | null): { connector: string; kind: string; value: string; label: string; confidence: number | null; source_url: string; source_date: string; retrieved_at: number }[] {
+  return g.postings.slice(0, 3).map(p => ({
+    connector: `signals:${g.board}-gtm`, kind: 'hiring',
+    value: `${unconfirmedNote ? 'Unconfirmed: ' : ''}${p.title} - posted ${p.date}`.slice(0, 254),
+    label: [unconfirmedNote, p.location ?? 'location not stated', BOARD_LABEL[g.board], p.updated && p.updated !== p.date ? `board updated ${p.updated}` : null].filter(Boolean).join('; ').slice(0, 200),
+    confidence: unconfirmedNote ? null : 70, source_url: p.url.slice(0, 500), source_date: p.date, retrieved_at: retrievedAt,
+  }))
 }
