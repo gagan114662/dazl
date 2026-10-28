@@ -121,6 +121,7 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/scan/enrichment.ts': 2,
   'lib/scan/evidence-copies.ts': 2,
   'lib/scan/find-contact.ts': 0,
+  'lib/scan/held-state.ts': 0,
   'lib/scan/history-jobs.ts': 0,
   'lib/scan/job-feed.ts': 4,
   'lib/scan/lookalike.ts': 0,

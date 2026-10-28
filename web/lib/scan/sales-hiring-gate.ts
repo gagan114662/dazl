@@ -158,6 +158,7 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
   const demote = db.prepare('UPDATE leads SET review_reason = ?, confidence = NULL, why = ? WHERE id = ? AND review_reason IS NULL')
   const counts = db.prepare('UPDATE scan_jobs SET verified = MAX(COALESCE(verified, 0) - 1, 0), needs_review = COALESCE(needs_review, 0) + 1 WHERE id = ?')
   let passed = 0, demoted = 0, lookups = 0
+  const passedIds: string[] = []
   for (const l of leads) {
     try {
     // Evidence for THIS lead: its own saved quote, plus other verified candidates' quotes for the same company that are identity-compatible (see evidenceCompatible).
@@ -175,7 +176,7 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
           let host = ''; try { host = new URL(o.url).hostname.replace(/^www\./, '') } catch { /* keep blank */ }
           setWhy.run((`Hiring sales: named in a verified source${host ? ` (${host})` : ''}${o.date ? `, dated ${o.date}` : ''}. ${l.why ?? ''}`).trim().slice(0, WHY_MAX), l.id)
         }
-        passed++; continue
+        passed++; passedIds.push(l.id); continue
       }
       if (l.company_domain && lookups >= MAX_BOARD_LOOKUPS) {
         // A processing limit never lets a lead through unproven: it is held, and the card says it was not checked (unknown, not absent).
@@ -194,7 +195,7 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
         const line = `Hiring sales: ${p.title} posted ${p.date} on its ${BOARD_LABEL[g.board]} job board (${l.company_domain}). `
         setWhy.run((line + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
         addEnrichment(db, job.user_id, l.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${g.postings.length} sales/GTM role${g.postings.length === 1 ? '' : 's'} posted, newest ${g.newest}`, label: g.postings.map(x => x.title).slice(0, 3).join('; ').slice(0, 200) || null, confidence: 70, source_url: g.url, source_date: g.newest, retrieved_at: now })
-        passed++; continue
+        passed++; passedIds.push(l.id); continue
       }
       // No usable job board: the company's OWN careers page (https, robots.txt obeyed, same domain) may list an open sales role. The domain must be established, or the careers
       // page itself must name the company and agree on the requested place (a same-name company elsewhere does not). Saved: URL, quote, retrieval time (not a posting date).
@@ -210,7 +211,7 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
             const day = new Date(v.retrievedAt * 1000).toISOString().slice(0, 10)
             setWhy.run((`Hiring sales: ${v.title} listed on its careers page (${l.company_domain}), checked ${day}. ` + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
             addEnrichment(db, job.user_id, l.id, { connector: 'signals:careers-gtm', kind: 'hiring', value: `Open sales role on its careers page: ${v.title}`.slice(0, 254), label: v.quote.slice(0, 200), confidence: 60, source_url: v.url, source_date: day, retrieved_at: v.retrievedAt })
-            passed++; continue
+            passed++; passedIds.push(l.id); continue
           }
           careersNote = `its careers page lists ${v.title} but the page is not established as this company's (${namesCompany ? 'place not confirmed' : 'company not named'}). `
         } else if (c) careersNote = `its careers page was checked: ${c.reason.replace(/_/g, ' ')}. `
@@ -224,6 +225,8 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
       if (demote.run(SALES_GATE_FAILED, `Sales-hiring check failed (${(e instanceof Error ? e.message : 'error').slice(0, 80)}): not verified. ${l.why ?? ''}`.trim().slice(0, WHY_MAX), l.id).changes) { counts.run(job.id); demoted++; demotions.push({ company: l.company, url: l.source_url, reason: SALES_GATE_FAILED }) }
     }
   }
+  // The gate ran again and PASSED these leads: a failed-gate marker from an earlier run no longer holds them.
+  for (const id of passedIds) { try { db.prepare("DELETE FROM lead_enrichments WHERE lead_id = ? AND connector = 'scan:gate' AND kind = 'gate_failed'").run(id) } catch { /* no marker table */ } }
   audit(db, { tenantId: job.user_id, connector: 'scan:sales-hiring-gate', jobId: job.id, lookup: `${leads.length} leads, window ${windowDays}d`.slice(0, 200), status: demoted ? 'demoted' : 'ok', results: passed })
   return { required: true, checked: leads.length, passed, demoted, demotions }
 }

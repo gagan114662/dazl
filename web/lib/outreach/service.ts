@@ -1,6 +1,7 @@
 import {contactPurposeRestricted} from './contact-purpose-db.ts'
 import { evidenceStateOf, type EvidenceState } from './evidence-state.ts'
 import {currentnessHeld} from './currentness.ts'
+import {requiredGateHeld} from '../scan/held-state.ts'
 import { messageProvenance } from './provenance.ts'
 import { snapshotSignalContext } from './attribution.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend, tableExists } from './send-budget.ts'
@@ -217,6 +218,7 @@ function draftChecks(db: Database.Database, tenantId: string, leadId: string) {
   ).get(leadId, tenantId) as Lead | undefined
   if (!lead) throw new OutreachError('not_found')
   if (isQuarantined(db, leadId)) throw new OutreachError('lead_quarantined')
+  if (requiredGateHeld(db,tenantId,leadId)) throw new OutreachError('sales_hiring_check_failed')   // confirming the lead or its domain never clears a failed required check
   if (currentnessHeld(db,tenantId,leadId)) throw new OutreachError('lead_currentness_unconfirmed')
   // Verified by dazl (quote confirmed on the cited page) OR confirmed by the user
   // themselves from the needs-review list. A human confirmation is the user's own
