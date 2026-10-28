@@ -54,7 +54,7 @@ const SCOPED = ROUTES.filter(r => r.auth === 'session' && r.crossTenant === 'ses
 
 // The route runtimes load route modules through a resolver hook, so each runs in its own process.
 for (const [name, file, expect] of [
-  ['every session route refuses an unauthenticated caller and changes nothing', 'tenant-route-unauth-runtime.mts', /UNAUTH 103/],
+  ['every session route refuses an unauthenticated caller and changes nothing', 'tenant-route-unauth-runtime.mts', /UNAUTH 104/],
   ["tenant B cannot read or change tenant A's rows through the id-taking lead, batch and reply routes", 'tenant-route-ids-runtime.mts', /COHORT 17/],
   ["tenant B cannot read or change tenant A's rows through the list, body-id and query-id routes, or any session-scope route", 'tenant-route-pending-runtime.mts',
     // 13 targeted handlers, then the sweep over every session-scope handler (the cohort counts both)
