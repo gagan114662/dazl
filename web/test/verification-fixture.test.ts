@@ -1,4 +1,5 @@
 import { test } from 'node:test'
+import { sqliteDb } from '../lib/db/client.ts'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { createVerificationFixture, deleteVerificationFixture, FIXTURE_CONTACTS, FIXTURE_REPLY, VERIFICATION_FIXTURE_LEAD } from '../lib/scan/verification-fixture.ts'
@@ -25,12 +26,12 @@ function db(): Database.Database {
   return d
 }
 
-test('fixture is gated to the designated test tenant', () => {
+test('fixture is gated to the designated test tenant', async () => {
   const d = db()
   assert.throws(() => createVerificationFixture(d, 'someone-else'), FixtureError)
 })
 
-test('fixture populates source metrics and warm paths, is idempotent, cleanup removes it', () => {
+test('fixture populates source metrics and warm paths, is idempotent, cleanup removes it', async () => {
   const d = db()
   const a = createVerificationFixture(d, TEST_TENANT)
   assert.equal(a.created, true)
@@ -62,8 +63,8 @@ test('fixture populates source metrics and warm paths, is idempotent, cleanup re
   assert.equal(om.status, 'sent')
 
   // #137 warm path via the REAL import path
-  importConnectionsCsv(d, TEST_TENANT, 'First Name,Last Name,URL\nAda,Lovelace,https://www.linkedin.com/in/dazl-test-ada\n')
-  const w = warmPathsForLead(d, TEST_TENANT, a.leadId)
+  await importConnectionsCsv(sqliteDb(d), TEST_TENANT, 'First Name,Last Name,URL\nAda,Lovelace,https://www.linkedin.com/in/dazl-test-ada\n')
+  const w = await warmPathsForLead(sqliteDb(d), TEST_TENANT, a.leadId)
   assert.equal(w.first_degree.length, 1)
   assert.equal(w.manual_check.length, 1) // grace; alan has no linkedin URL
 
@@ -78,7 +79,7 @@ test('fixture populates source metrics and warm paths, is idempotent, cleanup re
   assert.equal(sourceMetrics(d, TEST_TENANT).rows.length, 0)
   assert.equal((d.prepare('SELECT COUNT(*) c FROM leads WHERE company = ?').get(VERIFICATION_FIXTURE_LEAD) as { c: number }).c, 0)
   assert.equal((d.prepare("SELECT COUNT(*) c FROM leads WHERE review_reason = 'job_closed'").get() as { c: number }).c, 0)
-  assert.equal(warmPathsForLead(d, TEST_TENANT, a.leadId).imported_connections, 1) // import untouched
+  assert.equal((await warmPathsForLead(sqliteDb(d), TEST_TENANT, a.leadId)).imported_connections, 1) // import untouched
   // cleanup removes the synthetic thread rows too
   for (const q of ["SELECT COUNT(*) c FROM inbound_messages WHERE gmail_id LIKE 'dazl-test-in-%'",
                    "SELECT COUNT(*) c FROM followup_threads WHERE thread_id LIKE 'dazl-test-thread-%'",

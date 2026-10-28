@@ -13,7 +13,8 @@ import { createHash } from 'node:crypto'
 import type { Db, Param, Tx, TxBody } from './client.ts'
 
 export interface TableCopy { table: string; rows: number; checksum: string }
-export interface CopyReport { from: Db['kind']; to: Db['kind']; tables: TableCopy[]; skipped: string[] }
+// alreadyCopied: the target already held exactly the source's rows (a re-run after a finished copy); nothing was written.
+export interface CopyReport { from: Db['kind']; to: Db['kind']; tables: TableCopy[]; skipped: string[]; alreadyCopied?: boolean }
 
 export class CopyRefused extends Error { constructor(m: string) { super(m); this.name = 'CopyRefused' } }
 export class CopyVerifyError extends Error { constructor(m: string) { super(m); this.name = 'CopyVerifyError' } }
@@ -100,7 +101,12 @@ export async function copyStore(src: Db, dst: Db, opts: { batch?: number } = {})
   for (const t of dstTables) {
     if (SEEDED_BY_MIGRATION.has(t)) continue
     const n = Number((await dst.get<{ c: number }>(`SELECT count(*) AS c FROM ${ident(t)}`))!.c)
-    if (n > 0) throw new CopyRefused(`the target is not empty (${t} has ${n} rows): copy only into a freshly migrated store`)
+    if (n === 0) continue
+    // Idempotent: a re-run after a finished copy finds the same rows and changes nothing. Anything else is refused.
+    if ((await compareStores(src, dst)).length === 0) {
+      return { from: src.kind, to: dst.kind, tables: plan.map(p => ({ table: p.table, rows: p.rows.length, checksum: p.sum })), skipped, alreadyCopied: true }
+    }
+    throw new CopyRefused(`the target is not empty (${t} has ${n} rows) and differs from the source: copy only into a freshly migrated store`)
   }
   const deps = await parents(dst.kind === 'pg' ? dst : src, plan.map(p => p.table))
   const order = parentsFirst(plan.map(p => p.table), deps).map(t => plan.find(p => p.table === t)!)
@@ -139,8 +145,28 @@ export async function copyStore(src: Db, dst: Db, opts: { batch?: number } = {})
   return { from: src.kind, to: dst.kind, tables: order.map(p => ({ table: p.table, rows: p.rows.length, checksum: p.sum })), skipped }
 }
 
-// After a copy, or any time later: each table's row count and content checksum on both stores. A cutover proceeds
-// only when this is empty.
+// The column that names a row's tenant, where the table has one (users.id is the tenant id; scan_jobs uses user_id).
+async function tenantColumn(db: Db, table: string): Promise<string | null> {
+  const cols = await columns(db, table)
+  return cols.includes('tenant_id') ? 'tenant_id' : cols.includes('user_id') ? 'user_id' : null
+}
+
+export interface TableCount { table: string; rows: number; tenantColumn: string | null; byTenant: Record<string, number> }
+// Read-only: every table's row count, split by tenant where the table has a tenant column (the dry run prints these).
+export async function storeCounts(db: Db): Promise<TableCount[]> {
+  const out: TableCount[] = []
+  for (const t of await tables(db)) {
+    const col = await tenantColumn(db, t)
+    const rows = Number((await db.get<{ c: number }>(`SELECT count(*) AS c FROM ${ident(t)}`))!.c)
+    const byTenant: Record<string, number> = {}
+    if (col && rows) for (const r of await db.all<{ k: string | null; c: number }>(`SELECT ${ident(col)} AS k, count(*) AS c FROM ${ident(t)} GROUP BY ${ident(col)}`)) byTenant[String(r.k)] = Number(r.c)
+    out.push({ table: t, rows, tenantColumn: col, byTenant })
+  }
+  return out
+}
+
+// After a copy, or any time later: each table's row count and content checksum on both stores, and for tables with a
+// tenant column, which tenants' row counts differ. A cutover proceeds only when this is empty.
 export async function compareStores(a: Db, b: Db): Promise<string[]> {
   const diffs: string[] = []
   const ta = await tables(a), tb = new Set(await tables(b))
@@ -149,7 +175,13 @@ export async function compareStores(a: Db, b: Db): Promise<string[]> {
     const ra = await a.all(`SELECT * FROM ${ident(t)}`)
     if (!tb.has(t)) { if (ra.length) diffs.push(`${t}: missing from the target`); continue }
     const rb = await b.all(`SELECT ${cols.map(ident).join(', ')} FROM ${ident(t)}`)
-    if (ra.length !== rb.length) diffs.push(`${t}: ${ra.length} rows vs ${rb.length}`)
+    if (ra.length !== rb.length) {
+      const col = await tenantColumn(a, t)
+      const per = (rows: Record<string, unknown>[]) => rows.reduce<Record<string, number>>((m, r) => { const k = String(r[col!]); m[k] = (m[k] ?? 0) + 1; return m }, {})
+      const pa = col ? per(ra) : {}, pb = col && cols.includes(col) ? per(rb) : {}
+      const off = col ? [...new Set([...Object.keys(pa), ...Object.keys(pb)])].filter(k => pa[k] !== pb[k]).slice(0, 5).map(k => `tenant ${k} ${pa[k] ?? 0} vs ${pb[k] ?? 0}`) : []
+      diffs.push(`${t}: ${ra.length} rows vs ${rb.length}${off.length ? ` (${off.join(', ')})` : ''}`)
+    }
     else if (checksum(ra, cols) !== checksum(rb, cols)) diffs.push(`${t}: same row count, different content`)
   }
   for (const t of tb) {

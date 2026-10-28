@@ -19,17 +19,27 @@ export function migrateKeys(db: Database.Database): void {
 
 const ctx = (tenantId: string, vendor: Vendor) => `llm-key:${tenantId}:${vendor}`
 
+// Save, status and delete exist sync (the raw handle: the runner, replies, SEO and tests) and async on Db (the settings
+// route), with one SQL string each. validated_at comes from the caller's clock (epoch seconds, as strftime gave).
+const SAVE_KEY_SQL = `INSERT INTO tenant_llm_keys (tenant_id, vendor, ciphertext, last4, validated_at) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(tenant_id, vendor) DO UPDATE SET ciphertext = excluded.ciphertext, last4 = excluded.last4, validated_at = excluded.validated_at`
+const keyArgs = (tenantId: string, vendor: Vendor, apiKey: string, master?: Buffer) =>
+  [tenantId, vendor, encryptSecret(apiKey, ctx(tenantId, vendor), master), apiKey.slice(-4), Math.floor(Date.now() / 1000)]
 export function saveKey(db: Database.Database, tenantId: string, vendor: Vendor, apiKey: string, master?: Buffer): void {
-  const blob = encryptSecret(apiKey, ctx(tenantId, vendor), master)
-  db.prepare(
-    `INSERT INTO tenant_llm_keys (tenant_id, vendor, ciphertext, last4, validated_at) VALUES (?, ?, ?, ?, CAST(strftime('%s','now') AS INTEGER))
-     ON CONFLICT(tenant_id, vendor) DO UPDATE SET ciphertext = excluded.ciphertext, last4 = excluded.last4, validated_at = excluded.validated_at`,
-  ).run(tenantId, vendor, blob, apiKey.slice(-4))
+  db.prepare(SAVE_KEY_SQL).run(...keyArgs(tenantId, vendor, apiKey, master))
+}
+export async function writeKey(db: Db, tenantId: string, vendor: Vendor, apiKey: string, master?: Buffer): Promise<void> {
+  await db.run(SAVE_KEY_SQL, keyArgs(tenantId, vendor, apiKey, master))
 }
 
 // Safe for the browser: never includes the key or ciphertext.
+type KeyStatusRow = { vendor: Vendor; last4: string; validated_at: number }
+const KEY_STATUS_SQL = 'SELECT vendor, last4, validated_at FROM tenant_llm_keys WHERE tenant_id = ? ORDER BY vendor' // the primary-key order SQLite gave
 export function keyStatus(db: Database.Database, tenantId: string) {
-  return db.prepare('SELECT vendor, last4, validated_at FROM tenant_llm_keys WHERE tenant_id = ?').all(tenantId) as { vendor: Vendor; last4: string; validated_at: number }[]
+  return db.prepare(KEY_STATUS_SQL).all(tenantId) as KeyStatusRow[]
+}
+export async function readKeyStatus(db: Db, tenantId: string): Promise<KeyStatusRow[]> {
+  return (await db.all<KeyStatusRow>(KEY_STATUS_SQL, [tenantId])).map(r => ({ ...r, validated_at: Number(r.validated_at) }))
 }
 
 const HAS_KEY_SQL = 'SELECT 1 AS x FROM tenant_llm_keys WHERE tenant_id = ? LIMIT 1'
@@ -41,8 +51,12 @@ export async function readHasKey(db: Db, tenantId: string): Promise<boolean> {
   return (await db.get(HAS_KEY_SQL, [tenantId])) !== undefined
 }
 
+const DELETE_KEY_SQL = 'DELETE FROM tenant_llm_keys WHERE tenant_id = ? AND vendor = ?'
 export function deleteKey(db: Database.Database, tenantId: string, vendor: Vendor): boolean {
-  return db.prepare('DELETE FROM tenant_llm_keys WHERE tenant_id = ? AND vendor = ?').run(tenantId, vendor).changes === 1
+  return db.prepare(DELETE_KEY_SQL).run(tenantId, vendor).changes === 1
+}
+export async function removeKey(db: Db, tenantId: string, vendor: Vendor): Promise<boolean> {
+  return (await db.run(DELETE_KEY_SQL, [tenantId, vendor])).changes === 1
 }
 
 // The tenant's most recently added vendor. Server-side only.
