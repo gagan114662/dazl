@@ -41,7 +41,7 @@ export function requestedStage(query: string | null | undefined, icp: string | n
 }
 const RAISE_VERB = /\b(?:rais(?:ed|es)|clos(?:ed|es)|secur(?:ed|es)|announc(?:ed|es)|land(?:ed|s)|complet(?:ed|es)|bagg?(?:ed|s)|receiv(?:ed|es)|won|gets|got|backed|funded|seed-funded|unveil(?:ed|s))\b/i
 const FUNDING_NEG = /\b(?:not|no|never|didn'?t|hasn'?t|haven'?t|wasn'?t|without|failed\s+to|unable\s+to|yet\s+to|den(?:y|ies|ied)|reject\w*|refut\w+|cancel\w*|withdr\w+|collaps\w+|fell\s+through|ruled?\s+out|untrue|false)\b/i
-const FUNDING_HYPO = /\b(?:(?:to|will|shall|would|set\s+to|about\s+to|poised\s+to|slated\s+to|due\s+to|preparing\s+to|expected\s+to|likely\s+to|ready\s+to|going\s+to)\s+(?:raise|close|secure|announce|complete|finali[sz]e|land)|raising|closing|securing|finali[sz]\w+|negotiat\w+|pursuing|targeting|nearing|ongoing|in\s+the\s+process|open\s+round|if|unless|would|could|may|might|plans?\s+to|planning\s+to|hopes?\s+to|aims?\s+to|intends?\s+to|looking\s+to|seeking\s+to|in\s+talks|expects?\s+to|expected\s+to|reportedly|rumou?r\w*|allegedly)\b/i
+const FUNDING_HYPO = /\b(?:(?:plans?|planned|planning|intends?|intending|intentions?|aims?|aiming|proposes?|proposed|considering|exploring|mulling|weighing|preparing|prepares?|prepared)\s+(?:for\s+|to\s+|of\s+|on\s+)?(?:(?:a|an|its|the|new|first|another|additional)\s+)*(?:\S+\s+){0,4}?(?:raise|raising|close|closing|secure|securing|round|seed|series|funding|financing|fundrais\w+|investment)|(?:to|will|shall|would|set\s+to|about\s+to|poised\s+to|slated\s+to|due\s+to|preparing\s+to|expected\s+to|likely\s+to|ready\s+to|going\s+to)\s+(?:raise|close|secure|announce|complete|finali[sz]e|land)|raising|closing|securing|finali[sz]\w+|negotiat\w+|pursuing|targeting|nearing|ongoing|in\s+the\s+process|open\s+round|if|unless|would|could|may|might|plans?\s+to|planning\s+to|hopes?\s+to|aims?\s+to|intends?\s+to|looking\s+to|seeking\s+to|in\s+talks|expects?\s+to|expected\s+to|reportedly|rumou?r\w*|allegedly)\b/i
 export function stageOk(clause: string, stage: Stage): boolean {
   if (!stage) return true
   const series = /\bseries\s+([a-z])\b|\b(?:growth|bridge)\s+(?:round|equity)\b/i.exec(clause)
@@ -104,6 +104,10 @@ export function subjectIsOther(prefix: string, company: string | null | undefine
       }
       continue // only auxiliaries after and / a comma: the subject is carried from the earlier segment
     }
+    // A segment with no subject of its own carries the earlier one: it starts with a past-tense verb ("... and raised a seed round") or is an appositive after a comma
+    // ("Brightloop, a London B2B SaaS startup with 24 employees, raised ..."). Unless it names the company itself, the walk goes on to the segment in front of it.
+    const carries = !seg.some(w => own.has(w)) && ((/^[a-z]+ed$/.test(seg[0])) || (['a', 'an', 'the'].includes(seg[0]) && (parts[i - 1] ?? '').trim() === ','))
+    if (carries) continue
     if (seg.some((w, k) => own.has(w) && !(k > 0 && PREPOSITION.has(seg[k - 1])))) return false
     return seg.filter(w => !(NOT_ENTITY.has(w) && !own.has(w)) && !/^\d/.test(w)).length > 0
   }

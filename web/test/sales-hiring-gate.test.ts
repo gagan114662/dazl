@@ -170,6 +170,19 @@ test('through the real runJob: the seed lead passes the normal gates; with a boa
   assert.equal(rep.candidates.find(c => c.company === 'Brightloop')!.fate, 'review:no_sales_hiring_evidence'); assert.equal(rep.final_gate, 'sales_hiring')
 })
 
+test('through the real runJob: "has announced plans for a seed round" (and plans to / intends to / aims to / is preparing / will raise) is NOT a completed seed raise', async () => {
+  const board = {
+    'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs': { jobs: [{ id: 1, title: 'Account Executive' }] },
+    'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs/1': { id: 1, title: 'Account Executive', first_published: new Date(Date.now() - 12 * 86_400_000).toISOString(), absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/1', content: '&lt;p&gt;Write to jobs@brightloop.io&lt;/p&gt;' },
+  }
+  for (const q of ['Brightloop, a London B2B SaaS startup, has announced plans for a 3m GBP seed round this month', 'Brightloop, a London B2B SaaS startup, plans to raise a 3m GBP seed round this month', 'Brightloop, a London B2B SaaS startup, intends to raise a 3m GBP seed round this month', 'Brightloop, a London B2B SaaS startup, aims to raise a 3m GBP seed round this month', 'Brightloop, a London B2B SaaS startup, is preparing a 3m GBP seed round this month', 'Brightloop, a London B2B SaaS startup, will raise a 3m GBP seed round this month']) {
+    const r = await runFixture(london(board, q))
+    const l = r.db.prepare("SELECT review_reason, confidence FROM leads WHERE company = 'Brightloop'").get() as { review_reason: string | null; confidence: number | null } | undefined
+    assert.ok(l, q); assert.equal(l!.review_reason, 'no_event_evidence', q); assert.equal(l!.confidence, null, q)
+    assert.deepEqual(r.db.prepare('SELECT verified, needs_review FROM scan_jobs').get(), { verified: 0, needs_review: 1 }, q)
+  }
+})
+
 test('through the real runJob: a Series A-only article with a perfect sales board is NOT a seed lead (no_event_evidence, report agrees)', async () => {
   const board = {
     'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs': { jobs: [{ id: 1, title: 'Account Executive' }] },
@@ -272,6 +285,13 @@ test('#276 review: planned / ongoing fundraising is never a completed seed raise
     ['Brightloop has an ongoing seed round in London. Brightloop is hiring sales staff.', 'no_event_evidence'],
     ['Brightloop will close a seed round in London next month. Brightloop is hiring sales staff.', 'no_event_evidence'],
     ['Brightloop is closing a seed round in London. Brightloop is hiring sales staff.', 'no_event_evidence'],
+    ['Brightloop has announced plans for a 3m GBP seed round in London. Brightloop is hiring sales staff.', 'no_event_evidence'],
+    ['Brightloop has announced plans for a seed round in London. Brightloop is hiring sales staff.', 'no_event_evidence'],
+    ['Brightloop plans to raise a seed round in London. Brightloop is hiring sales staff.', 'no_event_evidence'],
+    ['Brightloop intends to raise a seed round in London. Brightloop is hiring sales staff.', 'no_event_evidence'],
+    ['Brightloop aims to close a seed round in London. Brightloop is hiring sales staff.', 'no_event_evidence'],
+    ['Brightloop is preparing a seed round in London. Brightloop is hiring sales staff.', 'no_event_evidence'],
+    ['Brightloop will raise a seed round in London. Brightloop is hiring sales staff.', 'no_event_evidence'],
     ['Brightloop raised a seed round in London. Brightloop partners with othercorp, which is hiring sales staff.', 'no_sales_hiring_evidence'],
     ['Brightloop raised a seed round in London and partners with othercorp, which is hiring sales staff.', 'no_sales_hiring_evidence'],
   ]
@@ -282,4 +302,11 @@ test('#276 review: planned / ongoing fundraising is never a completed seed raise
   for (const excerpt of ['Brightloop raised a seed round in London and will use it to hire sales staff. Brightloop is hiring two account executives.', 'Brightloop raised a seed round in London, which is hiring sales reps.', 'Brightloop raised a seed round in London and partners with othercorp. Brightloop is hiring sales staff.', 'Brightloop closed a seed round in London and is hiring sales staff.']) {
     const { db, job } = seed({ domain: null, excerpt }); assert.equal((await applySalesHiringGate(db, job, serve({}), { now: NOW })).passed, 1, excerpt)
   }
+})
+
+test('appositive subject: "Brightloop, a London B2B SaaS startup with 24 employees, raised a seed round and is hiring two account executives" counts for Brightloop; a different name in front still does not', async () => {
+  const good = 'Brightloop, a London B2B SaaS startup with 24 employees, raised a 3m GBP seed round this month and is hiring two account executives to build its sales team'
+  const { db, job } = seed({ domain: null, excerpt: good }); assert.equal((await applySalesHiringGate(db, job, serve({}), { now: NOW })).passed, 1)
+  const bad = seed({ domain: null, excerpt: 'othercorp, a London B2B SaaS startup with 24 employees, raised a 3m GBP seed round this month and is hiring two account executives' })
+  assert.equal((await applySalesHiringGate(bad.db, bad.job, serve({}), { now: NOW })).passed, 0)
 })
