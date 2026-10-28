@@ -217,3 +217,35 @@ test('REGRESSION (explicit country): a stated country that is not the lead\'s re
   await enrichLeadContacts(rightNy.db, 'u1', rightNy.jobId, [rightNy.lead], { fetchImpl: apollo({ ...NY, country: 'United States' }), master })
   assert.ok(attached(rightNy.db).length > 0, 'the genuine same-city, same-country record still attaches'); assert.equal(refusals(rightNy.db).length, 0, JSON.stringify(refusals(rightNy.db)))
 })
+
+test('COUNTRY TABLE: the complete ISO 3166 table resolves any explicit country; US states / DC, "New Jersey" / "New Mexico" and UK constituents are never misread', async () => {
+  const { countriesIn, COUNTRY_COUNT, resolveSegment } = await import('../lib/scan/countries.ts')
+  assert.ok(COUNTRY_COUNT >= 249, `all of ISO 3166-1: ${COUNTRY_COUNT}`)
+  const code = (t: string) => countriesIn(t)
+  for (const [t, c] of [['New York, NY, Zimbabwe', 'ZW'], ['57 W 57th St, New York, NY 10019, Brazil', 'BR'], ['Tokyo, Japan', 'JP'], ['London, Kenya', 'KE'], ['Harare, ZWE', 'ZW'], ['Seoul, Republic of Korea', 'KR'], ['Abidjan, Cote d\'Ivoire', 'CI'], ['Kyiv, Ukraine', 'UA'], ['Vilnius, Lithuania', 'LT'], ['Ulaanbaatar, Mongolia', 'MN'], ['Lima, Peru', 'PE'], ['Beirut, Lebanon', 'LB'], ['Tbilisi, Republic of Georgia', 'GE'], ['St Helier, Jersey', 'JE'], ['New York NY Zimbabwe', 'ZW'], ['Nairobi, kenya', 'KE'], ['MANILA, PHILIPPINES', 'PH']] as const) assert.deepEqual(code(t), [c], t)
+  for (const t of ['Atlanta, Georgia', 'Atlanta, GA 30301', 'Newark, New Jersey', 'Santa Fe, New Mexico', 'Lebanon, PA', 'Mexico, MO', 'Peru, IN', 'Turkey, TX', 'Indiana, PA', 'Washington, DC', 'Washington, District of Columbia', 'Dover, Delaware', 'Phoenix, Arizona', 'Charleston, West Virginia', 'Jersey City, NJ', 'New York, NY 10019']) assert.deepEqual(code(t), [], `${t}: a US place is not a foreign country`)
+  for (const t of ['New York, NY, USA', 'New York, NY, United States', 'New York, NY, U.S.A.', 'New York, NY, America']) assert.deepEqual(code(t), ['US'], t)
+  for (const t of ['London, UK', 'London, England', 'London, Scotland', 'Cardiff, Wales', 'Belfast, Northern Ireland', 'London, United Kingdom', 'London, GBR', 'London, Great Britain']) assert.deepEqual(code(t), ['GB'], t)
+  assert.equal(resolveSegment('Georgia'), null); assert.equal(resolveSegment('New Jersey'), null); assert.equal(resolveSegment('Jersey', true), 'JE'); assert.equal(resolveSegment('Jersey City'), null)
+})
+test('REGRESSION (complete country resolver): NYC street + Zimbabwe / Brazil / Japan and a London address + Kenya refuse; the USA / UK positives and US-state spellings attach', async () => {
+  const NYC = ['New York City'], LON = ['London, UK'], LE = 'Brightloop is opening an office at 10 Old Street, London'
+  for (const c of ['Zimbabwe', 'Brazil', 'Japan', 'Nigeria', 'Vietnam', 'New Zealand', 'Iceland', 'Peru', 'Zambia', 'ZWE', 'Republic of Korea'] as const) {
+    for (const stated of [{ place: `New York, NY, ${c}` }, { address: `57 W 57th St, New York, NY 10019, ${c}` }, { address: `57 W 57th St, New York, ${c}` }, { address: `57 W 57TH ST, NEW YORK, NY, ${c.toUpperCase()}` }]) {
+      const r = contactAgreement({ where: NYC, evidence: EVIDENCE }, stated); assert.equal(r.ok, false, JSON.stringify(stated)); assert.match((r as { reason: string }).reason, /^contact rejected: location mismatch .*country [A-Z]{2} is not the lead's/, JSON.stringify(stated))
+    }
+  }
+  for (const stated of [{ place: 'London, Kenya' }, { address: '10 Old Street, London EC1V 9AB, Kenya' }, { place: 'London, Zimbabwe' }, { address: '10 Old Street, London, Australia' }]) {
+    const r = contactAgreement({ where: LON, evidence: LE }, stated); assert.equal(r.ok, false, JSON.stringify(stated)); assert.match((r as { reason: string }).reason, /country [A-Z]{2} is not the lead's/)
+  }
+  for (const stated of [{ place: 'New York, NY, USA' }, { place: 'New York, NY, United States' }, { address: '57 W 57th St, New York, NY 10019, USA' }, { address: '57 W 57th St, New York, NY 10019' }, { address: '57 W 57th St' }, { address: '57 W 57th St, New York, New York' }]) assert.equal(contactAgreement({ where: NYC, evidence: EVIDENCE }, stated).ok, true, JSON.stringify(stated))
+  for (const stated of [{ place: 'London, UK' }, { place: 'London, England' }, { place: 'London, United Kingdom' }, { address: '10 Old Street, London EC1V 9AB, United Kingdom' }, { address: '10 Old Street, London EC1V 9AB, GBR' }]) assert.equal(contactAgreement({ where: LON, evidence: LE }, stated).ok, true, JSON.stringify(stated))
+  // US-state spellings are never a foreign country, for a lead in that state
+  assert.equal(contactAgreement({ where: ['Atlanta, Georgia'], evidence: 'Peachtree Dental is opening at 100 Peachtree St, Atlanta' }, { address: '100 Peachtree St, Atlanta, GA 30303' }).ok, true)
+  assert.equal(contactAgreement({ where: ['Atlanta, Georgia'], evidence: 'Peachtree Dental is opening at 100 Peachtree St, Atlanta' }, { address: '100 Peachtree St, Atlanta, Georgia' }).ok, true)
+  assert.equal(contactAgreement({ where: ['Newark, New Jersey'], evidence: 'Garden Dental is opening at 5 Broad St, Newark' }, { place: 'Newark, New Jersey, USA' }).ok, true)
+  // Apollo path: the org record names Zimbabwe (a country the old short list did not know)
+  const s = seed()
+  await enrichLeadContacts(s.db, 'u1', s.jobId, [s.lead], { fetchImpl: apollo({ ...NY, country: 'Zimbabwe' }), master })
+  assert.deepEqual(attached(s.db), [], 'New York, New York, Zimbabwe does not attach'); assert.deepEqual(refusals(s.db).map(r => r[0]), ['contact_location_mismatch'], JSON.stringify(refusals(s.db)))
+})

@@ -3,6 +3,7 @@
 // A same-name practice in Pico Rivera, CA must never be attached to a New York lead. A refusal carries a plain reason for the audit trail.
 import type Database from 'better-sqlite3'
 import { placeAgreement, cityScoped, US_STATES } from './place-agreement.ts'
+import { countriesIn } from './countries.ts'
 import { addEnrichment } from '../connectors/store.ts'
 import { WHY_MAX } from './score.ts'
 
@@ -77,20 +78,13 @@ function sameCityAsEvidence(stated: string, evidence: string | null | undefined)
   return !!city && !foreignMarker(stated) && stated.toLowerCase().replace(/\s+/g, ' ').startsWith(city)
 }
 const CA_PROVINCES = new Set(['on', 'qc', 'bc', 'ab', 'mb', 'sk', 'ns', 'nb', 'nl', 'pe', 'yt', 'nt', 'nu', 'ontario', 'quebec', 'british columbia', 'alberta', 'manitoba', 'saskatchewan', 'nova scotia', 'new brunswick', 'newfoundland and labrador', 'prince edward island'])
-const FOREIGN_COUNTRY = /\b(?:canada|mexico|united kingdom|great britain|england|scotland|wales|northern ireland|ireland|australia|new zealand|germany|france|spain|italy|netherlands|india|china|japan|brazil|south africa)\b/i
 const CA_POSTAL = /\b[a-z]\d[a-z]\s?\d[a-z]\d\b/i
 // ---- explicit country contradictions: a stated country that is not the lead's country refuses even when street / city / region all match ("New York, NY, Canada" for a New York lead, "London, France" for a London UK lead) ----
-const COUNTRIES: [string, RegExp][] = [
-  ['US', /\b(?:usa|u\.s\.a?\.?|united states(?: of america)?|america)\b/i], ['CA', /\bcanada\b/i],
-  ['GB', /\b(?:uk|u\.k\.|united kingdom|great britain|england|scotland|wales|northern ireland)\b/i], ['IE', /\bireland\b(?!.*northern)/i], ['FR', /\bfrance\b/i], ['DE', /\bgermany\b/i],
-  ['ES', /\bspain\b/i], ['IT', /\bitaly\b/i], ['NL', /\bnetherlands\b/i], ['MX', /\bmexico\b/i], ['AU', /\baustralia\b/i], ['NZ', /\bnew zealand\b/i], ['IN', /\bindia\b/i],
-  ['CN', /\bchina\b/i], ['JP', /\bjapan\b/i], ['BR', /\bbrazil\b/i], ['ZA', /\bsouth africa\b/i],
-]
-export const countriesNamed = (text: string): string[] => COUNTRIES.filter(([, re]) => re.test(text)).map(([c]) => c)
+export const countriesNamed = (text: string): string[] => countriesIn(text)   // the complete ISO 3166 table (lib/scan/countries.ts), not a short list
 // The lead's country from its place: New York City / a US state / a ", ST" code = US; London = GB; an explicitly named country = that country. Unknown = null (no country demand).
 function leadCountry(where: string[]): string | null {
   const w = where.join(' | ')
-  const named = countriesNamed(w)
+  const named = [...new Set(where.flatMap(x => countriesIn(x)))]
   if (named.length === 1) return named[0]
   if (cityScoped(where) && /\bnew york|\bnyc\b|\bmanhattan\b|\bbrooklyn\b/i.test(w)) return 'US'
   if (/\blondon\b/i.test(w)) return 'GB'
@@ -100,14 +94,14 @@ function leadCountry(where: string[]): string | null {
 // A country the record states that differs from the lead's. Province codes / Canadian postal codes count as Canada.
 export function countryConflict(stated: string, where: string[]): string | null {
   const ours = leadCountry(where); if (!ours) return null
-  const theirs = new Set(countriesNamed(stated))
+  const theirs = new Set(countriesIn(stated))
   if (CA_POSTAL.test(stated) || stated.split(',').some(seg => CA_PROVINCES.has(seg.trim().toLowerCase().replace(/\s+[a-z]\d[a-z].*$/i, '')))) theirs.add('CA')
   const other = [...theirs].find(c => c !== ours)
   return other && !(theirs.has(ours) && theirs.size === 1) ? other : null
 }
 // A province, a Canadian postal code or a non-US/non-UK country name written in a stated place: the record is not in the lead's US city unless placeAgreement positively says otherwise.
 function foreignMarker(stated: string): boolean {
-  return CA_POSTAL.test(stated) || FOREIGN_COUNTRY.test(stated) || stated.split(/[,\s]+/).some((w, i, all) => i > 0 && CA_PROVINCES.has(w.toLowerCase()) && !(w.toLowerCase() === 'on' && all.length > 4)) || stated.split(',').some(seg => CA_PROVINCES.has(seg.trim().toLowerCase().replace(/\s+[a-z]\d[a-z].*$/i, '')))
+  return CA_POSTAL.test(stated) || countriesIn(stated).some(c => c !== 'US') || stated.split(/[,\s]+/).some((w, i, all) => i > 0 && CA_PROVINCES.has(w.toLowerCase()) && !(w.toLowerCase() === 'on' && all.length > 4)) || stated.split(',').some(seg => CA_PROVINCES.has(seg.trim().toLowerCase().replace(/\s+[a-z]\d[a-z].*$/i, '')))
 }
 export function contactAgreement(lead: LeadSide, c: Candidate): Agreement {
   const ld = registrable(lead.company_domain), cd = registrable(c.domain)
