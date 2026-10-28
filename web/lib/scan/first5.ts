@@ -9,9 +9,11 @@ import type { ScanOutcome } from './scan-outcome.ts'
 export const FIRST5_TARGET = 5
 export type First5State = 'finding' | 'ready' | 'partial' | 'stopped_empty'
 export type First5Reason = 'failed' | 'rejected' | 'zero_match' | 'none_extracted' | 'stopped' | 'unrecorded'
-export interface First5Lead { id: string; company: string; name: string | null; signal: string; source_url: string; date: string | null; fit_pct: number | null }
+// event_date is when the EVENT happened (as the verifier read it); published_at is when the PAGE was published. They are different facts and are never substituted for one another: a request for a funding window is
+// answered by the event date. Either may be null.
+export interface First5Lead { id: string; company: string; name: string | null; signal: string; source_url: string; event_date: string | null; published_at: string | null; fit_pct: number | null; provisional: boolean }
 export interface First5View {
-  target: number; verified: number; state: First5State; finding_more: boolean; reason: First5Reason | null; message: string
+  target: number; found: number; verified: number; enriching: boolean; next: { action: 'wider_search'; label: string } | null; state: First5State; finding_more: boolean; reason: First5Reason | null; message: string
   leads: First5Lead[]; sources: { source: string; state: SourceProgress['state']; status: SourceProgress['status']; note: string | null; candidates: number | null; accepted: number | null; review: number | null; rejected: number | null }[]
   failed_sources: string[]; can_continue: boolean   // can_continue: a normal full scan can be started to find the rest
 }
@@ -22,7 +24,7 @@ export function verifiedLeads(db: Database.Database, userId: string, jobId: stri
   const rows = db.prepare(`SELECT l.id, l.name, l.company, l.signal, l.source_url, l.event_date, l.published_at, l.fit FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
     WHERE j.id = ? AND j.user_id = ? AND l.review_reason IS NULL AND l.quarantined_at IS NULL AND (l.fit IS NULL OR l.fit > 1)
     ORDER BY (l.fit IS NULL), l.fit DESC, l.created_at DESC, l.insert_seq LIMIT ?`).all(jobId, userId, limit) as LeadRow[]
-  return rows.map(r => ({ id: r.id, company: r.company || r.name, name: r.company && r.name ? r.name : null, signal: r.signal, source_url: r.source_url, date: r.event_date ?? r.published_at ?? null,
+  return rows.map(r => ({ id: r.id, company: r.company || r.name, name: r.company && r.name ? r.name : null, signal: r.signal, source_url: r.source_url, event_date: r.event_date ?? null, published_at: r.published_at ?? null, provisional: false,
     fit_pct: typeof r.fit === 'number' && r.fit >= 0 && r.fit <= 5 ? Math.round((r.fit / 5) * 100) : null }))
 }
 export function isFirst5(db: Database.Database, userId: string, jobId: string): boolean {
@@ -33,17 +35,22 @@ const REASON: Partial<Record<ScanOutcome['kind'], First5Reason>> = { failed: 'fa
 
 export function first5Of(input: { status: string; leads: First5Lead[]; progress: SourceProgress[]; outcome: ScanOutcome }): First5View {
   const { status, progress, outcome } = input
-  const leads = input.leads.slice(0, FIRST5_TARGET), verified = leads.length
-  const running = status === 'pending' || status === 'running'
+  // 'enriching': the scan row is finished but the company-site lookups, fit grading and the sales-hiring check are still running, and that check can still HOLD a lead. The job is active: what is shown is
+  // provisional, nothing is "verified" yet, no second scan is offered, and the view never turns terminal until the stage ends.
+  const enriching = status === 'enriching', running = status === 'pending' || status === 'running' || enriching
+  const leads = input.leads.slice(0, FIRST5_TARGET).map(l => ({ ...l, provisional: enriching })), found = leads.length, verified = enriching ? 0 : found
   const sources = progress.map(p => ({ source: p.source, state: p.state, status: p.status, note: p.note, candidates: p.candidates, accepted: p.accepted, review: p.review, rejected: p.rejected }))
   const failed_sources = progress.filter(p => p.status === 'failed').map(p => p.source)
-  const base = { target: FIRST5_TARGET, verified, leads, sources, failed_sources }
-  if (running) return { ...base, state: 'finding', finding_more: true, reason: null, can_continue: false, message: verified > 0 ? `${verified} found so far, finding more...` : 'Searching the free sources for your first customers...' }
-  if (verified >= FIRST5_TARGET) return { ...base, state: 'ready', finding_more: false, reason: null, can_continue: true, message: `We found ${verified} customers you can look at today.` }
-  if (verified > 0) return { ...base, state: 'partial', finding_more: true, reason: null, can_continue: true, message: `${verified} verified so far. Finding more...` }
+  const base = { target: FIRST5_TARGET, found, verified, enriching, leads, sources, failed_sources }
+  // finding_more is true ONLY while work is really active. A terminal result says what it is and offers a deliberate wider search: nothing continues in the background.
+  const wider = { action: 'wider_search' as const, label: 'Search wider (a full scan, using your scan allowance)' }
+  if (enriching) return { ...base, state: 'finding', finding_more: true, reason: null, can_continue: false, next: null, message: found > 0 ? `${found} found. Checking each one and looking up who to contact...` : 'Checking what was found...' }
+  if (running) return { ...base, state: 'finding', finding_more: true, reason: null, can_continue: false, next: null, message: 'Searching the free sources for your first customers...' }
+  if (verified >= FIRST5_TARGET) return { ...base, state: 'ready', finding_more: false, reason: null, can_continue: true, next: null, message: `We found ${verified} customers you can look at today.` }
+  if (verified > 0) return { ...base, state: 'partial', finding_more: false, reason: null, can_continue: true, next: wider, message: `${verified} of ${FIRST5_TARGET} verified from the free sources. You can search wider for more.` }
   // Finished with nothing verified: say WHICH of the distinct reasons it was (a failed source, rejected candidates, or a clean zero), never a bare empty state.
   // A free-sources-only run stops (budget_stopped) when its sources gave nothing; if a source FAILED that is the reason to show, not the stop.
-  if (outcome.kind === 'stopped' && failed_sources.length > 0) return { ...base, state: 'stopped_empty', finding_more: true, reason: 'failed', can_continue: true, message: `Failed - ${failed_sources.join(', ')} had an error. Finding more with a wider search...` }
+  if (outcome.kind === 'stopped' && failed_sources.length > 0) return { ...base, state: 'stopped_empty', finding_more: false, reason: 'failed', can_continue: true, next: wider, message: `Failed - ${failed_sources.join(', ')} had an error. You can search wider.` }
   const reason = REASON[outcome.kind] ?? 'unrecorded'
-  return { ...base, state: 'stopped_empty', finding_more: true, reason, can_continue: true, message: `${outcome.label}${outcome.detail ? `: ${outcome.detail}` : ''}. Finding more with a wider search...` }
+  return { ...base, state: 'stopped_empty', finding_more: false, reason, can_continue: true, next: wider, message: `${outcome.label}${outcome.detail ? `: ${outcome.detail}` : ''}. You can search wider.` }
 }
