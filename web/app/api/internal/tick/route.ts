@@ -12,6 +12,7 @@ import { LeaseLost, StaleLeaseWrite, tryLease } from '@/lib/shared/lease'
 import type { Lease } from '@/lib/shared/lease'
 import { migrateIndexing, dueTenants, runIndexChecks } from '@/lib/seo/indexing'
 import { captureError } from '@/lib/ops/errors'
+import { requestIdOf } from '@/lib/ops/request-log'
 
 // Called by a scheduler (cron or a systemd timer) with AUTOPILOT_TICK_SECRET. Reads replies and sends due
 // follow-ups for tenants who turned both on. Without the secret configured the route does not exist.
@@ -27,9 +28,9 @@ export async function POST(req: NextRequest) {
   const lease = await tryLease(await getDb(), 'internal-tick', TICK_LEASE)
   if (!lease) return NextResponse.json({ ok: true, skipped: 'another tick is running' })
   try {
-    return await tick(lease)
+    return await tick(lease, requestIdOf(req))
   } catch (e) {
-    if (e instanceof LeaseLost || e instanceof StaleLeaseWrite) { captureError(e, { source: 'worker', where: 'tick' }); return NextResponse.json({ ok: false, stopped: 'lease_lost' }) }
+    if (e instanceof LeaseLost || e instanceof StaleLeaseWrite) { captureError(e, { source: 'worker', where: 'tick', requestId: requestIdOf(req) }); return NextResponse.json({ ok: false, stopped: 'lease_lost' }) }
     throw e
   } finally {
     await lease.release().catch(() => {})
@@ -39,7 +40,7 @@ export async function POST(req: NextRequest) {
 // Heartbeat every ~6.7 min (default (ttl - budget) / 3); keep() refuses a new step with under 10 min of confirmed lease.
 const TICK_LEASE = { ttlMs: 30 * 60 * 1000, stepBudgetMs: 10 * 60 * 1000 }
 
-async function tick(lease: Lease) {
+async function tick(lease: Lease, requestId?: string) {
   const raw = getScanDb()
   const db = lease.fenceSqlite(raw)
   // A refused write means this tick lost the lease: stop, never carry on with the next tenant.
@@ -48,12 +49,12 @@ async function tick(lease: Lease) {
   let done = 0
   for (const t of tenants) {
     await lease.keep()
-    try { const sync = await syncReplies(db, t.tenant_id); if (sync.error) continue; await runFollowups(db, t.tenant_id, t.business_name ?? ''); done++ } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:replies', tenantId: t.tenant_id }) }
+    try { const sync = await syncReplies(db, t.tenant_id); if (sync.error) continue; await runFollowups(db, t.tenant_id, t.business_name ?? ''); done++ } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:replies', tenantId: t.tenant_id, requestId }) }
   }
   let sequences = 0
   for (const t of db.prepare("SELECT DISTINCT tenant_id FROM sequences WHERE status IN ('approved','active')").all() as { tenant_id: string }[]) {
     await lease.keep()
-    try { const r = await runSequences(db,t.tenant_id,''); sequences += r.sent } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:sequences', tenantId: t.tenant_id }) }
+    try { const r = await runSequences(db,t.tenant_id,''); sequences += r.sent } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:sequences', tenantId: t.tenant_id, requestId }) }
   }
   await lease.keep()
   const watches = runDueWatches(db)
@@ -70,7 +71,7 @@ async function tick(lease: Lease) {
   let indexChecked = 0
   for (const t of dueTenants(db, Math.floor(Date.now() / 1000))) {
     await lease.keep()
-    try { const r = await runIndexChecks(db, t); if (r && r.length > 0) indexChecked++ } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:index-checks', tenantId: t }) }
+    try { const r = await runIndexChecks(db, t); if (r && r.length > 0) indexChecked++ } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:index-checks', tenantId: t, requestId }) }
   }
   return NextResponse.json({ ok: true, tenants: done, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, index_checks: indexChecked })
 }

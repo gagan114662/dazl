@@ -91,6 +91,21 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
   | `app_leases`, `dazl_schema_migrations` | Global, no tenant data (listed in `NOT_DIRECT`) |
 
   On open branches: `work_queue` is covered in `test/multi-instance.test.ts` (#252). `stripe_ended_subscriptions` (#253) is keyed by Stripe's globally unique subscription id, and its tenant comes from the verified event; a two-tenant test follows once #253 merges.
+- **Tenant isolation across instances** (`test/multi-instance-isolation.test.ts`): two app instances (separate processes and pools) share one Postgres.
+  - They write tenant A's and tenant B's data concurrently through every `Db`-layer write path:
+    - sign-up and sessions;
+    - billing;
+    - scan jobs and leads;
+    - SEO audits, briefs and drafts;
+    - the work queue.
+  - Then each reads as the tenant the other instance wrote, through every `Db`-layer read, list, export and action path:
+    - with its own data, nothing of the other tenant comes back;
+    - with the other tenant's ids, it gets nothing and changes nothing (cancel, approve);
+    - Stripe calls carry only its own customer;
+    - its rate allowance is untouched.
+  - No leak was found. A planted leak (`getJob` ignoring the tenant) fails the test.
+  - Modules still on raw SQLite (campaigns, most settings, outreach) cannot run on Postgres yet; their routes are covered on SQLite by the route manifest tests.
+- **Route error records carry the request id**: the auth, billing, Gmail callback and tick catches pass `requestIdOf(req)`, the UUID `proxy.ts` set, as uncaught errors already do (`test/route-errors.test.ts`).
 - **Still on SQLite:** every other module. Production keeps running on SQLite until cutover.
 - **SQLite-only SQL in queries:** about 18 queries use `rowid` (for example as an ORDER BY tie-break), which PG does not have. They need rewriting as each area is ported.
 
