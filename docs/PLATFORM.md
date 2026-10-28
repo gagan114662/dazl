@@ -52,6 +52,11 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
   - `lib/scan/store-db.ts` has `Db` versions of the scan job store: create, query-create, get, count-active, list leads, count hidden, latest, list jobs, export, cancel and the stale reaper.
   - `test/scan-store-db.test.ts` covers them with two tenants on both engines, and pins them to `store.ts` on SQLite with the same rows.
   - No caller is switched. `store.ts`, the runner and the routes are unchanged; callers move with their owners.
+  - **Step 2, storage half:** `finishJob` and `failOrRequeue` write an attempt's end in one `Db` transaction: leads, review rows, counts and the job row.
+    - They are fenced on `status = 'running' AND attempts = ?`, with `FOR UPDATE` on PG.
+    - They are tested on both engines: stale attempts write nothing; requeue until `MAX_ATTEMPTS`, then fail.
+    - One deliberate difference from the runner's `finish()`: only duplicates are skipped (`ON CONFLICT DO NOTHING`, the same on both engines). A row that fails a CHECK fails the whole attempt instead of being dropped silently, as SQLite's `INSERT OR IGNORE` does.
+    - Wiring the runner to them is the yield session's part.
   - Differences from `store.ts`:
     - Times come from the caller.
     - Same-second ties order by `id`, not `rowid`.

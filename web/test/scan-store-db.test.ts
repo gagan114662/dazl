@@ -102,3 +102,58 @@ test('[sqlite] parity with store.ts on the same rows', async () => {
   assert.equal(await S.countActiveJobs(db, A), Legacy.countActiveJobs(raw, A))
   await db.close()
 })
+
+// ---- step 2 (storage half): finishJob / failOrRequeue ----
+const L = (key: string, o: Partial<S.LeadRow> = {}): S.LeadRow => ({ name: 'Pat', company: `Co ${key}`, contact: null, signal: 'Hiring', source_url: `https://e.example/${key}`, score: 70,
+  evidence_excerpt: 'quote', event_date: '2026-10-01', date_status: 'verified', retrieved_at: T0, confidence: 80, dedup_key: key, fit: 4, ...o })
+async function claimed(db: Db, attempts = 1) {
+  const id = await S.createJob(db, A, { business_name: 'Biz', industry: 'software', location: 'Toronto' }, null, T0)
+  await db.run("UPDATE scan_jobs SET status = 'running', attempts = ?, claimed_at = ? WHERE id = ?", [attempts, T0, id])
+  return { id, attempts }
+}
+
+bothEngines('finishJob: the attempt that holds the job writes its leads, review rows and counts in one transaction; duplicates are skipped', async ({ db }) => {
+  const job = await claimed(db)
+  const r = await S.finishJob(db, job, {
+    status: 'done', error: null, now: T0 + 60, candidates: 9, dropped: { stale: 2, no_quote: 1 },
+    leads: [L('k1'), L('k2', { fit: 2 }), L('k1')], // the second k1 is a duplicate of the first
+    review: [{ name: '', company: 'Rev Co', signal: 'Maybe', source_url: 'https://r.example/1', score: 40, evidence_excerpt: null, event_date: null, dedup_key: 'review:k3', review_reason: 'undated' }],
+  })
+  assert.deepEqual(r, { owned: true, inserted: ['k1|https://e.example/k1', 'k2|https://e.example/k2', 'review:k3|https://r.example/1'] })
+  const j = (await S.getJob(db, A, job.id))!
+  assert.deepEqual([j.status, j.claimed_at, Number(j.finished_at), Number(j.candidates), Number(j.verified), Number(j.needs_review), Number(j.dropped), JSON.parse(j.drop_reasons!)],
+    ['done', null, T0 + 60, 9, 3, 1, 3, { stale: 2, no_quote: 1 }])
+  assert.equal(Number(j.lead_count), 3)
+  const rev = await db.get<{ date_status: string; review_reason: string }>("SELECT date_status, review_reason FROM leads WHERE dedup_key = 'review:k3'")
+  assert.deepEqual(rev, { date_status: 'undated', review_reason: 'undated' })
+})
+
+bothEngines('finishJob: an attempt that no longer holds the job (re-claimed, cancelled, finished) writes nothing', async ({ db }) => {
+  const job = await claimed(db, 2)
+  assert.deepEqual(await S.finishJob(db, { id: job.id, attempts: 1 }, { status: 'done', error: null, leads: [L('late')] }), { owned: false })
+  assert.deepEqual(await S.cancelJob(db, A, job.id, T0 + 5), { ok: true, was_running: true })
+  assert.deepEqual(await S.finishJob(db, job, { status: 'done', error: null, leads: [L('late')] }), { owned: false })
+  const j = (await S.getJob(db, A, job.id))!
+  assert.deepEqual([j.status, j.error, Number(j.lead_count)], ['failed', 'cancelled', 0])
+})
+
+bothEngines('finishJob: an invalid row fails the whole attempt on both engines; nothing is half-written and the job stays running', async ({ db }) => {
+  const job = await claimed(db)
+  await assert.rejects(S.finishJob(db, job, { status: 'done', error: null, leads: [L('ok'), L('bad', { source_url: 'ftp://x.example/1' })] }))
+  const j = (await S.getJob(db, A, job.id))!
+  assert.deepEqual([j.status, Number(j.lead_count)], ['running', 0])
+})
+
+bothEngines('failOrRequeue: retryable errors requeue until the last attempt, then fail; non-retryable fails at once; stale writes nothing', async ({ db }) => {
+  const a = await claimed(db, 1)
+  assert.equal(await S.failOrRequeue(db, a, 'provider_down', { retryable: true, now: T0 + 1 }), 'retry')
+  const ja = (await S.getJob(db, A, a.id))!
+  assert.deepEqual([ja.status, ja.error, ja.claimed_at, ja.finished_at, Number(ja.attempts)], ['pending', 'provider_down', null, null, 1])
+  const b = await claimed(db, Legacy.MAX_ATTEMPTS)
+  assert.equal(await S.failOrRequeue(db, b, 'provider_down', { retryable: true, now: T0 + 2 }), 'failed')
+  const c = await claimed(db, 1)
+  assert.equal(await S.failOrRequeue(db, c, 'key_rejected', { retryable: false, now: T0 + 3 }), 'failed')
+  assert.deepEqual([(await S.getJob(db, A, c.id))!.status, (await S.getJob(db, A, c.id))!.error], ['failed', 'key_rejected'])
+  assert.equal(await S.failOrRequeue(db, { id: c.id, attempts: 1 }, 'late', { retryable: true }), 'stale')
+  assert.equal((await S.getJob(db, A, c.id))!.error, 'key_rejected')
+})

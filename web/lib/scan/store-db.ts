@@ -122,3 +122,74 @@ export function cancelJob(db: Db, userId: string, id: string, now = nowS()): Pro
     return r.changes === 1 ? { ok: true, was_running: wasRunning } : { ok: false, reason: 'already_finished' }
   })
 }
+
+// ---- Step 2 (storage half): ending an attempt in one transaction ----
+// The writes the runner's finish() makes (lib/scan/runner.ts), on the Db layer: the attempt's leads and review rows
+// and the job row, in one transaction, fenced on status='running' AND attempts=? (the attempt that was claimed). The
+// caller computes the rows (dedup key, source kind, evidence copy id) exactly as today; this only stores them. Not
+// wired in: the runner keeps its own finish() until its owners move it.
+// One difference from finish(): finish() inserts with INSERT OR IGNORE, which on SQLite also drops a row that fails a
+// CHECK; here only a duplicate is skipped (ON CONFLICT DO NOTHING, same on both engines), and an invalid row fails the
+// whole transaction, so nothing of the attempt is half-written and the job stays 'running' for the reaper.
+export interface LeadRow {
+  name: string; company: string; contact: string | null; signal: string; source_url: string; score: number
+  evidence_excerpt: string | null; event_date: string | null; date_status: string | null; retrieved_at: number | null
+  confidence: number | null; dedup_key: string | null; fit?: number | null; intent?: number | null; action?: number | null
+  why?: string | null; signals?: string | null; icp_match?: string | null; signal_kind?: string | null; source_kind?: string | null
+  evidence_origin?: string | null; own_fetch_failure?: string | null; evidence_copy_sha256?: string | null; evidence_copy_id?: string | null
+}
+export interface ReviewRow {
+  name: string; company: string; signal: string; source_url: string; score: number; evidence_excerpt: string | null
+  event_date: string | null; dedup_key: string; review_reason: string; source_kind?: string | null
+}
+export interface FinishInput {
+  status: 'done' | 'failed' | 'pending'
+  error: string | null
+  leads?: LeadRow[]
+  review?: ReviewRow[]
+  candidates?: number | null
+  dropped?: Record<string, number> | null
+  now?: number
+}
+export type FinishResult = { owned: false } | { owned: true; inserted: string[] }
+
+export function finishJob(db: Db, job: { id: string; attempts: number }, input: FinishInput): Promise<FinishResult> {
+  const now = input.now ?? nowS()
+  const leads = input.leads ?? [], review = input.review ?? []
+  return db.tx(function* (t): TxBody<FinishResult> {
+    const own = yield* t.get(`SELECT 1 AS x FROM scan_jobs WHERE id = ? AND status = 'running' AND attempts = ?${t.kind === 'pg' ? ' FOR UPDATE' : ''}`, [job.id, job.attempts])
+    if (!own) return { owned: false }
+    const inserted: string[] = []
+    for (const l of leads) {
+      const r = yield* t.run(
+        `INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, fit, intent, action, why, signals, icp_match, signal_kind, source_kind, evidence_origin, own_fetch_failure, evidence_copy_sha256, evidence_copy_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
+        [randomBytes(12).toString('hex'), job.id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l.dedup_key,
+          l.fit ?? null, l.intent ?? null, l.action ?? null, l.why ?? null, l.signals ?? null, l.icp_match ?? null, l.signal_kind ?? null, l.source_kind ?? null, l.evidence_origin ?? null, l.own_fetch_failure ?? null, l.evidence_copy_sha256 ?? null, l.evidence_copy_id ?? null, now])
+      if (r.changes) inserted.push(`${l.dedup_key}|${l.source_url}`)
+    }
+    for (const l of review) {
+      const r = yield* t.run(
+        `INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, review_reason, source_kind, created_at)
+         VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
+        [randomBytes(12).toString('hex'), job.id, l.name, l.company, l.signal, l.source_url, l.score, l.evidence_excerpt, l.event_date, l.event_date ? 'unverified' : 'undated', l.dedup_key, l.review_reason, l.source_kind ?? null, now])
+      if (r.changes) inserted.push(`${l.dedup_key}|${l.source_url}`)
+    }
+    const dropped = input.dropped ? Object.values(input.dropped).reduce((a, b) => a + b, 0) : null
+    yield* t.run(
+      `UPDATE scan_jobs SET status = ?, error = ?, claimed_at = NULL, candidates = ?, verified = ?, needs_review = ?, dropped = ?, drop_reasons = ?,
+         finished_at = ? WHERE id = ?`,
+      [input.status, input.error, input.candidates ?? null, input.status === 'done' ? leads.length : null, input.status === 'done' ? review.length : null,
+        dropped, input.dropped ? JSON.stringify(input.dropped) : null, input.status === 'pending' ? null : now, job.id])
+    return { owned: true, inserted }
+  })
+}
+
+// failOrRetry's storage step: after a retryable error the attempt goes back to 'pending' until MAX_ATTEMPTS, then
+// fails; a non-retryable one (a rejected key, a timeout, a refused spend) fails at once. 'stale' when this attempt no
+// longer owns the job (cancelled, finished, re-claimed): nothing is written.
+export async function failOrRequeue(db: Db, job: { id: string; attempts: number }, error: string, opts: { retryable: boolean; now?: number }): Promise<'retry' | 'failed' | 'stale'> {
+  const status = opts.retryable && job.attempts < MAX_ATTEMPTS ? 'pending' : 'failed'
+  const r = await finishJob(db, job, { status, error: error.slice(0, 200), now: opts.now })
+  return !r.owned ? 'stale' : status === 'pending' ? 'retry' : 'failed'
+}
