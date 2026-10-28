@@ -278,6 +278,13 @@ These steps are development work behind flags and tests. Merging them does not c
    - The ported modules (sessions, sign-in, Google sign-in, billing) are tested with two tenants on SQLite and PG.
    - Route-level tests run on SQLite until each area is ported to `Db`.
 5. **Stripe e2e (test mode).** Step 5:
+   - **Configuration (environment only; no key is ever in code or the repo):**
+     - `STRIPE_SECRET_KEY`: `sk_test_...` in test mode (`sk_live_...` only when the owner goes live). Used server-side for Checkout, the billing portal and the read-only subscription lookup on a same-second tie.
+     - `STRIPE_PRICE_PRO`: the Pro price id from the Stripe dashboard.
+     - `STRIPE_WEBHOOK_SECRET`: the endpoint's `whsec_...` signing secret. Without it the webhook answers 503 and nothing is applied.
+     - `PUBLIC_BASE_URL`: where Checkout and the portal return (`/app/settings`).
+     - Webhook URL: `https://<host>/api/stripe` or `https://<host>/api/billing/webhook` (the same handler). Events to send: `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.payment_failed`.
+   - **Unknown tenant (step 5f):** a verified event whose session or subscription names no tenant, for a customer no tenant has, answers 200 (`ignored`), changes no plan, records the event id (so its replay is a no-op), and writes one JSON line to stdout: `{level: 'warn', type: 'stripe_event', event_id, event_type, result: 'ignored', reason: 'unknown_tenant'}`, the id and type shape-checked, never a customer, email or amount. `test/stripe-endpoint.test.ts` runs the whole path through `/api/stripe` on SQLite and Postgres: checkout carries the tenant, bad signatures refused, apply, replay, payment failed, downgrade (`unpaid`), cancel, the unknown-tenant case, and a second tenant's row unchanged at every step.
    - `test/billing-e2e.test.ts` drives the real routes: checkout, signed webhook, Pro, portal, cancel at period end (still Pro), subscription deleted, Free. The same scenario runs on SQLite and on Postgres (the cutover target); on Postgres the raw SQLite handle is a trap, so every step goes through `Db`.
    - The webhook events are Stripe-shaped fixtures (`test/fixtures/stripe/`) signed with a test secret, the same way Stripe signs them.
    - Unsigned, wrongly signed, stale and tampered deliveries are refused. A replay is a duplicate, and an event for another tenant's customer changes nothing.
