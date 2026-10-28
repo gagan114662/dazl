@@ -9,7 +9,7 @@ type Thread = {
 }
 type State = { queries: string[]; threads: Thread[]; platforms: { reddit: boolean; x: boolean }; consent: boolean; has_key: boolean }
 
-export default function RepliesClient() {
+export default function SocialClient() {
   const [state, setState] = useState<State | null>(null)
   const [newQuery, setNewQuery] = useState('')
   const [busy, setBusy] = useState('')
@@ -116,7 +116,7 @@ export default function RepliesClient() {
         {state.queries.map(q => (
           <span key={q} className="inline-flex items-center gap-2 text-xs border border-black/15 rounded-full px-3 py-1 mr-2 mb-2">
             {q}
-            <button className="text-[#999] hover:text-[#111]" onClick={() => saveQueries(state.queries.filter(x => x !== q))}>x</button>
+            <button className="text-[#999] hover:text-[#111]" aria-label={`Remove search "${q}"`} title="Remove this search" onClick={() => saveQueries(state.queries.filter(x => x !== q))}>x</button>
           </span>
         ))}
         <div className="mt-3">
@@ -144,27 +144,37 @@ export default function RepliesClient() {
           </div>
           <a className="font-medium underline" href={t.url} target="_blank" rel="noopener noreferrer">{t.title}</a>
           <p className="text-sm text-[#555] mt-1">{t.quote}</p>
-          <div className="mt-3">
+          <div className="mt-3" data-testid="thread-actions">
             {t.draft === null ? (
-              <button className="btn-primary text-sm" disabled={busy === t.id || !state.has_key} onClick={() => draft(t.id)}>
-                {busy === t.id ? 'Writing...' : 'Write reply'}
-              </button>
+              <>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button className="btn-primary text-sm" disabled={busy === t.id || !state.has_key} onClick={() => draft(t.id)}>
+                    {busy === t.id ? 'Drafting...' : 'Draft reply'}
+                  </button>
+                  <button className="btn-ghost text-sm" onClick={() => dismiss(t.id)}>Dismiss</button>
+                </div>
+                <p className="text-xs text-[#555] mt-2" data-testid="action-hint">{state.has_key
+                  ? 'Draft reply writes a suggested reply on your AI key for you to edit. Nothing is posted. Dismiss hides this thread.'
+                  : 'Drafting needs your AI key (add one in Settings). Dismiss hides this thread.'}</p>
+              </>
             ) : (
               <>
                 <textarea
                   className="field w-full text-sm"
                   rows={4}
+                  aria-label="Your reply"
                   value={edits[t.id] ?? t.draft}
                   onChange={e => setEdits({ ...edits, [t.id]: e.target.value })}
                   maxLength={4000}
                 />
-                <div className="flex flex-wrap gap-4 mt-2 text-xs">
-                  <button className="underline" onClick={() => saveEdit(t.id)}>Save edit</button>
-                  <button className="underline" onClick={() => copyAndOpen(t)}>{copied === t.id ? 'Copied - paste it in the thread' : 'Copy & open thread'}</button>
-                  <button className="underline" disabled={busy === t.id} onClick={() => draft(t.id)}>{busy === t.id ? 'Writing...' : 'Rewrite'}</button>
-                  {t.draft_status !== 'posted' && <button className="underline text-[#888]" onClick={() => markPosted(t.id)}>Mark posted</button>}
-                  <button className="underline text-[#888]" onClick={() => dismiss(t.id)}>Dismiss</button>
+                <div className="flex flex-wrap items-center gap-2 mt-2">
+                  <button className="btn-primary text-sm" onClick={() => copyAndOpen(t)}>{copied === t.id ? 'Copied - paste it in the thread' : 'Copy reply & open thread'}</button>
+                  <button className="btn-ghost text-sm" onClick={() => saveEdit(t.id)}>Save edit</button>
+                  <button className="btn-ghost text-sm" disabled={busy === t.id} onClick={() => draft(t.id)}>{busy === t.id ? 'Drafting...' : 'Redraft'}</button>
+                  {t.draft_status !== 'posted' && <button className="btn-ghost text-sm" onClick={() => markPosted(t.id)}>Mark as posted</button>}
+                  <button className="btn-ghost text-sm" onClick={() => dismiss(t.id)}>Dismiss</button>
                 </div>
+                <p className="text-xs text-[#555] mt-2" data-testid="action-hint">dazl never posts. Copy puts your reply on the clipboard and opens the thread so you can post it from your own account; Mark as posted only records that you did. Redraft replaces the text on your AI key.</p>
               </>
             )}
           </div>
