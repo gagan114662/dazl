@@ -86,7 +86,7 @@ export function listLeads(db: Db, userId: string, jobId: string, limit = 200, in
     `SELECT ${LEAD_COLUMNS}
      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
      WHERE j.id = ? AND j.user_id = ? ${includeHidden ? '' : 'AND (l.fit IS NULL OR l.fit > 1)'}
-     ORDER BY (l.fit IS NULL), l.fit DESC, l.action DESC, (l.confidence IS NULL), l.confidence DESC, l.score DESC, l.created_at DESC, l.id DESC LIMIT ?`,
+     ORDER BY (l.fit IS NULL), l.fit DESC, l.action DESC, (l.confidence IS NULL), l.confidence DESC, l.score DESC, l.created_at DESC, ${insertionOrder(db.kind, 'l')} LIMIT ?`,
     'l.confidence, l.review_reason,', `${HELD_CONF}, ${HELD_REVIEW},`, [jobId, userId, Math.min(limit, 500)])
 }
 
@@ -117,7 +117,7 @@ export function exportLeads(db: Db, userId: string, jobId?: string, limit = 5000
      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
      WHERE j.user_id = ? ${jobId ? 'AND j.id = ?' : ''} AND (l.fit IS NULL OR l.fit > 1) AND l.quarantined_at IS NULL
      ${includeFixtures ? '' : "AND (l.source_kind IS NULL OR l.source_kind != 'test')"}
-     ORDER BY l.created_at DESC, l.id DESC LIMIT ?`,
+     ORDER BY l.created_at DESC, ${insertionOrder(db.kind, 'l')} LIMIT ?`,
     'l.confidence, l.event_date, l.date_status, l.review_reason,', `${HELD_CONF}, l.event_date, l.date_status, ${HELD_REVIEW},`, jobId ? [userId, jobId, limit] : [userId, limit])
 }
 
