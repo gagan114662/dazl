@@ -22,6 +22,15 @@ const tidy = (s: unknown) => typeof s === 'string' ? s.replace(/\s+/g, ' ').trim
 // "Online booking" -> "online booking", but keep acronyms and names ("CRM", "HubSpot add-ons").
 const lower = (s: string) => /^[A-Z][a-z]/.test(s) ? s[0].toLowerCase() + s.slice(1) : s
 
+// "what you sell" is free text ("We sell appointment booking software for clinics."). The template needs a short noun
+// phrase: drop a leading "we sell / we offer / we provide ...", an article and end punctuation; anything still long
+// reads badly in "Businesses that could use ...", so it yields nothing and examples fill the slot instead.
+export function offering(sells: string): string {
+  let t = tidy(sells).replace(/^(?:we|i|our (?:company|team|business|agency))\s+(?:sell|sells|offer|offers|provide|provides|build|builds|make|makes|run|runs|do|does)\s+/i, '')
+  t = t.replace(/^(?:an?|the)\s+/i, '').replace(/[.!?;:,]+$/, '').trim()
+  return t && t.split(/\s+/).length <= 6 && !/^(?:we|i|our)\b/i.test(t) ? t : ''
+}
+
 export function playSuggestions(p: PlayProfile | null): PlaySuggestions {
   const out: string[] = []
   const add = (s: string) => { const t = s.slice(0, MAX); if (t && !out.some(x => x.toLowerCase() === t.toLowerCase())) out.push(t) }
@@ -38,7 +47,7 @@ export function playSuggestions(p: PlayProfile | null): PlaySuggestions {
       add(`${w}${where ? ` in ${where}` : ''}${s ? ` - ${s}` : ''}`)
     }
   }
-  const sells = tidy(p?.sells)
+  const sells = offering(tidy(p?.sells))
   if (sells) for (const s of SELLS_SIGNALS) { if (out.length >= 3) break; add(`${industry ? `${industry} businesses` : 'Businesses'} that could use ${lower(sells)}${where ? ` in ${where}` : ''} - ${s}`) }
   const examples = EXAMPLE_PLAYS.filter(e => !out.some(x => x.toLowerCase() === e.toLowerCase())).slice(0, 3 - out.length)
   return { business: out, examples }

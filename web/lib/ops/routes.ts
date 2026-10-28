@@ -89,6 +89,7 @@ export const ROUTE_TEMPLATES: readonly string[] = [
   '/app/follow-ups',
   '/app/inbox',
   '/app/leads',
+  '/app/outcomes',
   '/app/outreach',
   '/app/replies',
   '/app/seo',

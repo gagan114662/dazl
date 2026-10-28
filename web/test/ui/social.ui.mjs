@@ -56,7 +56,7 @@ try {
   if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, 'social.png') })
   if (process.env.BEFORE_ONLY) { console.log('before shot'); process.exit(0) }
   const nav = page.locator('aside')
-  assert.deepEqual(await nav.getByRole('link').allTextContents().then(a => a.filter(t => /Replies|Social|Inbox/.test(t))), ['Social opportunities', 'Inbox'])
+  assert.deepEqual(await nav.getByRole('link').allTextContents().then(a => a.filter(t => /Replies|Social|Inbox/.test(t))), ['Inbox', 'Social opportunities']) // Social sits under More, after Engage
   assert.equal(await nav.getByRole('link', { name: 'Social opportunities' }).getAttribute('href'), '/app/social')
   assert.equal((await page.locator('main h1').textContent()).trim(), 'Social opportunities')
   assert.equal(await page.locator('main').getByRole('link', { name: 'Inbox' }).getAttribute('href'), '/app/inbox')

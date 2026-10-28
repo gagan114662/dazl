@@ -4,7 +4,9 @@ import { useEffect, useState } from 'react'
 import KeyInline from './key-inline'
 import SenderInline from './sender-inline'
 import { normalizeWebsite } from '@/lib/onboarding'
-import { capNotice, readinessRows, recentPlays, type ReadinessInput, type Play } from '@/lib/readiness'
+import { Icon } from './ui/icons'
+import { Pill } from './ui/bits'
+import { readinessRows, recentPlays, type ReadinessInput, type Play } from '@/lib/readiness'
 
 // Home after the first search: the steps left before a useful scan and send, each with its fix (in place, or a link to
 // the page that fixes it). Gmail stays in Settings: connecting is an explicit Google grant whose read-access terms are
@@ -43,30 +45,35 @@ export default function Readiness() {
   if (!input) return null
   const rows = readinessRows(input)
   const done = rows.filter(r => r.state === 'done').length
-  const capped = capNotice(input.outreach)
   return (
     <section className="mb-10">
-      {capped && <p role="status" data-testid="cap-notice" className="card p-4 mb-6 text-sm border-l-2 border-black">{capped} <Link className="underline" href="/app/outreach">Outreach</Link></p>}
-      {done === rows.length && !reopened && <p className="text-sm text-[#555] mb-6" data-testid="ready-all-done">Setup checklist: all {rows.length} steps done. <button type="button" className="underline" onClick={() => setReopened(true)}>Show it</button></p>}
-      {(done < rows.length || reopened) && <div data-testid="readiness-checklist">
-      <h2 id="ready-heading" className="text-lg font-semibold mb-1">Before your first scan and send</h2>
-      <p className="text-sm text-[#555] mb-3" data-testid="ready-progress">{done} of {rows.length} done</p>
-      <ul className="card divide-y divide-black/10" aria-labelledby="ready-heading">
+      {done === rows.length && !reopened && <div className="card px-4 py-3 text-sm mb-6 flex items-center gap-3"><span aria-hidden className="step-dot bg-[var(--mint)] text-white">✓</span><p className="flex-1 flex items-center justify-between gap-3" data-testid="ready-all-done"><span>Setup checklist: all {rows.length} steps done.</span> <button type="button" className="btn-ghost btn-sm" onClick={() => setReopened(true)}>Show it</button></p></div>}
+      {(done < rows.length || reopened) && <div data-testid="readiness-checklist" className="card overflow-hidden">
+      <div className="p-5 pb-4">
+        <div className="flex items-center justify-between gap-3">
+          <h2 id="ready-heading" className="text-lg font-bold tracking-tight">Get set up</h2>
+          <span className="text-sm font-semibold text-[var(--ink-2)]" data-testid="ready-progress">{done} of {rows.length} done</span>
+        </div>
+        <div className="mt-3 h-2 rounded-full bg-[#ececec] overflow-hidden" aria-hidden><div className="h-full rounded-full bg-[var(--ink)]" style={{ width: `${Math.round(done / rows.length * 100)}%` }} /></div>
+      </div>
+      <ul className="divide-y divide-[var(--line)] border-t border-[var(--line)]" aria-labelledby="ready-heading">
         {rows.map(r => (
-          <li key={r.id} className={`p-4 text-sm ${r.next ? 'border-l-2 border-black bg-black/[0.03]' : ''}`} data-testid={`ready-${r.id}`} data-next={r.next ? 'true' : undefined}>
+          <li key={r.id} className={`px-5 py-3.5 text-sm ${r.next ? 'bg-[var(--lav-bg)]' : ''}`} data-testid={`ready-${r.id}`} data-next={r.next ? 'true' : undefined}>
             <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <span aria-hidden className={`inline-block w-5 mr-2 font-semibold ${r.state === 'done' ? '' : 'text-[#999]'}`}>{r.state === 'done' ? '✓' : r.state === 'unknown' ? '?' : '○'}</span>
-                {r.next && <span className="text-[10px] uppercase tracking-wide border border-black px-1 py-0.5 mr-2" data-testid="next-step-tag">Next step</span>}
-                <span className="font-medium">{r.label}</span>
-                <span className="text-[#555]"> - {r.detail}</span>
+              <div className="min-w-0 flex items-start gap-3">
+                <span aria-hidden className={`step-dot shrink-0 ${r.state === 'done' ? 'bg-[var(--mint)] text-white' : r.next ? 'bg-[var(--lav)] text-white' : 'bg-[#efefef] text-[var(--ink-3)]'}`}>{r.state === 'done' ? '✓' : r.state === 'unknown' ? '?' : ''}</span>
+                <span className="min-w-0">
+                  <span className="font-semibold">{r.label}</span><span className="sr-only"> - </span>
+                  <span className="block text-xs text-[var(--ink-2)] mt-0.5">{r.detail}</span>
+                </span>
               </div>
+              {r.next && <span className="ml-auto shrink-0 hidden sm:inline" data-testid="next-step-tag"><Pill tone="lav">Next step</Pill></span>}
               {/* A done row has a fix only when part of it is still optional to set up (a lead source that is not available). */}
               {r.fix && (r.fix.kind === 'link'
                 // A same-page link with ?setup= must load the page (the setup steps read it once, on load).
-                ? r.fix.href.includes('?setup=') ? <a href={r.fix.href} className={`${r.next ? 'btn-primary' : 'btn-ghost'} text-xs px-3 py-1.5 shrink-0`}>{r.fix.label}</a>
-                  : <Link href={r.fix.href} className={`${r.next ? 'btn-primary' : 'btn-ghost'} text-xs px-3 py-1.5 shrink-0`}>{r.fix.label}</Link>
-                : <button type="button" className={`${r.next ? 'btn-primary' : 'btn-ghost'} text-xs px-3 py-1.5 shrink-0`} aria-expanded={open === r.id} onClick={() => setOpen(open === r.id ? null : r.id)}>{r.fix.label}</button>)}
+                ? r.fix.href.includes('?setup=') ? <a href={r.fix.href} className={`${r.next ? 'btn-primary' : 'btn-ghost'} btn-sm shrink-0`}>{r.fix.label}</a>
+                  : <Link href={r.fix.href} className={`${r.next ? 'btn-primary' : 'btn-ghost'} btn-sm shrink-0`}>{r.fix.label}</Link>
+                : <button type="button" className={`${r.next ? 'btn-primary' : 'btn-ghost'} btn-sm shrink-0`} aria-expanded={open === r.id} onClick={() => setOpen(open === r.id ? null : r.id)}>{r.fix.label}</button>)}
             </div>
             {open === r.id && r.id === 'site' && <form onSubmit={saveSite} className="mt-3 flex flex-col gap-2">
               <input className="field" aria-label="Business name" required maxLength={150} placeholder="Business name (used in your email drafts)" value={site.business_name} onChange={e => setSite({ ...site, business_name: e.target.value })} />
@@ -82,14 +89,14 @@ export default function Readiness() {
       </div>}
 
       {/* No plays yet: nothing to list (the First play row and the setup steps below point to the first one). */}
-      {(plays === null || plays.length > 0) && <h2 className={`text-lg font-semibold mb-3 ${done < rows.length ? 'mt-8' : ''}`}>Your plays</h2>}
-      {plays === null ? <p className="text-sm text-[#555]">Could not load your searches. Reload to retry.</p>
+      {(plays === null || plays.length > 0) && <div className={`flex items-center justify-between mb-3 ${done < rows.length || reopened ? 'mt-8' : ''}`}><h2 className="text-lg font-bold tracking-tight">Your plays</h2><Link className="btn-primary btn-sm" href="/app/leads"><Icon name="spark" className="w-3.5 h-3.5" />New play</Link></div>}
+      {plays === null ? <p className="text-sm text-[var(--ink-2)]">Could not load your searches. Reload to retry.</p>
         : plays.length === 0 ? null
-        : <ul className="card divide-y divide-black/10" aria-label="Your plays">
-          {plays.map(p => <li key={p.id} className="p-4 text-sm flex items-center justify-between gap-3">
+        : <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" aria-label="Your plays">
+          {plays.map(p => <li key={p.id} className="card p-4 text-sm flex flex-col gap-3">
             {/* The play opens its campaign page (play, leads, drafts and sends together); the outcome opens its leads. */}
-            <Link className="min-w-0 truncate hover:underline" title={`${p.query} - campaign page`} href={`/app/campaigns/${p.id}`} data-testid="play-campaign-link">{p.query}</Link>
-            <Link className="underline shrink-0" href={`/app/leads?job_id=${p.id}`}>{p.outcome}</Link>
+            <Link className="font-semibold leading-snug line-clamp-2 hover:underline" title={`${p.query} - campaign page`} href={`/app/campaigns/${p.id}`} data-testid="play-campaign-link">{p.query}</Link>
+            <Link className="pill pill-plain self-start mt-auto" href={`/app/leads?job_id=${p.id}`}>{p.outcome}</Link>
           </li>)}
         </ul>}
     </section>
