@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad origin' }, { status: 403 })
-  if (!rateLimit(`warm-import:${user.id}`, 10, 60_000).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!(await rateLimit(`warm-import:${user.id}`, 10, 60_000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   const body = await req.json().catch(() => null) as { csv?: string; confirm_replace?: boolean } | null
   if (!body || typeof body.csv !== 'string' || body.csv.length === 0) return NextResponse.json({ error: 'csv_required' }, { status: 400 })
   if (body.csv.length > MAX_CSV_BYTES) return NextResponse.json({ error: 'csv_too_large', max_bytes: MAX_CSV_BYTES }, { status: 413 })

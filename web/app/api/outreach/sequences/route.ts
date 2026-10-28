@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Sign in first.' }, { status: 401 })
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
-  if (!rateLimit(`sequences:${user.id}`,30,3600000).ok) return NextResponse.json({ error: 'Too many requests. Try again later.' }, { status: 429 })
+  if (!(await rateLimit(`sequences:${user.id}`,30,3600000)).ok) return NextResponse.json({ error: 'Too many requests. Try again later.' }, { status: 429 })
   const b = await req.json().catch(() => null)
   const db = getScanDb()
   try {

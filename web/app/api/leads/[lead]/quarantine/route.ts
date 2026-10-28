@@ -12,7 +12,7 @@ async function guard(req: NextRequest, leadId: string) {
   if (!user) return { res: NextResponse.json({ error: 'Not signed in' }, { status: 401 }) }
   if (!sameOriginJson(req)) return { res: NextResponse.json({ error: 'Bad origin' }, { status: 403 }) }
   if (!/^[a-f0-9]{24}$/.test(leadId)) return { res: NextResponse.json({ error: 'Not found' }, { status: 404 }) }
-  if (!rateLimit(`quarantine-lead:${user.id}`, 60, 60_000).ok) return { res: NextResponse.json({ error: 'Too many requests' }, { status: 429 }) }
+  if (!(await rateLimit(`quarantine-lead:${user.id}`, 60, 60_000)).ok) return { res: NextResponse.json({ error: 'Too many requests' }, { status: 429 }) }
   return { user }
 }
 

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { completeOAuth } from '@/lib/gmail/oauth'
+import { captureError } from '@/lib/ops/errors'
 
 export async function GET(req: NextRequest) {
   const user = await requireUser()
@@ -13,7 +14,7 @@ export async function GET(req: NextRequest) {
     await completeOAuth(getScanDb(), user.id, code, state)
     return back('connected')
   } catch (e) {
-    console.error('gmail connect failed', e instanceof Error ? e.message : e)
+    captureError(e, { source: 'route', where: '/api/gmail/callback', method: 'GET', tenantId: user.id })
     return back('error')
   }
 }

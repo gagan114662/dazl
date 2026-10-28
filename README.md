@@ -69,6 +69,7 @@ This is a development entry point, not a complete production deployment guide. S
 cd web
 npm test
 npm run build
+npm run test:smoke   # loads every /app page from the production build in Chromium; isolated DB, no network
 ```
 
 Worker tests run separately:

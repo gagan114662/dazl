@@ -59,5 +59,5 @@ export function getScanDb() {
 }
 
 export async function requireUser() {
-  return getSessionUser((await cookies()).get('dazl_session')?.value)
+  return await getSessionUser((await cookies()).get('dazl_session')?.value)
 }
