@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getScanDb, requireUser } from '@/lib/scan/service'
+import { requireUser } from '@/lib/scan/service'
+import { getDb } from '@/lib/db/client'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { setQuarantine } from '@/lib/scan/quarantine'
@@ -21,7 +22,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
   const g = await guard(req, lead)
   if (g.res) return g.res
   const body = await req.json().catch(() => ({})) as { reason?: unknown }
-  const r = setQuarantine(getScanDb(), g.user!.id, lead, 'quarantine', typeof body.reason === 'string' ? body.reason : '')
+  const r = await setQuarantine(await getDb(), g.user!.id, lead, 'quarantine', typeof body.reason === 'string' ? body.reason : '')
   if (r.status === 'not_found') return NextResponse.json({ error: 'Not found' }, { status: 404 })
   return NextResponse.json({ quarantined: true })
 }
@@ -30,7 +31,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ l
   const { lead } = await params
   const g = await guard(req, lead)
   if (g.res) return g.res
-  const r = setQuarantine(getScanDb(), g.user!.id, lead, 'release')
+  const r = await setQuarantine(await getDb(), g.user!.id, lead, 'release')
   if (r.status === 'not_found') return NextResponse.json({ error: 'Not found' }, { status: 404 })
   return NextResponse.json({ quarantined: false })
 }

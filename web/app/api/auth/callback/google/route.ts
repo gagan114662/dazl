@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createSession, getAuthDb, SESSION_TTL_S } from '@/lib/auth-db'
+import { createSession, SESSION_TTL_S } from '@/lib/auth-db'
 import { getDb } from '@/lib/db/client'
-import { cookieDomain, exchangeCode, migrateOauth, parseCookie, resolveUser, sameString, verifyIdToken } from '@/lib/auth-google'
+import { cookieDomain, exchangeCode, parseCookie, resolveUser, sameString, verifyIdToken } from '@/lib/auth-google'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 
 const back = (base: string, err: string) => {
@@ -29,7 +29,6 @@ export async function GET(req: NextRequest) {
   if (typeof id === 'string') return back(base, id === 'email_not_verified' ? 'google_email_unverified' : 'google_failed')
 
   const db = await getDb()
-  if (db.kind === 'sqlite') migrateOauth(getAuthDb())
   const r = await resolveUser(db, id)
   if ('error' in r) return back(base, 'google_email_exists')
 
