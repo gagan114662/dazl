@@ -37,7 +37,8 @@ export function loadPlaywright() {
   try { return require('playwright') } catch (e) { return notRun(e.message.split('\n')[0]) }
 }
 
-export async function startServer() {
+// opts.env: extra server environment; opts.prepare(dbPath): runs on the throwaway database before the server starts.
+export async function startServer(opts = {}) {
   if (!existsSync(path.join(root, '.next/BUILD_ID'))) notRun('no production build (run npm run build first)')
   const Database = require('better-sqlite3')
   const tmp = mkdtempSync(path.join(tmpdir(), 'dazl-smoke-'))
@@ -49,10 +50,11 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
   const token = randomBytes(32).toString('hex')
   db.prepare('INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)').run(createHash('sha256').update(token).digest('hex'), 'smoke-user', Math.floor(Date.now() / 1000) + 3600)
   db.close()
+  if (opts.prepare) await opts.prepare(DB_PATH)
   const port = await new Promise(r => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)) }) })
   const base = `http://127.0.0.1:${port}`
   const fence = path.join(root, 'test/helpers/net-fence.ts')
-  const env = { PATH: process.env.PATH, HOME: process.env.HOME, NODE_ENV: 'production', DB_PATH, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', PUBLIC_BASE_URL: base, NODE_OPTIONS: `--experimental-strip-types --import ${fence}` }
+  const env = { PATH: process.env.PATH, HOME: process.env.HOME, NODE_ENV: 'production', DB_PATH, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', PUBLIC_BASE_URL: base, NODE_OPTIONS: `--experimental-strip-types --import ${fence}`, ...opts.env }
   const server = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] })
   let log = ''; server.stdout.on('data', d => { log += d }); server.stderr.on('data', d => { log += d })
   const stop = () => { server.kill('SIGTERM'); rmSync(tmp, { recursive: true, force: true }) }
