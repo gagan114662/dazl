@@ -93,3 +93,23 @@ test('negative controls that DO get a real domain: no vacancy / closed / enginee
   rep = report(support); assert.deepEqual([rep.yield.verified, rep.yield.actionable], [1, 0]); assert.equal(rep.yield.missing.no_published_contact, 1)
   assert.match(actionRow(support)!.value, /no published contact/)
 })
+
+// ---- Instinct review of eff8d49: a REQUIRED gate that errors is a fail, never a pass ----
+test('FAIL-CLOSED: the required sales-hiring gate throws in the full runner -> the lead is unverified and NOT actionable, the trace records the failure, the report and the lead agree; the same fixture with a working gate is actionable', async () => {
+  const site: Site = { home: HOME, team: TEAM, careers: CAREERS, contact: CONTACT }
+  // control: the real gate succeeds -> verified and actionable
+  const okRun = await runCrawl(fixture({ site }))
+  assert.equal(lead(okRun)!.review_reason, null); assert.equal(report(okRun).yield.actionable, 1)
+  // the gate throws
+  const failing = fixture({ site }); failing.deps = { ...(failing.deps as object), salesHiringGate: async () => { throw new Error('boom: gate unavailable') } } as never
+  const r = await runCrawl(failing)
+  const l = lead(r)!
+  assert.equal(l.review_reason, 'sales_hiring_check_failed', JSON.stringify(l)); assert.equal(l.confidence, null)
+  assert.deepEqual(r.db.prepare('SELECT verified, needs_review FROM scan_jobs').get(), { verified: 0, needs_review: 1 })
+  const rep = report(r) as ReturnType<typeof report> & { candidates: { company: string; fate: string }[] }
+  assert.deepEqual([rep.yield.verified, rep.yield.actionable], [0, 0]); assert.equal(rep.funnel.verified, 0)
+  assert.equal(rep.candidates.find(c => c.company === 'Brightloop')!.fate, 'review:sales_hiring_check_failed')
+  const gate = rep.enrichment.find(s => s.stage === 'sales_hiring_gate')!; assert.equal(gate.status, 'failed'); assert.match(gate.reason ?? '', /boom: gate unavailable.*held as sales_hiring_check_failed/)
+  assert.match((r.db.prepare('SELECT why FROM leads').get() as { why: string }).why, /^Sales-hiring check failed \(boom: gate unavailable\): not verified\./)
+  assert.equal(actionRow(r), undefined, 'a held lead is not in the actionable classification at all')
+})

@@ -34,7 +34,7 @@ import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './veri
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
 import { getMemory, isExcluded, memoryPromptBlock } from '../memory.ts'
 import { enrichJobSignals } from '../signals/index.ts'
-import { applySalesHiringGate, type QuoteEvidence } from './sales-hiring-gate.ts'
+import { applySalesHiringGate, failClosedSalesHiring, type QuoteEvidence } from './sales-hiring-gate.ts'
 import { beginEnrichment, endEnrichment } from './enrichment.ts'
 import { regradeFromKeptContacts } from './contact-agreement.ts'
 import { primarySignalKind } from './score.ts'
@@ -50,7 +50,7 @@ import { findPeople } from '../people/people-search.ts'
 import { EnrichmentTrace, noteFromAudit, auditSummary, mergeIntoRunReport } from './enrichment-trace.ts'
 import { recordActionability } from './actionable.ts'
 import { parseWindowDays, splitByWindow, windowStatus } from './window.ts'
-import { applyBuyerFitGate } from './buyer-fit.ts'
+import { applyBuyerFitGate, failClosedBuyerFit } from './buyer-fit.ts'
 
 export interface Job { spend_reserved_usd?: number | null; id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string; seller?: string | null; watch_id?: string | null; csv_domain?: string | null; run_budget?: string | null }
 export interface LeadDraft extends Candidate {}
@@ -722,7 +722,7 @@ function budgetDeps(deps: RunDeps, budget: RunBudget | null): RunDeps {
 
 export interface RunDeps {
   // newsHttp: the free news search's own HTTP (lib/search/news.ts), separate from the per-scan sources' sourceHttp.
-  autopilot?: typeof runAutopilot; sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; jobBudgetMs?: number; clock?: () => number }
+  autopilot?: typeof runAutopilot; sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; salesHiringGate?: typeof applySalesHiringGate; jobBudgetMs?: number; clock?: () => number }
 
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
   const ledger = new SourceRunLedger()
@@ -1050,14 +1050,21 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       try {
         const icpText = (icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`) + offerBlockFor(db, job.user_id)
         await applyBuyerFitGate(db, job.id, providers_[vendor], key, icpText, { fetchPage: deps.fetchPage, fetchImpl: deps.fetchImpl }); trace.note('buyer_fit', 'ok')
-      } catch (e) { trace.note('buyer_fit', 'failed', e instanceof Error ? e.message : 'error'); console.error('buyer-fit gate failed', e instanceof Error ? e.message : 'error') }
+      } catch (e) { const msg = e instanceof Error ? e.message : 'error'; let capped = 0; try { capped = failClosedBuyerFit(db, job.id, msg) } catch { /* the cap is best effort */ } trace.note('buyer_fit', 'failed', `${msg} - ${capped} hiring lead(s) capped below the qualified bar`); console.error('buyer-fit gate failed', msg) }
     }
     // Seed funding AND hiring sales: a lead that passed on the funding quote alone is moved to review unless sales / GTM hiring is evidenced
     // (its own quote, or a dated posting on a public job board bound to its domain). Before autopilot, so nothing is drafted on a half proof.
     try {
-      const g = await applySalesHiringGate(db, job, deps.fetchImpl ?? fetch, { quotes: outcome.quotes, careersGet: sitecrawlEnabled() ? (deps.crawlGet ?? defaultGet()) : undefined }); reconcileRunReport(db, job.id, job.attempts, g.demotions)
+      const g = await (deps.salesHiringGate ?? applySalesHiringGate)(db, job, deps.fetchImpl ?? fetch, { quotes: outcome.quotes, careersGet: sitecrawlEnabled() ? (deps.crawlGet ?? defaultGet()) : undefined }); reconcileRunReport(db, job.id, job.attempts, g.demotions)
       trace.note('sales_hiring_gate', g.required ? 'ok' : 'skipped', g.required ? null : 'the request does not need sales-hiring proof', g.required ? { checked: g.checked, passed: g.passed, held: g.demoted } : undefined)
-    } catch (e) { trace.note('sales_hiring_gate', 'failed', e instanceof Error ? e.message : 'error'); console.error('sales-hiring gate failed', e instanceof Error ? e.message : 'error') }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'error'
+      // A REQUIRED gate that fails is a fail, never a pass: every lead still verified is held, the failure is its reason, and the report agrees.
+      let held: { company: string; url: string; reason: string }[] = []
+      try { held = failClosedSalesHiring(db, job, msg); reconcileRunReport(db, job.id, job.attempts, held) } catch (e2) { console.error('sales-hiring fail-closed failed', e2 instanceof Error ? e2.message : 'error') }
+      trace.note('sales_hiring_gate', 'failed', `${msg} - ${held.length} lead(s) held as sales_hiring_check_failed`)
+      console.error('sales-hiring gate failed', msg)
+    }
     // Actionable yield (domain + sales proof + named person + published contact) is measured here, at the END of enrichment, apart from the source-checked counts.
     // The same facts go beside each lead and into the run report, so the card and the report agree.
     try { mergeIntoRunReport(db, job.id, job.attempts, { enrichment: trace.stages, yield: recordActionability(db, job) }) } catch (e) { console.error('actionable yield failed', e instanceof Error ? e.message : 'error') }
