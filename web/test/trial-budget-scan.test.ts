@@ -5,7 +5,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { migrateScan, createJob, getJob, listLeads } from '../lib/scan/store.ts'
+import { migrateScan, createJob, createQueryJob, getJob, listLeads } from '../lib/scan/store.ts'
 import { migrateKeys } from '../lib/llm/key-store.ts'
 import { migrateTrial } from '../lib/scan/trial.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
@@ -84,6 +84,41 @@ test('a trial scan without its caps and prices configured does not run at all', 
     assert.equal(await runJob(db, claimKeyedJob(db)!, { providers: { anthropic, openai: anthropic }, fetchPage: page }), 'failed')
     assert.equal(called, false)
     assert.equal(getJob(db, 'keyless', id)!.error, 'trial_unavailable')
+  })
+})
+
+test('a trial scan that reaches its limit through search-provider calls alone is stopped, with no research after it', async () => {
+  // TinyFish on dazl's key at $0.40 a search; the scan's limit is $1.00. The model has no listed price here, so every
+  // model call is refused before it is sent and costs nothing: only TinyFish spends. Two searches fit ($0.80), the third
+  // does not and is never sent, and the web research that would follow ($0.50 reserve) no longer fits either.
+  await withEnv({ ...TRIAL_ENV, TINYFISH_API_KEY: 'tf-fixture', TINYFISH_ENABLED: '1', DAZL_TRIAL_TINYFISH_SEARCH_USD: '0.4', DAZL_TRIAL_TINYFISH_FETCH_USD: '0.01' }, async () => {
+    const db = setup(); resetTinyfishState()
+    const id = createQueryJob(db, 'keyless', { query: 'dental practices in Toronto hiring a receptionist', icp: JSON.stringify({ summary: 'Toronto dental practices hiring', who: ['Owner'], industries: ['dental'], sizes: [], where: ['Toronto'], signals: ['hiring a receptionist'], exclude: [] }) })
+    db.prepare("UPDATE scan_jobs SET funded_by = 'trial' WHERE id = ?").run(id)
+    const searches: string[] = []
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async (u: unknown) => {
+      const url = String(u)
+      if (url.startsWith('https://api.search.tinyfish.ai')) { searches.push(url); return new Response(JSON.stringify({ results: [] }), { status: 200 }) }
+      throw new Error(`Unexpected network call: ${url}`)
+    }) as typeof fetch
+    let researched = false, modelCalls = 0
+    const anthropic: Provider = {
+      research: async () => { researched = true; return { text: '[]', citedUrls: [] } },
+      complete: async () => { modelCalls++; return '[]' },
+    }
+    try {
+      assert.equal(await runJob(db, claimKeyedJob(db)!, { providers: { anthropic, openai: anthropic }, fetchPage: page, judge: null }), 'done')
+    } finally { globalThis.fetch = realFetch }
+    assert.equal(searches.length, 2, 'two $0.40 searches fit a $1.00 limit; the third was refused before its request')
+    assert.equal(modelCalls, 0, 'no model call was sent (unpriced here), so the spend is search-provider only')
+    assert.equal(researched, false, 'research does not start once the limit is spent')
+    const job = getJob(db, 'keyless', id)!
+    assert.deepEqual([job.status, job.error], ['done', 'trial_budget_reached'])
+    const recorded = (db.prepare('SELECT spend_reserved_usd AS s FROM scan_jobs WHERE id = ?').get(id) as { s: number }).s
+    assert.ok(Math.abs(recorded - 0.8) < 1e-9, `the two searches are what it recorded as spent (${recorded})`)
+    const o = scanOutcome({ ...job, id, status: job.status, error: job.error, funded_by: 'trial' } as never)
+    assert.equal(o.label, 'Stopped early: this free scan reached its spending limit before it found any companies.')
   })
 })
 
