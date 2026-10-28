@@ -104,7 +104,7 @@ test('Juicebox-type identity: a board found under a domain matched only by NAME 
     if (basis) db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES ('D1', 'lead1', 'u1', 'sitecrawl', 'domain', ?, 'x', NULL, 'https://brightloop.io/', '2026-10-28', 1)").run(`brightloop.io|${basis}`)
     return { db, jobId }
   }
-  const board = { 'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs': { jobs: [{ title: 'Head of Sales', absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/1' }, { title: 'Backend Engineer' }] }, ...ghBoard }
+  const board = { ...ghBoard, [`${GH}/jobs/1`]: { ...(ghBoard[`${GH}/jobs/1`] as object), content: '&lt;p&gt;Join Brightloop in London&lt;/p&gt;' }, [`${GH}/jobs/3`]: { ...(ghBoard[`${GH}/jobs/3`] as object), content: '&lt;p&gt;Lead sales&lt;/p&gt;' } }   // postings that name no company domain at all
   for (const basis of ['name_probe', 'evidence_link_text', null]) {
     const { db, jobId } = mk(basis); const realNow = Date.now; Date.now = () => NOW
     try { await enrichJobSignals(db, 'u1', jobId, { fetchImpl: route(board) }) } finally { Date.now = realNow }
