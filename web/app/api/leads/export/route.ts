@@ -1,7 +1,8 @@
-import { gdeltAttribution } from '@/lib/search/news-attribution'
+import { readGdeltAttribution } from '@/lib/search/news-attribution'
 import { NextRequest, NextResponse } from 'next/server'
-import { getScanDb, requireUser } from '@/lib/scan/service'
-import { exportLeads } from '@/lib/scan/store'
+import { requireUser } from '@/lib/scan/service'
+import { getDb } from '@/lib/db/client'
+import { exportLeads } from '@/lib/scan/store-db'
 import { toCsv } from '@/lib/scan/csv'
 import { eventDateCopy } from '@/lib/scan/date-copy'
 import { exportEvidenceOrigin } from '@/lib/scan/evidence-origin'
@@ -43,14 +44,14 @@ export async function GET(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const jobId = req.nextUrl.searchParams.get('job_id') ?? ''
-  const db = getScanDb()
+  const db = await getDb()
   if (jobId && !/^[a-f0-9]{24}$/.test(jobId)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   // Default export is real leads only; ?include_fixtures=1 is the explicit opt-in
   // that keeps the verification fixture rows in the file.
   const includeFixtures = req.nextUrl.searchParams.get('include_fixtures') === '1'
-  const rows = exportLeads(db, user.id, jobId || undefined, 5000, includeFixtures) as Record<string, unknown>[]
-  const via = gdeltAttribution(db, user.id, rows.map(r => String(r.lead_id)))
-  const people = bestPeople(db, user.id, rows as { lead_id: string; job_id: string }[])
+  const rows = await exportLeads(db, user.id, jobId || undefined, 5000, includeFixtures)
+  const via = await readGdeltAttribution(db, user.id, rows.map(r => String(r.lead_id)))
+  const people = await bestPeople(db, user.id, rows as { lead_id: string; job_id: string }[])
   const csv = toCsv(rows.map(r => ({ ...r, ...people.get(r.lead_id as string), discovered_via: via.get(String(r.lead_id))?.text ?? '', discovered_via_link: via.get(String(r.lead_id))?.link ?? '', evidence_origin_label: exportEvidenceOrigin(r as Parameters<typeof exportEvidenceOrigin>[0]), date_context: eventDateCopy(typeof r.event_date === 'string' ? r.event_date : null, typeof r.date_status === 'string' ? r.date_status : null), created_at: typeof r.created_at === 'number' ? new Date(r.created_at * 1000).toISOString() : r.created_at })), COLUMNS)
   return new NextResponse(csv, {
     headers: {

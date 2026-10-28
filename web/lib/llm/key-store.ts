@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import type { Db } from '../db/client.ts'
 import { decryptSecret, encryptSecret } from '../secrets.ts'
 import type { Vendor } from './vendors.ts'
 
@@ -31,8 +32,13 @@ export function keyStatus(db: Database.Database, tenantId: string) {
   return db.prepare('SELECT vendor, last4, validated_at FROM tenant_llm_keys WHERE tenant_id = ?').all(tenantId) as { vendor: Vendor; last4: string; validated_at: number }[]
 }
 
+const HAS_KEY_SQL = 'SELECT 1 AS x FROM tenant_llm_keys WHERE tenant_id = ? LIMIT 1'
 export function hasKey(db: Database.Database, tenantId: string): boolean {
-  return db.prepare('SELECT 1 FROM tenant_llm_keys WHERE tenant_id = ? LIMIT 1').get(tenantId) !== undefined
+  return db.prepare(HAS_KEY_SQL).get(tenantId) !== undefined
+}
+// hasKey on the Db layer (SQLite or Postgres).
+export async function readHasKey(db: Db, tenantId: string): Promise<boolean> {
+  return (await db.get(HAS_KEY_SQL, [tenantId])) !== undefined
 }
 
 export function deleteKey(db: Database.Database, tenantId: string, vendor: Vendor): boolean {

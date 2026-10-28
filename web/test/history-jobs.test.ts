@@ -1,4 +1,5 @@
 import { test } from 'node:test'
+import { sqliteDb } from '../lib/db/client.ts'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
@@ -17,7 +18,7 @@ const fail = (db: Database.Database, id: string, error: string) => {
 const snap = (db: Database.Database) => JSON.stringify(db.prepare('SELECT * FROM scan_jobs ORDER BY id').all())
 
 // Instinct #274 re-review: a legacy key_rejected row gets funded_by 'user' from the real migration's column default.
-test("a legacy rejected-key scan, migrated by the real migrateScan, is worded neutrally in history, campaign and Home", () => {
+test("a legacy rejected-key scan, migrated by the real migrateScan, is worded neutrally in history, campaign and Home", async () => {
   const db = new Database(':memory:')
   migrateScan(db); migrateOutreach(db); migrateRunReport(db)
   db.exec('ALTER TABLE scan_jobs DROP COLUMN funded_by') // the schema before the column existed
@@ -36,22 +37,22 @@ test("a legacy rejected-key scan, migrated by the real migrateScan, is worded ne
   fail(db, other, 'key_rejected')
 
   const before = snap(db)
-  const jobs = historyJobs(db, 'A')
+  const jobs = await historyJobs(sqliteDb(db), 'A')
   assert.deepEqual(jobs.map(j => j.id).sort(), [legacy, trial, fresh].sort(), "own account only")
   const byId = (id: string) => jobs.find(j => j.id === id)!
   assert.deepEqual([byId(legacy).funded_by, byId(fresh).funded_by, byId(trial).funded_by], [null, null, 'trial'], "'user' is never synthesized")
   assert.deepEqual([scanOutcome(byId(legacy)).label, scanOutcome(byId(fresh)).label], [NEUTRAL, NEUTRAL])
   assert.equal(scanOutcome(byId(trial)).label, 'Failed - the free-search key had trouble (not your key)')
-  const campaign = (id: string) => { const d = campaignDetail(db, 'A', id)!; return scanOutcome({ ...d.job, lead_count: d.leads.length }).label }
-  assert.deepEqual([campaign(legacy), campaign(fresh), campaign(trial)], [NEUTRAL, NEUTRAL, 'Failed - the free-search key had trouble (not your key)'])
+  const campaign = async (id: string) => { const d = (await campaignDetail(sqliteDb(db), 'A', id))!; return scanOutcome({ ...d.job, lead_count: d.leads.length }).label }
+  assert.deepEqual([await campaign(legacy), await campaign(fresh), await campaign(trial)], [NEUTRAL, NEUTRAL, 'Failed - the free-search key had trouble (not your key)'])
   const plays = Object.fromEntries(recentPlays(jobs).map(p => [p.query, p.outcome]))
   assert.deepEqual(plays, { 'Legacy search': 'failed: AI key rejected', 'Trial search': 'failed: free-search key trouble', 'New search': 'failed: AI key rejected' })
-  assert.equal(campaignDetail(db, 'A', other), null)
+  assert.equal(await campaignDetail(sqliteDb(db), 'A', other), null)
   assert.equal(snap(db), before, 'reading writes nothing')
 })
 
 // #254: the history read keeps the effective status - a finished scan still enriching is not reported as done.
-test('history reports a scan still enriching as enriching, and a stale enrichment as done', () => {
+test('history reports a scan still enriching as enriching, and a stale enrichment as done', async () => {
   const db = new Database(':memory:')
   migrateScan(db); migrateRunReport(db)
   const now = Math.floor(Date.now() / 1000)
@@ -62,7 +63,7 @@ test('history reports a scan still enriching as enriching, and a stale enrichmen
     return id
   }
   const live = job(now - 5), stale = job(now - 3600)
-  const jobs = historyJobs(db, 'A')
+  const jobs = await historyJobs(sqliteDb(db), 'A')
   assert.equal(jobs.find(j => j.id === live)!.status, 'enriching')
   assert.equal(jobs.find(j => j.id === stale)!.status, 'done')
   assert.match(scanOutcome(jobs.find(j => j.id === stale)!).label, /contacts and fit checks did not finish$/)

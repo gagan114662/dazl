@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireUser } from '@/lib/scan/service'
-import { getAuthDb, getBusinessName, getBuyerProfile, getSellerProfile, setBusinessName, setBuyerProfile, setSellerProfile } from '@/lib/auth-db'
+import { readBusinessName, readBuyerProfile, readSellerProfile, writeBusinessName, writeBuyerProfile, writeSellerProfile } from '@/lib/auth-db'
+import { getDb } from '@/lib/db/client'
+import type { Db } from '@/lib/db/client'
 import { normalizeIcp } from '@/lib/scan/icp'
 import { rateLimit } from '@/lib/rate-limit'
 
 // The stored buyer profile, re-normalized on the way out (null when none is saved or it no longer validates).
-function buyer(userId: string) {
-  const raw = getBuyerProfile(getAuthDb(), userId)
+async function buyer(db: Db, userId: string) {
+  const raw = await readBuyerProfile(db, userId)
   if (!raw) return null
   try { return normalizeIcp(JSON.parse(raw)) } catch { return null }
 }
@@ -14,7 +16,8 @@ function buyer(userId: string) {
 export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  return NextResponse.json({ ...getSellerProfile(getAuthDb(), user.id), business_name: getBusinessName(getAuthDb(), user.id), buyer: buyer(user.id) })
+  const db = await getDb()
+  return NextResponse.json({ ...await readSellerProfile(db, user.id), business_name: await readBusinessName(db, user.id), buyer: await buyer(db, user.id) })
 }
 
 export async function POST(req: NextRequest) {
@@ -22,7 +25,8 @@ export async function POST(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   if (!(await rateLimit(`profile:${user.id}`, 20, 60_000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   const body = await req.json().catch(() => null)
-  const cur = getSellerProfile(getAuthDb(), user.id)
+  const db = await getDb()
+  const cur = await readSellerProfile(db, user.id)
   // Fields the caller omits keep their stored value (a name-only save must not wipe sells/website).
   const sells = typeof body?.sells === 'string' ? body.sells.trim().slice(0, 150) : cur.sells
   const website = typeof body?.website === 'string' ? body.website.trim().slice(0, 200) : cur.website
@@ -38,10 +42,10 @@ export async function POST(req: NextRequest) {
     }
   }
   if (website && !/^https:\/\/[\w.-]+\.[a-z]{2,}([/?#]\S*)?$/i.test(website)) return NextResponse.json({ error: 'Website must be a full https URL, like https://acme.com' }, { status: 400 })
-  setSellerProfile(getAuthDb(), user.id, sells, website)
-  if (buyerJson !== undefined) setBuyerProfile(getAuthDb(), user.id, buyerJson)
+  await writeSellerProfile(db, user.id, sells, website)
+  if (buyerJson !== undefined) await writeBuyerProfile(db, user.id, buyerJson)
   // Optional: the name used in drafts. Only changed when the caller sends it; blank clears it (drafts then refuse).
-  if (typeof body?.business_name === 'string') setBusinessName(getAuthDb(), user.id, body.business_name)
+  if (typeof body?.business_name === 'string') await writeBusinessName(db, user.id, body.business_name)
   // Return the canonical stored values so the page never shows text the server did not keep.
-  return NextResponse.json({ ok: true, ...getSellerProfile(getAuthDb(), user.id), business_name: getBusinessName(getAuthDb(), user.id), buyer: buyer(user.id) })
+  return NextResponse.json({ ok: true, ...await readSellerProfile(db, user.id), business_name: await readBusinessName(db, user.id), buyer: await buyer(db, user.id) })
 }

@@ -69,38 +69,68 @@ export async function createPasswordUser(u: { id: string; email: string; name: s
 }
 
 // What the seller sells + their site, collected once on the home page. Used to aim ICP inference.
+// Each profile read and write exists twice: sync on the raw handle (callers not yet on Db) and async on Db (SQLite or
+// Postgres). Both run the same SQL and the same normalisation below, so they cannot drift apart.
+const SELLER_SQL = 'SELECT sells, website FROM users WHERE id = ?'
+const BUYER_SQL = 'SELECT buyer_profile FROM users WHERE id = ?'
+const SET_BUYER_SQL = 'UPDATE users SET buyer_profile = ? WHERE id = ?'
+const NAME_SQL = 'SELECT business_name FROM users WHERE id = ?'
+const SET_NAME_SQL = 'UPDATE users SET business_name = ? WHERE id = ?'
+const SET_SELLER_SQL = 'UPDATE users SET sells = ?, website = ? WHERE id = ?'
+type SellerRow = { sells: string | null; website: string | null } | undefined
+const seller = (r: SellerRow) => ({ sells: r?.sells ?? '', website: r?.website ?? '' })
+const cleanName = (name: string) => name.replace(/\s+/g, ' ').trim().slice(0, 150)
+const sellerLine = (p: { sells: string; website: string }) => [p.sells, p.website].filter(Boolean).join(' - ').slice(0, 300)
+
 export function getSellerProfile(db: Database.Database, userId: string): { sells: string; website: string } {
-  const r = db.prepare('SELECT sells, website FROM users WHERE id = ?').get(userId) as { sells: string | null; website: string | null } | undefined
-  return { sells: r?.sells ?? '', website: r?.website ?? '' }
+  return seller(db.prepare(SELLER_SQL).get(userId) as SellerRow)
+}
+export async function readSellerProfile(db: Db, userId: string): Promise<{ sells: string; website: string }> {
+  return seller(await db.get<NonNullable<SellerRow>>(SELLER_SQL, [userId]))
 }
 
 // Who the seller sells to, as reviewed in onboarding: a normalized Icp stored as JSON (validated by the caller with
 // normalizeIcp). Read back through normalizeIcp too, so a stored row can never return fields the profile does not allow.
 export function getBuyerProfile(db: Database.Database, userId: string): string | null {
-  const r = db.prepare('SELECT buyer_profile FROM users WHERE id = ?').get(userId) as { buyer_profile: string | null } | undefined
-  return r?.buyer_profile ?? null
+  return (db.prepare(BUYER_SQL).get(userId) as { buyer_profile: string | null } | undefined)?.buyer_profile ?? null
+}
+export async function readBuyerProfile(db: Db, userId: string): Promise<string | null> {
+  return (await db.get<{ buyer_profile: string | null }>(BUYER_SQL, [userId]))?.buyer_profile ?? null
 }
 
 export function setBuyerProfile(db: Database.Database, userId: string, json: string | null): void {
-  db.prepare('UPDATE users SET buyer_profile = ? WHERE id = ?').run(json, userId)
+  db.prepare(SET_BUYER_SQL).run(json, userId)
+}
+export async function writeBuyerProfile(db: Db, userId: string, json: string | null): Promise<void> {
+  await db.run(SET_BUYER_SQL, [json, userId])
 }
 
 export function getBusinessName(db: Database.Database, userId: string): string {
-  const r = db.prepare('SELECT business_name FROM users WHERE id = ?').get(userId) as { business_name: string | null } | undefined
-  return r?.business_name ?? ''
+  return (db.prepare(NAME_SQL).get(userId) as { business_name: string | null } | undefined)?.business_name ?? ''
+}
+export async function readBusinessName(db: Db, userId: string): Promise<string> {
+  return (await db.get<{ business_name: string | null }>(NAME_SQL, [userId]))?.business_name ?? ''
 }
 
 export function setBusinessName(db: Database.Database, userId: string, name: string): void {
-  db.prepare('UPDATE users SET business_name = ? WHERE id = ?').run(name.replace(/\s+/g, ' ').trim().slice(0, 150), userId)
+  db.prepare(SET_NAME_SQL).run(cleanName(name), userId)
+}
+export async function writeBusinessName(db: Db, userId: string, name: string): Promise<void> {
+  await db.run(SET_NAME_SQL, [cleanName(name), userId])
 }
 
 export function sellerProfile(db: Database.Database, userId: string): string {
-  const p = getSellerProfile(db, userId)
-  return [p.sells, p.website].filter(Boolean).join(' - ').slice(0, 300)
+  return sellerLine(getSellerProfile(db, userId))
+}
+export async function readSellerLine(db: Db, userId: string): Promise<string> {
+  return sellerLine(await readSellerProfile(db, userId))
 }
 
 export function setSellerProfile(db: Database.Database, userId: string, sells: string, website: string): void {
-  db.prepare('UPDATE users SET sells = ?, website = ? WHERE id = ?').run(sells.slice(0, 150), website.slice(0, 200), userId)
+  db.prepare(SET_SELLER_SQL).run(sells.slice(0, 150), website.slice(0, 200), userId)
+}
+export async function writeSellerProfile(db: Db, userId: string, sells: string, website: string): Promise<void> {
+  await db.run(SET_SELLER_SQL, [sells.slice(0, 150), website.slice(0, 200), userId])
 }
 
 export async function getSessionUser(token: string | undefined, d?: Db): Promise<{ id: string; email: string; business_name: string } | null> {

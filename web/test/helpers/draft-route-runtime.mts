@@ -1,4 +1,5 @@
 import { test } from 'node:test'
+import { sqliteDb } from '../../lib/db/client.ts'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
@@ -44,7 +45,7 @@ test('review refusal -> explicit synthetic confirmation -> route draft -> route 
     assert.equal(refused.status, 422)
     assert.equal((await refused.json()).code, 'lead_not_verified')
     assert.equal(db.prepare('SELECT 1 FROM outreach_messages WHERE lead_id=?').get(lead), undefined)
-    assert.equal(confirmLeadReview(db, 'A', lead), true)
+    assert.equal(await confirmLeadReview(sqliteDb(db), 'A', lead), true)
     const created = await draftPOST(request('/api/outreach', { lead_id: lead }))
     assert.equal(created.status, 201)
     const { id } = await created.json() as { id: string }
@@ -65,7 +66,7 @@ test('review refusal -> explicit synthetic confirmation -> route draft -> route 
     assert.equal(steps[0].body, message.body)
     const human = await draftGET()
     assert.equal((await human.json()).messages.find((m: {id:string}) => m.id === id).evidence_state, 'human')
-    assert.equal(unconfirmLeadReview(db, 'A', lead), true)
+    assert.equal(await unconfirmLeadReview(sqliteDb(db), 'A', lead), true)
     const withdrawn = await draftGET()
     assert.equal((await withdrawn.json()).messages.find((m: {id:string}) => m.id === id).evidence_state, 'unverified')
     const evidence = db.prepare('SELECT confidence,human_confirmed_at,review_reason FROM leads WHERE id=?').get(lead) as {confidence:null;human_confirmed_at:null;review_reason:string}
