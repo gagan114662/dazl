@@ -237,7 +237,7 @@ These steps are development work behind flags and tests. Merging them does not c
    - The ported modules (sessions, sign-in, Google sign-in, billing) are tested with two tenants on SQLite and PG.
    - Route-level tests run on SQLite until each area is ported to `Db`.
 5. **Stripe e2e (test mode).** Step 5:
-   - `test/billing-e2e.test.ts` drives the real routes: checkout, signed webhook, Pro, portal, cancel at period end (still Pro), subscription deleted, Free.
+   - `test/billing-e2e.test.ts` drives the real routes: checkout, signed webhook, Pro, portal, cancel at period end (still Pro), subscription deleted, Free. The same scenario runs on SQLite and on Postgres (the cutover target); on Postgres the raw SQLite handle is a trap, so every step goes through `Db`.
    - The webhook events are Stripe-shaped fixtures (`test/fixtures/stripe/`) signed with a test secret, the same way Stripe signs them.
    - Unsigned, wrongly signed, stale and tampered deliveries are refused. A replay is a duplicate, and an event for another tenant's customer changes nothing.
    - `api.stripe.com` is stubbed: no request leaves the test, and nothing is charged.
