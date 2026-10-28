@@ -1,7 +1,7 @@
 'use client'
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
-import { journey, type JourneyInput, type JourneyJob, type PreviewLead } from '@/lib/journey'
+import { editedBuyer, journey, showList, type JourneyInput, type JourneyJob, type PreviewLead } from '@/lib/journey'
 import { scanCounts } from '@/lib/outreach/scan-drafts'
 import { capNotice } from '@/lib/readiness'
 import { leadCardSummary } from '@/lib/scan/lead-card'
@@ -13,8 +13,8 @@ interface Buyer { summary: string; who: string[]; industries: string[]; sizes: s
 interface Profile { website?: string; sells?: string; business_name?: string; buyer?: Buyer | null }
 interface PlayIcp extends Partial<Buyer> { window_days?: number }
 const EMPTY: Buyer = { summary: '', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] }
-const list = (s: string) => s.split(',').map(x => x.trim()).filter(Boolean)
 const PREVIEW = 3
+const POLL_MS = 4000
 
 // Home for every account that has told dazl about its business, new or returning: what dazl understands, the one next
 // action for the account's real state, and the current play's opportunities. Read-only except the profile edit, which
@@ -42,7 +42,25 @@ export default function Journey() {
 
   const base: JourneyInput = { profile: profile && profile !== 'failed' ? profile : null, jobs: Array.isArray(jobs) ? jobs : null, leads: null, drafts: null }
   const playId = base.profile && base.jobs ? journey(base).play?.id ?? null : null
-  const playDone = base.jobs?.find(j => j.id === playId)?.status === 'done'
+  const playStatus = base.jobs?.find(j => j.id === playId)?.status
+  const playDone = playStatus === 'done'
+  const playActive = playStatus === 'pending' || playStatus === 'running' || playStatus === 'enriching'
+  // A running play settles into its result here without a refresh: the same read-only jobs list is re-read every few
+  // seconds while it is queued, running or finishing, and stops once it is not. A failed re-read keeps the last state.
+  useEffect(() => {
+    if (!playActive) return
+    const t = setInterval(() => { void get('/api/scan/jobs').then(j => { if (Array.isArray(j?.jobs)) setJobs(j.jobs) }) }, POLL_MS)
+    return () => clearInterval(t)
+  }, [playActive, playId]) // eslint-disable-line react-hooks/exhaustive-deps
+  const [stopNote, setStopNote] = useState('')
+  // The same Stop as the Leads page: POST /api/scan/cancel for this play only, then re-read the jobs.
+  async function stop(id: string) {
+    setStopNote('')
+    const r = await fetch('/api/scan/cancel', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ job_id: id }) }).catch(() => null)
+    const j = await r?.json().catch(() => ({}))
+    setStopNote(r?.ok ? (j?.note ?? 'Stop requested.') : 'Could not cancel: ' + (j?.error ?? 'try again'))
+    if (r?.ok) void get('/api/scan/jobs').then(x => { if (Array.isArray(x?.jobs)) setJobs(x.jobs) })
+  }
   useEffect(() => {
     if (!playId || !playDone) return
     // The play's own leads, and its own campaign record for drafts (never the account-wide Outreach list).
@@ -77,7 +95,12 @@ export default function Journey() {
           { label: 'Search and read sources', state: j.play.status === 'running' ? 'live' : j.play.status === 'pending' ? 'todo' : 'done', note: j.play.status === 'running' ? 'Searching...' : undefined },
           { label: 'Check fit and find contacts', state: j.play.status === 'enriching' ? 'live' : 'todo' },
           { label: 'Found leads', state: 'todo' },
-        ]} /></div>}
+        ]} />
+          <div className="flex flex-wrap items-center gap-3 mt-3">
+            <button type="button" className="btn-ghost btn-sm" onClick={() => void stop(j.play!.id)} data-testid="journey-stop">Stop this scan</button>
+            {stopNote && <span className="text-xs text-[var(--ink-2)]" role="status" data-testid="journey-stop-note">{stopNote}</span>}
+          </div>
+        </div>}
         {j.split && j.split.opportunities.length > 0 && <ul className="mt-5 grid gap-3" aria-label="Opportunities" data-testid="journey-preview">
           {j.split.opportunities.slice(0, PREVIEW).map(l => {
             const c = leadCardSummary(l, buyer?.who.join('; ') ?? '')
@@ -96,7 +119,7 @@ export default function Journey() {
         {j.play && (j.split || j.stage === 'failed' || j.stage === 'zero') && <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">
           {j.split && j.split.held.length > 0 && <Link className="btn-ghost btn-sm" href={`/app/leads?job_id=${j.play.id}`} data-testid="journey-held">{j.split.held.length} held for review<InfoTip>Leads that need your review, are rejected, undated, outside your time window, or whose company or source is not confirmed. They are never counted as opportunities.</InfoTip></Link>}
           {j.split && j.split.opportunities.length > PREVIEW && <Link className="btn-ghost btn-sm" href={`/app/leads?job_id=${j.play.id}`}>All {j.split.opportunities.length} opportunities</Link>}
-          <Link className="btn-ghost btn-sm" href={`/app/campaigns/${j.play.id}`} data-testid="journey-campaign"><Icon name="campaigns" className="w-3.5 h-3.5" />Drafts and outcomes</Link>
+          <Link className="btn-ghost btn-sm" href={`/app/outcomes?job_id=${j.play.id}`} data-testid="journey-campaign"><Icon name="check" className="w-3.5 h-3.5" />Drafts and outcomes</Link>
           {drafts && drafts.approved > 0 && <span className="text-xs text-[var(--ink-2)]" data-testid="journey-approved">{drafts.approved} approved, not sent yet</span>}
         </div>}
       </section>
@@ -112,11 +135,11 @@ export default function Journey() {
             <Fact k="You sell" v={p.sells} />
             <Fact k="Website" v={p.website} />
             <Fact k="Who buys" v={buyer?.summary} />
-            <Fact k="Buyer roles" v={buyer?.who.join(', ')} />
-            <Fact k="Industries" v={buyer?.industries.join(', ')} empty="Any" />
-            <Fact k="Where" v={buyer?.where.join(', ')} empty="Anywhere" />
-            <Fact k="Company size" v={buyer?.sizes.join(', ')} empty="Any" />
-            <Fact k="Skip" v={buyer?.exclude.join(', ')} empty="Nothing" />
+            <Fact k="Buyer roles" v={buyer ? showList(buyer.who) : ''} />
+            <Fact k="Industries" v={buyer ? showList(buyer.industries) : ''} empty="Any" />
+            <Fact k="Where" v={buyer ? showList(buyer.where) : ''} empty="Anywhere" />
+            <Fact k="Company size" v={buyer ? showList(buyer.sizes) : ''} empty="Any" />
+            <Fact k="Skip" v={buyer ? showList(buyer.exclude) : ''} empty="Nothing" />
           </dl>}
         {playIcp?.icp && j.play && playIcp.query === j.play.query && <div className="mt-4 pt-4 border-t border-[var(--line)] text-sm" data-testid="journey-constraints">
           <p className="text-xs font-semibold uppercase tracking-wide text-[var(--ink-3)] mb-2">This play searched with<InfoTip>The reviewed profile this play ran with, exactly as saved. It is not changed when you edit the business profile above.</InfoTip></p>
@@ -137,14 +160,15 @@ function Fact({ k, v, empty = 'Not set' }: { k: string; v?: string | null; empty
 
 function ProfileForm({ profile, onDone }: { profile: Profile; onDone: (saved: boolean) => void }) {
   const b = profile.buyer ?? EMPTY
-  const [f, setF] = useState({ sells: profile.sells ?? '', summary: b.summary, who: b.who.join(', '), industries: b.industries.join(', '), where: b.where.join(', '), sizes: b.sizes.join(', '), signals: b.signals.join(', '), exclude: b.exclude.join(', ') })
+  const [f, setF] = useState({ sells: profile.sells ?? '', summary: b.summary, who: showList(b.who), industries: showList(b.industries), where: showList(b.where), sizes: showList(b.sizes), signals: showList(b.signals), exclude: showList(b.exclude) })
   const [msg, setMsg] = useState('')
   const [busy, setBusy] = useState(false)
   async function save(e: React.FormEvent) {
     e.preventDefault(); setMsg(''); setBusy(true)
-    // Every field goes back as shown: nothing is broadened, merged or inferred here; the server validates it.
-    const buyer = { summary: f.summary.trim(), who: list(f.who), industries: list(f.industries), where: list(f.where), sizes: list(f.sizes), signals: list(f.signals), exclude: list(f.exclude) }
-    const r = await fetch('/api/settings/profile', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sells: f.sells.trim(), buyer }) }).catch(() => null)
+    // Untouched fields go back exactly as stored (lib/journey.ts editedBuyer); nothing is broadened, merged or inferred
+    // here, and the server validates it.
+    const buyer = editedBuyer(b, f)
+    const r = await fetch('/api/settings/profile', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sells: f.sells === (profile.sells ?? '') ? profile.sells : f.sells.trim(), buyer }) }).catch(() => null)
     const j = await r?.json().catch(() => ({}))
     setBusy(false)
     if (!r?.ok) return setMsg(j?.error || 'Could not save')
@@ -155,7 +179,7 @@ function ProfileForm({ profile, onDone }: { profile: Profile; onDone: (saved: bo
   return <form onSubmit={save} className="grid sm:grid-cols-2 gap-3" data-testid="journey-profile-form">
     {field('sells', 'You sell')}
     {field('summary', 'Who buys')}
-    {field('who', 'Buyer roles', 'comma separated')}
+    {field('who', 'Buyer roles', 'separate with ;')}
     {field('industries', 'Industries')}
     {field('where', 'Where')}
     {field('sizes', 'Company size')}

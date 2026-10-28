@@ -67,3 +67,13 @@ test('useful: drafts come from the same campaign only; unknown drafts fall back 
   const unknown = journey({ profile, jobs: [job()], leads: [lead()], drafts: null })
   assert.deepEqual([unknown.action?.label, unknown.action?.href], ['Review 1 opportunity', `/app/leads?job_id=${id}`])
 })
+
+test('profile edit: untouched constraints go back exactly; comma-bearing entries survive; only the edited field changes', async () => {
+  const { editedBuyer, showList, LIST_FIELDS } = await import('../lib/journey.ts')
+  const orig = { summary: 'B2B SaaS, 10-50 staff', who: ['Founder, CEO', 'Head of Sales'], industries: ['SaaS'], where: ['London, UK'], sizes: ['10-50 employees'], signals: ['Raised seed, last 90 days', 'Hiring sales'], exclude: ['Agencies, recruiters'] }
+  const form = { summary: orig.summary, ...Object.fromEntries(LIST_FIELDS.map(k => [k, showList(orig[k])])) } as Parameters<typeof editedBuyer>[1]
+  assert.deepEqual(editedBuyer(orig, form), orig, 'nothing edited: identical, "London, UK" is one entry')
+  assert.deepEqual(editedBuyer(orig, { ...form, where: 'London, UK; Manchester, UK' }), { ...orig, where: ['London, UK', 'Manchester, UK'] }, 'an edited list splits on ";" only')
+  const unchangedOthers = editedBuyer(orig, { ...form, industries: 'SaaS; Fintech' })
+  for (const k of ['who', 'where', 'sizes', 'signals', 'exclude'] as const) assert.equal(unchangedOthers[k], orig[k], `${k} is the stored array itself`)
+})

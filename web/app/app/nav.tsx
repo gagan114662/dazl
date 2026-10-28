@@ -13,6 +13,7 @@ const GROUPS: { title: string; items: Item[] }[] = [
     { href: '/app/leads?latest=1', label: 'Leads', icon: 'leads', match: (p, q) => p === '/app/leads' && (!!q.get('job_id') || !!q.get('latest')) },
   ] },
   { title: 'Engage', items: [
+    { href: '/app/outcomes', label: 'Outcomes', icon: 'check', match: p => p.startsWith('/app/outcomes') },
     { href: '/app/campaigns', label: 'Campaigns', icon: 'campaigns', match: p => p.startsWith('/app/campaigns') },
     { href: '/app/outreach', label: 'Outreach', icon: 'outreach', match: p => p.startsWith('/app/outreach') },
     { href: '/app/inbox', label: 'Inbox', icon: 'inbox', match: p => p.startsWith('/app/inbox') },

@@ -77,3 +77,17 @@ export function journey(i: JourneyInput): Journey {
   if (i.drafts && i.drafts.drafts > 0) return { ...base, play, split, stage: 'useful', action: { label: `Review ${i.drafts.drafts} draft${i.drafts.drafts === 1 ? '' : 's'}`, href: `/app/outreach?job_id=${play.id}` }, line: `${n} opportunit${n === 1 ? 'y' : 'ies'} in this play.` }
   return { ...base, play, split, stage: 'useful', action: { label: `Review ${n} opportunit${n === 1 ? 'y' : 'ies'}`, href: leadsHref }, line: `${n} opportunit${n === 1 ? 'y' : 'ies'} in this play.` }
 }
+
+// The inline profile editor. List fields are shown joined with "; " (an entry such as "London, UK" keeps its comma), and
+// a field the user did not change goes back exactly as it was stored, byte for byte: nothing untouched is re-split,
+// trimmed or reordered. Only a changed list field is split again, on ";" only.
+export type BuyerLists = 'who' | 'industries' | 'where' | 'sizes' | 'signals' | 'exclude'
+export const LIST_FIELDS: BuyerLists[] = ['who', 'industries', 'where', 'sizes', 'signals', 'exclude']
+export interface BuyerProfile { summary: string; who: string[]; industries: string[]; where: string[]; sizes: string[]; signals: string[]; exclude: string[] }
+export const showList = (v: string[]) => v.join('; ')
+const splitList = (s: string) => s.split(';').map(x => x.trim()).filter(Boolean)
+export function editedBuyer(original: BuyerProfile, form: Record<BuyerLists | 'summary', string>): BuyerProfile {
+  const out: BuyerProfile = { ...original, summary: form.summary === original.summary ? original.summary : form.summary.trim() }
+  for (const k of LIST_FIELDS) out[k] = form[k] === showList(original[k]) ? original[k] : splitList(form[k])
+  return out
+}

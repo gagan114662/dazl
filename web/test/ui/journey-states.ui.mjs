@@ -126,7 +126,7 @@ try {
           // Same campaign: the drafts action points at this play only; approved-unsent is reported apart from drafts.
           assert.deepEqual([actionText, href], ['Review 1 draft', `/app/outreach?job_id=${P}`])
           assert.equal(await page.getByTestId('journey-approved').textContent(), '1 approved, not sent yet')
-          assert.equal(await page.getByTestId('journey-campaign').getAttribute('href'), `/app/campaigns/${P}`)
+          assert.equal(await page.getByTestId('journey-campaign').getAttribute('href'), `/app/outcomes?job_id=${P}`)
           // The play's reviewed constraints are shown exactly, window and exclusions included.
           const c = await page.getByTestId('journey-constraints').textContent()
           for (const t of ['Practice owner', 'Dental', 'in Ohio', '2-10 chairs', 'Opened a new location', 'past 90 days', 'skip Dental schools', 'skip chains']) assert.ok(c.includes(t), t)
