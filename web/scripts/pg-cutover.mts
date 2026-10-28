@@ -10,7 +10,7 @@ import { sqliteDb, pgDb, type Db } from '../lib/db/client.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { runPgMigrations } from '../lib/db/migrate-pg.ts'
 import { copyStore, compareStores } from '../lib/db/copy-store.ts'
-import { RAW_SQLITE_MODULES, PG_INSERTION_ORDER_GAPS } from '../lib/db/pg-port-status.ts'
+import { RAW_SQLITE_MODULES } from '../lib/db/pg-port-status.ts'
 
 const [cmd, ...rest] = process.argv.slice(2)
 const arg = (name: string) => { const i = rest.indexOf(`--${name}`); return i >= 0 ? rest[i + 1] : undefined }
@@ -36,9 +36,9 @@ async function open(s: string, role: 'source' | 'target'): Promise<Db> {
   return sqliteDb(h)
 }
 
-const blockers = Object.keys(RAW_SQLITE_MODULES).length + PG_INSERTION_ORDER_GAPS.length
+const blockers = Object.keys(RAW_SQLITE_MODULES).length
 if (cmd === 'copy' && isPg(to) && blockers > 0 && !rest.includes('--rehearsal')) {
-  console.error(`refused: lib/db/pg-port-status.ts lists ${Object.keys(RAW_SQLITE_MODULES).length} modules still on the raw SQLite handle (after a cutover they would keep using the file) and ${PG_INSERTION_ORDER_GAPS.length} without an insertion order on Postgres.\nPass --rehearsal to copy for a rehearsal only.`)
+  console.error(`refused: ${blockers} modules still use the raw SQLite handle (lib/db/pg-port-status.ts); after a cutover they would keep using the file.\nPass --rehearsal to copy for a rehearsal only.`)
   process.exit(3)
 }
 const src = await open(from, 'source'), dst = await open(to, 'target')

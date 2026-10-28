@@ -45,6 +45,7 @@ async function seed(db: Db): Promise<void> {
   await q.enqueue({ tenantId: A, kind: 'scan', id: 'q1', now: T0, dedupeKey: 'k' })
   await q.enqueue({ tenantId: B, kind: 'scan', id: 'q2', now: T0 })
   await db.run("UPDATE work_queue_meta SET v = 41 WHERE k = 'token'") // tokens 1..41 were handed out before the copy
+  await db.run("INSERT INTO outreach_llm_usage (id, tenant_id, purpose, outcome) VALUES (1, ?, 'draft', 'ok')", [A])
 }
 
 async function counts(db: Db, tables: string[]): Promise<Record<string, number>> {
@@ -52,7 +53,7 @@ async function counts(db: Db, tables: string[]): Promise<Record<string, number>>
   for (const t of tables) out[t] = Number((await db.get<{ c: number }>(`SELECT count(*) AS c FROM ${t}`))!.c)
   return out
 }
-const SEEDED = { users: 2, tenant_plans: 1, scan_jobs: 2, leads: 3, watches: 1, watch_seen: 1, work_queue: 2, work_queue_meta: 1 }
+const SEEDED = { users: 2, tenant_plans: 1, scan_jobs: 2, leads: 3, watches: 1, watch_seen: 1, work_queue: 2, work_queue_meta: 1, outreach_llm_usage: 1 }
 
 test('cutover copy: SQLite -> Postgres copies every row, verifies it, and leaves the guard triggers on', { skip: pgSkip }, async () => {
   const src = sqliteStore(), pg = await pgStore()
@@ -72,11 +73,17 @@ test('cutover copy: SQLite -> Postgres copies every row, verifies it, and leaves
     // the triggers are back on for live writes: a lead for a finished job is still refused
     const done = (await pg.db.get<{ id: string }>("SELECT id FROM scan_jobs WHERE status = 'done'"))!.id
     await assert.rejects(pg.db.run("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, score) VALUES ('x', ?, 'P', 'C', 's', 'https://e.example/x', 1)", [done]), /running job/)
-    // the copied queue still works on Postgres
     // the copied queue still works on Postgres, and its fencing-token counter carried over instead of restarting
     const c = await new DbQueue(pg.db).claim({ now: T0 + 10 })
     assert.equal(c?.item.id, 'q1')
     assert.equal(c?.token, 42)
+    // sequences continue after the copied values: a new job sorts after every copied one, an identity id is not reused
+    const maxSeq = Number((await pg.db.get<{ m: number }>('SELECT max(insert_seq) AS m FROM scan_jobs'))!.m)
+    assert.deepEqual(await pg.db.all('SELECT id FROM scan_jobs WHERE insert_seq IS NULL'), [])
+    await pg.db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location) VALUES ('after', ?, 'b', 'i', 'l')", [B])
+    assert.equal(Number((await pg.db.get<{ s: number }>("SELECT insert_seq AS s FROM scan_jobs WHERE id = 'after'"))!.s), maxSeq + 1)
+    await pg.db.run("INSERT INTO outreach_llm_usage (tenant_id, purpose, outcome) VALUES (?, 'draft', 'ok')", [A])
+    assert.deepEqual((await pg.db.all<{ id: number }>('SELECT id FROM outreach_llm_usage ORDER BY id')).map(r => Number(r.id)), [1, 2])
   } finally { await src.close(); await pg.drop() }
 })
 
