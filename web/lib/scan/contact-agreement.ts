@@ -79,6 +79,32 @@ function sameCityAsEvidence(stated: string, evidence: string | null | undefined)
 const CA_PROVINCES = new Set(['on', 'qc', 'bc', 'ab', 'mb', 'sk', 'ns', 'nb', 'nl', 'pe', 'yt', 'nt', 'nu', 'ontario', 'quebec', 'british columbia', 'alberta', 'manitoba', 'saskatchewan', 'nova scotia', 'new brunswick', 'newfoundland and labrador', 'prince edward island'])
 const FOREIGN_COUNTRY = /\b(?:canada|mexico|united kingdom|great britain|england|scotland|wales|northern ireland|ireland|australia|new zealand|germany|france|spain|italy|netherlands|india|china|japan|brazil|south africa)\b/i
 const CA_POSTAL = /\b[a-z]\d[a-z]\s?\d[a-z]\d\b/i
+// ---- explicit country contradictions: a stated country that is not the lead's country refuses even when street / city / region all match ("New York, NY, Canada" for a New York lead, "London, France" for a London UK lead) ----
+const COUNTRIES: [string, RegExp][] = [
+  ['US', /\b(?:usa|u\.s\.a?\.?|united states(?: of america)?|america)\b/i], ['CA', /\bcanada\b/i],
+  ['GB', /\b(?:uk|u\.k\.|united kingdom|great britain|england|scotland|wales|northern ireland)\b/i], ['IE', /\bireland\b(?!.*northern)/i], ['FR', /\bfrance\b/i], ['DE', /\bgermany\b/i],
+  ['ES', /\bspain\b/i], ['IT', /\bitaly\b/i], ['NL', /\bnetherlands\b/i], ['MX', /\bmexico\b/i], ['AU', /\baustralia\b/i], ['NZ', /\bnew zealand\b/i], ['IN', /\bindia\b/i],
+  ['CN', /\bchina\b/i], ['JP', /\bjapan\b/i], ['BR', /\bbrazil\b/i], ['ZA', /\bsouth africa\b/i],
+]
+export const countriesNamed = (text: string): string[] => COUNTRIES.filter(([, re]) => re.test(text)).map(([c]) => c)
+// The lead's country from its place: New York City / a US state / a ", ST" code = US; London = GB; an explicitly named country = that country. Unknown = null (no country demand).
+function leadCountry(where: string[]): string | null {
+  const w = where.join(' | ')
+  const named = countriesNamed(w)
+  if (named.length === 1) return named[0]
+  if (cityScoped(where) && /\bnew york|\bnyc\b|\bmanhattan\b|\bbrooklyn\b/i.test(w)) return 'US'
+  if (/\blondon\b/i.test(w)) return 'GB'
+  if (Object.entries(US_STATES).some(([ab, name]) => new RegExp(`\\b${name}\\b|,\\s*${ab}\\b`, 'i').test(w))) return 'US'
+  return null
+}
+// A country the record states that differs from the lead's. Province codes / Canadian postal codes count as Canada.
+export function countryConflict(stated: string, where: string[]): string | null {
+  const ours = leadCountry(where); if (!ours) return null
+  const theirs = new Set(countriesNamed(stated))
+  if (CA_POSTAL.test(stated) || stated.split(',').some(seg => CA_PROVINCES.has(seg.trim().toLowerCase().replace(/\s+[a-z]\d[a-z].*$/i, '')))) theirs.add('CA')
+  const other = [...theirs].find(c => c !== ours)
+  return other && !(theirs.has(ours) && theirs.size === 1) ? other : null
+}
 // A province, a Canadian postal code or a non-US/non-UK country name written in a stated place: the record is not in the lead's US city unless placeAgreement positively says otherwise.
 function foreignMarker(stated: string): boolean {
   return CA_POSTAL.test(stated) || FOREIGN_COUNTRY.test(stated) || stated.split(/[,\s]+/).some((w, i, all) => i > 0 && CA_PROVINCES.has(w.toLowerCase()) && !(w.toLowerCase() === 'on' && all.length > 4)) || stated.split(',').some(seg => CA_PROVINCES.has(seg.trim().toLowerCase().replace(/\s+[a-z]\d[a-z].*$/i, '')))
@@ -96,6 +122,8 @@ export function contactAgreement(lead: LeadSide, c: Candidate): Agreement {
     const wh = effectiveWhere(lead)
     if (wh.length) for (const stated of [(c.place ?? '').trim(), addressGeography(c.address)]) {
       if (!stated) continue
+      const cc = countryConflict(stated, wh)
+      if (cc) return { ok: false, reason: `contact rejected: location mismatch ${stated.slice(0, 60)} vs ${leadPlaceLabel(wh).slice(0, 60)} (country ${cc} is not the lead's)` }
       let v: 'agrees' | 'mismatch' | 'unconfirmed' | 'no_geography' = placeAgreement(stated, wh)
       if (v !== 'agrees' && foreignMarker(stated)) v = 'mismatch'
       // The same city the lead's own evidence writes after the same street ("57 W 57th St, New York"): a city agreement from the lead's evidence, when nothing contradicts it.
@@ -110,6 +138,8 @@ export function contactAgreement(lead: LeadSide, c: Candidate): Agreement {
   if (where.length === 0) return { ok: true, via: 'no_geography' } // a request with no place makes no place demand (a domain that DISAGREES was refused above)
   if (!place) return { ok: false, reason: 'contact rejected: no domain or location to confirm the company' }
   const v = placeAgreement(place, where)
+  const cc = countryConflict(place, where)
+  if (cc) return { ok: false, reason: `contact rejected: location mismatch ${place.slice(0, 60)} vs ${leadPlaceLabel(where).slice(0, 60)} (country ${cc} is not the lead's)` }
   if (v === 'agrees') return { ok: true, via: 'location' }
   const ours = leadPlaceLabel(where)
   // A bare country or a region is context, never a match for a city request.

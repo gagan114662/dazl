@@ -191,3 +191,29 @@ test('REGRESSION (Toronto): the same street in another country never attaches to
   await enrichLeadContacts(s.db, 'u1', s.jobId, [s.lead], { fetchImpl: apollo({ ...PICO, name: 'Smile Avenue Dental', website_url: undefined, city: 'Toronto', state: 'Ontario', country: 'Canada', street_address: '57 W 57th St' }), master })
   assert.deepEqual(attached(s.db), [], 'nothing from the Toronto record attaches'); assert.equal(refusals(s.db).length, 1, JSON.stringify(refusals(s.db)))
 })
+
+test('REGRESSION (explicit country): a stated country that is not the lead\'s refuses even when street / city / region match - "New York, NY, Canada" for a New York lead, "London, France" for a London UK lead; genuine same-country positives stay', async () => {
+  const NYC = ['New York City'], LON = ['London, UK']
+  const LE = 'Brightloop is opening an office at 10 Old Street, London'
+  const bad: [string[], string | null, { address?: string; place?: string }][] = [
+    [NYC, EVIDENCE, { place: 'New York, NY, Canada' }], [NYC, EVIDENCE, { address: '57 W 57th St, New York, NY, Canada' }], [NYC, EVIDENCE, { address: '57 W 57th St, New York, NY 10019, Canada' }],
+    [NYC, EVIDENCE, { place: 'New York, New York, United Kingdom' }], [NYC, EVIDENCE, { address: '57 W 57th St', place: 'New York, NY, Mexico' }], [NYC, EVIDENCE, { place: 'NEW YORK, NY, CANADA' }],
+    [LON, LE, { place: 'London, France' }], [LON, LE, { address: '10 Old Street, London, France' }], [LON, LE, { address: '10 Old St, London EC1V 9AB, France' }], [LON, LE, { place: 'London, Germany' }], [LON, LE, { place: 'London, United States' }],
+  ]
+  for (const [where, evidence, c] of bad) { const r = contactAgreement({ where, evidence }, c); assert.equal(r.ok, false, JSON.stringify(c)); assert.match((r as { reason: string }).reason, /^contact rejected: location mismatch .*country [A-Z]{2} is not the lead's/, JSON.stringify(c)) }
+  const good: [string[], string | null, { address?: string; place?: string }][] = [
+    [NYC, EVIDENCE, { place: 'New York, NY, USA' }], [NYC, EVIDENCE, { place: 'New York, NY, United States' }], [NYC, EVIDENCE, { address: '57 W 57th St, New York, NY 10019, USA' }], [NYC, EVIDENCE, { address: '57 W 57th St, New York, NY' }],
+    [LON, LE, { place: 'London, UK' }], [LON, LE, { place: 'London, England' }], [LON, LE, { address: '10 Old Street, London EC1V 9AB, United Kingdom' }], [LON, LE, { address: '10 Old Street, London' }],
+  ]
+  for (const [where, evidence, c] of good) assert.equal(contactAgreement({ where, evidence }, c).ok, true, JSON.stringify(c))
+  // Apollo path, both leads: the org record states the wrong country
+  const wrongNy = seed()
+  await enrichLeadContacts(wrongNy.db, 'u1', wrongNy.jobId, [wrongNy.lead], { fetchImpl: apollo({ ...NY, country: 'Canada' }), master })
+  assert.deepEqual(attached(wrongNy.db), [], 'New York, New York, Canada does not attach to the New York lead'); assert.deepEqual(refusals(wrongNy.db).map(r => r[0]), ['contact_location_mismatch'], JSON.stringify(refusals(wrongNy.db)))
+  const wrongLon = seed({ where: JSON.stringify({ summary: 'London', where: ['London, UK'], who: ['Founder'], signals: [] }) })
+  await enrichLeadContacts(wrongLon.db, 'u1', wrongLon.jobId, [wrongLon.lead], { fetchImpl: apollo({ ...NY, name: 'Smile Avenue Dental', city: 'London', state: undefined, country: 'France', street_address: undefined }), master })
+  assert.deepEqual(attached(wrongLon.db), [], 'London, France does not attach to the London UK lead'); assert.deepEqual(refusals(wrongLon.db).map(r => r[0]), ['contact_location_mismatch'], JSON.stringify(refusals(wrongLon.db)))
+  const rightNy = seed()
+  await enrichLeadContacts(rightNy.db, 'u1', rightNy.jobId, [rightNy.lead], { fetchImpl: apollo({ ...NY, country: 'United States' }), master })
+  assert.ok(attached(rightNy.db).length > 0, 'the genuine same-city, same-country record still attaches'); assert.equal(refusals(rightNy.db).length, 0, JSON.stringify(refusals(rightNy.db)))
+})
