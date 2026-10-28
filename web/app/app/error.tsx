@@ -1,4 +1,6 @@
 'use client'
+import { useEffect } from 'react'
+import { reportClientError } from '@/lib/client-error-report'
 import { isChunkLoadError } from '@/lib/chunk-recovery'
 import { BOUNDARY_COPY } from '@/lib/error-boundary-copy'
 
@@ -8,6 +10,7 @@ import { BOUNDARY_COPY } from '@/lib/error-boundary-copy'
 // offers Reload; anything else also offers Try again (re-renders the page). Nothing here reloads on its own (the
 // bounded automatic reload lives in lib/chunk-recovery.ts), and neither button submits anything.
 export default function AppError({ error, retry }: { error: unknown; retry: () => void }) {
+  useEffect(() => { reportClientError('boundary', error) }, [error])
   const copy = isChunkLoadError(error) ? BOUNDARY_COPY.chunk : BOUNDARY_COPY.other
   return (
     <div className="p-8 max-w-xl" role="alert">
