@@ -1,5 +1,4 @@
-import type Database from 'better-sqlite3'
-import { migrateThreadReplies } from './threads.ts'
+import type { Db } from '../db/client.ts'
 
 // Thread-verdict quality: which reply searches (platform + query) surface threads that
 // grade as buyers. Correct entity, no joins: a thread's verdict is about the THREAD and
@@ -23,9 +22,10 @@ export interface ThreadMetricRow {
   ungraded: number
 }
 
-export function threadMetrics(db: Database.Database, tenantId: string): ThreadMetricRow[] {
-  migrateThreadReplies(db)
-  return db.prepare(`
+// On the Db layer (SQLite or Postgres). The table is created with the store (lib/db/sqlite-migrations.ts on SQLite, the
+// PG migrations on Postgres). Sums come back as numbers on both engines.
+export async function threadMetrics(db: Db, tenantId: string): Promise<ThreadMetricRow[]> {
+  const rows = await db.all<ThreadMetricRow>(`
     SELECT platform, query,
            COUNT(*) AS total,
            SUM(CASE WHEN buyer_intent = 'yes' THEN 1 ELSE 0 END) AS buyer_yes,
@@ -35,5 +35,6 @@ export function threadMetrics(db: Database.Database, tenantId: string): ThreadMe
     FROM reply_threads WHERE tenant_id = ?
     GROUP BY platform, query
     ORDER BY buyer_yes DESC, total DESC, platform, query
-  `).all(tenantId) as ThreadMetricRow[]
+  `, [tenantId])
+  return rows.map(r => ({ platform: r.platform, query: r.query, total: Number(r.total), buyer_yes: Number(r.buyer_yes), uncertain: Number(r.uncertain), not_buyer: Number(r.not_buyer), ungraded: Number(r.ungraded) }))
 }

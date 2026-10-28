@@ -123,7 +123,13 @@ test('JUICEBOX-TYPE job ad: a lead whose quote shows only a London office / sale
   // control: another verified candidate for the same company carries the funding (kept out as a duplicate) -> the event half is met
   const other = seed({ excerpt: ad }); const row = other.db.prepare("SELECT dedup_key FROM leads").get() as { dedup_key: string | null }
   other.db.prepare("UPDATE leads SET dedup_key = 'k1' WHERE id = 'L1'").run(); void row
-  assert.equal((await applySalesHiringGate(other.db, other.job, serve(board()), { now: NOW, quotes: new Map([['k1', [{ url: 'https://news.example/other', excerpt: 'Brightloop raised a seed round in London', date: null }]]]) })).passed, 1)
+  assert.equal((await applySalesHiringGate(other.db, other.job, serve(board()), { now: NOW, quotes: new Map([['k1', [{ url: 'https://news.example/other', excerpt: 'Brightloop raised a seed round in London', date: d(10) }]]]) })).passed, 1)
+  // A JOINED funding quote must carry its OWN date inside the window and agree on place: undated, stale (200 days) or Manchester funding never completes the pair (#327 review).
+  for (const [name, q] of [['undated', { excerpt: 'Brightloop raised a seed round in London', date: null }], ['stale', { excerpt: 'Brightloop raised a seed round in London', date: d(200) }], ['Manchester', { excerpt: 'Brightloop, a Manchester startup, raised a seed round', date: d(10) }]] as const) {
+    const o = seed({ excerpt: ad }); o.db.prepare("UPDATE leads SET dedup_key = 'k1' WHERE id = 'L1'").run()
+    const g = await applySalesHiringGate(o.db, o.job, serve(board()), { now: NOW, quotes: new Map([['k1', [{ url: 'https://news.example/other', ...q }]]]) })
+    assert.deepEqual([name, g.passed, lead(o.db).review_reason], [name, 0, 'no_event_evidence'])
+  }
 })
 
 test('seed-only and hiring-only requests are not touched, and review / human-confirmed rows are never promoted or changed', async () => {

@@ -86,7 +86,7 @@ test('newsjack: a pasted URL resolving to a non-public address is never fetched'
   saveKey(db, 'u1', 'anthropic', 'sk-ant-test-1234', master)
   let fetched = 0
   const f = (async () => { fetched++; return new Response('<html></html>', { status: 200 }) }) as unknown as typeof fetch
-  const r = await createNewsjack(sqliteDb(db), db, 'u1', 'https://internal.example/story', { fetchImpl: f, lookup: hostileLookup, master })
+  const r = await createNewsjack(sqliteDb(db), 'u1', 'https://internal.example/story', { fetchImpl: f, lookup: hostileLookup, master })
   assert.deepEqual(r, { error: 'fetch' })
   assert.equal(fetched, 0, 'article request never left the server')
 })

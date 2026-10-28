@@ -55,6 +55,7 @@ import { findPeople } from '../people/people-search.ts'
 import { EnrichmentTrace, noteFromAudit, auditSummary, mergeIntoRunReport } from './enrichment-trace.ts'
 import { recordActionability } from './actionable.ts'
 import { resolveBounded } from './resolution.ts'
+import { fallbackTargets, mergeFallback, rescuedNotes, recordFallbacks, type FallbackNote } from './blocked-fallback.ts'
 import { parseWindowDays, splitByWindow, windowStatus } from './window.ts'
 import { applyBuyerFitGate, failClosedBuyerFit } from './buyer-fit.ts'
 
@@ -965,8 +966,36 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     const judge = deps.judge === undefined ? makeJudge(providers_[vendor], key, deps.fetchImpl) : deps.judge ?? undefined
     assertOwned(db, job)
     let datesFinished: Awaited<ReturnType<typeof finishUndatedLeads>> = []
+    let fallbackNotes: FallbackNote[] = []
     let outcome = await verifyLeads(leads, fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [])
-    const verifiedUrls = leads.map(l => l.source_url) // verify_provenance: every URL the verifier was asked about, retry included
+    const verifiedUrls = leads.map(l => l.source_url) // verify_provenance
+    // A candidate whose OWN page blocks us is held with nothing readable. Look for the same company on other press (free news search): its pages go through the same extraction and verifier, and a
+    // verified candidate for that company replaces the held row. Bounded (3 companies, one search+extraction), no extra model call for a run that disabled the paid fallback.
+    const blocked = deps.paidFallback === false || !newsOn || !complete || !icpForSources ? [] : fallbackTargets(outcome.review, icpForSources.where ?? [])
+    if (blocked.length > 0) {
+      const note = { searched: false, hits: 0, attempted: 0, failed: 0, malformed: 0 }
+      ledger.record('fallback:news', 'started')
+      try {
+        assertOwned(db, job)
+        const found = await newsLeads(job, icpForSources!, providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl, note, blocked.map(b => b.query))
+        ledger.record('fallback:news', newsStatus(found, note), note.searched ? note.hits : null)
+        if (found && found.length > 0) {
+          ledger.candidates('fallback:news', found)
+          verifiedUrls.push(...found.map(l => l.source_url))
+          const o2 = await verifyLeads(found, fetchP, deps.now, judge, null, undefined, audit, icpForSources!.where ?? [])
+          fallbackNotes = mergeFallback(outcome, o2, blocked)
+        }
+      } catch (e) {
+        if (e instanceof ScanStopped || e instanceof ScanTimedOut || e instanceof SpendRefused) throw e
+        if (e instanceof ProviderError && e.kind === 'auth') throw e
+        ledger.record('fallback:news', 'error')
+      }
+    }
+    {
+      // For the record: every company whose own page blocked us and that now stands verified on another page (other press, a job-board posting, a merged quote), whichever fallback found it.
+      const seenKeys = new Set(fallbackNotes.map(n => n.key))
+      for (const n of rescuedNotes(leads, u => verifierFetch.get(u) ?? verifierFetch.get(canonicalUrl(u) ?? u) ?? null, outcome.leads)) if (!seenKeys.has(n.key)) fallbackNotes.push(n)
+    }
     // First-scan killer: the model's stale memory returns only old news and the verifier
     // honestly drops all of it. One bounded retry with the date spelled out a second time
     // and an explicit freshness instruction; a failed retry never fails the scan.
@@ -1118,6 +1147,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       const extra = (y.held_leads ?? []).filter(h => !heldByGate.has(h.id))
       if (extra.length) { markHeldInProcess(job.user_id, extra.map(h => h.id)); reconcileRunReport(db, job.id, job.attempts, extra.map(h => ({ company: h.company, url: h.url, reason: 'sales_hiring_check_failed' }))) }
       // Code decides done: every candidate is checked for date / identity / contact; the unresolved carry specific reasons after bounded targeted lookups (lib/scan/resolution.ts).
+      recordFallbacks(db, job, fallbackNotes)
       let resolution: Awaited<ReturnType<typeof resolveBounded>> | null = null
       // ONE overall deadline and the job's own cancellation cover every lookup; a cancel destroys the request in flight (fetchPageDetailed takes the signal). Nothing here renders (no render service).
       const resCtrl = new AbortController()
