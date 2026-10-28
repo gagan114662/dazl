@@ -47,11 +47,13 @@ const TIMEOUT_MS = Number(process.env.SCAN_PAGE_TIMEOUT_MS || 10_000)
 // timeoutMs/lookup are injectable for tests only. The socket 'timeout' below is INACTIVITY-based, so a
 // slow-drip server that sends a byte every few seconds never trips it: the absolute timer is what bounds
 // the whole request (headers + body) and always settles the promise.
-export function once(url: URL, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup): Promise<{ status: number; location?: string; type: string; body: string }> {
+export function once(url: URL, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup, signal?: AbortSignal): Promise<{ status: number; location?: string; type: string; body: string }> {
+  if (signal?.aborted) return Promise.reject(new Error('aborted'))   // cancelled before it started: no connection is made
   return new Promise((resolveRaw, rejectRaw) => {
     let hard: NodeJS.Timeout | undefined
-    const resolve = (v: { status: number; location?: string; type: string; body: string }) => { clearTimeout(hard); resolveRaw(v) }
-    const reject = (e: unknown) => { clearTimeout(hard); rejectRaw(e) }
+    const onAbort = () => { req.destroy(new Error('aborted')); reject(new Error('aborted')) }   // a cancelled / timed-out caller destroys the socket: nothing keeps running behind it
+    const resolve = (v: { status: number; location?: string; type: string; body: string }) => { clearTimeout(hard); signal?.removeEventListener('abort', onAbort); resolveRaw(v) }
+    const reject = (e: unknown) => { clearTimeout(hard); signal?.removeEventListener('abort', onAbort); rejectRaw(e) }
     const req = https.request(
       url,
       { method: 'GET', lookup: lookup as never, timeout: timeoutMs, headers: { 'user-agent': 'dazl-evidence-check/1.0', accept: 'text/html,text/plain;q=0.9', 'accept-encoding': 'identity' } },
@@ -80,6 +82,8 @@ export function once(url: URL, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLoo
     req.on('timeout', () => req.destroy(new Error('timeout')))
     hard = setTimeout(() => { req.destroy(new Error('timeout')); reject(new Error('timeout')) }, timeoutMs)
     req.on('error', reject)
+    if (signal?.aborted) return onAbort()
+    signal?.addEventListener('abort', onAbort, { once: true })
     req.end()
   })
 }
@@ -180,14 +184,15 @@ export async function renderViaService(rawUrl: string, fetchImpl: typeof fetch =
 }
 
 // Fetches a public https page and says why when it cannot. Private addresses are never contacted.
-export async function fetchPageDetailed(rawUrl: string, render: (url: string) => Promise<string | null> = renderViaService): Promise<Page | FetchFail> {
+export async function fetchPageDetailed(rawUrl: string, render: (url: string) => Promise<string | null> = renderViaService, signal?: AbortSignal): Promise<Page | FetchFail> {
   try {
     let url = new URL(rawUrl)
     for (let i = 0; i <= MAX_REDIRECTS; i++) {
       if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')) return { fail: 'refused' }
       const host = url.hostname.replace(/^\[|\]$/g, '')
       if (isIP(host) && !isPublicIp(host)) return { fail: 'refused' }
-      const r = await once(url)
+      if (signal?.aborted) return { fail: 'error' }
+      const r = await once(url, TIMEOUT_MS, guardedLookup, signal)
       if (r.status >= 300 && r.status < 400) {
         if (!r.location) return { fail: 'error' }
         url = new URL(r.location, url)
