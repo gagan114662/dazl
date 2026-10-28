@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { migrateInsertionOrder } from '../db/insertion-order.ts'
 import type Database from 'better-sqlite3'
+import type { Db } from '../db/client.ts'
 import { decryptSecret, encryptSecret } from '../secrets.ts'
 
 // Per-tenant connector credentials, encrypted with the same envelope scheme as LLM keys.
@@ -44,29 +45,40 @@ export function migrateConnectors(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS lead_enrichments_lead ON lead_enrichments (lead_id);
   `)
-  migrateInsertionOrder(db, ['lead_enrichments']) // insert_seq (lib/db/insertion-order.ts)
+  migrateInsertionOrder(db, ['lead_enrichments', 'connector_audit']) // insert_seq (lib/db/insertion-order.ts)
 }
 
 const ctx = (tenantId: string, connector: string) => `connector:${tenantId}:${connector}`
 
+// The settings routes run on the Db layer (SQLite or Postgres); the scan pipeline and the CRM still write on the raw
+// handle. Where both need a write, the sync and async versions share one SQL string and one argument builder.
+const SAVE_CREDENTIAL_SQL = `INSERT INTO tenant_connectors (tenant_id, connector, ciphertext, last4, enabled) VALUES (?, ?, ?, ?, 1)
+     ON CONFLICT(tenant_id, connector) DO UPDATE SET ciphertext = excluded.ciphertext, last4 = excluded.last4, enabled = 1`
+const credentialArgs = (tenantId: string, connector: string, secret: string, master?: Buffer) =>
+  [tenantId, connector, encryptSecret(secret, ctx(tenantId, connector), master), secret.slice(-4)]
 export function saveCredential(db: Database.Database, tenantId: string, connector: string, secret: string, master?: Buffer): void {
-  db.prepare(
-    `INSERT INTO tenant_connectors (tenant_id, connector, ciphertext, last4, enabled) VALUES (?, ?, ?, ?, 1)
-     ON CONFLICT(tenant_id, connector) DO UPDATE SET ciphertext = excluded.ciphertext, last4 = excluded.last4, enabled = 1`,
-  ).run(tenantId, connector, encryptSecret(secret, ctx(tenantId, connector), master), secret.slice(-4))
+  db.prepare(SAVE_CREDENTIAL_SQL).run(...credentialArgs(tenantId, connector, secret, master))
+}
+export async function writeCredential(db: Db, tenantId: string, connector: string, secret: string, master?: Buffer): Promise<void> {
+  await db.run(SAVE_CREDENTIAL_SQL, credentialArgs(tenantId, connector, secret, master))
 }
 
 // Safe for the browser: never includes the credential or ciphertext.
-export function connectorStatus(db: Database.Database, tenantId: string) {
-  return (db.prepare('SELECT connector, last4, enabled FROM tenant_connectors WHERE tenant_id = ?').all(tenantId) as { connector: string; last4: string; enabled: number }[]).map(r => ({ connector: r.connector, last4: r.last4, enabled: r.enabled === 1 }))
+export async function connectorStatus(db: Db, tenantId: string) {
+  return (await db.all<{ connector: string; last4: string; enabled: number }>('SELECT connector, last4, enabled FROM tenant_connectors WHERE tenant_id = ?', [tenantId]))
+    .map(r => ({ connector: r.connector, last4: r.last4, enabled: Number(r.enabled) === 1 }))
 }
 
-export function setEnabled(db: Database.Database, tenantId: string, connector: string, enabled: boolean): boolean {
-  return db.prepare('UPDATE tenant_connectors SET enabled = ? WHERE tenant_id = ? AND connector = ?').run(enabled ? 1 : 0, tenantId, connector).changes === 1
+export async function setEnabled(db: Db, tenantId: string, connector: string, enabled: boolean): Promise<boolean> {
+  return (await db.run('UPDATE tenant_connectors SET enabled = ? WHERE tenant_id = ? AND connector = ?', [enabled ? 1 : 0, tenantId, connector])).changes === 1
 }
 
+const DELETE_CREDENTIAL_SQL = 'DELETE FROM tenant_connectors WHERE tenant_id = ? AND connector = ?'
 export function deleteCredential(db: Database.Database, tenantId: string, connector: string): boolean {
-  return db.prepare('DELETE FROM tenant_connectors WHERE tenant_id = ? AND connector = ?').run(tenantId, connector).changes === 1
+  return db.prepare(DELETE_CREDENTIAL_SQL).run(tenantId, connector).changes === 1
+}
+export async function removeCredential(db: Db, tenantId: string, connector: string): Promise<boolean> {
+  return (await db.run(DELETE_CREDENTIAL_SQL, [tenantId, connector])).changes === 1
 }
 
 // Server-side only. Returns null unless the tenant has the connector saved and enabled.
@@ -75,12 +87,24 @@ export function getEnabledCredential(db: Database.Database, tenantId: string, co
   return r ? decryptSecret(r.ciphertext, ctx(tenantId, connector), master) : null
 }
 
-export function audit(db: Database.Database, a: { tenantId: string; connector: string; jobId?: string | null; lookup: string; status: string; results: number }): void {
-  db.prepare('INSERT INTO connector_audit (id, tenant_id, connector, scan_job_id, lookup, status, results) VALUES (?, ?, ?, ?, ?, ?, ?)').run(randomBytes(12).toString('hex'), a.tenantId, a.connector, a.jobId ?? null, a.lookup.slice(0, 200), a.status, a.results)
+type AuditEntry = { tenantId: string; connector: string; jobId?: string | null; lookup: string; status: string; results: number }
+const AUDIT_SQL = 'INSERT INTO connector_audit (id, tenant_id, connector, scan_job_id, lookup, status, results) VALUES (?, ?, ?, ?, ?, ?, ?)'
+const auditArgs = (a: AuditEntry) => [randomBytes(12).toString('hex'), a.tenantId, a.connector, a.jobId ?? null, a.lookup.slice(0, 200), a.status, a.results]
+export function audit(db: Database.Database, a: AuditEntry): void {
+  db.prepare(AUDIT_SQL).run(...auditArgs(a))
+}
+export async function writeAudit(db: Db, a: AuditEntry): Promise<void> {
+  await db.run(AUDIT_SQL, auditArgs(a))
 }
 
+// Newest first; same-second rows newest-inserted first (insert_seq: the order rowid gave). Sync for the pipeline's
+// tests and tools on the raw handle; readRecentAudit for the settings routes.
+const RECENT_AUDIT_SQL = 'SELECT connector, scan_job_id, lookup, status, results, created_at FROM connector_audit WHERE tenant_id = ? ORDER BY created_at DESC, insert_seq DESC LIMIT ?'
 export function recentAudit(db: Database.Database, tenantId: string, limit = 20) {
-  return db.prepare('SELECT connector, scan_job_id, lookup, status, results, created_at FROM connector_audit WHERE tenant_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?').all(tenantId, limit)
+  return db.prepare(RECENT_AUDIT_SQL).all(tenantId, limit)
+}
+export function readRecentAudit(db: Db, tenantId: string, limit = 20) {
+  return db.all(RECENT_AUDIT_SQL, [tenantId, limit])
 }
 
 export interface Enrichment { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string; retrieved_at: number }

@@ -10,7 +10,7 @@
 // Idempotent: safe on every start, on a fresh store and on an existing one.
 import type Database from 'better-sqlite3'
 
-export const INSERTION_ORDER_TABLES = ['scan_jobs', 'leads', 'outreach_messages', 'lead_enrichments'] as const
+export const INSERTION_ORDER_TABLES = ['scan_jobs', 'leads', 'outreach_messages', 'lead_enrichments', 'connector_audit'] as const
 
 export function migrateInsertionOrder(db: Database.Database, tables: readonly (typeof INSERTION_ORDER_TABLES)[number][] = INSERTION_ORDER_TABLES): void {
   for (const t of tables) {

@@ -14,6 +14,10 @@ import { migrateInsertionOrder, INSERTION_ORDER_TABLES } from '../lib/db/inserti
 function existingStore() {
   const db = new Database(':memory:')
   migrateScan(db); migrateOutreach(db); migrateConnectors(db)
+  // The owning migrations add insert_seq themselves now: take it out again, as a store from before it existed.
+  for (const t of INSERTION_ORDER_TABLES) {
+    db.exec(`DROP TRIGGER IF EXISTS ${t}_insert_seq; DROP INDEX IF EXISTS ${t}_insert_seq_idx; ALTER TABLE ${t} DROP COLUMN insert_seq`)
+  }
   const job = (id: string) => db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, created_at) VALUES (?, 'u', 'b', 'i', 'l', 100)").run(id)
   for (const id of ['j9', 'j1', 'j5', 'jx']) job(id)
   db.prepare("DELETE FROM scan_jobs WHERE id = 'j1'").run()
@@ -21,6 +25,7 @@ function existingStore() {
   for (const id of ['l7', 'l2']) db.prepare("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, score, created_at) VALUES (?, 'j9', 'P', 'C', 's', 'https://e.example/x', 1, 100)").run(id)
   db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body) VALUES ('m1', 'u', 'l7', 'a@e.example', 'Hi', 'A body that is long enough to pass.')").run()
   db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, source_url, source_date, retrieved_at) VALUES ('e1', 'l7', 'u', 'sitecrawl', 'person', 'Dana', 'https://e.example/t', '2026-10-01', 1)").run()
+  for (const id of ['a9', 'a1']) db.prepare("INSERT INTO connector_audit (id, tenant_id, connector, lookup, status) VALUES (?, 'u', 'enrich:apollo', 'x', 'ok')").run(id)
   return db
 }
 

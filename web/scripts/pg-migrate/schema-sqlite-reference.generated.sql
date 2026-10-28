@@ -97,7 +97,7 @@ CREATE TABLE connector_audit (
       status     TEXT NOT NULL,
       results    INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
-    );
+    , insert_seq INTEGER);
 
 CREATE TABLE consent_ledger (
       id           TEXT PRIMARY KEY,
@@ -724,6 +724,8 @@ CREATE INDEX company_events_company ON company_events (tenant_id, company_key);
 
 CREATE INDEX company_events_tenant ON company_events (tenant_id, last_seen_at);
 
+CREATE INDEX connector_audit_insert_seq_idx ON connector_audit (insert_seq);
+
 CREATE INDEX connector_audit_tenant ON connector_audit (tenant_id, created_at);
 
 CREATE INDEX consent_ledger_lookup ON consent_ledger (tenant_id, contact, channel, scope);
@@ -798,6 +800,8 @@ CREATE INDEX work_queue_claimable
 CREATE UNIQUE INDEX work_queue_dedupe
         ON work_queue(tenant_id, kind, dedupe_key)
         WHERE dedupe_key IS NOT NULL AND status IN ('pending','claimed');
+
+CREATE TRIGGER connector_audit_insert_seq AFTER INSERT ON connector_audit WHEN NEW.insert_seq IS NULL BEGIN UPDATE connector_audit SET insert_seq = (SELECT coalesce(max(insert_seq), 0) + 1 FROM connector_audit) WHERE rowid = NEW.rowid; END;
 
 CREATE TRIGGER evidence_purge_audit_no_delete BEFORE DELETE ON evidence_purge_audit BEGIN SELECT RAISE(ABORT, 'purge audit is append-only'); END;
 
