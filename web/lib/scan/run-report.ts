@@ -8,7 +8,10 @@ import { canonicalUrl as trackingFreeUrl } from '../search/tinyfish.ts'
 
 const ownFetchOf = (m: Map<string, string> | undefined, url: string): string | null => m?.get(trackingFreeUrl(url) ?? url) ?? m?.get(canonicalUrl(url) ?? url) ?? m?.get(url) ?? null
 
-export interface CandidateAudit { key: string; company: string; url: string; outcome: 'passed' | 'review' | 'dropped'; reason: string | null; evidence_origin?: string | null }
+// judge: what the semantic check was given and answered for this candidate (diagnostic): the exact extracted claim, the passage from the page that was
+// shown to the judge (cut to 600 characters) and its one-word verdict. The judge gives no reason text, so none is shown.
+export interface JudgeDetail { verdict: 'supports' | 'contradicts' | 'unclear' | 'unavailable'; claim: string; passage: string }
+export interface CandidateAudit { key: string; company: string; url: string; outcome: 'passed' | 'review' | 'dropped'; reason: string | null; evidence_origin?: string | null; judge?: JudgeDetail }
 export interface UrlRecord { url: string; hit_date: string | null; walled: boolean; selected: boolean; tinyfish_text_chars: number | null; own_fetch: string | null }
 export interface ReportParts {
   queries?: string[]; query_source?: string | null
@@ -47,7 +50,7 @@ export function buildRunReport(p: ReportParts, verified: FinalRow[] | null, revi
   const fates = audit.map(a => {
     // A terminal 'dropped' decision recorded for THIS occurrence stands; only passed / review entries are matched against the final rows.
     const fate = a.outcome === 'dropped' ? `dropped:${a.reason ?? 'unknown'}` : vKeys.has(a.key) ? 'verified' : rMap.has(a.key) ? `review:${rMap.get(a.key)}` : verified === null ? `not_finished:${a.reason ?? a.outcome}` : `dropped:${a.reason ?? 'after_verification'}`
-    return { company: cut(a.company, 120), url: cut(a.url, 300), fate, own_fetch: ownFetchOf(p.ownFetch, a.url), evidence_origin: a.evidence_origin ?? null }
+    return { company: cut(a.company, 120), url: cut(a.url, 300), fate, own_fetch: ownFetchOf(p.ownFetch, a.url), evidence_origin: a.evidence_origin ?? null, ...(a.judge ? { judge: { verdict: a.judge.verdict, claim: cut(a.judge.claim, 300), passage: cut(a.judge.passage, 600) } } : {}) }
   })
   const count = (pre: string) => fates.filter(f => f.fate === pre || f.fate.startsWith(`${pre}:`)).length
   const reasons = (pre: string) => { const o: Record<string, number> = {}; for (const f of fates) if (f.fate.startsWith(`${pre}:`)) { const r = f.fate.slice(pre.length + 1); o[r] = (o[r] ?? 0) + 1 } return o }

@@ -331,6 +331,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
   const verdicts = await Promise.all(passed.map(({ c, v }) => (judge ? judge(c, v.passage) : Promise.resolve<Judgement | null>(null))))
   passed.forEach(({ c, v, copy }, i) => {
     const j = verdicts[i]
+    if (j && audit) { const e = noted.get(c); if (e) e.judge = { verdict: j, claim: c.signal, passage: v.passage } } // exposed in the run report: what the judge saw and answered
     if (j === 'contradicts') { drop('contradicted'); note(c, 'dropped', 'contradicted'); return }
     // Cap by source class: a content farm that copied the quote never outranks the company's own page.
     const confidence = Math.max(0, Math.min(sourceCap(c.source_url, c.company, knownDomain), Math.min(100, v.confidence + (j ? JUDGE_DELTA[j] : 0))))
