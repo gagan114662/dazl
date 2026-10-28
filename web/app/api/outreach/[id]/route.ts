@@ -45,7 +45,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     else if (action === 'mark_sent') resolveUncertain(db, g.user.id, id, 'sent')
     else if (action === 'retry') resolveUncertain(db, g.user.id, id, 'retry')
     else if (action === 'send') {
-      if (!rateLimit(`send:${g.user.id}`, 60, 60 * 60 * 1000).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+      if (!(await rateLimit(`send:${g.user.id}`, 60, 60 * 60 * 1000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
       return NextResponse.json({ result: await sendMessage(db, g.user.id, id) })
     } else return NextResponse.json({ error: 'Bad request' }, { status: 400 })
     return NextResponse.json({ ok: true })

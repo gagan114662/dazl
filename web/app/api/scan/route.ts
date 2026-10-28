@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
 
-  const rl = rateLimit(`scan:${user.id}`, 10, 60 * 60 * 1000)
+  const rl = (await rateLimit(`scan:${user.id}`, 10, 60 * 60 * 1000))
   if (!rl.ok) return NextResponse.json({ error: 'Too many scans. Try again later.' }, { status: 429, headers: { 'Retry-After': String(rl.retryAfterS) } })
 
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
