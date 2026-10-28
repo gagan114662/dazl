@@ -20,14 +20,25 @@ test('proxy: a fresh request id per request, forwarded to the route and returned
   const l = JSON.parse(lines[0])
   assert.deepEqual(Object.keys(l).sort(), ['level', 'method', 'path', 'request_id', 'ts', 'type'])
   assert.deepEqual([l.level, l.type, l.request_id, l.method, l.path], ['info', 'request', id, 'GET', '/api/leads'])
-  for (const leak of ['jane', 'secret', '555', 'evil', 'tok']) assert.ok(!lines[0].includes(leak), leak)
+  const noId = JSON.stringify({ ...l, request_id: undefined }) // the request id is a random UUID and may contain any digits
+  for (const leak of ['jane', 'secret', '555', 'evil', 'tok']) assert.ok(!noId.includes(leak), leak)
 
   const res2 = proxy(req('/api/leads/0123456789abcdef0123456789abcdef/confirm', {}, 'POST'))
   assert.notEqual(res2.headers.get('x-request-id'), id)
-  assert.equal(JSON.parse(lines[1]).path, '/api/leads/[id]/confirm') // long ids and tokens never reach the log
+  assert.equal(JSON.parse(lines[1]).path, '/api/leads/[lead]/confirm') // the route template, never the id
+
+  // review repro through the real proxy: encoded email/phone/token, malformed and double-encoded values, unknown routes
+  const before = lines.length
+  for (const p of ['/api/leads/jane%40example.com/confirm', '/api/unknown/user.name%40company.example', '/api/replies/%2B1%20415%20555%200134',
+    '/api/campaigns/sk_live_0123456789abcdefghij', '/api/replies/%E0%A4%A', '/api/replies/jane%2540example.com']) proxy(req(p))
+  const logged = lines.slice(before)
+  assert.equal(logged.length, 6)
+  assert.deepEqual(logged.map(l => JSON.parse(l).path), ['/api/leads/[lead]/confirm', '/api/[unknown]', '/api/replies/[id]', '/api/campaigns/[id]', '/api/replies/[id]', '/api/replies/[id]'])
+  const paths = logged.map(l => JSON.parse(l).path).join(' ') // the request ids are random UUIDs and may contain any digits
+  for (const leak of ['jane', 'company', '415', 'sk_live', '%']) assert.ok(!paths.includes(leak), leak)
 
   proxy(req('/api/health/live')); proxy(req('/api/ready'))
-  assert.equal(lines.length, 2) // probes: no log line
+  assert.equal(lines.length, 8) // probes: no log line
 })
 
 test('proxy: /app still redirects signed-out visitors and lets a session through, with a request id either way', () => {

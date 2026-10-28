@@ -59,7 +59,7 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
     - Every `/app` and `/api` request gets a fresh random UUIDv4. An incoming `x-request-id` is replaced, never trusted.
     - The id is forwarded to the route as the `x-request-id` request header, returned as a response header, and recorded on error records as `request_id`, so a log line and an error can be joined.
     - Each request writes one JSON line to stdout: `{level, type: 'request', ts, request_id, method, path}`.
-      - The path has no query. Ids in it (16+ opaque characters, or a run of 6+ digits) become `[id]`, and emails and tokens are scrubbed.
+      - `path` is the route template the request matches (`lib/ops/routes.ts`, e.g. `/api/leads/[lead]/confirm`). No caller-supplied path text is ever logged, encoded or decoded. A path matching no route logs as `/api/[unknown]` or `/app/[unknown]`. A test fails when the list and the route files under `app/` differ.
       - It never contains headers, cookies, bodies or IPs.
       - Health probes write no line.
     - The proxy runs before the route, so the line has no status or duration. Failures appear as error records carrying the same `request_id`.
