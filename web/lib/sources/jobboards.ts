@@ -1,6 +1,8 @@
 import type { Evidence, SourceAdapter, SafeGet } from './types.ts'
 import { decodeText } from './rss.ts'
 import { norm } from '../scan/evidence.ts'
+import { parseWindowDays } from '../scan/window.ts'
+import { rolePhrases } from '../search/direct-queries.ts'
 
 // Public job-board JSON (Greenhouse, Ashby, Lever). Evidence only: a posting says a company is hiring a role in a state.
 // It is not proof of a need; the normal verifier still checks every lead against the cited page.
@@ -17,6 +19,42 @@ const GENERIC = new Set(['hiring', 'roles', 'role', 'jobs', 'job', 'open', 'open
 export function stateIn(query: string): string | null {
   const q = query.toLowerCase()
   for (const [, name] of Object.entries(STATES)) if (new RegExp(`\\b${name.toLowerCase()}\\b`).test(q)) return name
+  return null
+}
+// The place a request names, most specific first: a CITY (London, New York City), then a US state, then a bare COUNTRY (UK).
+// Specific wins because "London UK" is a London request (not all of the UK) and "New York City" is not the whole state of New York.
+// Postings are matched on their own location text; "Remote" or an empty location never matches (a place must be named). A request
+// naming no place gets no boards (never every place). A city never widens to its country/state: Manchester is not London, Albany is
+// not NYC, "Remote - United Kingdom" is not London. A country request accepts any UK location, which is what it asked for.
+// A location counts for LONDON only when the text starts with London (optionally Greater/Central/North/South/West London, or "East London" only
+// with a UK marker) and every other component is a UK marker or a work-mode word: "East London, South Africa", "London, Ontario",
+// "London, Kentucky", "Londonderry" are all out. NYC the same way: it must START with New York / NYC / a borough and carry nothing but a
+// New York/US marker after it ("New York State, USA", "Albany, New York", "Buffalo, NY" are out).
+const WORK = '(?:hybrid|on-?site|onsite|hq|head\\s*office|office)' // "remote" is deliberately absent: a remote posting is not located in the city
+const SEP = '\\s*[,;\\-\\u2013|/]\\s*'
+const UKM = '(?:london|uk|u\\.k\\.|united kingdom|england|gb|great britain|greater london)'
+// A parenthetical is place text too: it must be made only of markers that agree with the city ("London (UK)", "New York (NY, USA)"),
+// never "London (Ontario, Canada)" or "New York (State, USA)".
+const UK_ITEM = `(?:${UKM}|${WORK})`
+const NY_ITEM = `(?:(?:ny|new york|usa|us|united states|${WORK})(?:\\s+\\d{5}(?:-\\d{4})?)?|\\d{5})`
+const parens = (item: string) => `(?:\\s*\\(\\s*${item}(?:${SEP}${item})*\\s*\\))?`
+const LONDON_OK = new RegExp(`^\\s*(?:${WORK}${SEP})?(?:(?:greater|central|north|south|west)\\s+london|london|east\\s+london(?=${SEP}${UKM}\\b))(?:\\s+(?:area|metro(?:politan)?\\s+area))?${parens(UK_ITEM)}(?:${SEP}${UK_ITEM})*${parens(UK_ITEM)}\\s*$`, 'i')
+const NYC_OK = new RegExp(`^\\s*(?:${WORK}${SEP})?(?:new york(?:\\s+city)?|nyc|manhattan|brooklyn|queens|the bronx|bronx|staten island)${parens(NY_ITEM)}(?:${SEP}${NY_ITEM})*${parens(NY_ITEM)}\\s*$`, 'i')
+const CITY_PLACES: { ask: RegExp; name: string; ok: (l: string) => boolean }[] = [
+  { ask: /\blondon\b/i, name: 'London', ok: l => LONDON_OK.test(l) },
+  // "New York" alone is the state (stateIn). "New York, NY" / "New York, New York" / "New York City" / "NYC" / a borough name the city.
+  { ask: /\b(?:new york city|nyc|manhattan|brooklyn|queens|bronx|staten island|new york,\s*(?:ny|new york))\b/i, name: 'New York City', ok: l => NYC_OK.test(l) },
+]
+const COUNTRY_PLACES: { ask: RegExp; name: string; ok: (l: string) => boolean }[] = [
+  { ask: /\b(?:united kingdom|great britain|england|uk)\b/i, name: 'United Kingdom', ok: l => /\b(?:united kingdom|england|scotland|wales|great britain|u\.k\.|uk|gb)\b/i.test(l) },
+]
+export interface Place { name: string; ok: (...locs: (string | undefined)[]) => boolean }
+const placeOf = (c: { name: string; ok: (l: string) => boolean }): Place => ({ name: c.name, ok: (...l) => l.some(x => !!x && c.ok(x)) })
+export function placeIn(query: string): Place | null {
+  for (const c of CITY_PLACES) if (c.ask.test(query)) return placeOf(c)
+  const st = stateIn(query)
+  if (st) return { name: st, ok: (...l) => locationInState(st, ...l) }
+  for (const c of COUNTRY_PLACES) if (c.ask.test(query)) return placeOf(c)
   return null
 }
 export function locationInState(state: string, ...locs: (string | undefined)[]): boolean {
@@ -88,7 +126,7 @@ function currentThread(hits: unknown[]): string | null {
 }
 // Board links from this month's Hacker News "Who is hiring" thread (public Algolia API, no key: one story lookup, two comment pages = 3 requests).
 // Only top-level comments that name the state contribute boards. A link is where to look, never evidence: state, role and date are checked on the posting itself.
-export async function hnBoards(http: SafeGet, state: string, note?: Note): Promise<string[]> {
+export async function hnBoards(http: SafeGet, state: string | ((text: string) => boolean), note?: Note): Promise<string[]> {
   const st = await json(http, 'https://hn.algolia.com/api/v1/search_by_date?tags=story,author_whoishiring&hitsPerPage=3', note)
   const id = currentThread(Array.isArray(st?.hits) ? st.hits : [])
   if (!id) return []
@@ -98,7 +136,7 @@ export async function hnBoards(http: SafeGet, state: string, note?: Note): Promi
     for (const h of Array.isArray(cm?.hits) ? cm.hits : []) {
       if (typeof h?.comment_text !== 'string' || String(h.parent_id) !== id) continue
       const text = unesc(h.comment_text)
-      if (!locationInState(state, text.replace(/<[^>]*>/g, ' '))) continue
+      if (!(typeof state === 'string' ? locationInState(state, text.replace(/<[^>]*>/g, ' ')) : state(text.replace(/<[^>]*>/g, ' ')))) continue
       out.push(...(text.match(LINK) ?? []))
     }
   }
@@ -125,9 +163,17 @@ export const jobBoardsAdapter: SourceAdapter = {
       if (text === null) { note?.('page_unreachable'); return cands[0] }
       return cands.find(q => onPage(text, q)) ?? null
     }
-    const state = stateIn(query)
-    const roles = keywords.filter(k => !GENERIC.has(k) && !(state && state.toLowerCase().split(' ').includes(k)))
-    if (!state || roles.length === 0) return [] // never every state, never every role
+    const place = placeIn(query)
+    const state = place?.name ?? ''
+    // The role terms are the planner's own role phrases (their head noun: "front desk receptionist" -> "receptionist", "sales staff" -> "sales").
+    // The generic request keywords are only the fallback: they are the first six long words, which for "London UK B2B SaaS startups with
+    // 10-50 employees ... hiring sales staff" never reach "sales".
+    const heads = rolePhrases(query, [], place ? [place.name] : []).map(p => p.split(' ').pop()!).filter(w => w.length >= 3)
+    const fromKeywords = keywords.filter(k => !GENERIC.has(k) && !(place && place.name.toLowerCase().split(' ').includes(k)))
+    const roles = [...new Set([...fromKeywords, ...heads])] // the old keyword roles stay; the planner's role heads are added
+    if (!place || roles.length === 0) return [] // never every place, never every role
+    const windowDays = parseWindowDays(query) ?? WINDOW_DAYS // the user's own window when the request states one
+    const fresh = (d: string | null) => !!d && Date.now() - Date.parse(d) <= windowDays * 86_400_000 && Date.parse(d) <= Date.now() + 86_400_000
     const out: Evidence[] = []
     const roleOk = (t: string) => roles.some(k => t.toLowerCase().includes(k))
     // Boards come from the given feeds and from discovered page/hit URLs (posting links). Deduped; a lookalike host never yields a board.
@@ -139,7 +185,7 @@ export const jobBoardsAdapter: SourceAdapter = {
       seenBoards.add(`${b.kind}:${b.token}`)
       boards.push(b)
     }
-    for (const u of await hnBoards(http, state, note)) {
+    for (const u of await hnBoards(http, place.ok, note)) {
       const b = board(u)
       if (!b || seenBoards.has(`${b.kind}:${b.token}`)) continue
       seenBoards.add(`${b.kind}:${b.token}`)
@@ -153,7 +199,7 @@ export const jobBoardsAdapter: SourceAdapter = {
         for (const j of Array.isArray(d) ? d : []) {
           const url = typeof j?.hostedUrl === 'string' ? j.hostedUrl : ''
           const loc = typeof j?.categories?.location === 'string' ? j.categories.location : undefined
-          if (typeof j?.text !== 'string' || !url.startsWith('https://') || !roleOk(j.text) || !locationInState(state, loc, ...(Array.isArray(j?.categories?.allLocations) ? j.categories.allLocations.filter((x: unknown) => typeof x === 'string') : []))) continue
+          if (typeof j?.text !== 'string' || !url.startsWith('https://') || !roleOk(j.text) || !place.ok(loc, ...(Array.isArray(j?.categories?.allLocations) ? j.categories.allLocations.filter((x: unknown) => typeof x === 'string') : []))) continue
           const date = typeof j.createdAt === 'number' && Number.isFinite(j.createdAt) ? new Date(j.createdAt).toISOString().slice(0, 10) : null
           if (!fresh(date)) continue
           const quote = await quoteFor(url, j.descriptionPlain)
@@ -164,7 +210,7 @@ export const jobBoardsAdapter: SourceAdapter = {
         const d = await json(http, `https://api.ashbyhq.com/posting-api/job-board/${b.token}`, note)
         for (const j of Array.isArray(d?.jobs) ? d.jobs : []) {
           if (j?.isListed !== true || typeof j.title !== 'string' || typeof j.jobUrl !== 'string' || !j.jobUrl.startsWith('https://')) continue
-          if (!roleOk(j.title) || !locationInState(state, j.location, j.address?.postalAddress?.addressRegion)) continue
+          if (!roleOk(j.title) || !place.ok(j.location, j.address?.postalAddress?.addressRegion)) continue
           const date = day(j.publishedAt)
           if (!fresh(date)) continue
           const quote = await quoteFor(j.jobUrl, j.descriptionPlain)
@@ -176,7 +222,7 @@ export const jobBoardsAdapter: SourceAdapter = {
         let n = 0
         for (const j of Array.isArray(d?.jobs) ? d.jobs : []) {
           if (n >= MAX_DETAIL) break
-          if (!Number.isInteger(j?.id) || typeof j.title !== 'string' || !roleOk(j.title) || !locationInState(state, j.location?.name)) continue
+          if (!Number.isInteger(j?.id) || typeof j.title !== 'string' || !roleOk(j.title) || !place.ok(j.location?.name)) continue
           n++
           const det = await json(http, `https://boards-api.greenhouse.io/v1/boards/${b.token}/jobs/${j.id}`, note)
           const date = day(det?.first_published)

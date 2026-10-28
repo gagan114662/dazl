@@ -148,8 +148,10 @@ export function rolePhrases(request: string, signals: string[], where: string[])
 // places, so at most 6 direct queries; the runner leaves the rest of the search budget to the model's queries.
 // Order is HOST-major (every place on the first host, then every place on the second) so a truncated budget slice keeps
 // one direct query per place before a second host for any place (Instinct review of #215).
+// Does the request (or its profile signals) ask for a hiring signal, after cutting negated / excluded clauses? Independent of places and roles.
+export const hasHiringSignal = (request: string, signals: string[]): boolean => HIRING.test(stripNegatedHiring(`${request} ${signals.map(stripNegatedHiring).join(' ')}`))
 export function directQueries(request: string, signals: string[], where: string[]): string[] {
-  if (!HIRING.test(stripNegatedHiring(`${request} ${signals.map(stripNegatedHiring).join(' ')}`))) return []
+  if (!hasHiringSignal(request, signals)) return []
   const places = [...new Set(where.map(w => w.replace(/[\u0000-\u001f"()]/g, ' ').replace(/\s+/g, ' ').trim()).filter(w => w.length >= 2 && w.length <= 60))].slice(0, 3)
   const roles = rolePhrases(request, signals, where).map(r => `"${r}"`)
   if (places.length === 0 || roles.length === 0) return [] // never every state, never every role
