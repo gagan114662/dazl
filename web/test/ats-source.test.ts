@@ -107,3 +107,38 @@ test('VERIFIER GAP: corroboration finds nothing -> Brightloop stays held with th
   const rows = sourceRuns(x.db, 'A', (x.db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id) as { collector: string; status: string }[]
   assert.equal(rows.find(r => r.collector === 'corroborate:news')?.status, 'empty', JSON.stringify(rows))
 })
+
+// ---- the reverse direction: a SEED-ONLY candidate (funding news, no hiring evidence of its own) verified by a public job-board posting ----
+const SEED_Q = 'Brightloop, a London B2B SaaS startup, raised a 3m GBP seed round this month'
+const seedCand: Cand = { company: 'Brightloop', signal: 'raised a seed round', source_url: NEWS, excerpt: SEED_Q, event_date: daysAgo(12) }
+function seedOnly(board: { ghJobs?: unknown; ghDetail?: unknown } | null, over: Partial<Fixture> = {}): Fixture {
+  const sourceHttp = http(board ? { 'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs': { status: 200, body: board.ghJobs }, 'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs/1': { status: 200, body: board.ghDetail } } : {})
+  return { request: REQUEST, modelIcp: ICP, modelQueries: ['london saas startup seed round'], hits: [{ url: NEWS, title: 'Brightloop raises seed round', snippet: SEED_Q, date: daysAgo(12) }], tfPages: {},
+    own: { [NEWS]: { title: 'Brightloop raises seed round', text: `Published ${daysAgo(12)}. ${SEED_Q}.${filler}` }, [JOB]: { title: 'Sales Account Executive at Brightloop', text: `Posted ${daysAgo(9)}. ${JOBQ}.${filler}` } },
+    extraction: [seedCand, jobCand], deps: { sourceHttp }, ...over }
+}
+const lead1 = (x: Awaited<ReturnType<typeof runFixture>>) => x.db.prepare("SELECT review_reason, confidence, why FROM leads WHERE company = 'Brightloop'").get() as { review_reason: string | null; confidence: number | null; why: string | null }
+
+test('SEED-ONLY + BOARD: a funding-news candidate with no hiring evidence of its own is verified by the dated London sales posting on its (name-guessed) public Greenhouse board', async () => {
+  const x = await runFixture(seedOnly({ ghJobs: GH('brightloop'), ghDetail: GHD('brightloop') }))
+  const l = lead1(x); assert.equal(l.review_reason, null, JSON.stringify(l)); assert.notEqual(l.confidence, null); assert.match(l.why ?? '', /Hiring sales: named in a verified source/)
+  const rows = sourceRuns(x.db, 'A', (x.db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id) as { collector: string; status: string }[]
+  assert.equal(rows.find(r => r.collector === 'ats:greenhouse')?.status, 'ok', JSON.stringify(rows))
+})
+test('SEED-ONLY + NO BOARD: nothing on any public board -> held with the specific reason no_sales_hiring_evidence (not verified by guesswork)', async () => {
+  const l = lead1(await runFixture(seedOnly(null)))
+  assert.equal(l.review_reason, 'no_sales_hiring_evidence', JSON.stringify(l)); assert.equal(l.confidence, null)
+})
+test('SEED-ONLY + SOMEONE ELSE\'S BOARD: a board at the same slug whose posting does not name Brightloop is another company - it verifies nothing', async () => {
+  const other = { ...GHD('brightloop'), content: '&lt;p&gt;Initech is hiring an Account Executive in London to sell to UK fintechs. Join the sales team.&lt;/p&gt;' }
+  const x = await runFixture(seedOnly({ ghJobs: GH('brightloop'), ghDetail: other }))
+  assert.equal(lead1(x).review_reason, 'no_sales_hiring_evidence')
+})
+test('SEED-ONLY + WRONG CITY / STALE / NON-SALES POSTINGS: the place, window and role gates still apply to a board posting used as verifying evidence', async () => {
+  const cases: [string, unknown, unknown][] = [
+    ['wrong city', { jobs: [{ id: 1, title: 'Sales Account Executive', location: { name: 'Austin, TX' } }] }, { ...GHD('brightloop'), location: { name: 'Austin, TX' } }],
+    ['stale', GH('brightloop'), { ...GHD('brightloop'), first_published: new Date(ms(300)).toISOString() }],
+    ['non-sales role', { jobs: [{ id: 1, title: 'Backend Engineer', location: { name: 'London, UK' } }] }, { ...GHD('brightloop'), title: 'Backend Engineer' }],
+  ]
+  for (const [name, ghJobs, ghDetail] of cases) assert.equal(lead1(await runFixture(seedOnly({ ghJobs, ghDetail }))).review_reason, 'no_sales_hiring_evidence', name)
+})
