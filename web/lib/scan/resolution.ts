@@ -19,7 +19,7 @@ export const RESOLUTION_CONNECTOR = 'scan:resolution'
 export interface CandidateResolution {
   lead_id: string; company: string
   date: 'found' | 'stale' | 'missing'; identity: 'confirmed' | 'unconfirmed' | 'conflict'; contact: 'attached' | 'missing' | 'refused'
-  resolved: boolean; reasons: string[]; tried: string[]
+  resolved: boolean; reasons: string[]; tried: string[]; fallbacks: string[]   // fallbacks: sources used instead of a blocked page (e.g. other press)
   late_date?: { date: string; url: string }
 }
 export interface ResolutionSummary { candidates: number; resolved: number; unresolved: number; by_reason: Record<string, number>; leads: CandidateResolution[] }
@@ -53,7 +53,8 @@ export function resolveFacts(db: Database.Database, job: JobLike, tried: Map<str
     const contact: CandidateResolution['contact'] = person && route ? 'attached' : refused && !person && !route ? 'refused' : 'missing'
     if (contact === 'refused') reasons.push(`every contact found was refused (${[...new Set(rows.filter(r => r.kind === 'contact_rejected').map(r => r.label))].join(', ')})`)
     if (contact === 'missing') reasons.push(person ? 'a person is named but no route is published' : route ? 'a route is published but no named decision-maker' : 'no named decision-maker with a published route')
-    return { lead_id: l.id, company: l.company, date, identity, contact, resolved: reasons.length === 0, reasons, tried: t }
+    const fallbacks = rows.filter(r => r.connector === 'scan:fallback').map(r => r.value)
+    return { lead_id: l.id, company: l.company, date, identity, contact, resolved: reasons.length === 0, reasons, tried: t, fallbacks }
   })
 }
 
