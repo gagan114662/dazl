@@ -641,7 +641,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   const text = await ask(buildSourcePrompt(job.query!, icp, items), 3000)
   const parsed = parseLeads(text, items.map(i => i.url)) ?? null
   if (diag) diag.info.extracted_candidates = parsed ? parsed.length : null // null = the model reply was unusable, not zero
-  if (diag) diag.info.extraction = extractionNote(items, items.filter(i => f.ok && f.pages.some(pg => (canonicalUrl(pg.url) ?? pg.url) === (canonicalUrl(i.url) ?? i.url))).length, parsed)
+  if (diag) diag.info.extraction = extractionNote({ results: new Set(hits.map(h => h.url)).size, requested: urls.length, fetchedUrls: f.ok ? f.pages.map(p => p.url) : [], fetchError: !f.ok, items, parsed })
   return parsed
 }
 

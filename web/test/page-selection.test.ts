@@ -6,6 +6,7 @@ import { runFixture, daysAgo, type Fixture, type Hit } from './helpers/acceptanc
 process.env.TINYFISH_PER_MINUTE = '1000' // the stub answers instantly; the per-minute pacing is not under test
 process.env.TINYFISH_FETCHES_PER_SCAN = '6' // the search stub returns at most 10 results per query, so the fetch budget is scaled down to keep the shortage real
 import { isJobPage, needsEventBeyondHiring } from '../lib/search/page-class.ts'
+import { extractionNote, emptyExtractionReason, type ExtractionNote } from '../lib/scan/extraction-note.ts'
 
 const LONDON = 'Find London UK B2B SaaS startups with 10-50 employees that announced seed funding within the past 90 days and are hiring sales staff. Exclude agencies and recruiters. Include founder contacts and dated evidence.'
 const ICP = { summary: 'London seed-funded B2B SaaS hiring sales', who: ['Founder'], industries: ['SaaS'], sizes: ['10-50'], where: ['London, UK'], signals: ['announced seed funding', 'hiring sales staff'], exclude: ['agencies', 'recruiters'], country: 'GB', language: 'en', window_days: 90 }
@@ -83,25 +84,41 @@ test('London seed + sales-hiring target is produced and verified even when large
   assert.equal(r.leads.filter(l => /BigCo/.test(l.company)).length, 0, 'no large-company job posting becomes a lead')
 })
 
-test('when extraction is empty the run report keeps counts and the status reason says what was read (no URLs or page text)', async () => {
+test('when extraction returns nothing the run report keeps factual counts and the reason states only what is known (no claim that no company matches)', async () => {
   const f = londonFixture([])
   f.deps = { providers: stubProviders([]) }
   f.hits = f.hits.filter(h => h.url !== NEWS && !h.url.includes('other-news') && !h.url.includes('ldn-ai'))   // only job pages left: the failed live scan's shape
   f.tfPages = Object.fromEntries(Object.entries(f.tfPages).filter(([u]) => f.hits.some(h => h.url === u)))
   const r = await runFixture(f)
   assert.equal(r.leads.length, 0)
-  const ex = (r.report as { extraction?: { offered: number; job_pages: number; reason: string | null; reply: string } }).extraction
-  assert.ok(ex, JSON.stringify(r.report?.extracted_candidates)); assert.equal(ex!.reason, 'only_job_pages'); assert.equal(ex!.reply, 'usable'); assert.equal(ex!.offered, ex!.job_pages)
-  const { emptyExtractionReason } = await import('../lib/scan/extraction-note.ts')
-  const text = emptyExtractionReason(ex as never)!
-  assert.match(text, /every one was a job posting/); assert.doesNotMatch(text, /https?:/)
+  const ex = (r.report as { extraction?: ExtractionNote }).extraction
+  assert.ok(ex, JSON.stringify(r.report?.extracted_candidates))
+  assert.deepEqual([ex!.results, ex!.requested, ex!.fetched, ex!.fetch_failed, ex!.fetch_error, ex!.offered, ex!.snippet_only, ex!.job_pages_fetched, ex!.reply, ex!.returned, ex!.reason], [7, 6, 6, 0, false, 7, 1, 6, 'usable', 0, 'returned_zero'])
+  const text = emptyExtractionReason(ex)!
+  assert.match(text, /The search returned 7 results; dazl asked to read 6 pages and read 6\./); assert.match(text, /given 7 items \(6 page texts, 1 search snippet\) and returned 0 candidates\./); assert.match(text, /Every page read was a job posting\./)
+  assert.match(text, /does not show that no matching companies exist/); assert.doesNotMatch(text, /none described|contained no|no matching company\b(?! exist)/); assert.doesNotMatch(text, /https?:/)
 })
 
-test('extraction reasons: unusable reply, snippets only, mixed pages; nothing for a scan that did extract', async () => {
-  const { extractionNote, emptyExtractionReason } = await import('../lib/scan/extraction-note.ts')
-  const items = [{ url: 'https://boards.greenhouse.io/a/jobs/1' }, { url: 'https://news.example/x' }]
-  assert.equal(extractionNote(items, 2, null).reason, 'reply_unusable'); assert.match(emptyExtractionReason(extractionNote(items, 2, null))!, /could not be read/)
-  assert.equal(extractionNote(items, 0, []).reason, 'no_pages_read')
-  assert.equal(extractionNote(items, 2, []).reason, 'no_match_in_pages'); assert.match(emptyExtractionReason(extractionNote(items, 2, []))!, /1 of the 2 results were job postings/)
-  assert.equal(extractionNote(items, 2, [{}]).reason, null); assert.equal(emptyExtractionReason(extractionNote(items, 2, [{}])), null); assert.equal(emptyExtractionReason(null), null)
+test('partial fetch: pages that could not be read are counted as failed, not as read, and the wording says so', async () => {
+  const f = londonFixture([])
+  f.deps = { providers: stubProviders([]) }
+  f.hits = f.hits.filter(h => h.url !== NEWS && !h.url.includes('other-news') && !h.url.includes('ldn-ai'))
+  const keep = f.hits.slice(0, 3).map(h => h.url)                                   // TinyFish returns text for only 3 of the pages dazl asked for
+  f.tfPages = Object.fromEntries(Object.entries(f.tfPages).filter(([u]) => keep.includes(u)))
+  const r = await runFixture(f)
+  const ex = (r.report as { extraction?: ExtractionNote }).extraction!
+  assert.deepEqual([ex.requested, ex.fetched, ex.fetch_failed, ex.fetch_error, ex.job_pages_fetched, ex.snippet_only], [6, 3, 3, false, 3, ex.offered - 3])
+  const text = emptyExtractionReason(ex)!
+  assert.match(text, /asked to read 6 pages and read 3 \(3 pages could not be read\)/); assert.match(text, /3 page texts/); assert.doesNotMatch(text, /and read 6/)
+})
+
+test('fetch call failure and unusable reply are stated as such; nothing is claimed when extraction returned candidates', () => {
+  const base = { results: 10, requested: 6, fetchedUrls: [] as string[], fetchError: true, items: [{ url: 'https://news.example/a' }], parsed: [] as unknown[] | null }
+  const failed = emptyExtractionReason(extractionNote(base))!
+  assert.match(failed, /page-reading call failed, so none were read/); assert.match(failed, /given 1 item \(0 page texts, 1 search snippet\) and returned 0 candidates/)
+  const unusable = extractionNote({ ...base, fetchError: false, fetchedUrls: ['https://news.example/a'], parsed: null })
+  assert.equal(unusable.reason, 'reply_unusable'); assert.equal(unusable.returned, null); assert.match(emptyExtractionReason(unusable)!, /answer could not be read, so nothing was extracted\. This says nothing about whether matching companies exist/)
+  assert.equal(extractionNote({ ...base, parsed: [{}] }).reason, null); assert.equal(emptyExtractionReason(extractionNote({ ...base, parsed: [{}] })), null); assert.equal(emptyExtractionReason(null), null)
+  const mixed = emptyExtractionReason(extractionNote({ ...base, fetchError: false, fetchedUrls: ['https://boards.greenhouse.io/a/jobs/1', 'https://news.example/b'], items: [{ url: 'https://boards.greenhouse.io/a/jobs/1' }, { url: 'https://news.example/b' }] }))!
+  assert.match(mixed, /1 of the 2 pages read were job postings/)
 })

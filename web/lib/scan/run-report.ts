@@ -16,7 +16,7 @@ export interface ReportParts {
   urls?: UrlRecord[]
   evidence?: { items: number | null; with_page_text: number | null; snippet_only: number | null }
   extracted_candidates?: number | null
-  extraction?: { offered: number; with_page_text: number; job_pages: number; reply: string; candidates: number | null; reason: string | null } | null
+  extraction?: import('./extraction-note.ts').ExtractionNote | null
   audit?: CandidateAudit[]
   ownFetch?: Map<string, string>
   dropCounts?: Record<string, number>
