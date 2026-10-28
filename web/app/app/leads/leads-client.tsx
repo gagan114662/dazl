@@ -795,7 +795,7 @@ export default function LeadsClient() {
         const n = cardCounts(visibleLeads, draftedLeads, approved)
         // "Approved" on a card only makes a draft: the email itself is still approved in Outreach before anything sends.
         return <p className="text-xs text-[#555] mb-2">
-          <span data-testid="card-counts-scope">Cards below (Needs your review is counted separately): </span>
+          <span data-testid="card-counts-scope">Cards shown below (not counting Needs your review{!showSeen && leads.some(l => l.seen_before && !l.review_reason) ? ' or hidden already-seen leads' : ''}): </span>
           <span data-testid="card-counts"><span className="text-[#111] font-medium">Approved {n.approved ?? '?'}</span> · <span className="text-[#111] font-medium">Rejected {n.rejected}</span> · <span className="text-[#111] font-medium">To review {n.toReview ?? '?'}</span></span>
           {n.approved === null ? <span data-testid="card-counts-note"> (drafts could not be loaded, so Approved is unknown)</span> : <span data-testid="card-counts-note"> - approving a card makes a draft; each email is still approved in Outreach before it sends.</span>}
         </p>

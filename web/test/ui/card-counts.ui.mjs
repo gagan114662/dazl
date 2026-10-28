@@ -40,6 +40,8 @@ const LEADS = [
   lead(NOCONTACT, 'Lakeside Smiles', { event_date: null }),
   lead(PUBONLY, 'Maple Dental', { event_date: null, published_at: '2026-10-03', contact: 'hi@maple.example' }),
   lead(DRAFTED, 'Grove Dental', { contact: 'hello@grove.example' }),
+  // Seen in an earlier scan and hidden by default: not a card, so not counted; the label says so.
+  lead('f'.repeat(24), 'Seen Dental', { contact: 'hi@seen.example', seen_before: 1 }),
 ]
 const msg = lead_id => ({ id: lead_id.slice(0, 6) + 'm', lead_id, to_email: 'x@example.test', subject: 'Hi', body: 'Hi', status: 'draft', error: null, created_at: 1, sent_at: null, test: 0, evidence_state: 'machine', currentness_held: false, provenance: null, send_footer: null })
 const state = { msgs: [msg(DRAFTED)], outreachFail: false }
@@ -87,7 +89,7 @@ try {
   await page.getByTestId('card-counts').waitFor()
   await page.waitForFunction(() => /Approved 1/.test(document.querySelector('[data-testid=card-counts]')?.textContent ?? ''))
   assert.equal(await counts(), 'Approved 1 · Rejected 0 · To review 3', "Instinct #285: Grove's draft is older than the newest 200 emails and still counts")
-  assert.equal(await page.getByTestId('card-counts-scope').textContent(), 'Cards below (Needs your review is counted separately): ')
+  assert.equal(await page.getByTestId('card-counts-scope').textContent(), 'Cards shown below (not counting Needs your review or hidden already-seen leads): ')
   assert.match(await page.getByTestId('card-counts-note').textContent(), /approving a card makes a draft; each email is still approved in Outreach before it sends/, 'a card approval is never presented as an approved email')
   await shot('counts-initial')
   await card('Bright Dental').getByRole('button', { name: 'Approve' }).click()
