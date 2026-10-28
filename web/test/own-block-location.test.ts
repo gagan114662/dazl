@@ -87,3 +87,18 @@ test('#277 review: a roundup title naming both companies, a lowercase company na
   // control: a company's OWN-address continuation still binds, and a single-subject title still covers the whole page
   assert.equal(ownPlaceAgreement({ title: 'Brightloop raises seed', text: 'Brightloop raised a seed round. The founders met in Leeds, England. Visit us at 12 Hoxton Square, London N1 6NU.' }, LONDON, 'Brightloop'), 'agrees')
 })
+
+test('#277 review: a lowercase next-sentence company starts its own block ("acme is headquartered in Manchester, UK")', async () => {
+  const text = `Posted ${day(5)}. Brightloop raised a seed round in London, UK. acme is headquartered in Manchester, UK. ${'Founders shared what is next. '.repeat(8)}`
+  const page = { title: 'Seed round-up', text, retrievedAt: 1 }
+  assert.equal(ownPlaceAgreement(page, LONDON, 'Brightloop'), 'agrees', 'Manchester belongs to acme')
+  assert.equal(ownPlaceAgreement(page, LONDON, 'Acme'), 'mismatch', 'acme is judged on its own sentence and not attached to London')
+  const c = { name: '', company: 'Brightloop', contact: null, signal: 'seed round', source_url: 'https://news.example/roundup', score: 70, excerpt: 'Brightloop raised a seed round in London, UK', event_date: day(5) }
+  const ok = await verifyLeads([c], async () => page, new Date(), undefined, null, undefined, undefined, LONDON)
+  assert.equal(ok.leads.length, 1, JSON.stringify(ok.review))
+  const a = await verifyLeads([{ ...c, company: 'Acme', excerpt: 'acme is headquartered in Manchester, UK' }], async () => page, new Date(), undefined, null, undefined, undefined, LONDON)
+  assert.equal(a.leads.length, 0); assert.equal(a.review[0]?.review_reason, 'location_mismatch')
+  // abbreviations and continuing lowercase pieces do not split a company's own block
+  assert.equal(ownPlaceAgreement({ title: 'Round-up', text: 'Brightloop Ltd. is based in London, UK. Our office is at 12 Hoxton Square, London N1 6NU.' }, LONDON, 'Brightloop'), 'agrees')
+  assert.equal(ownPlaceAgreement({ title: 'Round-up', text: 'Brightloop raised a seed round. is based in London, UK and expanding.' }, LONDON, 'Brightloop'), 'agrees')
+})

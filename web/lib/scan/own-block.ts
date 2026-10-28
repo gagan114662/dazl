@@ -5,7 +5,21 @@
 import { companyKey, hasPhrase, norm } from './evidence.ts'
 import { placeAgreement, type PlaceVerdict } from './place-agreement.ts'
 
-const sentences = (text: string) => text.split(/(?<=[.!?])\s+(?=[A-Z0-9])|\n+/).map(s => s.trim()).filter(Boolean)
+// A sentence ends at . ! ? followed by a capital, a digit OR a lowercase start - a lowercase company ("acme is headquartered in Manchester") begins a new sentence too.
+// A lowercase piece that only carries on the previous one (starts with an auxiliary / connective: "is based in ...", "and ...", "which ...") is joined back, and so is
+// a piece after an abbreviation ("Brightloop Ltd. is ...", "U.K. and ...").
+const ABBREV = /(?:\b(?:inc|ltd|llc|plc|corp|co|st|ave|rd|blvd|no|vs|etc|mr|mrs|ms|dr|jr|sr|e\.g|i\.e|u\.k|u\.s|approx)|\b[a-z])\.$/i
+const LOWER_CONTINUES = /^(?:is|are|was|were|has|have|had|and|or|but|which|who|whose|that|with|in|at|on|of|to|for|from|by|as|also|now|then|still|it|its|their|they|we|our|located|based|offices?|hq|headquartered|including|while|where|when)\b/
+const sentences = (text: string): string[] => {
+  const out: string[] = []
+  for (const piece of text.split(/(?<=[.!?])\s+|\n+/).map(x => x.trim()).filter(Boolean)) {
+    const prev = out[out.length - 1]
+    const startsLower = /^[a-z]/.test(piece)
+    if (prev !== undefined && (ABBREV.test(prev) || (startsLower && LOWER_CONTINUES.test(piece)))) out[out.length - 1] = `${prev} ${piece}`
+    else out.push(piece)
+  }
+  return out
+}
 // A sentence that carries on about the company just named ("Our clinic is at ...", "Located at ...", "Visit us at ...").
 const CONTINUES = /^(?:our|we|its|located|based|address|visit|find|come|headquarters|hq|offices?|the (?:office|clinic|studio|practice|team)|they|it)\b/i
 // ... unless the sentence is about someone ELSE ("Its competitor Acme is headquartered in Manchester", "We compete with Acme"): it ends the block.
