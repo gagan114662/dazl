@@ -164,3 +164,28 @@ test('through the real runJob: the seed lead passes the normal gates; with a boa
   const job = none.db.prepare('SELECT verified, needs_review FROM scan_jobs').get() as { verified: number; needs_review: number }
   assert.deepEqual(job, { verified: 0, needs_review: 1 })
 })
+
+test('affirmative hiring only: negated or near-miss sentences are NOT sales-hiring evidence', () => {
+  const no = [
+    'Brightloop raised a $3M seed round but is not hiring any sales staff.',
+    'Brightloop raised a seed round and has no plans to hire sales reps this year.',
+    'Brightloop announced seed funding; a hiring freeze on sales roles remains in place.',
+    'Brightloop raised seed funding and paused hiring of account executives.',
+    'Brightloop raised a seed round and will not be hiring SDRs.',
+    'Brightloop raised a seed round and is hiring engineers to support its sales team.',
+    'Brightloop raised a seed round and is hiring two backend engineers and a Salesforce developer.',
+    'Brightloop raised a seed round. Its sales team is based in London.',
+    'Brightloop raised a seed round and cancelled its open sales roles.',
+    'Brightloop raised seed funding and is hiring a recruiter.',
+  ]
+  for (const t of no) assert.equal(quoteNamesSalesHiring(t, null), false, t)
+  const yes = [
+    'Brightloop raised a seed round and is hiring two account executives.',
+    'Brightloop raised a $3M seed round, and is now hiring SDRs in London.',
+    'Brightloop raised a seed round and is looking to hire its first AE.',
+    'Brightloop raised a seed round; it has two open sales roles in London.',
+    'Brightloop raised seed funding but is still hiring a Head of Sales.',
+    'Brightloop raised a seed round and is hiring across sales and customer success.',
+  ]
+  for (const t of yes) assert.equal(quoteNamesSalesHiring(t, null), true, t)
+})

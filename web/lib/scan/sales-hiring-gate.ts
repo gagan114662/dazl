@@ -31,8 +31,25 @@ export function salesHiringRequired(query: string | null | undefined, icp: strin
 // When the request asks for FUNDING, only a funding mention counts (an office opening is not a raise); otherwise any event beyond hiring does.
 export const quoteShowsEvent = (excerpt: string | null, signal: string | null, fundingAsked = false): boolean => { void signal; const t = excerpt ?? ''; return fundingAsked ? mentionsFunding(t) : showsEventBeyondHiring(t) }
 export const requestAsksFunding = (query: string | null | undefined, icp: string | null | undefined): boolean => { let sig = ''; try { const j = icp ? JSON.parse(icp) as { signals?: unknown } : null; if (Array.isArray(j?.signals)) sig = j!.signals.filter((x): x is string => typeof x === 'string').join(' . ') } catch { /* none */ } return mentionsFunding(`${sig} . ${query ?? ''}`) }
-export const quoteNamesSalesHiring = (excerpt: string | null, signal: string | null): boolean => { void signal; const t = excerpt ?? ''; // the VERIFIED quote only: the model's claim is not evidence
-  return HIRING_WORDS.test(t) && isGtmRole(t.replace(HIRING_WORDS, ' ')) }
+// Affirmative hiring proof, not keyword co-occurrence: a CLAUSE must say the company is hiring (or has open) a sales / GTM role, and must not negate it
+// ("not hiring any sales staff", "no plans to hire", "hiring freeze", "paused"). Clauses split on sentence ends and but / however / while / although / yet, so
+// "raised a seed round but is not hiring any sales staff" is judged on "is not hiring any sales staff". The sales noun must be the OBJECT of the hiring
+// verb ("hiring engineers to support sales" is not sales hiring). Anything this cannot read as plainly affirmative fails closed.
+const NEGATED = /\b(?:not|no|never|none|nor|without|isn'?t|aren'?t|wasn'?t|won'?t|doesn'?t|don'?t|didn'?t|hasn'?t|haven'?t|can'?t|cannot|zero|freeze|frozen|paused?|halt(?:ed|s)?|suspend(?:ed|s)?|cancel(?:l?ed|s)?|rescind(?:ed|s)?|scrapp(?:ed|ing)|shelv(?:ed|ing)|delay(?:ed|ing)?|postpon(?:ed|ing)|abandon(?:ed|ing)|ruled\s+out|rule\s+out|stopped|stops?|layoffs?|laid\s+off|cut(?:ting|s)?)\b/i
+const HIRE_VERB = '(?:hir(?:e|es|ed|ing)|recruit(?:s|ed|ing)?|seek(?:s|ing)?|look(?:s|ing)\\s+(?:to\\s+hire|for)|add(?:s|ed|ing)|building\\s+out)'
+const FILLER = '(?:(?:a|an|our|its|their|the|first|new|senior|junior|founding|key|two|three|four|five|six|\\d+|more|several|some|additional|dedicated|experienced|full[-\\s]?time|remote|enterprise|inbound|outbound|lead|head|for|in|across|into|within|to\\s+the|to\\s+our|to\\s+build\\s+(?:out\\s+)?(?:our|its|the))\\s+){0,6}'
+const GTM_OBJECT = '(?:head\\s+of\\s+(?:sales|growth|revenue)|account\\s+(?:executive|manager|director)s?|aes?|sdrs?|bdrs?|sales(?:\\s+(?:reps?|representatives?|people|persons?|staff|team|leaders?|managers?|directors?|engineers?|development\\s+reps?|hires?|professionals?|executives?|talent|roles?|positions?))?|business\\s+development|go[-\\s]to[-\\s]market|gtm|revenue\\s+(?:leaders?|team|roles?)|growth\\s+(?:leaders?|team|marketers?)|customer\\s+success|solutions?\\s+(?:engineer|consultant)s?|vp\\s+(?:of\\s+)?sales|demand\\s+gen\\w*)'
+const HIRING_VERB_OBJECT = new RegExp(`\\b${HIRE_VERB}\\s+${FILLER}${GTM_OBJECT}\\b`, 'i')
+const OPEN_ROLE = /\b(?:open|new|several|two|three|\d+)\s+(?:[a-z-]+\s+){0,3}(?:roles?|positions?|openings?|vacanc(?:y|ies))\b/i
+const FIRST_HIRE = /\b(?:first|new|key)\s+(?:sales|ae|sdr|bdr|gtm|account\s+executive)\s+hire\b|\bjoin(?:ing)?\s+(?:our|the)\s+(?:sales|gtm)\b/i
+const clauses = (t: string) => t.split(/[.;!?\n]+|\s(?:but|however|while|although|though|yet)\s/i).map(x => x.trim()).filter(Boolean)
+export const affirmativeSalesHiring = (text: string | null): boolean => clauses(text ?? '').some(c => {
+  if (NEGATED.test(c)) return false
+  const m = HIRING_VERB_OBJECT.exec(c)
+  if (m) return !/\bsalesforce\b|\bsales\s*tax\b/i.test(m[0])
+  return (OPEN_ROLE.test(c) || FIRST_HIRE.test(c)) && isGtmRole(c)
+})
+export const quoteNamesSalesHiring = (excerpt: string | null, signal: string | null): boolean => { void signal; return affirmativeSalesHiring(excerpt) } // the VERIFIED quote only: the model's claim is not evidence
 
 export async function applySalesHiringGate(db: Database.Database, job: JobLike, fetchImpl: typeof fetch = fetch, opts: { now?: number; hiringKeys?: Map<string, { url: string; date: string | null }>; eventKeys?: Set<string>; fundingKeys?: Set<string> } = {}): Promise<{ required: boolean; checked: number; passed: number; demoted: number }> {
   const none = { required: false, checked: 0, passed: 0, demoted: 0 }
