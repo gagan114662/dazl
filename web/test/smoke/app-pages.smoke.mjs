@@ -5,22 +5,10 @@
 // Fails (exit 1) on any page error, console error, ChunkLoadError, 4xx/5xx static asset, redirect to sign-in or anywhere
 // else (except the listed renamed-page redirects, which must land exactly on their new page) or missing <h1>.
 // Missing playwright/chromium or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes that exit 0).
-import { readdirSync, statSync } from 'node:fs'
-import path from 'node:path'
-import { loadPlaywright, newContext, root, startServer } from './harness.mjs'
+import { appRoutes, loadPlaywright, newContext, startServer } from './harness.mjs'
 const { chromium } = loadPlaywright()
 
-// Every page under app/app, so a new page is covered without editing this file. Dynamic segments are skipped.
-function pages(dir, route) {
-  const out = []
-  for (const name of readdirSync(dir)) {
-    const full = path.join(dir, name)
-    if (statSync(full).isDirectory()) { if (!name.startsWith('[') && !name.startsWith('_')) out.push(...pages(full, `${route}/${name}`)) }
-    else if (name === 'page.tsx') out.push(route)
-  }
-  return out
-}
-const routes = pages(path.join(root, 'app/app'), '/app').sort()
+const routes = appRoutes()
 // The only redirects allowed, each to exactly this destination: renamed pages whose old URL must keep working for
 // bookmarks and old links. Any other route that lands elsewhere (sign-in included) still fails.
 const REDIRECTS = { '/app/replies': '/app/social' }

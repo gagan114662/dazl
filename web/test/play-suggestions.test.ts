@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { EXAMPLE_PLAYS, playSuggestions } from '../lib/play-suggestions.ts'
+import { EXAMPLE_PLAYS, offering, playSuggestions } from '../lib/play-suggestions.ts'
 
 test('an empty brain gets the three static examples, labelled as examples', () => {
   for (const p of [null, {}, { sells: '  ', buyer: null }, { buyer: { who: [], signals: ['x'] } }]) assert.deepEqual(playSuggestions(p), { business: [], examples: EXAMPLE_PLAYS })
@@ -50,4 +50,16 @@ test('no suggestion is ever a placeholder: every role or event it names is concr
     const r = playSuggestions(p)
     for (const t of [...r.business, ...r.examples]) assert.doesNotMatch(t, /\b(a role|this helps|something|someone|your (product|tool|service))\b/i, t)
   }
+})
+
+// The live Leads page showed "Businesses that could use we sell appointment booking ...": "what you sell" is free text.
+test('a sentence in "what you sell" becomes a short noun phrase, or no template at all', () => {
+  assert.equal(offering('We sell appointment booking software.'), 'appointment booking software')
+  assert.equal(offering('We provide an online booking tool'), 'online booking tool')
+  assert.equal(offering('Online booking'), 'Online booking')
+  assert.equal(offering('We sell appointment booking and reminder software for dental and medical clinics across the US'), '', 'too long for the template')
+  const s = playSuggestions({ sells: 'We sell appointment booking software.', buyer: null })
+  assert.ok(s.business.every(x => !/could use we\b/i.test(x)), JSON.stringify(s.business))
+  assert.equal(s.business[0], 'Businesses that could use appointment booking software - opened a new location')
+  assert.deepEqual(playSuggestions({ sells: 'We sell appointment booking and reminder software for dental and medical clinics across the US', buyer: null }).business, [], 'examples fill in instead')
 })

@@ -93,7 +93,11 @@ assert.deepEqual(scanBodies, [{ query: 'Practice owners in NYC - opened a new lo
 
 // Scenario 2: every edited profile field reaches the request; a sentence the user typed survives Back/continue as typed.
 scanBodies.length = 0
+// Once the business is saved, Home is the journey (not the steps again); ?setup=site reopens the steps on purpose.
 await page.goto(base + '/app', { waitUntil: 'networkidle' })
+await page.getByTestId('journey-understanding').waitFor({ timeout: 15000 })
+assert.equal(await page.getByText("What's your website?").count(), 0)
+await page.goto(base + '/app?setup=site', { waitUntil: 'networkidle' })
 await page.getByLabel('Your website').fill('brightsmile.example'); await page.getByRole('button', { name: 'Read my site' }).click()
 await page.getByText("Here's what we think you sell").waitFor()
 await page.getByLabel('Who buys it').fill('Group dental practices opening new offices')
@@ -111,7 +115,7 @@ await findLeads()
 assert.deepEqual(scanBodies, [{ query: 'Orthodontists in Austin opening a second office', icp: { summary: 'Group dental practices opening new offices', who: ['Practice owners', 'COO'], industries: ['Dental', 'Orthodontics'], sizes: ['10-50 employees'], where: ['Austin', 'TX'], signals: ['Opened a new location'], exclude: ['Dental schools'] } }])
 
 // Scenario 3: full reload; the saved profile comes back from the real route, not from page memory.
-await page.goto(base + '/app', { waitUntil: 'networkidle' })
+await page.goto(base + '/app?setup=site', { waitUntil: 'networkidle' })
 await page.getByText("What's your website?").waitFor()
 assert.equal(await page.getByLabel('Your website').inputValue(), 'https://brightsmile.example')
 await page.getByRole('button', { name: 'No website? Describe your business yourself' }).click()

@@ -64,6 +64,7 @@ async function open({ server = { web_index: false, news: true, websites: true },
   })
   const page = await ctx.newPage()
   await page.goto(`${base}/app/leads`, { waitUntil: 'networkidle' })
+  await page.getByTestId('play-settings').locator('summary').first().click() // sources live in the closed "Settings for this play" drawer
   return { ctx, page, writes, scanBodies }
 }
 const shot = async (page, name) => { if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`) }) }
@@ -92,7 +93,9 @@ try {
   await page.getByText('Also search public GitHub repositories').click()
   await page.getByTestId('more-sources').locator('summary').first().click()
   await page.getByRole('button', { name: 'Find leads' }).click()
-  const run = page.getByTestId('run-sources'); await run.waitFor()
+  const run = page.getByTestId('run-sources'); await run.waitFor({ state: 'attached' })
+  await page.getByTestId('scan-progress').getByRole('button', { name: 'About this scan' }).click() // the sources line sits behind the progress card's (i)
+  await run.waitFor()
   assert.equal(await run.textContent(), 'Sources this scan can use: Web research with your AI key, News articles, Company websites, GitHub.')
   assert.doesNotMatch(await run.textContent(), /X posts|Web search index/, 'unticked and unavailable sources are not named')
   assert.equal(await page.getByText('Searching sources...').count(), 0)
