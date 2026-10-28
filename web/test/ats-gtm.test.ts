@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { atsGtmHiring, isGtmRole, domainInText } from '../lib/signals/ats-gtm.ts'
+import { atsGtmHiring, atsGtmBoard, isGtmRole, domainInText, domainsInText } from '../lib/signals/ats-gtm.ts'
 import { enrichJobSignals } from '../lib/signals/index.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, recentAudit } from '../lib/connectors/store.ts'
@@ -174,4 +174,17 @@ test('contradictory domains across Lever and Ashby postings fail closed as well;
     { title: 'Account Executive', jobUrl: 'https://jobs.ashbyhq.com/brightloop/2', isListed: true, publishedAt: d(8), descriptionPlain: b }] } })
   assert.equal(await atsGtmHiring('Brightloop', 'brightloop.io', route(ashby('https://brightloop.io', 'https://brightloop.com')), { now: NOW }), null)
   assert.equal(await atsGtmHiring('Brightloop', null, route(ashby('https://brightloop.io', 'https://brightloop.com')), { now: NOW }), null, 'also without a lead domain')
+})
+
+test('HTML link: a posting that SAYS brightloop.io while its company-website link points to brightloop.com is a conflict (board writes nothing)', async () => {
+  assert.deepEqual(domainsInText('<p>Join us at brightloop.io</p><a href="https://www.brightloop.com/careers">Company website</a>', 'brightloop').sort(), ['brightloop.com', 'brightloop.io'])
+  assert.deepEqual(domainsInText('&lt;p&gt;Join us at brightloop.io&lt;/p&gt;&lt;a href=&quot;https://brightloop.com&quot;&gt;site&lt;/a&gt;', 'brightloop').sort(), ['brightloop.com', 'brightloop.io'], 'Greenhouse sends escaped HTML')
+  assert.deepEqual(domainsInText('<a href="brightloop.io/jobs">Apply</a> <a href="mailto:jobs@brightloop.io">mail</a> at brightloop.io', 'brightloop'), ['brightloop.io'], 'agreeing text and links stay one domain')
+  const html = '<p>Join Brightloop at brightloop.io</p><a href="https://brightloop.com">Company website</a>'
+  const gh = await atsGtmBoard('Brightloop', 'brightloop.io', route({ ...ghBoard, [`${GH}/jobs/1`]: { ...(ghBoard[`${GH}/jobs/1`] as object), content: html.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;') } }), { now: NOW })
+  assert.deepEqual(gh, { hiring: null, contradictory: true })
+  const lever = await atsGtmBoard('Brightloop', 'brightloop.io', route({ 'https://api.lever.co/v0/postings/brightloop?mode=json': [{ text: 'Account Executive', hostedUrl: 'https://jobs.lever.co/brightloop/a', createdAt: NOW - 5 * 86_400_000, description: html }] }), { now: NOW })
+  assert.deepEqual(lever, { hiring: null, contradictory: true })
+  const ashby = await atsGtmBoard('Brightloop', 'brightloop.io', route({ 'https://api.ashbyhq.com/posting-api/job-board/brightloop': { jobs: [{ title: 'Account Executive', jobUrl: 'https://jobs.ashbyhq.com/brightloop/1', isListed: true, publishedAt: d(7), descriptionHtml: html }] } }), { now: NOW })
+  assert.deepEqual(ashby, { hiring: null, contradictory: true })
 })

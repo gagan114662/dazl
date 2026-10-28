@@ -35,10 +35,16 @@ const dedupe = (xs: GtmPosting[]) => { const seen = new Set<string>(); return xs
 // EVERY company domain the text names (a link or an e-mail host whose label is the board slug), registrable form. More than one distinct domain in one
 // posting (brightloop.io and brightloop.com) is itself a contradiction the caller must treat as such.
 export function domainsInText(text: string, slug: string): string[] {
-  const plain = text.replace(/&lt;|&gt;|&quot;|&amp;/g, ' ').replace(/<[^>]*>/g, ' ')
+  // Entities are decoded first (Greenhouse sends escaped HTML), then tags are NOT stripped: a link's href is read as well as the visible text, so a posting
+  // that says brightloop.io while its company-website link points to brightloop.com names both.
+  const raw = text.replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&quot;|&#34;|&#x22;/gi, '"').replace(/&#39;|&#x27;|&apos;/gi, "'").replace(/&amp;/gi, '&')
+  const hosts: string[] = []
+  for (const m of raw.matchAll(/(?:https?:\/\/(?:www\.)?|@)([a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,})/gi)) hosts.push(m[1])
+  for (const m of raw.matchAll(/\bhref\s*=\s*["']?\s*(?:mailto:[^"'\s>@]*@|(?:https?:)?\/\/)?(?:www\.)?([a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,})/gi)) hosts.push(m[1])
+  for (const m of raw.replace(/<[^>]*>/g, ' ').matchAll(/(?<![a-z0-9@./-])(?:www\.)?([a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,})(?![a-z0-9-])/gi)) hosts.push(m[1]) // a bare domain in the visible text
   const out = new Set<string>()
-  for (const m of plain.matchAll(/(?:https?:\/\/(?:www\.)?|@)([a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,})/gi)) {
-    const labels = m[1].toLowerCase().split('.')
+  for (const h of hosts) {
+    const labels = h.toLowerCase().split('.')
     if (!labels.some(l => l.replace(/[^a-z0-9]/g, '') === slug)) continue
     const reg = labels.length >= 3 && /^(?:co|com|org|ac)$/.test(labels[labels.length - 2]) ? labels.slice(-3).join('.') : labels.slice(-2).join('.')
     if (reg.length >= 4) out.add(reg)
