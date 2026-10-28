@@ -136,24 +136,33 @@ export async function importConnectionsCsv(db: Db, tenantId: string, csv: string
   }
   if (idx.url === -1) return { imported: 0, skipped: Math.max(0, rows.length - 1), replaced: 0, capped }
   let imported = 0, skipped = 0
-  const byUrl = new Map<string, [string, string, string, string | null, string | null, string | null]>()
+  type Row = [string, string, string, string | null, string | null, string | null]
+  const byUrl = new Map<string, Row>()
+  const superseded: Row[] = [] // rows a later repeat of their URL replaces
   for (const r of rows.slice(1)) {
     const url = normalizeLinkedInUrl(r[idx.url] ?? '')
     const name = [idx.first >= 0 ? r[idx.first] : '', idx.last >= 0 ? r[idx.last] : ''].join(' ').trim().replace(/[\u0000-\u001f\u007f]/g, '')
     if (!url || !name || /^[=+\-@]/.test(name)) { skipped++; continue }
-    byUrl.delete(url) // a repeat moves to the end, as a replaced row would
+    const prev = byUrl.get(url)
+    if (prev) { superseded.push(prev); byUrl.delete(url) } // a repeat moves to the end, as a replaced row would
     byUrl.set(url, [tenantId, name.slice(0, 200), url, idx.company >= 0 ? blank(r[idx.company]) : null, idx.position >= 0 ? blank(r[idx.position]) : null, idx.connected >= 0 ? blank(r[idx.connected]) : null])
     imported++
   }
   const values = [...byUrl.values()]
+  const INSERT = 'INSERT INTO tenant_connections (tenant_id, name, linkedin_url, company, position, connected_on) VALUES '
+  const UPSERT = ' ON CONFLICT (tenant_id, linkedin_url) DO UPDATE SET name = excluded.name, company = excluded.company, position = excluded.position, connected_on = excluded.connected_on'
   const replaced = await db.tx(function* (t: Tx): TxBody<number> {
     const before = Number((yield* t.get<{ c: number }>('SELECT COUNT(*) AS c FROM tenant_connections WHERE tenant_id = ?', [tenantId]))!.c)
     // Replaces the tenant's CONNECTIONS import only. warm_user_paths and every other
     // table are untouched - the user's own reported mutuals survive a re-import.
     yield* t.run('DELETE FROM tenant_connections WHERE tenant_id = ?', [tenantId])
+    // Every accepted row goes through the store, so its CHECKs judge each one, as with INSERT OR REPLACE: a superseded
+    // row is written first (CHECKs run before the conflict), then the final rows overwrite it. Any failure rolls the
+    // whole import back, the DELETE included.
+    for (const v of superseded) yield* t.run(`${INSERT}(?, ?, ?, ?, ?, ?)${UPSERT}`, v)
     for (let i = 0; i < values.length; i += 200) {
       const chunk = values.slice(i, i + 200)
-      yield* t.run(`INSERT INTO tenant_connections (tenant_id, name, linkedin_url, company, position, connected_on) VALUES ${chunk.map(() => '(?, ?, ?, ?, ?, ?)').join(', ')}`, chunk.flat())
+      yield* t.run(`${INSERT}${chunk.map(() => '(?, ?, ?, ?, ?, ?)').join(', ')}${UPSERT}`, chunk.flat())
     }
     return before
   })

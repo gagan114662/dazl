@@ -3,6 +3,7 @@ import { sqliteDb } from '../lib/db/client.ts'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateConnectors } from '../lib/connectors/store.ts'
+import { bothEngines } from './helpers/engines.ts'
 import { migrateWarm, importConnectionsCsv, normalizeLinkedInUrl, warmPathsForLead, addUserReportedPath, removeUserReportedPath } from '../lib/warm/connections.ts'
 
 function db(): Database.Database {
@@ -122,4 +123,28 @@ test("a user-reported path can only be attached to the caller's own lead", async
   assert.equal(await addUserReportedPath(sqliteDb(d), 'tenant1', 'no-such-lead', 'https://www.linkedin.com/in/x', 'Bob'), null)
   assert.equal((d.prepare('SELECT count(*) AS n FROM warm_user_paths').get() as { n: number }).n, 0)
   assert.ok(await addUserReportedPath(sqliteDb(d), 'tenant1', 'lead1', 'https://www.linkedin.com/in/x', 'Bob'))
+})
+
+// Review on #294: a repeated profile URL must not hide an earlier row's CHECK failure. Every accepted row is still
+// checked by the store, so an over-long Connected On anywhere in the file rejects the whole import, as INSERT OR
+// REPLACE did, and the tenant's existing connections stay as they were.
+bothEngines('a CHECK-invalid row followed by a valid duplicate still rejects the whole import; existing connections survive', async ({ db }) => {
+  await importConnectionsCsv(db, 'tenant1', CSV)
+  const keep = async () => db.all('SELECT name, linkedin_url, connected_on FROM tenant_connections WHERE tenant_id = ? ORDER BY linkedin_url', ['tenant1'])
+  const before = await keep()
+  assert.equal(before.length, 2)
+  const head = 'First Name,Last Name,URL,Connected On\n'
+  const tooLong = '1234567890123456789012345' // over the 20-character CHECK
+  for (const csv of [
+    `${head}Ada,One,https://www.linkedin.com/in/dup,${tooLong}\nAda,Two,https://linkedin.com/in/dup/,2026-10-28\n`, // invalid, then a valid duplicate
+    `${head}Ada,One,https://www.linkedin.com/in/dup,2026-10-28\nAda,Two,https://linkedin.com/in/dup/,${tooLong}\n`, // valid, then an invalid duplicate
+    `${head}Ada,One,https://www.linkedin.com/in/x,${tooLong}\nBo,Two,https://www.linkedin.com/in/y,2026-10-28\n`, // no duplicates
+  ]) {
+    await assert.rejects(importConnectionsCsv(db, 'tenant1', csv), /check|connected_on/i)
+    assert.deepEqual(await keep(), before, 'nothing of the rejected import was written and nothing was deleted')
+  }
+  // valid duplicates still import, the last row winning
+  const ok = await importConnectionsCsv(db, 'tenant1', `${head}Ada,One,https://www.linkedin.com/in/dup,2026-10-27\nAda,Two,https://linkedin.com/in/dup/,2026-10-28\n`)
+  assert.deepEqual([ok.imported, ok.skipped], [2, 0])
+  assert.deepEqual(await keep(), [{ name: 'Ada Two', linkedin_url: 'linkedin.com/in/dup', connected_on: '2026-10-28' }])
 })
