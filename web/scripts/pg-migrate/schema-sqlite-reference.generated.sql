@@ -572,6 +572,12 @@ CREATE TABLE source_reviews (
  company_named INTEGER NOT NULL, contact_match INTEGER NOT NULL, checked_at INTEGER NOT NULL
  );
 
+CREATE TABLE stripe_ended_subscriptions (
+      subscription_id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      ended_at INTEGER
+    );
+
 CREATE TABLE stripe_events (
       id TEXT PRIMARY KEY,
       type TEXT NOT NULL,

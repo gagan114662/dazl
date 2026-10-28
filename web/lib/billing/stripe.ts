@@ -27,6 +27,13 @@ export function migrateBilling(db: Database.Database): void {
       processed_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
     );
     CREATE INDEX IF NOT EXISTS tenant_plans_customer ON tenant_plans (stripe_customer_id);
+    -- Subscriptions Stripe has ended (deleted, canceled, incomplete_expired). Ending is final in Stripe: a resubscribe
+    -- is a new subscription id, so an ended id never upgrades a tenant again. PG: 0006_stripe_event_order.sql.
+    CREATE TABLE IF NOT EXISTS stripe_ended_subscriptions (
+      subscription_id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      ended_at INTEGER
+    );
   `)
 }
 
@@ -59,24 +66,32 @@ function* link(t: Tx, tenantId: string, customer?: string, subscription?: string
   yield* t.run('UPDATE tenant_plans SET stripe_customer_id = COALESCE(?, stripe_customer_id), stripe_subscription_id = COALESCE(?, stripe_subscription_id) WHERE tenant_id = ?', [customer ?? null, subscription ?? null, tenantId])
 }
 
-// What an event would do to the plan: upgrade, downgrade, or nothing.
-function effect(event: StripeEvent): { plan: 'pro' | 'free'; subscription?: string } | null {
+// What an event would do to the plan: upgrade, downgrade, or nothing. `ends` marks the subscription as over for good.
+function effect(event: StripeEvent): { plan: 'pro' | 'free'; subscription?: string; ends: boolean } | null {
   const o = event.data?.object ?? {}
-  if (event.type === 'checkout.session.completed') return o.mode === 'subscription' ? { plan: 'pro', subscription: o.subscription } : null
+  if (event.type === 'checkout.session.completed') return o.mode === 'subscription' ? { plan: 'pro', subscription: o.subscription, ends: false } : null
   if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.created') {
-    if (o.status === 'active' || o.status === 'trialing' || o.status === 'past_due') return { plan: 'pro', subscription: o.id } // past_due: Stripe is still retrying
-    if (o.status === 'canceled' || o.status === 'unpaid' || o.status === 'incomplete_expired') return { plan: 'free', subscription: o.id }
+    if (o.status === 'active' || o.status === 'trialing' || o.status === 'past_due') return { plan: 'pro', subscription: o.id, ends: false } // past_due: Stripe is still retrying
+    if (o.status === 'canceled' || o.status === 'incomplete_expired') return { plan: 'free', subscription: o.id, ends: true }
+    if (o.status === 'unpaid') return { plan: 'free', subscription: o.id, ends: false } // can become active again
     return null
   }
-  if (event.type === 'customer.subscription.deleted') return { plan: 'free', subscription: o.id }
+  if (event.type === 'customer.subscription.deleted') return { plan: 'free', subscription: o.id, ends: true }
   return null
 }
 
 // Apply a verified event. Each Stripe event id is processed once, in one transaction with its plan change: a concurrent
 // second delivery waits on the first's event row and then reports 'duplicate'.
-// Out of order: an event created before the one that last set the plan is 'stale' and changes nothing (a delayed
-// "active" must not undo a later cancellation). A downgrade only applies to the tenant's current subscription: an old
-// subscription ending does not cancel a newer one.
+// Stripe delivers events out of order, and `created` is in whole seconds, so time alone cannot order two events of the
+// same second. The rules, in this order:
+//   1. An ended subscription (deleted, canceled, incomplete_expired) stays ended: its id is recorded, and no later or
+//      same-second event for it upgrades the tenant again ('stale'). A resubscribe is a new subscription id.
+//   2. The end of the tenant's current subscription always downgrades, whatever its timestamp. The end of an older
+//      subscription changes nothing ('ignored').
+//   3. Otherwise an event created before the one that last set the plan is 'stale'. Two non-ending events of the same
+//      second (say active and unpaid) apply in arrival order; Stripe sends the next invoice event to settle them.
+// The tenant's plan row is locked (FOR UPDATE on Postgres; SQLite has one writer) before these checks, so two events
+// for one tenant processed at the same time are ordered by the rules, not by which commits last.
 export async function applyStripeEvent(db: Db, event: StripeEvent): Promise<'applied' | 'ignored' | 'stale' | 'duplicate'> {
   return db.tx(function* (t): TxBody<'applied' | 'ignored' | 'stale' | 'duplicate'> {
     if ((yield* t.run('INSERT INTO stripe_events (id, type) VALUES (?, ?) ON CONFLICT (id) DO NOTHING', [event.id, event.type])).changes === 0) return 'duplicate'
@@ -85,10 +100,15 @@ export async function applyStripeEvent(db: Db, event: StripeEvent): Promise<'app
     if (!tenantId) return 'ignored'
     const fx = effect(event)
     if (!fx) return 'ignored'
-    const row = yield* t.get<{ stripe_subscription_id: string | null; stripe_event_at: number | null }>('SELECT stripe_subscription_id, stripe_event_at FROM tenant_plans WHERE tenant_id = ?', [tenantId])
+    yield* t.run('INSERT INTO tenant_plans (tenant_id) VALUES (?) ON CONFLICT (tenant_id) DO NOTHING', [tenantId])
+    const row = (yield* t.get<{ stripe_subscription_id: string | null; stripe_event_at: number | null }>(
+      `SELECT stripe_subscription_id, stripe_event_at FROM tenant_plans WHERE tenant_id = ?${t.kind === 'pg' ? ' FOR UPDATE' : ''}`, [tenantId]))!
     const created = typeof event.created === 'number' && Number.isFinite(event.created) ? event.created : null
-    if (created !== null && row?.stripe_event_at != null && created < Number(row.stripe_event_at)) return 'stale'
-    if (fx.plan === 'free' && row?.stripe_subscription_id && fx.subscription && fx.subscription !== row.stripe_subscription_id) return 'ignored'
+    const current = row.stripe_subscription_id
+    if (fx.ends && fx.subscription) yield* t.run('INSERT INTO stripe_ended_subscriptions (subscription_id, tenant_id, ended_at) VALUES (?, ?, ?) ON CONFLICT (subscription_id) DO NOTHING', [fx.subscription, tenantId, created])
+    if (fx.plan === 'pro' && fx.subscription && (yield* t.get('SELECT 1 AS x FROM stripe_ended_subscriptions WHERE subscription_id = ?', [fx.subscription]))) return 'stale'
+    if (fx.plan === 'free' && current && fx.subscription && fx.subscription !== current) return 'ignored'
+    if (!fx.ends && created !== null && row.stripe_event_at != null && created < Number(row.stripe_event_at)) return 'stale'
     yield* link(t, tenantId, o.customer, fx.subscription)
     yield* writePlan(t, tenantId, fx.plan)
     if (created !== null) yield* t.run('UPDATE tenant_plans SET stripe_event_at = ? WHERE tenant_id = ? AND (stripe_event_at IS NULL OR stripe_event_at < ?)', [created, tenantId, created])

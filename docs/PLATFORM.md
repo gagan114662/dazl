@@ -146,11 +146,14 @@ These steps are development work behind flags and tests. Merging them does not c
    - The webhook events are Stripe-shaped fixtures (`test/fixtures/stripe/`) signed with a test secret, the same way Stripe signs them.
    - Unsigned, wrongly signed, stale and tampered deliveries are refused. A replay is a duplicate, and an event for another tenant's customer changes nothing.
    - `api.stripe.com` is stubbed: no request leaves the test, and nothing is charged.
-   - **Event order (step 5b):** Stripe does not deliver events in order. `tenant_plans.stripe_event_at` holds the `created` time of the last event that set the plan (PG `0006_stripe_event_order.sql`):
-     - An older event delivered later is `stale` and changes nothing, so a delayed "active" cannot undo a cancellation, and the reverse.
-     - A downgrade only applies to the tenant's current subscription, so an old subscription ending does not cancel a new one.
-     - Same-second events apply in arrival order.
-     - Covered by `test/billing-order.test.ts` (both engines) and by signed deliveries through the real webhook in `billing-e2e`.
+   - **Event order (step 5b):** Stripe does not deliver events in order, and `created` is in whole seconds.
+     - An ended subscription (deleted, `canceled`, `incomplete_expired`) is recorded in `stripe_ended_subscriptions` and never upgrades the tenant again, whatever the timestamps. A resubscribe is a new subscription id.
+     - The end of the tenant's current subscription always downgrades. The end of an older subscription changes nothing.
+     - Otherwise `tenant_plans.stripe_event_at` (the `created` time of the last event that set the plan) makes an older event `stale`.
+     - Two non-ending events of the same second (`active` and `unpaid`) apply in arrival order; Stripe's next invoice event settles them.
+     - The plan row is locked (`FOR UPDATE` on PG) before the checks, so concurrent deliveries follow these rules, not commit order.
+     - PG: `0006_stripe_event_order.sql`.
+     - Covered by `test/billing-order.test.ts` on both engines: same second, opposite order, resubscribe, and concurrent deliveries. It is also covered by signed deliveries through the real webhook in `billing-e2e`.
    - **Pricing is inconsistent. This is for the owner to decide, not for code:**
      - The landing page Free card says "3 trial scans, then your own AI key". It does not mention the 50-scans-a-month cap the code enforces (`PLAN_LIMITS.free`).
      - The sign-up page says "Free plan: 50 scans a month with your own AI key. New accounts may get 3 trial scans first".
