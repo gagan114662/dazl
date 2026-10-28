@@ -20,6 +20,26 @@ Staging is the app on the same box as production, as a separate service. It has 
 
 Nothing in staging uses production data or keys: a fresh master key, test-mode Stripe and no Google credentials.
 
+## Before installing: disk and safety checks (`ops/staging/deploy.sh`)
+- **Disk floor.** A release is started only if free space minus the release's estimated size stays above `MIN_FREE_BYTES` (2 GiB by default, the host's floor). A watcher stops the build if free space reaches the floor while it runs. A release that fails at any step is deleted at once, and the live release keeps serving.
+  - **Sizes measured:** a first release is about 1.1 GB (`node_modules` 0.7 GB plus build output). Later releases hard-link `node_modules` from the live one when `package-lock.json` is unchanged, so they cost about their build output (0.3–0.4 GB).
+  - **What's kept:** the live release plus two complete rollbacks.
+  - **Space needed:** about **2.3 GB above the floor**, roughly 4.5 GB free on a 2 GiB floor. With about 2.5 GB free today, the deploy will refuse on this host. Free space first, add disk, or use another host. That's an owner decision.
+- **Production's database.** The deploy must be told where production's database is: `PROD_ENV_FILE` (production's env file, read for `DB_PATH` only) or `PROD_DB_PATH`, in `dazl-staging-deploy.service`. Without it, the deploy refuses to run. It refuses a staging `DB_PATH` that:
+  - is production's file, by canonical path, with symlinks and `..` resolved;
+  - is inside production's database directory, or contains it;
+  - is the same file under another name (same device and inode).
+
+  It also refuses any `DATABASE_URL`, since staging is its own SQLite file.
+- **Secrets.** The env file stays root-only (mode 600). The deploy runs as root, reads it, and passes its values to the build and seed, which run as `dazl-staging`. The service gets them from systemd's `EnvironmentFile`. The service user never reads the file.
+- **End-to-end test** on a throwaway machine, as root: `bash ops/staging/e2e-test.sh`. It covers:
+  - the floor refusal;
+  - a first deploy as the service user with a root-only env file;
+  - a no-op re-run;
+  - a hard-linked second release;
+  - a broken commit, which is removed while the live release keeps serving;
+  - the floor being reached mid-build.
+
 ## One-time setup (Instinct, on the box, as root)
 
 1. **DNS.** Add an `A` record `staging.dazl.ai` pointing to the box's public IPv4 address, the same as `dazl.ai`. Add an `AAAA` record too if `dazl.ai` has one. Check with `dig +short staging.dazl.ai`.
@@ -35,16 +55,18 @@ Nothing in staging uses production data or keys: a fresh master key, test-mode S
      - `STRIPE_SECRET_KEY` is the `sk_test_` key;
      - `STRIPE_PRICE_PRO` is the test-mode Pro price;
      - `STRIPE_WEBHOOK_SECRET` is the signing secret of a test-mode webhook endpoint `https://staging.dazl.ai/api/stripe`, with events `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted` and `invoice.payment_failed`.
-   - `STAGING_DEMO_PASSWORD`: the demo password from the PR description.
+   - `STAGING_DEMO_PASSWORD`: generate it on the host (`openssl rand -base64 18`) and give it to Gagan privately. It's never in the repo or a PR.
    - `SENTRY_DSN` and `NEXT_PUBLIC_SENTRY_DSN`: from Hermes, or leave empty until they arrive.
    - Then check it. This exits 0 with `env ok` only if it's a staging file; it never prints a value:
      ```sh
-     bash ops/staging/deploy.sh --check-env /etc/dazl-staging/env
+     PROD_ENV_FILE=<production's env file> bash ops/staging/deploy.sh --check-env /etc/dazl-staging/env
      ```
 4. **Units and the deploy script.** From a checkout of `main`:
    ```sh
    install -m 755 ops/staging/deploy.sh /srv/dazl-staging/deploy.sh
    install -m 644 ops/staging/dazl-staging.service ops/staging/dazl-staging-deploy.service ops/staging/dazl-staging-deploy.timer /etc/systemd/system/
+   # set PROD_ENV_FILE in dazl-staging-deploy.service to production's real env file
+   systemctl edit --full dazl-staging-deploy.service
    systemctl daemon-reload
    ```
 5. **First deploy.** It clones, builds, seeds, starts and health-checks; expect a few minutes:
@@ -71,7 +93,7 @@ Nothing in staging uses production data or keys: a fresh master key, test-mode S
 - `https://staging.dazl.ai` loads with the yellow **Staging - test data** banner.
 - `curl -sI https://staging.dazl.ai | grep -i x-robots-tag` shows `noindex, nofollow`.
 - `curl -s https://staging.dazl.ai/robots.txt` shows `Disallow: /`.
-- Sign in as `demo@staging.dazl.test` with the PR's password. Leads > Past scans > *Dental practices in Texas hiring a practice manager* shows the demo leads. Settings shows Gmail connected as `sender-…@staging.dazl.test`.
+- Sign in as `demo@staging.dazl.test` with the password generated in step 3. Leads > Past scans > *Dental practices in Texas hiring a practice manager* shows the demo leads. Settings shows Gmail connected as `sender-…@staging.dazl.test`.
 - `curl -s https://staging.dazl.ai/api/health` reports the commit at the head of `main`. After the next merge it changes within about 2 minutes plus build time.
 - Locally, the same checks run in Chromium: `DAZL_ENV=staging npm run build && npm run test:smoke:staging` (in `web/`).
 
@@ -85,7 +107,7 @@ Nothing in staging uses production data or keys: a fresh master key, test-mode S
   systemctl start dazl-staging-deploy.service
   ```
   The seed runs on every deploy and recreates the demo account. To force one now, `rm /srv/dazl-staging/current-sha` first.
-- **Load on the box:** each deploy runs `npm ci` and a build at `nice 10` with a 2 GB heap cap, and the service is capped at 1.5 GB. If production feels it, lengthen the timer (`OnUnitActiveSec`) or build elsewhere.
+- **Load on the box:** each deploy runs a build at `nice 10` with a 2 GB heap cap, and the service is capped at 1.5 GB. `npm ci` runs only when the lockfile changed. If production feels it, lengthen the timer (`OnUnitActiveSec`) or build elsewhere.
 - **Remove staging:**
   ```sh
   systemctl disable --now dazl-staging-deploy.timer dazl-staging

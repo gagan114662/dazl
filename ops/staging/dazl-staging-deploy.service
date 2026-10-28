@@ -1,8 +1,12 @@
 # Deploys origin/main to staging when it changes (ops/staging/deploy.sh). Started by dazl-staging-deploy.timer.
+# Set PROD_ENV_FILE (or PROD_DB_PATH) to production's real env file or database path: the deploy compares the staging
+# DB_PATH against it by canonical path and inode, and refuses to run when it is not set.
 [Unit]
 Description=dazl staging deploy from main
 
 [Service]
 Type=oneshot
+Environment=PROD_ENV_FILE=/CHANGE-ME/path/to/production/env
+Environment=MIN_FREE_BYTES=2147483648
 ExecStart=/srv/dazl-staging/deploy.sh
 Nice=10
