@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { clientIp } from '@/lib/rate-limit'
 import { hasKey } from '@/lib/llm/key-store'
 import { getScanDb, requireUser } from '@/lib/scan/service'
-import { scanQuota } from '@/lib/plans'
+import { getBillingStatus, scanQuota } from '@/lib/plans'
 import { TRIAL_SCANS_PER_ACCOUNT, trialStatus } from '@/lib/scan/trial'
 
 export async function GET(req: NextRequest) {
@@ -15,6 +15,7 @@ export async function GET(req: NextRequest) {
   const t = keyed ? null : trialStatus(db, user.id, clientIp(req))
   return NextResponse.json({
     plan: q.plan, scans_used: q.used, scan_limit: q.limit, has_key: keyed,
+    billing_status: getBillingStatus(db, user.id), // e.g. past_due after a failed payment while Stripe retries (still Pro)
     trial: t ? { funded: t.funded, remaining: t.remaining, cap: TRIAL_SCANS_PER_ACCOUNT } : null,
   })
 }

@@ -82,11 +82,11 @@ function statusEffect(status: string | undefined, subscription: string | undefin
 }
 
 // What an event would do to the plan: upgrade, downgrade, or nothing.
-function effect(event: StripeEvent): { plan: 'pro' | 'free'; subscription?: string; ends: boolean } | null {
+function effect(event: StripeEvent): { plan: 'pro' | 'free'; subscription?: string; ends: boolean; status?: string } | null {
   const o = event.data?.object ?? {}
-  if (event.type === 'checkout.session.completed') return o.mode === 'subscription' ? { plan: 'pro', subscription: o.subscription, ends: false } : null
-  if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.created') return statusEffect(o.status, o.id)
-  if (event.type === 'customer.subscription.deleted') return { plan: 'free', subscription: o.id, ends: true }
+  if (event.type === 'checkout.session.completed') return o.mode === 'subscription' ? { plan: 'pro', subscription: o.subscription, ends: false, status: 'active' } : null
+  if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.created') { const fx = statusEffect(o.status, o.id); return fx && { ...fx, status: o.status } }
+  if (event.type === 'customer.subscription.deleted') return { plan: 'free', subscription: o.id, ends: true, status: 'canceled' }
   return null
 }
 
@@ -165,7 +165,7 @@ export async function applyStripeEvent(db: Db, event: StripeEvent, deps: StripeD
     if (eventFx.ends && eventFx.subscription) yield* t.run('INSERT INTO stripe_ended_subscriptions (subscription_id, tenant_id, ended_at) VALUES (?, ?, ?) ON CONFLICT (subscription_id) DO NOTHING', [eventFx.subscription, tenantId, created])
     if (eventFx.plan === 'pro' && eventFx.subscription && (yield* t.get('SELECT 1 AS x FROM stripe_ended_subscriptions WHERE subscription_id = ?', [eventFx.subscription]))) return 'stale'
     if (eventFx.plan === 'free' && current && eventFx.subscription && eventFx.subscription !== current) return 'ignored'
-    let fx = eventFx
+    let fx: { plan: 'pro' | 'free'; subscription?: string; ends: boolean; status?: string } = eventFx
     const tie = isTie(eventFx, created, row)
     const settled = tie && authoritative !== undefined ? statusEffect(authoritative, eventFx.subscription) : null
     if (tie && !settled) {
@@ -178,11 +178,12 @@ export async function applyStripeEvent(db: Db, event: StripeEvent, deps: StripeD
     }
     if (tie && settled) {
       yield* t.run('UPDATE tenant_plans SET stripe_reconcile_at = NULL WHERE tenant_id = ?', [tenantId])
-      fx = settled
+      fx = { ...settled, status: authoritative }
       if (fx.ends) yield* t.run('INSERT INTO stripe_ended_subscriptions (subscription_id, tenant_id, ended_at) VALUES (?, ?, ?) ON CONFLICT (subscription_id) DO NOTHING', [fx.subscription!, tenantId, created])
     } else if (!fx.ends && created !== null && row.stripe_event_at != null && created < Number(row.stripe_event_at)) return 'stale'
     yield* link(t, tenantId, o.customer, fx.subscription)
     yield* writePlan(t, tenantId, fx.plan)
+    if (fx.status) yield* t.run('UPDATE tenant_plans SET subscription_status = ? WHERE tenant_id = ?', [fx.status, tenantId])
     if (created !== null) yield* t.run('UPDATE tenant_plans SET stripe_event_at = ? WHERE tenant_id = ? AND (stripe_event_at IS NULL OR stripe_event_at < ?)', [created, tenantId, created])
     return tie ? 'reconciled' : 'applied'
   })
