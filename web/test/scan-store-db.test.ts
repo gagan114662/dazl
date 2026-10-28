@@ -14,9 +14,10 @@ import { bothEngines } from './helpers/engines.ts'
 const A = 'a'.repeat(32), B = 'b'.repeat(32)
 const T0 = 1_800_000_000
 
+// Every lead carries page timing (published_at, timing_note), so reads, exports and parity cover both columns.
 async function lead(db: Db, jobId: string, id: string, o: { fit?: number | null; quarantined?: boolean; kind?: string; created?: number } = {}) {
-  await db.run(`INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, score, fit, quarantined_at, source_kind, created_at) VALUES (?, ?, 'Pat', ?, 'Hiring', ?, 60, ?, ?, ?, ?)`,
-    [id, jobId, `Co ${id}`, `https://e.example/${id}`, o.fit ?? null, o.quarantined ? T0 : null, o.kind ?? null, o.created ?? T0])
+  await db.run(`INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, score, fit, quarantined_at, source_kind, created_at, published_at, timing_note) VALUES (?, ?, 'Pat', ?, 'Hiring', ?, 60, ?, ?, ?, ?, ?, ?)`,
+    [id, jobId, `Co ${id}`, `https://e.example/${id}`, o.fit ?? null, o.quarantined ? T0 : null, o.kind ?? null, o.created ?? T0, '2026-09-30', `published 2026-09-30 (${id})`])
 }
 // A tenant with one finished scan (visible, hidden, quarantined and fixture leads), one query scan and one CSV job.
 async function fixture(db: Db, tenant: string, tag: string) {
@@ -40,6 +41,11 @@ bothEngines('scan store on Db: each tenant reads, counts and exports only its ow
   assert.deepEqual((await S.listLeads(db, A, a.done)).map(l => l.id), ['a-quar', 'a-good', 'a-fixture']) // fit order; hidden fit<=1 out
   assert.deepEqual((await S.listLeads(db, A, a.done, 200, true)).map(l => l.id), ['a-quar', 'a-good', 'a-fixture', 'a-low'])
   assert.deepEqual(await S.listLeads(db, B, a.done), [])
+  // page timing is part of the read and export contract
+  const good = (await S.listLeads(db, A, a.done)).find(l => l.id === 'a-good')!
+  assert.deepEqual([good.published_at, good.timing_note], ['2026-09-30', 'published 2026-09-30 (a-good)'])
+  const ex = (await S.exportLeads(db, A))[0]
+  assert.deepEqual([ex.lead_id, ex.published_at, ex.timing_note], ['a-good', '2026-09-30', 'published 2026-09-30 (a-good)'])
   assert.equal(await S.countHiddenLeads(db, A, a.done), 1)
   assert.equal(await S.countHiddenLeads(db, B, a.done), 0)
   assert.deepEqual((await S.listJobs(db, A)).map(j => [j.id, Number(j.lead_count)]), [[a.csv, 0], [a.query, 0], [a.done, 4]])
@@ -94,6 +100,11 @@ test('[sqlite] parity with store.ts on the same rows', async () => {
   const legacyJob = Legacy.getJob(raw, A, a.done)
   assert.deepEqual(norm(await S.getJob(db, A, a.done)), norm(legacyJob))
   for (const hidden of [false, true]) assert.deepEqual(norm(await S.listLeads(db, A, a.done, 200, hidden)), norm(Legacy.listLeads(raw, A, a.done, 200, hidden)))
+  // the parity covers the page-timing columns main added: both stores return them, with the same values
+  const legacyRow = (Legacy.listLeads(raw, A, a.done) as Record<string, unknown>[])[0]
+  assert.ok('published_at' in legacyRow && 'timing_note' in legacyRow && legacyRow.published_at === '2026-09-30')
+  const legacyExport = (Legacy.exportLeads(raw, A) as Record<string, unknown>[])[0]
+  assert.ok('published_at' in legacyExport && 'timing_note' in legacyExport)
   assert.equal(await S.countHiddenLeads(db, A, a.done), Legacy.countHiddenLeads(raw, A, a.done))
   assert.deepEqual(norm(await S.listJobs(db, A)), norm(Legacy.listJobs(raw, A)))
   assert.equal(await S.latestJobId(db, A), Legacy.latestJobId(raw, A))
@@ -116,16 +127,20 @@ bothEngines('finishJob: the attempt that holds the job writes its leads, review 
   const job = await claimed(db)
   const r = await S.finishJob(db, job, {
     status: 'done', error: null, now: T0 + 60, candidates: 9, dropped: { stale: 2, no_quote: 1 },
-    leads: [L('k1'), L('k2', { fit: 2 }), L('k1')], // the second k1 is a duplicate of the first
-    review: [{ name: '', company: 'Rev Co', signal: 'Maybe', source_url: 'https://r.example/1', score: 40, evidence_excerpt: null, event_date: null, dedup_key: 'review:k3', review_reason: 'undated' }],
+    leads: [L('k1', { published_at: '2026-10-02', timing_note: 'published 2026-10-02' }), L('k2', { fit: 2 }), L('k1')], // the second k1 is a duplicate of the first
+    review: [{ name: '', company: 'Rev Co', signal: 'Maybe', source_url: 'https://r.example/1', score: 40, evidence_excerpt: null, event_date: null, dedup_key: 'review:k3', review_reason: 'undated', published_at: '2025-03-01', timing_note: 'the quote names 2025; the event is older than the window' }],
   })
   assert.deepEqual(r, { owned: true, inserted: ['k1|https://e.example/k1', 'k2|https://e.example/k2', 'review:k3|https://r.example/1'] })
   const j = (await S.getJob(db, A, job.id))!
   assert.deepEqual([j.status, j.claimed_at, Number(j.finished_at), Number(j.candidates), Number(j.verified), Number(j.needs_review), Number(j.dropped), JSON.parse(j.drop_reasons!)],
     ['done', null, T0 + 60, 9, 3, 1, 3, { stale: 2, no_quote: 1 }])
   assert.equal(Number(j.lead_count), 3)
-  const rev = await db.get<{ date_status: string; review_reason: string }>("SELECT date_status, review_reason FROM leads WHERE dedup_key = 'review:k3'")
-  assert.deepEqual(rev, { date_status: 'undated', review_reason: 'undated' })
+  const rev = await db.get<{ date_status: string; review_reason: string; published_at: string; timing_note: string }>("SELECT date_status, review_reason, published_at, timing_note FROM leads WHERE dedup_key = 'review:k3'")
+  assert.deepEqual(rev, { date_status: 'undated', review_reason: 'undated', published_at: '2025-03-01', timing_note: 'the quote names 2025; the event is older than the window' })
+  const k1 = await db.get<{ published_at: string; timing_note: string }>("SELECT published_at, timing_note FROM leads WHERE dedup_key = 'k1'")
+  assert.deepEqual(k1, { published_at: '2026-10-02', timing_note: 'published 2026-10-02' })
+  const k2 = await db.get<{ published_at: string | null; timing_note: string | null }>("SELECT published_at, timing_note FROM leads WHERE dedup_key = 'k2'")
+  assert.deepEqual(k2, { published_at: null, timing_note: null })
 })
 
 bothEngines('finishJob: an attempt that no longer holds the job (re-claimed, cancelled, finished) writes nothing', async ({ db }) => {
