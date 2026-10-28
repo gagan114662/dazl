@@ -42,6 +42,8 @@ interface StripeObject {
 export interface StripeEvent {
   id: string
   type: string
+  // Unix seconds when Stripe created the event. Stripe does not deliver events in order or only once.
+  created?: number
   data: { object: StripeObject }
 }
 
@@ -57,31 +59,40 @@ function* link(t: Tx, tenantId: string, customer?: string, subscription?: string
   yield* t.run('UPDATE tenant_plans SET stripe_customer_id = COALESCE(?, stripe_customer_id), stripe_subscription_id = COALESCE(?, stripe_subscription_id) WHERE tenant_id = ?', [customer ?? null, subscription ?? null, tenantId])
 }
 
+// What an event would do to the plan: upgrade, downgrade, or nothing.
+function effect(event: StripeEvent): { plan: 'pro' | 'free'; subscription?: string } | null {
+  const o = event.data?.object ?? {}
+  if (event.type === 'checkout.session.completed') return o.mode === 'subscription' ? { plan: 'pro', subscription: o.subscription } : null
+  if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.created') {
+    if (o.status === 'active' || o.status === 'trialing' || o.status === 'past_due') return { plan: 'pro', subscription: o.id } // past_due: Stripe is still retrying
+    if (o.status === 'canceled' || o.status === 'unpaid' || o.status === 'incomplete_expired') return { plan: 'free', subscription: o.id }
+    return null
+  }
+  if (event.type === 'customer.subscription.deleted') return { plan: 'free', subscription: o.id }
+  return null
+}
+
 // Apply a verified event. Each Stripe event id is processed once, in one transaction with its plan change: a concurrent
 // second delivery waits on the first's event row and then reports 'duplicate'.
-export async function applyStripeEvent(db: Db, event: StripeEvent): Promise<'applied' | 'ignored' | 'duplicate'> {
-  return db.tx(function* (t): TxBody<'applied' | 'ignored' | 'duplicate'> {
+// Out of order: an event created before the one that last set the plan is 'stale' and changes nothing (a delayed
+// "active" must not undo a later cancellation). A downgrade only applies to the tenant's current subscription: an old
+// subscription ending does not cancel a newer one.
+export async function applyStripeEvent(db: Db, event: StripeEvent): Promise<'applied' | 'ignored' | 'stale' | 'duplicate'> {
+  return db.tx(function* (t): TxBody<'applied' | 'ignored' | 'stale' | 'duplicate'> {
     if ((yield* t.run('INSERT INTO stripe_events (id, type) VALUES (?, ?) ON CONFLICT (id) DO NOTHING', [event.id, event.type])).changes === 0) return 'duplicate'
     const o = event.data?.object ?? {}
     const tenantId = yield* tenantFor(t, o)
     if (!tenantId) return 'ignored'
-
-    if (event.type === 'checkout.session.completed' && o.mode === 'subscription') {
-      yield* link(t, tenantId, o.customer, o.subscription)
-      yield* writePlan(t, tenantId, 'pro')
-      return 'applied'
-    }
-    if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.created') {
-      yield* link(t, tenantId, o.customer, o.id)
-      if (o.status === 'active' || o.status === 'trialing' || o.status === 'past_due') yield* writePlan(t, tenantId, 'pro') // past_due: Stripe is still retrying
-      else if (o.status === 'canceled' || o.status === 'unpaid' || o.status === 'incomplete_expired') yield* writePlan(t, tenantId, 'free')
-      return 'applied'
-    }
-    if (event.type === 'customer.subscription.deleted') {
-      yield* writePlan(t, tenantId, 'free')
-      return 'applied'
-    }
-    return 'ignored'
+    const fx = effect(event)
+    if (!fx) return 'ignored'
+    const row = yield* t.get<{ stripe_subscription_id: string | null; stripe_event_at: number | null }>('SELECT stripe_subscription_id, stripe_event_at FROM tenant_plans WHERE tenant_id = ?', [tenantId])
+    const created = typeof event.created === 'number' && Number.isFinite(event.created) ? event.created : null
+    if (created !== null && row?.stripe_event_at != null && created < Number(row.stripe_event_at)) return 'stale'
+    if (fx.plan === 'free' && row?.stripe_subscription_id && fx.subscription && fx.subscription !== row.stripe_subscription_id) return 'ignored'
+    yield* link(t, tenantId, o.customer, fx.subscription)
+    yield* writePlan(t, tenantId, fx.plan)
+    if (created !== null) yield* t.run('UPDATE tenant_plans SET stripe_event_at = ? WHERE tenant_id = ? AND (stripe_event_at IS NULL OR stripe_event_at < ?)', [created, tenantId, created])
+    return 'applied'
   })
 }
 

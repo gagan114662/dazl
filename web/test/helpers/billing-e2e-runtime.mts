@@ -1,6 +1,6 @@
 // Stripe end to end, test mode, through the real route handlers (docs/PLATFORM.md step 5):
 // checkout -> signed webhook (checkout.session.completed) -> Pro -> portal -> cancel at period end (still Pro) ->
-// subscription deleted -> Free. Webhook bodies are Stripe-shaped fixture events (test/fixtures/stripe/*.json) signed
+// subscription deleted -> Free -> a late, older event and an old subscription's cancellation change nothing. Webhook bodies are Stripe-shaped fixture events (test/fixtures/stripe/*.json) signed
 // with a test webhook secret exactly as Stripe signs them. Calls to api.stripe.com are answered by a stub that records
 // them, so nothing reaches Stripe and nothing is charged. Runs under tenant-route-loader.mjs (signed-in user stubbed).
 import { test } from 'node:test'
@@ -108,6 +108,12 @@ test('Stripe test mode end to end: checkout, signed webhook, Pro, portal, cancel
   assert.deepEqual(await (await deliver(deleted, sign(deleted))).json(), { result: 'applied' })
   assert.deepEqual(await plan(), { ...(await plan()), plan: 'free', scan_limit: 50 })
 
+  // 6b. Stripe does not deliver in order: a signed subscription.updated (still active) created before the deletion but
+  // delivered after it is stale and does not bring Pro back
+  const late = cancelAtEnd.replace(/"id": "evt_[^"]+"/, '"id": "evt_test_late_update"')
+  assert.deepEqual(await (await deliver(late, sign(late))).json(), { result: 'stale' })
+  assert.equal((await plan()).plan, 'free')
+
   // 7. An event for another tenant's customer never touches this tenant
   const foreign = fixture('checkout.session.completed', { ...vars, TENANT: other, CUSTOMER: 'cus_other', SUBSCRIPTION: 'sub_other' })
     .replace(/"id": "evt_[^"]+"/, '"id": "evt_other_fixture"')
@@ -117,5 +123,15 @@ test('Stripe test mode end to end: checkout, signed webhook, Pro, portal, cancel
   // 8. After the downgrade the tenant can check out again (a new Stripe session)
   assert.equal((await checkout.POST(json('/api/billing/checkout'))).status, 200)
   assert.equal(stripeCalls.at(-1)!.form.get('customer'), vars.CUSTOMER) // reuses the existing customer
+
+  // 9. The tenant subscribes again (a new subscription); the old subscription's late cancellation does not cancel it
+  const NEW_SUB = 'sub_fixture_new' + randomBytes(4).toString('hex')
+  const resub = fixture('checkout.session.completed', { ...vars, SUBSCRIPTION: NEW_SUB })
+    .replace(/"id": "evt_[^"]+"/, '"id": "evt_test_resubscribe"').replace(/"created": \d+/, '"created": 1793000300')
+  assert.deepEqual(await (await deliver(resub, sign(resub))).json(), { result: 'applied' })
+  assert.equal((await plan()).plan, 'pro')
+  const oldEnds = deleted.replace(/"id": "evt_[^"]+"/, '"id": "evt_test_old_sub_ends"').replace(/"created": \d+/, '"created": 1793000400')
+  assert.deepEqual(await (await deliver(oldEnds, sign(oldEnds))).json(), { result: 'ignored' })
+  assert.equal((await plan()).plan, 'pro')
   console.log('STRIPE_E2E', stripeCalls.length)
 })

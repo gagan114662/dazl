@@ -139,6 +139,11 @@ These steps are development work behind flags and tests. Merging them does not c
    - The webhook events are Stripe-shaped fixtures (`test/fixtures/stripe/`) signed with a test secret, the same way Stripe signs them.
    - Unsigned, wrongly signed, stale and tampered deliveries are refused. A replay is a duplicate, and an event for another tenant's customer changes nothing.
    - `api.stripe.com` is stubbed: no request leaves the test, and nothing is charged.
+   - **Event order (step 5b):** Stripe does not deliver events in order. `tenant_plans.stripe_event_at` holds the `created` time of the last event that set the plan (PG `0005_stripe_event_order.sql`):
+     - An older event delivered later is `stale` and changes nothing, so a delayed "active" cannot undo a cancellation, and the reverse.
+     - A downgrade only applies to the tenant's current subscription, so an old subscription ending does not cancel a new one.
+     - Same-second events apply in arrival order.
+     - Covered by `test/billing-order.test.ts` (both engines) and by signed deliveries through the real webhook in `billing-e2e`.
    - **Pricing is inconsistent. This is for the owner to decide, not for code:**
      - The landing page Free card says "3 trial scans, then your own AI key". It does not mention the 50-scans-a-month cap the code enforces (`PLAN_LIMITS.free`).
      - The sign-up page says "Free plan: 50 scans a month with your own AI key. New accounts may get 3 trial scans first".
