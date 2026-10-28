@@ -4,7 +4,8 @@
 // Real production build, throwaway database, server under test/helpers/net-fence.ts, EVERY /api/* call answered from a
 // stub in the browser: no model call, no scan runs, nothing is saved. Off-host requests are aborted. It proves:
 //   1. the entry is one labelled sentence box with three suggestions written from the saved business details;
-//   2. an empty brain gets the three static examples, labelled "Examples:";
+//   2. an empty brain gets the three static examples, labelled "Examples:"; a sparse profile shows only its own
+//      suggestion under "From your business details:" and the top-up examples in a separate "Examples:" group;
 //   3. clicking a suggestion only fills the box (no request is sent);
 //   4. submitting runs the existing flow unchanged: Find leads -> profile review -> one POST /api/scan carrying the
 //      suggestion as the query -> the live progress view, where the suggestions are no longer shown.
@@ -34,6 +35,7 @@ for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } ca
 const PROFILE = { business_name: 'Bright Smile Software', sells: 'Online booking for dental practices', website: 'https://brightsmile.example',
   buyer: { summary: 'Dental practices', who: ['Dental practice owners', 'Clinic administrators'], industries: ['Dental'], sizes: [], where: ['Ohio'], signals: ['opened a new location', 'hiring front-desk staff', 'switching practice software'], exclude: [] } }
 const EMPTY = { business_name: '', sells: '', website: '', buyer: null }
+const SPARSE = { business_name: '', sells: '', website: '', buyer: { summary: 'UK schools', who: ['UK school principals'], industries: ['education'], sizes: [], where: ['London'], signals: [], exclude: [] } }
 const ICP = { summary: 'Clinic administrators in Ohio hiring front-desk staff', who: ['Clinic administrators'], industries: ['Dental'], sizes: [], where: ['Ohio'], signals: ['hiring front-desk staff'], exclude: [] }
 const b = await chromium.launch()
 async function open(profile) {
@@ -68,7 +70,8 @@ try {
   await box.waitFor()
   const chips = page.getByTestId('play-suggestion')
   await chips.first().waitFor()
-  assert.match(await page.getByTestId('play-suggestions').textContent(), /^From your business details:/)
+  assert.match(await page.getByTestId('play-suggestions-business').textContent(), /^From your business details:/)
+  assert.equal(await page.getByTestId('play-suggestions-examples').count(), 0, 'a full profile needs no examples')
   assert.deepEqual(await chips.allTextContents(), [
     'Dental practice owners in Ohio - opened a new location',
     'Clinic administrators in Ohio - hiring front-desk staff',
@@ -95,13 +98,22 @@ try {
   const empty = await open(EMPTY)
   const ex = empty.page.getByTestId('play-suggestion'); await ex.first().waitFor()
   assert.match(await empty.page.getByTestId('play-suggestions').textContent(), /^Examples:/)
+  assert.equal(await empty.page.getByTestId('play-suggestions-business').count(), 0)
   assert.equal(await ex.count(), 3)
   await ex.first().click()
   assert.equal(await empty.page.getByLabel('Who do you want to reach?').inputValue(), 'Dental practice owners in Ohio - opened a new location')
   assert.deepEqual(empty.writes, [])
   await shot(empty.page, 'examples')
   await empty.ctx.close()
-  console.log('play step UI check passed: suggestions from the business details (examples when empty), click fills only, one scan, live progress')
+  // Sparse profile (one role, no signals, nothing sold): its own suggestion and the examples are labelled apart.
+  const sparse = await open(SPARSE)
+  const own = sparse.page.getByTestId('play-suggestions-business'); await own.waitFor()
+  assert.deepEqual(await own.getByTestId('play-suggestion').allTextContents(), ['UK school principals in London'])
+  assert.deepEqual(await sparse.page.getByTestId('play-suggestions-examples').getByTestId('play-suggestion').allTextContents(), ['Dental practice owners in Ohio - opened a new location', 'B2B SaaS founders in the US - hiring their first sales rep'])
+  assert.match(await sparse.page.getByTestId('play-suggestions-examples').textContent(), /^Examples:/)
+  await shot(sparse.page, 'sparse')
+  await sparse.ctx.close()
+  console.log('play step UI check passed: suggestions from the business details (examples labelled apart), click fills only, one scan, live progress')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }

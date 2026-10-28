@@ -423,9 +423,12 @@ export default function LeadsClient() {
         <label htmlFor="play" className="block text-base font-semibold mb-2">Who do you want to reach?</label>
         <textarea id="play" className={`${input} w-full`} rows={3} required minLength={3} maxLength={600} value={query} onChange={e => setQuery(e.target.value)}
           placeholder="One sentence: who, where, and what just happened. e.g. Seed-stage fintech founders in Europe who just hired their first sales rep" />
-        {!jobId && plays && <div className="mt-2 flex flex-wrap items-center gap-2 text-xs" data-testid="play-suggestions">
-          <span className="text-[#555]">{plays.from === 'business' ? 'From your business details:' : 'Examples:'}</span>
-          {plays.items.map(t => <button key={t} type="button" data-testid="play-suggestion" onClick={() => setQuery(t)} className="border border-black/20 rounded-full px-3 py-1 text-left hover:border-black">{t}</button>)}
+        {!jobId && plays && <div className="mt-2 space-y-1 text-xs" data-testid="play-suggestions">
+          {([['business', 'From your business details:', plays.business], ['examples', 'Examples:', plays.examples]] as const).filter(([, , items]) => items.length > 0).map(([k, label, items]) =>
+            <div key={k} className="flex flex-wrap items-center gap-2" data-testid={`play-suggestions-${k}`}>
+              <span className="text-[#555]">{label}</span>
+              {items.map(t => <button key={t} type="button" data-testid="play-suggestion" onClick={() => setQuery(t)} className="border border-black/20 rounded-full px-3 py-1 text-left hover:border-black">{t}</button>)}
+            </div>)}
         </div>}
         <div className="flex gap-3 mt-2 items-center">
           <button disabled={busy || scanActive} title={scanActive ? 'A scan is already running below' : undefined} className="btn-primary">{busy ? 'Working out your profile...' : 'Find leads'}</button>

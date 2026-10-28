@@ -1,12 +1,13 @@
 // Three one-sentence plays for the Leads entry box, written from the workspace's saved business details (the buyer
 // profile first, then what it sells). Pure templating on the client: no model call, nothing is saved or run until the
-// user submits. An empty brain gets three static examples, labelled as examples.
+// user submits. Suggestions built from saved details and static examples are kept apart, so the page labels each group
+// truthfully: a sparse profile gets its own suggestions plus examples to make three, never examples passed off as its own.
 
 export interface PlayProfile {
   sells?: string
   buyer?: { who?: string[]; where?: string[]; signals?: string[]; industries?: string[] } | null
 }
-export interface PlaySuggestions { from: 'business' | 'examples'; items: string[] }
+export interface PlaySuggestions { business: string[]; examples: string[] }
 
 export const EXAMPLE_PLAYS = [
   'Dental practice owners in Ohio - opened a new location',
@@ -38,7 +39,6 @@ export function playSuggestions(p: PlayProfile | null): PlaySuggestions {
   }
   const sells = tidy(p?.sells)
   if (sells) for (const s of SELLS_SIGNALS) { if (out.length >= 3) break; add(`${industry ? `${industry} businesses` : 'Businesses'} that could use ${lower(sells)}${where ? ` in ${where}` : ''} - ${s}`) }
-  if (out.length === 0) return { from: 'examples', items: [...EXAMPLE_PLAYS] }
-  for (const e of EXAMPLE_PLAYS) { if (out.length >= 3) break; add(e) }
-  return { from: 'business', items: out }
+  const examples = EXAMPLE_PLAYS.filter(e => !out.some(x => x.toLowerCase() === e.toLowerCase())).slice(0, 3 - out.length)
+  return { business: out, examples }
 }
