@@ -19,7 +19,8 @@ export interface Outcomes {
 }
 
 // Replies that need the owner: an interested answer, or a human answer the rules could not sort. A "no", an opt-out
-// (already honoured by the send rails) and auto-replies are not counted as needing the owner.
+// (already honoured by the send rails) and auto-replies are not counted as needing the owner, and neither is a thread
+// that is already stopped.
 const NEEDS_OWNER = new Set(['positive', 'other'])
 const FAILED_SEND = new Set(['failed', 'uncertain'])
 
@@ -29,7 +30,7 @@ export function outcomes(i: { jobId: string; scanFailed: string | null; leads: P
   const mine = i.messages && ids ? i.messages.filter(m => ids.has(m.lead_id)) : i.messages
   const by = (st: string) => mine ? mine.filter(m => m.status === st) : null
   const conversations = i.replies && ids
-    ? { rows: i.replies.filter(r => r.lead_id && ids.has(r.lead_id) && NEEDS_OWNER.has(r.classification)), complete: i.replies.length < INBOX_CAP }
+    ? { rows: i.replies.filter(r => r.lead_id && ids.has(r.lead_id) && NEEDS_OWNER.has(r.classification) && !r.stopped), complete: i.replies.length < INBOX_CAP }
     : null
   let exceptions: Outcomes['exceptions'] = []
   if (i.scanFailed) exceptions.push({ kind: 'scan', text: i.scanFailed, href: `/app/leads?job_id=${i.jobId}` })

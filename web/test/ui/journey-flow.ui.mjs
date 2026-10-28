@@ -8,7 +8,8 @@
 //      sends exactly one POST /api/scan/cancel for that play and settles into the cancelled state;
 //   3. the outcomes view is reachable from Home and the nav, scoped to the play: opportunities, drafts, approved-unsent,
 //      conversations needing the owner and exceptions; another play's draft or reply is never counted; a failed read
-//      shows "?" (unknown), never 0.
+//      shows "?" (unknown), never 0; a stopped thread is not a conversation needing the owner; approved-but-unsent emails
+//      show even with zero drafts.
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
@@ -67,8 +68,8 @@ async function open(s, url = '/app', width = 1400, height = 1000) {
     if (p === '/api/scan/jobs') { s.jobPolls = (s.jobPolls ?? 0) + 1; if (s.finishAfter && s.jobPolls > s.finishAfter) s.job = job(); return json({ jobs: [s.job, job({ id: OTHER, query: 'Another play', created_at: now - 99999 })], totals: { searches: 2, finished: 1 } }) }
     if (p === '/api/scan/latest') return json({ query: s.job.query, icp: { ...BUYER, window_days: 90 }, icp_source: 'user' })
     if (p === '/api/leads') return u.searchParams.get('job_id') === P ? json({ leads: LEADS, hidden_count: 0 }) : json({ error: 'nope' }, 500)
-    if (p === `/api/campaigns/${P}`) return s.campaignFails ? json({ error: 'boom' }, 500) : json({ job: s.job, leads: LEADS, messages: [...MSGS, { id: 'x', lead_id: '8'.repeat(24), to_email: 'z@other.example', subject: 'Other play', status: 'draft', created_at: now, sent_at: null }] })
-    if (p === '/api/outreach/inbox') return json({ available: true, consent_accepted: true, read_granted: true, account: 'me@x.example', rows: REPLIES, booking_url: null })
+    if (p === `/api/campaigns/${P}`) return s.campaignFails ? json({ error: 'boom' }, 500) : json({ job: s.job, leads: LEADS, messages: [...(s.msgs ?? MSGS), { id: 'x', lead_id: '8'.repeat(24), to_email: 'z@other.example', subject: 'Other play', status: 'draft', created_at: now, sent_at: null }] })
+    if (p === '/api/outreach/inbox') return json({ available: true, consent_accepted: true, read_granted: true, account: 'me@x.example', rows: s.replies ?? REPLIES, booking_url: null })
     if (p === '/api/usage') return json({ plan: 'free', scans_used: 1, scan_limit: 10, has_key: true, trial: null })
     if (p === '/api/settings/llm-key') return json({ keys: [{ vendor: 'anthropic', last4: 'Ab12', validated_at: 1 }], rejection: null })
     if (p === '/api/settings/advanced') return json({ available: true, version: '1', platforms: [] })
@@ -166,6 +167,21 @@ try {
     assert.equal((await o2.page.getByTestId('tile-drafts').locator('div').first().textContent()).trim(), '?')
     assert.match(await o2.page.getByTestId('outcomes-drafts').textContent(), /Could not load this/)
     await o2.ctx.close()
+    // Instinct #305 review of 45d6d06: a stopped thread is not a conversation that needs the owner, and approved-but-unsent
+    // emails show even when there are no drafts.
+    const z = { ...s, msgs: [{ ...MSGS[1] }], replies: [{ ...REPLIES[0], stopped: 'replied' }, { ...REPLIES[0], gmail_id: 'g4', lead_id: LEADS[1].id, from_email: 'ops@2.example', company: 'Kitebase', excerpt: 'Who is this for?', classification: 'other', stopped: null }] }
+    const o3 = await open(z, `/app/outcomes?job_id=${P}`)
+    await o3.page.getByTestId('outcomes-conversations').locator('a').first().waitFor({ timeout: 15000 })
+    const t3 = async t => (await o3.page.getByTestId(t).locator('div').first().textContent()).trim()
+    assert.deepEqual([await t3('tile-drafts'), await t3('tile-conversations')], ['0', '1'])
+    const conv3 = await o3.page.getByTestId('outcomes-conversations').textContent()
+    assert.match(conv3, /Kitebase.*Who is this for\?/); assert.doesNotMatch(conv3, /Northwind Labs/, 'the stopped thread is not listed')
+    const d3 = o3.page.getByTestId('outcomes-drafts')
+    assert.doesNotMatch(await d3.textContent(), /No drafts waiting/, 'not shown as empty while an approved email waits')
+    assert.match(await d3.textContent(), /ops@2\.example.*Approved, not sent yet/)
+    assert.match(await o3.page.getByTestId('outcomes-approved').textContent(), /^1 approved, not sent yet\./)
+    await shot(o3.page, 'outcomes-approved-stopped')
+    await o3.ctx.close()
     const m = await open(s, `/app/outcomes?job_id=${P}`, 390, 844)
     await m.page.getByTestId('outcomes-conversations').locator('a').first().waitFor({ timeout: 15000 })
     await shot(m.page, 'outcomes-mobile')

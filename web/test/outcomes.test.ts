@@ -28,3 +28,15 @@ test('what did not load is unknown, never zero; a capped reply list is marked in
   const capped = outcomes({ jobId: J, scanFailed: null, leads: [lead('1')], messages: [], replies: Array.from({ length: INBOX_CAP }, () => reply('1', 'positive')) })
   assert.equal(capped.conversations?.complete, false)
 })
+
+test('a stopped thread never counts as a conversation that needs the owner', () => {
+  const stopped = { ...reply('1', 'positive'), stopped: 'replied' }
+  const o = outcomes({ jobId: J, scanFailed: null, leads: [lead('1'), lead('2')], messages: [], replies: [stopped, { ...reply('2', 'other'), stopped: 'opt_out' }, reply('2', 'positive')] })
+  assert.deepEqual(o.conversations?.rows.map(r => [r.lead_id, r.stopped]), [['2', null]])
+})
+
+test('approved-but-unsent emails are reported even with zero drafts', () => {
+  const o = outcomes({ jobId: J, scanFailed: null, leads: [lead('1')], messages: [msg('a1', '1', 'approved')], replies: [] })
+  assert.deepEqual(o.drafts, [])
+  assert.deepEqual(o.approved?.map(m => m.id), ['a1'])
+})

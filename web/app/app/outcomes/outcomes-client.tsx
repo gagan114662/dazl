@@ -61,8 +61,10 @@ export default function OutcomesClient() {
       {o.conversations?.rows.map(r => <Row key={r.gmail_id} name={r.company || r.from_email} sub={r.excerpt} right={<Pill tone={r.classification === 'positive' ? 'mint' : 'lav'}>{r.classification === 'positive' ? 'Interested' : 'Needs a read'}</Pill>} href="/app/inbox" />)}
     </Section>
 
-    <Section title="Drafts to review" testid="outcomes-drafts" empty="No drafts waiting." state={o.drafts ? o.drafts.length : null} loading={loading} action={o.drafts?.length ? { label: `Review ${o.drafts.length} in Outreach`, href: outreachHref } : null}>
+    {/* Approved-but-unsent emails are listed here too (with zero drafts as well): they wait only for their send. */}
+    <Section title="Drafts to review" testid="outcomes-drafts" empty="No drafts waiting." state={o.drafts && o.approved ? o.drafts.length + o.approved.length : null} loading={loading} action={o.drafts?.length ? { label: `Review ${o.drafts.length} in Outreach`, href: outreachHref } : null}>
       {o.drafts?.map(m => <Row key={m.id} name={m.to_email} sub={m.subject} right={<Pill tone="peach">Draft</Pill>} href={outreachHref} />)}
+      {o.approved?.map(m => <Row key={m.id} name={m.to_email} sub={m.subject} right={<Pill tone="mint">Approved, not sent yet</Pill>} href={outreachHref} />)}
       {o.approved && o.approved.length > 0 && <p className="px-4 py-3 text-xs text-[var(--ink-2)]" data-testid="outcomes-approved">{o.approved.length} approved, not sent yet. {o.sent?.length ?? 0} sent.</p>}
     </Section>
 
