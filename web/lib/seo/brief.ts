@@ -1,10 +1,13 @@
 import type Database from 'better-sqlite3'
+import type { Db } from '../db/client.ts'
 import { getKey, keyStatus } from '../llm/key-store.ts'
 import { providers, ProviderError } from '../llm/provider.ts'
 import type { Vendor } from '../llm/vendors.ts'
 
 // Content briefs on the tenant's OWN AI key (BYOK only - never the operator key, never a trial
 // scan). One call, plain text brief, stored for history. The UI labels every step "uses your AI key".
+// Briefs are stored through the Db layer (SQLite or Postgres); the tenant's key is still read from the SQLite key store
+// (keysDb) until that store is ported.
 
 export function migrateBriefs(db: Database.Database): void {
   db.exec(`
@@ -33,12 +36,12 @@ Rules: no hype words, no invented statistics, no claims about specific companies
 
 export type BriefResult = { id: string; topic: string; brief: string; created_at: number }
 
-export async function generateBrief(db: Database.Database, tenantId: string, rawTopic: string, deps: { fetchImpl?: typeof fetch; master?: Buffer; now?: number } = {}): Promise<BriefResult | { error: 'no_key' | 'invalid' | 'upstream' }> {
+export async function generateBrief(db: Db, keysDb: Database.Database, tenantId: string, rawTopic: string, deps: { fetchImpl?: typeof fetch; master?: Buffer; now?: number } = {}): Promise<BriefResult | { error: 'no_key' | 'invalid' | 'upstream' }> {
   const topic = rawTopic.trim().replace(/\s+/g, ' ').slice(0, 300)
   if (topic.length < 3) return { error: 'invalid' }
-  const vendor = (keyStatus(db, tenantId)[0]?.vendor ?? null) as Vendor | null
+  const vendor = (keyStatus(keysDb, tenantId)[0]?.vendor ?? null) as Vendor | null
   if (!vendor) return { error: 'no_key' }
-  const key = getKey(db, tenantId, vendor, deps.master)
+  const key = getKey(keysDb, tenantId, vendor, deps.master)
   if (!key) return { error: 'no_key' }
   let brief: string
   try {
@@ -50,10 +53,10 @@ export async function generateBrief(db: Database.Database, tenantId: string, raw
   if (brief.length < 100) return { error: 'upstream' }
   const now = deps.now ?? Math.floor(Date.now() / 1000)
   const id = `${now.toString(36)}${Math.random().toString(36).slice(2, 10)}`
-  db.prepare('INSERT INTO seo_briefs (id, tenant_id, topic, brief, created_at) VALUES (?, ?, ?, ?, ?)').run(id, tenantId, topic, brief.slice(0, 8000), now)
+  await db.run('INSERT INTO seo_briefs (id, tenant_id, topic, brief, created_at) VALUES (?, ?, ?, ?, ?)', [id, tenantId, topic, brief.slice(0, 8000), now])
   return { id, topic, brief, created_at: now }
 }
 
-export function recentBriefs(db: Database.Database, tenantId: string, limit = 10): BriefResult[] {
-  return db.prepare('SELECT id, topic, brief, created_at FROM seo_briefs WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?').all(tenantId, limit) as BriefResult[]
+export function recentBriefs(db: Db, tenantId: string, limit = 10): Promise<BriefResult[]> {
+  return db.all<BriefResult>('SELECT id, topic, brief, created_at FROM seo_briefs WHERE tenant_id = ? ORDER BY created_at DESC, id DESC LIMIT ?', [tenantId, limit])
 }

@@ -40,7 +40,8 @@ const MARK = ['ASECRETCO8w2', 'ASECRETQUERY8w2', 'ASECRETTHREAD8w2', 'ASECRETNEW
 
 // Tenant A's rows only: anything owned by B (or by nobody) is left out, so B's own audit rows do not count as a change.
 function aRows(db: Database.Database): string {
-  const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[]).map(t => t.name)
+  // rate_limits and app_leases are global platform tables (no tenant data); rateLimit() writes there through getDb().
+  const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('rate_limits', 'app_leases') ORDER BY name").all() as { name: string }[]).map(t => t.name)
   return JSON.stringify(tables.map(t => {
     const rows = db.prepare(`SELECT * FROM "${t}" ORDER BY rowid`).all() as Record<string, unknown>[]
     return [t, rows.filter(r => r.tenant_id !== 'B' && r.user_id !== 'B')]
