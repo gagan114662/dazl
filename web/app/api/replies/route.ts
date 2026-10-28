@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
-  if (!rateLimit(`replies:${user.id}`, 30, 60_000).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!(await rateLimit(`replies:${user.id}`, 30, 60_000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   const body = await req.json().catch(() => null)
   const db = getScanDb()
   migrateThreadReplies(db)
@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
   }
 
   if (body?.action === 'refresh') {
-    if (!rateLimit(`replies-refresh:${user.id}`, 10, 3_600_000).ok) return NextResponse.json({ error: 'Refresh is limited to 10 times an hour' }, { status: 429 })
+    if (!(await rateLimit(`replies-refresh:${user.id}`, 10, 3_600_000)).ok) return NextResponse.json({ error: 'Refresh is limited to 10 times an hour' }, { status: 429 })
     return NextResponse.json(await refreshReplies(db, user.id))
   }
 

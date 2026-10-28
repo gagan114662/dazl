@@ -12,7 +12,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad origin' }, { status: 403 })
   if (!/^[a-f0-9]{24}$/.test(lead)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  if (!rateLimit(`find-contact:${user.id}`, 10, 60_000).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!(await rateLimit(`find-contact:${user.id}`, 10, 60_000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   const r = await findContactForConfirmedLead(getScanDb(), user.id, lead, { signal: AbortSignal.timeout(60_000) })
   if (r.status === 'not_found') return NextResponse.json({ error: 'Lead not found' }, { status: 404 })
   if (r.status === 'not_confirmed') return NextResponse.json({ error: 'Confirm the lead first' }, { status: 409 })

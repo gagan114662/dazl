@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
   if (body.action === 'revoke') { revokeConsent(db, user.id, scopeFor(p)); setEnabled(db, user.id, connectorId(p), false); return NextResponse.json({ ok: true }) }
   if (body.action === 'toggle' && typeof body.enabled === 'boolean') return NextResponse.json({ ok: setEnabled(db, user.id, connectorId(p), body.enabled) })
   if (body.action === 'save') {
-    const rl = rateLimit(`adv:${user.id}`, 10, 60 * 60 * 1000)
+    const rl = (await rateLimit(`adv:${user.id}`, 10, 60 * 60 * 1000))
     if (!rl.ok) return NextResponse.json({ error: 'Too many attempts. Try again later.' }, { status: 429 })
     if (!hasConsent(db, user.id, scopeFor(p))) return NextResponse.json({ error: 'Accept the risk notice first' }, { status: 403 })
     const session = typeof body.session === 'string' ? body.session.trim() : ''

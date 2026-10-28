@@ -86,7 +86,7 @@ function setup(corrupt = false) {
 }
 const goodProvider: Provider = {
   research: async () => { throw new Error('unused') },
-  complete: async () => JSON.stringify({ summary: 'Sales ops teams at B2B SaaS companies that need CRM cleanup.', who: ['Sales ops managers'], industries: ['B2B SaaS'], sizes: [], where: [], signals: ['Hiring a CRM admin'], exclude: [] }),
+  complete: async () => JSON.stringify({ sells: '  CRM cleanup\n for sales teams ', summary: 'Sales ops teams at B2B SaaS companies that need CRM cleanup.', who: ['Sales ops managers'], industries: ['B2B SaaS'], sizes: [], where: [], signals: ['Hiring a CRM admin'], exclude: [] }),
 }
 const f = (async () => htmlResponse(HTML)) as unknown as typeof fetch
 
@@ -97,6 +97,7 @@ test('icpFromWebsite: returns a normalized draft ICP with the final source url',
     assert.match(out.icp.summary, /Sales ops/)
     assert.deepEqual(out.icp.who, ['Sales ops managers'])
     assert.equal(out.source, 'https://acme.example/')
+    assert.equal(out.sells, 'CRM cleanup for sales teams')
   }
 })
 

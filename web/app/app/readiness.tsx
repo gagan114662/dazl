@@ -1,0 +1,77 @@
+'use client'
+import Link from 'next/link'
+import { useEffect, useState } from 'react'
+import KeyInline from './key-inline'
+import SenderInline from './sender-inline'
+import { normalizeWebsite } from '@/lib/onboarding'
+import { readinessRows, recentPlays, type ReadinessInput, type Play } from '@/lib/readiness'
+
+// Home after the first search: what is ready, what is missing, and the fix in place. Gmail is the one fix that stays in
+// Settings: connecting is an explicit Google grant whose read-access terms are explained there.
+export default function Readiness() {
+  const [input, setInput] = useState<ReadinessInput | null>(null)
+  const [plays, setPlays] = useState<Play[] | null>(null)
+  const [open, setOpen] = useState<string | null>(null)
+  const [site, setSite] = useState({ website: '', sells: '', business_name: '' })
+  const [siteMsg, setSiteMsg] = useState('')
+
+  async function load() {
+    const get = (u: string) => fetch(u).then(r => r.ok ? r.json() : null).catch(() => null)
+    const [profile, usage, outreach, jobs] = await Promise.all([get('/api/settings/profile'), get('/api/usage'), get('/api/outreach/settings'), get('/api/scan/jobs')])
+    setInput({ profile, usage, outreach })
+    setPlays(jobs?.jobs ? recentPlays(jobs.jobs) : null)
+    if (profile) setSite({ website: String(profile.website ?? ''), sells: String(profile.sells ?? ''), business_name: String(profile.business_name ?? '') })
+  }
+  useEffect(() => { void load() }, []) // eslint-disable-line react-hooks/set-state-in-effect
+
+  async function saveSite(e: React.FormEvent) {
+    e.preventDefault(); setSiteMsg('')
+    // Only the seller fields: the saved buyer profile is left as it is (omitted fields keep their stored value).
+    const r = await fetch('/api/settings/profile', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ website: normalizeWebsite(site.website), sells: site.sells, business_name: site.business_name }) }).catch(() => null)
+    const j = await r?.json().catch(() => ({}))
+    if (!r?.ok) return setSiteMsg(j?.error || 'Could not save')
+    setOpen(null); void load()
+  }
+
+  if (!input) return null
+  const rows = readinessRows(input)
+  return (
+    <section aria-labelledby="ready-heading" className="mb-10">
+      <h2 id="ready-heading" className="text-lg font-semibold mb-3">Ready to find and email leads?</h2>
+      <ul className="card divide-y divide-black/10">
+        {rows.map(r => (
+          <li key={r.id} className="p-4 text-sm" data-testid={`ready-${r.id}`}>
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <span aria-hidden className={`inline-block w-5 mr-2 font-semibold ${r.state === 'done' ? '' : 'text-[#999]'}`}>{r.state === 'done' ? '✓' : r.state === 'unknown' ? '?' : '○'}</span>
+                <span className="font-medium">{r.label}</span>
+                <span className="text-[#555]"> - {r.detail}</span>
+              </div>
+              {r.state !== 'done' && r.fix && (r.fix.kind === 'link'
+                ? <Link href={r.fix.href} className="btn-ghost text-xs px-3 py-1.5 shrink-0">{r.fix.label}</Link>
+                : <button type="button" className="btn-ghost text-xs px-3 py-1.5 shrink-0" aria-expanded={open === r.id} onClick={() => setOpen(open === r.id ? null : r.id)}>{r.fix.label}</button>)}
+            </div>
+            {open === r.id && r.id === 'site' && <form onSubmit={saveSite} className="mt-3 flex flex-col gap-2">
+              <input className="field" aria-label="Business name" required maxLength={150} placeholder="Business name (used in your email drafts)" value={site.business_name} onChange={e => setSite({ ...site, business_name: e.target.value })} />
+              <input className="field" aria-label="Your website" placeholder="acme.com" value={site.website} onChange={e => setSite({ ...site, website: e.target.value })} />
+              <input className="field" aria-label="What you sell" required minLength={3} maxLength={150} placeholder="What you sell, in one line" value={site.sells} onChange={e => setSite({ ...site, sells: e.target.value })} />
+              <div className="flex gap-3 items-center"><button className="btn-primary text-xs px-3 py-1.5">Save</button>{siteMsg && <span className="text-xs" role="status">{siteMsg}</span>}</div>
+            </form>}
+            {open === r.id && r.id === 'key' && <div className="mt-3"><KeyInline reason="Searches and website reads run on your own Anthropic or OpenAI key." onSaved={() => { setOpen(null); void load() }} /></div>}
+            {open === r.id && r.id === 'sender' && <div className="mt-3"><SenderInline initial={input.outreach?.sender ?? null} onSaved={() => { setOpen(null); void load() }} /></div>}
+          </li>
+        ))}
+      </ul>
+
+      <h2 className="text-lg font-semibold mt-8 mb-3">Your plays</h2>
+      {plays === null ? <p className="text-sm text-[#555]">Could not load your searches. Reload to retry.</p>
+        : plays.length === 0 ? <p className="text-sm text-[#555]">No searches yet. <Link className="underline" href="/app/leads">Find leads</Link></p>
+        : <ul className="card divide-y divide-black/10" aria-label="Your plays">
+          {plays.map(p => <li key={p.id} className="p-4 text-sm flex items-center justify-between gap-3">
+            <span className="min-w-0 truncate" title={p.query}>{p.query}</span>
+            <Link className="underline shrink-0" href={`/app/leads?job_id=${p.id}`}>{p.outcome}</Link>
+          </li>)}
+        </ul>}
+    </section>
+  )
+}

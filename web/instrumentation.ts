@@ -5,4 +5,16 @@ export async function register() {
   if (process.env.NEXT_RUNTIME !== 'nodejs') return
   const { installShutdownRequeue } = await import('./lib/scan/shutdown-hook.ts')
   installShutdownRequeue()
+  // An uncaught exception is recorded (structured, scrubbed) before Node's default handling; the monitor event does
+  // not change whether the process exits.
+  const { captureError } = await import('./lib/ops/errors.ts')
+  process.on('uncaughtExceptionMonitor', (e, origin) => { captureError(e, { source: 'process', where: origin }) })
+}
+
+// Every uncaught error from a route handler, page or server action (lib/ops/request-error.ts).
+export async function onRequestError(err: unknown, request: { path: string; method: string; headers: Record<string, string | string[] | undefined> }, context: { routerKind?: string; routePath?: string; routeType?: string }) {
+  if (process.env.NEXT_RUNTIME !== 'nodejs') return
+  const { handleRequestError } = await import('./lib/ops/request-error.ts')
+  const { getSessionUser } = await import('./lib/auth-db.ts')
+  await handleRequestError(err, request, context, { tenantFor: async t => (await getSessionUser(t))?.id ?? null })
 }
