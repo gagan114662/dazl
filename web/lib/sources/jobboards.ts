@@ -3,6 +3,7 @@ import { decodeText } from './rss.ts'
 import { norm } from '../scan/evidence.ts'
 import { parseWindowDays } from '../scan/window.ts'
 import { rolePhrases } from '../search/direct-queries.ts'
+import { domainSlug } from '../signals/entity-match.ts'
 
 // Public job-board JSON (Greenhouse, Ashby, Lever). Evidence only: a posting says a company is hiring a role in a state.
 // It is not proof of a need; the normal verifier still checks every lead against the cited page.
@@ -12,6 +13,7 @@ const STATES: Record<string, string> = { AL: 'Alabama', AK: 'Alaska', AZ: 'Arizo
 const WINDOW_DAYS = 90
 const MAX_DETAIL = 3 // per Greenhouse board
 const MAX_BOARDS = 10
+const MAX_GUESS_COMPANIES = 6 // companies whose boards are probed by slug guess, 3 boards each
 export const jobBoardsLimits = { budgetMs: 12_000, pageMs: 8_000 } // stop STARTING requests after this; each request is hard-bounded at 10 s, so 12 + 10 < the 25 s adapter deadline
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 const GENERIC = new Set(['hiring', 'roles', 'role', 'jobs', 'job', 'open', 'openings', 'positions', 'position', 'team', 'remote'])
@@ -143,10 +145,22 @@ export async function hnBoards(http: SafeGet, state: string | ((text: string) =>
   return [...new Set(out)]
 }
 
+// Board slugs to PROBE for a company this scan found: its domain's first label, then its bare name (and the hyphenated multiword form). A guess is where to look, never proof
+// the board is that company's: a board found by the domain slug is the company's own by construction of the domain; any other slug counts only for a posting that names the
+// company in its title or quote.
+export function guessSlugs(c: { name: string; domain?: string | null }): { token: string; byDomain: boolean }[] {
+  const out = new Map<string, boolean>()
+  const d = domainSlug(c.domain); if (d && TOKEN.test(d)) out.set(d, true)
+  const words = c.name.toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean)
+  const bare = words.join(''), dashed = words.join('-')
+  for (const t of [bare, dashed]) if (t.length >= 3 && TOKEN.test(t) && !out.has(t)) out.set(t, false)
+  return [...out].map(([token, byDomain]) => ({ token, byDomain }))
+}
+
 export const jobBoardsAdapter: SourceAdapter = {
   id: 'jobboards',
   label: 'Greenhouse and Ashby public job boards',
-  async collect({ query, keywords, feeds, pages, discovered, http: rawHttp, page, note }) {
+  async collect({ query, keywords, feeds, pages, discovered, companies, http: rawHttp, page, note }) {
     const t0 = Date.now()
     let cut = false
     const http: SafeGet = async (url, o) => { if (Date.now() - t0 > jobBoardsLimits.budgetMs) { cut = true; return { status: 0, body: '' } } return rawHttp(url, o) }
@@ -178,7 +192,8 @@ export const jobBoardsAdapter: SourceAdapter = {
     const roleOk = (t: string) => roles.some(k => t.toLowerCase().includes(k))
     // Boards come from the given feeds and from discovered page/hit URLs (posting links). Deduped; a lookalike host never yields a board.
     const seenBoards = new Set<string>()
-    const boards: { kind: 'gh' | 'ashby' | 'lever'; token: string }[] = []
+    type Board = { kind: 'gh' | 'ashby' | 'lever'; token: string; company?: string; byDomain?: boolean }
+    const boards: Board[] = []
     for (const u of [...feeds, ...(pages ?? []), ...(discovered ?? [])]) {
       const b = board(u)
       if (!b || seenBoards.has(`${b.kind}:${b.token}`)) continue
@@ -191,7 +206,19 @@ export const jobBoardsAdapter: SourceAdapter = {
       seenBoards.add(`${b.kind}:${b.token}`)
       boards.push(b)
     }
-    for (const b of boards.slice(0, MAX_BOARDS)) {
+    // Boards of the companies this scan found, by slug guess (public JSON, 3 keyless GETs per slug; a 404 is normal and not a partial result).
+    const guessed: Board[] = []
+    for (const c of (companies ?? []).slice(0, MAX_GUESS_COMPANIES)) for (const g of guessSlugs(c)) for (const kind of ['gh', 'ashby', 'lever'] as const) {
+      if (seenBoards.has(`${kind}:${g.token}`)) continue
+      seenBoards.add(`${kind}:${g.token}`)
+      guessed.push({ kind, token: g.token, company: c.name, byDomain: g.byDomain })
+    }
+    // A guessed board's posting is kept only when the board is the company's by domain slug, or the posting itself names the company; its title then leads with the company.
+    const push = (b: Board, e: Evidence) => {
+      if (!b.company) { out.push(e); return }
+      if (b.byDomain || norm(`${e.title} ${e.quote}`).includes(norm(b.company))) out.push({ ...e, title: `${b.company}: ${e.title}`.slice(0, 200) })
+    }
+    for (const b of [...boards, ...guessed].slice(0, MAX_BOARDS)) {   // one shared cap: explicit and discovered boards first, guessed ones fill what is left
       if (b.kind === 'lever') {
         // Lever's public postings JSON: createdAt (epoch milliseconds) is the only date and is used as the posting date.
         // A missing or non-numeric createdAt means no date and no evidence.
@@ -204,7 +231,7 @@ export const jobBoardsAdapter: SourceAdapter = {
           if (!fresh(date)) continue
           const quote = await quoteFor(url, j.descriptionPlain)
           if (!quote) continue
-          out.push({ source: 'jobboards', url, title: `${j.text} (${loc ?? state})`.slice(0, 200), quote, date })
+          push(b, { source: 'jobboards', url, title: `${j.text} (${loc ?? state})`.slice(0, 200), quote, date })
         }
       } else if (b.kind === 'ashby') {
         const d = await json(http, `https://api.ashbyhq.com/posting-api/job-board/${b.token}`, note)
@@ -215,7 +242,7 @@ export const jobBoardsAdapter: SourceAdapter = {
           if (!fresh(date)) continue
           const quote = await quoteFor(j.jobUrl, j.descriptionPlain)
           if (!quote) continue
-          out.push({ source: 'jobboards', url: j.jobUrl, title: `${j.title} (${j.location ?? state})`.slice(0, 200), quote, date })
+          push(b, { source: 'jobboards', url: j.jobUrl, title: `${j.title} (${j.location ?? state})`.slice(0, 200), quote, date })
         }
       } else {
         const d = await json(http, `https://boards-api.greenhouse.io/v1/boards/${b.token}/jobs`, note)
@@ -230,7 +257,7 @@ export const jobBoardsAdapter: SourceAdapter = {
           if (!fresh(date) || !url.startsWith('https://')) continue
           const quote = await quoteFor(url, det.content)
           if (!quote) continue
-          out.push({ source: 'jobboards', url, title: `${det.title} (${det.location?.name ?? state})`.slice(0, 200), quote, date, updated: day(det.updated_at) })
+          push(b, { source: 'jobboards', url, title: `${det.title} (${det.location?.name ?? state})`.slice(0, 200), quote, date, updated: day(det.updated_at) })
         }
       }
     }
