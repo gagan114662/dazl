@@ -9,7 +9,7 @@
 //   - getJob does not run the stale reaper as a side effect: reapStaleJobs is its own call.
 // The status-transition and running-job triggers stay in the schema on both engines; nothing here bypasses them.
 import { randomBytes } from 'node:crypto'
-import type { Db, Param, TxBody } from '../db/client.ts'
+import type { Db, Param, Tx, TxBody } from '../db/client.ts'
 import { CANCEL_HOLD_S, MAX_ATTEMPTS, STALE_RUNNING_S, type QueryInput, type ScanInput, type CancelResult, type JobSummary } from './store.ts'
 import { ENRICH_STALE_S } from './enrichment.ts'
 
@@ -24,10 +24,19 @@ export async function createJob(db: Db, userId: string, input: ScanInput, runBud
 
 // icp is a JSON string the user already saw; null means "infer it when the job runs". run_budget is part of the
 // INSERT, so a job is never visible to a runner without its budget.
+const QUERY_JOB_SQL = "INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, icp_inferred, sources, seller, watch_id, run_budget, created_at) VALUES (?, ?, ?, '(from request)', '-', ?, ?, ?, ?, ?, ?, ?, ?)"
+const queryJobParams = (id: string, userId: string, input: QueryInput, now: number): Param[] =>
+  [id, userId, input.query.slice(0, 150) || '-', input.query, input.icp ?? null, input.icp ? 0 : null, input.sources ?? null, (input.seller ?? '').trim().slice(0, 300) || null, input.watchId ?? null, input.runBudget ?? null, now]
 export async function createQueryJob(db: Db, userId: string, input: QueryInput, now = nowS()): Promise<string> {
   const id = randomBytes(12).toString('hex')
-  await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, icp_inferred, sources, seller, watch_id, run_budget, created_at) VALUES (?, ?, ?, '(from request)', '-', ?, ?, ?, ?, ?, ?, ?, ?)",
-    [id, userId, input.query.slice(0, 150) || '-', input.query, input.icp ?? null, input.icp ? 0 : null, input.sources ?? null, (input.seller ?? '').trim().slice(0, 300) || null, input.watchId ?? null, input.runBudget ?? null, now])
+  await db.run(QUERY_JOB_SQL, queryJobParams(id, userId, input, now))
+  return id
+}
+// createQueryJob as a transaction step, for a caller that records the job with other writes in one transaction (a
+// watch or monitor run: the job and the schedule that queued it commit together, or neither does).
+export function* queryJobStep(t: Tx, userId: string, input: QueryInput, now = nowS()): TxBody<string> {
+  const id = randomBytes(12).toString('hex')
+  yield* t.run(QUERY_JOB_SQL, queryJobParams(id, userId, input, now))
   return id
 }
 

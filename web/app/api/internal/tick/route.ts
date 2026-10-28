@@ -7,7 +7,7 @@ import { runFollowups } from '@/lib/outreach/followups'
 import { runDueWatches } from '@/lib/watch'
 import { collectMonitorResults, runDueMonitors } from '@/lib/monitors'
 import { kickRunner } from '@/lib/scan/runner'
-import { getDb } from '@/lib/db/client'
+import { getDb, type Tx } from '@/lib/db/client'
 import { LeaseLost, StaleLeaseWrite, tryLease } from '@/lib/shared/lease'
 import type { Lease } from '@/lib/shared/lease'
 import { migrateIndexing, dueTenants, runIndexChecks } from '@/lib/seo/indexing'
@@ -57,14 +57,17 @@ async function tick(lease: Lease, requestId?: string) {
     try { const r = await runSequences(db,t.tenant_id,''); sequences += r.sent } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:sequences', tenantId: t.tenant_id, requestId }) }
   }
   await lease.keep()
-  const watches = runDueWatches(db)
+  // Watches and monitors are on the Db layer: each of their transactions takes the lease's fence first.
+  const shared = await getDb()
+  const fence = (t: Tx) => lease.fence(t)
+  const watches = await runDueWatches(shared, { fence })
   // The scan runner works outside the tick's lease (its own claims), so it gets the raw handle.
   if (watches.ran > 0) after(() => kickRunner(raw))
   // Continuous monitoring: queue due monitors as ordinary scans, then fold finished runs into
   // per-monitor new-lead counts. Monitor jobs respect the same quota and pipeline as manual scans.
-  const monitorJobs = runDueMonitors(db)
+  const monitorJobs = await runDueMonitors(shared, { fence })
   if (monitorJobs.length > 0) after(() => kickRunner(raw))
-  const monitorAlerts = collectMonitorResults(db)
+  const monitorAlerts = await collectMonitorResults(shared, { fence })
   // Weekly indexing checks: one TinyFish site: search per saved keyword, inside the tenant's
   // own 10-searches-per-week allowance (separate from the scan caps). Best-effort per tenant.
   migrateIndexing(db)

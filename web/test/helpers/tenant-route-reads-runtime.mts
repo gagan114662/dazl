@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
+import { sqliteDb } from '../../lib/db/client.ts'
 import { migrateScan, createJob } from '../../lib/scan/store.ts'
 import { migrateOutreach } from '../../lib/outreach/store.ts'
 import { migrateReopen, createReopenDraft } from '../../lib/outreach/reopen.ts'
@@ -62,13 +63,13 @@ async function build() {
   setScanDb(db)
   const master = randomBytes(32)
   const now = Math.floor(Date.now() / 1000)
-  const seed = (t: string, m: typeof MA | typeof MB, email: string, thread: string | null) => {
+  const seed = async (t: string, m: typeof MA | typeof MB, email: string, thread: string | null) => {
     const job = createJob(db, t, { business_name: m.biz, industry: 'test', location: 'test' })
     db.prepare("UPDATE scan_jobs SET status='running', query=? WHERE id=?").run(m.q, job)
     const lead = hex()
     db.prepare("INSERT INTO leads(id,scan_job_id,company,name,contact,signal,source_url,evidence_excerpt,confidence,human_confirmed_at,score) VALUES(?,?,?,'Pat',?,'Hiring','https://x.invalid/jobs',?,80,1,70)").run(lead, job, m.co, email, `${m.co} is hiring`)
     db.prepare("INSERT INTO outreach_messages(id,tenant_id,lead_id,to_email,subject,body,status) VALUES(?,?,?,?,?,?,'draft')").run(hex(), t, lead, email, m.subj, 'Fixture body text long enough for the guard, twenty chars plus.')
-    createMonitor(db, t, { query: m.mon })
+    await createMonitor(sqliteDb(db), t, { query: m.mon })
     saveMemory(db, t, { positioning: m.mem })
     saveKey(db, t, 'anthropic', m.key, master)
     if (thread) db.prepare("INSERT INTO followup_threads(tenant_id,thread_id,lead_id,to_email,root_message_id,last_activity_at,last_lead_reply_at,followups_sent) VALUES(?,?,?,?,'r@x',?,?,0)").run(t, thread, lead, email, now, now)
@@ -78,8 +79,8 @@ async function build() {
     if (thread) db.prepare("INSERT INTO followup_messages(tenant_id,thread_id,step,status,created_at) VALUES(?,?,0,'sent',?)").run(t, thread, now)
     return { job, lead }
   }
-  const a = seed('A', MA, MA.email, MA.thread)
-  const b = seed('B', MB, 'bmarker7h2m@b.invalid', MB.thread)
+  const a = await seed('A', MA, MA.email, MA.thread)
+  const b = await seed('B', MB, 'bmarker7h2m@b.invalid', MB.thread)
   return { db, a, b }
 }
 

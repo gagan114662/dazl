@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
+import { sqliteDb } from '../../lib/db/client.ts'
 import { migrateScan, createJob } from '../../lib/scan/store.ts'
 import { migrateOutreach } from '../../lib/outreach/store.ts'
 import { migrateReopen, createReopenDraft } from '../../lib/outreach/reopen.ts'
@@ -69,7 +70,7 @@ async function build() {
   db.prepare("INSERT INTO followup_threads(tenant_id,thread_id,lead_id,to_email,root_message_id,last_activity_at,last_lead_reply_at,followups_sent) VALUES('A','tA',?,'info@a.invalid','r@x',?,?,2)").run(lead2, now - 86400 * 45, now - 86400 * 45)
   db.prepare("INSERT INTO inbound_messages(gmail_id,tenant_id,thread_id,lead_id,from_email,excerpt,classification,received_at) VALUES ('g','A','tA',?,'info@a.invalid','sounds interesting','positive',?)").run(lead2, now - 86400 * 45)
   createReopenDraft(db, 'A', 'tA', 'Acme')
-  const created = createMonitor(db, 'A', { query: 'synthetic query' })
+  const created = await createMonitor(sqliteDb(db), 'A', { query: 'synthetic query' })
   assert.ok('id' in created, 'fixture: monitor created')
   // Independent valid fixtures for the approve and reopen-edit positive controls (their own leads, drafts and thread).
   const { saveSettings } = await import('../../lib/outreach/service.ts')

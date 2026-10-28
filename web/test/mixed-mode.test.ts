@@ -9,7 +9,8 @@ import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { createPasswordUser, createSession, getSessionUser, sellerProfile, setSellerProfile } from '../lib/auth-db.ts'
 import { resolveUser } from '../lib/auth-google.ts'
 import { applyStripeEvent } from '../lib/billing/stripe.ts'
-import { getPlan, scanQuota } from '../lib/plans.ts'
+import { scanQuota } from '../lib/plans.ts'
+import { getPlan } from './helpers/plan-fixture.ts'
 import { createJob, listLeads } from '../lib/scan/store.ts'
 
 test('mixed mode: concurrent ported transactions and raw requests on one SQLite connection', async () => {

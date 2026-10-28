@@ -75,7 +75,8 @@ test('stale attempt: finish no-ops AND zero post-finish side effects fire', asyn
 test('stale CSV-batch attempt: owned-gate blocks seen-flags, crawl and enrichment', async () => {
   const { createBatch, queuePendingRows, migrateCsv } = await import('../lib/scan/csv-import.ts')
   const db = setup()
-  const { migratePlans, setPlan } = await import('../lib/plans.ts')
+  const { migratePlans } = await import('../lib/plans.ts')
+  const { setPlan } = await import('./helpers/plan-fixture.ts')
   migratePlans(db)
   setPlan(db, 'A', 'pro')
   migrateCsv(db)
