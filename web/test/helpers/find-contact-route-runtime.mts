@@ -1,4 +1,5 @@
 import { test } from 'node:test'
+import { sqliteDb } from '../../lib/db/client.ts'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
@@ -39,7 +40,7 @@ ins.run(ID(4), job, 'Acme Roofing', null, 'x', 'https://jobboard.test/a', 'x', n
 db.prepare('UPDATE leads SET scan_job_id = ? WHERE id = ?').run(jobB, ID(4))
 ins.run(ID(5), job, 'Different Corp', null, 'x', 'https://jobboard.test/b', 'x', null, 'source_review_required', 50, null)    // homepage names someone else
 ins.run(ID(6), job, 'Blocked Co', null, 'x', 'https://jobboard.test/c', 'x', null, 'source_review_required', 50, null)       // robots disallow
-for (const n of [1, 3, 5, 6]) confirmLeadReview(db, 'A', ID(n))
+for (const n of [1, 3, 5, 6]) await confirmLeadReview(sqliteDb(db), 'A', ID(n))
 setScanDb(db)
 
 const post = (id: string, headers: Record<string, string> = { 'content-type': 'application/json' }) =>

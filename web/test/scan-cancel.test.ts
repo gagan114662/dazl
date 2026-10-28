@@ -94,7 +94,7 @@ test('profile save returns canonical stored values; business name round-trips; k
   const fs = await import('node:fs')
   const rd = (p: string) => fs.readFileSync(new URL(p, import.meta.url), 'utf8')
   const route = rd('../app/api/settings/profile/route.ts')
-  assert.match(route, /ok: true, \.\.\.getSellerProfile/)
+  assert.match(route, /ok: true, \.\.\.await readSellerProfile/) // canonical values by value: test/helpers/pg-port-routes-runtime.mts
   assert.match(route, /: cur\.sells/)
   assert.match(route, /: cur\.website/)
   // Home re-reads the stored profile after a save (never shows unsaved text); a usage failure reads "could not check".
