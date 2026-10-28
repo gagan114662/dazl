@@ -27,6 +27,13 @@ export function migrateBilling(db: Database.Database): void {
       processed_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
     );
     CREATE INDEX IF NOT EXISTS tenant_plans_customer ON tenant_plans (stripe_customer_id);
+    -- Subscriptions Stripe has ended (deleted, canceled, incomplete_expired). Ending is final in Stripe: a resubscribe
+    -- is a new subscription id, so an ended id never upgrades a tenant again. PG: 0007_stripe_event_order.sql.
+    CREATE TABLE IF NOT EXISTS stripe_ended_subscriptions (
+      subscription_id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      ended_at INTEGER
+    );
   `)
 }
 
@@ -42,6 +49,8 @@ interface StripeObject {
 export interface StripeEvent {
   id: string
   type: string
+  // Unix seconds when Stripe created the event. Stripe does not deliver events in order or only once.
+  created?: number
   data: { object: StripeObject }
 }
 
@@ -57,31 +66,125 @@ function* link(t: Tx, tenantId: string, customer?: string, subscription?: string
   yield* t.run('UPDATE tenant_plans SET stripe_customer_id = COALESCE(?, stripe_customer_id), stripe_subscription_id = COALESCE(?, stripe_subscription_id) WHERE tenant_id = ?', [customer ?? null, subscription ?? null, tenantId])
 }
 
+// What a subscription status means for the plan: an explicit policy for every status Stripe documents. `ends` marks the
+// subscription as over for good. Unknown statuses return null: never proof of Pro (see applyStripeEvent).
+//   active, trialing, past_due          -> Pro (past_due: Stripe is still retrying the payment)
+//   canceled, incomplete_expired        -> Free, ended for good
+//   unpaid, incomplete, paused          -> Free, can become active again
+export const ENTITLING = new Set(['active', 'trialing', 'past_due'])
+const ENDED = new Set(['canceled', 'incomplete_expired'])
+const NOT_ENTITLING = new Set(['unpaid', 'incomplete', 'paused'])
+function statusEffect(status: string | undefined, subscription: string | undefined): { plan: 'pro' | 'free'; subscription?: string; ends: boolean } | null {
+  if (status && ENTITLING.has(status)) return { plan: 'pro', subscription, ends: false }
+  if (status && ENDED.has(status)) return { plan: 'free', subscription, ends: true }
+  if (status && NOT_ENTITLING.has(status)) return { plan: 'free', subscription, ends: false }
+  return null
+}
+
+// What an event would do to the plan: upgrade, downgrade, or nothing.
+function effect(event: StripeEvent): { plan: 'pro' | 'free'; subscription?: string; ends: boolean } | null {
+  const o = event.data?.object ?? {}
+  if (event.type === 'checkout.session.completed') return o.mode === 'subscription' ? { plan: 'pro', subscription: o.subscription, ends: false } : null
+  if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.created') return statusEffect(o.status, o.id)
+  if (event.type === 'customer.subscription.deleted') return { plan: 'free', subscription: o.id, ends: true }
+  return null
+}
+
+// A tie: a non-ending event for the tenant's current subscription, created in the same second as the event that last
+// set the plan, which would change the plan. Its order against that event is unknown (created is in whole seconds), so
+// the plan comes from the subscription's current status at Stripe instead of from delivery order. (An event for a
+// different subscription is not a tie: a new subscription links and upgrades, an old one's downgrade is ignored.)
+// A held tie (stripe_reconcile_at = that second) stays a tie for every event of that second until Stripe's answer
+// settles it, whatever the plan is meanwhile.
+type PlanRow = { plan: string; stripe_subscription_id: string | null; stripe_event_at: number | null; stripe_reconcile_at: number | null }
+function isTie(fx: { plan: string; ends: boolean; subscription?: string }, created: number | null, row: PlanRow | undefined): boolean {
+  return !fx.ends && !!fx.subscription && fx.subscription === row?.stripe_subscription_id && created !== null
+    && row.stripe_event_at != null && created === Number(row.stripe_event_at)
+    && (fx.plan !== row.plan || (row.stripe_reconcile_at != null && created === Number(row.stripe_reconcile_at)))
+}
+
+// The subscription's current status, read from Stripe (GET, test or live key; no charge). Tests always stub this.
+export async function fetchSubscriptionStatus(id: string, fetchImpl: typeof fetch = fetch): Promise<string> {
+  const res = await fetchImpl(`https://api.stripe.com/v1/subscriptions/${encodeURIComponent(id)}`, {
+    headers: { authorization: `Bearer ${process.env.STRIPE_SECRET_KEY}` }, signal: AbortSignal.timeout(10_000),
+  })
+  if (!res.ok) throw new Error(`stripe_${res.status}`)
+  const status = ((await res.json()) as { status?: unknown }).status
+  if (typeof status !== 'string') throw new Error('stripe_no_status')
+  return status
+}
+
+export interface StripeDeps { subscriptionStatus?: (id: string) => Promise<string> }
+
 // Apply a verified event. Each Stripe event id is processed once, in one transaction with its plan change: a concurrent
 // second delivery waits on the first's event row and then reports 'duplicate'.
-export async function applyStripeEvent(db: Db, event: StripeEvent): Promise<'applied' | 'ignored' | 'duplicate'> {
-  return db.tx(function* (t): TxBody<'applied' | 'ignored' | 'duplicate'> {
+// Stripe delivers events out of order, and `created` is in whole seconds, so time alone cannot order two events of the
+// same second. The rules, in this order:
+//   1. An ended subscription (deleted, canceled, incomplete_expired) stays ended: its id is recorded, and no later or
+//      same-second event for it upgrades the tenant again ('stale'). A resubscribe is a new subscription id.
+//   2. The end of the tenant's current subscription always downgrades, whatever its timestamp. The end of an older
+//      subscription changes nothing ('ignored').
+//   3. An event created before the one that last set the plan is 'stale'.
+//   4. A tie (see isTie: same second, non-ending, would change the plan) is settled by the subscription's current
+//      status at Stripe, read before the transaction ('reconciled'), never by delivery order, using the status policy
+//      above. Without a usable answer (the read failed, Stripe returned a status the policy does not know, or the tie
+//      only appeared under the lock) the tie goes to the restrictive state, Free, at once, and the event is NOT marked
+//      processed ('held'): the webhook answers 503, Stripe delivers it again, and the read settles it then. Only an
+//      entitling status from Stripe grants Pro on a tie.
+// The tenant's plan row is locked (FOR UPDATE on Postgres; SQLite has one writer) before these checks, so two events
+// for one tenant processed at the same time are ordered by the rules, not by which commits last.
+export type ApplyResult = 'applied' | 'reconciled' | 'held' | 'ignored' | 'stale' | 'duplicate'
+export async function applyStripeEvent(db: Db, event: StripeEvent, deps: StripeDeps = {}): Promise<ApplyResult> {
+  const eventFx = effect(event)
+  const o = event.data?.object ?? {}
+  const created = typeof event.created === 'number' && Number.isFinite(event.created) ? event.created : null
+  // Pre-check (read only): when this event would tie, read the subscription's status from Stripe now, outside the
+  // transaction, so no network call happens while the plan row is locked.
+  let authoritative: string | undefined
+  if (eventFx && !eventFx.ends && eventFx.subscription && created !== null) {
+    const pre = await db.tx(function* (t) {
+      const tenantId = yield* tenantFor(t, o)
+      const row = tenantId ? yield* t.get<PlanRow>('SELECT plan, stripe_subscription_id, stripe_event_at, stripe_reconcile_at FROM tenant_plans WHERE tenant_id = ?', [tenantId]) : undefined
+      const ended = !!(yield* t.get('SELECT 1 AS x FROM stripe_ended_subscriptions WHERE subscription_id = ?', [eventFx.subscription!]))
+      return { row, ended }
+    })
+    if (!pre.ended && isTie(eventFx, created, pre.row)) {
+      try { authoritative = await (deps.subscriptionStatus ?? (id => fetchSubscriptionStatus(id)))(eventFx.subscription) } catch { authoritative = undefined } // held below
+    }
+  }
+  return db.tx(function* (t): TxBody<ApplyResult> {
     if ((yield* t.run('INSERT INTO stripe_events (id, type) VALUES (?, ?) ON CONFLICT (id) DO NOTHING', [event.id, event.type])).changes === 0) return 'duplicate'
-    const o = event.data?.object ?? {}
     const tenantId = yield* tenantFor(t, o)
     if (!tenantId) return 'ignored'
-
-    if (event.type === 'checkout.session.completed' && o.mode === 'subscription') {
-      yield* link(t, tenantId, o.customer, o.subscription)
-      yield* writePlan(t, tenantId, 'pro')
-      return 'applied'
-    }
-    if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.created') {
-      yield* link(t, tenantId, o.customer, o.id)
-      if (o.status === 'active' || o.status === 'trialing' || o.status === 'past_due') yield* writePlan(t, tenantId, 'pro') // past_due: Stripe is still retrying
-      else if (o.status === 'canceled' || o.status === 'unpaid' || o.status === 'incomplete_expired') yield* writePlan(t, tenantId, 'free')
-      return 'applied'
-    }
-    if (event.type === 'customer.subscription.deleted') {
+    if (!eventFx) return 'ignored'
+    yield* t.run('INSERT INTO tenant_plans (tenant_id) VALUES (?) ON CONFLICT (tenant_id) DO NOTHING', [tenantId])
+    const row = (yield* t.get<PlanRow>(
+      `SELECT plan, stripe_subscription_id, stripe_event_at, stripe_reconcile_at FROM tenant_plans WHERE tenant_id = ?${t.kind === 'pg' ? ' FOR UPDATE' : ''}`, [tenantId]))!
+    const current = row.stripe_subscription_id
+    // rules 1 and 2 first: they decide without asking Stripe
+    if (eventFx.ends && eventFx.subscription) yield* t.run('INSERT INTO stripe_ended_subscriptions (subscription_id, tenant_id, ended_at) VALUES (?, ?, ?) ON CONFLICT (subscription_id) DO NOTHING', [eventFx.subscription, tenantId, created])
+    if (eventFx.plan === 'pro' && eventFx.subscription && (yield* t.get('SELECT 1 AS x FROM stripe_ended_subscriptions WHERE subscription_id = ?', [eventFx.subscription]))) return 'stale'
+    if (eventFx.plan === 'free' && current && eventFx.subscription && eventFx.subscription !== current) return 'ignored'
+    let fx = eventFx
+    const tie = isTie(eventFx, created, row)
+    const settled = tie && authoritative !== undefined ? statusEffect(authoritative, eventFx.subscription) : null
+    if (tie && !settled) {
+      // no usable answer from Stripe (no read, or a status the policy does not know): the restrictive state now, and
+      // leave the event unprocessed so Stripe delivers it again
       yield* writePlan(t, tenantId, 'free')
-      return 'applied'
+      yield* t.run('UPDATE tenant_plans SET stripe_reconcile_at = ? WHERE tenant_id = ?', [created, tenantId])
+      yield* t.run('DELETE FROM stripe_events WHERE id = ?', [event.id])
+      return 'held'
     }
-    return 'ignored'
+    if (tie && settled) {
+      yield* t.run('UPDATE tenant_plans SET stripe_reconcile_at = NULL WHERE tenant_id = ?', [tenantId])
+      fx = settled
+      if (fx.ends) yield* t.run('INSERT INTO stripe_ended_subscriptions (subscription_id, tenant_id, ended_at) VALUES (?, ?, ?) ON CONFLICT (subscription_id) DO NOTHING', [fx.subscription!, tenantId, created])
+    } else if (!fx.ends && created !== null && row.stripe_event_at != null && created < Number(row.stripe_event_at)) return 'stale'
+    yield* link(t, tenantId, o.customer, fx.subscription)
+    yield* writePlan(t, tenantId, fx.plan)
+    if (created !== null) yield* t.run('UPDATE tenant_plans SET stripe_event_at = ? WHERE tenant_id = ? AND (stripe_event_at IS NULL OR stripe_event_at < ?)', [created, tenantId, created])
+    return tie ? 'reconciled' : 'applied'
   })
 }
 

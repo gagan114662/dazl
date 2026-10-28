@@ -17,6 +17,11 @@ export function migratePlans(db: Database.Database): void {
       stripe_subscription_id TEXT
     );
   `)
+  // Stripe event ordering (lib/billing/stripe.ts): the created time of the last event that set this plan. PG:
+  // 0007_stripe_event_order.sql.
+  try { db.exec('ALTER TABLE tenant_plans ADD COLUMN stripe_event_at INTEGER') } catch { /* exists */ }
+  // A same-second tie Stripe has not settled yet (lib/billing/stripe.ts): that second, until the read settles it.
+  try { db.exec('ALTER TABLE tenant_plans ADD COLUMN stripe_reconcile_at INTEGER') } catch { /* exists */ }
 }
 
 // Sync reader for callers not yet on the Db layer (scan, monitors, watch). Billing uses readPlan.

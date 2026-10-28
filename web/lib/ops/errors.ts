@@ -4,7 +4,8 @@
 //   source, method   - fixed sets
 //   where            - a route template or worker name: [A-Za-z0-9_-./[]:] only, at most 128 chars
 //   tenant           - a users.id: 32 lowercase hex characters (randomBytes(16), app/api/auth/signup, lib/auth-google.ts)
-//   ref              - a Stripe event id from a signature-verified webhook (evt_ + 24-64 base62, with a digit)
+//   ref              - a Stripe event id from a signature-verified webhook (evt_ + 24-64 base62, with a digit), or a
+//                      scan_jobs.id (24 lowercase hex, randomBytes(12) in lib/scan/store.ts)
 //   error.name, cause.name - a class name ending in Error/Exception, or one of this app's own error classes, that the
 //                            scrub leaves unchanged and that has no run of 4+ digits
 // Never read: request bodies, headers, cookies, query strings. The scrub (emails, keys, tokens, IPs, phone numbers,
@@ -17,7 +18,7 @@ export interface ErrorContext {
   where: string
   method?: string
   tenantId?: string | null
-  // a Stripe event id (signature-verified webhook); dropped unless it has that shape
+  // a Stripe event id (signature-verified webhook) or a scan job id; dropped unless it has one of those shapes
   ref?: string
 }
 
@@ -68,6 +69,7 @@ export const isTenantId = (v: unknown): v is string => typeof v === 'string' && 
 // Stripe ids are evt_ + 24+ random base62 characters (digits included); the only caller passes the id of an event whose
 // signature was verified, so the value came from Stripe, and the shape check is a second guard.
 const isStripeEventId = (v: unknown): v is string => typeof v === 'string' && /^evt_(?=[A-Za-z]*[0-9])[A-Za-z0-9]{24,64}$/.test(v)
+const isScanJobId = (v: unknown): v is string => typeof v === 'string' && /^[a-f0-9]{24}$/.test(v)
 export function whereName(w: unknown): string {
   const s = typeof w === 'string' ? w.split(/[?#]/)[0] : ''
   return /^[A-Za-z0-9_\-./[\]:]{1,128}$/.test(s) && scrub(s) === s ? s : '[unrecognized]'
@@ -92,7 +94,7 @@ export function toRecord(e: unknown, ctx: ErrorContext, now = new Date()): Error
   return {
     level: 'error', ts: now.toISOString(), source, where, ...(ctx.method && METHODS.has(ctx.method) ? { method: ctx.method } : {}),
     tenant: isTenantId(ctx.tenantId) ? ctx.tenantId : null,
-    ...(isStripeEventId(ctx.ref) ? { ref: ctx.ref } : {}),
+    ...(isStripeEventId(ctx.ref) || isScanJobId(ctx.ref) ? { ref: ctx.ref } : {}),
     error: { ...d, ...(cause ? { cause: { name: cause.name, message: cause.message } } : {}) },
     fingerprint,
   }

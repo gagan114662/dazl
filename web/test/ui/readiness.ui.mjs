@@ -3,13 +3,19 @@
 // Real production build, throwaway database, server under test/helpers/net-fence.ts. /api/settings/profile goes to the
 // REAL route; every other /api/* call is answered from a stub in the browser (no key check, no Gmail, no scan, no email).
 // It proves:
-//   1. an account that has searched sees the checklist (not the first-run flow): business, AI key, Gmail, sender;
+//   1. an account that has searched sees the checklist (not the first-run flow): website and business brain, first play,
+//      AI key, lead sources, Gmail, sender, daily sending limit, with "n of 7 done"; lead sources reads the server's
+//      source switches (GET /api/scan/sources) and the key (capability wording: what a scan can use, never "searched";
+//      without a key it says a scan cannot start), and turns done once a key makes web research usable;
 //   2. each missing item has its fix in place: business and sender save inline, the key is one inline field, and Gmail
 //      links to Settings (where its consent text is) - Home never starts the Google grant itself;
 //   3. after each inline fix the row turns done from re-read server state;
 //   4. "Your plays" lists own searches newest first with their outcome, linked to their leads: source-checked and
 //      needs-review counts separately (a done search with 0 verified / 5 needing review never reads "5 leads"), old
-//      records without counts say "counts unavailable" (never leads), cancelled runs say "cancelled".
+//      records without counts say "counts unavailable" (never leads), cancelled runs say "cancelled";
+//   5. once every step is done (Gmail connected, from the stubbed status) the checklist is hidden and the plays stay;
+//   7. if the source check fails, that row says "could not check" and the checklist stays up (never counted as done);
+//   6. all steps done but the daily limit used up: the checklist stays hidden and Home still says why sending stopped.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -44,7 +50,7 @@ const JOBS = [
   job('f', 'Cancelled search', now - 200, { status: 'failed', error: 'cancelled', lead_count: 0 }),
   job('d', null, now - 100, { csv_domain: 'acme.com' }),
 ]
-const state = { hasKey: false, sender: null }
+const state = { hasKey: false, sender: null, gmail: null, sent: 0, sourcesFail: false }
 const writes = []
 const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: 1280, height: 1000 } })
 await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
@@ -56,9 +62,11 @@ await ctx.route('**/*', async route => {
   if (p === '/api/settings/profile') return route.continue() // the real route and its temporary database
   const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
   if (p === '/api/scan/jobs') return json({ jobs: JOBS })
-  if (p === '/api/usage') return json({ plan: 'free', scans_used: 3, scan_limit: 10, has_key: state.hasKey, trial: state.hasKey ? null : { funded: true, remaining: 1, cap: 3 } })
+  if (p === '/api/usage') return json({ plan: 'free', scans_used: 3, scan_limit: 10, has_key: state.hasKey, trial: state.hasKey ? null : { funded: true, remaining: 0, cap: 3 } })
   if (p === '/api/settings/llm-key' && m === 'PUT') { state.hasKey = true; return json({ ok: true, vendor: 'anthropic', last4: 'abcd' }) }
-  if (p === '/api/outreach/settings' && m === 'GET') return json({ gmail: null, sender: state.sender, daily_cap: 20, sent_24h: 0 })
+  // This server has no search index, news or website reads switched on: only web research with a key is possible.
+  if (p === '/api/scan/sources') return state.sourcesFail ? json({ error: 'unavailable' }, 503) : json({ web_index: false, news: false, websites: false })
+  if (p === '/api/outreach/settings' && m === 'GET') return json({ gmail: state.gmail, sender: state.sender, daily_cap: 20, sent_24h: Math.min(state.sent, 12), account_sent_24h: state.sent })
   if (p === '/api/outreach/settings' && m === 'PUT') { state.sender = JSON.parse(req.postData()); return json({ ok: true }) }
   return json({}, 404)
 })
@@ -71,11 +79,17 @@ try {
   await row('site').waitFor({ timeout: 15000 })
   await shot('home')
   assert.equal(await page.getByText("What's your website?").count(), 0, 'not the first-run flow')
-  assert.match(await row('site').textContent(), /Your business - missing business name, what you sell, website/)
-  assert.match(await row('key').textContent(), /AI key - not added; 1 free search left/)
+  assert.deepEqual(await page.locator('li[data-testid^="ready-"]').evaluateAll(e => e.map(x => x.dataset.testid)), ['ready-site', 'ready-play', 'ready-key', 'ready-sources', 'ready-gmail', 'ready-sender', 'ready-limit'])
+  assert.equal(await page.getByTestId('ready-progress').textContent(), '2 of 7 done')
+  assert.match(await row('site').textContent(), /Website and business details - missing business name, what you sell, website/)
+  assert.match(await row('play').textContent(), /First play - 5 searches written/)
+  assert.match(await row('key').textContent(), /AI key - needed for searches/)
+  assert.match(await row('sources').textContent(), /Lead sources - a scan cannot start until you add an AI key/)
+  assert.equal(await row('sources').getByRole('link', { name: 'Add key' }).getAttribute('href'), '/app/settings#model-key')
   assert.match(await row('gmail').textContent(), /Gmail - not connected/)
   assert.equal(await row('gmail').getByRole('link', { name: 'Connect' }).getAttribute('href'), '/app/settings#gmail')
   assert.match(await row('sender').textContent(), /Sender name and mailing address - added to every email; required before sending/)
+  assert.match(await row('limit').textContent(), /Daily sending limit - up to 20 emails a day; 0 sent in the last 24 hours/)
   assert.deepEqual(writes, [], 'nothing written by loading Home')
 
   // Plays: own searches newest first with their outcome; the CSV import is not a play.
@@ -101,6 +115,8 @@ try {
   await row('key').getByRole('button', { name: 'Add key' }).click()
   await page.getByLabel('Your AI key').fill('sk-ant-api03-' + 'x'.repeat(30)); await page.getByRole('button', { name: 'Save key' }).click()
   await row('key').getByText('✓').waitFor()
+  await row('sources').getByText('✓').waitFor()
+  assert.match(await row('sources').textContent(), /Lead sources - a scan can use Web research with your AI key/)
   await row('sender').getByRole('button', { name: 'Add' }).click()
   await page.getByPlaceholder('Your name, as recipients will see it').fill('Dana Smith'); await page.getByPlaceholder(/Mailing address/).fill('1 Main St, Columbus, OH 43004, USA')
   await page.getByRole('button', { name: 'Save sender details' }).click()
@@ -108,6 +124,34 @@ try {
   await shot('after-fixes')
   assert.equal(await row('gmail').getByText('✓').count(), 0, 'Gmail stays a to-do until connected in Settings')
   assert.deepEqual(writes, ['POST /api/settings/profile', 'PUT /api/settings/llm-key', 'PUT /api/outreach/settings'])
+  assert.equal(await page.getByTestId('ready-progress').textContent(), '6 of 7 done')
+
+  // Gmail connected (in Settings; here the stubbed status says so): everything is done, so the checklist goes away.
+  state.gmail = { email: 'dana@brightsmile.example', status: 'active' }
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.getByRole('list', { name: 'Your plays' }).waitFor()
+  assert.equal(await page.getByTestId('readiness-checklist').count(), 0, 'all done: checklist hidden')
+  assert.equal(await page.getByText('Before your first scan and send').count(), 0)
+  assert.equal(await page.getByTestId('cap-notice').count(), 0, 'no limit notice under the cap')
+  await shot('all-done')
+
+  // Same finished setup, but today's sends (first touches plus follow-ups) reached the cap: Home says so.
+  state.sent = 20
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.getByTestId('cap-notice').waitFor()
+  assert.equal(await page.getByTestId('readiness-checklist').count(), 0, 'checklist still hidden: every step is done')
+  assert.match(await page.getByTestId('cap-notice').textContent(), /^Today's 20-email limit is used up \(20 sent in the last 24 hours\)\. Sending resumes as those sends pass 24 hours old\./)
+  assert.equal(await page.getByTestId('cap-notice').getByRole('link', { name: 'Outreach' }).getAttribute('href'), '/app/outreach')
+  await shot('cap-used-up')
+
+  // The source check fails: that row is "could not check", so the checklist comes back instead of reading complete.
+  state.sent = 0; state.sourcesFail = true
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.getByTestId('readiness-checklist').waitFor()
+  assert.match(await row('sources').textContent(), /Lead sources - could not check/)
+  assert.equal(await row('sources').getByText('✓').count(), 0)
+  assert.equal(await page.getByTestId('ready-progress').textContent(), '6 of 7 done')
+  await shot('sources-unknown')
   console.log('readiness UI check passed:', writes.join(', '))
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })

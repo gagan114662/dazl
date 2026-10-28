@@ -1,15 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
-import { generateBrief, migrateBriefs, recentBriefs } from '@/lib/seo/brief'
+import { getDb } from '@/lib/db/client'
+import { generateBrief, recentBriefs } from '@/lib/seo/brief'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 
 export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  const db = getScanDb()
-  migrateBriefs(db)
-  return NextResponse.json({ briefs: recentBriefs(db, user.id) })
+  return NextResponse.json({ briefs: await recentBriefs(await getDb(), user.id) })
 }
 
 export async function POST(req: NextRequest) {
@@ -18,9 +17,7 @@ export async function POST(req: NextRequest) {
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   if (!(await rateLimit(`seo-brief:${user.id}`, 10, 60 * 60 * 1000)).ok) return NextResponse.json({ error: 'Too many briefs this hour. Try later.' }, { status: 429 })
   const body = await req.json().catch(() => null)
-  const db = getScanDb()
-  migrateBriefs(db)
-  const r = await generateBrief(db, user.id, typeof body?.topic === 'string' ? body.topic : '')
+  const r = await generateBrief(await getDb(), getScanDb(), user.id, typeof body?.topic === 'string' ? body.topic : '')
   if ('error' in r) {
     if (r.error === 'no_key') return NextResponse.json({ error: 'Briefs use your own AI key. Add one in Settings first.' }, { status: 400 })
     if (r.error === 'invalid') return NextResponse.json({ error: 'Give the topic a few words.' }, { status: 400 })

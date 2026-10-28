@@ -11,6 +11,7 @@ import { createNewsjack, migrateNewsjacks } from '../lib/seo/newsjack.ts'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { pushLead } from '../lib/crm/index.ts'
 import type { Lookup } from '../lib/net/public-fetch.ts'
+import { sqliteDb } from '../lib/db/client.ts'
 
 const master = randomBytes(32)
 const META = '169.254.169.254'
@@ -57,7 +58,7 @@ test('audit: a domain resolving to a non-public address is refused before any re
   migrateSeo(db)
   let fetched = 0
   const f = (async () => { fetched++; return new Response('<html></html>', { status: 200 }) }) as unknown as typeof fetch
-  const r = await runAudit(db, 'A', 'internal.example', { fetchImpl: f, lookup: hostileLookup })
+  const r = await runAudit(sqliteDb(db), 'A', 'internal.example', { fetchImpl: f, lookup: hostileLookup })
   assert.deepEqual(r, { error: 'That domain does not resolve to a public address.' })
   assert.equal(fetched, 0, 'no request left the server')
 })
@@ -71,7 +72,7 @@ test('audit: a redirect hopping to a private host is blocked at the hop', async 
     return new Response(null, { status: 302, headers: { location: 'http://169.254.169.254/latest/meta-data' } })
   }) as unknown as typeof fetch
   // First hop resolves publicly; the redirect target is a literal metadata IP.
-  const r = await runAudit(db, 'A', 'acme.com', { fetchImpl: f, lookup: pubLookup })
+  const r = await runAudit(sqliteDb(db), 'A', 'acme.com', { fetchImpl: f, lookup: pubLookup })
   assert.deepEqual(r, { error: 'That domain does not resolve to a public address.' })
   assert.deepEqual(seen, ['https://acme.com/'], 'the private hop was never requested')
 })
@@ -85,7 +86,7 @@ test('newsjack: a pasted URL resolving to a non-public address is never fetched'
   saveKey(db, 'u1', 'anthropic', 'sk-ant-test-1234', master)
   let fetched = 0
   const f = (async () => { fetched++; return new Response('<html></html>', { status: 200 }) }) as unknown as typeof fetch
-  const r = await createNewsjack(db, 'u1', 'https://internal.example/story', { fetchImpl: f, lookup: hostileLookup, master })
+  const r = await createNewsjack(sqliteDb(db), db, 'u1', 'https://internal.example/story', { fetchImpl: f, lookup: hostileLookup, master })
   assert.deepEqual(r, { error: 'fetch' })
   assert.equal(fetched, 0, 'article request never left the server')
 })

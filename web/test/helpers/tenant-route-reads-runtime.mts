@@ -42,6 +42,7 @@ import { GET as keyGET } from '../../app/api/settings/llm-key/route.ts'
 import { GET as memoryGET } from '../../app/api/settings/memory/route.ts'
 import { GET as monitorsGET } from '../../app/api/monitors/route.ts'
 import { GET as conversionGET } from '../../app/api/outreach/conversion/route.ts'
+import { GET as campaignGET } from '../../app/api/campaigns/[id]/route.ts'
 
 // Local synthetic fixture: two tenants with unique per-tenant markers, the real GET handlers, session switched per call.
 // Keys are fixture literals only; no vault, no network (fetch throws).
@@ -82,9 +83,10 @@ async function build() {
   return { db, a, b }
 }
 
-test('all 11 read routes: A and B each get their own content, never the other tenant\'s; A ids look nonexistent to B; GETs do not mutate; unauth is 401 for every route', async () => {
+test('all 12 read routes: A and B each get their own content, never the other tenant\'s; A ids look nonexistent to B; GETs do not mutate; unauth is 401 for every route', async () => {
   const { db, a, b } = await build()
-  const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[]).map(r => r.name)
+  // rate_limits and app_leases are global platform tables (no tenant data); rateLimit() writes there through getDb().
+  const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('rate_limits', 'app_leases') ORDER BY name").all() as { name: string }[]).map(r => r.name)
   const snap = () => JSON.stringify(tables.map(t => [t, db.prepare(`SELECT * FROM "${t}" ORDER BY rowid`).all()]))
   const before = snap()
   const text = async (r: Response) => r.text()
@@ -97,6 +99,8 @@ test('all 11 read routes: A and B each get their own content, never the other te
     { name: 'GET /api/scan/jobs', call: () => jobsGET(), own: { A: [MA.biz], B: [MB.biz] } },
     { name: 'GET /api/scan/latest', call: () => latestGET(), own: { A: [MA.q], B: [MB.q] } },
     { name: 'GET /api/scan/status', call: t => statusGET(get(`/api/scan/status?job_id=${j(t)}&passive=1`)), own: { A: [a.job], B: [b.job] }, id: h => statusGET(get(`/api/scan/status?job_id=${h}&passive=1`)) },
+    // The one-campaign page: owner-scoped, read-only (covered by the byte-unchanged snapshot below).
+    { name: 'GET /api/campaigns/[id]', call: t => campaignGET(get(`/api/campaigns/${j(t)}`), { params: Promise.resolve({ id: j(t) }) }), own: { A: [MA.q, MA.co, MA.subj], B: [MB.q, MB.co, MB.subj] }, id: h => campaignGET(get(`/api/campaigns/${h}`), { params: Promise.resolve({ id: h }) }) },
     { name: 'GET /api/outreach', call: () => outreachGET(), own: { A: [MA.subj], B: [MB.subj] } },
     { name: 'GET /api/outreach/inbox thread', call: t => inboxGET(get(`/api/outreach/inbox?thread_id=${t === 'A' ? MA.thread : MB.thread}`)), own: { A: [MA.thread], B: [MB.thread] } },
     { name: 'GET /api/outreach/followups', call: () => followupsGET(), own: { A: [MA.co, MA.thread], B: [MB.co, MB.thread] } },

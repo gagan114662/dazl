@@ -47,6 +47,7 @@ export interface SourceStats {
   evidence_items?: number | null
   evidence_with_page_text?: number | null
   evidence_snippet_only?: number | null
+  extraction?: import("../scan/extraction-note.ts").ExtractionNote // run report only (counts, not stored in the stats table)
 }
 
 const bump = (m: Record<string, number>, k: string) => { m[k] = (m[k] ?? 0) + 1 }
