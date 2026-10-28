@@ -16,6 +16,7 @@ export interface ReportParts {
   urls?: UrlRecord[]
   evidence?: { items: number | null; with_page_text: number | null; snippet_only: number | null }
   extracted_candidates?: number | null
+  extraction?: { offered: number; with_page_text: number; job_pages: number; reply: string; candidates: number | null; reason: string | null } | null
   audit?: CandidateAudit[]
   ownFetch?: Map<string, string>
   dropCounts?: Record<string, number>
@@ -65,7 +66,7 @@ export function buildRunReport(p: ReportParts, verified: FinalRow[] | null, revi
     queries: (p.queries ?? []).slice(0, 12).map(q => cut(q, 300)), query_source: p.query_source ?? null,
     search: p.search ?? null,
     urls: (p.urls ?? []).slice(0, MAX_URLS).map(u => ({ ...u, url: cut(u.url, 300), own_fetch: u.own_fetch ?? ownFetchOf(p.ownFetch, u.url) })),
-    evidence: p.evidence ?? null, extracted_candidates: p.extracted_candidates ?? null,
+    evidence: p.evidence ?? null, extracted_candidates: p.extracted_candidates ?? null, extraction: p.extraction ?? null,
     candidates: fates.slice(0, MAX_CANDIDATES),
     funnel: { candidates: p.extracted_candidates ?? (measured ? fates.length : null), verified: measured ? count('verified') : null, needs_review: measured ? count('review') : null, dropped: measured ? count('dropped') : null, review_reasons: reasons('review'), drop_reasons: reasons('dropped'), verifier_drop_counts: p.dropCounts ?? null },
     model: p.model ?? null,
