@@ -9,7 +9,7 @@ import { rateLimit } from '@/lib/rate-limit'
 export async function POST(req: NextRequest) {
   const tenantId = req.nextUrl.searchParams.get('u') ?? ''
   if (!/^[A-Za-z0-9_-]{6,80}$/.test(tenantId)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  if (!rateLimit(`calcom:${tenantId}`, 60, 60_000).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!(await rateLimit(`calcom:${tenantId}`, 60, 60_000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   const db = getScanDb()
   migrateCalcom(db)
   const secret = getSecret(db, tenantId)

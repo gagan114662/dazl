@@ -30,7 +30,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ bat
   const r = await load(req, batch)
   if ('res' in r) return r.res
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
-  const rl = rateLimit(`csv-resume:${r.user.id}`, 20, 24 * 60 * 60 * 1000)
+  const rl = (await rateLimit(`csv-resume:${r.user.id}`, 20, 24 * 60 * 60 * 1000))
   if (!rl.ok) return NextResponse.json({ error: 'Too many resumes. Try again tomorrow.' }, { status: 429, headers: { 'Retry-After': String(rl.retryAfterS) } })
   const db = getScanDb()
   if (getPlan(db, r.user.id) !== 'pro') return NextResponse.json({ error: 'pro_only' }, { status: 402 })

@@ -11,7 +11,7 @@ export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad origin' }, { status: 403 })
-  if (!rateLimit(`ranking-fixture:${user.id}`, 5, 60_000).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!(await rateLimit(`ranking-fixture:${user.id}`, 5, 60_000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   try {
     return NextResponse.json(createRankingFixture(getScanDb(), user.id))
   } catch (e) {

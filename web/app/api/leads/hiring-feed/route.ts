@@ -25,13 +25,13 @@ export async function POST(req:NextRequest){
  if(!body||typeof body!=='object')return NextResponse.json({error:'Bad request'},{status:400})
  if(body.retry_job_id!==undefined){
  if(typeof body.retry_job_id!=='string'||!/^[0-9a-f]{24}$/.test(body.retry_job_id))return NextResponse.json({error:'Bad request'},{status:400})
- if(!rateLimit(`hiring-feed-retry:${user.id}`,6,60*60*1000).ok)return NextResponse.json({error:'Too many retries. Try again later.'},{status:429})
+ if(!(await rateLimit(`hiring-feed-retry:${user.id}`,6,60*60*1000)).ok)return NextResponse.json({error:'Too many retries. Try again later.'},{status:429})
  const {crawl,...result}=await retryHiringFeedContacts(getScanDb(),user.id,body.retry_job_id)
  void crawl
  return NextResponse.json(result,{status:202})
  }
  if(typeof body.feed!=='string')return NextResponse.json({error:'Pick one of the listed feeds.'},{status:400})
- if(!rateLimit(`hiring-feed:${user.id}`,3,60*60*1000).ok)return NextResponse.json({error:'Too many feed checks. Try again later.'},{status:429})
+ if(!(await rateLimit(`hiring-feed:${user.id}`,3,60*60*1000)).ok)return NextResponse.json({error:'Too many feed checks. Try again later.'},{status:429})
  try{
  const {crawl,...result}=await createHiringFeedIntake(getScanDb(),user.id,body.feed,body.words)
  void crawl

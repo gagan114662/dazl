@@ -27,7 +27,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
   const { lead } = await params
   const g = await guard(req, lead)
   if (g.res) return g.res
-  if (!rateLimit(`warm-report:${g.user!.id}`, 20, 60_000).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!(await rateLimit(`warm-report:${g.user!.id}`, 20, 60_000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   const body = await req.json().catch(() => null) as { contact_url?: string; mutual_name?: string; note?: string } | null
   if (!body || typeof body.contact_url !== 'string' || typeof body.mutual_name !== 'string') return NextResponse.json({ error: 'contact_url_and_mutual_name_required' }, { status: 400 })
   const path = addUserReportedPath(getScanDb(), g.user!.id, lead, body.contact_url, body.mutual_name, body.note)
