@@ -17,6 +17,11 @@ const NYC_PLACES = ['new york', 'manhattan', 'brooklyn', 'queens', 'bronx', 'the
 const NYC_TERMS = ['new york city', 'nyc', 'new york ny', 'new york, ny', 'new york, new york', 'new york new york', 'manhattan', 'brooklyn', 'queens', 'bronx', 'staten island']
 const NYC_ASK = /\b(?:new york city|nyc|manhattan|brooklyn|queens|bronx|staten island|new york,\s*(?:ny|new york))\b/i
 const NYC_STREET = /\b\d{1,5}\s+[\p{L}0-9'\- ]{2,40}?\s(?:st|street|ave|avenue|broadway|rd|road|blvd|boulevard|pl|place|plaza|sq|square|dr|drive|way|ln|lane|pkwy|parkway)\b\.?(?:,?\s*(?:fl(?:oor)?|suite|ste|apt|unit)\.?\s*\w+)?,\s*(?:new york|manhattan|brooklyn|queens|the bronx|bronx|staten island|long island city|astoria|flushing)\.?,?\s*(?:ny|new york)\s+(?:10[0-4]\d{2}|11[0-6]\d{2})\b/iu
+// An address only binds the company when its own sentence is not about someone else: "Unrelated conference venue: London EC1V 9HX" or
+// "News: another business opens at 57 W 57th St" are real addresses of other parties. Judged per sentence; no cue = the address is the company's.
+const THIRD_PARTY_CUE = /\b(?:news|unrelated|another|other (?:business|company|firm|practice)|conference|venue|event|expo|summit|meetup|webinar|sponsor(?:ed|s)?|partner(?:s|ed)?|clients?|customers?|competitors?|opens?|opening|acquir\w+|merg\w+|press|article|reported|according to)\b/i
+const sentences = (text: string) => text.split(/(?<=[.!?])\s+(?=[A-Z])|\n+/)
+const ownAddress = (text: string, re: RegExp) => sentences(text).some(s => re.test(s) && !THIRD_PARTY_CUE.test(s))
 function otherNyCity(text: string): string | null {
   for (const m of text.matchAll(/\b([A-Z][\p{L}'.-]+(?: [A-Z][\p{L}'.-]+){0,2}),\s*(?:NY\b|New York\b)/gu)) {
     const city = clean(m[1]).replace(/\.$/, '')
@@ -36,7 +41,7 @@ function otherUsState(text: string, ours: string[]): string | null {
 function nycVerdict(text: string): PlaceVerdict {
   const t = clean(text); const named = NYC_TERMS.some(x => has(t, x))
   const other = otherNyCity(text) ?? otherUsState(text, ['NY'])
-  if (NYC_STREET.test(text)) return 'agrees' // a street address in the city (number + street + NYC ZIP); a bare "New York, NY 10001" in a news line does not bind the company
+  if (ownAddress(text, NYC_STREET)) return 'agrees' // a street address in the city (number + street + NYC ZIP); a bare "New York, NY 10001" in a news line does not bind the company
   if (other) return 'mismatch' // another town / state is named and no NYC address binds the company to the city
   return named ? 'agrees' : 'unconfirmed'
 }
@@ -51,8 +56,8 @@ function londonVerdict(text: string): PlaceVerdict {
   // Another UK city named as a place ("Manchester, England", "Leeds, UK") or a UK city on an address line.
   let other = UK_CITIES.find(c => new RegExp(`(?<![a-z0-9])${esc(c)},?\\s*(?:england|scotland|wales|northern ireland|uk|u\\.k\\.|united kingdom)(?![a-z0-9])`).test(t)) ?? null
   if (!other) for (const m of text.matchAll(/\b([A-Z][\p{L}'.-]+(?: [A-Z][\p{L}'.-]+){0,2}),\s*(?:England|Scotland|Wales|Northern Ireland|UK|U\.K\.|United Kingdom)\b/gu)) if (clean(m[1]) !== 'london') { other = m[1]; break }
-  if (NOT_UK_LONDON.test(text) && !LONDON_ADDRESS.test(text)) return 'mismatch' // London, Ontario / East London, South Africa is not London, UK; an unrelated "London, UK" or UK news line does not bind the company, only a London postcode address does
-  if (other && !LONDON_ADDRESS.test(text)) return 'mismatch'
+  if (NOT_UK_LONDON.test(text) && !ownAddress(text, LONDON_ADDRESS)) return 'mismatch' // London, Ontario / East London, South Africa is not London, UK; an unrelated "London, UK" or UK news line does not bind the company, only a London postcode address does
+  if (other && !ownAddress(text, LONDON_ADDRESS)) return 'mismatch'
   if (LONDON_TERMS.some(x => has(t, x))) return 'agrees'
   return 'unconfirmed'
 }

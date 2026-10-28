@@ -88,3 +88,11 @@ test('Instinct c3c505e cases: the company is bound to the city by its own text, 
   assert.equal(placeAgreement('Dental Studio, Albany, NY. Flagship: 57 W 57th St, New York, NY 10019.', ['NYC']), 'agrees')
   assert.equal(placeAgreement('Acme Ltd, London, UK', LON), 'agrees')
 })
+
+test('Instinct 5098eba cases: an address in a sentence about a third party (conference venue, news about another business) does not bind the company', () => {
+  assert.equal(placeAgreement('Dent Blanche in London, Ontario. Unrelated conference venue: London EC1V 9HX.', ['London UK']), 'mismatch')
+  assert.equal(placeAgreement('Dental Studio in Albany, NY. News: another business opens at 57 W 57th St, New York, NY 10019.', ['NYC']), 'mismatch')
+  // controls: the company's own office sentence still binds, even when a venue/news sentence sits beside it
+  assert.equal(placeAgreement('Dent Blanche in London, Ontario. Unrelated conference venue: London EC1V 9HX. Our UK office: 1 Old Street, London EC1V 9HX.', ['London UK']), 'agrees')
+  assert.equal(placeAgreement('Dental Studio in Albany, NY. News: another business opens at 9 Pine St, New York, NY 10005. Visit us at 57 W 57th St, New York, NY 10019.', ['NYC']), 'agrees')
+})
