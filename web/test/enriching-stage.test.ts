@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
 import { enrichState, effectiveStatus, beginEnrichment, endEnrichment, ENRICH_STALE_S } from '../lib/scan/enrichment.ts'
-import { migrateScan, createQueryJob, listJobs, getJob } from '../lib/scan/store.ts'
+import { migrateScan, createQueryJob, listJobs, getJob, countActiveJobs } from '../lib/scan/store.ts'
 
 const REQUEST = 'Find independent dental practices in New York City that opened a new location in the past 90 days.'
 const ICP = { summary: 'NYC dental practices', who: ['Practice manager'], industries: ['dental'], sizes: [], where: ['New York City'], signals: ['opened a new location'], exclude: [], country: 'US', language: 'en' }
@@ -79,4 +79,20 @@ test('status route, jobs route and the leads page use the effective status', asy
   assert.match(rd('../app/api/scan/jobs/route.ts'), /status: effectiveStatus\(j\)/)
   const ui = rd('../app/app/leads/leads-client.tsx')
   assert.match(ui, /status === 'enriching'/); assert.match(ui, /The scan is not done until this ends/)
+})
+
+test('countActiveJobs: a scan that is pending, running or enriching is active; done, failed and a stale enrichment mark are not', () => {
+  const db = new Database(':memory:'); migrateScan(db)
+  const id = createQueryJob(db, 'A', { query: 'q', icp: '{}' })
+  assert.equal(countActiveJobs(db, 'A'), 1, 'pending')
+  db.prepare("UPDATE scan_jobs SET status = 'running', attempts = 1 WHERE id = ?").run(id); assert.equal(countActiveJobs(db, 'A'), 1, 'running')
+  db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(id); assert.equal(countActiveJobs(db, 'A'), 0, 'done without an enrichment stage')
+  beginEnrichment(db, id, 1); assert.equal(countActiveJobs(db, 'A'), 1, 'enriching is active'); assert.equal(countActiveJobs(db, 'B'), 0, 'another tenant is unaffected')
+  endEnrichment(db, id, 1); assert.equal(countActiveJobs(db, 'A'), 0, 'finished')
+  db.prepare("UPDATE scan_jobs SET enrich_started_at = CAST(strftime('%s','now') AS INTEGER) - ?, enrich_finished_at = NULL WHERE id = ?").run(ENRICH_STALE_S + 5, id)
+  assert.equal(countActiveJobs(db, 'A'), 0, 'a crashed enrichment does not block forever')
+})
+test('the Find leads button is disabled while the scan runs or enriches, with a reason (string check; the rendered check is test/ui/scan-active.ui.mjs)', async () => {
+  const fs = await import('node:fs'); const ui = fs.readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8')
+  assert.match(ui, /status === 'pending' \|\| status === 'running' \|\| status === 'enriching'\)/); assert.match(ui, /disabled=\{busy \|\| starting \|\| scanActive\}/); assert.match(ui, /data-reason="scan-active"/)
 })

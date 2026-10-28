@@ -216,7 +216,7 @@ export default function LeadsClient() {
     if (!r.ok) { setCsvNote(j.error === 'quota_exceeded' ? 'Monthly scans are used up.' : j.error || 'Could not resume'); return }
     setCsvBatch(j)
   }
-  const scanActive = !!jobId && (status === 'pending' || status === 'running')
+  const scanActive = !!jobId && (status === 'pending' || status === 'running' || status === 'enriching')
   const csvActive = !!csvBatch && ((csvBatch.counts.queued ?? 0) + (csvBatch.counts.running ?? 0) > 0)
   useEffect(() => {
     if (!csvActive || !csvBatch) return
@@ -485,8 +485,9 @@ export default function LeadsClient() {
             </div>)}
         </div>}
         <div className="flex gap-3 mt-2 items-center">
-          <button disabled={busy || starting || scanActive} title={scanActive ? 'A scan is already running below' : undefined} className="btn-primary">{starting ? 'Starting...' : 'Find leads'}</button>
+          <button disabled={busy || starting || scanActive} title={scanActive ? 'A scan is still running or finishing below' : undefined} className="btn-primary">{starting ? 'Starting...' : 'Find leads'}</button>
           <button type="button" disabled={query.trim().length < 3 || busy || starting || scanActive} onClick={() => void preview()} className="text-xs text-[#555] underline disabled:opacity-40 disabled:no-underline">{busy ? 'Working out your profile...' : 'Review profile first'}</button>
+          {scanActive && <span className="text-xs text-gray-500" data-reason="scan-active">{status === 'enriching' ? 'The scan is finishing (contacts and fit checks). You can start another when it ends.' : 'A scan is already running. You can start another when it ends.'}</span>}
         </div>
         {!jobId && <SourceAvailability core={core} social={socialSources(advanced)} />}
       </form>

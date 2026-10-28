@@ -4,6 +4,7 @@ import { primarySignalKind } from './score.ts'
 import { migrateSourceRuns } from './source-runs.ts'
 import { migrateEvidenceCopies } from './evidence-copies.ts'
 import { migrateRunReport } from './run-report.ts'
+import { ENRICH_STALE_S } from './enrichment.ts'
 
 export const STALE_RUNNING_S = Number(process.env.SCAN_STALE_RUNNING_S || 20 * 60)
 export const MAX_ATTEMPTS = 3
@@ -248,10 +249,11 @@ export function getJob(db: Database.Database, userId: string, id: string) {
 
 export function countActiveJobs(db: Database.Database, userId: string): number {
   // CSV import jobs do not count: a 50-domain batch must not lock the user out of manual scans.
+  // A done scan that is still enriching (contacts / people / fit) is active too: it is not finished, and a second scan must not start beside it.
   // A just-cancelled scan keeps its slot for CANCEL_HOLD_S: its in-flight provider phase cannot be interrupted
   // and may still be running, so freeing the slot at once would let a user stack paid work.
   const holdFrom = Math.floor(Date.now() / 1000) - CANCEL_HOLD_S
-  return (db.prepare("SELECT count(*) AS n FROM scan_jobs WHERE user_id = ? AND csv_domain IS NULL AND (status IN ('pending','running') OR (status = 'failed' AND error = 'cancelled' AND finished_at >= ?))").get(userId, holdFrom) as { n: number }).n
+  return (db.prepare(`SELECT count(*) AS n FROM scan_jobs WHERE user_id = ? AND csv_domain IS NULL AND (status IN ('pending','running') OR (status = 'done' AND enrich_started_at IS NOT NULL AND enrich_finished_at IS NULL AND enrich_started_at > CAST(strftime('%s','now') AS INTEGER) - ${ENRICH_STALE_S}) OR (status = 'failed' AND error = 'cancelled' AND finished_at >= ?))`).get(userId, holdFrom) as { n: number }).n
 }
 
 // Ranked: scored leads first by ICP fit, then intent, actionability and evidence confidence.
