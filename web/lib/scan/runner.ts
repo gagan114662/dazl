@@ -676,10 +676,11 @@ export function newsStatus(leads: LeadDraft[] | null, note: { searched: boolean;
   if (note.hits === 0) return note.failed === 0 ? ((note.malformed ?? 0) > 0 ? 'unavailable' : 'empty') : note.failed >= note.attempted ? 'error' : `error_partial:${note.failed}_of_${note.attempted}`
   return partial ?? 'unavailable'   // hits but no usable page evidence: unknown (named as partial when some requests also failed)
 }
-async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, http: SafeGet, fetchPage: PageFetcher, fetchImpl?: typeof fetch, note?: { searched: boolean; hits: number; attempted: number; failed: number; malformed?: number }): Promise<LeadDraft[] | null> {
+async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, http: SafeGet, fetchPage: PageFetcher, fetchImpl?: typeof fetch, note?: { searched: boolean; hits: number; attempted: number; failed: number; malformed?: number }, queries?: string[]): Promise<LeadDraft[] | null> {
   const complete = provider.complete!
-  const plan = queryPlan(await complete.call(provider, key, queryPrompt(job.query!, icp, NEWS_PER_SCAN), fetchImpl, 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, NEWS_PER_SCAN)
-  const q = withGeography(sanitizeQueries(plan.queries, job.query!), icp.where).filter(x => !/site:/i.test(x)) // news search has no site: operator
+  // `queries` (the corroboration search) replaces the model's query planning: they name the companies whose second half is missing.
+  const plan = queries ? { queries, source: 'model' as const } : queryPlan(await complete.call(provider, key, queryPrompt(job.query!, icp, NEWS_PER_SCAN), fetchImpl, 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, NEWS_PER_SCAN)
+  const q = (queries ? plan.queries : withGeography(sanitizeQueries(plan.queries, job.query!), icp.where)).filter(x => !/site:/i.test(x)) // news search has no site: operator
   if (q.length === 0) return null
   const found = await newsSearch(http, q, icp.language), hits = found.hits
   if (note) { note.searched = true; note.hits = hits.length; note.attempted = found.attempted; note.failed = found.failed; note.malformed = found.malformed }
