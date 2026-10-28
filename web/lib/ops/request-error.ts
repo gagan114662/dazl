@@ -36,5 +36,6 @@ export async function handleRequestError(err: unknown, request: RequestInfo, con
   }
   // the route template Next gives ('/api/leads/[lead]/confirm'); never the concrete path, whose segments are caller data
   const where = context.routePath || '[unknown-route]'
-  return captureError(err, { source: context.routeType === 'route' ? 'route' : 'render', where, method: request.method, tenantId })
+  const rid = request.headers['x-request-id']
+  return captureError(err, { source: context.routeType === 'route' ? 'route' : 'render', where, method: request.method, tenantId, requestId: Array.isArray(rid) ? rid[0] : rid })
 }

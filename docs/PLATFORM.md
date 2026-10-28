@@ -31,7 +31,8 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
   - **Not wired yet:** scan jobs still claim through `claimKeyedJob` on the SQLite `scan_jobs` table, single writer per file. Moving scan claiming onto `DbQueue` needs `scan_jobs` on Postgres. That is the next slice, with the yield owners. The other per-process state is listed in the table below.
 - **Step 6a (health and error capture):**
   - `GET /api/health/live` answers without touching any store. Use it as the liveness probe.
-  - `GET /api/health/ready` and `GET /api/health` are the readiness probe. Each check has a 2 s budget. They return 503 when any of these fails or goes over budget:
+  - `GET /api/ready`, `GET /api/health/ready` and `GET /api/health` are the readiness probe. They are unauthenticated and carry no tenant data. `/api/health` stays readiness rather than liveness, because `ops/safe_launch.py` and the deploy checklist use it to confirm a new process can serve.
+  - Readiness: Each check has a 2 s budget. They return 503 when any of these fails or goes over budget:
     - the store does not answer (Postgres when `DATABASE_URL` is set, else SQLite);
     - on Postgres, `dazl_schema_migrations` is behind the migrations this build ships;
     - the SQLite file the raw-handle modules use does not answer.
@@ -54,7 +55,16 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
     - uncaught process exceptions (monitor only, exit behaviour unchanged);
     - unhandled promise rejections (`lib/ops/process-errors.ts`). Next's own listener keeps the server up. If ours is the only listener, it rethrows after recording, so bare Node still exits;
     - scan runner and queue runner crashes (`lib/scan/crash.ts`). A rejection that escapes `runJob`'s own failure handling is recorded with the tenant and job id. The job is marked `failed` with `error = 'crashed'`, fenced on `status = 'running'` and the same `attempts`, instead of waiting in `running` for the stale-lease reaper. On the queue path the queue item is failed too, not retried, since a crash would repeat.
-  - Alert hook: with `OPS_ALERT_WEBHOOK_URL` (https only) set, the same scrubbed record is POSTed. It is throttled to one per fingerprint per 10 min and 20 per 10 min overall, fire and forget.
+  - **Request ids and JSON request logs** (`proxy.ts`, `lib/ops/request-log.ts`):
+    - Every `/app` and `/api` request gets a fresh random UUIDv4. An incoming `x-request-id` is replaced, never trusted.
+    - The id is forwarded to the route as the `x-request-id` request header, returned as a response header, and recorded on error records as `request_id`, so a log line and an error can be joined.
+    - Each request writes one JSON line to stdout: `{level, type: 'request', ts, request_id, method, path}`.
+      - The path has no query. Ids in it (16+ opaque characters, or a run of 6+ digits) become `[id]`, and emails and tokens are scrubbed.
+      - It never contains headers, cookies, bodies or IPs.
+      - Health probes write no line.
+    - The proxy runs before the route, so the line has no status or duration. Failures appear as error records carrying the same `request_id`.
+    - `middleware.ts` moved to `proxy.ts`: the Next 16 name, Node runtime. The `/app` sign-in redirect is unchanged.
+  - Alert hook (the error reporter's DSN): with `OPS_ALERT_WEBHOOK_URL` (https only) set, the same scrubbed record is POSTed. It is throttled to one per fingerprint per 10 min and 20 per 10 min overall, fire and forget.
   - Not yet: other diagnostic `console.error` calls inside the scan pipeline (handled per-step failures, not crashes). Also not done yet: the backup restore drill and the deploy checklist (step 6b).
 - **Still on SQLite:** every other module. Production keeps running on SQLite until cutover.
 - **SQLite-only SQL in queries:** about 18 queries use `rowid` (for example as an ORDER BY tie-break), which PG does not have. They need rewriting as each area is ported.
@@ -142,7 +152,7 @@ These steps are development work behind flags and tests. Merging them does not c
    - All sends use stub providers. No real mail is sent.
    - The approval, cap, suppression and consent gates stay as they are.
 4. **Tenant isolation.** Step 4a/4b:
-   - `test/tenant-isolation-manifest.ts` classifies all 115 API route handlers: 13 public, each with what authenticates it, and 102 session.
+   - `test/tenant-isolation-manifest.ts` classifies all 116 API route handlers: 14 public, each with what authenticates it, and 102 session.
    - CI proves that every session handler refuses an unauthenticated caller without changing data.
    - All 102 session handlers are exercised with two tenants:
      - 48 that take ids or list tenant data have targeted tests: tenant B with tenant A's ids gets nothing of A's and changes nothing.
