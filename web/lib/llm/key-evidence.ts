@@ -1,38 +1,26 @@
 import type Database from 'better-sqlite3'
 
-// Server-only, read-only. Whether a saved AI key has open negative evidence: a scan that stopped because the key was
-// rejected (key_rejected) or could not be read (key_unreadable), with no positive acceptance of THAT key since.
+// Server-only, read-only. Whether the account's saved AI keys have open negative evidence: a scan that stopped because
+// its key was rejected (key_rejected) or could not be read (key_unreadable), with no positive acceptance since.
 //
-// Identity, from the records only:
+// What the records can and cannot say:
 // - Trial-funded scans (funded_by 'trial') ran on the shared free-search key and are never evidence about the user's.
-// - A scan uses the account's newest saved key (pickVendor: created_at desc). So the vendor a scan used is known only
-//   when a key row existed before the scan was created: the newest of those. A key added later was not used by it.
-//   Otherwise (no such row, e.g. a key deleted since or a legacy trial row) the vendor is unknown (null).
-// - Positive, key-specific acceptance: the provider check when that vendor's key is saved (validated_at, refreshed by
-//   a re-save), or a later non-trial scan that finished 'done' and provably used that same key (its vendor by the rule
-//   above, and the key not re-saved since that scan started). A cancelled or otherwise failed scan proves nothing.
-// A rejection is open until such acceptance after the scan finished; with an unknown vendor, until every current key
-// has been saved again. Only rejections that bear on the key scans use now (the newest key) or
-// whose key is unknown are reported.
-export interface KeyEvidence { error: 'key_rejected' | 'key_unreadable'; vendor: string | null }
+// - Which of the user's keys a scan used is NOT recorded. The runner picks the newest key when an attempt runs, so a key
+//   added, re-saved or deleted while the scan was queued or retrying changes it, and a deleted key leaves no trace.
+//   So a rejection is never attributed to a particular key, and a later finished scan proves nothing about which key
+//   it used.
+// - The only positive acceptance recorded is the provider check when a key is saved (validated_at). A rejection stays
+//   open until every key saved now was saved (and accepted) strictly after that scan ended; a same-second save, a
+//   cancelled or failed scan, a done scan or saving only one of several keys does not clear it.
+export interface KeyEvidence { error: 'key_rejected' | 'key_unreadable' }
 
 export function openKeyRejection(db: Database.Database, tenantId: string): KeyEvidence | null {
-  const keys = db.prepare('SELECT vendor, created_at, validated_at FROM tenant_llm_keys WHERE tenant_id = ? ORDER BY created_at DESC, rowid DESC').all(tenantId) as { vendor: string; created_at: number; validated_at: number }[]
+  const keys = db.prepare('SELECT validated_at FROM tenant_llm_keys WHERE tenant_id = ?').all(tenantId) as { validated_at: number }[]
   if (!keys.length) return null
-  const selected = keys[0].vendor
-  const done = db.prepare(`SELECT created_at FROM scan_jobs WHERE user_id = ? AND status = 'done' AND funded_by != 'trial'`).all(tenantId) as { created_at: number }[]
-  const usedBy = (createdAt: number) => keys.find(k => k.created_at <= createdAt)?.vendor ?? null
-  const failures = db.prepare(`SELECT error, created_at, COALESCE(finished_at, created_at) AS ended FROM scan_jobs
+  const oldestAcceptance = Math.min(...keys.map(k => k.validated_at))
+  const f = db.prepare(`SELECT error FROM scan_jobs
     WHERE user_id = ? AND status = 'failed' AND error IN ('key_rejected', 'key_unreadable') AND funded_by != 'trial'
-    ORDER BY created_at DESC, rowid DESC`).all(tenantId) as { error: KeyEvidence['error']; created_at: number; ended: number }[]
-  for (const f of failures) {
-    const used = usedBy(f.created_at)
-    if (used !== null && used !== selected) continue // a key scans no longer use
-    const key = used !== null ? keys.find(k => k.vendor === used)! : null
-    const open = key
-      ? key.validated_at <= f.ended && !done.some(d => d.created_at > f.ended && usedBy(d.created_at) === key.vendor && key.validated_at <= d.created_at)
-      : keys.some(k => k.validated_at <= f.ended)
-    if (open) return { error: f.error, vendor: used }
-  }
-  return null
+      AND COALESCE(finished_at, CAST(strftime('%s','now') AS INTEGER)) >= ?
+    ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(tenantId, oldestAcceptance) as { error: KeyEvidence['error'] } | undefined
+  return f ? { error: f.error } : null
 }

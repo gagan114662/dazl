@@ -15,9 +15,9 @@ export interface ReadinessInput {
   sources?: ServerSources | null
   // The saved AI keys' status (GET /api/settings/llm-key: vendor, last 4, when the provider accepted it); null when not loaded.
   keys?: { vendor: string; last4: string; validated_at: number }[] | null
-  // From the same read: a scan that stopped on this account's key with no acceptance of that same key since (server-side,
-  // lib/llm/key-evidence.ts; vendor null when the record cannot say which key it was). null when none or not loaded.
-  rejection?: { error: 'key_rejected' | 'key_unreadable'; vendor: string | null } | null
+  // From the same read: a scan that stopped on a key error with no acceptance of every saved key since (server-side,
+  // lib/llm/key-evidence.ts). The record never says which key a scan used, so neither does this. null when none or not loaded.
+  rejection?: { error: 'key_rejected' | 'key_unreadable' } | null
   // The account's social sources (GET /api/settings/advanced); null when not loaded.
   advanced?: Advanced | null
 }
@@ -45,17 +45,16 @@ export function readinessRows(i: ReadinessInput): Row[] {
     : own > 0 ? { id: 'play', label: 'First play', state: 'done', detail: `${own} search${own === 1 ? '' : 'es'} written`, fix: null }
     : { id: 'play', label: 'First play', state: 'todo', detail: 'describe who you want to find, in one sentence', fix: { kind: 'link', href: '/app/leads', label: 'Write a play' } }
   const trialLeft = u?.trial?.funded ? u.trial.remaining ?? 0 : 0
-  // A saved key was accepted by its provider when it was saved. After that, the server reports a rejection only while no
-  // acceptance of that same key has been recorded since (a re-save of that vendor's key); a later cancelled or failed
-  // scan, or saving another provider's key, never clears it. Without the key status loaded, no claim either way.
+  // A saved key was accepted by its provider when it was saved. After that, the server reports a rejection while any
+  // saved key has not been accepted again since that scan; it cannot say which key the scan used, so neither does Home.
+  // A later cancelled, failed or done scan never clears it. Without the key status loaded, no claim either way.
   const rej = u?.has_key ? i.rejection ?? null : null
   const keyError = rej?.error ?? null
-  const rejKey = rej?.vendor ? i.keys?.find(k => k.vendor === rej.vendor) : undefined
   const last4 = i.keys?.length === 1 ? ` (ending ${i.keys[0].last4})` : ''
-  const which = rejKey ? `your ${vendorName(rejKey.vendor)} key (ending ${rejKey.last4})` : null
-  const rejDetail = !rej ? '' : which
-    ? (rej.error === 'key_rejected' ? `${which} was rejected by ${vendorName(rejKey!.vendor)} on a scan after it was last saved - save it again to confirm it works` : `dazl could not read ${which} on a scan after it was last saved - save it again`)
-    : (rej.error === 'key_rejected' ? 'a scan stopped because its AI key was rejected after your key was last saved - save your key again to confirm it works' : 'a scan could not read its AI key after your key was last saved - save your key again')
+  const again = (i.keys?.length ?? 0) > 1 ? 'save each of your keys again to confirm they work' : 'save your key again to confirm it works'
+  const rejDetail = !rej ? '' : rej.error === 'key_rejected'
+    ? `a scan stopped because the AI provider rejected its key, after your key${(i.keys?.length ?? 0) > 1 ? 's were' : ' was'} last saved - ${again}`
+    : `a scan could not read its AI key after your key${(i.keys?.length ?? 0) > 1 ? 's were' : ' was'} last saved - ${again}`
   const key: Row = !u ? { id: 'key', label: 'AI key', state: 'unknown', detail: 'could not check', fix: null }
     : keyError ? { id: 'key', label: 'AI key', state: 'todo', detail: rejDetail, fix: { kind: 'inline', label: 'Replace key' } }
     : u.has_key ? { id: 'key', label: 'AI key', state: 'done', detail: i.keys?.length ? `saved${last4}; your provider accepted it when it was saved` : 'saved', fix: null }
@@ -92,8 +91,6 @@ export function readinessRows(i: ReadinessInput): Row[] {
     : { id: 'limit', label: 'Daily sending limit', state: 'done', detail: `up to ${cap} emails a day${used !== null ? `; ${used} sent in the last 24 hours` : ''}`, fix: null }
   return [site, brain, play, key, sources, gmail, sender, limit]
 }
-
-const vendorName = (v: string) => v === 'openai' ? 'OpenAI' : v === 'anthropic' ? 'Anthropic' : v
 
 // Sends counted against the cap: the whole account budget when reported, else first touches only (a lower bound).
 function sentToday(o: ReadinessInput['outreach']): number | null {
