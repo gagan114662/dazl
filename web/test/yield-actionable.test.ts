@@ -52,7 +52,7 @@ test('POSITIVE exact-ICP fixture: seed evidence + an open sales role on the own 
   const l = lead(r)!
   assert.equal(l.company_domain, 'brightloop.io'); assert.equal(l.review_reason, null); assert.ok(l.confidence !== null)
   const vac = r.db.prepare("SELECT value, label, source_url, confidence FROM lead_enrichments WHERE connector = 'signals:careers-gtm'").get() as { value: string; label: string; source_url: string; confidence: number }
-  assert.match(vac.value, /Account Executive - London/); assert.equal(vac.source_url, 'https://brightloop.io/careers'); assert.match(vac.label, /Account Executive/)
+  assert.match(vac.value, /Account Executive - London/); assert.equal(vac.source_url, 'https://brightloop.io/careers/ae'); assert.match(vac.label, /Account Executive/)
   const rep = report(r)
   assert.deepEqual([rep.yield.source_checked, rep.yield.verified, rep.yield.actionable], [1, 1, 1], JSON.stringify(rep.yield))
   assert.match(actionRow(r)!.value, /^Actionable:/); assert.match(actionRow(r)!.label!, /Jane Doe, Chief Executive Officer - email: hello@brightloop\.io/)
