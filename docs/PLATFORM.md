@@ -56,6 +56,31 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
     - scan runner and queue runner crashes (`lib/scan/crash.ts`). A rejection that escapes `runJob`'s own failure handling is recorded with the tenant and job id. The job is marked `failed` with `error = 'crashed'`, fenced on `status = 'running'` and the same `attempts`, instead of waiting in `running` for the stale-lease reaper. On the queue path the queue item is failed too, not retried, since a crash would repeat.
   - Alert hook: with `OPS_ALERT_WEBHOOK_URL` (https only) set, the same scrubbed record is POSTed. It is throttled to one per fingerprint per 10 min and 20 per 10 min overall, fire and forget.
   - Not yet: other diagnostic `console.error` calls inside the scan pipeline (handled per-step failures, not crashes). Also not done yet: the backup restore drill and the deploy checklist (step 6b).
+- **Scan jobs to Postgres, step 1 (platform part):**
+  - `lib/scan/store-db.ts` has `Db` versions of the scan job store: create, query-create, get, count-active, list leads, count hidden, latest, list jobs, export, cancel and the stale reaper.
+  - `test/scan-store-db.test.ts` covers them with two tenants on both engines, and pins them to `store.ts` on SQLite with the same rows.
+  - No caller is switched. `store.ts`, the runner and the routes are unchanged; callers move with their owners.
+  - **Step 2, storage half:** `finishJob` and `failOrRequeue` write an attempt's end in one `Db` transaction: leads, review rows, counts and the job row.
+    - They are fenced on `status = 'running' AND attempts = ?`, with `FOR UPDATE` on PG.
+    - They are tested on both engines: stale attempts write nothing; requeue until `MAX_ATTEMPTS`, then fail.
+    - One deliberate difference from the runner's `finish()`: only duplicates are skipped (`ON CONFLICT DO NOTHING`, the same on both engines). A row that fails a CHECK fails the whole attempt instead of being dropped silently, as SQLite's `INSERT OR IGNORE` does.
+    - Wiring the runner to them is the yield session's part.
+  - Differences from `store.ts`:
+    - Times come from the caller.
+    - Same-second ties order by `id`, not `rowid`.
+    - `getJob` does not reap as a side effect.
+- **Tenant isolation of tables on `Db`** (audit of every table a `Db`-layer module reads or writes, both engines):
+
+  | Table | Covered by |
+  |---|---|
+  | `users`, `sessions`, `oauth_identities` | `test/tenant-isolation-db.test.ts`: sessions, password sign-in, Google sign-in |
+  | `tenant_plans`, `stripe_events` | `test/tenant-isolation-db.test.ts` (billing); `billing-e2e` (another tenant's customer changes nothing) |
+  | `seo_audits`, `seo_briefs`, `newsjacks` | `test/seo-store.test.ts` |
+  | `scan_jobs`, `leads` (via `lib/scan/store-db.ts`) | `test/scan-store-db.test.ts` |
+  | `rate_limits` (global table, per-tenant keys) | `test/tenant-isolation-db.test.ts`: one tenant using up its allowance never spends or blocks another's |
+  | `app_leases`, `dazl_schema_migrations` | Global, no tenant data (listed in `NOT_DIRECT`) |
+
+  On open branches: `work_queue` is covered in `test/multi-instance.test.ts` (#252). `stripe_ended_subscriptions` (#253) is keyed by Stripe's globally unique subscription id, and its tenant comes from the verified event; a two-tenant test follows once #253 merges.
 - **Still on SQLite:** every other module. Production keeps running on SQLite until cutover.
 - **SQLite-only SQL in queries:** about 18 queries use `rowid` (for example as an ORDER BY tie-break), which PG does not have. They need rewriting as each area is ported.
 
