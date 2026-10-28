@@ -44,7 +44,7 @@ test('pure: per-source progress — status, candidates found, accepted; unknown 
   assert.equal(sourceStatusOf('started', true), 'running')
   assert.deepEqual(outcomeInputs(null, rows, 'done').failed_sources, ['search:news'], 'only a source that never reported is failed; unavailable is not')
   assert.deepEqual(progressOf([{ collector: 'search:x', status: 'error', evidence_count: null, candidate_count: null, verified_count: null, review_count: null }], 'done')[0].status, 'failed')
-  assert.deepEqual(outcomeInputs({ funnel: { review_reasons: { quote_unconfirmed: 2 }, drop_reasons: { duplicate: 1 } }, search: { hits_unique_urls: 6, attempted: 3, ok: 3 } }, [], 'done'), { failed_sources: [], reject_reasons: { 'review:quote_unconfirmed': 2, 'dropped:duplicate': 1 }, search_hits: 6 })
+  assert.deepEqual(outcomeInputs({ funnel: { review_reasons: { quote_unconfirmed: 2 }, drop_reasons: { duplicate: 1 } }, search: { hits_unique_urls: 6, attempted: 3, ok: 3 } }, [], 'done'), { failed_sources: [], reject_reasons: { 'review:quote_unconfirmed': 2, 'dropped:duplicate': 1 }, search_hits: 6, evidence_sources: [], unknown_sources: [] })
   assert.deepEqual(outcomeInputs({ search: { attempted: 3, ok: 0, hits_unique_urls: 0 } }, [], 'done').failed_sources, ['search:tinyfish'], 'every search attempt failed: a failed source, not an empty result')
 })
 
@@ -105,4 +105,28 @@ test('state is one of queued/running/done/failed for the UI', async () => {
   const { progressOf } = await import('../lib/scan/progress.ts')
   const row = (status: string) => ({ collector: 'x', status, evidence_count: null, candidate_count: null, verified_count: null, review_count: null })
   assert.deepEqual(['queued', 'started', 'ok', 'error', 'empty'].map(s => progressOf([row(s)], 'running')[0].state), ['queued', 'running', 'done', 'failed', 'done'])
+})
+
+const R = (collector: string, status: string, evidence_count: number | null, candidate_count: number | null) => ({ collector, status, evidence_count, candidate_count, verified_count: null, review_count: null })
+const SEARCH0 = { search: { attempted: 1, ok: 1, hits_raw: 0, hits_unique_urls: 0, hits_complete: true } }
+const outcomeOf = (rows: ReturnType<typeof R>[], report: unknown = SEARCH0) => scanOutcome({ id: 'j', status: 'failed', error: 'no_candidates', candidates: 0, verified: 0, needs_review: 0, dropped: 0, ...outcomeInputs(report, rows, 'failed') } as never)
+
+test('MIXED: search 0 hits but the job-board adapter returned 8 evidence items and 0 candidates is NOT a zero-results scan, and names the source', () => {
+  const o = outcomeOf([R('search:tinyfish', 'unavailable', null, null), R('adapter:jobboards', 'ok', 8, 0)])
+  assert.notEqual(o.kind, 'zero_match'); assert.doesNotMatch(o.label + (o.detail ?? ''), /sources returned nothing|no results for this request/)
+  assert.match(o.detail ?? '', /adapter:jobboards returned 8 items, none matched as candidates/)
+})
+test('MIXED: every recorded source returned nothing -> zero-match (the search collectors read as empty because the search report shows a clean 0)', () => {
+  assert.equal(outcomeOf([R('search:tinyfish', 'unavailable', null, null), R('search:news', 'unavailable', null, null), R('adapter:jobboards', 'ok', 0, 0)]).kind, 'zero_match')
+})
+test('MIXED: one unavailable (not run / not configured) source blocks the zero claim and is named', () => {
+  const o = outcomeOf([R('search:tinyfish', 'unavailable', null, null), R('adapter:jobboards', 'unavailable', null, null)])
+  assert.notEqual(o.kind, 'zero_match'); assert.match(o.detail ?? '', /adapter:jobboards was unavailable or not run/)
+})
+test('MIXED: an errored source is failed and named, not zero-match', () => {
+  const o = outcomeOf([R('search:tinyfish', 'unavailable', null, null), R('adapter:jobboards', 'error', null, null)])
+  assert.equal(o.kind, 'failed'); assert.match(o.label, /adapter:jobboards/)
+})
+test('MIXED: with no search report at all, unavailable search collectors are unknown, never a zero', () => {
+  assert.notEqual(outcomeOf([R('search:tinyfish', 'unavailable', null, null)], null).kind, 'zero_match')
 })

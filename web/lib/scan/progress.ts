@@ -33,7 +33,23 @@ export function progressOf(rows: SourceRunRow[], jobStatus: string): SourceProgr
 }
 
 // Inputs for scanOutcome() from the run report and the source rows: which sources failed, the per-reason counts of everything rejected, and how many search results came back.
-export function outcomeInputs(report: unknown, rows: SourceRunRow[], jobStatus: string): { failed_sources: string[]; reject_reasons: Record<string, number> | null; search_hits: number | null } {
+export interface SourceFindings { evidence_sources: { source: string; evidence: number }[]; unknown_sources: string[] }
+// Per recorded source, beyond the search: returned evidence but extracted no candidates (NOT a zero result), or gave nothing usable / was not run (unknown). A source that genuinely
+// returned nothing is in neither list. A search:* collector recorded 'unavailable' is just "no results" when the run report shows the search itself succeeded with 0 hits.
+export function sourceFindings(rows: SourceRunRow[], jobStatus: string, searchEmptyOk: boolean): SourceFindings {
+  const evidence_sources: SourceFindings['evidence_sources'] = [], unknown_sources: string[] = []
+  const raw = new Map(rows.map(r => [String(r.collector ?? ''), String(r.status ?? '')]))
+  for (const p of progressOf(rows, jobStatus)) {
+    const ev = num(rows.find(r => String(r.collector) === p.source)?.evidence_count)
+    if (p.status === 'failed' || p.status === 'running') continue
+    if (p.status === 'unavailable' && !(searchEmptyOk && p.source.startsWith('search:'))) { unknown_sources.push(p.source); continue }
+    if (p.status === 'skipped') continue   // deliberately not asked (e.g. no hiring signal in the request): neither evidence nor a zero
+    if (ev !== null && ev > 0 && (p.candidates === null || p.candidates === 0) && raw.get(p.source) !== 'unavailable') evidence_sources.push({ source: p.source, evidence: ev })
+  }
+  return { evidence_sources, unknown_sources }
+}
+
+export function outcomeInputs(report: unknown, rows: SourceRunRow[], jobStatus: string): { failed_sources: string[]; reject_reasons: Record<string, number> | null; search_hits: number | null } & SourceFindings {
   const rep = (report && typeof report === 'object' ? report : {}) as { funnel?: { review_reasons?: Record<string, number>; drop_reasons?: Record<string, number> }; search?: { hits_unique_urls?: number | null; hits_raw?: number | null; ok?: number | null; attempted?: number | null } | null }
   const failed = progressOf(rows, jobStatus).filter(p => p.status === 'failed').map(p => p.source)
   const search = rep.search ?? null
@@ -43,5 +59,6 @@ export function outcomeInputs(report: unknown, rows: SourceRunRow[], jobStatus: 
   for (const [k, v] of Object.entries(rep.funnel?.review_reasons ?? {})) if (typeof v === 'number' && v > 0) reasons[`review:${k}`] = v
   for (const [k, v] of Object.entries(rep.funnel?.drop_reasons ?? {})) if (typeof v === 'number' && v > 0) reasons[`dropped:${k}`] = v
   const hits = typeof search?.hits_unique_urls === 'number' ? search.hits_unique_urls : typeof search?.hits_raw === 'number' ? search.hits_raw : null
-  return { failed_sources: failed, reject_reasons: Object.keys(reasons).length ? reasons : null, search_hits: hits }
+  const searchEmptyOk = !!search && typeof search.attempted === 'number' && search.attempted > 0 && search.ok === search.attempted && hits === 0
+  return { failed_sources: failed, reject_reasons: Object.keys(reasons).length ? reasons : null, search_hits: hits, ...sourceFindings(rows, jobStatus, searchEmptyOk) }
 }

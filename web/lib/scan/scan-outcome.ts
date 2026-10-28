@@ -26,10 +26,21 @@ export interface ScanRecord {
   empty_reason?: string | null
   // From the run report / source rows (lib/scan/progress.ts), when recorded: the sources that failed, the per-reason counts of everything rejected, and the number of search results.
   failed_sources?: string[] | null; reject_reasons?: Record<string, number> | null; search_hits?: number | null
+  // Per-source findings (progress.ts): sources that returned evidence but extracted no candidates, and sources that were unavailable / not run.
+  evidence_sources?: { source: string; evidence: number }[] | null; unknown_sources?: string[] | null
 }
 const reasonList = (r: Record<string, number> | null | undefined) => r ? Object.entries(r).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k.replace(/^(?:review|dropped):/, '').replace(/_/g, ' ')} x${v}`).join(', ') : ''
-// Sources returned nothing at all: the search came back with zero results (a recorded 0, never an unrecorded null) and no source failed.
+// Zero match is claimed only when EVERY recorded source genuinely returned nothing: the search came back with a recorded 0, no source failed, none returned evidence that
+// extracted no candidates, and none was unavailable / not run (those are unknown, not zero).
 const ZERO_MATCH = (j: ScanRecord, open: string): ScanOutcome => ({ kind: 'zero_match', label: 'Zero match - the sources returned nothing', detail: 'The search and the other sources came back with no results for this request, and none of them failed.', next: { text: 'Widen the search', href: NEW_SCAN } })
+const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
+// What the empty result honestly is, given every recorded source. Evidence that yielded no candidates and unavailable sources are named; neither is a zero result.
+function emptyResult(j: ScanRecord, open: string): ScanOutcome {
+  const ev = j.evidence_sources ?? [], unknown = j.unknown_sources ?? []
+  if (ev.length) return { kind: 'none_extracted', label: 'No candidates were extracted', detail: `${ev.map(e => `${e.source} returned ${plural(e.evidence, 'item')}`).join('; ')}, none matched as candidates.${unknown.length ? ` ${unknown.join(', ')} was unavailable.` : ''} This is not a zero-results scan and does not show that no matching companies exist.`, next: { text: 'See what the scan read', href: open } }
+  if (unknown.length) return { kind: 'none_extracted', label: 'No candidates - a source was unavailable', detail: `${unknown.join(', ')} was unavailable or not run, so the other sources returning nothing does not show that no company matches.`, next: { text: 'See what the scan read', href: open } }
+  return j.search_hits === 0 ? ZERO_MATCH(j, open) : NONE_EXTRACTED(open, j.empty_reason)
+}
 const sourcesFailed = (j: ScanRecord) => (j.failed_sources ?? []).length > 0
 
 const NEW_SCAN = '/app/leads'
@@ -41,7 +52,7 @@ export function scanOutcome(j: ScanRecord): ScanOutcome {
   const open = `/app/leads?job_id=${j.id}`
   if (j.status === 'failed') {
     switch (j.error) {
-      case 'no_candidates': return sourcesFailed(j) ? { kind: 'failed', label: `Failed - ${j.failed_sources!.join(', ')} had an error`, detail: 'A source failed, so the empty result is not proof that nothing matches.', next: { text: 'Try again', href: NEW_SCAN } } : j.search_hits === 0 ? ZERO_MATCH(j, open) : NONE_EXTRACTED(open, j.empty_reason)
+      case 'no_candidates': return sourcesFailed(j) ? { kind: 'failed', label: `Failed - ${j.failed_sources!.join(', ')} had an error`, detail: 'A source failed, so the empty result is not proof that nothing matches.', next: { text: 'Try again', href: NEW_SCAN } } : emptyResult(j, open)
       case 'budget_stopped': return { kind: 'stopped', label: 'Stopped by its budget - not an empty search', next: { text: 'Run it again with a larger budget', href: NEW_SCAN } }
       case 'scan_timeout': return { kind: 'stopped', label: 'Stopped at its time limit - nothing was saved', next: { text: 'Try a narrower search', href: NEW_SCAN } }
       case 'cancelled': return { kind: 'stopped', label: 'Cancelled', next: { text: 'Start a new scan', href: NEW_SCAN } }
@@ -71,7 +82,7 @@ function finished(j: ScanRecord, open: string): ScanOutcome {
   }
   const verified = j.verified ?? 0, review = j.needs_review ?? 0, found = j.candidates ?? 0, dropped = j.dropped ?? 0
   // The runner only finishes 'done' after it had companies to check, but a 0 here still means exactly that.
-  if (found === 0 && verified === 0 && review === 0) return sourcesFailed(j) ? { kind: 'failed', label: `Failed - ${j.failed_sources!.join(', ')} had an error`, detail: 'A source failed, so the empty result is not proof that nothing matches.', next: { text: 'Try again', href: NEW_SCAN } } : j.search_hits === 0 ? ZERO_MATCH(j, open) : NONE_EXTRACTED(open, j.empty_reason)
+  if (found === 0 && verified === 0 && review === 0) return sourcesFailed(j) ? { kind: 'failed', label: `Failed - ${j.failed_sources!.join(', ')} had an error`, detail: 'A source failed, so the empty result is not proof that nothing matches.', next: { text: 'Try again', href: NEW_SCAN } } : emptyResult(j, open)
   if (verified > 0) return { kind: 'leads', label: `${found} found: ${verified} source-checked, ${review} need${review === 1 ? 's' : ''} your review, ${dropped} dropped`, next: null }
   if (review > 0) return { kind: 'review_only', label: `${found} found: none passed the checks on their own, ${review} need${review === 1 ? 's' : ''} your review`, next: { text: `Review ${review === 1 ? 'it' : 'them'}`, href: open } }
   return { kind: 'all_dropped', label: `${found} found, all dropped by the checks`, ...(j.reject_reasons ? { detail: `Rejected: ${reasonList(j.reject_reasons)}.` } : {}), next: { text: 'See why they were dropped', href: open } }
