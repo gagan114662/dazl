@@ -173,3 +173,10 @@ body { font-size: 16px; line-height: 1.5; }
 .lp-fade { opacity: .25; transform: translateY(4px); transition: opacity .45s, transform .45s; }
 .lp-fade.lp-in { opacity: 1; transform: none; }
 @media (prefers-reduced-motion: reduce) { .lp-fade, .lp-tick { transition: none; } .lp-caret, .lp-tick-now { animation: none; } }
+
+/* Home's "ready to run" card: two columns of items on wide screens, one on narrow. */
+.rc-grid { display: grid; gap: .5rem; }
+@media (min-width: 900px) { .rc-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem 1.25rem; } }
+.rc-item { display: flex; gap: .75rem; align-items: center; padding: .7rem .8rem; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+.rc-dot { width: 1.75rem; height: 1.75rem; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-size: .78rem; font-weight: 700; flex-shrink: 0; background: var(--peach-bg); color: #8a4a12; }
+.rc-dot-done { background: var(--mint-bg); color: #17694a; }
