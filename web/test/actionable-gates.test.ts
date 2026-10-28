@@ -62,3 +62,11 @@ test('FAIL-CLOSED buyer fit: when the fit check itself fails, hiring leads grade
   assert.deepEqual([by.ok.actionable, by.ok.missing], [false, ['fit_below_threshold']])
   assert.match((db.prepare("SELECT why FROM leads WHERE id = 'ok'").get() as { why: string }).why, /Buyer fit unconfirmed: the check failed \(database is locked\)/)
 })
+
+test('held in memory: a lead a required gate failed on is not actionable even though its stored row still reads verified', () => {
+  const { db, job } = seed()
+  const by = Object.fromEntries(classifyLeads(db, job, new Map([['ok', 'sales_hiring_check_failed']])).map(r => [r.lead_id, r]))
+  assert.deepEqual([by.ok.actionable, by.ok.missing], [false, ['sales_hiring_check_failed']])
+  const y = recordActionability(db, job, new Map([['ok', 'sales_hiring_check_failed']]))
+  assert.equal(y.actionable, 0); assert.equal(y.verified, 5, 'the held lead is not counted as verified'); assert.equal(y.missing.sales_hiring_check_failed, 1)
+})

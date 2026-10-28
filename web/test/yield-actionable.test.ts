@@ -113,3 +113,19 @@ test('FAIL-CLOSED: the required sales-hiring gate throws in the full runner -> t
   assert.match((r.db.prepare('SELECT why FROM leads').get() as { why: string }).why, /^Sales-hiring check failed \(boom: gate unavailable\): not verified\./)
   assert.equal(actionRow(r), undefined, 'a held lead is not in the actionable classification at all')
 })
+
+test('FAIL-CLOSED when the recovery write is rejected too: the gate\u2019s normal write AND the recovery write both fail -> still held in memory: actionable 0, trace and final result agree on the reason (fails on fb68548)', async () => {
+  const site: Site = { home: HOME, team: TEAM, careers: '<html><body><h1>Careers at Brightloop</h1><p>No open roles.</p></body></html>', contact: CONTACT }   // the real gate would demote: no sales proof
+  const f = fixture({ site })
+  // every later attempt to move a lead into review is rejected by the store: the gate's demotion AND failClosedSalesHiring's write
+  f.onVerify = db => { db.exec("CREATE TRIGGER reject_review BEFORE UPDATE OF review_reason ON leads WHEN NEW.review_reason IS NOT NULL BEGIN SELECT RAISE(ABORT, 'write rejected'); END") }
+  const r = await runCrawl(f)
+  // the stored row could not be changed (it still reads verified), but nothing may infer "passed" from it
+  assert.equal(lead(r)!.review_reason, null, 'precondition: the write really was rejected')
+  const rep = report(r) as ReturnType<typeof report> & { candidates: { company: string; fate: string }[] }
+  assert.deepEqual([rep.yield.verified, rep.yield.actionable], [0, 0], JSON.stringify(rep.yield)); assert.equal(rep.yield.missing.sales_hiring_check_failed, 1)
+  const gate = rep.enrichment.find(s => s.stage === 'sales_hiring_gate')!; assert.equal(gate.status, 'failed'); assert.match(gate.reason ?? '', /write rejected.*1 write\(s\) rejected: held in memory/)
+  assert.equal(rep.candidates.find(c => c.company === 'Brightloop')!.fate, 'review:sales_hiring_check_failed', 'the report shows the final result')
+  assert.equal(rep.funnel.verified, 0)
+  assert.match(actionRow(r)!.value, /^Not actionable yet: sales hiring check failed/)
+})

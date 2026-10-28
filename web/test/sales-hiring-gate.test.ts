@@ -340,4 +340,11 @@ test('a lead kept on a dated board posting stores per-posting evidence: role tit
   assert.equal(rows.length, 1)
   assert.deepEqual([rows[0].value, rows[0].source_url, rows[0].source_date, rows[0].confidence], [`Account Executive - posted ${d(12).slice(0, 10)}`, 'https://boards.greenhouse.io/brightloop/jobs/1', d(12).slice(0, 10), 70])
   assert.equal(rows[0].label, 'London, UK; Greenhouse'); assert.equal(rows[0].retrieved_at, Math.floor(NOW / 1000))
+
+test('FAIL-CLOSED in memory: failClosedSalesHiring still returns the held lead when its own write is rejected', () => {
+  const { db, job } = seed({ domain: 'brightloop.io', excerpt: QUOTE })
+  db.exec("CREATE TRIGGER reject_review BEFORE UPDATE OF review_reason ON leads WHEN NEW.review_reason IS NOT NULL BEGIN SELECT RAISE(ABORT, 'write rejected'); END")
+  const held = failClosedSalesHiring(db, job, 'database is locked')
+  assert.deepEqual(held.map(h => [h.id, h.reason, h.written]), [['L1', 'sales_hiring_check_failed', false]])
+  assert.equal(lead(db).review_reason, null, 'the row did not change - the in-memory set is the truth')
 })

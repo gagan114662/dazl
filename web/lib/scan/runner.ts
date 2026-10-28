@@ -34,7 +34,7 @@ import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './veri
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
 import { getMemory, isExcluded, memoryPromptBlock } from '../memory.ts'
 import { enrichJobSignals } from '../signals/index.ts'
-import { applySalesHiringGate, failClosedSalesHiring, type QuoteEvidence } from './sales-hiring-gate.ts'
+import { applySalesHiringGate, failClosedSalesHiring, type QuoteEvidence, type HeldLead } from './sales-hiring-gate.ts'
 import { beginEnrichment, endEnrichment } from './enrichment.ts'
 import { regradeFromKeptContacts } from './contact-agreement.ts'
 import { primarySignalKind } from './score.ts'
@@ -1054,20 +1054,22 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     }
     // Seed funding AND hiring sales: a lead that passed on the funding quote alone is moved to review unless sales / GTM hiring is evidenced
     // (its own quote, or a dated posting on a public job board bound to its domain). Before autopilot, so nothing is drafted on a half proof.
+    let heldByGate: Map<string, string> = new Map()
     try {
       const g = await (deps.salesHiringGate ?? applySalesHiringGate)(db, job, deps.fetchImpl ?? fetch, { quotes: outcome.quotes, careersGet: sitecrawlEnabled() ? (deps.crawlGet ?? defaultGet()) : undefined }); reconcileRunReport(db, job.id, job.attempts, g.demotions)
       trace.note('sales_hiring_gate', g.required ? 'ok' : 'skipped', g.required ? null : 'the request does not need sales-hiring proof', g.required ? { checked: g.checked, passed: g.passed, held: g.demoted } : undefined)
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'error'
       // A REQUIRED gate that fails is a fail, never a pass: every lead still verified is held, the failure is its reason, and the report agrees.
-      let held: { company: string; url: string; reason: string }[] = []
+      let held: HeldLead[] = []
       try { held = failClosedSalesHiring(db, job, msg); reconcileRunReport(db, job.id, job.attempts, held) } catch (e2) { console.error('sales-hiring fail-closed failed', e2 instanceof Error ? e2.message : 'error') }
-      trace.note('sales_hiring_gate', 'failed', `${msg} - ${held.length} lead(s) held as sales_hiring_check_failed`)
+      heldByGate = new Map(held.map(h => [h.id, h.reason]))   // kept in memory: classification must not infer "passed" from a row whose write did not land
+      trace.note('sales_hiring_gate', 'failed', `${msg} - ${held.length} lead(s) held as sales_hiring_check_failed${held.some(h => !h.written) ? ` (${held.filter(h => !h.written).length} write(s) rejected: held in memory)` : ''}`)
       console.error('sales-hiring gate failed', msg)
     }
     // Actionable yield (domain + sales proof + named person + published contact) is measured here, at the END of enrichment, apart from the source-checked counts.
     // The same facts go beside each lead and into the run report, so the card and the report agree.
-    try { mergeIntoRunReport(db, job.id, job.attempts, { enrichment: trace.stages, yield: recordActionability(db, job) }) } catch (e) { console.error('actionable yield failed', e instanceof Error ? e.message : 'error') }
+    try { mergeIntoRunReport(db, job.id, job.attempts, { enrichment: trace.stages, yield: recordActionability(db, job, heldByGate) }) } catch (e) { console.error('actionable yield failed', e instanceof Error ? e.message : 'error') }
     // Contacts, people, fit and the sales-hiring check are final: the stage ends before autopilot, whose drafting/sending is separate work, not enrichment.
     endEnrichment(db, job.id, job.attempts)
     // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.
