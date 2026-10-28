@@ -60,6 +60,29 @@ bothEngines('queue contract: an expired claim goes back to pending (backoff), an
   assert.deepEqual([(await q.get('r'))!.status, (await q.get('r'))!.lastError], ['failed', 'timeout'])
 })
 
+bothEngines("tenant isolation: one tenant's dedupe keys, cap and claims never touch another tenant's work", async ({ db }) => {
+  const q = new DbQueue(db, fixed)
+  const now = 1_800_000_000
+  // the same dedupe key in two tenants is two items, not one suppressing the other
+  assert.deepEqual(await q.enqueue({ id: 'a1', tenantId: T1, kind: 'monitor', dedupeKey: 'weekly', now }), { id: 'a1', created: true })
+  assert.deepEqual(await q.enqueue({ id: 'b1', tenantId: T2, kind: 'monitor', dedupeKey: 'weekly', now }), { id: 'b1', created: true })
+  await q.enqueue({ id: 'a2', tenantId: T1, kind: 'monitor', now: now + 1 })
+  assert.deepEqual([await q.depth({ tenantId: T1 }), await q.depth({ tenantId: T2 })], [2, 1])
+  // a worker scoped to tenant B never claims A's items, even when A's are older
+  const b = (await q.claim({ now: now + 5, tenants: [T2] }))!
+  assert.equal(b.item.id, 'b1')
+  assert.equal(await q.claim({ now: now + 5, tenants: [T2] }), null)
+  // A reaching its in-flight cap does not hold B back, and B's claim does not count against A
+  const a = (await q.claim({ now: now + 5, tenants: [T1] }))!
+  assert.equal(a.item.id, 'a1')
+  assert.equal(await q.claim({ now: now + 5, tenants: [T1] }), null) // A at its cap of 1
+  // B's token cannot complete or fail A's item
+  assert.equal(await q.complete(b.token), true)
+  assert.equal((await q.get('a1'))!.status, 'claimed')
+  assert.equal(await q.fail(b.token), 'stale')
+  assert.equal((await q.get('a1'))!.status, 'claimed')
+})
+
 async function sharedSchema() {
   const s = await freshSchema()
   const db = pgDb({ connectionString: PG_URL!, searchPath: s.schema, max: 4 })
