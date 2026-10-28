@@ -18,7 +18,7 @@ export function migratePlans(db: Database.Database): void {
     );
   `)
   // Stripe event ordering (lib/billing/stripe.ts): the created time of the last event that set this plan. PG:
-  // 0005_stripe_event_order.sql.
+  // 0006_stripe_event_order.sql.
   try { db.exec('ALTER TABLE tenant_plans ADD COLUMN stripe_event_at INTEGER') } catch { /* exists */ }
 }
 
