@@ -13,10 +13,10 @@ import type { SafeGet } from '../lib/sources/types.ts'
 
 const ms = (n: number) => Date.now() - n * 86_400_000
 const QUERY = 'London UK startups hiring sales account executives'
-const LEVER = (host: string, n = 1) => Array.from({ length: n }, (_, i) => ({ text: 'Account Executive', hostedUrl: `https://jobs.lever.co/${host}/${i + 1}`, createdAt: ms(9), categories: { location: 'London, UK', allLocations: ['London, UK'] }, descriptionPlain: `${host} is hiring an Account Executive in London to sell to UK fintechs. ${'x'.repeat(40)}` }))
-const GH = (t: string) => ({ jobs: [{ id: 1, title: 'Account Executive', location: { name: 'London, UK' } }] })
-const GHD = (t: string) => ({ id: 1, title: 'Account Executive', first_published: new Date(ms(9)).toISOString(), absolute_url: `https://boards.greenhouse.io/${t}/jobs/1`, location: { name: 'London, UK' }, content: `&lt;p&gt;${t} is hiring an Account Executive in London to sell to UK fintechs. Join the sales team.&lt;/p&gt;` })
-const ASHBY = (t: string) => ({ jobs: [{ isListed: true, title: 'Account Executive', jobUrl: `https://jobs.ashbyhq.com/${t}/1`, location: 'London, UK', publishedAt: new Date(ms(9)).toISOString(), descriptionPlain: `${t} is hiring an Account Executive in London to sell to UK fintechs. ${'x'.repeat(40)}` }] })
+const LEVER = (host: string, n = 1) => Array.from({ length: n }, (_, i) => ({ text: 'Sales Account Executive', hostedUrl: `https://jobs.lever.co/${host}/${i + 1}`, createdAt: ms(9), categories: { location: 'London, UK', allLocations: ['London, UK'] }, descriptionPlain: `${host} is hiring an Account Executive in London to sell to UK fintechs. ${'x'.repeat(40)}` }))
+const GH = (t: string) => ({ jobs: [{ id: 1, title: 'Sales Account Executive', location: { name: 'London, UK' } }] })
+const GHD = (t: string) => ({ id: 1, title: 'Sales Account Executive', first_published: new Date(ms(9)).toISOString(), absolute_url: `https://boards.greenhouse.io/${t}/jobs/1`, location: { name: 'London, UK' }, content: `&lt;p&gt;${t} is hiring an Account Executive in London to sell to UK fintechs. Join the sales team.&lt;/p&gt;` })
+const ASHBY = (t: string) => ({ jobs: [{ isListed: true, title: 'Sales Account Executive', jobUrl: `https://jobs.ashbyhq.com/${t}/1`, location: 'London, UK', publishedAt: new Date(ms(9)).toISOString(), descriptionPlain: `${t} is hiring an Account Executive in London to sell to UK fintechs. ${'x'.repeat(40)}` }] })
 function http(map: Record<string, { status: number; body?: unknown } | null>): SafeGet {
   return async url => {
     if (new URL(url).hostname === 'hn.algolia.com') return { status: 404, body: '' }
