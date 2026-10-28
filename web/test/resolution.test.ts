@@ -7,6 +7,7 @@ import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, addEnrichment } from '../lib/connectors/store.ts'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
 import { runReportFor } from '../lib/scan/run-report.ts'
+import { applySalesHiringGate } from '../lib/scan/sales-hiring-gate.ts'
 
 const ICP = JSON.stringify({ summary: 's', where: ['London, UK'], who: ['Founder'], signals: ['opened a new office'], exclude: [], window_days: 90 })
 const REQ = 'Find London UK startups that opened a new office within the past 90 days.'
@@ -139,4 +140,58 @@ test('the real fetcher takes the signal: an already-aborted signal makes no conn
   const pre = new AbortController(); pre.abort()
   await assert.rejects(once(new URL('https://203.0.113.9/'), 10_000, undefined, pre.signal), /aborted/)
   assert.deepEqual(await fetchPageDetailed('https://203.0.113.9/', async () => null, pre.signal), { fail: 'error' })
+})
+
+// ---- #316 review 2: tomorrow is not resolved; a normal post-scan lookup is not a cancellation ----
+test('TOMORROW (no window): a date-only day after today is future and never resolved; today is found', () => {
+  const { db, job, lead, enr } = seed(); db.prepare('UPDATE scan_jobs SET query = ?, icp = ? WHERE id = ?').run('Find startups', '{}', job.id)
+  const mk = (company: string, date: string) => { const id = lead({ company, domain: `${company.toLowerCase()}.example`, date }); enr(id, 'person', 'Jo Bo, Founder'); enr(id, 'email', `jo@${company.toLowerCase()}.example`) }
+  mk('Tomorrow', '2026-10-29'); mk('Today', '2026-10-28'); mk('Yesterday', '2026-10-27')
+  const m = new Map(resolveFacts(db, { ...job, query: 'Find startups', icp: '{}' }, new Map(), new Date('2026-10-28T14:00:00Z')).map(r => [r.company, r]))
+  assert.deepEqual([m.get('Tomorrow')!.date, m.get('Tomorrow')!.resolved, m.get('Tomorrow')!.reasons], ['future', false, ['the event date 2026-10-29 is in the future']])
+  assert.deepEqual([m.get('Today')!.date, m.get('Today')!.resolved], ['found', true]); assert.deepEqual([m.get('Yesterday')!.date, m.get('Yesterday')!.resolved], ['found', true])
+  assert.equal(resolveFacts(db, { ...job, query: 'Find startups', icp: '{}' }, new Map(), new Date('2026-10-28T23:59:59Z')).find(r => r.company === 'Tomorrow')!.date, 'future')
+})
+
+// A real runJob whose finish() has already written status 'done': the own-page lookup runs AFTER that. SITECRAWL on (stubbed crawl) only to bind the lead's domain, exactly as the sales-hiring tests do.
+const QUOTE = 'Brightloop opened a new office in Shoreditch, London for its growing engineering team'
+const PAGE = { title: 'Brightloop opens in Shoreditch', text: `Published ${daysAgo(12)}. ${QUOTE}. ${'More about the company and its people. '.repeat(15)}` }
+const NEWSU = 'https://sifted.example/brightloop-opens'
+const EVENTLD = JSON.stringify({ '@type': 'Event', name: 'Brightloop office opening', startDate: daysAgo(10), organizer: { name: 'Brightloop' }, location: { '@type': 'Place', name: 'Brightloop Shoreditch office', address: { addressLocality: 'London', addressCountry: 'GB', addressRegion: 'England' } } })
+interface Seen { started: string[]; finished: string[]; abortedAtEnd: boolean[]; db?: Database.Database; jobId?: string }
+function undated(slowMs: number, seen: Seen, cancelAfterMs?: number): Fixture {
+  const crawl = async (url: string) => { const u = new URL(url)
+    if (u.hostname === 'sifted.example') return { status: 200, body: `<html><body><a href="https://brightloop.io/">Brightloop</a> ${PAGE.text}</body></html>`, finalUrl: url }
+    if (u.hostname === 'brightloop.io') return u.pathname === '/robots.txt' ? { status: 200, body: 'User-agent: *\nAllow: /', finalUrl: url } : u.pathname === '/' ? { status: 200, body: `<html><body>Brightloop - London SaaS, 1 Old Street, London EC1V 9HX. ${PAGE.text}`, finalUrl: url } : { status: 404, body: '', finalUrl: url }
+    return null }
+  const fetchPage = async (u: string, signal?: AbortSignal) => {
+    if (signal && new URL(u).hostname === 'brightloop.io') {   // ONLY the post-finish own-site lookup passes a signal: slow, and it answers with the company's own Event
+      seen.started.push(u)
+      if (cancelAfterMs !== undefined) setTimeout(() => { try { seen.db?.prepare('UPDATE scan_jobs SET attempts = attempts + 1 WHERE id = ?').run(seen.jobId) } catch (e) { console.error('flip failed', e instanceof Error ? e.message : e) } }, cancelAfterMs)
+      await new Promise<void>(r => { const tm = setTimeout(r, slowMs); signal.addEventListener('abort', () => { clearTimeout(tm); r() }, { once: true }) })   // honours the signal like the real fetcher
+      seen.abortedAtEnd.push(signal.aborted); if (!signal.aborted) seen.finished.push(u)
+      return { text: 'Brightloop home. ' + 'x'.repeat(300), title: 'Brightloop', retrievedAt: 1, structured: [EVENTLD] }
+    }
+    return u === NEWSU ? { text: PAGE.text, title: PAGE.title, retrievedAt: 1 } : { fail: 'error' as const }
+  }
+  return { request: 'Find London UK startups that opened a new office within the past 90 days.', modelIcp: { summary: 's', who: ['Founder'], industries: ['SaaS'], sizes: [], where: ['London, UK'], signals: ['opened a new office'], exclude: [], country: 'GB', language: 'en', window_days: 90 }, modelQueries: ['london startup opens office'],
+    hits: [{ url: NEWSU, title: PAGE.title, snippet: QUOTE, date: daysAgo(12) }], tfPages: { [NEWSU]: PAGE }, own: { [NEWSU]: PAGE }, extraction: [{ company: 'Brightloop', signal: 'opened a new office', source_url: NEWSU, excerpt: QUOTE, event_date: null }],
+    deps: { crawlGet: crawl as never, fetchPage: fetchPage as never, salesHiringGate: (async (db: Database.Database, job: { id: string }, ...rest: unknown[]) => { seen.db = db; seen.jobId = job.id; return (applySalesHiringGate as (...a: unknown[]) => Promise<unknown>)(db, job, ...rest) }) as never } }
+}
+async function runCrawl(f: Fixture) { const saved = process.env.SITECRAWL_ENABLED; process.env.SITECRAWL_ENABLED = '1'; try { return await runFixture(f) } finally { if (saved === undefined) delete process.env.SITECRAWL_ENABLED; else process.env.SITECRAWL_ENABLED = saved } }
+const resOf = (x: Awaited<ReturnType<typeof runFixture>>) => (runReportFor(x.db, 'A', (x.db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id) as { resolution?: { interrupted: string | null; lookups: number; leads: { company: string; late_date?: { date: string; url: string }; reasons: string[] }[] } }[]).findLast(r => r.resolution)?.resolution
+
+test('REAL RUNNER: a normal own-page lookup that takes longer than the 500ms ownership poll is NOT cancelled - it completes and finds the company\'s own Event date', async () => {
+  const seen: Seen = { started: [], finished: [], abortedAtEnd: [] }
+  const x = await runCrawl(undated(900, seen))
+  assert.equal((x.db.prepare("SELECT company_domain FROM leads WHERE company = 'Brightloop'").get() as { company_domain: string }).company_domain, 'brightloop.io')
+  assert.ok(seen.started.length >= 1 && seen.finished.length >= 1, `the lookup ran and finished: ${JSON.stringify(seen)}`)
+  assert.deepEqual(seen.abortedAtEnd, seen.abortedAtEnd.map(() => false), 'its signal was not aborted while it ran'); const res = resOf(x)!
+  assert.equal(res.interrupted, null); const l = res.leads.find(r => r.company === 'Brightloop')!; assert.ok(l.late_date, JSON.stringify(res)); assert.equal(l.late_date!.date, daysAgo(10))
+})
+test('REAL RUNNER: an actual cancellation (a newer attempt has taken the job row) aborts the lookup in flight and records it', async () => {
+  const seen: Seen = { started: [], finished: [], abortedAtEnd: [] }
+  const x = await runCrawl(undated(8000, seen, 100))
+  assert.ok(seen.started.length >= 1 && seen.finished.length === 0, `the lookup started and never completed: ${JSON.stringify(seen)}`); assert.ok(seen.abortedAtEnd.includes(true), 'the in-flight request was aborted by the cancellation')
+  const res = resOf(x); assert.ok(res, 'the run report still carries the resolution summary'); assert.equal(res!.interrupted, 'cancelled'); assert.ok(res!.leads.some(l => /own-site date lookup not completed: the scan was cancelled/.test(l.reasons.join('|'))), JSON.stringify(res))
 })

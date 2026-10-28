@@ -35,7 +35,7 @@ function dateState(d: string | null, reason: string | null, windowDays: number |
   if (!d) return reason === 'event_timing_unconfirmed' ? 'unconfirmed' : 'missing'
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d), t = m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])) : null
   if (!m || !t || t.getUTCFullYear() !== +m[1] || t.getUTCMonth() !== +m[2] - 1 || t.getUTCDate() !== +m[3]) return 'invalid'
-  if (t.getTime() > now.getTime() + 86_400_000) return 'future'
+  if (d > now.toISOString().slice(0, 10)) return 'future'   // calendar days, like the window gate: tomorrow is already in the future (no time-of-day tolerance)
   if (reason === 'outside_window' || reason === 'outside_window_undated' || (windowDays && windowStatus(d, windowDays, now) !== 'inside')) return 'stale'
   return 'found'
 }
