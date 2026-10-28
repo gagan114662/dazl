@@ -28,6 +28,12 @@ function addLead(db: Database.Database, jobId: string, over: Record<string, unkn
   db.prepare('INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, score) VALUES (@id,@scan_job_id,@name,@company,@company_domain,@signal,@source_url,@score)').run({ ...l, scan_job_id: jobId })
 }
 
+test('watches made in the same second list in one stable order (created_at, then id)', () => {
+  const db = setup()
+  for (const [id, at] of [['b', 100], ['c', 100], ['a', 100], ['d', 99]] as const) db.prepare("INSERT INTO watches (id, user_id, query, icp, next_run_at, created_at) VALUES (?, 'u', ?, ?, 0, ?)").run(id, `q ${id}`, ICP, at)
+  assert.deepEqual(listWatches(db, 'u').map(w => w.id), ['c', 'b', 'a', 'd'])
+})
+
 test('cap of 3 active watches, and no duplicate active query', () => {
   const db = setup()
   for (let i = 0; i < MAX_WATCHES; i++) assert.ok(createWatch(db, 'u', `query ${i}`, ICP).watch)

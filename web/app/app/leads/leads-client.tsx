@@ -434,6 +434,16 @@ export default function LeadsClient() {
     const id = new URLSearchParams(window.location.search).get('job_id')
     if (id && /^[a-f0-9]{24}$/.test(id)) { passiveJob.current = new URLSearchParams(window.location.search).get('passive') === '1'; setJobId(id); setStatus('loading') }
   }, [])
+  // The address bar names the job on screen. A fresh scan started from an older scan's URL used to leave that old
+  // job_id in the bar, so a refresh, copy or reopen showed the old result. Rewrite it in place (no navigation, no
+  // fetch) whenever the viewed job changes; 'passive' belongs to the job it was opened with, so it is dropped then.
+  useEffect(() => {
+    if (!jobId) return
+    const url = new URL(window.location.href)
+    if (url.searchParams.get('job_id') === jobId) return
+    url.searchParams.set('job_id', jobId); url.searchParams.delete('passive')
+    window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash)
+  }, [jobId])
   const watchReq = async (body: Record<string, unknown>) => {
     setWatchNote('')
     const r = await fetch('/api/watch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => null)
