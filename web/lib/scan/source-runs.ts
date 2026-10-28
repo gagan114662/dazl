@@ -35,6 +35,7 @@ export function migrateSourceRuns(db: Database.Database): void {
 const evidenceKey = (c: Pick<Candidate, 'company' | 'name' | 'source_url'>) => `${dedupKey(c)}|${c.source_url}`
 
 type Run = { status: string; evidence: number | null; candidates: Set<string>; observed: boolean }
+const ERRORED = /^(error|timeout|unavailable)$/
 export class SourceRunLedger {
   private runs = new Map<string, Run>()
   private credits = new Map<string, Set<string>>()
@@ -55,7 +56,7 @@ export class SourceRunLedger {
   progress(db: Database.Database, jobId: string, attempt: number, stage: string): void {
     try {
       if (!db.prepare("SELECT 1 FROM scan_jobs WHERE id = ? AND attempts = ? AND status = 'running'").get(jobId, attempt)) return
-      this.parts = { ...this.parts, stage, model: this.modelSummary(), sources: [...this.runs].map(([collector, r]) => ({ collector, status: r.status, evidence: r.evidence })) }
+      this.parts = { ...this.parts, stage, model: this.modelSummary(), sources: this.sourceRows(null) }
       writeRunReport(db, jobId, attempt, buildRunReport(this.parts, null, null, attempt, Date.now(), true))
     } catch { /* progress is best effort */ }
   }
@@ -70,6 +71,16 @@ export class SourceRunLedger {
       writeModelCalls(db, own.user_id, jobId, attempt, this.calls.slice(this.written), process.env, this.written)
       this.written = this.calls.length
     } catch { /* usage recording never affects the scan */ }
+  }
+  // Per-source facts for the run report / progress screen. While the scan runs `verifiedKeys` is null: verified / rejected are not known yet (null),
+  // errors only count a source that ended in error (a 'started' source is still working). At the end rejected = candidates that did not verify.
+  private sourceRows(verifiedKeys: Set<string> | null, final = false): NonNullable<ReportParts['sources']> {
+    return [...this.runs].map(([collector, r]) => {
+      const counted = r.observed || r.evidence === 0
+      const cands = counted ? r.candidates.size : null
+      const verified = verifiedKeys && counted ? [...r.candidates].filter(k => verifiedKeys.has(k)).length : null
+      return { collector, status: r.status, evidence: r.evidence, queried: !/^skipped/.test(r.status), candidates: cands, verified, rejected: verified !== null && cands !== null ? cands - verified : null, errors: ERRORED.test(r.status) || (final && r.status === 'started') ? 1 : 0 }
+    })
   }
   has(collector: string): boolean { return this.runs.has(collector) }
   stats(collector: string, s: SourceStats): void { this.diag.set(collector, s) }
@@ -109,7 +120,7 @@ export class SourceRunLedger {
     }
     for (const [collector, s] of this.diag) writeSourceStats(db, jobId, attempt, collector, s) // on unless DAZL_SOURCE_STATS=0; never throws
     this.flushModelCalls(db, jobId, attempt) // never throws; failed and retried attempts included
-    this.parts = { ...this.parts, model: this.modelSummary(), sources: [...this.runs].map(([collector, r]) => ({ collector, status: r.status, evidence: r.evidence })) }
+    this.parts = { ...this.parts, model: this.modelSummary(), sources: this.sourceRows(verified ? verifiedKeys : null, true) }
     writeRunReport(db, jobId, attempt, buildRunReport(this.parts, verified ? verified.map(r => ({ key: evidenceKey(r) })) : null, review ? review.map(r => ({ key: evidenceKey(r), review_reason: (r as { review_reason?: string }).review_reason })) : null, attempt)) // never throws
     const link = db.prepare('INSERT OR IGNORE INTO lead_sources (lead_id,collector,attempt) VALUES (?,?,?)')
     for (const l of stored) for (const collector of this.credits.get(evidenceKey(l)) ?? []) link.run(l.id, collector, attempt)

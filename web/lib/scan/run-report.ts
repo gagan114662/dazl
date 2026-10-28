@@ -21,7 +21,10 @@ export interface ReportParts {
   ownFetch?: Map<string, string>
   dropCounts?: Record<string, number>
   stage?: string
-  sources?: { collector: string; status: string; evidence: number | null }[]
+  // Per source, as far as the scan has got (null = not reached yet, never a fabricated 0): queried = the source was actually asked; found = evidence items
+  // it returned; candidates = model candidates built from them; verified / rejected = how those ended (rejected = review + dropped); errors = 1 when it
+  // errored, timed out or never finished.
+  sources?: { collector: string; status: string; evidence: number | null; queried?: boolean; candidates?: number | null; verified?: number | null; rejected?: number | null; errors?: number }[]
   model?: { requests_recorded: number; requests_with_reported_tokens: number; input_tokens: number | null; output_tokens: number | null; tokens_complete: boolean }
   observed?: { search: boolean; extraction: boolean; verification: boolean }
 }
@@ -98,7 +101,8 @@ export function runReportFor(db: Database.Database, tenantId: string, jobId: str
 }
 
 // What a UI can show while a scan runs (and after): derived only from the stored report. Counts the scan has not reached yet are null.
-export interface Progress { stage: string; in_progress: boolean; sources_tried: { collector: string; status: string; candidates_or_evidence: number | null }[]; queries_sent: number; results_found: number | null; pages_selected: number; pages_with_text: number; candidates_found: number | null; checks_done: number; rejections_by_reason: Record<string, number> }
+export interface SourceProgress { source: string; status: string; queried: boolean; found: number | null; candidates: number | null; verified: number | null; rejected: number | null; errors: number }
+export interface Progress { per_source: SourceProgress[]; stage: string; in_progress: boolean; sources_tried: { collector: string; status: string; candidates_or_evidence: number | null }[]; queries_sent: number; results_found: number | null; pages_selected: number; pages_with_text: number; candidates_found: number | null; checks_done: number; rejections_by_reason: Record<string, number> }
 export function progressOf(report: Record<string, any> | null | undefined): Progress | null {
   if (!report || typeof report !== 'object') return null
   const urls = Array.isArray(report.urls) ? report.urls : []
@@ -109,7 +113,11 @@ export function progressOf(report: Record<string, any> | null | undefined): Prog
   const cands = Array.isArray(report.candidates) ? report.candidates : []
   // Mid-scan the final fates are not known yet; the verifier's own drop counts are, as soon as verification has run.
   if (report.in_progress) for (const [k, n] of Object.entries(report.funnel?.verifier_drop_counts ?? {})) rej[k] = n as number
-  return { stage: String(report.stage ?? 'finished'), in_progress: !!report.in_progress,
+  const perSource: SourceProgress[] = (report.sources ?? []).map((s: any) => ({
+    source: String(s.collector), status: String(s.status), queried: s.queried ?? !/^skipped/.test(String(s.status)), found: s.evidence ?? (s.collector === 'search:tinyfish' ? report.search?.hits_unique_urls ?? null : null),   // TinyFish records no evidence count of its own: its found = unique result URLs
+    candidates: s.candidates ?? null, verified: s.verified ?? null, rejected: s.rejected ?? null, errors: s.errors ?? (/^(error|timeout|started|unavailable)$/.test(String(s.status)) && !report.in_progress ? 1 : 0),
+  }))
+  return { per_source: perSource, stage: String(report.stage ?? 'finished'), in_progress: !!report.in_progress,
     sources_tried: (report.sources ?? []).map((s: any) => ({ collector: s.collector, status: s.status, candidates_or_evidence: s.evidence ?? null })),
     queries_sent: Array.isArray(report.queries) ? report.queries.length : 0, results_found: report.search?.hits_unique_urls ?? null,
     pages_selected: urls.filter((u: any) => u.selected).length, pages_with_text: urls.filter((u: any) => u.tinyfish_text_chars).length,

@@ -707,6 +707,9 @@ export default function LeadsClient() {
           ))}
         </div>
       )}
+      {status === 'done' && outcome && outcome.kind === 'all_rejected' && (
+        <p className="text-gray-400 text-sm mb-4" data-outcome="all_rejected">Found, but none qualified: {outcome.detail} {outcome.next_step}</p>
+      )}
       {quality && status === 'done' && (
         <p className="text-gray-400 text-sm mb-4">
           {quality.candidates} found: {quality.passed ?? 0} source-checked, {quality.needs_review ?? 0} need{(quality.needs_review ?? 0) === 1 ? 's' : ''} your review, {quality.dropped ?? 0} dropped

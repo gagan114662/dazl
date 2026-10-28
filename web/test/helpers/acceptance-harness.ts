@@ -32,6 +32,7 @@ export interface Fixture {
   own: Record<string, { title: string; text: string; published?: string } | 'blocked' | 'js_required' | 'not_found'>   // SYNTHETIC verifier own-fetch results
   extraction: Cand[]                       // SYNTHETIC extraction reply (real parseLeads runs on it)
   onVerify?: (db: Database.Database, jobId: string) => void   // called once, while the verifier is fetching (the scan is still running)
+  searchStatus?: number                    // every TinyFish search answers with this HTTP status instead of results (a search failure)
   deps?: Record<string, unknown>           // extra runJob deps (e.g. memory exclusions)
 }
 export async function runFixture(f: Fixture) {
@@ -49,6 +50,7 @@ export async function runFixture(f: Fixture) {
       const q = new URL(u).searchParams.get('query') ?? ''
       if (q.startsWith('site:linkedin.com/in ')) return new Response(JSON.stringify({ results: [] }), { status: 200 })
       calls.searches.push(q); calls.afters.push(new URL(u).searchParams.get('after_date'))
+      if (f.searchStatus) return new Response('error', { status: f.searchStatus })
       return new Response(JSON.stringify({ results: f.hits.map(h => ({ url: h.url, title: h.title, snippet: h.snippet, ...(h.date ? { date: h.date } : {}) })) }), { status: 200 })
     }
     if (u.startsWith('https://api.fetch.tinyfish.ai')) {
