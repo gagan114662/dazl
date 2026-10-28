@@ -31,6 +31,9 @@ export function normalizeScanBudget(raw: unknown, supplied: boolean): BudgetChec
       const v = o[k]
       if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0 || v > MAX_BUDGET_USD) return { ok: false, error: `budget.max_usd must be a number above 0 and at most ${MAX_BUDGET_USD}` }
       out.max_usd = v
+    } else if (k === 'first5') {
+      if (o[k] !== true) return { ok: false, error: 'budget.first5 accepts only true' }
+      out.first5 = true
     } else if ((NARROWING as readonly string[]).includes(k)) {
       if (o[k] !== false) return { ok: false, error: `budget.${k} accepts only false - the control can only narrow a run` }
       ;(out as Record<string, boolean>)[k] = false
