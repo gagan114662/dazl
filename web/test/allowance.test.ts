@@ -17,7 +17,7 @@ test('the stated allowance is the enforced one', () => {
   const scan = src('app/api/scan/route.ts')
   assert.match(scan, new RegExp(`rateLimit\\(\`scan:\\$\\{user\\.id\\}\`, ${SCAN_STARTS_PER_HOUR}, 60 \\* 60 \\* 1000\\)`))
   assert.match(scan, new RegExp(`countActiveJobs\\(db, user\\.id\\) >= ${ACTIVE_SCANS}\\b`))
-  // trial scans are not counted in the month (lib/plans.ts SCANS_THIS_MONTH_SQL), as FREE_LINE says
+  // trial scans are not counted in the month (lib/plans.ts SCANS_THIS_MONTH_SQL), so Free still has its 50 after them
   assert.match(src('lib/plans.ts'), /funded_by != 'trial'/)
 })
 
@@ -25,7 +25,7 @@ test('the lines say it plainly, with no "unlimited" or "fair use"', () => {
   for (const l of [FREE_LINE, PRO_LINE, LIMITS_LINE, usageLine('pro', 7, null), usageLine('free', 3, 50)]) assert.doesNotMatch(l, /unlimited|fair[- ]use/i, l)
   assert.equal(usageLine('free', 3, 50), '3 of 50 scans used this month.')
   assert.equal(usageLine('pro', 7, null), '7 scans this month. Pro has no monthly scan cap.')
-  assert.match(FREE_LINE, /50 scans a month/); assert.match(FREE_LINE, /3 trial scans/)
+  assert.match(FREE_LINE, /50 scans a month/); assert.match(FREE_LINE, /first 3 scans are free and need no AI key/)
   assert.match(LIMITS_LINE, /10 scan starts an hour, one scan running at a time/)
 })
 
