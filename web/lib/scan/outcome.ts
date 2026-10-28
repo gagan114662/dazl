@@ -5,10 +5,11 @@
 //   completed     - at least one source-checked lead.
 // Older scans have no run report; for them an empty result stays "no_candidates_unknown" (not recorded whether the search failed).
 import type Database from 'better-sqlite3'
+import { enrichState } from './enrichment.ts'
 
-export type OutcomeKind = 'queued' | 'running' | 'completed' | 'all_rejected' | 'no_matches' | 'search_failed' | 'stopped' | 'no_candidates_unknown'
-export interface Outcome { kind: OutcomeKind; label: string; detail: string; reasons: Record<string, number>; next_step: string }
-export interface OutcomeJob { status: string; error?: string | null; candidates?: number | null; verified?: number | null; needs_review?: number | null; dropped?: number | null; drop_reasons?: string | null }
+export type OutcomeKind = 'queued' | 'running' | 'completed' | 'all_rejected' | 'no_matches' | 'search_failed' | 'stopped' | 'no_candidates_unknown' | 'enriching'
+export interface Outcome { kind: OutcomeKind; then?: OutcomeKind; label: string; detail: string; reasons: Record<string, number>; next_step: string }
+export interface OutcomeJob { enrich_started_at?: number | null; enrich_finished_at?: number | null; status: string; error?: string | null; candidates?: number | null; verified?: number | null; needs_review?: number | null; dropped?: number | null; drop_reasons?: string | null }
 export interface ReportSummary { searches_attempted: number | null; searches_ok: number | null; hits_unique_urls: number | null; hits_complete: boolean | null; searches_failed: Record<string, number> | null; extracted: number | null; review_reasons: Record<string, number>; drop_reasons: Record<string, number> }
 
 const STOPPED: Record<string, string> = { budget_stopped: 'stopped by the per-run budget', cancelled: 'stopped by you', scan_timeout: 'ran past its time limit' }
@@ -16,7 +17,14 @@ const FAILED_WHY: Record<string, string> = { key_rejected: 'your model key was r
 const sum = (o: Record<string, number>) => Object.values(o).reduce((a, b) => a + b, 0)
 const list = (o: Record<string, number>) => Object.entries(o).map(([k, n]) => `${n} ${k.replace(/_/g, ' ')}`).join(', ')
 
-export function scanOutcome(job: OutcomeJob, rep: ReportSummary | null): Outcome {
+// While the contact / people / fit stage still runs the scan is not finished: the kind is 'enriching' and `then` keeps what the result
+// is so far (completed, all_rejected or no_matches), so a zero-match or fully rejected scan is never mistaken for a pending one.
+export function scanOutcome(job: OutcomeJob, rep: ReportSummary | null, nowS?: number): Outcome {
+  const base = baseOutcome(job, rep)
+  if (enrichState(job, nowS) !== 'running') return base
+  return { ...base, kind: 'enriching', then: base.kind, label: `finishing - ${base.label}`, detail: `${base.detail} Still finding contacts and checking fit; the counts can change until this finishes.`, next_step: 'Wait a moment: contacts and fit checks are still being added.' }
+}
+function baseOutcome(job: OutcomeJob, rep: ReportSummary | null): Outcome {
   const none = {} as Record<string, number>
   if (job.status === 'pending') return { kind: 'queued', label: 'queued', detail: 'Waiting for a free slot.', reasons: none, next_step: 'Nothing to do; it starts on its own.' }
   if (job.status === 'running') return { kind: 'running', label: 'scanning', detail: 'The scan is running.', reasons: none, next_step: 'Wait for it to finish.' }
