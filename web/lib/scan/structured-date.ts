@@ -8,7 +8,7 @@
 //   - exactly one distinct date across all qualifying nodes (several = a list of items: none is this lead's),
 //   - a real calendar day. datePublished / dateModified / dateCreated are publication or update stamps and are never read here (page-timing.ts keeps them as labels only).
 import { companyKey, hasPhrase, norm } from './evidence.ts'
-import { isCountryOrRegion } from './countries.ts'
+import { isCountryOrRegion, countryFromField, countriesIn, regionOf, regionsIn, countryOfRegion } from './countries.ts'
 
 export type DateKind = 'Event' | 'JobPosting'
 export interface StructuredDate { date: string; kind: DateKind }
@@ -87,6 +87,29 @@ function requestPlaces(where: string[], eventCity: string[][]): { city: string[]
   }
   return { city, finer }
 }
+// The country / region an Event's address states in its STRUCTURED fields (addressCountry, addressRegion). A region implies its country.
+function eventGeo(location: unknown): { countries: Set<string>; regions: Set<string> } {
+  const countries = new Set<string>(), regions = new Set<string>()
+  const take = (l: unknown, depth = 0) => {
+    if (depth > 3 || l == null || typeof l !== 'object') return
+    if (Array.isArray(l)) { for (const x of l.slice(0, 5)) take(x, depth + 1); return }
+    const o = l as Record<string, unknown>
+    const c = countryFromField(o.addressCountry); if (c) countries.add(c)
+    const r = typeof o.addressRegion === 'string' ? regionOf(o.addressRegion) : null; if (r) { regions.add(r); countries.add(countryOfRegion(r)) }
+    take(o.address, depth + 1)
+  }
+  take(location)
+  return { countries, regions }
+}
+// The countries / regions the CLAIM and the REQUEST state (comma segments only, so "in" / "on" / "or" in running text are never read as a province or state).
+function claimGeo(claim: string, where: string[]): { countries: Set<string>; regions: Set<string> } {
+  const countries = new Set<string>(), regions = new Set<string>()
+  for (const text of [...where, claim]) {
+    for (const c of countriesIn(text)) countries.add(c)
+    for (const r of regionsIn(text)) { regions.add(r); countries.add(countryOfRegion(r)) }
+  }
+  return { countries, regions }
+}
 // What an Event's location states: `city` = each addressLocality as a token phrase, `local` = the place-name phrase(s) (neighbourhood / site) with the city words taken off. Street, region, country and postal code are not place terms.
 function eventPlace(location: unknown, key: string): { city: string[][]; local: string[][] } {
   const city: string[][] = [], names: string[][] = []
@@ -133,6 +156,10 @@ function eventMatches(o: Record<string, unknown>, claim: string, where: string[]
   const virtual = locVals.some(v => /^VirtualLocation$/i.test(v))
   if (virtual && !claimTypes.has('webinar')) return false
   // The event's OWN place has to agree with the claim's place - same city / neighbourhood (or the request's place), never merely a shared country, region or the word "London".
+  // The event's STRUCTURED country / region must agree with what the claim / request states: London, Ontario (CA, Ontario) is not London, UK. Both sides stating one and no overlap = a different place.
+  const geoE = eventGeo(o.location), geoC = claimGeo(claim, where)
+  if (geoE.countries.size > 0 && geoC.countries.size > 0 && ![...geoE.countries].some(c => geoC.countries.has(c))) return false
+  if (geoE.regions.size > 0 && geoC.regions.size > 0 && ![...geoE.regions].some(r => geoC.regions.has(r))) return false
   const { city, local } = eventPlace(o.location, key)
   if (city.length + local.length > 0) {
     const req = requestPlaces(where, city)

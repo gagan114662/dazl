@@ -180,7 +180,7 @@ test('FULL RUN, lowercase claim: a Camden event leaves "opened a new office in s
 
 // ---- #307 review 4: whole place names, not shared words ----
 const CASINGS = (s: string) => [s, s.toLowerCase(), s.toUpperCase(), s.replace(/\b(\w)(\w*)/g, (_, a, b) => a.toLowerCase() + b.toUpperCase())]
-const EV = (placeName: string, locality = 'London', country = 'United Kingdom') => PLACE(`Embedd ${placeName}`, locality, country)
+const EV = (placeName: string, locality = 'London', country = 'United Kingdom') => PLACE(`Embedd ${placeName}`, locality, country, country === 'United States' ? 'New York' : 'England')
 const CLAIM_OF = (place: string) => `opened a new office in ${place}, London`
 test('INSTINCT REPRO 4: an East Kensington claim is never dated by a West Kensington event (or a bare Kensington one) - whole place names, qualifiers included, in every casing', () => {
   for (const claimPlace of CASINGS('East Kensington')) for (const w of WHERES) {
@@ -265,4 +265,37 @@ test('POSITIVES stay green with every request-place variant that does not contra
 test('"Greater London" as the request place is the city London, not a finer place; a Shoreditch claim still needs a Shoreditch event', () => {
   assert.deepEqual(resolveStructuredDate([EV('Shoreditch')], 'Embedd', CLAIM_OF('Shoreditch'), ['Greater London, UK']), { date: '2026-10-19', kind: 'Event' })
   assert.equal(resolveStructuredDate([EV('Camden')], 'Embedd', CLAIM_OF('Shoreditch'), ['Greater London, UK']), null)
+})
+
+// ---- #307 review 6: the event's STRUCTURED country / region must agree (London, Ontario is not London, UK) ----
+const LONDON_UK_CLAIM = 'Embedd opened a new office in London, UK'
+test('INSTINCT REPRO 6: addressCountry CA / addressRegion Ontario never dates a London, UK claim; the GB / England control does', () => {
+  const ev = (country: unknown, region: unknown) => ld({ '@type': 'Event', name: 'Embedd office opening', startDate: '2026-10-19', organizer: { name: 'Embedd' }, location: { '@type': 'Place', name: 'Embedd London office', address: { '@type': 'PostalAddress', addressLocality: 'London', addressCountry: country, addressRegion: region } } })
+  assert.deepEqual(resolveStructuredDate([ev('GB', 'England')], 'Embedd', LONDON_UK_CLAIM, ['London, UK']), { date: '2026-10-19', kind: 'Event' }, 'the London, UK control')
+  for (const [country, region] of [['CA', 'Ontario'], ['Canada', 'Ontario'], ['CA', 'ON'], ['ca', 'on'], ['CANADA', 'ONTARIO'], [{ '@type': 'Country', name: 'Canada' }, 'Ontario'], ['CA', undefined], [undefined, 'Ontario'], [undefined, 'ON'], ['CAN', 'Ontario']] as const) {
+    for (const where of [['London, UK'], ['london, united kingdom'], ['LONDON, UK'], []]) assert.equal(resolveStructuredDate([ev(country, region)], 'Embedd', LONDON_UK_CLAIM, where), null, `${JSON.stringify([country, region])} ${JSON.stringify(where)}`)
+    assert.equal(resolveStructuredDate([ev(country, region)], 'Embedd', 'Embedd opened a new office in London', ['London, UK']), null, `request-only UK: ${JSON.stringify([country, region])}`)
+  }
+})
+test('country / region spellings that AGREE keep dating (GB, UK, United Kingdom, England, Scotland-only for a Scottish claim), and a missing country stays the old behaviour (no conflict is claimed)', () => {
+  const ev = (country: unknown, region: unknown, locality = 'London') => ld({ '@type': 'Event', name: 'Embedd office opening', startDate: '2026-10-19', organizer: { name: 'Embedd' }, location: { '@type': 'Place', name: 'Embedd London office', address: { '@type': 'PostalAddress', addressLocality: locality, addressCountry: country, addressRegion: region } } })
+  for (const [country, region] of [['GB', 'England'], ['UK', 'England'], ['United Kingdom', 'England'], ['GBR', undefined], [{ name: 'United Kingdom' }, 'ENGLAND'], ['gb', 'england'], [undefined, undefined], [undefined, 'England']] as const)
+    assert.deepEqual(resolveStructuredDate([ev(country, region)], 'Embedd', LONDON_UK_CLAIM, ['London, UK']), { date: '2026-10-19', kind: 'Event' }, JSON.stringify([country, region]))
+  // a London, Ontario claim IS dated by the Ontario event and not by the UK one
+  const onClaim = 'Embedd opened a new office in London, Ontario'
+  assert.deepEqual(resolveStructuredDate([ev('CA', 'Ontario')], 'Embedd', onClaim, ['London, Ontario, Canada']), { date: '2026-10-19', kind: 'Event' })
+  assert.equal(resolveStructuredDate([ev('GB', 'England')], 'Embedd', onClaim, ['London, Ontario, Canada']), null)
+  // a US lead: New York, NY event vs a New York claim; a Canadian-province event never dates it
+  assert.deepEqual(resolveStructuredDate([ev('US', 'NY', 'New York')], 'Embedd', 'opened a new office in New York, NY', ['New York, NY, USA']), { date: '2026-10-19', kind: 'Event' })
+  assert.equal(resolveStructuredDate([ev('CA', 'Ontario', 'New York')], 'Embedd', 'opened a new office in New York, NY', ['New York, NY, USA']), null)
+  // a different UK constituent region disagrees too (Scotland vs England)
+  assert.equal(resolveStructuredDate([ev('GB', 'Scotland')], 'Embedd', 'opened a new office in London, England', ['London, England']), null)
+})
+test('FULL RUN: a London, Ontario event leaves the London, UK claim undated and held (no timing note); the London, UK event dates it', async () => {
+  const ev = (country: string, region: string, startDate: string) => ld({ '@context': 'https://schema.org', '@type': 'Event', name: 'Embedd office opening', startDate, organizer: { '@type': 'Organization', name: 'Embedd' }, location: { '@type': 'Place', name: 'Embedd London office', address: { '@type': 'PostalAddress', addressLocality: 'London', addressCountry: country, addressRegion: region } } })
+  const claim = 'Embedd opened a new office in London, UK for its growing engineering team'
+  const held = await row(fx([ev('CA', 'Ontario', daysAgo(9))], { quote: claim }))
+  assert.equal(held.r.event_date, null); assert.equal(held.r.review_reason, 'outside_window_undated'); assert.equal(held.r.timing_note, null)
+  const ok = await row(fx([ev('GB', 'England', daysAgo(9))], { quote: claim }))
+  assert.equal(ok.r.event_date, daysAgo(9)); assert.equal(ok.r.review_reason, null)
 })
