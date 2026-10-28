@@ -2,8 +2,9 @@ import {contactPurposeRestricted} from './contact-purpose-db.ts'
 import {currentnessHeld} from './currentness.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend, tableExists } from './send-budget.ts'
 import type Database from 'better-sqlite3'
+import type { Db } from '../db/client.ts'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
-import { getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
+import { getAccessToken, gmailSend, gmailStatus, readGmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { auditAt, autopilotAvailable, getState, pause } from './autopilot.ts'
 import { hasConsent } from './ledger.ts'
 import { composeBody, getSettings, isSuppressed, domainReviewStatus, leadEvidenceEligible, leadHeld, recipientAllowed, unsubToken, type Deps } from './service.ts'
@@ -20,8 +21,9 @@ export function setFollowups(db: Database.Database, tenantId: string, on: boolea
   db.prepare('UPDATE autopilot_settings SET followups_enabled = ? WHERE tenant_id = ?').run(on ? 1 : 0, tenantId)
   auditAt(db, tenantId, on ? 'followups_on' : 'followups_off')
 }
+const FOLLOWUPS_ENABLED_SQL = 'SELECT followups_enabled AS f FROM autopilot_settings WHERE tenant_id = ?'
 export const followupsEnabled = (db: Database.Database, tenantId: string) =>
-  (db.prepare('SELECT followups_enabled AS f FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as { f: number } | undefined)?.f === 1
+  (db.prepare(FOLLOWUPS_ENABLED_SQL).get(tenantId) as { f: number } | undefined)?.f === 1
 
 export function followupText(step: number, lead: { company: string; name: string; signal: string; source_url: string }, businessName: string, bookingUrl?: string | null): string {
   const who = lead.name ? lead.name.split(' ')[0] : 'there'
@@ -148,13 +150,16 @@ export interface FollowupOverview {
   sent: { thread_id: string; company: string; to_email: string; step: number; status: string; created_at: number }[]
 }
 
-export function followupOverview(db: Database.Database, tenantId: string, now = Math.floor(Date.now() / 1000)): FollowupOverview {
-  const rows = db.prepare(
+// The follow-ups page, on the Db layer (SQLite or Postgres). Read-only and tenant-scoped: every row is the tenant's own
+// (followup_threads.tenant_id, followup_messages.tenant_id), and the lead join adds a name and company only from a lead
+// of the tenant's own scan (OWN_LEAD), so a thread that named another tenant's lead shows no company rather than theirs.
+const OWN_LEAD = 'EXISTS (SELECT 1 FROM scan_jobs j WHERE j.id = l.scan_job_id AND j.user_id = t.tenant_id)'
+export async function followupOverview(db: Db, tenantId: string): Promise<FollowupOverview> {
+  const rows = await db.all<{ thread_id: string; to_email: string; last_activity_at: number; last_lead_reply_at: number | null; followups_sent: number; stopped: string | null; company: string; name: string }>(
     `SELECT t.thread_id, t.to_email, t.last_activity_at, t.last_lead_reply_at, t.followups_sent, t.stopped,
             COALESCE(l.company, '') AS company, COALESCE(l.name, '') AS name
-     FROM followup_threads t LEFT JOIN leads l ON l.id = t.lead_id
-     WHERE t.tenant_id = ? ORDER BY t.last_activity_at DESC LIMIT 100`,
-  ).all(tenantId) as { thread_id: string; to_email: string; last_activity_at: number; last_lead_reply_at: number | null; followups_sent: number; stopped: string | null; company: string; name: string }[]
+     FROM followup_threads t LEFT JOIN leads l ON l.id = t.lead_id AND ${OWN_LEAD}
+     WHERE t.tenant_id = ? ORDER BY t.last_activity_at DESC, t.thread_id LIMIT 100`, [tenantId])
   const threads = rows.map(r => ({
     thread_id: r.thread_id,
     company: r.company,
@@ -169,15 +174,14 @@ export function followupOverview(db: Database.Database, tenantId: string, now = 
       ? null
       : r.last_activity_at + (GAPS_DAYS[r.followups_sent] ?? GAPS_DAYS[GAPS_DAYS.length - 1]) * 86400,
   }))
-  const sent = db.prepare(
+  const sent = await db.all<{ thread_id: string; company: string; to_email: string; step: number; status: string; created_at: number }>(
     `SELECT m.thread_id, m.step, m.status, m.created_at, t.to_email, COALESCE(l.company, '') AS company
      FROM followup_messages m JOIN followup_threads t ON t.tenant_id = m.tenant_id AND t.thread_id = m.thread_id
-     LEFT JOIN leads l ON l.id = t.lead_id
-     WHERE m.tenant_id = ? ORDER BY m.created_at DESC LIMIT 100`,
-  ).all(tenantId) as { thread_id: string; company: string; to_email: string; step: number; status: string; created_at: number }[]
-  void now
-  const acct = gmailStatus(db, tenantId)
-  return { enabled: followupsEnabled(db, tenantId), account: acct?.status === 'active' ? acct.email : null, threads, sent }
+     LEFT JOIN leads l ON l.id = t.lead_id AND ${OWN_LEAD}
+     WHERE m.tenant_id = ? ORDER BY m.created_at DESC, m.thread_id, m.step DESC LIMIT 100`, [tenantId])
+  const acct = await readGmailStatus(db, tenantId)
+  const enabled = (await db.get<{ f: number }>(FOLLOWUPS_ENABLED_SQL, [tenantId]))?.f === 1
+  return { enabled, account: acct?.status === 'active' ? acct.email : null, threads, sent }
 }
 
 // What the follow-ups page should ask for when automatic follow-ups are not running.

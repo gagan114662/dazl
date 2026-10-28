@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto'
+import type { Db } from '../db/client.ts'
 import type Database from 'better-sqlite3'
 import { decryptSecret, encryptSecret } from '../secrets.ts'
 import { norm } from '../outreach/store.ts'
@@ -116,9 +117,15 @@ function connectStub(db: Database.Database, tenantId: string, env: OAuthEnv, dep
   return `${(env.PUBLIC_BASE_URL || 'https://staging.dazl.ai').replace(/\/$/, '')}/app/settings?gmail=connected`
 }
 
+const GMAIL_STATUS_SQL = 'SELECT email, status, read_granted FROM gmail_accounts WHERE tenant_id = ?'
+type GmailStatusRow = { email: string; status: string; read_granted: number }
+const gmailStatusOf = (r: GmailStatusRow | undefined) => r ? { email: r.email, status: r.status, read_granted: Number(r.read_granted) === 1 } : null
 export function gmailStatus(db: Database.Database, tenantId: string): { email: string; status: string; read_granted: boolean } | null {
-  const r = db.prepare('SELECT email, status, read_granted FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string; status: string; read_granted: number } | undefined
-  return r ? { email: r.email, status: r.status, read_granted: r.read_granted === 1 } : null
+  return gmailStatusOf(db.prepare(GMAIL_STATUS_SQL).get(tenantId) as GmailStatusRow | undefined)
+}
+// gmailStatus on the Db layer (SQLite or Postgres).
+export async function readGmailStatus(db: Db, tenantId: string): Promise<{ email: string; status: string; read_granted: boolean } | null> {
+  return gmailStatusOf(await db.get<GmailStatusRow>(GMAIL_STATUS_SQL, [tenantId]))
 }
 
 // Short-lived access token from the stored refresh token. A revoked or expired
