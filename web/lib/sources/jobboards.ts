@@ -92,15 +92,15 @@ const fresh = (d: string | null) => !!d && Date.now() - Date.parse(d) <= WINDOW_
 type Note = (code: string) => void
 // `seen` reports how a BOARD LIST request went, for the per-board progress rows: 'answered' (200, or a plain 404 / 403 = no such board), 'failed' (no answer, 5xx / 429, cut, oversize, malformed).
 type Seen = (r: 'answered' | 'failed') => void
-const json = async (http: SafeGet, url: string, note?: Note, expect?: 'array' | 'jobs', seen?: Seen): Promise<any> => {
+const json = async (http: SafeGet, url: string, note?: Note, expect?: 'array' | 'jobs' | 'object', seen?: Seen): Promise<any> => {
   const r = await http(url, { accept: 'application/json' })
   if (!r) { note?.('unreachable'); seen?.('failed'); return null }
-  if (r.status !== 200) { seen?.(r.status === 404 || r.status === 403 || r.status === 401 || r.status === 410 ? 'answered' : 'failed'); return null } // a missing or private board is normal, not a partial result
+  if (r.status !== 200) { if (r.status >= 400 && !(r.status === 404 || r.status === 403 || r.status === 401 || r.status === 410)) note?.('http_error'); seen?.(r.status === 404 || r.status === 403 || r.status === 401 || r.status === 410 ? 'answered' : 'failed'); return null } // a missing or private board is normal, not a partial result
   if (r.truncated) { note?.('oversize'); seen?.('failed'); return null } // cut at the shared byte cap: never parse a prefix
   try {
     const parsed = JSON.parse(r.body)
     // A 200 that is not the documented shape (an empty object, no jobs array) is a parse failure, never a healthy empty board.
-    if ((expect === 'array' && !Array.isArray(parsed)) || (expect === 'jobs' && !Array.isArray(parsed?.jobs))) { note?.('unparseable'); seen?.('failed'); return null }
+    if ((expect === 'array' && !Array.isArray(parsed)) || (expect === 'jobs' && !Array.isArray(parsed?.jobs)) || (expect === 'object' && (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)))) { note?.('unparseable'); seen?.('failed'); return null }
     seen?.('answered')
     return parsed
   } catch { note?.('unparseable'); seen?.('failed'); return null }
@@ -159,8 +159,7 @@ export async function hnBoards(http: SafeGet, state: string | ((text: string) =>
 }
 
 // Board slugs to PROBE for a company this scan found: its domain's first label, then its bare name (and the hyphenated multiword form). A guess is where to look, never proof
-// the board is that company's: a board found by the domain slug is the company's own by construction of the domain; any other slug counts only for a posting that names the
-// company in its title or quote.
+// the board is that company's: a guessed board counts only for a posting that names the company in its title or quote.
 export function guessSlugs(c: { name: string; domain?: string | null }): { token: string; byDomain: boolean }[] {
   const out = new Map<string, boolean>()
   const d = domainSlug(c.domain); if (d && TOKEN.test(d)) out.set(d, true)
@@ -226,10 +225,11 @@ export const jobBoardsAdapter: SourceAdapter = {
       seenBoards.add(`${kind}:${g.token}`)
       guessed.push({ kind, token: g.token, company: c.name, byDomain: g.byDomain })
     }
-    // A guessed board's posting is kept only when the board is the company's by domain slug, or the posting itself names the company; its title then leads with the company.
+    // A guessed board's posting is kept only when the posting itself names the company: a slug (even the domain's first label) is where to look, not proof of ownership
+    // (acme.dental shares "acme" with another company's board). Its title then leads with the company.
     const push = (b: Board, e: Evidence) => {
       if (!b.company) { out.push(e); return }
-      if (b.byDomain || norm(`${e.title} ${e.quote}`).includes(norm(b.company))) out.push({ ...e, title: `${b.company}: ${e.title}`.slice(0, 200) })
+      if (norm(`${e.title} ${e.quote}`).includes(norm(b.company))) out.push({ ...e, title: `${b.company}: ${e.title}`.slice(0, 200) })
     }
     const kindName = { gh: 'greenhouse', lever: 'lever', ashby: 'ashby' } as const
     const seenFor = (b: Board): Seen => r => { if (!tally) return; const t = (tally[kindName[b.kind]] ??= { probed: 0, failed: 0, evidence: 0 }); t.probed++; if (r === 'failed') t.failed++ }
@@ -267,7 +267,8 @@ export const jobBoardsAdapter: SourceAdapter = {
           if (n >= MAX_DETAIL) break
           if (!Number.isInteger(j?.id) || typeof j.title !== 'string' || !roleOk(j.title) || !place.ok(j.location?.name)) continue
           n++
-          const det = await json(http, `https://boards-api.greenhouse.io/v1/boards/${b.token}/jobs/${j.id}`, note)
+          // The detail read is part of the board: a 5xx / timeout / malformed detail is a failed read (partial), never a healthy empty board.
+          const det = await json(http, `https://boards-api.greenhouse.io/v1/boards/${b.token}/jobs/${j.id}`, note, 'object', seenFor(b))
           const date = day(det?.first_published)
           const url = typeof det?.absolute_url === 'string' ? det.absolute_url : ''
           if (!fresh(date) || !url.startsWith('https://')) continue

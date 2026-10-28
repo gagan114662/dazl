@@ -1,5 +1,5 @@
 // Before/after yield for the ATS job-board source, on the STUBBED scenario set (the same fixtures the tests use; no network, no keys): each scenario is run twice through the real runJob -
-// "before" = the public job boards unavailable (every board request 404s), "after" = the boards answer. Prints qualified / held (needs review) per scenario and the totals.
+// "before" = the public job boards unavailable (every board request 404s), "after" = the boards answer. Prints verifier-passed / held (needs review) per scenario and the totals.
 //   node --experimental-strip-types --no-warnings --import ./test/helpers/net-fence.ts scripts/ats-yield-compare.mts
 import { runFixture, daysAgo, type Fixture, type Cand } from '../test/helpers/acceptance-harness.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
@@ -36,12 +36,12 @@ async function run(s: Scenario, withBoards: boolean) {
     extraction: [seed, jobCand], deps: { sourceHttp: httpOf(withBoards ? s.boards : null) } }
   const x = await runFixture(f)
   const l = x.db.prepare('SELECT review_reason FROM leads WHERE company = ?').get(s.company) as { review_reason: string | null } | undefined
-  return l ? (l.review_reason === null ? 'qualified' : `held:${l.review_reason}`) : 'none'
+  return l ? (l.review_reason === null ? 'verifier-passed' : `held:${l.review_reason}`) : 'none'
 }
 const rows: [string, string, string][] = []
 for (const s of SCENARIOS) rows.push([s.name, await run(s, false), await run(s, true)])
 const w = Math.max(...rows.map(r => r[0].length))
 console.log(`${'scenario'.padEnd(w)}  before (boards off)            after (boards on)`)
 for (const [n, b, a] of rows) console.log(`${n.padEnd(w)}  ${b.padEnd(30)} ${a}`)
-const q = (i: 1 | 2) => rows.filter(r => r[i] === 'qualified').length
-console.log(`\nqualified: before ${q(1)} / ${rows.length}, after ${q(2)} / ${rows.length}; held: before ${rows.filter(r => r[1].startsWith('held')).length}, after ${rows.filter(r => r[2].startsWith('held')).length}`)
+const q = (i: 1 | 2) => rows.filter(r => r[i] === 'verifier-passed').length
+console.log(`\nverifier-passed (no contact / fit grade, NOT scoreboard-qualified): before ${q(1)} / ${rows.length}, after ${q(2)} / ${rows.length}; held: before ${rows.filter(r => r[1].startsWith('held')).length}, after ${rows.filter(r => r[2].startsWith('held')).length}`)
