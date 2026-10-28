@@ -3,6 +3,7 @@
 // Real production build, throwaway database, server under test/helpers/net-fence.ts, and EVERY /api/* CALL ANSWERED
 // FROM A STUB in the browser: no scan, no draft is really created, nothing is sent. Off-host requests are aborted.
 // It proves, on the rendered page:
+//   0. viewing a scan, Leads links to that scan's campaign page;
 //   1. each card shows company, contact, one line of why, source link + date, and Approve / Reject; Details is closed;
 //   1b. the contact's uncertainty is visible beside it on the collapsed card: name-guessed website (Instinct's repro),
 //      conflicting websites, restricted inbox, past-title people; only cited/own-site/user-checked reads "Confirmed";
@@ -78,6 +79,7 @@ try {
   const cards = page.getByTestId('lead-card')
   await cards.first().waitFor({ timeout: 15000 })
   assert.equal(await cards.count(), 7)
+  assert.equal(await page.getByTestId('campaign-page-link').getAttribute('href'), `/app/campaigns/${JOB}`, 'Leads links the scan being viewed to its campaign page')
   await page.locator('main').evaluate(m => m.scrollTo(0, m.scrollHeight)); await shot('cards')
 
   const bright = cards.filter({ hasText: 'Bright Dental' })

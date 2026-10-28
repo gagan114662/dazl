@@ -470,7 +470,11 @@ export default function LeadsClient() {
           <h1 className="text-2xl font-bold tracking-tight mb-1">Leads</h1>
           <p className="text-gray-400 text-sm mb-6">Companies matching your search, with the signal and source for each. Match is a heuristic - review fit yourself.</p>
         </div>
-        <a className="text-sm text-gray-300 underline underline-offset-4 hover:text-white" href={jobId ? `/api/leads/export?job_id=${jobId}` : '/api/leads/export'}>Download CSV</a>
+        <div className="flex gap-4 items-baseline">
+          {/* The scan being viewed as one campaign: its play, every lead's status, drafts and sends. */}
+          {jobId && <a className="text-sm underline underline-offset-4" href={`/app/campaigns/${jobId}`} data-testid="campaign-page-link">Campaign page</a>}
+          <a className="text-sm text-gray-300 underline underline-offset-4 hover:text-white" href={jobId ? `/api/leads/export?job_id=${jobId}` : '/api/leads/export'}>Download CSV</a>
+        </div>
       </div>
       {/* Submitting the sentence runs the scan (the server works out the profile, as the run-without-review path always did)
           and lands on live progress; reviewing the profile first is optional. */}
