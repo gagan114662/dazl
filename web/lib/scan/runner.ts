@@ -9,6 +9,7 @@ import type { Vendor } from '../llm/vendors.ts'
 import { runAutopilot } from '../outreach/autopilot.ts'
 import { MAX_ATTEMPTS, reapStaleJobs, markSeenBefore } from './store.ts'
 import { kickQueueRunner, queueTenants } from './queue-runner.ts'
+import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, verifyEvidence, type Candidate } from './evidence.ts'
 import { inferIcp, normalizeIcp, type Icp } from './icp.ts'
@@ -1071,7 +1072,7 @@ export async function kickRunner(db: Database.Database, deps: RunDeps = {}): Pro
     acquireSlot()
     const untrack = trackInFlight(job)
     void runJob(db, job, deps)
-      .catch(e => console.error('scan run crashed', job.id, e))
+      .catch(e => { failCrashedJob(db, job, e, 'scan-runner') })
       .finally(() => {
         untrack()
         releaseSlot()
