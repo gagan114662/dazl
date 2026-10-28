@@ -41,6 +41,7 @@ import { enrichJobSignals } from '../signals/index.ts'
 import { applySalesHiringGate, failClosedSalesHiring, persistHeldState, type QuoteEvidence, type HeldLead } from './sales-hiring-gate.ts'
 import { beginEnrichment, endEnrichment } from './enrichment.ts'
 import { regradeFromKeptContacts } from './contact-agreement.ts'
+import { recordFinalOutcome } from './stored-outcome.ts'
 import { primarySignalKind } from './score.ts'
 import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } from '../signals/competitor-reddit.ts'
 import { finishUndatedLeads } from './structured-date.ts'
@@ -442,7 +443,7 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
   const review = out?.review ?? []
   const dropped = out ? Object.values(out.dropped).reduce((a, b) => a + b, 0) : null
   // IMMEDIATE: the ownership read then the writes in one deferred transaction fail at once with SQLITE_BUSY (snapshot upgrade, busy_timeout does not apply) if another process committed in between.
-  return db.transaction((): boolean => {
+  const done = db.transaction((): boolean => {
     const own = db.prepare("SELECT 1 FROM scan_jobs WHERE id = ? AND status = 'running' AND attempts = ?").get(job.id, job.attempts)
     if (!own) return false
     const ins = db.prepare(
@@ -461,6 +462,9 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
     ).run(status, error, candidates, status === 'done' ? leads.length : null, status === 'done' ? review.length : null, dropped, out ? JSON.stringify(out.dropped) : null, status, job.id)
     return true
   }).immediate()
+  // A failed scan stores its ending now (a done scan stores it when enrichment ends): failed / extraction_failed / rejected / no_match / stopped, with counts per reason and per-source numbers.
+  if (done && status === 'failed') recordFinalOutcome(db, job.user_id, job.id)
+  return done
 }
 
 // Shared failure handling: a rejected key fails the job outright; anything else retries
@@ -1157,6 +1161,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     } catch (e) { console.error('actionable yield failed', e instanceof Error ? e.message : 'error') }
     // Contacts, people, fit and the sales-hiring check are final: the stage ends before autopilot, whose drafting/sending is separate work, not enrichment.
     endEnrichment(db, job.id, job.attempts)
+    recordFinalOutcome(db, job.user_id, job.id)
     // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.
     // A job that carries a budget never starts autopilot: its model drafting and sends are outside the budget (run-budget.ts).
     if (!parseRunBudget(job.run_budget)) try { await (deps.autopilot ?? runAutopilot)(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }

@@ -109,6 +109,7 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/scan/source-review.ts': 0,
   'lib/scan/source-runs.ts': 3,
   'lib/scan/store.ts': 11,
+  'lib/scan/stored-outcome.ts': 1,
   'lib/scan/trial.ts': 0,
   'lib/scan/verification-fixture.ts': 0,
   'lib/search/news-attribution.ts': 1,
