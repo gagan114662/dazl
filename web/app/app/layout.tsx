@@ -10,7 +10,7 @@ const NAV = [
   { href: '/app/campaigns', label: 'Campaigns' },
   { href: '/app/outreach', label: 'Outreach' },
   { href: '/app/follow-ups', label: 'Follow-ups' },
-  { href: '/app/replies', label: 'Social opportunities' },
+  { href: '/app/social', label: 'Social opportunities' },
   { href: '/app/inbox', label: 'Inbox' },
   { href: '/app/seo', label: 'SEO' },
   { href: '/app/settings', label: 'Settings' },

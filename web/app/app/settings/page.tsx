@@ -26,7 +26,7 @@ export default function Settings() {
       <div id="model-key" className="scroll-mt-6"><LlmKeyPanel /></div>
       <UsagePanel />
       <CompetitorsPanel />
-      <AdvancedPanel />
+      <div id="social" className="scroll-mt-6"><AdvancedPanel /></div>
       <div id="gmail" className="scroll-mt-6"><GmailPanel /></div>
       <div id="autopilot" className="scroll-mt-6"><AutopilotPanel /></div>
       <div id="replies" className="scroll-mt-6"><RepliesPanel /></div>

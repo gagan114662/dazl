@@ -7,9 +7,9 @@ const byId = (rows: ReturnType<typeof readinessRows>) => Object.fromEntries(rows
 const job = (o: object = {}) => ({ id: 'j', status: 'done', error: null, query: 'Dentists in Ohio', csv_domain: null, created_at: 1, lead_count: 0, ...o })
 
 test('a new account: the steps in order, each to-do with its fix; Gmail goes to Settings where its consent text is', () => {
-  const r = byId(readinessRows({ profile: { sells: '', website: '' }, usage: { has_key: false, trial: null }, outreach: { gmail: null, sender: null, daily_cap: 20, sent_24h: 0 }, jobs: [] }))
-  assert.deepEqual(Object.keys(r), ['site', 'play', 'key', 'gmail', 'sender', 'limit'])
-  assert.deepEqual(Object.values(r).map(x => x.state), ['todo', 'todo', 'todo', 'todo', 'todo', 'done'])
+  const r = byId(readinessRows({ profile: { sells: '', website: '' }, usage: { has_key: false, trial: null }, outreach: { gmail: null, sender: null, daily_cap: 20, sent_24h: 0 }, jobs: [], sources: { web_index: false, news: false, websites: false } }))
+  assert.deepEqual(Object.keys(r), ['site', 'play', 'key', 'sources', 'gmail', 'sender', 'limit'])
+  assert.deepEqual(Object.values(r).map(x => x.state), ['todo', 'todo', 'todo', 'todo', 'todo', 'todo', 'done'])
   assert.equal(r.site.label, 'Website and business details', 'business details only: the buyer profile is not checked')
   assert.deepEqual(r.play.fix, { kind: 'link', href: '/app/leads', label: 'Write a play' })
   assert.equal(r.key.detail, 'needed for searches')
@@ -19,8 +19,9 @@ test('a new account: the steps in order, each to-do with its fix; Gmail goes to 
 })
 
 test('a ready account: all done, no fixes offered', () => {
-  const r = readinessRows({ profile: { sells: 'Booking software', website: 'https://acme.example', business_name: 'Acme' }, usage: { has_key: true, trial: null }, outreach: { gmail: { email: 'me@acme.example', status: 'active' }, sender: { sender_name: 'Dana', postal_address: '1 Main St, Columbus OH' }, daily_cap: 12, sent_24h: 3 }, jobs: [job()] })
+  const r = readinessRows({ profile: { sells: 'Booking software', website: 'https://acme.example', business_name: 'Acme' }, usage: { has_key: true, trial: null }, outreach: { gmail: { email: 'me@acme.example', status: 'active' }, sender: { sender_name: 'Dana', postal_address: '1 Main St, Columbus OH' }, daily_cap: 12, sent_24h: 3 }, jobs: [job()], sources: { web_index: true, news: true, websites: true } })
   assert.ok(r.every(x => x.state === 'done' && x.fix === null))
+  assert.equal(byId(r).sources.detail, 'a scan can use Web research with your AI key, Web search index, News articles, Company websites')
   assert.equal(byId(r).gmail.detail, 'sending from me@acme.example')
   assert.equal(byId(r).site.detail, 'Acme - Booking software (acme.example)')
   assert.equal(byId(r).play.detail, '1 search written')
@@ -28,7 +29,7 @@ test('a ready account: all done, no fixes offered', () => {
 })
 
 test('a failed status load is "could not check", never done or to-do', () => {
-  const r = readinessRows({ profile: null, usage: null, outreach: null, jobs: null })
+  const r = readinessRows({ profile: null, usage: null, outreach: null, jobs: null, sources: null })
   assert.ok(r.every(x => x.state === 'unknown' && x.fix === null))
   assert.equal(byId(readinessRows({ profile: null, usage: null, outreach: {} })).limit.state, 'unknown', 'no cap reported: not claimed as set')
 })
@@ -76,7 +77,7 @@ test('plays never present research-only leads as yield; old records and cancelle
 
 // Instinct #246: a finished setup hid the checklist, and with it why sending had stopped.
 test('an exhausted daily limit is a notice of its own, shown even when every step is done', () => {
-  const ready = { profile: { sells: 'Booking software', website: 'https://acme.example', business_name: 'Acme' }, usage: { has_key: true, trial: null }, jobs: [job()] }
+  const ready = { profile: { sells: 'Booking software', website: 'https://acme.example', business_name: 'Acme' }, usage: { has_key: true, trial: null }, jobs: [job()], sources: { web_index: true, news: true, websites: true } }
   const outreach = { gmail: { email: 'me@acme.example', status: 'active' }, sender: { sender_name: 'Dana', postal_address: '1 Main St, Columbus OH' }, daily_cap: 20, sent_24h: 14, account_sent_24h: 20 }
   assert.ok(readinessRows({ ...ready, outreach }).every(x => x.state === 'done'), 'the checklist is complete (and hidden)')
   assert.equal(capNotice(outreach), "Today's 20-email limit is used up (20 sent in the last 24 hours). Sending resumes as those sends pass 24 hours old.")
@@ -95,4 +96,18 @@ test('the outreach settings GET reports the whole account budget, read-only', as
   const { readFileSync } = await import('node:fs')
   const route = readFileSync(new URL('../app/api/outreach/settings/route.ts', import.meta.url), 'utf8')
   assert.match(route, /account_sent_24h: accountSendCount\(db, user\.id, /)
+})
+
+test('lead sources: capabilities, never "searched"; no usable key means a scan cannot start, whatever else is on', () => {
+  const src = (sources: object | null | undefined, usage: object | null) => byId(readinessRows({ profile: null, usage: usage as never, outreach: null, sources: sources as never })).sources
+  const ON = { web_index: false, news: true, websites: false }
+  // Instinct #255: enabled news must not make the row done when no scan can start.
+  const nokey = src(ON, { has_key: false, trial: null })
+  assert.deepEqual([nokey.state, nokey.detail, nokey.fix], ['todo', 'a scan cannot start until you add an AI key', { kind: 'link', href: '/app/settings#model-key', label: 'Add key' }])
+  assert.equal(src(ON, { has_key: false, trial: { funded: true, remaining: 0 } }).state, 'todo', 'free searches used up')
+  assert.deepEqual(src(ON, { has_key: true }), { id: 'sources', label: 'Lead sources', state: 'done', detail: 'a scan can use Web research with your AI key, News articles', fix: null })
+  assert.equal(src(ON, { has_key: false, trial: { funded: true, remaining: 2 } }).state, 'done', 'free searches left')
+  assert.equal(src({ web_index: false, news: false, websites: false }, { has_key: true }).state, 'done', 'web research with the saved key')
+  for (const st of [src(ON, { has_key: true }), nokey]) assert.doesNotMatch(st.detail, /search(es|ed)\b/, 'never claims sources are searched')
+  assert.deepEqual([src(null, { has_key: true }).state, src(undefined, { has_key: true }).state, src(ON, null).state], ['unknown', 'unknown', 'unknown'], 'a failed or missing check is never done')
 })
