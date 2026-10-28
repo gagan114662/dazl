@@ -14,7 +14,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 
 export interface ErrorContext {
-  source: 'route' | 'render' | 'worker' | 'health' | 'process'
+  source: 'route' | 'render' | 'worker' | 'health' | 'process' | 'client'
   // route template ('/api/leads/[lead]/confirm') or worker name ('tick:replies'); never a concrete URL
   where: string
   method?: string
@@ -67,7 +67,7 @@ export function errorName(n: unknown): string {
   return typeof n === 'string' && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(n) && (/(?:Error|Exception)$/.test(n) || OWN_ERROR_NAMES.has(n))
     && !/[0-9]{4}/.test(n) && scrub(n) === n ? n : '[unrecognized-name]'
 }
-const SOURCES = new Set(['route', 'render', 'worker', 'health', 'process'])
+const SOURCES = new Set(['route', 'render', 'worker', 'health', 'process', 'client'])
 const METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'])
 export const isTenantId = (v: unknown): v is string => typeof v === 'string' && /^[a-f0-9]{32}$/.test(v)
 // Stripe ids are evt_ + 24+ random base62 characters (digits included); the only caller passes the id of an event whose

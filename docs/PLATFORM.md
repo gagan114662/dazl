@@ -73,6 +73,23 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
     - uncaught process exceptions (monitor only, exit behaviour unchanged);
     - unhandled promise rejections (`lib/ops/process-errors.ts`). Next's own listener keeps the server up. If ours is the only listener, it rethrows after recording, so bare Node still exits;
     - scan runner and queue runner crashes (`lib/scan/crash.ts`). A rejection that escapes `runJob`'s own failure handling is recorded with the tenant and job id. The job is marked `failed` with `error = 'crashed'`, fenced on `status = 'running'` and the same `attempts`, instead of waiting in `running` for the stale-lease reaper. On the queue path the queue item is failed too, not retried, since a crash would repeat.
+    - browser errors (`lib/client-error-report.ts`, mounted in the root layout): uncaught errors, unhandled rejections and errors caught by the three error boundaries are posted to `POST /api/client-errors` and recorded with `source: 'client'` and `where: '<kind>:<page route template>'`.
+      - **Allowlist only, no error text.** The browser sends:
+        - the kind;
+        - a built-in error type, else `Error`;
+        - the page path;
+        - up to 8 frames as `/_next/static/` file:line:col, only for scripts the page actually loaded from its own origin (its script tags and fetched script resources). The server keeps a frame only if this build emitted that bundle (`lib/ops/emitted.ts`), so a path that only looks like a bundle (`/_next/static/AliceSmith/password-….js`) is dropped on both sides.
+
+        It never sends the message or the stack text. The server reads only those fields, checks each one's shape and ignores everything else. The record's message is the fixed `browser error`.
+      - The tenant comes from the session cookie, never from the body.
+      - Limits:
+        - same origin only;
+        - the browser's report is at most 2 KB;
+        - the route refuses a declared length over 4 KB before reading, and stops reading past 4 KB;
+        - 30 reports per IP per 10 min;
+        - at most 5 per page load, each distinct report once.
+      - A missing JavaScript chunk after a deploy is not reported (`lib/chunk-recovery.ts` handles it).
+      - End to end on a production build: `npm run test:smoke:client-errors`.
   - **Request ids and JSON request logs** (`proxy.ts`, `lib/ops/request-log.ts`):
     - Every `/app` and `/api` request gets a fresh random UUIDv4. An incoming `x-request-id` is replaced, never trusted.
     - The id is forwarded to the route as the `x-request-id` request header, returned as a response header, and recorded on error records as `request_id`, so a log line and an error can be joined.

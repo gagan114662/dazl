@@ -1,4 +1,6 @@
 'use client'
+import { useEffect } from 'react'
+import { reportClientError } from '@/lib/client-error-report'
 import { isChunkLoadError } from '@/lib/chunk-recovery'
 import { BOUNDARY_COPY } from '@/lib/error-boundary-copy'
 
@@ -7,6 +9,7 @@ import { BOUNDARY_COPY } from '@/lib/error-boundary-copy'
 // page. A missing chunk offers Reload only; anything else also offers Try again. Neither button submits anything, and
 // the bounded automatic reload stays in lib/chunk-recovery.ts.
 export default function RootError({ error, retry }: { error: unknown; retry: () => void }) {
+  useEffect(() => { reportClientError('boundary', error) }, [error])
   const copy = isChunkLoadError(error) ? BOUNDARY_COPY.chunk : BOUNDARY_COPY.other
   return (
     <main className="p-8 max-w-xl mx-auto">
