@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { editedBuyer, journey, showList, type JourneyInput, type JourneyJob, type PreviewLead } from '@/lib/journey'
 import { scanCounts } from '@/lib/outreach/scan-drafts'
+import { constraintPills, PILLS_SHOWN, playName, playPace, widenActions, type PlayWatch } from '@/lib/play-card'
 import { capNotice } from '@/lib/readiness'
 import { leadCardSummary } from '@/lib/scan/lead-card'
 import { Avatar, Pill, Stepper } from './ui/bits'
@@ -27,6 +28,9 @@ export default function Journey() {
   const [drafts, setDrafts] = useState<{ drafts: number; approved: number } | null>(null)
   const [editing, setEditing] = useState(false)
   const [capped, setCapped] = useState<string | null>(null)
+  const [watches, setWatches] = useState<PlayWatch[] | null>(null)
+  const [sent, setSent] = useState<number | null>(null)
+  const [morePills, setMorePills] = useState(false)
 
   const get = (u: string) => fetch(u).then(r => r.ok ? r.json() : null).catch(() => null)
   // Missing buyer lists read as empty (never invented), so a partial profile still renders.
@@ -38,6 +42,7 @@ export default function Journey() {
     // Why sending stopped stays on screen (not under the collapsed setup details).
     void get('/api/outreach/settings').then(o => setCapped(capNotice(o)))
     void get('/api/scan/latest').then(j => setPlayIcp(j ? { query: j.query ?? null, icp: j.icp ?? null } : null))
+    void get('/api/watch').then(w => setWatches(Array.isArray(w?.watches) ? w.watches : null))
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const base: JourneyInput = { profile: profile && profile !== 'failed' ? profile : null, jobs: Array.isArray(jobs) ? jobs : null, leads: null, drafts: null }
@@ -68,7 +73,13 @@ export default function Journey() {
       const ls: PreviewLead[] | null = Array.isArray(j?.leads) ? j.leads : null
       setLeads(ls)
       if (!ls) return
-      void get(`/api/campaigns/${playId}`).then(c => setDrafts(Array.isArray(c?.messages) ? scanCounts(c.messages, ls.map(l => l.id)) : null))
+      void get(`/api/campaigns/${playId}`).then(c => {
+        const ok = Array.isArray(c?.messages)
+        setDrafts(ok ? scanCounts(c.messages, ls.map(l => l.id)) : null)
+        // Contacted = this play's emails that were sent (its own campaign record; unknown when it could not be read).
+        const ids = new Set(ls.map(l => l.id))
+        setSent(ok ? (c.messages as { lead_id: string; status: string }[]).filter(m => ids.has(m.lead_id) && m.status === 'sent').length : null)
+      })
     })
   }, [playId, playDone]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -77,20 +88,32 @@ export default function Journey() {
   const p = profile !== 'failed' ? profile : null
   const buyer = p?.buyer ?? null
 
+  const icp = playIcp?.icp && j.play && playIcp.query === j.play.query ? playIcp.icp : null
+  const pace = j.play ? playPace(j.play, watches) : null
+  const pills = icp ? constraintPills(icp) : []
+  const opp = j.split?.opportunities.length ?? null, held = j.split?.held.length ?? null
+  const stat = (v: number | null) => v === null ? (j.stage === 'unknown' || j.stage === 'useful' || j.stage === 'all_held' ? '?' : '0') : String(v)
+  const missing = p ? [!p.sells && 'what you sell', !buyer?.summary && 'who buys', !buyer?.who.length && 'buyer roles', !buyer?.where.length && 'where they are', !buyer?.sizes.length && 'company size', !buyer?.exclude.length && 'who to skip'].filter((x): x is string => !!x) : []
+
   return (
     <div className="space-y-4" data-testid="journey" data-stage={j.stage}>
       {capped && <p role="status" data-testid="cap-notice" className="card p-4 text-sm">{capped} <Link className="underline" href="/app/outreach">Outreach</Link></p>}
-      {/* The one next action. */}
-      <section className="card p-5 sm:p-6" aria-labelledby="next-heading">
-        <div className="flex flex-wrap items-start justify-between gap-4">
+
+      {/* The play, as a card: short name, Who / Signal / Pace, status. The full request is behind its (i). */}
+      {j.play ? <section className="card p-5 sm:p-6" aria-labelledby="play-name" data-testid="play-card">
+        <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase tracking-wide text-[var(--ink-3)]">{j.play ? 'Your current play' : 'Next'}</p>
-            {j.play && <h2 className="text-lg font-bold tracking-tight mt-1 leading-snug" data-testid="journey-play">{j.play.query}</h2>}
-            <p id="next-heading" className={`${j.play ? 'text-sm mt-1' : 'text-lg font-bold mt-1'}`} data-testid="journey-line">{j.line}</p>
+            <p className="text-xs text-[var(--ink-3)]">Play</p>
+            <h2 id="play-name" className="text-xl sm:text-2xl font-bold tracking-tight leading-tight mt-0.5"><span data-testid="journey-play">{playName(j.play.query, icp)}</span><InfoTip label="The full request"><span data-testid="play-request">{j.play.query}</span></InfoTip></h2>
           </div>
-          {j.action && <Link className="btn-primary btn-lg shrink-0" href={j.action.href} data-testid="journey-action">{j.action.label}<Icon name="arrow" className="w-4 h-4" /></Link>}
+          {pace && <span className="shrink-0 mt-1" data-testid="play-status" data-status={pace.status}>{pace.status === 'live' || pace.status === 'running' ? <span className={`live-dot ${pace.status === 'running' ? '!text-[var(--lav)]' : ''}`}>{pace.label}</span> : <Pill tone={pace.status === 'failed' ? 'pink' : pace.status === 'paused' ? 'peach' : 'plain'}>{pace.label}</Pill>}</span>}
         </div>
-        {j.stage === 'running' && j.play && <div className="mt-5"><Stepper steps={[
+        <dl className="mt-3">
+          <div className="kv"><dt>Who</dt><dd>{icp?.who?.length ? icp.who.join(', ') : icp?.summary || <span className="text-[var(--ink-3)]">From your request</span>}</dd></div>
+          <div className="kv"><dt>Signal</dt><dd className="flex flex-wrap gap-1.5">{icp?.signals?.length ? icp.signals.slice(0, 3).map(t => <span key={t} className="tag">{t}</span>) : <span className="text-[var(--ink-3)]">From your request</span>}{(icp?.signals?.length ?? 0) > 3 && <span className="tag text-[var(--ink-3)]" data-testid="signals-more">+{icp!.signals!.length - 3}</span>}{typeof icp?.window_days === 'number' && <span className="tag">past {icp.window_days} days</span>}</dd></div>
+          <div className="kv"><dt>Pace</dt><dd data-testid="play-pace">{pace?.pace}</dd></div>
+        </dl>
+        {j.stage === 'running' && <div className="mt-4"><Stepper steps={[
           { label: 'Read your profile and play', state: j.play.status === 'pending' ? 'live' : 'done', note: j.play.status === 'pending' ? 'Queued' : undefined },
           { label: 'Search and read sources', state: j.play.status === 'running' ? 'live' : j.play.status === 'pending' ? 'todo' : 'done', note: j.play.status === 'running' ? 'Searching...' : undefined },
           { label: 'Check fit and find contacts', state: j.play.status === 'enriching' ? 'live' : 'todo' },
@@ -101,52 +124,83 @@ export default function Journey() {
             {stopNote && <span className="text-xs text-[var(--ink-2)]" role="status" data-testid="journey-stop-note">{stopNote}</span>}
           </div>
         </div>}
-        {j.split && j.split.opportunities.length > 0 && <ul className="mt-5 grid gap-3" aria-label="Opportunities" data-testid="journey-preview">
+        <div className="flex flex-wrap items-center justify-between gap-3 mt-4 pt-4 border-t border-[var(--line)]">
+          <p className="text-sm text-[var(--ink-2)]" data-testid="journey-line">{j.line}</p>
+          {j.action && <Link className="btn-primary" href={j.action.href} data-testid="journey-action">{j.action.label}<Icon name="arrow" className="w-4 h-4" /></Link>}
+        </div>
+      </section>
+      : <section className="card p-5 sm:p-6" aria-labelledby="next-heading">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div><p className="text-xs text-[var(--ink-3)]">Next</p><p id="next-heading" className="text-xl font-bold tracking-tight mt-0.5" data-testid="journey-line">{j.line}</p></div>
+          {j.action && <Link className="btn-primary btn-lg" href={j.action.href} data-testid="journey-action">{j.action.label}<Icon name="arrow" className="w-4 h-4" /></Link>}
+        </div>
+      </section>}
+
+      {/* Results first: the counts, then the opportunities; a play with none gets a designed state with real next steps. */}
+      {j.play && j.stage !== 'running' && <section className="card p-5 sm:p-6" aria-label="Results" data-testid="journey-results">
+        <div className="grid grid-cols-3 gap-3">
+          <Stat label="Leads ready" value={stat(opp)} testid="stat-ready" strong />
+          <Stat label="Held for review" value={stat(held)} testid="stat-held" />
+          <Stat label="Contacted" value={sent === null ? (j.stage === 'useful' || j.stage === 'all_held' ? '?' : '0') : String(sent)} testid="stat-contacted" />
+        </div>
+        {j.split && j.split.opportunities.length > 0 ? <ul className="mt-4 divide-y divide-[var(--line)] border-t border-[var(--line)]" aria-label="Opportunities" data-testid="journey-preview">
           {j.split.opportunities.slice(0, PREVIEW).map(l => {
             const c = leadCardSummary(l, buyer?.who.join('; ') ?? '')
-            return <li key={l.id} className="rounded-2xl border border-[var(--line)] p-4 text-sm" data-testid="journey-opportunity">
+            return <li key={l.id} className="py-4 text-sm" data-testid="journey-opportunity">
               <div className="flex items-start gap-3">
                 <Avatar name={c.company} size={40} />
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2"><span className="font-semibold">{c.company}</span>{l.fit != null && <Pill tone="plain">fit {l.fit}/5</Pill>}<Pill tone={l.contactReady ? 'mint' : 'plain'} testid="journey-contact">{l.contactReady ? 'Contact ready' : 'No published contact yet'}</Pill></div>
+                  {c.contact && <p className="text-xs text-[var(--ink-2)] mt-0.5">{c.contact}</p>}
                   <p className="font-semibold mt-1.5 leading-snug">{c.why}</p>
                   <p className="text-xs mt-2 flex flex-wrap gap-2"><span className="pill pill-plain"><Icon name="link" className="w-3 h-3" />{c.sourceHost}</span><span className="sr-only"> · </span><span className="pill pill-plain"><Icon name="calendar" className="w-3 h-3" />{c.date}</span></p>
                 </div>
               </div>
             </li>
           })}
-        </ul>}
-        {j.play && (j.split || j.stage === 'failed' || j.stage === 'zero') && <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">
+        </ul>
+        : (j.stage === 'zero' || j.stage === 'all_held') && <div className="mt-4 rounded-2xl bg-[#f6f0ea] p-5 sm:p-6 text-center" data-testid="journey-empty">
+          <p className="text-lg font-bold tracking-tight">{j.stage === 'all_held' ? 'Nothing ready yet - a few leads need your eyes' : 'No leads ready from this play yet'}</p>
+          <p className="text-sm text-[var(--ink-2)] mt-1">Try a wider version of it:</p>
+          <div className="flex flex-wrap justify-center gap-2 mt-4">
+            {widenActions(j.play.query, icp).map(a => <Link key={a.testid} className="btn-ghost btn-sm" href={a.href} data-testid={a.testid}>{a.label}</Link>)}
+          </div>
+        </div>}
+        <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">
           {j.split && j.split.held.length > 0 && <Link className="btn-ghost btn-sm" href={`/app/leads?job_id=${j.play.id}`} data-testid="journey-held">{j.split.held.length} held for review<InfoTip>Leads that need your review, are rejected, undated, outside your time window, or whose company or source is not confirmed. They are never counted as opportunities.</InfoTip></Link>}
-          {j.split && j.split.opportunities.length > PREVIEW && <Link className="btn-ghost btn-sm" href={`/app/leads?job_id=${j.play.id}`}>All {j.split.opportunities.length} opportunities</Link>}
+          {j.split && j.split.opportunities.length > PREVIEW && <Link className="btn-ghost btn-sm" href={`/app/leads?job_id=${j.play.id}`}>All {j.split.opportunities.length} leads</Link>}
           <Link className="btn-ghost btn-sm" href={`/app/outcomes?job_id=${j.play.id}`} data-testid="journey-campaign"><Icon name="check" className="w-3.5 h-3.5" />Drafts and outcomes</Link>
           {drafts && drafts.approved > 0 && <span className="text-xs text-[var(--ink-2)]" data-testid="journey-approved">{drafts.approved} approved, not sent yet</span>}
-        </div>}
-      </section>
+        </div>
+      </section>}
 
-      {/* What dazl understands, editable in place. */}
+      {/* What dazl understands: only what is set, one nudge for the rest; editable in place. */}
       {p && <section className="card p-5 sm:p-6" aria-labelledby="understand-heading" data-testid="journey-understanding">
         <div className="flex items-center justify-between gap-3 mb-3">
           <h2 id="understand-heading" className="text-lg font-bold tracking-tight">What dazl understands</h2>
           {!editing && <button type="button" className="btn-ghost btn-sm" onClick={() => setEditing(true)}>Edit</button>}
         </div>
         {editing ? <ProfileForm profile={p} onDone={saved => { setEditing(false); if (saved) void loadProfile() }} />
-          : <dl className="grid sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
-            <Fact k="You sell" v={p.sells} />
-            <Fact k="Website" v={p.website} />
-            <Fact k="Who buys" v={buyer?.summary} />
-            <Fact k="Buyer roles" v={buyer ? showList(buyer.who) : ''} />
-            <Fact k="Industries" v={buyer ? showList(buyer.industries) : ''} empty="Any" />
-            <Fact k="Where" v={buyer ? showList(buyer.where) : ''} empty="Anywhere" />
-            <Fact k="Company size" v={buyer ? showList(buyer.sizes) : ''} empty="Any" />
-            <Fact k="Skip" v={buyer ? showList(buyer.exclude) : ''} empty="Nothing" />
-          </dl>}
-        {playIcp?.icp && j.play && playIcp.query === j.play.query && <div className="mt-4 pt-4 border-t border-[var(--line)] text-sm" data-testid="journey-constraints">
+          : <>
+            <dl className="grid sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
+              <Fact k="You sell" v={p.sells} />
+              <Fact k="Website" v={p.website} />
+              <Fact k="Who buys" v={buyer?.summary} />
+              <Fact k="Buyer roles" v={buyer ? showList(buyer.who) : ''} />
+              <Fact k="Industries" v={buyer ? showList(buyer.industries) : ''} />
+              <Fact k="Where" v={buyer ? showList(buyer.where) : ''} />
+              <Fact k="Company size" v={buyer ? showList(buyer.sizes) : ''} />
+              <Fact k="Skip" v={buyer ? showList(buyer.exclude) : ''} />
+            </dl>
+            {missing.length > 0 && <button type="button" className="mt-4 w-full text-left rounded-xl border border-dashed border-[var(--line-2)] px-4 py-3 text-sm hover:border-[var(--ink-3)]" onClick={() => setEditing(true)} data-testid="profile-nudge">
+              <span className="font-semibold">Complete your profile</span><span className="text-[var(--ink-2)]"> - add {missing.slice(0, 3).join(', ')}{missing.length > 3 ? ` and ${missing.length - 3} more` : ''}</span>
+            </button>}
+          </>}
+        {icp && <div className="mt-4 pt-4 border-t border-[var(--line)] text-sm" data-testid="journey-constraints">
           <p className="text-xs font-semibold uppercase tracking-wide text-[var(--ink-3)] mb-2">This play searched with<InfoTip>The reviewed profile this play ran with, exactly as saved. It is not changed when you edit the business profile above.</InfoTip></p>
           <div className="flex flex-wrap gap-2">
-            {[...(playIcp.icp.who ?? []), ...(playIcp.icp.industries ?? []), ...(playIcp.icp.where ?? []).map(w => `in ${w}`), ...(playIcp.icp.sizes ?? []), ...(playIcp.icp.signals ?? [])].map(t => <span key={t} className="pill pill-plain">{t}</span>)}
-            {typeof playIcp.icp.window_days === 'number' && <span className="pill pill-mint" data-testid="journey-window">past {playIcp.icp.window_days} days</span>}
-            {(playIcp.icp.exclude ?? []).map(t => <span key={t} className="pill pill-pink">skip {t}</span>)}
+            {pills.map((t, i) => <span key={t.text + i} className={`pill ${t.kind === 'window' ? 'pill-mint' : t.kind === 'skip' ? 'pill-pink' : 'pill-plain'}`} style={i >= PILLS_SHOWN && !morePills ? { display: 'none' } : undefined} data-testid={t.kind === 'window' ? 'journey-window' : undefined}>{t.text}</span>)}
+            {pills.length > PILLS_SHOWN && <button type="button" className="pill pill-plain hover:border-[var(--ink-3)]" aria-expanded={morePills} onClick={() => setMorePills(m => !m)} data-testid="pills-more">{morePills ? 'Show less' : `+${pills.length - PILLS_SHOWN} more`}</button>}
           </div>
         </div>}
       </section>}
@@ -154,8 +208,17 @@ export default function Journey() {
   )
 }
 
-function Fact({ k, v, empty = 'Not set' }: { k: string; v?: string | null; empty?: string }) {
-  return <div><dt className="text-xs text-[var(--ink-3)]">{k}</dt><dd className={v ? 'font-medium' : 'text-[var(--ink-3)]'}>{v || empty}</dd></div>
+function Stat({ label, value, testid, strong }: { label: string; value: string; testid: string; strong?: boolean }) {
+  return <div className={`rounded-2xl px-4 py-3 ${strong ? 'bg-[var(--mint-bg)]' : 'bg-[#f6f0ea]'}`} data-testid={testid}>
+    <div className="text-3xl font-bold tracking-tight">{value}</div>
+    <div className="text-xs text-[var(--ink-2)] mt-0.5">{label}</div>
+  </div>
+}
+
+// Only what is set is shown; an empty field is left out (the "Complete your profile" nudge covers the rest).
+function Fact({ k, v }: { k: string; v?: string | null }) {
+  if (!v) return null
+  return <div><dt className="text-xs text-[var(--ink-3)]">{k}</dt><dd className="font-medium">{v}</dd></div>
 }
 
 function ProfileForm({ profile, onDone }: { profile: Profile; onDone: (saved: boolean) => void }) {
