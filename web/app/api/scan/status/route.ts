@@ -10,6 +10,7 @@ import { effectiveStatus, enrichState } from '@/lib/scan/enrichment'
 import { emptyExtractionReason } from '@/lib/scan/extraction-note'
 import { progressOf, outcomeInputs } from '@/lib/scan/progress'
 import { scanOutcome } from '@/lib/scan/scan-outcome'
+import { outcomeClass, storedOutcomeFor } from '@/lib/scan/stored-outcome'
 
 // What a scan never stored, so a reader cannot mistake absence for a zero. Fixed list, not derived from data.
 const NOT_RECORDED = ['search_queries', 'raw_search_hits', 'fetched_pages']
