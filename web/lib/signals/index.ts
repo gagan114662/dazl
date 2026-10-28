@@ -10,6 +10,7 @@ import { addEnrichment, audit } from '../connectors/store.ts'
 import { companyKey, recordCompanyEvent } from '../events/store.ts'
 import { listLeads } from '../scan/store.ts'
 import { classifyEntityMatch, domainSlug, withinEventWindow } from './entity-match.ts'
+import { atsGtmHiring } from './ats-gtm.ts'
 
 const TIMEOUT = 8000
 const MAX_LEADS = 10
@@ -122,7 +123,7 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
   const { fundingNews, fundingRoundFor } = await import('./funding-round.ts')
   const news = process.env.SIGNALS_FUNDING_RSS === '0' ? [] : await fundingNews(fetchImpl).catch(() => [])
   const jinaLeft = { n: 2 }
-  let funding = 0, hiring = 0, rounds = 0
+  let funding = 0, hiring = 0, rounds = 0, gtm = 0
   const today = new Date().toISOString().slice(0, 10)
   const now = Math.floor(Date.now() / 1000)
   for (const lead of leads) {
@@ -146,6 +147,14 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
       if (ck) recordCompanyEvent(db, tenantId, { companyKey: ck, companyName: lead.company, scope: 'account', leadId: lead.id, eventType: 'hiring_surge', summary: `${h.openRoles} open role${h.openRoles === 1 ? '' : 's'}`, detail: h.titles.join('; ').slice(0, 200) || null, sourceUrl: h.url, sourcePublishedAt: null, retrievedAt: now, confidence: 70 })
       hiring++
     }
+    // Dated sales / go-to-market postings from the company's own public board: the "hiring sales" half of a seed + sales request, with the
+    // posting's own date. An enrichment beside the lead; it never changes the lead, its date or any verdict.
+    const g = await atsGtmHiring(lead.company, lead.company_domain, fetchImpl).catch(() => null)
+    if (g) {
+      const n = g.postings.length
+      addEnrichment(db, tenantId, lead.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${n} sales/GTM role${n === 1 ? '' : 's'} posted, newest ${g.newest}`, label: g.postings.map(p => p.title).slice(0, 3).join('; ').slice(0, 200) || null, confidence: g.via === 'domain' ? 70 : 75, source_url: g.url, source_date: g.newest, retrieved_at: now })
+      gtm++
+    }
     const r = await fundingRoundFor(lead.company, news, { fetchImpl, jinaLeft }).catch(() => null)
     if (r && classifyEntityMatch(lead.company, r.matched) === 'heuristic') {
       const what = [r.amount, r.stage].filter(Boolean).join(' ') || 'funding'
@@ -155,6 +164,7 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
     }
   }
   audit(db, { tenantId, connector: 'signals:sec-edgar', jobId, lookup: `${leads.length} leads`, status: funding ? 'ok' : 'empty', results: funding })
+  audit(db, { tenantId, connector: 'signals:ats-gtm', jobId, lookup: `${leads.length} leads`, status: gtm ? 'ok' : 'empty', results: gtm })
   audit(db, { tenantId, connector: 'signals:ats', jobId, lookup: `${leads.length} leads`, status: hiring ? 'ok' : 'empty', results: hiring })
   audit(db, { tenantId, connector: 'signals:funding-round', jobId, lookup: `${leads.length} leads, ${news.length} raise reports`, status: rounds ? 'ok' : 'empty', results: rounds })
   // BYOK contact/firmographic pass: runs only with the tenant's own Apollo/PDL key.
