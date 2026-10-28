@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { Geist } from 'next/font/google'
 import './globals.css'
 import { chunkRecoveryScript } from '@/lib/chunk-recovery'
+import ClientErrorReporter from './client-error-reporter'
 
 const geist = Geist({ subsets: ['latin'] })
 
@@ -18,6 +19,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <script dangerouslySetInnerHTML={{ __html: chunkRecoveryScript(process.env.NEXT_PUBLIC_DAZL_BUILD || '') }} />
       </head>
       <body className={`${geist.className} antialiased`}>
+        <ClientErrorReporter />
         {children}
       </body>
     </html>

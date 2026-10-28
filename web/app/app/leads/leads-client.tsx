@@ -27,7 +27,12 @@ import { budgetFromForm, EMPTY_BUDGET_FORM, type BudgetForm } from '@/lib/scan/r
 import { evidenceOriginLabel, purgedNote } from '@/lib/scan/evidence-origin'
 import { playSuggestions, type PlaySuggestions } from '@/lib/play-suggestions'
 import { scanOutcome } from '@/lib/scan/scan-outcome'
+import InfoTip from '../ui/info-tip'
+import { Icon } from '../ui/icons'
+import { Avatar, Pill, Stepper, type Tone } from '../ui/bits'
 import Caveat from '@/app/app/caveat'
+import SourceProgressList from './source-progress'
+import type { SourceProgress } from '@/lib/scan/progress'
 
 // Reject on the card is the existing reversible quarantine, with its own reason so the card can say "Rejected".
 // Reject asks for an optional reason (a preset or a few words); it is stored as "Rejected" or "Rejected: <reason>".
@@ -121,6 +126,8 @@ export default function LeadsClient() {
   viewedJob.current = jobId ?? ''
   const [status, setStatus] = useState<string>('')
   const [leadsSoFar, setLeadsSoFar] = useState(0)
+  // Live per-source progress from the status poll; null when the response had none (older server or a failed read).
+  const [progress, setProgress] = useState<SourceProgress[] | null>(null)
   const [startedAt, setStartedAt] = useState<number | null>(null)
   const [createdAt, setCreatedAt] = useState<number | null>(null)
   const [attempt, setAttempt] = useState<[number, number] | null>(null)
@@ -224,6 +231,7 @@ export default function LeadsClient() {
     if (!r.ok) { setCsvNote(j.error === 'quota_exceeded' ? 'Monthly scans are used up.' : j.error || 'Could not resume'); return }
     setCsvBatch(j)
   }
+  const [leadTab, setLeadTab] = useState<'all' | 'review' | 'approved' | 'rejected'>('all')
   const scanActive = !!jobId && (status === 'pending' || status === 'running' || status === 'enriching')
   const csvActive = !!csvBatch && ((csvBatch.counts.queued ?? 0) + (csvBatch.counts.running ?? 0) > 0)
   useEffect(() => {
@@ -395,7 +403,7 @@ export default function LeadsClient() {
       }
       statusFails.current = 0
       const s = await r.json()
-      setStatus(s.status); setEnrichInterrupted(s.enrichment?.state === 'interrupted'); setEmptyReason(typeof s.empty_reason === 'string' ? s.empty_reason : null); setJobError(s.error ?? ''); setLeadsSoFar(s.lead_count ?? 0); setStartedAt(s.claimed_at ?? null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
+      setStatus(s.status); setEnrichInterrupted(s.enrichment?.state === 'interrupted'); setEmptyReason(typeof s.empty_reason === 'string' ? s.empty_reason : null); setJobError(s.error ?? ''); setLeadsSoFar(s.lead_count ?? 0); setProgress(Array.isArray(s.progress) ? s.progress : null); setStartedAt(s.claimed_at ?? null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
       setQuality(s.quality ?? null)
       if (s.icp) setIcp({ icp: s.icp, source: s.icp_source, query: typeof s.query === 'string' ? s.query : null })
       if (typeof s.query === 'string' && s.query && queryShownFor.current !== jobId) { queryShownFor.current = jobId; setQuery(s.query) }
@@ -473,6 +481,12 @@ export default function LeadsClient() {
       // return from Home must show its progress and Stop control, not an enabled Find leads button.
       const active = jobs.find(x => !x.csv_domain && (x.status === 'pending' || x.status === 'running' || x.status === 'enriching'))
       if (active) { passiveJob.current = new URLSearchParams(window.location.search).get('passive') === '1'; setJobId(active.id); setStatus(active.status) }
+      // The sidebar's "Leads" link (?latest=1) is the user explicitly asking for their newest leads: open the newest own,
+      // finished, non-test scan that saved any. No such scan => stay on Plays.
+      else if (new URLSearchParams(window.location.search).get('latest') === '1') {
+        const newest = jobs.find(x => !x.csv_domain && !x.test_only && x.status === 'done' && x.lead_count > 0)
+        if (newest) window.location.replace(`/app/leads?job_id=${newest.id}`)
+      }
     } }).catch(() => {})
   }, [jobId])
   // Restore the last profile so a reload never loses it (item: ICP persistence).
@@ -503,142 +517,156 @@ export default function LeadsClient() {
   const visibleLeads = leads.filter(l => !l.review_reason && (showSeen || !l.seen_before))
 
   return (
-    <div className="p-8">
-      <div className="flex items-baseline justify-between">
+    <div className="p-4 sm:p-8 max-w-6xl mx-auto flex flex-col">
+      {/* A scan's own page reads like a conversation: its progress and leads first, the next ask at the bottom. */}
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight mb-1">Leads</h1>
-          <p className="text-gray-400 text-sm mb-6">Companies matching your search, with the signal and source for each. Match is a heuristic - review fit yourself.</p>
+          <h1 className="text-3xl font-bold tracking-tight">{jobId ? 'Leads' : 'Plays'}</h1>
+          <p className="text-[var(--ink-2)] text-sm mt-1">{jobId ? 'Approve the leads worth an email.' : 'Describe who you want to reach.'}<InfoTip>Companies matching your search, with the signal and source for each. Match is a heuristic - review fit yourself.</InfoTip></p>
         </div>
-        <div className="flex gap-4 items-baseline">
+        <div className="flex gap-2 items-center">
           {/* The scan being viewed as one campaign: its play, every lead's status, drafts and sends. */}
-          {jobId && <a className="text-sm underline underline-offset-4" href={`/app/campaigns/${jobId}`} data-testid="campaign-page-link">Campaign page</a>}
-          <a className="text-sm text-gray-300 underline underline-offset-4 hover:text-white" href={jobId ? `/api/leads/export?job_id=${jobId}` : '/api/leads/export'}>Download CSV</a>
+          {jobId && <a className="btn-ghost btn-sm" href={`/app/campaigns/${jobId}`} data-testid="campaign-page-link"><Icon name="campaigns" className="w-4 h-4" />Campaign page</a>}
+          <a className="btn-ghost btn-sm" href={jobId ? `/api/leads/export?job_id=${jobId}` : '/api/leads/export'}>Download CSV</a>
         </div>
       </div>
       {/* Submitting the sentence runs the scan (the server works out the profile, as the run-without-review path always did)
           and lands on live progress; reviewing the profile first is optional. */}
-      <form onSubmit={e => { e.preventDefault(); void run(reuseIcp) }} className="mb-4">
-        <label htmlFor="play" className="block text-base font-semibold mb-2">Who do you want to reach?</label>
-        <textarea id="play" className={`${input} w-full`} rows={3} required minLength={3} maxLength={600} value={query} onChange={e => setQuery(e.target.value)}
-          placeholder="One sentence: who, where, and what just happened. e.g. Seed-stage fintech founders in Europe who just hired their first sales rep" />
-        {!jobId && plays && <div className="mt-2 space-y-1 text-xs" data-testid="play-suggestions">
+      <form onSubmit={e => { e.preventDefault(); void run(reuseIcp) }} className={`${jobId ? 'card p-5 sm:p-6 mb-4 order-last mt-6' : 'card px-5 py-8 sm:px-12 sm:py-12 mb-5'}`}>
+        <div className={jobId ? '' : 'max-w-2xl mx-auto'}>
+        <label htmlFor="play" className={`block font-bold tracking-tight mb-4 ${jobId ? 'text-lg' : 'text-2xl sm:text-4xl text-center'}`}>Who do you want to reach?</label>
+        <div className="ask">
+          <textarea id="play" rows={jobId ? 1 : 2} required minLength={3} maxLength={600} value={query} onChange={e => setQuery(e.target.value)}
+            placeholder="Find people who..." />
+          <button disabled={busy || starting || scanActive} title={scanActive ? 'A scan is still running or finishing below' : undefined} className="btn-primary send"><Icon name="arrow" className="w-4 h-4 -rotate-90" /><span className="sr-only">{starting ? 'Starting...' : 'Find leads'}</span></button>
+        </div>
+        {!jobId && plays && <div className="mt-4 space-y-2" data-testid="play-suggestions">
           {([['business', 'From your business details:', plays.business], ['examples', 'Examples:', plays.examples]] as const).filter(([, , items]) => items.length > 0).map(([k, label, items]) =>
             <div key={k} className="flex flex-wrap items-center gap-2" data-testid={`play-suggestions-${k}`}>
-              <span className="text-[#555]">{label}</span>
-              {items.map(t => <button key={t} type="button" data-testid="play-suggestion" onClick={() => setQuery(t)} className="border border-black/20 rounded-full px-3 py-1 text-left hover:border-black">{t}</button>)}
+              <span className="text-xs text-[var(--ink-3)] mr-1">{label}</span>
+              {items.map(t => <button key={t} type="button" data-testid="play-suggestion" aria-pressed={query.trim() === t} onClick={() => setQuery(t)} className="chip">{t}</button>)}
             </div>)}
         </div>}
-        <div className="flex gap-3 mt-2 items-center">
-          <button disabled={busy || starting || scanActive} title={scanActive ? 'A scan is still running or finishing below' : undefined} className="btn-primary">{starting ? 'Starting...' : 'Find leads'}</button>
-          <button type="button" disabled={query.trim().length < 3 || busy || starting || scanActive} onClick={() => void preview()} className="text-xs text-[#555] underline disabled:opacity-40 disabled:no-underline">{busy ? 'Working out your profile...' : 'Review profile first'}</button>
+        <div className="flex flex-wrap gap-3 mt-4 items-center">
+          <button type="button" disabled={query.trim().length < 3 || busy || starting || scanActive} onClick={() => void preview()} className="btn-ghost btn-sm disabled:opacity-40">{busy ? 'Working out your profile...' : 'Review profile first'}</button>
           {scanActive && <span className="text-xs text-gray-500" data-reason="scan-active">{status === 'enriching' ? 'The scan is finishing (contacts and fit checks). You can start another when it ends.' : 'A scan is already running. You can start another when it ends.'}</span>}
         </div>
         {reuseIcp && !scanActive && <p className="text-xs text-[#555] mt-2" data-testid="reuse-profile">Find leads runs with your reviewed profile: {reuseIcp.summary.replace(/[.\s]+$/, '')}. Change the sentence, or use Review profile first, to build a new one.</p>}
-        {!jobId && <SourceAvailability core={core} social={socialSources(advanced)} />}
+        </div>
       </form>
-      <details className="mb-4 text-sm" data-testid="more-sources">
-        <summary className="cursor-pointer text-[#555]">More sources</summary>
-        <div className="mt-3 space-y-4 border-l border-black/10 pl-4">
-          <div className="space-y-2">
-            <p className="text-xs font-medium text-[#111]">Add to this search</p>
-              <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useGithub} onChange={e => setUseGithub(e.target.checked)} /> Also search public GitHub repositories</label>
-              <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useYoutube} onChange={e => setUseYoutube(e.target.checked)} /> Also search public YouTube videos</label>
-              <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useV2ex} onChange={e => setUseV2ex(e.target.checked)} /> Also search public V2EX topics</label>
-              <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useJobboards} onChange={e => setUseJobboards(e.target.checked)} /> Also read public job postings (Greenhouse, Ashby, Lever) for a US state in your request</label>
-              <label className="block text-xs text-gray-500">Web page URLs to read (https only, one per line, up to 3). Pages are read through Jina Reader, a third-party service: the URLs are sent to it, and it rate limits requests without a key.</label>
-              <textarea className={`${input} w-full`} rows={2} value={pageText} onChange={e => setPageText(e.target.value)} placeholder="https://example.com/blog/post" />
-              <label className="block text-xs text-gray-500">RSS or Atom feed URLs to include (https only, one per line, up to 5)</label>
-              <textarea className={`${input} w-full`} rows={2} value={feedText} onChange={e => setFeedText(e.target.value)} placeholder="https://example.com/news/feed.xml" />
-              {advReady.map(p => <label key={p} className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={advPick.includes(p)} onChange={e => setAdvPick(e.target.checked ? [...advPick, p] : advPick.filter(x => x !== p))} /> {p === "x" ? "Also search X posts (via web index, no account risk)" : `Also search ${socialLabel(p)} (uses operator session, posts may be flagged)`}</label>)}
-              <p className="text-xs text-gray-500">Items from these sources are checked against their page like every other lead.</p>
-          </div>
-          <div>
-            <p className="text-xs font-medium text-[#111]">Fill the profile from your website</p>
-          <div className="flex gap-2 mt-1 items-center">
-            <input type="text" value={siteUrl} onChange={e => setSiteUrl(e.target.value)} maxLength={300} placeholder="Your website - we will fill the profile from it" className={`${input} flex-1`} />
-            <button type="button" onClick={() => void fillFromSite()} disabled={siteBusy || siteUrl.trim().length < 5} className="text-gray-400 hover:text-white text-sm px-3 whitespace-nowrap disabled:opacity-40">{siteBusy ? 'Reading your site...' : 'Fill from my website'}</button>
-          </div>
-          </div>
-          <SourceReview />
-          <HiringFeed />
-          {plan === 'free'
-            ? <p className="text-xs text-[#555]" data-testid="pro-sources-note">Bulk domain import and post-commenter import are on the Pro plan. <a className="underline" href="/app/settings#plan">See plans</a></p>
-            : <>
-          <details className="mb-4 text-sm">
-            <summary className="cursor-pointer text-gray-400">Bulk import company domains (Pro)</summary>
-            <div className="card p-4 mt-2">
-              <p className="text-gray-500 text-xs mb-2">A CSV or text file with one company domain per line, up to 50. Each domain runs as its own scan on your AI key - contacts and signals land in the table below. Blank rows are skipped; bad rows are flagged.</p>
-              <input type="file" accept=".csv,.txt,text/csv,text/plain" disabled={csvBusy} onChange={e => { const f = e.target.files?.[0]; if (f) void importCsv(f); e.target.value = '' }} className="text-xs text-gray-300 file:mr-3 file:font-mono file:uppercase file:text-xs file:border file:border-black file:px-2 file:py-1 file:bg-transparent file:text-white hover:file:bg-black" />
-              {csvNote && <p className="text-xs text-gray-400 mt-2">{csvNote}</p>}
-              {csvInvalid.length > 0 && (
-                <div className="mt-2">
-                  <p className="text-xs text-yellow-500">Skipped {csvInvalid.length} invalid row{csvInvalid.length === 1 ? '' : 's'}:</p>
-                  <ul className="text-xs text-gray-500 ml-4 list-disc">{csvInvalid.slice(0, 10).map(r => <li key={r.line}>{r.line} - {r.reason}</li>)}</ul>
-                  {csvInvalid.length > 10 && <p className="text-xs text-gray-600">and {csvInvalid.length - 10} more</p>}
-                </div>
-              )}
-              {csvBatch && (
-                <div className="mt-3">
-                  <div className="flex items-center gap-3 text-xs text-gray-400 mb-1">
-                    <span>{csvBatch.total} domains: {(['done','running','queued','failed','pending'] as const).filter(k => csvBatch.counts[k]).map(k => `${csvBatch.counts[k]} ${k === 'pending' ? 'waiting' : k}`).join(', ')}</span>
-                    {(csvBatch.counts.pending ?? 0) > 0 && !csvActive && <button onClick={() => void resumeCsv()} disabled={csvBusy} className="font-mono text-xs uppercase border border-black px-2 py-1 hover:bg-black hover:text-white">Resume</button>}
-                  </div>
-                  {csvBatch.note && <p className="text-xs text-yellow-500 mb-1">{csvBatch.note}</p>}
-                  <div className="divide-y divide-white/5 border-t border-white/5">
-                    {csvBatch.rows.map(r => (
-                      <div key={r.domain} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5 text-xs">
-                        <span className="text-gray-200 min-w-0 flex-1 truncate">{r.domain}</span>
-                        <span className={r.status === 'failed' ? 'text-red-400' : r.status === 'done' ? 'text-green-300' : 'text-gray-500'}>
-                          {r.status === 'queued' ? 'queued' : r.status === 'running' ? 'scanning' : r.status === 'pending' ? 'waiting - quota reached' : r.status === 'failed' ? `failed${r.error === 'budget_stopped' ? ' - stopped by run budget' : r.error === 'no_candidates' ? ' - nothing found' : ''}` : 'done'}
-                        </span>
-                        {r.status === 'done' && r.job_id && <a className="underline text-[#111]" href={`/app/leads?job_id=${r.job_id}`}>{r.leads ?? 0} lead{(r.leads ?? 0) === 1 ? '' : 's'}</a>}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </details>
-          <details className="mb-4 text-sm">
-            <summary className="cursor-pointer text-gray-400">Import post commenters (Pro)</summary>
-            <div className="card p-4 mt-2">
-              <Caveat className="text-gray-500 text-xs mb-2" summary="Import people who engaged with a post from a CSV or LinkedIn profile links (up to 100); the links are never opened.">People who engaged with a post, imported as leads. Upload a CSV with profile URL, name, title and company columns, or paste LinkedIn profile links (linkedin.com/in/...) one per line, up to 100. Links are never opened - no scraping. Names guessed from a link are marked derived; your CSV names win. Only your Apollo/PDL key (org lookup, 1 credit per company, max 50) and free sources enrich them.</Caveat>
-              <input value={cmtContext} onChange={e => setCmtContext(e.target.value)} maxLength={500} placeholder="Context: what they engaged with, e.g. Commented on my post about CRM switching costs" className="field w-full mb-2 text-xs" />
-              <textarea value={cmtText} onChange={e => setCmtText(e.target.value)} rows={4} placeholder={'profile_url,name,title,company\nhttps://www.linkedin.com/in/jane-doe,Jane Doe,VP Sales,Acme'} className="field w-full mb-2 text-xs font-mono" />
-              <div className="flex items-center gap-3">
-                <button onClick={() => void importCommenters()} disabled={cmtBusy || !cmtText.trim() || !cmtContext.trim()} className="font-mono text-xs uppercase border border-black px-2 py-1 hover:bg-black hover:text-white disabled:opacity-40">Import</button>
-                {/* A cost is never behind a click: enrichment starts on its own after Import when a connector key is on. */}
-                <span className="text-gray-500 text-xs" data-testid="import-cost">Paid enrichment: if an Apollo or People Data Labs key is enabled in Settings, Import uses it automatically - 1 credit per company, up to 50 companies, plus a people search per company that your provider may also bill. With no key enabled, only free sources are used.</span>
-                <label className="text-xs text-gray-400 underline cursor-pointer">or upload a file<input type="file" accept=".csv,.txt,text/csv,text/plain" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) void f.text().then(t => setCmtText(t)); e.target.value = '' }} /></label>
+      {/* Everything that tunes a play lives in one drawer, closed by default: sources, imports, past source results and
+          warm paths. The play box above stays the only thing asking for attention. */}
+      <details className={`drawer card ${jobId ? 'order-last' : 'mb-6'}`} data-testid="play-settings">
+        <summary><span className="flex items-center gap-2"><Icon name="sliders" className="w-4 h-4" />Settings for this play</span><span className="ml-auto text-xs font-normal text-[var(--ink-3)] hidden sm:inline">Sources, imports, profile, warm paths</span></summary>
+        <div className="px-5 pb-5 space-y-4 text-sm border-t border-[var(--line)] pt-4">
+          {!jobId && <SourceAvailability core={core} social={socialSources(advanced)} />}
+          <details className="mb-4 text-sm" data-testid="more-sources">
+            <summary className="cursor-pointer text-[#555]">More sources</summary>
+            <div className="mt-3 space-y-4 border-l border-black/10 pl-4">
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-[#111]">Add to this search</p>
+                  <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useGithub} onChange={e => setUseGithub(e.target.checked)} /> Also search public GitHub repositories</label>
+                  <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useYoutube} onChange={e => setUseYoutube(e.target.checked)} /> Also search public YouTube videos</label>
+                  <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useV2ex} onChange={e => setUseV2ex(e.target.checked)} /> Also search public V2EX topics</label>
+                  <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useJobboards} onChange={e => setUseJobboards(e.target.checked)} /> Also read public job postings (Greenhouse, Ashby, Lever) for a US state in your request</label>
+                  <label className="block text-xs text-gray-500">Web page URLs to read (https only, one per line, up to 3). Pages are read through Jina Reader, a third-party service: the URLs are sent to it, and it rate limits requests without a key.</label>
+                  <textarea className={`${input} w-full`} rows={2} value={pageText} onChange={e => setPageText(e.target.value)} placeholder="https://example.com/blog/post" />
+                  <label className="block text-xs text-gray-500">RSS or Atom feed URLs to include (https only, one per line, up to 5)</label>
+                  <textarea className={`${input} w-full`} rows={2} value={feedText} onChange={e => setFeedText(e.target.value)} placeholder="https://example.com/news/feed.xml" />
+                  {advReady.map(p => <label key={p} className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={advPick.includes(p)} onChange={e => setAdvPick(e.target.checked ? [...advPick, p] : advPick.filter(x => x !== p))} /> {p === "x" ? "Also search X posts (via web index, no account risk)" : `Also search ${socialLabel(p)} (uses operator session, posts may be flagged)`}</label>)}
+                  <p className="text-xs text-gray-500">Items from these sources are checked against their page like every other lead.</p>
               </div>
-              {cmtNote && <p className="text-xs text-gray-400 mt-2">{cmtNote}</p>}
-              {cmtInvalid.length > 0 && (
-                <div className="mt-2">
-                  <p className="text-xs text-yellow-500">Skipped {cmtInvalid.length} invalid row{cmtInvalid.length === 1 ? '' : 's'}:</p>
-                  <ul className="text-xs text-gray-500 ml-4 list-disc">{cmtInvalid.slice(0, 10).map(r => <li key={r.line}>{r.line} - {r.reason}</li>)}</ul>
-                  {cmtInvalid.length > 10 && <p className="text-xs text-gray-600">and {cmtInvalid.length - 10} more</p>}
-                </div>
-              )}
-              {cmtBatch && (
-                <div className="mt-3">
-                  <div className="flex items-center gap-3 text-xs text-gray-400 mb-1">
-                    <span>{cmtBatch.total} imported: {cmtBatch.context}</span>
-                    <button onClick={() => void deleteCommenters()} disabled={cmtBusy} className="font-mono text-xs uppercase border border-red-900 text-red-400 px-2 py-1 hover:bg-red-900 hover:text-white">Delete batch</button>
-                  </div>
-                  <div className="divide-y divide-white/5 border-t border-white/5">
-                    {cmtBatch.rows.map(r => (
-                      <div key={r.profile_url} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5 text-xs">
-                        <span className="text-gray-200 min-w-0 flex-1 truncate">{r.name}{r.title ? ` - ${r.title}` : ''}{r.company ? `, ${r.company}` : ''}</span>
-                        {r.name_source === 'derived' && <span className="text-yellow-500">name derived from link</span>}
-                        {r.lead_id && <a className="underline text-[#111]" href={`/app/leads?job_id=${cmtBatch.job_id}`}>in leads</a>}
+              <div>
+                <p className="text-xs font-medium text-[#111]">Fill the profile from your website</p>
+              <div className="flex gap-2 mt-1 items-center">
+                <input type="text" value={siteUrl} onChange={e => setSiteUrl(e.target.value)} maxLength={300} placeholder="Your website - we will fill the profile from it" className={`${input} flex-1`} />
+                <button type="button" onClick={() => void fillFromSite()} disabled={siteBusy || siteUrl.trim().length < 5} className="text-gray-400 hover:text-white text-sm px-3 whitespace-nowrap disabled:opacity-40">{siteBusy ? 'Reading your site...' : 'Fill from my website'}</button>
+              </div>
+              </div>
+              <SourceReview />
+              <HiringFeed />
+              {plan === 'free'
+                ? <p className="text-xs text-[#555]" data-testid="pro-sources-note">Bulk domain import and post-commenter import are on the Pro plan. <a className="underline" href="/app/settings#plan">See plans</a></p>
+                : <>
+              <details className="mb-4 text-sm">
+                <summary className="cursor-pointer text-gray-400">Bulk import company domains (Pro)</summary>
+                <div className="card p-4 mt-2">
+                  <p className="text-gray-500 text-xs mb-2">A CSV or text file with one company domain per line, up to 50. Each domain runs as its own scan on your AI key - contacts and signals land in the table below. Blank rows are skipped; bad rows are flagged.</p>
+                  <input type="file" accept=".csv,.txt,text/csv,text/plain" disabled={csvBusy} onChange={e => { const f = e.target.files?.[0]; if (f) void importCsv(f); e.target.value = '' }} className="text-xs text-gray-300 file:mr-3 file:font-mono file:uppercase file:text-xs file:border file:border-black file:px-2 file:py-1 file:bg-transparent file:text-white hover:file:bg-black" />
+                  {csvNote && <p className="text-xs text-gray-400 mt-2">{csvNote}</p>}
+                  {csvInvalid.length > 0 && (
+                    <div className="mt-2">
+                      <p className="text-xs text-yellow-500">Skipped {csvInvalid.length} invalid row{csvInvalid.length === 1 ? '' : 's'}:</p>
+                      <ul className="text-xs text-gray-500 ml-4 list-disc">{csvInvalid.slice(0, 10).map(r => <li key={r.line}>{r.line} - {r.reason}</li>)}</ul>
+                      {csvInvalid.length > 10 && <p className="text-xs text-gray-600">and {csvInvalid.length - 10} more</p>}
+                    </div>
+                  )}
+                  {csvBatch && (
+                    <div className="mt-3">
+                      <div className="flex items-center gap-3 text-xs text-gray-400 mb-1">
+                        <span>{csvBatch.total} domains: {(['done','running','queued','failed','pending'] as const).filter(k => csvBatch.counts[k]).map(k => `${csvBatch.counts[k]} ${k === 'pending' ? 'waiting' : k}`).join(', ')}</span>
+                        {(csvBatch.counts.pending ?? 0) > 0 && !csvActive && <button onClick={() => void resumeCsv()} disabled={csvBusy} className="font-mono text-xs uppercase border border-black px-2 py-1 hover:bg-black hover:text-white">Resume</button>}
                       </div>
-                    ))}
-                  </div>
+                      {csvBatch.note && <p className="text-xs text-yellow-500 mb-1">{csvBatch.note}</p>}
+                      <div className="divide-y divide-white/5 border-t border-white/5">
+                        {csvBatch.rows.map(r => (
+                          <div key={r.domain} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5 text-xs">
+                            <span className="text-gray-200 min-w-0 flex-1 truncate">{r.domain}</span>
+                            <span className={r.status === 'failed' ? 'text-red-400' : r.status === 'done' ? 'text-green-300' : 'text-gray-500'}>
+                              {r.status === 'queued' ? 'queued' : r.status === 'running' ? 'scanning' : r.status === 'pending' ? 'waiting - quota reached' : r.status === 'failed' ? `failed${r.error === 'budget_stopped' ? ' - stopped by run budget' : r.error === 'no_candidates' ? ' - nothing found' : ''}` : 'done'}
+                            </span>
+                            {r.status === 'done' && r.job_id && <a className="underline text-[#111]" href={`/app/leads?job_id=${r.job_id}`}>{r.leads ?? 0} lead{(r.leads ?? 0) === 1 ? '' : 's'}</a>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
-              )}
+              </details>
+              <details className="mb-4 text-sm">
+                <summary className="cursor-pointer text-gray-400">Import post commenters (Pro)</summary>
+                <div className="card p-4 mt-2">
+                  <Caveat className="text-gray-500 text-xs mb-2" summary="Import people who engaged with a post from a CSV or LinkedIn profile links (up to 100); the links are never opened.">People who engaged with a post, imported as leads. Upload a CSV with profile URL, name, title and company columns, or paste LinkedIn profile links (linkedin.com/in/...) one per line, up to 100. Links are never opened - no scraping. Names guessed from a link are marked derived; your CSV names win. Only your Apollo/PDL key (org lookup, 1 credit per company, max 50) and free sources enrich them.</Caveat>
+                  <input value={cmtContext} onChange={e => setCmtContext(e.target.value)} maxLength={500} placeholder="Context: what they engaged with, e.g. Commented on my post about CRM switching costs" className="field w-full mb-2 text-xs" />
+                  <textarea value={cmtText} onChange={e => setCmtText(e.target.value)} rows={4} placeholder={'profile_url,name,title,company\nhttps://www.linkedin.com/in/jane-doe,Jane Doe,VP Sales,Acme'} className="field w-full mb-2 text-xs font-mono" />
+                  <div className="flex items-center gap-3">
+                    <button onClick={() => void importCommenters()} disabled={cmtBusy || !cmtText.trim() || !cmtContext.trim()} className="font-mono text-xs uppercase border border-black px-2 py-1 hover:bg-black hover:text-white disabled:opacity-40">Import</button>
+                    {/* A cost is never behind a click: enrichment starts on its own after Import when a connector key is on. */}
+                    <span className="text-gray-500 text-xs" data-testid="import-cost">Paid enrichment: if an Apollo or People Data Labs key is enabled in Settings, Import uses it automatically - 1 credit per company, up to 50 companies, plus a people search per company that your provider may also bill. With no key enabled, only free sources are used.</span>
+                    <label className="text-xs text-gray-400 underline cursor-pointer">or upload a file<input type="file" accept=".csv,.txt,text/csv,text/plain" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) void f.text().then(t => setCmtText(t)); e.target.value = '' }} /></label>
+                  </div>
+                  {cmtNote && <p className="text-xs text-gray-400 mt-2">{cmtNote}</p>}
+                  {cmtInvalid.length > 0 && (
+                    <div className="mt-2">
+                      <p className="text-xs text-yellow-500">Skipped {cmtInvalid.length} invalid row{cmtInvalid.length === 1 ? '' : 's'}:</p>
+                      <ul className="text-xs text-gray-500 ml-4 list-disc">{cmtInvalid.slice(0, 10).map(r => <li key={r.line}>{r.line} - {r.reason}</li>)}</ul>
+                      {cmtInvalid.length > 10 && <p className="text-xs text-gray-600">and {cmtInvalid.length - 10} more</p>}
+                    </div>
+                  )}
+                  {cmtBatch && (
+                    <div className="mt-3">
+                      <div className="flex items-center gap-3 text-xs text-gray-400 mb-1">
+                        <span>{cmtBatch.total} imported: {cmtBatch.context}</span>
+                        <button onClick={() => void deleteCommenters()} disabled={cmtBusy} className="font-mono text-xs uppercase border border-red-900 text-red-400 px-2 py-1 hover:bg-red-900 hover:text-white">Delete batch</button>
+                      </div>
+                      <div className="divide-y divide-white/5 border-t border-white/5">
+                        {cmtBatch.rows.map(r => (
+                          <div key={r.profile_url} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5 text-xs">
+                            <span className="text-gray-200 min-w-0 flex-1 truncate">{r.name}{r.title ? ` - ${r.title}` : ''}{r.company ? `, ${r.company}` : ''}</span>
+                            {r.name_source === 'derived' && <span className="text-yellow-500">name derived from link</span>}
+                            {r.lead_id && <a className="underline text-[#111]" href={`/app/leads?job_id=${cmtBatch.job_id}`}>in leads</a>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </details>
+                </>}
             </div>
           </details>
-            </>}
+          <SourceMetrics />
+          <WarmConnections />
         </div>
       </details>
       {draft && (
@@ -698,16 +726,28 @@ export default function LeadsClient() {
         </div>
       )}
       {jobId && (status === 'pending' || status === 'running') && (
-        <div className="card p-4 mb-4 flex items-center gap-3">
-          <span className="inline-block h-4 w-4 rounded-full border-2 border-gray-500 border-t-white animate-spin" aria-hidden />
-          <div className="text-sm">
-            <div>{status === 'pending' ? 'Queued - waiting to start.' : 'Scanning - this can take a few minutes.'}</div>
-            <div className="text-gray-400 text-xs">{leadsSoFar > 0 ? `${leadsSoFar} lead${leadsSoFar === 1 ? '' : 's'} so far` : status === 'pending' ? 'Not started' : 'Running'}{status === 'pending' ? (createdAt ? ` - queued ${Math.max(0, Math.floor((now - createdAt) / 60))} min ago` : '') : startedAt ? ` - running ${Math.max(0, Math.floor((now - startedAt) / 60))} min` : ''}{attempt ? ` - attempt ${attempt[0]} of ${attempt[1]}` : ''}</div>
-            <div className="text-gray-400 text-xs" data-testid="run-sources">{core ? `Sources this scan can use: ${[usableLabels(core), ...(runExtras ?? [])].filter(Boolean).join(', ') || 'none'}${runExtras === null ? ' (plus any extra sources chosen when it started)' : ''}.` : 'Could not check which sources this scan can use.'}</div>
-            <div className="text-gray-400 text-xs">dazl cannot show a per-source count yet. A scan that stops responding is retried automatically, up to {attempt?.[1] ?? 3} attempts.</div>
-            <button type="button" className="underline text-[#111] text-xs mt-1" onClick={async () => { const r = await fetch('/api/scan/cancel', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ job_id: jobId }) }); const j = await r.json().catch(() => ({})); setCancelNote(r.ok ? (j.note ?? 'Stop requested.') : 'Could not cancel: ' + (j.error ?? 'try again')); if (r.ok) setStatus('failed'); if (r.ok) setJobError('cancelled') }}>Stop this scan</button>
-            {cancelNote && <div className="text-gray-400 text-xs">{cancelNote}</div>}
+        <div className="card p-5 mb-4 space-y-4" data-testid="scan-progress">
+          {/* The stages are what the scan record can honestly tell apart: queued, running (search + read), finishing (contacts
+              + fit checks), done. Below it, each source that has started reports live (progress from the status poll). */}
+          <Stepper steps={[
+            { label: 'Read your profile and play', state: status === 'pending' ? 'live' : 'done', note: status === 'pending' ? `Queued${createdAt ? ` ${Math.max(0, Math.floor((now - createdAt) / 60))} min` : ''}` : undefined },
+            { label: 'Search and read sources', state: status === 'running' ? 'live' : 'todo', note: status === 'running' ? `Searching...${startedAt ? ` ${Math.max(0, Math.floor((now - startedAt) / 60))} min` : ''}` : undefined },
+            { label: 'Check fit and find contacts', state: 'todo' },
+            { label: leadsSoFar > 0 ? `Found ${leadsSoFar} lead${leadsSoFar === 1 ? '' : 's'}` : 'Found leads', state: 'todo', note: leadsSoFar > 0 ? 'so far' : undefined },
+          ]} />
+          <SourceProgressList progress={progress} />
+          <div className="flex flex-wrap items-center justify-between gap-3 text-sm border-t border-[var(--line)] pt-3">
+            <div>
+              <span className="font-semibold">{status === 'pending' ? 'Queued - waiting to start.' : 'Scanning - this can take a few minutes.'}</span>
+              <InfoTip label="About this scan">
+                <span className="block">{leadsSoFar > 0 ? `${leadsSoFar} lead${leadsSoFar === 1 ? '' : 's'} so far` : status === 'pending' ? 'Not started' : 'Running'}{status === 'pending' ? (createdAt ? ` - queued ${Math.max(0, Math.floor((now - createdAt) / 60))} min ago` : '') : startedAt ? ` - running ${Math.max(0, Math.floor((now - startedAt) / 60))} min` : ''}{attempt ? ` - attempt ${attempt[0]} of ${attempt[1]}` : ''}</span>
+                <span className="block mt-1" data-testid="run-sources">{core ? `Sources this scan can use: ${[usableLabels(core), ...(runExtras ?? [])].filter(Boolean).join(', ') || 'none'}${runExtras === null ? ' (plus any extra sources chosen when it started)' : ''}.` : 'Could not check which sources this scan can use.'}</span>
+                <span className="block mt-1">A scan that stops responding is retried automatically, up to {attempt?.[1] ?? 3} attempts.</span>
+              </InfoTip>
+            </div>
+            <button type="button" className="btn-ghost btn-sm" onClick={async () => { const r = await fetch('/api/scan/cancel', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ job_id: jobId }) }); const j = await r.json().catch(() => ({})); setCancelNote(r.ok ? (j.note ?? 'Stop requested.') : 'Could not cancel: ' + (j.error ?? 'try again')); if (r.ok) setStatus('failed'); if (r.ok) setJobError('cancelled') }}>Stop this scan</button>
           </div>
+          {cancelNote && <div className="text-[var(--ink-2)] text-xs">{cancelNote}</div>}
         </div>
       )}
       {jobId && status === 'done' && enrichInterrupted && (
@@ -717,11 +757,16 @@ export default function LeadsClient() {
         </div>
       )}
       {jobId && status === 'enriching' && (
-        <div className="card p-4 mb-4 flex items-center gap-3" role="status">
-          <span className="inline-block h-4 w-4 rounded-full border-2 border-gray-500 border-t-white animate-spin" aria-hidden />
-          <div className="text-sm">
-            <div>Finishing - finding contacts and checking fit.</div>
-            <div className="text-gray-400 text-xs">The leads below are not final yet. The scan is not done until this ends.</div>
+        <div className="card p-5 mb-4 space-y-4" role="status" data-testid="scan-progress">
+          <Stepper steps={[
+            { label: 'Read your profile and play', state: 'done' },
+            { label: 'Search and read sources', state: 'done' },
+            { label: 'Check fit and find contacts', state: 'live', note: 'Checking...' },
+            { label: leadsSoFar > 0 ? `Found ${leadsSoFar} lead${leadsSoFar === 1 ? '' : 's'}` : 'Found leads', state: 'todo' },
+          ]} />
+          <div className="text-sm border-t border-[var(--line)] pt-3">
+            <span className="font-semibold">Finishing - finding contacts and checking fit.</span>
+            <InfoTip>The leads below are not final yet. The scan is not done until this ends.</InfoTip>
           </div>
         </div>
       )}
@@ -757,33 +802,42 @@ export default function LeadsClient() {
           {Object.keys(quality.drop_reasons).length > 0 && <> ({Object.entries(quality.drop_reasons).map(([k, n]) => `${n} ${REASON[k] ?? k}`).join(', ')})</>}.
         </p>
       )}
-      <SourceMetrics />
-      <WarmConnections />
       <VerificationFixture />
       {!jobId && pastJobs && pastJobs.length > 0 && (
-        <div className="card divide-y divide-white/5 mb-4">
-          <div className="p-4">
-            <h2 className="text-sm font-semibold">Past scans</h2>
-            <p className="text-gray-500 text-xs mt-0.5">Pick one to review its leads. Nothing runs until you start a new scan above.</p>
-          </div>
+        <section className="mb-6" aria-labelledby="your-plays">
+          <h2 id="your-plays" className="text-xl font-bold tracking-tight mb-3">Past scans<InfoTip>Pick one to review its leads. Nothing runs until you start a new scan above.</InfoTip></h2>
+          <div className="grid gap-3 md:grid-cols-2">
           {pastJobs.map(j => {
             // What the scan record says it ended as (lib/scan/scan-outcome.ts), with its one next step beside it.
             const o = scanOutcome(j)
+            const tone: Tone = o.kind === 'leads' ? 'mint' : o.kind === 'review_only' ? 'lav' : o.kind === 'running' || o.kind === 'enriching' ? 'peach' : o.kind === 'failed' ? 'pink' : 'grey'
+            const pill = o.kind === 'leads' ? 'Leads ready' : o.kind === 'review_only' ? 'Needs review' : o.kind === 'running' ? 'Running' : o.kind === 'enriching' ? 'Finishing' : o.kind === 'failed' ? 'Failed' : o.kind === 'stopped' ? 'Stopped' : 'No leads'
             return (
-              <div key={j.id} className="p-4 hover:bg-white/5" data-testid="past-scan" data-outcome={o.kind}>
-                <a href={`/app/leads?job_id=${j.id}`} className="block">
-                  <div className="text-sm font-medium">
-                    {j.test_only && <span className="text-gray-500">test only · </span>}
-                    {j.query ?? (j.csv_domain ? `CSV import: ${j.csv_domain}` : j.business_name)}
-                  </div>
-                  <div className="text-gray-500 text-xs mt-0.5">{new Date(j.created_at * 1000).toLocaleDateString()} · {o.label}</div>
-                  {o.detail && <div className="text-gray-500 text-xs mt-0.5" data-testid="outcome-detail">{o.detail}</div>}
-                </a>
-                {o.next && <a className="underline text-[#111] text-xs" href={o.next.href} data-testid="next-step">{o.next.text}</a>}
+              <div key={j.id} className="card p-4 sm:p-5 flex flex-col" data-testid="past-scan" data-outcome={o.kind}>
+                <div className="flex items-start justify-between gap-3 mb-2">
+                  <a href={`/app/leads?job_id=${j.id}`} className="block min-w-0">
+                    <span className="text-xs text-[var(--ink-3)]">Play</span>
+                    <div className="font-semibold leading-snug line-clamp-2" data-testid="past-scan-title">
+                      {j.test_only && <span className="text-[var(--ink-3)]">test only · </span>}
+                      {j.query ?? (j.csv_domain ? `CSV import: ${j.csv_domain}` : j.business_name)}
+                    </div>
+                  </a>
+                  {o.kind === 'running' || o.kind === 'enriching' ? <span className="live-dot shrink-0 mt-1">{pill}</span> : <span className="shrink-0"><Pill tone={tone}>{pill}</Pill></span>}
+                </div>
+                <dl className="mb-3">
+                  <div className="kv"><dt>Last run</dt><dd>{new Date(j.created_at * 1000).toLocaleDateString()}</dd></div>
+                  <div className="kv"><dt>Leads</dt><dd><span className="font-semibold">{j.lead_count}</span> saved</dd></div>
+                  <div className="kv"><dt>Result</dt><dd className="text-[var(--ink-2)]">{o.label}{o.detail && <InfoTip><span data-testid="outcome-detail">{o.detail}</span></InfoTip>}</dd></div>
+                </dl>
+                <div className="mt-auto flex flex-wrap gap-2">
+                  <a className="btn-ghost btn-sm" href={`/app/leads?job_id=${j.id}`}>Open</a>
+                  {o.next && <a className="btn-ghost btn-sm" href={o.next.href} data-testid="next-step">{o.next.text}</a>}
+                </div>
               </div>
             )
           })}
-        </div>
+          </div>
+        </section>
       )}
       {jobId && leads.length > 0 && scanDrafts && barCopy(scanDrafts) && (
         <div className="card p-4 mb-4 flex items-center justify-between gap-3 text-sm" data-testid="approved-bar" role="status">
@@ -800,25 +854,31 @@ export default function LeadsClient() {
           {n.approved === null ? <span data-testid="card-counts-note"> (drafts could not be loaded, so Approved is unknown)</span> : <span data-testid="card-counts-note"> - approving a card makes a draft; each email is still approved in Outreach before it sends.</span>}
         </p>
       })()}
-      <div className="card divide-y divide-white/5">
+      {jobId && visibleLeads.length > 0 && <div className="seg mb-3" role="tablist" aria-label="Filter leads" data-testid="lead-tabs">
+        {(['all', 'review', 'approved', 'rejected'] as const).map(t => <button key={t} type="button" role="tab" aria-selected={leadTab === t} onClick={() => setLeadTab(t)}>{{ all: 'All', review: 'To review', approved: 'Approved', rejected: 'Rejected' }[t]}</button>)}
+      </div>}
+      <div className={visibleLeads.length ? 'card overflow-hidden divide-y divide-[var(--line)]' : ''}>
         {visibleLeads.length === 0 ? (
           // Loading, failed and status-error states have their own truthful copy above.
           status === 'loading' || status === 'failed' || statusError ? null
             : <p className="p-10 text-center text-gray-500 text-sm">{emptyLeadsMessage(status, 0, hiddenCount, quality?.needs_review) ?? ''}</p>
-        ) : visibleLeads.map(l => (
-          <div key={l.id} className="p-4 text-sm">
+        ) : visibleLeads.filter(l => leadTab === 'all' ? true : leadTab === 'rejected' ? !!l.quarantined_at : leadTab === 'approved' ? !l.quarantined_at && !!(draftedLeads?.has(l.id) || approved[l.id]) : !l.quarantined_at && !(draftedLeads?.has(l.id) || approved[l.id])).map(l => (
+          <div key={l.id} className="p-4 sm:p-5 text-sm bg-[var(--panel)] hover:bg-white transition-colors">
             {(() => {
               const c = leadCardSummary(l, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')
               return <div data-testid="lead-card">
                 <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-start gap-3 min-w-0">
+                  <Avatar name={c.company} size={40} />
                   <div className="min-w-0">
-                    <div className="font-medium">{l.company_domain ? <a className="underline decoration-black/30" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{c.company}</a> : c.company}{!!l.watch_new && <span className="ml-2 text-[10px] uppercase tracking-wide text-[#111] border border-black/30 px-1 py-0.5">new</span>}</div>
-                    <div className="text-[#555] text-xs">{c.contact ?? 'No contact found yet'}</div>
+                    <div className="font-semibold text-base leading-tight">{l.company_domain ? <a className="hover:underline" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{c.company}</a> : c.company}{!!l.watch_new && <span className="ml-2"><Pill tone="mint">new</Pill></span>}{l.quarantined_at && <span className="ml-2"><Pill tone="pink">Rejected</Pill></span>}{!l.quarantined_at && (draftedLeads?.has(l.id) || approved[l.id]) && <span className="ml-2"><Pill tone="mint">Approved</Pill></span>}</div>
+                    <div className="text-[var(--ink-2)] text-xs mt-0.5">{c.contact ?? 'No contact found yet'}</div>
                     {c.contactStatus && <div data-testid="contact-status" className={`text-xs ${c.contactStatus.confirmed ? 'text-[#555]' : 'text-[#111] font-medium border-l-2 border-black pl-2 mt-0.5'}`}>{c.contactStatus.text}</div>}
                   </div>
+                  </div>
                   {!l.quarantined_at && <div className="flex gap-2 shrink-0">
-                    <button onClick={() => approveLead(l.id)} disabled={!c.approve.ok || !!approving[l.id] || !!approved[l.id]} title={c.approve.ok ? 'Creates a draft for you to review in Outreach. Nothing is sent.' : c.approve.reason} className="btn-primary text-xs px-3 py-1.5">Approve</button>
-                    <button onClick={() => setRejecting(rejecting?.id === l.id ? null : { id: l.id, why: '' })} aria-expanded={rejecting?.id === l.id} className="btn-ghost text-xs px-3 py-1.5">Reject</button>
+                    <button onClick={() => approveLead(l.id)} disabled={!c.approve.ok || !!approving[l.id] || !!approved[l.id]} title={c.approve.ok ? 'Creates a draft for you to review in Outreach. Nothing is sent.' : c.approve.reason} className="btn-primary btn-sm"><Icon name="check" className="w-3.5 h-3.5" />Approve</button>
+                    <button onClick={() => setRejecting(rejecting?.id === l.id ? null : { id: l.id, why: '' })} aria-expanded={rejecting?.id === l.id} className="btn-ghost btn-sm"><Icon name="x" className="w-3.5 h-3.5" />Reject</button>
                   </div>}
                 </div>
                 {rejecting?.id === l.id && !l.quarantined_at && <div className="mt-2 border-l-2 border-black pl-3 text-xs" data-testid="reject-reason">
@@ -830,8 +890,8 @@ export default function LeadsClient() {
                     <button type="button" className="underline" onClick={() => setRejecting(null)}>Cancel</button>
                   </form>
                 </div>}
-                <p className="mt-2">{c.why}</p>
-                <p className="text-xs text-[#555] mt-1"><a className="underline" href={c.sourceUrl} target="_blank" rel="noopener noreferrer nofollow">{c.sourceHost}</a> · {c.date}</p>
+                <p className="mt-3 font-semibold text-[15px] leading-snug">{c.why}</p>
+                <p className="text-xs mt-2 flex flex-wrap gap-2 items-center"><a className="pill pill-plain hover:border-[var(--ink-3)]" href={c.sourceUrl} target="_blank" rel="noopener noreferrer nofollow"><Icon name="link" className="w-3 h-3" />{c.sourceHost}</a><span className="sr-only"> · </span><span className="pill pill-plain"><Icon name="calendar" className="w-3 h-3" />{c.date}</span></p>
                 {l.quarantined_at
                   ? <p className="text-xs mt-2">{isRejection(l.quarantine_reason) ? l.quarantine_reason : `Quarantined: ${l.quarantine_reason ?? 'by you'}`}. Kept with its evidence; it will not be drafted, sent or exported. <button className="underline" onClick={() => quarantine(l.id, true)}>Undo</button></p>
                   : drafted[l.id] ? <p className="text-xs mt-2" role="status">{drafted[l.id]} {drafted[l.id].startsWith('Draft created') && <a className="underline" href="/app/outreach">Open Outreach</a>}</p>

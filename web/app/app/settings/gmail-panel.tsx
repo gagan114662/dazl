@@ -25,7 +25,19 @@ export default function GmailPanel() {
     void load()
     const q = new URLSearchParams(window.location.search).get('gmail')
     // Google's redirect lands at the top of Settings: bring this panel (and its next step) into view.
-    if (q) setTimeout(() => document.getElementById('gmail')?.scrollIntoView({ block: 'start' }), 0)
+    // The sections above load on their own and can push it back down, so it keeps its place while they settle
+    // (up to 3s), unless the user scrolls first.
+    if (q) {
+      const el = document.getElementById('gmail'), page = el?.closest('main')?.firstElementChild
+      const put = () => el?.scrollIntoView({ block: 'start' })
+      setTimeout(put, 0)
+      if (page && typeof ResizeObserver !== 'undefined') {
+        const ro = new ResizeObserver(put); ro.observe(page)
+        const stop = () => { ro.disconnect(); window.removeEventListener('wheel', stop); window.removeEventListener('touchstart', stop); window.removeEventListener('keydown', stop) }
+        window.addEventListener('wheel', stop, { passive: true }); window.addEventListener('touchstart', stop, { passive: true }); window.addEventListener('keydown', stop)
+        setTimeout(stop, 3000)
+      }
+    }
     if (q === 'connected') { setMsg('Gmail connected.'); setJustConnected(true) }
     else if (q) setMsg('Gmail was not connected. Try again.')
   }, [])
