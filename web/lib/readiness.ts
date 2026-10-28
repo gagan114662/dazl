@@ -35,14 +35,15 @@ export function readinessRows(i: ReadinessInput): Row[] {
     // Free searches cover the first scan; the row comes back as a to-do when they run out.
     : trialLeft > 0 ? { id: 'key', label: 'AI key', state: 'done', detail: `using free searches (${trialLeft} left)`, fix: null }
     : { id: 'key', label: 'AI key', state: 'todo', detail: 'needed for searches', fix: { kind: 'inline', label: 'Add key' } }
-  // At least one source a scan can search here (the same availability Leads shows). Unknown unless both the server
-  // switches and the key state loaded; the only fix a user can make is adding a key, so that is the one link offered.
+  // At least one source a scan here can use (capabilities, as Leads shows them; a scan may still skip one). Without a
+  // usable AI key no scan can start, so that is a to-do whatever else is switched on. Unknown unless both checks loaded;
+  // adding a key is the only fix a user can make, so it is the one link offered.
   const core = coreSources(i.sources ?? null, u ? { has_key: u.has_key, trial: u.trial } : null)
+  const research = core?.find(r => r.id === 'research')
   const usableSources = core?.filter(r => r.usable) ?? []
-  const keyFix = core?.find(r => !r.usable && r.fix)?.fix
   const sources: Row = !core ? { id: 'sources', label: 'Lead sources', state: 'unknown', detail: 'could not check', fix: null }
-    : usableSources.length > 0 ? { id: 'sources', label: 'Lead sources', state: 'done', detail: usableSources.map(r => r.label).join(', '), fix: null }
-    : { id: 'sources', label: 'Lead sources', state: 'todo', detail: keyFix ? 'none available yet: add an AI key' : 'none available on this server yet', fix: keyFix ? { kind: 'link', href: keyFix.href, label: keyFix.label } : null }
+    : !research?.usable ? { id: 'sources', label: 'Lead sources', state: 'todo', detail: 'a scan cannot start until you add an AI key', fix: research?.fix ? { kind: 'link', href: research.fix.href, label: research.fix.label } : null }
+    : { id: 'sources', label: 'Lead sources', state: 'done', detail: `a scan can use ${usableSources.map(r => r.label).join(', ')}`, fix: null }
   const gmail: Row = !o ? { id: 'gmail', label: 'Gmail', state: 'unknown', detail: 'could not check', fix: null }
     : o.gmail?.status === 'active' ? { id: 'gmail', label: 'Gmail', state: 'done', detail: `sending from ${o.gmail.email ?? 'your Gmail'}`, fix: null }
     : { id: 'gmail', label: 'Gmail', state: 'todo', detail: o.gmail ? 'needs reconnecting' : 'not connected (signing in with Google does not connect it)', fix: { kind: 'link', href: '/app/settings#gmail', label: o.gmail ? 'Reconnect' : 'Connect' } }

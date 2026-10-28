@@ -5,7 +5,8 @@
 // It proves:
 //   1. an account that has searched sees the checklist (not the first-run flow): website and business brain, first play,
 //      AI key, lead sources, Gmail, sender, daily sending limit, with "n of 7 done"; lead sources reads the server's
-//      source switches (GET /api/scan/sources) and the key, and turns done once a key makes web research usable;
+//      source switches (GET /api/scan/sources) and the key (capability wording: what a scan can use, never "searched";
+//      without a key it says a scan cannot start), and turns done once a key makes web research usable;
 //   2. each missing item has its fix in place: business and sender save inline, the key is one inline field, and Gmail
 //      links to Settings (where its consent text is) - Home never starts the Google grant itself;
 //   3. after each inline fix the row turns done from re-read server state;
@@ -83,7 +84,7 @@ try {
   assert.match(await row('site').textContent(), /Website and business details - missing business name, what you sell, website/)
   assert.match(await row('play').textContent(), /First play - 5 searches written/)
   assert.match(await row('key').textContent(), /AI key - needed for searches/)
-  assert.match(await row('sources').textContent(), /Lead sources - none available yet: add an AI key/)
+  assert.match(await row('sources').textContent(), /Lead sources - a scan cannot start until you add an AI key/)
   assert.equal(await row('sources').getByRole('link', { name: 'Add key' }).getAttribute('href'), '/app/settings#model-key')
   assert.match(await row('gmail').textContent(), /Gmail - not connected/)
   assert.equal(await row('gmail').getByRole('link', { name: 'Connect' }).getAttribute('href'), '/app/settings#gmail')
@@ -115,7 +116,7 @@ try {
   await page.getByLabel('Your AI key').fill('sk-ant-api03-' + 'x'.repeat(30)); await page.getByRole('button', { name: 'Save key' }).click()
   await row('key').getByText('✓').waitFor()
   await row('sources').getByText('✓').waitFor()
-  assert.match(await row('sources').textContent(), /Lead sources - Web research with your AI key/)
+  assert.match(await row('sources').textContent(), /Lead sources - a scan can use Web research with your AI key/)
   await row('sender').getByRole('button', { name: 'Add' }).click()
   await page.getByPlaceholder('Your name, as recipients will see it').fill('Dana Smith'); await page.getByPlaceholder(/Mailing address/).fill('1 Main St, Columbus, OH 43004, USA')
   await page.getByRole('button', { name: 'Save sender details' }).click()
