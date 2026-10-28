@@ -157,7 +157,7 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
     const g = await atsGtmHiring(lead.company, lead.company_domain, fetchImpl).catch(() => null)
     if (g) {
       const n = g.postings.length
-      const est = g.via === 'board_name' || domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established'   // a Greenhouse board NAME token-identical to the company is its own evidence of identity
+      const est = g.via === 'board_name' || domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established' || (!!g.domain && !!lead.company_domain && g.domain.replace(/^www\./, '') === lead.company_domain.replace(/^www\./, ''))   // or the board's own postings name the lead's domain   // a Greenhouse board NAME token-identical to the company is its own evidence of identity
       const titles = g.postings.map(p => p.title).slice(0, 3).join('; ')
       addEnrichment(db, tenantId, lead.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${est ? '' : 'Unconfirmed: '}${n} sales/GTM role${n === 1 ? '' : 's'} posted, newest ${g.newest}`, label: (est ? titles : `${titles} (${HEURISTIC_NOTE})`).slice(0, 200) || null, confidence: est ? (g.via === 'domain' ? 70 : 75) : null, source_url: g.url, source_date: g.newest, retrieved_at: now })
       gtm++

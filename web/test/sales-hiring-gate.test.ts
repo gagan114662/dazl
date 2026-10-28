@@ -25,12 +25,14 @@ const REQUEST = 'Find London UK B2B SaaS startups that announced seed funding wi
 const ICP = JSON.stringify({ summary: 's', where: ['London, UK'], who: ['Founder'], signals: ['announced seed funding', 'hiring sales staff'], exclude: [] })
 const QUOTE = 'Brightloop, a London B2B SaaS startup, raised a 3m GBP seed round this month'
 
-function seed(over: { domain?: string | null; excerpt?: string; query?: string; icp?: string } = {}) {
+function seed(over: { domain?: string | null; excerpt?: string; query?: string; icp?: string; basis?: string | null } = {}) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
   const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
   db.prepare("UPDATE scan_jobs SET status = 'running', query = ?, icp = ? WHERE id = ?").run(over.query ?? REQUEST, over.icp ?? ICP, jobId)
   db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, evidence_excerpt, confidence, score, why, event_date, date_status) VALUES ('L1', ?, '', 'Brightloop', ?, 'raised a seed round', 'https://news.example/1', ?, 80, 80, 'Seed-funded London SaaS.', ?, 'unverified')")
     .run(jobId, over.domain === undefined ? 'brightloop.io' : over.domain, over.excerpt ?? QUOTE, d(12).slice(0, 10))
+  const basis = over.basis === undefined ? 'evidence_own_domain' : over.basis   // how the crawl chose the lead's domain (own = the cited page is hosted on it)
+  if (basis && (over.domain === undefined || over.domain)) db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES ('D1', 'L1', 'u1', 'sitecrawl', 'domain', ?, 'x', NULL, 'https://brightloop.io/', '2026-10-28', 1)").run(`${over.domain ?? 'brightloop.io'}|${basis}`)
   db.prepare("UPDATE scan_jobs SET status = 'done', verified = 1, needs_review = 0 WHERE id = ?").run(jobId)
   return { db, job: { id: jobId, user_id: 'u1', query: over.query ?? REQUEST, icp: over.icp ?? ICP } }
 }
@@ -54,7 +56,7 @@ test('PASS: a dated sales posting on a Greenhouse board bound to the lead’s do
   const l = lead(db); assert.equal(l.review_reason, null); assert.equal(l.confidence, 80)
   assert.match(l.why, new RegExp(`^Hiring sales: Account Executive posted ${d(12).slice(0, 10)} on its Greenhouse job board \\(brightloop\\.io\\)\\. Seed-funded`))
   assert.deepEqual(counts(db), { verified: 1, needs_review: 0 })
-  const e = enrichmentsForLeads(db, 'u1', ['L1']).L1; assert.equal(e.length, 1); assert.equal(e[0].source_date, d(12).slice(0, 10))
+  const e = (enrichmentsForLeads(db, 'u1', ['L1']).L1 ?? []).filter(x => x.kind === 'hiring'); assert.equal(e.length, 1); assert.equal(e[0].source_date, d(12).slice(0, 10))
 })
 
 test('PASS (source): the saved quote itself names the sales hiring, so no board lookup is made', async () => {
@@ -88,6 +90,33 @@ test('NO BOARD / NO DOMAIN: nothing found is a distinct outcome, not a silent pa
   await applySalesHiringGate(b.db, b.job, serve(board(), seen), { now: NOW })
   assert.equal(lead(b.db).review_reason, 'no_sales_hiring_evidence'); assert.equal(seen.length, 0, 'no domain: no board lookup')
   assert.match(lead(b.db).why, /a confirmed company domain \(none found\)/)
+})
+
+test('JUICEBOX-TYPE: a perfect board under a domain matched only by company NAME (probe / link) is NOT this lead\u2019s hiring: no_sales_hiring_evidence, not a pass', async () => {
+  for (const basis of ['name_probe', 'evidence_link_text', 'evidence_link_domain_label', null]) {
+    const { db, job } = seed({ basis })
+    const r = await applySalesHiringGate(db, job, serve(board({ [`${GH}/jobs/1`]: { id: 1, title: 'Account Executive', first_published: d(12), absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/1', content: '&lt;p&gt;Join Brightloop in London&lt;/p&gt;' } })), { now: NOW })
+    assert.deepEqual([r.passed, r.demoted], [0, 1], String(basis)); assert.equal(lead(db).review_reason, 'no_sales_hiring_evidence')
+    assert.match(lead(db).why, /not established as this company's board/)
+  }
+  const confirmed = seed({ basis: null }); confirmed.db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES ('R1', 'L1', 'u1', 'user', 'domain_review', 'brightloop.io', 'domain-review-v1:x', NULL, 'https://brightloop.io/', '2026-10-28', 1)").run()
+  assert.equal((await applySalesHiringGate(confirmed.db, confirmed.job, serve(board({ [`${GH}/jobs/1`]: { id: 1, title: 'Account Executive', first_published: d(12), absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/1', content: '&lt;p&gt;Join Brightloop in London&lt;/p&gt;' } })), { now: NOW })).passed, 1, 'a domain the user confirmed is established')
+  const named = seed({ basis: 'name_probe' })
+  assert.equal((await applySalesHiringGate(named.db, named.job, serve(board()), { now: NOW })).passed, 1, 'the board\u2019s own postings name the lead\u2019s domain (jobs@brightloop.io): bound by the board itself')
+})
+
+test('JUICEBOX-TYPE job ad: a lead whose quote shows only a London office / sales-leadership opening does NOT stand in for "seed funding"; it is no_event_evidence', async () => {
+  const ad = 'Brightloop is opening a second office in London and hiring a Head of Sales to lead the new team'
+  const { db, job } = seed({ excerpt: ad })
+  const seen: string[] = []
+  const r = await applySalesHiringGate(db, job, serve(board(), seen), { now: NOW })
+  assert.deepEqual([r.passed, r.demoted], [0, 1]); assert.equal(lead(db).review_reason, 'no_event_evidence'); assert.equal(lead(db).confidence, null)
+  assert.match(lead(db).why, /^No event evidence: the source quote shows hiring but not the funding or event the request asks for\./); assert.equal(seen.length, 0, 'no board lookup was spent on it')
+  assert.deepEqual(counts(db), { verified: 0, needs_review: 1 })
+  // control: another verified candidate for the same company carries the funding (kept out as a duplicate) -> the event half is met
+  const other = seed({ excerpt: ad }); const row = other.db.prepare("SELECT dedup_key FROM leads").get() as { dedup_key: string | null }
+  other.db.prepare("UPDATE leads SET dedup_key = 'k1' WHERE id = 'L1'").run(); void row
+  assert.equal((await applySalesHiringGate(other.db, other.job, serve(board()), { now: NOW, fundingKeys: new Set(['k1']) })).passed, 1)
 })
 
 test('seed-only and hiring-only requests are not touched, and review / human-confirmed rows are never promoted or changed', async () => {

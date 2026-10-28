@@ -34,7 +34,7 @@ import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './veri
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
 import { getMemory, isExcluded, memoryPromptBlock } from '../memory.ts'
 import { enrichJobSignals } from '../signals/index.ts'
-import { applySalesHiringGate, quoteNamesSalesHiring } from './sales-hiring-gate.ts'
+import { applySalesHiringGate, quoteNamesSalesHiring, quoteShowsEvent } from './sales-hiring-gate.ts'
 import { primarySignalKind } from './score.ts'
 import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } from '../signals/competitor-reddit.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
@@ -144,7 +144,7 @@ export interface ReviewLead extends LeadDraft { review_reason: string }
 export function offerBlockFor(db: Database.Database, userId: string): string {
   try { return sellerOfferBlock((db.prepare('SELECT sells FROM users WHERE id = ?').get(userId) as { sells?: string } | undefined)?.sells) } catch { return '' }
 }
-export interface VerifyOutcome { leads: VerifiedLead[]; review: ReviewLead[]; dropped: Record<string, number>; hiring_keys?: Map<string, { url: string; date: string | null }> } // hiring_keys: companies (dedup key) with a VERIFIED candidate whose own quote names sales / GTM hiring, even when a duplicate candidate was the one kept
+export interface VerifyOutcome { leads: VerifiedLead[]; review: ReviewLead[]; dropped: Record<string, number>; hiring_keys?: Map<string, { url: string; date: string | null }>; event_keys?: Set<string>; funding_keys?: Set<string> } // hiring_keys: companies (dedup key) with a VERIFIED candidate whose own quote names sales / GTM hiring, even when a duplicate candidate was the one kept
 
 export function judgePrompt(c: Pick<LeadDraft, 'company' | 'signal'>, passage: string): string {
   const safe = passage.replace(/<<<|>>>/g, ' ').slice(0, 1800)
@@ -249,6 +249,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
   }
   const best = new Map<string, VerifiedLead>()
   const hiringKeys = new Map<string, { url: string; date: string | null }>()
+  const eventKeys = new Set<string>(); const fundingKeys = new Set<string>()
   const review = new Map<string, ReviewLead>()
   // Which candidate each surviving row came from (rows are clones), so a LATER drop (duplicate, source cap) is recorded against the right occurrence.
   const bestSrc = new Map<string, LeadDraft>(); const reviewSrc = new Map<string, LeadDraft>(); const origin = new WeakMap<object, LeadDraft>()
@@ -340,6 +341,8 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     const lead: VerifiedLead = { ...c, contact: v.contact, confidence, date_status: v.dateStatus, retrieved_at: v.retrievedAt, ...(copy ? { evidence_origin: COPY_ORIGIN, own_fetch_failure: copy.failure, evidence_copy_sha256: copy.sha256, evidence_copy_page: copy.page } : {}) }
     const key = dedupKey(c)
     if (!hiringKeys.has(key) && quoteNamesSalesHiring(c.excerpt, c.signal)) hiringKeys.set(key, { url: c.source_url, date: c.event_date })
+    if (quoteShowsEvent(c.excerpt, c.signal)) eventKeys.add(key)
+    if (quoteShowsEvent(c.excerpt, c.signal, true)) fundingKeys.add(key)
     const prev = best.get(key)
     if (prev) drop('duplicate')
     if (!prev || lead.confidence > prev.confidence) { if (prev) note(bestSrc.get(key)!, 'dropped', 'duplicate'); best.set(key, lead); bestSrc.set(key, c); origin.set(lead, c) }
@@ -364,6 +367,8 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     review: capPer([...review.values()], (a, b) => b.score - a.score),
     dropped,
     hiring_keys: hiringKeys,
+    event_keys: eventKeys,
+    funding_keys: fundingKeys,
   }
 }
 
@@ -1042,7 +1047,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     }
     // Seed funding AND hiring sales: a lead that passed on the funding quote alone is moved to review unless sales / GTM hiring is evidenced
     // (its own quote, or a dated posting on a public job board bound to its domain). Before autopilot, so nothing is drafted on a half proof.
-    try { await applySalesHiringGate(db, job, deps.fetchImpl ?? fetch, { hiringKeys: outcome.hiring_keys }) } catch (e) { console.error('sales-hiring gate failed', e instanceof Error ? e.message : 'error') }
+    try { await applySalesHiringGate(db, job, deps.fetchImpl ?? fetch, { hiringKeys: outcome.hiring_keys, eventKeys: outcome.event_keys, fundingKeys: outcome.funding_keys }) } catch (e) { console.error('sales-hiring gate failed', e instanceof Error ? e.message : 'error') }
     // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.
     // A job that carries a budget never starts autopilot: its model drafting and sends are outside the budget (run-budget.ts).
     if (!parseRunBudget(job.run_budget)) try { await (deps.autopilot ?? runAutopilot)(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
