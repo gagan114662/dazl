@@ -51,6 +51,7 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
     - the store does not answer (Postgres when `DATABASE_URL` is set, else SQLite);
     - on Postgres, `dazl_schema_migrations` is behind the migrations this build ships;
     - the scan work queue (`work_queue`, `lib/queue`) does not answer in that store;
+    - the environment `web/docs/DEPLOY.md` requires is missing or malformed: `DB_PATH`, `DAZL_MASTER_KEY` (exactly what its consumer `getMasterKey` accepts: the value decodes to 32 bytes; decoded-byte compatibility, not strict base64, so readiness never disagrees with the app), `PUBLIC_BASE_URL` (parses as an absolute http(s) URL with a real host, no credentials, query, fragment or whitespace), `STRIPE_SECRET_KEY` (`sk_`/`rk_`), `STRIPE_PRICE_PRO` (`price_`), `STRIPE_WEBHOOK_SECRET` (`whsec_`). The body gives only `checks.env: {ok, missing: <count>}`; the names go to the error reporter when the missing set changes, not on every probe.
     - the SQLite file the raw-handle modules use does not answer.
   - The budget is a hard cut-off only for asynchronous waits (the Postgres pool). Synchronous better-sqlite3 work (a query, or the first open and migrate) cannot be preempted on the event loop. The probe waits for it, for up to the 5 s busy timeout on a locked file, and then reports that check as `timeout` if it went over budget.
   - The body names the failed check and the engine, never the error text. `/api/ready` carries `ok` and `commit` for `ops/safe_launch.py`.
