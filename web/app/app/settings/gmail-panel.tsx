@@ -9,6 +9,7 @@ export default function GmailPanel() {
   const [addr, setAddr] = useState('')
   const [booking, setBooking] = useState('')
   const [msg, setMsg] = useState('')
+  const [justConnected, setJustConnected] = useState(false) // back from Google's grant: offer the way back to the emails
 
   async function load() {
     const r = await fetch('/api/outreach/settings')
@@ -22,7 +23,9 @@ export default function GmailPanel() {
   useEffect(() => {
     void load()
     const q = new URLSearchParams(window.location.search).get('gmail')
-    if (q === 'connected') setMsg('Gmail connected.')
+    // Google's redirect lands at the top of Settings: bring this panel (and its next step) into view.
+    if (q) setTimeout(() => document.getElementById('gmail')?.scrollIntoView({ block: 'start' }), 0)
+    if (q === 'connected') { setMsg('Gmail connected.'); setJustConnected(true) }
     else if (q) setMsg('Gmail was not connected. Try again.')
   }, [])
 
@@ -69,7 +72,7 @@ export default function GmailPanel() {
         <button className="btn-ghost px-5 py-2 text-sm w-fit">Save sender details</button>
       </form>
       {s && <p className="text-[#666] text-xs mt-3">Sent in the last 24 hours: {s.sent_24h} of {s.daily_cap}.</p>}
-      {msg && <p className="text-sm text-[#555] mt-2">{msg}</p>}
+      {msg && <p className="text-sm text-[#555] mt-2" role="status">{msg}{justConnected && <> <a className="underline text-[#111]" href="/app/outreach">Back to Outreach to send your approved emails</a></>}</p>}
     </div>
   )
 }
