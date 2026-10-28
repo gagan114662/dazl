@@ -16,6 +16,7 @@ import type Database from 'better-sqlite3'
 import { addEnrichment, audit, getEnabledCredential } from '../connectors/store.ts'
 import { apolloOrgEnrich, apolloPeopleSearch, EnrichError } from '../enrich/apollo.ts'
 import { pdlPeopleSearch } from '../enrich/pdl.ts'
+import { contactAgreement, organizationContradicts, recordContactRejection, regradeFromKeptContacts } from './contact-agreement.ts'
 import { getMasterKey } from '../secrets.ts'
 
 export const MAX_PROFILES = 100
@@ -187,6 +188,12 @@ export function importCommenters(db: Database.Database, userId: string, rows: Im
 // stored - people results are name/title strings, same as the scan waterfall. Silent on
 // failure: a bonus, never the bar.
 export async function enrichCommenters(db: Database.Database, tenantId: string, batchId: string, deps: { fetchImpl?: typeof fetch; master?: Buffer } = {}): Promise<void> {
+  try { await enrichCommentersInner(db, tenantId, batchId, deps) } finally {
+    // The score follows the evidence kept: a contact refused by the agreement checks must not keep contributing to the lead's reachability grade.
+    try { const j = (db.prepare('SELECT job_id FROM commenter_batches WHERE id = ? AND user_id = ?').get(batchId, tenantId) as { job_id: string | null } | undefined)?.job_id; if (j) regradeFromKeptContacts(db, tenantId, j) } catch { /* the regrade never blocks the import */ }
+  }
+}
+async function enrichCommentersInner(db: Database.Database, tenantId: string, batchId: string, deps: { fetchImpl?: typeof fetch; master?: Buffer } = {}): Promise<void> {
   const batch = db.prepare('SELECT job_id FROM commenter_batches WHERE id = ? AND user_id = ?').get(batchId, tenantId) as { job_id: string | null } | undefined
   if (!batch?.job_id) return
   const leads = db.prepare("SELECT id, company, company_domain FROM leads WHERE scan_job_id = ? AND company <> ''").all(batch.job_id) as { id: string; company: string; company_domain: string | null }[]
@@ -211,7 +218,13 @@ export async function enrichCommenters(db: Database.Database, tenantId: string, 
       let org: Awaited<ReturnType<typeof apolloOrgEnrich>> = null
       try {
         org = await apolloOrgEnrich(apolloKey, { domain: g.domain, name: g.company }, fetchImpl)
-        if (org && (org.employees || org.industry)) {
+        // Company-level facts attach only when the organisation record is on the lead's own domain: a name-only match may be a same-name company elsewhere.
+        const sameSite = (a: string | null | undefined, b: string | null | undefined) => !!a && !!b && a.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/[/?#].*$/, '').toLowerCase() === b.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/[/?#].*$/, '').toLowerCase()
+        if (org && !sameSite(g.domain, org.website)) {
+          const reason = g.domain ? `contact rejected: domain mismatch ${(org.website ?? 'unknown site').replace(/^https?:\/\/(?:www\.)?/, '').replace(/[/?#].*$/, '')} vs ${g.domain}` : 'contact rejected: no domain to confirm the company'
+          audit(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `org ${g.company}`.slice(0, 200), status: reason, results: 0 })
+          for (const leadId of g.leadIds) recordContactRejection(db, tenantId, leadId, { connector: 'enrich:apollo', reason, sourceUrl: org.website ?? `https://www.linkedin.com/company/${encodeURIComponent(g.company.toLowerCase().replace(/[^a-z0-9]+/g, '-'))}` })
+        } else if (org && (org.employees || org.industry)) {
           const bits = [org.employees ? `${org.employees} employees` : null, org.industry, org.founded ? `founded ${org.founded}` : null].filter(Boolean).join(' · ')
           for (const leadId of g.leadIds) addEnrichment(db, tenantId, leadId, { connector: 'enrich:apollo', kind: 'firmographic', value: bits.slice(0, 254), label: org.name, confidence: 75, source_url: org.linkedin ?? org.website ?? `https://${g.domain ?? ''}`, source_date: today, retrieved_at: now })
         }
@@ -221,8 +234,23 @@ export async function enrichCommenters(db: Database.Database, tenantId: string, 
         if (e instanceof EnrichError && e.code === 'auth') return
       }
       try {
-        const orgDomain = g.domain ?? (/^[a-z]+:\/\/([^/?#]+)/i.exec(org?.website ?? '')?.[1]?.replace(/^www\./, '') || null)
-        const people = await apolloPeopleSearch(apolloKey, { domain: orgDomain, name: g.company }, fetchImpl, 5)
+        // A name-only organisation match NEVER supplies the lead's domain: its website is the other company's. Only the lead's own known domain keys the people search.
+        const orgDomain = g.domain
+        // A commenter's company is found by NAME, and a same-name company elsewhere shares it. Contacts attach only when the company's domain is known (the lead's own, or the one
+        // Apollo's organisation record gives) and the person's own organisation agrees with it; otherwise nothing is attached and the refusal is recorded on the lead.
+        if (!orgDomain) {
+          audit(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: 'contact rejected: no domain to confirm the company', results: 0 })
+          for (const leadId of g.leadIds) recordContactRejection(db, tenantId, leadId, { connector: 'enrich:apollo', reason: 'contact rejected: no domain to confirm the company', sourceUrl: `https://www.linkedin.com/company/${encodeURIComponent(g.company.toLowerCase().replace(/[^a-z0-9]+/g, '-'))}` })
+          continue
+        }
+        const found = await apolloPeopleSearch(apolloKey, { domain: orgDomain, name: g.company }, fetchImpl, 5)
+        const people: typeof found = []
+        for (const p of found) {
+          const why = organizationContradicts(g.company, orgDomain, p.organization)
+          if (!why) { people.push(p); continue }
+          audit(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: why, results: 0 })
+          for (const leadId of g.leadIds) recordContactRejection(db, tenantId, leadId, { connector: 'enrich:apollo', reason: why, sourceUrl: `https://${orgDomain}/` })
+        }
         for (const leadId of g.leadIds) for (const p of people) addEnrichment(db, tenantId, leadId, { connector: 'enrich:apollo', kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: 'Apollo', confidence: 70, source_url: p.linkedin ?? `https://${g.domain ?? ''}`, source_date: today, retrieved_at: now })
         audit(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `people ${g.company}`, status: people.length ? 'ok' : 'empty', results: people.length })
       } catch (e) {
@@ -231,7 +259,17 @@ export async function enrichCommenters(db: Database.Database, tenantId: string, 
       }
     } else if (pdlKey) {
       try {
-        const people = await pdlPeopleSearch(pdlKey, g.company, fetchImpl, 5)
+        const found = await pdlPeopleSearch(pdlKey, g.company, fetchImpl, 5)
+        // PDL matches on the company NAME only. With no scan geography, only the company's DOMAIN can confirm it: the person's employer domain must equal the lead's.
+        const people: typeof found = []
+        for (const p of found) {
+          const a = contactAgreement({ company_domain: g.domain, where: [] }, { domain: p.domain, place: p.place })
+          const confirmed = a.ok && a.via === 'domain'
+          if (confirmed) { people.push(p); continue }
+          const reason = a.ok ? 'contact rejected: no domain or location to confirm the company' : a.reason
+          audit(db, { tenantId, connector: 'enrich:pdl', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: reason, results: 0 })
+          for (const leadId of g.leadIds) recordContactRejection(db, tenantId, leadId, { connector: 'enrich:pdl', reason, sourceUrl: `https://www.linkedin.com/company/${encodeURIComponent(g.company.toLowerCase().replace(/[^a-z0-9]+/g, '-'))}` })
+        }
         for (const leadId of g.leadIds) for (const p of people) addEnrichment(db, tenantId, leadId, { connector: 'enrich:pdl', kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: 'People Data Labs', confidence: 70, source_url: p.linkedin ?? `https://${g.domain ?? ''}`, source_date: today, retrieved_at: now })
         audit(db, { tenantId, connector: 'enrich:pdl', jobId: batch.job_id, lookup: `people ${g.company}`, status: people.length ? 'ok' : 'empty', results: people.length })
       } catch (e) {

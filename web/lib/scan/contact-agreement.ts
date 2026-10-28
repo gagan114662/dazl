@@ -60,11 +60,19 @@ export function firstPlaceLabel(text: string): string | null {
 
 // ---- the refusal is recorded on the lead, and the lead is regraded from the evidence actually kept ----
 export const REJECTED_KIND = 'contact_rejected'
+// The structured marker stored beside a refusal (the enrichment's label): why the record was not attached.
+export type RejectionCode = 'contact_location_mismatch' | 'contact_location_unconfirmed' | 'contact_domain_mismatch' | 'contact_unconfirmed'
+export function contactRejectionCode(reason: string): RejectionCode {
+  if (/location mismatch/i.test(reason)) return 'contact_location_mismatch'
+  if (/location unconfirmed/i.test(reason)) return 'contact_location_unconfirmed'
+  if (/domain mismatch|organization mismatch/i.test(reason)) return 'contact_domain_mismatch'
+  return 'contact_unconfirmed'
+}
 const KEPT_KINDS = ['contact', 'person', 'email', 'phone']
 // A refused record is kept as a labelled row beside the lead (shown on the card as the reason, never counted as a contact).
 export function recordContactRejection(db: Database.Database, tenantId: string, leadId: string, r: { connector: string; reason: string; sourceUrl: string }): void {
   const url = /^https?:\/\//.test(r.sourceUrl) ? r.sourceUrl : 'https://invalid.example/'
-  addEnrichment(db, tenantId, leadId, { connector: r.connector, kind: REJECTED_KIND, value: r.reason.slice(0, 254), label: 'not attached', confidence: null, source_url: url.slice(0, 500), source_date: new Date().toISOString().slice(0, 10), retrieved_at: Math.floor(Date.now() / 1000) })
+  addEnrichment(db, tenantId, leadId, { connector: r.connector, kind: REJECTED_KIND, value: r.reason.slice(0, 254), label: contactRejectionCode(r.reason), confidence: null, source_url: url.slice(0, 500), source_date: new Date().toISOString().slice(0, 10), retrieved_at: Math.floor(Date.now() / 1000) })
 }
 // "Can the seller act on it" (the action grade, 0-5) assumed a reachable company. When every contact found for a lead was refused (wrong place /
 // wrong domain) and nothing else reaches it, reachability is unconfirmed: the grade is capped at 2 (it only ever goes DOWN) and the card says why.
