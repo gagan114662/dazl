@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
 import type { Db } from '../db/client.ts'
-import { getKey, keyStatus } from '../llm/key-store.ts'
+import { fetchKey, readKeyStatus } from '../llm/key-store.ts'
 import { providers, ProviderError } from '../llm/provider.ts'
 import { fetchPublicHtml, defaultLookup, type Lookup } from '../net/public-fetch.ts'
 import type { Vendor } from '../llm/vendors.ts'
@@ -8,8 +8,7 @@ import type { Vendor } from '../llm/vendors.ts'
 // Newsjacking drafts: paste a news URL, get a draft commentary on the tenant's OWN AI key.
 // Nothing is ever published by dazl. A draft must be approved in the UI, then the user copies it
 // to their own channel (Notion first, or anywhere else) - the app only ever hands back text.
-// Drafts are stored through the Db layer (SQLite or Postgres); the tenant's key is still read from the SQLite key store
-// (keysDb) until that store is ported.
+// Drafts and the tenant's own key are read and written through the Db layer (SQLite or Postgres).
 
 export function migrateNewsjacks(db: Database.Database): void {
   db.exec(`
@@ -61,12 +60,12 @@ Rules: no hype words, no invented statistics, state only what the excerpt suppor
 
 export type Newsjack = { id: string; url: string; title: string | null; draft: string; status: string; created_at: number }
 
-export async function createNewsjack(db: Db, keysDb: Database.Database, tenantId: string, rawUrl: string, deps: { fetchImpl?: typeof fetch; lookup?: Lookup; master?: Buffer; now?: number } = {}): Promise<Newsjack | { error: 'no_key' | 'invalid' | 'fetch' | 'upstream' }> {
+export async function createNewsjack(db: Db, tenantId: string, rawUrl: string, deps: { fetchImpl?: typeof fetch; lookup?: Lookup; master?: Buffer; now?: number } = {}): Promise<Newsjack | { error: 'no_key' | 'invalid' | 'fetch' | 'upstream' }> {
   const url = rawUrl.trim()
   if (!/^https:\/\/[^\s]{4,480}$/.test(url)) return { error: 'invalid' }
-  const vendor = (keyStatus(keysDb, tenantId)[0]?.vendor ?? null) as Vendor | null
+  const vendor = ((await readKeyStatus(db, tenantId))[0]?.vendor ?? null) as Vendor | null
   if (!vendor) return { error: 'no_key' }
-  const key = getKey(keysDb, tenantId, vendor, deps.master)
+  const key = await fetchKey(db, tenantId, vendor, deps.master)
   if (!key) return { error: 'no_key' }
   const f = deps.fetchImpl ?? fetch
   const article = await fetchArticle(url, deps.fetchImpl, deps.lookup ?? defaultLookup)
