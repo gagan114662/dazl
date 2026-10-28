@@ -34,7 +34,7 @@ import { extractionNote } from './extraction-note.ts'
 import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { crawlJob, defaultGet, sitecrawlEnabled } from '../connectors/sitecrawl.ts'
 import { anthropicCountTokens, guardProvider, ownerPool, reserveAllUsd, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
-import { trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
+import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
 import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './verify-provenance.ts'
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
 import { getMemory, isExcluded, memoryPromptBlock } from '../memory.ts'
@@ -1214,7 +1214,11 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
   } catch (e) {
     if (trialGuard && e instanceof SpendRefused && (e.reason === TRIAL_BUDGET_REASON || trialGuard.refused)) return finishTrialBudget(db, job, partial, ledger)
     return failOrRetry(db, job, e, ledger)
-  } finally { trialCharges.delete(job) }
+  } finally {
+    trialCharges.delete(job)
+    // the run's paid work is over (scan, enrichment, buyer fit): the trial ledger may count what it recorded
+    if (job.funded_by === 'trial') await settleTrialReservation(db, job.id)
+  }
 }
 
 // Post-processing budget config: finite positive ms, else the 90s default.

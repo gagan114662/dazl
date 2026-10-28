@@ -616,7 +616,8 @@ CREATE TABLE trial_reservations (
       job_id      TEXT,
       reserve_usd DOUBLE PRECISION NOT NULL CHECK (reserve_usd > 0),
       day         BIGINT NOT NULL,
-      created_at  BIGINT NOT NULL
+      created_at  BIGINT NOT NULL,
+      settled_at  BIGINT
     );
 
 CREATE TABLE trial_scans (

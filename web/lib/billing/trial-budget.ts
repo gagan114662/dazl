@@ -15,16 +15,19 @@
 //   - per trial account, in total across all days (DAZL_TRIAL_ACCOUNT_TOTAL_USD), and
 //   - globally per UTC day (DAZL_TRIAL_GLOBAL_DAILY_USD): checked at admission, in one transaction every admission takes
 //     in turn (the trial_budget_lock row), so concurrent workers and instances cannot admit against the same room. A
-//     scan counts as its full reserve until it ends, then as what it recorded as spent.
-//     For the day's ceiling, a scan admitted on an earlier day also counts if it was still running or ended today, so
-//     a scan that runs past midnight is charged to both days, never to neither.
+//     scan counts as its full reserve until ALL its paid work has ended - the scan, then its enrichment (buyer fit is
+//     a guarded model call after the scan reads 'done') - which the runner records as the reservation's settled_at at
+//     the very end of the run (settleTrialReservation). Only then does it count as what it recorded as spent. A retry
+//     after that counts as the full reserve again until it settles.
+//     For the day's ceiling, a scan admitted on an earlier day also counts if its paid work had not settled before
+//     today began, so work that runs past midnight is charged to both days, never to neither.
 // Admission (admitTrialScan) also requires a verified Google account, and one trial per company email domain (consumer
 // mailboxes count per account). Owner-funded calls outside a scan are off: the search-profile preview of a trial
 // account returns the plain profile with no model call (lib/scan/runner.ts previewIcp), and "fill the profile from my
 // website" runs only on the tenant's own key (lib/scan/icp-from-site.ts).
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
-import type { Db, Tx, TxBody } from '../db/client.ts'
+import { asDb, type Db, type DbLike, type Tx, type TxBody } from '../db/client.ts'
 
 export function migrateTrialBudget(db: Database.Database): void {
   db.exec(`
@@ -34,7 +37,8 @@ export function migrateTrialBudget(db: Database.Database): void {
       job_id      TEXT,
       reserve_usd REAL NOT NULL CHECK (reserve_usd > 0),
       day         INTEGER NOT NULL,
-      created_at  INTEGER NOT NULL
+      created_at  INTEGER NOT NULL,
+      settled_at  INTEGER
     );
     CREATE INDEX IF NOT EXISTS trial_reservations_day ON trial_reservations (day, tenant_id);
     CREATE TABLE IF NOT EXISTS trial_budget_lock (id INTEGER PRIMARY KEY CHECK (id = 1), n INTEGER NOT NULL DEFAULT 0);
@@ -78,13 +82,15 @@ export type Admission = { ok: true; reservation: string } | { ok: false; reason:
 // scan recorded as spent once it ended: scan_jobs.spend_reserved_usd, every paid step the runner counted against the
 // trial budget (the runner never records more than the reserve; if a row ever did, it counts in full). The rows: this account's reservations on any day, and every reservation that
 // counts toward today (admitted today, or admitted earlier and still running or ended today).
-const LEDGER_SQL = `SELECT r.tenant_id, r.reserve_usd, r.day, j.status, j.finished_at, j.spend_reserved_usd
+const LEDGER_SQL = `SELECT r.tenant_id, r.reserve_usd, r.day, r.settled_at, j.status, j.finished_at, j.spend_reserved_usd
   FROM trial_reservations r LEFT JOIN scan_jobs j ON j.id = r.job_id AND j.user_id = r.tenant_id
-  WHERE r.tenant_id = ? OR r.day = ? OR (r.day < ? AND (j.status IS NULL OR j.status NOT IN ('done', 'failed') OR j.finished_at >= ?))`
-export type LedgerRow = { tenant_id: string; reserve_usd: number; day: number; status: string | null; finished_at: number | null; spend_reserved_usd: number | null }
-const ended = (r: LedgerRow) => r.status === 'done' || r.status === 'failed'
-export const reservationCost = (r: LedgerRow) => ended(r) ? Math.max(0, Number(r.spend_reserved_usd ?? 0)) : Number(r.reserve_usd)
-const countsToday = (r: LedgerRow, day: number) => Number(r.day) === day || (Number(r.day) < day && (!ended(r) || Number(r.finished_at ?? 0) >= day * 86400))
+  WHERE r.tenant_id = ? OR r.day = ? OR (r.day < ? AND (r.settled_at IS NULL OR r.settled_at >= ?))`
+export type LedgerRow = { tenant_id: string; reserve_usd: number; day: number; settled_at: number | null; status: string | null; finished_at: number | null; spend_reserved_usd: number | null }
+// Every paid step of the scan has ended: it is finished ('done' or 'failed', not queued for a retry) AND the run that
+// finished it has settled since (a scan reads 'done' before its enrichment, which can still pay for model calls).
+const settled = (r: LedgerRow) => (r.status === 'done' || r.status === 'failed') && r.settled_at !== null && Number(r.settled_at) >= Number(r.finished_at ?? 0)
+export const reservationCost = (r: LedgerRow) => settled(r) ? Math.max(0, Number(r.spend_reserved_usd ?? 0)) : Number(r.reserve_usd)
+const countsToday = (r: LedgerRow, day: number) => Number(r.day) === day || (Number(r.day) < day && (!settled(r) || Number(r.settled_at) >= day * 86400))
 export function ledger(rows: LedgerRow[], tenantId: string, day: number): { account: number; today: number } {
   let account = 0, today = 0
   for (const r of rows) {
@@ -134,6 +140,13 @@ export async function trialRefusal(db: Db, user: { id: string; email: string }, 
   if (!caps) return 'not_configured'
   const day = utcDay(o.now ?? Math.floor(Date.now() / 1000))
   return db.tx(t => refusal(t, user, caps, day))
+}
+
+// Called by the runner as the very last step of a trial scan's run (lib/scan/runner.ts), after the scan, its enrichment
+// and every guarded paid call: the reservation may now count as what the scan recorded instead of its full reserve.
+// Best effort: if this write fails, the reservation keeps counting in full (never less than it could spend).
+export async function settleTrialReservation(db: DbLike, jobId: string, nowS = Math.floor(Date.now() / 1000)): Promise<void> {
+  try { await asDb(db).run('UPDATE trial_reservations SET settled_at = ? WHERE job_id = ?', [nowS, jobId]) } catch { /* stays at its full reserve */ }
 }
 
 // The scan the reservation paid for, once it exists. Until then (or if creating it failed) the reservation counts as

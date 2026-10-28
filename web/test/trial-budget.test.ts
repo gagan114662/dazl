@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict'
 import { pgDb } from '../lib/db/client.ts'
 import type { Db } from '../lib/db/client.ts'
-import { admitTrialScan, linkTrialReservation, trialCaps, utcDay } from '../lib/billing/trial-budget.ts'
+import { admitTrialScan, linkTrialReservation, settleTrialReservation, trialCaps, utcDay } from '../lib/billing/trial-budget.ts'
 import { bothEngines } from './helpers/engines.ts'
 
 const NOW = 1_800_000_000
@@ -31,7 +31,11 @@ const scan = async (db: Db, tenant: string, reservation: string, o: { status?: s
   await linkTrialReservation(db, tenant, reservation, id)
   return id
 }
-const end = (db: Db, jobId: string, spent: number, finishedAt = NOW) => db.run("UPDATE scan_jobs SET status = 'done', spend_reserved_usd = ?, finished_at = ? WHERE id = ?", [spent, finishedAt, jobId])
+// The scan reads 'done' (finish), then its enrichment runs (still paid: buyer fit), then the run settles the reservation
+const finish = (db: Db, jobId: string, spent: number, finishedAt = NOW) =>
+  db.run("UPDATE scan_jobs SET status = 'done', spend_reserved_usd = ?, finished_at = ?, enrich_started_at = ?, enrich_finished_at = NULL WHERE id = ?", [spent, finishedAt, finishedAt, jobId])
+const settle = (db: Db, jobId: string, at = NOW) => settleTrialReservation(db, jobId, at)
+const end = async (db: Db, jobId: string, spent: number, finishedAt = NOW) => { await finish(db, jobId, spent, finishedAt); await settle(db, jobId, finishedAt) }
 const reservation = (r: Awaited<ReturnType<typeof admitTrialScan>>) => { assert.ok(r.ok, JSON.stringify(r)); return r.reservation }
 
 bothEngines('trial ceilings: off without every ceiling and TinyFish priced; Google sign-in required; one trial per company domain', async ({ db }) => {
@@ -126,4 +130,55 @@ bothEngines('trial ceilings: concurrent workers on separate Postgres pools never
     assert.ok(ss.filter(r => !r.ok).every(r => !r.ok && r.reason === 'account_total_cap'))
     assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM trial_reservations WHERE tenant_id = ?', [solo.id]))!.n), 3)
   } finally { await Promise.all(pools.map(p => p.close())) }
+})
+
+bothEngines('trial ceilings: a scan that reads done but is still enriching keeps its full reserve, on the account and the day', async ({ db }) => {
+  // global $0.59 left for two scans of $0.30: A's scan is done with $0.01 recorded, but its enrichment (buyer fit, a
+  // paid model call under its per-scan guard) has not finished, so it may still spend up to its $0.30
+  const day = { ...caps, DAZL_TRIAL_GLOBAL_DAILY_USD: '0.59' }
+  const a = await user(db, 'a'.repeat(32), 'a@gmail.com'), b = await user(db, 'b'.repeat(32), 'b@gmail.com')
+  const ja = await scan(db, a.id, reservation(await admitTrialScan(db, a, { env: day, now: NOW })))
+  await finish(db, ja, 0.01)
+  assert.deepEqual(await admitTrialScan(db, b, { env: day, now: NOW }), { ok: false, reason: 'global_daily_cap' }, 'done-but-enriching counts in full')
+  // both admitted at once while it enriches (separate pools on Postgres): still neither
+  const both = await Promise.all([admitTrialScan(db, b, { env: day, now: NOW }), admitTrialScan(db, b, { env: day, now: NOW })])
+  assert.ok(both.every(r => !r.ok && r.reason === 'global_daily_cap'), JSON.stringify(both))
+  await settle(db, ja)
+  assert.equal((await admitTrialScan(db, b, { env: day, now: NOW })).ok, true, 'once its paid work settled, it counts what it spent ($0.01)')
+  // the account ceiling the same way: three scans done at $0.01 each but still enriching are $0.90 of $1
+  const c = await user(db, 'c'.repeat(32), 'c@gmail.com')
+  const jc = []
+  for (let i = 0; i < 3; i++) jc.push(await scan(db, c.id, reservation(await admit(db, c))))
+  for (const j of jc) await finish(db, j, 0.01)
+  assert.deepEqual(await admit(db, c, NOW + 3 * 86400), { ok: false, reason: 'account_total_cap' })
+  for (const j of jc) await settle(db, j, NOW + 60)
+  assert.equal((await admit(db, c, NOW + 3 * 86400)).ok, true, '$0.03 spent once settled')
+})
+
+bothEngines('trial ceilings: enrichment that crosses midnight counts on the day it settles; a retry counts in full again', async ({ db }) => {
+  const day = { ...caps, DAZL_TRIAL_GLOBAL_DAILY_USD: '0.59' }
+  const a = await user(db, 'a'.repeat(32), 'a@gmail.com'), b = await user(db, 'b'.repeat(32), 'b@gmail.com')
+  const midnight = (DAY + 1) * 86400
+  // admitted and finished before midnight; its enrichment is still running after it
+  const ja = await scan(db, a.id, reservation(await admitTrialScan(db, a, { env: day, now: midnight - 120 })))
+  await finish(db, ja, 0.01, midnight - 60)
+  assert.deepEqual(await admitTrialScan(db, b, { env: day, now: midnight + 60 }), { ok: false, reason: 'global_daily_cap' }, 'the new day sees it in full while it still enriches')
+  await settle(db, ja, midnight + 30) // its paid work ended after midnight: it belongs to the new day too, at what it spent
+  const rb = await admitTrialScan(db, b, { env: day, now: midnight + 60 })
+  assert.equal(rb.ok, true)
+  // the new day now holds 0.01 (A, settled today) + 0.30 (B, running): with $0.605 a third scan ($0.30) reaches 0.61,
+  // refused only because A's spend counts on the day its work ended (by its finish, yesterday, it would be 0.60 and fit)
+  const c = await user(db, 'c'.repeat(32), 'c@gmail.com')
+  assert.deepEqual(await admitTrialScan(db, c, { env: { ...caps, DAZL_TRIAL_GLOBAL_DAILY_USD: '0.605' }, now: midnight + 90 }), { ok: false, reason: 'global_daily_cap' })
+  // a retried scan: attempt 1 fails and its run settles, but the scan goes back to the queue (pending), then runs again
+  await db.run('DELETE FROM trial_reservations')
+  const d = await user(db, 'd'.repeat(32), 'd@gmail.com'), e = await user(db, 'e'.repeat(32), 'e@gmail.com')
+  const jd = await scan(db, d.id, reservation(await admitTrialScan(db, d, { env: day, now: midnight + 100 })))
+  await db.run("UPDATE scan_jobs SET status = 'pending', spend_reserved_usd = 0.01 WHERE id = ?", [jd]); await settle(db, jd, midnight + 110)
+  assert.deepEqual(await admitTrialScan(db, e, { env: day, now: midnight + 120 }), { ok: false, reason: 'global_daily_cap' }, 'queued for a retry: in full despite the earlier settle')
+  await db.run("UPDATE scan_jobs SET status = 'running' WHERE id = ?", [jd])
+  await finish(db, jd, 0.02, midnight + 200)
+  assert.deepEqual(await admitTrialScan(db, e, { env: day, now: midnight + 210 }), { ok: false, reason: 'global_daily_cap' }, 'finished again, enriching: in full until it settles again')
+  await settle(db, jd, midnight + 300)
+  assert.equal((await admitTrialScan(db, e, { env: day, now: midnight + 310 })).ok, true)
 })

@@ -16,6 +16,7 @@ import { icpFromWebsite } from '../lib/scan/icp-from-site.ts'
 import { scanOutcome } from '../lib/scan/scan-outcome.ts'
 import type { Provider } from '../lib/llm/provider.ts'
 import { migrateTinyfish, resetTinyfishState, tfSearch } from '../lib/search/tinyfish.ts'
+import { migrateTrialBudget } from '../lib/billing/trial-budget.ts'
 import { INPUT_MARGIN_TOKENS, PRICES_USD_PER_M, SpendGuard, SpendRefused, reserveAllUsd, researchCostUsd } from '../lib/llm/spend-guard.ts'
 
 const SEARCH_USD = 0.05, FETCH_USD = 0.01, CEILING = 0.30
@@ -125,6 +126,24 @@ test('concurrent workers: a worker whose job was re-claimed by another attempt c
     assert.equal(sent.filter(c => c.kind === 'search').length, 1, 'the stale worker sent nothing after losing the job')
     assert.ok(!sent.some(c => c.kind === 'research'))
     assert.ok(Math.abs(recorded(db, id) - total(sent)) < 1e-9, 'its spend stays recorded on the job for the next attempt to start from')
+  })
+})
+
+test('the trial reservation settles only when the run has ended: every paid call happened before it, and after the scan read done', async () => {
+  await withEnv(TRIAL_ENV, async () => {
+    const db = setup(); migrateTrialBudget(db); const id = trialJob(db)
+    db.prepare("INSERT INTO trial_reservations (id, tenant_id, job_id, reserve_usd, day, created_at) VALUES ('r1', 'keyless', ?, 0.3, 1, 1)").run(id)
+    const settledAt = () => (db.prepare("SELECT settled_at AS s FROM trial_reservations WHERE id = 'r1'").get() as { s: number | null }).s
+    const sent: { kind: string; usd: number }[] = []
+    const unsettledAtCall: boolean[] = []
+    const m = model(sent)
+    const watched: Provider = { ...m, complete: async (k, p, f, max) => { unsettledAtCall.push(settledAt() === null); return m.complete!(k, p, f, max) } }
+    await tinyfish(sent, async () => { await runJob(db, claimKeyedJob(db)!, { providers: { anthropic: watched, openai: watched }, judge: null }) },
+      () => { unsettledAtCall.push(settledAt() === null); return new Response(JSON.stringify({ results: [] }), { status: 200 }) })
+    assert.ok(unsettledAtCall.length >= 2 && unsettledAtCall.every(Boolean), 'every paid call ran while the reservation still counted in full')
+    const row = db.prepare('SELECT status, finished_at FROM scan_jobs WHERE id = ?').get(id) as { status: string; finished_at: number }
+    assert.ok(['done', 'failed'].includes(row.status))
+    assert.ok(settledAt() !== null && settledAt()! >= row.finished_at, 'settled at or after the scan finished')
   })
 })
 

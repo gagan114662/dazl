@@ -655,7 +655,8 @@ CREATE TABLE trial_reservations (
       job_id      TEXT,
       reserve_usd REAL NOT NULL CHECK (reserve_usd > 0),
       day         INTEGER NOT NULL,
-      created_at  INTEGER NOT NULL
+      created_at  INTEGER NOT NULL,
+      settled_at  INTEGER
     );
 
 CREATE TABLE trial_scans (
