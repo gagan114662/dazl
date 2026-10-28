@@ -32,11 +32,18 @@ export function playName(query: string | null, icp: PlayIcp | null): string {
 }
 
 export type PlayStatus = 'live' | 'paused' | 'running' | 'done' | 'failed'
-// Status chip and the Pace row. A weekly watch on the same request makes the play Live (or Paused); otherwise it ran once.
+// Status chip and the Pace row. A weekly watch on the same request makes the play Live (or Paused); with the watch list
+// read and none for it, it ran once. `watches === null` means the list could not be read: the schedule is then unknown,
+// never reported as one-off (an active weekly play must not read as "Ran once").
 export function playPace(job: { status: string; error: string | null; created_at: number; query: string | null }, watches: PlayWatch[] | null): { status: PlayStatus; label: string; pace: string } {
   const w = watches?.find(x => x.query.trim() === (job.query ?? '').trim()) ?? null
   const day = (t: number) => new Date(t * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-  if (job.status === 'pending' || job.status === 'running' || job.status === 'enriching') return { status: 'running', label: 'Running', pace: w ? `Runs weekly${w.active ? '' : ' (paused)'}` : `Running now, started ${day(job.created_at)}` }
+  const unknown = watches === null
+  if (job.status === 'pending' || job.status === 'running' || job.status === 'enriching') return { status: 'running', label: 'Running', pace: w ? `Runs weekly${w.active ? '' : ' (paused)'}` : unknown ? `Running now; schedule unavailable` : `Running now, started ${day(job.created_at)}` }
+  if (unknown) {
+    const last = job.status === 'failed' ? (job.error === 'no_candidates' ? 'No results' : job.error === 'cancelled' ? 'Stopped' : 'Failed') : 'Done'
+    return { status: job.status === 'failed' && job.error !== 'no_candidates' ? 'failed' : 'done', label: last, pace: `Last run ${day(job.created_at)}; schedule unavailable` }
+  }
   if (w && w.active) return { status: 'live', label: 'Live', pace: `Runs weekly${w.next_run_at ? `, next ${day(w.next_run_at)}` : ''}` }
   if (w) return { status: 'paused', label: 'Paused', pace: `Weekly, paused${w.paused_reason ? ` (${w.paused_reason.replace(/_/g, ' ')})` : ''}` }
   if (job.status === 'failed' && job.error === 'no_candidates') return { status: 'done', label: 'No results', pace: `Ran once, ${day(job.created_at)}` }
@@ -58,19 +65,20 @@ export function constraintPills(icp: PlayIcp): { text: string; kind: 'plain' | '
 }
 export const PILLS_SHOWN = 6
 
-// Next actions when a play found nothing ready: each one rewrites the request and opens Plays with it filled in.
+// Next actions when a play found nothing ready. Each opens Plays with a sentence in the box; nothing starts until Find
+// leads. Only a rewrite that is exact is made for the user: the time window's day count is swapped and every other word
+// of the request is kept. Place and signal are not rewritten here (a sentence cannot be edited safely by pattern): those
+// actions open the full original request for the user to change, and say so.
 export function widenActions(query: string | null, icp: PlayIcp | null): { label: string; href: string; testid: string }[] {
   const q = (query ?? '').trim()
   if (!q) return [{ label: 'Write a new play', href: '/app/leads', testid: 'widen-new' }]
   const plays = (s: string) => `/app/leads?q=${encodeURIComponent(s)}`
   const out: { label: string; href: string; testid: string }[] = []
   const days = icp?.window_days
-  if (typeof days === 'number' && days < 180) {
-    const wider = /\b\d+\s*days?\b/i.test(q) ? q.replace(/\b\d+\s*days?\b/i, '180 days') : `${q} (past 180 days)`
-    out.push({ label: 'Widen to 180 days', href: plays(wider), testid: 'widen-window' })
-  }
-  if (!icp?.where?.length) out.push({ label: 'Add a city', href: plays(`${q} in `), testid: 'widen-city' })
-  else out.push({ label: 'Try another city', href: plays(q.replace(icp.where[0], '').replace(/\s+in\s*$/i, '').replace(/\s{2,}/g, ' ').trim() + ' in '), testid: 'widen-city' })
-  if ((icp?.signals?.length ?? 0) > 0) out.push({ label: 'Drop the signal', href: plays(icp?.summary ? `${icp.summary}${icp.where?.[0] ? ` in ${icp.where[0]}` : ''}` : q), testid: 'widen-signal' })
+  const inText = /\b(\d+)\s*days?\b/i.exec(q)
+  // Only when the request states its window as "<N> days" and N is the saved window: that one number changes.
+  if (typeof days === 'number' && days < 180 && inText && Number(inText[1]) === days) out.push({ label: 'Widen to 180 days', href: plays(q.replace(inText[0], `${180} days`)), testid: 'widen-window' })
+  out.push({ label: icp?.where?.length ? 'Change the place' : 'Add a place', href: plays(q), testid: 'widen-city' })
+  if ((icp?.signals?.length ?? 0) > 0) out.push({ label: 'Change the signal', href: plays(q), testid: 'widen-signal' })
   return out
 }

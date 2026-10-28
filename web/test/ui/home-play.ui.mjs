@@ -10,7 +10,8 @@
 //   3. "What dazl understands" shows only what is set (no "Not set", "Any", "Nothing", "Anywhere") plus one nudge;
 //   4. "This play searched with" shows 6 pills and "+N more", folded by default;
 //   5. a play with 0 leads ready shows a designed state whose actions only prefill Plays (Widen to 180 days lands on
-//      Plays with the widened sentence in the box; nothing is started); Home writes nothing.
+//      Plays with only the day count changed; place and signal open the full request to edit); Home writes nothing;
+//   6. if the weekly-watch list cannot be read, the schedule reads unavailable, never "Ran once".
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -55,6 +56,7 @@ const job = o => ({ id: P, status: 'done', error: null, query: QUERY, business_n
 const MSGS = [['1', 'sent'], ['2', 'sent'], ['3', 'draft']].map(([d, status], i) => ({ id: `m${i}`, lead_id: d.repeat(24), to_email: 'x@y.example', subject: 'Hi', status, created_at: now, sent_at: status === 'sent' ? now : null }))
 const SCENES = {
   useful: { jobs: [job()], leads: LEADS, msgs: MSGS, watches: [{ id: 'w1', query: QUERY, icp: ICP, active: true, next_run_at: now + 5 * 86400, last_run_at: now - 2 * 86400, paused_reason: null, last_job_id: P, last_status: 'done', new_leads: 5 }] },
+  watchfail: { jobs: [job()], leads: LEADS, msgs: MSGS, watches: 'fail' },
   zero: { jobs: [job({ status: 'failed', error: 'no_candidates', candidates: 0, verified: null, needs_review: null, dropped: null, lead_count: 0 })], leads: [], msgs: [], watches: [] },
 }
 const b = await chromium.launch()
@@ -73,7 +75,7 @@ async function open(sc, width, height) {
     if (p === '/api/scan/latest') return json({ query: QUERY, icp: ICP, icp_source: 'user' })
     if (p === '/api/leads') return json({ leads: sc.leads, hidden_count: 0 })
     if (p === `/api/campaigns/${P}`) return json({ job: sc.jobs[0], leads: sc.leads, messages: sc.msgs })
-    if (p === '/api/watch') return json({ watches: sc.watches })
+    if (p === '/api/watch') return sc.watches === 'fail' ? json({ error: 'boom' }, 500) : json({ watches: sc.watches })
     if (p === '/api/usage') return json({ plan: 'pro', scans_used: 3, scan_limit: 50, has_key: true, trial: null })
     if (p === '/api/settings/llm-key') return json({ keys: [{ vendor: 'anthropic', last4: 'Ab12', validated_at: 1 }], rejection: null })
     if (p === '/api/settings/advanced') return json({ available: true, version: '1', platforms: [] })
@@ -91,9 +93,10 @@ async function open(sc, width, height) {
 const shot = async (page, name) => { if (process.env.SHOTS) { await page.waitForTimeout(300); await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`) }) } }
 try {
   for (const [w, h, tag] of [[1440, 900, 'desktop'], [390, 844, 'mobile']]) {
-    for (const scene of ['useful', 'zero']) {
+    for (const scene of ['useful', 'zero', 'watchfail']) {
+      if (scene === 'watchfail' && (tag !== 'desktop' || process.env.BEFORE_ONLY)) continue
       const { ctx, page, writes } = await open(SCENES[scene], w, h)
-      await shot(page, `${scene}-${tag}`)
+      if (scene !== 'watchfail') await shot(page, `${scene}-${tag}`)
       if (!process.env.BEFORE_ONLY && tag === 'desktop') {
         const main = page.locator('main')
         if (scene === 'useful') {
@@ -117,10 +120,18 @@ try {
           assert.equal(await page.getByTestId('journey-constraints').locator('.pill:visible').count(), 18)
           assert.equal(await page.getByTestId('pills-more').textContent(), 'Show less')
           await page.getByTestId('pills-more').click()
+        } else if (scene === 'watchfail') {
+          // The weekly-watch list could not be read: the schedule is unknown, never reported as "Ran once".
+          await page.waitForFunction(() => !!document.querySelector('[data-testid=play-status]'))
+          assert.equal(await page.getByTestId('play-status').textContent(), 'Done')
+          assert.match(await page.getByTestId('play-pace').textContent(), /^Last run .+; schedule unavailable$/)
+          assert.doesNotMatch(await page.getByTestId('play-card').innerText(), /Ran once/)
         } else {
           assert.equal(await page.getByTestId('journey-line').textContent(), 'This play found 0 companies.')
           assert.equal(await page.getByTestId('journey-empty').isVisible(), true)
-          assert.deepEqual(await page.getByTestId('journey-empty').getByRole('link').allTextContents(), ['Widen to 180 days', 'Try another city', 'Drop the signal'])
+          assert.deepEqual(await page.getByTestId('journey-empty').getByRole('link').allTextContents(), ['Widen to 180 days', 'Change the place', 'Change the signal'])
+          // Place and signal are changed by the user from the full request; nothing claims to have dropped anything.
+          for (const t of ['widen-city', 'widen-signal']) assert.equal(decodeURIComponent((await page.getByTestId(t).getAttribute('href')).split('q=')[1]), QUERY)
           await page.getByTestId('widen-window').click()
           await page.waitForURL(/\/app\/leads\?q=/)
           await page.locator('#play').waitFor()

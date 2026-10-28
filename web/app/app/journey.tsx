@@ -28,7 +28,8 @@ export default function Journey() {
   const [drafts, setDrafts] = useState<{ drafts: number; approved: number } | null>(null)
   const [editing, setEditing] = useState(false)
   const [capped, setCapped] = useState<string | null>(null)
-  const [watches, setWatches] = useState<PlayWatch[] | null>(null)
+  // 'loading' until read; null = the list could not be read (the schedule is then unknown, never "Ran once").
+  const [watches, setWatches] = useState<PlayWatch[] | null | 'loading'>('loading')
   const [sent, setSent] = useState<number | null>(null)
   const [morePills, setMorePills] = useState(false)
 
@@ -89,7 +90,7 @@ export default function Journey() {
   const buyer = p?.buyer ?? null
 
   const icp = playIcp?.icp && j.play && playIcp.query === j.play.query ? playIcp.icp : null
-  const pace = j.play ? playPace(j.play, watches) : null
+  const pace = j.play && watches !== 'loading' ? playPace(j.play, watches) : null
   const pills = icp ? constraintPills(icp) : []
   const opp = j.split?.opportunities.length ?? null, held = j.split?.held.length ?? null
   const stat = (v: number | null) => v === null ? (j.stage === 'unknown' || j.stage === 'useful' || j.stage === 'all_held' ? '?' : '0') : String(v)
@@ -111,7 +112,7 @@ export default function Journey() {
         <dl className="mt-3">
           <div className="kv"><dt>Who</dt><dd>{icp?.who?.length ? icp.who.join(', ') : icp?.summary || <span className="text-[var(--ink-3)]">From your request</span>}</dd></div>
           <div className="kv"><dt>Signal</dt><dd className="flex flex-wrap gap-1.5">{icp?.signals?.length ? icp.signals.slice(0, 3).map(t => <span key={t} className="tag">{t}</span>) : <span className="text-[var(--ink-3)]">From your request</span>}{(icp?.signals?.length ?? 0) > 3 && <span className="tag text-[var(--ink-3)]" data-testid="signals-more">+{icp!.signals!.length - 3}</span>}{typeof icp?.window_days === 'number' && <span className="tag">past {icp.window_days} days</span>}</dd></div>
-          <div className="kv"><dt>Pace</dt><dd data-testid="play-pace">{pace?.pace}</dd></div>
+          <div className="kv"><dt>Pace</dt><dd data-testid="play-pace">{pace ? pace.pace : <span className="text-[var(--ink-3)]">...</span>}</dd></div>
         </dl>
         {j.stage === 'running' && <div className="mt-4"><Stepper steps={[
           { label: 'Read your profile and play', state: j.play.status === 'pending' ? 'live' : 'done', note: j.play.status === 'pending' ? 'Queued' : undefined },
