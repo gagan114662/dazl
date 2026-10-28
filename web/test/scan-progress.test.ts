@@ -216,3 +216,27 @@ test('job boards: HTTP 200 with an empty object / no jobs array / invalid JSON i
     assert.notEqual(o.kind, 'zero_match', body); assert.match(o.detail ?? '', /adapter:jobboards/)
   }
 })
+
+test('REGRESSION (Instinct): article entries are validated — all-invalid entries and a null entry are a failed request (no throw); mixed valid + invalid keeps the valid hits and flags partial', async () => {
+  const { parseGdeltDetail } = await import('../lib/search/news.ts')
+  const good = { url: 'https://news.example.com/acme', title: 'Acme opens clinic', seendate: '20261020T101500Z' }
+  assert.equal(parseGdeltDetail(JSON.stringify({ articles: [{ url: 5 }, { title: 'no url' }, 'str', 7] })), null, 'every entry invalid')
+  assert.equal(parseGdeltDetail(JSON.stringify({ articles: [null] })), null, 'a null entry does not throw and is not a zero')
+  assert.equal(parseGdeltDetail(JSON.stringify({ articles: [null, null] })), null)
+  const mixed = parseGdeltDetail(JSON.stringify({ articles: [good, null, { url: 1 }] }))!
+  assert.deepEqual([mixed.hits.length, mixed.malformed], [1, 2])
+  const policy = parseGdeltDetail(JSON.stringify({ articles: [good, { url: 'http://insecure.example.com/x', title: 'x' }] }))!
+  assert.deepEqual([policy.hits.length, policy.malformed], [1, 0], 'a well-formed non-https entry is a policy drop, not a malformed one')
+  assert.deepEqual(parseGdeltDetail('{"articles":[]}'), { hits: [], malformed: 0 })
+  for (const [articles, failed] of [[[{ url: 1 }, { title: 'x' }], 2], [[null], 2]] as const) {
+    resetNewsQueue()
+    const r = await newsSearch(async () => ({ status: 200, body: JSON.stringify({ articles }) }), ['a', 'b'], 'en', { gapMs: 0, sleep: async () => {} })
+    assert.deepEqual([r.hits.length, r.attempted, r.failed], [0, 2, failed])
+    assert.equal(newsStatus(null, { searched: true, hits: 0, attempted: 2, failed: r.failed, malformed: r.malformed }), 'error')
+  }
+  resetNewsQueue()
+  const m = await newsSearch(async () => ({ status: 200, body: JSON.stringify({ articles: [good, null] }) }), ['a'], 'en', { gapMs: 0, sleep: async () => {} })
+  assert.deepEqual([m.hits.length, m.failed, m.malformed], [1, 0, 1])
+  assert.equal(newsStatus([{} as never], { searched: true, hits: 1, attempted: 1, failed: 0, malformed: 1 }), 'partial', 'valid hits kept, source flagged partial')
+  assert.equal(newsStatus(null, { searched: true, hits: 0, attempted: 1, failed: 0, malformed: 1 }), 'unavailable', 'unparsed entries beside no valid hit: unknown, never empty')
+})

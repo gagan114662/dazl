@@ -39,19 +39,29 @@ export function parseGdelt(body: string, max = 15): SearchHit[] { return parseGd
 // A 200 whose body is not the documented shape (invalid HTML / text, an empty object, a missing `articles` array) is a PARSE FAILURE (null), never a search that found nothing.
 // Only a JSON object carrying an `articles` array (possibly empty) is a real answer.
 export function parseGdeltStrict(body: string, max = 15): SearchHit[] | null {
+  const d = parseGdeltDetail(body, max)
+  return d ? d.hits : null
+}
+// Entry-level validation: an entry that is not an object, or has no string url / title, is MALFORMED (a null entry never throws). An array whose entries are ALL malformed is a parse
+// failure (null) - never a successful zero; some malformed beside valid ones keeps the valid hits and reports `malformed` so the caller marks the result partial. A well-formed entry
+// the policy drops (a non-https url) is not malformed.
+export function parseGdeltDetail(body: string, max = 15): { hits: SearchHit[]; malformed: number } | null {
   let j: unknown
   try { j = JSON.parse(body) } catch { return null }
   const arts = (j as { articles?: unknown } | null)?.articles
   if (!Array.isArray(arts)) return null
   const out: SearchHit[] = []
+  let malformed = 0
   for (const a of arts) {
-    const o = a as Record<string, unknown>
-    if (typeof o.url !== 'string' || !/^https:\/\/[^\s]{4,480}$/.test(o.url) || typeof o.title !== 'string') continue
+    const o = a && typeof a === 'object' && !Array.isArray(a) ? a as Record<string, unknown> : null
+    if (!o || typeof o.url !== 'string' || typeof o.title !== 'string') { malformed++; continue }
+    if (!/^https:\/\/[^\s]{4,480}$/.test(o.url)) continue
+    if (out.length >= max) continue
     const d = typeof o.seendate === 'string' ? o.seendate.match(/^(\d{4})(\d{2})(\d{2})T/) : null
     out.push({ url: o.url, title: o.title.replace(/\s+([.,:;!?%)])/g, '$1').replace(/([($])\s+/g, '$1').slice(0, 200), snippet: '', date: null, observed: d ? `${d[1]}-${d[2]}-${d[3]}` : null, via: 'gdelt' })
-    if (out.length >= max) break
   }
-  return out
+  if (arts.length > 0 && malformed === arts.length) return null
+  return { hits: out, malformed }
 }
 
 // One request at a time for the whole process, at least GAP_MS apart (conservative spacing, not a published limit).
@@ -70,20 +80,21 @@ function queued<T>(f: () => Promise<T>, gapMs: number, sleep: (ms: number) => Pr
 
 // At most NEWS_PER_SCAN queries. A failed, limited or empty query only means fewer hits.
 // Request outcomes are kept apart from the hits: an empty `hits` with failed === attempted is an outage, never a search that found nothing.
-export interface NewsSearchResult { hits: SearchHit[]; attempted: number; failed: number }
+export interface NewsSearchResult { hits: SearchHit[]; attempted: number; failed: number; malformed: number }   // malformed: invalid entries inside otherwise-valid answers (valid ones are kept; the result is partial)
 export async function newsSearch(http: SafeGet, queries: string[], language?: string, opts: { gapMs?: number; sleep?: (ms: number) => Promise<void> } = {}): Promise<NewsSearchResult> {
   const sleep = opts.sleep ?? (ms => new Promise<void>(r => setTimeout(r, ms)))
   const lang = gdeltLang(language)
   const hits: SearchHit[] = []
   const seen = new Set<string>()
-  let attempted = 0, failed = 0
+  let attempted = 0, failed = 0, malformed = 0
   for (const q of queries.slice(0, NEWS_PER_SCAN)) {
     attempted++
     const r = await queued(() => http(newsUrl(q, lang), { accept: 'application/json' }).catch(() => null), opts.gapMs ?? GAP_MS, sleep)
     if (!r || r.status !== 200 || !r.body) { failed++; continue }
-    const parsed = parseGdeltStrict(r.body)
-    if (!parsed) { failed++; continue }   // 200 but malformed: a parse failure, counted with the failed requests
-    for (const h of parsed) if (!seen.has(h.url)) { seen.add(h.url); hits.push(h) }
+    const parsed = parseGdeltDetail(r.body)
+    if (!parsed) { failed++; continue }   // 200 but malformed (not the documented shape, or every entry invalid): a parse failure, counted with the failed requests
+    malformed += parsed.malformed
+    for (const h of parsed.hits) if (!seen.has(h.url)) { seen.add(h.url); hits.push(h) }
   }
-  return { hits, attempted, failed }
+  return { hits, attempted, failed, malformed }
 }

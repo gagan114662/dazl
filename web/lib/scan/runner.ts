@@ -662,19 +662,19 @@ export const NEWS_PAGES = 8
 // The ledger status of the news fallback, from its OWN request outcomes. 'empty' needs a completed search with every request answered and zero hits; request failures are
 // kept apart from the hits array: all failed = 'error' (a failed source), some failed with no hits = 'error_partial:<failed>_of_<attempted>' (failed and named), and hits with no
 // usable page evidence or no query to run stay 'unavailable' (unknown).
-export function newsStatus(leads: LeadDraft[] | null, note: { searched: boolean; hits: number; attempted: number; failed: number }): string {
-  if (leads) return leads.length ? 'ok' : 'empty'
+export function newsStatus(leads: LeadDraft[] | null, note: { searched: boolean; hits: number; attempted: number; failed: number; malformed?: number }): string {
+  if (leads) return leads.length ? ((note.malformed ?? 0) > 0 ? 'partial' : 'ok') : 'empty'   // invalid entries beside valid ones: the valid hits are kept and the source is marked partial
   if (!note.searched) return 'unavailable'
-  if (note.hits === 0) return note.failed === 0 ? 'empty' : note.failed >= note.attempted ? 'error' : `error_partial:${note.failed}_of_${note.attempted}`
+  if (note.hits === 0) return note.failed === 0 ? ((note.malformed ?? 0) > 0 ? 'unavailable' : 'empty') : note.failed >= note.attempted ? 'error' : `error_partial:${note.failed}_of_${note.attempted}`
   return 'unavailable'
 }
-async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, http: SafeGet, fetchPage: PageFetcher, fetchImpl?: typeof fetch, note?: { searched: boolean; hits: number; attempted: number; failed: number }): Promise<LeadDraft[] | null> {
+async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, http: SafeGet, fetchPage: PageFetcher, fetchImpl?: typeof fetch, note?: { searched: boolean; hits: number; attempted: number; failed: number; malformed?: number }): Promise<LeadDraft[] | null> {
   const complete = provider.complete!
   const plan = queryPlan(await complete.call(provider, key, queryPrompt(job.query!, icp, NEWS_PER_SCAN), fetchImpl, 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, NEWS_PER_SCAN)
   const q = withGeography(sanitizeQueries(plan.queries, job.query!), icp.where).filter(x => !/site:/i.test(x)) // news search has no site: operator
   if (q.length === 0) return null
   const found = await newsSearch(http, q, icp.language), hits = found.hits
-  if (note) { note.searched = true; note.hits = hits.length; note.attempted = found.attempted; note.failed = found.failed }
+  if (note) { note.searched = true; note.hits = hits.length; note.attempted = found.attempted; note.failed = found.failed; note.malformed = found.malformed }
   if (hits.length === 0) return null
   const pages = (await Promise.all(hits.slice(0, NEWS_PAGES).map(async h => {
     const p = await fetchPage(h.url).catch(() => null)
@@ -838,7 +838,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       try {
         ledger.record('search:news', 'started')
         assertOwned(db, job)
-        const note = { searched: false, hits: 0, attempted: 0, failed: 0 }
+        const note = { searched: false, hits: 0, attempted: 0, failed: 0, malformed: 0 }
         leads = await newsLeads(job, icpForSources, providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl, note)
         // 'empty' only when the news search ran and returned zero hits; hits with no usable page evidence, or no query to run, stay 'unavailable' (unknown, never a zero).
         ledger.record('search:news', newsStatus(leads, note), note.searched ? note.hits : null)
