@@ -32,7 +32,8 @@ test('cap of 3 active watches, and no duplicate active query', () => {
   const db = setup()
   for (let i = 0; i < MAX_WATCHES; i++) assert.ok(createWatch(db, 'u', `query ${i}`, ICP).watch)
   assert.match(createWatch(db, 'u', 'query 4th', ICP).error ?? '', /already have 3/)
-  const w = listWatches(db, 'u')[0] // most recent: 'query 2'
+  // Pause 'query 2' by name: listWatches orders by created_at (whole seconds), so [0] is not reliably the newest.
+  const w = listWatches(db, 'u').find(x => x.query === 'query 2')!
   assert.ok(watchAction(db, 'u', w.id, 'pause'))
   assert.match(createWatch(db, 'u', 'query 1', ICP).error ?? '', /already watching/, 'an active dupe is rejected even under the cap')
   const fourth = createWatch(db, 'u', 'query 4th', ICP).watch!

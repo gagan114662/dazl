@@ -68,7 +68,8 @@ await ctx.route('**/*', async route => {
   const q = /^\/api\/leads\/([a-f0-9]{24})\/quarantine$/.exec(p)
   if (q) { if (m === 'POST') state.quarantined[q[1]] = JSON.parse(req.postData()).reason; else delete state.quarantined[q[1]]; return json({ quarantined: m === 'POST' }) }
   if (p === '/api/outreach' && m === 'POST') { const { lead_id } = JSON.parse(req.postData()); state.msgs = [msg(lead_id, LEADS.find(l => l.id === lead_id).contact)]; return json({ ok: true, message_id: 'm1' }) }
-  if (p === '/api/outreach' && m === 'GET') return json({ messages: state.msgs })
+  // Like the real listMessages: the send footer is recomputed from the current sender settings on every GET.
+  if (p === '/api/outreach' && m === 'GET') return json({ messages: state.msgs.map(x => ({ ...x, send_footer: state.sender ? `${state.sender.sender_name}\n${state.sender.postal_address}\nUnsubscribe: https://dazl.ai/u/...` : null })) })
   if (p === '/api/outreach/m1' && m === 'POST') {
     const { action } = JSON.parse(req.postData())
     if (action === 'approve') state.msgs[0].status = 'approved'
@@ -167,6 +168,9 @@ try {
     await page.locator('main').getByRole('link', { name: /send your approved emails/i }).click()
     await page.waitForURL(/\/app\/outreach/, T)
     await page.getByText(/^Ready to send from dana@brightsmile\.example/).waitFor(T)
+    // The card shows the footer that will be added, with the saved sender, and no stale missing-sender claim.
+    await page.getByLabel('Added automatically when sent').filter({ hasText: 'Dana Smith' }).waitFor(T)
+    assert.equal(await page.getByText(/Sending needs your name and mailing address/).count(), 0, 'no contradictory missing-sender note')
   })
   await step('send', async () => {
     await page.getByRole('button', { name: 'Send now' }).click()
