@@ -23,7 +23,7 @@ export function migratePlans(db: Database.Database): void {
   // A same-second tie Stripe has not settled yet (lib/billing/stripe.ts): that second, until the read settles it.
   try { db.exec('ALTER TABLE tenant_plans ADD COLUMN stripe_reconcile_at INTEGER') } catch { /* exists */ }
   // The subscription's status as Stripe last reported it (lib/billing/stripe.ts): active, past_due after a failed
-  // payment while Stripe retries, unpaid, canceled... The plan is what entitles; this says why. PG: 0008_subscription_status.sql.
+  // payment while Stripe retries, unpaid, canceled... The plan is what entitles; this says why. PG: 0009_subscription_status.sql.
   try { db.exec('ALTER TABLE tenant_plans ADD COLUMN subscription_status TEXT') } catch { /* exists */ }
 }
 

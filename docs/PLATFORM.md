@@ -210,7 +210,7 @@ These steps are development work behind flags and tests. Merging them does not c
      - The plan row is locked (`FOR UPDATE` on PG) before the checks, so concurrent deliveries follow these rules, not commit order.
      - PG: `0007_stripe_event_order.sql`.
    - **Plan limits and billing status (step 5c):**
-     - `tenant_plans.subscription_status` (PG `0008_subscription_status.sql`) keeps the status Stripe last reported, and `/api/usage` returns it as `billing_status`.
+     - `tenant_plans.subscription_status` (PG `0009_subscription_status.sql`) keeps the status Stripe last reported, and `/api/usage` returns it as `billing_status`.
        - Checkout gives `active`.
        - A failed payment gives `past_due` while Stripe retries. The plan stays Pro.
        - A settled tie stores Stripe's answer, and a stale event never rewrites it.
