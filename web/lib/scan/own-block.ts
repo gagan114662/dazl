@@ -5,6 +5,8 @@
 import { companyKey, hasPhrase, norm } from './evidence.ts'
 import { placeAgreement, type PlaceVerdict } from './place-agreement.ts'
 
+// A sentence about someone ELSE ("its competitor Acme is headquartered in Manchester", "it competes with Acme in Manchester") is never joined to, or continued from, the lead's block.
+const ABOUT_ANOTHER = /\b(?:competitors?|rivals?|peers?|partners?|customers?|clients?|suppliers?|vendors?|investors?|backers?|acquir\w+|subsidiar\w+|parent|sister|former|another|other|neighbou?r\w*|affiliates?|compet\w+|against|versus|vs\.?|than|works?\s+with|working\s+with|alongside|owned\s+by|part\s+of|sister|rivalling)\b/i
 // A sentence ends at . ! ? followed by a capital, a digit OR a lowercase start - a lowercase company ("acme is headquartered in Manchester") begins a new sentence too.
 // A lowercase piece that only carries on the previous one (starts with an auxiliary / connective: "is based in ...", "and ...", "which ...") is joined back, and so is
 // a piece after an abbreviation ("Brightloop Ltd. is ...", "U.K. and ...").
@@ -15,7 +17,7 @@ const sentences = (text: string): string[] => {
   for (const piece of text.split(/(?<=[.!?])\s+|\n+/).map(x => x.trim()).filter(Boolean)) {
     const prev = out[out.length - 1]
     const startsLower = /^[a-z]/.test(piece)
-    if (prev !== undefined && (ABBREV.test(prev) || (startsLower && LOWER_CONTINUES.test(piece)))) out[out.length - 1] = `${prev} ${piece}`
+    if (prev !== undefined && (ABBREV.test(prev) || (startsLower && LOWER_CONTINUES.test(piece) && !ABOUT_ANOTHER.test(piece)))) out[out.length - 1] = `${prev} ${piece}`
     else out.push(piece)
   }
   return out
@@ -23,7 +25,6 @@ const sentences = (text: string): string[] => {
 // A sentence that carries on about the company just named ("Our clinic is at ...", "Located at ...", "Visit us at ...").
 const CONTINUES = /^(?:our|we|its|located|based|address|visit|find|come|headquarters|hq|offices?|the (?:office|clinic|studio|practice|team)|they|it)\b/i
 // ... unless the sentence is about someone ELSE ("Its competitor Acme is headquartered in Manchester", "We compete with Acme"): it ends the block.
-const ABOUT_ANOTHER = /\b(?:competitors?|rivals?|peers?|partners?|customers?|clients?|suppliers?|vendors?|investors?|backers?|acquir\w+|subsidiar\w+|parent|sister|former|another|other|neighbou?r\w*|affiliates?|compet\w+|against|versus|vs\.?|than)\b/i
 // A title that names the company is about it alone only when it does not look like a list or a pairing ("Seed round-up: Brightloop and Acme").
 const MULTI_TITLE = /,|;|\band\b|&|\bvs\.?\b|\bversus\b|\bplus\b|\+|\b(?:round-?ups?|roundup|list|best|top|\d+\s+\w+)\b|\bwho\b|\bthis\s+week\b/i
 

@@ -102,3 +102,15 @@ test('#277 review: a lowercase next-sentence company starts its own block ("acme
   assert.equal(ownPlaceAgreement({ title: 'Round-up', text: 'Brightloop Ltd. is based in London, UK. Our office is at 12 Hoxton Square, London N1 6NU.' }, LONDON, 'Brightloop'), 'agrees')
   assert.equal(ownPlaceAgreement({ title: 'Round-up', text: 'Brightloop raised a seed round. is based in London, UK and expanding.' }, LONDON, 'Brightloop'), 'agrees')
 })
+
+test('#277 review: lowercase pronoun-led sentences about another company ("its competitor Acme...", "it competes with Acme in Manchester...") never attach its place to the lead', async () => {
+  for (const other of ['its competitor Acme is headquartered in Manchester, UK.', 'it competes with Acme in Manchester, UK.', 'its rival acme is based in Manchester, UK.', 'it works with Acme in Manchester, UK.']) {
+    const page = { title: 'Seed round-up', text: `Posted ${day(5)}. Brightloop raised a seed round in London, UK. ${other} ${'Founders shared what is next. '.repeat(8)}`, retrievedAt: 1 }
+    assert.equal(ownPlaceAgreement(page, LONDON, 'Brightloop'), 'agrees', other)
+    const c = { name: '', company: 'Brightloop', contact: null, signal: 'seed round', source_url: 'https://news.example/roundup', score: 70, excerpt: 'Brightloop raised a seed round in London, UK', event_date: day(5) }
+    const r = await verifyLeads([c], async () => page, new Date(), undefined, null, undefined, undefined, LONDON)
+    assert.equal(r.leads.length, 1, `${other} ${JSON.stringify(r.review)}`); assert.equal(r.review.length, 0)
+  }
+  // control: a lowercase continuation about the lead itself still binds
+  assert.equal(ownPlaceAgreement({ title: 'Round-up', text: 'Brightloop raised a seed round. its team is based in London, UK.' }, LONDON, 'Brightloop'), 'agrees')
+})
