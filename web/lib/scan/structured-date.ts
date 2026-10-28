@@ -24,7 +24,7 @@ const TYPE_RES: [EventType, RegExp][] = [
   ['launch', /\b(?:launch(?:es|ed|ing)?|unveil(?:s|ed|ing)?|release[sd]?)\b/i],
 ]
 export const eventTypesOf = (text: string): Set<EventType> => new Set(TYPE_RES.filter(([, re]) => re.test(text)).map(([t]) => t))
-const words = (text: string): Set<string> => new Set(norm(text).split(' ').filter(w => w.length >= 4))
+const words = (text: string): Set<string> => new Set(norm(text).replace(/[.@+]+/g, ' ').split(' ').filter(w => w.length >= 4))   // case, accents, punctuation and stray whitespace never change a place name
 const GENERIC_WORDS = new Set(['office', 'offices', 'location', 'locations', 'opening', 'opened', 'opens', 'second', 'third', 'with', 'from', 'that', 'this', 'team', 'company', 'hiring', 'role', 'roles', 'position', 'join', 'joins', 'new', 'event'])
 const stringValuesOf = (v: unknown, out: string[] = [], depth = 0): string[] => { if (depth > 3 || v == null) return out; if (typeof v === 'string') out.push(v); else if (Array.isArray(v)) for (const x of v.slice(0, 10)) stringValuesOf(x, out, depth + 1); else if (typeof v === 'object') for (const x of Object.values(v as object).slice(0, 20)) stringValuesOf(x, out, depth + 1); return out }
 const overlap = (a: Set<string>, b: Set<string>, ignore: Set<string> = GENERIC_WORDS) => [...a].some(w => b.has(w) && !ignore.has(w))
@@ -73,9 +73,17 @@ function eventPlaceTerms(location: unknown, key: string): { city: Set<string>; l
   take(location)
   return { city, local }
 }
-// The place phrases a claim writes after "in / at / near" ("in Shoreditch, London" -> "Shoreditch").
+// The place phrases a claim writes after "in / at / near / on" ("in Shoreditch, London" -> "Shoreditch"). Case-blind: "in shoreditch, london", "IN SHOREDITCH LONDON" and "in Shoreditch" read the same;
+// a phrase runs up to 4 words and stops at punctuation or the first function word ("for its growing team").
+const PHRASE_END = new Set(['for', 'with', 'to', 'and', 'which', 'as', 'the', 'its', 'our', 'their', 'from', 'since', 'that', 'where', 'while', 'after', 'before', 'this', 'last', 'next', 'a', 'an', 'is', 'are', 'was', 'has', 'have', 'will', 'under', 'over', 'by', 'of', 'in', 'at', 'on', 'near', 'new', 'second', 'third', 'first'])
 function claimPlacePhrases(claim: string): string[] {
-  return [...claim.matchAll(/\b(?:in|at|near|on)\s+((?:[A-Z][\p{L}'-]+)(?:\s+[A-Z][\p{L}'-]+)*)/gu)].map(m => m[1])
+  const out: string[] = []
+  for (const m of claim.matchAll(/\b(?:in|at|near|on)\s+([\p{L}][\p{L}'\u2019-]*(?:[ \t]+[\p{L}][\p{L}'\u2019-]*){0,3})/giu)) {
+    const kept: string[] = []
+    for (const w of m[1].split(/\s+/)) { if (PHRASE_END.has(w.toLowerCase())) break; kept.push(w) }
+    if (kept.length) out.push(kept.join(' '))
+  }
+  return out
 }
 // Does this Event node describe the SAME event the claim is about? Type and place, not just the company.
 function eventMatches(o: Record<string, unknown>, claim: string, where: string[], key: string): boolean {
@@ -96,8 +104,9 @@ function eventMatches(o: Record<string, unknown>, claim: string, where: string[]
     // 1. the CITY must be the claim's / request's city (Manchester is not London, whatever country they share). With no addressLocality the place name has to be that city.
     for (const t of city.size ? city : local) if (!claimWords.has(t)) return false
     // 2. if the claim names a finer place than the city ("in Shoreditch"), the event must name that same place: a Camden office, or an event that only says "London", is a different / unconfirmed place -> undated and held.
-    const finer = claimPlacePhrases(claim).flatMap(p => [...words(p)]).filter(w => !wh.has(w) && w !== key && !PLACE_STOP.has(w) && !GENERIC_WORDS.has(w))
-    if (finer.length > 0 && !finer.some(w => local.has(w) || city.has(w))) return false
+    // Words the event's own city already accounts for (step 1) are not "finer": in "shoreditch london" only shoreditch is.
+    const finer = claimPlacePhrases(claim).flatMap(p => [...words(p)]).filter(w => !wh.has(w) && !city.has(w) && w !== key && !PLACE_STOP.has(w) && !GENERIC_WORDS.has(w))
+    if (finer.length > 0 && !finer.some(w => local.has(w))) return false
     return true
   }
   return claimTypes.has('webinar') || claimTypes.has('conference')                       // no place at all: only an online / conference claim can be dated by it

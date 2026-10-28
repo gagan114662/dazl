@@ -149,3 +149,30 @@ test('FULL RUN: Manchester and Camden events on the page leave the Shoreditch cl
   const ok = await row(fx([PLACE('Embedd Shoreditch', 'London', 'United Kingdom', 'England', daysAgo(9))]))
   assert.equal(ok.r.event_date, daysAgo(9)); assert.equal(ok.r.review_reason, null)
 })
+
+// ---- #307 review 3: place identity is independent of letter case (lowercase shoreditch must not borrow Camden) ----
+const CASES = ['opened a new office in shoreditch, london', 'opened a new office in Shoreditch, London', 'opened a new office in SHOREDITCH, LONDON', 'opened a new office in ShoreDitch, london', 'opened a new office in shoreditch london for its growing engineering team', 'OPENED A NEW OFFICE IN SHOREDITCH LONDON', '  opened a new office in  Shoreditch ,  London . ']
+const WHERES = [['London, United Kingdom'], ['london, united kingdom'], ['LONDON, UK'], []]
+test('INSTINCT REPRO 3: a lowercase / mixed / ALL CAPS "shoreditch" claim never borrows a Camden, London event - every casing, with and without the request place', () => {
+  const camden = [PLACE('Embedd Camden', 'London'), PLACE('embedd camden', 'london'), PLACE('EMBEDD CAMDEN', 'LONDON', 'UNITED KINGDOM', 'ENGLAND')]
+  for (const c of CASES) for (const w of WHERES) for (const ev of camden) assert.equal(resolveStructuredDate([ev], 'Embedd', c, w), null, `${JSON.stringify(c)} ${JSON.stringify(w)}`)
+})
+test('every casing also refuses Manchester and a London-only event for a Shoreditch claim', () => {
+  for (const c of CASES) for (const w of WHERES) {
+    assert.equal(resolveStructuredDate([PLACE('Embedd Manchester', 'Manchester')], 'Embedd', c, w), null, c)
+    assert.equal(resolveStructuredDate([PLACE('embedd manchester', 'MANCHESTER')], 'Embedd', c, w), null, c)
+    assert.equal(resolveStructuredDate([PLACE('Embedd', 'London')], 'Embedd', c, w), null, `ambiguous (London only): ${c}`)
+  }
+})
+test('MATCHING POSITIVES in every casing, on the claim side and the event side: Shoreditch dates the Shoreditch claim', () => {
+  const shoreditch = [PLACE('Embedd Shoreditch', 'London'), PLACE('embedd shoreditch', 'london'), PLACE('EMBEDD SHOREDITCH', 'LONDON', 'UNITED KINGDOM', 'ENGLAND'), PLACE(' Embedd  Shoreditch ', ' London. ')]
+  for (const c of CASES) for (const w of WHERES) for (const ev of shoreditch) assert.deepEqual(resolveStructuredDate([ev], 'Embedd', c, w), { date: '2026-10-19', kind: 'Event' }, `${JSON.stringify(c)} ${JSON.stringify(w)}`)
+  for (const c of ['opened a new office in london', 'opened a new office in LONDON', 'opened a new office']) assert.deepEqual(resolveStructuredDate([PLACE('embedd camden', 'LONDON')], 'Embedd', c, ['london, united kingdom']), { date: '2026-10-19', kind: 'Event' }, `a claim that names only London is dated by any London event: ${c}`)
+})
+test('FULL RUN, lowercase claim: a Camden event leaves "opened a new office in shoreditch, london" undated and held; the Shoreditch event dates it', async () => {
+  const lower = 'Embedd opened a new office in shoreditch, london for its growing engineering team'
+  const held = await row(fx([PLACE('Embedd Camden', 'London')], { quote: lower }))
+  assert.equal(held.r.event_date, null); assert.equal(held.r.review_reason, 'outside_window_undated'); assert.equal(held.r.timing_note, null)
+  const ok = await row(fx([PLACE('Embedd Shoreditch', 'London', 'United Kingdom', 'England', daysAgo(9))], { quote: lower }))
+  assert.equal(ok.r.event_date, daysAgo(9)); assert.equal(ok.r.review_reason, null)
+})
