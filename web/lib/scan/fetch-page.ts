@@ -2,7 +2,7 @@ import { lookup as dnsLookup } from 'node:dns'
 import https from 'node:https'
 import { isIP } from 'node:net'
 
-export interface Page { text: string; title: string; retrievedAt: number; published?: string | null } // published: the page's OWN publication metadata (never modified/updated), YYYY-MM-DD
+export interface Page { text: string; title: string; retrievedAt: number; published?: string | null; structured?: string[] } // published: the page's OWN publication metadata (never modified/updated), YYYY-MM-DD
 
 // True only for addresses on the public internet. Everything private, loopback,
 // link-local, cloud-metadata, CGNAT, multicast or reserved is refused.
@@ -117,7 +117,13 @@ export function publishedDate(html: string): string | null {
   return days.size === 1 ? [...days][0] : null
 }
 
-export function htmlToText(html: string): { text: string; title: string; published: string | null } {
+// The raw schema.org JSON-LD blocks of a page (capped), kept so a dated entity the page itself declares (an Event's startDate, a JobPosting's datePosted) can be read later by scan/structured-date.ts.
+export function ldJsonBlocks(html: string): string[] {
+  const out: string[] = []
+  for (const m of html.slice(0, 600_000).matchAll(/<script\b[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) { if (m[1].length <= 40_000) out.push(m[1]); if (out.length >= 8) break }
+  return out
+}
+export function htmlToText(html: string): { text: string; title: string; published: string | null; structured: string[] } {
   const title = decode(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? '')
   const text = decode(
     html
@@ -127,7 +133,7 @@ export function htmlToText(html: string): { text: string; title: string; publish
   )
     .replace(/\s+/g, ' ')
     .trim()
-  return { text, title: title.replace(/\s+/g, ' ').trim().slice(0, 300), published: publishedDate(html) }
+  return { text, title: title.replace(/\s+/g, ' ').trim().slice(0, 300), published: publishedDate(html), structured: ldJsonBlocks(html) }
 }
 
 export type FetchFail = { fail: 'blocked' | 'js_required' | 'not_found' | 'error' | 'refused' }
