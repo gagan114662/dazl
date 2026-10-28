@@ -15,6 +15,7 @@ import { migrateWatch, createWatch, runDueWatches } from '../lib/watch.ts'
 import { icpPrompt, MAX_QUERY } from '../lib/scan/icp.ts'
 import { MAX_COMPANIES } from '../lib/people/people-search.ts'
 import { BUDGET_EXCLUDED_PATHS, DEFAULT_TINYFISH, PEOPLE_SEARCHES_MAX, describeRunBudget, profileGenerationWorstCaseUsd } from '../lib/scan/run-budget.ts'
+import { sqliteDb } from '../lib/db/client.ts'
 
 // The remaining paths around the PARTIAL per-run budget (STATUS "Next"; #216/#217 follow-up). Stubs only, no network, no price.
 // max_usd stays a reservation limit on guarded model requests; this file pins what ELSE bounds (or does not bound) each path.
@@ -69,16 +70,16 @@ test('autopilot: a job that carries a budget never starts it; an unbudgeted job 
   }
 })
 
-test('weekly watches: the budget is saved on the watch and every weekly run job carries it; an unbudgeted watch is unchanged', () => {
+test('weekly watches: the budget is saved on the watch and every weekly run job carries it; an unbudgeted watch is unchanged', async () => {
   const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migrateWatch(db)
   saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
   const icp = JSON.stringify({ summary: 's', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] })
-  const w1 = createWatch(db, 'A', 'dental practices in Toronto hiring', icp, '{"max_usd":0.25,"judge":false}').watch!
-  const w2 = createWatch(db, 'A', 'dental practices in Ohio hiring', icp).watch!
+  const w1 = (await createWatch(sqliteDb(db), 'A', 'dental practices in Toronto hiring', icp, '{"max_usd":0.25,"judge":false}')).watch!
+  const w2 = (await createWatch(sqliteDb(db), 'A', 'dental practices in Ohio hiring', icp)).watch!
   assert.equal(w1.run_budget, '{"max_usd":0.25,"judge":false}'); assert.equal(w2.run_budget, null)
   // due watches -> one job each; the budgeted watch's job carries the budget
   db.prepare('UPDATE watches SET next_run_at = 0').run()
-  assert.equal(runDueWatches(db, 10).ran, 1, 'one scan at a time per user: the first due watch runs')
+  assert.equal((await runDueWatches(sqliteDb(db), { now: 10 })).ran, 1, 'one scan at a time per user: the first due watch runs')
   const j = db.prepare('SELECT watch_id, run_budget FROM scan_jobs').all() as { watch_id: string; run_budget: string | null }[]
   assert.equal(j.length, 1); assert.equal(j[0].run_budget, j[0].watch_id === w1.id ? '{"max_usd":0.25,"judge":false}' : null)
   // an older database without the column is migrated in place
