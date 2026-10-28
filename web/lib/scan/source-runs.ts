@@ -115,3 +115,23 @@ export function sourcesForLead(db: Database.Database, tenantId: string, leadId: 
   return db.prepare(`SELECT s.collector,s.attempt FROM lead_sources s JOIN leads l ON l.id=s.lead_id
     JOIN scan_jobs j ON j.id=l.scan_job_id WHERE j.user_id=? AND l.id=? ORDER BY s.attempt,s.collector`).all(tenantId, leadId)
 }
+
+// Post-scan job-board lookups (Greenhouse / Lever / Ashby public JSON, lib/signals/ats-gtm.ts) as live per-source progress. One row per board plus `ats:lookups`;
+// they use the same scan_source_runs columns the status route already serves. The lookups run after the scan finished, so these rows are written when they end.
+//   ats:lookups   evidence = leads looked up; candidates = leads with a dated sales/GTM posting found; review = found but not bound to the lead (unconfirmed) or contradictory
+//   ats:<board>   evidence = leads whose postings were found on that board (a measured 0 when lookups ran and none were there)
+// verified_count stays NULL: whether a posting becomes lead evidence is decided by the sales-hiring gate, not here. Replaces the rows of an earlier call for the job; never throws.
+export interface AtsProgress { lookups: number; found: Record<'greenhouse' | 'lever' | 'ashby', number>; unconfirmed: number; contradictory: number }
+export function recordAtsProgress(db: Database.Database, jobId: string, p: AtsProgress): boolean {
+  if (p.lookups <= 0) return false
+  try {
+    migrateSourceRuns(db)
+    const job = db.prepare('SELECT attempts FROM scan_jobs WHERE id = ?').get(jobId) as { attempts: number } | undefined
+    if (!job) return false
+    const ins = db.prepare('INSERT OR REPLACE INTO scan_source_runs (job_id,attempt,collector,status,evidence_count,candidate_count,verified_count,review_count,inserted_count) VALUES (?,?,?,?,?,?,?,?,0)')
+    const found = p.found.greenhouse + p.found.lever + p.found.ashby
+    ins.run(jobId, job.attempts, 'ats:lookups', 'ok', p.lookups, found, null, p.unconfirmed + p.contradictory)
+    for (const b of ['greenhouse', 'lever', 'ashby'] as const) ins.run(jobId, job.attempts, `ats:${b}`, 'ok', p.found[b], p.found[b], null, null)
+    return true
+  } catch { return false }
+}

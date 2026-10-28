@@ -205,3 +205,18 @@ test('plain text AND html both supplied: the plain text says brightloop.io, the 
   const ok = { 'https://api.lever.co/v0/postings/brightloop?mode=json': [{ text: 'Account Executive', hostedUrl: 'https://jobs.lever.co/brightloop/a', createdAt: NOW - 5 * 86_400_000, descriptionPlain: plain, description: html.replace('brightloop.com', 'brightloop.io') }] }
   assert.equal((await atsGtmBoard('Brightloop', 'brightloop.io', route(ok), { now: NOW })).contradictory, false)
 })
+
+test('per-source progress: the job-board lookups are recorded as ats:lookups + one row per board (measured zero kept), and a contradictory / unconfirmed board is counted for review', async () => {
+  const rows = (db: Database.Database) => db.prepare("SELECT collector, status, evidence_count, candidate_count, verified_count, review_count FROM scan_source_runs ORDER BY collector").all() as { collector: string; status: string; evidence_count: number | null; candidate_count: number | null; verified_count: number | null; review_count: number | null }[]
+  const a = leadDb('brightloop.io', 'evidence_own_domain'); await enrich(a.db, a.jobId, ghBoard)
+  assert.deepEqual(rows(a.db), [
+    { collector: 'ats:ashby', status: 'ok', evidence_count: 0, candidate_count: 0, verified_count: null, review_count: null },
+    { collector: 'ats:greenhouse', status: 'ok', evidence_count: 1, candidate_count: 1, verified_count: null, review_count: null },
+    { collector: 'ats:lever', status: 'ok', evidence_count: 0, candidate_count: 0, verified_count: null, review_count: null },
+    { collector: 'ats:lookups', status: 'ok', evidence_count: 1, candidate_count: 1, verified_count: null, review_count: 0 },
+  ])
+  const u = leadDb('brightloop.io', 'name_probe'); await enrich(u.db, u.jobId, gh('Join Brightloop in London', 'Lead sales'))
+  assert.equal(rows(u.db).find(r => r.collector === 'ats:lookups')!.review_count, 1, 'found but not bound to the lead: counted for review')
+  const c = leadDb('brightloop.io', 'evidence_own_domain'); await enrich(c.db, c.jobId, gh('Write to jobs@brightloop.io', 'Write to jobs@brightloop.com'))
+  const l = rows(c.db).find(r => r.collector === 'ats:lookups')!; assert.deepEqual([l.evidence_count, l.candidate_count, l.review_count], [1, 0, 1], 'a contradictory board is a lookup with nothing found, flagged for review')
+})

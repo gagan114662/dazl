@@ -11,6 +11,7 @@ import { companyKey, recordCompanyEvent } from '../events/store.ts'
 import { listLeads } from '../scan/store.ts'
 import { classifyEntityMatch, domainSlug, withinEventWindow } from './entity-match.ts'
 import { atsGtmBoard } from './ats-gtm.ts'
+import { recordAtsProgress, type AtsProgress } from '../scan/source-runs.ts'
 import { domainRelationship, HEURISTIC_NOTE } from './domain-basis.ts'
 
 const TIMEOUT = 8000
@@ -125,6 +126,7 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
   const news = process.env.SIGNALS_FUNDING_RSS === '0' ? [] : await fundingNews(fetchImpl).catch(() => [])
   const jinaLeft = { n: 2 }
   let funding = 0, hiring = 0, rounds = 0, gtm = 0
+  const atsProg: AtsProgress = { lookups: 0, found: { greenhouse: 0, lever: 0, ashby: 0 }, unconfirmed: 0, contradictory: 0 }
   const today = new Date().toISOString().slice(0, 10)
   const now = Math.floor(Date.now() / 1000)
   for (const lead of leads) {
@@ -137,6 +139,7 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
     ])
     // Postings naming contradictory company domains cannot corroborate this company: neither the dated sales / GTM roles nor the older open-role count.
     const gb = await atsGtmBoard(lead.company, lead.company_domain, fetchImpl).catch(() => ({ hiring: null, contradictory: false }))
+    atsProg.lookups++; if (gb.contradictory) atsProg.contradictory++
     // A filing far from the claimed round date is a real fact about the entity but not
     // corroboration of THIS raise (fund filings and stale filings both collide here).
     const f = f0 && withinEventWindow(f0.date, (lead as { event_date?: string | null }).event_date ?? null) ? f0 : null
@@ -159,11 +162,13 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
     const g = gb.hiring
     if (g) {
       const n = g.postings.length
+      atsProg.found[g.board]++
       // A board's own NAME (even token-identical to the company) is a claim by the board, not proof of ownership: only an established domain, or the board's
       // postings all naming the lead's own domain, binds it. Otherwise: Unconfirmed, no confidence, nothing written to the company's history.
       const est = domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established' || (!!g.domain && !!lead.company_domain && g.domain.replace(/^www\./, '') === lead.company_domain.replace(/^www\./, ''))
       const titles = g.postings.map(p => p.title).slice(0, 3).join('; ')
       addEnrichment(db, tenantId, lead.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${est ? '' : 'Unconfirmed: '}${n} sales/GTM role${n === 1 ? '' : 's'} posted, newest ${g.newest}`, label: (est ? titles : `${titles} (${HEURISTIC_NOTE})`).slice(0, 200) || null, confidence: est ? 70 : null, source_url: g.url, source_date: g.newest, retrieved_at: now })
+      if (!est) atsProg.unconfirmed++
       gtm++
     }
     const r = await fundingRoundFor(lead.company, news, { fetchImpl, jinaLeft }).catch(() => null)
@@ -178,6 +183,7 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
   audit(db, { tenantId, connector: 'signals:ats-gtm', jobId, lookup: `${leads.length} leads`, status: gtm ? 'ok' : 'empty', results: gtm })
   audit(db, { tenantId, connector: 'signals:ats', jobId, lookup: `${leads.length} leads`, status: hiring ? 'ok' : 'empty', results: hiring })
   audit(db, { tenantId, connector: 'signals:funding-round', jobId, lookup: `${leads.length} leads, ${news.length} raise reports`, status: rounds ? 'ok' : 'empty', results: rounds })
+  recordAtsProgress(db, jobId, atsProg) // live per-source progress: lookups made, postings found per board (never throws)
   // BYOK contact/firmographic pass: runs only with the tenant's own Apollo/PDL key.
   // A per-run budget control can skip this paid-credit pass for a specific run.
   if (deps.creditEnrichment !== false) {
