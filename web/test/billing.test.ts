@@ -30,16 +30,20 @@ bothEngines('checkout completed upgrades the tenant to pro and stores ids; repla
   assert.deepEqual({ ...(row as object) }, { stripe_customer_id: 'cus_1', stripe_subscription_id: 'sub_1' })
 })
 
-bothEngines('subscription deleted or canceled downgrades; found by customer id; past_due keeps pro', async ({ db }) => {
+bothEngines('unpaid and canceled downgrade; found by customer id; past_due keeps pro; unpaid can recover, canceled cannot', async ({ db }) => {
   await applyStripeEvent(db, checkout('evt_1', 'u1'))
   const sub = (id: string, status: string): StripeEvent => ({ id, type: 'customer.subscription.updated', data: { object: { id: 'sub_1', customer: 'cus_1', status } } })
   await applyStripeEvent(db, sub('evt_2', 'past_due'))
   assert.equal(await readPlan(db, 'u1'), 'pro')
-  await applyStripeEvent(db, sub('evt_3', 'canceled'))
+  await applyStripeEvent(db, sub('evt_3', 'unpaid'))
   assert.equal(await readPlan(db, 'u1'), 'free')
-  await applyStripeEvent(db, sub('evt_4', 'active'))
+  await applyStripeEvent(db, sub('evt_4', 'active')) // paid after all
   assert.equal(await readPlan(db, 'u1'), 'pro')
-  await applyStripeEvent(db, { id: 'evt_5', type: 'customer.subscription.deleted', data: { object: { id: 'sub_1', customer: 'cus_1' } } })
+  await applyStripeEvent(db, sub('evt_5', 'canceled'))
+  assert.equal(await readPlan(db, 'u1'), 'free')
+  assert.equal(await applyStripeEvent(db, sub('evt_6', 'active')), 'stale') // a canceled subscription is over in Stripe
+  assert.equal(await readPlan(db, 'u1'), 'free')
+  await applyStripeEvent(db, { id: 'evt_7', type: 'customer.subscription.deleted', data: { object: { id: 'sub_1', customer: 'cus_1' } } })
   assert.equal(await readPlan(db, 'u1'), 'free')
 })
 

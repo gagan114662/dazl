@@ -5,7 +5,7 @@ import { coreSources, type ServerSources } from './scan/source-availability.ts'
 // The checklist is the steps a new workspace finishes before its first useful scan and send; Home hides it once every row is done.
 
 export interface ReadinessInput {
-  profile: { sells?: string; website?: string; business_name?: string } | null
+  profile: { sells?: string; website?: string; business_name?: string; buyer?: { summary?: string; who?: string[] } | null } | null
   usage: { has_key?: boolean; trial?: { funded?: boolean; remaining?: number } | null } | null
   outreach: { gmail?: { email?: string; status?: string } | null; sender?: { sender_name?: string; postal_address?: string; booking_url?: string | null } | null; daily_cap?: number; sent_24h?: number; account_sent_24h?: number } | null
   // The account's scan jobs; null when they could not be loaded, omitted by callers that only check the other rows.
@@ -14,7 +14,7 @@ export interface ReadinessInput {
   sources?: ServerSources | null
 }
 export type Fix = { kind: 'link'; href: string; label: string } | { kind: 'inline'; label: string }
-export interface Row { id: 'site' | 'play' | 'key' | 'sources' | 'gmail' | 'sender' | 'limit'; label: string; state: 'done' | 'todo' | 'unknown'; detail: string; fix: Fix | null }
+export interface Row { id: 'site' | 'brain' | 'play' | 'key' | 'sources' | 'gmail' | 'sender' | 'limit'; label: string; state: 'done' | 'todo' | 'unknown'; detail: string; fix: Fix | null }
 
 export function readinessRows(i: ReadinessInput): Row[] {
   const p = i.profile, u = i.usage, o = i.outreach
@@ -24,6 +24,13 @@ export function readinessRows(i: ReadinessInput): Row[] {
   const site: Row = !p ? { id: 'site', label: SITE, state: 'unknown', detail: 'could not check', fix: null }
     : missing.length === 0 ? { id: 'site', label: SITE, state: 'done', detail: `${p.business_name} - ${p.sells} (${p.website!.replace(/^https:\/\//, '')})`, fix: null }
     : { id: 'site', label: SITE, state: 'todo', detail: `missing ${missing.join(', ')}`, fix: { kind: 'inline', label: 'Add' } }
+  // The brain: the saved buyer profile (who buys it), which the first search is built on. It is built and edited in the
+  // Home setup steps, which the fix link reopens at that step.
+  const BRAIN = 'Buyer profile (who buys from you)'
+  const b = p?.buyer
+  const brain: Row = !p ? { id: 'brain', label: BRAIN, state: 'unknown', detail: 'could not check', fix: null }
+    : b && ((b.who?.length ?? 0) > 0 || !!b.summary?.trim()) ? { id: 'brain', label: BRAIN, state: 'done', detail: b.summary?.trim() || (b.who ?? []).join(', '), fix: null }
+    : { id: 'brain', label: BRAIN, state: 'todo', detail: 'not built yet: dazl drafts it from your website, you edit it', fix: { kind: 'link', href: '/app?setup=brain', label: 'Build' } }
   // Any search the account wrote itself counts, whatever it found; imports and test fixtures are not plays.
   const own = i.jobs ? i.jobs.filter(j => j.query && !j.csv_domain && !j.test_only).length : 0
   const play: Row = !i.jobs ? { id: 'play', label: 'First play', state: 'unknown', detail: 'could not check', fix: null }
@@ -55,7 +62,7 @@ export function readinessRows(i: ReadinessInput): Row[] {
   const cap = o?.daily_cap, used = sentToday(o)
   const limit: Row = typeof cap !== 'number' ? { id: 'limit', label: 'Daily sending limit', state: 'unknown', detail: 'could not check', fix: null }
     : { id: 'limit', label: 'Daily sending limit', state: 'done', detail: `up to ${cap} emails a day${used !== null ? `; ${used} sent in the last 24 hours` : ''}`, fix: null }
-  return [site, play, key, sources, gmail, sender, limit]
+  return [site, brain, play, key, sources, gmail, sender, limit]
 }
 
 // Sends counted against the cap: the whole account budget when reported, else first touches only (a lower bound).

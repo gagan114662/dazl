@@ -9,6 +9,8 @@ export interface Candidate {
   score: number
   excerpt: string
   event_date: string | null
+  published_at?: string | null // the page's publication day (label only; never the event date)
+  timing_note?: string | null // how the date was read from the page, or a season/"soon" label with no date (scan/page-timing.ts)
 }
 
 export type Verdict =

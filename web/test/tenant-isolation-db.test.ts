@@ -9,6 +9,7 @@ import { createPasswordUser, createSession, deleteSession, findPasswordUser, get
 import { resolveUser } from '../lib/auth-google.ts'
 import { applyStripeEvent, createCheckoutUrl, createPortalUrl } from '../lib/billing/stripe.ts'
 import { readPlan } from '../lib/plans.ts'
+import { rateLimit } from '../lib/rate-limit.ts'
 import { bothEngines } from './helpers/engines.ts'
 
 const TENANT_COLUMNS = ['tenant_id', 'user_id']
@@ -99,4 +100,17 @@ bothEngines("billing: a Stripe event for one tenant changes only that tenant's p
   await createCheckoutUrl(db, 'B', 'b@example.test', f)
   assert.ok(bodies.every(b => b.includes('cus_B') && !b.includes('cus_A')), bodies.join(' | '))
   assert.equal(await createPortalUrl(db, 'C', f), null) // a tenant with no customer gets no portal, never someone else's
+})
+
+// rate_limits is global (no tenant column), but the routes key every per-tenant limit by tenant id. One tenant using up
+// its allowance must never spend or block another's, on either engine.
+bothEngines("rate limits: tenant A using up its allowance never spends or blocks tenant B's", async ({ db, kind }) => {
+  const now = 1_800_000_000_000
+  const A = `${kind}-${'a'.repeat(32)}`, B = `${kind}-${'b'.repeat(32)}`
+  for (let i = 0; i < 3; i++) assert.equal((await rateLimit(`scan:${A}`, 3, 3_600_000, db, now + i)).ok, true)
+  assert.equal((await rateLimit(`scan:${A}`, 3, 3_600_000, db, now + 10)).ok, false) // A is out
+  for (let i = 0; i < 3; i++) assert.equal((await rateLimit(`scan:${B}`, 3, 3_600_000, db, now + 20 + i)).ok, true) // B has its full 3
+  assert.equal((await rateLimit(`scan:${B}`, 3, 3_600_000, db, now + 30)).ok, false)
+  const rows = await db.all<{ key: string; count: number }>('SELECT key, count FROM rate_limits WHERE key IN (?, ?) ORDER BY key', [`scan:${A}`, `scan:${B}`])
+  assert.deepEqual(rows.map(r => [r.key, Number(r.count)]), [[`scan:${A}`, 4], [`scan:${B}`, 4]])
 })
