@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
-import type { Db } from '../db/client.ts'
-import { audit, getEnabledCredential } from '../connectors/store.ts'
+import { asDb, type Db, type DbLike } from '../db/client.ts'
+import { readEnabledCredential, writeAudit } from '../connectors/store.ts'
 import type { Evidence } from '../sources/types.ts'
 import { advFlags, CONSENT_VERSION, connectorId, maxCallsPerHour, platformAllowed, scopeFor, type AdvPlatform, type ConsentScope } from './config.ts'
 import { tfSearch, tinyfishEnabled } from '../search/tinyfish.ts'
@@ -76,8 +76,8 @@ export function parseWorkerItems(raw: unknown): WorkerItem[] {
   return out
 }
 
-function callsLastHour(db: Database.Database, tenantId: string, platform: AdvPlatform): number {
-  return (db.prepare("SELECT count(*) AS n FROM connector_audit WHERE tenant_id = ? AND connector = ? AND status IN ('ok','empty','worker_error') AND created_at >= CAST(strftime('%s','now') AS INTEGER) - 3600").get(tenantId, connectorId(platform)) as { n: number }).n
+async function callsLastHour(db: Db, tenantId: string, platform: AdvPlatform, now: number): Promise<number> {
+  return Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM connector_audit WHERE tenant_id = ? AND connector = ? AND status IN ('ok','empty','worker_error') AND created_at >= ?", [tenantId, connectorId(platform), now - 3600]))!.n)
 }
 
 // X search AND-matches every token, so a full natural-language scan sentence returns
@@ -96,8 +96,10 @@ export function xSearchQuery(icp: { who: string[]; signals: string[] }): string 
 }
 
 // Runs the platforms this tenant chose for one scan. Every gate is re-checked here, so a stale
-// request cannot get around a flag, a kill switch, a missing consent or the rate limit.
-export async function collectAdvanced(db: Database.Database, tenantId: string, jobId: string, platforms: AdvPlatform[], query: string, deps: { worker?: WorkerFetch; master?: Buffer; env?: Record<string, string | undefined>; xQuery?: string; fetchImpl?: typeof fetch } = {}): Promise<(Evidence & { login_walled: boolean })[]> {
+// request cannot get around a flag, a kill switch, a missing consent or the rate limit. On the Db layer; today's runner
+// passes its raw handle, which runs on that same connection (DbLike).
+export async function collectAdvanced(store: DbLike, tenantId: string, jobId: string, platforms: AdvPlatform[], query: string, deps: { worker?: WorkerFetch; master?: Buffer; env?: Record<string, string | undefined>; xQuery?: string; fetchImpl?: typeof fetch; now?: number } = {}): Promise<(Evidence & { login_walled: boolean })[]> {
+  const db = asDb(store)
   const env = deps.env ?? process.env
   const flags = advFlags(env)
   const worker = deps.worker ?? httpWorker(env)
@@ -105,10 +107,10 @@ export async function collectAdvanced(db: Database.Database, tenantId: string, j
   for (const p of platforms) {
     const id = connectorId(p)
     const q = p === 'x' && deps.xQuery ? deps.xQuery : query
-    const skip = (status: string) => audit(db, { tenantId, connector: id, jobId, lookup: q, status, results: 0 })
-    if (!platformAllowed(p, flags)) { skip('disabled'); continue }
-    if (!hasConsent(db, tenantId, scopeFor(p))) { skip('no_consent'); continue }
-    if (callsLastHour(db, tenantId, p) >= maxCallsPerHour(p, env)) { skip('rate_limited'); continue }
+    const skip = (status: string) => writeAudit(db, { tenantId, connector: id, jobId, lookup: q, status, results: 0 })
+    if (!platformAllowed(p, flags)) { await skip('disabled'); continue }
+    if (!(await readConsent(db, tenantId, scopeFor(p)))) { await skip('no_consent'); continue }
+    if (await callsLastHour(db, tenantId, p, deps.now ?? Math.floor(Date.now() / 1000)) >= maxCallsPerHour(p, env)) { await skip('rate_limited'); continue }
     // X path 1: operator-key web search of the public index (TinyFish free tier, capped
     // per scan / tenant / day). No account session is used, so nothing here can get a
     // tenant's account banned. A search snippet is not the verbatim post text, so every
@@ -116,7 +118,7 @@ export async function collectAdvanced(db: Database.Database, tenantId: string, j
     // they are never auto-verified. Set X_VIA_SEARCH=0 to force the worker path.
     if (p === 'x' && env.X_VIA_SEARCH !== '0' && tinyfishEnabled(env)) {
       const r = await tfSearch(db, tenantId, `site:x.com ${q}`.slice(0, 300), {}, { searches: 0 }, { env, fetchImpl: deps.fetchImpl })
-      if (!r.ok) { skip(r.reason); continue }
+      if (!r.ok) { await skip(r.reason); continue }
       const items: (Evidence & { login_walled: boolean })[] = []
       for (const h of r.hits.slice(0, 20)) {
         if (!/^https:\/\/(www\.)?(x|twitter)\.com\/[^\s]{4,460}$/.test(h.url)) continue
@@ -124,7 +126,7 @@ export async function collectAdvanced(db: Database.Database, tenantId: string, j
         if (quote.length < 20) continue
         items.push({ source: id, url: h.url, title: h.title.slice(0, 200), quote, date: h.date, login_walled: true })
       }
-      audit(db, { tenantId, connector: id, jobId, lookup: q, status: items.length ? 'ok' : 'empty', results: items.length })
+      await writeAudit(db, { tenantId, connector: id, jobId, lookup: q, status: items.length ? 'ok' : 'empty', results: items.length })
       out.push(...items)
       continue
     }
@@ -132,10 +134,10 @@ export async function collectAdvanced(db: Database.Database, tenantId: string, j
     // throwaway sessions in its env (X_SESSION_COOKIE / REDDIT_SESSION_COOKIE),
     // which the site owner placed there for the connector fetchers. A worker with
     // neither answers no_session, which audits as worker_error here.
-    const session = getEnabledCredential(db, tenantId, id, deps.master) || ''
+    const session = (await readEnabledCredential(db, tenantId, id, deps.master)) || ''
     const items = await worker({ platform: p, query: q.slice(0, 300), session })
-    if (items === null) { skip('worker_error'); continue }
-    audit(db, { tenantId, connector: id, jobId, lookup: q, status: items.length ? 'ok' : 'empty', results: items.length })
+    if (items === null) { await skip('worker_error'); continue }
+    await writeAudit(db, { tenantId, connector: id, jobId, lookup: q, status: items.length ? 'ok' : 'empty', results: items.length })
     for (const it of items) out.push({ source: id, url: it.url, title: it.title, quote: it.quote, date: it.date, login_walled: it.login_walled })
   }
   return out
