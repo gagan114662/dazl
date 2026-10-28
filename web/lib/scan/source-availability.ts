@@ -12,7 +12,9 @@ export type Fix = { href: string; label: string }
 export interface SourceRow { id: string; label: string; usable: boolean; reason?: string; fix?: Fix }
 
 const OPERATOR = 'not set up on this server'
-const SOCIAL_LABEL: Record<string, string> = { x: 'X posts', linkedin: 'LinkedIn', reddit: 'Reddit' }
+const SOCIAL_LABEL: Record<string, string> = { x: 'X posts', linkedin: 'LinkedIn', reddit: 'Reddit', instagram: 'Instagram', facebook: 'Facebook', xiaohongshu: 'Xiaohongshu', bilibili: 'Bilibili' }
+// A platform's display name; an unknown id is capitalised rather than shown raw.
+export const socialLabel = (p: string) => SOCIAL_LABEL[p] ?? (p ? p[0].toUpperCase() + p.slice(1) : p)
 const SOCIAL_FIX: Fix = { href: '/app/settings#social', label: 'Set up' }
 
 // The sources every search uses when they are available. null input = could not be checked (never shown as usable).
@@ -29,14 +31,14 @@ export function coreSources(server: ServerSources | null, key: KeyState | null):
   ]
 }
 
-// Connected social sources: usable exactly when the Leads page offers the checkbox (consent, and connected + enabled or
-// the operator's web index). Unusable ones carry the first missing step.
+// Social sources this server offers: usable exactly when the Leads page offers the checkbox (consent, and connected +
+// enabled or the operator's web index); otherwise the first missing step the user can take. A platform the server does
+// not offer at all (the tier is off, or that platform is not switched on) is not listed: there is nothing to set up.
 export function socialSources(adv: Advanced | null): SourceRow[] {
-  if (!adv) return []
-  return adv.platforms.map(p => {
-    const label = SOCIAL_LABEL[p.platform] ?? p.platform
+  if (!adv || !adv.available) return []
+  return adv.platforms.filter(p => p.allowed !== false).map(p => {
+    const label = socialLabel(p.platform)
     const id = `social:${p.platform}`
-    if (!adv.available || p.allowed === false) return { id, label, usable: false, reason: OPERATOR }
     if (!p.consent) return { id, label, usable: false, reason: 'consent needed', fix: SOCIAL_FIX }
     if (p.operator_index || (p.connected && p.enabled)) return { id, label, usable: true }
     if (!p.connected) return { id, label, usable: false, reason: 'not connected', fix: SOCIAL_FIX }
