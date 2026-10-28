@@ -41,7 +41,8 @@ const ctx = <T extends object>(p: T) => ({ params: Promise.resolve(p) })
 const MARK = ['ASECRETCO4q7', 'ASECRETMUTUAL4q7', 'ASECRETCONTEXT4q7', 'ASECRETDRAFT4q7', 'ASECRETTHREAD4q7', 'asecretdomain4q7']
 
 function snapshot(db: Database.Database): string {
-  const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[]).map(t => t.name)
+  // rate_limits and app_leases are global platform tables (no tenant data); rateLimit() writes there through getDb().
+  const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('rate_limits', 'app_leases') ORDER BY name").all() as { name: string }[]).map(t => t.name)
   return JSON.stringify(tables.map(t => [t, db.prepare(`SELECT * FROM "${t}" ORDER BY rowid`).all()]))
 }
 

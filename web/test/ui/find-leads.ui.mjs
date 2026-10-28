@@ -8,7 +8,7 @@
 //   2. inside it: the built-in public sources, the website fill, Review a source, Companies posting roles;
 //      connected social sources only when consented+connected+enabled (others are absent, not offered);
 //   3. a free account does not see the Pro-only imports, only one line saying where they are; a Pro account does;
-//   4. a source ticked under More sources still reaches the scan: "run without reviewing" sends exactly one
+//   4. a source ticked under More sources still reaches the scan: Find leads sends exactly one
 //      POST /api/scan carrying it.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
@@ -85,7 +85,7 @@ try {
   await page.locator('main textarea').first().fill('Dental practice owners in Ohio opening a new location')
   await more.getByText('Also search public GitHub repositories').click()
   assert.deepEqual(writes, [], 'nothing written before a run')
-  await page.getByRole('button', { name: 'or run without reviewing the profile' }).click()
+  await page.getByRole('button', { name: 'Find leads' }).click()
   await page.waitForTimeout(800)
   assert.equal(scanBodies.length, 1)
   assert.deepEqual(scanBodies[0].sources?.adapters, ['github'])

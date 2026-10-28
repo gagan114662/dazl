@@ -16,6 +16,11 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
 - **CI** (`.github/workflows/web-ci.yml`) runs the full suite twice, once on SQLite and once with a Postgres 16 service, and a schema drift check fails when the code's tables and the PG migrations differ.
 - **Step 2b (auth + billing on `Db`):** sessions, password sign-in/sign-up, Google sign-in (`users`, `sessions`, `oauth_identities`), and the Stripe webhook, checkout and portal (`tenant_plans`, `stripe_events`) now go through `Db`. They run against both engines in tests (`test/helpers/engines.ts`). Sync readers that other areas still call (`getPlan`, `setPlan`, `scanQuota`, and the seller- and buyer-profile functions in `auth-db.ts`) stay on raw SQLite until those areas are ported.
 - **Mixed mode on SQLite:** ported and unported code share one connection. `Db.tx` bodies are generators that can only yield statements. On SQLite, a body runs synchronously inside one better-sqlite3 transaction, so no other request (raw or ported) can run during it, see it half-done or join it. `test/mixed-mode.test.ts` runs concurrent auth/billing transactions, including a rollback, alongside raw requests on one connection.
+- **Step 2c (SEO tables on `Db`):**
+  - `seo_audits`, `seo_briefs` and `newsjacks` (`lib/seo/audit.ts`, `brief.ts`, `newsjack.ts`, and the `/api/seo/audit`, `/brief` and `/newsjack` routes) now go through `Db`. They live in Postgres when `DATABASE_URL` is set.
+  - `test/seo-store.test.ts` runs their write and read paths with two tenants on both engines.
+  - The tenant's AI key for briefs and drafts is still read from the SQLite key store until `tenant_llm_keys` is ported.
+  - The route-test harness (`test/helpers/tenant-route-db.ts`) points `getDb()` at the same fixture store as `getScanDb()`, as in the app. The route isolation tests therefore also cover the ported routes, and the shared rate limiter writes to that store. The snapshots skip the two global platform tables.
 - **Step 3c (shared work queue across instances):** `lib/queue/db.ts` `DbQueue` is the queue contract (`lib/queue/types.ts`) on `Db`, so on Postgres any number of instances share one queue.
   - A claim takes the next fencing token with `UPDATE work_queue_meta … RETURNING`, a row lock held to commit, so claims are serialized across instances and the per-tenant and global in-flight caps count only committed claims. It then selects the item `FOR UPDATE SKIP LOCKED`.
   - `complete` and `fail` match on the claim token: a stale holder changes nothing.
@@ -35,7 +40,7 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
   - Errors are captured by `lib/ops/errors.ts` as one JSON line on stderr. Every field is built in code, scrubbed free text, or checked against its exact shape and replaced when it does not match:
     - `where`: a route template or worker name, never a concrete path.
     - `tenant`: a `users.id`, 32 lowercase hex characters.
-    - `ref`: a Stripe event id from a signature-verified webhook.
+    - `ref`: a Stripe event id from a signature-verified webhook, or a scan job id (24 lowercase hex).
     - `method` and `source`: fixed sets.
     - `error.name` and `cause.name`: a class name ending in Error/Exception, or one of the app's own error classes.
     - `message` and stack frames: scrubbed and bounded.
@@ -46,9 +51,11 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
     - every uncaught route, page or server-action error (Next `onRequestError` in `instrumentation.ts`, tenant from the session cookie, lookup bounded to 500 ms);
     - the auth, billing and Gmail callback routes' own catches;
     - the tick's per-tenant workers;
-    - uncaught process exceptions (monitor only, exit behaviour unchanged).
+    - uncaught process exceptions (monitor only, exit behaviour unchanged);
+    - unhandled promise rejections (`lib/ops/process-errors.ts`). Next's own listener keeps the server up. If ours is the only listener, it rethrows after recording, so bare Node still exits;
+    - scan runner and queue runner crashes (`lib/scan/crash.ts`). A rejection that escapes `runJob`'s own failure handling is recorded with the tenant and job id. The job is marked `failed` with `error = 'crashed'`, fenced on `status = 'running'` and the same `attempts`, instead of waiting in `running` for the stale-lease reaper. On the queue path the queue item is failed too, not retried, since a crash would repeat.
   - Alert hook: with `OPS_ALERT_WEBHOOK_URL` (https only) set, the same scrubbed record is POSTed. It is throttled to one per fingerprint per 10 min and 20 per 10 min overall, fire and forget.
-  - Not yet: the scan runner and queue runner crash catches (`lib/scan/runner.ts`, `lib/scan/queue-runner.ts`) still use `console.error`. Those files belong to the yield stack (#224/#226/#230), so they move after it merges. Also not done yet: the backup restore drill and the deploy checklist (step 6b).
+  - Not yet: other diagnostic `console.error` calls inside the scan pipeline (handled per-step failures, not crashes). Also not done yet: the backup restore drill and the deploy checklist (step 6b).
 - **Still on SQLite:** every other module. Production keeps running on SQLite until cutover.
 - **SQLite-only SQL in queries:** about 18 queries use `rowid` (for example as an ORDER BY tie-break), which PG does not have. They need rewriting as each area is ported.
 

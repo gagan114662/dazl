@@ -47,11 +47,18 @@ const JOINERS = new Set(['of', 'for', '&', 'de', 'da', 'do', 'del', 'des', 'du',
 // A part of the request about a FUNDING event is a different signal, not a role: ("raised seed funding" OR "sales") on a
 // job board matches no posting. Funding words are cut from role extraction unless the same part also talks about hiring.
 const FUNDING = word('rais(?:e|ed|es|ing)|fund(?:ing|ed|s)?|seed|series [a-e]|rounds?|invest(?:ed|ment|ments|ors?)|venture|valuation|financiamento|investimento|financiación|inversión|levée|finanzierung|finanziamento')
+// Two more parts of a request that are NOT roles, found by running the exact NYC request of #204 through the planner: a part about
+// an OPENING event ("opened a new location") is a different signal like funding, and a sentence that only says what to DELIVER
+// ("Provide dated source evidence and a practice manager contact.", "Include founder contacts and dated evidence.") names what
+// the user wants back, not a posting to search for. Both are cut from role extraction only (removal, never addition); the
+// profile, the window and every gate still see the whole request.
+const OPENING = word('open(?:ed|ing|s)?|launch(?:ed|es|ing)?|expan(?:d|ded|ds|ding|sion)|new (?:location|locations|office|offices|branch|branches|clinic|clinics|store|stores)|locations?')
+const DELIVERABLE = /^\s*(?:please\s+)?(?:provide|include|including|give|return|show|list|add|attach|supply|with)\b/i
 function phrasesIn(text: string, places: Set<string>): string[] {
   const out: string[] = []
   for (const part of text.toLowerCase().split(SEPARATOR)) {
     if (!part) continue
-    if (FUNDING.test(part) && !HIRING.test(part)) continue
+    if ((FUNDING.test(part) || OPENING.test(part)) && !HIRING.test(part)) continue
     let run: string[] = []; let last: string[] = []
     for (const w of tokens(part)) {
       const keep = [...w].length >= 2 && !/^\d+$/.test(w) && !NOISE.has(w) && !places.has(w) && !JOINERS.has(w)
@@ -127,7 +134,7 @@ export function positiveRequestText(text: string): string {
 }
 export const stripNegatedHiring = positiveRequestText
 export function roleRequestText(request: string): string {
-  return positiveRequestText(request)
+  return positiveRequestText(request.split(/(?<=[.;!?])\s+|\n+/).filter(x => !DELIVERABLE.test(x)).join(' '))
     .replace(REQ_CLAUSE, (_m, rest: string) => HIRING.test(rest) ? ` ${rest} ` : ' . ')
     .replace(WINDOW_CLAUSE, ' ').replace(/\s+/g, ' ').trim()
 }
@@ -141,8 +148,10 @@ export function rolePhrases(request: string, signals: string[], where: string[])
 // places, so at most 6 direct queries; the runner leaves the rest of the search budget to the model's queries.
 // Order is HOST-major (every place on the first host, then every place on the second) so a truncated budget slice keeps
 // one direct query per place before a second host for any place (Instinct review of #215).
+// Does the request (or its profile signals) ask for a hiring signal, after cutting negated / excluded clauses? Independent of places and roles.
+export const hasHiringSignal = (request: string, signals: string[]): boolean => HIRING.test(stripNegatedHiring(`${request} ${signals.map(stripNegatedHiring).join(' ')}`))
 export function directQueries(request: string, signals: string[], where: string[]): string[] {
-  if (!HIRING.test(stripNegatedHiring(`${request} ${signals.map(stripNegatedHiring).join(' ')}`))) return []
+  if (!hasHiringSignal(request, signals)) return []
   const places = [...new Set(where.map(w => w.replace(/[\u0000-\u001f"()]/g, ' ').replace(/\s+/g, ' ').trim()).filter(w => w.length >= 2 && w.length <= 60))].slice(0, 3)
   const roles = rolePhrases(request, signals, where).map(r => `"${r}"`)
   if (places.length === 0 || roles.length === 0) return [] // never every state, never every role
