@@ -37,8 +37,8 @@ test('pure: per-source progress — status, candidates found, accepted; unknown 
     { collector: 'search:anthropic', status: 'empty', evidence_count: 0, candidate_count: 0, verified_count: 0, review_count: 0 },
   ]
   const live = progressOf(rows, 'running'); const by = (p: ReturnType<typeof progressOf>, s: string) => p.find(x => x.source === s)!
-  assert.deepEqual(by(live, 'search:tinyfish'), { source: 'search:tinyfish', status: 'ok', candidates: 4, accepted: 2, review: 1, rejected: 1 })
-  assert.deepEqual(by(live, 'search:news'), { source: 'search:news', status: 'running', candidates: null, accepted: null, review: null, rejected: null })
+  assert.deepEqual(by(live, 'search:tinyfish'), { source: 'search:tinyfish', state: 'done', status: 'ok', candidates: 4, accepted: 2, review: 1, rejected: 1 })
+  assert.deepEqual(by(live, 'search:news'), { source: 'search:news', state: 'running', status: 'running', candidates: null, accepted: null, review: null, rejected: null })
   assert.equal(by(live, 'adapter:jobboards').status, 'skipped'); assert.equal(by(live, 'advanced:x').status, 'unavailable', 'no data from it is not proof that it failed'); assert.equal(by(live, 'search:anthropic').status, 'empty')
   assert.equal(by(progressOf(rows, 'done'), 'search:news').status, 'failed', 'started but never reported, and the scan is over')
   assert.equal(sourceStatusOf('started', true), 'running')
