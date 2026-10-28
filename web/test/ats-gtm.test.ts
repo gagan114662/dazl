@@ -118,3 +118,60 @@ test('Juicebox-type identity: a board found under a domain matched only by NAME 
   const r2 = own.db.prepare("SELECT value, confidence FROM lead_enrichments WHERE kind = 'hiring' ORDER BY value").all() as { value: string; confidence: number | null }[]
   assert.ok(r2.length >= 1 && r2.every(r => !r.value.startsWith('Unconfirmed') && r.confidence !== null), JSON.stringify(r2))
 })
+
+// ---- #273 review: identity must be established independently; contradictory company domains across ALL included postings fail closed ----
+function leadDb(domain: string | null, basis: string | null) {
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db); migrateEvents(db)
+  const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' }); db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(jobId)
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url) VALUES ('lead1', ?, '', 'Brightloop', ?, 'raised a seed round', 'https://news.example/1')").run(jobId, domain)
+  if (domain && basis) db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES ('D1', 'lead1', 'u1', 'sitecrawl', 'domain', ?, 'x', NULL, 'https://brightloop.io/', '2026-10-28', 1)").run(`${domain}|${basis}`)
+  return { db, jobId }
+}
+const gh = (content1: string, content3 = 'Lead sales') => ({
+  ...ghBoard, [GH]: { name: 'Brightloop, Inc.' },
+  [`${GH}/jobs/1`]: { ...(ghBoard[`${GH}/jobs/1`] as object), content: content1 }, [`${GH}/jobs/3`]: { ...(ghBoard[`${GH}/jobs/3`] as object), content: content3 },
+})
+async function enrich(db: Database.Database, jobId: string, board: Record<string, unknown>) {
+  const realNow = Date.now; Date.now = () => NOW
+  try { await enrichJobSignals(db, 'u1', jobId, { fetchImpl: route(board) }) } finally { Date.now = realNow }
+  return {
+    gtm: db.prepare("SELECT value, label, confidence FROM lead_enrichments WHERE connector LIKE 'signals:%-gtm'").all() as { value: string; label: string; confidence: number | null }[],
+    events: (db.prepare("SELECT count(*) AS n FROM company_events WHERE event_type = 'hiring_surge'").get() as { n: number }).n,
+  }
+}
+
+test('enrichJobSignals: a lead with NO domain and a Greenhouse board whose NAME equals the company is Unconfirmed, no confidence, no history (the board’s own name claim is not proof)', async () => {
+  const { db, jobId } = leadDb(null, null)
+  const r = await enrich(db, jobId, gh('Join Brightloop in London'))
+  assert.equal(r.gtm.length, 1); assert.match(r.gtm[0].value, /^Unconfirmed: 2 sales\/GTM roles/); assert.equal(r.gtm[0].confidence, null); assert.match(r.gtm[0].label, /not established/); assert.equal(r.events, 0)
+})
+test('enrichJobSignals: a heuristic (name-probe) domain stays Unconfirmed; an established domain is scored', async () => {
+  const probe = leadDb('brightloop.io', 'name_probe'); const a = await enrich(probe.db, probe.jobId, gh('Join Brightloop in London'))
+  assert.match(a.gtm[0].value, /^Unconfirmed:/); assert.equal(a.gtm[0].confidence, null); assert.equal(a.events, 0)
+  const own = leadDb('brightloop.io', 'evidence_own_domain'); const b = await enrich(own.db, own.jobId, gh('Join Brightloop in London'))
+  assert.doesNotMatch(b.gtm[0].value, /Unconfirmed/); assert.equal(b.gtm[0].confidence, 70)
+})
+test('enrichJobSignals: a LATER posting naming a different company domain (brightloop.com) is not masked by the first (brightloop.io): the board corroborates nothing', async () => {
+  for (const [domain, basis] of [['brightloop.io', 'evidence_own_domain'], ['brightloop.io', 'name_probe'], [null, null]] as const) {
+    const { db, jobId } = leadDb(domain, basis)
+    const r = await enrich(db, jobId, gh('Write to jobs@brightloop.io', 'Write to jobs@brightloop.com'))
+    assert.deepEqual(r.gtm, [], `${domain}/${basis}: contradictory boards write nothing, not even an unconfirmed row`); assert.equal(r.events, 0)
+  }
+})
+test('enrichJobSignals: several company domains inside ONE posting (brightloop.io and brightloop.com) are contradictory too', async () => {
+  const { db, jobId } = leadDb('brightloop.io', 'evidence_own_domain')
+  const r = await enrich(db, jobId, gh('Apply at jobs@brightloop.io or see https://brightloop.com/careers'))
+  assert.deepEqual(r.gtm, [])
+})
+test('contradictory domains across Lever and Ashby postings fail closed as well; agreeing ones pass', async () => {
+  const lever = (a: string, b: string) => ({ 'https://api.lever.co/v0/postings/brightloop?mode=json': [
+    { text: 'Account Executive', hostedUrl: 'https://jobs.lever.co/brightloop/a', createdAt: NOW - 5 * 86_400_000, descriptionPlain: a },
+    { text: 'Sales Manager', hostedUrl: 'https://jobs.lever.co/brightloop/b', createdAt: NOW - 6 * 86_400_000, descriptionPlain: b }] })
+  assert.equal(await atsGtmHiring('Brightloop', 'brightloop.io', route(lever('see brightloop.io', 'email x@brightloop.com')), { now: NOW }), null)
+  assert.ok(await atsGtmHiring('Brightloop', 'brightloop.io', route(lever('see https://brightloop.io', 'email x@brightloop.io')), { now: NOW }))
+  const ashby = (a: string, b: string) => ({ 'https://api.ashbyhq.com/posting-api/job-board/brightloop': { jobs: [
+    { title: 'Sales Development Representative', jobUrl: 'https://jobs.ashbyhq.com/brightloop/1', isListed: true, publishedAt: d(7), descriptionPlain: a },
+    { title: 'Account Executive', jobUrl: 'https://jobs.ashbyhq.com/brightloop/2', isListed: true, publishedAt: d(8), descriptionPlain: b }] } })
+  assert.equal(await atsGtmHiring('Brightloop', 'brightloop.io', route(ashby('https://brightloop.io', 'https://brightloop.com')), { now: NOW }), null)
+  assert.equal(await atsGtmHiring('Brightloop', null, route(ashby('https://brightloop.io', 'https://brightloop.com')), { now: NOW }), null, 'also without a lead domain')
+})
