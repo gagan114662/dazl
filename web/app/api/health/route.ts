@@ -1,9 +1,11 @@
 import { connection } from 'next/server'
-import { liveResponse } from '@/lib/ops/health-route'
+import { healthResponse } from '@/lib/ops/health-route'
 
-// Liveness (lib/ops/health-route.ts): the process answers, with the commit it serves. No store is touched. Readiness
-// (the store, its schema, the scan queue) is /api/ready; ops/safe_launch.py waits on that before a cutover.
+// Health (lib/ops/health-route.ts): the commit this process serves and whether each configured database answers
+// (SQLite; Postgres when DATABASE_URL is set). 503 when one does not. The deploy smoke check (scripts/health-smoke.mjs)
+// requires it ok with the new commit. Liveness alone, touching no store, is /api/health/live; full readiness (schema,
+// queue, env) is /api/ready, which ops/safe_launch.py waits on before a production cutover.
 export async function GET() {
   await connection() // opt out of prerendering so the answer is per request
-  return liveResponse()
+  return healthResponse()
 }
