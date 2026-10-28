@@ -27,7 +27,7 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
   - Errors are captured by `lib/ops/errors.ts` as one JSON line on stderr. Every field is built in code, scrubbed free text, or checked against its exact shape and replaced when it does not match:
     - `where`: a route template or worker name, never a concrete path.
     - `tenant`: a `users.id`, 32 lowercase hex characters.
-    - `ref`: a Stripe event id from a signature-verified webhook.
+    - `ref`: a Stripe event id from a signature-verified webhook, or a scan job id (24 lowercase hex).
     - `method` and `source`: fixed sets.
     - `error.name` and `cause.name`: a class name ending in Error/Exception, or one of the app's own error classes.
     - `message` and stack frames: scrubbed and bounded.
@@ -38,9 +38,11 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
     - every uncaught route, page or server-action error (Next `onRequestError` in `instrumentation.ts`, tenant from the session cookie, lookup bounded to 500 ms);
     - the auth, billing and Gmail callback routes' own catches;
     - the tick's per-tenant workers;
-    - uncaught process exceptions (monitor only, exit behaviour unchanged).
+    - uncaught process exceptions (monitor only, exit behaviour unchanged);
+    - unhandled promise rejections (`lib/ops/process-errors.ts`). Next's own listener keeps the server up. If ours is the only listener, it rethrows after recording, so bare Node still exits;
+    - scan runner and queue runner crashes (`lib/scan/crash.ts`). A rejection that escapes `runJob`'s own failure handling is recorded with the tenant and job id. The job is marked `failed` with `error = 'crashed'`, fenced on `status = 'running'` and the same `attempts`, instead of waiting in `running` for the stale-lease reaper. On the queue path the queue item is failed too, not retried, since a crash would repeat.
   - Alert hook: with `OPS_ALERT_WEBHOOK_URL` (https only) set, the same scrubbed record is POSTed. It is throttled to one per fingerprint per 10 min and 20 per 10 min overall, fire and forget.
-  - Not yet: the scan runner and queue runner crash catches (`lib/scan/runner.ts`, `lib/scan/queue-runner.ts`) still use `console.error`. Those files belong to the yield stack (#224/#226/#230), so they move after it merges. Also not done yet: the backup restore drill and the deploy checklist (step 6b).
+  - Not yet: other diagnostic `console.error` calls inside the scan pipeline (handled per-step failures, not crashes). Also not done yet: the backup restore drill and the deploy checklist (step 6b).
 - **Still on SQLite:** every other module. Production keeps running on SQLite until cutover.
 - **SQLite-only SQL in queries:** about 18 queries use `rowid` (for example as an ORDER BY tie-break), which PG does not have. They need rewriting as each area is ported.
 
