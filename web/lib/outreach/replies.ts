@@ -2,6 +2,7 @@ import { tableExists } from './send-budget.ts'
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getAccessToken, type OAuthDeps } from '../gmail/oauth.ts'
+import { isStaging } from '../staging.ts'
 import { auditAt, recordBounce } from './autopilot.ts'
 import { grantConsent, revokeAll } from './ledger.ts'
 import { norm } from './store.ts'
@@ -93,6 +94,7 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
   const f = d.fetchImpl ?? fetch
   let token: string
   try { token = await getAccessToken(db, tenantId, d) } catch { return { ...out, error: 'gmail_unavailable' } }
+  if (isStaging((d.env ?? process.env) as Record<string, string | undefined>)) return out // stubbed Gmail: no mailbox to read
   const get = async (path: string) => { const r = await f(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) }); if (!r.ok) throw new Error(`gmail_${r.status}`); return r.json() }
 
   const seqPriority = tableExists(db, 'sequences') ? " OR id IN (SELECT message_id FROM sequences WHERE tenant_id = ? AND status IN ('approved','active'))" : ''
