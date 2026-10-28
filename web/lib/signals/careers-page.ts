@@ -8,7 +8,7 @@ import { isGtmRole } from './ats-gtm.ts'
 import { parseRobots, type Get } from '../connectors/sitecrawl.ts'
 
 export interface CareersVacancy { url: string; title: string; quote: string; retrievedAt: number; pageText: string } // pageText: the page's visible text (capped), so the caller can check it names the company and its place
-export type CareersReason = 'job_closed' | 'job_company_mismatch' | 'job_unverified' | 'found' | 'robots_unreachable' | 'robots_disallow' | 'no_careers_page' | 'no_open_sales_role' | 'closed_marker' | 'wrong_domain'
+export type CareersReason = 'job_role_mismatch' | 'job_closed' | 'job_company_mismatch' | 'job_unverified' | 'found' | 'robots_unreachable' | 'robots_disallow' | 'no_careers_page' | 'no_open_sales_role' | 'closed_marker' | 'wrong_domain'
 export interface CareersResult { vacancy: CareersVacancy | null; reason: CareersReason; pages: number }
 
 const PATHS = ['/careers', '/jobs', '/join-us', '/join', '/about/careers', '/company/careers', '/work-with-us']
@@ -78,8 +78,22 @@ export function openJobsFor(html: string, pageUrl: string, site: string): { titl
 //                         domain's name, or the posting itself names the company (never a board that merely exists). Another company's posting is rejected.
 const norm = (x: string) => x.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/&/g, 'and').replace(/\b(inc|ltd|llc|limited|plc|corp|co|the|gmbh)\b/g, ' ').replace(/[^a-z0-9]+/g, '')
 const json = (b: string): any => { try { return JSON.parse(b) } catch { return null } }
-export type JobVerdict = { ok: true; text: string } | { ok: false; reason: 'job_closed' | 'job_company_mismatch' | 'job_unverified' }
-async function verifyAtsJob(url: URL, get: Get, site: string, company: string | undefined): Promise<JobVerdict> {
+export type JobVerdict = { ok: true; text: string; title: string } | { ok: false; reason: 'job_closed' | 'job_company_mismatch' | 'job_unverified' | 'job_role_mismatch' }
+// The role comes from the POSTING itself (its JSON title or its own heading), never from the index label. It must be a sales / GTM role and agree with what the index
+// claimed: same role once locations / levels after a dash, pipe, comma or bracket are dropped ("Account Executive - London" ~ "Account Executive"); a different role
+// behind the same link (a Backend Engineer behind "Account Executive") is rejected.
+const coreRole = (t: string) => norm2(t.split(/\s[-\u2013\u2014|\u00b7]\s|\s*[,(\[]/)[0] ?? t)
+const norm2 = (x: string) => x.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim()
+export function roleAgrees(indexTitle: string, postingTitle: string): boolean {
+  if (!isGtmRole(postingTitle)) return false
+  const a = coreRole(indexTitle), b = coreRole(postingTitle)
+  if (!a || !b) return false
+  if (a === b) return true
+  const wa = new Set(a.split(' ')), wb = new Set(b.split(' '))
+  const sub = (x: Set<string>, y: Set<string>) => [...x].every(w => y.has(w))
+  return sub(wa, wb) || sub(wb, wa)
+}
+async function verifyAtsJob(url: URL, get: Get, site: string, company: string | undefined, indexTitle: string): Promise<JobVerdict> {
   const host = url.hostname.toLowerCase(), segs = url.pathname.split('/').filter(Boolean), token = (segs[0] ?? '').toLowerCase()
   let title = '', body = '', open = false
   if (host.endsWith('greenhouse.io')) {
@@ -110,11 +124,12 @@ async function verifyAtsJob(url: URL, get: Get, site: string, company: string | 
   const ownBoard = tokenN.length >= 3 && tokenN === slug
   const namesCompany = !!company && norm(company).length >= 3 && norm(plain).includes(norm(company))
   if (!ownBoard && !namesCompany) return { ok: false, reason: 'job_company_mismatch' }
-  return { ok: true, text: plain.slice(0, 6000) }
+  if (!roleAgrees(indexTitle, title)) return { ok: false, reason: 'job_role_mismatch' } // the posting is a different role (or not a sales / GTM one) than the index claimed
+  return { ok: true, text: plain.slice(0, 6000), title: title.slice(0, 120) }
 }
 async function verifyJob(hit: { title: string; jobUrl: string }, get: Get, site: string, company: string | undefined, robots: { allows: (p: string) => boolean }): Promise<JobVerdict> {
   let u: URL; try { u = new URL(hit.jobUrl) } catch { return { ok: false, reason: 'job_unverified' } }
-  if (ATS_HOST.test(u.hostname.toLowerCase())) return verifyAtsJob(u, get, site, company)
+  if (ATS_HOST.test(u.hostname.toLowerCase())) return verifyAtsJob(u, get, site, company, hit.title)
   if (!robots.allows(u.pathname)) return { ok: false, reason: 'job_unverified' }
   const r = await get(u.toString())
   if (!r) return { ok: false, reason: 'job_unverified' }
@@ -124,8 +139,14 @@ async function verifyJob(hit: { title: string; jobUrl: string }, get: Get, site:
   if (registrable(f.hostname) !== registrable(site)) return { ok: false, reason: 'job_company_mismatch' }
   const text = flat(r.body)
   if (CLOSED.test(text) || /\b(?:this )?(?:job|position|role|posting|vacancy) (?:is |has )?(?:closed|expired|no longer|been (?:filled|removed|closed))\b/i.test(text)) return { ok: false, reason: 'job_closed' }
-  if (!norm(text).includes(norm(hit.title))) return { ok: false, reason: 'job_closed' } // the page no longer shows this job (a redirect to a listing, a generic page)
-  return { ok: true, text }
+  // redirected back to the index / a listing: the job is gone
+  const indexPath = (() => { try { return new URL(hit.jobUrl).pathname } catch { return '' } })()
+  if (f.pathname.replace(/\/$/, '') !== indexPath.replace(/\/$/, '') && !/job|role|position|opening|vacanc/i.test(f.pathname)) return { ok: false, reason: 'job_closed' }
+  // the role is read from the page's OWN heading (h1, else <title>), never from the index label
+  const heading = decode((/<h1\b[^>]*>([\s\S]*?)<\/h1>/i.exec(r.body)?.[1] ?? /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(r.body)?.[1] ?? '').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim()
+  if (!heading) return { ok: false, reason: 'job_unverified' }
+  if (!roleAgrees(hit.title, heading)) return { ok: false, reason: 'job_role_mismatch' }
+  return { ok: true, text, title: heading.slice(0, 120) }
 }
 
 export async function careersSalesVacancy(domain: string, get: Get, opts: { now?: number; signal?: AbortSignal; company?: string } = {}): Promise<CareersResult> {
@@ -159,8 +180,8 @@ export async function careersSalesVacancy(domain: string, get: Get, opts: { now?
     for (const hit of hits.slice(0, 3)) {
       const v = await verifyJob(hit, get, site, opts.company, robots)
       if (!v.ok) { verdict = v.reason; continue }
-      const at = text.indexOf(hit.title)
-      return { vacancy: { url: hit.jobUrl.slice(0, 500), title: hit.title.slice(0, 120), quote: (at >= 0 ? text.slice(Math.max(0, at - 60), at + hit.title.length + 160) : hit.title).slice(0, 300), retrievedAt: Math.floor((opts.now ?? Date.now()) / 1000), pageText: `${text} ${v.text}`.slice(0, 6000) }, reason: 'found', pages }
+      const shown = v.title, vt = v.text, at = vt.indexOf(shown)
+      return { vacancy: { url: hit.jobUrl.slice(0, 500), title: shown, quote: (at >= 0 ? vt.slice(Math.max(0, at - 60), at + shown.length + 160) : shown).slice(0, 300), retrievedAt: Math.floor((opts.now ?? Date.now()) / 1000), pageText: `${text} ${v.text}`.slice(0, 6000) }, reason: 'found', pages }
     }
   }
   if (verdict) return { vacancy: null, reason: verdict, pages }
