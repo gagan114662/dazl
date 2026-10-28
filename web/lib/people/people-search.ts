@@ -97,7 +97,7 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
         .filter((x): x is { h: SearchHit; p: { name: string; title: string } } => !!x.p && titleMatches(x.p.title, roleText).length > 0)
         // Same company NAME is not the same company: when the request names a place, the result's own text must name it (a same-name
         // practice in another state is a different business). No place named in the result = unconfirmed = not attached.
-        .filter(x => { const v = placeAgreement(`${x.h.title} ${x.h.snippet ?? ''}`, where); return v === 'agrees' || v === 'no_geography' })
+        .filter(x => { const v = placeAgreement(`${x.h.title} ${x.h.snippet ?? ''}`, where, l.company); return v === 'agrees' || v === 'no_geography' })
         .sort((a, b) => titleMatches(b.p.title, roleText).length - titleMatches(a.p.title, roleText).length)
       const seen = new Set<string>()
       for (const { h, p } of people) {
