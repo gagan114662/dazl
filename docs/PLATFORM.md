@@ -157,6 +157,38 @@ These steps are development work behind flags and tests. Merging them does not c
      - Pro ($49/mo) says "Fair-use limits apply", but the code has no Pro limit (`scansPerMonth: null`), and Settings shows "unlimited".
 6. **Ops.** `/api/health` checks the DB and the worker heartbeat. Add a structured error log with an alert hook, a scheduled backup restore drill (extends `scripts/backup/restore-drill.ts`), and a deploy checklist in `web/docs/DEPLOY.md`.
 
+## Plan: scan jobs to Postgres (for coordination with the yield session; no code yet)
+
+`scan_jobs` is the hub of the scan pipeline. 53 files read or write it: 23 in `lib/scan`, 11 in `lib/outreach`, plus search, people, warm, connectors and Cal.com. That is about 120 statements, 54 of them joins (leads → `scan_jobs.user_id` is how lead rows are tenant-scoped). `leads`, `lead_sources`, `scan_source_runs`, `scan_source_stats`, `scan_model_calls`, `csv_batches` and `commenter_batches` reference it by foreign key. They form one cluster and must move to Postgres together: a join cannot span SQLite and Postgres.
+
+Steps, one small PR each. Nothing changes where the rows live until step 5.
+1. **Read and write functions on `Db`, still on SQLite.**
+   - Port `lib/scan/store.ts` (create, get, list, cancel, export, reap) to `Db`, with two-engine tests.
+   - Keep sync wrappers for callers not yet ported, as was done for `getPlan` and `setPlan`.
+   - Platform owns this; the yield session reviews the signatures.
+2. **`finish()` and `failOrRetry` as `Db.tx` generators.**
+   - The leads insert, the source-run ledger and the job row update stay one transaction.
+   - They stay fenced on `status = 'running' AND attempts = ?`.
+   - Yield owns this, because it is runner code. Platform pairs on the transaction shape.
+3. **Claiming on Postgres.**
+   - `claimKeyedJob` becomes a `FOR UPDATE SKIP LOCKED` claim on `scan_jobs`. A loser takes the next job instead of stopping its loop.
+   - Alternatively the queue bridge moves onto `DbQueue` (step 3c). It already binds queue claims to domain rows by id and attempts.
+   - Add a `claimed_by` instance id, so shutdown requeue returns only this instance's jobs.
+   - `SCAN_MAX_CONCURRENT` becomes a global count of running rows (replacing `run-slots.ts`).
+   - The stale reaper becomes the lease expiry. Requeue or fail stays bounded by `MAX_ATTEMPTS`.
+4. **The other readers.** Outreach, people, warm and the rest move their `scan_jobs` and `leads` joins to `Db`, each with its owning session. Until every reader of the cluster is on `Db`, `DATABASE_URL` must not be set in production. Mixed mode is safe only on SQLite.
+5. **Cutover**, owner-authorized (see "Production go/no-go" below):
+   - Copy the cluster with `scripts/pg-migrate/rehearse-full.ts`.
+   - Verify counts and checksums.
+   - Switch `DATABASE_URL` for all instances at once.
+6. **Test that gates step 5.** Two app instances on one Postgres run N stubbed scans:
+   - each scan runs exactly once;
+   - a killed instance's scan is requeued or failed;
+   - leads are written once;
+   - tenant isolation holds on every scan route.
+
+The quote, identity and date gates in the scan pipeline do not change in any step. Each step moves storage only.
+
 ## Production go/no-go (separate from merging the PRs above)
 
 Each item below needs **its own explicit owner authorization**. Merging a step's PR or approving this doc authorizes none of them:
