@@ -102,3 +102,22 @@ test('JOINED EVIDENCE, controls: a country-level conflict (Canada) and an absent
   assert.match(state((await run({ board: true, place: 'Toronto, Canada' })).lead), /^held:/)
   assert.match(state((await run({ board: true, press: false })).lead), /^held:/)
 })
+
+// ---- #327 review (head fc380a2): the place comparison is case- and whitespace-insensitive ----
+test('CASE: lowercase / uppercase / oddly spaced "manchester" funding + a London job must NOT pass (mismatched cities fail regardless of casing)', async () => {
+  for (const place of ['manchester', 'MANCHESTER', 'Manchester', 'greater  manchester']) {
+    const r = await run({ board: true, place })
+    assert.equal(state(r.lead), 'held:no_event_evidence', `${place}: ${JSON.stringify([r.lead, r.rows])}`)
+  }
+})
+test('CASE: the SAME city in a different case still passes - "london" / "LONDON" funding + a London job -> verifier-passed (not scoreboard-qualified)', async () => {
+  for (const place of ['london', 'LONDON']) assert.equal(state((await run({ board: true, place })).lead), 'verifier-passed', place)
+})
+test('namesOtherUkCity: case and spacing are normalized; ordinary English words never name a city', async () => {
+  const { namesOtherUkCity, eventPlaceOk } = await import('../lib/scan/place-agreement.ts')
+  for (const t of ['a manchester startup', 'A MANCHESTER startup', 'based in  Milton   Keynes', 'a leeds fintech']) assert.ok(namesOtherUkCity(t), t)
+  for (const t of ['reading the report', 'a bath of ice', 'New York startup', 'the hull of the ship', 'a derby winner', 'a London startup']) assert.equal(namesOtherUkCity(t), null, t)
+  assert.equal(eventPlaceOk('Clera, a manchester startup, raised a seed round', ['London, UK']), false)
+  assert.equal(eventPlaceOk('Clera, a LONDON startup, raised a seed round', ['London, UK']), true)
+  assert.equal(eventPlaceOk('Clera, a manchester startup in london, raised a seed round', ['London, UK']), true, 'a quote that names London itself is not held for also naming another city')
+})
