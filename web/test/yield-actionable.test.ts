@@ -18,7 +18,7 @@ const QUOTE = 'Brightloop, a London B2B SaaS startup with 24 employees, raised a
 const resp = (body: string, url: string) => ({ status: 200, body, finalUrl: url })
 const nf = (url: string) => ({ status: 404, body: '', finalUrl: url })
 
-interface Site { home?: string; team?: string; careers?: string; contact?: string }
+interface Site { home?: string; team?: string; careers?: string; contact?: string; job?: string }
 function fixture(opts: { quote?: string; company?: string; articleLinks?: string | null; site?: Site | null }): Fixture {
   const company = opts.company ?? 'Brightloop', quote = opts.quote ?? QUOTE
   const page = { title: `${company} raises seed round`, text: pad(`Published ${daysAgo(12)}. ${quote}.`) }
@@ -27,7 +27,7 @@ function fixture(opts: { quote?: string; company?: string; articleLinks?: string
     if (u.hostname === 'sifted.example') return resp(`<html><body>${opts.articleLinks === null ? '' : opts.articleLinks ?? '<a href="https://brightloop.io/">Brightloop</a> '}${page.text}</body></html>`, url)
     if (u.hostname === 'brightloop.io' && opts.site) {
       if (u.pathname === '/robots.txt') return resp('User-agent: *\nAllow: /', url)
-      const map: Record<string, string | undefined> = { '/': opts.site.home, '/team': opts.site.team, '/careers': opts.site.careers, '/contact': opts.site.contact }
+      const map: Record<string, string | undefined> = { '/': opts.site.home, '/team': opts.site.team, '/careers': opts.site.careers, '/contact': opts.site.contact, '/careers/ae': opts.site.job ?? JOBPAGE }
       return map[u.pathname] !== undefined ? resp(map[u.pathname]!, url) : nf(url)
     }
     return null
@@ -41,6 +41,7 @@ function fixture(opts: { quote?: string; company?: string; articleLinks?: string
 const HOME = pad('<html><body><h1>Brightloop</h1> <p>London SaaS platform at 1 Old Street, London EC1V 9HX.</p> <a href="/team">Team</a> <a href="/careers">Careers</a> <a href="/contact">Contact</a>')
 const TEAM = pad('<html><body><p>Brightloop is a London software company building sales tooling for retailers across the UK and beyond.</p><div class="card"><h3>Jane Doe</h3><p>Chief Executive Officer</p></div>')
 const CONTACT = '<html><body><p>Say hello to the team at Brightloop in London.</p><a href="mailto:hello@brightloop.io">hello@brightloop.io</a></body></html>'
+const JOBPAGE = '<html><body><h1>Account Executive - London</h1><p>Join Brightloop in London as our Account Executive.</p><a href="/careers/apply">Apply</a></body></html>'
 const CAREERS = '<html><body><h1>Careers at Brightloop</h1><p>Join Brightloop in London.</p><h2>Open roles</h2><ul><li>Backend Engineer</li><li><a href="/careers/ae">Account Executive - London</a> <a href="/careers/ae">Apply</a></li></ul></body></html>'
 
 const lead = (r: Awaited<ReturnType<typeof runCrawl>>) => r.db.prepare("SELECT id, review_reason, confidence, company_domain FROM leads").get() as { id: string; review_reason: string | null; confidence: number | null; company_domain: string | null } | undefined

@@ -198,7 +198,7 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
     // page itself must name the company and agree on the requested place (a same-name company elsewhere does not). Saved: URL, quote, retrieval time (not a posting date).
     let careersNote = ''
     if (l.company_domain && opts.careersGet) {
-      const c = await careersSalesVacancy(l.company_domain, opts.careersGet, { now: opts.now }).catch(() => null)
+      const c = await careersSalesVacancy(l.company_domain, opts.careersGet, { now: opts.now, company: l.company }).catch(() => null)
       if (c?.vacancy) {
         const v = c.vacancy
         const established = domainRelationship(db, job.user_id, l.id, l.company_domain) === 'established'
