@@ -32,6 +32,12 @@ test('client error endpoint', async () => {
     // size: a declared length over 4 KB is refused before reading; an undeclared one stops being read past 4 KB
     assert.equal((await post(JSON.stringify({ ...report, pad: 'x'.repeat(5000) }))).status, 413)
     assert.equal((await post(JSON.stringify(report), { 'content-length': '999999' })).status, 413, 'declared too large: refused unread')
+    // review repro: 3000 x '界' is 9166 UTF-8 bytes but only 3166 JS characters; the cap is on bytes
+    const wide = JSON.stringify({ ...report, message: '界'.repeat(3000) })
+    assert.ok(Buffer.byteLength(wide) > 9000 && wide.length < 4096)
+    assert.equal((await post(wide)).status, 413, 'multibyte body over the byte cap')
+    const wideStream = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(wide)); c.close() } })
+    assert.equal((await post(wideStream)).status, 413, 'the same, chunked with no declared length')
     let pulled = 0
     const endless = new ReadableStream({ pull(c) { pulled++; c.enqueue(new TextEncoder().encode('x'.repeat(1024))); if (pulled > 1000) c.close() } })
     assert.equal((await post(endless)).status, 413)

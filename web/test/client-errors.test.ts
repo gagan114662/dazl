@@ -65,6 +65,20 @@ test('the server keeps only allowlisted fields: no message, no stack text, no bo
   } finally { restore() }
 })
 
+test('review repro: a non-pattern password and name in the message reach neither the payload nor the record', () => {
+  const msg = 'Login failed password=river-mint-secret customer=AliceSmith'
+  const body = clientReport('error', new Error(msg), '/sign-in')
+  const { got, restore } = capture()
+  try {
+    recordClientError({ ...JSON.parse(body), message: msg, stack: msg }, {})
+    for (const leak of ['river-mint-secret', 'AliceSmith', 'password=', 'Login failed']) {
+      assert.ok(!body.includes(leak), `${leak} in the browser payload`)
+      assert.ok(!JSON.stringify(got).includes(leak), `${leak} in the record`)
+    }
+    assert.equal(got[0].error.message, 'browser error')
+  } finally { restore() }
+})
+
 test('end to end in process: a thrown error with a name and a secret reaches neither the request nor the record', async () => {
   resetClientErrorReporting()
   const { got, restore } = capture()
