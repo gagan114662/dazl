@@ -1,0 +1,10 @@
+# Checks main every 2 minutes; a merge is live on staging a few minutes later (build time).
+[Unit]
+Description=dazl staging: deploy main when it changes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=2min
+
+[Install]
+WantedBy=timers.target

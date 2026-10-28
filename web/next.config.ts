@@ -29,7 +29,9 @@ const nextConfig: NextConfig = {
   cacheComponents: true,
   partialPrefetching: true,
   async headers() {
-    return [{ source: '/:path*', headers: securityHeaders }]
+    // staging (DAZL_ENV=staging, lib/staging.ts) is never indexed
+    const staging = process.env.DAZL_ENV === 'staging' ? [{ key: 'X-Robots-Tag', value: 'noindex, nofollow' }] : []
+    return [{ source: '/:path*', headers: [...securityHeaders, ...staging] }]
   },
   turbopack: {
     rules: {
