@@ -21,6 +21,14 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
   - `test/seo-store.test.ts` runs their write and read paths with two tenants on both engines.
   - The tenant's AI key for briefs and drafts is still read from the SQLite key store until `tenant_llm_keys` is ported.
   - The route-test harness (`test/helpers/tenant-route-db.ts`) points `getDb()` at the same fixture store as `getScanDb()`, as in the app. The route isolation tests therefore also cover the ported routes, and the shared rate limiter writes to that store. The snapshots skip the two global platform tables.
+- **Step 3c (shared work queue across instances):** `lib/queue/db.ts` `DbQueue` is the queue contract (`lib/queue/types.ts`) on `Db`, so on Postgres any number of instances share one queue.
+  - A claim takes the next fencing token with `UPDATE work_queue_meta … RETURNING`, a row lock held to commit, so claims are serialized across instances and the per-tenant and global in-flight caps count only committed claims. It then selects the item `FOR UPDATE SKIP LOCKED`.
+  - `complete` and `fail` match on the claim token: a stale holder changes nothing.
+  - A claim whose instance died expires at the end of its lease. It goes back to pending with backoff, or to `failed`/`timeout` past max attempts.
+  - `test/multi-instance.test.ts` runs the contract on both engines, then on Postgres:
+    - Two instances, as separate processes with their own pools, drain 60 jobs. Each runs exactly once, both take jobs, and one 24h limit is shared across them.
+    - An instance killed mid-job loses its claim at lease end. The job runs once more on the survivor, or fails past max attempts.
+  - **Not wired yet:** scan jobs still claim through `claimKeyedJob` on the SQLite `scan_jobs` table, single writer per file. Moving scan claiming onto `DbQueue` needs `scan_jobs` on Postgres. That is the next slice, with the yield owners. The other per-process state is listed in the table below.
 - **Step 6a (health and error capture):**
   - `GET /api/health/live` answers without touching any store. Use it as the liveness probe.
   - `GET /api/health/ready` and `GET /api/health` are the readiness probe. Each check has a 2 s budget. They return 503 when any of these fails or goes over budget:
@@ -95,6 +103,10 @@ Totals: 60 PG-schema, 12 SQLite-only, 1 temp.
 | Per-host crawl spacing | `lib/connectors/sitecrawl.ts` `lastHit` | Politeness spacing is per instance | Accept this (best effort) |
 | Source result caches | `lib/sources/{youtube,jina,github,v2ex}.ts` | Cache is per instance | Fine to keep |
 | Migration-ran flags | `lib/scan/service.ts` `ready`, and similar | None, once migrations run on deploy | Remove after step 2 |
+| In-flight scan set and deadlines | `lib/scan/runner.ts` `trackInFlight`, `jobDeadlines` | Only this instance's own runs (used for shutdown requeue and the per-job time budget) | Fine per instance; the claim itself is the shared state |
+| Shared store handles | `lib/db/client.ts` `shared`, `lib/auth-db.ts` `db` | One pool or handle per instance | Fine |
+| Error sinks and alert throttle | `lib/ops/errors.ts` `sinks`, `hook` | Alert throttling is per instance (up to N× the alert rate) | Accept, or a shared throttle row if alerts get noisy |
+| Sessions, plans, 24h send counts | `sessions`, `tenant_plans`, `autopilot_audit` tables | Already durable rows: shared once the table is on the shared store | Port with their areas |
 
 ### Existing durable guards (keep them; PG must preserve these semantics)
 
@@ -163,6 +175,38 @@ These steps are development work behind flags and tests. Merging them does not c
      - The sign-up page says "Free plan: 50 scans a month with your own AI key. New accounts may get 3 trial scans first".
      - Pro ($49/mo) says "Fair-use limits apply", but the code has no Pro limit (`scansPerMonth: null`), and Settings shows "unlimited".
 6. **Ops.** `/api/health` checks the DB and the worker heartbeat. Add a structured error log with an alert hook, a scheduled backup restore drill (extends `scripts/backup/restore-drill.ts`), and a deploy checklist in `web/docs/DEPLOY.md`.
+
+## Plan: scan jobs to Postgres (for coordination with the yield session; no code yet)
+
+`scan_jobs` is the hub of the scan pipeline. 53 files read or write it: 23 in `lib/scan`, 11 in `lib/outreach`, plus search, people, warm, connectors and Cal.com. That is about 120 statements, 54 of them joins (leads → `scan_jobs.user_id` is how lead rows are tenant-scoped). `leads`, `lead_sources`, `scan_source_runs`, `scan_source_stats`, `scan_model_calls`, `csv_batches` and `commenter_batches` reference it by foreign key. They form one cluster and must move to Postgres together: a join cannot span SQLite and Postgres.
+
+Steps, one small PR each. Nothing changes where the rows live until step 5.
+1. **Read and write functions on `Db`, still on SQLite.**
+   - Port `lib/scan/store.ts` (create, get, list, cancel, export, reap) to `Db`, with two-engine tests.
+   - Keep sync wrappers for callers not yet ported, as was done for `getPlan` and `setPlan`.
+   - Platform owns this; the yield session reviews the signatures.
+2. **`finish()` and `failOrRetry` as `Db.tx` generators.**
+   - The leads insert, the source-run ledger and the job row update stay one transaction.
+   - They stay fenced on `status = 'running' AND attempts = ?`.
+   - Yield owns this, because it is runner code. Platform pairs on the transaction shape.
+3. **Claiming on Postgres.**
+   - `claimKeyedJob` becomes a `FOR UPDATE SKIP LOCKED` claim on `scan_jobs`. A loser takes the next job instead of stopping its loop.
+   - Alternatively the queue bridge moves onto `DbQueue` (step 3c). It already binds queue claims to domain rows by id and attempts.
+   - Add a `claimed_by` instance id, so shutdown requeue returns only this instance's jobs.
+   - `SCAN_MAX_CONCURRENT` becomes a global count of running rows (replacing `run-slots.ts`).
+   - The stale reaper becomes the lease expiry. Requeue or fail stays bounded by `MAX_ATTEMPTS`.
+4. **The other readers.** Outreach, people, warm and the rest move their `scan_jobs` and `leads` joins to `Db`, each with its owning session. Until every reader of the cluster is on `Db`, `DATABASE_URL` must not be set in production. Mixed mode is safe only on SQLite.
+5. **Cutover**, owner-authorized (see "Production go/no-go" below):
+   - Copy the cluster with `scripts/pg-migrate/rehearse-full.ts`.
+   - Verify counts and checksums.
+   - Switch `DATABASE_URL` for all instances at once.
+6. **Test that gates step 5.** Two app instances on one Postgres run N stubbed scans:
+   - each scan runs exactly once;
+   - a killed instance's scan is requeued or failed;
+   - leads are written once;
+   - tenant isolation holds on every scan route.
+
+The quote, identity and date gates in the scan pipeline do not change in any step. Each step moves storage only.
 
 ## Production go/no-go (separate from merging the PRs above)
 

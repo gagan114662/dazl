@@ -101,6 +101,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'scan/jobs', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' } },
   { path: 'scan/latest', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' } },
   { path: 'scan', method: 'POST', auth: 'session', crossTenant: 'session-scope' },
+  { path: 'scan/sources', method: 'GET', auth: 'session', crossTenant: 'session-scope' },
   { path: 'scan/status', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' } },
   { path: 'seo/audit', method: 'GET', auth: 'session', crossTenant: 'session-scope' },
   { path: 'seo/audit', method: 'POST', auth: 'session', crossTenant: 'session-scope' },
