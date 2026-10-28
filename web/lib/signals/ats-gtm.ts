@@ -12,6 +12,9 @@ const WINDOW_DAYS = 90
 const MAX_DETAIL = 4
 const GTM = /\b(?:account\s+(?:executive|manager|director)s?|sales|business\s+development|bdrs?|sdrs?|revenue|go[-\s]to[-\s]market|gtm|growth|demand\s+gen(?:eration)?|customer\s+success|partnerships?|solutions?\s+(?:engineer|consultant)s?|head\s+of\s+(?:sales|growth|revenue|marketing)|vp\s+(?:of\s+)?(?:sales|revenue|growth|marketing))\b/i
 const NOT_GTM = /\b(?:salesforce\s+(?:developer|engineer|architect|admin(?:istrator)?)|sales\s*tax|software\s+engineer|backend|front[-\s]?end|devops|data\s+scientist)\b/i
+// A posting whose own text says it is closed is not open evidence, whatever the board still lists.
+const POSTING_CLOSED = /\b(?:this (?:job|position|role|posting|vacancy) (?:is |has |was )?(?:closed|filled|expired|been (?:filled|closed|removed))|no longer (?:accepting applications|available|open|hiring)|applications? (?:are |is )?closed|position (?:has been |is )?filled)\b/i
+export const postingClosed = (text: unknown): boolean => typeof text === 'string' && POSTING_CLOSED.test(text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/<[^>]+>/g, ' ').slice(0, 3000))
 export const isGtmRole = (title: string): boolean => GTM.test(title) && !NOT_GTM.test(title)
 export const BOARD_LABEL = { greenhouse: 'Greenhouse', lever: 'Lever', ashby: 'Ashby' } as const
 
@@ -88,7 +91,7 @@ export async function atsGtmBoard(company: string, domain: string | null, fetchI
         for (const j of gh.jobs.filter((x: { id?: unknown; title?: unknown }) => Number.isInteger(x?.id) && typeof x.title === 'string' && isGtmRole(x.title)).slice(0, MAX_DETAIL)) {
           const det = await get(`https://boards-api.greenhouse.io/v1/boards/${token}/jobs/${j.id}`, fetchImpl)
           const date = day(det?.first_published), url = typeof det?.absolute_url === 'string' ? det.absolute_url : ''
-          if (!fresh(date) || !url.startsWith('https://')) continue
+          if (!fresh(date) || !url.startsWith('https://') || postingClosed(det?.content)) continue
           for (const d of fieldDomains([det.content, det.description], token)) seen.add(d)   // every included posting is examined, and every domain in it
           postings.push({ title: String(det.title ?? j.title).slice(0, 120), date: date!, url, location: typeof det?.location?.name === 'string' ? det.location.name : null, updated: day(det?.updated_at) })
         }
@@ -101,7 +104,7 @@ export async function atsGtmBoard(company: string, domain: string | null, fetchI
     const lever = await get(`https://api.lever.co/v0/postings/${token}?mode=json`, fetchImpl)
     if (Array.isArray(lever) && lever.length > 0) {
       const seen = new Set<string>()
-      const postings = dedupe(lever.filter((j: any) => typeof j?.text === 'string' && isGtmRole(j.text) && typeof j.hostedUrl === 'string' && j.hostedUrl.startsWith('https://') && fresh(day(j.createdAt)))
+      const postings = dedupe(lever.filter((j: any) => typeof j?.text === 'string' && isGtmRole(j.text) && typeof j.hostedUrl === 'string' && j.hostedUrl.startsWith('https://') && fresh(day(j.createdAt)) && !postingClosed(j.descriptionPlain ?? j.description))
         .slice(0, MAX_DETAIL).map((j: any) => { for (const d of fieldDomains([j.descriptionPlain, j.description, j.additionalPlain, j.additional, ...(Array.isArray(j.lists) ? j.lists.flatMap((l: any) => [l?.text, l?.content]) : [])], token)) seen.add(d); return { title: j.text.slice(0, 120), date: day(j.createdAt)!, url: j.hostedUrl, location: typeof j?.categories?.location === 'string' ? j.categories.location : null, updated: day(j.updatedAt) } }))
       const found = settle(seen, domain); if (found === false) return { hiring: null, contradictory: true }
       if (postings.length) return { hiring: build('lever', postings, `https://jobs.lever.co/${token}`, found, 'domain'), contradictory: false }
@@ -109,7 +112,7 @@ export async function atsGtmBoard(company: string, domain: string | null, fetchI
     const ashby = await get(`https://api.ashbyhq.com/posting-api/job-board/${token}`, fetchImpl)
     if (Array.isArray(ashby?.jobs) && ashby.jobs.length > 0) {
       const seen = new Set<string>()
-      const postings = dedupe(ashby.jobs.filter((j: any) => j?.isListed === true && typeof j.title === 'string' && isGtmRole(j.title) && typeof j.jobUrl === 'string' && j.jobUrl.startsWith('https://') && fresh(day(j.publishedAt)))
+      const postings = dedupe(ashby.jobs.filter((j: any) => j?.isListed === true && typeof j.title === 'string' && isGtmRole(j.title) && typeof j.jobUrl === 'string' && j.jobUrl.startsWith('https://') && fresh(day(j.publishedAt)) && !postingClosed(j.descriptionPlain ?? j.descriptionHtml))
         .slice(0, MAX_DETAIL).map((j: any) => { for (const d of fieldDomains([j.descriptionPlain, j.descriptionHtml, j.description], token)) seen.add(d); return { title: j.title.slice(0, 120), date: day(j.publishedAt)!, url: j.jobUrl, location: typeof j.location === 'string' ? j.location : null, updated: day(j.updatedAt) } }))
       const found = settle(seen, domain); if (found === false) return { hiring: null, contradictory: true }
       if (postings.length) return { hiring: build('ashby', postings, `https://jobs.ashbyhq.com/${token}`, found, 'domain'), contradictory: false }

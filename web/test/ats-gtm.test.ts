@@ -223,3 +223,16 @@ test('a contradictory board writes no per-posting evidence either', async () => 
   const { db, jobId } = leadDb('brightloop.io', 'evidence_own_domain'); await enrich(db, jobId, gh('Write to jobs@brightloop.io', 'Write to jobs@brightloop.com'))
   assert.equal((db.prepare("SELECT count(*) AS n FROM lead_enrichments WHERE value LIKE '% - posted %'").get() as { n: number }).n, 0)
 })
+
+test('open-status: a posting whose own text says it is closed / filled / expired is not evidence on any board, even if the board still lists it', async () => {
+  const closedText = 'This position is closed. Thanks to everyone who applied.'
+  const g = gh(`&lt;p&gt;${closedText} jobs@brightloop.io&lt;/p&gt;`, 'Lead sales jobs@brightloop.io')
+  const board = await atsGtmBoard('Brightloop', 'brightloop.io', route(g), { now: NOW })
+  assert.deepEqual(board.hiring?.postings.map(p => p.title), ['Head of Sales'], 'only the open posting survives')
+  const allClosed = gh(`&lt;p&gt;${closedText}&lt;/p&gt;`, 'This job has expired.')
+  assert.equal((await atsGtmBoard('Brightloop', 'brightloop.io', route(allClosed), { now: NOW })).hiring, null)
+  const lever = { 'https://api.lever.co/v0/postings/brightloop?mode=json': [{ text: 'Account Executive', hostedUrl: 'https://jobs.lever.co/brightloop/a', createdAt: NOW - 5 * 86_400_000, descriptionPlain: 'This position has been filled. brightloop.io' }] }
+  assert.equal((await atsGtmBoard('Brightloop', 'brightloop.io', route(lever), { now: NOW })).hiring, null)
+  const ashby = { 'https://api.ashbyhq.com/posting-api/job-board/brightloop': { jobs: [{ title: 'Account Executive', jobUrl: 'https://jobs.ashbyhq.com/brightloop/1', isListed: true, publishedAt: d(7), descriptionPlain: 'Applications are closed. brightloop.io' }] } }
+  assert.equal((await atsGtmBoard('Brightloop', 'brightloop.io', route(ashby), { now: NOW })).hiring, null)
+})
