@@ -666,10 +666,13 @@ export const NEWS_PAGES = 8
 // kept apart from the hits array: all failed = 'error' (a failed source), some failed with no hits = 'error_partial:<failed>_of_<attempted>' (failed and named), and hits with no
 // usable page evidence or no query to run stay 'unavailable' (unknown).
 export function newsStatus(leads: LeadDraft[] | null, note: { searched: boolean; hits: number; attempted: number; failed: number; malformed?: number }): string {
-  if (leads) return leads.length ? ((note.malformed ?? 0) > 0 ? 'partial' : 'ok') : 'empty'   // invalid entries beside valid ones: the valid hits are kept and the source is marked partial
+  // Any failed request or invalid entry beside answers that worked makes the source PARTIAL - never ok, never a plain empty. All requests failed is handled below ('error').
+  const partial = note.failed > 0 ? `partial:${note.failed}_of_${note.attempted}` : (note.malformed ?? 0) > 0 ? 'partial:malformed' : null
+  // Hits with usable page evidence but nothing extracted is NOT "nothing found": its own status, so progress and the outcome say evidence was read and no candidate came of it.
+  if (leads) return partial ?? (leads.length ? 'ok' : note.hits > 0 ? 'no_candidates' : 'empty')
   if (!note.searched) return 'unavailable'
   if (note.hits === 0) return note.failed === 0 ? ((note.malformed ?? 0) > 0 ? 'unavailable' : 'empty') : note.failed >= note.attempted ? 'error' : `error_partial:${note.failed}_of_${note.attempted}`
-  return 'unavailable'
+  return partial ?? 'unavailable'   // hits but no usable page evidence: unknown (named as partial when some requests also failed)
 }
 async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, http: SafeGet, fetchPage: PageFetcher, fetchImpl?: typeof fetch, note?: { searched: boolean; hits: number; attempted: number; failed: number; malformed?: number }, queries?: string[]): Promise<LeadDraft[] | null> {
   const complete = provider.complete!

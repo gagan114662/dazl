@@ -39,14 +39,14 @@ test('pure: per-source progress — status, candidates found, accepted; unknown 
     { collector: 'search:anthropic', status: 'empty', evidence_count: 0, candidate_count: 0, verified_count: 0, review_count: 0 },
   ]
   const live = progressOf(rows, 'running'); const by = (p: ReturnType<typeof progressOf>, s: string) => p.find(x => x.source === s)!
-  assert.deepEqual(by(live, 'search:tinyfish'), { source: 'search:tinyfish', state: 'done', status: 'ok', candidates: 4, accepted: 2, review: 1, rejected: 1 })
-  assert.deepEqual(by(live, 'search:news'), { source: 'search:news', state: 'running', status: 'running', candidates: null, accepted: null, review: null, rejected: null })
+  assert.deepEqual(by(live, 'search:tinyfish'), { source: 'search:tinyfish', state: 'done', status: 'ok', note: null, candidates: 4, accepted: 2, review: 1, rejected: 1 })
+  assert.deepEqual(by(live, 'search:news'), { source: 'search:news', state: 'running', status: 'running', note: null, candidates: null, accepted: null, review: null, rejected: null })
   assert.equal(by(live, 'adapter:jobboards').status, 'skipped'); assert.equal(by(live, 'advanced:x').status, 'unavailable', 'no data from it is not proof that it failed'); assert.equal(by(live, 'search:anthropic').status, 'empty')
   assert.equal(by(progressOf(rows, 'done'), 'search:news').status, 'failed', 'started but never reported, and the scan is over')
   assert.equal(sourceStatusOf('started', true), 'running')
   assert.deepEqual(outcomeInputs(null, rows, 'done').failed_sources, ['search:news'], 'only a source that never reported is failed; unavailable is not')
   assert.deepEqual(progressOf([{ collector: 'search:x', status: 'error', evidence_count: null, candidate_count: null, verified_count: null, review_count: null }], 'done')[0].status, 'failed')
-  assert.deepEqual(outcomeInputs({ funnel: { review_reasons: { quote_unconfirmed: 2 }, drop_reasons: { duplicate: 1 } }, search: { hits_unique_urls: 6, attempted: 3, ok: 3 } }, [], 'done'), { failed_sources: [], reject_reasons: { 'review:quote_unconfirmed': 2, 'dropped:duplicate': 1 }, search_hits: 6, evidence_sources: [], unknown_sources: [] })
+  assert.deepEqual(outcomeInputs({ funnel: { review_reasons: { quote_unconfirmed: 2 }, drop_reasons: { duplicate: 1 } }, search: { hits_unique_urls: 6, attempted: 3, ok: 3 } }, [], 'done'), { failed_sources: [], reject_reasons: { 'review:quote_unconfirmed': 2, 'dropped:duplicate': 1 }, search_hits: 6, evidence_sources: [], unknown_sources: [], partial_sources: [] })
   assert.deepEqual(outcomeInputs({ search: { attempted: 3, ok: 0, hits_unique_urls: 0 } }, [], 'done').failed_sources, ['search:tinyfish'], 'every search attempt failed: a failed source, not an empty result')
 })
 
@@ -237,6 +237,50 @@ test('REGRESSION (Instinct): article entries are validated — all-invalid entri
   resetNewsQueue()
   const m = await newsSearch(async () => ({ status: 200, body: JSON.stringify({ articles: [good, null] }) }), ['a'], 'en', { gapMs: 0, sleep: async () => {} })
   assert.deepEqual([m.hits.length, m.failed, m.malformed], [1, 0, 1])
-  assert.equal(newsStatus([{} as never], { searched: true, hits: 1, attempted: 1, failed: 0, malformed: 1 }), 'partial', 'valid hits kept, source flagged partial')
+  assert.equal(newsStatus([{} as never], { searched: true, hits: 1, attempted: 1, failed: 0, malformed: 1 }), 'partial:malformed', 'valid hits kept, source flagged partial')
   assert.equal(newsStatus(null, { searched: true, hits: 0, attempted: 1, failed: 0, malformed: 1 }), 'unavailable', 'unparsed entries beside no valid hit: unknown, never empty')
+})
+
+// ---- end to end: the news fallback with SOME requests failing ----
+const gdeltBody = JSON.stringify({ articles: [{ url: NEWS, title: page.title, seendate: '20261016T100000Z' }] })
+const newsFx = (status2: number, body2 = ''): Fixture => { let n = 0; return base({ hits: [], modelQueries: ['london saas startup seed round', 'london startup raises seed funding'], deps: { newsHttp: async () => (n++ === 0 ? { status: 200, body: gdeltBody } : { status: status2, body: body2 }) } }) }
+test('END TO END: some news requests fail but another yields a lead -> progress shows search:news PARTIAL (never ok), and the scan outcome names it', async () => {
+  const e = await ending(newsFx(503))
+  const n = e.progress.find(p => p.source === 'search:news')!
+  assert.equal(n.status, 'partial', JSON.stringify(e.rows)); assert.match(n.note ?? '', /^1 of 2 requests failed$/); assert.equal(n.state, 'done')
+  assert.equal(e.outcome.kind, 'leads', JSON.stringify(e.outcome)); assert.match(e.outcome.detail ?? '', /Partial: search:news \(1 of 2 requests failed\)/)
+})
+test('END TO END: every news request fails -> search:news FAILED in progress and the outcome (never partial, never empty)', async () => {
+  const f = newsFx(503); f.deps = { newsHttp: async () => ({ status: 503, body: '' }) }
+  const e = await ending({ ...f, extraction: [] })
+  assert.equal(e.progress.find(p => p.source === 'search:news')!.status, 'failed', JSON.stringify(e.rows))
+  assert.equal(e.outcome.kind, 'failed'); assert.match(e.outcome.label, /search:news/)
+})
+test('partial vs ok vs empty: a partial source can never leave the outcome reading as zero-match, and progress carries the note', () => {
+  const rows = [R('search:tinyfish', 'unavailable', null, null), R('search:news', 'partial:1_of_3', 0, null)]
+  const p = progressOf(rows, 'failed').find(x => x.source === 'search:news')!
+  assert.deepEqual([p.status, p.state, p.note], ['partial', 'done', '1 of 3 requests failed'])
+  const o = outcomeOf(rows)
+  assert.notEqual(o.kind, 'zero_match'); assert.match(o.detail ?? '', /search:news \(1 of 3 requests failed\)/)
+  assert.deepEqual(['partial:malformed', 'partial'].map(s => progressOf([R('x', s, null, null)], 'done')[0].note), ['some of its answer could not be read', 'some of its answer could not be read'])
+  assert.equal(newsStatus([{} as never], { searched: true, hits: 1, attempted: 3, failed: 1 }), 'partial:1_of_3')
+  assert.equal(newsStatus([], { searched: true, hits: 0, attempted: 3, failed: 1 }), 'partial:1_of_3', 'an empty result with a failed request is not a plain empty')
+  assert.equal(newsStatus(null, { searched: true, hits: 2, attempted: 3, failed: 1 }), 'partial:1_of_3')
+  assert.equal(newsStatus([{} as never], { searched: true, hits: 1, attempted: 3, failed: 0 }), 'ok')
+  assert.equal(newsStatus(null, { searched: true, hits: 0, attempted: 3, failed: 3 }), 'error')
+})
+
+test('END TO END (public status/outcome mapping): news hits with valid page evidence but the model extracts nothing -> search:news is no_candidates (evidence read), NOT empty, and the outcome is not zero-match', async () => {
+  const f: Fixture = { ...base({ hits: [], modelQueries: ['london saas startup seed round', 'london startup raises seed funding'], deps: { newsHttp: async () => ({ status: 200, body: gdeltBody }) } }), extraction: [] }
+  const e = await ending(f)
+  const n = e.progress.find(p => p.source === 'search:news')!
+  assert.equal(n.status, 'no_candidates', JSON.stringify(e.rows)); assert.equal(n.state, 'done'); assert.match(n.note ?? '', /items read, none extracted as candidates/)
+  assert.notEqual(n.status as string, 'empty')
+  assert.notEqual(e.outcome.kind, 'zero_match', JSON.stringify(e.outcome)); assert.match((e.outcome.detail ?? '') + e.outcome.label, /search:news returned \d+ items?, none matched as candidates/)
+  assert.equal(outcomeInputs(null, e.rows, 'failed').evidence_sources.some(x => x.source === 'search:news'), true)
+})
+test('newsStatus: evidence + no extraction is no_candidates; zero hits is empty; the two are never conflated', () => {
+  assert.equal(newsStatus([], { searched: true, hits: 2, attempted: 2, failed: 0 }), 'no_candidates')
+  assert.equal(newsStatus([], { searched: true, hits: 0, attempted: 2, failed: 0 }), 'empty')
+  assert.equal(newsStatus([], { searched: true, hits: 2, attempted: 2, failed: 1 }), 'partial:1_of_2', 'a failed request still wins')
 })

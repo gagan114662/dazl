@@ -28,6 +28,8 @@ export interface ScanRecord {
   failed_sources?: string[] | null; reject_reasons?: Record<string, number> | null; search_hits?: number | null
   // Per-source findings (progress.ts): sources that returned evidence but extracted no candidates, and sources that were unavailable / not run.
   evidence_sources?: { source: string; evidence: number }[] | null; unknown_sources?: string[] | null
+  // Sources that answered only in part (some requests / entries failed): named beside whatever the scan ended as - never read as ok, never as an empty result.
+  partial_sources?: string[] | null
 }
 const reasonList = (r: Record<string, number> | null | undefined) => r ? Object.entries(r).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k.replace(/^(?:review|dropped):/, '').replace(/_/g, ' ')} x${v}`).join(', ') : ''
 // Zero match is claimed only when EVERY recorded source genuinely returned nothing: the search came back with a recorded 0, no source failed, none returned evidence that
@@ -48,7 +50,16 @@ const NEW_SCAN = '/app/leads'
 const NONE_EXTRACTED = (open: string, why?: string | null): ScanOutcome => ({ kind: 'none_extracted', label: 'No candidates were extracted', detail: why || 'Nothing more was recorded about what the search returned. This does not show that no matching companies exist.', next: { text: 'See what the scan read', href: open } })
 const TRIAL_KEY: ScanOutcome = { kind: 'failed', label: 'Failed - the free-search key had trouble (not your key)', next: { text: 'Try again later', href: NEW_SCAN } }
 
+const PARTIAL_KINDS: ScanOutcomeKind[] = ['leads', 'review_only', 'all_dropped', 'none_extracted', 'zero_match']
 export function scanOutcome(j: ScanRecord): ScanOutcome {
+  const o = baseOutcome(j), partial = j.partial_sources ?? []
+  if (partial.length === 0 || !PARTIAL_KINDS.includes(o.kind)) return o
+  const note = `Partial: ${partial.join('; ')} - the result may be incomplete.`
+  // A partial source can never leave an empty result reading as "the sources returned nothing".
+  if (o.kind === 'zero_match') return { kind: 'none_extracted', label: 'No candidates - a source answered only in part', detail: `${note} The other sources returned nothing, which does not show that no company matches.`, next: o.next }
+  return { ...o, detail: o.detail ? `${o.detail} ${note}` : note }
+}
+function baseOutcome(j: ScanRecord): ScanOutcome {
   const open = `/app/leads?job_id=${j.id}`
   if (j.status === 'failed') {
     switch (j.error) {
