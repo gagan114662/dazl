@@ -340,6 +340,7 @@ test('a lead kept on a dated board posting stores per-posting evidence: role tit
   assert.equal(rows.length, 1)
   assert.deepEqual([rows[0].value, rows[0].source_url, rows[0].source_date, rows[0].confidence], [`Account Executive - posted ${d(12).slice(0, 10)}`, 'https://boards.greenhouse.io/brightloop/jobs/1', d(12).slice(0, 10), 70])
   assert.equal(rows[0].label, 'London, UK; Greenhouse'); assert.equal(rows[0].retrieved_at, Math.floor(NOW / 1000))
+})
 
 test('FAIL-CLOSED in memory: failClosedSalesHiring still returns the held lead when its own write is rejected', () => {
   const { db, job } = seed({ domain: 'brightloop.io', excerpt: QUOTE })
