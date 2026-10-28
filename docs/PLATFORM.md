@@ -106,8 +106,18 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
   - No leak was found. A planted leak (`getJob` ignoring the tenant) fails the test.
   - Modules still on raw SQLite (campaigns, most settings, outreach) cannot run on Postgres yet; their routes are covered on SQLite by the route manifest tests.
 - **Route error records carry the request id**: the auth, billing, Gmail callback and tick catches pass `requestIdOf(req)`, the UUID `proxy.ts` set, as uncaught errors already do (`test/route-errors.test.ts`).
-- **Still on SQLite:** every other module. Production keeps running on SQLite until cutover.
-- **SQLite-only SQL in queries:** about 18 queries use `rowid` (for example as an ORDER BY tie-break), which PG does not have. They need rewriting as each area is ported.
+- **Postgres-readiness audit** (`lib/db/sql-audit.ts`, `test/pg-sql-audit.test.ts`): every SQL statement in `lib/` and `app/` is found statically and `PREPARE`d on a freshly migrated Postgres schema, which parses it and resolves every table, column, function and parameter type without running it.
+  - At the time of the audit: 786 statements: 76 on `Db`, 18 Postgres-native (`lib/db/leads-read-pg.ts`), the rest raw. Postgres accepts every `Db` and Postgres-native statement; it rejects 86 raw ones.
+  - 148 modules still need the synchronous SQLite handle: 87 run raw queries or writes on it, and 61 get it (`getAuthDb`/`getScanDb`) for code that does.
+  - Not counted:
+    - Modules whose only raw statements are SQLite schema setup (their Postgres side is the PG migrations): `auth-google.ts`, `billing/stripe.ts`, `db/platform-tables.ts`, and the three `seo/` stores.
+    - `ENGINE_FILES` (`lib/db/sql-audit.ts`): the `Db` layer's SQLite engine and the cross-engine tooling, which are tested on both engines.
+  - The rejected statements are SQLite dialect: `strftime` (28), `INSERT OR IGNORE/REPLACE` (most of the syntax errors), `rowid` (12), `sqlite_master` table checks (9), and a few type-inference or aggregate differences. They are fixed as each module is ported, under both-engine tests, not rewritten in place: on the raw handle they cannot reach Postgres anyway, and an in-place rewrite would change SQLite behaviour (`INSERT OR IGNORE` also swallows NOT NULL and CHECK violations; `ON CONFLICT DO NOTHING` does not).
+  - Port order by size (modules / rejected statements): `lib/scan` 31/38 and `app/api/scan` 11 (yield-owned); `lib/outreach` 18/17 and `app/api/outreach` 12/1; `app/api/leads` 16; `app/api/settings` 8; the rest are 1 to 7 modules per area.
+  - No schema gap: every table and column the app uses exists in the PG schema.
+  - `lib/db/pg-port-status.ts` lists each raw module and how many of its statements Postgres rejects. The test holds the code to it both ways: a new raw module or a newly rejected statement fails, and a port that shrinks it fails until the manifest is regenerated (`scripts/pg-migrate/sql-audit.mts --write`).
+  - SQL built at runtime (35 statements) cannot be checked statically. The `Db`-layer ones run on Postgres in the both-engine tests.
+- **Still on SQLite:** the 148 modules in `lib/db/pg-port-status.ts`. Production keeps running on SQLite until that list is empty and the cutover below is authorized.
 
 ## Tables (73 created in code)
 
@@ -263,7 +273,7 @@ Steps, one small PR each. Nothing changes where the rows live until step 5.
    - The stale reaper becomes the lease expiry. Requeue or fail stays bounded by `MAX_ATTEMPTS`.
 4. **The other readers.** Outreach, people, warm and the rest move their `scan_jobs` and `leads` joins to `Db`, each with its owning session. Until every reader of the cluster is on `Db`, `DATABASE_URL` must not be set in production. Mixed mode is safe only on SQLite.
 5. **Cutover**, owner-authorized (see "Production go/no-go" below):
-   - Copy the cluster with `scripts/pg-migrate/rehearse-full.ts`.
+   - Copy with `scripts/pg-cutover.mts copy` (see "Postgres cutover" below; `rehearse-full.ts` stays the synthetic full-schema rehearsal).
    - Verify counts and checksums.
    - Switch `DATABASE_URL` for all instances at once.
 6. **Test that gates step 5.** Two app instances on one Postgres run N stubbed scans:
@@ -273,6 +283,44 @@ Steps, one small PR each. Nothing changes where the rows live until step 5.
    - tenant isolation holds on every scan route.
 
 The quote, identity and date gates in the scan pipeline do not change in any step. Each step moves storage only.
+
+## Postgres cutover (plan; Instinct decides and deploys)
+
+Nothing here has been run against production. The tool and the steps are ready for a rehearsal; the switch itself is Instinct's call.
+
+**Gate.** `lib/db/pg-port-status.ts` must be empty. A module on the raw SQLite handle keeps reading and writing the SQLite file whatever `DATABASE_URL` says. With the list non-empty, a cutover would split the data between two stores. `scripts/pg-cutover.mts` refuses to copy into Postgres while the list is non-empty, unless `--rehearsal` is passed.
+
+**Tool.** `scripts/pg-cutover.mts` (library: `lib/db/copy-store.ts`, tests: `test/copy-store.test.ts`):
+- `copy --from <app.db | postgres://…> --to <postgres://… | new.db>` copies every table into an empty store, in one target transaction:
+  - The source is opened read-only. A Postgres target is migrated first; a SQLite target must be a new file.
+  - It refuses a target that holds rows, and a source table or column the target lacks.
+  - Rows go in parents first. The guard triggers are off only inside that transaction, so a finished job's leads can be copied, and they are back on at commit.
+  - Before commit, every table's row count and full-content SHA-256 are compared with the source. Any difference rolls everything back, so the target is either a verified copy or empty.
+  - The queue's fencing-token counter carries over, so no token is ever handed out twice.
+- `verify --from … --to …` compares the two stores, table by table: row counts and content checksums.
+
+**Cutover steps** (one maintenance window):
+1. Take a fresh backup of the SQLite file and restore-test it.
+2. Stop every writer: all app instances, plus `worker/`, `session-worker/` and the Hermes tunnel (the write fence does not cover them).
+3. `pg-cutover.mts copy --from <app.db> --to $DATABASE_URL`. It prints each table's rows and checksum.
+4. `pg-cutover.mts verify --from <app.db> --to $DATABASE_URL` must report "stores match".
+5. Set `DATABASE_URL` on every instance and start them. `/api/ready` must report the `pg` engine with the schema check ok.
+6. Keep the SQLite file read-only and untouched. Never delete it.
+
+**Rollback:**
+- **Before any write lands on Postgres** (the copy failed, verify differs, or readiness fails): stop the instances, unset `DATABASE_URL`, start again. The SQLite file is exactly as it was.
+- **After Postgres has taken writes:**
+  1. Stop every writer.
+  2. `pg-cutover.mts copy --from $DATABASE_URL --to <new.db>` writes a new, verified SQLite file.
+  3. Run `verify` on it.
+  4. Point `DB_PATH` at the new file, unset `DATABASE_URL`, and start the instances.
+  5. Keep the pre-cutover file as a second copy.
+- Both directions are covered by `test/copy-store.test.ts`. The rollback test also changes a row on Postgres after the cutover copy and checks the change comes back.
+
+**Limits:**
+- Each table is read into memory whole, which is fine at today's store size.
+- The copy needs downtime: there is no live replication.
+- The SQLite file is not encrypted on disk, and neither is the copy.
 
 ## Production go/no-go (separate from merging the PRs above)
 
