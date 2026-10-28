@@ -35,6 +35,7 @@ export interface Fixture {
 
   reviewedIcp?: object                     // a profile the USER reviewed: stored with the job exactly as POST /api/scan stores it (normalizeIcp, icp_inferred = 0); no inference is run
   deps?: Record<string, unknown>           // extra runJob deps (e.g. memory exclusions)
+  searchStatus?: number                    // the search API answers every query with this HTTP status (a source/infrastructure failure)
 }
 export async function runFixture(f: Fixture) {
   resetTinyfishState()
@@ -51,6 +52,7 @@ export async function runFixture(f: Fixture) {
       const q = new URL(u).searchParams.get('query') ?? ''
       if (q.startsWith('site:linkedin.com/in ')) return new Response(JSON.stringify({ results: [] }), { status: 200 })
       calls.searches.push(q); calls.afters.push(new URL(u).searchParams.get('after_date'))
+      if (f.searchStatus) return new Response('{}', { status: f.searchStatus })
       return new Response(JSON.stringify({ results: f.hits.map(h => ({ url: h.url, title: h.title, snippet: h.snippet, ...(h.date ? { date: h.date } : {}) })) }), { status: 200 })
     }
     if (u.startsWith('https://api.fetch.tinyfish.ai')) {

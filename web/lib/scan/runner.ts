@@ -518,7 +518,7 @@ async function tinyfishCompany(db: Database.Database, job: Job, domain: string, 
 // CSV import job: research one known company domain through the same
 // research/ground/verify/enrich stages as a discovery scan. No ICP scoring (there is no
 // profile to fit against) and no autopilot: an uploaded account list never triggers outreach.
-async function runCompanyJob(db: Database.Database, job: Job, provider: Provider, vendor: Vendor, key: string, deps: RunDeps, ledger: SourceRunLedger = new SourceRunLedger()): Promise<'done' | 'failed' | 'retry'> {
+async function runCompanyJob(db: Database.Database, job: Job, provider: Provider, vendor: Vendor, key: string, deps: RunDeps, ledger: SourceRunLedger = (() => { const l = new SourceRunLedger(); l.attach(db, job.id, job.attempts); return l })()): Promise<'done' | 'failed' | 'retry'> {
   const domain = job.csv_domain!
   const request = `The company at https://${domain}`
   try {
@@ -724,6 +724,7 @@ export interface RunDeps {
 
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
   const ledger = new SourceRunLedger()
+  ledger.attach(db, job.id, job.attempts)   // live per-source progress for the status route
   const budget = job.csv_domain ? null : deps.jobBudgetMs ?? scanJobBudgetMs()
   if (budget) { const now = deps.clock ?? Date.now; jobDeadlines.set(job, { at: now() + budget, now }) }
   // Trial-funded jobs run on the shared operator key from the server environment; everything

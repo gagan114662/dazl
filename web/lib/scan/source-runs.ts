@@ -62,11 +62,25 @@ export class SourceRunLedger {
       this.written = this.calls.length
     } catch { /* usage recording never affects the scan */ }
   }
+  // LIVE progress: each source's row is upserted as it starts / reports / observes candidates, so the status route can show a running scan's sources. The final write() at finish replaces
+  // these rows with the counted ones. Only the attempt that owns the running job writes; never throws; off when not attached.
+  private live?: { db: Database.Database; jobId: string; attempt: number }
+  attach(db: Database.Database, jobId: string, attempt: number): void { this.live = { db, jobId, attempt } }
+  private persist(collector: string): void {
+    const l = this.live; const run = this.runs.get(collector); if (!l || !run) return
+    try {
+      migrateSourceRuns(l.db)
+      if (!l.db.prepare("SELECT 1 FROM scan_jobs WHERE id = ? AND status = 'running' AND attempts = ?").get(l.jobId, l.attempt)) return
+      l.db.prepare('INSERT OR REPLACE INTO scan_source_runs (job_id,attempt,collector,status,evidence_count,candidate_count,verified_count,review_count,inserted_count) VALUES (?,?,?,?,?,?,NULL,NULL,0)')
+        .run(l.jobId, l.attempt, collector, run.status, run.evidence, run.observed || run.evidence === 0 ? run.candidates.size : null)
+    } catch { /* live progress never affects the scan */ }
+  }
   has(collector: string): boolean { return this.runs.has(collector) }
   stats(collector: string, s: SourceStats): void { this.diag.set(collector, s) }
   record(collector: string, status: string, evidence: number | null = null): void {
     const old = this.runs.get(collector)
     this.runs.set(collector, { status, evidence, candidates: old?.candidates ?? new Set(), observed: old?.observed ?? false })
+    this.persist(collector)
   }
   candidates(collector: string, rows: Candidate[]): void {
     if (!this.runs.has(collector)) this.record(collector, 'ok')
@@ -77,6 +91,7 @@ export class SourceRunLedger {
       if (!this.credits.has(key)) this.credits.set(key, new Set())
       this.credits.get(key)!.add(collector)
     }
+    this.persist(collector)
   }
   // A selected adapter's ID comes from the call boundary, not the cited host.
   evidenceCandidates(items: { source: string; url: string }[], rows: Candidate[]): void {
