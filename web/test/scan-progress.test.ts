@@ -6,6 +6,8 @@ import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.
 import { progressOf, outcomeInputs, sourceStatusOf } from '../lib/scan/progress.ts'
 import { scanOutcome } from '../lib/scan/scan-outcome.ts'
 import { sourceRuns } from '../lib/scan/source-runs.ts'
+import { newsSearch, resetNewsQueue } from '../lib/search/news.ts'
+import { newsStatus } from '../lib/scan/runner.ts'
 import { runReportFor } from '../lib/scan/run-report.ts'
 
 const done = (o: object) => scanOutcome({ id: 'j1', status: 'done', error: null, ...o })
@@ -157,4 +159,22 @@ test('REGRESSION: a job-board source with unknown (null) evidence/candidate coun
   }
   assert.equal(outcomeOf([R('search:tinyfish', 'unavailable', null, null), R('adapter:jobboards', 'ok', 0, 0)]).kind, 'zero_match', 'an explicit 0 and 0 is a real zero')
   assert.equal(outcomeOf([R('search:tinyfish', 'unavailable', null, null), R('adapter:jobboards', 'empty', null, null)]).kind, 'zero_match', 'the source itself says empty')
+})
+
+test('REGRESSION (Instinct): every news request returns HTTP 503 -> NOT a successful zero-result search; with a clean TinyFish 0 the scan is failed, not zero-match, and says so', async () => {
+  resetNewsQueue()
+  const r = await newsSearch(async () => ({ status: 503, body: 'upstream down' }), ['a', 'b', 'c'], 'en', { gapMs: 0, sleep: async () => {} })
+  assert.deepEqual([r.hits.length, r.attempted, r.failed], [0, 3, 3])
+  const note = { searched: true, hits: r.hits.length, attempted: r.attempted, failed: r.failed }
+  assert.equal(newsStatus(null, note), 'error')
+  const o = outcomeOf([R('search:tinyfish', 'unavailable', null, null), R('search:news', newsStatus(null, note), 0, null)])
+  assert.equal(o.kind, 'failed'); assert.match(o.label, /search:news/); assert.doesNotMatch(o.label + (o.detail ?? ''), /sources returned nothing|none of them failed/)
+})
+test('news partial failure with zero hits is failed and named (2 of 3 requests); a fully answered zero is empty; hits without pages stay unknown', () => {
+  assert.equal(newsStatus(null, { searched: true, hits: 0, attempted: 3, failed: 2 }), 'error_partial:2_of_3')
+  const o = outcomeOf([R('search:tinyfish', 'unavailable', null, null), R('search:news', 'error_partial:2_of_3', 0, null)])
+  assert.equal(o.kind, 'failed'); assert.match(o.label, /search:news \(2 of 3 requests failed\)/)
+  assert.equal(newsStatus(null, { searched: true, hits: 0, attempted: 3, failed: 0 }), 'empty')
+  assert.equal(newsStatus(null, { searched: true, hits: 4, attempted: 3, failed: 0 }), 'unavailable')
+  assert.equal(newsStatus(null, { searched: false, hits: 0, attempted: 0, failed: 0 }), 'unavailable')
 })

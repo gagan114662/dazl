@@ -65,15 +65,19 @@ function queued<T>(f: () => Promise<T>, gapMs: number, sleep: (ms: number) => Pr
 }
 
 // At most NEWS_PER_SCAN queries. A failed, limited or empty query only means fewer hits.
-export async function newsSearch(http: SafeGet, queries: string[], language?: string, opts: { gapMs?: number; sleep?: (ms: number) => Promise<void> } = {}): Promise<SearchHit[]> {
+// Request outcomes are kept apart from the hits: an empty `hits` with failed === attempted is an outage, never a search that found nothing.
+export interface NewsSearchResult { hits: SearchHit[]; attempted: number; failed: number }
+export async function newsSearch(http: SafeGet, queries: string[], language?: string, opts: { gapMs?: number; sleep?: (ms: number) => Promise<void> } = {}): Promise<NewsSearchResult> {
   const sleep = opts.sleep ?? (ms => new Promise<void>(r => setTimeout(r, ms)))
   const lang = gdeltLang(language)
   const hits: SearchHit[] = []
   const seen = new Set<string>()
+  let attempted = 0, failed = 0
   for (const q of queries.slice(0, NEWS_PER_SCAN)) {
+    attempted++
     const r = await queued(() => http(newsUrl(q, lang), { accept: 'application/json' }).catch(() => null), opts.gapMs ?? GAP_MS, sleep)
-    if (!r || r.status !== 200 || !r.body) continue
+    if (!r || r.status !== 200 || !r.body) { failed++; continue }
     for (const h of parseGdelt(r.body)) if (!seen.has(h.url)) { seen.add(h.url); hits.push(h) }
   }
-  return hits
+  return { hits, attempted, failed }
 }

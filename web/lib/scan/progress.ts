@@ -57,12 +57,13 @@ export function sourceFindings(rows: SourceRunRow[], jobStatus: string, searchEm
 
 export function outcomeInputs(report: unknown, rows: SourceRunRow[], jobStatus: string): { failed_sources: string[]; reject_reasons: Record<string, number> | null; search_hits: number | null } & SourceFindings {
   const rep = (report && typeof report === 'object' ? report : {}) as { funnel?: { review_reasons?: Record<string, number>; drop_reasons?: Record<string, number> }; search?: { hits_unique_urls?: number | null; hits_raw?: number | null; ok?: number | null; attempted?: number | null } | null }
-  const failed = progressOf(rows, jobStatus).filter(p => p.status === 'failed').map(p => p.source)
+  const partial = new Map(rows.map(r => [String(r.collector ?? ''), /^error_partial:(\d+)_of_(\d+)/.exec(String(r.status ?? ''))] as const))
+  const failed = progressOf(rows, jobStatus).filter(p => p.status === 'failed').map(p => { const m = partial.get(p.source); return m ? `${p.source} (${m[1]} of ${m[2]} requests failed)` : p.source })
   const search = rep.search ?? null
   // The report's `search` block describes the TinyFish search ONLY (the news fallback has its own row), so it speaks for that source alone. ANY failed attempt (1 of 3 succeeded) is a
   // named failure of that source: the empty result is then not proof of anything.
   const attempted = typeof search?.attempted === 'number' ? search.attempted : 0, ok = typeof search?.ok === 'number' ? search.ok : null
-  if (attempted > 0 && ok !== null && ok < attempted && !failed.includes('search:tinyfish')) failed.push(ok === 0 ? 'search:tinyfish' : `search:tinyfish (${attempted - ok} of ${attempted} search attempts failed)`)
+  if (attempted > 0 && ok !== null && ok < attempted && !failed.some(f => f.startsWith('search:tinyfish'))) failed.push(ok === 0 ? 'search:tinyfish' : `search:tinyfish (${attempted - ok} of ${attempted} search attempts failed)`)
   const reasons: Record<string, number> = {}
   for (const [k, v] of Object.entries(rep.funnel?.review_reasons ?? {})) if (typeof v === 'number' && v > 0) reasons[`review:${k}`] = v
   for (const [k, v] of Object.entries(rep.funnel?.drop_reasons ?? {})) if (typeof v === 'number' && v > 0) reasons[`dropped:${k}`] = v
