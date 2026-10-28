@@ -28,6 +28,8 @@ import { evidenceOriginLabel, purgedNote } from '@/lib/scan/evidence-origin'
 import { playSuggestions, type PlaySuggestions } from '@/lib/play-suggestions'
 import { scanOutcome } from '@/lib/scan/scan-outcome'
 import Caveat from '@/app/app/caveat'
+import SourceProgressList from './source-progress'
+import type { SourceProgress } from '@/lib/scan/progress'
 
 // Reject on the card is the existing reversible quarantine, with its own reason so the card can say "Rejected".
 // Reject asks for an optional reason (a preset or a few words); it is stored as "Rejected" or "Rejected: <reason>".
@@ -121,6 +123,8 @@ export default function LeadsClient() {
   viewedJob.current = jobId ?? ''
   const [status, setStatus] = useState<string>('')
   const [leadsSoFar, setLeadsSoFar] = useState(0)
+  // Live per-source progress from the status poll; null when the response had none (older server or a failed read).
+  const [progress, setProgress] = useState<SourceProgress[] | null>(null)
   const [startedAt, setStartedAt] = useState<number | null>(null)
   const [createdAt, setCreatedAt] = useState<number | null>(null)
   const [attempt, setAttempt] = useState<[number, number] | null>(null)
@@ -395,7 +399,7 @@ export default function LeadsClient() {
       }
       statusFails.current = 0
       const s = await r.json()
-      setStatus(s.status); setEnrichInterrupted(s.enrichment?.state === 'interrupted'); setEmptyReason(typeof s.empty_reason === 'string' ? s.empty_reason : null); setJobError(s.error ?? ''); setLeadsSoFar(s.lead_count ?? 0); setStartedAt(s.claimed_at ?? null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
+      setStatus(s.status); setEnrichInterrupted(s.enrichment?.state === 'interrupted'); setEmptyReason(typeof s.empty_reason === 'string' ? s.empty_reason : null); setJobError(s.error ?? ''); setLeadsSoFar(s.lead_count ?? 0); setProgress(Array.isArray(s.progress) ? s.progress : null); setStartedAt(s.claimed_at ?? null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
       setQuality(s.quality ?? null)
       if (s.icp) setIcp({ icp: s.icp, source: s.icp_source, query: typeof s.query === 'string' ? s.query : null })
       if (typeof s.query === 'string' && s.query && queryShownFor.current !== jobId) { queryShownFor.current = jobId; setQuery(s.query) }
@@ -704,7 +708,8 @@ export default function LeadsClient() {
             <div>{status === 'pending' ? 'Queued - waiting to start.' : 'Scanning - this can take a few minutes.'}</div>
             <div className="text-gray-400 text-xs">{leadsSoFar > 0 ? `${leadsSoFar} lead${leadsSoFar === 1 ? '' : 's'} so far` : status === 'pending' ? 'Not started' : 'Running'}{status === 'pending' ? (createdAt ? ` - queued ${Math.max(0, Math.floor((now - createdAt) / 60))} min ago` : '') : startedAt ? ` - running ${Math.max(0, Math.floor((now - startedAt) / 60))} min` : ''}{attempt ? ` - attempt ${attempt[0]} of ${attempt[1]}` : ''}</div>
             <div className="text-gray-400 text-xs" data-testid="run-sources">{core ? `Sources this scan can use: ${[usableLabels(core), ...(runExtras ?? [])].filter(Boolean).join(', ') || 'none'}${runExtras === null ? ' (plus any extra sources chosen when it started)' : ''}.` : 'Could not check which sources this scan can use.'}</div>
-            <div className="text-gray-400 text-xs">dazl cannot show a per-source count yet. A scan that stops responding is retried automatically, up to {attempt?.[1] ?? 3} attempts.</div>
+            <SourceProgressList progress={progress} />
+            <div className="text-gray-400 text-xs mt-2">A scan that stops responding is retried automatically, up to {attempt?.[1] ?? 3} attempts.</div>
             <button type="button" className="underline text-[#111] text-xs mt-1" onClick={async () => { const r = await fetch('/api/scan/cancel', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ job_id: jobId }) }); const j = await r.json().catch(() => ({})); setCancelNote(r.ok ? (j.note ?? 'Stop requested.') : 'Could not cancel: ' + (j.error ?? 'try again')); if (r.ok) setStatus('failed'); if (r.ok) setJobError('cancelled') }}>Stop this scan</button>
             {cancelNote && <div className="text-gray-400 text-xs">{cancelNote}</div>}
           </div>
