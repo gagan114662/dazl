@@ -14,7 +14,7 @@ import { getDb, sqliteDb } from '../db/client.ts'
 import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, verifyEvidence, type Candidate } from './evidence.ts'
-import { inferIcp, normalizeIcp, type Icp } from './icp.ts'
+import { fallbackIcp, inferIcp, normalizeIcp, type Icp } from './icp.ts'
 import { collectAdvanced, xSearchQuery } from '../advanced/index.ts'
 import { markWatchLeads } from '../watch.ts'
 import type { AdvPlatform } from '../advanced/config.ts'
@@ -816,11 +816,15 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // refused request is not recorded as sent. Behaviour is unchanged: same calls, same text, same errors.
     const rawProviders = deps.providers ?? providers
     const baseProviders = { ...rawProviders, [vendor]: meterProvider(rawProviders[vendor], c => ledger.model(c)) } as Record<Vendor, Provider>
-    // A trial scan keeps web research on: each call reserves the trial's research worst case, then settles to its reported
-    // usage. A run with its own max_usd still refuses research (run-budget.ts).
-    const research = trial && jobMax === null ? { reserveUsd: trial.researchReserveUsd } : undefined
-    const providers_ = spendLimit === null ? baseProviders : { ...baseProviders, [vendor]: guardProvider(baseProviders[vendor], spendGuards, vendor === 'anthropic' ? anthropicCountTokens : undefined, research) }
-    if (jobMax !== null || ownerMax !== null) deps = { ...deps, creditEnrichment: false } // a budgeted run adds no other paid enrichment (a trial's credit enrichment would run on the tenant's own keys, not dazl's)
+    // A trial scan reserves each paid step's maximum (lib/billing/trial-budget.ts): model calls by their prompt's bytes,
+    // not the token counter's estimate, and the model's own web search, whose cost has no bound, is refused. Its web
+    // research is TinyFish, charged per call below. A run with its own max_usd refuses research too (run-budget.ts).
+    const providers_ = spendLimit === null ? baseProviders : { ...baseProviders, [vendor]: guardProvider(baseProviders[vendor], spendGuards, vendor === 'anthropic' && !trial ? anthropicCountTokens : undefined) }
+    if (jobMax !== null || ownerMax !== null || trial) deps = { ...deps, creditEnrichment: false } // a budgeted run adds no other paid enrichment
+    // A trial scan makes no paid call outside its guard: no fallback to the model's web search (a trial with nothing
+    // from TinyFish or the free news search ends as stopped, not empty), and no people search, advanced sources or
+    // autopilot (TinyFish or other paid calls the trial charge does not see).
+    if (trial) deps = { ...deps, paidFallback: false }
     if (trial) trialCharges.set(job, (kind, units) => reserveAllUsd(spendGuards, units * (kind === 'search' ? trial.tinyfishSearchUsd : trial.tinyfishFetchUsd)))
     // Narrowing flags of a query job's own budget (paid_fallback / credit_enrichment / judge = false). They only ever switch a paid
     // surface off; before this the query path honoured max_usd but ignored the flags.
@@ -900,6 +904,8 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       if (leads && leads.length === 0) leads = null
     }
     if (!leads) {
+      // a trial whose budget refused a step stops with what it has (finishTrialBudget, via the catch below)
+      if (trialGuard?.refused) throw new SpendRefused(TRIAL_BUDGET_REASON)
       // paid_fallback=false: stop honestly as a budget stop (not "nothing found") instead of web-search research.
       if (deps.paidFallback === false) { finish(db, job, 'failed', 'budget_stopped', null, 0, ledger); return 'failed' }
       ledger.record(`search:${vendor}`, 'started')
@@ -958,7 +964,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         }
         // Advanced connectors (opt-in tier, own flag, consent and session). A page behind a login is never
         // verified by us: it goes to "needs review" as is, shown to the user and never emailed.
-        if (sel.advanced?.length) {
+        if (sel.advanced?.length && !trial) {
           assertOwned(db, job)
           const adv = await collectAdvanced(db, job.user_id, job.id, sel.advanced as AdvPlatform[], job.query!, { master: deps.master, worker: deps.advancedWorker, xQuery: xSearchQuery(icpForSources) || undefined })
           for (const collector of new Set(adv.map(i => i.source))) ledger.record(collector, 'ok', adv.filter(i => i.source === collector).length)
@@ -982,7 +988,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // skips the sources block entirely, and the collector never ran). Same consent, session
     // and rate budget as the Reddit fetcher; posts become candidates like any other evidence
     // and keep their competitor tag so the badge can be applied after verification.
-    if (complaints.length === 0 && job.query && icpForSources && complete) {
+    if (complaints.length === 0 && job.query && icpForSources && complete && !trial) {
       try {
         assertOwned(db, job)
         complaints = await collectCompetitorComplaints(db, job.user_id, job.id, { master: deps.master, worker: deps.advancedWorker })
@@ -1150,6 +1156,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // People search (person-first): the right people at each lead's company from public profile SEARCH RESULTS, for
     // companies whose own site lists nobody. Never throws; never an address; kill switch PEOPLE_SEARCH_ENABLED=0.
     if (process.env.PEOPLE_SEARCH_ENABLED === '0') trace.note('people_search', 'skipped', 'PEOPLE_SEARCH_ENABLED=0')
+    else if (trial) trace.note('people_search', 'skipped', 'a free trial scan makes no search outside its budget')
     else try { const n = await findPeople(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl }); trace.note('people_search', n > 0 ? 'ok' : 'attempted_no_result', n > 0 ? null : 'no profile results named a role-matching person at a verified company, or no search key/quota', { people_stored: n }) } catch (e) { trace.note('people_search', 'failed', e instanceof Error ? e.message : 'error') }
     // Contacts refused for disagreeing with the lead (wrong place / wrong domain) leave nothing reachable: regrade the lead from the evidence actually kept.
     try { regradeFromKeptContacts(db, job.user_id, job.id) } catch (e) { console.error('regrade from kept contacts failed', e instanceof Error ? e.message : 'error') }
@@ -1200,7 +1207,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     endEnrichment(db, job.id, job.attempts)
     // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.
     // A job that carries a budget never starts autopilot: its model drafting and sends are outside the budget (run-budget.ts).
-    if (!parseRunBudget(job.run_budget)) try { await (deps.autopilot ?? runAutopilot)(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
+    if (!parseRunBudget(job.run_budget) && !trial) try { await (deps.autopilot ?? runAutopilot)(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
     if (trialGuard?.refused) holdTrialBudget(db, job)
     return 'done'
     } finally { endEnrichment(db, job.id, job.attempts); ledger.flushModelCalls(db, job.id, job.attempts) }
@@ -1324,9 +1331,9 @@ export async function kickRunner(db: Database.Database, deps: RunDeps = {}): Pro
 // Preview for the "what are you looking for" form: infers the ICP with the tenant's own key
 // so the user can read and edit it before the scan runs.
 export async function previewIcp(db: Database.Database, tenantId: string, query: string, deps: Pick<RunDeps, 'providers' | 'fetchImpl' | 'master'> = {}, ip?: string): Promise<{ icp: Icp; inferred: boolean } | { error: 'no_api_key' | 'key_rejected' | 'trial_key_invalid' | 'key_unreadable' }> {
-  let vendor = pickVendor(db, tenantId)
+  const vendor = pickVendor(db, tenantId)
   const read = vendor ? readKey(db, tenantId, vendor, deps.master) : { key: null, unreadable: false }
-  let key = read.key
+  const key = read.key
   // Profile generation happens before any job exists: its model request is recorded by tenant (job_id null), including a
   // failed one, so the first paid step of a customer run is not invisible. Same call, same result.
   const metered = async (v: Vendor, q: string) => {
@@ -1335,18 +1342,9 @@ export async function previewIcp(db: Database.Database, tenantId: string, query:
     finally { writeModelCalls(db, tenantId, null, 0, calls) }
   }
   if ((!vendor || !key) && ip !== undefined && trialStatus(db, tenantId, ip).funded) {
-    // A preview is cheap and does not consume one of the account's trial scans; only starting
-    // the scan does. It still needs the trial to be live and the account under its caps.
-    const op = operatorKey()
-    vendor = op?.vendor ?? null
-    key = op?.key ?? null
-    if (!vendor || !key) return { error: 'no_api_key' }
-    try {
-      return await metered(vendor, query)
-    } catch {
-      // A trial user has no key of their own - never blame them for the server's key failing.
-      return { error: 'trial_key_invalid' }
-    }
+    // No model call on dazl's key outside a trial scan's budget (lib/billing/trial-budget.ts): a trial account gets the
+    // plain profile from its own words to read and edit, and the scan infers the full one inside its budget.
+    return { icp: fallbackIcp(query), inferred: false }
   }
   // An unreadable stored key is not "no key" - say which, or the user re-enters a good
   // key into a slot that stays broken.

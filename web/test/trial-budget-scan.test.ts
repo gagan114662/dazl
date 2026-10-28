@@ -1,124 +1,144 @@
-// A free-trial scan inside the runner (lib/billing/trial-budget.ts, lib/scan/runner.ts): every paid step on dazl's keys
-// counts against the scan's reserve; web research stays on until the reserve is reached; a scan that reaches it stops,
-// keeps what it found in the review lane (never as verified), and its status says why in plain words. Stubs only: no
-// network, no key; TinyFish runs against a local fake.
+// A free-trial scan inside the runner (lib/billing/trial-budget.ts, lib/scan/runner.ts), with the proposed per-scan
+// ceiling of $0.30 (not approved spend): every paid step on dazl's keys reserves its MAXIMUM cost before it is sent -
+// model calls by prompt bytes plus margin and max_tokens, TinyFish at a fixed price per search and fetched URL - and a
+// step that does not fit is never sent. The model's own web search has no cost bound and is never made on a trial.
+// Failed calls keep their charge; a retried attempt starts from what the job already reserved; a worker that lost the
+// job to another cannot spend on it. A scan that reaches its ceiling stops, keeps what it found in the review lane and
+// says why. Owner-funded calls outside a scan are off for trial accounts. Stubs only: no network, no key.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { migrateScan, createJob, createQueryJob, getJob, listLeads } from '../lib/scan/store.ts'
+import { migrateScan, createQueryJob, getJob } from '../lib/scan/store.ts'
 import { migrateKeys } from '../lib/llm/key-store.ts'
 import { migrateTrial } from '../lib/scan/trial.ts'
-import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
+import { claimKeyedJob, previewIcp, runJob } from '../lib/scan/runner.ts'
+import { icpFromWebsite } from '../lib/scan/icp-from-site.ts'
 import { scanOutcome } from '../lib/scan/scan-outcome.ts'
 import type { Provider } from '../lib/llm/provider.ts'
 import { migrateTinyfish, resetTinyfishState, tfSearch } from '../lib/search/tinyfish.ts'
-import { SpendGuard, SpendRefused, reserveAllUsd, researchCostUsd } from '../lib/llm/spend-guard.ts'
+import { INPUT_MARGIN_TOKENS, PRICES_USD_PER_M, SpendGuard, SpendRefused, reserveAllUsd, researchCostUsd } from '../lib/llm/spend-guard.ts'
 
-const TRIAL_ENV = { DAZL_TRIAL_ANTHROPIC_KEY: 'sk-ant-trial-fixture', DAZL_TRIAL_SCAN_RESERVE_USD: '1', DAZL_TRIAL_USER_DAILY_USD: '3', DAZL_TRIAL_GLOBAL_DAILY_USD: '10', DAZL_TRIAL_RESEARCH_RESERVE_USD: '0.5' }
+const SEARCH_USD = 0.05, FETCH_USD = 0.01, CEILING = 0.30
+const TRIAL_ENV = { DAZL_TRIAL_ANTHROPIC_KEY: 'sk-ant-trial-fixture', DAZL_TRIAL_SCAN_RESERVE_USD: String(CEILING), DAZL_TRIAL_ACCOUNT_TOTAL_USD: '1',
+  DAZL_TRIAL_GLOBAL_DAILY_USD: '10', TINYFISH_API_KEY: 'tf-fixture', TINYFISH_ENABLED: '1', DAZL_TRIAL_TINYFISH_SEARCH_USD: String(SEARCH_USD), DAZL_TRIAL_TINYFISH_FETCH_USD: String(FETCH_USD) }
 const withEnv = async (env: Record<string, string>, fn: () => Promise<void>) => {
   const old = Object.fromEntries(Object.keys(env).map(k => [k, process.env[k]]))
   Object.assign(process.env, env)
   try { await fn() } finally { for (const [k, v] of Object.entries(old)) { if (v === undefined) delete process.env[k]; else process.env[k] = v } }
 }
-const QUOTE = 'Northside Builders announced it is hiring three roofing crews for the Toronto market'
-const recent = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10)
-const lead = (url: string) => ({ name: 'Pat', company: 'Northside Builders', contact: null, signal: 'Hiring', source_url: url, score: 80, excerpt: QUOTE, event_date: recent })
-const page = async () => ({ text: `News ${recent.slice(0, 4)}. ${QUOTE}. ${'More text about the roofing market. '.repeat(10)}`, title: 'Northside Builders news', retrievedAt: 1_700_000_000 })
-// counting tokens before a model call is Anthropic's free count endpoint; locally it answers 5,000
-const countFetch = (async (u: unknown) => String(u).includes('count_tokens') ? new Response(JSON.stringify({ input_tokens: 5000 }), { status: 200 }) : (() => { throw new Error(`Unexpected network call: ${String(u)}`) })()) as typeof fetch
-const trialJob = (db: Database.Database) => {
-  const id = createJob(db, 'keyless', { business_name: 'Acme Roofing', industry: 'roofing', location: 'Toronto' })
-  db.prepare("UPDATE scan_jobs SET funded_by = 'trial' WHERE id = ?").run(id)
+const ICP = JSON.stringify({ summary: 'Toronto dental practices hiring', who: ['Owner'], industries: ['dental'], sizes: [], where: ['Toronto'], signals: ['hiring a receptionist'], exclude: [] })
+const setup = () => { const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migrateTrial(db); resetTinyfishState(); return db }
+const trialJob = (db: Database.Database, reservedBefore = 0) => {
+  const id = createQueryJob(db, 'keyless', { query: 'dental practices in Toronto hiring a receptionist', icp: ICP })
+  db.prepare("UPDATE scan_jobs SET funded_by = 'trial', spend_reserved_usd = ? WHERE id = ?").run(reservedBefore, id)
   return id
 }
-const setup = () => { const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migrateTrial(db); return db }
+const recorded = (db: Database.Database, id: string) => (db.prepare('SELECT spend_reserved_usd AS s FROM scan_jobs WHERE id = ?').get(id) as { s: number }).s
+// What each sent model call can cost at most, priced independently of the guard: prompt bytes + margin in, max_tokens out
+const P = PRICES_USD_PER_M['claude-sonnet-4-5']
+const modelMax = (prompt: string, max: number) => ((Buffer.byteLength(prompt) + INPUT_MARGIN_TOKENS) * P.in + max * P.out) / 1e6
+// A model that records every call it is sent; research (the model's own web search) must never be one of them
+const model = (sent: { kind: string; usd: number }[]): Provider => ({
+  configuredModel: () => 'claude-sonnet-4-5',
+  research: async () => { sent.push({ kind: 'research', usd: Infinity }); return { text: '[]', citedUrls: [] } },
+  complete: async (_k, prompt, _f, max = 10) => { sent.push({ kind: 'complete', usd: modelMax(prompt, max) }); return '[]' },
+})
+// TinyFish on loopback: each search request recorded; `answer` picks the reply (ok and empty by default)
+const tinyfish = async (sent: { kind: string; usd: number }[], fn: () => Promise<void>, answer: (n: number) => Response | Promise<Response> = () => new Response(JSON.stringify({ results: [] }), { status: 200 }), price = SEARCH_USD) => {
+  const real = globalThis.fetch
+  let n = 0
+  globalThis.fetch = (async (u: unknown) => {
+    const url = String(u)
+    if (url.startsWith('https://api.search.tinyfish.ai')) { sent.push({ kind: 'search', usd: price }); return answer(++n) }
+    // the token counter's answer is an estimate, not a bound: a trial never asks it (recorded at no cost if it did)
+    if (url.includes('/count_tokens')) { sent.push({ kind: 'count', usd: 0 }); return new Response(JSON.stringify({ input_tokens: 10 }), { status: 200 }) }
+    throw new Error(`Unexpected network call: ${url}`)
+  }) as typeof fetch
+  try { await fn() } finally { globalThis.fetch = real }
+}
+const total = (sent: { usd: number }[]) => sent.reduce((a, c) => a + c.usd, 0)
 
-test('a trial scan that reaches its limit after finding leads stops, keeps them in review, and says why', async () => {
+test('per-scan ceiling: every step is reserved at its maximum before it is sent; the step that would pass $0.30 is never sent', async () => {
+  // searches at $0.12: the query plan (~$0.01) and two searches fit, the third would pass $0.30
+  const BIG = 0.12
+  await withEnv({ ...TRIAL_ENV, DAZL_TRIAL_TINYFISH_SEARCH_USD: String(BIG) }, async () => {
+    const db = setup(); const id = trialJob(db)
+    const sent: { kind: string; usd: number }[] = []
+    await tinyfish(sent, async () => {
+      assert.equal(await runJob(db, claimKeyedJob(db)!, { providers: { anthropic: model(sent), openai: model(sent) }, judge: null }), 'done')
+    }, undefined, BIG)
+    const searches = sent.filter(c => c.kind === 'search').length
+    assert.equal(searches, 2, 'two searches fit; the third was refused before its request')
+    assert.ok(!sent.some(c => c.kind === 'research'), "the model's own web search (no cost bound) is never sent on a trial")
+    assert.ok(sent.some(c => c.kind === 'complete'), 'model calls were sent, each reserved by its prompt bytes')
+    assert.ok(!sent.some(c => c.kind === 'count'), 'never by the token counter\'s estimate')
+    // what was sent, priced at its maximum independently, is exactly what the scan recorded, and within the ceiling
+    assert.ok(Math.abs(recorded(db, id) - total(sent)) < 1e-9, `recorded ${recorded(db, id)} = sent maxima ${total(sent)}`)
+    assert.ok(recorded(db, id) <= CEILING + 1e-9, `recorded ${recorded(db, id)} <= ${CEILING}`)
+    assert.ok(recorded(db, id) + BIG > CEILING, 'it stopped because the next search would have passed the ceiling')
+    const job = getJob(db, 'keyless', id)!
+    assert.deepEqual([job.status, job.error], ['done', 'trial_budget_reached'])
+    const o = scanOutcome({ ...job, id, status: job.status, error: job.error, funded_by: 'trial' } as never)
+    assert.equal(o.label, 'Stopped early: this free scan reached its spending limit before it found any companies.')
+  })
+})
+
+test('per-scan ceiling: a failed search keeps its charge; a trial with nothing found ends as stopped, never falling back to unbounded research', async () => {
   await withEnv(TRIAL_ENV, async () => {
     const db = setup(); const id = trialJob(db)
-    const calls: string[] = []
-    // research runs (reserve 0.5) and reports usage that costs $0.95 (300k in + 3,333 out at $3/$15 per M, + 0 searches):
-    // the next paid step, grounding, does not fit in the $0.05 left
-    const anthropic: Provider = {
-      configuredModel: () => 'claude-sonnet-4-5',
-      research: async () => { calls.push('research'); return { text: JSON.stringify([lead('https://news.example/a')]), citedUrls: ['https://news.example/a'], usage: { model: 'claude-sonnet-4-5', input_tokens: 300_000, output_tokens: 3_333 } } },
-      complete: async () => { calls.push('complete'); return '[]' },
-    }
-    const out = await runJob(db, claimKeyedJob(db)!, { providers: { anthropic, openai: anthropic }, fetchPage: page, fetchImpl: countFetch, judge: null })
-    assert.equal(out, 'done')
-    assert.deepEqual(calls, ['research'], 'research ran (not refused up front); the step that did not fit was never sent')
+    const sent: { kind: string; usd: number }[] = []
+    await tinyfish(sent, async () => {
+      assert.equal(await runJob(db, claimKeyedJob(db)!, { providers: { anthropic: model(sent), openai: model(sent) }, judge: null }), 'failed')
+    }, () => new Response('upstream error', { status: 500 }))
+    assert.deepEqual(sent.map(c => c.kind).filter(k => k !== 'complete'), ['search'], 'one search, which failed; no research after it')
+    assert.ok(Math.abs(recorded(db, id) - total(sent)) < 1e-9, 'the failed search is counted like a successful one')
     const job = getJob(db, 'keyless', id)!
-    assert.equal(job.status, 'done'); assert.equal(job.error, 'trial_budget_reached')
-    const recorded = (db.prepare('SELECT spend_reserved_usd AS s FROM scan_jobs WHERE id = ?').get(id) as { s: number }).s
-    assert.ok(Math.abs(recorded - 0.95) < 0.001, `research settled to its reported cost (recorded ${recorded})`)
-    // the partial result is kept, in the review lane only: nothing reads as verified
-    const leads = listLeads(db, 'keyless', id, 200, true) as { company: string; review_reason: string | null }[]
-    assert.deepEqual(leads.map(l => [l.company, l.review_reason]), [['Northside Builders', 'trial_budget_reached']])
+    assert.deepEqual([job.status, job.error], ['failed', 'budget_stopped'])
     const o = scanOutcome({ ...job, id, status: job.status, error: job.error, funded_by: 'trial' } as never)
-    assert.equal(o.kind, 'stopped')
-    assert.match(o.label, /^Stopped early: this free scan reached its spending limit\. It kept 1 result found before it stopped\.$/)
-    assert.match(o.detail ?? '', /review list/)
+    assert.equal(o.label, 'This free scan found no companies within its spending limit')
+    assert.match(o.detail ?? '', /does not show that no company matches/)
   })
 })
 
-test('a trial scan whose first paid step does not fit stops at once, says so, and is not an empty search', async () => {
-  await withEnv({ ...TRIAL_ENV, DAZL_TRIAL_SCAN_RESERVE_USD: '0.3' }, async () => {
+test('per-scan ceiling across retries: an attempt starts from what the job already reserved, so a retry cannot spend the ceiling again', async () => {
+  await withEnv(TRIAL_ENV, async () => {
+    // an earlier attempt of this job reserved $0.27: what is left ($0.03) fits no $0.05 search
+    const db = setup(); const id = trialJob(db, 0.27)
+    const sent: { kind: string; usd: number }[] = []
+    await tinyfish(sent, async () => { await runJob(db, claimKeyedJob(db)!, { providers: { anthropic: model(sent), openai: model(sent) }, judge: null }) })
+    assert.equal(sent.filter(c => c.kind === 'search').length, 0, 'no search was sent')
+    assert.ok(recorded(db, id) <= CEILING + 1e-9, `recorded ${recorded(db, id)} <= ${CEILING}`)
+    assert.ok(Math.abs(recorded(db, id) - (0.27 + total(sent))) < 1e-9)
+    assert.equal(getJob(db, 'keyless', id)!.error, 'trial_budget_reached')
+  })
+})
+
+test('concurrent workers: a worker whose job was re-claimed by another attempt cannot spend on it; its next step is never sent', async () => {
+  await withEnv(TRIAL_ENV, async () => {
     const db = setup(); const id = trialJob(db)
-    let researched = false
-    const anthropic: Provider = { configuredModel: () => 'claude-sonnet-4-5', research: async () => { researched = true; return { text: '[]', citedUrls: [] } } }
-    assert.equal(await runJob(db, claimKeyedJob(db)!, { providers: { anthropic, openai: anthropic }, fetchPage: page, fetchImpl: countFetch, judge: null }), 'done')
-    assert.equal(researched, false, 'a $0.50 research reserve does not fit a $0.30 scan: never sent')
-    const job = getJob(db, 'keyless', id)!
-    assert.deepEqual([job.status, job.error], ['done', 'trial_budget_reached'])
-    const o = scanOutcome({ ...job, id, status: job.status, error: job.error, funded_by: 'trial' } as never)
-    assert.equal(o.label, 'Stopped early: this free scan reached its spending limit before it found any companies.')
-    assert.match(o.detail ?? '', /not an empty search/)
+    const sent: { kind: string; usd: number }[] = []
+    // during the first search another worker re-claims the job (a new attempt): this worker no longer owns it
+    await tinyfish(sent, async () => { await runJob(db, claimKeyedJob(db)!, { providers: { anthropic: model(sent), openai: model(sent) }, judge: null }) }, n => {
+      if (n === 1) db.prepare('UPDATE scan_jobs SET attempts = attempts + 1 WHERE id = ?').run(id)
+      return new Response(JSON.stringify({ results: [] }), { status: 200 })
+    })
+    assert.equal(sent.filter(c => c.kind === 'search').length, 1, 'the stale worker sent nothing after losing the job')
+    assert.ok(!sent.some(c => c.kind === 'research'))
+    assert.ok(Math.abs(recorded(db, id) - total(sent)) < 1e-9, 'its spend stays recorded on the job for the next attempt to start from')
   })
 })
 
-test('a trial scan without its caps and prices configured does not run at all', async () => {
-  await withEnv({ DAZL_TRIAL_ANTHROPIC_KEY: 'sk-ant-trial-fixture' }, async () => {
-    const db = setup(); const id = trialJob(db)
-    let called = false
-    const anthropic: Provider = { research: async () => { called = true; return { text: '[]', citedUrls: [] } } }
-    assert.equal(await runJob(db, claimKeyedJob(db)!, { providers: { anthropic, openai: anthropic }, fetchPage: page }), 'failed')
-    assert.equal(called, false)
-    assert.equal(getJob(db, 'keyless', id)!.error, 'trial_unavailable')
-  })
-})
-
-test('a trial scan that reaches its limit through search-provider calls alone is stopped, with no research after it', async () => {
-  // TinyFish on dazl's key at $0.40 a search; the scan's limit is $1.00. The model has no listed price here, so every
-  // model call is refused before it is sent and costs nothing: only TinyFish spends. Two searches fit ($0.80), the third
-  // does not and is never sent, and the web research that would follow ($0.50 reserve) no longer fits either.
-  await withEnv({ ...TRIAL_ENV, TINYFISH_API_KEY: 'tf-fixture', TINYFISH_ENABLED: '1', DAZL_TRIAL_TINYFISH_SEARCH_USD: '0.4', DAZL_TRIAL_TINYFISH_FETCH_USD: '0.01' }, async () => {
-    const db = setup(); resetTinyfishState()
-    const id = createQueryJob(db, 'keyless', { query: 'dental practices in Toronto hiring a receptionist', icp: JSON.stringify({ summary: 'Toronto dental practices hiring', who: ['Owner'], industries: ['dental'], sizes: [], where: ['Toronto'], signals: ['hiring a receptionist'], exclude: [] }) })
-    db.prepare("UPDATE scan_jobs SET funded_by = 'trial' WHERE id = ?").run(id)
-    const searches: string[] = []
-    const realFetch = globalThis.fetch
-    globalThis.fetch = (async (u: unknown) => {
-      const url = String(u)
-      if (url.startsWith('https://api.search.tinyfish.ai')) { searches.push(url); return new Response(JSON.stringify({ results: [] }), { status: 200 }) }
-      throw new Error(`Unexpected network call: ${url}`)
-    }) as typeof fetch
-    let researched = false, modelCalls = 0
-    const anthropic: Provider = {
-      research: async () => { researched = true; return { text: '[]', citedUrls: [] } },
-      complete: async () => { modelCalls++; return '[]' },
-    }
-    try {
-      assert.equal(await runJob(db, claimKeyedJob(db)!, { providers: { anthropic, openai: anthropic }, fetchPage: page, judge: null }), 'done')
-    } finally { globalThis.fetch = realFetch }
-    assert.equal(searches.length, 2, 'two $0.40 searches fit a $1.00 limit; the third was refused before its request')
-    assert.equal(modelCalls, 0, 'no model call was sent (unpriced here), so the spend is search-provider only')
-    assert.equal(researched, false, 'research does not start once the limit is spent')
-    const job = getJob(db, 'keyless', id)!
-    assert.deepEqual([job.status, job.error], ['done', 'trial_budget_reached'])
-    const recorded = (db.prepare('SELECT spend_reserved_usd AS s FROM scan_jobs WHERE id = ?').get(id) as { s: number }).s
-    assert.ok(Math.abs(recorded - 0.8) < 1e-9, `the two searches are what it recorded as spent (${recorded})`)
-    const o = scanOutcome({ ...job, id, status: job.status, error: job.error, funded_by: 'trial' } as never)
-    assert.equal(o.label, 'Stopped early: this free scan reached its spending limit before it found any companies.')
+test('owner-funded calls outside a scan are off for a trial account: the profile preview and website analysis call no model', async () => {
+  await withEnv(TRIAL_ENV, async () => {
+    const db = setup()
+    let calls = 0
+    const p: Provider = { configuredModel: () => 'claude-sonnet-4-5', research: async () => { calls++; return { text: '', citedUrls: [] } }, complete: async () => { calls++; return '{}' } }
+    const out = await previewIcp(db, 'keyless', 'dental practices in Toronto hiring a receptionist', { providers: { anthropic: p, openai: p } }, '1.2.3.4')
+    assert.ok('icp' in out && out.inferred === false, JSON.stringify(out))
+    let fetched = 0
+    const site = await icpFromWebsite(db, 'keyless', 'https://acme.example', { providers: { anthropic: p, openai: p }, fetchImpl: (async () => { fetched++; return new Response('') }) as typeof fetch } as never)
+    assert.deepEqual(site, { error: 'no_api_key' })
+    assert.deepEqual([calls, fetched], [0, 0])
   })
 })
 

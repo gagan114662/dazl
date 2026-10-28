@@ -1,21 +1,27 @@
 // What dazl spends on free trial scans (owner decision 2026-10-28: new users get real results with no API key, on
-// dazl's own keys), held by hard caps and abuse limits. lib/scan/trial.ts keeps the per-account scan count and the
+// dazl's own keys), held by hard ceilings and abuse limits. lib/scan/trial.ts keeps the per-account scan count and the
 // per-IP throttle; this module decides whether dazl can afford one more trial scan right now, and for whom.
 //
-// Admission (admitTrialScan), in one transaction that every admission takes in turn (the trial_budget_lock row):
-//   1. caps configured: DAZL_TRIAL_SCAN_RESERVE_USD, DAZL_TRIAL_USER_DAILY_USD and DAZL_TRIAL_GLOBAL_DAILY_USD must all
-//      be set to positive numbers, or no trial scan runs (fails closed; Instinct sets the numbers with the owner);
-//   2. a verified Google account: the user signed in with Google (oauth_identities), whose email Google verified;
-//   3. one trial per company: an email domain that is not a consumer mailbox (gmail.com, outlook.com, ...) gets one
-//      trial account; a second account on the same domain is refused;
-//   4. money: today's trial spend (UTC day) plus this scan's reserve must stay within the user's and the global cap.
-//      A scan counts as its reserve until it ends, then as what it recorded as spent. So caps are checked against a
-//      worst case for scans still running, and against recorded spend for finished ones.
-// Inside the scan (lib/scan/runner.ts), every paid step on dazl's keys is counted against the scan's reserve before it
-// is made: model calls, research (worst case, then settled to its reported usage), TinyFish searches and fetches,
-// retries and failed calls. A step that does not fit stops the scan with what it has (trial_budget_reached), and web
-// research stays on until then. A scan therefore never spends more than its reserve, except by what one research call
-// reports above its own reserve, which is recorded and stops the scan. Search-profile previews are not counted.
+// Funded trials stay OFF until Gagan approves the spend directly: with any number below unset, no trial scan runs. The
+// numbers Instinct proposed (not approved spend) are $0.30 a scan, $1 per trial account in total, $10 a day globally.
+//
+// Three ceilings, each a hard bound on money spent, not an estimate:
+//   - per scan (DAZL_TRIAL_SCAN_RESERVE_USD): the runner's guard reserves every paid step's MAXIMUM cost before the step
+//     is sent and refuses a step that does not fit (lib/scan/runner.ts). A step whose cost cannot be bounded is never
+//     made on a trial: the model's own web search (its search results are billed input with no limit dazl can set) is
+//     refused, so a trial's web research is TinyFish, at a fixed price per search and per fetched URL. Model calls are
+//     bounded by their prompt's UTF-8 bytes plus a margin, and their max_tokens. Failed calls and retries keep their
+//     reservation; a re-claimed attempt starts from what the job already reserved (scan_jobs.spend_reserved_usd).
+//   - per trial account, in total across all days (DAZL_TRIAL_ACCOUNT_TOTAL_USD), and
+//   - globally per UTC day (DAZL_TRIAL_GLOBAL_DAILY_USD): checked at admission, in one transaction every admission takes
+//     in turn (the trial_budget_lock row), so concurrent workers and instances cannot admit against the same room. A
+//     scan counts as its full reserve until it ends, then as what it recorded as spent.
+//     For the day's ceiling, a scan admitted on an earlier day also counts if it was still running or ended today, so
+//     a scan that runs past midnight is charged to both days, never to neither.
+// Admission (admitTrialScan) also requires a verified Google account, and one trial per company email domain (consumer
+// mailboxes count per account). Owner-funded calls outside a scan are off: the search-profile preview of a trial
+// account returns the plain profile with no model call (lib/scan/runner.ts previewIcp), and "fill the profile from my
+// website" runs only on the tenant's own key (lib/scan/icp-from-site.ts).
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import type { Db, Tx, TxBody } from '../db/client.ts'
@@ -36,22 +42,21 @@ export function migrateTrialBudget(db: Database.Database): void {
 }
 
 export interface TrialCaps {
-  reserveUsd: number; userDailyUsd: number; globalDailyUsd: number
-  // Prices of the paid steps a trial scan's own budget counts in the runner (lib/scan/runner.ts): a research call's worst
-  // case (settled to the usage it reports), and each TinyFish search and fetched URL on dazl's key. Model calls are
-  // priced from their tokens (lib/llm/spend-guard.ts PRICES_USD_PER_M). 0 is allowed for a free tier, but must be set.
-  researchReserveUsd: number; tinyfishSearchUsd: number; tinyfishFetchUsd: number
+  reserveUsd: number; accountTotalUsd: number; globalDailyUsd: number
+  // Prices of the paid web research a trial scan's own budget counts in the runner (lib/scan/runner.ts): each TinyFish
+  // search and fetched URL on dazl's key. Model calls are priced from their bounds (lib/llm/spend-guard.ts). 0 is allowed
+  // for a free tier, but must be set.
+  tinyfishSearchUsd: number; tinyfishFetchUsd: number
 }
 const positive = (v: string | undefined) => { const n = Number(v); return v !== undefined && v.trim() !== '' && Number.isFinite(n) && n > 0 ? n : null }
 const nonNegative = (v: string | undefined) => { const n = Number(v); return v !== undefined && v.trim() !== '' && Number.isFinite(n) && n >= 0 ? n : null }
-// null unless every number is set: no cap or no price, no trial. TinyFish prices are needed only while TinyFish is on.
+// null unless every number is set and TinyFish (a trial's only web research) is on: no ceiling or no price, no trial.
 export function trialCaps(env: Record<string, string | undefined> = process.env): TrialCaps | null {
-  const reserveUsd = positive(env.DAZL_TRIAL_SCAN_RESERVE_USD), userDailyUsd = positive(env.DAZL_TRIAL_USER_DAILY_USD), globalDailyUsd = positive(env.DAZL_TRIAL_GLOBAL_DAILY_USD)
-  const researchReserveUsd = positive(env.DAZL_TRIAL_RESEARCH_RESERVE_USD)
-  const tfOn = !!env.TINYFISH_API_KEY && env.TINYFISH_ENABLED !== '0'
-  const tinyfishSearchUsd = tfOn ? nonNegative(env.DAZL_TRIAL_TINYFISH_SEARCH_USD) : 0, tinyfishFetchUsd = tfOn ? nonNegative(env.DAZL_TRIAL_TINYFISH_FETCH_USD) : 0
-  if (!reserveUsd || !userDailyUsd || !globalDailyUsd || !researchReserveUsd || tinyfishSearchUsd === null || tinyfishFetchUsd === null) return null
-  return { reserveUsd, userDailyUsd, globalDailyUsd, researchReserveUsd, tinyfishSearchUsd, tinyfishFetchUsd }
+  const reserveUsd = positive(env.DAZL_TRIAL_SCAN_RESERVE_USD), accountTotalUsd = positive(env.DAZL_TRIAL_ACCOUNT_TOTAL_USD), globalDailyUsd = positive(env.DAZL_TRIAL_GLOBAL_DAILY_USD)
+  if (!env.TINYFISH_API_KEY || env.TINYFISH_ENABLED === '0') return null
+  const tinyfishSearchUsd = nonNegative(env.DAZL_TRIAL_TINYFISH_SEARCH_USD), tinyfishFetchUsd = nonNegative(env.DAZL_TRIAL_TINYFISH_FETCH_USD)
+  if (!reserveUsd || !accountTotalUsd || !globalDailyUsd || tinyfishSearchUsd === null || tinyfishFetchUsd === null) return null
+  return { reserveUsd, accountTotalUsd, globalDailyUsd, tinyfishSearchUsd, tinyfishFetchUsd }
 }
 
 // Mailbox providers anyone can sign up to: the one-trial-per-domain rule would lock out everyone else on them, so these
@@ -66,24 +71,27 @@ export const utcDay = (nowS: number) => Math.floor(nowS / 86400)
 // The reason a free-trial scan stopped at its budget (scan_jobs.error) and why its leads are in review (leads.review_reason).
 export const TRIAL_BUDGET_REASON = 'trial_budget_reached'
 
-export type TrialRefusal = 'not_configured' | 'google_required' | 'domain_used' | 'user_daily_cap' | 'global_daily_cap'
+export type TrialRefusal = 'not_configured' | 'google_required' | 'domain_used' | 'account_total_cap' | 'global_daily_cap'
 export type Admission = { ok: true; reservation: string } | { ok: false; reason: TrialRefusal }
 
-// A reservation's cost for the day: its reserve while the scan runs (or before it exists), then what the scan recorded
-// as spent once it ended: scan_jobs.spend_reserved_usd, every paid step the runner counted against the trial budget
-// (model calls, research settled to its reported usage, TinyFish searches and fetched URLs, retries and failed calls).
-const SPENT_SQL = `SELECT r.tenant_id, r.reserve_usd, j.status, j.spend_reserved_usd
+// A reservation's cost: its reserve while the scan runs (or before it exists, or if creating it failed), then what the
+// scan recorded as spent once it ended: scan_jobs.spend_reserved_usd, every paid step the runner counted against the
+// trial budget (the runner never records more than the reserve; if a row ever did, it counts in full). The rows: this account's reservations on any day, and every reservation that
+// counts toward today (admitted today, or admitted earlier and still running or ended today).
+const LEDGER_SQL = `SELECT r.tenant_id, r.reserve_usd, r.day, j.status, j.finished_at, j.spend_reserved_usd
   FROM trial_reservations r LEFT JOIN scan_jobs j ON j.id = r.job_id AND j.user_id = r.tenant_id
-  WHERE r.day = ?`
-type SpentRow = { tenant_id: string; reserve_usd: number; status: string | null; spend_reserved_usd: number | null }
-export function spendByTenant(rows: SpentRow[]): Map<string, number> {
-  const out = new Map<string, number>()
+  WHERE r.tenant_id = ? OR r.day = ? OR (r.day < ? AND (j.status IS NULL OR j.status NOT IN ('done', 'failed') OR j.finished_at >= ?))`
+export type LedgerRow = { tenant_id: string; reserve_usd: number; day: number; status: string | null; finished_at: number | null; spend_reserved_usd: number | null }
+const ended = (r: LedgerRow) => r.status === 'done' || r.status === 'failed'
+export const reservationCost = (r: LedgerRow) => ended(r) ? Math.max(0, Number(r.spend_reserved_usd ?? 0)) : Number(r.reserve_usd)
+const countsToday = (r: LedgerRow, day: number) => Number(r.day) === day || (Number(r.day) < day && (!ended(r) || Number(r.finished_at ?? 0) >= day * 86400))
+export function ledger(rows: LedgerRow[], tenantId: string, day: number): { account: number; today: number } {
+  let account = 0, today = 0
   for (const r of rows) {
-    const ended = r.status === 'done' || r.status === 'failed'
-    const cost = ended ? Math.max(0, Number(r.spend_reserved_usd ?? 0)) : Number(r.reserve_usd)
-    out.set(r.tenant_id, (out.get(r.tenant_id) ?? 0) + cost)
+    if (r.tenant_id === tenantId) account += reservationCost(r)
+    if (countsToday(r, day)) today += reservationCost(r)
   }
-  return out
+  return { account, today }
 }
 
 // The checks, as a transaction step: the reason a trial scan would be refused for this user now, or null.
@@ -97,10 +105,10 @@ function* refusal(t: Tx, user: { id: string; email: string }, caps: TrialCaps, d
       WHERE u.id <> ? AND lower(u.email) LIKE ? LIMIT 1`, [user.id, `%@${domain}`])
     if (other) return 'domain_used'
   }
-  const spent = spendByTenant(yield* t.all<SpentRow>(SPENT_SQL, [day]))
-  const total = [...spent.values()].reduce((a, b) => a + b, 0)
-  if ((spent.get(user.id) ?? 0) + caps.reserveUsd > caps.userDailyUsd) return 'user_daily_cap'
-  if (total + caps.reserveUsd > caps.globalDailyUsd) return 'global_daily_cap'
+  const l = ledger(yield* t.all<LedgerRow>(LEDGER_SQL, [user.id, day, day, day * 86400]), user.id, day)
+  // a small tolerance for float sums (0.1 + 0.2), far below a cent
+  if (l.account + caps.reserveUsd > caps.accountTotalUsd + 1e-9) return 'account_total_cap'
+  if (l.today + caps.reserveUsd > caps.globalDailyUsd + 1e-9) return 'global_daily_cap'
   return null
 }
 
