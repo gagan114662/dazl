@@ -171,15 +171,18 @@ test('London stage report: seed funding plus sales hiring for the same company q
   console.log('LONDON fates', JSON.stringify(rep.candidates.map((c: { company: string; fate: string }) => [c.company, c.fate])), 'funnel', JSON.stringify(rep.funnel))
 })
 
-// KNOWN GAP, pinned so a future gate shows up as a visible diff. Nothing in the verifier or the window gate checks a funding STAGE or
-// that BOTH requested signals exist: "seed only" and "also hiring sales" are enforced only by the profile guard, the planner and the
-// extraction prompt. If the model returns a funding-only or a Series A candidate whose quote, company and date check out, it verifies.
-// Closing this is a policy/verifier change (a design item, not part of this fixture PR).
-test('KNOWN GAP (documented, not fixed here): a funding-only or Series A candidate with a clean quote/company/date is not stopped by any code gate', async () => {
+// Two requested signals ("seed only" and "also hiring sales"). The sales-hiring half is now checked after the contact crawl (lib/scan/sales-hiring-gate.ts):
+// a funding-only candidate is moved to review as no_sales_hiring_evidence unless its quote, another verified candidate for the company, or a dated
+// posting on a public job board bound to its domain shows the hiring. STILL A KNOWN GAP: nothing checks a funding STAGE, so a Series A candidate
+// that also shows sales hiring (or a Series A quote the model pairs with a hiring one) verifies.
+test('sales-hiring half is enforced: a funding-only candidate is stored as no_sales_hiring_evidence, a seed + sales-hiring pair stays verified; the funding-STAGE gap remains', async () => {
   const fundingOnly = await runFixture({ ...london, extraction: [lSeed] })
-  assert.equal(fate(fundingOnly, 'Nimbus Analytics'), 'verified', 'no code requires the sales-hiring signal')
+  assert.equal(fate(fundingOnly, 'Nimbus Analytics'), 'verified', 'the verifier\u2019s own fate is unchanged (quote, company and date check out)')
+  assert.equal(fundingOnly.leads.find(l => l.company === 'Nimbus Analytics')!.review_reason, 'no_sales_hiring_evidence', 'but the stored lead is not passed on the funding quote alone')
+  const pair = await runFixture({ ...london, extraction: [lSeed, lSales] })
+  assert.equal(pair.leads.find(l => l.company === 'Nimbus Analytics')!.review_reason, null, 'the verified sales-hiring candidate for the same company keeps it')
   const seriesA = await runFixture({ ...london, extraction: [lA] })
-  assert.equal(fate(seriesA, 'Orbit Software'), 'verified', 'no code checks the funding stage of a quote')
+  assert.equal(fate(seriesA, 'Orbit Software'), 'verified', 'no code checks the funding stage of a quote (still a gap)')
 })
 
 test('London control: no candidates -> failed with no_candidates and a full report; seed-only evidence for the wrong company is not a lead for the claimed company', async () => {
