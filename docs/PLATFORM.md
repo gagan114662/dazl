@@ -21,14 +21,6 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
   - `test/seo-store.test.ts` runs their write and read paths with two tenants on both engines.
   - The tenant's AI key for briefs and drafts is still read from the SQLite key store until `tenant_llm_keys` is ported.
   - The route-test harness (`test/helpers/tenant-route-db.ts`) points `getDb()` at the same fixture store as `getScanDb()`, as in the app. The route isolation tests therefore also cover the ported routes, and the shared rate limiter writes to that store. The snapshots skip the two global platform tables.
-- **Scan jobs to Postgres, step 1 (platform part):**
-  - `lib/scan/store-db.ts` has `Db` versions of the scan job store: create, query-create, get, count-active, list leads, count hidden, latest, list jobs, export, cancel and the stale reaper.
-  - `test/scan-store-db.test.ts` covers them with two tenants on both engines, and pins them to `store.ts` on SQLite with the same rows.
-  - No caller is switched. `store.ts`, the runner and the routes are unchanged; callers move with their owners.
-  - Differences from `store.ts`:
-    - Times come from the caller.
-    - Same-second ties order by `id`, not `rowid`.
-    - `getJob` does not reap as a side effect.
 - **Step 6a (health and error capture):**
   - `GET /api/health/live` answers without touching any store. Use it as the liveness probe.
   - `GET /api/health/ready` and `GET /api/health` are the readiness probe. Each check has a 2 s budget. They return 503 when any of these fails or goes over budget:
@@ -56,6 +48,14 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
     - scan runner and queue runner crashes (`lib/scan/crash.ts`). A rejection that escapes `runJob`'s own failure handling is recorded with the tenant and job id. The job is marked `failed` with `error = 'crashed'`, fenced on `status = 'running'` and the same `attempts`, instead of waiting in `running` for the stale-lease reaper. On the queue path the queue item is failed too, not retried, since a crash would repeat.
   - Alert hook: with `OPS_ALERT_WEBHOOK_URL` (https only) set, the same scrubbed record is POSTed. It is throttled to one per fingerprint per 10 min and 20 per 10 min overall, fire and forget.
   - Not yet: other diagnostic `console.error` calls inside the scan pipeline (handled per-step failures, not crashes). Also not done yet: the backup restore drill and the deploy checklist (step 6b).
+- **Scan jobs to Postgres, step 1 (platform part):**
+  - `lib/scan/store-db.ts` has `Db` versions of the scan job store: create, query-create, get, count-active, list leads, count hidden, latest, list jobs, export, cancel and the stale reaper.
+  - `test/scan-store-db.test.ts` covers them with two tenants on both engines, and pins them to `store.ts` on SQLite with the same rows.
+  - No caller is switched. `store.ts`, the runner and the routes are unchanged; callers move with their owners.
+  - Differences from `store.ts`:
+    - Times come from the caller.
+    - Same-second ties order by `id`, not `rowid`.
+    - `getJob` does not reap as a side effect.
 - **Still on SQLite:** every other module. Production keeps running on SQLite until cutover.
 - **SQLite-only SQL in queries:** about 18 queries use `rowid` (for example as an ORDER BY tie-break), which PG does not have. They need rewriting as each area is ported.
 
