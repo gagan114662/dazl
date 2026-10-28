@@ -137,10 +137,22 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
     - `GET /api/leads`: its read contract spans sequences, connectors, events, priorities and lookalikes, plus the currentness gate's storage.
     - The campaign list: it evaluates the draft, approve and send gates per draft, so those gates' storage moves first.
     - Starting a scan and scan status: they call the runner, which is yield-owned.
+- **Postgres port, batch 2 (settings, Cal.com, warm paths):** these routes now run on `Db`:
+  - settings: memory, competitors, Cal.com, connectors, enrichment keys, advanced connectors, the LLM key;
+  - the Cal.com webhook (`/api/hooks/calcom`);
+  - the LinkedIn connections import (`/api/warm/connections`) and a lead's warm paths (`/api/leads/[lead]/warm-path`).
+  - Modules that moved fully: `calcom/index.ts`, `llm/key-evidence.ts`, `warm/connections.ts` (all but its SQLite migration).
+  - Async twins sharing SQL with the sync version the scan pipeline still uses: `memory.ts`, `signals/competitor-reddit.ts`, `connectors/store.ts`, `advanced/index.ts`, `llm/key-store.ts`.
+  - **Behaviour on SQLite is unchanged:**
+    - `INSERT OR IGNORE` / `OR REPLACE` became explicit `ON CONFLICT` on the primary key: Cal.com bookings (`DO NOTHING` on the booking uid), user-reported warm paths (`DO NOTHING`), and the connections import, which upserts on `(tenant_id, linkedin_url)` (the last row for a profile URL wins, as `OR REPLACE` did). A row a later repeat replaces is still written first, so the table's CHECKs judge every accepted row: an over-long `connected_on` anywhere in the file still rejects the whole import and leaves the existing connections in place (`test/warm-connections.test.ts`, both engines). None of these was hiding a NOT NULL or CHECK failure.
+    - `strftime('now')` became the caller's clock. Unordered reads that SQLite answered in primary-key order now say so (`connectorStatus` by connector, LLM key status by vendor); same-second ties use `insert_seq`.
+    - `insert_seq` now covers `connector_audit` and `warm_user_paths` too (SQLite migration; Postgres `0011_insertion_order_more.sql`).
+  - **Tests:** `test/helpers/pg-port-routes-2-runtime.mts` runs the real handlers as two tenants on SQLite and on Postgres from one seed: every response and every row the writes leave must be identical (random ids, secrets and clock times compared by identity), tenant B sees none of tenant A's settings, bookings, connections or paths, and the SQLite handle is a trap on Postgres. It caught the `connectorStatus` order.
+  - **Not in batch 2:** `GET /api/leads` and the other leads routes. They read through yield-owned `lib/scan` modules (source review, lookalikes, domain review, evidence copies, find-contact, page signals, qualify) and the outreach gates' storage, which their owners port first.
 - **Insertion order on both engines (`insert_seq`):**
   - What it fixes: SQLite's `rowid` gave `scan_jobs`, `leads`, `outreach_messages` and `lead_enrichments` an implicit insertion order, which same-second ties relied on. Postgres has none.
   - `insert_seq` makes that order a column on both engines:
-    - **SQLite** (`lib/db/insertion-order.ts`, called by each table's own migration (`migrateScan`, `migrateOutreach`, `migrateConnectors`) and once more at the end of `migrateAllSqlite` and `getScanDb`): existing rows are backfilled from `rowid`. An AFTER INSERT trigger then gives each new row `max(insert_seq) + 1`. Using max rather than `rowid` keeps the order increasing after a copy back from Postgres. A row that brings its own value keeps it.
+    - **SQLite** (`lib/db/insertion-order.ts`, called by each table's own migration (`migrateScan`, `migrateOutreach`, `migrateConnectors`, `migrateWarm`) and once more at the end of `migrateAllSqlite` and `getScanDb`): existing rows are backfilled from `rowid`. An AFTER INSERT trigger then gives each new row `max(insert_seq) + 1`. Using max rather than `rowid` keeps the order increasing after a copy back from Postgres. A row that brings its own value keeps it.
     - **Postgres** (`0010_insertion_order.sql`): a sequence default. `translate-schema.ts` maps the SQLite trigger to it, so the drift test holds.
   - The ported queries (`store-db.ts`, `campaign-detail.ts`, `best-person.ts`) order ties by `insert_seq` on both engines, and the insertion-order gap list is gone.
   - A `rowid` left in `Db`-layer SQL fails the audit, because Postgres rejects it in `PREPARE`.
@@ -149,7 +161,7 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
     - `test/insertion-order.test.ts`: on an existing store, the migration backfills from `rowid`, re-runs change nothing, and new and copied rows order correctly.
     - The parity runtime: ties seeded out of id order come back identically on SQLite and Postgres.
     - `test/copy-store.test.ts`: the sequences continue past the copied values.
-- **Still on SQLite:** the 135 modules in `lib/db/pg-port-status.ts`, down from 149 before batch 1 (the audit's 148 plus `lib/scan/sales-hiring-gate.ts` from #276). Postgres rejects 83 of their statements, down from 87. Production keeps running on SQLite until that list is empty and the cutover below is authorized.
+- **Still on SQLite:** the 122 modules in `lib/db/pg-port-status.ts`, down from 135 after batch 1 and 149 before it (the audit's 148 plus `lib/scan/sales-hiring-gate.ts` from #276). Postgres rejects 74 of their statements, down from 83 and 87. Production keeps running on SQLite until that list is empty and the cutover below is authorized.
 
 ## Tables (73 created in code)
 
@@ -366,11 +378,11 @@ Nothing here has been run against production. The tool and the steps are ready f
 - Both directions are covered by `test/copy-store.test.ts` and `test/pg-cutover-cli.test.ts`. The CLI test also writes to Postgres after the copy and checks that the rollback carries the write back.
 
 **Still blocking the switch:**
-- 135 modules on the raw SQLite handle (`lib/db/pg-port-status.ts`): the gate. The largest groups:
+- 122 modules on the raw SQLite handle (`lib/db/pg-port-status.ts`): the gate. The largest groups:
   - the scan runner and pipeline (`lib/scan`, yield-owned);
   - outreach and the send gates (`lib/outreach`);
-  - the leads routes, including `GET /api/leads`;
-  - settings.
+  - the leads routes, including `GET /api/leads` (they wait on `lib/scan` and `lib/outreach` storage).
+  - Settings moved in batch 2.
 - Not authorized: provisioning production Postgres, setting `DATABASE_URL`, and the cutover itself (see "Production go/no-go").
 - The write fence is not wired into the app. Writers are stopped by stopping the processes, and the Hermes tunnel and workers must be paused separately.
 - 35 runtime-built SQL statements are not statically checked; the ported ones run on Postgres in tests.
