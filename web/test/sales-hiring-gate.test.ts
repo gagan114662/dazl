@@ -9,6 +9,12 @@ import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, enrichmentsForLeads } from '../lib/connectors/store.ts'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
 
+// CI runs with SITECRAWL_ENABLED=0 (npm test). The runJob fixtures below need their STUBBED crawl (an injected crawlGet, no network) to establish the lead's domain,
+// so the crawl is switched on for the duration of one fixture run only and restored; the domain gate itself is unchanged.
+async function runCrawl(f: Fixture) {
+  const saved = process.env.SITECRAWL_ENABLED; process.env.SITECRAWL_ENABLED = '1'
+  try { return await runFixture(f) } finally { if (saved === undefined) delete process.env.SITECRAWL_ENABLED; else process.env.SITECRAWL_ENABLED = saved }
+}
 const NOW = Date.parse('2026-10-28T12:00:00Z')
 const d = (n: number) => new Date(NOW - n * 86_400_000).toISOString()
 const ok = (b: unknown) => new Response(JSON.stringify(b), { status: 200 })
@@ -152,14 +158,14 @@ function london(boardJson: Record<string, unknown>, quote = QUOTE): Fixture {
   }
 }
 test('through the real runJob: the seed lead passes the normal gates; with a board bound to its domain it stays verified (why names the role + date), without one it is no_sales_hiring_evidence', async () => {
-  const withBoard = await runFixture(london({
+  const withBoard = await runCrawl(london({
     'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs': { jobs: [{ id: 1, title: 'Account Executive' }] },
     'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs/1': { id: 1, title: 'Account Executive', first_published: new Date(Date.now() - 12 * 86_400_000).toISOString(), absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/1', content: '&lt;p&gt;Write to jobs@brightloop.io&lt;/p&gt;' },
   }))
   const l1 = withBoard.db.prepare("SELECT company_domain, review_reason, confidence, why FROM leads WHERE company = 'Brightloop'").get() as { company_domain: string | null; review_reason: string | null; confidence: number | null; why: string | null }
   assert.equal(l1.company_domain, 'brightloop.io', JSON.stringify(l1)); assert.equal(l1.review_reason, null); assert.ok(l1.confidence !== null)
   assert.match(l1.why ?? '', /^Hiring sales: Account Executive posted \d{4}-\d{2}-\d{2} on its Greenhouse job board \(brightloop\.io\)\./)
-  const none = await runFixture(london({}))
+  const none = await runCrawl(london({}))
   const l2 = none.db.prepare("SELECT company_domain, review_reason, confidence, why FROM leads WHERE company = 'Brightloop'").get() as { company_domain: string | null; review_reason: string | null; confidence: number | null; why: string | null }
   assert.equal(l2.review_reason, 'no_sales_hiring_evidence', JSON.stringify(l2)); assert.equal(l2.confidence, null)
   const job = none.db.prepare('SELECT verified, needs_review FROM scan_jobs').get() as { verified: number; needs_review: number }
@@ -176,7 +182,7 @@ test('through the real runJob: "has announced plans for a seed round" (and plans
     'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs/1': { id: 1, title: 'Account Executive', first_published: new Date(Date.now() - 12 * 86_400_000).toISOString(), absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/1', content: '&lt;p&gt;Write to jobs@brightloop.io&lt;/p&gt;' },
   }
   for (const q of ['Brightloop, a London B2B SaaS startup, has announced plans for a 3m GBP seed round this month', 'Brightloop, a London B2B SaaS startup, plans to raise a 3m GBP seed round this month', 'Brightloop, a London B2B SaaS startup, intends to raise a 3m GBP seed round this month', 'Brightloop, a London B2B SaaS startup, aims to raise a 3m GBP seed round this month', 'Brightloop, a London B2B SaaS startup, is preparing a 3m GBP seed round this month', 'Brightloop, a London B2B SaaS startup, will raise a 3m GBP seed round this month']) {
-    const r = await runFixture(london(board, q))
+    const r = await runCrawl(london(board, q))
     const l = r.db.prepare("SELECT review_reason, confidence FROM leads WHERE company = 'Brightloop'").get() as { review_reason: string | null; confidence: number | null } | undefined
     assert.ok(l, q); assert.equal(l!.review_reason, 'no_event_evidence', q); assert.equal(l!.confidence, null, q)
     assert.deepEqual(r.db.prepare('SELECT verified, needs_review FROM scan_jobs').get(), { verified: 0, needs_review: 1 }, q)
@@ -188,7 +194,7 @@ test('through the real runJob: a Series A-only article with a perfect sales boar
     'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs': { jobs: [{ id: 1, title: 'Account Executive' }] },
     'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs/1': { id: 1, title: 'Account Executive', first_published: new Date(Date.now() - 12 * 86_400_000).toISOString(), absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/1', content: '&lt;p&gt;Write to jobs@brightloop.io&lt;/p&gt;' },
   }
-  const r = await runFixture(london(board, 'Brightloop, a London B2B SaaS startup, raised a 3m GBP Series A round this month'))
+  const r = await runCrawl(london(board, 'Brightloop, a London B2B SaaS startup, raised a 3m GBP Series A round this month'))
   const l = r.db.prepare("SELECT review_reason, confidence FROM leads WHERE company = 'Brightloop'").get() as { review_reason: string | null; confidence: number | null }
   assert.equal(l.review_reason, 'no_event_evidence', JSON.stringify(l)); assert.equal(l.confidence, null)
   assert.deepEqual(r.db.prepare('SELECT verified, needs_review FROM scan_jobs').get(), { verified: 0, needs_review: 1 })
