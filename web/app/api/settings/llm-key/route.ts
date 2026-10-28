@@ -1,15 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { deleteKey, keyStatus, saveKey } from '@/lib/llm/key-store'
+import { openKeyRejection } from '@/lib/llm/key-evidence'
 import { isVendor, looksLikeKey, validateKey } from '@/lib/llm/vendors'
 import { rateLimit } from '@/lib/rate-limit'
 import { sameOriginJson } from '@/lib/same-origin'
 
-// Status only: vendor, last 4 characters and when it was validated. The key itself is never returned.
+// Status only: vendor, last 4 characters and when it was validated. The key itself is never returned. rejection: a later
+// scan that stopped on this account's key with no acceptance of that same key since (lib/llm/key-evidence.ts); read-only.
 export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  return NextResponse.json({ keys: keyStatus(getScanDb(), user.id) })
+  const db = getScanDb()
+  return NextResponse.json({ keys: keyStatus(db, user.id), rejection: openKeyRejection(db, user.id) })
 }
 
 export async function PUT(req: NextRequest) {

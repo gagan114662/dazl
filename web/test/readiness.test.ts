@@ -111,9 +111,9 @@ test('lead sources: capabilities, never "searched"; no usable key means a scan c
   const ON = { web_index: false, news: true, websites: false }
   // Instinct #255: enabled news must not make the row done when no scan can start.
   const nokey = src(ON, { has_key: false, trial: null })
-  assert.deepEqual([nokey.state, nokey.detail, nokey.fix], ['todo', 'a scan cannot start until you add an AI key', { kind: 'link', href: '/app/settings#model-key', label: 'Add key' }])
+  assert.deepEqual([nokey.state, nokey.detail, nokey.fix], ['todo', 'a scan cannot start until you add an AI key. Not available: Web search index (not set up on this server), Company websites (not set up on this server)', { kind: 'link', href: '/app/settings#model-key', label: 'Add key' }])
   assert.equal(src(ON, { has_key: false, trial: { funded: true, remaining: 0 } }).state, 'todo', 'free searches used up')
-  assert.deepEqual(src(ON, { has_key: true }), { id: 'sources', label: 'Lead sources', state: 'done', detail: 'a scan can use Web research with your AI key, News articles', fix: null })
+  assert.deepEqual(src(ON, { has_key: true }), { id: 'sources', label: 'Lead sources', state: 'done', detail: 'a scan can use Web research with your AI key, News articles. Not available: Web search index (not set up on this server), Company websites (not set up on this server)', fix: null })
   assert.equal(src(ON, { has_key: false, trial: { funded: true, remaining: 2 } }).state, 'done', 'free searches left')
   assert.equal(src({ web_index: false, news: false, websites: false }, { has_key: true }).state, 'done', 'web research with the saved key')
   for (const st of [src(ON, { has_key: true }), nokey]) assert.doesNotMatch(st.detail, /search(es|ed)\b/, 'never claims sources are searched')
@@ -126,4 +126,41 @@ test('brain: done only with a saved buyer profile (who or a summary); the fix re
   assert.deepEqual(brain({ summary: '', who: ['Practice owner', 'Office manager'] }), { id: 'brain', label: 'Buyer profile (who buys from you)', state: 'done', detail: 'Practice owner, Office manager', fix: null })
   assert.equal(brain({ summary: 'Independent dental practices', who: [] }).detail, 'Independent dental practices')
   assert.equal(byId(readinessRows({ profile: null, usage: null, outreach: null })).brain.state, 'unknown')
+})
+
+// Home readiness: "AI key valid" and truthful source availability.
+// Instinct #275: the evidence (and what clears it) is server-side (test/key-evidence.test.ts). The record never says
+// which key a scan used, so Home names none, and never infers acceptance from other scans.
+test('AI key: done with no open rejection; a server-reported rejection is a to-do that names no key', () => {
+  const key = (keys: object[] | null, rejection: object | null, jobs: object[] = []) => byId(readinessRows({ profile: null, usage: { has_key: true }, outreach: null, keys: keys as never, rejection: rejection as never, jobs: jobs as never })).key
+  const K = [{ vendor: 'anthropic', last4: 'Ab12', validated_at: 1000 }]
+  const K2 = [...K, { vendor: 'openai', last4: 'Zz99', validated_at: 5000 }]
+  assert.deepEqual(key(K, null), { id: 'key', label: 'AI key', state: 'done', detail: 'saved (ending Ab12); your provider accepted it when it was saved', fix: null })
+  const one = key(K, { error: 'key_rejected' })
+  assert.deepEqual([one.state, one.detail, one.fix], ['todo', 'a scan stopped because the AI provider rejected its key, after your key was last saved - save your key again to confirm it works', { kind: 'inline', label: 'Replace key' }])
+  assert.equal(key(K2, { error: 'key_rejected' }).detail, 'a scan stopped because the AI provider rejected its key, after your keys were last saved - save each of your keys again to confirm they work')
+  assert.equal(key(K, { error: 'key_unreadable' }).detail, 'a scan could not read its AI key after your key was last saved - save your key again to confirm it works')
+  for (const k of [K, K2]) assert.doesNotMatch(key(k, { error: 'key_rejected' }).detail, /Anthropic|OpenAI|Ab12|Zz99/, 'no key is named')
+  const job = (created_at: number, status: string, error: string | null) => ({ id: String(created_at), status, error, query: 'q', csv_domain: null, created_at, lead_count: 0 })
+  assert.equal(key(K, { error: 'key_rejected' }, [job(2000, 'failed', 'key_rejected'), job(3000, 'failed', 'cancelled'), job(4000, 'done', null)]).state, 'todo')
+  assert.equal(key(K, null, [job(2000, 'failed', 'key_rejected')]).state, 'done', 'the jobs list alone is not evidence; the server read is')
+  assert.equal(key(null, null).detail, 'saved', 'key status not loaded: no claim either way')
+  const src = byId(readinessRows({ profile: null, usage: { has_key: true }, outreach: null, keys: K as never, rejection: { error: 'key_rejected' }, sources: { web_index: true, news: true, websites: true } })).sources
+  assert.deepEqual([src.state, src.detail, src.fix], ['todo', 'a scan may not run until you save your AI key again', { kind: 'link', href: '/app/settings#model-key', label: 'Replace key' }], 'a rejected key is not listed as a usable source')
+})
+
+test('lead sources: only usable sources are named as usable; social sources that are not set up are listed with their reason and fix', () => {
+  const ALL = { web_index: true, news: true, websites: true }
+  const adv = { available: true, platforms: [
+    { platform: 'x', allowed: true, consent: true, connected: false, enabled: false, operator_index: true },
+    { platform: 'linkedin', allowed: true, consent: false, connected: false, enabled: false },
+    { platform: 'reddit', allowed: false, consent: false, connected: false, enabled: false },
+  ] }
+  const row = byId(readinessRows({ profile: null, usage: { has_key: true }, outreach: null, sources: ALL, advanced: adv as never })).sources
+  assert.equal(row.state, 'done')
+  assert.equal(row.detail, 'a scan can use Web research with your AI key, Web search index, News articles, Company websites, X posts. Not available: LinkedIn (consent needed)')
+  assert.deepEqual(row.fix, { kind: 'link', href: '/app/settings#social', label: 'Set up' })
+  assert.doesNotMatch(row.detail, /Reddit/, 'a platform this server does not offer is not listed')
+  const plain = byId(readinessRows({ profile: null, usage: { has_key: true }, outreach: null, sources: ALL, advanced: null })).sources
+  assert.deepEqual([plain.detail, plain.fix], ['a scan can use Web research with your AI key, Web search index, News articles, Company websites', null])
 })
