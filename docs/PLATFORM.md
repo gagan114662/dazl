@@ -78,7 +78,7 @@ Snapshot of `web/` at df0bee5 (2026-10-27). Goal: run dazl.ai as a multi-tenant 
         - the kind;
         - a built-in error type, else `Error`;
         - the page path;
-        - up to 8 frames as `/_next/static/` file:line:col.
+        - up to 8 frames as `/_next/static/` file:line:col, only for scripts the page actually loaded from its own origin (its script tags and fetched script resources). The server keeps a frame only if this build emitted that bundle (`lib/ops/emitted.ts`), so a path that only looks like a bundle (`/_next/static/AliceSmith/password-….js`) is dropped on both sides.
 
         It never sends the message or the stack text. The server reads only those fields, checks each one's shape and ignores everything else. The record's message is the fixed `browser error`.
       - The tenant comes from the session cookie, never from the body.
