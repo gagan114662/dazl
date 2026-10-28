@@ -6,7 +6,7 @@
 // It proves:
 //   1. no bar before anything from this scan is drafted (another scan's draft does not count);
 //   2. each Approve sends the existing POST /api/outreach { lead_id } and the bar counts this scan's drafts, read back
-//      from GET /api/outreach ("1 draft ... waiting for your review", then "2 drafts"); a draft is never called approved;
+//      from GET /api/campaigns/<scan> ("1 draft ... waiting for your review", then "2 drafts"); a draft is never called approved;
 //   3. after a reload the bar still counts them; with one of them approved in Outreach (not sent), the bar shows the
 //      two states apart and does not ask for a second approval; approved-only says "approved and not sent yet";
 //   4. Review drafts opens /app/outreach?job_id=<scan>, which lists only that scan's emails, with "Show all emails";
@@ -62,6 +62,8 @@ await ctx.route('**/*', async route => {
   // A live cold sequence from ANOTHER scan: it must never appear in this scan's view.
   if (u.pathname === '/api/outreach/sequences' && m === 'GET') return json({ sequences: [{ id: 's1', message_id: 'm-other', lead_id: OTHER, to_email: 'seq@elsewhere.example', status: 'active', stop_reason: null, evidence_state: 'machine', currentness_held: false, steps: [{ step: 1, subject: 'Step one', body: 'Hi', status: 'sent', due_at: 1, sent_at: 1 }] }], status: {}, test_addresses: [], campaigns: [] })
   if (u.pathname === '/api/outreach' && m === 'GET') return json({ messages: MSGS })
+  // The Leads bar reads this scan's own campaign record (every email of this scan's leads, no cap).
+  if (u.pathname === `/api/campaigns/${JOB}`) return json({ job: { id: JOB }, leads: [], messages: MSGS.filter(x => LEADS.some(l => l.id === x.lead_id)) })
   if (u.pathname === '/api/outreach' && m === 'POST') {
     const { lead_id } = JSON.parse(req.postData()); const l = LEADS.find(x => x.id === lead_id)
     MSGS.unshift(msg(lead_id, l.contact)); return json({ ok: true, message_id: lead_id.slice(0, 6) + 'm' })

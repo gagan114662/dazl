@@ -416,14 +416,19 @@ export default function LeadsClient() {
   const [scanDrafts, setScanDrafts] = useState<{ drafts: number; approved: number } | null>(null)
   // Leads of this scan that have an email made from them (any status but skipped): the cards' "Approved" count.
   const [draftedLeads, setDraftedLeads] = useState<Set<string> | null>(null)
+  // Read from this scan's campaign record (GET /api/campaigns/<job>: every email made from this scan's leads, no cap),
+  // not the account-wide Outreach list, which holds only the newest 200 and can miss an older scan's drafts.
   const loadScanDrafts = async () => {
-    const r = await fetch('/api/outreach').catch(() => null)
+    const id = jobIdRef.current
+    const r = id ? await fetch(`/api/campaigns/${id}`).catch(() => null) : null
     const j = r?.ok ? await r.json().catch(() => null) : null
     setScanDrafts(j?.messages ? scanCounts(j.messages, leadIdsRef.current) : null)
     const ids = new Set(leadIdsRef.current)
     setDraftedLeads(Array.isArray(j?.messages) ? new Set((j.messages as { lead_id: string; status: string }[]).filter(m => ids.has(m.lead_id) && m.status !== 'skipped').map(m => m.lead_id)) : null)
   }
   const leadIdsRef = useRef<string[]>([])
+  const jobIdRef = useRef<string | null>(null)
+  jobIdRef.current = jobId
   leadIdsRef.current = leads.map(l => l.id)
   const leadKey = leads.map(l => l.id).join(',')
   useEffect(() => { if (leadKey) void loadScanDrafts() }, [leadKey]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -790,6 +795,7 @@ export default function LeadsClient() {
         const n = cardCounts(visibleLeads, draftedLeads, approved)
         // "Approved" on a card only makes a draft: the email itself is still approved in Outreach before anything sends.
         return <p className="text-xs text-[#555] mb-2">
+          <span data-testid="card-counts-scope">Cards below (Needs your review is counted separately): </span>
           <span data-testid="card-counts"><span className="text-[#111] font-medium">Approved {n.approved ?? '?'}</span> · <span className="text-[#111] font-medium">Rejected {n.rejected}</span> · <span className="text-[#111] font-medium">To review {n.toReview ?? '?'}</span></span>
           {n.approved === null ? <span data-testid="card-counts-note"> (drafts could not be loaded, so Approved is unknown)</span> : <span data-testid="card-counts-note"> - approving a card makes a draft; each email is still approved in Outreach before it sends.</span>}
         </p>

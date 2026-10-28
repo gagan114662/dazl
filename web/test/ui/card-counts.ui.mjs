@@ -5,7 +5,8 @@
 //   1. a full card shows company, contact, one line of why, "source · claimed event date 1 Oct 2026", Approve and Reject;
 //   2. a card with no contact says "No contact found yet"; an undated lead says "No dated source" (a published-only lead
 //      says "published ..., event date unknown"), never an invented date;
-//   3. the bar reads Approved / Rejected / To review from real state (a draft already in Outreach counts as approved) and
+//   3. the bar reads Approved / Rejected / To review from this scan's complete campaign record (a draft older than the
+//      newest 200 Outreach emails still counts as approved), says it excludes Needs your review, and
 //      follows Approve (one POST /api/outreach), Reject (one quarantine POST) and Undo (one DELETE);
 //   4. if this scan's emails cannot be read, Approved and To review show "?" with the reason, never a guess.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
@@ -54,7 +55,10 @@ await ctx.route('**/*', async route => {
   if (p === '/api/scan/status') return json({ job_id: JOB, status: 'done', lead_count: LEADS.length, icp: ICP, icp_source: 'user', attempts: 1, max_attempts: 3, query: 'Dental practice owners in Ohio opening a new location', enrichment: { state: 'none' } })
   if (p === '/api/leads' && m === 'GET') return json({ job_id: JOB, status: 'done', hidden_count: 0, leads: LEADS })
   if (p === '/api/scan/jobs') return json({ jobs: [] })
-  if (p === '/api/outreach' && m === 'GET') return state.outreachFail ? json({ error: 'unavailable' }, 503) : json({ messages: state.msgs })
+  // The account-wide list is capped at the newest 200: here it is full of other scans' emails, and this scan's older
+  // draft (Grove) is not in it. The page must not read it; this scan's campaign record has every email of the scan.
+  if (p === '/api/outreach' && m === 'GET') return json({ messages: Array.from({ length: 200 }, (_, k) => ({ ...msg('9'.repeat(24)), id: `n${k}` })) })
+  if (p === `/api/campaigns/${JOB}`) return state.outreachFail ? json({ error: 'unavailable' }, 503) : json({ job: { id: JOB }, leads: [], messages: state.msgs })
   if (p === '/api/outreach' && m === 'POST') { const { lead_id } = JSON.parse(req.postData()); state.msgs.push(msg(lead_id)); return json({ ok: true, message_id: 'm' }) }
   if (/^\/api\/leads\/[a-f0-9]{24}\/quarantine$/.test(p)) return json({ quarantined: m === 'POST' })
   return json({}, 404)
@@ -82,7 +86,8 @@ try {
   // 3. Counts from real state: Grove already has a draft in Outreach.
   await page.getByTestId('card-counts').waitFor()
   await page.waitForFunction(() => /Approved 1/.test(document.querySelector('[data-testid=card-counts]')?.textContent ?? ''))
-  assert.equal(await counts(), 'Approved 1 · Rejected 0 · To review 3')
+  assert.equal(await counts(), 'Approved 1 · Rejected 0 · To review 3', "Instinct #285: Grove's draft is older than the newest 200 emails and still counts")
+  assert.equal(await page.getByTestId('card-counts-scope').textContent(), 'Cards below (Needs your review is counted separately): ')
   assert.match(await page.getByTestId('card-counts-note').textContent(), /approving a card makes a draft; each email is still approved in Outreach before it sends/, 'a card approval is never presented as an approved email')
   await shot('counts-initial')
   await card('Bright Dental').getByRole('button', { name: 'Approve' }).click()
