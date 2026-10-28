@@ -68,15 +68,18 @@ export function scansThisMonth(db: Database.Database, tenantId: string, now = ne
   return r.n
 }
 
-const quota = (plan: PlanId, used: number) => {
+// The quota for a plan and a count of scans. The scan routes take the plan from the shared store (getDb(), where the
+// Stripe webhook writes it) and the count from the store their scans are written to, which is still the raw SQLite
+// handle; on SQLite both are the same connection.
+export const planQuota = (plan: PlanId, used: number) => {
   const limit = PLAN_LIMITS[plan].scansPerMonth
   return { plan, used, limit, allowed: limit === null || used < limit }
 }
 export function scanQuota(db: Database.Database, tenantId: string, now = new Date()) {
-  return quota(getPlan(db, tenantId), scansThisMonth(db, tenantId, now))
+  return planQuota(getPlan(db, tenantId), scansThisMonth(db, tenantId, now))
 }
 // scanQuota on the Db layer (SQLite or Postgres): the same plan, count and limit.
 export async function readScanQuota(db: Db, tenantId: string, now = new Date()) {
   const used = Number((await db.get<{ n: number }>(SCANS_THIS_MONTH_SQL, [tenantId, monthStartS(now)]))!.n)
-  return quota(await readPlan(db, tenantId), used)
+  return planQuota(await readPlan(db, tenantId), used)
 }
