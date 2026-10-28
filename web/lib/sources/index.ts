@@ -34,14 +34,17 @@ export function keywordsFor(query: string): string[] {
 }
 
 // Runs the chosen adapters in parallel with an overall time limit. A failed or slow source gives no evidence and never drops the others.
-export interface AdapterRun { collector: string; status: 'ok' | 'empty' | 'error' | 'timeout' | 'partial'; evidence: number | null; notes?: Record<string, number> } // partial: the source answered but some of it could not be read; never the same as a healthy empty
+export interface AdapterRun { collector: string; status: 'ok' | 'empty' | 'error' | 'timeout' | 'partial' | `partial:${string}`; evidence: number | null; notes?: Record<string, number> } // partial: the source answered but some of it could not be read; never the same as a healthy empty
 export async function collectEvidenceReport(sel: SourceSelection, query: string, http = safeGet, timeoutMs = 25_000, discovered: string[] = [], page?: AdapterInput['page'], companies: AdapterInput['companies'] = []): Promise<{ items: Evidence[]; runs: AdapterRun[] }> {
   const results = new Map<string, Evidence[]>()
   const runs = new Map<string, AdapterRun>()
+  const tallies = new Map<string, NonNullable<AdapterInput['tally']>>()
   let settled = false
   const run = Promise.all(sel.adapters.map(async id => {
     const notes: Record<string, number> = {}
-    const input: AdapterInput = { query, keywords: keywordsFor(query), feeds: sel.feeds, pages: sel.pages ?? [], discovered, companies, http, page, note: code => { notes[code] = (notes[code] ?? 0) + 1 } }
+    const tally: NonNullable<AdapterInput['tally']> = {}
+    tallies.set(id, tally)
+    const input: AdapterInput = { query, keywords: keywordsFor(query), feeds: sel.feeds, pages: sel.pages ?? [], discovered, companies, tally, http, page, note: code => { notes[code] = (notes[code] ?? 0) + 1 } }
     try {
       const items = await ADAPTERS[id].collect(input)
       const partial = Object.keys(notes).length > 0
@@ -53,8 +56,15 @@ export async function collectEvidenceReport(sel: SourceSelection, query: string,
   await Promise.race([run, timeout]); settled = true; clearTimeout(timer)
   // A source that did not finish by the deadline is reported as 'timeout'; sources that finished keep their items.
   // Late results never mutate the report (settled gate above).
-  return { items: sel.adapters.flatMap(id => runs.has(id) && runs.get(id)!.status !== 'error' ? results.get(id) ?? [] : []).slice(0, 40),
-    runs: sel.adapters.map(id => runs.get(id) ?? { collector: `adapter:${id}`, status: 'timeout', evidence: null }) }
+  const adapterRuns = sel.adapters.map(id => runs.get(id) ?? { collector: `adapter:${id}`, status: 'timeout' as const, evidence: null })
+  // One progress row per public ATS the job-board adapter actually asked (ats:greenhouse / ats:lever / ats:ashby): every request failed = error, some failed = partial:<failed>_of_<asked>,
+  // all answered with postings = ok, all answered with none = empty. A board the adapter never asked has no row.
+  const atsRuns: AdapterRun[] = []
+  if (runs.has('jobboards')) for (const [kind, t] of Object.entries(tallies.get('jobboards') ?? {})) {
+    if (!t || t.probed === 0) continue
+    atsRuns.push({ collector: `ats:${kind}`, status: t.failed >= t.probed ? 'error' : t.failed > 0 ? `partial:${t.failed}_of_${t.probed}` : t.evidence > 0 ? 'ok' : 'empty', evidence: t.failed >= t.probed ? null : t.evidence })
+  }
+  return { items: sel.adapters.flatMap(id => runs.has(id) && runs.get(id)!.status !== 'error' ? results.get(id) ?? [] : []).slice(0, 40), runs: [...adapterRuns, ...atsRuns] }
 }
 export async function collectEvidence(sel: SourceSelection, query: string, http = safeGet, timeoutMs = 25_000): Promise<Evidence[]> {
   // Existing callers keep their original adapter source labels and payload.

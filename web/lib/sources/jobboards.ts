@@ -90,17 +90,20 @@ const day = (v: unknown): string | null => {
 }
 const fresh = (d: string | null) => !!d && Date.now() - Date.parse(d) <= WINDOW_DAYS * 86_400_000 && Date.parse(d) <= Date.now() + 86_400_000
 type Note = (code: string) => void
-const json = async (http: SafeGet, url: string, note?: Note, expect?: 'array' | 'jobs'): Promise<any> => {
+// `seen` reports how a BOARD LIST request went, for the per-board progress rows: 'answered' (200, or a plain 404 / 403 = no such board), 'failed' (no answer, 5xx / 429, cut, oversize, malformed).
+type Seen = (r: 'answered' | 'failed') => void
+const json = async (http: SafeGet, url: string, note?: Note, expect?: 'array' | 'jobs', seen?: Seen): Promise<any> => {
   const r = await http(url, { accept: 'application/json' })
-  if (!r) { note?.('unreachable'); return null }
-  if (r.status !== 200) return null // a missing or private board is normal, not a partial result
-  if (r.truncated) { note?.('oversize'); return null } // cut at the shared byte cap: never parse a prefix
+  if (!r) { note?.('unreachable'); seen?.('failed'); return null }
+  if (r.status !== 200) { seen?.(r.status === 404 || r.status === 403 || r.status === 401 || r.status === 410 ? 'answered' : 'failed'); return null } // a missing or private board is normal, not a partial result
+  if (r.truncated) { note?.('oversize'); seen?.('failed'); return null } // cut at the shared byte cap: never parse a prefix
   try {
     const parsed = JSON.parse(r.body)
     // A 200 that is not the documented shape (an empty object, no jobs array) is a parse failure, never a healthy empty board.
-    if ((expect === 'array' && !Array.isArray(parsed)) || (expect === 'jobs' && !Array.isArray(parsed?.jobs))) { note?.('unparseable'); return null }
+    if ((expect === 'array' && !Array.isArray(parsed)) || (expect === 'jobs' && !Array.isArray(parsed?.jobs))) { note?.('unparseable'); seen?.('failed'); return null }
+    seen?.('answered')
     return parsed
-  } catch { note?.('unparseable'); return null }
+  } catch { note?.('unparseable'); seen?.('failed'); return null }
 }
 function board(feed: string): { kind: 'gh' | 'ashby' | 'lever'; token: string } | null {
   let u: URL
@@ -114,6 +117,11 @@ function board(feed: string): { kind: 'gh' | 'ashby' | 'lever'; token: string } 
   return null
 }
 
+// Which public ATS an evidence url belongs to (its documented hosts only), for the per-board progress rows.
+export function atsKindOf(url: string): 'greenhouse' | 'lever' | 'ashby' | null {
+  let h = ''; try { h = new URL(url).hostname.toLowerCase() } catch { return null }
+  return h === 'boards.greenhouse.io' || h === 'job-boards.greenhouse.io' ? 'greenhouse' : h === 'jobs.lever.co' ? 'lever' : h === 'jobs.ashbyhq.com' ? 'ashby' : null
+}
 const cp = (n: number) => (Number.isInteger(n) && n >= 0 && n <= 0x10ffff && !(n >= 0xd800 && n <= 0xdfff) ? String.fromCodePoint(n) : ' ') // a malformed entity becomes a space, never an exception
 const unesc = (t: string) => t.replace(/&#x([0-9a-f]+);/gi, (_, h) => cp(parseInt(h, 16))).replace(/&#(\d+);/g, (_, n) => cp(Number(n))).replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
 const LINK = /https:\/\/(?:boards|job-boards)\.greenhouse\.io\/[A-Za-z0-9_-]+|https:\/\/jobs\.(?:ashbyhq\.com|lever\.co)\/[A-Za-z0-9_-]+/g
@@ -165,7 +173,7 @@ export function guessSlugs(c: { name: string; domain?: string | null }): { token
 export const jobBoardsAdapter: SourceAdapter = {
   id: 'jobboards',
   label: 'Greenhouse and Ashby public job boards',
-  async collect({ query, keywords, feeds, pages, discovered, companies, http: rawHttp, page, note }) {
+  async collect({ query, keywords, feeds, pages, discovered, companies, http: rawHttp, page, note, tally }) {
     const t0 = Date.now()
     let cut = false
     const http: SafeGet = async (url, o) => { if (Date.now() - t0 > jobBoardsLimits.budgetMs) { cut = true; return { status: 0, body: '' } } return rawHttp(url, o) }
@@ -223,11 +231,14 @@ export const jobBoardsAdapter: SourceAdapter = {
       if (!b.company) { out.push(e); return }
       if (b.byDomain || norm(`${e.title} ${e.quote}`).includes(norm(b.company))) out.push({ ...e, title: `${b.company}: ${e.title}`.slice(0, 200) })
     }
-    for (const b of [...boards, ...guessed].slice(0, MAX_BOARDS)) {   // one shared cap: explicit and discovered boards first, guessed ones fill what is left
+    const kindName = { gh: 'greenhouse', lever: 'lever', ashby: 'ashby' } as const
+    const seenFor = (b: Board): Seen => r => { if (!tally) return; const t = (tally[kindName[b.kind]] ??= { probed: 0, failed: 0, evidence: 0 }); t.probed++; if (r === 'failed') t.failed++ }
+    for (const b of [...boards, ...guessed].slice(0, MAX_BOARDS)) {
+      // one shared cap: explicit and discovered boards first, guessed ones fill what is left
       if (b.kind === 'lever') {
         // Lever's public postings JSON: createdAt (epoch milliseconds) is the only date and is used as the posting date.
         // A missing or non-numeric createdAt means no date and no evidence.
-        const d = await json(http, `https://api.lever.co/v0/postings/${b.token}?mode=json`, note, 'array')
+        const d = await json(http, `https://api.lever.co/v0/postings/${b.token}?mode=json`, note, 'array', seenFor(b))
         for (const j of Array.isArray(d) ? d : []) {
           const url = typeof j?.hostedUrl === 'string' ? j.hostedUrl : ''
           const loc = typeof j?.categories?.location === 'string' ? j.categories.location : undefined
@@ -239,7 +250,7 @@ export const jobBoardsAdapter: SourceAdapter = {
           push(b, { source: 'jobboards', url, title: `${j.text} (${loc ?? state})`.slice(0, 200), quote, date })
         }
       } else if (b.kind === 'ashby') {
-        const d = await json(http, `https://api.ashbyhq.com/posting-api/job-board/${b.token}`, note, 'jobs')
+        const d = await json(http, `https://api.ashbyhq.com/posting-api/job-board/${b.token}`, note, 'jobs', seenFor(b))
         for (const j of Array.isArray(d?.jobs) ? d.jobs : []) {
           if (j?.isListed !== true || typeof j.title !== 'string' || typeof j.jobUrl !== 'string' || !j.jobUrl.startsWith('https://')) continue
           if (!roleOk(j.title) || !place.ok(j.location, j.address?.postalAddress?.addressRegion)) continue
@@ -250,7 +261,7 @@ export const jobBoardsAdapter: SourceAdapter = {
           push(b, { source: 'jobboards', url: j.jobUrl, title: `${j.title} (${j.location ?? state})`.slice(0, 200), quote, date })
         }
       } else {
-        const d = await json(http, `https://boards-api.greenhouse.io/v1/boards/${b.token}/jobs`, note, 'jobs')
+        const d = await json(http, `https://boards-api.greenhouse.io/v1/boards/${b.token}/jobs`, note, 'jobs', seenFor(b))
         let n = 0
         for (const j of Array.isArray(d?.jobs) ? d.jobs : []) {
           if (n >= MAX_DETAIL) break
@@ -266,6 +277,7 @@ export const jobBoardsAdapter: SourceAdapter = {
         }
       }
     }
+    if (tally) for (const e of out.slice(0, 30)) { const k = atsKindOf(e.url); if (k) (tally[k] ??= { probed: 0, failed: 0, evidence: 0 }).evidence++ }
     if (cut) note?.('budget')
     return out.slice(0, 30)
   },

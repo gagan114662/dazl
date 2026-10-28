@@ -21,7 +21,8 @@ import type { AdvPlatform } from '../advanced/config.ts'
 import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, selfDescribedUrls } from '../sources/index.ts'
 import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '../search/trace.ts'
 import { directQueries, hasHiringSignal } from '../search/direct-queries.ts'
-import { placeIn } from '../sources/jobboards.ts'
+import { placeIn, atsKindOf } from '../sources/jobboards.ts'
+import { corroborationTargets } from './corroborate.ts'
 import { resolveTiming } from './page-timing.ts'
 import { ownPlaceAgreement } from './own-block.ts'
 import { HeldText, COPY_ORIGIN, type HeldPage } from './held-text.ts'
@@ -670,10 +671,11 @@ export function newsStatus(leads: LeadDraft[] | null, note: { searched: boolean;
   if (note.hits === 0) return note.failed === 0 ? ((note.malformed ?? 0) > 0 ? 'unavailable' : 'empty') : note.failed >= note.attempted ? 'error' : `error_partial:${note.failed}_of_${note.attempted}`
   return 'unavailable'
 }
-async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, http: SafeGet, fetchPage: PageFetcher, fetchImpl?: typeof fetch, note?: { searched: boolean; hits: number; attempted: number; failed: number; malformed?: number }): Promise<LeadDraft[] | null> {
+async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, http: SafeGet, fetchPage: PageFetcher, fetchImpl?: typeof fetch, note?: { searched: boolean; hits: number; attempted: number; failed: number; malformed?: number }, queries?: string[]): Promise<LeadDraft[] | null> {
   const complete = provider.complete!
-  const plan = queryPlan(await complete.call(provider, key, queryPrompt(job.query!, icp, NEWS_PER_SCAN), fetchImpl, 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, NEWS_PER_SCAN)
-  const q = withGeography(sanitizeQueries(plan.queries, job.query!), icp.where).filter(x => !/site:/i.test(x)) // news search has no site: operator
+  // `queries` (the corroboration search) replaces the model's query planning: they name the companies whose second half is missing.
+  const plan = queries ? { queries, source: 'model' as const } : queryPlan(await complete.call(provider, key, queryPrompt(job.query!, icp, NEWS_PER_SCAN), fetchImpl, 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, NEWS_PER_SCAN)
+  const q = (queries ? plan.queries : withGeography(sanitizeQueries(plan.queries, job.query!), icp.where)).filter(x => !/site:/i.test(x)) // news search has no site: operator
   if (q.length === 0) return null
   const found = await newsSearch(http, q, icp.language), hits = found.hits
   if (note) { note.searched = true; note.hits = hits.length; note.attempted = found.attempted; note.failed = found.failed; note.malformed = found.malformed }
@@ -885,14 +887,27 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         assertOwned(db, job)
         const collected = await collectEvidenceReport(sel, job.query!, deps.sourceHttp, undefined, sel.adapters.includes('jobboards') ? [...diag.hitUrls, ...leads.map(l => l.source_url)] : [], async url => { try { const r = await fetchP(url); return r && 'text' in r && typeof r.text === 'string' ? r.text : null } catch { return null } }, sel.adapters.includes('jobboards') ? [...new Map(leads.filter(l => l.company).map(l => [l.company.toLowerCase(), { name: l.company }])).values()] : [])
         const items = collected.items
+        const leadsBefore = leads.length
         for (const run of collected.runs) ledger.record(run.collector, run.status, run.evidence)
         if (items.length > 0) {
           assertOwned(db, job)
           const text = await complete.call(providers_[vendor], key, buildSourcePrompt(job.query!, icpForSources, items), deps.fetchImpl, 3000)
           const extra = parseLeads(text, items.map(i => i.url)) ?? []
-          ledger.evidenceCandidates(items.map(i => ({ ...i, source: `adapter:${i.source}` })), extra)
+          ledger.evidenceCandidates([...items.map(i => ({ ...i, source: `adapter:${i.source}` })), ...items.flatMap(i => { const k = atsKindOf(i.url); return k ? [{ ...i, source: `ats:${k}` }] : [] })], extra)
           const selfDesc = selfDescribedUrls(items)
           for (const l of extra) (selfDesc.has(canonUrl(l.source_url)) ? selfDescribedLeads : leads).push(l)
+        }
+        // Seed funding AND hiring sales: a board-sourced candidate proves the hiring half only. For the few such companies, search the news for their funding round; the results are ordinary
+        // candidates (verified quote, identity, date window) that the sales-hiring gate later merges with the posting. A run that disabled the paid fallback makes no extra model call.
+        const targets = deps.paidFallback === false || !newsOn ? [] : corroborationTargets(job, leads.slice(leadsBefore).map(l => ({ company: l.company, excerpt: l.excerpt, signal: l.signal })))
+        if (targets.length > 0) {
+          const note = { searched: false, hits: 0, attempted: 0, failed: 0, malformed: 0 }
+          ledger.record('corroborate:news', 'started')
+          let found: LeadDraft[] | null = null
+          try { found = await newsLeads(job, icpForSources, providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl, note, withGeography(targets.map(t => t.query), icpForSources.where)) }
+          catch (e) { if (e instanceof ScanStopped || e instanceof ScanTimedOut || e instanceof SpendRefused) throw e; if (e instanceof ProviderError && e.kind === 'auth') throw e }
+          ledger.record('corroborate:news', newsStatus(found, note), note.searched ? note.hits : null)
+          if (found?.length) { ledger.candidates('corroborate:news', found); for (const l of found) leads.push(l) }
         }
         // Advanced connectors (opt-in tier, own flag, consent and session). A page behind a login is never
         // verified by us: it goes to "needs review" as is, shown to the user and never emailed.
