@@ -18,8 +18,8 @@ export default function Readiness() {
 
   async function load() {
     const get = (u: string) => fetch(u).then(r => r.ok ? r.json() : null).catch(() => null)
-    const [profile, usage, outreach, jobs, sources] = await Promise.all([get('/api/settings/profile'), get('/api/usage'), get('/api/outreach/settings'), get('/api/scan/jobs'), get('/api/scan/sources')])
-    setInput({ profile, usage, outreach, jobs: jobs?.jobs ?? null, sources })
+    const [profile, usage, outreach, jobs, sources, keys, advanced] = await Promise.all([get('/api/settings/profile'), get('/api/usage'), get('/api/outreach/settings'), get('/api/scan/jobs'), get('/api/scan/sources'), get('/api/settings/llm-key'), get('/api/settings/advanced')])
+    setInput({ profile, usage, outreach, jobs: jobs?.jobs ?? null, sources, keys: Array.isArray(keys?.keys) ? keys.keys : null, advanced: advanced && Array.isArray(advanced.platforms) ? advanced : null })
     setPlays(jobs?.jobs ? recentPlays(jobs.jobs) : null)
     if (profile) setSite({ website: String(profile.website ?? ''), sells: String(profile.sells ?? ''), business_name: String(profile.business_name ?? '') })
   }
@@ -58,7 +58,8 @@ export default function Readiness() {
                 <span className="font-medium">{r.label}</span>
                 <span className="text-[#555]"> - {r.detail}</span>
               </div>
-              {r.state !== 'done' && r.fix && (r.fix.kind === 'link'
+              {/* A done row has a fix only when part of it is still optional to set up (a lead source that is not available). */}
+              {r.fix && (r.fix.kind === 'link'
                 // A same-page link with ?setup= must load the page (the setup steps read it once, on load).
                 ? r.fix.href.includes('?setup=') ? <a href={r.fix.href} className="btn-ghost text-xs px-3 py-1.5 shrink-0">{r.fix.label}</a>
                   : <Link href={r.fix.href} className="btn-ghost text-xs px-3 py-1.5 shrink-0">{r.fix.label}</Link>

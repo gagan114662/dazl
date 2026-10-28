@@ -1,4 +1,4 @@
-import { coreSources, type ServerSources } from './scan/source-availability.ts'
+import { coreSources, socialSources, type Advanced, type ServerSources } from './scan/source-availability.ts'
 
 // Home readiness checklist and recent plays. Pure and client-safe: it only reads the existing status endpoints'
 // responses (profile, usage, outreach settings, scan jobs) and never decides anything the server enforces.
@@ -12,6 +12,10 @@ export interface ReadinessInput {
   jobs?: JobRow[] | null
   // The server's source switches (GET /api/scan/sources); null when they could not be loaded.
   sources?: ServerSources | null
+  // The saved AI keys' status (GET /api/settings/llm-key: vendor, last 4, when the provider accepted it); null when not loaded.
+  keys?: { vendor: string; last4: string; validated_at: number }[] | null
+  // The account's social sources (GET /api/settings/advanced); null when not loaded.
+  advanced?: Advanced | null
 }
 export type Fix = { kind: 'link'; href: string; label: string } | { kind: 'inline'; label: string }
 export interface Row { id: 'site' | 'brain' | 'play' | 'key' | 'sources' | 'gmail' | 'sender' | 'limit'; label: string; state: 'done' | 'todo' | 'unknown'; detail: string; fix: Fix | null }
@@ -37,8 +41,15 @@ export function readinessRows(i: ReadinessInput): Row[] {
     : own > 0 ? { id: 'play', label: 'First play', state: 'done', detail: `${own} search${own === 1 ? '' : 'es'} written`, fix: null }
     : { id: 'play', label: 'First play', state: 'todo', detail: 'describe who you want to find, in one sentence', fix: { kind: 'link', href: '/app/leads', label: 'Write a play' } }
   const trialLeft = u?.trial?.funded ? u.trial.remaining ?? 0 : 0
+  // A saved key was accepted by its provider when it was saved. Whether it still works is only known from the latest
+  // finished scan: if that scan ran after the key was last saved and stopped on a key error, the key needs replacing.
+  const savedAt = i.keys?.length ? Math.max(...i.keys.map(k => k.validated_at)) : null
+  const latest = i.jobs?.filter(j => j.status === 'done' || j.status === 'failed').sort((a, b) => b.created_at - a.created_at)[0]
+  const keyError = u?.has_key && savedAt !== null && latest && latest.created_at >= savedAt && (latest.error === 'key_rejected' || latest.error === 'key_unreadable') ? latest.error : null
+  const last4 = i.keys?.length === 1 ? ` (ending ${i.keys[0].last4})` : ''
   const key: Row = !u ? { id: 'key', label: 'AI key', state: 'unknown', detail: 'could not check', fix: null }
-    : u.has_key ? { id: 'key', label: 'AI key', state: 'done', detail: 'saved', fix: null }
+    : keyError ? { id: 'key', label: 'AI key', state: 'todo', detail: keyError === 'key_rejected' ? `saved${last4}, but your AI provider refused it on your latest scan` : `saved${last4}, but dazl could not read it on your latest scan - save it again`, fix: { kind: 'inline', label: 'Replace key' } }
+    : u.has_key ? { id: 'key', label: 'AI key', state: 'done', detail: i.keys?.length ? `saved${last4}; your provider accepted it when it was saved` : 'saved', fix: null }
     // Free searches cover the first scan; the row comes back as a to-do when they run out.
     : trialLeft > 0 ? { id: 'key', label: 'AI key', state: 'done', detail: `using free searches (${trialLeft} left)`, fix: null }
     : { id: 'key', label: 'AI key', state: 'todo', detail: 'needed for searches', fix: { kind: 'inline', label: 'Add key' } }
@@ -47,10 +58,18 @@ export function readinessRows(i: ReadinessInput): Row[] {
   // adding a key is the only fix a user can make, so it is the one link offered.
   const core = coreSources(i.sources ?? null, u ? { has_key: u.has_key, trial: u.trial } : null)
   const research = core?.find(r => r.id === 'research')
-  const usableSources = core?.filter(r => r.usable) ?? []
+  // Only usable sources are named as usable; every other source is listed as not available, with its reason. Social
+  // sources are added only when they loaded (a failed read never lists them either way).
+  const all = core ? [...core, ...socialSources(i.advanced ?? null)] : []
+  const usableSources = all.filter(r => r.usable)
+  const off = all.filter(r => !r.usable && r.id !== 'research')
+  const offText = off.length ? `. Not available: ${off.map(r => `${r.label} (${r.reason})`).join(', ')}` : ''
+  const offFix = off.find(r => r.fix)?.fix
   const sources: Row = !core ? { id: 'sources', label: 'Lead sources', state: 'unknown', detail: 'could not check', fix: null }
-    : !research?.usable ? { id: 'sources', label: 'Lead sources', state: 'todo', detail: 'a scan cannot start until you add an AI key', fix: research?.fix ? { kind: 'link', href: research.fix.href, label: research.fix.label } : null }
-    : { id: 'sources', label: 'Lead sources', state: 'done', detail: `a scan can use ${usableSources.map(r => r.label).join(', ')}`, fix: null }
+    // The key row's evidence that the saved key stopped working means web research cannot run either.
+    : keyError ? { id: 'sources', label: 'Lead sources', state: 'todo', detail: `a scan cannot run until you replace your AI key${offText}`, fix: { kind: 'link', href: '/app/settings#model-key', label: 'Replace key' } }
+    : !research?.usable ? { id: 'sources', label: 'Lead sources', state: 'todo', detail: `a scan cannot start until you add an AI key${offText}`, fix: research?.fix ? { kind: 'link', href: research.fix.href, label: research.fix.label } : null }
+    : { id: 'sources', label: 'Lead sources', state: 'done', detail: `a scan can use ${usableSources.map(r => r.label).join(', ')}${offText}`, fix: offFix ? { kind: 'link', href: offFix.href, label: offFix.label } : null }
   const gmail: Row = !o ? { id: 'gmail', label: 'Gmail', state: 'unknown', detail: 'could not check', fix: null }
     : o.gmail?.status === 'active' ? { id: 'gmail', label: 'Gmail', state: 'done', detail: `sending from ${o.gmail.email ?? 'your Gmail'}`, fix: null }
     : { id: 'gmail', label: 'Gmail', state: 'todo', detail: o.gmail ? 'needs reconnecting' : 'not connected (signing in with Google does not connect it)', fix: { kind: 'link', href: '/app/settings#gmail', label: o.gmail ? 'Reconnect' : 'Connect' } }
