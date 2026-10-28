@@ -8,6 +8,10 @@
 import type Database from 'better-sqlite3'
 import { addEnrichment, audit } from '../connectors/store.ts'
 import { atsGtmHiring, isGtmRole, BOARD_LABEL } from '../signals/ats-gtm.ts'
+import { careersSalesVacancy } from '../signals/careers-page.ts'
+import { placeAgreement } from './place-agreement.ts'
+import { norm } from './evidence.ts'
+import type { Get } from '../connectors/sitecrawl.ts'
 import { domainRelationship } from '../signals/domain-basis.ts'
 import { needsEventBeyondHiring, showsEventBeyondHiring, mentionsFunding } from '../search/page-class.ts'
 import { parseWindowDays } from './window.ts'
@@ -122,6 +126,7 @@ export const affirmativeSalesHiring = (text: string | null, company?: string | n
 })
 export const quoteNamesSalesHiring = (excerpt: string | null, signal: string | null, company?: string | null): boolean => { void signal; return affirmativeSalesHiring(excerpt, company) } // the VERIFIED quote only: the model's claim is not evidence
 
+const whereOf = (icp: string | null | undefined): string[] => { try { const j = icp ? JSON.parse(icp) as { where?: unknown } : null; return Array.isArray(j?.where) ? j!.where.filter((x): x is string => typeof x === 'string' && !!x.trim()) : [] } catch { return [] } }
 export interface QuoteEvidence { url: string; excerpt: string; date: string | null }
 const labelOf = (host: string) => { const l = host.replace(/^www\./, '').split('.'); return (l.length >= 3 && /^(?:co|com|org|ac)$/.test(l[l.length - 2]) ? l[l.length - 3] : l[l.length - 2] ?? '').replace(/[^a-z0-9]/g, '') }
 const registrable = (host: string) => { const l = host.replace(/^www\./, '').split('.'); return l.length >= 3 && /^(?:co|com|org|ac)$/.test(l[l.length - 2]) ? l.slice(-3).join('.') : l.slice(-2).join('.') }
@@ -136,7 +141,7 @@ export function evidenceCompatible(url: string, company: string, leadDomain: str
   return !!leadDomain && registrable(host) === registrable(leadDomain.toLowerCase().replace(/^https?:\/\//, '').replace(/[/?#].*$/, ''))
 }
 
-export async function applySalesHiringGate(db: Database.Database, job: JobLike, fetchImpl: typeof fetch = fetch, opts: { now?: number; quotes?: Map<string, QuoteEvidence[]> } = {}): Promise<{ required: boolean; checked: number; passed: number; demoted: number; demotions: { company: string; url: string; reason: string }[] }> {
+export async function applySalesHiringGate(db: Database.Database, job: JobLike, fetchImpl: typeof fetch = fetch, opts: { now?: number; quotes?: Map<string, QuoteEvidence[]>; careersGet?: Get } = {}): Promise<{ required: boolean; checked: number; passed: number; demoted: number; demotions: { company: string; url: string; reason: string }[] }> {
   const none = { required: false, checked: 0, passed: 0, demoted: 0, demotions: [] as { company: string; url: string; reason: string }[] }
   if (!salesHiringRequired(job.query, job.icp)) return none
   const demotions = none.demotions
@@ -189,10 +194,29 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
       addEnrichment(db, job.user_id, l.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${g.postings.length} sales/GTM role${g.postings.length === 1 ? '' : 's'} posted, newest ${g.newest}`, label: g.postings.map(x => x.title).slice(0, 3).join('; ').slice(0, 200) || null, confidence: 70, source_url: g.url, source_date: g.newest, retrieved_at: now })
       passed++; continue
     }
+    // No usable job board: the company's OWN careers page (https, robots.txt obeyed, same domain) may list an open sales role. The domain must be established, or the careers
+    // page itself must name the company and agree on the requested place (a same-name company elsewhere does not). Saved: URL, quote, retrieval time (not a posting date).
+    let careersNote = ''
+    if (l.company_domain && opts.careersGet) {
+      const c = await careersSalesVacancy(l.company_domain, opts.careersGet, { now: opts.now }).catch(() => null)
+      if (c?.vacancy) {
+        const v = c.vacancy
+        const established = domainRelationship(db, job.user_id, l.id, l.company_domain) === 'established'
+        const namesCompany = norm(v.pageText).includes(norm(l.company).replace(/\s/g, '')) || norm(v.pageText).replace(/\s/g, '').includes(norm(l.company).replace(/\s/g, ''))
+        const place = whereOf(job.icp).length ? placeAgreement(v.pageText, whereOf(job.icp), l.company) : 'no_geography'
+        if (established || (namesCompany && (place === 'agrees' || place === 'no_geography'))) {
+          const day = new Date(v.retrievedAt * 1000).toISOString().slice(0, 10)
+          setWhy.run((`Hiring sales: ${v.title} listed on its careers page (${l.company_domain}), checked ${day}. ` + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
+          addEnrichment(db, job.user_id, l.id, { connector: 'signals:careers-gtm', kind: 'hiring', value: `Open sales role on its careers page: ${v.title}`.slice(0, 254), label: v.quote.slice(0, 200), confidence: 60, source_url: v.url, source_date: day, retrieved_at: v.retrievedAt })
+          passed++; continue
+        }
+        careersNote = `its careers page lists ${v.title} but the page is not established as this company's (${namesCompany ? 'place not confirmed' : 'company not named'}). `
+      } else if (c) careersNote = `its careers page was checked: ${c.reason.replace(/_/g, ' ')}. `
+    }
     const line = heuristic
       ? `No sales-hiring evidence: a job board was found only through ${l.company_domain}, a domain matched by company name, so it is not established as this company's board. `
       : `No sales-hiring evidence: no sales or GTM posting dated in the last ${windowDays} days was found on a public job board tied to ${l.company_domain ?? 'a confirmed company domain (none found)'} (a board that could not be reached looks the same as none, so this is unconfirmed, not proof the company is not hiring). `
-    demoteFor(NO_SALES_HIRING, line)
+    demoteFor(NO_SALES_HIRING, line + careersNote)
   }
   audit(db, { tenantId: job.user_id, connector: 'scan:sales-hiring-gate', jobId: job.id, lookup: `${leads.length} leads, window ${windowDays}d`.slice(0, 200), status: demoted ? 'demoted' : 'ok', results: passed })
   return { required: true, checked: leads.length, passed, demoted, demotions }
