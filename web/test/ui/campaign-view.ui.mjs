@@ -2,7 +2,7 @@
 // Run:  cd web && npm run build && node test/ui/campaign-view.ui.mjs   (SHOTS=<dir> also saves screenshots)
 // Real production build, throwaway database, server under test/helpers/net-fence.ts, and EVERY /api/* CALL ANSWERED
 // FROM A STUB in the browser: no scan, no draft, nothing sent. Off-host requests are aborted. It proves:
-//   1. the Campaigns list links each campaign to its own page;
+//   1. the Campaigns list, Home ("Your plays") and Leads (the scan being viewed) all link a campaign to its own page;
 //   2. the page shows the play (the search sentence) and the scan's state from GET /api/campaigns/<id> only: it never
 //      calls the scan status read (which can reap stale jobs) or the account-wide Outreach list (newest 200 only);
 //   3. every lead of the scan (rejected ones included) shows where it stands: rejected, needs review, not verified,
@@ -52,6 +52,9 @@ await ctx.route('**/*', async route => {
   if (!u.pathname.startsWith('/api/')) return route.continue()
   const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
   if (m !== 'GET') writes.push(`${m} ${u.pathname}`)
+  if (u.pathname === '/api/scan/jobs') return json({ jobs: [{ id: JOB, status: 'done', error: null, query: 'Dental practice owners in Ohio - opened a new location', business_name: '', csv_domain: null, created_at: 1761500000, finished_at: 1761500100, candidates: 9, verified: 4, needs_review: 1, dropped: 2, lead_count: 7, test_only: false }] })
+  if (u.pathname === '/api/scan/status') return json({ job_id: JOB, status: 'done', lead_count: LEADS.length, attempts: 1, max_attempts: 3, query: 'Dental practice owners in Ohio - opened a new location' })
+  if (u.pathname === '/api/leads') return json({ job_id: JOB, status: 'done', hidden_count: 0, leads: [] })
   if (u.pathname === '/api/campaigns') return json({ campaigns: [{ id: JOB, query: 'Dental practice owners in Ohio - opened a new location', status: 'done', error: null, created_at: 1761500000, discovery: { candidates: 9, leads: 7 }, qualification: { sourceChecked: 4, confirmedByYou: 0, needsReview: 1, unverified: 1, held: 0, rejected: 1 }, contact: { withContact: 3 }, outreach: { drafts: 1, approved: 1, sent: 1, draftsReady: 1, draftsSetup: 0, draftsHeld: 0, approvedReady: 1, approvedSetup: 0, approvedHeld: 0 }, sequence: { active: 0, stopped: 0 }, reply: { replied: 0, interested: 0, bounced: 0, optOuts: 0 }, next: { label: 'Review 1 draft', href: '/app/outreach' } }] })
   calls.push(u.pathname)
   if (u.pathname === `/api/campaigns/${JOB}`) return detailFail ? json({ error: 'unavailable' }, 503) : json({ job: { id: JOB, query: 'Dental practice owners in Ohio - opened a new location', status: 'done', error: null, created_at: 1761500000 }, leads: LEADS, messages: MSGS })
@@ -97,8 +100,21 @@ try {
   await page.getByText('This campaign was not found.').waitFor()
   await page.goto(`${base}/app/campaigns/not-a-scan`, { waitUntil: 'networkidle' })
   await page.getByText('This campaign was not found.').waitFor()
+  // Home: the play in "Your plays" opens its campaign page.
+  await page.goto(`${base}/app`, { waitUntil: 'networkidle' })
+  const fromHome = page.getByTestId('play-campaign-link').first(); await fromHome.waitFor({ timeout: 15000 })
+  await fromHome.click()
+  await page.waitForURL(`**/app/campaigns/${JOB}`)
+  await page.getByTestId('campaign-play').filter({ hasText: 'Dental practice owners in Ohio' }).waitFor()
+  // Leads: the scan being viewed links to its campaign page.
+  await page.goto(`${base}/app/leads?job_id=${JOB}&passive=1`, { waitUntil: 'networkidle' })
+  const fromLeads = page.getByTestId('campaign-page-link'); await fromLeads.waitFor()
+  await shot('leads-link')
+  await fromLeads.click()
+  await page.waitForURL(`**/app/campaigns/${JOB}`)
+  await page.getByTestId('campaign-play').filter({ hasText: 'Dental practice owners in Ohio' }).waitFor()
   assert.deepEqual(writes, [], 'loading writes nothing')
-  console.log('campaign view UI check passed: list links to the page, play + status from the campaign read only, every lead staged, only this scan\'s emails, fail closed, not found, no writes')
+  console.log('campaign view UI check passed: Campaigns, Home and Leads link to the page, play + status from the campaign read only, every lead staged, only this scan\'s emails, fail closed, not found, no writes')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }
