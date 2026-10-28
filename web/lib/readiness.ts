@@ -1,3 +1,4 @@
+import { scanOutcome } from './scan/scan-outcome.ts'
 import { coreSources, type ServerSources } from './scan/source-availability.ts'
 
 // Home readiness checklist and recent plays. Pure and client-safe: it only reads the existing status endpoints'
@@ -79,7 +80,7 @@ export function capNotice(o: ReadinessInput['outreach']): string | null {
   return `Today's ${cap}-email limit is used up (${used} sent in the last 24 hours). Sending resumes as those sends pass 24 hours old.`
 }
 
-export interface JobRow { id: string; status: string; error: string | null; query: string | null; csv_domain: string | null; created_at: number; lead_count: number; verified?: number | null; needs_review?: number | null; test_only?: boolean }
+export interface JobRow { id: string; status: string; error: string | null; query: string | null; csv_domain: string | null; created_at: number; lead_count: number; funded_by?: string | null; candidates?: number | null; verified?: number | null; needs_review?: number | null; dropped?: number | null; test_only?: boolean }
 export interface Play { id: string; query: string; outcome: string }
 
 // The account's own searches, newest first, with what each produced. Imports and test fixtures are not plays.
@@ -93,10 +94,21 @@ export function recentPlays(jobs: JobRow[], limit = 5): Play[] {
 }
 
 function outcomeOf(j: JobRow): string {
-  if (j.status === 'failed') return j.error === 'cancelled' ? 'cancelled' : 'failed'
-  if (j.status !== 'done') return 'running'
+  // The same recorded outcome as the Leads history and the campaign page (lib/scan/scan-outcome.ts), in short words.
+  const o = scanOutcome(j)
+  if (o.kind === 'running') return 'running'
+  if (o.kind === 'enriching') return 'finishing'
+  if (o.kind === 'stopped') return j.error === 'cancelled' ? 'cancelled' : 'stopped'
+  if (o.kind === 'failed') {
+    // A rejected key says whose it was, exactly as the history and campaign page do (funded_by from the scan record).
+    if (j.error === 'trial_key_invalid' || (j.error === 'key_rejected' && j.funded_by === 'trial')) return 'failed: free-search key trouble'
+    if (j.error === 'key_rejected') return 'failed: AI key rejected'
+    return 'failed'
+  }
+  if (o.kind === 'none_extracted') return 'no candidates extracted'
   // Older records never stored the check counts: say so, and never call what they found "leads".
-  if (j.verified == null && j.needs_review == null) return 'counts unavailable'
+  if (o.kind === 'unrecorded') return 'counts unavailable'
+  if (o.kind === 'all_dropped') return `${j.candidates} found, all dropped by the checks`
   const review = j.needs_review ?? 0
   return `${j.verified ?? 0} source-checked, ${review} need${review === 1 ? 's' : ''} your review`
 }

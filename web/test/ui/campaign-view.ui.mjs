@@ -57,7 +57,7 @@ await ctx.route('**/*', async route => {
   if (u.pathname === '/api/leads') return json({ job_id: JOB, status: 'done', hidden_count: 0, leads: [] })
   if (u.pathname === '/api/campaigns') return json({ campaigns: [{ id: JOB, query: 'Dental practice owners in Ohio - opened a new location', status: 'done', error: null, created_at: 1761500000, discovery: { candidates: 9, leads: 7 }, qualification: { sourceChecked: 4, confirmedByYou: 0, needsReview: 1, unverified: 1, held: 0, rejected: 1 }, contact: { withContact: 3 }, outreach: { drafts: 1, approved: 1, sent: 1, draftsReady: 1, draftsSetup: 0, draftsHeld: 0, approvedReady: 1, approvedSetup: 0, approvedHeld: 0 }, sequence: { active: 0, stopped: 0 }, reply: { replied: 0, interested: 0, bounced: 0, optOuts: 0 }, next: { label: 'Review 1 draft', href: '/app/outreach' } }] })
   calls.push(u.pathname)
-  if (u.pathname === `/api/campaigns/${JOB}`) return detailFail ? json({ error: 'unavailable' }, 503) : json({ job: { id: JOB, query: 'Dental practice owners in Ohio - opened a new location', status: 'done', error: null, created_at: 1761500000 }, leads: LEADS, messages: MSGS })
+  if (u.pathname === `/api/campaigns/${JOB}`) return detailFail ? json({ error: 'unavailable' }, 503) : json({ job: { id: JOB, query: 'Dental practice owners in Ohio - opened a new location', status: 'done', error: null, created_at: 1761500000, candidates: 9, verified: 4, needs_review: 1, dropped: 2 }, leads: LEADS, messages: MSGS })
   if (u.pathname.startsWith('/api/campaigns/')) return json({ error: 'Not found' }, 404)
   return json({}, 404)
 })
@@ -72,7 +72,7 @@ try {
   await page.getByTestId('lead-status').first().waitFor()
   await page.getByTestId('campaign-email').first().waitFor()
   assert.equal(await page.getByTestId('campaign-play').textContent(), 'Dental practice owners in Ohio - opened a new location')
-  assert.match(await page.getByTestId('campaign-status').textContent(), /^Scan finished/)
+  assert.match(await page.getByTestId('campaign-status').textContent(), /^Scan: 9 found: 4 source-checked, 1 needs your review, 2 dropped/)
   assert.ok(!calls.some(p => p === '/api/scan/status' || p === '/api/outreach' || p === '/api/leads'), `only the campaign read is used: ${calls.join(', ')}`)
   const rows = await page.getByTestId('campaign-lead').evaluateAll(els => els.map(e => [e.children[0].textContent, e.children[1].textContent]))
   assert.deepEqual(rows, [
