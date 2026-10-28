@@ -14,6 +14,7 @@ import { approve, createDraft, editDraft, isSuppressed, OutreachError, readUnsub
 import { createMonitor, deleteMonitor, migrateMonitors, setMonitorEnabled } from '../lib/monitors.ts'
 import { getKey, hasKey, keyStatus, migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { migratePlans } from '../lib/plans.ts'
+import { sqliteDb } from '../lib/db/client.ts'
 
 const A = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 const B = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
@@ -97,12 +98,12 @@ test('suppression lists are per-tenant', () => {
   assert.equal(isSuppressed(db, B, 'someone@example.com'), false)
 })
 
-test('monitors cannot be enabled, disabled or deleted across tenants', () => {
+test('monitors cannot be enabled, disabled or deleted across tenants', async () => {
   const db = setup()
-  const r = createMonitor(db, A, { query: 'robotics companies hiring sales' })
+  const r = await createMonitor(sqliteDb(db), A, { query: 'robotics companies hiring sales' })
   assert.ok('id' in r)
-  assert.equal(setMonitorEnabled(db, B, r.id, false), false)
-  assert.equal(deleteMonitor(db, B, r.id), false)
+  assert.equal(await setMonitorEnabled(sqliteDb(db), B, r.id, false), false)
+  assert.equal(await deleteMonitor(sqliteDb(db), B, r.id), false)
   // Tenant A's monitor is still there and still enabled.
   const m = db.prepare('SELECT enabled FROM monitors WHERE id = ? AND user_id = ?').get(r.id, A) as { enabled: number }
   assert.equal(m.enabled, 1)

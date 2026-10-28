@@ -10,7 +10,7 @@ import { randomBytes } from 'node:crypto'
 import { addEnrichment, audit } from '../connectors/store.ts'
 import { atsGtmHiring, isGtmRole, postingEvidence, BOARD_LABEL } from '../signals/ats-gtm.ts'
 import { careersSalesVacancy } from '../signals/careers-page.ts'
-import { placeAgreement } from './place-agreement.ts'
+import { placeAgreement, eventPlaceOk } from './place-agreement.ts'
 import { releaseHeld } from './held-state.ts'
 import { salesHiringRequired } from './sales-hiring-required.ts'
 export { salesHiringRequired }
@@ -139,6 +139,13 @@ export function evidenceCompatible(url: string, company: string, leadDomain: str
   return !!leadDomain && registrable(host) === registrable(leadDomain.toLowerCase().replace(/^https?:\/\//, '').replace(/[/?#].*$/, ''))
 }
 
+// Place and (for evidence from another candidate) date of the event quote. The lead's own row was window-checked on its own date already; a joined quote is only usable with its own known date inside the window.
+function eventQuoteUsable(q: QuoteEvidence, date: string | null, company: string, where: string[], windowDays: number, nowS: number, own: boolean): boolean {
+  if (!eventPlaceOk(q.excerpt, where, company)) return false
+  if (own) return true
+  const t = date ? Date.parse(date) : NaN
+  return Number.isFinite(t) && t <= (nowS + 86_400) * 1000 && nowS * 1000 - t <= windowDays * 86_400_000
+}
 export async function applySalesHiringGate(db: Database.Database, job: JobLike, fetchImpl: typeof fetch = fetch, opts: { now?: number; quotes?: Map<string, QuoteEvidence[]>; careersGet?: Get } = {}): Promise<{ required: boolean; checked: number; passed: number; demoted: number; demotions: { company: string; url: string; reason: string }[] }> {
   const none = { required: false, checked: 0, passed: 0, demoted: 0, demotions: [] as { company: string; url: string; reason: string }[] }
   if (!salesHiringRequired(job.query, job.icp)) return none
@@ -146,11 +153,12 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
   const stage = requestedStage(job.query, job.icp)
   const windowDays = parseWindowDays(job.query ?? '') ?? 90
   const fundingAsked = requestAsksFunding(job.query, job.icp)
+  const where = whereOf(job.icp)
   const now = Math.floor((opts.now ?? Date.now()) / 1000)
   const leads = db.prepare(
-    `SELECT id, company, company_domain, evidence_excerpt, signal, why, dedup_key, source_url FROM leads
+    `SELECT id, company, company_domain, evidence_excerpt, signal, why, dedup_key, source_url, event_date FROM leads
      WHERE scan_job_id = ? AND review_reason IS NULL AND confidence IS NOT NULL AND human_confirmed_at IS NULL AND company <> '' ORDER BY score DESC`,
-  ).all(job.id) as { id: string; company: string; company_domain: string | null; evidence_excerpt: string | null; signal: string; why: string | null; dedup_key: string | null; source_url: string }[]
+  ).all(job.id) as { id: string; company: string; company_domain: string | null; evidence_excerpt: string | null; signal: string; why: string | null; dedup_key: string | null; source_url: string; event_date: string | null }[]
   const setWhy = db.prepare('UPDATE leads SET why = ? WHERE id = ?')
   const demote = db.prepare('UPDATE leads SET review_reason = ?, confidence = NULL, why = ? WHERE id = ? AND review_reason IS NULL')
   const counts = db.prepare('UPDATE scan_jobs SET verified = MAX(COALESCE(verified, 0) - 1, 0), needs_review = COALESCE(needs_review, 0) + 1 WHERE id = ?')
@@ -161,9 +169,12 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
     // Evidence for THIS lead: its own saved quote, plus other verified candidates' quotes for the same company that are identity-compatible (see evidenceCompatible).
       const others = (l.dedup_key ? opts.quotes?.get(l.dedup_key) ?? [] : []).filter(q => evidenceCompatible(q.url, l.company, l.company_domain))
       const quotes: QuoteEvidence[] = [{ url: l.source_url, excerpt: l.evidence_excerpt ?? '', date: null }, ...others]
+      // The EVENT half must stand on its own: the quote that shows the event agrees with the requested place, and (when it came from another candidate) carries its OWN date inside the window.
+      // A current job in the right city never validates a funding quote from another place, and its date is never the funding event's date.
+      const eventQuotes = quotes.filter((q, i) => eventQuoteUsable(q, i === 0 ? l.event_date : q.date, l.company, where, windowDays, now, i === 0))
       const demoteFor = (reason: string, why: string) => { if (demote.run(reason, (why + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id).changes) { counts.run(job.id); demoted++; demotions.push({ company: l.company, url: l.source_url, reason }) } }
       // The event half first: a hiring page alone (a job ad) does not show seed funding / an opening, whatever it says about the company.
-      if (!quotes.some(q => quoteShowsEvent(q.excerpt, l.signal, fundingAsked, l.company, stage))) {
+      if (!eventQuotes.some(q => quoteShowsEvent(q.excerpt, l.signal, fundingAsked, l.company, stage))) {
         demoteFor(NO_EVENT, stage && fundingAsked ? `No event evidence: no source quote affirms this company raised a ${stage} round (a different stage, a negated or planned raise, or another company's raise does not count). ` : `No event evidence: the source quote shows hiring but not the funding or event the request asks for. `)
         continue
       }
