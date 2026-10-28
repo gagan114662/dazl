@@ -83,3 +83,60 @@ test('REAL RUN: every scan carries a resolution summary in its run report (candi
   assert.ok(res, 'the run report carries the resolution summary'); assert.equal(res!.candidates, 1); assert.equal(res!.resolved + res!.unresolved, 1)
   assert.equal(res!.resolved, 0, 'no domain / person / route in this offline run: it is NOT resolved, and says why'); assert.ok(Object.keys(res!.by_reason).length > 0)
 })
+
+// ---- #316 review: role, calendar truth, one overall deadline, cancellation ----
+const ICP_NOWIN = JSON.stringify({ summary: 's', where: ['London, UK'], who: ['Founder'], signals: ['opened a new office'], exclude: [] })
+test('WRONG ROLE: a named person who is not the requested decision-maker (a dentist at a SaaS lead) does not make the contact "attached"; founder / requested-role titles do', () => {
+  const { db, job, lead, enr } = seed()
+  const wrong = lead({ company: 'Acme', domain: 'acme.example', date: daysAgo(10) }); enr(wrong, 'person', 'Jane Doe, Dentist'); enr(wrong, 'email', 'jane@acme.example')
+  const ok = lead({ company: 'Beta', domain: 'beta.example', date: daysAgo(10) }); enr(ok, 'person', 'Sam Roe, Co-founder'); enr(ok, 'email', 'sam@beta.example')
+  const ceo = lead({ company: 'Gamma', domain: 'gamma.example', date: daysAgo(10) }); enr(ceo, 'person', 'Lee Poe, CEO'); enr(ceo, 'phone', '+44 20 7946 0000')
+  const m = new Map(resolveFacts(db, job).map(r => [r.company, r]))
+  assert.deepEqual([m.get('Acme')!.contact, m.get('Acme')!.resolved], ['missing', false]); assert.ok(m.get('Acme')!.reasons.includes('the named person (Jane Doe, Dentist) is not the requested role (Founder)'), JSON.stringify(m.get('Acme')!.reasons))
+  assert.deepEqual([m.get('Beta')!.contact, m.get('Beta')!.resolved], ['attached', true]); assert.deepEqual([m.get('Gamma')!.contact, m.get('Gamma')!.resolved], ['attached', true])
+  // a requested non-founder role works too
+  const s2 = seed(); s2.db.prepare('UPDATE scan_jobs SET icp = ? WHERE id = ?').run(JSON.stringify({ summary: 's', where: ['London, UK'], who: ['Head of Sales'], signals: ['x'], exclude: [], window_days: 90 }), s2.job.id)
+  const a = s2.lead({ company: 'Delta', domain: 'delta.example', date: daysAgo(10) }); s2.enr(a, 'person', 'Ann Lee, Head of Sales'); s2.enr(a, 'email', 'ann@delta.example')
+  assert.equal(resolveFacts(s2.db, { ...s2.job, icp: JSON.stringify({ summary: 's', who: ['Head of Sales'], window_days: 90 }) })[0].contact, 'attached')
+})
+test('CALENDAR TRUTH, with or without a recency window: an impossible date, a future date and unconfirmed timing are never "found" - each carries its own reason', () => {
+  for (const icp of [ICP, ICP_NOWIN]) {
+    const { db, job, lead, enr } = seed(); db.prepare('UPDATE scan_jobs SET icp = ? WHERE id = ?').run(icp, job.id)
+    const mk = (company: string, date: string | null, reason: string | null = null) => { const id = lead({ company, domain: `${company.toLowerCase()}.example`, date, reason }); enr(id, 'person', 'Jo Bo, Founder'); enr(id, 'email', `jo@${company.toLowerCase()}.example`); return id }
+    mk('Badday', '2026-02-30'); mk('Future', '2099-01-01'); mk('FutureHeld', '2099-01-01', 'event_date_future_date'); mk('BadHeld', null, 'event_date_bad_date'); mk('Season', null, 'event_timing_unconfirmed'); mk('Fine', daysAgo(10))
+    const m = new Map(resolveFacts(db, { ...job, icp }).map(r => [r.company, r]))
+    assert.equal(m.get('Badday')!.date, 'invalid'); assert.deepEqual(m.get('Badday')!.reasons, ['the event date "2026-02-30" is not a real calendar date'])
+    assert.equal(m.get('Future')!.date, 'future'); assert.deepEqual(m.get('Future')!.reasons, ['the event date 2099-01-01 is in the future'])
+    assert.equal(m.get('FutureHeld')!.date, 'future'); assert.equal(m.get('BadHeld')!.date, 'invalid'); assert.equal(m.get('Season')!.date, 'unconfirmed'); assert.match(m.get('Season')!.reasons[0], /event timing is unconfirmed/)
+    for (const c of ['Badday', 'Future', 'FutureHeld', 'BadHeld', 'Season']) assert.equal(m.get(c)!.resolved, false, c)
+    assert.deepEqual([m.get('Fine')!.date, m.get('Fine')!.resolved], ['found', true])
+  }
+})
+const stuck = (calls: { u: string; signal?: AbortSignal }[]) => (u: string, signal?: AbortSignal) => { calls.push({ u, signal }); return new Promise<never>(() => { /* never answers: only the deadline / cancel can end it */ }) }
+function manyDomains(n: number) { const s = seed(); for (let i = 0; i < n; i++) s.lead({ company: `Co${i}`, domain: `co${i}.example`, reason: 'outside_window_undated' }); return s }
+test('ONE OVERALL DEADLINE: slow pages on many domains cannot hold the worker - the run ends at the deadline, the request in flight is aborted, the untried work is recorded as skipped (not as tried)', async () => {
+  const { db, job } = manyDomains(5); const calls: { u: string; signal?: AbortSignal }[] = []
+  const t0 = Date.now(); const s = await resolveBounded(db, job, { fetchPage: stuck(calls), where: ['London, UK'], deadlineMs: 80 }); const ms = Date.now() - t0
+  assert.ok(ms < 1500, `ended at the deadline, not after 5 domains x 3 pages: ${ms}ms`); assert.equal(s.interrupted, 'deadline'); assert.equal(calls.length, 1, 'no request was started after the deadline'); assert.equal(calls[0].signal?.aborted, true, 'the in-flight request was aborted')
+  assert.ok(s.leads.every(l => l.tried.length === 0), 'an interrupted page is not counted as tried'); assert.ok(s.leads.every(l => /own-site date lookup not completed: the overall lookup deadline \(0\.08s\) was reached/.test(l.reasons.join('|'))), JSON.stringify(s.leads[0].reasons))
+  assert.ok(s.leads.every(l => !/on \d+ sources? tried/.test(l.reasons.join('|'))), 'untried work is never presented as completed')
+})
+test('CANCELLATION: aborting the scan stops new requests and aborts the one in flight', async () => {
+  const { db, job } = manyDomains(4); const calls: { u: string; signal?: AbortSignal }[] = []; const ctrl = new AbortController()
+  const p = resolveBounded(db, job, { fetchPage: stuck(calls), signal: ctrl.signal, deadlineMs: 10_000 }); await new Promise(r => setTimeout(r, 30)); ctrl.abort(); const s = await p
+  assert.equal(s.interrupted, 'cancelled'); assert.equal(calls.length, 1); assert.equal(calls[0].signal?.aborted, true); assert.ok(s.leads.every(l => /the scan was cancelled/.test(l.reasons.join('|'))))
+  // already cancelled: nothing is started at all
+  const none: { u: string }[] = []; const pre = new AbortController(); pre.abort()
+  const s2 = await resolveBounded(db, job, { fetchPage: async u => { none.push({ u }); return null }, signal: pre.signal }); assert.equal(none.length, 0); assert.equal(s2.interrupted, 'cancelled')
+})
+test('SCAN-WIDE BOUND: many domains with failing pages stop at the scan-wide cap, with the rest recorded as skipped', async () => {
+  const { db, job } = manyDomains(6); let calls = 0
+  const s = await resolveBounded(db, job, { fetchPage: async () => { calls++; throw new Error('boom') }, maxFetches: 4, deadlineMs: 5000 })
+  assert.equal(calls, 4); assert.equal(s.lookups, 4); assert.ok(s.leads.some(l => /the scan-wide limit of 4 page reads was reached/.test(l.reasons.join('|')))); assert.equal(s.interrupted, null)
+})
+test('the real fetcher takes the signal: an already-aborted signal makes no connection at all', async () => {
+  const { once, fetchPageDetailed } = await import('../lib/scan/fetch-page.ts')
+  const pre = new AbortController(); pre.abort()
+  await assert.rejects(once(new URL('https://203.0.113.9/'), 10_000, undefined, pre.signal), /aborted/)
+  assert.deepEqual(await fetchPageDetailed('https://203.0.113.9/', async () => null, pre.signal), { fail: 'error' })
+})

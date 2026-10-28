@@ -1149,7 +1149,10 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       // Code decides done: every candidate is checked for date / identity / contact; the unresolved carry specific reasons after bounded targeted lookups (lib/scan/resolution.ts).
       recordFallbacks(db, job, fallbackNotes)
       let resolution: Awaited<ReturnType<typeof resolveBounded>> | null = null
-      try { resolution = await resolveBounded(db, job, { fetchPage: fetchP, where: icpForSources?.where ?? [] }) } catch (e) { console.error('resolution failed', e instanceof Error ? e.message : 'error') }
+      // ONE overall deadline and the job's own cancellation cover every lookup; a cancel destroys the request in flight (fetchPageDetailed takes the signal). Nothing here renders (no render service).
+      const resCtrl = new AbortController()
+      const poll = setInterval(() => { try { assertOwned(db, job) } catch { resCtrl.abort() } }, 500)
+      try { resolution = await resolveBounded(db, job, { fetchPage: (u, signal) => (deps.fetchPage ? deps.fetchPage(u) : fetchPageDetailed(u, async () => null, signal)), where: icpForSources?.where ?? [], signal: resCtrl.signal }) } catch (e) { console.error('resolution failed', e instanceof Error ? e.message : 'error') } finally { clearInterval(poll) }
       mergeIntoRunReport(db, job.id, job.attempts, { enrichment: trace.stages, yield: y, ...(resolution ? { resolution } : {}), held_lead_ids: [...heldByGate.keys(), ...extra.map(h => h.id)] })
     } catch (e) { console.error('actionable yield failed', e instanceof Error ? e.message : 'error') }
     // Contacts, people, fit and the sales-hiring check are final: the stage ends before autopilot, whose drafting/sending is separate work, not enrichment.
