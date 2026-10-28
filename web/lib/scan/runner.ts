@@ -55,7 +55,7 @@ import { findPeople } from '../people/people-search.ts'
 import { EnrichmentTrace, noteFromAudit, auditSummary, mergeIntoRunReport } from './enrichment-trace.ts'
 import { recordActionability } from './actionable.ts'
 import { resolveBounded } from './resolution.ts'
-import { fallbackTargets, mergeFallback, rescuedNotes, recordFallbacks, type FallbackNote } from './blocked-fallback.ts'
+import { fallbackTargets, mergeFallback, rescuedNotes, recordFallbacks, recordRecovery, type FallbackNote, type FallbackTarget } from './blocked-fallback.ts'
 import { parseWindowDays, splitByWindow, windowStatus } from './window.ts'
 import { applyBuyerFitGate, failClosedBuyerFit } from './buyer-fit.ts'
 
@@ -967,11 +967,18 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     assertOwned(db, job)
     let datesFinished: Awaited<ReturnType<typeof finishUndatedLeads>> = []
     let fallbackNotes: FallbackNote[] = []
+    let recoveryTargets: FallbackTarget[] = []; let recoveryRan: { searched: boolean; why?: string } = { searched: false, why: 'not needed' }
     let outcome = await verifyLeads(leads, fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [])
     const verifiedUrls = leads.map(l => l.source_url) // verify_provenance
     // A candidate whose OWN page blocks us is held with nothing readable. Look for the same company on other press (free news search): its pages go through the same extraction and verifier, and a
     // verified candidate for that company replaces the held row. Bounded (3 companies, one search+extraction), no extra model call for a run that disabled the paid fallback.
-    const blocked = deps.paidFallback === false || !newsOn || !complete || !icpForSources ? [] : fallbackTargets(outcome.review, icpForSources.where ?? [])
+    // One automatic recovery pass before anything is marked held: a verified lead with no date (when the request has a window) first gets the date the page itself declares (structured data), then the
+    // same company's dated coverage elsewhere; a held lead whose page is unreadable or lacks the quote gets the same search. Every replacement goes through the SAME verifier and window gate.
+    if (icpForSources?.window_days) { try { datesFinished = await finishUndatedLeads(outcome.leads, fetchP, 6, icpForSources.where ?? []) } catch { /* bonus only */ } }
+    const undated = icpForSources?.window_days ? outcome.leads.filter(l => !l.event_date) : []
+    const blocked = deps.paidFallback === false || !newsOn || !complete || !icpForSources ? [] : fallbackTargets(outcome.review, icpForSources.where ?? [], undated)
+    recoveryTargets = fallbackTargets(outcome.review, icpForSources?.where ?? [], undated)
+    recoveryRan = blocked.length > 0 ? { searched: true } : { searched: false, why: deps.paidFallback === false ? 'the run disabled the paid fallback' : !newsOn ? 'news search is off' : !complete ? 'no model for this run' : 'nothing recoverable' }
     if (blocked.length > 0) {
       const note = { searched: false, hits: 0, attempted: 0, failed: 0, malformed: 0 }
       ledger.record('fallback:news', 'started')
@@ -1148,6 +1155,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       if (extra.length) { markHeldInProcess(job.user_id, extra.map(h => h.id)); reconcileRunReport(db, job.id, job.attempts, extra.map(h => ({ company: h.company, url: h.url, reason: 'sales_hiring_check_failed' }))) }
       // Code decides done: every candidate is checked for date / identity / contact; the unresolved carry specific reasons after bounded targeted lookups (lib/scan/resolution.ts).
       recordFallbacks(db, job, fallbackNotes)
+      recordRecovery(db, job, recoveryTargets, fallbackNotes, recoveryRan)
       let resolution: Awaited<ReturnType<typeof resolveBounded>> | null = null
       // ONE overall deadline and the job's own cancellation cover every lookup; a cancel destroys the request in flight (fetchPageDetailed takes the signal). Nothing here renders (no render service).
       const resCtrl = new AbortController()
