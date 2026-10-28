@@ -1,24 +1,35 @@
 // Home readiness checklist and recent plays. Pure and client-safe: it only reads the existing status endpoints'
 // responses (profile, usage, outreach settings, scan jobs) and never decides anything the server enforces.
+// The checklist is the steps a new workspace finishes before its first useful scan and send; Home hides it once every row is done.
 
 export interface ReadinessInput {
   profile: { sells?: string; website?: string; business_name?: string } | null
   usage: { has_key?: boolean; trial?: { funded?: boolean; remaining?: number } | null } | null
-  outreach: { gmail?: { email?: string; status?: string } | null; sender?: { sender_name?: string; postal_address?: string; booking_url?: string | null } | null } | null
+  outreach: { gmail?: { email?: string; status?: string } | null; sender?: { sender_name?: string; postal_address?: string; booking_url?: string | null } | null; daily_cap?: number; sent_24h?: number } | null
+  // The account's scan jobs; null when they could not be loaded, omitted by callers that only check the other rows.
+  jobs?: JobRow[] | null
 }
 export type Fix = { kind: 'link'; href: string; label: string } | { kind: 'inline'; label: string }
-export interface Row { id: 'site' | 'key' | 'gmail' | 'sender'; label: string; state: 'done' | 'todo' | 'unknown'; detail: string; fix: Fix | null }
+export interface Row { id: 'site' | 'play' | 'key' | 'gmail' | 'sender' | 'limit'; label: string; state: 'done' | 'todo' | 'unknown'; detail: string; fix: Fix | null }
 
 export function readinessRows(i: ReadinessInput): Row[] {
   const p = i.profile, u = i.usage, o = i.outreach
   const missing = p ? [!p.business_name && 'business name', !p.sells && 'what you sell', !p.website && 'website'].filter(Boolean) as string[] : []
-  const site: Row = !p ? { id: 'site', label: 'Your business', state: 'unknown', detail: 'could not check', fix: null }
-    : missing.length === 0 ? { id: 'site', label: 'Your business', state: 'done', detail: `${p.business_name} - ${p.sells} (${p.website!.replace(/^https:\/\//, '')})`, fix: null }
-    : { id: 'site', label: 'Your business', state: 'todo', detail: `missing ${missing.join(', ')}`, fix: { kind: 'inline', label: 'Add' } }
+  const SITE = 'Website and business brain'
+  const site: Row = !p ? { id: 'site', label: SITE, state: 'unknown', detail: 'could not check', fix: null }
+    : missing.length === 0 ? { id: 'site', label: SITE, state: 'done', detail: `${p.business_name} - ${p.sells} (${p.website!.replace(/^https:\/\//, '')})`, fix: null }
+    : { id: 'site', label: SITE, state: 'todo', detail: `missing ${missing.join(', ')}`, fix: { kind: 'inline', label: 'Add' } }
+  // Any search the account wrote itself counts, whatever it found; imports and test fixtures are not plays.
+  const own = i.jobs ? i.jobs.filter(j => j.query && !j.csv_domain && !j.test_only).length : 0
+  const play: Row = !i.jobs ? { id: 'play', label: 'First play', state: 'unknown', detail: 'could not check', fix: null }
+    : own > 0 ? { id: 'play', label: 'First play', state: 'done', detail: `${own} search${own === 1 ? '' : 'es'} written`, fix: null }
+    : { id: 'play', label: 'First play', state: 'todo', detail: 'describe who you want to find, in one sentence', fix: { kind: 'link', href: '/app/leads', label: 'Write a play' } }
   const trialLeft = u?.trial?.funded ? u.trial.remaining ?? 0 : 0
   const key: Row = !u ? { id: 'key', label: 'AI key', state: 'unknown', detail: 'could not check', fix: null }
     : u.has_key ? { id: 'key', label: 'AI key', state: 'done', detail: 'saved', fix: null }
-    : { id: 'key', label: 'AI key', state: 'todo', detail: trialLeft > 0 ? `not added; ${trialLeft} free search${trialLeft === 1 ? '' : 'es'} left` : 'needed for searches', fix: { kind: 'inline', label: 'Add key' } }
+    // Free searches cover the first scan; the row comes back as a to-do when they run out.
+    : trialLeft > 0 ? { id: 'key', label: 'AI key', state: 'done', detail: `using free searches (${trialLeft} left)`, fix: null }
+    : { id: 'key', label: 'AI key', state: 'todo', detail: 'needed for searches', fix: { kind: 'inline', label: 'Add key' } }
   const gmail: Row = !o ? { id: 'gmail', label: 'Gmail', state: 'unknown', detail: 'could not check', fix: null }
     : o.gmail?.status === 'active' ? { id: 'gmail', label: 'Gmail', state: 'done', detail: `sending from ${o.gmail.email ?? 'your Gmail'}`, fix: null }
     : { id: 'gmail', label: 'Gmail', state: 'todo', detail: o.gmail ? 'needs reconnecting' : 'not connected (signing in with Google does not connect it)', fix: { kind: 'link', href: '/app/settings#gmail', label: o.gmail ? 'Reconnect' : 'Connect' } }
@@ -26,7 +37,11 @@ export function readinessRows(i: ReadinessInput): Row[] {
   const sender: Row = !o ? { id: 'sender', label: 'Sender name and mailing address', state: 'unknown', detail: 'could not check', fix: null }
     : senderOk ? { id: 'sender', label: 'Sender name and mailing address', state: 'done', detail: o.sender!.sender_name!, fix: null }
     : { id: 'sender', label: 'Sender name and mailing address', state: 'todo', detail: 'added to every email; required before sending', fix: { kind: 'inline', label: 'Add' } }
-  return [site, key, gmail, sender]
+  // The daily limit is the server's send cap (an operator setting, at most 20), not a per-workspace choice: this row reports it.
+  const cap = o?.daily_cap
+  const limit: Row = typeof cap !== 'number' ? { id: 'limit', label: 'Daily sending limit', state: 'unknown', detail: 'could not check', fix: null }
+    : { id: 'limit', label: 'Daily sending limit', state: 'done', detail: `up to ${cap} emails a day${typeof o!.sent_24h === 'number' ? `; ${o!.sent_24h} sent in the last 24 hours` : ''}`, fix: null }
+  return [site, play, key, gmail, sender, limit]
 }
 
 export interface JobRow { id: string; status: string; error: string | null; query: string | null; csv_domain: string | null; created_at: number; lead_count: number; verified?: number | null; needs_review?: number | null; test_only?: boolean }

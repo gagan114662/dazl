@@ -6,8 +6,9 @@ import SenderInline from './sender-inline'
 import { normalizeWebsite } from '@/lib/onboarding'
 import { readinessRows, recentPlays, type ReadinessInput, type Play } from '@/lib/readiness'
 
-// Home after the first search: what is ready, what is missing, and the fix in place. Gmail is the one fix that stays in
-// Settings: connecting is an explicit Google grant whose read-access terms are explained there.
+// Home after the first search: the steps left before a useful scan and send, each with its fix (in place, or a link to
+// the page that fixes it). Gmail stays in Settings: connecting is an explicit Google grant whose read-access terms are
+// explained there. The checklist is hidden once every step is done; the plays stay.
 export default function Readiness() {
   const [input, setInput] = useState<ReadinessInput | null>(null)
   const [plays, setPlays] = useState<Play[] | null>(null)
@@ -18,7 +19,7 @@ export default function Readiness() {
   async function load() {
     const get = (u: string) => fetch(u).then(r => r.ok ? r.json() : null).catch(() => null)
     const [profile, usage, outreach, jobs] = await Promise.all([get('/api/settings/profile'), get('/api/usage'), get('/api/outreach/settings'), get('/api/scan/jobs')])
-    setInput({ profile, usage, outreach })
+    setInput({ profile, usage, outreach, jobs: jobs?.jobs ?? null })
     setPlays(jobs?.jobs ? recentPlays(jobs.jobs) : null)
     if (profile) setSite({ website: String(profile.website ?? ''), sells: String(profile.sells ?? ''), business_name: String(profile.business_name ?? '') })
   }
@@ -35,10 +36,13 @@ export default function Readiness() {
 
   if (!input) return null
   const rows = readinessRows(input)
+  const done = rows.filter(r => r.state === 'done').length
   return (
-    <section aria-labelledby="ready-heading" className="mb-10">
-      <h2 id="ready-heading" className="text-lg font-semibold mb-3">Ready to find and email leads?</h2>
-      <ul className="card divide-y divide-black/10">
+    <section className="mb-10">
+      {done < rows.length && <div data-testid="readiness-checklist">
+      <h2 id="ready-heading" className="text-lg font-semibold mb-1">Before your first scan and send</h2>
+      <p className="text-sm text-[#555] mb-3" data-testid="ready-progress">{done} of {rows.length} done</p>
+      <ul className="card divide-y divide-black/10" aria-labelledby="ready-heading">
         {rows.map(r => (
           <li key={r.id} className="p-4 text-sm" data-testid={`ready-${r.id}`}>
             <div className="flex items-center justify-between gap-3">
@@ -62,8 +66,9 @@ export default function Readiness() {
           </li>
         ))}
       </ul>
+      </div>}
 
-      <h2 className="text-lg font-semibold mt-8 mb-3">Your plays</h2>
+      <h2 className={`text-lg font-semibold mb-3 ${done < rows.length ? 'mt-8' : ''}`}>Your plays</h2>
       {plays === null ? <p className="text-sm text-[#555]">Could not load your searches. Reload to retry.</p>
         : plays.length === 0 ? <p className="text-sm text-[#555]">No searches yet. <Link className="underline" href="/app/leads">Find leads</Link></p>
         : <ul className="card divide-y divide-black/10" aria-label="Your plays">

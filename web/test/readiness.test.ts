@@ -4,24 +4,48 @@ import { readinessRows, recentPlays } from '../lib/readiness.ts'
 
 const byId = (rows: ReturnType<typeof readinessRows>) => Object.fromEntries(rows.map(r => [r.id, r]))
 
-test('a new account: every row is a to-do with its fix; Gmail goes to Settings where its consent text is', () => {
-  const r = byId(readinessRows({ profile: { sells: '', website: '' }, usage: { has_key: false, trial: { funded: true, remaining: 2 } }, outreach: { gmail: null, sender: null } }))
-  assert.deepEqual(Object.values(r).map(x => x.state), ['todo', 'todo', 'todo', 'todo'])
-  assert.equal(r.key.detail, 'not added; 2 free searches left')
+const job = (o: object = {}) => ({ id: 'j', status: 'done', error: null, query: 'Dentists in Ohio', csv_domain: null, created_at: 1, lead_count: 0, ...o })
+
+test('a new account: the steps in order, each to-do with its fix; Gmail goes to Settings where its consent text is', () => {
+  const r = byId(readinessRows({ profile: { sells: '', website: '' }, usage: { has_key: false, trial: null }, outreach: { gmail: null, sender: null, daily_cap: 20, sent_24h: 0 }, jobs: [] }))
+  assert.deepEqual(Object.keys(r), ['site', 'play', 'key', 'gmail', 'sender', 'limit'])
+  assert.deepEqual(Object.values(r).map(x => x.state), ['todo', 'todo', 'todo', 'todo', 'todo', 'done'])
+  assert.equal(r.site.label, 'Website and business brain')
+  assert.deepEqual(r.play.fix, { kind: 'link', href: '/app/leads', label: 'Write a play' })
+  assert.equal(r.key.detail, 'needed for searches')
   assert.deepEqual(r.gmail.fix, { kind: 'link', href: '/app/settings#gmail', label: 'Connect' })
   assert.deepEqual(r.sender.fix, { kind: 'inline', label: 'Add' })
+  assert.equal(r.limit.detail, 'up to 20 emails a day; 0 sent in the last 24 hours')
 })
 
 test('a ready account: all done, no fixes offered', () => {
-  const r = readinessRows({ profile: { sells: 'Booking software', website: 'https://acme.example', business_name: 'Acme' }, usage: { has_key: true, trial: null }, outreach: { gmail: { email: 'me@acme.example', status: 'active' }, sender: { sender_name: 'Dana', postal_address: '1 Main St, Columbus OH' } } })
+  const r = readinessRows({ profile: { sells: 'Booking software', website: 'https://acme.example', business_name: 'Acme' }, usage: { has_key: true, trial: null }, outreach: { gmail: { email: 'me@acme.example', status: 'active' }, sender: { sender_name: 'Dana', postal_address: '1 Main St, Columbus OH' }, daily_cap: 12, sent_24h: 3 }, jobs: [job()] })
   assert.ok(r.every(x => x.state === 'done' && x.fix === null))
   assert.equal(byId(r).gmail.detail, 'sending from me@acme.example')
   assert.equal(byId(r).site.detail, 'Acme - Booking software (acme.example)')
+  assert.equal(byId(r).play.detail, '1 search written')
+  assert.equal(byId(r).limit.detail, 'up to 12 emails a day; 3 sent in the last 24 hours')
 })
 
 test('a failed status load is "could not check", never done or to-do', () => {
-  const r = readinessRows({ profile: null, usage: null, outreach: null })
+  const r = readinessRows({ profile: null, usage: null, outreach: null, jobs: null })
   assert.ok(r.every(x => x.state === 'unknown' && x.fix === null))
+  assert.equal(byId(readinessRows({ profile: null, usage: null, outreach: {} })).limit.state, 'unknown', 'no cap reported: not claimed as set')
+})
+
+test('first play: any own search counts, whatever it found; imports and test fixtures do not', () => {
+  const play = (jobs: object[]) => byId(readinessRows({ profile: null, usage: null, outreach: null, jobs: jobs as never })).play
+  assert.equal(play([job({ csv_domain: 'acme.com' }), job({ test_only: true }), job({ query: null })]).state, 'todo')
+  assert.equal(play([job({ status: 'failed', error: 'no_candidates' })]).state, 'done')
+  assert.equal(play([job(), job({ id: 'k' })]).detail, '2 searches written')
+})
+
+test('free searches cover the first scan: the key row is done while they last and a to-do once they run out', () => {
+  const key = (trial: object | null) => byId(readinessRows({ profile: null, usage: { has_key: false, trial: trial as never }, outreach: null })).key
+  assert.deepEqual([key({ funded: true, remaining: 2 }).state, key({ funded: true, remaining: 2 }).detail, key({ funded: true, remaining: 2 }).fix], ['done', 'using free searches (2 left)', null])
+  assert.equal(key({ funded: true, remaining: 1 }).detail, 'using free searches (1 left)')
+  assert.equal(key({ funded: true, remaining: 0 }).state, 'todo')
+  assert.equal(key({ funded: false, remaining: 5 }).state, 'todo')
 })
 
 test('Gmail that needs reconnecting and a half-filled sender are to-dos', () => {
