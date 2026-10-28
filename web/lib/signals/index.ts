@@ -11,6 +11,7 @@ import { companyKey, recordCompanyEvent } from '../events/store.ts'
 import { listLeads } from '../scan/store.ts'
 import { classifyEntityMatch, domainSlug, withinEventWindow } from './entity-match.ts'
 import { atsGtmHiring } from './ats-gtm.ts'
+import { domainRelationship, HEURISTIC_NOTE } from './domain-basis.ts'
 
 const TIMEOUT = 8000
 const MAX_LEADS = 10
@@ -143,8 +144,12 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
       funding++
     }
     if (h && h.via === 'domain') {
-      addEnrichment(db, tenantId, lead.id, { connector: `signals:${h.board}`, kind: 'hiring', value: `${h.openRoles} open role${h.openRoles === 1 ? '' : 's'}`, label: h.titles.join('; ').slice(0, 200) || null, confidence: 70, source_url: h.url, source_date: today, retrieved_at: now })
-      if (ck) recordCompanyEvent(db, tenantId, { companyKey: ck, companyName: lead.company, scope: 'account', leadId: lead.id, eventType: 'hiring_surge', summary: `${h.openRoles} open role${h.openRoles === 1 ? '' : 's'}`, detail: h.titles.join('; ').slice(0, 200) || null, sourceUrl: h.url, sourcePublishedAt: null, retrievedAt: now, confidence: 70 })
+      // Only a board under a domain the cited page itself is hosted on (or the user confirmed) is the company's own. Otherwise the roles are shown
+      // as unconfirmed, are not scored (no confidence) and are NOT written to the company's account history as hiring growth.
+      const rel = domainRelationship(db, tenantId, lead.id, lead.company_domain)
+      const est = rel === 'established'
+      addEnrichment(db, tenantId, lead.id, { connector: `signals:${h.board}`, kind: 'hiring', value: `${est ? '' : 'Unconfirmed: '}${h.openRoles} open role${h.openRoles === 1 ? '' : 's'}`, label: (est ? (h.titles.join('; ') || '') : `${h.titles.join('; ')} (${HEURISTIC_NOTE})`).slice(0, 200) || null, confidence: est ? 70 : null, source_url: h.url, source_date: today, retrieved_at: now })
+      if (ck && est) recordCompanyEvent(db, tenantId, { companyKey: ck, companyName: lead.company, scope: 'account', leadId: lead.id, eventType: 'hiring_surge', summary: `${h.openRoles} open role${h.openRoles === 1 ? '' : 's'}`, detail: h.titles.join('; ').slice(0, 200) || null, sourceUrl: h.url, sourcePublishedAt: null, retrievedAt: now, confidence: 70 })
       hiring++
     }
     // Dated sales / go-to-market postings from the company's own public board: the "hiring sales" half of a seed + sales request, with the
@@ -152,7 +157,9 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
     const g = await atsGtmHiring(lead.company, lead.company_domain, fetchImpl).catch(() => null)
     if (g) {
       const n = g.postings.length
-      addEnrichment(db, tenantId, lead.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${n} sales/GTM role${n === 1 ? '' : 's'} posted, newest ${g.newest}`, label: g.postings.map(p => p.title).slice(0, 3).join('; ').slice(0, 200) || null, confidence: g.via === 'domain' ? 70 : 75, source_url: g.url, source_date: g.newest, retrieved_at: now })
+      const est = g.via === 'board_name' || domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established'   // a Greenhouse board NAME token-identical to the company is its own evidence of identity
+      const titles = g.postings.map(p => p.title).slice(0, 3).join('; ')
+      addEnrichment(db, tenantId, lead.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${est ? '' : 'Unconfirmed: '}${n} sales/GTM role${n === 1 ? '' : 's'} posted, newest ${g.newest}`, label: (est ? titles : `${titles} (${HEURISTIC_NOTE})`).slice(0, 200) || null, confidence: est ? (g.via === 'domain' ? 70 : 75) : null, source_url: g.url, source_date: g.newest, retrieved_at: now })
       gtm++
     }
     const r = await fundingRoundFor(lead.company, news, { fetchImpl, jinaLeft }).catch(() => null)
