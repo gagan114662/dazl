@@ -87,6 +87,34 @@ export function writeRunReport(db: Database.Database, jobId: string, attempt: nu
   } catch { return false }
 }
 
+// A gate that runs AFTER the report was written (the sales-hiring gate) moves leads from verified to review. The saved report must show the final outcome:
+// the candidate's fate becomes `review:<reason>` and the funnel is recounted, so no surface reports a held lead as verified. Best effort; never throws.
+export function reconcileRunReport(db: Database.Database, jobId: string, attempt: number, demotions: { company: string; url: string; reason: string }[]): boolean {
+  if (demotions.length === 0) return false
+  try {
+    const row = db.prepare('SELECT report FROM scan_run_report WHERE job_id = ? AND attempt = ?').get(jobId, attempt) as { report: string } | undefined
+    if (!row) return false
+    const r = JSON.parse(row.report) as { candidates?: { company: string; url: string; fate: string }[]; funnel?: Record<string, unknown> }
+    if (!Array.isArray(r.candidates)) return false
+    const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, '')
+    let changed = 0
+    for (const d of demotions) {
+      const c = r.candidates.find(x => x.fate === 'verified' && norm(x.company) === norm(d.company) && x.url === d.url.slice(0, 300)) ?? r.candidates.find(x => x.fate === 'verified' && norm(x.company) === norm(d.company))
+      if (c) { c.fate = `review:${d.reason}`; changed++ }
+    }
+    if (!changed) return false
+    const f = r.funnel ?? {}
+    if (typeof f.verified === 'number') f.verified = Math.max(0, f.verified - changed)
+    if (typeof f.needs_review === 'number') f.needs_review = f.needs_review + changed
+    const reasons = (f.review_reasons && typeof f.review_reasons === 'object' ? f.review_reasons : {}) as Record<string, number>
+    for (const d of demotions) reasons[d.reason] = (reasons[d.reason] ?? 0) + 1
+    f.review_reasons = reasons; r.funnel = f
+    ;(r as Record<string, unknown>).final_gate = 'sales_hiring'
+    db.prepare('UPDATE scan_run_report SET report = ? WHERE job_id = ? AND attempt = ?').run(JSON.stringify(r), jobId, attempt)
+    return true
+  } catch { return false }
+}
+
 // Owner-scoped read. null = never recorded for this job (table absent or no row) - "not recorded", not zero.
 export function runReportFor(db: Database.Database, tenantId: string, jobId: string): unknown[] | null {
   try {

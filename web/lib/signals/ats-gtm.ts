@@ -10,9 +10,10 @@ import { classifyEntityMatch, domainSlug } from './entity-match.ts'
 const TIMEOUT = 8000
 const WINDOW_DAYS = 90
 const MAX_DETAIL = 4
-const GTM = /\b(?:account\s+(?:executive|manager|director)|sales|business\s+development|bdr|sdr|revenue|go[-\s]to[-\s]market|gtm|growth|demand\s+gen(?:eration)?|customer\s+success|partnerships?|solutions?\s+(?:engineer|consultant)|head\s+of\s+(?:sales|growth|revenue|marketing)|vp\s+(?:of\s+)?(?:sales|revenue|growth|marketing))\b/i
+const GTM = /\b(?:account\s+(?:executive|manager|director)s?|sales|business\s+development|bdrs?|sdrs?|revenue|go[-\s]to[-\s]market|gtm|growth|demand\s+gen(?:eration)?|customer\s+success|partnerships?|solutions?\s+(?:engineer|consultant)s?|head\s+of\s+(?:sales|growth|revenue|marketing)|vp\s+(?:of\s+)?(?:sales|revenue|growth|marketing))\b/i
 const NOT_GTM = /\b(?:salesforce\s+(?:developer|engineer|architect|admin(?:istrator)?)|sales\s*tax|software\s+engineer|backend|front[-\s]?end|devops|data\s+scientist)\b/i
 export const isGtmRole = (title: string): boolean => GTM.test(title) && !NOT_GTM.test(title)
+export const BOARD_LABEL = { greenhouse: 'Greenhouse', lever: 'Lever', ashby: 'Ashby' } as const
 
 export interface GtmPosting { title: string; date: string; url: string; location: string | null }
 export interface GtmHiring { board: 'greenhouse' | 'lever' | 'ashby'; postings: GtmPosting[]; newest: string; url: string; domain: string | null; via: 'domain' | 'board_name' }
