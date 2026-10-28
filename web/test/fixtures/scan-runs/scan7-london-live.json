@@ -1,0 +1,744 @@
+[
+  {
+    "attempt": 1,
+    "candidates": [
+      {
+        "company": "Clera",
+        "evidence_origin": null,
+        "fate": "review:blocked_by_site",
+        "own_fetch": "blocked",
+        "url": "https://startup.jobs/sales-development-representative-english-speaking-associate-clera-10390648"
+      }
+    ],
+    "coverage": [
+      "urls: TinyFish search hits only. News-adapter, public-adapter and provider-fallback candidates have no search-result URL entry.",
+      "candidates: every candidate the verifier saw, plus login-wall and self-description holds. Candidates a model-search fallback returns are included once they reach the verifier.",
+      "model: requests dazl sent through the job provider before this report was written (all stages that ran, research calls included, which report no tokens). Steps after the scan finishes (buyer-fit) and profile generation are NOT included. Never a bill.",
+      "a stage that did not run is null, not 0"
+    ],
+    "enrichment": [
+      {
+        "reason": "no undated candidate declared its own event date as structured data (schema.org Event / JobPosting)",
+        "stage": "date_resolution",
+        "status": "attempted_no_result"
+      },
+      {
+        "reason": "no lookups were recorded (no eligible lead, or the stage was cut off before it wrote)",
+        "stage": "crawl",
+        "status": "attempted_no_result"
+      },
+      {
+        "detail": {
+          "lookups": 4,
+          "with_results": 0
+        },
+        "reason": "empty x4",
+        "stage": "signals",
+        "status": "attempted_no_result"
+      },
+      {
+        "detail": {
+          "lookups": 0
+        },
+        "reason": "no Apollo / People Data Labs key configured for this tenant, or no eligible lead",
+        "stage": "paid_enrichment",
+        "status": "unavailable"
+      },
+      {
+        "detail": {
+          "people_stored": 0
+        },
+        "reason": "no profile results named a role-matching person at a verified company, or no search key/quota",
+        "stage": "people_search",
+        "status": "attempted_no_result"
+      },
+      {
+        "reason": null,
+        "stage": "buyer_fit",
+        "status": "ok"
+      },
+      {
+        "detail": {
+          "checked": 0,
+          "held": 0,
+          "passed": 0
+        },
+        "reason": null,
+        "stage": "sales_hiring_gate",
+        "status": "ok"
+      }
+    ],
+    "evidence": {
+      "items": 30,
+      "snippet_only": 15,
+      "with_page_text": 15
+    },
+    "extracted_candidates": 1,
+    "extraction": {
+      "fetch_error": false,
+      "fetch_failed": 1,
+      "fetched": 15,
+      "fetched_too_short": 0,
+      "fetched_unused": 0,
+      "job_pages_fetched": 0,
+      "offered": 30,
+      "page_texts_given": 15,
+      "reason": null,
+      "reply": "usable",
+      "requested": 16,
+      "results": 74,
+      "returned": 1,
+      "snippet_only": 15
+    },
+    "funnel": {
+      "candidates": 1,
+      "drop_reasons": {},
+      "dropped": 0,
+      "needs_review": 1,
+      "review_reasons": {
+        "blocked_by_site": 1
+      },
+      "verified": 0,
+      "verifier_drop_counts": {}
+    },
+    "generated_at": "2026-10-28T17:54:00.341Z",
+    "held_lead_ids": [],
+    "model": {
+      "input_tokens": 8786,
+      "output_tokens": 257,
+      "requests_recorded": 3,
+      "requests_with_reported_tokens": 3,
+      "tokens_complete": true
+    },
+    "observed": {
+      "extraction": true,
+      "search": true,
+      "verification": true
+    },
+    "queries": [
+      "(site:boards.greenhouse.io OR site:job-boards.greenhouse.io) \"sales\" London UK",
+      "(site:jobs.ashbyhq.com OR site:jobs.lever.co) \"sales\" London UK",
+      "London B2B SaaS startup announces seed funding hiring sales development representative London UK",
+      "London cloud software company raises seed round hiring account executive London UK",
+      "London enterprise SaaS seed funding announcement hiring sales manager London UK",
+      "London business software startup closes seed investment hiring sales team London UK",
+      "London SaaS platform secures seed funding press release hiring business development London UK",
+      "London software startup seed round TechCrunch Sifted hiring sales London UK"
+    ],
+    "query_source": "model",
+    "search": {
+      "attempted": 8,
+      "hits_complete": true,
+      "hits_raw": 77,
+      "hits_unique_urls": 74,
+      "ok": 8
+    },
+    "truncated": {
+      "candidates": 0,
+      "urls": 0
+    },
+    "urls": [
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://job-boards.greenhouse.io/ripple/jobs/8257711?ref=sailonchain.com",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://job-boards.greenhouse.io/block/jobs/5435413008",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": "ok",
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://job-boards.greenhouse.io/reddit/jobs/8249259",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://job-boards.greenhouse.io/tailscale/jobs/4723401005",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": "ok",
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://job-boards.greenhouse.io/clearstreet/jobs/8273561",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://job-boards.greenhouse.io/deliveroo/jobs/8285513",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://job-boards.greenhouse.io/knowbe4/jobs/8894313002-8",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://job-boards.greenhouse.io/gleanwork/jobs/4741742005",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://job-boards.greenhouse.io/toast/jobs/8144312",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": "blocked",
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://jobs.ashbyhq.com/n8n/01e97911-afbc-4d4b-bdc7-ea6cd5e51662",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://jobs.ashbyhq.com/partly.com/a4e56b46-ca9e-424c-afba-7d73e1c18e6f",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": "blocked",
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://jobs.ashbyhq.com/scarlet/dd6585c4-38c4-4ac3-b63f-56b71d383fcb",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://jobs.ashbyhq.com/hozah/8f922199-11f4-491f-8574-165a095e2bcc",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://jobs.ashbyhq.com/juicebox/9d7111d6-a010-424e-b5b6-c4bf154576d9",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://jobs.ashbyhq.com/lumaai/79314512-401d-40b0-8529-9fd7f87a9ac6",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://jobs.ashbyhq.com/webflow/f96305c7-36a4-45c1-8feb-320c8ac58394",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://jobs.lever.co/madhappy/fd11926e-0c0b-4250-b04f-52508185b6f6?lever-source=Indeed",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://jobs.lever.co/wgsn/95eac2de-973d-4d22-9d1a-e1bdbe5114d0",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://jobs.ashbyhq.com/voize/08ef311b-525c-46f4-9879-1b0c860c3e99",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.ycombinator.com/companies/juicebox/jobs/53PtLHZ-sales-development-representative-london",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.evinced.com/careers/business-development-representative-(emea)",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://careers.box.com/en/jobs/8226111/sales-development-representative-placement-student/",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://uk.indeed.com/viewjob?jk=578c2fe17bc2b3d1",
+        "walled": true
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://uk.linkedin.com/jobs/view/founding-sdr-at-vc-backed-b2b-saas-startup-%C2%A335-40k-at-jumpstart-4484217048",
+        "walled": true
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://wellfound.com/jobs/4751341-first-sales-hire-b2b-saas-scaleup-uk-usa-real-equity",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": "blocked",
+        "selected": true,
+        "tinyfish_text_chars": 3120,
+        "url": "https://startup.jobs/sales-development-representative-english-speaking-associate-clera-10390648",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.justlondonjobs.com/jobs/sales-development-representative-b2b-saas-fintech-297585",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": true,
+        "tinyfish_text_chars": 73363,
+        "url": "https://fundraiseinsider.com/blog/series-b-startups/",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": true,
+        "tinyfish_text_chars": 12600,
+        "url": "https://fractional.quest/sdr-jobs",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": true,
+        "tinyfish_text_chars": 21862,
+        "url": "https://www.landbase.com/blog/london-ai-startups-hiring-fastest",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.instagram.com/reel/DdUg42xo-8c/",
+        "walled": true
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": true,
+        "tinyfish_text_chars": 15183,
+        "url": "https://meetdex.ai/blog/top-50-companies-2026",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.linkedin.com/posts/kevin-ampeh-7ab2a876_ai-europeantech-europeanai-activity-7512770154934456320-B5TQ",
+        "walled": true
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": true,
+        "tinyfish_text_chars": 5975,
+        "url": "https://finance.yahoo.com/small-business/articles/juicebox-opens-london-office-uk-060000203.html",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": true,
+        "tinyfish_text_chars": 10029,
+        "url": "https://www.vcbacked.co/london-startups",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.instagram.com/p/Dexcu0hCJjs/",
+        "walled": true
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": true,
+        "tinyfish_text_chars": 22250,
+        "url": "https://www.clay.com/dossier/otta-funding",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.facebook.com/EUStartups/posts/wiremind-a-paris-based-ai-software-company-serving-the-transport-air-cargo-and-e/1530322379122366/",
+        "walled": true
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": true,
+        "tinyfish_text_chars": 5533,
+        "url": "https://www.sesamers.com/funding/lette-raises-6-5m-seed-uk-rental-ai-agents/",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.linkedin.com/posts/michael-logue-01a87a4a_im-hiring-the-team-thats-going-to-drive-activity-7518223402743091201-wUNU",
+        "walled": true
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": true,
+        "tinyfish_text_chars": 4940,
+        "url": "https://theweekinukstartups.substack.com/p/the-week-in-uk-startups-c1a",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": true,
+        "tinyfish_text_chars": 5654,
+        "url": "https://foresight.group/news-insights/news/2026/spaceam-closes-seed-round-backed-by-foresight-and-with-funding-from-the-uk-defence-unicorn-fund/",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://uk.linkedin.com/jobs/view/head-of-technology-partnerships-ai-startup-at-founding-teams-4478073031",
+        "walled": true
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": true,
+        "tinyfish_text_chars": 5102,
+        "url": "https://www.startupmag.co.uk/funding/skwky-2026-pre-seed-funding/",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": true,
+        "tinyfish_text_chars": 8169,
+        "url": "https://fortune.com/2026/10/26/ai-giving-cybercrime-makeover-startup-raised-15-million-to-fight-back-overwatch/",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": true,
+        "tinyfish_text_chars": 5486,
+        "url": "https://www.gpbullhound.com/articles/capital-is-flowing-again-it-is-just-more-selective/",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.glassdoor.com/Job/startup-jobs-SRCH_IC2671300_KO0,7.htm",
+        "walled": true
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.glassdoor.co.uk/Job/london-head-of-software-sales-jobs-SRCH_IL.0,6_IC2671300_KO7,29.htm",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": true,
+        "tinyfish_text_chars": 3295,
+        "url": "https://www.simplyhired.co.uk/en-GB/search?q=start+up+sales&l=london%2C+eng&cursor=ABQAAQAUAAAAAAAAAAAAAAACY0nhbAEAUmjflrOWeeYYHeqHiKRQlJuPrxklHs0iR5TjoA%3D%3D",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": true,
+        "tinyfish_text_chars": null,
+        "url": "https://workinstartups.com/somers-town/sales-jobs",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://uk.jooble.org/jobs-ceo-startup/East-London",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://uk.jooble.org/jobs-developer-startup/Clerkenwell%2C-Greater-London",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://revexa.io/en/signals/startups-hiring-sales/uk",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.fintechfutures.com/embedded-finance/uk-firms-oval-and-seedrs-build-first-in-app-fintech-investment-opportunity",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.agentlens.app/jobs?location=London&batch=F25",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.agentlens.app/jobs?location=London&batch=S25",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.facebook.com/61573559727027/posts/these-2-uk-startups-just-secured-the-bag-and-theyre-hiring-aggressively1%EF%B8%8F%E2%83%A3-opply/122215328696785324/",
+        "walled": true
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.linkedin.com/posts/aipoweredleadgeneration_uksaas-saas-funding-activity-7502679222172184576-BWJe",
+        "walled": true
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://careers.publicisgroupe.com/jobs/178176?lang=en-us&previousLocale=en-US",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.vestbee.com/insights/articles/european-funding-rounds-closed-in-august-2026",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.linkedin.com/posts/setsquared-partnership_startups-scaleups-investment-activity-7495751927792574464-PU1n",
+        "walled": true
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.saasrise.com/deals/uks-extend-robotics-secures-us33m-26m-to-sell-factory-work-instead-of-machines-ece16ecf-ddd3-45b4-be83-97cf30b01f4e",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.businesswire.com/news/home/20260929377193/en/Juicebox-Opens-London-Office-as-UK-and-EMEA-Companies-Rethink-How-They-Hire",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.sesamers.com/funding/ivee-1m-seed-round-ai-upskilling-platform/",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.prnewswire.com/",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.linkedin.com/posts/benclarfelt_ive-just-finished-reading-the-latest-sifted-activity-7516497515194572800-EcnF",
+        "walled": true
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://techcrunch.com/2026/08/01/inside-one-london-founder-house-rewriting-the-founder-house-rules/",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.datocms-assets.com/60124/1792011501-sifted-ai-100-2026.pdf",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://vestbee.com/insights/articles/must-attend-startup-and-vc-events-in-2026",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.eu-startups.com/2026/10/top-50-journalists-and-pr-pros-in-european-tech/",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.facebook.com/alughaofficial/posts/damn-h%C3%A4tten-die-sich-nicht-ein-bisschen-l%C3%A4nger-zeit-lassen-k%C3%B6nnen-were-alugha-a-/1761508325490143/",
+        "walled": true
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://dealroom.co/news/145405-storonskys-quantumlight-closes-oversubscribed-500m-fund-to-back-ai-start/",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.sesamers.com/startups/in-person-tech-events-irl-investment/",
+        "walled": false
+      },
+      {
+        "hit_date": null,
+        "own_fetch": null,
+        "selected": false,
+        "tinyfish_text_chars": null,
+        "url": "https://www.peony.ink/blog/top-20-startup-accelerators-worldwide",
+        "walled": false
+      }
+    ],
+    "v": 1,
+    "yield": {
+      "actionable": 0,
+      "held_leads": [],
+      "leads": [],
+      "missing": {},
+      "source_checked": 1,
+      "verified": 0
+    }
+  }
+]

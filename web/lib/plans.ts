@@ -27,34 +27,26 @@ export function migratePlans(db: Database.Database): void {
   try { db.exec('ALTER TABLE tenant_plans ADD COLUMN subscription_status TEXT') } catch { /* exists */ }
 }
 
-// Sync reader for callers not yet on the Db layer (scan, monitors, watch). Billing uses readPlan.
-export function getPlan(db: Database.Database, tenantId: string): PlanId {
-  const r = db.prepare('SELECT plan FROM tenant_plans WHERE tenant_id = ?').get(tenantId) as { plan: PlanId } | undefined
-  return r?.plan ?? 'free'
-}
-
+// Every read and write here is on the Db layer (SQLite or Postgres). The sync quota for the scan code still on the raw
+// handle is lib/billing/plans-sqlite.ts, re-exported below so its callers' imports are unchanged.
+export const PLAN_SQL = 'SELECT plan FROM tenant_plans WHERE tenant_id = ?'
 export async function readPlan(db: Db, tenantId: string): Promise<PlanId> {
-  return (await db.get<{ plan: PlanId }>('SELECT plan FROM tenant_plans WHERE tenant_id = ?', [tenantId]))?.plan ?? 'free'
+  return (await db.get<{ plan: PlanId }>(PLAN_SQL, [tenantId]))?.plan ?? 'free'
 }
 
-// Sync writer kept for callers and test fixtures not yet on the Db layer; billing uses writePlan.
-export function setPlan(db: Database.Database, tenantId: string, plan: PlanId): void {
-  db.prepare('INSERT INTO tenant_plans (tenant_id, plan) VALUES (?, ?) ON CONFLICT(tenant_id) DO UPDATE SET plan = excluded.plan').run(tenantId, plan)
-}
-
-// A transaction step: billing changes a plan only inside the transaction that records the Stripe event.
-// The subscription status Stripe last reported, null without one. Sync for callers on the raw handle; /api/usage uses
-// readBillingStatus (Db layer).
+// The subscription status Stripe last reported, null without one.
 const BILLING_STATUS_SQL = 'SELECT subscription_status FROM tenant_plans WHERE tenant_id = ?'
-export function getBillingStatus(db: Database.Database, tenantId: string): string | null {
-  return (db.prepare(BILLING_STATUS_SQL).get(tenantId) as { subscription_status: string | null } | undefined)?.subscription_status ?? null
-}
 export async function readBillingStatus(db: Db, tenantId: string): Promise<string | null> {
   return (await db.get<{ subscription_status: string | null }>(BILLING_STATUS_SQL, [tenantId]))?.subscription_status ?? null
 }
 
+// A transaction step: billing changes a plan only inside the transaction that records the Stripe event.
 export function* writePlan(t: Tx, tenantId: string, plan: PlanId): TxBody<void> {
   yield* t.run('INSERT INTO tenant_plans (tenant_id, plan) VALUES (?, ?) ON CONFLICT (tenant_id) DO UPDATE SET plan = excluded.plan', [tenantId, plan])
+}
+// writePlan on its own, outside a Stripe event (operator and test fixtures).
+export function savePlan(db: Db, tenantId: string, plan: PlanId): Promise<void> {
+  return db.tx(t => writePlan(t, tenantId, plan))
 }
 
 export function monthStartS(now = new Date()): number {
@@ -62,24 +54,18 @@ export function monthStartS(now = new Date()): number {
 }
 
 // Scans started this UTC month. Genuine failures do not count (the user gets the slot back); cancelled scans keep their charge because their provider work may already have run.
-const SCANS_THIS_MONTH_SQL = "SELECT count(*) AS n FROM scan_jobs WHERE user_id = ? AND created_at >= ? AND (status != 'failed' OR error = 'cancelled') AND funded_by != 'trial'"
-export function scansThisMonth(db: Database.Database, tenantId: string, now = new Date()): number {
-  const r = db.prepare(SCANS_THIS_MONTH_SQL).get(tenantId, monthStartS(now)) as { n: number }
-  return r.n
-}
-
-// The quota for a plan and a count of scans. The scan routes take the plan from the shared store (getDb(), where the
-// Stripe webhook writes it) and the count from the store their scans are written to, which is still the raw SQLite
-// handle; on SQLite both are the same connection.
+export const SCANS_THIS_MONTH_SQL = "SELECT count(*) AS n FROM scan_jobs WHERE user_id = ? AND created_at >= ? AND (status != 'failed' OR error = 'cancelled') AND funded_by != 'trial'"
+// The quota for a plan and a count of scans. The scan route takes the plan from the shared store (getDb(), where the
+// Stripe webhook writes it) and the count from the store its scans are written to, which is still the raw SQLite
+// handle (lib/billing/plans-sqlite.ts); on SQLite both are the same connection.
 export const planQuota = (plan: PlanId, used: number) => {
   const limit = PLAN_LIMITS[plan].scansPerMonth
   return { plan, used, limit, allowed: limit === null || used < limit }
 }
-export function scanQuota(db: Database.Database, tenantId: string, now = new Date()) {
-  return planQuota(getPlan(db, tenantId), scansThisMonth(db, tenantId, now))
-}
-// scanQuota on the Db layer (SQLite or Postgres): the same plan, count and limit.
+// The plan, this month's scans and the limit, on the Db layer (SQLite or Postgres).
 export async function readScanQuota(db: Db, tenantId: string, now = new Date()) {
   const used = Number((await db.get<{ n: number }>(SCANS_THIS_MONTH_SQL, [tenantId, monthStartS(now)]))!.n)
   return planQuota(await readPlan(db, tenantId), used)
 }
+
+export { scanQuota, scansThisMonth } from './billing/plans-sqlite.ts'

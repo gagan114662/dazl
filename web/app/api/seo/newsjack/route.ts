@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getScanDb, requireUser } from '@/lib/scan/service'
+import { requireUser } from '@/lib/scan/service'
 import { getDb } from '@/lib/db/client'
 import { createNewsjack, approveNewsjack, recentNewsjacks } from '@/lib/seo/newsjack'
 import { sameOriginJson } from '@/lib/same-origin'
@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
     const ok = typeof body?.id === 'string' && await approveNewsjack(db, user.id, body.id)
     return ok ? NextResponse.json({ ok: true }) : NextResponse.json({ error: 'Not found' }, { status: 404 })
   }
-  const r = await createNewsjack(db, getScanDb(), user.id, typeof body?.url === 'string' ? body.url : '')
+  const r = await createNewsjack(db, user.id, typeof body?.url === 'string' ? body.url : '')
   if ('error' in r) {
     if (r.error === 'no_key') return NextResponse.json({ error: 'Drafts use your own AI key. Add one in Settings first.' }, { status: 400 })
     if (r.error === 'invalid') return NextResponse.json({ error: 'Paste the full https URL of the news article.' }, { status: 400 })

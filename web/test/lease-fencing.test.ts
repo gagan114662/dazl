@@ -9,7 +9,7 @@ import { sqliteDb, pgDb, toPgPlaceholders } from '../lib/db/client.ts'
 import type { Db } from '../lib/db/client.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { runPgMigrations } from '../lib/db/migrate-pg.ts'
-import { getPlan, setPlan } from '../lib/plans.ts'
+import { getPlan, setPlan } from './helpers/plan-fixture.ts'
 import { bothEngines } from './helpers/engines.ts'
 import { PG_URL, pgSkip, freshSchema } from './helpers/pg-test.ts'
 

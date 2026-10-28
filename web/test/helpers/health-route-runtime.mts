@@ -35,20 +35,27 @@ test(`health routes (${mode})`, async () => {
   const { GET: health } = await import('../../app/api/health/route.ts')
   const { GET: ready } = await import('../../app/api/health/ready/route.ts')
   const { GET: apiReady } = await import('../../app/api/ready/route.ts')
+  // the store this instance is configured for: DATABASE_URL -> postgres (pg, pg-behind, pg-down), else sqlite
+  const backend = mode === 'sqlite' || mode === 'env-missing' ? 'sqlite' : 'postgres'
+  const ids = new Set<string>()
   // liveness, /api/health and /api/health/live: 200 in every mode, even with the store down; no check runs
   for (const get of [live, health]) {
     const l = await get()
     assert.equal(l.status, 200)
     assert.equal(l.headers.get('cache-control'), 'no-store')
     const body = await l.json()
-    assert.deepEqual(Object.keys(body).sort(), ['commit', 'ok'])
+    assert.deepEqual(Object.keys(body).sort(), ['commit', 'db', 'instance', 'ok'])
     assert.equal(body.ok, true)
+    assert.equal(body.db, backend)
+    ids.add(body.instance)
   }
   for (const get of [ready, apiReady]) {
     const res = await get()
     const body = await res.json()
     assert.equal(res.headers.get('cache-control'), 'no-store')
     assert.ok('commit' in body)
+    assert.equal(body.db, backend)
+    ids.add(body.instance)
     if (mode === 'env-missing') {
       assert.equal(res.status, 503, JSON.stringify(body))
       assert.equal(body.checks.store.ok, true, 'the store answers')
@@ -86,6 +93,9 @@ test(`health routes (${mode})`, async () => {
       assert.ok(!JSON.stringify(body).includes('ECONNREFUSED'))
     }
   }
+  // one id per process, the same on every route; random (12 hex) unless DAZL_INSTANCE_ID names it
+  assert.equal(ids.size, 1)
+  assert.match([...ids][0], /^[a-f0-9]{12}$/)
   restore()
   if (livePg) { await (await (await import('../../lib/db/client.ts')).getDb()).close(); await schema!.drop() }
   console.log(`HEALTH_ROUTES ${mode}`)
