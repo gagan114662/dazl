@@ -133,8 +133,8 @@ try {
     await card('Lakeside Smiles').getByRole('button', { name: 'Reject' }).click()
     await card('Lakeside Smiles').getByRole('button', { name: 'Not a fit' }).click()
     await card('Lakeside Smiles').getByRole('button', { name: 'Confirm reject' }).click()
-    await card('Lakeside Smiles').getByText(/^Rejected: Not a fit\. Kept with its evidence/).waitFor(T)
-    await card('Lakeside Smiles').getByRole('button', { name: 'Undo' }).waitFor(T)
+    await page.getByTestId('card-result').getByText(/Lakeside Smiles \(Not a fit\) left the list\./).waitFor(T) // it leaves the list
+    await page.getByTestId('card-result').getByRole('button', { name: 'Undo' }).waitFor(T)
   })
   await step('approve', async () => {
     await card('Bright Dental').getByRole('button', { name: 'Approve' }).click()
