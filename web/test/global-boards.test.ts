@@ -28,3 +28,20 @@ test('END TO END: boards are read for three countries (Canada, India, UAE) and a
     const no = await run(query, other); assert.equal(no.items.length, 0, `${query} vs ${other}`)
   }
 })
+
+// ---- #? review: lowercase cities, and "Cambridge, UK" must stay Cambridge ----
+test('LOWERCASE: "toronto, canada" / "in toronto canada" / "Toronto CANADA" select the same city as "Toronto, Canada"', () => {
+  for (const q of ['hiring sales staff in toronto, canada', 'hiring sales staff in toronto canada', 'marketing agencies toronto, canada hiring', 'Hiring in TORONTO, CANADA', 'hiring in Toronto, Canada']) {
+    const p = genericPlace(q); assert.equal(p?.name.toLowerCase(), 'toronto', q)
+    assert.ok(p!.ok('Toronto, ON, Canada') && p!.ok('TORONTO') && p!.ok('toronto, ontario'), q); assert.ok(!p!.ok('Toronto, Ohio, United States') && !p!.ok('Calgary, AB, Canada'), q)
+  }
+  assert.equal(genericPlace('dentists uk hiring')?.name ?? null, null, 'a bare lowercase noun before a country is not a city')
+})
+test('CAMBRIDGE, UK stays the CITY: it is not widened to the whole United Kingdom, and Cambridge, MA is another place', () => {
+  for (const q of ['hiring sales staff in Cambridge, UK', 'hiring sales staff in cambridge, uk', 'startups in Cambridge, United Kingdom hiring sales']) {
+    const p = placeIn(q)!; assert.equal(p.name.toLowerCase(), 'cambridge', q)
+    assert.ok(p.ok('Cambridge, UK') && p.ok('Cambridge, England, United Kingdom') && p.ok('cambridge'), q)
+    for (const other of ['Manchester, UK', 'Leeds, England', 'London, UK', 'Cambridge, MA, United States', 'Remote - United Kingdom']) assert.ok(!p.ok(other), `${q} must not accept ${other}`)
+  }
+  assert.equal(placeIn('hiring sales staff in the UK')?.name, 'United Kingdom', 'a bare country request still means the country'); assert.equal(placeIn('hiring in London, UK')?.name, 'London')
+})
