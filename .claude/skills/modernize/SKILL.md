@@ -5,6 +5,9 @@ description: >-
   "modernize".
 ---
 
+> Vendored from [t3dotgg/tstack](https://github.com/t3dotgg/tstack) (MIT, see `../LICENSE-tstack`) and adapted for
+> dazl. See `../README.md` for every change from upstream.
+
 # Modernize
 
 Modernize the idea, not just the branch. A clean rebase does not prove that the
@@ -20,6 +23,9 @@ PR still belongs in the product.
   authorize merging, closing, changing the base branch, or expanding scope.
 - Never use an unqualified force push. Update a rebased branch with
   `--force-with-lease` against the head SHA observed before the rebase.
+- In dazl, Instinct reviews exact head SHAs: never rebase or force-push a branch someone has reviewed or is
+  reviewing. Bring the base in with a merge commit instead, and use the rebase steps below only for a branch nobody
+  has reviewed yet.
 - Do not post a PR comment unless the user asked for one. Use the
   `leaving-pr-comments` skill for every comment posted on the user's behalf.
 

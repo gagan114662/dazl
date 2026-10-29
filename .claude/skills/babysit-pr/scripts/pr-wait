@@ -544,6 +544,14 @@ def main() -> None:
     parser.add_argument("--until", choices=("green", "ready", "any-change"), default="ready")
     parser.add_argument("--interval", type=int, default=20, help="seconds between polls (default 20, min 5)")
     args = parser.parse_args()
+    # dazl: in Claude Code cloud sessions gh is installed but not authenticated. Say so at once and point at the
+    # skill's fallback (subscribe_pr_activity and the GitHub MCP tools) instead of failing on the first poll.
+    try:
+        auth = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True)
+    except FileNotFoundError:
+        fail("gh is not installed. See 'Cloud sessions without gh' in the babysit-pr skill.")
+    if auth.returncode != 0:
+        fail("gh is not authenticated here (gh auth status failed). See 'Cloud sessions without gh' in the babysit-pr skill.")
     repo, pr = parse_target(args.pr, args.repo)
     _lock = lock(repo, pr)
     Watcher(repo, pr, args.until, max(args.interval, 5)).run()

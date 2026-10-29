@@ -3,6 +3,9 @@ name: file-pr
 description: File a concise pull request. Use when the user asks to file, open, or create a PR.
 ---
 
+> Vendored from [t3dotgg/tstack](https://github.com/t3dotgg/tstack) (MIT, see `../LICENSE-tstack`) and adapted for
+> dazl. See `../README.md` for every change from upstream.
+
 # File PR
 
 Before filing, check whether a PR for this branch already exists. Review the
@@ -21,6 +24,10 @@ GOOD
 
 > ✅ perf(server): cut websocket frame size by 70%+ with gzipping
 
+In dazl, also keep the open-PR limit (at most two of yours at a time), and make the description say what
+`docs/PROCESS.md` asks of every branch: what changed, the exact claims, what is NOT verified, and how to test it (the
+commands and their output). Add the council result from the `council` skill.
+
 Open the description with a simple explanation of the problem based on the
 user's original prompt, then briefly explain the solution. Do not lead with an
 implementation inventory:
@@ -33,10 +40,9 @@ GOOD
 
 > ✅ My "new worktree" default was ignored when starting new threads on existing worktrees. Super unintuitive. Now your preferences always apply.
 
-End the description with the public model name and harness that made the
-changes, for example `Created with <model> in <harness>.` Include subagent
-models that wrote part of the change. Use the model name the harness reports.
-If model identity is unavailable, name the harness without guessing a model.
+Do not name a model anywhere in the title, description, commits or comments: dazl keeps model identifiers out
+of commits and PRs. End the description with the attribution line the harness or session requires (in Claude Code
+on the web it supplies one); otherwise name the harness, for example `Created with Claude Code.`
 
 Before submission, check the title, description, quotes, and attachments for
 secrets and private details.

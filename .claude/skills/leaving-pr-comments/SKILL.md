@@ -3,6 +3,9 @@ name: leaving-pr-comments
 description: Use whenever leaving comments on GitHub.
 ---
 
+> Vendored from [t3dotgg/tstack](https://github.com/t3dotgg/tstack) (MIT, see `../LICENSE-tstack`) and adapted for
+> dazl. See `../README.md` for every change from upstream.
+
 # Leaving PR Comments
 
 Prefix every agent-authored comment left on the user's behalf with this GitHub
@@ -10,15 +13,16 @@ note callout:
 
 ```md
 > [!NOTE]
-> 🤖 **<model> responding on behalf of <user>**
+> 🤖 **Claude Code responding on behalf of <user>**
 
 Actual comment starts here.
 ```
 
-Use the verified public name of the model that wrote the comment, and the
-user's name or GitHub login.
+Name the harness (Claude Code), never a model: dazl keeps model identifiers out of commits, PRs and PR comments. Use
+the user's name or GitHub login.
 
-If the harness does not expose a model name, use the harness name. Do not guess.
+When the harness or session requires its own attribution footer on GitHub posts (Claude Code on the web does), keep
+that footer too: harness rules win over the "no signature footer" rule below.
 
 Before posting, check the entire comment, including quoted text and
 attachments, for secrets and private details.

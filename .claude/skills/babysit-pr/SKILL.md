@@ -3,12 +3,18 @@ name: babysit-pr
 description: Monitor a pull request through review and CI. Use when the user asks to monitor, watch, or babysit a PR.
 ---
 
+> Vendored from [t3dotgg/tstack](https://github.com/t3dotgg/tstack) (MIT, see `../LICENSE-tstack`) and adapted for
+> dazl. See `../README.md` for every change from upstream.
+
 # Babysit PR
 
 Many repos have AI review bots. They're helpful, even if they are not always
 right.
 
 ## Waiting
+
+**In dazl's Claude Code cloud sessions, read "Cloud sessions without `gh`" below first:** `gh` is installed there but
+not authenticated, so `pr-wait` cannot run.
 
 Never write your own watcher, polling loop, or `sleep` loop. Use one watcher
 per PR: `watch_pull_request` in T3 Code, `pr-wait` everywhere else. Never run
@@ -66,6 +72,25 @@ Kill the old one only if its events do not reach you.
 With either watcher: when an event needs no action, end your turn without a
 message. Never post or say "still waiting".
 
+### Cloud sessions without `gh` (dazl builders)
+
+Check once with `gh auth status`. When it fails (the usual case in Claude Code on the web), `pr-wait` exits at once
+with a pointer here. Use the session's own GitHub tools instead; do not try to authenticate `gh` or copy a token:
+
+- **Wake-ups:** call `subscribe_pr_activity` for the PR (claude-code-remote tools). CI results, reviews, comments and
+  the merge or close arrive as events that wake the session, so there is nothing to poll. Keep one safety-net
+  check-in with `send_later` (about 50 minutes after the last activity) for what events miss: merge conflicts and
+  pushes by others.
+- **Reading state:** the GitHub MCP tools. `pull_request_read` with `get_check_runs` (CI on the head), `get_status`,
+  `get_comments`, `get_reviews` and `get_review_comments`; `get_job_logs` for a failed job's log; `pull_request_read`
+  `get` for mergeability.
+- **Replying:** `add_issue_comment` or `add_reply_to_pull_request_comment`, formatted with `leaving-pr-comments`.
+- **Neither available:** `git fetch origin <branch>` shows pushes, and the PR's checks page
+  (`https://github.com/<owner>/<repo>/pull/<n>/checks`) shows CI. Tell the user plainly that you cannot watch the PR,
+  and what they will need to check.
+
+Never use Bash `sleep` loops in place of any of these.
+
 ## GitHub rate limits
 
 `gh pr create`, `gh pr view`, and `gh pr checks` use GraphQL. When GraphQL is
@@ -109,9 +134,12 @@ If an overlapping PR makes this one obsolete, stop monitoring, report it to the
 user, and ask before closing the PR unless closure was explicitly authorized.
 
 If nothing has changed, stay quiet rather than posting filler comments. Stop
-when `pr-wait` exits 0, or in T3 Code when the merge gate passes on the latest
-head. Merge only when the user explicitly requested it;
-otherwise report that the PR is ready. Right before a merge, run `git fetch` and
-check the PR again. Never merge when it is BEHIND or DIRTY, or when base commits
-that landed after the last green run touch this PR's files. Rebase, push, and
-wait for green again.
+when `pr-wait` exits 0, or when the "Ready for Instinct" gate in `full-stop` passes on the latest head.
+
+**Never merge in dazl,** even when asked to "full send": Instinct is the only one who merges (`docs/PROCESS.md`).
+Report that the PR is ready, with its exact head SHA. When the branch is BEHIND or DIRTY, or base commits that
+landed after the last green run touch this PR's files, bring `main` in with a merge commit (never rewrite a branch
+someone has reviewed), push, and wait for green again.
+
+In dazl, Instinct's review comments are the gate: answer every HOLD on the PR with what changed and the new head
+SHA. Bot comments that only say a reviewer bot is out of credits need no reply.

@@ -3,6 +3,9 @@ name: takeover
 description: Take over existing work. Use when the user asks to take over a PR, branch, or agent thread, or requests a takeover.
 ---
 
+> Vendored from [t3dotgg/tstack](https://github.com/t3dotgg/tstack) (MIT, see `../LICENSE-tstack`) and adapted for
+> dazl. See `../README.md` for every change from upstream.
+
 # Takeover
 
 Take responsibility for finishing the original goal while preserving the
@@ -36,7 +39,8 @@ experience works. State what remains unverified.
 
 When the requested finish includes a PR, use `file-pr` to file or update it,
 then `babysit-pr` rather than stopping at creation. Use `leaving-pr-comments`
-for replies. Merge or close the original PR only when authorized.
+for replies. Never merge in dazl (Instinct merges); close the original PR only when authorized. Keep model names out of the
+credit lines, as `file-pr` says.
 
 Report what you inherited, what you changed, how you verified it, how credit
 was preserved, and any remaining decision.
