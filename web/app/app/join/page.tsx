@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 const COPY: Record<string, string> = {
   no_token: 'Open the invitation link you were sent; it carries the code this page needs.',
   invalid_invite: 'This invitation link has expired, was already used, or was withdrawn. Ask for a new one.',
+  email_unverified: 'Confirm your email address first (Settings, Account), then open the invitation link again.',
   wrong_account: 'This invitation was sent to a different email address. Sign in with that account, then open the link again.',
 }
 

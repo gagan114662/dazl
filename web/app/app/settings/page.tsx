@@ -13,8 +13,9 @@ import UsagePanel from './usage-panel'
 import TeamPanel from './team-panel'
 import SessionsPanel from './sessions-panel'
 import ReauthGate from './reauth-gate'
+import AccountPanel from './account-panel'
 
-const SECTIONS = [['plan', 'Plan'], ['team', 'Team'], ['devices', 'Devices'], ['memory', 'Memory'], ['model-key', 'Model key'], ['connectors', 'Connectors'], ['enrichment', 'Enrichment'], ['gmail', 'Gmail'], ['autopilot', 'Autopilot'], ['replies', 'Replies']]
+const SECTIONS = [['plan', 'Plan'], ['account', 'Account'], ['team', 'Team'], ['devices', 'Devices'], ['memory', 'Memory'], ['model-key', 'Model key'], ['connectors', 'Connectors'], ['enrichment', 'Enrichment'], ['gmail', 'Gmail'], ['autopilot', 'Autopilot'], ['replies', 'Replies']]
 
 export default function Settings() {
   return (
@@ -26,6 +27,7 @@ export default function Settings() {
       </nav>
       <ReauthGate />
       <div id="plan" className="scroll-mt-6"><PlanPanel /></div>
+      <div id="account" className="scroll-mt-6"><AccountPanel /></div>
       <div id="team" className="scroll-mt-6"><TeamPanel /></div>
       <div id="devices" className="scroll-mt-6"><SessionsPanel /></div>
       <div id="memory" className="scroll-mt-6"><MemoryPanel /></div>

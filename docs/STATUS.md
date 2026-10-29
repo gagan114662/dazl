@@ -99,7 +99,9 @@ Updated by the builder on every branch. Newest first.
   membership tables, backfill, server-side resolution, role table) increment 2 (routes use tenantId, role check
   on every non-read handler) and increment 3 (invitations, members, switching, Settings > Team) in review; then
   #358 increment 1 (session inventory, revoke one/all, bounded reaper; docs/design/sessions.md) and
-  increment 2 (fresh authentication for secrets, billing and member changes) in review; next: #357.
+  increment 2 (fresh authentication for secrets, billing and member changes) in review;
+  #357 increment 1 (email verification, password reset that signs out everywhere, verified email to join a
+  workspace; docs/design/email-ownership.md) in review; next: change email, explicit Google linking, then #371.
 
 ## Next (in order, for the scheduled builder; nothing business- or place-specific)
 

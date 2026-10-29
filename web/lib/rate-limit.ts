@@ -23,6 +23,8 @@ export type Degraded = 'closed' | 'local'
 export const DEGRADED: Record<string, Degraded> = {
   // auth (reauth: password re-entry for a fresh session, the same brute-force surface as sign-in)
   reauth: 'closed', 'reauth-ip': 'closed',
+  // email ownership and recovery (#357): link guessing, and mail dazl sends
+  verify: 'closed', 'verify-send': 'closed', reset: 'closed', 'reset-ip': 'closed', 'reset-email': 'closed',
   'signin-ip': 'closed', 'signin-acct': 'closed', signup: 'closed', google: 'closed', 'google-cb': 'closed',
   // scans, trial admission and paid or shared providers
   scan: 'closed', icp: 'closed', icpurl: 'closed', qualify: 'closed', 'qualify-preview': 'closed', 'hiring-feed': 'closed',

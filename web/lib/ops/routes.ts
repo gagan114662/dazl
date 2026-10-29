@@ -2,13 +2,18 @@
 // caller's path text. test/request-log.test.ts fails when this list and the route files under app/ differ: add new routes here.
 export const ROUTE_TEMPLATES: readonly string[] = [
   '/api/auth/callback/google',
+  '/api/auth/email',
+  '/api/auth/email/send-verification',
   '/api/auth/google',
   '/api/auth/reauth',
+  '/api/auth/reset',
+  '/api/auth/reset/request',
   '/api/auth/sessions',
   '/api/auth/sessions/revoke-all',
   '/api/auth/signin',
   '/api/auth/signout',
   '/api/auth/signup',
+  '/api/auth/verify',
   '/api/billing/checkout',
   '/api/billing/portal',
   '/api/billing/webhook',

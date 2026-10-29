@@ -140,6 +140,17 @@ CREATE TABLE email_patterns (
       tenant_id TEXT NOT NULL, lead_id TEXT NOT NULL, site TEXT NOT NULL, format TEXT NOT NULL, support INTEGER NOT NULL,
       created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), PRIMARY KEY (lead_id, site));
 
+CREATE TABLE email_tokens (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    purpose TEXT NOT NULL CHECK (purpose IN ('verify', 'reset', 'change')),
+    email TEXT NOT NULL CHECK (length(email) <= 254),
+    token_hash TEXT NOT NULL UNIQUE,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    used_at INTEGER
+  );
+
 CREATE TABLE evidence_purge_audit (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
@@ -623,6 +634,15 @@ CREATE TABLE suppressions (
       PRIMARY KEY (tenant_id, email)
     );
 
+CREATE TABLE system_mail_outbox (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    to_email TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+
 CREATE TABLE tenant_competitors (
     tenant_id TEXT NOT NULL, name TEXT NOT NULL, position INTEGER NOT NULL,
     PRIMARY KEY (tenant_id, name)
@@ -708,7 +728,7 @@ CREATE TABLE users (
       password_hash TEXT NOT NULL,
       salt TEXT NOT NULL,
       created_at INTEGER DEFAULT (unixepoch())
-    , buyer_profile TEXT);
+    , buyer_profile TEXT, email_verified_at INTEGER);
 
 CREATE TABLE warm_user_paths (
       id           TEXT PRIMARY KEY,
@@ -778,6 +798,8 @@ CREATE INDEX csv_batches_user ON csv_batches (user_id, created_at);
 
 CREATE INDEX csv_rows_batch ON csv_rows (batch_id);
 
+CREATE INDEX email_tokens_user ON email_tokens (user_id, purpose);
+
 CREATE UNIQUE INDEX hiring_feed_crawl_company ON hiring_feed_crawl(tenant_id, company_key);
 
 CREATE INDEX hiring_feed_crawl_job ON hiring_feed_crawl(tenant_id, job_id);
@@ -835,6 +857,8 @@ CREATE UNIQUE INDEX sessions_public_id ON sessions (public_id);
 CREATE INDEX sessions_user ON sessions (user_id);
 
 CREATE INDEX source_reviews_tenant ON source_reviews(tenant_id,lead_id);
+
+CREATE INDEX system_mail_outbox_created ON system_mail_outbox (created_at);
 
 CREATE INDEX tenant_connections_tenant ON tenant_connections (tenant_id);
 
