@@ -9,7 +9,9 @@ Staging is the app on the same box as production, as a separate service. It has 
   - Connect needs no Google account.
   - A send makes no network call and gets a stub id.
   - Reply sync reads nothing.
-  - Google credentials are refused in the env file.
+  - Gmail's Google credentials (`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`) are refused in the env file.
+- **Sign in with Google** works only with a dedicated, identity-only staging OAuth client (see below); without one the
+  button reports "not available".
 - **Stripe is test mode only:** a live key is refused.
 - It has its **own database**, seeded with a demo account (`web/scripts/staging-seed.mts`):
   - a reviewed buyer profile;
@@ -18,7 +20,7 @@ Staging is the app on the same box as production, as a separate service. It has 
   - the stub Gmail connection.
 - **Error reports** are tagged `environment=staging`.
 
-Nothing in staging uses production data or keys: a fresh master key, test-mode Stripe and no Google credentials.
+Nothing in staging uses production data or keys: a fresh master key, test-mode Stripe, no Gmail credentials, and at most a dedicated staging sign-in client.
 
 ## Before installing: disk and safety checks (`ops/staging/deploy.sh`)
 - **Disk floor.** `MIN_FREE_BYTES` is 2 GiB by default, the host's floor. Every run of the 2-minute timer checks free space first:
@@ -103,6 +105,44 @@ Nothing in staging uses production data or keys: a fresh master key, test-mode S
    systemctl list-timers dazl-staging-deploy.timer
    ```
 
+## Sign in with Google (runbook, Instinct)
+Staging can sign people in with Google through its **own** OAuth client, used for identity only. Gmail stays stubbed:
+the Gmail client is never configured on staging, and the app refuses sign-in on staging while it is.
+1. In Google Cloud, create a new OAuth client (Web application) for staging only. Its consent screen asks only for
+   `openid`, `email` and `profile`. Its single authorized redirect URI is
+   `https://staging.dazl.ai/api/auth/callback/google`. Do not reuse production's client.
+2. In `/etc/dazl-staging/env` set `GOOGLE_SIGNIN_CLIENT_ID` (`….apps.googleusercontent.com`) and
+   `GOOGLE_SIGNIN_CLIENT_SECRET`. Leave `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` unset.
+3. `PROD_ENV_FILE=<production's env file> bash ops/staging/deploy.sh --check-env /etc/dazl-staging/env` prints
+   `env ok`. With a sign-in client set, the check needs production's env file, and refuses an id or secret equal to any
+   Google client there. Values are never printed.
+4. `systemctl restart dazl-staging.service` (no rebuild needed: the sign-in routes read their configuration on each
+   request and are never cached). Then `curl -sI https://staging.dazl.ai/api/auth/google` shows a 307 to
+   `accounts.google.com` with this client's id, `redirect_uri=https://staging.dazl.ai/api/auth/callback/google`,
+   `scope=openid email profile` and `cache-control: no-store`.
+
+## Stripe in test mode (runbook, Instinct)
+Staging takes test-mode Stripe only: `deploy.sh --check-env` refuses any `sk_live_` or `rk_live_` key, and staging never holds a live key. Set these four values in `/etc/dazl-staging/env`, all from the Stripe dashboard with **Test mode** switched on:
+
+| Variable | Value | Where it comes from |
+|---|---|---|
+| `STRIPE_SECRET_KEY` | `sk_test_…`, or a restricted `rk_test_…` key | Developers → API keys. A restricted key needs: Checkout Sessions **write**, Customer portal **write**, Subscriptions **read**. These are the only three calls the app makes: `POST /v1/checkout/sessions`, `POST /v1/billing_portal/sessions`, `GET /v1/subscriptions/:id`. |
+| `STRIPE_PRICE_PRO` | `price_…` | Product catalog → the Pro product → its recurring price, created in test mode. |
+| `STRIPE_WEBHOOK_SECRET` | `whsec_…` | Developers → Webhooks → Add endpoint `https://staging.dazl.ai/api/stripe`, with the events `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted` and `invoice.payment_failed`. Then reveal its signing secret. |
+| `PUBLIC_BASE_URL` | `https://staging.dazl.ai` | Already set. Checkout returns to `…/app/settings?billing=success` (or `=cancelled`), and the portal returns to `…/app/settings`. |
+
+In Settings → Billing → Customer portal (test mode), save the portal configuration once, or portal sessions fail.
+
+Then check, in this order:
+1. `PROD_ENV_FILE=<production's env file> bash ops/staging/deploy.sh --check-env /etc/dazl-staging/env` prints `env ok`.
+2. `systemctl restart dazl-staging.service`. Then `curl -s localhost:3200/api/ready` shows `"env":{"ok":true,"missing":0}`; a malformed value counts as missing, by count only.
+3. In a browser on `https://staging.dazl.ai`:
+   - Sign in, open Settings → **Upgrade to Pro**, and pay with Stripe's test card `4242 4242 4242 4242` (any future date, any CVC). Stripe test mode moves no money.
+   - Back on Settings the plan reads **Pro**, and `/api/usage` shows `"plan":"pro","scan_limit":null`. In Stripe → Webhooks → the endpoint, the delivery shows **200** with `{"result":"applied"}`.
+4. Settings → **Manage billing** opens the portal; cancel there (at period end): still Pro. Then cancel the subscription immediately from the Stripe dashboard: the plan reads **Free** with `billing_status` `canceled`, and the Free monthly scan limit applies again.
+
+The same chain is pinned in CI without Stripe by `web/test/stripe-flow.test.ts`, on SQLite and Postgres. That chain is checkout → signed webhook → plan → the scan limit → cancel at period end → deleted → Free and limited again.
+
 ## Verify (the done check)
 - `https://staging.dazl.ai` loads with the yellow **Staging - test data** banner.
 - `curl -sI https://staging.dazl.ai | grep -i x-robots-tag` shows `noindex, nofollow`.
@@ -110,6 +150,40 @@ Nothing in staging uses production data or keys: a fresh master key, test-mode S
 - Sign in as `demo@staging.dazl.test` with the password generated in step 3. Leads > Past scans > *Dental practices in Texas hiring a practice manager* shows the demo leads. Settings shows Gmail connected as `sender-…@staging.dazl.test`.
 - `curl -s https://staging.dazl.ai/api/health` reports the commit at the head of `main`. After the next merge it changes within about 2 minutes plus build time.
 - Locally, the same checks run in Chromium: `DAZL_ENV=staging npm run build && npm run test:smoke:staging` (in `web/`).
+
+## Send-safety scenarios (runbook, Instinct; issue #362)
+`web/scripts/staging-send-scenarios.mts` drives the app's real send, sequence, reply-sync, unsubscribe and uncertain-send code through six scenarios and writes `evidence.json`:
+
+| scenario | proves |
+|---|---|
+| owned-inbox-handoff | an approved message addressed to the owned staging inbox is handed to the provider interface exactly once. The recorded MIME has the approved subject; the body before the footer is exactly the approved words; the footer has the sender's name, postal address and an unsubscribe link equal to `List-Unsubscribe` that resolves to this message. A message edited after approval is refused (approval hash). |
+| reply-stop | a reply in the thread stops the sequence, so step 2 is never sent. A control sequence with no reply does send step 2 at the same time. |
+| opt-out | the unsubscribe link from the sent message suppresses the address for that tenant only; another tenant can still send to it |
+| bounce | a mailer-daemon 5.x.x bounce suppresses the address, and the next message is not sent |
+| uncertain | a send with an unknown outcome is marked uncertain and never retried, and blocks the tenant's other sends until resolved |
+| restart | a process killed inside the provider call leaves the claim held. A fresh process reaps it as uncertain, makes no second provider call, and blocks the tenant. |
+
+**Sending stays off.** Every scenario stops at a **recorded hand-off** to the provider interface. Nothing is delivered to any inbox, and the evidence is not proof of delivery.
+- The only transport is a recorder (`transport.log`). It returns fake ids and refuses any recipient outside a fixed allowlist of reserved `@staging.dazl.test` addresses.
+- The script runs under the network fence, so any non-loopback connection throws. Gmail token and thread reads come from an in-process stub, and the master key is generated per run.
+- It uses its own new SQLite file in `--out`. It refuses to run without `DAZL_ENV=staging`, onto a non-empty directory, or inside `DB_PATH`'s or `PROD_DB_PATH`'s directory. The staging and production databases are never opened.
+
+Run it on the staging box after a deploy, as the service user, from the live release:
+
+```bash
+sudo install -d -o dazl-staging -m 750 /var/lib/dazl-staging-scenarios
+cd /srv/dazl-staging/current/web && sudo -u dazl-staging env DAZL_ENV=staging DB_PATH=/var/lib/dazl-staging/app.db npm run -s staging:scenarios -- --out /var/lib/dazl-staging-scenarios/$(date -u +%Y%m%dT%H%M%SZ)
+```
+
+Exit codes: 0 means all passed, 1 means a scenario failed (named), 2 means it refused to run. To attach the evidence to #362, copy `evidence.json` to the issue. It records the commit, time, each check and the recorded recipients, and holds no secrets.
+
+**Before any real send (not built; owner decisions):**
+- A real owned-inbox send through a real provider needs a sending identity approved by the owner: a dedicated nonproduction Gmail account, and its own staging-only OAuth client with the send scope.
+- It needs the exact recipient addresses, which must be inboxes the owner controls.
+- It needs the exact approved words.
+- It needs a separately reviewed change that adds a real transport behind an explicit staging flag and that allowlist.
+
+Until then `deploy.sh` keeps refusing Google send credentials on staging, and the staging Gmail stub sends nothing.
 
 ## Day to day
 - **Deploys** are automatic. `journalctl -u dazl-staging-deploy` shows each one. A build or health-check failure keeps the previous release serving, and the journal ends with `rolling back`.

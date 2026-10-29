@@ -14,7 +14,9 @@ import { getDb, sqliteDb } from '../db/client.ts'
 import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, verifyEvidence, type Candidate } from './evidence.ts'
-import { inferIcp, normalizeIcp, type Icp } from './icp.ts'
+import { fallbackIcp, inferIcp, normalizeIcp, type Icp } from './icp.ts'
+import { isMissingSchema, draftOffer } from './play-offer-text.ts'
+import { readTenantOffer } from '../outreach/play-memory.ts'
 import { collectAdvanced, xSearchQuery } from '../advanced/index.ts'
 import { markWatchLeads } from '../watch.ts'
 import type { AdvPlatform } from '../advanced/config.ts'
@@ -33,10 +35,11 @@ import { isJobPage, needsEventBeyondHiring } from '../search/page-class.ts'
 import { extractionNote } from './extraction-note.ts'
 import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { crawlJob, defaultGet, sitecrawlEnabled } from '../connectors/sitecrawl.ts'
-import { anthropicCountTokens, guardProvider, ownerPool, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
+import { anthropicCountTokens, guardProvider, ownerPool, reserveAllUsd, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
+import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
 import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './verify-provenance.ts'
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
-import { getMemory, isExcluded, memoryPromptBlock } from '../memory.ts'
+import { getMemory, isExcluded, memoryPromptBlock, type Memory } from '../memory.ts'
 import { enrichJobSignals } from '../signals/index.ts'
 import { applySalesHiringGate, failClosedSalesHiring, persistHeldState, type QuoteEvidence, type HeldLead } from './sales-hiring-gate.ts'
 import { beginEnrichment, endEnrichment } from './enrichment.ts'
@@ -152,9 +155,22 @@ export type Judge = (c: LeadDraft, passage: string) => Promise<Judgement>
 export type PageFetcher = (url: string) => Promise<Page | FetchFail | null>
 
 export interface ReviewLead extends LeadDraft { review_reason: string }
-// The seller's own offer text, read from the same account row the profile page writes. A missing column or row means no block.
-export function offerBlockFor(db: Database.Database, userId: string): string {
-  try { return sellerOfferBlock((db.prepare('SELECT sells FROM users WHERE id = ?').get(userId) as { sells?: string } | undefined)?.sells) } catch { return '' }
+// The seller's own offer text for THIS play (lib/scan/play-offer.ts): the offer reviewed for the play, else the one it
+// was created with, else the tenant's selling context (Memory positioning, else the profile offer). A play whose offer
+// is contested gets no offer block (scoring never assumes one). A missing column or row means no block; any other read
+// failure throws, so scoring never runs on a guessed offer.
+export function offerBlockFor(db: Database.Database, userId: string, jobId?: string): string {
+  try {
+    const tenant = readTenantOffer(db, userId)
+    let play: { offer: string | null; seller: string | null; query: string | null } | undefined
+    try { play = jobId ? db.prepare('SELECT offer, seller, query FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, userId) as typeof play : undefined } catch (e) { if (!isMissingSchema(e)) throw e /* else: a database from before per-play offers */ }
+    return sellerOfferBlock(draftOffer(play, tenant).offer)
+  } catch (e) { if (isMissingSchema(e)) return ''; throw e } // unreadable: scoring stops rather than guess the offer
+}
+// What buyer-fit scoring is told about the seller for one play: the tenant's Memory WITHOUT its positioning (a global
+// offer that may not be this play's), then this play's offer block, which is the only statement of what is sold.
+export function scoringSellerContext(db: Database.Database, userId: string, jobId: string, memory: Memory | null): string {
+  return memoryPromptBlock(memory ? { ...memory, positioning: '' } : null) + offerBlockFor(db, userId, jobId)
 }
 export interface VerifyOutcome { leads: VerifiedLead[]; review: ReviewLead[]; dropped: Record<string, number>; quotes?: Map<string, QuoteEvidence[]> } // quotes: every VERIFIED candidate's quote by company key, even when a duplicate candidate was the one kept; the sales-hiring gate reads them only through its identity-compatibility check
 
@@ -512,13 +528,13 @@ async function tinyfishCompany(db: Database.Database, job: Job, domain: string, 
   ]
   const hits: import('../search/tinyfish.ts').SearchHit[] = []
   for (const { q, date } of queries) {
-    const r = await tfSearch(db, job.user_id, q, date ? { afterDate: after } : {}, spent, fetchImpl ? { fetchImpl } : {})
+    const r = await tfSearch(db, job.user_id, q, date ? { afterDate: after } : {}, spent, { ...(fetchImpl ? { fetchImpl } : {}), charge: trialCharges.get(job) })
     if (!r.ok) { if (hits.length === 0) return null; break }
     hits.push(...r.hits)
   }
   if (hits.length === 0) return null
   const urls = [...new Set(hits.map(h => h.url))].slice(0, 8)
-  const f = await tfFetch(db, job.user_id, urls, spent, fetchImpl ? { fetchImpl } : {})
+  const f = await tfFetch(db, job.user_id, urls, spent, { ...(fetchImpl ? { fetchImpl } : {}), charge: trialCharges.get(job) })
   const items = toEvidence(hits, f.ok ? f.pages : [])
   if (items.length === 0) return null
   const text = await complete.call(provider, key, buildSourcePrompt(`The company at https://${domain}`, { company_domain: domain }, items), fetchImpl, 3000)
@@ -621,7 +637,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   const hits: Awaited<ReturnType<typeof tfSearch>> extends infer R ? (R extends { ok: true; hits: infer H } ? H : never) : never = []
   // Without location/language TinyFish searches as US/English; the profile's country and language target the buyer's market.
   const geo = { ...(icp.country ? { location: icp.country } : {}), ...(icp.language ? { language: icp.language } : {}) }
-  for (const query of q) { const r = await tfSearch(db, job.user_id, query, { afterDate: after, ...geo }, spent, diag ? { trace: diag.trace } : {}); if (!r.ok) { if (hits.length === 0) return null; break } hits.push(...r.hits) }
+  for (const query of q) { const r = await tfSearch(db, job.user_id, query, { afterDate: after, ...geo }, spent, { ...(diag ? { trace: diag.trace } : {}), charge: trialCharges.get(job) }); if (!r.ok) { if (hits.length === 0) return null; break } hits.push(...r.hits) }
   // Free news search beside TinyFish (lib/search/news.ts): the same queries minus site: restrictions, the ICP's market.
   if (newsHttp && hits.length > 0) { const seen = new Set(hits.map(h => h.url)); for (const h of (await newsSearch(newsHttp, q.filter(x => !/site:/i.test(x)), icp.language)).hits) if (!seen.has(h.url)) { seen.add(h.url); hits.push(h); diag?.newsUrls?.push(h.url) } }
   if (hits.length === 0) {
@@ -638,7 +654,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   const eventBeyondHiring = needsEventBeyondHiring(icp.signals, job.query ?? '')
   const fetchRank = fetchRankFor(hitByUrl, icp.window_days ?? 365, eventBeyondHiring)
   const urls = pickFetchUrls(hits.map(h => h.url), tfLimits().fetchesPerScan, fetchRank) // exact duplicates removed, breadth first by host, nothing excluded
-  const f = await tfFetchMany(db, job.user_id, urls, spent, diag ? { trace: diag.trace } : {})
+  const f = await tfFetchMany(db, job.user_id, urls, spent, { ...(diag ? { trace: diag.trace } : {}), charge: trialCharges.get(job) })
   if (diag?.tfTextUrls && f.ok) diag.tfTextUrls.push(...f.pages.map(p => p.url)) // verify_provenance: pages TinyFish had text for
   if (diag && f.ok) diag.held = HeldText.seal(`${job.id}:${job.attempts}`, urls, f.pages) // sealed for THIS attempt: only text already fetched, never re-fetched
   if (diag) { // run report: every result URL, whether it was selected for fetching and whether TinyFish returned text for it
@@ -753,7 +769,33 @@ export interface RunDeps {
   // newsHttp: the free news search's own HTTP (lib/search/news.ts), separate from the per-scan sources' sourceHttp.
   first5?: boolean; autopilot?: typeof runAutopilot; sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; salesHiringGate?: typeof applySalesHiringGate; jobBudgetMs?: number; clock?: () => number }
 
+// A free-trial scan's charge for each TinyFish call on dazl's key (lib/billing/trial-budget.ts), set while that scan runs.
+const trialCharges = new WeakMap<Job, (kind: 'search' | 'fetch', units: number) => void>()
+
+// A free-trial scan whose budget refused a paid step (lib/billing/trial-budget.ts): it stops with what it has. Nothing
+// it found counts as checked, because a required check may not have run: every candidate and every lead it had verified
+// is kept in the review lane with the reason, and the job says why it stopped.
+function finishTrialBudget(db: Database.Database, job: Job, partial: { candidates: LeadDraft[] | null; outcome: VerifyOutcome | null }, ledger: SourceRunLedger): 'done' {
+  const asReview = (l: LeadDraft): ReviewLead => ({ ...l, contact: null, review_reason: TRIAL_BUDGET_REASON })
+  const o = partial.outcome
+  const review = o ? [...o.leads.map(asReview), ...o.review] : (partial.candidates ?? []).map(asReview)
+  if (!finish(db, job, 'done', TRIAL_BUDGET_REASON, { leads: [], review, dropped: o?.dropped ?? {} }, (o ? o.leads.length + o.review.length : partial.candidates?.length) ?? 0, ledger)) holdTrialBudget(db, job)
+  return 'done'
+}
+// The scan already saved its leads when the budget refused (or a refusal was swallowed by a step that only adds
+// candidates): its source-checked leads move to the review lane, since later required checks may not have run on them.
+function holdTrialBudget(db: Database.Database, job: Job): void {
+  db.transaction(() => {
+    const own = db.prepare("SELECT 1 FROM scan_jobs WHERE id = ? AND attempts = ? AND status = 'done'").get(job.id, job.attempts)
+    if (!own) return
+    const moved = db.prepare('UPDATE leads SET review_reason = ? WHERE scan_job_id = ? AND review_reason IS NULL AND human_confirmed_at IS NULL').run(TRIAL_BUDGET_REASON, job.id).changes
+    db.prepare('UPDATE scan_jobs SET error = ?, verified = 0, needs_review = coalesce(needs_review, 0) + ? WHERE id = ?').run(TRIAL_BUDGET_REASON, moved, job.id)
+  }).immediate()
+}
+
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
+  const partial: { candidates: LeadDraft[] | null; outcome: VerifyOutcome | null } = { candidates: null, outcome: null } // what a trial scan stopped by its budget keeps
+  let trialGuard: SpendGuard | null = null
   const ledger = new SourceRunLedger()
   ledger.attach(db, job.id, job.attempts)   // live per-source progress for the status route
   const budget = job.csv_domain ? null : deps.jobBudgetMs ?? scanJobBudgetMs()
@@ -777,9 +819,15 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
   try {
     const jobMax = job.csv_domain ? null : parseRunBudget(job.run_budget)?.max_usd ?? null
     const ownerMax = job.csv_domain ? null : ownerMaxUsd(job.user_id)
+    // A free-trial scan runs on dazl's keys: every paid step counts against its reserve (lib/billing/trial-budget.ts). Its
+    // own budget, if it set one, can only lower that limit. Without the trial's caps and prices it does not run.
+    const trial = job.funded_by === 'trial' ? trialCaps() : null
+    if (job.funded_by === 'trial' && !trial) { finish(db, job, 'failed', 'trial_unavailable', null, null, ledger); return 'failed' }
     // The job's guard starts from what this job already reserved (saved per call), so a retry, a re-claimed attempt or a
     // restart cannot spend the limit again. The owner pool is in memory only and starts empty after a restart.
-    const jobGuard = jobMax !== null ? new SpendGuard(jobMax, job.spend_reserved_usd ?? 0) : null
+    const guardMax = trial ? Math.min(trial.reserveUsd, jobMax ?? Infinity) : jobMax
+    const jobGuard = guardMax !== null ? new SpendGuard(guardMax, job.spend_reserved_usd ?? 0) : null
+    if (jobGuard && trial) { jobGuard.label = TRIAL_BUDGET_REASON; trialGuard = jobGuard }
     if (jobGuard) jobGuard.persist = usd => {
       // Same job, same tenant, same attempt, still running: exactly one row must change, or the call is refused.
       const r = db.prepare("UPDATE scan_jobs SET spend_reserved_usd = ? WHERE id = ? AND user_id = ? AND attempts = ? AND status = 'running'").run(usd, job.id, job.user_id, job.attempts)
@@ -791,8 +839,16 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // refused request is not recorded as sent. Behaviour is unchanged: same calls, same text, same errors.
     const rawProviders = deps.providers ?? providers
     const baseProviders = { ...rawProviders, [vendor]: meterProvider(rawProviders[vendor], c => ledger.model(c)) } as Record<Vendor, Provider>
-    const providers_ = spendLimit === null ? baseProviders : { ...baseProviders, [vendor]: guardProvider(baseProviders[vendor], spendGuards, vendor === 'anthropic' ? anthropicCountTokens : undefined) }
-    if (spendLimit !== null) deps = { ...deps, creditEnrichment: false } // a budgeted run adds no other paid enrichment
+    // A trial scan reserves each paid step's maximum (lib/billing/trial-budget.ts): model calls by their prompt's bytes,
+    // not the token counter's estimate, and the model's own web search, whose cost has no bound, is refused. Its web
+    // research is TinyFish, charged per call below. A run with its own max_usd refuses research too (run-budget.ts).
+    const providers_ = spendLimit === null ? baseProviders : { ...baseProviders, [vendor]: guardProvider(baseProviders[vendor], spendGuards, vendor === 'anthropic' && !trial ? anthropicCountTokens : undefined) }
+    if (jobMax !== null || ownerMax !== null || trial) deps = { ...deps, creditEnrichment: false } // a budgeted run adds no other paid enrichment
+    // A trial scan makes no paid call outside its guard: no fallback to the model's web search (a trial with nothing
+    // from TinyFish or the free news search ends as stopped, not empty), and no people search, advanced sources or
+    // autopilot (TinyFish or other paid calls the trial charge does not see).
+    if (trial) deps = { ...deps, paidFallback: false }
+    if (trial) trialCharges.set(job, (kind, units) => reserveAllUsd(spendGuards, units * (kind === 'search' ? trial.tinyfishSearchUsd : trial.tinyfishFetchUsd)))
     // Narrowing flags of a query job's own budget (paid_fallback / credit_enrichment / judge = false). They only ever switch a paid
     // surface off; before this the query path honoured max_usd but ignored the flags.
     if (!job.csv_domain) deps = budgetDeps(deps, parseRunBudget(job.run_budget))
@@ -831,6 +887,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         ledger.record('search:tinyfish', 'started')
         assertOwned(db, job)
         leads = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl, diag, newsOn ? deps.newsHttp ?? safeGet : undefined)
+        if (leads?.length) partial.candidates = leads
         ledger.record('search:tinyfish', leads === null ? 'unavailable' : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:tinyfish', leads)
         // Leads whose page GDELT surfaced carry the GDELT attribution (its terms require citation and a link).
@@ -858,6 +915,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         assertOwned(db, job)
         const note = { searched: false, hits: 0, attempted: 0, failed: 0, malformed: 0 }
         leads = await newsLeads(job, icpForSources, providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl, note)
+        if (leads?.length) partial.candidates = leads
         // 'empty' only when the news search ran and returned zero hits; hits with no usable page evidence, or no query to run, stay 'unavailable' (unknown, never a zero).
         ledger.record('search:news', newsStatus(leads, note), note.searched ? note.hits : null)
         if (leads) { ledger.candidates('search:news', leads); ledger.candidates(NEWS_SOURCE, leads) }
@@ -869,12 +927,15 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       if (leads && leads.length === 0) leads = null
     }
     if (!leads) {
+      // a trial whose budget refused a step stops with what it has (finishTrialBudget, via the catch below)
+      if (trialGuard?.refused) throw new SpendRefused(TRIAL_BUDGET_REASON)
       // paid_fallback=false: stop honestly as a budget stop (not "nothing found") instead of web-search research.
       if (deps.paidFallback === false) { finish(db, job, 'failed', 'budget_stopped', null, 0, ledger); return 'failed' }
       ledger.record(`search:${vendor}`, 'started')
       assertOwned(db, job)
       const res = await providers_[vendor].research(key, prompt, deps.fetchImpl)
       leads = parseLeads(res.text, res.citedUrls)
+      if (leads?.length) partial.candidates = leads
       if (leads && leads.length > 0 && complete && deps.ground !== false) {
         assertOwned(db, job)
         const g = await groundLeads(providers_[vendor], key, job.query ?? `${job.business_name} ${job.industry} ${job.location}`, leads, fetchP, deps.fetchImpl)
@@ -882,6 +943,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       }
     }
     if (!leads) throw new ProviderError('retry', 'bad_output')
+    partial.candidates = leads // the same array: candidates added below are kept too
     if (ledger.has(`search:${vendor}`)) { ledger.record(`search:${vendor}`, leads.length ? 'ok' : 'empty'); ledger.candidates(`search:${vendor}`, leads) }
     // Optional per-scan sources: public evidence is collected without any key or DB access, then the user's own model
     // turns it into candidates. They go through the same verifier as web-search leads.
@@ -925,7 +987,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         }
         // Advanced connectors (opt-in tier, own flag, consent and session). A page behind a login is never
         // verified by us: it goes to "needs review" as is, shown to the user and never emailed.
-        if (sel.advanced?.length) {
+        if (sel.advanced?.length && !trial) {
           assertOwned(db, job)
           const adv = await collectAdvanced(db, job.user_id, job.id, sel.advanced as AdvPlatform[], job.query!, { master: deps.master, worker: deps.advancedWorker, xQuery: xSearchQuery(icpForSources) || undefined })
           for (const collector of new Set(adv.map(i => i.source))) ledger.record(collector, 'ok', adv.filter(i => i.source === collector).length)
@@ -949,7 +1011,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // skips the sources block entirely, and the collector never ran). Same consent, session
     // and rate budget as the Reddit fetcher; posts become candidates like any other evidence
     // and keep their competitor tag so the badge can be applied after verification.
-    if (complaints.length === 0 && job.query && icpForSources && complete) {
+    if (complaints.length === 0 && job.query && icpForSources && complete && !trial) {
       try {
         assertOwned(db, job)
         complaints = await collectCompetitorComplaints(db, job.user_id, job.id, { master: deps.master, worker: deps.advancedWorker })
@@ -976,7 +1038,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     let datesFinished: Awaited<ReturnType<typeof finishUndatedLeads>> = []
     let fallbackNotes: FallbackNote[] = []
     let recoveryTargets: FallbackTarget[] = []; let recoveryRan: { searched: boolean; why?: string } = { searched: false, why: 'not needed' }
-    let outcome = await verifyLeads(leads, fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [])
+    let outcome = partial.outcome = await verifyLeads(leads, fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [])
     const verifiedUrls = leads.map(l => l.source_url) // verify_provenance
     // A candidate whose OWN page blocks us is held with nothing readable. Look for the same company on other press (free news search): its pages go through the same extraction and verifier, and a
     // verified candidate for that company replaces the held row. Bounded (3 companies, one search+extraction), no extra model call for a run that disabled the paid fallback.
@@ -1077,7 +1139,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // per scan; a scoring failure never fails the scan - but it no longer passes the raw
     // candidate score through as if it were a grade. Ungraded leads are held at fit 0.
     if (complete && outcome.leads.length > 0 && (deps.score !== false)) {
-      const icpText = (icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`) + memoryPromptBlock(memory ?? null) + offerBlockFor(db, job.user_id)
+      const icpText = (icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`) + scoringSellerContext(db, job.user_id, job.id, memory ?? null)
       assertOwned(db, job)
       const grades = await scoreLeads(providers_[vendor], key, icpText, outcome.leads, deps.fetchImpl)
       if (grades) {
@@ -1130,6 +1192,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // companies whose own site lists nobody. Never throws; never an address; kill switch PEOPLE_SEARCH_ENABLED=0.
     if (deps.first5) trace.note('people_search', 'skipped', 'first5: free search sources only; people search is a paid TinyFish search')
     else if (process.env.PEOPLE_SEARCH_ENABLED === '0') trace.note('people_search', 'skipped', 'PEOPLE_SEARCH_ENABLED=0')
+    else if (trial) trace.note('people_search', 'skipped', 'a free trial scan makes no search outside its budget')
     else try { const n = await findPeople(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl }); trace.note('people_search', n > 0 ? 'ok' : 'attempted_no_result', n > 0 ? null : 'no profile results named a role-matching person at a verified company, or no search key/quota', { people_stored: n }) } catch (e) { trace.note('people_search', 'failed', e instanceof Error ? e.message : 'error') }
     // Contacts refused for disagreeing with the lead (wrong place / wrong domain) leave nothing reachable: regrade the lead from the evidence actually kept.
     try { regradeFromKeptContacts(db, job.user_id, job.id) } catch (e) { console.error('regrade from kept contacts failed', e instanceof Error ? e.message : 'error') }
@@ -1138,7 +1201,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     if (!(complete && deps.score !== false)) trace.note('buyer_fit', 'skipped', deps.score === false ? 'scoring disabled for this run' : 'no model provider for this run')
     if (complete && deps.score !== false) {
       try {
-        const icpText = (icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`) + offerBlockFor(db, job.user_id)
+        const icpText = (icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`) + offerBlockFor(db, job.user_id, job.id)
         await applyBuyerFitGate(db, job.id, providers_[vendor], key, icpText, { fetchPage: deps.fetchPage, fetchImpl: deps.fetchImpl }); trace.note('buyer_fit', 'ok')
       } catch (e) { const msg = e instanceof Error ? e.message : 'error'; let capped = 0; try { capped = failClosedBuyerFit(db, job.id, msg) } catch { /* the cap is best effort */ } trace.note('buyer_fit', 'failed', `${msg} - ${capped} hiring lead(s) capped below the qualified bar`); console.error('buyer-fit gate failed', msg) }
     }
@@ -1183,11 +1246,17 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     endEnrichment(db, job.id, job.attempts)
     // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.
     // A job that carries a budget never starts autopilot: its model drafting and sends are outside the budget (run-budget.ts).
-    if (!parseRunBudget(job.run_budget)) try { await (deps.autopilot ?? runAutopilot)(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
+    if (!parseRunBudget(job.run_budget) && !trial) try { await (deps.autopilot ?? runAutopilot)(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
+    if (trialGuard?.refused) holdTrialBudget(db, job)
     return 'done'
     } finally { endEnrichment(db, job.id, job.attempts); ledger.flushModelCalls(db, job.id, job.attempts) }
   } catch (e) {
+    if (trialGuard && e instanceof SpendRefused && (e.reason === TRIAL_BUDGET_REASON || trialGuard.refused)) return finishTrialBudget(db, job, partial, ledger)
     return failOrRetry(db, job, e, ledger)
+  } finally {
+    trialCharges.delete(job)
+    // the run's paid work is over (scan, enrichment, buyer fit): the trial ledger may count what it recorded
+    if (job.funded_by === 'trial') await settleTrialReservation(db, job.id, job.attempts)
   }
 }
 
@@ -1305,9 +1374,9 @@ export async function kickRunner(db: Database.Database, deps: RunDeps = {}): Pro
 // Preview for the "what are you looking for" form: infers the ICP with the tenant's own key
 // so the user can read and edit it before the scan runs.
 export async function previewIcp(db: Database.Database, tenantId: string, query: string, deps: Pick<RunDeps, 'providers' | 'fetchImpl' | 'master'> = {}, ip?: string): Promise<{ icp: Icp; inferred: boolean } | { error: 'no_api_key' | 'key_rejected' | 'trial_key_invalid' | 'key_unreadable' }> {
-  let vendor = pickVendor(db, tenantId)
+  const vendor = pickVendor(db, tenantId)
   const read = vendor ? readKey(db, tenantId, vendor, deps.master) : { key: null, unreadable: false }
-  let key = read.key
+  const key = read.key
   // Profile generation happens before any job exists: its model request is recorded by tenant (job_id null), including a
   // failed one, so the first paid step of a customer run is not invisible. Same call, same result.
   const metered = async (v: Vendor, q: string) => {
@@ -1316,18 +1385,9 @@ export async function previewIcp(db: Database.Database, tenantId: string, query:
     finally { writeModelCalls(db, tenantId, null, 0, calls) }
   }
   if ((!vendor || !key) && ip !== undefined && trialStatus(db, tenantId, ip).funded) {
-    // A preview is cheap and does not consume one of the account's trial scans; only starting
-    // the scan does. It still needs the trial to be live and the account under its caps.
-    const op = operatorKey()
-    vendor = op?.vendor ?? null
-    key = op?.key ?? null
-    if (!vendor || !key) return { error: 'no_api_key' }
-    try {
-      return await metered(vendor, query)
-    } catch {
-      // A trial user has no key of their own - never blame them for the server's key failing.
-      return { error: 'trial_key_invalid' }
-    }
+    // No model call on dazl's key outside a trial scan's budget (lib/billing/trial-budget.ts): a trial account gets the
+    // plain profile from its own words to read and edit, and the scan infers the full one inside its budget.
+    return { icp: fallbackIcp(query), inferred: false }
   }
   // An unreadable stored key is not "no key" - say which, or the user re-enters a good
   // key into a slot that stays broken.

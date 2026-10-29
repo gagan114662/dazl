@@ -24,9 +24,11 @@ export async function createJob(db: Db, userId: string, input: ScanInput, runBud
 
 // icp is a JSON string the user already saw; null means "infer it when the job runs". run_budget is part of the
 // INSERT, so a job is never visible to a runner without its budget.
-const QUERY_JOB_SQL = "INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, icp_inferred, sources, seller, watch_id, run_budget, created_at) VALUES (?, ?, ?, '(from request)', '-', ?, ?, ?, ?, ?, ?, ?, ?)"
-const queryJobParams = (id: string, userId: string, input: QueryInput, now: number): Param[] =>
-  [id, userId, input.query.slice(0, 150) || '-', input.query, input.icp ?? null, input.icp ? 0 : null, input.sources ?? null, (input.seller ?? '').trim().slice(0, 300) || null, input.watchId ?? null, input.runBudget ?? null, now]
+const QUERY_JOB_SQL = "INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, icp_inferred, sources, seller, offer, offer_set_at, watch_id, run_budget, created_at) VALUES (?, ?, ?, '(from request)', '-', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+const queryJobParams = (id: string, userId: string, input: QueryInput, now: number): Param[] => {
+  const offer = (input.offer ?? '').replace(/\s+/g, ' ').trim().slice(0, 150) || null
+  return [id, userId, input.query.slice(0, 150) || '-', input.query, input.icp ?? null, input.icp ? 0 : null, input.sources ?? null, (input.seller ?? '').trim().slice(0, 300) || null, offer, offer ? now : null, input.watchId ?? null, input.runBudget ?? null, now]
+}
 export async function createQueryJob(db: Db, userId: string, input: QueryInput, now = nowS()): Promise<string> {
   const id = randomBytes(12).toString('hex')
   await db.run(QUERY_JOB_SQL, queryJobParams(id, userId, input, now))

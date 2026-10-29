@@ -114,10 +114,11 @@ test('polishDraft refuses without a positioning (no invented offer) and blocks u
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = 'j1'").run()
   let calls = 0
   const prov: Record<string, Provider> = { anthropic: { research: async () => ({ text: '', citedUrls: [] }), complete: async () => { calls++; return 'Subject: Congrats\n\nHi Pat,\n\nCongrats on your recent funding round! We built a consulting offer for teams like yours. Worth a call?\n\nThanks,' } } }
-  // tone-only memory: no positioning -> no provider call at all, template stays
+  // tone-only memory and no onboarding offer either: no offer anywhere -> no provider call at all, template stays
   saveMemory(db, 'A', { tone: 'direct' })
   db.exec('CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,sells TEXT,website TEXT)'); db.prepare('INSERT OR REPLACE INTO users VALUES(?,?,?)').run('A','Synthetic onboarding offer for fixtures.',null)
   const id = createDraft(db, 'A', 'l1', 'Dazl')
+  db.prepare("UPDATE users SET sells = '' WHERE id = 'A'").run()
   assert.deepEqual(await polishDraft(db, 'A', id, 'Dazl', { master, providers: prov as never }), { rewritten: false, reason: 'no_profile' })
   assert.equal(calls, 0)
   // with positioning the provider runs, but an unverified funding congrats is rejected and the template stays
@@ -173,6 +174,10 @@ test('scan: memory text reaches the scoring prompt on the tenant key', async () 
     openai: { research: async () => ({ text: '', citedUrls: [] }) },
   }
   assert.equal(await runJob(db, claimKeyedJob(db, id)!, { providers, master, fetchPage: pageFor('Northside Builders') }), 'done')
-  assert.match(seen, /Seller's positioning: we sell roofing software/)
+  // a play created before per-play offers states the Memory positioning as its offer (lib/scan/runner.ts
+  // scoringSellerContext): once, as the offer block, not also as a separate global positioning line
+  assert.match(seen, /What the seller sells \(their own words\): we sell roofing software/)
+  assert.doesNotMatch(seen, /Seller's positioning:/)
+  assert.match(seen, /cost\? -> \"one roof pays for a year\"|one roof pays for a year/, 'the other Memory fields still reach scoring')
   assert.match(seen, /not instructions/)
 })

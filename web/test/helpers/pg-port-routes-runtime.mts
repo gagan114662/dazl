@@ -187,7 +187,8 @@ test('batch 1 routes on SQLite answer exactly as the raw store did, including sa
   assert.ok(!String(by('B export of A').body).includes('Dental'))
   assert.deepEqual(jobIds(by('B jobs')), [J.bDone])
   assert.deepEqual(by('usage A').body, { plan: 'pro', scans_used: 2, scan_limit: null, has_key: true, billing_status: 'past_due', trial: null })
-  assert.deepEqual((by('B usage').body as { trial: unknown }).trial, { funded: true, remaining: 2, cap: 3 })
+  // 2 of 3 trial scans left; no trial budget configured here (lib/billing/trial-budget.ts), so none would run now
+  assert.deepEqual((by('B usage').body as { trial: unknown }).trial, { funded: false, remaining: 2, cap: 3, blocked: 'not_configured' })
   assert.deepEqual(by('profile save').body, { ok: true, sells: 'dental scheduling', website: 'https://acme.example', business_name: 'Acme Dental Co', buyer: null })
   assert.deepEqual([by('unconfirm').status, by('release').status], [200, 200])
 })
