@@ -107,6 +107,8 @@ export function nextAction(c: Omit<Campaign, 'next'>, undrafted: number): Campai
   const setup = c.outreach.draftsSetup + c.outreach.approvedSetup
   if (setup > 0) return { label: `Add your sender details and connect Gmail to continue ${plural(setup, 'email', 'emails')}`, href: '/app' }
   if (c.reply.interested > 0) return { label: `Answer ${plural(c.reply.interested, 'interested reply', 'interested replies')}`, href: '/app/inbox' }
+  // Every lead this search found has been rejected: none passed, whatever the scan recorded when it finished.
+  if (c.discovery.leads > 0 && c.qualification.rejected >= c.discovery.leads) return { label: 'None passed: every lead was rejected. Try a broader search', href: '/app/leads' }
   if (undrafted > 0) return { label: `Approve ${plural(undrafted, 'lead', 'leads')} to draft emails`, href: leadsHref }
   if (c.qualification.held > 0) return { label: `Review the source of ${plural(c.qualification.held, 'lead', 'leads')} to confirm timing`, href: leadsHref }
   const heldEmails = c.outreach.draftsHeld + c.outreach.approvedHeld

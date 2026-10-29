@@ -35,6 +35,10 @@ job('A', 'c'.repeat(24), 'Orthodontists in Austin', null); end('c'.repeat(24), '
 job('A', 'e'.repeat(24), 'Legacy search', 1); lead('e'.repeat(24), 'g1', { confidence: 90, excerpt: null, contact: 'hello@legacy.example' }); end('e'.repeat(24))
 // 5. A technical failure (the AI provider rejected the key): a different state from 3, with its own next step.
 job('A', 'f'.repeat(24), 'Plumbers in Leeds', null); end('f'.repeat(24), 'failed', 'key_rejected')
+// 6. #350 (synthetic ids and names): the scan recorded 1 found and 1 source-checked; the UI test then rejects that lead.
+const DENT = '7'.repeat(24)
+job('A', DENT, 'Dental practices in a big city - opening a new location', 1); lead(DENT, '8'.repeat(24)); end(DENT)
+db.prepare('UPDATE scan_jobs SET verified = 1, needs_review = 0, dropped = 0 WHERE id = ?').run(DENT)
 // B's search must never appear for A.
 job('B', 'd'.repeat(24), 'B-ONLY SEARCH', 3); lead('d'.repeat(24), 'b1', { contact: 'x@b.example' }); end('d'.repeat(24)); msg('B', 'b1', 'draft')
 db.close()
