@@ -52,3 +52,11 @@ test('a reply held for review (uncertain, thread stopped for review) needs the o
   const o = outcomes({ jobId: J, scanFailed: null, leads: [lead('1'), lead('2')], messages: [], replies: [held, opted] })
   assert.deepEqual(o.conversations?.rows.map(r => [r.lead_id, r.classification]), [['1', 'uncertain']])
 })
+
+test('a held reply stays in needs-a-read after a later auto-reply, and on a thread stopped for a weaker reason; settled threads do not', () => {
+  const at = (r: OutcomeReply, received_at: number, stopped: string | null) => ({ ...r, received_at, stopped })
+  const held = at(reply('1', 'uncertain'), 3, 'review'), laterAuto = { ...at(reply('1', 'auto'), 9, 'review'), gmail_id: 'auto1', thread_id: held.thread_id }
+  const reopened = at(reply('2', 'uncertain'), 3, 'reopened'), settled = at(reply('3', 'uncertain'), 3, 'opt_out')
+  const o = outcomes({ jobId: J, scanFailed: null, leads: [lead('1'), lead('2'), lead('3')], messages: [], replies: [held, laterAuto, reopened, settled] })
+  assert.deepEqual(o.conversations?.rows.map(r => r.lead_id).sort(), ['1', '2'])
+})

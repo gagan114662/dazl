@@ -228,3 +228,30 @@ test('COUNCIL a later unclear message does not downgrade a thread stopped for an
   assert.equal(stopped(db, 'A', a.thread), 'opt_out')
   assert.equal(isSuppressed(db, 'A', 'sam@buyer.example'), true)
 })
+
+// Council round 2 (on the fix above): what the second review found, confirmed and fixed.
+test('COUNCIL-2 auto markers never hide an opt-out, a no, ambiguous wording or an unreadable body, in either alternative', () => {
+  const alt = (plain: GPart, html: string) => multi('multipart/alternative', [plain, part('text/html', html)])
+  assert.equal(classify(alt(part('text/plain', 'I am away until Monday.'), '<p>Please unsubscribe me</p>'), { subject: 'Out of office' }), 'opt_out')
+  assert.equal(classify(alt({ mimeType: 'text/plain', body: { data: '%%%bad%%%' } }, '<p>Please remove me from your list</p>'), { subject: 'Out of office' }), 'opt_out')
+  assert.equal(classify(alt({ mimeType: 'text/plain', body: { data: '%%%bad%%%' } }, '<p>Please remove me from your list</p>')), 'opt_out', 'no auto marker either')
+  assert.equal(classifyMessage({ text: '', status: 'empty', alt: 'Please unsubscribe me' }, { precedence: 'list' }), 'opt_out')
+  assert.equal(classifyReply('stop', { precedence: 'list' }), 'uncertain')
+  assert.equal(classifyReply('How did you get my email', { subject: 'Automatic reply' }), 'uncertain')
+  assert.equal(classify({ mimeType: 'text/plain', body: { data: '%%%bad%%%' } }, { precedence: 'list' }), 'uncertain')
+  assert.equal(classify(part('text/plain', ''), { autoSubmitted: 'auto-replied' }), 'auto', 'a blank auto-ack stays auto')
+  // documented, fail-closed: an auto-reply that itself says "unsubscribe" is honoured as an opt-out
+  assert.equal(classifyReply('To unsubscribe from our newsletter click here', { subject: 'Out of office' }), 'opt_out')
+})
+
+test('COUNCIL-2 apostrophe-less negations and hedges never grant consent', () => {
+  for (const t of ['Please dont call me', 'I cant talk, sounds good though', 'Maybe, tell me more', 'Unlikely, but tell me more', 'Why would I be interested?', 'I doubt we would be interested', 'Unlikely to be interested', 'Maybe interested later', 'Would have been interested last year', 'Nah, interested in later though', 'Hardly interested, sounds good'])
+    assert.equal(classifyReply(t), 'uncertain', t)
+})
+
+test('COUNCIL-2 more English opt-outs; a dateless line with an address is new text, not a quote header', () => {
+  for (const t of ["Please don't send me any more emails", 'Please take me out of your list', 'No more emails please', 'Remove my address'])
+    assert.equal(classifyReply(t), 'opt_out', t)
+  assert.equal(newText('Please send the deck to my colleague <jo@buyer.example>:\nAlso unsubscribe me'), 'Please send the deck to my colleague <jo@buyer.example>: Also unsubscribe me')
+  assert.equal(classifyReply(newText('Hi there.\nWrite to <me@co.example>:\nPlease unsubscribe me')), 'opt_out')
+})

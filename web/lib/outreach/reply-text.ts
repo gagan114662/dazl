@@ -77,9 +77,9 @@ export function newText(t: string): string {
   const out: string[] = []
   for (const l of lines) {
     if (QUOTE_HEADER.test(l.trim()) && /^(?:-{2,}|(?:on|el|le|am|em|il|op|from|de|von|da|van|från|fra)(?![\p{L}]))/iu.test(l.trim())) break
-    // a quote header in a language not listed above: a line naming an address in <...> and ending with ":"
-    // ("Den mån 3 mars skrev Pat <pat@seller.example>:")
-    if (QUOTE_ADDR_HEADER.test(l.trim())) break
+    // a quote header in a language not listed above: a dated line naming an address in <...> and ending with ":"
+    // ("Den mån 3 mars skrev Pat <pat@seller.example>:"); a line without a date ("my colleague <jo@...>:") is new text
+    if (QUOTE_ADDR_HEADER.test(l.trim()) && /\d/.test(l.replace(/<[^>]*>/g, ''))) break
     if (l.trimStart().startsWith('>')) continue
     out.push(l)
   }
@@ -92,7 +92,8 @@ export function messageText(payload: GPart | undefined): ExtractedText {
   if (!payload) return { text: '', status: 'empty', source: 'none' }
   const plain = find(payload, 'text/plain'), html = find(payload, 'text/html')
   const htmlText = html ? (html.text === null ? null : newText(htmlToText(html.text))) : undefined
-  if (plain && plain.text === null) return { text: '', status: 'malformed', source: 'plain' }
+  // an undecodable plain body still carries what its HTML alternative says (an opt-out there is honoured)
+  if (plain && plain.text === null) return htmlText ? { text: '', status: 'malformed', source: 'plain', alt: htmlText } : { text: '', status: 'malformed', source: 'plain' }
   if (plain && plain.text) {
     const t = newText(plain.text)
     if (t) return htmlText === undefined || htmlText === '' ? { text: t, status: 'ok', source: 'plain' } : { text: t, status: 'ok', source: 'plain', alt: htmlText }

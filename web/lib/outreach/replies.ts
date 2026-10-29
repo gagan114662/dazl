@@ -66,7 +66,8 @@ const words = (alts: string[]) => new RegExp(`(?<![\\p{L}\\p{N}])(?:${alts.join(
 const OPT_OUT = words([
   // English
   'unsubscribe', 'remove me', 'stop (?:emailing|email|contacting|sending|messaging|reaching out)', 'do not (?:contact|email|reach out)', "don'?t (?:contact|email|reach out)", 'take me off', 'opt[- ]?out', 'cease',
-  'never (?:contact|email|message) (?:me|us)', 'leave me alone',
+  'never (?:contact|email|message) (?:me|us)', 'leave me alone', "(?:do not|don'?t) send (?:me |us )?(?:any )?(?:more )?(?:e-?mails?|messages?)",
+  'no more (?:e-?mails?|messages?)', 'take (?:me|us) out of', 'remove (?:my|our) (?:address|e-?mail)',
   // Spanish, French, German, Portuguese, Italian, Dutch
   'dar(?:me)? de baja', 'darse de baja', 'no me (?:escriban?|contacte[ns]?|env[ií]e[ns]?)', 'el[ií]min(?:a|e|en)(?:me)? de (?:su|la|vuestra) lista', 'quitar(?:me)? de (?:su|la) lista',
   'd[ée]sinscri(?:re|vez|vez-moi|ption)', 'd[ée]sabonn(?:er|ez|ement)', 'retirez[- ]moi', "ne m'(?:[ée]crivez|contactez|envoyez) plus", 'ne plus me (?:contacter|[ée]crire)',
@@ -83,9 +84,12 @@ const NEGATIVE = words([
 ])
 // Might be an opt-out, might not: a person reads it.
 const AMBIGUOUS = words(['stop', 'stopp', 'remove', 'unsub\\p{L}*', 'spam', 'abuse', 'gdpr', 'dsgvo', 'rgpd', 'lgpd', 'baja', 'block(?:ed)?', 'blacklist', 'report(?:ed)? (?:you|this)', 'how did you get my'])
-// Any negation anywhere in a reply that also says something positive ("Not really interested", "Please don't call
-// me", "Not now, let's talk next year"): the positive wording cannot be trusted, so a person reads it.
-const NEGATION = words(['not', 'never', 'no', 'nope', 'no longer', 'rather not', "\\p{L}+n['\u2019]t", 'cannot', 'pas', 'jamais', 'kein\\p{L}*', 'nicht', 'nein', 'n[aã]o', 'non', 'nunca', 'mai', 'niet', 'geen', 'nooit'])
+// Any negation or hedge anywhere in a reply that also says something positive ("Not really interested", "Please
+// dont call me", "Maybe interested later", "Why would I be interested?"): the positive wording cannot be trusted, so a
+// person reads it.
+const NEGATION = words(['not', 'never', 'no', 'nope', 'no longer', 'rather not', "\\p{L}+n['\u2019]?t", 'cannot', 'aint', 'nah', 'hardly', 'barely', 'neither', 'without',
+  'maybe', 'perhaps', 'possibly', 'might', 'doubt\\p{L}*', 'unlikely', 'later', 'someday', 'would have', 'if ever', 'why (?:would|should)',
+  'pas', 'jamais', 'kein\\p{L}*', 'nicht', 'nein', 'n[aã]o', 'non', 'nunca', 'mai', 'niet', 'geen', 'nooit'])
 const POSITIVE = /\b(interested|tell me more|send (me )?(more )?(info|information|details)|sounds good|let'?s (talk|chat|connect|schedule|set up)|call me|book (a|the) (call|time|meeting)|yes,? please|happy to (chat|talk|connect))\b/i
 const AUTO_SUBJECT = /^(automatic reply|auto[- ]?reply|autoreply|out of (the )?office|abwesenheitsnotiz|automatische antwort|r[ée]ponse automatique|absence|respuesta autom[áa]tica|resposta autom[áa]tica|risposta automatica|automatisch antwoord)/i
 // Letters outside the Latin script (Cyrillic, Greek, CJK, Arabic, Hebrew...): these rules do not read them.
@@ -95,8 +99,13 @@ export interface ReplyHeaders { autoSubmitted?: string; precedence?: string; sub
 // over positive wording; unsure never grants consent.
 export function classifyReply(text: string, h: ReplyHeaders = {}, status: 'ok' | 'empty' | 'malformed' = 'ok'): ReplyClass {
   const auto = (h.autoSubmitted && h.autoSubmitted.toLowerCase() !== 'no') || /^(bulk|junk|auto_reply|list)$/i.test(h.precedence ?? '') || !!h.xAutoreply || !!h.xAutorespond || AUTO_SUBJECT.test(h.subject ?? '')
-  // Auto-reply markers (a subject, a list header) never hide an opt-out or a "no" in the body: those are honoured.
-  if (auto) return status === 'ok' && OPT_OUT.test(text) ? 'opt_out' : status === 'ok' && NEGATIVE.test(text) ? 'negative' : 'auto'
+  // Auto-reply markers (a subject, a list header) never hide what the body says: an opt-out or a "no" is honoured,
+  // and ambiguous wording or an undecodable body is held for review, as without the marker. A blank auto-ack stays auto.
+  if (auto) {
+    if (status === 'malformed') return 'uncertain'
+    if (status !== 'ok') return 'auto'
+    return OPT_OUT.test(text) ? 'opt_out' : NEGATIVE.test(text) ? 'negative' : AMBIGUOUS.test(text) ? 'uncertain' : 'auto'
+  }
   if (status !== 'ok' || !text.trim()) return 'uncertain'
   if (OPT_OUT.test(text)) return 'opt_out'
   if (NEGATIVE.test(text)) return 'negative'
@@ -111,10 +120,12 @@ export function classifyReply(text: string, h: ReplyHeaders = {}, status: 'ok' |
 // for review (uncertain), and positive only stands when both bodies say it.
 export function classifyMessage(t: { text: string; status: 'ok' | 'empty' | 'malformed'; alt?: string | null }, h: ReplyHeaders = {}): ReplyClass {
   const first = classifyReply(t.text, h, t.status)
-  if (first === 'auto' || t.alt === undefined) return first
-  const second = t.alt === null ? 'uncertain' : classifyReply(t.alt, h, 'ok')
+  if (t.alt === undefined) return first
+  const second = t.alt === null ? classifyReply('', h, 'malformed') : classifyReply(t.alt, h, 'ok')
   if (first === second) return first
   if (first === 'opt_out' || second === 'opt_out') return 'opt_out'
+  // under auto-reply markers both bodies were read the same way: whatever one of them says beyond "auto" stands
+  if (first === 'auto' || second === 'auto') return first === 'auto' ? second : first
   return 'uncertain'
 }
 
