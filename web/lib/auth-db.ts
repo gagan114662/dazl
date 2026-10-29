@@ -3,6 +3,8 @@ import { createHash, randomBytes } from 'crypto'
 import path from 'path'
 import { getDb } from './db/client.ts'
 import type { Db } from './db/client.ts'
+import { BACKFILL_SQL, WORKSPACE_DDL, createPersonalWorkspace, resolveMembership } from './workspaces.ts'
+import type { Role } from './workspaces.ts'
 
 let db: Database.Database | null = null
 
@@ -37,6 +39,10 @@ export function migrateAuth(d: Database.Database): void {
   try { d.exec('ALTER TABLE users ADD COLUMN sells TEXT') } catch { /* exists */ }
   try { d.exec('ALTER TABLE users ADD COLUMN website TEXT') } catch { /* exists */ }
   try { d.exec('ALTER TABLE users ADD COLUMN buyer_profile TEXT') } catch { /* exists */ }
+  // The workspace this session acts in (lib/workspaces.ts); NULL: the default one. PG: 0013_workspaces.sql.
+  try { d.exec('ALTER TABLE sessions ADD COLUMN active_tenant_id TEXT') } catch { /* exists */ }
+  d.exec(WORKSPACE_DDL)
+  d.transaction(() => { for (const s of BACKFILL_SQL) d.prepare(s).run() })()
 }
 
 // Sessions are stored as a SHA-256 digest; the raw token only lives in the cookie.
@@ -60,12 +66,17 @@ export async function findPasswordUser(email: string, d?: Db): Promise<{ id: str
   return (d ?? await getDb()).get('SELECT id, password_hash, salt FROM users WHERE email = ?', [email])
 }
 
-// 'exists' when the email is taken; the route must not reveal which.
+// 'exists' when the email is taken; the route must not reveal which. The account and its personal workspace are made
+// together.
 export async function createPasswordUser(u: { id: string; email: string; name: string; business_name: string; password_hash: string; salt: string }, d?: Db): Promise<'created' | 'exists'> {
-  const r = await (d ?? await getDb()).run(
-    'INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (email) DO NOTHING',
-    [u.id, u.email, u.name, u.business_name, u.password_hash, u.salt])
-  return r.changes === 1 ? 'created' : 'exists'
+  return (d ?? await getDb()).tx(function* (t) {
+    const r = yield* t.run(
+      'INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (email) DO NOTHING',
+      [u.id, u.email, u.name, u.business_name, u.password_hash, u.salt])
+    if (r.changes !== 1) return 'exists' as const
+    yield* createPersonalWorkspace(t, u.id, u.business_name)
+    return 'created' as const
+  })
 }
 
 // What the seller sells + their site, collected once on the home page. Used to aim ICP inference.
@@ -133,13 +144,27 @@ export async function writeSellerProfile(db: Db, userId: string, sells: string, 
   await db.run(SET_SELLER_SQL, [sells.slice(0, 150), website.slice(0, 200), userId])
 }
 
-export async function getSessionUser(token: string | undefined, d?: Db): Promise<{ id: string; email: string; business_name: string } | null> {
+// The signed-in actor and the workspace they act in. actorId is the person (users.id); tenantId is the workspace every
+// tenant-scoped read and write must use; role is their role there. `id` is the actor too, kept for the callers that
+// have not moved to actorId/tenantId yet: until workspace switching ships, tenantId is always the actor's personal
+// workspace, whose id is their user id. No membership in the session's workspace: not signed in (null).
+export type SessionUser = { id: string; email: string; business_name: string; actorId: string; tenantId: string; role: Role }
+export async function getSessionUser(token: string | undefined, d?: Db): Promise<SessionUser | null> {
   if (!token || !/^[a-f0-9]{64}$/.test(token)) return null
-  const row = await (d ?? await getDb()).get<{ id: string; email: string; business_name: string }>(
-    `SELECT u.id, u.email, u.business_name FROM sessions s JOIN users u ON u.id = s.user_id
+  const db = d ?? await getDb()
+  const id = hashToken(token)
+  const row = await db.get<{ id: string; email: string; business_name: string; active_tenant_id: string | null }>(
+    `SELECT u.id, u.email, u.business_name, s.active_tenant_id FROM sessions s JOIN users u ON u.id = s.user_id
      WHERE s.id = ? AND s.expires_at > ?`,
-    [hashToken(token), nowS()])
-  return row ?? null
+    [id, nowS()])
+  if (!row) return null
+  const m = await resolveMembership(db, row, row.active_tenant_id)
+  if (!m) {
+    // The chosen workspace is gone for this member: this request fails, the next one uses their default workspace.
+    if (row.active_tenant_id !== null) await db.run('UPDATE sessions SET active_tenant_id = NULL WHERE id = ? AND active_tenant_id = ?', [id, row.active_tenant_id])
+    return null
+  }
+  return { id: row.id, email: row.email, business_name: row.business_name, actorId: row.id, tenantId: m.tenantId, role: m.role }
 }
 
 export async function deleteSession(token: string | undefined, d?: Db): Promise<void> {
