@@ -2,7 +2,7 @@
 // Every World here is SYNTHETIC (invented companies, pages and addresses); nothing replays a real run.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, cpSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { readFileSync, cpSync, mkdtempSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -101,22 +101,60 @@ test('gate: the case set itself is checked - a missing, unregistered or duplicat
   assert.throws(() => { const f = join(mkdtempSync(join(tmpdir(), 'dazl-baseline-')), 'b.json'); writeFileSync(f, JSON.stringify({ ...b, min_cases: 0 })); loadBaseline(f) }, /min_cases/)
 })
 
-test('gate CLI: deleting a case file turns `npm run evals` red (exit 1, the case named)', () => {
-  const run = (dir: string) => spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts', 'scripts/evals.mts', '--dir', dir],
-    { cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8', env: { ...process.env, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0' } })
+const runCli = (dir: string) => spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts', 'scripts/evals.mts', '--dir', dir],
+  { cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8', env: { ...process.env, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0' } })
+// A temp copy of the committed suite, optionally with a second registered case (a copy of the London case under another id).
+function suiteCopy(opts: { second?: boolean } = {}): string {
   const tmp = mkdtempSync(join(tmpdir(), 'dazl-evals-'))
+  cpSync(DIR, tmp, { recursive: true })
+  if (opts.second) {
+    const c = JSON.parse(readFileSync(join(tmp, 'cases', 'scan-london-seed-traps.case.json'), 'utf8'))
+    writeFileSync(join(tmp, 'cases', 'scan-london-seed-traps-copy.case.json'), JSON.stringify({ ...c, id: 'scan-london-seed-traps-copy' }))
+    const b = JSON.parse(readFileSync(join(tmp, 'baseline.json'), 'utf8'))
+    writeFileSync(join(tmp, 'baseline.json'), JSON.stringify({ ...b, min_cases: b.min_cases + 1, cases: { ...b.cases, 'scan-london-seed-traps-copy': b.cases['scan-london-seed-traps'] } }))
+  }
+  return tmp
+}
+const gateRed = (r: ReturnType<typeof runCli>, ...lines: RegExp[]) => {
+  assert.equal(r.status, 1, r.stdout + r.stderr)
+  assert.match(r.stdout, /eval gate: FAIL/)
+  for (const l of lines) assert.match(r.stdout, l)
+}
+
+test('gate CLI: deleting or renaming the only case turns `npm run evals` red (exit 1, the case named)', () => {
+  for (const how of ['delete', 'rename'] as const) {
+    const tmp = suiteCopy()
+    try {
+      const intact = runCli(tmp)
+      assert.equal(intact.status, 0, intact.stdout + intact.stderr); assert.match(intact.stdout, /eval gate: ok/)
+      const f = join(tmp, 'cases', 'scan-london-seed-traps.case.json')
+      if (how === 'delete') unlinkSync(f); else renameSync(f, `${f}.bak`)
+      gateRed(runCli(tmp), /MISSING CASE \(registered in baseline.json, did not run\): scan-london-seed-traps/, /TOO FEW CASES: 0 ran, baseline min_cases is 1/)
+    } finally { rmSync(tmp, { recursive: true, force: true }) }
+  }
+})
+
+test('gate CLI: deleting one of several cases, or renaming its id, is red; an empty suite directory is red', () => {
+  const tmp = suiteCopy({ second: true })
   try {
-    cpSync(DIR, tmp, { recursive: true })
-    const intact = run(tmp)
+    const intact = runCli(tmp)
     assert.equal(intact.status, 0, intact.stdout + intact.stderr)
-    assert.match(intact.stdout, /eval gate: ok/)
-    unlinkSync(join(tmp, 'cases', 'scan-london-seed-traps.case.json'))
-    const deleted = run(tmp)
-    assert.equal(deleted.status, 1, deleted.stdout + deleted.stderr)
-    assert.match(deleted.stdout, /MISSING CASE \(registered in baseline.json, did not run\): scan-london-seed-traps/)
-    assert.match(deleted.stdout, /TOO FEW CASES: 0 ran, baseline min_cases is 1/)
-    assert.match(deleted.stdout, /eval gate: FAIL/)
+    assert.match(intact.stdout, /2 of 2\+ registered cases ran/)
+    const copy = join(tmp, 'cases', 'scan-london-seed-traps-copy.case.json')
+    const saved = readFileSync(copy, 'utf8')
+    unlinkSync(copy)
+    gateRed(runCli(tmp), /MISSING CASE \(registered in baseline.json, did not run\): scan-london-seed-traps-copy/, /TOO FEW CASES: 1 ran, baseline min_cases is 2/)
+    writeFileSync(copy, JSON.stringify({ ...JSON.parse(saved), id: 'renamed-case' }))  // same file, new id: the old id is missing, the new one unregistered
+    gateRed(runCli(tmp), /MISSING CASE .*: scan-london-seed-traps-copy/, /UNREGISTERED CASE \(add to baseline.json\): renamed-case/)
+    writeFileSync(copy, JSON.stringify({ ...JSON.parse(saved), id: 'scan-london-seed-traps' })) // two files, one id
+    gateRed(runCli(tmp), /DUPLICATE CASE ID: scan-london-seed-traps/)
   } finally { rmSync(tmp, { recursive: true, force: true }) }
+  const empty = mkdtempSync(join(tmpdir(), 'dazl-evals-empty-'))
+  try {
+    const r = runCli(empty)                                       // no cases/ and no baseline.json: the run cannot pass
+    assert.notEqual(r.status, 0, r.stdout + r.stderr)
+    assert.doesNotMatch(r.stdout, /eval gate: ok/)
+  } finally { rmSync(empty, { recursive: true, force: true }) }
 })
 
 test('world_closed: a page the World does not have is a recorded miss, answered as a failed fetch, never fetched', async () => {
