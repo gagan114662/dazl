@@ -67,7 +67,7 @@ test('HubSpot 200 with no contact id is unknown, recorded as uncertain, and bloc
 
 test('every malformed or wrong-type HubSpot success is unknown through the route; resolving "it is there" ends the block without pushing', async () => {
   for (const [why, body] of [['empty body', ''], ['malformed', '{"id":'], ['null', 'null'], ['numeric id', '{"id":1234}'], ['empty id', '{"id":""}']] as const) {
-    db.prepare("DELETE FROM connector_audit WHERE tenant_id = 'A'").run()
+    db.prepare("DELETE FROM connector_audit WHERE tenant_id = 'A'").run(); db.prepare("DELETE FROM crm_push_claims WHERE tenant_id = 'A'").run()
     as('A'); answer = reply(body)
     const r = await push('A')
     assert.deepEqual([r.status, r.json.outcome], [502, 'unknown'], why)
@@ -78,7 +78,7 @@ test('every malformed or wrong-type HubSpot success is unknown through the route
 })
 
 test('HubSpot 409 for another person\'s contact is a refusal (failed, not "already there"); the lead\'s own contact is found', async () => {
-  db.prepare("DELETE FROM connector_audit WHERE tenant_id = 'A'").run()
+  db.prepare("DELETE FROM connector_audit WHERE tenant_id = 'A'").run(); db.prepare("DELETE FROM crm_push_claims WHERE tenant_id = 'A'").run()
   as('A')
   const conflict = (email: string) => (u: string) => u.endsWith('/contacts')
     ? new Response(JSON.stringify({ message: 'Contact already exists. Existing ID: 77' }), { status: 409 })
@@ -152,7 +152,7 @@ test('a crashed request (claim left pending) blocks as in progress, then as unkn
 })
 
 test('a result that cannot be recorded after the create answers ok: reported unknown, and the retry stays blocked', async () => {
-  as('A'); calls.length = 0
+  as('A'); calls.length = 0; db.prepare("DELETE FROM crm_push_claims").run()
   db.exec("CREATE TRIGGER crm_claim_write_fails BEFORE UPDATE ON crm_push_claims WHEN NEW.status <> 'pending' BEGIN SELECT RAISE(ABORT, 'disk full'); END")
   try {
     answer = reply(JSON.stringify({ id: '555' }), 201)
@@ -198,4 +198,52 @@ test('status is read-only: none, in_progress, unknown and done from the durable 
   assert.equal(calls.length, 0, 'status never sends')
   as('B')
   assert.equal((await post({ action: 'status', lead_id: 'lead-A' })).status, 404)
+})
+
+// Instinct's HOLD on 17ee4c5: a lead the CRM already has (recorded success, or the user found it there) is never created
+// again. A push returns the recorded result; only failed and resolved_not_created claims allow a new create.
+test('response lost after a recorded success: the replayed push (and a reload) returns the recorded record, never a second create', async () => {
+  db.prepare("DELETE FROM crm_push_claims").run(); calls.length = 0
+  as('A'); answer = reply(JSON.stringify({ id: '1234' }), 201)
+  let r = await push('A') // the response to this push is the one the user's browser lost
+  assert.deepEqual([r.status, r.json.external_id, calls.length], [200, '1234', 1])
+  for (let i = 0; i < 3; i++) { // retries, replays, a reload's push
+    r = await push('A')
+    assert.deepEqual([r.status, r.json.ok, r.json.already, r.json.external_id, r.json.message], [200, true, true, '1234', 'Already in your CRM (record 1234)'])
+  }
+  assert.equal(calls.length, 1, 'one create in total')
+  assert.deepEqual((await post({ action: 'status', lead_id: 'lead-A' })).json, { state: 'done', external_id: '1234' })
+  // "already there" cannot be resolved into a new create either
+  assert.equal((await post({ action: 'resolve', lead_id: 'lead-A', created: false })).status, 409)
+})
+
+test('"It is in my CRM" is durable: a later push returns done and never creates', async () => {
+  db.prepare("DELETE FROM crm_push_claims").run(); calls.length = 0
+  as('A'); answer = reply('{}')
+  assert.equal((await push('A')).json.outcome, 'unknown')
+  assert.equal((await post({ action: 'resolve', lead_id: 'lead-A', created: true })).status, 200)
+  for (let i = 0; i < 2; i++) {
+    const r = await push('A')
+    assert.deepEqual([r.status, r.json.already, r.json.external_id, r.json.message], [200, true, null, 'Already in your CRM'])
+  }
+  assert.equal(calls.length, 1, 'only the first, unknown attempt reached the CRM')
+  // "It is not there" is the one way to a new create
+  db.prepare("UPDATE crm_push_claims SET status = 'uncertain' WHERE tenant_id = 'A'").run()
+  assert.equal((await post({ action: 'resolve', lead_id: 'lead-A', created: false })).status, 200)
+  answer = reply(JSON.stringify({ id: '5678' }), 201)
+  assert.equal((await push('A')).json.external_id, '5678')
+  assert.equal(calls.length, 2)
+})
+
+test('Pipedrive create counter: one person created however many times the lead is pushed', async () => {
+  db.prepare("DELETE FROM crm_push_claims").run(); calls.length = 0
+  as('C'); answer = reply(JSON.stringify({ success: true, data: { id: 42 } }), 201)
+  const rs = [await push('C'), await push('C'), await push('C')]
+  const creates = calls.filter(u => u.startsWith('https://api.pipedrive.com/v1/persons')).length
+  assert.equal(creates, 1)
+  assert.deepEqual(rs.map(r => [r.status, r.json.external_id, r.json.already ?? false]), [[200, '42', false], [200, '42', true], [200, '42', true]])
+  // a definite failure stays retryable: the create runs again
+  db.prepare("UPDATE crm_push_claims SET status = 'failed' WHERE tenant_id = 'C'").run()
+  await push('C')
+  assert.equal(calls.filter(u => u.startsWith('https://api.pipedrive.com/v1/persons')).length, 2)
 })

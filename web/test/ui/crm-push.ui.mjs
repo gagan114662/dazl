@@ -10,7 +10,8 @@
 //      there" brings the push back;
 //   4. reconnect (a new key for the same CRM) keeps the unknown hold; a reload shows the button, and the server's hold
 //      answers it again with the resolution choices, not a second create;
-//   5. every control is on screen and is what a click there hits, with no horizontal scroll.
+//   5. a lead the CRM already has shows the recorded record (the route never creates it again);
+//   6. every control is on screen and is what a click there hits, with no horizontal scroll.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -121,6 +122,12 @@ try {
       await click('Push to CRM'); await sleep(400)
       assert.deepEqual(await state('pushed'), { text: 'Contact created in HubSpot', labels: [] })
       assert.deepEqual(calls, ['push', 'resolve', 'push'])
+    })
+    // a lead the CRM already has: the route answers with the recorded record and the control says so (no second create)
+    await scenario(w, 'already-done', () => ({ json: { ok: true, already: true, message: 'Already in your CRM (record 1234)', external_id: '1234' } }), async ({ state, click, calls }) => {
+      await click('Push to CRM'); await sleep(400)
+      assert.deepEqual(await state('already'), { text: 'Already in your CRM (record 1234)', labels: [] })
+      assert.deepEqual(calls, ['push'])
     })
     await scenario(w, 'reconnect-reload', (b, calls) => calls.length === 1 ? { status: 502, json: { outcome: 'unknown', error: 'HubSpot did not answer; the contact may or may not have been created' } }
       : { status: 409, json: { outcome: 'unknown', error: 'An earlier push of this lead has an unknown result. Check your CRM for this contact first, then record what you found.' } }, async ({ page, state, click, calls, open }) => {

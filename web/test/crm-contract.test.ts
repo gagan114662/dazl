@@ -90,7 +90,7 @@ test('route: truthful outcomes, audit rows, unknown blocks a blind retry until r
     '--test', './test/helpers/crm-route-runtime.mts'], { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 120000 })
   assert.equal(r.error, undefined)
   assert.equal(r.status, 0, r.stdout + r.stderr)
-  assert.match(r.stdout, /# pass 10\b/)
+  assert.match(r.stdout, /# pass 13\b/)
   assert.match(r.stdout, /# fail 0\b/)
 })
 

@@ -67,6 +67,8 @@ export async function POST(req: NextRequest) {
       let attemptId = ''
       if (dest) {
         const c = claimPush(db, user.id, dest, lead.id)
+        // already in the CRM (recorded success, or the user found it there): the recorded result, never a second create
+        if ('blocked' in c && c.blocked === 'done') return NextResponse.json({ ok: true, already: true, message: c.externalId ? `Already in your CRM (record ${c.externalId})` : 'Already in your CRM', external_id: c.externalId ?? null })
         if ('blocked' in c) return NextResponse.json(c.blocked === 'in_progress'
           ? { error: 'This lead is being pushed right now. Wait a moment, then check your CRM.', outcome: 'in_progress' }
           : { error: 'An earlier push of this lead has an unknown result. Check your CRM for this contact first, then record what you found.', outcome: 'unknown' }, { status: 409 })

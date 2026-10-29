@@ -144,23 +144,28 @@ export function auditPush(db: Database.Database, tenantId: string, provider: str
 //   pending   a create is (or was) on its way. A claim still pending after STALE_CLAIM_SECONDS belongs to a request
 //             that crashed or could not record its result: it is unknown.
 //   uncertain the CRM's answer did not say whether the record exists.
-//   Both block a new push until the user resolves it. ok, failed and the resolved states may be claimed again. A claim
-//   that could not be finished stays pending, so a failure to record never makes a retry look safe.
+//   Both block a new push until the user resolves it. A claim that could not be finished stays pending, so a failure
+//   to record never makes a retry look safe.
+//   ok, resolved_created: the CRM has the record. A new push returns that recorded result and never creates again (a
+//             lost response, a reload or a replay cannot duplicate it). Only failed and resolved_not_created, where the
+//             CRM definitely has nothing, may be claimed again.
 // Each claim carries a random attempt id; only the request holding that id may finish it, so an older request can never
 // finish a later claim, even one taken in the same second.
 export const STALE_CLAIM_SECONDS = 300
-export type ClaimBlock = 'in_progress' | 'unknown'
+export type ClaimBlock = 'in_progress' | 'unknown' | 'done'
 export const crmDestination = (cfg: CrmConfig): string => cfg.provider
 const nowS = () => Math.floor(Date.now() / 1000)
 
-// Claims the push atomically. Returns the attempt id (the fence finishClaim needs), or why the lead is blocked.
-export function claimPush(db: Database.Database, tenantId: string, destination: string, leadId: string, now = nowS()): { attemptId: string } | { blocked: ClaimBlock } {
+// Claims the push atomically. Returns the attempt id (the fence finishClaim needs), or why the lead is blocked: done
+// (with the recorded record id) when the CRM already has it.
+export function claimPush(db: Database.Database, tenantId: string, destination: string, leadId: string, now = nowS()): { attemptId: string } | { blocked: ClaimBlock; externalId?: string | null } {
   const attemptId = randomBytes(12).toString('hex')
   const r = db.prepare(`INSERT INTO crm_push_claims (tenant_id, destination, lead_id, status, attempt_id, claimed_at, updated_at) VALUES (?, ?, ?, 'pending', ?, ?, ?)
     ON CONFLICT (tenant_id, destination, lead_id) DO UPDATE SET status = 'pending', external_id = NULL, attempt_id = excluded.attempt_id, claimed_at = excluded.claimed_at, updated_at = excluded.updated_at
-    WHERE crm_push_claims.status IN ('ok', 'failed', 'resolved_created', 'resolved_not_created')`).run(tenantId, destination, leadId, attemptId, now, now)
+    WHERE crm_push_claims.status IN ('failed', 'resolved_not_created')`).run(tenantId, destination, leadId, attemptId, now, now)
   if (r.changes === 1) return { attemptId }
-  const c = db.prepare('SELECT status, claimed_at FROM crm_push_claims WHERE tenant_id = ? AND destination = ? AND lead_id = ?').get(tenantId, destination, leadId) as { status: string; claimed_at: number }
+  const c = db.prepare('SELECT status, external_id, claimed_at FROM crm_push_claims WHERE tenant_id = ? AND destination = ? AND lead_id = ?').get(tenantId, destination, leadId) as { status: string; external_id: string | null; claimed_at: number }
+  if (c.status === 'ok' || c.status === 'resolved_created') return { blocked: 'done', externalId: c.external_id }
   return { blocked: c.status === 'pending' && c.claimed_at > now - STALE_CLAIM_SECONDS ? 'in_progress' : 'unknown' }
 }
 // Records the outcome of the claim this request holds. False when the claim is no longer this request's attempt
