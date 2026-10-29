@@ -45,7 +45,9 @@ export function migrateAuth(d: Database.Database): void {
   try { d.exec('ALTER TABLE sessions ADD COLUMN active_tenant_id TEXT') } catch { /* exists */ }
   // Session inventory and revocation (lib/sessions.ts). PG: 0016_session_inventory.sql.
   for (const c of SESSION_COLUMNS) { try { d.exec(c) } catch { /* exists */ } }
-  d.exec('UPDATE sessions SET public_id = lower(hex(randomblob(12))) WHERE public_id IS NULL')
+  const unnamed = d.prepare('SELECT id FROM sessions WHERE public_id IS NULL').all() as { id: string }[]
+  const name = d.prepare('UPDATE sessions SET public_id = ? WHERE id = ?')
+  d.transaction(() => { for (const r of unnamed) name.run(newPublicId(), r.id) })()
   d.exec(SESSION_INDEXES)
   d.exec(WORKSPACE_DDL)
   d.exec(INVITATIONS_DDL)
