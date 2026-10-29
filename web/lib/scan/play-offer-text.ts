@@ -48,18 +48,19 @@ export function offerOfSeller(seller: string | null | undefined): string | null 
   return cleanOffer(offer) || null
 }
 
-const words = (s: string) => new Set(s.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').split(' ').filter(w => w.length > 2 && !STOP.has(w)))
-const STOP = new Set(['and', 'the', 'for', 'with', 'our', 'your', 'from', 'that', 'this'])
-// Two offers name the same thing: one contains the other, or they share most of their words.
+// Words that never change what an offer is. Everything else counts, including negations ("no", "without", "except")
+// and buyer qualifiers ("for veterinary practices"): those are exactly the differences a tenant must decide.
+const FILLER = new Set(['a', 'an', 'the', 'and', 'our', 'my', 'your'])
+const offerWords = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').split(' ').filter(w => w && !FILLER.has(w)).map(w => w.length > 3 ? w.replace(/s$/, '') : w)
+// Two offers name the same thing only when they say the same words (order, case, punctuation, articles and plural
+// endings aside). Any added, removed or replaced word is a difference to choose between, never a guess: a near match
+// ("appointment software for dental practices" / "... for veterinary practices", "CRM setup and outbound consulting" /
+// "CRM setup but no outbound consulting") is a different offer.
 export function sameOffer(a: string, b: string): boolean {
-  const x = a.toLowerCase().trim(), y = b.toLowerCase().trim()
-  if (!x || !y) return false
-  if (x.includes(y) || y.includes(x)) return true
-  const wa = words(x), wb = words(y)
-  if (!wa.size || !wb.size) return false
-  let shared = 0
-  for (const w of wa) if (wb.has(w)) shared++
-  return shared / Math.min(wa.size, wb.size) >= 0.6
+  const wa = offerWords(a), wb = offerWords(b)
+  if (!wa.length || !wb.length) return false
+  const sa = [...new Set(wa)].sort().join(' '), sb = [...new Set(wb)].sort().join(' ')
+  return sa === sb
 }
 
 export function effectiveOffer(play: { offer?: string | null; seller?: string | null; query?: string | null }, profileSells: string | null | undefined): PlayOffer {

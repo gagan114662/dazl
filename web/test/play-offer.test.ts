@@ -33,7 +33,11 @@ test('the offer a request states, and the offer part of a recorded seller line',
   assert.equal(offerOfSeller(DENTAL), DENTAL)
   assert.equal(offerOfSeller('Pipeline - and more - work'), 'Pipeline - and more - work', 'a dash inside the offer is kept')
   assert.equal(offerOfSeller(null), null)
-  assert.ok(sameOffer('CRM setup and outbound consulting', 'outbound consulting and CRM setup for startups'))
+  assert.ok(sameOffer('CRM setup and outbound consulting', 'Outbound consulting and CRM setup.'), 'same words, other order')
+  assert.ok(!sameOffer('CRM setup and outbound consulting', 'outbound consulting and CRM setup for startups'), 'a buyer qualifier is a difference')
+  assert.ok(!sameOffer(CRM, 'CRM setup but no outbound consulting'), 'a withdrawn service is a difference')
+  assert.ok(!sameOffer('appointment software for dental practices', 'appointment software for veterinary practices'))
+  assert.ok(!sameOffer('appointment software', 'appointment software for dental practices'), 'containment is not sameness')
   assert.ok(!sameOffer(CRM, DENTAL))
 })
 
