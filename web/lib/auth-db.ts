@@ -171,6 +171,15 @@ export async function getSessionUser(token: string | undefined, d?: Db): Promise
   return { email: row.email, business_name, actorId: row.id, tenantId: m.tenantId, role: m.role }
 }
 
+// Whether the cookie is a live session (signed in, not expired): authentication only, for the page gates (proxy.ts,
+// the /app layout). Which workspace a request may act in is the API's decision (getSessionUser): a member removed from
+// the workspace their session chose still gets the app shell, and its first API request meant for that workspace is
+// refused there, never sent to the sign-in page as if signed out.
+export async function hasLiveSession(token: string | undefined, d?: Db): Promise<boolean> {
+  if (!token || !/^[a-f0-9]{64}$/.test(token)) return false
+  return !!(await (d ?? await getDb()).get('SELECT 1 AS x FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = ? AND s.expires_at > ?', [hashToken(token), nowS()]))
+}
+
 export async function deleteSession(token: string | undefined, d?: Db): Promise<void> {
   if (!token) return
   await (d ?? await getDb()).run('DELETE FROM sessions WHERE id = ?', [hashToken(token)])
