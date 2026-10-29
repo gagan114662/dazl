@@ -17,7 +17,8 @@ export async function GET(req: NextRequest) {
   const cfg = signInConfig()
   if (!cfg) return redirectNoStore(new URL('/sign-in?error=google_unavailable', process.env.PUBLIC_BASE_URL || req.url))
   const { base, clientId, clientSecret, redirectUri } = cfg
-  if (!(await rateLimit(`google-cb:${clientIp(req)}`, 20, 10 * 60 * 1000)).ok) return back(base, 'too_many')
+  const rl = await rateLimit(`google-cb:${clientIp(req)}`, 20, 10 * 60 * 1000)
+  if (!rl.ok) return back(base, rl.unavailable ? 'unavailable' : 'too_many')
 
   const c = parseCookie(req.cookies.get(OAUTH_COOKIE)?.value)
   const q = req.nextUrl.searchParams

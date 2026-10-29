@@ -33,6 +33,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'billing/webhook', method: 'POST', auth: 'public', note: 'Stripe signature over the raw body' },
   { path: 'campaigns', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'campaigns/[id]', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
+  { path: 'campaigns/[id]', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/play-offer-route-runtime.mts' }, role: 'operate' },
   { path: 'client-errors', method: 'POST', auth: 'public', note: 'browser error reports: same origin, 8 KB, rate limited per IP; writes only a scrubbed error record; tenant from the session cookie, never the body' },
   { path: 'crm', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'read' },
   { path: 'crm', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'operate' },

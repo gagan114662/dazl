@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import Database from 'better-sqlite3'
-import { rateLimit } from '../lib/rate-limit.ts'
+import { degradedPolicy, rateLimit } from '../lib/rate-limit.ts'
 import { LeaseLost, tryLease } from '../lib/shared/lease.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { pgDb, sqliteDb } from '../lib/db/client.ts'
@@ -33,22 +33,29 @@ bothEngines('rate limit: concurrent calls in one process never exceed the limit'
   assert.equal(rs.filter(r => r.ok).length, 25)
 }, { pgMax: 8 })
 
-// The shared store failing must never remove protection: the per-process limiter takes over (what production ran
-// before limits were shared). Each case breaks a real store in a different way, then spends a limit of 2.
+// The shared store failing must never remove protection. Each case breaks a real store in a different way, then spends
+// a limit of 2. Auth, scans and every shared-cost kind fail closed: refused while the store cannot answer, never a fresh
+// per-process allowance (lib/rate-limit.ts DEGRADED). The listed low-risk kinds keep this process's own limit.
 async function holdsWhileBroken(db: Db, key: string) {
   const orig = console.error
   const logged: unknown[][] = []
   console.error = (...a: unknown[]) => { logged.push(a) }
+  const closed = degradedPolicy(key) === 'closed'
   try {
     const r = [await rateLimit(key, 2, 60_000, db), await rateLimit(key, 2, 60_000, db), await rateLimit(key, 2, 60_000, db)]
-    assert.deepEqual(r.map(x => x.ok), [true, true, false], 'the limit must still hold while the store is broken')
+    if (closed) {
+      assert.deepEqual(r.map(x => [x.ok, x.unavailable]), [[false, true], [false, true], [false, true]], 'refused while the store cannot answer')
+    } else {
+      assert.deepEqual(r.map(x => x.ok), [true, true, false], 'the limit must still hold while the store is broken')
+      assert.ok(r.every(x => !x.unavailable))
+    }
     assert.ok(r[2].retryAfterS > 0)
   } finally { console.error = orig }
-  assert.equal(logged.filter(a => String(a[0]).includes('enforcing this process')).length, 3) // every fallback is logged
+  assert.equal(logged.filter(a => String(a[0]).includes(closed ? 'refusing (fails closed)' : 'enforcing this process')).length, 3) // every fallback is logged
   assert.doesNotMatch(JSON.stringify(logged), /example\.test|10\.0\.0\.1/) // only the key's kind is logged
 }
 
-test('store read-only (writes refused, reads fine): sign-in lookups still work and the sign-in limits still hold', async () => {
+test('store read-only (writes refused, reads fine): sign-in lookups still work and sign-in is refused, not unlimited', async () => {
   const raw = new Database(':memory:'); migrateAllSqlite(raw)
   const db = sqliteDb(raw)
   await createPasswordUser({ id: 'u1', email: 'a@example.test', name: 'A', business_name: 'B', password_hash: 'h', salt: 's' }, db)
@@ -56,9 +63,10 @@ test('store read-only (writes refused, reads fine): sign-in lookups still work a
   assert.ok(await findPasswordUser('a@example.test', db)) // the route's own read keeps working...
   await holdsWhileBroken(db, 'signin-acct:a@example.test') // ...and so does the brute-force limit
   await holdsWhileBroken(db, 'signin-ip:10.0.0.1')
+  await holdsWhileBroken(db, 'unsub:10.0.0.1') // a low-risk kind: unsubscribing keeps working on this process's limit
 })
 
-test('store full (SQLITE_FULL): paid-call limits still hold', async () => {
+test('store full (SQLITE_FULL): paid calls are refused', async () => {
   const raw = new Database(':memory:'); migrateAllSqlite(raw)
   raw.pragma(`max_page_count = ${raw.pragma('page_count', { simple: true })}`)
   const fill = raw.prepare('INSERT INTO rate_limits (key, count, reset_at) VALUES (?, 1, 0)')
@@ -127,35 +135,57 @@ bothEngines('lease: a holder that cannot renew stops before the lease can be tak
 })
 
 // Healthy -> outage -> recovery on one key: the decision never forgets an allowance already used (review repro).
-test('rate limit: an outage or a recovery never hands back an allowance already used', async () => {
+test('rate limit (a local kind): an outage or a recovery never hands back an allowance already used', async () => {
   const raw = new Database(':memory:'); migrateAllSqlite(raw)
   const db = sqliteDb(raw)
   const orig = console.error
   console.error = () => {}
   try {
     const ok = async (k: string, limit = 1) => (await rateLimit(k, limit, 60_000, db)).ok
-    assert.equal(await ok('transition'), true)
-    assert.equal(await ok('transition'), false) // used up while the store is healthy
+    assert.equal(await ok('profile:transition'), true)
+    assert.equal(await ok('profile:transition'), false) // used up while the store is healthy
     raw.pragma('query_only = ON')
-    assert.equal(await ok('transition'), false) // the outage does not reset it
-    assert.equal(await ok('transition'), false)
+    assert.equal(await ok('profile:transition'), false) // the outage does not reset it
+    assert.equal(await ok('profile:transition'), false)
     raw.pragma('query_only = OFF')
-    assert.equal(await ok('transition'), false) // nor does the recovery
+    assert.equal(await ok('profile:transition'), false) // nor does the recovery
     // flipping the store on and off every call: exactly `limit` calls get through in the window
     let allowed = 0
     for (let i = 0; i < 20; i++) {
       raw.pragma(`query_only = ${i % 2 ? 'ON' : 'OFF'}`)
-      if (await ok('flip', 3)) allowed++
+      if (await ok('profile:flip', 3)) allowed++
     }
     assert.equal(allowed, 3)
     raw.pragma('query_only = OFF')
     // an outage first, then recovery: what was counted during the outage still counts
     raw.pragma('query_only = ON')
-    assert.equal(await ok('outage-first', 2), true)
-    assert.equal(await ok('outage-first', 2), true)
+    assert.equal(await ok('profile:outage-first', 2), true)
+    assert.equal(await ok('profile:outage-first', 2), true)
     await new Promise(r => setTimeout(r, 5)) // the store's own window starts later than this process's
     raw.pragma('query_only = OFF')
-    assert.equal(await ok('outage-first', 2), false)
+    assert.equal(await ok('profile:outage-first', 2), false)
+  } finally { console.error = orig }
+})
+
+// The same sequence on a kind that fails closed: nothing is allowed while the store cannot answer, and the recovery
+// does not hand back an allowance already used.
+test('rate limit (a closed kind): refused through an outage; after recovery only the unused shared allowance remains', async () => {
+  const raw = new Database(':memory:'); migrateAllSqlite(raw)
+  const db = sqliteDb(raw)
+  const orig = console.error
+  console.error = () => {}
+  try {
+    const ok = async (k: string, limit = 2) => (await rateLimit(k, limit, 60_000, db)).ok
+    assert.equal(await ok('scan:t'), true) // one of two used while healthy
+    raw.pragma('query_only = ON')
+    assert.equal(await ok('scan:t'), false)
+    assert.equal(await ok('scan:t'), false)
+    raw.pragma('query_only = OFF')
+    assert.equal(await ok('scan:t'), true) // the one left
+    assert.equal(await ok('scan:t'), false)
+    let allowed = 0
+    for (let i = 0; i < 20; i++) { raw.pragma(`query_only = ${i % 2 ? 'ON' : 'OFF'}`); if (await ok('scan:flip', 3)) allowed++ }
+    assert.equal(allowed, 3)
   } finally { console.error = orig }
 })
 

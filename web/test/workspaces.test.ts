@@ -122,6 +122,6 @@ test('sqlite startup: migrateAuth backfills existing users and is idempotent', (
 
 test('the PG migration backfills with exactly the SQL the SQLite startup runs', () => {
   const norm = (s: string) => s.replace(/\s+/g, ' ').trim()
-  const mig = norm(readFileSync(new URL('../lib/db/migrations/pg/0013_workspaces.sql', import.meta.url), 'utf8'))
+  const mig = norm(readFileSync(new URL('../lib/db/migrations/pg/0014_workspaces.sql', import.meta.url), 'utf8'))
   for (const s of BACKFILL_SQL) assert.ok(mig.includes(norm(s) + ';'), norm(s))
 })
