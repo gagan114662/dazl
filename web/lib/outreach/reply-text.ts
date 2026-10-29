@@ -77,9 +77,12 @@ export function newText(t: string): string {
   const out: string[] = []
   for (const l of lines) {
     if (QUOTE_HEADER.test(l.trim()) && /^(?:-{2,}|(?:on|el|le|am|em|il|op|from|de|von|da|van|från|fra)(?![\p{L}]))/iu.test(l.trim())) break
-    // a quote header in a language not listed above: a dated line naming an address in <...> and ending with ":"
-    // ("Den mån 3 mars skrev Pat <pat@seller.example>:"); a line without a date ("my colleague <jo@...>:") is new text
-    if (QUOTE_ADDR_HEADER.test(l.trim()) && /\d/.test(l.replace(/<[^>]*>/g, ''))) break
+    // a quote header in a language not listed above: a line naming an address in <...> and ending with ":"
+    // ("Den mån 3 mars skrev Pat <pat@seller.example>:", undated "Pat Seller <pat@...> napisał:"). Known limit, chosen
+    // on purpose: a new-text line of that shape ("my colleague <jo@...>:") also ends the new text, so words written
+    // after it are not read. That can miss an opt-out (the reply then grants nothing, and with no new text left it is
+    // held for review), but it never lets our own quoted pitch be read as the lead's interest.
+    if (QUOTE_ADDR_HEADER.test(l.trim())) break
     if (l.trimStart().startsWith('>')) continue
     out.push(l)
   }

@@ -252,6 +252,22 @@ test('COUNCIL-2 apostrophe-less negations and hedges never grant consent', () =>
 test('COUNCIL-2 more English opt-outs; a dateless line with an address is new text, not a quote header', () => {
   for (const t of ["Please don't send me any more emails", 'Please take me out of your list', 'No more emails please', 'Remove my address'])
     assert.equal(classifyReply(t), 'opt_out', t)
-  assert.equal(newText('Please send the deck to my colleague <jo@buyer.example>:\nAlso unsubscribe me'), 'Please send the deck to my colleague <jo@buyer.example>: Also unsubscribe me')
-  assert.equal(classifyReply(newText('Hi there.\nWrite to <me@co.example>:\nPlease unsubscribe me')), 'opt_out')
+})
+
+// Council round 3: two regressions in the round 2 fixes, found by two reviewers each.
+test('COUNCIL-3 apostrophe-less negation is a word list: ordinary words ending in "nt" keep a positive reply positive', () => {
+  for (const t of ['Sounds good, I want to learn more', 'Interested - please loop in my assistant', 'Sounds good, send details to our account manager', 'Tell me more about the event', 'Interested. Tell us about your current stack'])
+    assert.equal(classifyReply(t), 'positive', t)
+  for (const t of ['Please dont call me', 'Sounds good but I cant right now', 'We wont need it, sounds good'])
+    assert.equal(classifyReply(t), 'uncertain', t)
+})
+
+test('COUNCIL-3 a quote header naming an address ends the new text, dated or not: our quoted pitch never reads as interest', () => {
+  for (const h of ['Pat Seller <pat@seller.example> napisał:', 'Pat skrev <pat@seller.example>:', 'Den mån 3 mars skrev Pat <pat@seller.example>:'])
+    assert.notEqual(classifyReply(newText(`Who?\n${h}\nIf you are interested, lets talk`)), 'positive', h)
+  // the documented limit: words from such a line on are not read. Nothing is granted, and a reply left with no new
+  // text is held for review
+  assert.equal(newText('Please send the deck to my colleague <jo@buyer.example>:\nAlso unsubscribe me'), '')
+  assert.equal(classifyReply(newText('Please send the deck to my colleague <jo@buyer.example>:\nAlso unsubscribe me')), 'uncertain')
+  assert.equal(classifyReply(newText('Thanks.\nSam <sam@buyer.example>:\nunsubscribe')), 'other')
 })
