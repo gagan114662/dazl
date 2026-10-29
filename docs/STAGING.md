@@ -39,7 +39,7 @@ Nothing in staging uses production data or keys: a fresh master key, test-mode S
   - is the same file under another name (same device and inode).
 
   It also refuses any `DATABASE_URL`, since staging is its own SQLite file.
-- **Cutover.** From switching `current` until the new release reports its commit on `/api/health`, any failure goes to one handler: the switch itself, a non-zero restart command, or readiness. The handler:
+- **Cutover.** From switching `current` until the new release passes the smoke check (`ops/health-smoke.mjs`: `/api/health` answers 200, `ok: true`, every configured database reachable, with the new commit), any failure goes to one handler: the switch itself, a non-zero restart command, or readiness. The handler:
   - puts the previous complete release and its `release.env` back, restarts it, and checks it is really serving again before reporting `rolled back: <sha> is live again`;
   - reports `NO LIVE STAGING SERVICE` if that rollback restart or readiness fails, rather than claiming recovery;
   - on a failed first deployment, which has nothing to go back to, removes `current` and reports `NO LIVE STAGING SERVICE`.
@@ -87,7 +87,7 @@ Nothing in staging uses production data or keys: a fresh master key, test-mode S
    ```sh
    systemctl enable dazl-staging.service
    systemctl start dazl-staging-deploy.service; journalctl -u dazl-staging-deploy -n 50 --no-pager   # ends with "live: <sha>"
-   curl -s localhost:3200/api/health    # {"ok":true,"commit":"<sha of main>"}
+   curl -s localhost:3200/api/health    # {"ok":true,"commit":"<sha of main>",...,"checks":{"sqlite":{"ok":true,...},...}}
    curl -s localhost:3200/api/ready     # 200 once the Stripe test values are set
    ```
 6. **Caddy.**
