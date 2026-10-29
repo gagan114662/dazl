@@ -4,7 +4,7 @@
 //   agrees      - the text names the requested place and no competing company address
 //   mismatch    - the text names a DIFFERENT place (another state, another New York town, another UK city, London Ontario ...) and the requested
 //                 place is only incidental (a footer, a "we also serve", an unrelated news mention)
-//   unconfirmed - the text names no place at all
+//   unconfirmed - the text names no place at all (a page naming only a different place, in any country, is a mismatch: otherPlace below)
 // City-scoped requests (New York City, London) are judged at city level: the country or state in the request is context, never enough.
 export const US_STATES: Record<string, string> = { AL: 'alabama', AK: 'alaska', AZ: 'arizona', AR: 'arkansas', CA: 'california', CO: 'colorado', CT: 'connecticut', DE: 'delaware', FL: 'florida', GA: 'georgia', HI: 'hawaii', ID: 'idaho', IL: 'illinois', IN: 'indiana', IA: 'iowa', KS: 'kansas', KY: 'kentucky', LA: 'louisiana', ME: 'maine', MD: 'maryland', MA: 'massachusetts', MI: 'michigan', MN: 'minnesota', MS: 'mississippi', MO: 'missouri', MT: 'montana', NE: 'nebraska', NV: 'nevada', NH: 'new hampshire', NJ: 'new jersey', NM: 'new mexico', NY: 'new york', NC: 'north carolina', ND: 'north dakota', OH: 'ohio', OK: 'oklahoma', OR: 'oregon', PA: 'pennsylvania', RI: 'rhode island', SC: 'south carolina', SD: 'south dakota', TN: 'tennessee', TX: 'texas', UT: 'utah', VT: 'vermont', VA: 'virginia', WA: 'washington', WV: 'west virginia', WI: 'wisconsin', WY: 'wyoming', DC: 'district of columbia' }
 const clean = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9 ,.]+/g, ' ').replace(/\s+/g, ' ').trim()
@@ -65,7 +65,7 @@ function nycVerdict(text: string, company?: string): PlaceVerdict {
   const other = otherNyCity(text) ?? otherUsState(text, ['NY'])
   if (ownAddress(text, NYC_STREET, company)) return 'agrees' // a street address in the city (number + street + NYC ZIP); a bare "New York, NY 10001" in a news line does not bind the company
   if (other) return 'mismatch' // another town / state is named and no NYC address binds the company to the city
-  return named ? 'agrees' : 'unconfirmed'
+  return named ? 'agrees' : otherPlace(text, ['New York City']) ? 'mismatch' : 'unconfirmed'
 }
 
 // ---- London (UK) ----
@@ -83,7 +83,7 @@ function londonVerdict(text: string, company?: string): PlaceVerdict {
   if (NOT_UK_LONDON.test(text) && !ownAddress(text, LONDON_STREET, company)) return 'mismatch' // London, Ontario / East London, South Africa is not London, UK; an unrelated "London, UK" or UK news line does not bind the company, only a London postcode address does
   if (other && !ownAddress(text, LONDON_STREET, company)) return 'mismatch'
   if (LONDON_TERMS.some(x => has(t, x))) return 'agrees'
-  return 'unconfirmed'
+  return otherPlace(text, ['London, United Kingdom']) ? 'mismatch' : 'unconfirmed' // Paris, Berlin, Toronto ... and no London at all
 }
 
 // India, the UAE and the neighbouring Gulf states: a page that names a DIFFERENT city of the list than the one asked for is a place conflict, not "unconfirmed" (Mumbai for Gurugram, Abu Dhabi or Doha for
@@ -170,6 +170,119 @@ export function eventPlaceOk(text: string, where: string[], company?: string): b
   if (where.some(w => /\blondon\b/i.test(w)) && !/\blondon\b/i.test(text) && namesOtherUkCity(text)) return false
   return true
 }
+// ---- Any other city, any country ----
+// The lists above only know NYC towns, UK cities and the India / Gulf metros, so a page that plainly names Paris, Berlin or
+// Toronto used to be "unconfirmed" for a London request, and the scan kept it (#440: a Paris startup verified for London).
+// This detector answers one question: does the text name a place that is clearly NOT the requested one? It is consulted only
+// where a verdict would otherwise be "unconfirmed", plus one early check for the requested city's name in another country
+// ("Paris, Texas" for "Paris, France"), which a bare "paris" term used to call agreement.
+// "Clearly a place" is either "City, Region" (a country, US state, Canadian province or Australian state after a comma) or a
+// bare name from a short list of major cities whose names are not also ordinary words or common first names. Each city is
+// compared at the granularity the request asked for: a city request rejects any other city; a country or state request
+// rejects only places outside it ("Berlin" agrees with a Germany request, "Rome, NY" with a New York state request).
+// The India / Gulf metros are left to the METROS rules above (they carry the "Delhi NCR counts for Gurugram" exception).
+interface Region { country: string; state?: string }
+const COUNTRY_ALIASES: Record<string, string[]> = {
+  'united kingdom': ['United Kingdom', 'UK', 'U.K.', 'England', 'Scotland', 'Wales', 'Northern Ireland', 'Great Britain', 'Britain'],
+  'united states': ['United States', 'USA', 'U.S.A.', 'US', 'U.S.'], canada: ['Canada'], australia: ['Australia'], 'new zealand': ['New Zealand'],
+  ireland: ['Ireland'], france: ['France'], germany: ['Germany', 'Deutschland'], spain: ['Spain', 'España'], portugal: ['Portugal'], italy: ['Italy', 'Italia'],
+  netherlands: ['Netherlands', 'The Netherlands', 'Holland'], belgium: ['Belgium'], switzerland: ['Switzerland'], austria: ['Austria'], sweden: ['Sweden'],
+  denmark: ['Denmark'], norway: ['Norway'], finland: ['Finland'], poland: ['Poland'], 'czech republic': ['Czech Republic', 'Czechia'], hungary: ['Hungary'],
+  greece: ['Greece'], turkey: ['Turkey', 'Türkiye'], russia: ['Russia'], israel: ['Israel'], egypt: ['Egypt'], nigeria: ['Nigeria'], kenya: ['Kenya'],
+  'south africa': ['South Africa'], india: ['India'], 'united arab emirates': ['United Arab Emirates', 'UAE'], qatar: ['Qatar'], 'saudi arabia': ['Saudi Arabia'],
+  singapore: ['Singapore'], china: ['China'], 'hong kong': ['Hong Kong'], japan: ['Japan'], 'south korea': ['South Korea', 'Korea'], mexico: ['Mexico', 'México'],
+  brazil: ['Brazil', 'Brasil'], argentina: ['Argentina'], colombia: ['Colombia'], peru: ['Peru'], chile: ['Chile'],
+}
+const CA_PROVINCES: Record<string, string[]> = { ontario: ['Ontario', 'ON'], quebec: ['Quebec', 'Québec', 'QC'], 'british columbia': ['British Columbia', 'BC'], alberta: ['Alberta', 'AB'], manitoba: ['Manitoba', 'MB'], 'nova scotia': ['Nova Scotia', 'NS'] }
+const AU_STATES: Record<string, string[]> = { 'new south wales': ['New South Wales', 'NSW'], victoria: ['Victoria', 'VIC'], queensland: ['Queensland', 'QLD'], 'western australia': ['Western Australia', 'WA'] }
+const titled = (n: string) => n.replace(/\b[a-z]/g, c => c.toUpperCase())
+// Region alias (as written in text, case-sensitive so "in", "on", "us" in prose never read as a region) -> region.
+const REGION_ALIASES = new Map<string, Region>()
+for (const [country, as] of Object.entries(COUNTRY_ALIASES)) for (const a of as) REGION_ALIASES.set(a, { country })
+for (const [ab, name] of Object.entries(US_STATES)) { REGION_ALIASES.set(ab, { country: 'united states', state: name }); REGION_ALIASES.set(titled(name), { country: 'united states', state: name }) }
+for (const [name, as] of Object.entries(CA_PROVINCES)) for (const a of as) REGION_ALIASES.set(a, { country: 'canada', state: name })
+for (const [name, as] of Object.entries(AU_STATES)) for (const a of as) if (a !== 'WA') REGION_ALIASES.set(a, { country: 'australia', state: name }) // WA is Washington
+const REGION_ALT = [...REGION_ALIASES.keys()].sort((a, b) => b.length - a.length).map(a => esc(a).replace(/ /g, '\\s+')).join('|')
+const CITY_COMMA_REGION = new RegExp(`\\b([A-Z][\\p{L}'.-]+(?: [A-Z][\\p{L}'.-]+){0,2}),\\s*(${REGION_ALT})(?![\\p{L}])`, 'gu')
+const NOT_A_CITY = /^(?:st|street|ave|avenue|blvd|boulevard|rd|road|dr|drive|pl|place|plaza|sq|square|ln|lane|way|pkwy|broadway|inc|ltd|llc|plc|gmbh|suite|floor)$/
+// Major cities by name -> region. Excluded on purpose: names that are ordinary words or first names (Nice, Reading, Bath,
+// York, Mobile, Phoenix, Victoria, Split, Austin, Sydney, Jackson, Lincoln, Washington, Houston), and the METROS cities.
+const WORLD_CITIES: Record<string, Region> = Object.fromEntries(([
+  ['paris', 'france'], ['lyon', 'france'], ['marseille', 'france'], ['berlin', 'germany'], ['munich', 'germany'], ['hamburg', 'germany'], ['frankfurt', 'germany'], ['cologne', 'germany'],
+  ['madrid', 'spain'], ['barcelona', 'spain'], ['lisbon', 'portugal'], ['rome', 'italy'], ['milan', 'italy'], ['amsterdam', 'netherlands'], ['rotterdam', 'netherlands'],
+  ['brussels', 'belgium'], ['vienna', 'austria'], ['zurich', 'switzerland'], ['geneva', 'switzerland'], ['stockholm', 'sweden'], ['copenhagen', 'denmark'], ['oslo', 'norway'],
+  ['helsinki', 'finland'], ['dublin', 'ireland'], ['warsaw', 'poland'], ['prague', 'czech republic'], ['budapest', 'hungary'], ['athens', 'greece'], ['istanbul', 'turkey'],
+  ['moscow', 'russia'], ['tel aviv', 'israel'], ['cairo', 'egypt'], ['lagos', 'nigeria'], ['nairobi', 'kenya'], ['johannesburg', 'south africa'], ['cape town', 'south africa'],
+  ['singapore', 'singapore'], ['hong kong', 'hong kong'], ['shanghai', 'china'], ['beijing', 'china'], ['shenzhen', 'china'], ['tokyo', 'japan'], ['osaka', 'japan'], ['seoul', 'south korea'],
+  ['melbourne', 'australia'], ['brisbane', 'australia'], ['auckland', 'new zealand'], ['toronto', 'canada'], ['vancouver', 'canada'], ['montreal', 'canada'],
+  ['san francisco', 'united states'], ['los angeles', 'united states'], ['chicago', 'united states'], ['boston', 'united states'], ['seattle', 'united states'], ['miami', 'united states'],
+  ['denver', 'united states'], ['atlanta', 'united states'], ['dallas', 'united states'], ['philadelphia', 'united states'], ['mexico city', 'mexico'], ['sao paulo', 'brazil'],
+  ['rio de janeiro', 'brazil'], ['buenos aires', 'argentina'], ['bogota', 'colombia'], ['santiago', 'chile'],
+  ['london', 'united kingdom'], ['manchester', 'united kingdom'], ['birmingham', 'united kingdom'], ['leeds', 'united kingdom'], ['glasgow', 'united kingdom'], ['edinburgh', 'united kingdom'],
+  ['liverpool', 'united kingdom'], ['bristol', 'united kingdom'], ['cardiff', 'united kingdom'], ['belfast', 'united kingdom'],
+] as const).map(([c, country]) => [c, { country }]))
+const US_CITY_STATE: Record<string, string> = { 'san francisco': 'california', 'los angeles': 'california', chicago: 'illinois', boston: 'massachusetts', seattle: 'washington', miami: 'florida', denver: 'colorado', atlanta: 'georgia', dallas: 'texas', philadelphia: 'pennsylvania' }
+for (const [c, st] of Object.entries(US_CITY_STATE)) WORLD_CITIES[c] = { country: 'united states', state: st }
+const BARE_CITY = new RegExp(`(?<![\\p{L}])(${Object.keys(WORLD_CITIES).map(c => titled(c).replace(/ /g, '\\s+')).join('|')})(?![\\p{L}])`, 'gu')
+const plain = (s: string) => clean(s).replace(/[,.]+/g, ' ').replace(/ +/g, ' ').trim()
+
+interface Ask { cities: Map<string, Region | null>; regions: Region[] } // a city's region is null when the request does not say and the city is not listed
+function regionOf(name: string): Region | null {
+  for (const [a, r] of REGION_ALIASES) if (plain(a) === plain(name)) return r
+  return null
+}
+function askOf(where: string[]): Ask {
+  const ask: Ask = { cities: new Map(), regions: [] }
+  for (const w of where) {
+    const parts = w.split(',').map(x => x.trim()).filter(Boolean)
+    if (parts.length === 0) continue
+    const tail = parts.length > 1 ? regionOf(parts[parts.length - 1]) : null
+    const head = regionOf(parts[0])
+    if (head && parts.length === 1) { ask.regions.push(head); continue }        // "Germany", "Texas"
+    const city = plain(parts[0]).replace(SUFFIX, '')
+    if (NYC_ASK.test(w)) { for (const c of NYC_PLACES) ask.cities.set(c, { country: 'united states', state: 'new york' }); continue }
+    ask.cities.set(city, tail ?? WORLD_CITIES[city] ?? null)
+  }
+  return ask
+}
+const inRegion = (r: Region, scope: Region) => r.country === scope.country && (!scope.state || r.state === scope.state)
+// A place the text names that is clearly not the requested one. `same_name`: the requested city's name in another region.
+export function otherPlace(text: string, where: string[]): { kind: 'other' | 'same_name'; place: string } | null {
+  const ask = askOf(where)
+  if (ask.cities.size === 0 && ask.regions.length === 0) return null
+  let rest = text
+  let found: { kind: 'other' | 'same_name'; place: string } | null = null
+  const differs = (city: string, r: Region | null, label: string): { kind: 'other' | 'same_name'; place: string } | null => {
+    if (ask.cities.size) {
+      if (!ask.cities.has(city)) return ask.regions.length && r && ask.regions.some(x => inRegion(r, x)) ? null : { kind: 'other', place: label }
+      const want = ask.cities.get(city)
+      return want && r && !inRegion(r, { country: want.country, ...(want.state && r.state ? { state: want.state } : {}) }) ? { kind: 'same_name', place: label } : null
+    }
+    return r && !ask.regions.some(x => inRegion(r, x)) ? { kind: 'other', place: label } : null
+  }
+  const sameNameHere = new Set<string>() // the requested city named WITH its requested region: a same-name mention elsewhere is then incidental
+  for (const m of text.matchAll(CITY_COMMA_REGION)) {
+    const city = plain(m[1]); const r = REGION_ALIASES.get(m[2].replace(/\s+/g, ' '))!
+    if (NOT_A_CITY.test(city.split(' ').pop() ?? '') || regionOf(m[1])) continue           // "57th St, New York", "England, UK"
+    rest = rest.replace(m[0], ' ')
+    const d = differs(city, r, m[0])
+    if (!d && ask.cities.has(city)) sameNameHere.add(city)
+    if (d && (!found || (found.kind === 'same_name' && d.kind === 'other'))) found = d
+  }
+  if (found?.kind === 'same_name' && [...sameNameHere].length) found = null
+  if (found) return found
+  // The US has a namesake of most world cities (Rome NY, Paris TX, Athens GA), so for a US request a bare foreign name is
+  // not clearly elsewhere; only its "City, Region" form above counts.
+  const usAsk = [...ask.cities.values(), ...ask.regions].some(r => r?.country === 'united states')
+  for (const m of rest.matchAll(BARE_CITY)) {
+    const city = plain(m[1])
+    if (ask.cities.has(city) || (usAsk && WORLD_CITIES[city].country !== 'united states')) continue
+    const d = differs(city, WORLD_CITIES[city], m[1])
+    if (d) return d
+  }
+  return null
+}
+
 export type PlaceVerdict = 'agrees' | 'unconfirmed' | 'mismatch' | 'no_geography'
 // `company` (optional) is the candidate company's name: an address binds the company when its own sentence names it. Without it only first-person addresses bind.
 export function placeAgreement(text: string, where: string[], company?: string): PlaceVerdict {
@@ -179,11 +292,12 @@ export function placeAgreement(text: string, where: string[], company?: string):
   if (where.some(w => /\blondon\b/i.test(w))) verdicts.push(londonVerdict(text, company))
   if (verdicts.length) return verdicts.includes('agrees') ? 'agrees' : verdicts.includes('mismatch') ? 'mismatch' : 'unconfirmed'
   if (boundOtherListedCity(text, terms, company)) return 'mismatch'
+  if (otherPlace(text, where)?.kind === 'same_name') return 'mismatch' // "Paris, Texas" for "Paris, France": the bare name would agree below
   if (namesPlace(text, cityLevelTerms(terms))) return 'agrees'
   if (askedMetroAlias(text, terms)) return 'agrees'
   if (otherListedCity(text, terms)) return 'mismatch'
   const ours = Object.entries(US_STATES).filter(([ab, name]) => terms.some(x => x === name || x === ab.toLowerCase() || x.endsWith(`, ${ab.toLowerCase()}`))).map(([ab]) => ab)
-  return otherUsState(text, ours) ? 'mismatch' : 'unconfirmed'
+  return otherUsState(text, ours) || otherPlace(text, where) ? 'mismatch' : 'unconfirmed'
 }
 // kept for callers that only need the "another US state" signal
 export const otherState = (text: string, terms: string[]) => otherUsState(text, Object.entries(US_STATES).filter(([ab, name]) => terms.some(x => x === name || x === ab.toLowerCase())).map(([ab]) => ab))

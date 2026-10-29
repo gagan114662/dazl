@@ -1,14 +1,5 @@
 {
  "contract": "dazl.evals/1",
- "note": "Known non-pass verdicts on main. The eval gate fails when a case's non-pass set differs from this list in EITHER direction: a new failure is a regression; a fixed one must be removed here in the PR that fixes it.",
- "cases": {
-  "scan-london-seed-traps": {
-   "status": "fail",
-   "non_pass": [
-    "expected_outcomes|expect:Lumen Ledger|fail",
-    "place_on_page|lead:Lumen Ledger|unknown"
-   ],
-   "why": "Agent gap found by this case: for a London request, lib/scan/place-agreement.ts returns 'unconfirmed' (not 'mismatch') for a page that names a non-UK city (Paris, Berlin), and the runner holds only on 'mismatch', so a Paris company verifies."
-  }
- }
+ "note": "Known non-pass verdicts on main. The eval gate fails when a case's non-pass set differs from this list in EITHER direction: a new failure is a regression; a fixed one must be removed here in the PR that fixes it. A case with no entry must pass outright.",
+ "cases": {}
 }
