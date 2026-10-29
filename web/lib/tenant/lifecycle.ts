@@ -27,7 +27,8 @@
 // No retention policy is decided here: deleteTenant() takes the policy as an argument and refuses to run without an
 // explicit decision on opt-outs (suppressions). The owner's decisions are listed in docs/TENANT-LIFECYCLE.md.
 import { asDb, type DbLike, type Param, type Tx, type TxBody } from '../db/client.ts'
-import { NOT_DIRECT, TENANT_COLUMNS } from './scope.ts'
+import { classify, type Scope } from './scope.ts'
+import { tableColumns, UNGUARDED } from '../db/tenant-guard.ts'
 
 export type DeletionState = 'requested' | 'revoked' | 'cancelled' | 'erased' | 'completed'
 const ORDER: DeletionState[] = ['requested', 'revoked', 'cancelled', 'erased', 'completed']
@@ -36,12 +37,9 @@ export const CREDENTIAL_TABLES = ['sessions', 'oauth_states', 'oauth_identities'
 // Left out of an export entirely (token material, no value to the tenant) and redacted columns.
 export const EXPORT_EXCLUDED: Record<string, string> = { sessions: 'session tokens (hashed); never exported', oauth_states: 'one-time OAuth state and PKCE verifiers; never exported' }
 export const REDACTED_COLUMN = /^(password_hash|salt|ciphertext|refresh_ct)$|secret/
-const TOMB_TABLES = new Set(['tenant_tombstones', 'tenant_tombstone_keys'])
 // Kept whatever the policy: append-only audit records that hold no tenant content (lib/scan/evidence-copies.ts: who
 // purged evidence, why, and counts). Reported on the tombstone as retained, like any policy retention.
 export const ALWAYS_RETAINED: Record<string, string> = { evidence_purge_audit: 'append-only audit of evidence purges (operator, reason, counts); no tenant content' }
-// A transient lock row, not data (the evidence purge gate exists only inside one transaction): no deletion guard.
-export const UNGUARDED = new Set(['evidence_purge_gate'])
 
 export interface DeletionPolicy {
   // An explicit decision on opt-outs: keep the suppression list (so the addresses are never mailed again if the
@@ -51,28 +49,8 @@ export interface DeletionPolicy {
   retainTables?: string[]
 }
 
-export type Scope = { table: string; how: 'direct'; col: string } | { table: string; how: 'via'; col: string; parent: string }
-export function classify(cols: Map<string, string[]>): Scope[] {
-  const out: Scope[] = []
-  for (const [t, cs] of [...cols].sort(([a], [b]) => a.localeCompare(b))) {
-    if (TOMB_TABLES.has(t) || t === 'dazl_schema_migrations') continue
-    const nd = NOT_DIRECT[t]
-    if (nd && 'global' in nd) continue
-    const col = cs.find(c => TENANT_COLUMNS.includes(c))
-    if (col) out.push({ table: t, how: 'direct', col })
-    else if (nd && 'via' in nd && cs.includes(nd.via[0])) out.push({ table: t, how: 'via', col: nd.via[0], parent: nd.via[1] })
-  }
-  return out
-}
 // The tenant-scoped tables of a live store, on either engine.
-export async function tenantScope(d: DbLike): Promise<Scope[]> {
-  const db = asDb(d)
-  const rows = db.kind === 'pg'
-    ? await db.all<{ t: string; c: string }>("SELECT table_name AS t, column_name AS c FROM information_schema.columns WHERE table_schema = current_schema() ORDER BY table_name, ordinal_position")
-    : await db.all<{ t: string; c: string }>("SELECT m.name AS t, p.name AS c FROM sqlite_master m JOIN pragma_table_info(m.name) p WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%'")
-  const cols = new Map<string, string[]>(); for (const r of rows) cols.set(r.t, [...(cols.get(r.t) ?? []), r.c])
-  return classify(cols)
-}
+export async function tenantScope(d: DbLike): Promise<Scope[]> { return classify(await tableColumns(asDb(d))) }
 
 // A WHERE clause selecting the tenant's rows of one table (through its parent chain), with its parameters.
 function owned(scope: Map<string, Scope>, table: string, tenant: string): { sql: string; params: Param[] } {
@@ -195,3 +173,5 @@ export async function reapplyTombstones(d: DbLike, ledgerLines: string[], now?: 
   }
   return out
 }
+
+export type { Scope }

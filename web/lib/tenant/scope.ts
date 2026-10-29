@@ -25,3 +25,19 @@ export const NOT_DIRECT: Record<string, { via: [string, string] } | { global: st
   trial_budget_lock: { global: 'one row every free-trial admission locks in turn (lib/billing/trial-budget.ts); a counter, no tenant data' },
 }
 
+
+// The tombstone tables themselves are never in scope (lib/tenant/lifecycle.ts).
+const TOMB_TABLES = new Set(['tenant_tombstones', 'tenant_tombstone_keys'])
+export type Scope = { table: string; how: 'direct'; col: string } | { table: string; how: 'via'; col: string; parent: string }
+export function classify(cols: Map<string, string[]>): Scope[] {
+  const out: Scope[] = []
+  for (const [t, cs] of [...cols].sort(([a], [b]) => a.localeCompare(b))) {
+    if (TOMB_TABLES.has(t) || t === 'dazl_schema_migrations') continue
+    const nd = NOT_DIRECT[t]
+    if (nd && 'global' in nd) continue
+    const col = cs.find(c => TENANT_COLUMNS.includes(c))
+    if (col) out.push({ table: t, how: 'direct', col })
+    else if (nd && 'via' in nd && cs.includes(nd.via[0])) out.push({ table: t, how: 'via', col: nd.via[0], parent: nd.via[1] })
+  }
+  return out
+}
