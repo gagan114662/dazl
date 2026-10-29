@@ -1,6 +1,7 @@
 import type { Evidence, SourceAdapter, SafeGet } from './types.ts'
 import { decodeText } from './rss.ts'
 import { norm } from '../scan/evidence.ts'
+import { countriesIn, resolveSegment } from '../scan/countries.ts'
 import { parseWindowDays } from '../scan/window.ts'
 import { rolePhrases } from '../search/direct-queries.ts'
 import { domainSlug } from '../signals/entity-match.ts'
@@ -52,10 +53,41 @@ const COUNTRY_PLACES: { ask: RegExp; name: string; ok: (l: string) => boolean }[
 ]
 export interface Place { name: string; ok: (...locs: (string | undefined)[]) => boolean }
 const placeOf = (c: { name: string; ok: (l: string) => boolean }): Place => ({ name: c.name, ok: (...l) => l.some(x => !!x && c.ok(x)) })
+// Any other "<City>, <Country>" in the request (Toronto, Canada / toronto canada / Cambridge, UK / Gurugram India): a posting is in the place when its location names the city as a whole word, in any
+// letter case, and does not name a different country. A city is taken from the words right before a country name when they are separated from it by a comma, follow "in / at / near / from", or are all
+// capitalized ("Berlin Germany"); a bare lowercase noun before a country ("dentists UK") is not a city. The CITY stays the place: "Cambridge, UK" is Cambridge, not the whole United Kingdom.
+const STOP = new Set(['in', 'at', 'near', 'from', 'of', 'the', 'a', 'an', 'and', 'or', 'for', 'with', 'to', 'by', 'find', 'hiring', 'hire', 'hires', 'startups', 'startup', 'companies', 'firms', 'firm', 'agencies', 'agency', 'based', 'new', 'recruiting', 'sales', 'staff', 'b2b', 'saas'])
+const LEAD_IN = new Set(['in', 'at', 'near', 'from'])
+export function genericPlace(query: string): Place | null {
+  const toks = query.match(/[\p{L}\p{M}'\u2019.-]+|,/gu) ?? []
+  for (let i = 0; i < toks.length; i++) {
+    let country: string | null = null
+    for (let n = Math.min(4, toks.length - i); n >= 1 && !country; n--) { if (toks.slice(i, i + n).includes(',')) continue; const c = resolveSegment(toks.slice(i, i + n).join(' '), true); if (c) country = c }
+    if (!country) continue
+    let j = i - 1; const comma = toks[j] === ','; if (comma) j--
+    const words: string[] = []
+    while (j >= 0 && toks[j] !== ',' && words.length < 3 && !STOP.has(toks[j].toLowerCase())) { words.unshift(toks[j]); j-- }
+    if (words.length === 0) continue
+    const lead = j >= 0 ? toks[j].toLowerCase() : ''
+    const allCap = words.every(w => /^\p{Lu}/u.test(w))
+    if (!(comma || LEAD_IN.has(lead) || allCap)) continue
+    const city = words.join(' '), key = norm(city); if (key.length < 3) continue
+    const re = new RegExp(`(^| )${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( |$)`)
+    const ok = (...locs: (string | undefined)[]) => locs.some(l => {
+      if (!l) return false
+      if (!re.test(norm(l))) return false
+      const named = countriesIn(l); return named.length === 0 || named.every(c => c === country)
+    })
+    return { name: city, ok }
+  }
+  return null
+}
 export function placeIn(query: string): Place | null {
   for (const c of CITY_PLACES) if (c.ask.test(query)) return placeOf(c)
   const st = stateIn(query)
   if (st) return { name: st, ok: (...l) => locationInState(st, ...l) }
+  // A named city with its country ("Cambridge, UK") is that CITY, so it is tried before the bare-country place, which would widen it to the whole country.
+  const g = genericPlace(query); if (g) return g
   for (const c of COUNTRY_PLACES) if (c.ask.test(query)) return placeOf(c)
   return null
 }
