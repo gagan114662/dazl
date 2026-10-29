@@ -87,6 +87,7 @@ try {
   assert.ok(!emails.some(t => t.includes('elsewhere')), "another scan's draft is not listed")
   assert.equal(await page.locator('main').last().getByRole('link', { name: 'Outreach', exact: true }).getAttribute('href'), `/app/outreach?job_id=${JOB}`)
   await shot('campaign')
+  if (process.env.SHOTS) { const vp = page.viewportSize(); await page.setViewportSize({ width: 390, height: 844 }); await page.waitForTimeout(300); await shot('campaign-mobile'); await page.setViewportSize(vp) }
   // The campaign cannot be read: no lead or email is claimed.
   detailFail = true
   await page.reload({ waitUntil: 'networkidle' })

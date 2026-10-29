@@ -33,6 +33,8 @@ msg('A', 'm1', 'draft'); msg('A', 'm2', 'draft')
 job('A', 'c'.repeat(24), 'Orthodontists in Austin', null); end('c'.repeat(24), 'failed', 'no_candidates')
 // 4. Instinct's legacy row: confidence 90 and a contact but no stored excerpt -> unverified, never "ready to draft".
 job('A', 'e'.repeat(24), 'Legacy search', 1); lead('e'.repeat(24), 'g1', { confidence: 90, excerpt: null, contact: 'hello@legacy.example' }); end('e'.repeat(24))
+// 5. A technical failure (the AI provider rejected the key): a different state from 3, with its own next step.
+job('A', 'f'.repeat(24), 'Plumbers in Leeds', null); end('f'.repeat(24), 'failed', 'key_rejected')
 // B's search must never appear for A.
 job('B', 'd'.repeat(24), 'B-ONLY SEARCH', 3); lead('d'.repeat(24), 'b1', { contact: 'x@b.example' }); end('d'.repeat(24)); msg('B', 'b1', 'draft')
 db.close()

@@ -7,7 +7,10 @@
 //   2b. qualification uses the server's evidence states: a legacy row (confidence, contact, no excerpt) is unverified
 //      and never offered as ready to draft;
 //   3. the next action follows the pipeline (review before drafts, drafts before sending) and links to the page where
-//      that step and its checks live; a failed search says so;
+//      that step and its checks live;
+//   3b. a run that produced no leads says how it ended, in the same words as its page and the Leads history: Austin
+//      extracted nothing (not "failed") and offers "See what the scan read"; Leeds is a technical failure (key
+//      rejected) and offers "Check your AI key in Settings";
 //   4. loading the page writes nothing.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
@@ -49,12 +52,22 @@ try {
   await cards.first().waitFor({ timeout: 15000 })
   if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, 'campaigns.png'), fullPage: true })
   assert.equal(await page.locator('aside').getByRole('link', { name: 'Campaigns' }).getAttribute('href'), '/app/campaigns')
-  assert.equal(await cards.count(), 4)
+  assert.equal(await cards.count(), 5)
   assert.doesNotMatch(await page.locator('main').textContent(), /B-ONLY SEARCH/, "another tenant's search never shows")
-  const [legacy, austin, nyc, ohio] = [cards.nth(0), cards.nth(1), cards.nth(2), cards.nth(3)]
+  const [leeds, legacy, austin, nyc, ohio] = [cards.nth(0), cards.nth(1), cards.nth(2), cards.nth(3), cards.nth(4)]
   const text = async (card, s) => (await card.getByTestId(`stage-${s}`).textContent())
   assert.match(await austin.textContent(), /Orthodontists in Austin/)
-  assert.equal(await austin.getByTestId('next-action').textContent(), 'Search failed. Open it to see why')
+  // 3b. Austin extracted nothing: it never reads "failed" (the London report), and its next step matches its page.
+  assert.equal(await austin.getByTestId('run-tag').textContent(), 'Nothing extracted')
+  assert.equal(await austin.getByTestId('run-label').textContent(), 'No candidates were extracted')
+  assert.doesNotMatch(await austin.textContent(), /failed/i)
+  assert.equal(await austin.getByTestId('next-action').textContent(), 'See what the scan read')
+  assert.equal(await austin.getByTestId('next-action').getAttribute('href'), `/app/leads?job_id=${'c'.repeat(24)}`)
+  assert.equal(await leeds.getByTestId('run-tag').textContent(), 'Technical failure')
+  assert.equal(await leeds.getByTestId('run-label').textContent(), 'Failed - the AI provider rejected the key this scan used')
+  assert.equal(await leeds.getByTestId('next-action').textContent(), 'Check your AI key in Settings')
+  assert.equal(await ohio.getByTestId('run-tag').textContent(), 'Leads found (counts not recorded)', 'an older run that saved leads but not its check counts')
+  assert.equal(await ohio.getByTestId('run-label').count(), 0, 'a run with results keeps the pipeline\'s next action, no extra line')
   // NYC's two stored drafts are for leads whose timing is not confirmed: the approve gate refuses them, so the card
   // recommends the source review, never "approve" (Instinct #239, 60176be).
   assert.equal(await nyc.getByTestId('next-action').textContent(), 'Review the source of 2 leads to confirm timing')
@@ -74,8 +87,15 @@ try {
   assert.equal(await text(legacy, 'qualification'), 'Qualification0 source-checked, 0 confirmed by you, 0 to review0 timing not confirmed, 1 unverified, 0 rejected')
   assert.equal(await text(legacy, 'contact'), 'Contact1 with a contact')
   assert.equal(await legacy.getByTestId('next-action').textContent(), 'Check 1 unverified lead against their sources', 'an honest research step, never "nothing waiting"')
+  if (process.env.SHOTS) {
+    await page.screenshot({ path: path.join(process.env.SHOTS, 'campaigns-desktop.png') })
+    await page.setViewportSize({ width: 390, height: 844 }); await page.waitForTimeout(300)
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'no horizontal scroll at 390px')
+    for (const c of await cards.all()) { const cb = await c.boundingBox(); for (const el of [c.getByTestId('next-action'), c.getByTestId('campaign-link')]) { const bb = await el.boundingBox(); assert.ok(bb.x >= cb.x && bb.x + bb.width <= cb.x + cb.width + 0.5, 'the title and next action stay inside the card at 390px') } }
+    await page.screenshot({ path: path.join(process.env.SHOTS, 'campaigns-mobile.png') })
+  }
   assert.deepEqual(writes, [], 'loading the page writes nothing')
-  console.log('campaigns UI check passed: 4 own campaigns (incl. a legacy unverified lead), stage counts and next actions from the real route')
+  console.log('campaigns UI check passed: 5 own campaigns (run states: nothing extracted, technical failure, leads found) (incl. a legacy unverified lead), stage counts and next actions from the real route')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }
