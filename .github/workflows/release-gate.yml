@@ -3,12 +3,14 @@ name: release-gate
 # touching web/ or ops/, and on every push to main, so the exact commit Instinct deploys has a run of its own:
 # - browser: the production build, then every production smoke check against it in Chromium: pages and chunks load,
 #   chunk-load recovery, the /app sign-in gate, the two-tenant leak check, and release identity plus readiness;
-# - migrations: the previous release's SQLite database (filled by its own synthetic staging seed) is migrated by this
-#   release without losing a row, a second migration changes nothing, and the previous release still starts on it
+# - migrations: the previous release's SQLite database (filled by its own synthetic staging seed and a stored key) is
+#   migrated by this release keeping every row and value, a second migration changes nothing, the previous release's
+#   migration changes no value either, and each release's own code verifies the demo password and decrypts the key.
+#   Then the previous release's production build is started on the migrated database: ready, sign-in, scans and leads
 #   (rollback). The base is the PR's base commit, or the commit main was at before the push.
 # The run's release-<sha> artifact is the release manifest (ops/release-manifest.mjs): commit, Next BUILD_ID, static
-# tree sha256, lockfile sha256, PG migrations. After a deploy, `node ops/release-manifest.mjs check release.json <url>`
-# proves the server serves exactly that build and is ready. No secrets: servers run under the test network fence with
+# file sha256s, lockfile sha256, PG migrations. After a deploy, `node ops/release-manifest.mjs check release.json <url>`
+# proves the server serves that commit, every static file with exactly the recorded bytes, and is ready. No secrets: servers run under the test network fence with
 # throwaway databases and generated test-mode values, so nothing is scanned, sent, billed or fetched.
 on:
   pull_request:
@@ -80,16 +82,19 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci
         working-directory: web
-      - name: Previous release checkout
+      - name: Previous release checkout and production build
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           # a new branch or a forced push has no usable "before": fall back to the first parent
           if ! git cat-file -e "${BASE}^{commit}" 2>/dev/null; then BASE=$(git rev-parse HEAD^); fi
           echo "previous release: $BASE"
+          echo "PREV_SHA=$BASE" >> "$GITHUB_ENV"
           git worktree add --detach "$RUNNER_TEMP/prev" "$BASE"
-          # the previous release runs with this checkout's node_modules (better-sqlite3 is all a migration needs)
-          ln -s "$GITHUB_WORKSPACE/web/node_modules" "$RUNNER_TEMP/prev/web/node_modules"
-      - name: Forward, re-run and rollback on a seeded database
+          cd "$RUNNER_TEMP/prev/web" && npm ci --no-audit --no-fund && npm run build
+      - name: Forward, re-run and rollback on a seeded database (every row and value, password, key decryption)
         working-directory: web
-        run: node --experimental-strip-types --no-warnings scripts/migration-gate.mts "$RUNNER_TEMP/prev/web"
+        run: node --experimental-strip-types --no-warnings scripts/migration-gate.mts "$RUNNER_TEMP/prev/web" --keep "$RUNNER_TEMP/gate"
+      - name: The previous release's production build starts, signs in and reads its data on the migrated database
+        working-directory: web
+        run: node scripts/rollback-start-check.mjs "$RUNNER_TEMP/prev/web" "$RUNNER_TEMP/gate" "$PREV_SHA"
