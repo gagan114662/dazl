@@ -18,10 +18,11 @@ export interface Outcomes {
   exceptions: { kind: 'scan' | 'send' | 'held'; text: string; href: string }[] | null
 }
 
-// Replies that need the owner: an interested answer, or a human answer the rules could not sort. A "no", an opt-out
-// (already honoured by the send rails) and auto-replies are not counted as needing the owner, and neither is a thread
-// that is already stopped.
-const NEEDS_OWNER = new Set(['positive', 'other'])
+// Replies that need the owner: an interested answer, a human answer the rules could not sort, or one held for review
+// (uncertain: unreadable or unclear, its thread stopped with stopped = 'review' until a person reads it). A "no", an
+// opt-out (already honoured by the send rails) and auto-replies are not counted as needing the owner, and neither is a
+// thread that is stopped for any other reason.
+const NEEDS_OWNER = new Set(['positive', 'other', 'uncertain'])
 const FAILED_SEND = new Set(['failed', 'uncertain'])
 
 export function outcomes(i: { jobId: string; scanFailed: string | null; leads: PreviewLead[] | null; messages: OutcomeMsg[] | null; replies: OutcomeReply[] | null }): Outcomes {
@@ -33,7 +34,7 @@ export function outcomes(i: { jobId: string; scanFailed: string | null; leads: P
   const newest = new Map<string, OutcomeReply>()
   for (const r of i.replies ?? []) { const cur = newest.get(r.thread_id); if (!cur || r.received_at > cur.received_at) newest.set(r.thread_id, r) }
   const conversations = i.replies && ids
-    ? { rows: [...newest.values()].filter(r => r.lead_id && ids.has(r.lead_id) && NEEDS_OWNER.has(r.classification) && !r.stopped).sort((a, b) => b.received_at - a.received_at), complete: i.replies.length < INBOX_CAP }
+    ? { rows: [...newest.values()].filter(r => r.lead_id && ids.has(r.lead_id) && NEEDS_OWNER.has(r.classification) && (!r.stopped || r.stopped === 'review')).sort((a, b) => b.received_at - a.received_at), complete: i.replies.length < INBOX_CAP }
     : null
   let exceptions: Outcomes['exceptions'] = []
   if (i.scanFailed) exceptions.push({ kind: 'scan', text: i.scanFailed, href: `/app/leads?job_id=${i.jobId}` })

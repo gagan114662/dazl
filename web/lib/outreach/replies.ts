@@ -65,7 +65,8 @@ export type ReplyClass = 'opt_out' | 'negative' | 'positive' | 'auto' | 'uncerta
 const words = (alts: string[]) => new RegExp(`(?<![\\p{L}\\p{N}])(?:${alts.join('|')})(?![\\p{L}\\p{N}])`, 'iu')
 const OPT_OUT = words([
   // English
-  'unsubscribe', 'remove me', 'stop (?:emailing|email|contacting|sending|messaging)', 'do not (?:contact|email)', "don'?t (?:contact|email)", 'take me off', 'opt[- ]?out', 'cease',
+  'unsubscribe', 'remove me', 'stop (?:emailing|email|contacting|sending|messaging|reaching out)', 'do not (?:contact|email|reach out)', "don'?t (?:contact|email|reach out)", 'take me off', 'opt[- ]?out', 'cease',
+  'never (?:contact|email|message) (?:me|us)', 'leave me alone',
   // Spanish, French, German, Portuguese, Italian, Dutch
   'dar(?:me)? de baja', 'darse de baja', 'no me (?:escriban?|contacte[ns]?|env[ií]e[ns]?)', 'el[ií]min(?:a|e|en)(?:me)? de (?:su|la|vuestra) lista', 'quitar(?:me)? de (?:su|la) lista',
   'd[ée]sinscri(?:re|vez|vez-moi|ption)', 'd[ée]sabonn(?:er|ez|ement)', 'retirez[- ]moi', "ne m'(?:[ée]crivez|contactez|envoyez) plus", 'ne plus me (?:contacter|[ée]crire)',
@@ -82,6 +83,9 @@ const NEGATIVE = words([
 ])
 // Might be an opt-out, might not: a person reads it.
 const AMBIGUOUS = words(['stop', 'stopp', 'remove', 'unsub\\p{L}*', 'spam', 'abuse', 'gdpr', 'dsgvo', 'rgpd', 'lgpd', 'baja', 'block(?:ed)?', 'blacklist', 'report(?:ed)? (?:you|this)', 'how did you get my'])
+// Any negation anywhere in a reply that also says something positive ("Not really interested", "Please don't call
+// me", "Not now, let's talk next year"): the positive wording cannot be trusted, so a person reads it.
+const NEGATION = words(['not', 'never', 'no', 'nope', 'no longer', 'rather not', "\\p{L}+n['\u2019]t", 'cannot', 'pas', 'jamais', 'kein\\p{L}*', 'nicht', 'nein', 'n[aã]o', 'non', 'nunca', 'mai', 'niet', 'geen', 'nooit'])
 const POSITIVE = /\b(interested|tell me more|send (me )?(more )?(info|information|details)|sounds good|let'?s (talk|chat|connect|schedule|set up)|call me|book (a|the) (call|time|meeting)|yes,? please|happy to (chat|talk|connect))\b/i
 const AUTO_SUBJECT = /^(automatic reply|auto[- ]?reply|autoreply|out of (the )?office|abwesenheitsnotiz|automatische antwort|r[ée]ponse automatique|absence|respuesta autom[áa]tica|resposta autom[áa]tica|risposta automatica|automatisch antwoord)/i
 // Letters outside the Latin script (Cyrillic, Greek, CJK, Arabic, Hebrew...): these rules do not read them.
@@ -90,13 +94,15 @@ export interface ReplyHeaders { autoSubmitted?: string; precedence?: string; sub
 // Order matters: an auto-reply is no one's answer; an unreadable body or any opt-out, negative or ambiguous wording wins
 // over positive wording; unsure never grants consent.
 export function classifyReply(text: string, h: ReplyHeaders = {}, status: 'ok' | 'empty' | 'malformed' = 'ok'): ReplyClass {
-  if ((h.autoSubmitted && h.autoSubmitted.toLowerCase() !== 'no') || /^(bulk|junk|auto_reply|list)$/i.test(h.precedence ?? '') || !!h.xAutoreply || !!h.xAutorespond || AUTO_SUBJECT.test(h.subject ?? '')) return 'auto'
+  const auto = (h.autoSubmitted && h.autoSubmitted.toLowerCase() !== 'no') || /^(bulk|junk|auto_reply|list)$/i.test(h.precedence ?? '') || !!h.xAutoreply || !!h.xAutorespond || AUTO_SUBJECT.test(h.subject ?? '')
+  // Auto-reply markers (a subject, a list header) never hide an opt-out or a "no" in the body: those are honoured.
+  if (auto) return status === 'ok' && OPT_OUT.test(text) ? 'opt_out' : status === 'ok' && NEGATIVE.test(text) ? 'negative' : 'auto'
   if (status !== 'ok' || !text.trim()) return 'uncertain'
   if (OPT_OUT.test(text)) return 'opt_out'
   if (NEGATIVE.test(text)) return 'negative'
   if (AMBIGUOUS.test(text)) return 'uncertain'
   if (nonLatinShare(text) > 0.2) return 'uncertain'
-  if (POSITIVE.test(text)) return 'positive'
+  if (POSITIVE.test(text)) return NEGATION.test(text) ? 'uncertain' : 'positive'
   return 'other'
 }
 
@@ -174,7 +180,8 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
           // Blocked for review: no automated follow-up on this thread and no consent stands for either address until a
           // person has read it. Nobody is suppressed: an unclear message is not taken as an opt-out (or as interest).
           for (const e of new Set([from, m.to_email])) revokeAll(db, tenantId, e, 'reply_uncertain', now)
-          db.prepare("UPDATE followup_threads SET stopped = 'review' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, thread)
+          // a thread already stopped for a stronger reason (opt-out, no, bounce) keeps that reason
+          db.prepare("UPDATE followup_threads SET stopped = 'review' WHERE tenant_id = ? AND thread_id = ? AND stopped IS NULL").run(tenantId, thread)
           auditAt(db, tenantId, 'reply_blocked_for_review', body.status === 'ok' ? 'unclear wording' : `body ${body.status}`, m.lead_id, m.id, now); out.reviews++
         } else auditAt(db, tenantId, 'reply_for_review', cls, m.lead_id, m.id, now)
       }

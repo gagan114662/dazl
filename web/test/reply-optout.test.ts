@@ -189,3 +189,42 @@ test('sync, two tenants: HTML unsubscribe suppresses and stops only A\'s thread;
   await syncReplies(db, 'A', { env: genv, master, now: NOW, fetchImpl: gmail({ [a1.thread]: [msg('a1-r', 'Sam <sam@buyer.example>', part('text/plain', 'Sounds good'))] }, []) })
   assert.equal(cls(db, 'A', 'a1-r'), 'opt_out')
 })
+
+// Council review of #419 (three reviewer agents, round 1): findings confirmed on the merged code.
+test('COUNCIL negated or hedged interest never grants consent; it is held for review', () => {
+  for (const t of ["I'm not currently interested", 'Not really interested', 'Not that interested right now', "I'm not sure I'm interested", "Please don't call me", "Not now, maybe later. Let's talk next year", 'We are not currently interested', 'Pas du tout intéressé, sounds good', 'Kein Interesse jetzt, aber sounds good'])
+    assert.notEqual(classifyReply(t), 'positive', t)
+  assert.equal(classifyReply('Not really interested'), 'uncertain')
+  assert.equal(classifyReply('Sounds good, tell me more'), 'positive', 'plain interest is still interest')
+})
+
+test('COUNCIL auto-reply markers never hide an opt-out or a no in the body', () => {
+  assert.equal(classifyReply('Please unsubscribe me', { precedence: 'list' }), 'opt_out')
+  assert.equal(classifyReply('Unsubscribe me please.', { subject: 'Absence of interest' }), 'opt_out')
+  assert.equal(classifyReply('Please remove me from your list.', { subject: 'Out of office' }), 'opt_out')
+  assert.equal(classifyReply('Not interested, thanks', { autoSubmitted: 'auto-replied' }), 'negative')
+  assert.equal(classifyReply('I am out of the office until Monday.', { subject: 'Out of office' }), 'auto')
+})
+
+test('COUNCIL more English opt-outs; a quote header in an unlisted language still ends the new text', () => {
+  for (const t of ['Never contact me again', 'Please do not reach out again', 'Leave me alone', 'Stop reaching out'])
+    assert.equal(classifyReply(t), 'opt_out', t)
+  const sw = part('text/plain', "Hej, tack.\n\nDen mån 3 mars skrev Pat <pat@seller.example>:\nIf you're interested, reply and we'll talk")
+  assert.equal(messageText(sw).text, 'Hej, tack.')
+  assert.notEqual(classify(sw), 'positive')
+  for (const h of ['W dniu 3.03.2026 Pat <pat@seller.example> napisał:', 'Dne 3. 3. 2026 Pat <pat@seller.example> napsal(a):', 'Den 3. mar. 2026 skrev Pat <pat@seller.example>:'])
+    assert.equal(newText(`Who is this?\n\n${h}\nSounds good, let's talk`), 'Who is this?', h)
+})
+
+test('COUNCIL a later unclear message does not downgrade a thread stopped for an opt-out', async () => {
+  const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db)
+  await tenant(db, 'A', 'me@a-seller.example')
+  const a = sent(db, 'A', 'sam@buyer.example')
+  await syncReplies(db, 'A', { env: genv, master, now: NOW, fetchImpl: gmail({ [a.thread]: [
+    msg('o1', 'Sam <sam@buyer.example>', part('text/plain', 'Please unsubscribe me')),
+    msg('o2', 'Sam <sam@buyer.example>', { mimeType: 'text/plain', body: { data: '%%%broken%%%' } }),
+  ] }, []) })
+  assert.equal(cls(db, 'A', 'o2'), 'uncertain')
+  assert.equal(stopped(db, 'A', a.thread), 'opt_out')
+  assert.equal(isSuppressed(db, 'A', 'sam@buyer.example'), true)
+})

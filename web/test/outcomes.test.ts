@@ -46,3 +46,9 @@ test('two replies in one thread are one conversation; the newest reply decides',
   const o = outcomes({ jobId: J, scanFailed: null, leads: [lead('1')], messages: [], replies: [r('a', 't1', 'positive', 10), r('b', 't1', 'other', 20), r('c', 't2', 'positive', 5), r('d', 't2', 'opt_out', 6)] })
   assert.deepEqual(o.conversations?.rows.map(x => [x.thread_id, x.gmail_id]), [['t1', 'b']], 't1 counts once (its newest reply); t2 ended with an opt-out')
 })
+
+test('a reply held for review (uncertain, thread stopped for review) needs the owner; other stopped threads do not', () => {
+  const held = { ...reply('1', 'uncertain'), stopped: 'review' }, opted = { ...reply('2', 'other'), stopped: 'opt_out' }
+  const o = outcomes({ jobId: J, scanFailed: null, leads: [lead('1'), lead('2')], messages: [], replies: [held, opted] })
+  assert.deepEqual(o.conversations?.rows.map(r => [r.lead_id, r.classification]), [['1', 'uncertain']])
+})

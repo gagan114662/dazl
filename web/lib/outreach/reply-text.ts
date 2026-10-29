@@ -71,11 +71,15 @@ const QUOTE_HEADER = new RegExp([
   String.raw`-{2,}\s*(Original Message|Mensaje original|Message d'origine|Urspr[üu]ngliche Nachricht|Mensagem original|Messaggio originale|Oorspronkelijk bericht)`,
   String.raw`-{2,}\s*Forwarded message`, String.raw`(From|De|Von|Da|Van|Från|Fra)\s?: .{0,200}`,
 ].map(s => `(?:${s})`).join('|'), 'i')
+const QUOTE_ADDR_HEADER = /<[^\s<>@]+@[^\s<>]+>.{0,60}:$/
 export function newText(t: string): string {
   const lines = t.split(/\r?\n/)
   const out: string[] = []
   for (const l of lines) {
     if (QUOTE_HEADER.test(l.trim()) && /^(?:-{2,}|(?:on|el|le|am|em|il|op|from|de|von|da|van|från|fra)(?![\p{L}]))/iu.test(l.trim())) break
+    // a quote header in a language not listed above: a line naming an address in <...> and ending with ":"
+    // ("Den mån 3 mars skrev Pat <pat@seller.example>:")
+    if (QUOTE_ADDR_HEADER.test(l.trim())) break
     if (l.trimStart().startsWith('>')) continue
     out.push(l)
   }
