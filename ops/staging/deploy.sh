@@ -51,7 +51,8 @@ check_env() {
   [ -z "$(val DATABASE_URL "$f")" ] || fail "env: no DATABASE_URL on staging (its store is its own SQLite file)"
   case "$(val STRIPE_SECRET_KEY "$f")" in sk_test_*|rk_test_*|'') ;; *) fail "env: STRIPE_SECRET_KEY must be a test-mode key";; esac
   case "$(val PUBLIC_BASE_URL "$f")" in https://staging.*) ;; *) fail "env: PUBLIC_BASE_URL must be the staging URL";; esac
-  [ -z "$(val GOOGLE_CLIENT_SECRET "$f")" ] || fail "env: no Google credentials on staging (Gmail is stubbed)"
+  [ -z "$(val GOOGLE_CLIENT_SECRET "$f")" ] && [ -z "$(val GOOGLE_CLIENT_ID "$f")" ] || fail "env: no Google credentials on staging (Gmail is stubbed)"
+  check_signin_client "$f"
   local db; db=$(val DB_PATH "$f")
   [ -n "$db" ] || fail "env: DB_PATH is required"
   case "$db" in /*) ;; *) fail "env: DB_PATH must be absolute";; esac
@@ -66,6 +67,22 @@ check_env() {
   case "$pdir/" in "$sdir/"*) fail "env: production's database is inside the staging DB_PATH's directory";; esac
   # the same file under another name (a hard link): same device and inode
   if [ -e "$sdb" ] && [ -e "$pdb" ] && [ "$(stat -Lc '%d:%i' -- "$sdb")" = "$(stat -Lc '%d:%i' -- "$pdb")" ]; then fail "env: DB_PATH is the production database (same file)"; fi
+  return 0
+}
+
+# Sign in with Google on staging: only a dedicated, identity-only OAuth client (GOOGLE_SIGNIN_CLIENT_ID/SECRET, both or
+# neither), never production's. Its id and secret must differ from every Google client in production's env file, so
+# that file must be readable whenever a sign-in client is configured (fail closed). Values are never printed.
+check_signin_client() {
+  local f=$1 id secret
+  id=$(val GOOGLE_SIGNIN_CLIENT_ID "$f"); secret=$(val GOOGLE_SIGNIN_CLIENT_SECRET "$f")
+  [ -z "$id" ] && [ -z "$secret" ] && return 0
+  [ -n "$id" ] && [ -n "$secret" ] || fail "env: GOOGLE_SIGNIN_CLIENT_ID and GOOGLE_SIGNIN_CLIENT_SECRET go together"
+  case "$id" in *.apps.googleusercontent.com) ;; *) fail "env: GOOGLE_SIGNIN_CLIENT_ID is not a Google OAuth client id";; esac
+  [ -n "$PROD_ENV_FILE" ] && [ -r "$PROD_ENV_FILE" ] || fail "env: a staging sign-in client needs PROD_ENV_FILE to prove it is not production's"
+  local k v
+  for k in GOOGLE_CLIENT_ID GOOGLE_SIGNIN_CLIENT_ID; do v=$(val "$k" "$PROD_ENV_FILE"); [ -z "$v" ] || [ "$v" != "$id" ] || fail "env: the staging sign-in client is production's Google client"; done
+  for k in GOOGLE_CLIENT_SECRET GOOGLE_SIGNIN_CLIENT_SECRET; do v=$(val "$k" "$PROD_ENV_FILE"); [ -z "$v" ] || [ "$v" != "$secret" ] || fail "env: the staging sign-in client secret is production's"; done
   return 0
 }
 
