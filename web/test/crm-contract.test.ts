@@ -90,34 +90,56 @@ test('route: truthful outcomes, audit rows, unknown blocks a blind retry until r
     '--test', './test/helpers/crm-route-runtime.mts'], { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 120000 })
   assert.equal(r.error, undefined)
   assert.equal(r.status, 0, r.stdout + r.stderr)
-  assert.match(r.stdout, /# pass 8\b/)
+  assert.match(r.stdout, /# pass 9\b/)
   assert.match(r.stdout, /# fail 0\b/)
 })
 
 // Two workers (two connections to one database file) claiming the same push: exactly one wins, every time.
-test('claims across two workers: one winner; resolution races change one row once; tenants and CRM accounts are separate', () => {
+test('claims across two workers: one winner; resolution races change one row once; an old attempt never finishes a newer claim', () => {
   const file = path.join(mkdtempSync(path.join(tmpdir(), 'dazl-claims-')), 'app.db')
   const w1 = new Database(file); migrateConnectors(w1); const w2 = new Database(file)
-  const dest = crmDestination('A', HS), NOW = 1_800_000_000
+  const dest = crmDestination(HS), NOW = 1_800_000_000
+  const won = (cs: ReturnType<typeof claimPush>[]) => cs.filter(c => 'attemptId' in c) as { attemptId: string }[]
   for (let i = 0; i < 20; i++) {
     const lead = `lead-${i}`
-    const [a, b] = [claimPush(w1, 'A', dest, lead, NOW), claimPush(w2, 'A', dest, lead, NOW)]
-    assert.equal([a, b].filter(c => 'claimedAt' in c).length, 1, lead)
-    assert.deepEqual([a, b].find(c => 'blocked' in c), { blocked: 'in_progress' })
+    const cs = [claimPush(w1, 'A', dest, lead, NOW), claimPush(w2, 'A', dest, lead, NOW)]
+    assert.equal(won(cs).length, 1, lead)
+    assert.deepEqual(cs.find(c => 'blocked' in c), { blocked: 'in_progress' })
   }
   // the winner records unknown; two resolves race: one changes the row, the other finds nothing to resolve
-  assert.ok(finishClaim(w1, 'A', dest, 'lead-0', NOW, 'uncertain', null, NOW))
-  assert.deepEqual([resolveClaim(w1, 'A', dest, 'lead-0', false, NOW), resolveClaim(w2, 'A', dest, 'lead-0', true, NOW)], [true, false])
-  // after "not created" exactly one worker may claim again
-  assert.equal([claimPush(w1, 'A', dest, 'lead-0', NOW + 1), claimPush(w2, 'A', dest, 'lead-0', NOW + 1)].filter(c => 'claimedAt' in c).length, 1)
-  // a stale claim cannot be finished by its late request once resolved
-  assert.ok(resolveClaim(w2, 'A', dest, 'lead-0', true, NOW + 1 + STALE_CLAIM_SECONDS))
-  assert.equal(finishClaim(w1, 'A', dest, 'lead-0', NOW + 1, 'ok', '9', NOW + 2 + STALE_CLAIM_SECONDS), false)
-  // the destination is the tenant, provider and account: another tenant, another key or another CRM is another claim
-  assert.ok('claimedAt' in claimPush(w1, 'B', crmDestination('B', HS), 'lead-1', NOW))
-  assert.ok('claimedAt' in claimPush(w1, 'A', crmDestination('A', { provider: 'hubspot', key: 'other-account' }), 'lead-1', NOW))
-  assert.ok('claimedAt' in claimPush(w1, 'A', crmDestination('A', PD), 'lead-1', NOW))
-  assert.notEqual(crmDestination('A', HS), crmDestination('B', HS))
-  assert.doesNotMatch(crmDestination('A', HS), /synthetic/, 'never the key itself')
+  const first = won([claimPush(w1, 'A', dest, 'lead-x', NOW)])[0]
+  assert.ok(finishClaim(w1, 'A', dest, 'lead-x', first.attemptId, 'uncertain', null, NOW))
+  assert.deepEqual([resolveClaim(w1, 'A', dest, 'lead-x', false, NOW), resolveClaim(w2, 'A', dest, 'lead-x', true, NOW)], [true, false])
+  // after "not created" exactly one worker claims again, IN THE SAME SECOND as the first attempt
+  const second = won([claimPush(w1, 'A', dest, 'lead-x', NOW), claimPush(w2, 'A', dest, 'lead-x', NOW)])
+  assert.equal(second.length, 1)
+  // the first attempt (same second, older) can never finish the newer claim; the newer one can
+  assert.equal(finishClaim(w2, 'A', dest, 'lead-x', first.attemptId, 'ok', '1', NOW), false)
+  assert.ok(finishClaim(w2, 'A', dest, 'lead-x', second[0].attemptId, 'ok', '2', NOW))
+  // a stale claim resolved meanwhile cannot be finished by its late request
+  const late = won([claimPush(w1, 'A', dest, 'lead-y', NOW)])[0]
+  assert.ok(resolveClaim(w2, 'A', dest, 'lead-y', true, NOW + STALE_CLAIM_SECONDS))
+  assert.equal(finishClaim(w1, 'A', dest, 'lead-y', late.attemptId, 'ok', '9', NOW + STALE_CLAIM_SECONDS + 1), false)
   w1.close(); w2.close()
+})
+
+// Instinct's HOLD on 8e8ef6e: a key is a credential, not an account identity. The hold is provider-scoped.
+test('a rotated or replaced key never lifts an unresolved claim; another provider is a separate destination; tenants are separate', () => {
+  const db = new Database(':memory:'); migrateConnectors(db)
+  const NOW = 1_800_000_000
+  const before = { provider: 'hubspot', key: 'token-before' } as CrmConfig, after = { provider: 'hubspot', key: 'token-after' } as CrmConfig
+  const c = claimPush(db, 't', crmDestination(before), 'l', NOW)
+  assert.ok('attemptId' in c && finishClaim(db, 't', crmDestination(before), 'l', c.attemptId, 'uncertain', null, NOW))
+  // the same tenant and lead with a new token (rotation, reconnect, or a key for another account of the same CRM)
+  assert.deepEqual(claimPush(db, 't', crmDestination(after), 'l', NOW + 1), { blocked: 'unknown' })
+  assert.equal(crmDestination(before), crmDestination(after))
+  assert.doesNotMatch(crmDestination(before), /token/, 'never the key')
+  // the explicit, safe way on: the user resolves it, then the new key may push
+  assert.ok(resolveClaim(db, 't', crmDestination(after), 'l', false, NOW + 2))
+  assert.ok('attemptId' in claimPush(db, 't', crmDestination(after), 'l', NOW + 3))
+  // Pipedrive is another system: its create cannot duplicate the HubSpot one; another tenant never shares a claim
+  const d = claimPush(db, 't', crmDestination(PD), 'l2', NOW)
+  assert.ok('attemptId' in d && finishClaim(db, 't', crmDestination(PD), 'l2', d.attemptId, 'uncertain', null, NOW))
+  assert.ok('attemptId' in claimPush(db, 't', crmDestination(HS), 'l2', NOW))
+  assert.ok('attemptId' in claimPush(db, 'other-tenant', crmDestination(PD), 'l2', NOW))
 })

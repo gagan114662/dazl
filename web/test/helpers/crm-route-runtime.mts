@@ -163,3 +163,18 @@ test('a result that cannot be recorded after the create answers ok: reported unk
   const again = await push('A')
   assert.deepEqual([again.status, again.json.outcome, calls.length], [409, 'in_progress', 1], 'no second create')
 })
+
+test('disconnect and reconnect with a new key, same CRM: the unknown push stays blocked until resolved', async () => {
+  db.prepare("DELETE FROM crm_push_claims").run(); calls.length = 0
+  as('A'); answer = reply('{}')
+  let r = await push('A')
+  assert.deepEqual([r.status, r.json.outcome, calls.length], [502, 'unknown', 1])
+  assert.equal((await post({ action: 'disconnect' })).status, 200)
+  saveCrmConfig(db, 'A', { provider: 'hubspot', key: 'synthetic-key-A-rotated' })
+  r = await push('A')
+  assert.deepEqual([r.status, r.json.outcome, calls.length], [409, 'unknown', 1], 'no create with the new key')
+  assert.equal((await post({ action: 'resolve', lead_id: 'lead-A', created: false })).status, 200)
+  answer = reply(JSON.stringify({ id: '777' }), 201)
+  r = await push('A')
+  assert.deepEqual([r.status, r.json.external_id, calls.length], [200, '777', 2])
+})

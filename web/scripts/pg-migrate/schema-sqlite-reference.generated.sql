@@ -119,6 +119,7 @@ CREATE TABLE crm_push_claims (
       lead_id     TEXT NOT NULL,
       status      TEXT NOT NULL CHECK (status IN ('pending', 'ok', 'failed', 'uncertain', 'resolved_created', 'resolved_not_created')),
       external_id TEXT,
+      attempt_id  TEXT NOT NULL,
       claimed_at  INTEGER NOT NULL,
       updated_at  INTEGER NOT NULL,
       PRIMARY KEY (tenant_id, destination, lead_id)

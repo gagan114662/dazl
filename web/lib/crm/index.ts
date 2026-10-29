@@ -2,7 +2,7 @@
 // connectors vault (never returned by any API). Three targets: HubSpot (private-app
 // token), Pipedrive (API token), or a generic HTTPS webhook the tenant controls.
 // A push failure is reported to the caller, never swallowed silently.
-import { createHash } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getEnabledCredential, saveCredential, deleteCredential, audit } from '../connectors/store.ts'
 import { fetchPublicHtml, defaultLookup, type Lookup } from '../net/public-fetch.ts'
@@ -134,35 +134,40 @@ export function auditPush(db: Database.Database, tenantId: string, provider: str
 }
 
 // ---------- push claims (crm_push_claims, lib/connectors/store.ts) ----------
-// A native CRM create (HubSpot, Pipedrive) is sent only by the request that claimed (tenant, destination, lead) first.
-// The destination is the provider and the account the key opens (a fingerprint of the key, never the key), so a claim
-// follows the lead id, not its company text, and another CRM account is another destination. The generic webhook
-// keeps its own protocol and takes no claim.
+// A native CRM create (HubSpot, Pipedrive) is sent only by the request that claimed (tenant, destination, lead) first,
+// keyed on the lead id, never its company text.
+// The destination is the provider alone. A key is a credential, not an account identity: rotating it, reconnecting, or
+// pasting another key for the same account must not lift an unresolved claim, and dazl has no verified account id to
+// tell a genuinely different account apart. So the hold is provider-scoped, on purpose: after switching to another
+// account of the same CRM, an unknown push still waits for the user to resolve it (resolveClaim). Another provider is a
+// different system, where a create cannot duplicate this one. The generic webhook takes no claim.
 //   pending   a create is (or was) on its way. A claim still pending after STALE_CLAIM_SECONDS belongs to a request
 //             that crashed or could not record its result: it is unknown.
 //   uncertain the CRM's answer did not say whether the record exists.
-//   Both block a new push until the user resolves it (resolveClaim). ok, failed and the resolved states may be claimed
-//   again. A claim that could not be finished stays pending, so a failure to record never makes a retry look safe.
+//   Both block a new push until the user resolves it. ok, failed and the resolved states may be claimed again. A claim
+//   that could not be finished stays pending, so a failure to record never makes a retry look safe.
+// Each claim carries a random attempt id; only the request holding that id may finish it, so an older request can never
+// finish a later claim, even one taken in the same second.
 export const STALE_CLAIM_SECONDS = 300
 export type ClaimBlock = 'in_progress' | 'unknown'
-export const crmDestination = (tenantId: string, cfg: CrmConfig): string =>
-  `${cfg.provider}:${createHash('sha256').update(`dazl-crm-destination\0${tenantId}\0${cfg.provider}\0${cfg.key ?? ''}`).digest('hex').slice(0, 24)}`
+export const crmDestination = (cfg: CrmConfig): string => cfg.provider
 const nowS = () => Math.floor(Date.now() / 1000)
 
-// Claims the push atomically. Returns the claim time (the fence finishClaim needs), or why the lead is blocked.
-export function claimPush(db: Database.Database, tenantId: string, destination: string, leadId: string, now = nowS()): { claimedAt: number } | { blocked: ClaimBlock } {
-  const r = db.prepare(`INSERT INTO crm_push_claims (tenant_id, destination, lead_id, status, claimed_at, updated_at) VALUES (?, ?, ?, 'pending', ?, ?)
-    ON CONFLICT (tenant_id, destination, lead_id) DO UPDATE SET status = 'pending', external_id = NULL, claimed_at = excluded.claimed_at, updated_at = excluded.updated_at
-    WHERE crm_push_claims.status IN ('ok', 'failed', 'resolved_created', 'resolved_not_created')`).run(tenantId, destination, leadId, now, now)
-  if (r.changes === 1) return { claimedAt: now }
+// Claims the push atomically. Returns the attempt id (the fence finishClaim needs), or why the lead is blocked.
+export function claimPush(db: Database.Database, tenantId: string, destination: string, leadId: string, now = nowS()): { attemptId: string } | { blocked: ClaimBlock } {
+  const attemptId = randomBytes(12).toString('hex')
+  const r = db.prepare(`INSERT INTO crm_push_claims (tenant_id, destination, lead_id, status, attempt_id, claimed_at, updated_at) VALUES (?, ?, ?, 'pending', ?, ?, ?)
+    ON CONFLICT (tenant_id, destination, lead_id) DO UPDATE SET status = 'pending', external_id = NULL, attempt_id = excluded.attempt_id, claimed_at = excluded.claimed_at, updated_at = excluded.updated_at
+    WHERE crm_push_claims.status IN ('ok', 'failed', 'resolved_created', 'resolved_not_created')`).run(tenantId, destination, leadId, attemptId, now, now)
+  if (r.changes === 1) return { attemptId }
   const c = db.prepare('SELECT status, claimed_at FROM crm_push_claims WHERE tenant_id = ? AND destination = ? AND lead_id = ?').get(tenantId, destination, leadId) as { status: string; claimed_at: number }
   return { blocked: c.status === 'pending' && c.claimed_at > now - STALE_CLAIM_SECONDS ? 'in_progress' : 'unknown' }
 }
-// Records the outcome of the claim this request holds. False when the claim is no longer this request's (resolved as
-// stale meanwhile); the caller then reports the outcome as unknown.
-export function finishClaim(db: Database.Database, tenantId: string, destination: string, leadId: string, claimedAt: number, status: 'ok' | 'failed' | 'uncertain', externalId: string | null, now = nowS()): boolean {
-  return db.prepare("UPDATE crm_push_claims SET status = ?, external_id = ?, updated_at = ? WHERE tenant_id = ? AND destination = ? AND lead_id = ? AND status = 'pending' AND claimed_at = ?")
-    .run(status, externalId, now, tenantId, destination, leadId, claimedAt).changes === 1
+// Records the outcome of the claim this request holds. False when the claim is no longer this request's attempt
+// (resolved as stale, then claimed again); the caller then reports the outcome as unknown.
+export function finishClaim(db: Database.Database, tenantId: string, destination: string, leadId: string, attemptId: string, status: 'ok' | 'failed' | 'uncertain', externalId: string | null, now = nowS()): boolean {
+  return db.prepare("UPDATE crm_push_claims SET status = ?, external_id = ?, updated_at = ? WHERE tenant_id = ? AND destination = ? AND lead_id = ? AND status = 'pending' AND attempt_id = ?")
+    .run(status, externalId, now, tenantId, destination, leadId, attemptId).changes === 1
 }
 // The user checked the CRM after an unknown outcome. Only an unknown claim (uncertain, or pending past the stale
 // limit) can be resolved, atomically: a second resolve, or one racing a fresh push, changes nothing.

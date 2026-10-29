@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
       const lead = db.prepare('SELECT l.id, l.scan_job_id, l.company, l.name, l.contact, l.signal, l.source_url, l.fit, l.intent, l.why FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, user.id) as { id: string; scan_job_id: string; company: string; name: string; contact: string | null; signal: string; source_url: string; fit: number | null; intent: number | null; why: string | null } | undefined
       if (!lead) return NextResponse.json({ error: 'Not found' }, { status: 404 })
       // the generic webhook keeps its own protocol: no record id, no claim
-      const dest = cfg.provider === 'webhook' ? null : crmDestination(user.id, cfg)
+      const dest = cfg.provider === 'webhook' ? null : crmDestination(cfg)
       if (body.action === 'resolve') {
         // The user checked the CRM after an unknown result and says whether the record is there. Only then may the
         // lead be pushed again (when it is not there).
@@ -61,19 +61,19 @@ export async function POST(req: NextRequest) {
         auditPush(db, user.id, cfg.provider, lead, body.created ? 'resolved_created' : 'resolved_not_created')
         return NextResponse.json({ ok: true })
       }
-      let claimedAt = 0
+      let attemptId = ''
       if (dest) {
         const c = claimPush(db, user.id, dest, lead.id)
         if ('blocked' in c) return NextResponse.json(c.blocked === 'in_progress'
           ? { error: 'This lead is being pushed right now. Wait a moment, then check your CRM.', outcome: 'in_progress' }
           : { error: 'An earlier push of this lead has an unknown result. Check your CRM for this contact first, then record what you found.', outcome: 'unknown' }, { status: 409 })
-        claimedAt = c.claimedAt
+        attemptId = c.attemptId
       }
       // A result that cannot be recorded leaves the claim pending (it turns unknown), so a retry is never made safe by
       // a failed write: the response says unknown too.
       const finish = (status: 'ok' | 'failed' | 'uncertain', id: string | null) => {
         if (!dest) return true
-        try { return finishClaim(db, user.id, dest, lead.id, claimedAt, status, id) } catch (e) { captureError(e, { source: 'route', where: '/api/crm', method: 'POST', tenantId: user.id, requestId: requestIdOf(req) }); return false }
+        try { return finishClaim(db, user.id, dest, lead.id, attemptId, status, id) } catch (e) { captureError(e, { source: 'route', where: '/api/crm', method: 'POST', tenantId: user.id, requestId: requestIdOf(req) }); return false }
       }
       const unknownReply = () => NextResponse.json({ error: 'The result of this push could not be recorded. Check your CRM for this contact first, then record what you found.', outcome: 'unknown' }, { status: 502 })
       let r: Awaited<ReturnType<typeof pushLead>>
