@@ -129,7 +129,7 @@ async function run(width, height, tag, leads = LEADS, fail = false) {
   assert.equal(await page.getByTestId('ready-subhead').textContent(), 'dazl found 5 leads ready to contact.')
   assert.equal(await page.getByTestId('first-heading').textContent(), '5 ready to contact')
   assert.equal(await page.getByTestId('ready-cta').textContent(), 'Start reaching out')
-  assert.equal(await page.getByTestId('ready-cta').getAttribute('href'), `/app/leads?job_id=${J}`)
+  assert.equal(await page.getByTestId('ready-cta').evaluate(e => e.tagName), 'BUTTON', 'with leads ready, reaching out opens the review step in place (test/ui/first-review.ui.mjs)')
   await page.waitForTimeout(400)
   await fits('ready screen with leads')
   await shot('4-customers')

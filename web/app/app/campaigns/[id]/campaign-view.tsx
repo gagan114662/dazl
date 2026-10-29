@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { isJobId } from '@/lib/outreach/scan-drafts'
 import { leadStatus, scanMessages, type ViewLead, type ViewMsg } from '@/lib/outreach/campaign-view'
 import { scanOutcome } from '@/lib/scan/scan-outcome'
-import { runStatus } from '@/lib/run-status'
+import { currentQual, currentRun, runStatus } from '@/lib/run-status'
 
 import type { CampaignDetail } from '@/lib/outreach/campaign-detail'
 import type { PlayOffer } from '@/lib/scan/play-offer-text'
@@ -39,14 +39,16 @@ export default function CampaignView({ id }: { id: string }) {
       {/* What this play sells (lib/scan/play-offer.ts): the same offer Home and its drafts use; a contested one is chosen here. */}
       {data && typeof data === 'object' && <div className="my-3" data-testid="campaign-offer"><PlayOfferCard jobId={id} offer={data.offer ?? null} onChange={o => setData(d => d && typeof d === 'object' ? { ...d, offer: o } : d)} /></div>}
       {job && typeof job === 'object' && (() => {
-        // The same recorded outcome and next step as the Leads history (lib/scan/scan-outcome.ts).
+        // The same recorded outcome and next step as the Leads history (lib/scan/scan-outcome.ts), restated from the
+        // leads as they stand now (the Campaigns card does the same), so a run whose leads were all rejected says none passed.
         const o = scanOutcome({ ...job, empty_reason: (job as { empty_reason?: string | null }).empty_reason ?? null, lead_count: Array.isArray(leads) ? leads.length : null })
-        const run = runStatus(o, Array.isArray(leads) ? leads.length : null)
+        const recorded = runStatus(o, Array.isArray(leads) ? leads.length : null)
+        const run = Array.isArray(leads) ? currentRun(recorded, currentQual(leads), job.query) : recorded
         return <><span className={`pill mb-2 ${run.group === 'technical' ? 'pill-pink' : run.group === 'results' ? 'pill-mint' : run.group === 'running' ? 'pill-peach' : ''}`} data-testid="run-tag" data-group={run.group}>{run.tag}</span>
         <p className="text-[#555] text-sm mb-1" data-testid="campaign-status" data-outcome={o.kind}>
-          Scan: {o.label}{job.created_at ? ` - started ${new Date(job.created_at * 1000).toLocaleDateString()}` : ''}
-          {o.next && <>. <Link className="underline" href={o.next.href} data-testid="next-step">{o.next.text}</Link></>}
-          {o.detail && <span className="block text-xs mt-1" data-testid="outcome-detail">{o.detail}</span>}
+          Scan: {run.label}{job.created_at ? ` - started ${new Date(job.created_at * 1000).toLocaleDateString()}` : ''}
+          {run.next && <>. <Link className="underline" href={run.next.href} data-testid="next-step">{run.next.text}</Link></>}
+          {run.detail && <span className="block text-xs mt-1" data-testid="outcome-detail">{run.detail}</span>}
         </p></>
       })()}
       <p className="text-[#555] text-sm mb-6">Review, approve, draft and send on <Link className="underline" href={`/app/leads?job_id=${id}`}>Leads</Link> and <Link className="underline" href={`/app/outreach?job_id=${id}`}>Outreach</Link>; this page only shows where each lead stands. Sent is not delivered.</p>

@@ -52,9 +52,13 @@ test('every emitted field is scrubbed or shape-checked: PII in a name, cause nam
     { source: `route ${PII_EMAIL}` as ErrorContext['source'], where: '/api/x' },
   ]
   const leaks = [PII_EMAIL, 'synthetic.owner', '1234567890', 'SyntheticPerson', 'Jane', '555']
+  // Pinned to the instant that once failed CI: a capture time ending in .555Z holds the planted phone fragment.
+  const AT = new Date('2026-10-29T16:43:53.555Z')
   for (const ctx of hostile) {
-    const r = toRecord(e, ctx)
-    const out = JSON.stringify(r)
+    const r = toRecord(e, ctx, AT)
+    // ts is the capture time, not input: only it is left out; every input-derived field is still checked.
+    const out = JSON.stringify({ ...r, ts: undefined })
+    assert.equal(r.ts, AT.toISOString())
     for (const leak of leaks) assert.ok(!out.includes(leak), `${leak} leaked from ${JSON.stringify(ctx)}: ${out}`)
     assert.equal(r.error.name, '[unrecognized-name]')
     assert.equal(r.error.cause?.name, '[unrecognized-name]')
