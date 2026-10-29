@@ -65,7 +65,7 @@ export default function AdvancedPanel() {
                   <span className="font-medium">{c.name}</span>
                   <span className="badge">{BADGE[c.status]}</span>
                 </div>
-                <p className="text-[#555] mb-2">{c.note}</p>
+                <p className="text-[#555] mb-2" data-testid={c.status === 'soon' ? `unsupported-${c.id}` : undefined}>{c.note}</p>
                 {p && Row(c, p)}
               </div>
             )

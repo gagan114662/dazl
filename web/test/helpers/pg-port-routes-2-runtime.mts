@@ -127,6 +127,9 @@ async function scenario(db: Db): Promise<{ out: Out[]; rows: unknown }> {
   out.push(await call('advanced save', advanced.POST(req('/api/settings/advanced', 'POST', { platform: 'reddit', action: 'save', session: 'reddit-session-abcd' }))))
   out.push(await call('advanced toggle off', advanced.POST(req('/api/settings/advanced', 'POST', { platform: 'reddit', action: 'toggle', enabled: false }))))
   out.push(await call('advanced after', advanced.GET()))
+  // Adapters that cannot run take no consent, toggle or session, on either engine.
+  for (const [n, b] of [['consent', { action: 'consent', accept: true, version }], ['save', { action: 'save', session: 'facebook-session-abcd' }], ['toggle', { action: 'toggle', enabled: true }]] as const) out.push(await call(`advanced unsupported ${n}`, advanced.POST(req('/api/settings/advanced', 'POST', { platform: 'facebook', ...b }))))
+  out.push(await call('advanced unsupported xhs save', advanced.POST(req('/api/settings/advanced', 'POST', { platform: 'xiaohongshu', action: 'save', session: 'xhs-session-abcdef' }))))
   out.push(await call('connectors', connectors.GET()))
   out.push(await call('llm key', llmKey.GET()))
   out.push(await call('llm key remove', llmKey.DELETE(req('/api/settings/llm-key', 'DELETE', { vendor: 'openai' }))))
@@ -208,6 +211,10 @@ test('batch 2 routes on SQLite: settings, Cal.com and warm paths behave, and ten
   assert.deepEqual((o('calcom after').body as { bookings: { booking_uid: string }[] }).bookings.map(b => b.booking_uid).sort(), ['bk-1', 'bk-2'])
   assert.deepEqual((rows as { leads: unknown[] }).leads, [{ id: L.a, stage: 'booked_call' }, { id: L.b, stage: null }].sort((x, y) => x.id.localeCompare(y.id)))
   assert.deepEqual([o('advanced save before consent').status, o('advanced consent').status, o('advanced save').status], [403, 200, 200])
+  assert.deepEqual(['consent', 'save', 'toggle'].map(n => o(`advanced unsupported ${n}`).status).concat(o('advanced unsupported xhs save').status), [409, 409, 409, 409])
+  assert.deepEqual((o('advanced unsupported save').body as { error: string; capability: string; platform: string }), { error: 'unsupported_capability', capability: 'unsupported', platform: 'facebook', reason: (o('advanced unsupported save').body as { reason: string }).reason } as never)
+  assert.ok(!(rows as { credentials: { connector: string }[] }).credentials.some(c => /facebook|xiaohongshu/.test(c.connector)), 'no session was stored for an adapter that cannot run')
+  assert.deepEqual((o('advanced after').body as { platforms: { platform: string; supported: boolean }[] }).platforms.filter(p => !p.supported).map(p => p.platform).sort(), ['facebook', 'xiaohongshu'])
   assert.deepEqual([o('warm import').status, o('warm import again').status], [200, 409])
   const wp = o('warm path').body as { first_degree: { connection_name: string }[]; manual_check: unknown[] }
   assert.deepEqual(wp.first_degree.map(f => f.connection_name), ['Ada L'], 'the duplicated profile keeps its last row')

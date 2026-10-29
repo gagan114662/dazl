@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3'
 import { asDb, type Db, type DbLike } from '../db/client.ts'
 import { readEnabledCredential, writeAudit } from '../connectors/store.ts'
 import type { Evidence } from '../sources/types.ts'
+import { adapterSupported, UNSUPPORTED_STATUS } from './capability.ts'
 import { advFlags, CONSENT_VERSION, connectorId, maxCallsPerHour, platformAllowed, scopeFor, type AdvPlatform, type ConsentScope } from './config.ts'
 import { tfSearch, tinyfishEnabled } from '../search/tinyfish.ts'
 
@@ -40,7 +41,8 @@ export async function readConsent(db: Db, tenantId: string, scope: ConsentScope)
 }
 
 export interface WorkerItem { url: string; title: string; quote: string; date: string | null; login_walled: boolean }
-export type WorkerFetch = (req: { platform: AdvPlatform; query: string; session: string }) => Promise<WorkerItem[] | null>
+// 'unsupported': the worker answered that this adapter cannot run (501 unsupported_capability). Distinct from null (a worker error).
+export type WorkerFetch = (req: { platform: AdvPlatform; query: string; session: string }) => Promise<WorkerItem[] | null | typeof UNSUPPORTED_STATUS>
 
 // Worker protocol: POST {platform, query, session} with a bearer token, reply {items:[{url,title,quote,date,login_walled}]}.
 // The request carries one tenant's own session and nothing else: no tenant id, no DB access, no other keys.
@@ -54,6 +56,7 @@ export function httpWorker(env: Record<string, string | undefined> = process.env
         redirect: 'error',
         signal: AbortSignal.timeout(45_000),
       })
+      if (res.status === 501) { const b = await res.json().catch(() => null) as { error?: unknown; capability?: unknown } | null; return b?.error === UNSUPPORTED_STATUS && b?.capability === 'unsupported' ? UNSUPPORTED_STATUS : null }
       if (!res.ok) return null
       const text = await res.text()
       if (text.length > 1_000_000) return null
@@ -108,6 +111,8 @@ export async function collectAdvanced(store: DbLike, tenantId: string, jobId: st
     const id = connectorId(p)
     const q = p === 'x' && deps.xQuery ? deps.xQuery : query
     const skip = (status: string) => writeAudit(db, { tenantId, connector: id, jobId, lookup: q, status, results: 0 })
+    // An adapter that cannot run is reported as such before anything else: no consent check, no stored session read, no worker call.
+    if (!adapterSupported(p)) { await skip(UNSUPPORTED_STATUS); continue }
     if (!platformAllowed(p, flags)) { await skip('disabled'); continue }
     if (!(await readConsent(db, tenantId, scopeFor(p)))) { await skip('no_consent'); continue }
     if (await callsLastHour(db, tenantId, p, deps.now ?? Math.floor(Date.now() / 1000)) >= maxCallsPerHour(p, env)) { await skip('rate_limited'); continue }
@@ -136,6 +141,7 @@ export async function collectAdvanced(store: DbLike, tenantId: string, jobId: st
     // neither answers no_session, which audits as worker_error here.
     const session = (await readEnabledCredential(db, tenantId, id, deps.master)) || ''
     const items = await worker({ platform: p, query: q.slice(0, 300), session })
+    if (items === UNSUPPORTED_STATUS) { await skip(UNSUPPORTED_STATUS); continue }
     if (items === null) { await skip('worker_error'); continue }
     await writeAudit(db, { tenantId, connector: id, jobId, lookup: q, status: items.length ? 'ok' : 'empty', results: items.length })
     for (const it of items) out.push({ source: id, url: it.url, title: it.title, quote: it.quote, date: it.date, login_walled: it.login_walled })

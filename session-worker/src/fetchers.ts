@@ -129,8 +129,13 @@ const linkedin: Fetcher = async (query, session) => {
 
 // --- Not fetchable without a real browser or request signing. Honest stubs: they return nothing,
 // so the app records worker_error and the platform stays "Needs worker" in the UI until done. ---
-const facebook: Fetcher = async () => [] // FB has no cookie-only JSON search; needs a browser worker
-const xiaohongshu: Fetcher = async () => [] // XHS signs every web request (x-s/x-t); signing is not implemented
+// Unfinished adapters: the server answers them with an explicit unsupported capability before any session is read (server.ts), so these are never reached.
+export const UNSUPPORTED: Partial<Record<Platform, string>> = {
+  facebook: 'no cookie-only search; needs a browser worker (not built)',
+  xiaohongshu: 'every web request is signed (x-s/x-t); signing is not implemented',
+}
+const facebook: Fetcher = async () => { throw new Error('unsupported_capability') }
+const xiaohongshu: Fetcher = async () => { throw new Error('unsupported_capability') }
 
 export const FETCHERS: Record<Platform, Fetcher> = { x, reddit, instagram, facebook, bilibili, xiaohongshu, linkedin }
 export const isPlatform = (v: unknown): v is Platform => typeof v === 'string' && Object.hasOwn(FETCHERS, v)

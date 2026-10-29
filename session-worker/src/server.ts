@@ -2,7 +2,7 @@
 // The app sends {platform, query, session} with a bearer token; the worker replies {items:[...]}.
 // The request carries one tenant's own session cookie and nothing else. Nothing is stored.
 import http from 'node:http'
-import { FETCHERS, isPlatform } from './fetchers.ts'
+import { FETCHERS, isPlatform, UNSUPPORTED } from './fetchers.ts'
 
 const TOKEN = process.env.ADVANCED_WORKER_TOKEN ?? ''
 const PORT = Number(process.env.PORT || 3210)
@@ -25,6 +25,8 @@ const server = http.createServer((req, res) => {
     let parsed: { platform?: unknown; query?: unknown; session?: unknown }
     try { parsed = JSON.parse(body) } catch { return reply(400, { error: 'bad json' }) }
     if (!isPlatform(parsed.platform)) return reply(400, { error: 'unknown platform' })
+    // An adapter that cannot run says so, explicitly, and never reads the request's session.
+    if (UNSUPPORTED[parsed.platform]) return reply(501, { error: 'unsupported_capability', capability: 'unsupported', platform: parsed.platform, reason: UNSUPPORTED[parsed.platform] })
     const query = typeof parsed.query === 'string' ? parsed.query.slice(0, 300) : ''
     const session = typeof parsed.session === 'string' ? parsed.session.slice(0, 8000) : ''
     if (!query || !session) return reply(400, { error: 'missing query or session' })

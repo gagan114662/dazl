@@ -16,9 +16,9 @@ export const CHANNELS: Channel[] = [
   { id: 'x', name: 'Twitter / X', tier: 1, status: 'worker', platform: 'x', note: 'Found through web search of the public index when the operator sets a TinyFish key - no session needed and no account at risk; results go to needs review. Otherwise needs a worker session. X disallows automated access in robots.txt and its terms.' },
   { id: 'reddit', name: 'Reddit', tier: 1, status: 'worker', platform: 'reddit', note: 'Needs a worker. Reddit limits automated access under its terms.' },
   { id: 'instagram', name: 'Instagram', tier: 1, status: 'worker', platform: 'instagram', note: 'Needs a worker. Instagram disallows automated access in robots.txt and its terms.' },
-  { id: 'facebook', name: 'Facebook', tier: 1, status: 'worker', platform: 'facebook', note: 'Needs a worker. Facebook disallows automated access in robots.txt and its terms. The worker does not fetch Facebook yet.' },
+  { id: 'facebook', name: 'Facebook', tier: 1, status: 'soon', note: 'Not supported yet. Facebook disallows automated access in robots.txt and its terms, and the worker has no Facebook fetcher. No session is collected.' },
   { id: 'bilibili', name: 'Bilibili', tier: 1, status: 'worker', platform: 'bilibili', note: 'Needs a worker.' },
-  { id: 'xiaohongshu', name: 'XiaoHongShu', tier: 1, status: 'worker', platform: 'xiaohongshu', note: 'Needs a worker.' },
+  { id: 'xiaohongshu', name: 'XiaoHongShu', tier: 1, status: 'soon', note: 'Not supported yet. Every request is signed and the signing is not implemented. No session is collected.' },
   { id: 'linkedin', name: 'LinkedIn', tier: 2, status: 'worker', platform: 'linkedin', note: 'Needs a worker and a separate operator switch. Highest ban risk. Public pages through Jina Reader are not built yet.' },
 ]
 export const TIER_LABEL: Record<Tier, string> = { 0: 'Tier 0 · no setup', 1: 'Tier 1 · your session', 2: 'Tier 2 · login required' }

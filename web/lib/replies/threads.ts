@@ -195,7 +195,7 @@ export async function refreshReplies(db: Database.Database, tenantId: string, de
     let anyError = false
     for (const q of queries.slice(0, budget)) {
       const items = await worker({ platform: p, query: q, session }).catch(() => null)
-      if (items === null) { audit(db, { tenantId, connector, lookup: q, status: 'worker_error', results: 0 }); anyError = true; continue }
+      if (items === null || typeof items === 'string') { audit(db, { tenantId, connector, lookup: q, status: items === null ? 'worker_error' : 'unsupported_capability', results: 0 }); anyError = true; continue }
       const fresh = items.filter(i => i.date && new Date(i.date).getTime() >= cutoff && looksLikeQuestion(i.title))
       let qualified = fresh.filter(i => isRelevantToQuery(q, i.title, i.quote))
       out.filtered += fresh.length - qualified.length
