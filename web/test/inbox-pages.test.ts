@@ -106,11 +106,20 @@ bothEngines('the deciding reply: a person\'s newest message decides; an auto-rep
   await reply(db, 'T', 'yes-then-ooo', 'l1', 'positive', NOW - 10); await reply(db, 'T', 'yes-then-ooo', 'l1', 'auto', NOW)
   await reply(db, 'T', 'yes-then-no', 'l2', 'positive', NOW - 10); await reply(db, 'T', 'yes-then-no', 'l2', 'negative', NOW - 5)
   await reply(db, 'T', 'only-ooo', 'l3', 'auto', NOW - 1)
+  // A reply flagged for review stops its thread as 'review' (lib/outreach/replies.ts): it needs the owner; a thread
+  // stopped for any other reason does not.
+  await lead(db, play, 'l4', 'l4'); await lead(db, play, 'l5', 'l5')
+  await reply(db, 'T', 'flagged', 'l4', 'uncertain', NOW - 2)
+  await reply(db, 'T', 'stopped-yes', 'l5', 'positive', NOW - 3)
+  for (const [th, l, why] of [['flagged', 'l4', 'review'], ['stopped-yes', 'l5', 'replied']]) {
+    await db.run("INSERT INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at, stopped) VALUES ('T', ?, ?, 'pat@x.example', 'r', ?, ?)", [th, l, NOW, why])
+  }
   const rows = Object.fromEntries((await inboxPage(db, 'T')).threads.map(t => [t.thread_id, t]))
   assert.equal(rows['yes-then-ooo'].classification, 'positive'); assert.equal(rows['yes-then-ooo'].needs_owner, true)
   assert.equal(rows['yes-then-no'].classification, 'negative'); assert.equal(rows['yes-then-no'].needs_owner, false)
   assert.equal(rows['only-ooo'].classification, 'auto')
-  assert.deepEqual((await inboxPage(db, 'T', { jobId: play, status: 'needs_owner' })).threads.map(t => t.thread_id), ['yes-then-ooo'])
+  assert.equal(rows.flagged.needs_owner, true); assert.equal(rows['stopped-yes'].needs_owner, false)
+  assert.deepEqual((await inboxPage(db, 'T', { jobId: play, status: 'needs_owner' })).threads.map(t => t.thread_id), ['flagged', 'yes-then-ooo'], 'newest deciding reply first')
 })
 
 bothEngines('tenant scope: another tenant\'s rows, leads, plays and threads never show, filter or get marked', async ({ db }) => {

@@ -35,10 +35,11 @@ test('what did not load is unknown, never zero; a partial first page reports the
   assert.deepEqual([whole.conversations?.complete, whole.conversations?.total], [true, 3])
 })
 
-test('a stopped thread never counts as a conversation that needs the owner', () => {
+test('a stopped thread never counts as a conversation that needs the owner, unless it is stopped for review', () => {
   const stopped = { ...reply('1', 'positive'), stopped: 'replied' }
-  const o = outcomes({ jobId: J, scanFailed: null, leads: [lead('1'), lead('2')], messages: [], replies: page([stopped, { ...reply('2', 'other'), stopped: 'opt_out' }, reply('2', 'positive')]) })
-  assert.deepEqual(o.conversations?.rows.map(r => [r.lead_id, r.stopped]), [['2', null]])
+  const flagged = { ...reply('1', 'uncertain'), stopped: 'review' }
+  const o = outcomes({ jobId: J, scanFailed: null, leads: [lead('1'), lead('2')], messages: [], replies: page([stopped, { ...reply('2', 'other'), stopped: 'opt_out' }, reply('2', 'positive'), flagged]) })
+  assert.deepEqual(o.conversations?.rows.map(r => [r.lead_id, r.stopped]), [['2', null], ['1', 'review']])
 })
 
 test('approved-but-unsent emails are reported even with zero drafts', () => {

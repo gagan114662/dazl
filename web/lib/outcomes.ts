@@ -20,10 +20,10 @@ export interface Outcomes {
   exceptions: { kind: 'scan' | 'send' | 'held'; text: string; href: string }[] | null
 }
 
-// Replies that need the owner: an interested answer, or a human answer the rules could not sort. A "no", an opt-out
-// (already honoured by the send rails) and auto-replies are not counted as needing the owner, and neither is a thread
-// that is already stopped.
-const NEEDS_OWNER = new Set(['positive', 'other'])
+// Replies that need the owner: an interested answer, a human answer the rules could not sort, or a reply flagged for
+// review ('uncertain', which stops the thread as 'review'). A "no", an opt-out (already honoured by the send rails) and
+// auto-replies are not counted as needing the owner, and neither is a thread stopped for any other reason.
+const NEEDS_OWNER = new Set(['positive', 'other', 'uncertain'])
 const FAILED_SEND = new Set(['failed', 'uncertain'])
 
 export interface RepliesPage { threads: OutcomeReply[]; complete: boolean; needsOwner: number }
@@ -36,7 +36,7 @@ export function outcomes(i: { jobId: string; scanFailed: string | null; leads: P
   // are re-applied here so a row that does not meet them can never be shown or counted.
   const newest = new Map<string, OutcomeReply>()
   for (const r of i.replies?.threads ?? []) { const cur = newest.get(r.thread_id); if (!cur || r.received_at > cur.received_at) newest.set(r.thread_id, r) }
-  const rows = [...newest.values()].filter(r => r.lead_id && ids?.has(r.lead_id) && NEEDS_OWNER.has(r.classification) && !r.stopped).sort((a, b) => b.received_at - a.received_at)
+  const rows = [...newest.values()].filter(r => r.lead_id && ids?.has(r.lead_id) && NEEDS_OWNER.has(r.classification) && (!r.stopped || r.stopped === 'review')).sort((a, b) => b.received_at - a.received_at)
   const conversations = i.replies && ids
     ? { rows, total: i.replies.complete ? rows.length : Math.max(i.replies.needsOwner, rows.length), complete: i.replies.complete }
     : null
