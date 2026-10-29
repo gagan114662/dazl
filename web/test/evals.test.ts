@@ -2,7 +2,10 @@
 // Every World here is SYNTHETIC (invented companies, pages and addresses); nothing replays a real run.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, cpSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { spawnSync } from 'node:child_process'
 import { TraceRecorder, totals, type Trace } from '../lib/evals/trace.ts'
 import { worldFromTrace, validateWorld, WorldError, type World } from '../lib/evals/world.ts'
 import { redactTrace } from '../lib/evals/redact.ts'
@@ -10,7 +13,7 @@ import { loadCase, validateCase, CaseError, type Case } from '../lib/evals/case.
 import { replayCase } from './helpers/eval-replay.ts'
 import { CANARY, CANARY_TENANT, type ReplayResult } from '../lib/evals/result.ts'
 import { scoreCase, eventDateInWindow, evidenceInWorld, contactDomainMatchesCompany, noTenantLeak, placeOnPage, worldClosed, expectedOutcomes, type EvalContext, type Evaluator } from '../lib/evals/evaluators.ts'
-import { runSuite, loadBaseline, compareBaseline } from './helpers/eval-suite.ts'
+import { runSuite, loadBaseline, compareBaseline, gate, type SuiteRow } from './helpers/eval-suite.ts'
 import type { Provider } from '../lib/llm/provider.ts'
 
 const DIR = new URL('./fixtures/evals/', import.meta.url).pathname
@@ -60,15 +63,59 @@ test('a replay trace freezes back into the same World (search, pages, model repl
   assert.equal(t.model_calls, 2); assert.equal(t.page_fetches, 5); assert.equal(t.cost_usd, null) // stub model has no listed price: unknown, not $0
 })
 
-test('the suite matches the committed baseline exactly, and a change in either direction is reported', async () => {
+test('the suite matches the committed baseline exactly, and a verdict change in either direction is reported', async () => {
   const rows = await runSuite(`${DIR}cases`)
   const b = loadBaseline(`${DIR}baseline.json`)
-  assert.deepEqual(compareBaseline(rows, b), [{ case: 'scan-london-seed-traps', regressions: [], fixed: [], missingBaseline: false }])
-  const fixedB = clone(b); fixedB.cases['scan-london-seed-traps'].non_pass.push('event_date_in_window|lead:Querix|fail')
-  assert.deepEqual(compareBaseline(rows, fixedB)[0].fixed, ['event_date_in_window|lead:Querix|fail'])
-  const strict = clone(b); strict.cases['scan-london-seed-traps'].non_pass = []
-  assert.equal(compareBaseline(rows, strict)[0].regressions.length, 2)
-  assert.equal(compareBaseline(rows, { ...b, cases: {} })[0].missingBaseline, true)
+  // registered, with the two known Paris-for-London failures this case found (fixed in the place-agreement PR)
+  const KNOWN = ['expected_outcomes|expect:Lumen Ledger|fail', 'place_on_page|lead:Lumen Ledger|unknown']
+  assert.deepEqual(b.cases['scan-london-seed-traps'].non_pass, KNOWN)
+  assert.deepEqual(compareBaseline(rows, b), [{ case: 'scan-london-seed-traps', regressions: [], fixed: [] }])
+  assert.equal(gate(rows, b).ok, true)
+  const stale = { ...b, cases: { 'scan-london-seed-traps': { status: 'fail', non_pass: [...KNOWN, 'event_date_in_window|lead:Querix|fail'] } } }
+  assert.deepEqual(compareBaseline(rows, stale)[0].fixed, ['event_date_in_window|lead:Querix|fail'])  // a fixed entry left in the baseline fails the gate
+  assert.equal(gate(rows, stale).ok, false)
+  const regressed = rows.map(r => ({ ...r, nonPass: [...r.nonPass, 'event_date_in_window|lead:Querix|fail'] }))
+  assert.deepEqual(compareBaseline(regressed, b)[0], { case: 'scan-london-seed-traps', regressions: ['event_date_in_window|lead:Querix|fail'], fixed: [] })
+  assert.equal(gate(regressed, b).ok, false)
+  const unlisted = { ...b, cases: { 'scan-london-seed-traps': { status: 'pass', non_pass: [] } } }
+  assert.deepEqual(compareBaseline(rows, unlisted)[0].regressions, KNOWN)                       // known failures must be listed, not dropped
+  assert.equal(gate(rows, unlisted).ok, false)
+})
+
+test('gate: the case set itself is checked - a missing, unregistered or duplicate case, or too few cases, is red', async () => {
+  const rows = await runSuite(`${DIR}cases`)
+  const b = loadBaseline(`${DIR}baseline.json`)
+  const row = (id: string): SuiteRow => ({ ...rows[0], case: id })
+  const missing = gate([], b)
+  assert.equal(missing.ok, false); assert.deepEqual(missing.missing, ['scan-london-seed-traps']); assert.equal(missing.ran, 0)
+  const two = { ...b, min_cases: 2, cases: { ...b.cases, 'other-case': { status: 'pass', non_pass: [] } } }
+  const dropped = gate(rows, two)                                     // one of two registered cases deleted
+  assert.equal(dropped.ok, false); assert.deepEqual(dropped.missing, ['other-case'])
+  const floor = gate(rows, { ...b, min_cases: 2 })                    // entry removed too, but the floor was not lowered
+  assert.equal(floor.ok, false); assert.deepEqual(floor.missing, []); assert.equal(floor.ran, 1); assert.equal(floor.minCases, 2)
+  const extra = gate([...rows, row('new-case')], b)                    // a case that runs without being registered
+  assert.equal(extra.ok, false); assert.deepEqual(extra.unregistered, ['new-case'])
+  const dup = gate([...rows, row('scan-london-seed-traps')], { ...b, min_cases: 1 })
+  assert.equal(dup.ok, false); assert.deepEqual(dup.duplicates, ['scan-london-seed-traps'])
+  assert.throws(() => { const f = join(mkdtempSync(join(tmpdir(), 'dazl-baseline-')), 'b.json'); writeFileSync(f, JSON.stringify({ ...b, min_cases: 0 })); loadBaseline(f) }, /min_cases/)
+})
+
+test('gate CLI: deleting a case file turns `npm run evals` red (exit 1, the case named)', () => {
+  const run = (dir: string) => spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts', 'scripts/evals.mts', '--dir', dir],
+    { cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8', env: { ...process.env, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0' } })
+  const tmp = mkdtempSync(join(tmpdir(), 'dazl-evals-'))
+  try {
+    cpSync(DIR, tmp, { recursive: true })
+    const intact = run(tmp)
+    assert.equal(intact.status, 0, intact.stdout + intact.stderr)
+    assert.match(intact.stdout, /eval gate: ok/)
+    unlinkSync(join(tmp, 'cases', 'scan-london-seed-traps.case.json'))
+    const deleted = run(tmp)
+    assert.equal(deleted.status, 1, deleted.stdout + deleted.stderr)
+    assert.match(deleted.stdout, /MISSING CASE \(registered in baseline.json, did not run\): scan-london-seed-traps/)
+    assert.match(deleted.stdout, /TOO FEW CASES: 0 ran, baseline min_cases is 1/)
+    assert.match(deleted.stdout, /eval gate: FAIL/)
+  } finally { rmSync(tmp, { recursive: true, force: true }) }
 })
 
 test('world_closed: a page the World does not have is a recorded miss, answered as a failed fetch, never fetched', async () => {
