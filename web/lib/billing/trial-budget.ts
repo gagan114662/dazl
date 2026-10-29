@@ -31,7 +31,8 @@
 // website" may run on the trial key for a keyless account (#409, lib/scan/trial-site-read.ts): it is paid work in this
 // same wallet, a 'site_read' reservation of TRIAL_SITE_READ_RESERVE_USD admitted under the same lock and ceilings
 // (account total, day, across midnight), counted at its full reserve until its single model call settles to the cost
-// the provider reported (a failed or unreported call keeps the full reserve). It is not one of the scan attempts.
+// the provider reported, in full even above the reserve (a failed or unreported call keeps the full reserve). It is
+// not one of the scan attempts.
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { asDb, type Db, type DbLike, type Tx, type TxBody } from '../db/client.ts'
@@ -113,8 +114,10 @@ const readSettled = (r: LedgerRow) => r.settled_at !== null && r.spent_usd !== n
 // that finished it has settled (a scan reads 'done' before its enrichment, which can still pay for model calls; an
 // earlier attempt's settle never releases a later attempt's reserve).
 const settled = (r: LedgerRow) => (r.status === 'done' || r.status === 'failed') && r.settled_at !== null && r.settled_attempt !== null && Number(r.settled_attempt) === Number(r.attempts)
+// A settled read counts as what the provider reported, in full: its reserve is dazl's own bound, not a vendor-enforced
+// maximum, so a reported cost above it is real spend and later work is refused against it.
 export const reservationCost = (r: LedgerRow) => isRead(r)
-  ? (readSettled(r) ? Math.min(Number(r.reserve_usd), Math.max(0, Number(r.spent_usd))) : Number(r.reserve_usd))
+  ? (readSettled(r) ? Math.max(0, Number(r.spent_usd)) : Number(r.reserve_usd))
   : settled(r) ? Math.max(0, Number(r.spend_reserved_usd ?? 0)) : Number(r.reserve_usd)
 const countsToday = (r: LedgerRow, day: number) => Number(r.day) === day
   || (Number(r.day) < day && (isRead(r) ? (r.settled_at === null || Number(r.settled_at) >= day * 86400) : (!settled(r) || Number(r.settled_at) >= day * 86400)))
@@ -185,8 +188,9 @@ export async function admitTrialSiteReadBudget(db: Db, user: { id: string; email
     return { ok: true, reservation: id }
   })
 }
-// A read's call has ended and the provider reported its cost: from now on it counts as that (never more than its
-// reserve). Not called when the call failed or its cost is unknown: then it keeps counting in full. Best effort.
+// A read's call has ended and the provider reported its cost: from now on it counts as that, even above its reserve.
+// Not called when the call failed or its cost is unknown, and a non-finite or negative cost is ignored: then it keeps
+// counting its full reserve. Best effort.
 export async function settleTrialSiteRead(db: Db, tenantId: string, reservation: string, spentUsd: number, nowS = Math.floor(Date.now() / 1000)): Promise<void> {
   if (!Number.isFinite(spentUsd) || spentUsd < 0) return
   try { await db.run("UPDATE trial_reservations SET settled_at = ?, spent_usd = ? WHERE id = ? AND tenant_id = ? AND kind = 'site_read' AND settled_at IS NULL", [nowS, spentUsd, reservation, tenantId]) } catch { /* stays at its full reserve */ }

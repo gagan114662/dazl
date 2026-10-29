@@ -15,7 +15,8 @@ import { operatorKey, readTrialStatus, type OperatorKey, type TrialDeny } from '
 //   - one model call per read, bounded by the page text cap (lib/scan/icp-from-site.ts) and its output cap;
 //   - paid from the same wallet as trial scans: the read's maximum cost is reserved under the trial budget lock (lib/
 //     billing/trial-budget.ts admitTrialSiteReadBudget) and counts toward the account-total and daily-global ceilings
-//     until its call settles to the reported cost (a failed or unreported call keeps the full reserve).
+//     until its call settles to the reported cost, in full even above the reserve (a failed or unreported call keeps
+//     the full reserve).
 // A site read does not use one of the account's trial scan attempts; those stay for scans. Called only after the page
 // was fetched and found readable, so a fetch failure or a JS-only page never counts.
 

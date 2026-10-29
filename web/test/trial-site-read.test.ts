@@ -146,3 +146,22 @@ bothEngines('#409 wallet: across midnight a pending read counts toward both days
   assert.equal((await admitTrialScan(db, c, { env, now: next })).ok, true, 'settled before midnight: not today')
   assert.equal(TRIAL_SITE_READ_RESERVE_USD, 0.05)
 })
+
+// Instinct's hold on 8cfcf7d: the read's reserve is dazl's own bound, not a vendor-enforced maximum. A reported cost
+// above it is what was spent, and later work is refused against it; a missing or unusable cost keeps the full reserve.
+bothEngines('#409 wallet: a reported read cost above its reserve counts in full (Instinct negative); unusable costs keep the reserve', async ({ db }) => {
+  const env = { ...wallet('0.30', '0.30'), DAZL_TRIAL_SCAN_RESERVE_USD: '0.25' }
+  const a = await user(db, uid(450), 'ov@gmail.com')
+  const read = await admitTrialSiteReadBudget(db, a, { env })
+  assert.ok(read.ok)
+  if (read.ok) await settleTrialSiteRead(db, a.id, read.reservation, 0.08)
+  assert.deepEqual(await admitTrialScan(db, a, { env }), { ok: false, reason: 'account_total_cap' }, 'reported $0.08 + scan $0.25 > $0.30')
+  // NaN, Infinity or a negative cost is not a cost: the read keeps counting its full $0.05.
+  for (const [i, bad] of [NaN, Infinity, -0.01].entries()) {
+    const b = await user(db, uid(460 + i), `bad${i}@gmail.com`)
+    const r = await admitTrialSiteReadBudget(db, b, { env: wallet('0.30', '10') })
+    assert.ok(r.ok)
+    if (r.ok) await settleTrialSiteRead(db, b.id, r.reservation, bad)
+    assert.deepEqual(await admitTrialScan(db, b, { env: { ...wallet('0.30', '10'), DAZL_TRIAL_SCAN_RESERVE_USD: '0.26' } }), { ok: false, reason: 'account_total_cap' }, `${bad}: $0.05 + $0.26 > $0.30`)
+  }
+})

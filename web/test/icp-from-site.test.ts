@@ -201,3 +201,16 @@ test('#409: a trial read settles its wallet reservation only to a cost the provi
   const failed = await run(detailed(undefined, true))
   assert.deepEqual([failed.out, failed.settled], [{ error: 'trial_read_failed' }, []], 'failed call: keeps the full reserve')
 })
+
+test('#409: incomplete usage (one token count missing) is not a cost: the read keeps its full reserve', async () => {
+  const empty = new Database(':memory:'); migrateKeys(empty)
+  const partial: Provider = {
+    research: async () => { throw new Error('unused') },
+    configuredModel: () => 'claude-sonnet-4-5',
+    completeDetailed: async () => ({ text: await goodProvider.complete!('k', '', undefined, 700), model: 'claude-sonnet-4-5', usage: { input_tokens: 2000 } as never }),
+  }
+  const settled: number[] = []
+  const out = await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: partial }, trial: admitted({ n: 0 }, settled) })
+  assert.ok('icp' in out)
+  assert.deepEqual(settled, [])
+})
