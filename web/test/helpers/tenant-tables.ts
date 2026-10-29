@@ -18,5 +18,6 @@ export const NOT_DIRECT: Record<string, { via: [string, string] } | { global: st
   work_queue_meta: { global: 'queue counters (claim-token sequence), no tenant data' },
   rate_limits: { global: 'counters keyed by caller (tenant id, account or IP inside the key); holds no tenant data and no route reads it back' },
   app_leases: { global: 'named locks for platform jobs (the scheduled tick); no tenant data' },
+  trial_budget_lock: { global: 'one row every free-trial admission locks in turn (lib/billing/trial-budget.ts); a counter, no tenant data' },
 }
 
