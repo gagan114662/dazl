@@ -11,7 +11,7 @@ import { Avatar, Pill, Stepper } from './ui/bits'
 import BrainGraph from './onboarding/brain-graph'
 import { brainFacts, type BrainFact } from '@/lib/brain'
 import { previewSplit, type PreviewLead } from '@/lib/journey'
-import { leadCardSummary } from '@/lib/scan/lead-card'
+import { approveState, leadCardSummary } from '@/lib/scan/lead-card'
 import { sourceName, stateText } from '@/lib/source-progress-copy'
 import type { First5View } from '@/lib/scan/first5'
 import type { SourceProgress } from '@/lib/scan/progress'
@@ -201,8 +201,8 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
     const f5 = first?.f5 ?? null
     const f5Live = !!f5 && f5.state === 'finding' && first?.status !== 'failed'
     const f5Ready = f5 && !f5.enriching ? f5.verified : 0   // source-checked leads the fast scan found
-    // Found is not ready: a lead is contact-ready only with a real event date, a graded fit of 4/5 or more and a named person. The fast scan's leads can have none of these (date, fit and name may all be null).
-    const f5Qualified = f5 && !f5.enriching ? f5.leads.filter(l => !l.provisional && !!l.event_date && l.fit_pct != null && l.fit_pct >= 80 && !!l.name).length : 0
+    // Found is not ready: a fast-scan lead counts as contact-ready only when its FULL saved row passes the same gates as the Leads card (previewSplit: verified, dated, in window, not held; approveState: a published, sales-usable email and a confirmed company website). The fast scan's own rows carry no contact, so a lead whose full row is missing or not loaded is not ready.
+    const f5Qualified = f5 && !f5.enriching ? f5.leads.filter(l => !l.provisional && (split?.opportunities ?? []).some(o => o.id === l.id && approveState(o).ok)).length : 0
     // The one sentence: what the user typed, else the top suggestion from the profile (so nothing has to be typed).
     const sentence = askIsSuggestion ? (ask || plays[0] || '') : ask
     const candidatesSoFar = f5 ? f5.sources.reduce<number | null>((n, x) => x.candidates == null ? n : (n ?? 0) + x.candidates, null) : null

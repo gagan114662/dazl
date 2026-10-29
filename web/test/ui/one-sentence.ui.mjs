@@ -45,6 +45,7 @@ const LEADS = [
   L(4, 'Ashworth Partners', 'Announced a merger and a move to larger offices in Leeds', 'yorkshirepost.example', '2026-10-12', 60),
   L(5, 'Brightledger', 'Hiring an operations manager to scale client onboarding', 'workable.example', '2026-10-09', 60),
 ]
+const FULL = (l, withEmail) => ({ id: l.id, name: l.name ?? '', company: l.company, contact: withEmail ? 'hello@hartleyshaw.example' : null, signal: l.signal, source_url: l.source_url, score: 70, evidence_excerpt: `${l.company}: ${l.signal}`, event_date: l.event_date, date_status: 'verified', published_at: null, confidence: 90, review_reason: null, company_domain: 'hartleyshaw.example', human_confirmed_at: null, fit: Math.round(l.fit_pct / 20), intent: 4, action: 3, why: l.signal, signals: null, icp_match: null, enrichments: [], events: [] })
 const src = (source, state, status, candidates) => ({ source, state, status, note: null, candidates, accepted: null, review: null, rejected: null })
 const view = (o) => ({ target: 5, found: 0, verified: 0, enriching: false, next: null, state: 'finding', finding_more: true, reason: null, message: '', leads: [], sources: [], failed_sources: [], can_continue: false, ...o })
 // What the status read returns on each poll of the seeded run: queued, the news being read, job boards being read with
@@ -58,7 +59,8 @@ const STEPS = (full, unknown = false) => [
     : { status: 'done', first5: view({ state: 'partial', finding_more: false, found: 2, verified: 2, can_continue: true, next: { action: 'wider_search', label: 'Search wider (a full scan, using your scan allowance)' }, message: '2 of 5 verified from the free sources.', leads: LEADS.slice(0, 2), sources: [src('search:news', 'done', 'ok', 7), src('adapter:jobboards', 'done', 'ok', 5)] }) },
 ]
 const b = await chromium.launch()
-async function run({ width, height, tag, how = 'cta', full = true, unknown = false, tz = undefined }) {
+async function run({ width, height, tag, how = 'cta', full = true, unknown = false, nocontact = false, tz = undefined }) {
+  const notReady = unknown || nocontact   // nothing proven ready: no date/fit/name, or no published contact
   const st = { profile: { business_name: '', sells: '', website: '', buyer: null }, scanBodies: [], polls: 0 }
   const ctx = await b.newContext({ viewport: { width, height }, ...(tz ? { timezoneId: tz } : {}) })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
@@ -76,7 +78,8 @@ async function run({ width, height, tag, how = 'cta', full = true, unknown = fal
     if (p === '/api/scan/status') { const s = STEPS(full, unknown)[Math.min(st.polls++, 3)]; return json({ job_id: J, ...s }) }
     if (p === '/api/scan/jobs') return json({ jobs: [] })
     if (p === '/api/usage') return json({ plan: 'free', scans_used: 0, scan_limit: 10, has_key: false, trial: { funded: true, remaining: 3 } })
-    if (p === '/api/leads') return json({ leads: [], hidden_count: 0 })
+    // The full saved rows the Leads card gates on. Only the first lead has a published sales address, and only when the run has one.
+    if (p === '/api/leads') return json({ leads: unknown ? [] : LEADS.map(l => FULL(l, l.id[0] === '1' && !nocontact)), hidden_count: 0 })
     return json({}, 404)
   })
   const page = await ctx.newPage()
@@ -124,13 +127,13 @@ async function run({ width, height, tag, how = 'cta', full = true, unknown = fal
   // 4. Settled.
   if (full) {
     // Found is not ready: 5 source-checked leads, of which only the first has a date, a fit of 80%+ AND a named person.
-    const want = unknown ? '5 leads found - none ready to contact yet' : '5 leads found - 1 ready to contact'
+    const want = notReady ? '5 leads found - none ready to contact yet' : '5 leads found - 1 ready to contact'
     await page.waitForFunction(w => document.querySelector('[data-testid=first-heading]')?.textContent === w, want, { timeout: 10000 })
     assert.equal(await page.getByTestId('first-lead').count(), 5)
     if (!unknown) assert.match(await page.getByTestId('first-lead').nth(1).innerText(), /^Northgate Bookkeeping\n+fit 80%\n/)
-    assert.equal(await page.getByTestId('ready-cta').textContent(), unknown ? 'Review the leads' : 'Start reaching out', 'reaching out is offered only when a lead is proven ready')
-    assert.equal(await page.getByTestId('ready-subhead').textContent(), unknown ? 'dazl found 5 source-checked leads. None is ready to contact yet: a date, a fit grade or a contact is still unknown.' : 'dazl found 5 source-checked leads; 1 ready to contact.')
-    if (unknown) assert.doesNotMatch(await page.getByTestId('onboarding-screen').innerText(), /Start reaching out|ready for your review/)
+    assert.equal(await page.getByTestId('ready-cta').textContent(), notReady ? 'Review the leads' : 'Start reaching out', 'reaching out is offered only when a lead is proven ready')
+    assert.equal(await page.getByTestId('ready-subhead').textContent(), notReady ? 'dazl found 5 source-checked leads. None is ready to contact yet: a date, a fit grade or a contact is still unknown.' : 'dazl found 5 source-checked leads; 1 ready to contact.')
+    if (notReady) assert.doesNotMatch(await page.getByTestId('onboarding-screen').innerText(), /Start reaching out|ready for your review/)
     assert.equal(await page.getByTestId('search-wider').count(), 0)
   } else {
     await page.waitForFunction(() => document.querySelector('[data-testid=first-heading]')?.textContent === '2 leads found - 1 ready to contact', null, { timeout: 10000 })
@@ -153,6 +156,9 @@ try {
   // Readiness unknown (no date / fit / name in the payload): the screen must not offer outreach. Calendar days must not move in any timezone (Toronto showed 21 Oct as 20 Oct).
   await run({ width: 1440, height: 900, tag: 'unknown-desktop', unknown: true })
   await run({ width: 390, height: 844, tag: 'unknown-mobile', unknown: true })
+  // A dated, graded, named lead with NO published contact is not ready to contact: no "1 ready", no "Start reaching out".
+  await run({ width: 1440, height: 900, tag: 'nocontact-desktop', nocontact: true })
+  await run({ width: 390, height: 844, tag: 'nocontact-mobile', nocontact: true })
   await run({ width: 1440, height: 900, tag: 'toronto', tz: 'America/Toronto' })
   await run({ width: 390, height: 844, tag: 'auckland', tz: 'Pacific/Auckland' })
   assert.deepEqual([d.typed, m.typed, c.typed], [1, 1, 1], 'the website is the only thing typed')
