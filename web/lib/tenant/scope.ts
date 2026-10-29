@@ -4,7 +4,8 @@
 export const TENANT_COLUMNS = ['tenant_id', 'user_id']
 // Tables without a tenant column of their own: scoped through a parent row, or global by design.
 export const NOT_DIRECT: Record<string, { via: [string, string] } | { global: string }> = {
-  users: { global: 'the tenant itself: users.id is the tenant id' },
+  users: { global: 'accounts (actors); a personal workspace id equals its founder users.id' },
+  organizations: { global: 'the tenant itself: organizations.id is the tenant id (lib/workspaces.ts)' },
   leads: { via: ['scan_job_id', 'scan_jobs'] },
   lead_sources: { via: ['lead_id', 'leads'] },
   scan_source_runs: { via: ['job_id', 'scan_jobs'] },

@@ -23,6 +23,9 @@ test('postgres: export complete, deletion erases only the target, other tenant b
       await db.run("INSERT INTO users (id, email, password_hash, salt) VALUES (?, ?, 'x', 'y')", [id, `${tag}@example.test`])
       const r = await seedTenant(db, id, tag)
       assert.deepEqual(r.failed, {}, `every tenant table seeded for ${id}`)
+      // a personal workspace: its organizations row, its founder as the sole owner
+      await db.run("UPDATE memberships SET member_id = ?, role = 'owner' WHERE tenant_id = ?", [id, id])
+      await db.run("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, ?, 'personal', ?, 1) ON CONFLICT (id) DO NOTHING", [id, `${id} workspace`, id])
     }
     const tables = [...(await tenantTables(db)).keys()]
     assert.ok(tables.length >= 70, `${tables.length} tenant tables`)
@@ -36,6 +39,7 @@ test('postgres: export complete, deletion erases only the target, other tenant b
     assert.deepEqual(Object.entries(after).filter(([k, v]) => !['suppressions', 'evidence_purge_audit'].includes(k) && v !== '[]').map(([k]) => k), [])
     assert.deepEqual(await snapshot(db, B), bBefore, 'the other tenant is byte-identical')
     await assert.rejects(db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location) VALUES ('late', ?, 'x', 'y', 'z')", [A]), /tenant deleted/)
+    assert.equal((await db.get<{ n: number }>('SELECT count(*) AS n FROM organizations WHERE id = ?', [A]))!.n, 0)
     await assert.rejects(db.run("INSERT INTO users (id, email, password_hash, salt) VALUES (?, 'again@example.test', 'x', 'y')", [A]), /tenant deleted/)
     await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location) VALUES ('b-late', ?, 'x', 'y', 'z')", [B])
   } finally { await db.close(); await s.drop() }

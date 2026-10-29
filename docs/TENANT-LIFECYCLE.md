@@ -37,7 +37,7 @@ Each step is one transaction and moves the tombstone (`tenant_tombstones`) to th
 - `until` stops after a given state, for staged deletion.
 - The tombstone holds the tenant id, who asked, when, the policy and what was retained. It holds no tenant content.
 
-**Recreation guard.** A `BEFORE INSERT` trigger on every tenant-scoped table (SQLite at startup; Postgres migration `0015`) refuses a row for a tombstoned tenant, or under one of its deleted parent rows. A scan still running when the deletion starts, a late scheduler tick or a stale request therefore cannot bring erased data back. A late `UPDATE` matches no rows. Retained tables are guarded too: nothing new is added for a deleted tenant.
+**Recreation guard.** A `BEFORE INSERT` trigger on every tenant-scoped table (SQLite at startup; Postgres migration `0017`) refuses a row for a tombstoned tenant, or under one of its deleted parent rows. A scan still running when the deletion starts, a late scheduler tick or a stale request therefore cannot bring erased data back. A late `UPDATE` matches no rows. Retained tables are guarded too: nothing new is added for a deleted tenant.
 
 **Restored backups.**
 - A restore brings back rows deleted after the backup and loses tombstones written since.
@@ -79,3 +79,4 @@ The fixture is two tenants with a marked row in **every** tenant-scoped table (7
 6. **Backups.** How long a deleted tenant's data may remain in backups. This equals the backup retention in docs/RECOVERY.md, and the tombstone ledger must be kept at least that long.
 7. **Who may delete.** Tenant self-service, operator only, or both with confirmation. Also how the export is delivered and how long the download link lives.
 8. **Remote revocation.** Whether the deletion must also revoke the Gmail grant at Google and delete the Stripe customer automatically. Both are network calls outside this library.
+9. **Shared workspaces** (workspaces, #353). A tenant is a workspace, and a personal workspace's id is its founder's account. Deletion today removes the workspace, its memberships and the founder's account, and **refuses** three cases: a team workspace, a workspace with other members, and a founder who also belongs to another workspace. Decide what deleting those means: remove the workspace but keep the person, delete the person everywhere, or move the profile off the account first.

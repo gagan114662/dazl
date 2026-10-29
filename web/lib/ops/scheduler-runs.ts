@@ -10,7 +10,7 @@
 // Per tenant: reply sync stale (no success for REPLY_SYNC_STALE_S while it is being attempted), blocked
 // (BLOCKED_AFTER_FAILURES consecutive failures), and due work overdue (the oldest due sequence step more than
 // OVERDUE_ALERT_S past its due time). The operator view is counts only; a tenant sees only its own rows.
-// Queries are on the Db layer (SQLite today, Postgres after the cutover: lib/db/migrations/pg/0014_scheduler_runs.sql).
+// Queries are on the Db layer (SQLite today, Postgres after the cutover: lib/db/migrations/pg/0016_scheduler_runs.sql).
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { asDb, type DbLike } from '../db/client.ts'

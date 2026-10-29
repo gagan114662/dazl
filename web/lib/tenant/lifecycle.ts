@@ -92,6 +92,19 @@ export function tombstoneLedgerEntry(t: Tombstone): string {
   return JSON.stringify({ kind: 'dazl-tenant-tombstone', deleted_tenant: t.deleted_tenant, requested_at: Number(t.requested_at), requested_by: t.requested_by, policy: JSON.parse(t.policy) })
 }
 
+// Workspaces (lib/workspaces.ts): the tenant is an organization, and a personal workspace's id is its founder's users.id,
+// whose row also holds the workspace profile. Deleting a workspace that is shared (a team workspace, other members in
+// it, or a founder who belongs to another workspace) would either delete a person still using dazl elsewhere or leave
+// this workspace's profile on their account. Until the owner decides how that works, it is refused, never guessed.
+async function refuseSharedWorkspace(db: ReturnType<typeof asDb>, tenant: string): Promise<void> {
+  const cols = await tableColumns(db)
+  if (!cols.has('organizations') || !cols.has('memberships')) return
+  const org = await db.get<{ kind: string }>('SELECT kind FROM organizations WHERE id = ?', [tenant])
+  if (org && org.kind !== 'personal') throw new Error('team workspaces cannot be deleted yet (docs/TENANT-LIFECYCLE.md, decision 9)')
+  if (await db.get('SELECT 1 FROM memberships WHERE tenant_id = ? AND member_id <> ?', [tenant, tenant])) throw new Error('the workspace has other members: deletion refused (docs/TENANT-LIFECYCLE.md, decision 9)')
+  if (await db.get('SELECT 1 FROM memberships WHERE member_id = ? AND tenant_id <> ?', [tenant, tenant])) throw new Error('the founder belongs to another workspace: deletion refused (docs/TENANT-LIFECYCLE.md, decision 9)')
+}
+
 function validPolicy(p: DeletionPolicy | undefined, scope: Map<string, Scope>): DeletionPolicy {
   if (!p || (p.suppressions !== 'retain' && p.suppressions !== 'erase')) throw new Error('deletion policy must decide suppressions: retain or erase')
   for (const t of p.retainTables ?? []) {
@@ -109,6 +122,7 @@ export async function deleteTenant(d: DbLike, tenant: string, o: { policy?: Dele
   const scope = new Map((await tenantScope(db)).map(s => [s.table, s]))
   let t = await tombstone(db, tenant)
   if (!t) {
+    await refuseSharedWorkspace(db, tenant)
     const policy = validPolicy(o.policy, scope)
     if (!o.requestedBy) throw new Error('requestedBy is required (who asked, for the audit record)')
     await db.run("INSERT INTO tenant_tombstones (deleted_tenant, requested_at, requested_by, state, policy) VALUES (?, ?, ?, 'requested', ?) ON CONFLICT (deleted_tenant) DO NOTHING",
@@ -152,6 +166,7 @@ export async function deleteTenant(d: DbLike, tenant: string, o: { policy?: Dele
     for (const x of erase) yield* del(tx, x)
     if (gate) yield* del(tx, 'evidence_purge_gate')
     yield* tx.run('DELETE FROM users WHERE id = ?', [tenant])
+    if (has('memberships')) yield* tx.run('DELETE FROM organizations WHERE id = ?', [tenant])
   })) return t
   await advance('erased', 'completed', function* (tx) {
     const kept: Record<string, number> = {}

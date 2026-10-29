@@ -113,6 +113,18 @@ CREATE TABLE consent_ledger (
       revoke_reason TEXT CHECK (revoke_reason IS NULL OR length(revoke_reason) <= 60)
     );
 
+CREATE TABLE crm_push_claims (
+      tenant_id   TEXT NOT NULL,
+      destination TEXT NOT NULL,
+      lead_id     TEXT NOT NULL,
+      status      TEXT NOT NULL CHECK (status IN ('pending', 'ok', 'failed', 'uncertain', 'resolved_created', 'resolved_not_created')),
+      external_id TEXT,
+      attempt_id  TEXT NOT NULL,
+      claimed_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL,
+      PRIMARY KEY (tenant_id, destination, lead_id)
+    );
+
 CREATE TABLE csv_batches (
       id         TEXT PRIMARY KEY,
       user_id    TEXT NOT NULL,
@@ -245,6 +257,15 @@ CREATE TABLE leads (
 
 CREATE TABLE mail_read_consent (tenant_id TEXT PRIMARY KEY, version TEXT NOT NULL, accepted_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)));
 
+CREATE TABLE memberships (
+    tenant_id TEXT NOT NULL,
+    member_id TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'operator', 'viewer')),
+    created_at INTEGER NOT NULL,
+    added_by TEXT,
+    PRIMARY KEY (tenant_id, member_id)
+  );
+
 CREATE TABLE monitor_runs (
       id         TEXT PRIMARY KEY,
       monitor_id TEXT NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
@@ -296,6 +317,14 @@ CREATE TABLE oauth_states (
       verifier   TEXT NOT NULL,
       expires_at INTEGER NOT NULL
     , read_scope INTEGER NOT NULL DEFAULT 0);
+
+CREATE TABLE organizations (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '' CHECK (length(name) <= 150),
+    kind TEXT NOT NULL CHECK (kind IN ('personal', 'team')),
+    created_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
 
 CREATE TABLE outreach_llm_usage (
       id            INTEGER PRIMARY KEY,
@@ -587,7 +616,7 @@ CREATE TABLE sessions (
       user_id TEXT NOT NULL,
       created_at INTEGER DEFAULT (unixepoch()),
       expires_at INTEGER NOT NULL
-    );
+    , active_tenant_id TEXT);
 
 CREATE TABLE source_reviews (
  id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, job_id TEXT NOT NULL, lead_id TEXT NOT NULL,
@@ -805,6 +834,8 @@ CREATE INDEX leads_insert_seq_idx ON leads (insert_seq);
 
 CREATE INDEX leads_job ON leads (scan_job_id);
 
+CREATE INDEX memberships_member ON memberships (member_id);
+
 CREATE INDEX monitor_runs_monitor ON monitor_runs (monitor_id, ran_at);
 
 CREATE INDEX monitors_due ON monitors (enabled, next_run_at);
@@ -926,6 +957,8 @@ CREATE TRIGGER tomb_connector_audit BEFORE INSERT ON connector_audit WHEN EXISTS
 
 CREATE TRIGGER tomb_consent_ledger BEFORE INSERT ON consent_ledger WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
+CREATE TRIGGER tomb_crm_push_claims BEFORE INSERT ON crm_push_claims WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
 CREATE TRIGGER tomb_csv_batches BEFORE INSERT ON csv_batches WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
 CREATE TRIGGER tomb_csv_rows BEFORE INSERT ON csv_rows WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'csv_batches' AND key = NEW.batch_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
@@ -958,6 +991,8 @@ CREATE TRIGGER tomb_leads BEFORE INSERT ON leads WHEN EXISTS (SELECT 1 FROM tena
 
 CREATE TRIGGER tomb_mail_read_consent BEFORE INSERT ON mail_read_consent WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
+CREATE TRIGGER tomb_memberships BEFORE INSERT ON memberships WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
 CREATE TRIGGER tomb_monitor_runs BEFORE INSERT ON monitor_runs WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
 CREATE TRIGGER tomb_monitor_seen BEFORE INSERT ON monitor_seen WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
@@ -969,6 +1004,8 @@ CREATE TRIGGER tomb_newsjacks BEFORE INSERT ON newsjacks WHEN EXISTS (SELECT 1 F
 CREATE TRIGGER tomb_oauth_identities BEFORE INSERT ON oauth_identities WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
 CREATE TRIGGER tomb_oauth_states BEFORE INSERT ON oauth_states WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_organizations BEFORE INSERT ON organizations WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
 CREATE TRIGGER tomb_outreach_llm_usage BEFORE INSERT ON outreach_llm_usage WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 

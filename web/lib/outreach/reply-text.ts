@@ -9,7 +9,8 @@ export interface GPart { mimeType?: string; filename?: string; body?: { data?: s
 export type TextStatus = 'ok' | 'empty' | 'malformed'
 // alt: when the message carries BOTH a plain and an HTML body, the other one's new text (null: not decodable), so the
 // caller can refuse to act when the two say different things.
-export interface ExtractedText { text: string; status: TextStatus; source: 'plain' | 'html' | 'none'; alt?: string | null }
+// addrTail: the text after an address-style quote header that cut the reply (see newTextWithTail), when there was any.
+export interface ExtractedText { text: string; status: TextStatus; source: 'plain' | 'html' | 'none'; alt?: string | null; addrTail?: string }
 
 const MAX_DEPTH = 12
 const B64URL = /^[A-Za-z0-9_-]*={0,2}$/
@@ -71,15 +72,28 @@ const QUOTE_HEADER = new RegExp([
   String.raw`-{2,}\s*(Original Message|Mensaje original|Message d'origine|Urspr[üu]ngliche Nachricht|Mensagem original|Messaggio originale|Oorspronkelijk bericht)`,
   String.raw`-{2,}\s*Forwarded message`, String.raw`(From|De|Von|Da|Van|Från|Fra)\s?: .{0,200}`,
 ].map(s => `(?:${s})`).join('|'), 'i')
-export function newText(t: string): string {
+const QUOTE_ADDR_HEADER = /<[^\s<>@]+@[^\s<>]+>.{0,60}:$/
+export function newText(t: string): string { return newTextWithTail(t).text }
+// The new text, and when an address-style header (not a recognised "wrote:" line) cut it, the text after that header.
+export function newTextWithTail(t: string): { text: string; addrTail?: string } {
   const lines = t.split(/\r?\n/)
   const out: string[] = []
-  for (const l of lines) {
+  for (const [i, l] of lines.entries()) {
     if (QUOTE_HEADER.test(l.trim()) && /^(?:-{2,}|(?:on|el|le|am|em|il|op|from|de|von|da|van|från|fra)(?![\p{L}]))/iu.test(l.trim())) break
+    // a quote header in a language not listed above: a line naming an address in <...> and ending with ":"
+    // ("Den mån 3 mars skrev Pat <pat@seller.example>:", undated "Pat Seller <pat@...> napisał:"). Known limit, chosen
+    // on purpose: a new-text line of that shape ("my colleague <jo@...>:") also ends the new text, so words written
+    // after it are not read. That can miss an opt-out: the reply then grants nothing, but it is held for review only
+    // when no new text is left before that line, and otherwise reads as "other" with nothing suppressed. It never
+    // lets our own quoted pitch be read as the lead's interest.
+    if (QUOTE_ADDR_HEADER.test(l.trim())) {
+      const tail = lines.slice(i + 1).filter(x => !x.trimStart().startsWith('>')).join(' ').replace(/\s+/g, ' ').trim()
+      return { text: out.join(' ').replace(/\s+/g, ' ').trim(), ...(tail ? { addrTail: tail } : {}) }
+    }
     if (l.trimStart().startsWith('>')) continue
     out.push(l)
   }
-  return out.join(' ').replace(/\s+/g, ' ').trim()
+  return { text: out.join(' ').replace(/\s+/g, ' ').trim() }
 }
 
 // The new text of one message. Plain text first; HTML when there is no plain part (or it is empty). When both are
@@ -87,14 +101,17 @@ export function newText(t: string): string {
 export function messageText(payload: GPart | undefined): ExtractedText {
   if (!payload) return { text: '', status: 'empty', source: 'none' }
   const plain = find(payload, 'text/plain'), html = find(payload, 'text/html')
-  const htmlText = html ? (html.text === null ? null : newText(htmlToText(html.text))) : undefined
-  if (plain && plain.text === null) return { text: '', status: 'malformed', source: 'plain' }
+  const htmlCut = html && html.text !== null ? newTextWithTail(htmlToText(html.text)) : undefined
+  const htmlText = html ? (html.text === null ? null : htmlCut!.text) : undefined
+  // an undecodable plain body still carries what its HTML alternative says (an opt-out there is honoured)
+  if (plain && plain.text === null) return htmlText ? { text: '', status: 'malformed', source: 'plain', alt: htmlText } : { text: '', status: 'malformed', source: 'plain' }
   if (plain && plain.text) {
-    const t = newText(plain.text)
-    if (t) return htmlText === undefined || htmlText === '' ? { text: t, status: 'ok', source: 'plain' } : { text: t, status: 'ok', source: 'plain', alt: htmlText }
+    // a boundary we could not place in EITHER alternative makes the whole message ambiguous
+    const c = newTextWithTail(plain.text), t = c.addrTail ?? htmlCut?.addrTail, tail = t ? { addrTail: t } : {}
+    if (c.text) return htmlText === undefined || htmlText === '' ? { text: c.text, status: 'ok', source: 'plain', ...tail } : { text: c.text, status: 'ok', source: 'plain', alt: htmlText, ...tail }
   }
   if (htmlText === null) return { text: '', status: 'malformed', source: 'html' }
-  if (htmlText) return { text: htmlText, status: 'ok', source: 'html' }
+  if (htmlText) return { text: htmlText, status: 'ok', source: 'html', ...(htmlCut?.addrTail ? { addrTail: htmlCut.addrTail } : {}) }
   return { text: '', status: 'empty', source: plain ? 'plain' : html ? 'html' : 'none' }
 }
 

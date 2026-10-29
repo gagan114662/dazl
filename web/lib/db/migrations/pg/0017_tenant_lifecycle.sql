@@ -1,6 +1,6 @@
 -- Tenant deletion lifecycle (lib/tenant/lifecycle.ts, issue #359): the tombstone of every deleted tenant and the ids of
--- its deleted parent rows, and on every tenant-scoped table a guard that refuses a new row for a deleted tenant (or
--- under one of its deleted parents), so in-flight work or a late write cannot recreate erased data.
+-- its deleted parent rows, and on every tenant-scoped table (and users, organizations) a guard that refuses a new row
+-- for a deleted tenant (or under one of its deleted parents), so in-flight work or a late write cannot recreate erased data.
 CREATE TABLE tenant_tombstone_keys (
       deleted_tenant TEXT NOT NULL,
       tbl            TEXT NOT NULL,
@@ -97,6 +97,14 @@ BEGIN
 END $$;
 DROP TRIGGER IF EXISTS tomb_consent_ledger ON consent_ledger;
 CREATE TRIGGER tomb_consent_ledger BEFORE INSERT ON consent_ledger FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_consent_ledger();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_crm_push_claims() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_crm_push_claims ON crm_push_claims;
+CREATE TRIGGER tomb_crm_push_claims BEFORE INSERT ON crm_push_claims FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_crm_push_claims();
 
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_csv_batches() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -226,6 +234,14 @@ END $$;
 DROP TRIGGER IF EXISTS tomb_mail_read_consent ON mail_read_consent;
 CREATE TRIGGER tomb_mail_read_consent BEFORE INSERT ON mail_read_consent FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_mail_read_consent();
 
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_memberships() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_memberships ON memberships;
+CREATE TRIGGER tomb_memberships BEFORE INSERT ON memberships FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_memberships();
+
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_monitor_runs() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
@@ -273,6 +289,14 @@ BEGIN
 END $$;
 DROP TRIGGER IF EXISTS tomb_oauth_states ON oauth_states;
 CREATE TRIGGER tomb_oauth_states BEFORE INSERT ON oauth_states FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_oauth_states();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_organizations() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_organizations ON organizations;
+CREATE TRIGGER tomb_organizations BEFORE INSERT ON organizations FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_organizations();
 
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_outreach_llm_usage() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN

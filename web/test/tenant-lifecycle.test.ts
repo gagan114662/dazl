@@ -22,6 +22,11 @@ test.after(() => rmSync(T, { recursive: true, force: true }))
 function fixture(file = ':memory:') {
   const db = new Database(file); migrateAllSqlite(db)
   for (const [t, tag] of [[A, 'ta'], [B, 'tb']]) { const s = seedTenantSqlite(db, t, tag); assert.deepEqual(s.failed, {}, `every tenant table seeded for ${t}`) }
+  // each tenant is a personal workspace (lib/workspaces.ts): its organizations row, its founder as the sole owner
+  for (const t of [A, B]) {
+    db.prepare("UPDATE memberships SET member_id = ?, role = 'owner' WHERE tenant_id = ?").run(t, t)
+    db.prepare("INSERT OR IGNORE INTO organizations (id, name, kind, created_by, created_at) VALUES (?, ?, 'personal', ?, 1)").run(t, `${t} workspace`, t)
+  }
   db.prepare('UPDATE tenant_llm_keys SET ciphertext = ? WHERE tenant_id = ?').run('SECRET-CIPHERTEXT-OF-A', A)
   db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run('SECRET-HASH-OF-A', A)
   return db
@@ -75,6 +80,9 @@ test('deletion: refuses without a decision on opt-outs; erases only the target; 
   assert.deepEqual(leftovers(db, 'ta', ['suppressions']), [], 'no row anywhere still carries the deleted tenant (orphans included)')
   assert.ok(leftovers(db, 'tb', []).length > 50, 'the scan does see data: the other tenant is everywhere')
   assert.deepEqual(snapshotSqlite(db, B), bBefore, 'the other tenant is byte-identical')
+  assert.equal(db.prepare('SELECT count(*) AS n FROM organizations WHERE id = ?').pluck().get(A), 0, 'the workspace row is gone')
+  assert.equal(db.prepare('SELECT count(*) AS n FROM organizations WHERE id = ?').pluck().get(B), 1)
+  assert.throws(() => db.prepare("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'again', 'personal', ?, 1)").run(A, A), /tenant deleted/)
   // re-running a completed deletion changes nothing
   assert.equal((await deleteTenant(d, A)).state, 'completed'); assert.deepEqual(snapshotSqlite(db, B), bBefore)
   // erasing opt-outs too, when the policy says so
@@ -146,4 +154,19 @@ test('restored backup: the deletion is re-applied from the off-database ledger b
   assert.deepEqual(Object.keys(snapshotSqlite(restored, B)), Object.keys(bBefore))
   assert.throws(() => restored.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location) VALUES ('x', ?, 'x', 'y', 'z')").run(A), /tenant deleted/)
   restored.close()
+})
+
+test('shared workspaces are refused, never guessed: a team workspace, other members, a founder in another workspace', async () => {
+  const cases: [string, (db: Database.Database) => void, RegExp][] = [
+    ['team', db => db.prepare("UPDATE organizations SET kind = 'team' WHERE id = ?").run(A), /team workspaces cannot be deleted yet/],
+    ['member', db => db.prepare("INSERT INTO memberships (tenant_id, member_id, role, created_at) VALUES (?, ?, 'viewer', 1)").run(A, B), /other members/],
+    ['elsewhere', db => db.prepare("INSERT INTO memberships (tenant_id, member_id, role, created_at) VALUES (?, ?, 'viewer', 1)").run(B, A), /founder belongs to another workspace/],
+  ]
+  for (const [name, setup, why] of cases) {
+    const db = fixture(); setup(db)
+    const before = snapshotSqlite(db, A)
+    await assert.rejects(deleteTenant(sqliteDb(db), A, { policy: POLICY, requestedBy: 'test' }), why, name)
+    assert.equal(await tombstone(sqliteDb(db), A), undefined, `${name}: no tombstone`)
+    assert.deepEqual(snapshotSqlite(db, A), before, `${name}: nothing changed`)
+  }
 })

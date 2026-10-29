@@ -1,7 +1,7 @@
 // Schema machinery for the tenant deletion lifecycle (lib/tenant/lifecycle.ts, issue #359), like insertion-order.ts:
 // the tombstone tables, and a BEFORE INSERT guard on every tenant-scoped table that exists when it runs (it runs after
 // every other migration). The guard refuses a row for a deleted tenant, or under one of its deleted parent rows, so
-// in-flight work or a late write cannot recreate erased data. Postgres: lib/db/migrations/pg/0015_tenant_lifecycle.sql.
+// in-flight work or a late write cannot recreate erased data. Postgres: lib/db/migrations/pg/0017_tenant_lifecycle.sql.
 import type Database from 'better-sqlite3'
 import type { Db } from './client.ts'
 import { classify, type Scope } from '../tenant/scope.ts'
@@ -50,5 +50,6 @@ export function migrateTenantLifecycle(db: Database.Database): void {
       : `EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = '${s.parent}' AND key = NEW.${s.col})`
     db.exec(`CREATE TRIGGER IF NOT EXISTS ${name} BEFORE INSERT ON ${s.table} WHEN ${when} BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;`)
   }
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'organizations'").get()) db.exec(`CREATE TRIGGER IF NOT EXISTS tomb_organizations BEFORE INSERT ON organizations WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;`)
   db.exec(`CREATE TRIGGER IF NOT EXISTS tomb_users BEFORE INSERT ON users WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;`)
 }
