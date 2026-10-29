@@ -24,7 +24,7 @@ const NYC_STREET = new RegExp(`\\b\\d{1,5}(?:-\\d{1,4})?\\s+[\\p{L}0-9'\\- ]{2,4
 // is a short allow-list of own-address phrasing, not a list of third parties. A mixed page whose address is unbound stays out of agreement.
 const sentences = (text: string) => text.split(/(?<=[.!?])\s+(?=[A-Z])|\n+/)
 const normName = (x: string) => x.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/&/g, 'and').replace(/\b(inc|ltd|llc|limited|gmbh|corp|corporation|co|company|plc|pty|group|the)\b/g, ' ').replace(/[^a-z0-9]+/g, '')
-const CONNECT = new Set(['is', 'are', 'located', 'based', 'situated', 'found', 'at', 'on', 'in', 'office', 'offices', 'headquarters', 'hq', 'head', 'registered', 'address', 'visit', 'find', 'contact', 'come', 'see', 'us', 'we', 'were', 'our', 'main', 'second', 'new', 'flagship', 'principal', 'primary', 'home', 'uk', 'london', 'nyc', 'york', 'local', 'clinic', 'studio', 'practice', 'branch', 'dental', 'and', 'the'])
+const CONNECT = new Set(['is', 'are', 'located', 'based', 'situated', 'found', 'at', 'on', 'in', 'office', 'offices', 'headquarters', 'headquartered', 'hq', 'head', 'registered', 'address', 'visit', 'find', 'contact', 'come', 'see', 'us', 'we', 'were', 'our', 'main', 'second', 'new', 'flagship', 'principal', 'primary', 'home', 'uk', 'london', 'nyc', 'york', 'local', 'clinic', 'studio', 'practice', 'branch', 'dental', 'and', 'the'])
 const FIRST_PERSON = new Set(['our', 'we', 'us', 'were'])
 function bindsToCompany(prefix: string, company?: string): boolean {
   let rest = prefix.trim()
@@ -195,16 +195,33 @@ const COUNTRY_ALIASES: Record<string, string[]> = {
 }
 const CA_PROVINCES: Record<string, string[]> = { ontario: ['Ontario', 'ON'], quebec: ['Quebec', 'Québec', 'QC'], 'british columbia': ['British Columbia', 'BC'], alberta: ['Alberta', 'AB'], manitoba: ['Manitoba', 'MB'], 'nova scotia': ['Nova Scotia', 'NS'] }
 const AU_STATES: Record<string, string[]> = { 'new south wales': ['New South Wales', 'NSW'], victoria: ['Victoria', 'VIC'], queensland: ['Queensland', 'QLD'], 'western australia': ['Western Australia', 'WA'] }
-const titled = (n: string) => n.replace(/\b[a-z]/g, c => c.toUpperCase())
-// Region alias (as written in text, case-sensitive so "in", "on", "us" in prose never read as a region) -> region.
-const REGION_ALIASES = new Map<string, Region>()
-for (const [country, as] of Object.entries(COUNTRY_ALIASES)) for (const a of as) REGION_ALIASES.set(a, { country })
-for (const [ab, name] of Object.entries(US_STATES)) { REGION_ALIASES.set(ab, { country: 'united states', state: name }); REGION_ALIASES.set(titled(name), { country: 'united states', state: name }) }
-for (const [name, as] of Object.entries(CA_PROVINCES)) for (const a of as) REGION_ALIASES.set(a, { country: 'canada', state: name })
-for (const [name, as] of Object.entries(AU_STATES)) for (const a of as) if (a !== 'WA') REGION_ALIASES.set(a, { country: 'australia', state: name }) // WA is Washington
-const REGION_ALT = [...REGION_ALIASES.keys()].sort((a, b) => b.length - a.length).map(a => esc(a).replace(/ /g, '\\s+')).join('|')
-const CITY_COMMA_REGION = new RegExp(`\\b([A-Z][\\p{L}'.-]+(?: [A-Z][\\p{L}'.-]+){0,2}),\\s*(${REGION_ALT})(?![\\p{L}])`, 'gu')
-const NOT_A_CITY = /^(?:st|street|ave|avenue|blvd|boulevard|rd|road|dr|drive|pl|place|plaza|sq|square|ln|lane|way|pkwy|broadway|inc|ltd|llc|plc|gmbh|suite|floor)$/
+// Region lookup by alias (lower-cased key). Full names match in any case ("france", "FRANCE", "Ontario"); short capital
+// abbreviations (ON, BC, NY, US, U.K., NSW) only when written in capitals, so "in", "on", "us", "me", "or" in prose never read
+// as a region. uk, usa and uae are not English words and are accepted in lower case too.
+const REGION_BY_ALIAS = new Map<string, Region>()
+const NEEDS_CAPITALS = new Set<string>()
+const addRegion = (alias: string, r: Region) => {
+  const key = alias.toLowerCase()
+  REGION_BY_ALIAS.set(key, r)
+  if (/^[A-Z.]{2,5}$/.test(alias) && !['UK', 'USA', 'UAE'].includes(alias.replace(/\./g, ''))) NEEDS_CAPITALS.add(key)
+}
+for (const [country, as] of Object.entries(COUNTRY_ALIASES)) for (const a of as) addRegion(a, { country })
+for (const [ab, name] of Object.entries(US_STATES)) { addRegion(ab, { country: 'united states', state: name }); addRegion(name, { country: 'united states', state: name }) }
+for (const [name, as] of Object.entries(CA_PROVINCES)) for (const a of as) addRegion(a, { country: 'canada', state: name })
+for (const [name, as] of Object.entries(AU_STATES)) for (const a of as) if (a !== 'WA') addRegion(a, { country: 'australia', state: name }) // WA is Washington
+const regionWritten = (written: string): Region | null => {
+  for (const w of [written, written.replace(/\.$/, '')]) { // "Illinois." ends a sentence; "U.K." keeps its dots
+    const key = w.toLowerCase().replace(/\s+/g, ' ')
+    const r = REGION_BY_ALIAS.get(key)
+    if (r && !(NEEDS_CAPITALS.has(key) && w !== w.toUpperCase())) return r
+  }
+  return null
+}
+// "<words>, <words>": the place is the longest region at the start of the words after the comma, and the city the words
+// right before it. The after-comma words are read in a lookahead so "Paris, France and Berlin, Germany" yields both.
+const COMMA_PAIR = /([\p{L}][\p{L}'.-]*(?:\s+[\p{L}][\p{L}'.-]*){0,3}),\s*(?=([\p{L}][\p{L}.]*(?:\s+[\p{L}][\p{L}.]*){0,2}))/gu
+// Words that start a sentence or a clause and are capitalised for that reason only ("Today, France ...").
+const NOT_A_CITY = /^(?:st|street|ave|avenue|blvd|boulevard|rd|road|dr|drive|pl|place|plaza|sq|square|ln|lane|way|pkwy|broadway|inc|ltd|llc|plc|gmbh|suite|floor|today|yesterday|meanwhile|however|also|recently|earlier|later|now|then|instead|here|there|thanks|hello|hi|dear|yes|no|and|but|or|in|on|at|of|for|from|with|by|to|the|a|an)$/
 // Major cities by name -> region. Excluded on purpose: names that are ordinary words or first names (Nice, Reading, Bath,
 // York, Mobile, Phoenix, Victoria, Split, Austin, Sydney, Jackson, Lincoln, Washington, Houston), and the METROS cities.
 const WORLD_CITIES: Record<string, Region> = Object.fromEntries(([
@@ -223,13 +240,14 @@ const WORLD_CITIES: Record<string, Region> = Object.fromEntries(([
 ] as const).map(([c, country]) => [c, { country }]))
 const US_CITY_STATE: Record<string, string> = { 'san francisco': 'california', 'los angeles': 'california', chicago: 'illinois', boston: 'massachusetts', seattle: 'washington', miami: 'florida', denver: 'colorado', atlanta: 'georgia', dallas: 'texas', philadelphia: 'pennsylvania' }
 for (const [c, st] of Object.entries(US_CITY_STATE)) WORLD_CITIES[c] = { country: 'united states', state: st }
-const BARE_CITY = new RegExp(`(?<![\\p{L}])(${Object.keys(WORLD_CITIES).map(c => titled(c).replace(/ /g, '\\s+')).join('|')})(?![\\p{L}])`, 'gu')
+// Bare names match in any case, except names that are also ordinary lower-case words (eau de cologne): capitals only.
+const BARE_CAPITAL_ONLY = new Set(['cologne'])
+const BARE_CITY = new RegExp(`(?<![\\p{L}])(${Object.keys(WORLD_CITIES).sort((a, b) => b.length - a.length).map(c => esc(c).replace(/ /g, '\\s+')).join('|')})(?![\\p{L}])`, 'giu')
 const plain = (s: string) => clean(s).replace(/[,.]+/g, ' ').replace(/ +/g, ' ').trim()
 
 interface Ask { cities: Map<string, Region | null>; regions: Region[] } // a city's region is null when the request does not say and the city is not listed
 function regionOf(name: string): Region | null {
-  for (const [a, r] of REGION_ALIASES) if (plain(a) === plain(name)) return r
-  return null
+  return REGION_BY_ALIAS.get(plain(name)) ?? REGION_BY_ALIAS.get(name.trim().toLowerCase()) ?? null
 }
 function askOf(where: string[]): Ask {
   const ask: Ask = { cities: new Map(), regions: [] }
@@ -243,50 +261,99 @@ function askOf(where: string[]): Ask {
     if (NYC_ASK.test(w)) { for (const c of NYC_PLACES) ask.cities.set(c, { country: 'united states', state: 'new york' }); continue }
     ask.cities.set(city, tail ?? WORLD_CITIES[city] ?? null)
   }
+  // A region beside a city ("London" + "UK") is that city's context, not a second, wider ask (as in geoTerms).
+  if (ask.cities.size && ask.regions.length) {
+    if (ask.regions.length === 1) for (const [c, r] of ask.cities) if (!r) ask.cities.set(c, ask.regions[0])
+    ask.regions = []
+  }
   return ask
 }
 const inRegion = (r: Region, scope: Region) => r.country === scope.country && (!scope.state || r.state === scope.state)
-// A place the text names that is clearly not the requested one. `same_name`: the requested city's name in another region.
-export function otherPlace(text: string, where: string[]): { kind: 'other' | 'same_name'; place: string } | null {
-  const ask = askOf(where)
-  if (ask.cities.size === 0 && ask.regions.length === 0) return null
-  let rest = text
-  let found: { kind: 'other' | 'same_name'; place: string } | null = null
-  const differs = (city: string, r: Region | null, label: string): { kind: 'other' | 'same_name'; place: string } | null => {
+
+const METRO_NAMES = new Set(METROS.flat())
+interface PlaceHit { kind: 'other' | 'same_name'; place: string; at: number }
+// Every place the text names that is clearly not the requested one, in text order. `same_name`: the requested city's name in
+// another region; dropped when the text also places that city in the requested region.
+function placesElsewhere(text: string, ask: Ask): PlaceHit[] {
+  if (ask.cities.size === 0 && ask.regions.length === 0) return []
+  const differs = (city: string, r: Region | null): PlaceHit['kind'] | null => {
     if (ask.cities.size) {
-      if (!ask.cities.has(city)) return ask.regions.length && r && ask.regions.some(x => inRegion(r, x)) ? null : { kind: 'other', place: label }
+      if (!ask.cities.has(city)) return 'other'
       const want = ask.cities.get(city)
-      return want && r && !inRegion(r, { country: want.country, ...(want.state && r.state ? { state: want.state } : {}) }) ? { kind: 'same_name', place: label } : null
+      return want && r && !inRegion(r, { country: want.country, ...(want.state && r.state ? { state: want.state } : {}) }) ? 'same_name' : null
     }
-    return r && !ask.regions.some(x => inRegion(r, x)) ? { kind: 'other', place: label } : null
+    return r && !ask.regions.some(x => inRegion(r, x)) ? 'other' : null
   }
-  const sameNameHere = new Set<string>() // the requested city named WITH its requested region: a same-name mention elsewhere is then incidental
-  for (const m of text.matchAll(CITY_COMMA_REGION)) {
-    const city = plain(m[1]); const r = REGION_ALIASES.get(m[2].replace(/\s+/g, ' '))!
-    if (NOT_A_CITY.test(city.split(' ').pop() ?? '') || regionOf(m[1])) continue           // "57th St, New York", "England, UK"
-    rest = rest.replace(m[0], ' ')
-    const d = differs(city, r, m[0])
-    if (!d && ask.cities.has(city)) sameNameHere.add(city)
-    if (d && (!found || (found.kind === 'same_name' && d.kind === 'other'))) found = d
+  const hits: PlaceHit[] = []
+  const masked: [number, number][] = []
+  const sameNameHere = new Set<string>()
+  for (const m of text.matchAll(COMMA_PAIR)) {
+    const after = m[2].split(/\s+/)
+    let region: Region | null = null
+    for (let n = after.length; n >= 1 && !region; n--) region = regionWritten(after.slice(0, n).join(' '))
+    if (!region) continue
+    const before = m[1].split(/\s+/)
+    // the city: the longest known city (any case) ending at the comma, else the run of capitalised words ending there
+    let cityWords: string[] | null = null
+    for (let n = Math.min(3, before.length); n >= 1 && !cityWords; n--) { const c = plain(before.slice(-n).join(' ')); if (WORLD_CITIES[c] || ask.cities.has(c)) cityWords = before.slice(-n) }
+    if (!cityWords) { const caps: string[] = []; for (let n = before.length - 1; n >= 0 && caps.length < 3 && /^\p{Lu}/u.test(before[n]); n--) caps.unshift(before[n]); if (caps.length) cityWords = caps }
+    if (!cityWords) continue
+    const city = plain(cityWords.join(' '))
+    if (METRO_NAMES.has(city)) continue // the India / Gulf metros, their aliases and the NCR rule are owned by METROS above
+    if (!city || NOT_A_CITY.test(city.split(' ').pop() ?? '') || NOT_A_CITY.test(city.split(' ')[0]) || regionOf(cityWords.join(' '))) continue // "57th St, New York", "Today, France", "England, UK"
+    const at = m.index + m[1].length - cityWords.join(' ').length
+    masked.push([at, m.index + m[0].length])
+    const kind = differs(city, region)
+    if (!kind && ask.cities.has(city)) sameNameHere.add(city)
+    if (kind) hits.push({ kind, place: `${cityWords.join(' ')}, ${after.join(' ')}`.slice(0, 80), at })
   }
-  if (found?.kind === 'same_name' && [...sameNameHere].length) found = null
-  if (found) return found
   // The US has a namesake of most world cities (Rome NY, Paris TX, Athens GA), so for a US request a bare foreign name is
   // not clearly elsewhere; only its "City, Region" form above counts.
   const usAsk = [...ask.cities.values(), ...ask.regions].some(r => r?.country === 'united states')
-  for (const m of rest.matchAll(BARE_CITY)) {
+  for (const m of text.matchAll(BARE_CITY)) {
     const city = plain(m[1])
+    if (masked.some(([a, b]) => m.index >= a && m.index < b)) continue
+    if (BARE_CAPITAL_ONLY.has(city) && !/^\p{Lu}/u.test(m[1])) continue
     if (ask.cities.has(city) || (usAsk && WORLD_CITIES[city].country !== 'united states')) continue
-    const d = differs(city, WORLD_CITIES[city], m[1])
-    if (d) return d
+    const kind = differs(city, WORLD_CITIES[city])
+    if (kind) hits.push({ kind, place: m[1], at: m.index })
   }
-  return null
+  return hits.filter(h => h.kind !== 'same_name' || sameNameHere.size === 0).sort((a, b) => a.at - b.at)
+}
+// The first place clearly not the requested one ('other' before 'same_name'), or null.
+export function otherPlace(text: string, where: string[]): { kind: 'other' | 'same_name'; place: string } | null {
+  const hits = placesElsewhere(text, askOf(where))
+  const h = hits.find(x => x.kind === 'other') ?? hits[0]
+  return h ? { kind: h.kind, place: h.place } : null
+}
+
+// A place is BOUND to the company when, in its own sentence, only the company's name or first person and connective words
+// ("is based in", "our office is in") come before it: the same allow-list as own addresses above (bindsToCompany). A company
+// bound to another place is elsewhere, whatever else the page mentions ("Market news: London startups raised more"), unless
+// the requested place is bound to it too (or, for London / NYC, a company-bound street address there).
+function sentenceStart(text: string, at: number): number {
+  let i = at
+  while (i > 0 && !(/[.!?\n]/.test(text[i - 1]) && (i === at || /\s/.test(text[i])))) i--
+  return i
+}
+const boundAt = (text: string, at: number, company?: string) => bindsToCompany(text.slice(sentenceStart(text, at), at).replace(/[,:;]/g, ' '), company)
+function boundElsewhere(text: string, where: string[], company?: string): string | null {
+  const ask = askOf(where)
+  const bound = placesElsewhere(text, ask).find(h => boundAt(text, h.at, company))
+  if (!bound) return null
+  const names = [...ask.cities.keys()].filter(c => c.length >= 3)
+  const ours = names.length ? new RegExp(`(?<![\\p{L}])(?:${names.map(c => esc(c).replace(/ /g, '\\s+')).join('|')})(?![\\p{L}])`, 'giu') : null
+  if (ours) for (const m of text.matchAll(ours)) if (boundAt(text, m.index, company)) return null
+  if (where.some(w => /\blondon\b/i.test(w)) && ownAddress(text, LONDON_STREET, company)) return null
+  if (where.some(w => NYC_ASK.test(w)) && ownAddress(text, NYC_STREET, company)) return null
+  return bound.place
 }
 
 export type PlaceVerdict = 'agrees' | 'unconfirmed' | 'mismatch' | 'no_geography'
 // `company` (optional) is the candidate company's name: an address binds the company when its own sentence names it. Without it only first-person addresses bind.
 export function placeAgreement(text: string, where: string[], company?: string): PlaceVerdict {
   const terms = geoTerms(where); if (terms.length === 0) return 'no_geography'
+  if (boundElsewhere(text, where, company)) return 'mismatch' // the company itself is placed elsewhere: outranks any mention of the requested place
   const verdicts: PlaceVerdict[] = []
   if (where.some(w => NYC_ASK.test(w))) verdicts.push(nycVerdict(text, company))
   if (where.some(w => /\blondon\b/i.test(w))) verdicts.push(londonVerdict(text, company))

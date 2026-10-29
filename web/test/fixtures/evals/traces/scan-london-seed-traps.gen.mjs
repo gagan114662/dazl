@@ -9,6 +9,8 @@ const P = {
   northwind: { url: 'https://news.example/london/northwind-profile', title: 'Northwind Analytics profile', text: `Northwind Analytics opened its London office in 2019 and raised a seed round from local angels.${filler('The firm builds dashboards for retailers in London, UK.')}` },
   lumen: { url: 'https://news.example/paris/lumen-ledger', title: 'Lumen Ledger raises seed in Paris', text: `2026-10-05. Lumen Ledger, a Paris B2B SaaS startup, raised a seed round this month. The team works from its office in Paris, France.${filler('Lumen Ledger sells accounting software across France.')}` },
   brightpath: { url: 'https://news.example/london/startup-roundup', title: 'London startup roundup', text: `2026-10-12. A roundup of London startup news this week, covering events and meetups across the city.${filler('Founders met at a London meetup to talk about hiring.')}` },
+  // Review of #446: a lower-case, company-bound Paris location beside an incidental London mention.
+  seine: { url: 'https://news.example/london/seine-systems', title: 'seine systems raises seed', text: `2026-10-09. seine systems is based in paris, france and raised a seed round this month. Market news: London startups raised more this year.${filler('seine systems sells billing software to European retailers.')}` },
   orbit: { url: 'https://news.example/london/orbit-labs', title: 'Orbit Labs to announce seed', text: `Orbit Labs, a London B2B SaaS startup, will announce its seed round at a launch event on 2026-11-15.${filler('Orbit Labs builds scheduling tools for clinics in London.')}` },
 }
 const icp = { summary: 'London B2B SaaS startups that raised seed funding in the past 90 days', who: ['Founder', 'Head of Sales'], industries: ['B2B SaaS'], sizes: [], where: ['London, UK'], signals: ['raised a seed round'], exclude: [], country: 'GB', language: 'en', window_days: 90 }
@@ -19,6 +21,7 @@ const cands = [
   { name: '', company: 'Northwind Analytics', contact: null, signal: 'Raised a seed round', source_url: P.northwind.url, score: 60, excerpt: 'Northwind Analytics opened its London office in 2019 and raised a seed round from local angels', event_date: null },
   { name: '', company: 'Lumen Ledger', contact: null, signal: 'Raised a seed round', source_url: P.lumen.url, score: 70, excerpt: 'Lumen Ledger, a Paris B2B SaaS startup, raised a seed round this month', event_date: '2026-10-05' },
   { name: 'Dana Example', company: 'Brightpath AI', contact: null, signal: 'Raised a seed round led by a London fund', source_url: P.brightpath.url, score: 75, excerpt: 'Brightpath AI closed a 2m GBP seed round led by a London fund', event_date: '2026-10-12' },
+  { name: '', company: 'Seine Systems', contact: null, signal: 'Raised a seed round', source_url: P.seine.url, score: 70, excerpt: 'seine systems is based in paris, france and raised a seed round this month', event_date: '2026-10-09' },
   { name: '', company: 'Orbit Labs', contact: null, signal: 'Announcing a seed round', source_url: P.orbit.url, score: 65, excerpt: 'Orbit Labs, a London B2B SaaS startup, will announce its seed round at a launch event on 2026-11-15', event_date: '2026-11-15' },
 ]
 let seq = 0, t = 0
