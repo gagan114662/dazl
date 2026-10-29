@@ -15,7 +15,7 @@ import type { Db, DbLike } from '../db/client.ts'
 import { asDb } from '../db/client.ts'
 
 export { MAX_OFFER, isMissingSchema, cleanOffer, statedOffer, offerOfSeller, sameOffer, effectiveOffer, type OfferSource, type PlayOffer } from './play-offer-text.ts'
-import { effectiveOffer, cleanOffer, isMissingSchema, type PlayOffer } from './play-offer-text.ts'
+import { effectiveOffer, cleanOffer, isMissingSchema, tenantOffer, type PlayOffer } from './play-offer-text.ts'
 
 // The effective offer of one play of this tenant (null: no such play of this tenant).
 export async function readPlayOffer(db: DbLike, tenantId: string, jobId: string): Promise<PlayOffer | null> {
@@ -25,12 +25,13 @@ export async function readPlayOffer(db: DbLike, tenantId: string, jobId: string)
   return effectiveOffer(row, await profileOffer(d, tenantId))
 }
 
-// The tenant's current selling context: its Memory positioning, else the business profile's offer.
+// The tenant's own selling context (play-offer-text.ts tenantOffer): the Memory positioning, else the business
+// profile's offer; '' when neither is set.
 export async function profileOffer(db: Db, tenantId: string): Promise<string> {
   let positioning = ''
   try { positioning = (await db.get<{ positioning: string }>('SELECT positioning FROM tenant_memory WHERE tenant_id = ?', [tenantId]))?.positioning ?? '' } catch (e) { if (!isMissingSchema(e)) throw e /* else: no Memory table yet */ }
-  if (positioning.trim()) return positioning
-  return (await db.get<{ sells: string | null }>('SELECT sells FROM users WHERE id = ?', [tenantId]))?.sells ?? ''
+  const sells = (await db.get<{ sells: string | null }>('SELECT sells FROM users WHERE id = ?', [tenantId]))?.sells ?? ''
+  return tenantOffer(positioning, sells) ?? ''
 }
 
 // Sets the offer of one play of this tenant, and nothing else: the profile and every other play keep theirs.

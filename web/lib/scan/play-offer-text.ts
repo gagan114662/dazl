@@ -30,17 +30,25 @@ export type PlayOffer =
 export const cleanOffer = (s: unknown): string => typeof s === 'string' ? s.replace(/\s+/g, ' ').trim().slice(0, MAX_OFFER) : ''
 
 // The offer a request states, if it states one: "selling X to ...", "we sell X to ...", "I offer X for ...",
-// "offer: X". Plain targeting ("dental practices in NYC hiring a receptionist") states none.
+// "offer: X", and a whole sentence that is only that statement ("We sell CRM setup and outbound sales consulting.").
+// A pattern never reaches past its sentence. Plain targeting ("dental practices in NYC hiring a receptionist"),
+// exclusions ("Exclude agencies.") and negated sentences ("We don't sell to agencies.") state none.
+const SENTENCE_STOP = /[.!?;\n]/
 export function statedOffer(query: string | null | undefined): string | null {
-  const q = (query ?? '').replace(/\s+/g, ' ').trim()
+  const q = (query ?? '').replace(/[ \t]+/g, ' ').trim()
   if (!q) return null
   const pats = [
-    /\b(?:i|we|i'm|we're|i am|we are)\s+(?:sell|selling|offer|offering|provide|providing)\s+(.{3,150}?)\s+(?:to|for)\s+\S/i,
-    /\bselling\s+(.{3,150}?)\s+(?:to|for)\s+\S/i,
+    /\b(?:i|we|i'm|we're|i am|we are)\s+(?:sell|selling|offer|offering|provide|providing)\s+([^.!?;\n]{3,150}?)\s+(?:to|for)\s+\S/i,
+    /\bselling\s+([^.!?;\n]{3,150}?)\s+(?:to|for)\s+\S/i,
     /\b(?:offer|offering|product|service)\s*:\s*([^.;\n]{3,150})/i,
   ]
   for (const p of pats) {
     const m = p.exec(q)
+    if (m) { const o = cleanOffer(m[1].replace(/^(?:our|my|a|an)\s+/i, '')); if (o.length >= 3) return o }
+  }
+  // a sentence that is nothing but "we sell / I offer / we provide <offer>"
+  for (const sentence of q.split(SENTENCE_STOP)) {
+    const m = /^(?:i|we|i'm|we're|i am|we are)\s+(?:sell|offer|provide)\s+(.{3,150})$/i.exec(sentence.trim())
     if (m) { const o = cleanOffer(m[1].replace(/^(?:our|my|a|an)\s+/i, '')); if (o.length >= 3) return o }
   }
   return null
@@ -74,4 +82,19 @@ export function effectiveOffer(play: { offer?: string | null; seller?: string | 
   if (base) return { offer: base, source: recorded ? 'recorded' : 'profile', conflict: null }
   if (stated) return { offer: stated, source: 'request', conflict: null }
   return { offer: null, source: 'none', conflict: null }
+}
+
+// The tenant's own selling context, for a play without an offer of its own (#349): the Memory positioning set in
+// Settings, else what onboarding saved (users.sells), so nobody needs a second hidden form. Every drafting path (template,
+// rewrite, follow-ups), scoring and the offer card read it through these two functions, so they cannot disagree.
+export function tenantOffer(memoryPositioning: string | null | undefined, profileSells: string | null | undefined): string | null {
+  return cleanOffer(memoryPositioning) || cleanOffer(profileSells) || null
+}
+// The offer a draft for a lead of this play states: the play's effective offer, with the tenant context as its base. A
+// contested play refuses (offer_conflict). offer null and no refusal: there is nothing to state.
+export type DraftOffer = { offer: string | null; refuse: 'offer_conflict' | null }
+export function draftOffer(play: { offer?: string | null; seller?: string | null; query?: string | null } | null | undefined, tenant: string | null): DraftOffer {
+  const e = effectiveOffer(play ?? {}, tenant ?? '')
+  if (e.conflict) return { offer: null, refuse: 'offer_conflict' }
+  return { offer: e.offer, refuse: null }
 }
