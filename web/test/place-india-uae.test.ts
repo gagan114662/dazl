@@ -27,3 +27,16 @@ test('NOT widened: a country-level ask accepts any of its cities; a request else
   assert.equal(v('Gurugram, India', 'Sky Realty leased 50,000 sq ft of office space this month'), 'unconfirmed')
   assert.equal(v('London, UK', 'Sky Realty, a Mumbai broker, opened an office in London'), 'agrees')
 })
+
+// Review fix (#342): an explicit company-bound headquarters in another listed city beats country overlap and incidental alias mentions.
+import { placeAgreement as pa342 } from '../lib/scan/place-agreement.ts'
+import { test as t342 } from 'node:test'
+import assert342 from 'node:assert/strict'
+t342('#342 city+country request: Mumbai HQ is a mismatch for Gurugram, India', () => assert342.equal(pa342('Orbitly is based in Mumbai, India.', ['Gurugram, India'], 'Orbitly'), 'mismatch'))
+t342('#342 city+country request: Abu Dhabi HQ is a mismatch for Dubai, UAE', () => assert342.equal(pa342('Orbitly is based in Abu Dhabi, UAE.', ['Dubai, UAE'], 'Orbitly'), 'mismatch'))
+t342('#342 incidental alias mention (conference in Gurgaon) does not erase a Mumbai HQ', () => assert342.equal(pa342('Orbitly is based in Mumbai. We attended a conference in Gurgaon.', ['Gurugram'], 'Orbitly'), 'mismatch'))
+t342('#342 first-person competing HQ also wins', () => assert342.equal(pa342('Our headquarters is in Pune, India. Founder spoke at an event in Gurgaon.', ['Gurugram, India'], 'Orbitly'), 'mismatch'))
+t342('#342 positive: genuine alias HQ still agrees', () => assert342.equal(pa342('Orbitly is based in Gurgaon, India.', ['Gurugram'], 'Orbitly'), 'agrees'))
+t342('#342 positive: bound asked city plus a later other-city mention agrees', () => assert342.equal(pa342('Orbitly is based in Gurgaon, with a sales office in Mumbai.', ['Gurugram, India'], 'Orbitly'), 'agrees'))
+t342('#342 country-only request accepts any listed city', () => assert342.equal(pa342('Orbitly is based in Mumbai, India.', ['India'], 'Orbitly'), 'agrees'))
+t342('#342 unbound other-city mention is not a conflict', () => assert342.equal(pa342('Orbitly, Gurugram, India. Our customer Acme is based in Mumbai.', ['Gurugram, India'], 'Orbitly'), 'agrees'))

@@ -115,6 +115,18 @@ export function otherListedCity(text: string, terms: string[]): string | null {
   return null
 }
 
+// An explicit, company-bound HEADQUARTERS in a different listed city ("Orbitly is based in Mumbai") outranks every broad signal that would otherwise agree: a country token shared with the request
+// ("India"), or an incidental mention of the asked city or its alias ("a conference in Gurgaon"). Only a sentence that binds the asked city to the company itself ("Orbitly is based in
+// Gurgaon", "Our office is in Gurgaon") restores agreement; the bind rule is the same short own-address allow-list used for NYC and London. Requests with no listed city are not affected.
+const metroRe = (m: string[]) => new RegExp(`(?<![a-z0-9])(?:${m.map(n => esc(n).replace(/ /g, '\\s+')).join('|')})(?![a-z0-9])`, 'i')
+function boundOtherListedCity(text: string, terms: string[], company?: string): string | null {
+  const ours = METROS.filter(m => m.some(n => terms.some(x => x === n || x.startsWith(`${n},`) || x === `${n} india`)))
+  if (ours.length === 0) return null
+  if (ours.some(m => ownAddress(text, metroRe(m), company))) return null
+  const other = METROS.find(m => !ours.includes(m) && ownAddress(text, metroRe(m), company))
+  return other ? other[0] : null
+}
+
 const GENERIC_ALIAS: Record<string, string[]> = {}
 export function geoTerms(where: string[]): string[] {
   const out = new Set<string>()
@@ -159,6 +171,7 @@ export function placeAgreement(text: string, where: string[], company?: string):
   if (where.some(w => NYC_ASK.test(w))) verdicts.push(nycVerdict(text, company))
   if (where.some(w => /\blondon\b/i.test(w))) verdicts.push(londonVerdict(text, company))
   if (verdicts.length) return verdicts.includes('agrees') ? 'agrees' : verdicts.includes('mismatch') ? 'mismatch' : 'unconfirmed'
+  if (boundOtherListedCity(text, terms, company)) return 'mismatch'
   if (namesPlace(text, terms)) return 'agrees'
   if (askedMetroAlias(text, terms)) return 'agrees'
   if (otherListedCity(text, terms)) return 'mismatch'
