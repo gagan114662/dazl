@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateTrial, trialStatus, recordTrialScan, operatorKey, TRIAL_SCANS_PER_ACCOUNT, TRIAL_SCANS_PER_IP_PER_DAY } from '../lib/scan/trial.ts'
-import { migrateScan, createJob, cancelJob } from '../lib/scan/store.ts'
+import { migrateScan, createJob, createQueryJob, cancelJob } from '../lib/scan/store.ts'
 import { migrateKeys } from '../lib/llm/key-store.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import type { Provider } from '../lib/llm/provider.ts'
@@ -82,12 +82,15 @@ test('not configured: keyless accounts get no_api_key behavior (not funded)', ()
 })
 
 test('runner claims trial-funded jobs from keyless accounts and runs them on the operator key', async () => {
-  process.env.DAZL_TRIAL_ANTHROPIC_KEY = 'sk-ant-test'
+  // a trial scan runs only with dazl's trial budget configured (lib/billing/trial-budget.ts)
+  const CAPS = { DAZL_TRIAL_ANTHROPIC_KEY: 'sk-ant-test', DAZL_TRIAL_SCAN_RESERVE_USD: '0.3', DAZL_TRIAL_ACCOUNT_TOTAL_USD: '1', DAZL_TRIAL_GLOBAL_DAILY_USD: '10',
+    TINYFISH_API_KEY: 'tf-fixture', TINYFISH_ENABLED: '1', DAZL_TRIAL_TINYFISH_SEARCH_USD: '0.01', DAZL_TRIAL_TINYFISH_FETCH_USD: '0.01' }
+  Object.assign(process.env, CAPS)
   try {
     const db = new Database(':memory:')
     migrateScan(db); migrateKeys(db); migrateTrial(db)
-    // keyless tenant: no row in tenant_llm_keys, job funded by the trial
-    const id = createJob(db, 'keyless', { business_name: 'B', industry: 'i', location: 'l' })
+    // keyless tenant: no row in tenant_llm_keys, job funded by the trial (a query scan: its profile is inferred by the model)
+    const id = createQueryJob(db, 'keyless', { query: 'dental practices in Toronto hiring a receptionist' })
     db.prepare("UPDATE scan_jobs SET funded_by='trial' WHERE id=?").run(id)
     recordTrialScan(db, 'keyless', id, '1.2.3.4')
     const claimed = claimKeyedJob(db)
@@ -95,12 +98,15 @@ test('runner claims trial-funded jobs from keyless accounts and runs them on the
     assert.equal(claimed?.funded_by, 'trial')
     let seenKey = ''
     const prov: Record<'anthropic' | 'openai', Provider> = {
-      anthropic: { research: async (k: string) => { seenKey = k; return { text: '[]', citedUrls: [] } } },
+      anthropic: { configuredModel: () => 'claude-sonnet-4-5', research: async () => ({ text: '[]', citedUrls: [] }), complete: async (k: string) => { seenKey = k; return '{}' } },
       openai: { research: async () => ({ text: '[]', citedUrls: [] }) },
     }
-    await runJob(db, claimed!, { providers: prov })
+    // TinyFish answers nothing here (no network): the scan ends with no companies, after the model ran on the operator key
+    const real = globalThis.fetch
+    globalThis.fetch = (async () => new Response('', { status: 503 })) as typeof fetch
+    try { await runJob(db, claimed!, { providers: prov, judge: null }) } finally { globalThis.fetch = real }
     assert.equal(seenKey, 'sk-ant-test') // operator key, never a tenant key
-  } finally { delete process.env.DAZL_TRIAL_ANTHROPIC_KEY }
+  } finally { for (const k of Object.keys(CAPS)) delete process.env[k] }
 })
 
 test('keyless non-trial jobs are still never claimed', () => {
