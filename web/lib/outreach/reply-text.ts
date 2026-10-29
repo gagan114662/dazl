@@ -7,7 +7,9 @@
 //   - A body that cannot be decoded is reported as malformed, never as an empty (harmless) reply.
 export interface GPart { mimeType?: string; filename?: string; body?: { data?: string; attachmentId?: string; size?: number }; parts?: GPart[]; headers?: { name: string; value: string }[] }
 export type TextStatus = 'ok' | 'empty' | 'malformed'
-export interface ExtractedText { text: string; status: TextStatus; source: 'plain' | 'html' | 'none' }
+// alt: when the message carries BOTH a plain and an HTML body, the other one's new text (null: not decodable), so the
+// caller can refuse to act when the two say different things.
+export interface ExtractedText { text: string; status: TextStatus; source: 'plain' | 'html' | 'none'; alt?: string | null }
 
 const MAX_DEPTH = 12
 const B64URL = /^[A-Za-z0-9_-]*={0,2}$/
@@ -34,7 +36,8 @@ function decode(p: GPart): string | null {
 function find(p: GPart | undefined, type: string, depth = 0): { text: string | null } | undefined {
   if (!p || depth > MAX_DEPTH) return undefined
   const mt = (p.mimeType ?? '').toLowerCase()
-  if (mt === 'message/rfc822' || (depth > 0 && isAttachment(p))) return undefined
+  // an attachment is never the reply, at any depth (a message whose root part is itself an attachment has no reply text)
+  if (mt === 'message/rfc822' || isAttachment(p)) return undefined
   if (mt === type) return { text: decode(p) }
   for (const c of p.parts ?? []) { const r = find(c, type, depth + 1); if (r && r.text !== '') return r }
   return undefined
@@ -79,15 +82,19 @@ export function newText(t: string): string {
   return out.join(' ').replace(/\s+/g, ' ').trim()
 }
 
-// The new text of one message. Plain text first; HTML when there is no plain part (or it is empty).
+// The new text of one message. Plain text first; HTML when there is no plain part (or it is empty). When both are
+// readable, the HTML one's new text is returned as alt.
 export function messageText(payload: GPart | undefined): ExtractedText {
   if (!payload) return { text: '', status: 'empty', source: 'none' }
-  const plain = find(payload, 'text/plain')
+  const plain = find(payload, 'text/plain'), html = find(payload, 'text/html')
+  const htmlText = html ? (html.text === null ? null : newText(htmlToText(html.text))) : undefined
   if (plain && plain.text === null) return { text: '', status: 'malformed', source: 'plain' }
-  if (plain && plain.text) { const t = newText(plain.text); if (t) return { text: t, status: 'ok', source: 'plain' } }
-  const html = find(payload, 'text/html')
-  if (html && html.text === null) return { text: '', status: 'malformed', source: 'html' }
-  if (html && html.text) { const t = newText(htmlToText(html.text)); if (t) return { text: t, status: 'ok', source: 'html' } }
+  if (plain && plain.text) {
+    const t = newText(plain.text)
+    if (t) return htmlText === undefined || htmlText === '' ? { text: t, status: 'ok', source: 'plain' } : { text: t, status: 'ok', source: 'plain', alt: htmlText }
+  }
+  if (htmlText === null) return { text: '', status: 'malformed', source: 'html' }
+  if (htmlText) return { text: htmlText, status: 'ok', source: 'html' }
   return { text: '', status: 'empty', source: plain ? 'plain' : html ? 'html' : 'none' }
 }
 

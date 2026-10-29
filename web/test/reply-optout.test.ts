@@ -14,13 +14,13 @@ import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.
 import { saveSettings, isSuppressed } from '../lib/outreach/service.ts'
 import { ATTESTATIONS, CONSENT_VERSION, enable, migrateAutopilot } from '../lib/outreach/autopilot.ts'
 import { grantConsent, hasConsent, migrateLedger } from '../lib/outreach/ledger.ts'
-import { acceptReadConsent, classifyReply, migrateReplies, syncReplies } from '../lib/outreach/replies.ts'
+import { acceptReadConsent, classifyMessage, classifyReply, migrateReplies, syncReplies } from '../lib/outreach/replies.ts'
 import { htmlToText, messageText, newText, type GPart } from '../lib/outreach/reply-text.ts'
 
 const b64 = (s: string | Buffer) => Buffer.from(s).toString('base64url')
 const part = (mimeType: string, body: string, extra: Partial<GPart> = {}): GPart => ({ mimeType, body: { data: b64(body) }, ...extra })
 const multi = (mimeType: string, parts: GPart[]): GPart => ({ mimeType, parts })
-const classify = (p: GPart, h = {}) => { const t = messageText(p); return classifyReply(t.text, h, t.status) }
+const classify = (p: GPart, h = {}) => classifyMessage(messageText(p), h)
 
 test('HTML-only replies: the new text is read; quoted history, scripts and styles never count', () => {
   const unsub = part('text/html', '<html><head><style>.x{}</style></head><body><div dir="ltr">Please <b>unsubscribe</b> me.</div><br><div class="gmail_quote"><div class="gmail_attr">On Mon, Pat wrote:</div><blockquote>Sounds good, tell me more</blockquote></div></body></html>')
@@ -40,7 +40,7 @@ test('nested multipart: plain text inside alternative inside mixed; attachments 
     { mimeType: 'message/rfc822', parts: [part('text/plain', 'Sounds good, let\'s talk')] },
     part('application/pdf', '%PDF', { filename: 'deck.pdf', body: { attachmentId: 'a1' } }),
   ])
-  assert.deepEqual(messageText(msg), { text: 'Please take me off your list.', status: 'ok', source: 'plain' })
+  assert.deepEqual(messageText(msg), { text: 'Please take me off your list.', status: 'ok', source: 'plain', alt: 'Please take me off your list.' })
   assert.equal(classify(msg), 'opt_out')
   // an empty plain part falls back to the HTML one
   assert.equal(classify(multi('multipart/alternative', [part('text/plain', ''), part('text/html', '<p>No thanks</p>')])), 'negative')
@@ -48,6 +48,35 @@ test('nested multipart: plain text inside alternative inside mixed; attachments 
   assert.equal(classify(multi('multipart/mixed', [part('text/plain', 'yes please', { filename: 'a.txt' })])), 'uncertain')
   // a charset other than UTF-8
   assert.equal(classify(multi('multipart/alternative', [{ mimeType: 'text/plain', headers: [{ name: 'Content-Type', value: 'text/plain; charset="iso-8859-1"' }], body: { data: b64(Buffer.from('Désinscrivez-moi, merci', 'latin1')) } }])), 'opt_out')
+})
+
+test('REVIEW an attachment is never the reply, also when it is the message\'s root part (filename, Content-Disposition, attachmentId)', () => {
+  for (const text of ['Sounds good, interested', 'Please unsubscribe me']) {
+    for (const extra of [{ filename: 'reply.txt' }, { headers: [{ name: 'Content-Disposition', value: 'attachment' }] }, { headers: [{ name: 'Content-Disposition', value: 'attachment; filename="r.txt"' }], filename: 'r.txt' }, { body: { data: b64(text), attachmentId: 'att-1' } }]) {
+      const root = part('text/plain', text, extra)
+      assert.equal(messageText(root).status, 'empty', JSON.stringify(extra))
+      assert.equal(classify(root), 'uncertain', `${text} ${JSON.stringify(extra)}`)
+    }
+  }
+  // the reviewer's exact negative
+  const exact = { mimeType: 'text/plain', filename: 'reply.txt', headers: [{ name: 'Content-Disposition', value: 'attachment' }], body: { data: b64('Sounds good, interested') } }
+  assert.equal(classify(exact), 'uncertain')
+  // an inline (not attachment) disposition is still the reply
+  assert.equal(classify(part('text/plain', 'Sounds good, tell me more', { headers: [{ name: 'Content-Disposition', value: 'inline' }] })), 'positive')
+})
+
+test('REVIEW plain and HTML alternatives that disagree never grant consent: an opt-out in either is honoured, anything else is held for review', () => {
+  const alt = (plain: string, html: string) => multi('multipart/alternative', [part('text/plain', plain), part('text/html', html)])
+  assert.equal(classify(alt('Sounds good, tell me more', '<p>Please unsubscribe me</p>')), 'opt_out')
+  assert.equal(classify(alt('Please unsubscribe me', '<p>Sounds good, tell me more</p>')), 'opt_out')
+  assert.equal(classify(alt('Sounds good, tell me more', '<p>Not interested</p>')), 'uncertain')
+  assert.equal(classify(alt('Sounds good, tell me more', '<p>Who is this?</p>')), 'uncertain')
+  assert.equal(classify(multi('multipart/alternative', [part('text/plain', 'Sounds good, tell me more'), { mimeType: 'text/html', body: { data: '%%%broken%%%' } }])), 'uncertain', 'an undecodable alternative')
+  // the usual case: both bodies say the same thing
+  assert.equal(classify(alt('Sounds good, tell me more', '<p>Sounds good, <b>tell me more</b></p>')), 'positive')
+  assert.equal(classify(alt('Kein Interesse', '<div>Kein Interesse</div>')), 'negative')
+  // the HTML's quoted history does not count as a disagreement
+  assert.equal(classify(alt('Sounds good, tell me more\n\nOn Mon, Pat wrote:\n> Unsubscribe?', '<p>Sounds good, tell me more</p><blockquote>Unsubscribe?</blockquote>')), 'positive')
 })
 
 test('localized opt-out and negative wording; ambiguous wording and unread scripts are held for review, never positive', () => {

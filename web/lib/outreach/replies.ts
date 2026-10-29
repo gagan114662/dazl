@@ -100,6 +100,18 @@ export function classifyReply(text: string, h: ReplyHeaders = {}, status: 'ok' |
   return 'other'
 }
 
+// One message, all of its readable bodies. When the plain and HTML alternatives disagree, no body is trusted to grant
+// anything: an explicit opt-out in either is honoured (the recipient asked to stop), any other disagreement is held
+// for review (uncertain), and positive only stands when both bodies say it.
+export function classifyMessage(t: { text: string; status: 'ok' | 'empty' | 'malformed'; alt?: string | null }, h: ReplyHeaders = {}): ReplyClass {
+  const first = classifyReply(t.text, h, t.status)
+  if (first === 'auto' || t.alt === undefined) return first
+  const second = t.alt === null ? 'uncertain' : classifyReply(t.alt, h, 'ok')
+  if (first === second) return first
+  if (first === 'opt_out' || second === 'opt_out') return 'opt_out'
+  return 'uncertain'
+}
+
 // ---------- Gmail reading (thread ids only) ----------
 interface GMsg { id: string; threadId: string; internalDate?: string; payload?: GPart }
 const header = (m: GMsg, n: string) => m.payload?.headers?.find(h => h.name.toLowerCase() === n)?.value
@@ -144,7 +156,7 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
           if (/\b5\.\d{1,3}\.\d{1,3}\b/.test(full)) { recordBounce(db, tenantId, m.to_email, now); db.prepare("UPDATE followup_threads SET stopped = 'bounce' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, thread); out.bounces++; log('bounce') } else log('soft_bounce')
           continue
         }
-        const cls = classifyReply(text, { autoSubmitted: header(g, 'auto-submitted'), precedence: header(g, 'precedence'), subject: header(g, 'subject'), xAutoreply: header(g, 'x-autoreply'), xAutorespond: header(g, 'x-autorespond') }, body.status)
+        const cls = classifyMessage(body, { autoSubmitted: header(g, 'auto-submitted'), precedence: header(g, 'precedence'), subject: header(g, 'subject'), xAutoreply: header(g, 'x-autoreply'), xAutorespond: header(g, 'x-autorespond') })
         log(cls)
         if (cls === 'auto') continue
         out.replies++
