@@ -9,7 +9,9 @@ import { Avatar, Pill } from '../ui/bits'
 // before it writes. Approve is the existing draft action (POST /api/outreach { lead_id }), so every server check still
 // decides; a lead a check holds says why and is never approved from here. Nothing is sent from this screen: drafts wait
 // in Outreach. Then the two things sending needs: Gmail (one click, with the read notice it accepts) and the sender name
-// and mailing address every email carries.
+// and mailing address every email carries. Progress is the server's, not this component's: each mount (first entry, Back
+// and Start reaching out again, a refresh) reads this play's existing drafts (GET /api/campaigns/<id>, complete for one
+// scan) and counts those leads as approved, so nothing is approved twice and the queue resumes at the next lead.
 interface Settings { gmail: { email?: string; status?: string } | null; sender: { sender_name?: string; postal_address?: string; booking_url?: string | null } | null; read_notice?: string[] }
 type Verdict = 'approved' | 'skipped'
 
@@ -20,9 +22,21 @@ export default function FirstReview({ jobId }: { jobId: string }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const [settings, setSettings] = useState<Settings | null>(null)
+  // The drafts read could not be read: approving still works (a duplicate is refused by the server and counted as done).
+  const [draftsUnknown, setDraftsUnknown] = useState(false)
   const loadSettings = () => void fetch('/api/outreach/settings').then(r => r.ok ? r.json() : null).catch(() => null).then(setSettings)
   useEffect(() => {
-    void fetch(`/api/leads?job_id=${jobId}`).then(r => r.ok ? r.json() : null).catch(() => null).then(j => setLeads(Array.isArray(j?.leads) ? previewSplit(j.leads as PreviewLead[]).opportunities : 'failed'))
+    const read = (u: string) => fetch(u).then(r => r.ok ? r.json() : null).catch(() => null)
+    void Promise.all([read(`/api/leads?job_id=${jobId}`), read(`/api/campaigns/${jobId}`)]).then(([j, c]) => {
+      if (!Array.isArray(j?.leads)) return setLeads('failed')
+      const list = previewSplit(j.leads as PreviewLead[]).opportunities
+      const drafted = new Set(Array.isArray(c?.messages) ? (c.messages as { lead_id: string }[]).map(m => m.lead_id) : [])
+      setDraftsUnknown(!Array.isArray(c?.messages))
+      setVerdict(Object.fromEntries(list.filter(l => drafted.has(l.id)).map(l => [l.id, 'approved' as Verdict])))
+      const next = list.findIndex(l => !drafted.has(l.id))
+      setAt(next === -1 ? list.length : next)
+      setLeads(list)
+    })
     loadSettings()
   }, [jobId])
 
@@ -30,20 +44,24 @@ export default function FirstReview({ jobId }: { jobId: string }) {
   if (leads === 'failed') return <p className="text-center" role="alert">Could not load your leads. <a className="underline" href={`/app/leads?job_id=${jobId}`}>Open them in Leads</a></p>
 
   const approved = leads.filter(l => verdict[l.id] === 'approved').length
+  // Leads already drafted are passed over (Back, re-entry, refresh); a skipped one comes back on the next visit.
   const done = at >= leads.length
   const l = done ? null : leads[at]
+  // The next lead still to review after n (one drafted earlier, in this visit or before, is passed over).
+  const nextOpen = (n: number) => { let k = n + 1; while (k < leads.length && verdict[leads[k].id] === 'approved') k++; return k }
 
   async function approve(id: string) {
     setBusy(true); setErr('')
     try {
       const r = await fetch('/api/outreach', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lead_id: id }) })
       const j = await r.json().catch(() => ({}))
-      // The server's own refusal is shown on the card; the lead stays where it is.
-      if (!r.ok) return setErr(j.error || 'Could not create the draft.')
-      setVerdict(v => ({ ...v, [id]: 'approved' })); setAt(n => n + 1)
+      // A draft that already exists is this lead done, not an error (another tab, or the drafts read was unavailable).
+      // Any other refusal is shown on the card; the lead stays where it is.
+      if (!r.ok && j.code !== 'already_drafted') return setErr(j.error || 'Could not create the draft.')
+      setVerdict(v => ({ ...v, [id]: 'approved' })); setAt(n => nextOpen(n))
     } catch { setErr('Could not reach the server. Try again.') } finally { setBusy(false) }
   }
-  const skip = (id: string) => { setErr(''); setVerdict(v => ({ ...v, [id]: 'skipped' })); setAt(n => n + 1) }
+  const skip = (id: string) => { setErr(''); setVerdict(v => ({ ...v, [id]: 'skipped' })); setAt(n => nextOpen(n)) }
 
   const gmailOn = settings?.gmail?.status === 'active'
   const senderOn = !!settings?.sender?.sender_name && !!settings?.sender?.postal_address
@@ -71,6 +89,7 @@ export default function FirstReview({ jobId }: { jobId: string }) {
           {l.evidence_excerpt && <blockquote className="mt-3 border-l-2 border-[var(--mint)] pl-3 text-sm break-words" data-testid="review-quote">&ldquo;{l.evidence_excerpt}&rdquo;</blockquote>}
           <p className="text-xs mt-3 flex flex-wrap gap-2"><a className="pill pill-plain" href={c.sourceUrl} target="_blank" rel="noopener noreferrer nofollow">{c.sourceHost}</a><span className="pill pill-plain">{c.date}</span></p>
           {err && <p className="text-sm mt-3 text-[#a3173f]" role="alert" data-testid="review-error">{err}</p>}
+          {draftsUnknown && <p className="text-xs mt-3 text-[var(--ink-2)]" data-testid="drafts-unknown">Could not check which of these already have a draft. A lead that has one is not drafted twice.</p>}
           {!ok.ok && <p className="text-sm mt-4 text-[var(--ink-2)]" data-testid="review-held">Can&apos;t approve yet: {ok.reason} <a className="underline" href={`/app/leads?job_id=${jobId}`}>Open it in Leads</a></p>}
           <div className="mt-5 flex flex-wrap gap-2">
             <button type="button" className="btn-primary btn-lg" disabled={busy || !ok.ok} onClick={() => void approve(l.id)}>{busy ? 'Drafting...' : 'Approve and draft'}</button>

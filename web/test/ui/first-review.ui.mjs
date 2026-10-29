@@ -69,8 +69,8 @@ const ROWS = [
   row(4, 'Ashworth Partners', 'Helen Ashworth, Managing partner', 'helen@ashworthpartners.example', 'Ashworth Partners announced a merger and a move to larger offices in Leeds.', 'yorkshirepost.example', '2026-10-12'),
 ]
 const NOTICE = ['dazl reads only replies and delivery-failure notices in the email threads it started for you.', 'Nothing else in your mailbox is read, stored or used.']
-async function run({ width, height, tag }) {
-  const st = { profile: { business_name: '', sells: '', website: '', buyer: null }, scanBodies: [], polls: 0, drafts: [], failNext4: true, sender: { sender_name: '', postal_address: '', booking_url: null } }
+async function run({ width, height, tag, drafted = [] }) {
+  const st = { profile: { business_name: '', sells: '', website: '', buyer: null }, scanBodies: [], polls: 0, drafts: [...drafted], failNext4: true, sender: { sender_name: '', postal_address: '', booking_url: null } }
   const ctx = await b.newContext({ viewport: { width, height } })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
   const writes = []
@@ -90,8 +90,12 @@ async function run({ width, height, tag }) {
       const { lead_id } = JSON.parse(req.postData())
       // One refusal the first time Ashworth is approved: the card shows it and the lead stays.
       if (lead_id === ROWS[3].id && st.failNext4) { st.failNext4 = false; return json({ error: 'Could not create the draft right now. Try again.' }, 503) }
+      // The server refuses a second draft for a lead (the unique lead_id); the review step must never send one.
+      if (st.drafts.includes(lead_id)) { st.dupes = (st.dupes ?? 0) + 1; return json({ error: 'A draft for this lead already exists', code: 'already_drafted' }, 409) }
       st.drafts.push(lead_id); return json({ id: `m${st.drafts.length}` }, 201)
     }
+    // This play's own emails (the campaign read): the drafts made so far, by lead.
+    if (p === `/api/campaigns/${J}`) return json({ job: { id: J }, leads: ROWS, messages: st.drafts.map((id, k) => ({ id: `m${k + 1}`, lead_id: id, to_email: 'x@example.test', subject: 'Hello', status: 'draft', created_at: 1, sent_at: null })) })
     if (p === '/api/outreach/settings' && m === 'PUT') { st.sender = { ...st.sender, ...JSON.parse(req.postData()) }; return json({ ok: true }) }
     if (p === '/api/outreach/settings') return json({ gmail: null, sender: st.sender, daily_cap: 20, sent_24h: 0, account_sent_24h: 0, read_notice: NOTICE })
     if (p === '/api/scan/jobs') return json({ jobs: [] })
@@ -114,6 +118,20 @@ async function run({ width, height, tag }) {
   await page.waitForFunction(() => document.querySelector('[data-testid=ready-cta]')?.textContent === 'Start reaching out', null, { timeout: 15000 })
   // 1. Review in place.
   await page.getByTestId('ready-cta').click()
+  if (drafted.length) {
+    // Fresh entry with drafts already made (another visit, a refresh): those leads count as approved, the queue starts at
+    // the first lead without one, and nothing is drafted again.
+    await page.getByTestId('review-count').waitFor()
+    assert.equal(await page.getByTestId('review-count').textContent(), '2 of 4', 'Hartley and Ashworth already have drafts: the queue starts at Northgate')
+    assert.equal(await page.getByTestId('review-drafts').textContent(), 'Review your 2 drafts', 'the existing drafts are acknowledged and reachable')
+    await page.getByTestId('review-card').getByRole('button', { name: 'Skip' }).click()
+    await page.getByTestId('review-card').getByRole('button', { name: 'Skip' }).click()
+    await page.waitForFunction(() => document.querySelector('[data-testid=review-step] h1')?.textContent === '2 drafts ready for you', null, { timeout: 10000 })
+    assert.equal(await page.getByTestId('review-drafts').getAttribute('href'), `/app/outreach?job_id=${J}`)
+    assert.deepEqual([writes.filter(w => w === 'POST /api/outreach').length, st.dupes ?? 0], [0, 0], 'no draft request at all: both were made before')
+    await shot('8-reentry-drafted')
+    await ctx.close(); return null
+  }
   const card = page.getByTestId('review-card')
   await card.waitFor()
   assert.equal(await page.getByTestId('review-count').textContent(), '1 of 4')
@@ -126,6 +144,15 @@ async function run({ width, height, tag }) {
   await card.getByRole('button', { name: 'Approve and draft' }).click()
   await page.waitForFunction(() => document.querySelector('[data-testid=review-count]')?.textContent === '2 of 4')
   const toFirstDraft = { seconds: (Date.now() - t0) / 1000, typed }
+  // Back to the leads and in again (Instinct's hold on 1275383): the draft is still counted, the drafts link is there,
+  // the queue resumes at the next lead and no second draft request is made.
+  await page.getByTestId('review-back').click()
+  await page.getByTestId('ready-step').waitFor()
+  await page.getByTestId('ready-cta').click()
+  await page.waitForFunction(() => document.querySelector('[data-testid=review-count]')?.textContent === '2 of 4', null, { timeout: 10000 })
+  assert.equal(await page.getByTestId('review-drafts').textContent(), 'Review your 1 draft')
+  assert.equal(await page.getByTestId('review-card').locator('.font-bold').first().textContent(), 'Northgate Bookkeeping')
+  assert.equal(writes.filter(w => w === 'POST /api/outreach').length, 1, 'still one draft request after Back and re-entry')
   await card.getByRole('button', { name: 'Skip' }).click()
   await page.waitForFunction(() => document.querySelector('[data-testid=review-count]')?.textContent === '3 of 4')
   assert.equal(await card.getByRole('button', { name: 'Approve and draft' }).isDisabled(), true, 'no published email: the approve gate holds it')
@@ -162,10 +189,12 @@ async function run({ width, height, tag }) {
 try {
   const d = await run({ width: 1440, height: 900, tag: 'desktop' })
   const m = await run({ width: 390, height: 844, tag: 'mobile' })
+  await run({ width: 1440, height: 900, tag: 'desktop', drafted: [ROWS[0].id, ROWS[3].id] })
+  await run({ width: 390, height: 844, tag: 'mobile', drafted: [ROWS[0].id, ROWS[3].id] })
   assert.deepEqual([d.toFirstLead.typed, d.toFirstDraft.typed, m.toFirstLead.typed, m.toFirstDraft.typed], [1, 1, 1, 1])
   console.log(`MEASURE things typed: before the first lead card ${d.toFirstLead.typed}, before the first draft ${d.toFirstDraft.typed}, before ready to send ${d.typedToSendReady} (website + sender name + mailing address)`)
   console.log(`MEASURE seconds from sign-in (seeded, stubbed timings): first lead card ${d.toFirstLead.seconds.toFixed(1)} desktop / ${m.toFirstLead.seconds.toFixed(1)} 390px; first draft ${d.toFirstDraft.seconds.toFixed(1)} desktop / ${m.toFirstDraft.seconds.toFixed(1)} 390px`)
-  console.log('first review UI check passed: review in place, approve = existing draft action, held lead says why, refusal stays on the card, Gmail with its notice + sender details, review drafts in Outreach, nothing sent')
+  console.log('first review UI check passed: review in place, approve = existing draft action, held lead says why, refusal stays on the card, Back + re-entry and a fresh entry keep existing drafts (no duplicate request), Gmail with its notice + sender details, review drafts in Outreach, nothing sent')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }
