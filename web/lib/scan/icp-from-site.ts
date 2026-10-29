@@ -4,7 +4,8 @@ import { providers, type Provider } from '../llm/provider.ts'
 import { fetchPublicHtml, type Lookup, type PublicFetchError } from '../net/public-fetch.ts'
 import { normalizeIcp, type Icp } from './icp.ts'
 import { pickVendor } from './runner.ts'
-import { guardProvider, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
+import { guardProvider, researchCostUsd, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
+import { TRIAL_SITE_READ_RESERVE_USD } from '../billing/trial-budget.ts'
 import type { SiteReadAdmission, SiteReadRefusal } from './trial-site-read.ts'
 
 // "Fill the profile from my website": the user pastes their own URL, we read the page
@@ -15,9 +16,10 @@ import type { SiteReadAdmission, SiteReadRefusal } from './trial-site-read.ts'
 // #409), after the page was fetched and found readable, under a per-read spend ceiling.
 
 export type IcpFromSiteError = PublicFetchError | 'js_only' | 'no_api_key' | 'key_unreadable' | 'key_rejected' | 'trial_read_failed'
-// The most one trial-funded read may cost, reserved from the prompt's size and the output cap before the call
-// (lib/llm/spend-guard.ts): a page capped at 5000 characters plus 700 output tokens fits well inside it.
-export const TRIAL_SITE_READ_MAX_USD = 0.05
+// The most one trial-funded read may cost: the wallet reservation (lib/billing/trial-budget.ts), and the call's own
+// guard here, from the prompt's size and the output cap (lib/llm/spend-guard.ts). A page capped at 5000 characters plus
+// 700 output tokens fits well inside it.
+export const TRIAL_SITE_READ_MAX_USD = TRIAL_SITE_READ_RESERVE_USD
 
 const ENTITIES: [RegExp, string][] = [[/&amp;/g, '&'], [/&lt;/g, '<'], [/&gt;/g, '>'], [/&quot;/g, '"'], [/&#0?39;|&apos;/g, "'"], [/&nbsp;/g, ' ']]
 const unescape = (s: string) => ENTITIES.reduce((t, [re, v]) => t.replace(re, v), s)
@@ -72,7 +74,7 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
   if (text.length < 200) return { error: 'js_only' } // nothing readable without running JS
 
   // The paid call: the tenant's key, or (admitted only now, after a readable page) dazl's trial key under a ceiling.
-  let call: { key: string; provider: Provider; funded: 'own' | 'trial' }
+  let call: { key: string; provider: Provider; funded: 'own' | 'trial'; settle?: (usd: number) => Promise<void> }
   if (read?.key) {
     const provider = (deps.providers ?? providers)[vendor!]
     if (!provider?.complete) return { error: 'key_rejected' }
@@ -81,14 +83,23 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
     const a = await deps.trial!()
     if (!a.ok) return { error: 'no_api_key', trial: a.reason }
     const provider = (deps.providers ?? providers)[a.key.vendor]
-    if (!provider?.complete) return { error: 'trial_read_failed' }
-    call = { key: a.key.key, provider: guardProvider(provider, new SpendGuard(TRIAL_SITE_READ_MAX_USD)), funded: 'trial' }
+    if (!provider?.complete && !provider?.completeDetailed) return { error: 'trial_read_failed' }
+    call = { key: a.key.key, provider: guardProvider(provider, new SpendGuard(TRIAL_SITE_READ_MAX_USD)), funded: 'trial', settle: a.settle }
   }
 
   let icp: Icp | null = null
   let sells = ''
   try {
-    const out = await call.provider.complete!(call.key, PROMPT(new URL(page.finalUrl).hostname, title, text), deps.fetchImpl, 700)
+    const prompt = PROMPT(new URL(page.finalUrl).hostname, title, text)
+    let out: string
+    if (call.funded === 'trial' && call.provider.completeDetailed) {
+      // On the trial key, the provider's reported usage settles the wallet reservation to what the read cost; without a
+      // reported usage (or a listed price) it keeps its full reserve.
+      const det = await call.provider.completeDetailed(call.key, prompt, deps.fetchImpl, 700)
+      const usd = researchCostUsd(det.usage as never, det.model ?? call.provider.configuredModel?.())
+      if (usd !== null) await call.settle?.(usd)
+      out = det.text
+    } else out = await call.provider.complete!(call.key, prompt, deps.fetchImpl, 700)
     const json = /^\s*```(?:json)?\s*([\s\S]*?)\s*```\s*$/.exec(out)?.[1] ?? out
     const parsed = JSON.parse(json)
     icp = normalizeIcp(parsed)

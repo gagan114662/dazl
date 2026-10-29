@@ -2,7 +2,7 @@
 // (lib/scan/trial-site-read.ts). Synthetic accounts, a stubbed limiter; no provider call, no fetch.
 import assert from 'node:assert/strict'
 import type { Db } from '../lib/db/client.ts'
-import { admitTrialScan } from '../lib/billing/trial-budget.ts'
+import { admitTrialScan, admitTrialSiteReadBudget, settleTrialSiteRead, TRIAL_SITE_READ_RESERVE_USD, utcDay } from '../lib/billing/trial-budget.ts'
 import { admitTrialSiteRead, trialSiteReadsPerDay, TRIAL_SITE_READS_PER_ACCOUNT, TRIAL_SITE_READS_PER_IP_PER_DAY } from '../lib/scan/trial-site-read.ts'
 import { bothEngines } from './helpers/engines.ts'
 
@@ -39,7 +39,8 @@ bothEngines('#409 trial site read: off unless the operator key AND a daily ceili
     assert.equal(trialSiteReadsPerDay({ DAZL_TRIAL_SITE_READS_PER_DAY: '2.5' }), null)
     assert.deepEqual(await admitTrialSiteRead(db, a, '203.0.113.9', { env: { ...ENV, DAZL_TRIAL_SITE_READS_PER_DAY: '' }, limit: limiter() }), { ok: false, reason: 'not_configured' }, 'no explicit daily ceiling: off')
     assert.deepEqual(await admitTrialSiteRead(db, a, '203.0.113.9', { env: { ...ENV, DAZL_TRIAL_ANTHROPIC_KEY: '' }, limit: limiter() }), { ok: false, reason: 'not_configured' })
-    assert.deepEqual(await admitTrialSiteRead(db, a, '203.0.113.9', { env: ENV, limit: limiter() }), { ok: true, key: { vendor: 'anthropic', key: OP } })
+    const ok = await admitTrialSiteRead(db, a, '203.0.113.9', { env: ENV, limit: limiter() })
+    assert.ok(ok.ok && ok.key.key === OP && ok.key.vendor === 'anthropic' && typeof ok.settle === 'function', JSON.stringify(ok))
   })
   await withKey(undefined, async () => {
     // A deployment with no operator key at all (staging): unavailable, whatever else is set.
@@ -79,4 +80,69 @@ bothEngines('#409 trial site read: per-account, per-network and deployment-wide 
     assert.deepEqual([admittedN, refused], [5, { ok: false, reason: 'site_reads_busy' }])
     assert.deepEqual(await admitTrialSiteRead(db, await user(db, uid(300), 'z@gmail.com'), '203.0.113.50', { env: ENV, limit: limiter(true) }), { ok: false, reason: 'limit_unavailable' })
   })
+})
+
+// Instinct's hold on 7057370: a trial-funded site read is paid work, so it reserves its maximum cost in the same wallet
+// (trial_reservations, under trial_budget_lock) as trial scans, and counts toward the account-total and daily-global
+// money ceilings, pending or not, across midnight.
+const wallet = (account: string, daily: string) => ({ ...ENV, DAZL_TRIAL_ACCOUNT_TOTAL_USD: account, DAZL_TRIAL_GLOBAL_DAILY_USD: daily, DAZL_TRIAL_SITE_READS_PER_DAY: '1000' })
+
+bothEngines('#409 wallet: an admitted site read leaves too little room for a full scan (Instinct negative)', async ({ db }) => {
+  await withKey(OP, async () => {
+    const a = await user(db, uid(400), 'w@gmail.com')
+    const env = wallet('0.30', '0.30') // scan reserve $0.30: one scan exactly fits an empty wallet
+    assert.equal((await admitTrialSiteRead(db, a, '203.0.113.60', { env, limit: limiter() })).ok, true)
+    assert.deepEqual(await admitTrialScan(db, a, { env }), { ok: false, reason: 'account_total_cap' }, 'the read holds $0.05 of the $0.30')
+    // Another account the same day: the daily-global room is also reduced by the read.
+    const b = await user(db, uid(401), 'x@gmail.com')
+    assert.deepEqual(await admitTrialScan(db, b, { env: wallet('1', '0.30') }), { ok: false, reason: 'global_daily_cap' })
+  })
+})
+
+bothEngines('#409 wallet: concurrent read/read and read/scan at a boundary admit only what fits', async ({ db }) => {
+  await withKey(OP, async () => {
+    // read/read: the day has room for exactly one read ($0.05) beside nothing else.
+    const env = wallet('1', '0.07')
+    const r = await Promise.all([0, 1, 2, 3].map(async i => admitTrialSiteRead(db, await user(db, uid(410 + i), `rr${i}@gmail.com`), `198.51.100.${10 + i}`, { env, limit: limiter() })))
+    assert.equal(r.filter(x => x.ok).length, 1, JSON.stringify(r))
+    assert.ok(r.filter(x => !x.ok).every(x => !x.ok && x.reason === 'global_daily_cap'))
+  })
+})
+
+bothEngines('#409 wallet: read/scan for one account at the account boundary: one of the two, never both', async ({ db }) => {
+  await withKey(OP, async () => {
+    const a = await user(db, uid(420), 'rs@gmail.com')
+    const env = wallet('0.32', '10') // a read ($0.05) and a scan ($0.30) do not both fit $0.32
+    const [read, scan] = await Promise.all([admitTrialSiteRead(db, a, '203.0.113.70', { env, limit: limiter() }), admitTrialScan(db, a, { env })])
+    assert.equal(Number(read.ok) + Number(scan.ok), 1, JSON.stringify([read, scan]))
+  })
+})
+
+bothEngines('#409 wallet: a read counts its full reserve until it settles to the reported cost; it is never a scan attempt', async ({ db }) => {
+  await withKey(OP, async () => {
+    const a = await user(db, uid(430), 'st@gmail.com')
+    const env = wallet('0.32', '10')
+    const read = await admitTrialSiteRead(db, a, '203.0.113.80', { env, limit: limiter() })
+    assert.ok(read.ok)
+    assert.deepEqual(await admitTrialScan(db, a, { env }), { ok: false, reason: 'account_total_cap' }, 'pending read: full $0.05 reserve')
+    if (read.ok) await read.settle(0.01)
+    assert.equal((await admitTrialScan(db, a, { env })).ok, true, 'settled at $0.01: the $0.30 scan fits $0.32')
+    // Three reads use no scan attempt: the account still has its three scans (wide money ceilings).
+    const b = await user(db, uid(431), 'at@gmail.com'), wide = wallet('100', '100')
+    for (let i = 0; i < 3; i++) assert.equal((await admitTrialSiteRead(db, b, `203.0.113.${90 + i}`, { env: wide, limit: limiter() })).ok, true)
+    for (let i = 0; i < 3; i++) assert.equal((await admitTrialScan(db, b, { env: wide })).ok, true, `scan ${i + 1}`)
+    assert.deepEqual(await admitTrialScan(db, b, { env: wide }), { ok: false, reason: 'attempts_cap' })
+  })
+})
+
+bothEngines('#409 wallet: across midnight a pending read counts toward both days; one settled before midnight does not', async ({ db }) => {
+  const NOW = 1_800_000_000, DAY = utcDay(NOW), lastSecond = (DAY + 1) * 86400 - 1, next = (DAY + 1) * 86400 + 60
+  const env = wallet('10', '0.30')
+  const a = await user(db, uid(440), 'mn1@gmail.com'), b = await user(db, uid(441), 'mn2@gmail.com'), c = await user(db, uid(442), 'mn3@gmail.com')
+  const pending = await admitTrialSiteReadBudget(db, a, { env, now: lastSecond })
+  assert.ok(pending.ok)
+  assert.deepEqual(await admitTrialScan(db, b, { env, now: next }), { ok: false, reason: 'global_daily_cap' }, 'unsettled read from yesterday still counts today')
+  if (pending.ok) await settleTrialSiteRead(db, a.id, pending.reservation, 0.02, lastSecond)
+  assert.equal((await admitTrialScan(db, c, { env, now: next })).ok, true, 'settled before midnight: not today')
+  assert.equal(TRIAL_SITE_READ_RESERVE_USD, 0.05)
 })

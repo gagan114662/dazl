@@ -126,7 +126,7 @@ const trialProvider = (seen: { keys: string[]; max: number[] }, model = 'claude-
   configuredModel: () => model,
   complete: async (k, _p, _f, max = 10) => { seen.keys.push(k); seen.max.push(max); return goodProvider.complete!(k, _p, _f, max) },
 })
-const admitted = (calls: { n: number }) => async () => { calls.n++; return { ok: true as const, key: { vendor: 'anthropic' as const, key: OP } } }
+const admitted = (calls: { n: number }, settled: number[] = []) => async () => { calls.n++; return { ok: true as const, key: { vendor: 'anthropic' as const, key: OP }, settle: async (usd: number) => { settled.push(usd) } } }
 
 test('#409: an account without its own key has its site read on the trial key, admitted only after a readable page', async () => {
   const empty = new Database(':memory:'); migrateKeys(empty)
@@ -184,4 +184,20 @@ test('redirects cannot introduce credentials or a nonstandard port', async () =>
     assert.deepEqual(await fetchPublicHtml('https://acme.example', { lookup: pubLookup, fetchImpl: f }), { error: 'invalid' })
     assert.equal(calls, 1)
   }
+})
+
+test('#409: a trial read settles its wallet reservation only to a cost the provider reported; a failed call keeps it', async () => {
+  const empty = new Database(':memory:'); migrateKeys(empty)
+  const detailed = (usage?: { input_tokens: number; output_tokens: number }, fail = false): Provider => ({
+    research: async () => { throw new Error('unused') },
+    configuredModel: () => 'claude-sonnet-4-5',
+    completeDetailed: async () => { if (fail) throw new Error('provider 500'); return { text: await goodProvider.complete!('k', '', undefined, 700), model: 'claude-sonnet-4-5', ...(usage ? { usage } : {}) } },
+  })
+  const run = async (p: Provider) => { const settled: number[] = []; const out = await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: p }, trial: admitted({ n: 0 }, settled) }); return { out, settled } }
+  const reported = await run(detailed({ input_tokens: 2000, output_tokens: 300 }))
+  assert.ok('icp' in reported.out)
+  assert.deepEqual(reported.settled, [(2000 * 3 + 300 * 15) / 1e6], 'settled to the reported usage at the listed price')
+  assert.deepEqual((await run(detailed())).settled, [], 'no usage reported: keeps the full reserve')
+  const failed = await run(detailed(undefined, true))
+  assert.deepEqual([failed.out, failed.settled], [{ error: 'trial_read_failed' }, []], 'failed call: keeps the full reserve')
 })
