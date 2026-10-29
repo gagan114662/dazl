@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
-import { auditPush, disconnectCrm, getCrmConfig, pushLead, saveCrmConfig } from '@/lib/crm/index'
+import { auditPush, CrmPushError, disconnectCrm, getCrmConfig, pushBlocked, pushLead, saveCrmConfig } from '@/lib/crm/index'
 import { defaultLookup, resolvePublic } from '@/lib/net/public-fetch'
 import { sameOriginJson } from '@/lib/same-origin'
 import { captureError } from '@/lib/ops/errors'
@@ -44,20 +44,33 @@ export async function POST(req: NextRequest) {
     case 'disconnect':
       disconnectCrm(db, user.id)
       return NextResponse.json({ ok: true })
-    case 'push': {
+    case 'push':
+    case 'resolve': {
       const cfg = getCrmConfig(db, user.id)
       if (!cfg) return NextResponse.json({ error: 'Connect a CRM in Settings first' }, { status: 400 })
       const leadId = typeof body?.lead_id === 'string' ? body.lead_id : ''
-      const lead = db.prepare('SELECT l.company, l.name, l.contact, l.signal, l.source_url, l.fit, l.intent, l.why FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, user.id) as { company: string; name: string; contact: string | null; signal: string; source_url: string; fit: number | null; intent: number | null; why: string | null } | undefined
+      const lead = db.prepare('SELECT l.scan_job_id, l.company, l.name, l.contact, l.signal, l.source_url, l.fit, l.intent, l.why FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, user.id) as { scan_job_id: string; company: string; name: string; contact: string | null; signal: string; source_url: string; fit: number | null; intent: number | null; why: string | null } | undefined
       if (!lead) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+      const blocked = pushBlocked(db, user.id, cfg.provider, lead)
+      if (body.action === 'resolve') {
+        // The user checked the CRM after an unknown result and says whether the record is there. Only then may the
+        // lead be pushed again (when it is not there).
+        if (!blocked) return NextResponse.json({ error: 'Nothing to resolve for this lead' }, { status: 409 })
+        if (typeof body?.created !== 'boolean') return NextResponse.json({ error: 'Say whether the contact is in your CRM' }, { status: 400 })
+        auditPush(db, user.id, cfg.provider, lead, body.created ? 'resolved_created' : 'resolved_not_created')
+        return NextResponse.json({ ok: true })
+      }
+      // An earlier push of this lead has an unknown result: pushing again could create a duplicate.
+      if (blocked) return NextResponse.json({ error: 'An earlier push of this lead has an unknown result. Check your CRM for this contact first, then record what you found.', outcome: 'unknown' }, { status: 409 })
       try {
-        const msg = await pushLead(cfg, lead)
-        auditPush(db, user.id, cfg.provider, lead.company, true)
-        return NextResponse.json({ ok: true, message: msg })
+        const r = await pushLead(cfg, lead)
+        auditPush(db, user.id, cfg.provider, lead, 'ok')
+        return NextResponse.json({ ok: true, message: r.message, external_id: r.externalId })
       } catch (e) {
-        auditPush(db, user.id, cfg.provider, lead.company, false)
+        const unknown = e instanceof CrmPushError && e.outcome === 'unknown'
+        auditPush(db, user.id, cfg.provider, lead, unknown ? 'uncertain' : 'worker_error')
         captureError(e, { source: 'route', where: '/api/crm', method: 'POST', tenantId: user.id, requestId: requestIdOf(req) })
-        return NextResponse.json({ error: e instanceof Error ? e.message : 'Push failed' }, { status: 502 })
+        return NextResponse.json({ error: e instanceof Error ? e.message : 'Push failed', outcome: unknown ? 'unknown' : 'failed' }, { status: 502 })
       }
     }
     default:

@@ -156,6 +156,8 @@ export default function LeadsClient() {
 
   const [drafted, setDrafted] = useState<Record<string, string>>({})
   const [pushed, setPushed] = useState<Record<string, string>>({})
+  // leads whose last push has an unknown result: the user checks the CRM and says what they found before any retry
+  const [pushUnknown, setPushUnknown] = useState<Record<string, boolean>>({})
   const [crmOn, setCrmOn] = useState(false)
   const [watches, setWatches] = useState<Watch[]>([])
   const [watchNote, setWatchNote] = useState('')
@@ -254,6 +256,15 @@ export default function LeadsClient() {
     const r = await fetch('/api/crm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'push', lead_id: leadId }) })
     const j = await r.json().catch(() => ({}))
     setPushed(d => ({ ...d, [leadId]: r.ok ? (j.message || 'Pushed to CRM') : j.error || 'Push failed' }))
+    setPushUnknown(d => ({ ...d, [leadId]: !r.ok && j.outcome === 'unknown' }))
+  }
+  async function resolveCrm(leadId: string, created: boolean) {
+    const r = await fetch('/api/crm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'resolve', lead_id: leadId, created }) })
+    const j = await r.json().catch(() => ({}))
+    if (!r.ok) { setPushed(d => ({ ...d, [leadId]: j.error || 'Could not record that' })); return }
+    setPushUnknown(d => ({ ...d, [leadId]: false }))
+    // found: done; not found: the push can be tried again
+    setPushed(d => { const n = { ...d }; if (created) n[leadId] = 'Recorded: it is in your CRM'; else delete n[leadId]; return n })
   }
   async function confirmReview(leadId: string) {
     const r = await fetch(`/api/leads/${leadId}/confirm`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
@@ -1075,7 +1086,7 @@ export default function LeadsClient() {
               </>
             })()}
             {crmOn && (pushed[l.id]
-              ? <span className="text-gray-400 text-xs ml-2">{pushed[l.id]}</span>
+              ? <span className="text-gray-400 text-xs ml-2">{pushed[l.id]}{pushUnknown[l.id] && <> <button onClick={() => resolveCrm(l.id, true)} className="underline ml-1">It is in my CRM</button> <button onClick={() => resolveCrm(l.id, false)} className="underline ml-1">It is not there</button></>}</span>
               : <button onClick={() => pushCrm(l.id)} className="font-mono text-xs uppercase border border-black px-2 py-1 ml-2 hover:bg-black hover:text-white">Push to CRM</button>)}
               </div>
             </details>
