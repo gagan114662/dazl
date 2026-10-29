@@ -2,7 +2,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { createPasswordUser, createSession, deleteSession, getSessionUser, hashToken, migrateAuth, SESSION_TTL_S } from '../lib/auth-db.ts'
+import { createPasswordUser, createSession, deleteSession, getSessionUser, hasLiveSession, hashToken, migrateAuth, SESSION_TTL_S } from '../lib/auth-db.ts'
 import { SEEN_EVERY_S, SESSION_RETAIN_S, deviceLabel, listSessions, reapSessions, revokeAllSessions, revokeSession } from '../lib/sessions.ts'
 import { bothEngines } from './helpers/engines.ts'
 
@@ -16,8 +16,10 @@ bothEngines('a revoked or signed-out session fails at once and keeps who revoked
   assert.equal(row.device, 'Chrome on macOS')
   assert.match(row.public_id, /^[a-f0-9]{24}$/)
   assert.equal(await revokeSession(db, 'B', row.public_id, 'B'), false, "another account's id")
+  assert.equal(await hasLiveSession(t1, db), true)
   assert.equal(await revokeSession(db, 'A', row.public_id, 'A', 'revoked', NOW), true)
   assert.equal(await getSessionUser(t1, db), null)
+  assert.equal(await hasLiveSession(t1, db), false, 'the page gate refuses a revoked session too')
   assert.deepEqual(await db.get('SELECT revoked_at, revoked_by, revoke_reason FROM sessions WHERE id = ?', [hashToken(t1)]), { revoked_at: NOW, revoked_by: 'A', revoke_reason: 'revoked' })
   await deleteSession(t2, db)
   assert.equal(await getSessionUser(t2, db), null)
