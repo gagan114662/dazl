@@ -127,6 +127,13 @@ function boundOtherListedCity(text: string, terms: string[], company?: string): 
   return other ? other[0] : null
 }
 
+// When the request names a listed city, the country beside it ("India", "UAE", "Qatar") is context, never enough: "Orbitly is headquartered in Mumbai, India" shares the token "india" with a
+// Gurugram request but sits in another city. Only the city (or an alias, or "city, country") can agree; a country-only request keeps every term, so it still accepts any city of the country.
+function cityLevelTerms(terms: string[]): string[] {
+  const isMetro = (x: string) => METROS.some(m => m.some(n => x === n || x.startsWith(`${n},`)))
+  return terms.some(isMetro) ? terms.filter(isMetro) : terms
+}
+
 const GENERIC_ALIAS: Record<string, string[]> = {}
 export function geoTerms(where: string[]): string[] {
   const out = new Set<string>()
@@ -172,7 +179,7 @@ export function placeAgreement(text: string, where: string[], company?: string):
   if (where.some(w => /\blondon\b/i.test(w))) verdicts.push(londonVerdict(text, company))
   if (verdicts.length) return verdicts.includes('agrees') ? 'agrees' : verdicts.includes('mismatch') ? 'mismatch' : 'unconfirmed'
   if (boundOtherListedCity(text, terms, company)) return 'mismatch'
-  if (namesPlace(text, terms)) return 'agrees'
+  if (namesPlace(text, cityLevelTerms(terms))) return 'agrees'
   if (askedMetroAlias(text, terms)) return 'agrees'
   if (otherListedCity(text, terms)) return 'mismatch'
   const ours = Object.entries(US_STATES).filter(([ab, name]) => terms.some(x => x === name || x === ab.toLowerCase() || x.endsWith(`, ${ab.toLowerCase()}`))).map(([ab]) => ab)

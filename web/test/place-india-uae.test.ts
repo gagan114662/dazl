@@ -40,3 +40,11 @@ t342('#342 positive: genuine alias HQ still agrees', () => assert342.equal(pa342
 t342('#342 positive: bound asked city plus a later other-city mention agrees', () => assert342.equal(pa342('Orbitly is based in Gurgaon, with a sales office in Mumbai.', ['Gurugram, India'], 'Orbitly'), 'agrees'))
 t342('#342 country-only request accepts any listed city', () => assert342.equal(pa342('Orbitly is based in Mumbai, India.', ['India'], 'Orbitly'), 'agrees'))
 t342('#342 unbound other-city mention is not a conflict', () => assert342.equal(pa342('Orbitly, Gurugram, India. Our customer Acme is based in Mumbai.', ['Gurugram, India'], 'Orbitly'), 'agrees'))
+
+// Review fix 2 (#342): the country token must not stand in for the city. Normal headquarters / appositive wording, not one word per example.
+for (const [name, text] of [['headquartered', 'Orbitly is headquartered in Mumbai, India.'], ['hyphen adjective', 'Orbitly is a Mumbai-based startup in India.'], ['appositive', 'Orbitly, a Mumbai startup, raised a seed round in India.']] as const)
+  t342(`#342 city+country request: ${name} wording in another city is a mismatch`, () => assert342.equal(pa342(text, ['Gurugram, India'], 'Orbitly'), 'mismatch'))
+t342('#342 UAE: Abu Dhabi appositive does not agree with Dubai via the UAE token', () => assert342.equal(pa342('Orbitly, an Abu Dhabi startup, expanded across the UAE.', ['Dubai, UAE'], 'Orbitly'), 'mismatch'))
+t342('#342 country-only request still accepts a headquartered city', () => assert342.equal(pa342('Orbitly is headquartered in Mumbai, India.', ['India'], 'Orbitly'), 'agrees'))
+t342('#342 requested city + country wording agrees', () => assert342.equal(pa342('Orbitly is a Gurgaon-based startup in India.', ['Gurugram, India'], 'Orbitly'), 'agrees'))
+t342('#342 company office in the requested city beside another HQ city still agrees', () => assert342.equal(pa342('Orbitly, a Mumbai startup, opened an office in Gurugram, India.', ['Gurugram, India'], 'Orbitly'), 'agrees'))
