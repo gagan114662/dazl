@@ -3,12 +3,13 @@ import { randomBytes, scryptSync } from 'crypto'
 import { cookies } from 'next/headers'
 import { createPasswordUser, createSession, SESSION_TTL_S } from '@/lib/auth-db'
 import { cleanText, validateEmail, validatePassword } from '@/lib/validate'
-import { clientIp, rateLimit } from '@/lib/rate-limit'
+import { clientIp, rateLimit, UNAVAILABLE_RETRY_S } from '@/lib/rate-limit'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 
 export async function POST(req: NextRequest) {
   const rl = (await rateLimit(`signup:${clientIp(req)}`, 5, 60 * 60 * 1000))
+  if (rl.unavailable) return NextResponse.json({ error: 'Sign-up is briefly unavailable. Try again in a moment.', code: 'limits_unavailable' }, { status: 503, headers: { 'Retry-After': String(UNAVAILABLE_RETRY_S) } })
   if (!rl.ok) {
     return NextResponse.json({ error: 'Too many attempts. Try again later.' }, { status: 429, headers: { 'Retry-After': String(rl.retryAfterS) } })
   }
