@@ -1,8 +1,8 @@
 // Decision-makers from SEC Form D filings (US, free, public). A company that raised money under Reg D names its
 // executive officers, directors and promoters in the filing's "related persons" list - often the founder/CEO that the
 // company's own site never lists. Gojiberry-class tools sell this as "founder contact"; here it is read straight from
-// the filing the funding signal already matched to the lead (entity-matched by edgarFunding, so a same-named fund's
-// filing never attaches).
+// the filing the funding signal matched to the lead. That match is only a name heuristic, so the fetched filing's own
+// primaryIssuer must also agree with the expected entity (missing or contradicting issuer -> nothing stored).
 //
 // Stored as 'person' enrichments ("First Last, Role") with the filing URL as source and labelled with the filing date:
 // the list is as of the filing, not verified as current staff. No addresses are kept (the filing carries a business
@@ -10,6 +10,7 @@
 // Only sec.gov filing URLs are fetched. Kill switch: SEC_OFFICERS=0.
 import type Database from 'better-sqlite3'
 import { addEnrichment } from '../connectors/store.ts'
+import { classifyEntityMatch } from '../signals/entity-match.ts'
 
 export const CONNECTOR = 'signals:sec-form-d'
 export const MAX_OFFICERS = 4
@@ -29,6 +30,12 @@ const titleCase = (s: string) => s.toLowerCase().replace(/(^|[\s'’-])([a-z])/g
 // Pull people out of a Form D primary_doc.xml. A person needs BOTH a first and last name (entity "persons" such as a
 // fund carry only a last name) and at least one relationship. The company-given clarification ("CEO", "Co-Founder")
 // beats the generic relationship because it is what the ICP role words (rank.ts) can actually match.
+// The issuer the filing itself names; '' when absent/malformed, which callers must treat as "identity unknown".
+export function filingIssuer(xml: string): string {
+  const block = /<primaryIssuer>[\s\S]*?<\/primaryIssuer>/i.exec(xml)
+  return block ? tag(block[0], 'entityName').slice(0, 200) : ''
+}
+
 export function parseRelatedPersons(xml: string): FilingPerson[] {
   const out: FilingPerson[] = []
   const seen = new Set<string>()
@@ -59,6 +66,10 @@ export async function storeFilingOfficers(db: Database.Database, tenantId: strin
     const res = await (deps.fetchImpl ?? fetch)(filing.url, { headers: { 'user-agent': EDGAR_UA, accept: 'application/xml, text/xml' }, signal: AbortSignal.timeout(TIMEOUT) })
     if (!res.ok) return 0
     const xml = (await res.text()).slice(0, 400_000)
+    // Bind the people to the issuer the document names: a wrong URL or a same-name collision must not attach another
+    // company's executives. Still a name heuristic (token-identical after suffix stripping), so labels stay "as of filing".
+    const issuer = filingIssuer(xml)
+    if (!issuer || classifyEntityMatch(filing.entity, issuer) !== 'heuristic') return 0
     const now = Math.floor((deps.now ?? Date.now()) / 1000)
     let n = 0
     for (const p of parseRelatedPersons(xml)) {

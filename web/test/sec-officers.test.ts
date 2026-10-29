@@ -8,7 +8,8 @@ import { contactsFromEnrichments } from '../lib/people/rank.ts'
 
 // TEST-ONLY fixture shaped like a Form D primary_doc.xml; no network.
 const rp = (f: string, l: string, rels: string[], clar = '') => `<relatedPersonInfo><relatedPersonName><firstName>${f}</firstName><lastName>${l}</lastName></relatedPersonName><relatedPersonAddress><street1>1 Main St</street1></relatedPersonAddress><relatedPersonRelationshipList>${rels.map(r => `<relationship>${r}</relationship>`).join('')}</relatedPersonRelationshipList>${clar ? `<relationshipClarification>${clar}</relationshipClarification>` : ''}</relatedPersonInfo>`
-const XML = `<edgarSubmission><relatedPersonsList>${rp('JANE', 'DOE', ['Executive Officer', 'Director'], 'CEO')}${rp('Raj', 'Patel', ['Director'])}${rp('', 'Big Fund LP', ['Promoter'])}${rp('Jane', 'Doe', ['Director'])}${rp('Sam', 'Lee', ['Promoter'])}</relatedPersonsList></edgarSubmission>`
+const issuer = (n: string) => `<primaryIssuer><entityName>${n}</entityName></primaryIssuer>`
+const XML = `<edgarSubmission>${issuer('Acme, Inc.')}<relatedPersonsList>${rp('JANE', 'DOE', ['Executive Officer', 'Director'], 'CEO')}${rp('Raj', 'Patel', ['Director'])}${rp('', 'Big Fund LP', ['Promoter'])}${rp('Jane', 'Doe', ['Director'])}${rp('Sam', 'Lee', ['Promoter'])}</relatedPersonsList></edgarSubmission>`
 const URL = 'https://www.sec.gov/Archives/edgar/data/123456/000123456726000001/primary_doc.xml'
 
 test('parse: people only, clarified title first, no entities, deduped, no address kept', () => {
@@ -49,4 +50,11 @@ test('refuses non-sec.gov / non-filing URLs, kill switch, http failure, and junk
   assert.equal(await storeFilingOfficers(db, 'A', 'L1', filing, { fetchImpl: (async () => new Response('no', { status: 500 })) as typeof fetch }), 0)
   assert.equal(await storeFilingOfficers(db, 'A', 'L1', filing, { fetchImpl: (async () => new Response('{"hits":1}')) as typeof fetch }), 0)
   assert.equal(await storeFilingOfficers(db, 'A', 'L1', filing, { fetchImpl: (async () => { throw new Error('x') }) as typeof fetch }), 0)
+})
+
+test('issuer binding: contradicting, missing or fund-like issuer stores nothing; matching issuer stores', async () => {
+  const body = (iss: string) => XML.replace(issuer('Acme, Inc.'), iss)
+  const run = async (xml: string) => { const db = setup(); const n = await storeFilingOfficers(db, 'A', 'L1', filing, { fetchImpl: (async () => new Response(xml)) as typeof fetch }); return { n, rows: (db.prepare('SELECT count(*) n FROM lead_enrichments').get() as { n: number }).n } }
+  for (const iss of [issuer('Entirely Different Invented LLC'), '', '<primaryIssuer></primaryIssuer>', issuer('Acme Growth Fund II, LP')]) assert.deepEqual(await run(body(iss)), { n: 0, rows: 0 })
+  assert.deepEqual(await run(body(issuer('ACME INC'))), { n: 3, rows: 3 })
 })
