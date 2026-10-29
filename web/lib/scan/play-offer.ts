@@ -14,8 +14,8 @@
 import type { Db, DbLike } from '../db/client.ts'
 import { asDb } from '../db/client.ts'
 
-export { MAX_OFFER, cleanOffer, statedOffer, offerOfSeller, sameOffer, effectiveOffer, type OfferSource, type PlayOffer } from './play-offer-text.ts'
-import { effectiveOffer, cleanOffer, type PlayOffer } from './play-offer-text.ts'
+export { MAX_OFFER, isMissingSchema, cleanOffer, statedOffer, offerOfSeller, sameOffer, effectiveOffer, type OfferSource, type PlayOffer } from './play-offer-text.ts'
+import { effectiveOffer, cleanOffer, isMissingSchema, type PlayOffer } from './play-offer-text.ts'
 
 // The effective offer of one play of this tenant (null: no such play of this tenant).
 export async function readPlayOffer(db: DbLike, tenantId: string, jobId: string): Promise<PlayOffer | null> {
@@ -28,7 +28,7 @@ export async function readPlayOffer(db: DbLike, tenantId: string, jobId: string)
 // The tenant's current selling context: its Memory positioning, else the business profile's offer.
 export async function profileOffer(db: Db, tenantId: string): Promise<string> {
   let positioning = ''
-  try { positioning = (await db.get<{ positioning: string }>('SELECT positioning FROM tenant_memory WHERE tenant_id = ?', [tenantId]))?.positioning ?? '' } catch { /* no Memory table yet */ }
+  try { positioning = (await db.get<{ positioning: string }>('SELECT positioning FROM tenant_memory WHERE tenant_id = ?', [tenantId]))?.positioning ?? '' } catch (e) { if (!isMissingSchema(e)) throw e /* else: no Memory table yet */ }
   if (positioning.trim()) return positioning
   return (await db.get<{ sells: string | null }>('SELECT sells FROM users WHERE id = ?', [tenantId]))?.sells ?? ''
 }

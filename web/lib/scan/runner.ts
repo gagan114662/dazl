@@ -15,7 +15,7 @@ import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, verifyEvidence, type Candidate } from './evidence.ts'
 import { fallbackIcp, inferIcp, normalizeIcp, type Icp } from './icp.ts'
-import { effectiveOffer } from './play-offer-text.ts'
+import { effectiveOffer, isMissingSchema } from './play-offer-text.ts'
 import { collectAdvanced, xSearchQuery } from '../advanced/index.ts'
 import { markWatchLeads } from '../watch.ts'
 import type { AdvPlatform } from '../advanced/config.ts'
@@ -155,16 +155,18 @@ export type PageFetcher = (url: string) => Promise<Page | FetchFail | null>
 export interface ReviewLead extends LeadDraft { review_reason: string }
 // The seller's own offer text for THIS play (lib/scan/play-offer.ts): the offer reviewed for the play, else the one it
 // was created with, else the tenant's selling context (Memory positioning, else the profile offer). A play whose offer
-// is contested gets no offer block (scoring never assumes one). A missing column or row means no block.
+// is contested gets no offer block (scoring never assumes one). A missing column or row means no block; any other read
+// failure throws, so scoring never runs on a guessed offer.
 export function offerBlockFor(db: Database.Database, userId: string, jobId?: string): string {
   try {
     let positioning: string | undefined, sells: string | undefined
-    try { positioning = getMemory(db, userId)?.positioning?.trim() } catch { /* no Memory table yet */ }
-    try { if (!positioning) sells = (db.prepare('SELECT sells FROM users WHERE id = ?').get(userId) as { sells?: string } | undefined)?.sells } catch { /* no profile table */ }
+    try { positioning = getMemory(db, userId)?.positioning?.trim() } catch (e) { if (!isMissingSchema(e)) throw e /* else: no Memory table yet */ }
+    try { if (!positioning) sells = (db.prepare('SELECT sells FROM users WHERE id = ?').get(userId) as { sells?: string } | undefined)?.sells } catch (e) { if (!isMissingSchema(e)) throw e /* else: no profile table */ }
     const profile = positioning || sells
-    const play = jobId ? db.prepare('SELECT offer, seller, query FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, userId) as { offer: string | null; seller: string | null; query: string | null } | undefined : undefined
+    let play: { offer: string | null; seller: string | null; query: string | null } | undefined
+    try { play = jobId ? db.prepare('SELECT offer, seller, query FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, userId) as typeof play : undefined } catch (e) { if (!isMissingSchema(e)) throw e /* else: a database from before per-play offers */ }
     return sellerOfferBlock(play ? effectiveOffer(play, profile).offer : profile)
-  } catch { return '' }
+  } catch (e) { if (isMissingSchema(e)) return ''; throw e } // unreadable: scoring stops rather than guess the offer
 }
 // What buyer-fit scoring is told about the seller for one play: the tenant's Memory WITHOUT its positioning (a global
 // offer that may not be this play's), then this play's offer block, which is the only statement of what is sold.

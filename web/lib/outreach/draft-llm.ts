@@ -17,12 +17,12 @@ export interface LlmDeps { fetchImpl?: typeof fetch; master?: Buffer; providers?
 export interface PolishUsage { model: string | null; input_tokens?: number; output_tokens?: number }
 export type PolishResult =
   | { rewritten: true; vendor: Vendor; usage?: PolishUsage }
-  | { rewritten: false; reason: 'no_key' | 'no_profile' | 'offer_conflict' | 'unusable' | 'blocked_claim' | 'error'; usage?: PolishUsage }
+  | { rewritten: false; reason: 'no_key' | 'no_profile' | 'offer_conflict' | 'offer_unreadable' | 'unusable' | 'blocked_claim' | 'error'; usage?: PolishUsage }
 
 // Accounting only: vendor, requested + served model, bounded outcome code, token
 // counts, request id. Never secrets, never the prompt, never the output text,
 // never raw provider error text.
-type PolishOutcome = 'pending' | 'rewritten' | 'unusable' | 'blocked_claim' | 'error' | 'no_key' | 'no_profile' | 'offer_conflict' | 'superseded'
+type PolishOutcome = 'pending' | 'rewritten' | 'unusable' | 'blocked_claim' | 'error' | 'no_key' | 'no_profile' | 'offer_conflict' | 'offer_unreadable' | 'superseded'
 
 // A durable PENDING attempt is written before any provider call. If it cannot be
 // recorded, the paid call is refused - no invisible spend. Null means "do not call".
@@ -113,7 +113,8 @@ export async function polishDraft(db: Database.Database, tenantId: string, messa
   if (!hasOffer(memory)) { recordRefusal(db, tenantId, messageId, p.vendor, 'no_profile'); return { rewritten: false, reason: 'no_profile' } }
   // The rewrite says what THIS lead's play sells (lib/scan/play-offer.ts), as the template draft did; a play whose
   // offer is contested is refused before any paid call.
-  const play = playOfferRow(db, tenantId, msg.lead_id)
+  let play: ReturnType<typeof playOfferRow>
+  try { play = playOfferRow(db, tenantId, msg.lead_id) } catch { recordRefusal(db, tenantId, messageId, p.vendor, 'offer_unreadable'); return { rewritten: false, reason: 'offer_unreadable' } } // no paid call
   if (play && memory) {
     const e = effectiveOffer(play, memory.positioning)
     if (e.conflict) { recordRefusal(db, tenantId, messageId, p.vendor, 'offer_conflict'); return { rewritten: false, reason: 'offer_conflict' } }

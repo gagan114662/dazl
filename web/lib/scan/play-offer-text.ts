@@ -14,6 +14,13 @@
 // has no effective offer until the tenant chooses one, and drafting for it is refused. A play's recorded context is
 // never rewritten except by that explicit choice for that play: an old play keeps the offer it was created with.
 export const MAX_OFFER = 150
+
+// The ONLY read failure that may be treated as "this play has no offer of its own": a database from before per-play
+// offers (or before Memory), where the table or column does not exist yet. Any other failure (busy, locked, I/O, a lost
+// connection) is not "no play": callers refuse or defer instead of falling back to the tenant-wide offer.
+export function isMissingSchema(e: unknown): boolean {
+  return /no such (table|column)|(relation|column) "?[\w.]+"? (of relation "?[\w.]+"? )?does not exist/i.test(e instanceof Error ? e.message : String(e))
+}
 export type OfferSource = 'play' | 'recorded' | 'profile' | 'request'
 export type PlayOffer =
   | { offer: string; source: OfferSource; conflict: null }
