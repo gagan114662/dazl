@@ -22,6 +22,9 @@
 //     claimed again, which raises the attempt) counts as the full reserve again until that attempt settles.
 //     For the day's ceiling, a scan admitted on an earlier day also counts unless its current attempt settled before
 //     today began, so work that runs past midnight (a retry included) is charged to both days, never to neither.
+// Attempts: at most TRIAL_SCANS_PER_ACCOUNT (3) admitted trial scans per account that can cost dazl money, counted at
+// admission under the same lock: a failed or cancelled scan keeps its place once any paid step was reserved; only a
+// scan that failed before any cost releases it (releasedBeforeCost).
 // Admission (admitTrialScan) also requires a verified Google account, and one trial per company email domain (consumer
 // mailboxes count per account). Owner-funded calls outside a scan are off: the search-profile preview of a trial
 // account returns the plain profile with no model call (lib/scan/runner.ts previewIcp), and "fill the profile from my
@@ -29,6 +32,7 @@
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { asDb, type Db, type DbLike, type Tx, type TxBody } from '../db/client.ts'
+import { TRIAL_SCANS_PER_ACCOUNT } from '../scan/trial.ts'
 
 export function migrateTrialBudget(db: Database.Database): void {
   db.exec(`
@@ -77,7 +81,7 @@ export const utcDay = (nowS: number) => Math.floor(nowS / 86400)
 // The reason a free-trial scan stopped at its budget (scan_jobs.error) and why its leads are in review (leads.review_reason).
 export const TRIAL_BUDGET_REASON = 'trial_budget_reached'
 
-export type TrialRefusal = 'not_configured' | 'google_required' | 'domain_used' | 'account_total_cap' | 'global_daily_cap'
+export type TrialRefusal = 'not_configured' | 'google_required' | 'domain_used' | 'attempts_cap' | 'account_total_cap' | 'global_daily_cap'
 export type Admission = { ok: true; reservation: string } | { ok: false; reason: TrialRefusal }
 
 // A reservation's cost: its reserve while the scan runs (or before it exists, or if creating it failed), then what the
@@ -86,23 +90,29 @@ export type Admission = { ok: true; reservation: string } | { ok: false; reason:
 // counts toward today (admitted today, or admitted earlier and still running or ended today).
 // SETTLED_SQL and settled() are the same rule: the scan is finished and its current attempt's run has settled.
 const SETTLED_SQL = "(j.status IN ('done', 'failed') AND r.settled_at IS NOT NULL AND r.settled_attempt = j.attempts)"
-const LEDGER_SQL = `SELECT r.tenant_id, r.reserve_usd, r.day, r.settled_at, r.settled_attempt, j.status, j.attempts, j.spend_reserved_usd
+const LEDGER_SQL = `SELECT r.tenant_id, r.reserve_usd, r.day, r.settled_at, r.settled_attempt, j.status, j.error, j.attempts, j.spend_reserved_usd
   FROM trial_reservations r LEFT JOIN scan_jobs j ON j.id = r.job_id AND j.user_id = r.tenant_id
   WHERE r.tenant_id = ? OR r.day = ? OR (r.day < ? AND (NOT COALESCE(${SETTLED_SQL}, FALSE) OR r.settled_at >= ?))`
-export type LedgerRow = { tenant_id: string; reserve_usd: number; day: number; settled_at: number | null; settled_attempt: number | null; status: string | null; attempts: number | null; spend_reserved_usd: number | null }
+export type LedgerRow = { tenant_id: string; reserve_usd: number; day: number; settled_at: number | null; settled_attempt: number | null; status: string | null; error?: string | null; attempts: number | null; spend_reserved_usd: number | null }
 // Every paid step of the scan has ended: it is finished ('done' or 'failed', not queued for a retry) AND the attempt
 // that finished it has settled (a scan reads 'done' before its enrichment, which can still pay for model calls; an
 // earlier attempt's settle never releases a later attempt's reserve).
 const settled = (r: LedgerRow) => (r.status === 'done' || r.status === 'failed') && r.settled_at !== null && r.settled_attempt !== null && Number(r.settled_attempt) === Number(r.attempts)
 export const reservationCost = (r: LedgerRow) => settled(r) ? Math.max(0, Number(r.spend_reserved_usd ?? 0)) : Number(r.reserve_usd)
 const countsToday = (r: LedgerRow, day: number) => Number(r.day) === day || (Number(r.day) < day && (!settled(r) || Number(r.settled_at) >= day * 86400))
-export function ledger(rows: LedgerRow[], tenantId: string, day: number): { account: number; today: number } {
-  let account = 0, today = 0
+// A trial attempt released before any cost: its scan failed (not cancelled: a cancelled scan may have paid for work
+// already under way), recorded no spend at all, and its current attempt has settled. Every other admission keeps its
+// place among the account's TRIAL_SCANS_PER_ACCOUNT attempts: running, queued for a retry, linked to no scan, or
+// failed after any paid step.
+export const releasedBeforeCost = (r: LedgerRow) => settled(r) && r.status === 'failed' && r.error !== 'cancelled' && Number(r.spend_reserved_usd ?? 0) === 0
+export function ledger(rows: LedgerRow[], tenantId: string, day: number): { account: number; today: number; attempts: number } {
+  let account = 0, today = 0, attempts = 0
   for (const r of rows) {
+    if (r.tenant_id === tenantId && !releasedBeforeCost(r)) attempts++
     if (r.tenant_id === tenantId) account += reservationCost(r)
     if (countsToday(r, day)) today += reservationCost(r)
   }
-  return { account, today }
+  return { account, today, attempts }
 }
 
 // The checks, as a transaction step: the reason a trial scan would be refused for this user now, or null.
@@ -118,6 +128,8 @@ function* refusal(t: Tx, user: { id: string; email: string }, caps: TrialCaps, d
   }
   const l = ledger(yield* t.all<LedgerRow>(LEDGER_SQL, [user.id, day, day, day * 86400]), user.id, day)
   // a small tolerance for float sums (0.1 + 0.2), far below a cent
+  // three admitted attempts that can cost dazl money per account, paid failures and cancellations included
+  if (l.attempts >= TRIAL_SCANS_PER_ACCOUNT) return 'attempts_cap'
   if (l.account + caps.reserveUsd > caps.accountTotalUsd + 1e-9) return 'account_total_cap'
   if (l.today + caps.reserveUsd > caps.globalDailyUsd + 1e-9) return 'global_daily_cap'
   return null

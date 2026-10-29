@@ -62,25 +62,25 @@ bothEngines('trial ceilings: off without every ceiling and TinyFish priced; Goog
   assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM trial_reservations'))!.n), 3, 'refusals reserve nothing')
 })
 
-bothEngines('trial ceilings: $1 per trial account in total holds across days; finished scans count what they spent', async ({ db }) => {
+// The account ceiling binds before the three attempts only when it is below three reserves: these use $0.70 (two
+// $0.30 scans fit, a third does not); the proposed $1 with three attempts is pinned by the attempts tests below.
+const acct = { ...caps, DAZL_TRIAL_ACCOUNT_TOTAL_USD: '0.70' }
+bothEngines('trial ceilings: the per-account total holds across days; finished scans count what they spent, in full', async ({ db }) => {
   const a = await user(db, 'a'.repeat(32), 'a@gmail.com')
-  // three running scans: 0.90 of 1.00; a fourth ($0.30) would reach 1.20
-  const rs = [reservation(await admit(db, a)), reservation(await admit(db, a)), reservation(await admit(db, a))]
-  assert.deepEqual(await admit(db, a), { ok: false, reason: 'account_total_cap' })
+  const at = (now = NOW) => admitTrialScan(db, a, { env: acct, now })
+  // two running scans: 0.60 of 0.70; a third ($0.30) would reach 0.90
+  const rs = [reservation(await at()), reservation(await at())]
+  assert.deepEqual(await at(), { ok: false, reason: 'account_total_cap' })
   // the same account on later days: still refused (a daily per-user cap would have reset here)
-  for (const d of [1, 2, 30]) assert.deepEqual(await admit(db, a, NOW + d * 86400), { ok: false, reason: 'account_total_cap' }, `day +${d}`)
-  // the three end, each having spent $0.10: the account is at 0.30, so two more fit (0.90), not a third (1.20)
-  for (const r of rs) await end(db, await scan(db, a.id, r), 0.1)
-  const later = NOW + 5 * 86400
-  const r4 = reservation(await admit(db, a, later)), r5 = reservation(await admit(db, a, later))
-  assert.deepEqual(await admit(db, a, later), { ok: false, reason: 'account_total_cap' })
-  // they end having spent nothing: 0.30 again, so two more fit
-  await end(db, await scan(db, a.id, r4), 0, later); await end(db, await scan(db, a.id, r5), 0, later)
-  const r6 = reservation(await admit(db, a, later)), r7 = reservation(await admit(db, a, later))
+  for (const d of [1, 2, 30]) assert.deepEqual(await at(NOW + d * 86400), { ok: false, reason: 'account_total_cap' }, `day +${d}`)
+  // they end having spent $0.10 and nothing: the account is at 0.10, so a third fits (0.40)
+  await end(db, await scan(db, a.id, rs[0]), 0.1); await end(db, await scan(db, a.id, rs[1]), 0)
+  assert.equal((await at(NOW + 5 * 86400)).ok, true)
   // a scan that recorded more than its reserve (the runner never does) counts in full, not capped at its reserve:
-  // 0.30 + 0.75 + 0 = 1.05, refused (capped it would read 0.60 and admit)
-  await end(db, await scan(db, a.id, r6), 0.75, later); await end(db, await scan(db, a.id, r7), 0, later)
-  assert.deepEqual(await admit(db, a, later + 86400), { ok: false, reason: 'account_total_cap' })
+  // 0.45 + 0.30 = 0.75 > 0.70, refused (capped at its reserve it would read 0.60 and admit)
+  const c = await user(db, 'c'.repeat(32), 'c@gmail.com')
+  await end(db, await scan(db, c.id, reservation(await admitTrialScan(db, c, { env: acct, now: NOW }))), 0.45)
+  assert.deepEqual(await admitTrialScan(db, c, { env: acct, now: NOW + 86400 }), { ok: false, reason: 'account_total_cap' })
   // a reservation links only to its own tenant's scan
   const b = await user(db, 'b'.repeat(32), 'b@gmail.com')
   const rb = reservation(await admit(db, b))
@@ -124,14 +124,14 @@ bothEngines('trial ceilings: concurrent workers on separate Postgres pools never
     const rs = await Promise.all(us.map((u, i) => admit(pools[i], u)))
     assert.equal(rs.filter(r => r.ok).length, 33, JSON.stringify(rs.filter(r => !r.ok)))
     assert.ok(rs.filter(r => !r.ok).every(r => !r.ok && r.reason === 'global_daily_cap'))
-    // account: one fresh account, 6 admissions at once from 6 pools, on another day: exactly 3 ($0.90 of $1)
+    // account: one fresh account, 6 admissions at once from 6 pools, on another day: exactly 2 ($0.60 of $0.70)
     const solo = await user(db, 'f'.repeat(32), 'solo@gmail.com')
     const next = NOW + 2 * 86400
     await db.run('DELETE FROM trial_reservations') // clear the global day, so only the account ceiling binds
-    const ss = await Promise.all(pools.slice(0, 6).map(p => admit(p, solo, next)))
-    assert.equal(ss.filter(r => r.ok).length, 3, JSON.stringify(ss))
+    const ss = await Promise.all(pools.slice(0, 6).map(p => admitTrialScan(p, solo, { env: acct, now: next })))
+    assert.equal(ss.filter(r => r.ok).length, 2, JSON.stringify(ss))
     assert.ok(ss.filter(r => !r.ok).every(r => !r.ok && r.reason === 'account_total_cap'))
-    assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM trial_reservations WHERE tenant_id = ?', [solo.id]))!.n), 3)
+    assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM trial_reservations WHERE tenant_id = ?', [solo.id]))!.n), 2)
   } finally { await Promise.all(pools.map(p => p.close())) }
 })
 
@@ -148,14 +148,14 @@ bothEngines('trial ceilings: a scan that reads done but is still enriching keeps
   assert.ok(both.every(r => !r.ok && r.reason === 'global_daily_cap'), JSON.stringify(both))
   await settle(db, ja)
   assert.equal((await admitTrialScan(db, b, { env: day, now: NOW })).ok, true, 'once its paid work settled, it counts what it spent ($0.01)')
-  // the account ceiling the same way: three scans done at $0.01 each but still enriching are $0.90 of $1
+  // the account ceiling the same way: two scans done at $0.01 each but still enriching are $0.60 of $0.70
   const c = await user(db, 'c'.repeat(32), 'c@gmail.com')
   const jc = []
-  for (let i = 0; i < 3; i++) jc.push(await scan(db, c.id, reservation(await admit(db, c))))
+  for (let i = 0; i < 2; i++) jc.push(await scan(db, c.id, reservation(await admitTrialScan(db, c, { env: acct, now: NOW }))))
   for (const j of jc) await finish(db, j, 0.01)
-  assert.deepEqual(await admit(db, c, NOW + 3 * 86400), { ok: false, reason: 'account_total_cap' })
+  assert.deepEqual(await admitTrialScan(db, c, { env: acct, now: NOW + 3 * 86400 }), { ok: false, reason: 'account_total_cap' })
   for (const j of jc) await settle(db, j, NOW + 60)
-  assert.equal((await admit(db, c, NOW + 3 * 86400)).ok, true, '$0.03 spent once settled')
+  assert.equal((await admitTrialScan(db, c, { env: acct, now: NOW + 3 * 86400 })).ok, true, '$0.02 spent once settled')
 })
 
 bothEngines('trial ceilings: enrichment that crosses midnight counts on the day it settles; a retry counts in full again', async ({ db }) => {
@@ -224,4 +224,43 @@ bothEngines('trial ceilings: a retry done before midnight but enriching after it
   assert.deepEqual(await admitTrialScan(db, b, { env: day, now: midnight + 60 }), { ok: false, reason: 'global_daily_cap' })
   await settle(db, ja, midnight + 90)
   assert.equal((await admitTrialScan(db, b, { env: day, now: midnight + 120 })).ok, true)
+})
+
+// A trial scan that ended failed (or cancelled) after reserving `spent` on paid steps, its attempt settled
+const fail = async (db: Db, jobId: string, error: string, spent: number) => {
+  await db.run("UPDATE scan_jobs SET status = 'failed', error = ?, spend_reserved_usd = ?, finished_at = ? WHERE id = ?", [error, spent, NOW, jobId])
+  await settle(db, jobId)
+}
+
+bothEngines('trial attempts: three admitted attempts per account that can cost money, paid failures and cancellations included', async ({ db }) => {
+  const a = await user(db, 'a'.repeat(32), 'a@gmail.com')
+  for (let i = 0; i < 3; i++) await fail(db, await scan(db, a.id, reservation(await admit(db, a))), 'provider_error', 0.02)
+  // $0.06 of $1 spent: the attempts run out, not the money; on later days too
+  assert.deepEqual(await admit(db, a), { ok: false, reason: 'attempts_cap' })
+  assert.deepEqual(await admit(db, a, NOW + 40 * 86400), { ok: false, reason: 'attempts_cap' })
+  // what keeps a place: a cancellation that reserved nothing, a reservation that never got its scan, a running scan,
+  // a failure whose attempt has not settled yet; what gives it back: a failure before any cost, once settled
+  const b = await user(db, 'b'.repeat(32), 'b@gmail.com')
+  await fail(db, await scan(db, b.id, reservation(await admit(db, b))), 'cancelled', 0)
+  reservation(await admit(db, b))                                                              // never linked to a scan
+  const early = await scan(db, b.id, reservation(await admit(db, b)))
+  await db.run("UPDATE scan_jobs SET status = 'failed', error = 'trial_unavailable', spend_reserved_usd = 0, finished_at = ? WHERE id = ?", [NOW, early])
+  assert.deepEqual(await admit(db, b), { ok: false, reason: 'attempts_cap' }, 'failed before cost, but its run has not settled yet')
+  await settle(db, early)
+  const again = await scan(db, b.id, reservation(await admit(db, b)))                          // the released place, used again
+  assert.deepEqual(await admit(db, b), { ok: false, reason: 'attempts_cap' }, 'running: holds the third place')
+  await fail(db, again, 'provider_error', 0.01)
+  assert.deepEqual(await admit(db, b), { ok: false, reason: 'attempts_cap' }, 'a paid failure keeps it')
+})
+
+bothEngines('trial attempts: concurrent admissions on separate Postgres pools never pass three', async ({ db, kind, url, schema }) => {
+  if (kind !== 'pg') return // SQLite runs one transaction at a time in-process; the race is between Postgres connections
+  const a = await user(db, 'a'.repeat(32), 'a@gmail.com')
+  for (let i = 0; i < 2; i++) await fail(db, await scan(db, a.id, reservation(await admit(db, a))), 'provider_error', 0.02)
+  const pools = Array.from({ length: 5 }, () => pgDb({ connectionString: url!, searchPath: schema, max: 1 }))
+  try {
+    const rs = await Promise.all(pools.map(p => admit(p, a)))
+    assert.equal(rs.filter(r => r.ok).length, 1, JSON.stringify(rs))
+    assert.ok(rs.filter(r => !r.ok).every(r => !r.ok && r.reason === 'attempts_cap'))
+  } finally { await Promise.all(pools.map(p => p.close())) }
 })
