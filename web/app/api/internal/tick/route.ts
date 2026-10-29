@@ -2,7 +2,7 @@ import { runSequences } from '@/lib/outreach/sequences'
 import { after, NextRequest, NextResponse } from 'next/server'
 import { timingSafeEqual } from 'node:crypto'
 import { getScanDb } from '@/lib/scan/service'
-import { syncReplies } from '@/lib/outreach/replies'
+import { readRepliesForAll, syncReplies } from '@/lib/outreach/replies'
 import { runFollowups } from '@/lib/outreach/followups'
 import { runDueWatches } from '@/lib/watch'
 import { collectMonitorResults, runDueMonitors } from '@/lib/monitors'
@@ -15,7 +15,8 @@ import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 
 // Called by a scheduler (cron or a systemd timer) with AUTOPILOT_TICK_SECRET. Reads replies and sends due
-// follow-ups for tenants who turned both on. Without the secret configured the route does not exist.
+// follow-ups for tenants who turned both on, and reads replies, opt-outs and bounces for every account that consented
+// to reading, whatever its sending settings (#413). Without the secret configured the route does not exist.
 export async function POST(req: NextRequest) {
   const secret = process.env.AUTOPILOT_TICK_SECRET
   const got = req.headers.get('authorization') ?? ''
@@ -47,15 +48,22 @@ async function tick(lease: Lease, requestId?: string) {
   const fenced = (e: unknown) => { if (e instanceof StaleLeaseWrite) throw e }
   const tenants = db.prepare('SELECT s.tenant_id, u.business_name FROM autopilot_settings s JOIN users u ON u.id = s.tenant_id WHERE s.enabled = 1 AND s.paused = 0 AND s.followups_enabled = 1').all() as { tenant_id: string; business_name: string | null }[]
   let done = 0
+  const read = new Set<string>()
   for (const t of tenants) {
     await lease.keep()
+    read.add(t.tenant_id)
     try { const sync = await syncReplies(db, t.tenant_id); if (sync.error) continue; await runFollowups(db, t.tenant_id, t.business_name ?? ''); done++ } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:replies', tenantId: t.tenant_id, requestId }) }
   }
   let sequences = 0
   for (const t of db.prepare("SELECT DISTINCT tenant_id FROM sequences WHERE status IN ('approved','active')").all() as { tenant_id: string }[]) {
     await lease.keep()
+    read.add(t.tenant_id) // runSequences reads replies first
     try { const r = await runSequences(db,t.tenant_id,''); sequences += r.sent } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:sequences', tenantId: t.tenant_id, requestId }) }
   }
+  // #413: reading is not sending. Every read-consented account with a sent thread to watch is read on each tick, even
+  // with autopilot off or paused, follow-ups off and no sequence: replies are captured, opt-outs suppressed, bounces
+  // recorded. Nothing is sent here. Accounts already read above are not read twice.
+  const readOnly = (await readRepliesForAll(db, read, { each: () => lease.keep(), onError: (tenantId, e) => { fenced(e); captureError(e, { source: 'worker', where: 'tick:reply-read', tenantId, requestId }) } })).read
   await lease.keep()
   // Watches and monitors are on the Db layer: each of their transactions takes the lease's fence first.
   const shared = await getDb()
@@ -75,5 +83,5 @@ async function tick(lease: Lease, requestId?: string) {
     await lease.keep()
     try { const r = await runIndexChecks(shared, t); if (r && r.length > 0) indexChecked++ } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:index-checks', tenantId: t, requestId }) }
   }
-  return NextResponse.json({ ok: true, tenants: done, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, index_checks: indexChecked })
+  return NextResponse.json({ ok: true, tenants: done, replies_read: readOnly, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, index_checks: indexChecked })
 }

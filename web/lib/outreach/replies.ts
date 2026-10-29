@@ -43,6 +43,56 @@ export function migrateReplies(db: Database.Database): void {
   `)
   const columns = db.prepare('PRAGMA table_info(inbound_messages)').all() as { name: string }[]
   if (!columns.some(c => c.name === 'outreach_message_id')) db.exec('ALTER TABLE inbound_messages ADD COLUMN outreach_message_id TEXT')
+  // #413: per tenant, the last reply sync and the last one that read every thread. A sync with any failure leaves ok_at
+  // where it was (freshness unknown since then), so nothing may treat a partial read as current safety state.
+  db.exec(`CREATE TABLE IF NOT EXISTS reply_sync_state (
+    tenant_id TEXT PRIMARY KEY,
+    checked_at INTEGER NOT NULL,
+    ok_at INTEGER,
+    error TEXT CHECK (error IS NULL OR length(error) <= 40),
+    failed_threads INTEGER NOT NULL DEFAULT 0
+  )`)
+}
+
+// How far back a sync reads sent threads (syncReplies), and so which accounts have anything to read.
+export const READ_WINDOW_S = 120 * 86400
+
+// #413: every account that consented to reply reading, with Gmail connected for reading and a sent email in the read
+// window, whatever its sending settings (autopilot off or paused, follow-ups off, no sequence). Reading replies, opt-outs
+// and bounces is the recipients' safety, not part of sending; revoking read consent removes the account at once.
+export function readingTenants(db: Database.Database, now = Math.floor(Date.now() / 1000)): string[] {
+  if (!tableExists(db, 'gmail_accounts') || !tableExists(db, 'outreach_messages')) return []
+  return (db.prepare(`SELECT c.tenant_id FROM mail_read_consent c JOIN gmail_accounts g ON g.tenant_id = c.tenant_id
+    WHERE c.version = ? AND g.read_granted = 1 AND g.status = 'active'
+      AND EXISTS (SELECT 1 FROM outreach_messages m WHERE m.tenant_id = c.tenant_id AND m.status = 'sent' AND m.gmail_id IS NOT NULL AND m.sent_at >= ?)
+    ORDER BY c.tenant_id`).all(READ_CONSENT_VERSION, now - READ_WINDOW_S) as { tenant_id: string }[]).map(r => r.tenant_id)
+}
+
+// The scheduler's read-only pass (#413): sync every reading tenant not already read this tick. Nothing is sent. `each`
+// runs before each tenant (the tick keeps its lease there); a throw from it stops the pass.
+export async function readRepliesForAll(db: Database.Database, skip: Set<string>, o: { each?: () => Promise<void>; onError?: (tenantId: string, e: unknown) => void; d?: SyncDeps } = {}): Promise<{ read: number; failed: number }> {
+  let read = 0, failed = 0
+  for (const tenantId of readingTenants(db, o.d?.now)) {
+    if (skip.has(tenantId)) continue
+    await o.each?.()
+    try { if ((await syncReplies(db, tenantId, o.d)).error) failed++; else read++ } catch (e) { failed++; o.onError?.(tenantId, e) }
+  }
+  return { read, failed }
+}
+
+// 'fresh': the last full read is within maxAgeS and nothing failed since; 'unknown': never read in full, or the latest
+// sync failed (in part or whole); 'stale': read in full, but longer ago than maxAgeS.
+export function replyFreshness(db: Database.Database, tenantId: string, maxAgeS: number, now = Math.floor(Date.now() / 1000)): 'fresh' | 'stale' | 'unknown' {
+  const r = db.prepare('SELECT checked_at, ok_at, error FROM reply_sync_state WHERE tenant_id = ?').get(tenantId) as { checked_at: number; ok_at: number | null; error: string | null } | undefined
+  if (!r || r.ok_at === null || r.error !== null) return 'unknown'
+  return now - r.ok_at <= maxAgeS ? 'fresh' : 'stale'
+}
+
+function recordSync(db: Database.Database, tenantId: string, now: number, out: SyncResult, failed: number): SyncResult {
+  db.prepare(`INSERT INTO reply_sync_state (tenant_id, checked_at, ok_at, error, failed_threads) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT (tenant_id) DO UPDATE SET checked_at = excluded.checked_at, ok_at = COALESCE(excluded.ok_at, reply_sync_state.ok_at), error = excluded.error, failed_threads = excluded.failed_threads`)
+    .run(tenantId, now, out.error ? null : now, out.error ?? null, failed)
+  return out
 }
 
 export const acceptReadConsent = (db: Database.Database, tenantId: string) =>
@@ -155,15 +205,17 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
   const out: SyncResult = { threads: 0, replies: 0, optOuts: 0, bounces: 0, consents: 0, reviews: 0 }
   const now = d.now ?? Math.floor(Date.now() / 1000)
   const acct = db.prepare('SELECT email, read_granted, status FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string; read_granted: number; status: string } | undefined
-  if (!hasReadConsent(db, tenantId) || !acct || acct.read_granted !== 1 || acct.status !== 'active') return { ...out, error: 'reading_not_enabled' }
+  // No read consent (or revoked), or Gmail not connected for reading: no provider call at all.
+  if (!hasReadConsent(db, tenantId) || !acct || acct.read_granted !== 1 || acct.status !== 'active') return recordSync(db, tenantId, now, { ...out, error: 'reading_not_enabled' }, 0)
   const f = d.fetchImpl ?? fetch
   let token: string
-  try { token = await getAccessToken(db, tenantId, d) } catch { return { ...out, error: 'gmail_unavailable' } }
+  try { token = await getAccessToken(db, tenantId, d) } catch { return recordSync(db, tenantId, now, { ...out, error: 'gmail_unavailable' }, 0) }
   if (isStaging((d.env ?? process.env) as Record<string, string | undefined>)) return out // stubbed Gmail: no mailbox to read
   const get = async (path: string) => { const r = await f(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) }); if (!r.ok) throw new Error(`gmail_${r.status}`); return r.json() }
 
   const seqPriority = tableExists(db, 'sequences') ? " OR id IN (SELECT message_id FROM sequences WHERE tenant_id = ? AND status IN ('approved','active'))" : ''
-  const sent = db.prepare(`SELECT id, lead_id, to_email, gmail_id, thread_id, sent_at FROM outreach_messages WHERE tenant_id = ? AND status = 'sent' AND gmail_id IS NOT NULL AND (sent_at >= ? ${seqPriority}) ORDER BY sent_at DESC`).all(tenantId, now - 120 * 86400,...(seqPriority ? [tenantId] : [])) as { id: string; lead_id: string; to_email: string; gmail_id: string; thread_id: string | null; sent_at: number }[]
+  const sent = db.prepare(`SELECT id, lead_id, to_email, gmail_id, thread_id, sent_at FROM outreach_messages WHERE tenant_id = ? AND status = 'sent' AND gmail_id IS NOT NULL AND (sent_at >= ? ${seqPriority}) ORDER BY sent_at DESC`).all(tenantId, now - READ_WINDOW_S,...(seqPriority ? [tenantId] : [])) as { id: string; lead_id: string; to_email: string; gmail_id: string; thread_id: string | null; sent_at: number }[]
+  let failed = 0
   for (const m of sent) {
     try {
       let thread = m.thread_id
@@ -211,11 +263,11 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
         } else auditAt(db, tenantId, 'reply_for_review', cls, m.lead_id, m.id, now)
       }
     } catch (e) {
-      out.error = 'reply_sync_failed' // fail closed: the scheduler must not treat a partial sync as fresh
+      out.error = 'reply_sync_failed'; failed++ // fail closed: the scheduler must not treat a partial sync as fresh
       auditAt(db, tenantId, 'sync_error', e instanceof Error ? e.message : 'error', m.lead_id, m.id, now)
     }
   }
-  return out
+  return recordSync(db, tenantId, now, out, failed)
 }
 
 // Inbox surface: one row per captured reply with lead and follow-up state joined in.

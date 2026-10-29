@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
-import { acceptReadConsent, hasReadConsent, READ_CONSENT_TEXT, READ_CONSENT_VERSION, recentInbound, revokeReadConsent, syncReplies } from '@/lib/outreach/replies'
+import { acceptReadConsent, hasReadConsent, READ_CONSENT_TEXT, READ_CONSENT_VERSION, recentInbound, replyFreshness, revokeReadConsent, syncReplies } from '@/lib/outreach/replies'
 import { followupsEnabled, runFollowups, setFollowups } from '@/lib/outreach/followups'
 import { getState } from '@/lib/outreach/autopilot'
 import { sameOriginJson } from '@/lib/same-origin'
@@ -11,7 +11,8 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const db = getScanDb()
   const acc = db.prepare('SELECT read_granted, status FROM gmail_accounts WHERE tenant_id = ?').get(user.id) as { read_granted: number; status: string } | undefined
-  return NextResponse.json({ available: true, gmail_connected: !!acc, consent: { version: READ_CONSENT_VERSION, text: READ_CONSENT_TEXT, accepted: hasReadConsent(db, user.id) }, read_granted: acc?.read_granted === 1, followups_enabled: followupsEnabled(db, user.id), autopilot_on: getState(db, user.id).enabled, inbound: recentInbound(db, user.id) })
+  // reply_freshness (#413): whether replies, opt-outs and bounces were read in full within the last 2 hours.
+  return NextResponse.json({ available: true, gmail_connected: !!acc, consent: { version: READ_CONSENT_VERSION, text: READ_CONSENT_TEXT, accepted: hasReadConsent(db, user.id) }, read_granted: acc?.read_granted === 1, reply_freshness: replyFreshness(db, user.id, 2 * 3600), followups_enabled: followupsEnabled(db, user.id), autopilot_on: getState(db, user.id).enabled, inbound: recentInbound(db, user.id) })
 }
 
 export async function POST(req: NextRequest) {

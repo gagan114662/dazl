@@ -387,6 +387,14 @@ CREATE TABLE reply_queries (
       PRIMARY KEY (tenant_id, query)
     );
 
+CREATE TABLE reply_sync_state (
+    tenant_id TEXT PRIMARY KEY,
+    checked_at INTEGER NOT NULL,
+    ok_at INTEGER,
+    error TEXT CHECK (error IS NULL OR length(error) <= 40),
+    failed_threads INTEGER NOT NULL DEFAULT 0
+  );
+
 CREATE TABLE reply_threads (
       id           TEXT PRIMARY KEY,
       tenant_id    TEXT NOT NULL,
