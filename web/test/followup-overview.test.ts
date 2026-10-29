@@ -29,7 +29,11 @@ test('overview: active thread gets a due date from the gap schedule; stopped and
   assert.equal(o.threads.length, 2)
   const active = o.threads.find(t => t.thread_id === 'th1')!
   assert.equal(active.company, 'Acme Robotics')
-  assert.equal(active.next_due_at, now - 86400 + GAPS_DAYS[0] * 86400)
+  // the gap schedule's date; this fixture has no autopilot consent, Gmail or follow-up consent, so the runner would not
+  // send and no date is promised (test/followup-holds.test.ts covers a ready account and every hold)
+  assert.equal(active.scheduled_at, now - 86400 + GAPS_DAYS[0] * 86400)
+  assert.equal(active.next_due_at, null)
+  assert.ok(active.hold)
   const done = o.threads.find(t => t.thread_id === 'th2')!
   assert.equal(done.next_due_at, null)
   assert.equal(done.stopped, 'replied')
