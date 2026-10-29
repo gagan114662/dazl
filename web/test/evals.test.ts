@@ -43,7 +43,7 @@ test('replay runs the real scan offline against the World: closed, deterministic
   assert.deepEqual(result.misses, [])
   const got = Object.fromEntries(result.leads.map(l => [l.company, l.review_reason]))
   // Lumen Ledger (a Paris company on a Paris page, London request) is held: the gap this case found in #440, fixed in lib/scan/place-agreement.ts.
-  assert.deepEqual(got, { 'Querix': null, 'Northwind Analytics': 'event_date_stale', 'Orbit Labs': 'event_date_future_date', 'Lumen Ledger': 'location_mismatch' })
+  assert.deepEqual(got, { 'Querix': null, 'Northwind Analytics': 'event_date_stale', 'Orbit Labs': 'event_date_future_date', 'Lumen Ledger': 'location_mismatch', 'Seine Systems': 'location_mismatch' })
   const s = scoreCase({ kase, world, result })
   assert.equal(s.status, 'pass')
   assert.deepEqual(s.verdicts.filter(v => v.status !== 'pass'), [])
@@ -66,7 +66,7 @@ test('a replay trace freezes back into the same World (search, pages, model repl
   assert.ok(Object.keys(w2.http).length > 0)
   for (const r of Object.values(w2.http)) assert.deepEqual(r, world.http_default)
   const t = totals(result.trace)
-  assert.equal(t.model_calls, 2); assert.equal(t.page_fetches, 5); assert.equal(t.cost_usd, null) // stub model has no listed price: unknown, not $0
+  assert.equal(t.model_calls, 2); assert.equal(t.page_fetches, 6); assert.equal(t.cost_usd, null) // stub model has no listed price: unknown, not $0
 })
 
 test('the suite matches the committed baseline exactly, and a verdict change in either direction is reported', async () => {

@@ -22,6 +22,7 @@
    { "company": "Northwind Analytics", "outcome": "held", "review_reason": "event_date_stale", "why": "the quote names 2019: an old event on an undated page" },
    { "company": "Lumen Ledger", "outcome": "held", "review_reason": "location_mismatch", "why": "the page is about Paris, the request is London" },
    { "company": "Brightpath AI", "outcome": "absent", "why": "fabricated: neither the quote nor the company is on the cited page" },
+   { "company": "Seine Systems", "outcome": "held", "review_reason": "location_mismatch", "why": "lower-case 'based in paris, france' binds the company to Paris; the London market-news line is incidental" },
    { "company": "Orbit Labs", "outcome": "held", "review_reason": "event_date_future_date", "why": "the event is after as_of" }
   ]
  }
