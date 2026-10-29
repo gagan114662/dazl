@@ -58,8 +58,9 @@ Never recorded: the provider's API key argument, request headers (TinyFish's key
 ARE recorded, so a trace of a real run is PII until redacted. `totals(trace)` gives model calls, HTTP calls, page fetches,
 errors, cost (with `cost_complete` when every call was priced) and wall time.
 
-Production capture is NOT wired in this increment: the recorder is exercised by every replay. Wiring it into the live
-runner needs a storage decision (tenant-scoped table, retention, redaction at write) and is the next increment.
+**Live trace capture is OFF.** Nothing in this increment records a production run: the recorder is exercised only by
+replays. Wiring it into the live runner needs a storage decision (tenant-scoped table, retention, redaction at write) and
+is a separate, reviewed increment.
 
 ### 2. World (`lib/evals/world.ts`)
 
@@ -167,11 +168,19 @@ wall time per case). Repeated runs and uncertainty intervals belong to #398 and 
 
 ## Redaction (`lib/evals/redact.ts`)
 
-Required before any real trace becomes a World. Consistent HMAC tokens across the whole trace, so a quote or contact that
-matched the page still matches: email local parts (domain kept), phone digits (format kept; ISO dates and date-times are
-not phones), LinkedIn `/in/` slugs, and every person name the run itself extracted. Tokens avoid punctuation the verifier
-normalises away. KNOWN LIMIT: a person named only in page text, never extracted, is not caught. Recorded Worlds therefore
-stay tenant-scoped and unpublished until a stronger name pass exists; none is stored yet.
+Required before any real trace becomes a World. Consistent HMAC tokens across the whole trace (string values AND object
+keys), so a quote or contact that matched the page still matches: email local parts, phone digits (format kept; ISO dates
+and date-times are not phones), LinkedIn `/in/` slugs, and every person name the run itself extracted. Tokens avoid
+punctuation the verifier normalises away.
+
+`redacted: true` means this pass ran. It is NOT permission to publish and NOT proof of complete anonymisation. Known gaps:
+
+- email and web **domains are kept** (contact-domain checks need them); a domain can identify a small company or a person;
+- a person named **only in page text**, never extracted as a lead or contact name, is not found;
+- free-text identifiers the patterns do not know (street addresses, account numbers, handles other than LinkedIn) are kept.
+
+**Recorded Worlds are private and unpublished**: tenant-scoped, never committed to this repository, never shared across
+tenants. None has been captured or stored yet; every World in `web/test/fixtures/evals/` is synthetic.
 
 ## The first case, and what it found
 
