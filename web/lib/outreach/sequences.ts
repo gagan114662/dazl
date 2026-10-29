@@ -14,6 +14,7 @@ import { readKey } from '../llm/key-store.ts'
 import { providers } from '../llm/provider.ts'
 import { pickVendor } from '../scan/runner.ts'
 import { getMemory, memoryPromptBlock } from '../memory.ts'
+import { memoryForLead } from './play-memory.ts'
 import { norm } from './store.ts'
 
 // Multi-step sequences: step 1 is the normal approved outreach email; steps 2 and 3 are
@@ -111,7 +112,7 @@ ${step === 2
     : 'Write a brief close-out (40-80 words): one last note, no guilt, say you will not follow up again.'}
 Match the seller's tone when given. No invented facts or numbers. Reply with the email body only, no subject line. Close with just "Thanks,".`
 
-async function llmStepText(db: Database.Database, tenantId: string, step: 2 | 3, lead: { company: string; name: string; signal: string; source_url: string }, businessName: string, bookingUrl: string | null | undefined, d: Deps): Promise<string | null> {
+async function llmStepText(db: Database.Database, tenantId: string, step: 2 | 3, lead: { company: string; name: string; signal: string; source_url: string; lead_id?: string }, businessName: string, bookingUrl: string | null | undefined, d: Deps): Promise<string | null> {
   const vendor = pickVendor(db, tenantId)
   if (!vendor) return null
   const read = readKey(db, tenantId, vendor, d.master)
@@ -119,7 +120,7 @@ async function llmStepText(db: Database.Database, tenantId: string, step: 2 | 3,
   const provider = providers[vendor]
   if (!provider?.complete) return null
   try {
-    const text = (await provider.complete(read.key, seqPrompt(step, businessName, lead, bookingUrl, memoryPromptBlock(getMemory(db, tenantId))), d.fetchImpl, 400)).trim().slice(0, 3000)
+    const text = (await provider.complete(read.key, seqPrompt(step, businessName, lead, bookingUrl, memoryPromptBlock(lead.lead_id ? memoryForLead(db, tenantId, lead.lead_id) : getMemory(db, tenantId))), d.fetchImpl, 400)).trim().slice(0, 3000)
     if (text.length < 20 || /^\s*Subject:/im.test(text)) return null
     if (bookingUrl && !text.includes(bookingUrl)) return null
     return text
@@ -171,7 +172,7 @@ export async function draftSequenceSteps(db: Database.Database, tenantId: string
   const settings = getSettings(db, tenantId)
   for (const step of [2, 3] as const) {
     const before = db.prepare('SELECT body FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? AND step = ?').get(tenantId,sequenceId,step) as { body: string }
-    const body = (await llmStepText(db, tenantId, step, lead, businessName, settings?.booking_url, d)) ?? sequenceStepText(step, lead, businessName, settings?.booking_url)
+    const body = (await llmStepText(db, tenantId, step, { ...lead, lead_id: s.lead_id }, businessName, settings?.booking_url, d)) ?? sequenceStepText(step, lead, businessName, settings?.booking_url)
     db.prepare("UPDATE sequence_steps SET body = ? WHERE tenant_id = ? AND sequence_id = ? AND step = ? AND status = 'draft' AND body = ? AND EXISTS (SELECT 1 FROM sequences WHERE id = ? AND tenant_id = ? AND status = 'draft')").run(body, tenantId, sequenceId, step,before.body,sequenceId,tenantId)
   }
 }
