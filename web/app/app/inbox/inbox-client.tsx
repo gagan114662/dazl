@@ -11,10 +11,11 @@ const BADGE: Record<string, string> = {
   positive: 'text-black border-black font-medium',
   negative: 'text-[#333] border-black/40',
   opt_out: 'text-[#333] border-black/40',
+  uncertain: 'text-[#8a5a00] border-[#e8b04a]',
   auto: 'text-gray-400 border-black/10',
   other: 'text-gray-500 border-black/10',
 }
-const LABEL: Record<string, string> = { positive: 'interested', negative: 'not interested', opt_out: 'opted out', auto: 'auto-reply', other: 'other' }
+const LABEL: Record<string, string> = { positive: 'interested', negative: 'not interested', opt_out: 'opted out', auto: 'auto-reply', uncertain: 'needs your review', other: 'other' }
 
 export default function InboxClient() {
   const [i, setI] = useState<Info | null>(null)
@@ -58,7 +59,7 @@ export default function InboxClient() {
               </div>
               <p className="text-sm text-[#333] mt-2">{r.excerpt}</p>
               <div className="text-xs text-[#888] mt-2 flex items-center gap-3">
-                <span>{r.stopped ? `Follow-ups stopped (${r.stopped.replace(/_/g, ' ')})` : r.followups_sent ? `Follow-ups sent: ${r.followups_sent}` : 'No follow-up sent'}</span>
+                <span>{r.stopped === 'review' ? 'Follow-ups stopped: this reply needs your review' : r.stopped ? `Follow-ups stopped (${r.stopped.replace(/_/g, ' ')})` : r.followups_sent ? `Follow-ups sent: ${r.followups_sent}` : 'No follow-up sent'}</span>
                 <button className="underline underline-offset-2" onClick={() => toggle(r.thread_id)}>{open === r.thread_id ? 'Hide thread' : 'View thread'}</button>
               </div>
               {r.classification === 'positive' && (
