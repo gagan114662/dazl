@@ -1,8 +1,12 @@
 // Send-safety scenarios for staging (issue #362, part 2; docs/STAGING.md "Send-safety scenarios"). Drives the app's real
 // send, sequence, reply-sync, unsubscribe and uncertain-send code end to end on an isolated SQLite file, and writes an
 // evidence report. Six scenarios:
-//   owned-inbox  an approved message goes to the owned staging inbox exactly once, carrying the approved words and a
-//                working unsubscribe link; a message edited after approval is refused (approval hash)
+//   owned-inbox-handoff  an approved message addressed to the owned staging inbox is handed to the provider interface
+//                exactly once. The recorded MIME is decoded and checked: subject, recipient and sender; the body before
+//                the footer is exactly the approved words; the footer carries the sender's name and postal address and
+//                an unsubscribe link equal to the List-Unsubscribe header that resolves to this message; the recorded
+//                hash is of those bytes. A message edited after approval is refused (approval hash). This is the
+//                recorded hand-off, not delivery: nothing reaches an inbox
 //   reply-stop   a reply in the thread stops the sequence: step 2 is never sent; a control sequence with no reply does
 //                send step 2 at the same time (so the stop is the reply's doing, not the clock's)
 //   opt-out      the unsubscribe link from the sent message suppresses the address for that tenant: its next approved
@@ -13,7 +17,7 @@
 //   restart      a process is killed (SIGKILL) inside the provider call; a fresh process on the same database reaps the
 //                claim as uncertain, makes no provider call, and blocks the tenant's other sends
 //
-// Sending is OFF: the only transport is a recorder that writes each message to transport.log and returns a fake id. It
+// Sending is OFF: every scenario stops at a recorded hand-off to the provider interface. The only transport is a recorder that writes each message to transport.log and returns a fake id. It
 // never opens a connection (the script runs under test/helpers/net-fence.ts, which throws on any non-loopback socket),
 // and it refuses any recipient outside the fixed allowlist below (reserved *.staging.dazl.test addresses), failing the
 // run. Gmail token and thread reads are answered by an in-process stub. The master key is generated per run. No
@@ -31,7 +35,7 @@ import { fileURLToPath } from 'node:url'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { createJob } from '../lib/scan/store.ts'
 import { completeOAuth, GMAIL_READ_SCOPE, startOAuth } from '../lib/gmail/oauth.ts'
-import { approve, editDraft, isSuppressed, resolveUncertain, saveSettings, sendMessage, unsubscribeByToken, type Deps } from '../lib/outreach/service.ts'
+import { approve, editDraft, isSuppressed, readUnsubToken, resolveUncertain, saveSettings, sendMessage, unsubscribeByToken, type Deps } from '../lib/outreach/service.ts'
 import { acceptReadConsent, syncReplies } from '../lib/outreach/replies.ts'
 import { approveSequence, createSequence, runSequences } from '../lib/outreach/sequences.ts'
 
@@ -46,6 +50,13 @@ const GENV = { GOOGLE_CLIENT_ID: 'scenario.apps.googleusercontent.com', GOOGLE_C
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status })
 const decode = (raw: string) => Buffer.from(raw, 'base64url').toString('utf8')
 const header = (mime: string, name: string) => new RegExp(`^${name}: (.*)$`, 'mi').exec(mime)?.[1]?.trim() ?? null
+// The text/plain body of a recorded message (lib/gmail/mime.ts: base64 transfer encoding, CRLF line ends), as text.
+export function recordedBody(mime: string): string | null {
+  const at = mime.indexOf('\r\n\r\n'); if (at < 0) return null
+  if (!/^Content-Transfer-Encoding: base64$/mi.test(mime.slice(0, at))) return null
+  return Buffer.from(mime.slice(at + 4).replace(/\s+/g, ''), 'base64').toString('utf8').replace(/\r\n/g, '\n')
+}
+const SENDER = { sender_name: 'Scenario Sender', postal_address: '100 Demo Street, Columbus, OH 43004 (staging test address)' }
 
 export class AllowlistError extends Error {}
 // The only transport: refuses anything not on the allowlist, records the rest, returns a fake provider id.
@@ -78,7 +89,7 @@ async function tenant(db: Database.Database, id: string, master: Buffer) {
   const state = new URL(startOAuth(db, id, { env: GENV, now: NOW, withRead: true })).searchParams.get('state')!
   const idToken = 'x.' + Buffer.from(JSON.stringify({ email: `sender-${id}@staging.dazl.test`, email_verified: true })).toString('base64url') + '.y'
   await completeOAuth(db, id, 'scenario-code', state, { env: GENV, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'scenario-refresh', scope: `https://www.googleapis.com/auth/gmail.send ${GMAIL_READ_SCOPE}`, id_token: idToken })) as unknown as typeof fetch })
-  saveSettings(db, id, { sender_name: 'Scenario Sender', postal_address: '100 Demo Street, Columbus, OH 43004 (staging test address)' })
+  saveSettings(db, id, SENDER)
   acceptReadConsent(db, id)
 }
 function draft(db: Database.Database, tenantId: string, to: string, words = 'A short note about your new location. This is synthetic staging test text.') {
@@ -111,24 +122,40 @@ async function scenarios(out: string, master: Buffer): Promise<Scenario[]> {
   }
   const rejects = async (p: Promise<unknown>) => { try { await p; return null } catch (e) { return e instanceof Error ? e.message : String(e) } }
 
-  await run('owned-inbox', async check => {
+  // the messages as handed off, by provider id, for the content checks
+  const mimes: Record<string, string> = {}
+  const capture = (t: string) => { const rec = recordingTransport(log, t); return (async (tok: string, raw: string, f?: unknown, th?: string) => { const r = await rec(tok, raw, f, th); mimes[r.id] = decode(raw); return r }) as never }
+
+  await run('owned-inbox-handoff', async check => {
     const T = 'scn-owned'; await tenant(db, T, master)
-    const words = 'Owned inbox scenario: these exact approved words must arrive. (synthetic)'
-    const m = draft(db, T, 'owner-inbox@staging.dazl.test', words); approve(db, T, m.mid)
+    const OWNED = 'owner-inbox@staging.dazl.test'
+    const words = 'Owned inbox scenario: these exact approved words must be what is handed off.\nSecond line, kept as written. (synthetic)'
+    const m = draft(db, T, OWNED, words); approve(db, T, m.mid)
+    const approved = db.prepare('SELECT subject, body, to_email FROM outreach_messages WHERE id = ?').get(m.mid) as { subject: string; body: string; to_email: string }
     check('approval hash recorded', !!status(db, m.mid).approved_hash)
-    check('send result', await sendMessage(db, T, m.mid, deps(T)) === 'sent')
-    check('sent again: no second provider call', await sendMessage(db, T, m.mid, deps(T)) === 'sent' && sentTo(log, T).length === 1, `${sentTo(log, T).length} call(s)`)
+    check('send result', await sendMessage(db, T, m.mid, deps(T, { sendFn: capture(T) })) === 'sent')
+    check('sent again: no second hand-off', await sendMessage(db, T, m.mid, deps(T)) === 'sent' && sentTo(log, T).length === 1, `${sentTo(log, T).length} hand-off(s)`)
     const rec = sentTo(log, T)[0]
-    check('delivered only to the owned inbox', rec?.to === 'owner-inbox@staging.dazl.test')
+    const mime = mimes[(db.prepare('SELECT gmail_id FROM outreach_messages WHERE id = ?').get(m.mid) as { gmail_id: string }).gmail_id] ?? ''
+    check('recorded hash is of the bytes handed off', !!mime && rec?.sha256 === createHash('sha256').update(mime).digest('hex'))
+    check('addressed only to the owned inbox', rec?.to === OWNED && header(mime, 'To') === OWNED, header(mime, 'To') ?? '')
+    check('from the connected sender', (header(mime, 'From') ?? '').includes(`<sender-${T}@staging.dazl.test>`), header(mime, 'From') ?? '')
+    check('subject is the approved subject', header(mime, 'Subject') === approved.subject, header(mime, 'Subject') ?? '')
+    const body = recordedBody(mime) ?? ''
+    const cut = body.indexOf('\n\n--\n')
+    check('body before the footer is exactly the approved words', cut >= 0 && body.slice(0, cut) === approved.body.trim(), cut >= 0 ? `${body.slice(0, cut).length} chars` : 'no footer marker')
+    const footer = cut >= 0 ? body.slice(cut + 5).split('\n') : []
+    check("footer: the sender's name and postal address", footer[0] === SENDER.sender_name && footer[1] === SENDER.postal_address, footer.slice(0, 2).join(' | '))
+    const link = header(mime, 'List-Unsubscribe')?.replace(/^<|>$/g, '') ?? ''
+    const inBody = /unsubscribe here: (\S+)\s*$/.exec(body)?.[1] ?? ''
+    check('footer unsubscribe link equals the List-Unsubscribe header', !!link && inBody === link, inBody.slice(0, 50))
+    let tok: string | null = null; try { tok = new URL(link).searchParams.get('t') } catch { /* checked below */ }
+    check('the link resolves to this message', !!tok && readUnsubToken(tok, master) === m.mid)
     const edited = draft(db, T, 'owner-inbox@staging.dazl.test'); approve(db, T, edited.mid)
     editDraft(db, T, edited.mid, { subject: 'A quick question', body: 'Words changed after approval. (synthetic)' })
     const why = await rejects(sendMessage(db, T, edited.mid, deps(T)))
     check('edited after approval: refused', !!why && sentTo(log, T).length === 1, why ?? 'sent')
   })
-
-  // the words actually sent, for the owned-inbox and opt-out checks
-  const mimes: Record<string, string> = {}
-  const capture = (t: string) => { const rec = recordingTransport(log, t); return (async (tok: string, raw: string, f?: unknown, th?: string) => { const r = await rec(tok, raw, f, th); mimes[r.id] = decode(raw); return r }) as never }
 
   await run('reply-stop', async check => {
     const T = 'scn-reply'; await tenant(db, T, master)
@@ -153,8 +180,8 @@ async function scenarios(out: string, master: Buffer): Promise<Scenario[]> {
     const to = 'optout-lead@staging.dazl.test'
     const first = draft(db, A, to); approve(db, A, first.mid)
     await sendMessage(db, A, first.mid, deps(A, { sendFn: capture(A) }))
-    const mime = Object.values(mimes).at(-1) ?? ''
-    const link = header(mime, 'List-Unsubscribe')?.replace(/^<|>$/g, '') ?? ''
+    const optMime = Object.values(mimes).at(-1) ?? ''
+    const link = header(optMime, 'List-Unsubscribe')?.replace(/^<|>$/g, '') ?? ''
     const token = link ? new URL(link).searchParams.get('t') : null
     check('sent message carries a List-Unsubscribe link', !!token, link.slice(0, 60))
     check('the link unsubscribes', !!token && unsubscribeByToken(db, token, master))
@@ -267,7 +294,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const transport = lines(path.join(out, 'transport.log'))
   const report = {
     kind: 'dazl staging send-safety scenarios', version: 1, commit: commit(), started_at: started.toISOString(), duration_ms: Date.now() - t0, host_env: 'staging',
-    sending: 'off: recording transport only, no network (net fence), recipients limited to the allowlist',
+    sending: 'off: every send stops at a recorded hand-off to the provider interface (transport.log); nothing is delivered to any inbox; no network (net fence); recipients limited to the allowlist',
     allowlist: [...ALLOWLIST], transport_calls: transport.length, transport_recipients: [...new Set(transport.map(t => t.to))],
     ok: results.every(r => r.ok), scenarios: results,
   }

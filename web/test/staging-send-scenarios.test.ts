@@ -9,7 +9,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { ALLOWLIST, AllowlistError, recordingTransport } from '../scripts/staging-send-scenarios.mts'
+import { ALLOWLIST, AllowlistError, recordedBody, recordingTransport } from '../scripts/staging-send-scenarios.mts'
+import { buildMime } from '../lib/gmail/mime.ts'
 
 const web = fileURLToPath(new URL('../', import.meta.url))
 const T = mkdtempSync(path.join(tmpdir(), 'send-scenarios-test-'))
@@ -27,11 +28,13 @@ test('all six scenarios pass; every recorded send went to an allowlisted address
   assert.equal(r.code, 0, r.out)
   const ev = JSON.parse(readFileSync(path.join(out, 'evidence.json'), 'utf8'))
   assert.equal(ev.ok, true)
-  assert.deepEqual(ev.scenarios.map((s: { name: string }) => s.name), ['owned-inbox', 'reply-stop', 'opt-out', 'bounce', 'uncertain', 'restart'])
+  assert.deepEqual(ev.scenarios.map((s: { name: string }) => s.name), ['owned-inbox-handoff', 'reply-stop', 'opt-out', 'bounce', 'uncertain', 'restart'])
   for (const s of ev.scenarios) { assert.ok(s.checks.length >= 3, s.name); assert.ok(s.checks.every((c: { ok: boolean }) => c.ok), JSON.stringify(s)) }
   assert.ok(ev.transport_calls > 0)
   assert.ok(ev.transport_recipients.every((to: string) => ALLOWLIST.has(to) && to.endsWith('@staging.dazl.test')))
-  assert.match(ev.sending, /^off:/)
+  assert.match(ev.sending, /^off: .*recorded hand-off.*nothing is delivered/)
+  const owned = ev.scenarios[0].checks.map((c: { what: string }) => c.what)
+  for (const w of ['subject is the approved subject', 'body before the footer is exactly the approved words', 'footer unsubscribe link equals the List-Unsubscribe header', 'the link resolves to this message']) assert.ok(owned.includes(w), w)
 })
 
 test('refuses: outside staging, onto a non-empty directory, inside the live database directory', () => {
@@ -53,4 +56,11 @@ test('the transport refuses a recipient outside the allowlist and records nothin
   assert.equal(existsSync(log), false)
   assert.deepEqual(Object.keys(await send('t', mime('Owner <owner-inbox@staging.dazl.test>'))), ['id', 'threadId'])
   assert.equal(readFileSync(log, 'utf8').trim().split('\n').length, 1)
+})
+
+test('recordedBody decodes what lib/gmail/mime.ts builds, exactly (unicode and line breaks kept)', () => {
+  const body = 'Line one, exactly.\nZweite Zeile: \u00fc\u00f1\u00ee\u00e7\u00f8d\u00e9 \u2014 kept.\n\n--\nName'
+  const mime = buildMime({ fromName: 'A', fromEmail: 'a@staging.dazl.test', to: 'b@staging.dazl.test', subject: 's', body, messageId: 'm@x', unsubscribeUrl: 'https://staging.dazl.test/u' })
+  assert.equal(recordedBody(mime), body)
+  assert.equal(recordedBody('To: x\r\n\r\nplain'), null) // not the encoding the app sends: not read as matching
 })

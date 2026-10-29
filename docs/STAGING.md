@@ -156,14 +156,14 @@ The same chain is pinned in CI without Stripe by `web/test/stripe-flow.test.ts`,
 
 | scenario | proves |
 |---|---|
-| owned-inbox | an approved message reaches the owned staging inbox exactly once; a message edited after approval is refused (approval hash) |
+| owned-inbox-handoff | an approved message addressed to the owned staging inbox is handed to the provider interface exactly once. The recorded MIME has the approved subject; the body before the footer is exactly the approved words; the footer has the sender's name, postal address and an unsubscribe link equal to `List-Unsubscribe` that resolves to this message. A message edited after approval is refused (approval hash). |
 | reply-stop | a reply in the thread stops the sequence, so step 2 is never sent. A control sequence with no reply does send step 2 at the same time. |
 | opt-out | the unsubscribe link from the sent message suppresses the address for that tenant only; another tenant can still send to it |
 | bounce | a mailer-daemon 5.x.x bounce suppresses the address, and the next message is not sent |
 | uncertain | a send with an unknown outcome is marked uncertain and never retried, and blocks the tenant's other sends until resolved |
 | restart | a process killed inside the provider call leaves the claim held. A fresh process reaps it as uncertain, makes no second provider call, and blocks the tenant. |
 
-**Sending stays off.**
+**Sending stays off.** Every scenario stops at a **recorded hand-off** to the provider interface. Nothing is delivered to any inbox, and the evidence is not proof of delivery.
 - The only transport is a recorder (`transport.log`). It returns fake ids and refuses any recipient outside a fixed allowlist of reserved `@staging.dazl.test` addresses.
 - The script runs under the network fence, so any non-loopback connection throws. Gmail token and thread reads come from an in-process stub, and the master key is generated per run.
 - It uses its own new SQLite file in `--out`. It refuses to run without `DAZL_ENV=staging`, onto a non-empty directory, or inside `DB_PATH`'s or `PROD_DB_PATH`'s directory. The staging and production databases are never opened.
