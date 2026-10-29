@@ -123,10 +123,12 @@ export function classifyReply(text: string, h: ReplyHeaders = {}, status: 'ok' |
 // for review (uncertain), and positive only stands when both bodies say it.
 export function classifyMessage(t: { text: string; status: 'ok' | 'empty' | 'malformed'; alt?: string | null; addrTail?: string }, h: ReplyHeaders = {}): ReplyClass {
   const cls = classifyBodies(t, h)
-  // The text was cut at an address-style quote header (lib/outreach/reply-text.ts): what follows is probably the quoted
-  // earlier message, but it may be the lead's own words. When it carries opt-out or ambiguous wording, follow-ups stop
-  // for review (uncertain), without taking those quoted words as a fresh opt-out (no suppression).
-  if (t.addrTail && cls !== 'opt_out' && cls !== 'auto' && (OPT_OUT.test(t.addrTail) || AMBIGUOUS.test(t.addrTail))) return 'uncertain'
+  // The text was cut at an address-style line we cannot place (lib/outreach/reply-text.ts): what follows is probably the
+  // quoted earlier message, but it may be the lead's own words. That boundary is uncertain, so the thread is held for
+  // review (uncertain: follow-ups stop, earlier consent revoked) whatever the tail says and whatever auto-reply markers
+  // the message has. The tail is never read as interest or as a fresh opt-out (no suppression); only an opt-out in the
+  // new text itself is honoured as one.
+  if (t.addrTail && cls !== 'opt_out') return 'uncertain'
   return cls
 }
 function classifyBodies(t: { text: string; status: 'ok' | 'empty' | 'malformed'; alt?: string | null }, h: ReplyHeaders): ReplyClass {

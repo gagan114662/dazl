@@ -106,7 +106,8 @@ export function messageText(payload: GPart | undefined): ExtractedText {
   // an undecodable plain body still carries what its HTML alternative says (an opt-out there is honoured)
   if (plain && plain.text === null) return htmlText ? { text: '', status: 'malformed', source: 'plain', alt: htmlText } : { text: '', status: 'malformed', source: 'plain' }
   if (plain && plain.text) {
-    const c = newTextWithTail(plain.text), tail = c.addrTail ? { addrTail: c.addrTail } : {}
+    // a boundary we could not place in EITHER alternative makes the whole message ambiguous
+    const c = newTextWithTail(plain.text), t = c.addrTail ?? htmlCut?.addrTail, tail = t ? { addrTail: t } : {}
     if (c.text) return htmlText === undefined || htmlText === '' ? { text: c.text, status: 'ok', source: 'plain', ...tail } : { text: c.text, status: 'ok', source: 'plain', alt: htmlText, ...tail }
   }
   if (htmlText === null) return { text: '', status: 'malformed', source: 'html' }

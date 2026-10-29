@@ -289,8 +289,9 @@ test('HOLD quoted-tail case: opt-out wording after an address-style quote header
   assert.equal(classify(part('text/html', '<p>Sounds good, tell me more.</p><p>Pat Seller &lt;pat@seller.example&gt; napisał:</p><p>To unsubscribe reply STOP</p>')), 'uncertain', 'the HTML body too')
   // a recognised quote header with ">" quoted lines: the quoted footer is excluded as before
   assert.equal(classify(plain('Sounds good, tell me more\n\nOn Mon, Pat wrote:\n> To unsubscribe reply STOP')), 'positive')
-  // a tail with nothing opt-out-like changes nothing; a real opt-out in the new text still wins
-  assert.equal(classify(plain('Sounds good, tell me more.\nPat Seller <pat@seller.example> napisał:\nHi Sam, quick question about your hiring')), 'positive')
+  // an unplaced boundary holds even when its tail says nothing opt-out-like (Instinct, second HOLD): the boundary itself
+  // is uncertain. A real opt-out in the new text still wins
+  assert.equal(classify(plain('Sounds good, tell me more.\nPat Seller <pat@seller.example> napisał:\nHi Sam, quick question about your hiring')), 'uncertain')
   assert.equal(classify(plain('Please unsubscribe me.\nPat Seller <pat@seller.example> napisał:\nTo unsubscribe reply STOP')), 'opt_out')
 })
 
@@ -310,6 +311,42 @@ test('HOLD sync, two tenants: a rejection with positive words grants nothing; th
   assert.equal(hasConsent(db, 'A', 'kim@buyer.example', 'email', 'followup', NOW), false, 'follow-ups stop: consent revoked')
   assert.equal(isSuppressed(db, 'A', 'kim@buyer.example'), false, 'the quoted words are not a fresh opt-out')
   // tenant B, the same contact as A's first thread: untouched by A's sync
+  assert.equal(hasConsent(db, 'B', 'sam@buyer.example', 'email', 'followup', NOW), true)
+  assert.equal(isSuppressed(db, 'B', 'sam@buyer.example'), false)
+  assert.equal(stopped(db, 'B', b1.thread), null)
+})
+
+// Instinct's second HOLD on #429 (at 6b1c32f): the ambiguity must survive alternative selection and auto-reply markers.
+test('HOLD-2 boundary ambiguity is carried from either alternative and is not hidden by auto markers', () => {
+  const alt = multi('multipart/alternative', [part('text/plain', 'Thanks.'), part('text/html', '<p>Thanks.</p><p>Sam &lt;sam@buyer.example&gt;:</p><p>unsubscribe</p>')])
+  assert.equal(messageText(alt).addrTail, 'unsubscribe')
+  assert.equal(classify(alt), 'uncertain')
+  assert.equal(classify(part('text/plain', 'Thanks.\nSam <sam@buyer.example>:\nunsubscribe'), { subject: 'Out of office' }), 'uncertain')
+  // standard quoted-history controls are unchanged
+  assert.equal(classify(part('text/plain', 'Sounds good, tell me more\n\nOn Mon, Pat <pat@seller.example> wrote:\n> To unsubscribe reply STOP')), 'positive')
+  assert.equal(classify(multi('multipart/alternative', [part('text/plain', 'Sounds good, tell me more'), part('text/html', '<p>Sounds good, tell me more</p><div class="gmail_quote">On Mon, Pat wrote:<blockquote>unsubscribe</blockquote></div>')])), 'positive')
+})
+
+test('HOLD-2 sync, two tenants with prior consent: both exact cases hold the thread and revoke consent, grant and suppress nothing', async () => {
+  const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db)
+  await tenant(db, 'A', 'me@a-seller.example'); await tenant(db, 'B', 'me@b-seller.example')
+  const a1 = sent(db, 'A', 'sam@buyer.example'), a2 = sent(db, 'A', 'kim@buyer.example'), b1 = sent(db, 'B', 'sam@buyer.example')
+  for (const [t, e] of [['A', 'sam@buyer.example'], ['A', 'kim@buyer.example'], ['B', 'sam@buyer.example']])
+    grantConsent(db, t, e, { channel: 'email', scope: 'followup', basis: 'reply_interest', evidenceRef: 'gmail:earlier', now: NOW - 2 * DAY })
+  const consents0 = (db.prepare('SELECT count(*) n FROM consent_ledger').get() as { n: number }).n
+  const r = await syncReplies(db, 'A', { env: genv, master, now: NOW, fetchImpl: gmail({
+    [a1.thread]: [msg('x1', 'Sam <sam@buyer.example>', multi('multipart/alternative', [part('text/plain', 'Thanks.'), part('text/html', '<p>Thanks.</p><p>Sam &lt;sam@buyer.example&gt;:</p><p>unsubscribe</p>')]))],
+    [a2.thread]: [msg('x2', 'Kim <kim@buyer.example>', part('text/plain', 'Thanks.\nSam <sam@buyer.example>:\nunsubscribe'), [{ name: 'Subject', value: 'Out of office' }])],
+  }, []) })
+  assert.deepEqual([r.consents, r.reviews, r.optOuts, r.error], [0, 2, 0, undefined])
+  for (const [id, th, e] of [['x1', a1.thread, 'sam@buyer.example'], ['x2', a2.thread, 'kim@buyer.example']]) {
+    assert.equal(cls(db, 'A', id), 'uncertain', id)
+    assert.equal(stopped(db, 'A', th), 'review', id)
+    assert.equal(hasConsent(db, 'A', e, 'email', 'followup', NOW), false, `${id}: prior consent revoked`)
+    assert.equal(isSuppressed(db, 'A', e), false, `${id}: quoted content is not a fresh opt-out`)
+  }
+  assert.equal((db.prepare('SELECT count(*) n FROM consent_ledger').get() as { n: number }).n, consents0, 'no new consent')
+  // tenant B, same contact, untouched
   assert.equal(hasConsent(db, 'B', 'sam@buyer.example', 'email', 'followup', NOW), true)
   assert.equal(isSuppressed(db, 'B', 'sam@buyer.example'), false)
   assert.equal(stopped(db, 'B', b1.thread), null)
