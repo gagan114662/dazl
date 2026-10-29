@@ -831,10 +831,12 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     const diag = { trace: new SearchTrace(), info: {} as Partial<SourceStats>, hitUrls: [] as string[], tfTextUrls: [] as string[], newsUrls: [] as string[], held: undefined as HeldText | undefined, urls: undefined as UrlRecord[] | undefined }
     if (job.query && icpForSources && complete && tinyfishEnabled() && !deps.first5) {   // first5: free sources only
       try {
-        ledger.record('search:tinyfish', 'started')
+        ledger.queue('search:tinyfish'); ledger.record('search:tinyfish', 'started')
         assertOwned(db, job)
         leads = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl, diag, newsOn ? deps.newsHttp ?? safeGet : undefined)
-        ledger.record('search:tinyfish', leads === null ? 'unavailable' : leads.length ? 'ok' : 'empty')
+        // Every search request failed: the source BROKE (a failed step, named as such), which is not the same as a source that was off or returned nothing ('unavailable').
+        const st0 = summarizeTrace(diag.trace)
+        ledger.record('search:tinyfish', leads === null ? ((st0.searches_attempted ?? 0) > 0 && st0.searches_ok === 0 ? 'error' : 'unavailable') : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:tinyfish', leads)
         // Leads whose page GDELT surfaced carry the GDELT attribution (its terms require citation and a link).
         if (leads && diag.newsUrls.length) ledger.candidates(NEWS_SOURCE, leads.filter(l => diag.newsUrls.includes(l.source_url)))
@@ -857,7 +859,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // the run budget already refused a call (its own calls would be refused too); a refusal inside it stops the scan.
     if (!leads && !budgetRefused && job.query && icpForSources && complete && newsOn) {
       try {
-        ledger.record('search:news', 'started')
+        ledger.queue('search:news'); ledger.record('search:news', 'started')
         assertOwned(db, job)
         const note = { searched: false, hits: 0, attempted: 0, failed: 0, malformed: 0 }
         leads = await newsLeads(job, icpForSources, providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl, note)
@@ -902,6 +904,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     if (sel && icpForSources && complete) {
       try {
         assertOwned(db, job)
+        for (const id of sel.adapters) ledger.queue(`adapter:${id}`)   // the adapters run together: all are queued, then each reports
         const collected = await collectEvidenceReport(sel, job.query!, deps.sourceHttp, undefined, sel.adapters.includes('jobboards') ? [...diag.hitUrls, ...leads.map(l => l.source_url)] : [], async url => { try { const r = await fetchP(url); return r && 'text' in r && typeof r.text === 'string' ? r.text : null } catch { return null } }, sel.adapters.includes('jobboards') ? [...new Map(leads.filter(l => l.company).map(l => [l.company.toLowerCase(), { name: l.company }])).values()] : [])
         const items = collected.items
         const leadsBefore = leads.length

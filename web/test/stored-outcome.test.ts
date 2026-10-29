@@ -54,3 +54,31 @@ test('PER-SOURCE POLLING DATA: each source row has name, status, found / kept / 
 test('the classes are distinct: every scan-outcome kind maps to exactly one class, and the three honest endings never collapse', () => {
   assert.deepEqual((['failed', 'stopped', 'none_extracted', 'all_dropped', 'review_only', 'zero_match', 'leads', 'running', 'enriching', 'unrecorded'] as const).map(outcomeClass), ['failed', 'stopped', 'extraction_failed', 'rejected', 'rejected', 'no_match', 'yielded', 'active', 'active', 'unrecorded'])
 })
+
+// ---- per-source progress EVENTS: the ordered sequence the UI can follow live and the history can replay ----
+import { runReportFor } from '../lib/scan/run-report.ts'
+const events = (r: Awaited<ReturnType<typeof runFixture>>, jobId: string) => ((runReportFor(r.db, 'A', jobId) as { progress_events?: { seq: number; source: string; state: string; status: string; found: number | null; kept: number | null }[] }[])[0]?.progress_events ?? [])
+const seq = (ev: ReturnType<typeof events>, source: string) => ev.filter(e => e.source === source).map(e => `${e.state}${e.found === null ? '' : `(found ${e.found}${e.kept === null ? '' : `, kept ${e.kept}`})`}`).join(' > ')
+
+test('PROGRESS EVENTS for the four endings: the returned outcome object and each source\'s event sequence (queued > running > done | failed, found, kept)', async () => {
+  const cases: [string, Fixture, string][] = [
+    ['leads-found', base(), 'yielded'],
+    ['all-rejected', base({ hits: [{ url: B, title: pageB.title, snippet: QB, date: daysAgo(12) }], extraction: [candB] }), 'rejected'],
+    ['zero-match', base({ hits: [], tfPages: {}, own: {}, extraction: [] }), 'no_match'],
+    ['failed', base({ searchStatus: 503, extraction: [] }), 'failed'],
+  ]
+  for (const [name, f, cls] of cases) {
+    const r = await runFixture(f); const jobId = (r.db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id
+    const stored = storedOutcomeFor(r.db, 'A', jobId)!, ev = events(r, jobId)
+    console.log(`# ${name}: outcome ${JSON.stringify({ class: stored.class, label: stored.label, counts: stored.counts, reasons: stored.reasons, failed_sources: stored.failed_sources })}`)
+    for (const s of [...new Set(ev.map(e => e.source))]) console.log(`#   ${s}: ${seq(ev, s)}  [${ev.filter(e => e.source === s).map(e => e.status).join(',')}]`)
+    assert.equal(stored.class, cls, name); assert.ok(ev.length > 0 && ev.every((e, i) => e.seq === i + 1), `${name}: ordered events`)
+    for (const s of new Set(ev.map(e => e.source))) { const states = ev.filter(e => e.source === s).map(e => e.state); assert.ok(['queued', 'running', 'done', 'failed'].includes(states[states.length - 1]), `${name} ${s}: ends in a terminal state`); const firstTerminal = states.findIndex(x => x === 'done' || x === 'failed'); assert.ok(firstTerminal < 0 || states.slice(firstTerminal).every(x => x === 'done' || x === 'failed'), `${name} ${s}: once terminal, never queued / running again`) }
+  }
+})
+test('the TinyFish source is queued before it runs, and a successful one ends done with found and kept; a failed one ends failed', async () => {
+  const ok = await runFixture(base()); const okId = (ok.db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id; const okSeq = events(ok, okId).filter(e => e.source === 'search:tinyfish')
+  assert.deepEqual(okSeq.map(e => e.state).slice(0, 2), ['queued', 'running']); assert.deepEqual([okSeq.at(-1)!.state, okSeq.at(-1)!.found, okSeq.at(-1)!.kept], ['done', 2, 1])
+  const bad = await runFixture(base({ searchStatus: 503, extraction: [] })); const badId = (bad.db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id
+  assert.equal(events(bad, badId).filter(e => e.source === 'search:tinyfish').at(-1)!.state, 'failed')
+})

@@ -23,6 +23,7 @@ export interface ReportParts {
   dropCounts?: Record<string, number>
   model?: { requests_recorded: number; requests_with_reported_tokens: number; input_tokens: number | null; output_tokens: number | null; tokens_complete: boolean }
   observed?: { search: boolean; extraction: boolean; verification: boolean }
+  progress_events?: unknown[]   // the ordered per-source progress events of the run (source-runs.ts): queued / running / done / failed with found and kept counts
 }
 export const MAX_URLS = 120, MAX_CANDIDATES = 80, MAX_REPORT_CHARS = 120_000
 // Table-wide retention: a report older than this is deleted the next time any report is written (reports also go with their job via ON DELETE CASCADE).
@@ -58,6 +59,7 @@ export function buildRunReport(p: ReportParts, verified: FinalRow[] | null, revi
   return {
     v: 1, attempt, generated_at: new Date(now).toISOString(),
     observed,
+    progress_events: (p.progress_events ?? []).slice(0, 200),
     coverage: [
       'urls: TinyFish search hits only. News-adapter, public-adapter and provider-fallback candidates have no search-result URL entry.',
       'candidates: every candidate the verifier saw, plus login-wall and self-description holds. Candidates a model-search fallback returns are included once they reach the verifier.',

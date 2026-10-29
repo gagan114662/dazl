@@ -4,6 +4,7 @@ import type { Candidate } from './evidence.ts'
 import { writeSourceStats, type SourceStats } from '../search/trace.ts'
 import { buildRunReport, writeRunReport, type ReportParts } from './run-report.ts'
 import { writeModelCalls, type ModelCall } from './model-usage.ts'
+import { sourceStatusOf, stateOf, type SourceState } from './progress.ts'
 
 // Discovery-stage provenance, not URL-domain classification. Counters are per
 // collector and may overlap: one candidate can be credited to several collectors.
@@ -35,6 +36,8 @@ export function migrateSourceRuns(db: Database.Database): void {
 const evidenceKey = (c: Pick<Candidate, 'company' | 'name' | 'source_url'>) => `${dedupKey(c)}|${c.source_url}`
 
 type Run = { status: string; evidence: number | null; candidates: Set<string>; observed: boolean }
+// One step in a source's life during the run, for the UI to show live and the history to replay: queued -> running -> done | failed, with how many candidates it found and (once the checks ran) how many were kept.
+export interface ProgressEvent { seq: number; at: number; source: string; state: SourceState; status: string; found: number | null; kept: number | null }
 export class SourceRunLedger {
   private runs = new Map<string, Run>()
   private credits = new Map<string, Set<string>>()
@@ -75,12 +78,29 @@ export class SourceRunLedger {
         .run(l.jobId, l.attempt, collector, run.status, run.evidence, run.observed || run.evidence === 0 ? run.candidates.size : null)
     } catch { /* live progress never affects the scan */ }
   }
+  // PROGRESS EVENTS: every change of a source's state or candidate count is appended (identical consecutive events are not repeated) and handed to onEvent as it happens; the whole ordered list is stored
+  // in the run report. `kept` is known only once the checks have run (the final events written with the job).
+  readonly events: ProgressEvent[] = []
+  onEvent?: (e: ProgressEvent) => void
+  private emit(collector: string, kept: number | null = null): void {
+    const run = this.runs.get(collector); if (!run) return
+    const status = sourceStatusOf(run.status, true), state = stateOf(run.status, status)
+    const found = run.observed || run.evidence === 0 ? run.candidates.size : null
+    const last = [...this.events].reverse().find(e => e.source === collector)
+    if (last && last.state === state && last.status === (state === 'queued' ? 'queued' : status) && last.found === found && last.kept === kept) return
+    const e: ProgressEvent = { seq: this.events.length + 1, at: Date.now(), source: collector, state, status: state === 'queued' ? 'queued' : status, found, kept }
+    this.events.push(e)
+    try { this.onEvent?.(e) } catch { /* a listener never affects the scan */ }
+  }
+  // A source the run intends to ask, before it starts: the UI can list it as queued.
+  queue(collector: string): void { if (!this.runs.has(collector)) this.record(collector, 'queued') }
   has(collector: string): boolean { return this.runs.has(collector) }
   stats(collector: string, s: SourceStats): void { this.diag.set(collector, s) }
   record(collector: string, status: string, evidence: number | null = null): void {
     const old = this.runs.get(collector)
     this.runs.set(collector, { status, evidence, candidates: old?.candidates ?? new Set(), observed: old?.observed ?? false })
     this.persist(collector)
+    this.emit(collector)
   }
   candidates(collector: string, rows: Candidate[]): void {
     if (!this.runs.has(collector)) this.record(collector, 'ok')
@@ -92,6 +112,7 @@ export class SourceRunLedger {
       this.credits.get(key)!.add(collector)
     }
     this.persist(collector)
+    this.emit(collector)
   }
   // A selected adapter's ID comes from the call boundary, not the cited host.
   evidenceCandidates(items: { source: string; url: string }[], rows: Candidate[]): void {
@@ -113,6 +134,9 @@ export class SourceRunLedger {
       const count = (keys: Set<string>) => [...run.candidates].filter(k => keys.has(k)).length
       ins.run(jobId, attempt, collector, run.status === 'started' ? 'error' : run.status, run.evidence, run.observed || run.evidence === 0 ? run.candidates.size : null, verified && (run.observed || run.evidence === 0) ? count(verifiedKeys) : null, review && (run.observed || run.evidence === 0) ? count(reviewKeys) : null, [...run.candidates].filter(k => insertedKeys.has(k)).length)
     }
+    // Final events: the state each source ended in, with how many of its candidates were kept (verified).
+    for (const [collector, run] of this.runs) { if (run.status === 'started' || run.status === 'queued') run.status = run.status === 'started' ? 'error' : 'skipped_not_run'; this.emit(collector, verified && (run.observed || run.evidence === 0) ? [...run.candidates].filter(k => verifiedKeys.has(k)).length : null) }
+    this.parts = { ...this.parts, progress_events: this.events }
     for (const [collector, s] of this.diag) writeSourceStats(db, jobId, attempt, collector, s) // on unless DAZL_SOURCE_STATS=0; never throws
     this.flushModelCalls(db, jobId, attempt) // never throws; failed and retried attempts included
     this.parts = { ...this.parts, model: this.modelSummary() }
