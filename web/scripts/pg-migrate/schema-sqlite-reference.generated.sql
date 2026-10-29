@@ -183,6 +183,8 @@ CREATE TABLE inbound_messages (
       PRIMARY KEY (tenant_id, gmail_id)
     );
 
+CREATE TABLE inbox_thread_reads (tenant_id TEXT NOT NULL, thread_id TEXT NOT NULL, read_upto INTEGER NOT NULL, PRIMARY KEY (tenant_id, thread_id));
+
 CREATE TABLE lead_enrichments (
       id          TEXT PRIMARY KEY,
       lead_id     TEXT NOT NULL,
@@ -752,6 +754,8 @@ CREATE UNIQUE INDEX hiring_feed_crawl_company ON hiring_feed_crawl(tenant_id, co
 CREATE INDEX hiring_feed_crawl_job ON hiring_feed_crawl(tenant_id, job_id);
 
 CREATE INDEX idx_evidence_copies_tenant ON lead_evidence_copies(tenant_id, expires_at);
+
+CREATE INDEX inbound_messages_thread ON inbound_messages (tenant_id, thread_id, received_at);
 
 CREATE INDEX lead_enrichments_insert_seq_idx ON lead_enrichments (insert_seq);
 

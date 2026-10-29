@@ -1,0 +1,117 @@
+// Inbox list on the production build: one row per thread, filters, totals and "Show older" paging all come from the
+// server (lib/outreach/inbox.ts, #369). Every /api/* call is stubbed (throwaway database, server under
+// test/helpers/net-fence.ts; no Gmail, no email, no spend). NOT part of `npm test`.
+// Run:  cd web && npm run build && node test/ui/inbox.ui.mjs   (SHOTS=<dir> saves the screenshots)
+// Proves: the page asks the server for each filter and page (never one account-wide capped list); paging appends with no
+// duplicates and stops at the end; the filter totals are the server's; ?job_id&status=needs_owner (the Outcomes link)
+// scopes the list to that play; opening an unread thread marks it read once (POST) and the unread total drops by one.
+import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
+import { spawn } from 'node:child_process'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import assert from 'node:assert/strict'
+import path from 'node:path'
+const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+const require = createRequire(path.join(dir, 'package.json'))
+const notRun = reason => { console.log(`NOT RUN${process.env.SMOKE_ALLOW_SKIP === '1' ? ' (allowed by SMOKE_ALLOW_SKIP=1)' : ''}: ${reason}`); process.exit(process.env.SMOKE_ALLOW_SKIP === '1' ? 0 : 2) }
+let chromium
+try { ({ chromium } = require('playwright')) } catch (e) { notRun(e.message.split('\n')[0]) }
+if (!existsSync(path.join(dir, '.next/BUILD_ID'))) notRun('no production build (run npm run build first)')
+const Database = require('better-sqlite3'); const { createHash, randomBytes } = require('crypto')
+const tmp = mkdtempSync(path.join(tmpdir(), 'dazl-inbox-ui-')); const DB = path.join(tmp, 'app.db'); const db = new Database(DB)
+db.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT, business_name TEXT, sells TEXT, website TEXT, password_hash TEXT NOT NULL, salt TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch())); CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch()), expires_at INTEGER NOT NULL);`)
+db.prepare("INSERT INTO users (id,email,password_hash,salt) VALUES ('u1','s@example.test','x','y')").run()
+const token = randomBytes(32).toString('hex'); db.prepare('INSERT INTO sessions (id,user_id,expires_at) VALUES (?,?,?)').run(createHash('sha256').update(token).digest('hex'), 'u1', Math.floor(Date.now() / 1000) + 3600); db.close()
+const port = 3300 + Math.floor(Math.random() * 500); const base = `http://127.0.0.1:${port}`
+const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
+for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
+
+const now = Math.floor(Date.now() / 1000)
+const OLD = 'a'.repeat(24), BUSY = 'b'.repeat(24)
+// 120 newer threads in a busy play, then one older interested reply in another play.
+const THREADS = [
+  ...Array.from({ length: 120 }, (_, i) => ({ thread_id: `t${String(i).padStart(3, '0')}`, gmail_id: `g${i}`, lead_id: `l${i}`, job_id: BUSY, from_email: `p${i}@busy.example`, excerpt: `Busy reply ${i}`, classification: i % 3 === 0 ? 'negative' : 'positive', received_at: now - i * 60, replies: 1, company: `Busy ${i}`, lead_name: null, followups_sent: 0, stopped: null, unread: i % 2 === 0 })),
+  { thread_id: 'old', gmail_id: 'gold', lead_id: 'lold', job_id: OLD, from_email: 'ceo@older.example', excerpt: 'Yes - send details', classification: 'positive', received_at: now - 40 * 86400, replies: 2, company: 'Older Co', lead_name: 'Sam', followups_sent: 1, stopped: null, unread: true },
+].map(t => ({ ...t, needs_owner: ['positive', 'other'].includes(t.classification) && !t.stopped }))
+
+function serve(u, reads) {
+  const st = u.searchParams.get('status') ?? 'all', job = u.searchParams.get('job_id'), cursor = u.searchParams.get('cursor')
+  const limit = 50
+  const scoped = THREADS.map(t => ({ ...t, unread: t.unread && !reads.has(t.thread_id) })).filter(t => !job || t.job_id === job)
+  const rows = scoped.filter(t => st === 'all' || (st === 'needs_owner' ? t.needs_owner : t.unread)).sort((a, b) => b.received_at - a.received_at)
+  const start = cursor ? rows.findIndex(t => t.thread_id === cursor) + 1 : 0
+  const page = rows.slice(start, start + limit)
+  return {
+    available: true, consent_accepted: true, read_granted: true, account: 'me@x.example', booking_url: null,
+    threads: page, next_cursor: start + limit < rows.length ? page.at(-1).thread_id : null,
+    counts: { threads: scoped.length, needs_owner: scoped.filter(t => t.needs_owner).length, unread: scoped.filter(t => t.unread).length, unread_needs_owner: scoped.filter(t => t.unread && t.needs_owner).length },
+  }
+}
+
+const b = await chromium.launch()
+async function open(url, width = 1280, height = 900) {
+  const ctx = await b.newContext({ viewport: { width, height } })
+  await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
+  const reads = new Set(), calls = [], posts = []
+  await ctx.route('**/*', async route => {
+    const req = route.request(); const u = new URL(req.url()); const p = u.pathname
+    if (u.origin !== base) return route.abort()
+    if (!p.startsWith('/api/')) return route.continue()
+    const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+    if (p === '/api/outreach/inbox' && req.method() === 'POST') { const body = JSON.parse(req.postData() || '{}'); posts.push(body); reads.add(body.thread_id); return json({ ok: true }) }
+    if (p === '/api/outreach/inbox') {
+      if (u.searchParams.get('thread_id')) return json({ messages: [{ dir: 'in', kind: 'reply', subject: null, body: 'Yes - send details', at: now, classification: 'positive' }] })
+      calls.push(u.search); return json(serve(u, reads))
+    }
+    if (p === '/api/outreach/conversion') return json({ rows: [] })
+    return json({}, 404)
+  })
+  const page = await ctx.newPage()
+  await page.goto(base + url, { waitUntil: 'networkidle' })
+  return { ctx, page, calls, posts }
+}
+const shot = async (page, name) => { if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`), fullPage: true }) }
+const ids = async page => page.getByTestId('inbox-thread').evaluateAll(els => els.map(e => e.textContent))
+try {
+  {
+    const { ctx, page, calls } = await open('/app/inbox')
+    await page.getByTestId('inbox-filters').waitFor({ timeout: 15000 })
+    assert.match(await page.getByTestId('inbox-filter-all').textContent(), /All\s*121/)
+    assert.match(await page.getByTestId('inbox-filter-needs_owner').textContent(), /Needs you\s*81/)
+    assert.match(await page.getByTestId('inbox-filter-unread').textContent(), /Unread\s*61/)
+    assert.equal(await page.getByTestId('inbox-thread').count(), 50)
+    await page.getByTestId('inbox-more').click(); await page.waitForFunction(() => document.querySelectorAll('[data-testid=inbox-thread]').length === 100)
+    await page.getByTestId('inbox-more').click(); await page.waitForFunction(() => document.querySelectorAll('[data-testid=inbox-thread]').length === 121)
+    assert.equal(await page.getByTestId('inbox-more').count(), 0, 'no more pages at the end')
+    const rows = await ids(page)
+    assert.equal(new Set(rows).size, 121, 'no duplicates across pages')
+    assert.match(rows.at(-1), /Older Co/, 'the oldest conversation is reachable')
+    assert.ok(calls.every(c => /status=all/.test(c)) && calls.length === 3, 'each page is its own server call')
+    await page.getByTestId('inbox-filter-needs_owner').click(); await page.waitForFunction(() => document.querySelectorAll('[data-testid=inbox-thread]').length === 50)
+    assert.ok(calls.at(-1).includes('status=needs_owner'))
+    await shot(page, 'inbox-desktop')
+    await ctx.close()
+  }
+  {
+    // The Outcomes link: this play only, needing the owner. The older conversation is the first row, not hidden behind 120 newer ones.
+    const { ctx, page, posts } = await open(`/app/inbox?status=needs_owner&job_id=${OLD}`, 390, 844)
+    await page.getByTestId('inbox-filters').waitFor({ timeout: 15000 })
+    const rows = await ids(page)
+    assert.equal(rows.length, 1); assert.match(rows[0], /Older Co/); assert.match(rows[0], /2 replies/)
+    assert.match(await page.getByTestId('inbox-filters').textContent(), /This play only/)
+    assert.match(await page.getByTestId('inbox-filter-unread').textContent(), /Unread\s*1/)
+    await page.getByRole('button', { name: 'View thread' }).click()
+    await page.waitForFunction(() => /Unread\s*0/.test(document.querySelector('[data-testid=inbox-filter-unread]')?.textContent ?? ''))
+    assert.deepEqual(posts, [{ thread_id: 'old', action: 'read' }])
+    await page.getByRole('button', { name: 'Hide thread' }).click(); await page.getByRole('button', { name: 'View thread' }).click()
+    assert.equal(posts.length, 1, 'a read thread is not marked again')
+    const scrollW = await page.evaluate(() => document.documentElement.scrollWidth)
+    assert.ok(scrollW <= 390, `no horizontal scroll at 390px (${scrollW})`)
+    await shot(page, 'inbox-play-mobile')
+    await ctx.close()
+  }
+  console.log('inbox UI check passed: server-side filters and totals, paging to the end with no duplicates, play-scoped Outcomes link finds the older conversation, opening marks read once')
+} finally {
+  await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
+}
