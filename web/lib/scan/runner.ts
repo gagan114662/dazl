@@ -635,14 +635,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   // A request that needs an event beyond hiring (seed funding, an opening) is not answered by job postings alone: within each window class
   // the pages that can carry the event come before job-board / careers pages, which only corroborate the hiring half. Nothing is excluded.
   const eventBeyondHiring = needsEventBeyondHiring(icp.signals, job.query ?? '')
-  const fetchRank = (u: string): number => {
-    if (isLoginWalled(u)) return 8
-    const st = windowStatus(hitByUrl.get(u)?.date ?? null, icp.window_days ?? 365, new Date())
-    const cls = st === 'inside' ? 0 : st === 'undated' ? 1 : 2
-    // Compound request: non-job inside / undated, then job-page inside / undated, then outside-window pages (which can never pass the window gate).
-    if (eventBeyondHiring && isJobPage(u)) return cls === 2 ? 5 : 2 + cls
-    return cls === 2 ? 4 : cls
-  }
+  const fetchRank = fetchRankFor(hitByUrl, icp.window_days ?? 365, eventBeyondHiring)
   const urls = pickFetchUrls(hits.map(h => h.url), tfLimits().fetchesPerScan, fetchRank) // exact duplicates removed, breadth first by host, nothing excluded
   const f = await tfFetchMany(db, job.user_id, urls, spent, diag ? { trace: diag.trace } : {})
   if (diag?.tfTextUrls && f.ok) diag.tfTextUrls.push(...f.pages.map(p => p.url)) // verify_provenance: pages TinyFish had text for
@@ -665,6 +658,18 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
 // are labels, not quotable text, so the article pages are fetched with the verifier's own cached fetcher and the model
 // quotes from that page text: the verifier then checks the same text it was quoted from.
 export const NEWS_PAGES = 8
+// Which result URLs get the scarce fetch slots, as a rank (lower first): dated inside the window, then undated, then dated outside it (can never pass), login-walled last; for a compound request
+// (an event beyond hiring) the job-board / careers pages sit behind the pages that can carry the event. Among equal ranks the caller keeps search order, breadth first by host: there is NO relevance signal.
+export function fetchRankFor(hitByUrl: Map<string, { date: string | null }>, windowDays: number, eventBeyondHiring: boolean, now = new Date()): (u: string) => number {
+  return (u: string): number => {
+    if (isLoginWalled(u)) return 8
+    const st = windowStatus(hitByUrl.get(u)?.date ?? null, windowDays, now)
+    const cls = st === 'inside' ? 0 : st === 'undated' ? 1 : 2
+    // Compound request: non-job inside / undated, then job-page inside / undated, then outside-window pages (which can never pass the window gate).
+    if (eventBeyondHiring && isJobPage(u)) return cls === 2 ? 5 : 2 + cls
+    return cls === 2 ? 4 : cls
+  }
+}
 // The ledger status of the news fallback, from its OWN request outcomes. 'empty' needs a completed search with every request answered and zero hits; request failures are
 // kept apart from the hits array: all failed = 'error' (a failed source), some failed with no hits = 'error_partial:<failed>_of_<attempted>' (failed and named), and hits with no
 // usable page evidence or no query to run stay 'unavailable' (unknown).
