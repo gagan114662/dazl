@@ -7,6 +7,7 @@ import { validateEmail } from '@/lib/validate'
 import { createInvitation, listInvitations, revokeInvitation } from '@/lib/workspace-members'
 import { isRole } from '@/lib/workspaces'
 import { denied, isId, memberFail, stale } from '@/lib/workspace-access'
+import { requestIdOf } from '@/lib/ops/request-log'
 
 // Pending invitations (email, role, expiry). Never a token.
 export async function GET() {
@@ -30,7 +31,7 @@ export async function POST(req: NextRequest) {
   if (!email) return NextResponse.json({ error: 'Enter a valid email address' }, { status: 400 })
   if (!isRole(body?.role)) return NextResponse.json({ error: 'Pick a role' }, { status: 400 })
   try {
-    const inv = await createInvitation(await getDb(), user, email, body.role)
+    const inv = await createInvitation(await getDb(), { ...user, correlationId: requestIdOf(req) }, email, body.role)
     const base = process.env.PUBLIC_BASE_URL || req.nextUrl.origin
     return NextResponse.json({ id: inv.id, expires_at: inv.expires_at, link: `${base}/app/join#t=${inv.token}` })
   } catch (e) { return memberFail(e) }
@@ -45,7 +46,7 @@ export async function DELETE(req: NextRequest) {
   const body = await req.json().catch(() => null)
   if (!isId(body?.id)) return NextResponse.json({ error: 'not_found' }, { status: 404 })
   try {
-    await revokeInvitation(await getDb(), user, body.id)
+    await revokeInvitation(await getDb(), { ...user, correlationId: requestIdOf(req) }, body.id)
     return NextResponse.json({ ok: true })
   } catch (e) { return memberFail(e) }
 }

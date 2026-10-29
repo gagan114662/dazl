@@ -9,6 +9,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import type { Db, Tx, TxBody } from './db/client.ts'
 import { revokeAllSessionsTx } from './sessions.ts'
 import { sendSystemMail } from './system-mail.ts'
+import { recordTx } from './audit.ts'
 
 // SQLite: migrateAuth (lib/auth-db.ts); PG: 0018_email_ownership.sql.
 export const EMAIL_TOKENS_DDL = `
@@ -92,6 +93,7 @@ export async function verifyEmail(db: Db, token: unknown, now = nowS()): Promise
       }
       if (yield* t.get('SELECT 1 AS x FROM users WHERE email = ? AND id <> ?', [row.email, row.user_id])) return false
       const r = yield* t.run('UPDATE users SET email = ?, email_verified_at = ? WHERE id = ?', [row.email, now, row.user_id])
+      if (r.changes === 1) yield* recordTx(t, { tenantId: row.user_id, actorId: row.user_id, action: 'account.email_changed', resourceType: 'account', resourceId: row.user_id, summary: { to: row.email } }, now)
       return r.changes === 1
     })
   } catch { return false } // a concurrent sign-up took the new address: the unique email refused the change, nothing changed
@@ -142,6 +144,7 @@ export async function resetPassword(db: Db, token: unknown, next: { password_has
       [next.password_hash, next.salt, now, row.user_id, row.email])
     if (r.changes !== 1) return false
     yield* t.run("UPDATE email_tokens SET used_at = ? WHERE user_id = ? AND purpose = 'reset' AND used_at IS NULL", [now, row.user_id])
+    yield* recordTx(t, { tenantId: row.user_id, actorId: row.user_id, action: 'account.password_reset', resourceType: 'account', resourceId: row.user_id }, now)
     yield* revokeAllSessionsTx(t, row.user_id, { by: row.user_id, reason: 'recovery', now })
     return true
   })

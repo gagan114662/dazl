@@ -7,6 +7,8 @@ import { markSessionFresh } from '@/lib/auth-db'
 import { sameOriginJson } from '@/lib/same-origin'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { FRESH_AUTH_S } from '@/lib/sessions'
+import { record } from '@/lib/audit'
+import { requestIdOf } from '@/lib/ops/request-log'
 
 // Whether this session may change secrets, billing and members right now, until when, and how it re-authenticates:
 // 'password', or 'google' (sign in with Google again: /api/auth/google?reauth=1).
@@ -28,12 +30,14 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   const password = typeof body?.password === 'string' ? body.password : ''
   const row = await (await getDb()).get<{ password_hash: string; salt: string }>('SELECT password_hash, salt FROM users WHERE id = ?', [user.actorId])
-  const fail = () => NextResponse.json({ error: 'That password is not right' }, { status: 401 })
+  const event = { tenantId: user.actorId, actorId: user.actorId, correlationId: requestIdOf(req), action: 'session.reauthenticated', resourceType: 'account', resourceId: user.actorId }
+  const fail = async () => { await record(await getDb(), { ...event, decision: 'denied', summary: { reason: 'wrong_password' } }); return NextResponse.json({ error: 'That password is not right' }, { status: 401 }) }
   if (!row || !password || password.length > 200) return fail()
   const computed = scryptSync(password, row.salt, 64), stored = Buffer.from(row.password_hash, 'hex')
   if (stored.length !== computed.length || !timingSafeEqual(computed, stored)) return fail()
   const token = (await cookies()).get('dazl_session')?.value
   if (!token) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   await markSessionFresh(token)
+  await record(await getDb(), { ...event, summary: { method: 'password' } })
   return NextResponse.json({ ok: true, fresh_until: Math.floor(Date.now() / 1000) + FRESH_AUTH_S })
 }

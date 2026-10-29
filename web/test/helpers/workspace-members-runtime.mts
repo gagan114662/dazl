@@ -22,6 +22,7 @@ const members = await import('../../app/api/workspace/members/route.ts')
 const invitations = await import('../../app/api/workspace/invitations/route.ts')
 const accept = await import('../../app/api/workspace/invitations/accept/route.ts')
 const sw = await import('../../app/api/workspace/switch/route.ts')
+const audit = await import('../../app/api/workspace/audit/route.ts')
 
 const req = (path: string, method: string, body?: unknown) => new NextRequest(`http://localhost${path}`, {
   method, headers: { 'content-type': 'application/json', host: 'localhost', origin: 'http://localhost' }, body: body === undefined ? undefined : JSON.stringify(body) })
@@ -70,7 +71,8 @@ test('invite, join and switch through the routes; nothing of workspace A is reac
   assert.deepEqual(ws.body.current, { tenant_id: 'A', role: 'operator' })
   assert.deepEqual((ws.body.workspaces as { tenant_id: string }[]).map(w => w.tenant_id), ['C', 'A'])
   assert.equal((await call(tc, () => accept.POST(req('/api/workspace/invitations/accept', 'POST', { token })))).status, 410)
-  // an operator cannot manage members
+  // an operator cannot manage members, nor read the audit trail
+  assert.equal((await call(tc, () => audit.GET(req('/api/workspace/audit', 'GET')))).status, 403)
   assert.equal((await call(tc, () => members.PATCH(req('/api/workspace/members', 'PATCH', { member_id: 'A', role: 'viewer' })))).status, 403)
   // C switches back to their own workspace, and A removes C: C's session in C is untouched
   assert.equal((await call(tc, () => sw.POST(req('/api/workspace/switch', 'POST', { tenant_id: 'C' })))).status, 200)
@@ -78,5 +80,19 @@ test('invite, join and switch through the routes; nothing of workspace A is reac
   assert.deepEqual((await call(tc, () => workspace.GET())).body.current, { tenant_id: 'C', role: 'owner' })
   // the last owner cannot demote themselves
   assert.deepEqual(await call(ta, () => members.PATCH(req('/api/workspace/members', 'PATCH', { member_id: 'A', role: 'admin' }))), { status: 409, body: { error: 'last_owner' } })
+  // 'GET /api/workspace/audit': A's owner sees A's trail (CSV too, with no token in it); B, naming A, sees only B's
+  const trail = async (t: string, q = '') => (await call(t, () => audit.GET(req(`/api/workspace/audit${q}`, 'GET')))).body
+  const aEvents = (await trail(ta)).events as { action: string; actor_id: string }[]
+  assert.ok(aEvents.some(e => e.action === 'invitation.accepted' && e.actor_id === 'C'))
+  assert.ok(aEvents.some(e => e.action === 'member.removed'))
+  assert.ok(aEvents.some(e => e.action === 'member.role_changed'), 'the refused demotion is recorded too')
+  const bEvents = (await trail(tb, '?tenant_id=A&actor=A')).events as unknown[]
+  assert.deepEqual(bEvents, [], "B's search never reaches A's trail")
+  const csv = await withJar(new Map([['dazl_session', ta]]), () => audit.GET(req('/api/workspace/audit?format=csv', 'GET')))
+  const text = await csv.text()
+  assert.match(csv.headers.get('content-type') ?? '', /text\/csv/)
+  assert.match(text, /^at,actor_id,actor_kind,action/)
+  assert.ok(!text.includes(token), 'no invitation token in the export')
+  assert.equal((await call(tc, () => audit.GET(req('/api/workspace/audit', 'GET')))).status, 200, "C's own workspace, where C is owner")
   console.log('WORKSPACE MEMBERS ok')
 })

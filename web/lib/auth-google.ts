@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3'
 import type { Db, TxBody } from './db/client.ts'
 import { createPersonalWorkspace } from './workspaces.ts'
 import { VERIFIED_BACKFILL_SQL } from './email-ownership.ts'
+import { recordTx } from './audit.ts'
 
 // Sign in with Google: authorization code + PKCE + state + nonce, identity only
 // (openid email profile). The ID token is checked here before anyone is signed in.
@@ -189,6 +190,7 @@ export async function linkGoogle(db: Db, userId: string, id: GoogleIdentity): Pr
     if (!u || u.email !== id.email) return 'mismatch'
     if (u.v === null) return 'unverified'
     yield* t.run("INSERT INTO oauth_identities (provider, subject, user_id) VALUES ('google', ?, ?)", [id.sub, userId])
+    yield* recordTx(t, { tenantId: userId, actorId: userId, action: 'account.google_linked', resourceType: 'account', resourceId: userId })
     return 'linked'
   })
 }

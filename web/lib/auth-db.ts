@@ -8,6 +8,7 @@ import type { Role } from './workspaces.ts'
 import { INVITATIONS_DDL } from './workspace-members.ts'
 import { EMAIL_TOKENS_DDL } from './email-ownership.ts'
 import { OUTBOX_DDL } from './system-mail.ts'
+import { AUDIT_DDL } from './audit.ts'
 import { SEEN_EVERY_S, SESSION_COLUMNS, SESSION_INDEXES, newPublicId } from './sessions.ts'
 
 let db: Database.Database | null = null
@@ -56,6 +57,8 @@ export function migrateAuth(d: Database.Database): void {
   try { d.exec('ALTER TABLE users ADD COLUMN email_verified_at INTEGER') } catch { /* exists */ }
   d.exec(EMAIL_TOKENS_DDL)
   d.exec(OUTBOX_DDL)
+  // Durable audit trail (lib/audit.ts). PG: 0019_audit_events.sql.
+  d.exec(AUDIT_DDL)
   d.exec(WORKSPACE_DDL)
   d.exec(INVITATIONS_DDL)
   d.transaction(() => { for (const s of BACKFILL_SQL) d.prepare(s).run() })()

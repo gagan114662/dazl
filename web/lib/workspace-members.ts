@@ -4,6 +4,8 @@
 import { createHash, randomBytes } from 'node:crypto'
 import type { Db, Tx, TxBody } from './db/client.ts'
 import { can, isRole } from './workspaces.ts'
+import { record, recordTx } from './audit.ts'
+import type { AuditEvent } from './audit.ts'
 import type { Role } from './workspaces.ts'
 
 // SQLite: migrateAuth (lib/auth-db.ts); PG: 0015_invitations.sql. Only the token's SHA-256 is stored; the token itself
@@ -40,8 +42,20 @@ export const MEMBER_ERROR_STATUS: Record<MemberError['code'], number> = {
   forbidden: 403, not_found: 404, last_owner: 409, already_member: 409, too_many_invites: 429, invalid_invite: 410, wrong_account: 403, email_unverified: 403,
 }
 
-// The acting member: who, in which workspace, as what (from getSessionUser, never from the request).
-export type Acting = { actorId: string; tenantId: string; role: Role }
+// The acting member: who, in which workspace, as what (from getSessionUser, never from the request), and the request
+// id it acts under (recorded with its audit events).
+export type Acting = { actorId: string; tenantId: string; role: Role; correlationId?: string | null }
+
+// Runs a member change; a refusal by policy (forbidden, last owner) is itself recorded, as a denied event, after its
+// transaction rolled back. The allowed event is recorded inside the change's own transaction.
+type Audit = Omit<AuditEvent, 'tenantId' | 'actorId' | 'correlationId' | 'decision'>
+const ev = (by: Acting, a: Audit): AuditEvent => ({ ...a, tenantId: by.tenantId, actorId: by.actorId, correlationId: by.correlationId })
+async function audited<T>(db: Db, by: Acting, a: Audit, run: () => Promise<T>): Promise<T> {
+  try { return await run() } catch (e) {
+    if (e instanceof MemberError && (e.code === 'forbidden' || e.code === 'last_owner')) await record(db, { ...ev(by, a), decision: 'denied', summary: { ...a.summary, reason: e.code } }).catch(() => {})
+    throw e
+  }
+}
 
 // Serializes member and invitation changes per workspace: PG holds this row lock until commit; SQLite transactions are
 // already serialized (IMMEDIATE). Every write takes it first (the one lock order), then reads the acting member's current
@@ -87,52 +101,59 @@ export async function listWorkspaces(db: Db, actorId: string) {
 }
 
 export async function changeRole(db: Db, by: Acting, memberId: string, role: Role): Promise<void> {
-  await db.tx(function* (t) {
+  await audited(db, by, { action: 'member.role_changed', resourceType: 'member', resourceId: memberId, summary: { to: role } }, () => db.tx(function* (t) {
     const me = yield* actingRole(t, by)
     const current = yield* roleOf(t, by.tenantId, memberId)
     if (!current) throw new MemberError('not_found')
     if (!mayManage(me, current, role)) throw new MemberError('forbidden')
     if (current === 'owner' && role !== 'owner' && (yield* owners(t, by.tenantId)) <= 1) throw new MemberError('last_owner')
     yield* t.run('UPDATE memberships SET role = ? WHERE tenant_id = ? AND member_id = ?', [role, by.tenantId, memberId])
-  })
+    yield* recordTx(t, ev(by, { action: 'member.role_changed', resourceType: 'member', resourceId: memberId, summary: { from: current, to: role } }))
+  }))
 }
 
 // Removing someone else; leaving is leave(). Access ends on the member's next request: getSessionUser reads the row.
 export async function removeMember(db: Db, by: Acting, memberId: string): Promise<void> {
   if (memberId === by.actorId) throw new MemberError('forbidden')
-  await db.tx(function* (t) {
+  await audited(db, by, { action: 'member.removed', resourceType: 'member', resourceId: memberId }, () => db.tx(function* (t) {
     const me = yield* actingRole(t, by)
     const current = yield* roleOf(t, by.tenantId, memberId)
     if (!current) throw new MemberError('not_found')
     if (!mayManage(me, current, null)) throw new MemberError('forbidden')
     if (current === 'owner' && (yield* owners(t, by.tenantId)) <= 1) throw new MemberError('last_owner')
     yield* t.run('DELETE FROM memberships WHERE tenant_id = ? AND member_id = ?', [by.tenantId, memberId])
-  })
+    yield* recordTx(t, ev(by, { action: 'member.removed', resourceType: 'member', resourceId: memberId, summary: { role: current } }))
+  }))
 }
 
 export async function leave(db: Db, by: Acting): Promise<void> {
-  await db.tx(function* (t) {
+  await audited(db, by, { action: 'member.left', resourceType: 'member', resourceId: by.actorId }, () => db.tx(function* (t) {
     yield* lockWorkspace(t, by.tenantId)
     const current = yield* roleOf(t, by.tenantId, by.actorId)
     if (!current) throw new MemberError('not_found')
     if (current === 'owner' && (yield* owners(t, by.tenantId)) <= 1) throw new MemberError('last_owner')
     yield* t.run('DELETE FROM memberships WHERE tenant_id = ? AND member_id = ?', [by.tenantId, by.actorId])
-  })
+    yield* recordTx(t, ev(by, { action: 'member.left', resourceType: 'member', resourceId: by.actorId, summary: { role: current } }))
+  }))
 }
 
 // A new invitation for `email` (lowercased by the caller's validateEmail). A pending invitation for the same email is
 // replaced, so only the newest link works. Returns the raw token once; only its hash is stored.
 export async function createInvitation(db: Db, by: Acting, email: string, role: Role, now = nowS()): Promise<{ id: string; token: string; expires_at: number }> {
-  if (!mayManage(by.role, null, role)) throw new MemberError('forbidden') // fast refusal; re-checked under the lock
   const token = randomBytes(32).toString('hex'), id = randomBytes(12).toString('hex')
-  await db.tx(function* (t) {
-    if (!mayManage(yield* actingRole(t, by), null, role)) throw new MemberError('forbidden')
-    if (yield* t.get('SELECT 1 AS x FROM memberships m JOIN users u ON u.id = m.member_id WHERE m.tenant_id = ? AND lower(u.email) = ?', [by.tenantId, email])) throw new MemberError('already_member')
-    yield* t.run('UPDATE invitations SET revoked_at = ? WHERE tenant_id = ? AND email = ? AND accepted_at IS NULL AND revoked_at IS NULL', [now, by.tenantId, email])
-    const pending = Number((yield* t.get<{ n: number }>('SELECT count(*) AS n FROM invitations WHERE tenant_id = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?', [by.tenantId, now]))?.n ?? 0)
-    if (pending >= MAX_PENDING_INVITES) throw new MemberError('too_many_invites')
-    yield* t.run('INSERT INTO invitations (id, tenant_id, email, role, token_hash, invited_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [id, by.tenantId, email, role, sha256(token), by.actorId, now, now + INVITE_TTL_S])
+  const event: Audit = { action: 'invitation.created', resourceType: 'invitation', resourceId: id, summary: { email, role } }
+  await audited(db, by, event, async () => {
+    if (!mayManage(by.role, null, role)) throw new MemberError('forbidden') // fast refusal; re-checked under the lock
+    await db.tx(function* (t) {
+      if (!mayManage(yield* actingRole(t, by), null, role)) throw new MemberError('forbidden')
+      if (yield* t.get('SELECT 1 AS x FROM memberships m JOIN users u ON u.id = m.member_id WHERE m.tenant_id = ? AND lower(u.email) = ?', [by.tenantId, email])) throw new MemberError('already_member')
+      yield* t.run('UPDATE invitations SET revoked_at = ? WHERE tenant_id = ? AND email = ? AND accepted_at IS NULL AND revoked_at IS NULL', [now, by.tenantId, email])
+      const pending = Number((yield* t.get<{ n: number }>('SELECT count(*) AS n FROM invitations WHERE tenant_id = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?', [by.tenantId, now]))?.n ?? 0)
+      if (pending >= MAX_PENDING_INVITES) throw new MemberError('too_many_invites')
+      yield* t.run('INSERT INTO invitations (id, tenant_id, email, role, token_hash, invited_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [id, by.tenantId, email, role, sha256(token), by.actorId, now, now + INVITE_TTL_S])
+      yield* recordTx(t, ev(by, event), now)
+    })
   })
   return { id, token, expires_at: now + INVITE_TTL_S }
 }
@@ -145,13 +166,14 @@ export async function listInvitations(db: Db, tenantId: string, now = nowS()) {
 }
 
 export async function revokeInvitation(db: Db, by: Acting, id: string, now = nowS()): Promise<void> {
-  await db.tx(function* (t) {
+  await audited(db, by, { action: 'invitation.revoked', resourceType: 'invitation', resourceId: id }, () => db.tx(function* (t) {
     const me = yield* actingRole(t, by)
     const inv = yield* t.get<{ role: string }>('SELECT role FROM invitations WHERE id = ? AND tenant_id = ? AND accepted_at IS NULL AND revoked_at IS NULL', [id, by.tenantId])
     if (!inv || !isRole(inv.role)) throw new MemberError('not_found')
     if (!mayManage(me, null, inv.role)) throw new MemberError('forbidden')
     yield* t.run('UPDATE invitations SET revoked_at = ? WHERE id = ? AND tenant_id = ?', [now, id, by.tenantId])
-  })
+    yield* recordTx(t, ev(by, { action: 'invitation.revoked', resourceType: 'invitation', resourceId: id, summary: { role: inv.role } }), now)
+  }))
 }
 
 // Accepting: the signed-in account must hold the link (the token) and be the account it was sent to (its email, which
@@ -159,7 +181,7 @@ export async function revokeInvitation(db: Db, by: Acting, id: string, now = now
 // token is used up in the same transaction that adds the membership, so a replay, an expired or a revoked link adds
 // nothing. Unknown, used, revoked and expired links all answer the same 'invalid_invite'. An account already in the
 // workspace keeps its role.
-export async function acceptInvitation(db: Db, actor: { actorId: string; email: string }, token: string, now = nowS()): Promise<{ tenantId: string; role: Role }> {
+export async function acceptInvitation(db: Db, actor: { actorId: string; email: string; correlationId?: string | null }, token: string, now = nowS()): Promise<{ tenantId: string; role: Role }> {
   if (!isInviteToken(token)) throw new MemberError('invalid_invite')
   return db.tx(function* (t) {
     const inv = yield* t.get<{ id: string; tenant_id: string; email: string; role: string; invited_by: string }>(
@@ -176,6 +198,7 @@ export async function acceptInvitation(db: Db, actor: { actorId: string; email: 
     yield* t.run('INSERT INTO memberships (tenant_id, member_id, role, created_at, added_by) VALUES (?, ?, ?, ?, ?) ON CONFLICT (tenant_id, member_id) DO NOTHING',
       [inv.tenant_id, actor.actorId, inv.role, now, inv.invited_by])
     const role = yield* roleOf(t, inv.tenant_id, actor.actorId)
+    yield* recordTx(t, { tenantId: inv.tenant_id, actorId: actor.actorId, correlationId: actor.correlationId, action: 'invitation.accepted', resourceType: 'invitation', resourceId: inv.id, summary: { role: role ?? inv.role, invited_by: inv.invited_by } }, now)
     return { tenantId: inv.tenant_id, role: role ?? inv.role }
   })
 }

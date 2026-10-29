@@ -102,7 +102,9 @@ Updated by the builder on every branch. Newest first.
   increment 2 (fresh authentication for secrets, billing and member changes) in review;
   #357 increment 1 (email verification, password reset that signs out everywhere, verified email to join a
   workspace; docs/design/email-ownership.md) and increment 2
-  (change email, explicit Google linking) in review; next: #371.
+  (change email, explicit Google linking) in review;
+  #371 increment 1 (append-only audit trail: member, session and recovery events, scoped search/export, retention;
+  docs/design/audit.md) in review; next: credential, billing, send, CRM, export and deletion events.
 
 ## Next (in order, for the scheduled builder; nothing business- or place-specific)
 

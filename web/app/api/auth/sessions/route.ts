@@ -6,6 +6,7 @@ import { hashToken } from '@/lib/auth-db'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { listSessions, revokeSession } from '@/lib/sessions'
+import { requestIdOf } from '@/lib/ops/request-log'
 
 const currentHash = async () => { const t = (await cookies()).get('dazl_session')?.value; return t ? hashToken(t) : null }
 
@@ -24,6 +25,6 @@ export async function DELETE(req: NextRequest) {
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   if (!(await rateLimit(`sessions:${user.actorId}`, 30, 60 * 60 * 1000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   const body = await req.json().catch(() => null)
-  const ok = await revokeSession(await getDb(), user.actorId, body?.id, user.actorId)
+  const ok = await revokeSession(await getDb(), user.actorId, body?.id, user.actorId, 'revoked', undefined, requestIdOf(req))
   return ok ? NextResponse.json({ ok: true }) : NextResponse.json({ error: 'not_found' }, { status: 404 })
 }

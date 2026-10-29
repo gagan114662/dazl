@@ -4,6 +4,7 @@
 // every instance, because the check is that row in the shared store.
 import { randomBytes } from 'node:crypto'
 import type { Db, Tx, TxBody } from './db/client.ts'
+import { recordTx } from './audit.ts'
 
 export const SESSION_COLUMNS = [
   'ALTER TABLE sessions ADD COLUMN public_id TEXT',
@@ -50,22 +51,29 @@ export async function listSessions(db: Db, userId: string, currentHash: string |
   return rows.map(r => ({ public_id: r.public_id, created_at: Number(r.created_at), last_seen_at: r.last_seen_at === null ? null : Number(r.last_seen_at), device: r.device || 'Unknown device', current: r.id === currentHash }))
 }
 
-// One of the account's own sessions, by its public id. false: no such working session of this account.
-export async function revokeSession(db: Db, userId: string, publicId: string, by: string, reason: RevokeReason = 'revoked', now = nowS()): Promise<boolean> {
+// One of the account's own sessions, by its public id. false: no such working session of this account. Account events
+// are recorded in the account's personal workspace (its id is the user id).
+export async function revokeSession(db: Db, userId: string, publicId: string, by: string, reason: RevokeReason = 'revoked', now = nowS(), correlationId?: string | null): Promise<boolean> {
   if (!isPublicId(publicId)) return false
-  const r = await db.run('UPDATE sessions SET revoked_at = ?, revoked_by = ?, revoke_reason = ? WHERE public_id = ? AND user_id = ? AND revoked_at IS NULL',
-    [now, by, reason, publicId, userId])
-  return r.changes === 1
+  return db.tx(function* (t) {
+    const r = yield* t.run('UPDATE sessions SET revoked_at = ?, revoked_by = ?, revoke_reason = ? WHERE public_id = ? AND user_id = ? AND revoked_at IS NULL',
+      [now, by, reason, publicId, userId])
+    if (r.changes !== 1) return false
+    yield* recordTx(t, { tenantId: userId, actorId: by, correlationId, action: 'session.revoked', resourceType: 'session', resourceId: publicId, summary: { reason } }, now)
+    return true
+  })
 }
 
 // Every working session of the account, except `keepHash` when given (sign out everywhere else). Also the step
 // account recovery and offboarding take (#357). Returns how many were revoked.
-export function* revokeAllSessionsTx(t: Tx, userId: string, o: { by: string; reason: RevokeReason; keepHash?: string | null; now?: number }): TxBody<number> {
+export function* revokeAllSessionsTx(t: Tx, userId: string, o: { by: string; reason: RevokeReason; keepHash?: string | null; now?: number; correlationId?: string | null }): TxBody<number> {
+  const now = o.now ?? nowS()
   const r = yield* t.run('UPDATE sessions SET revoked_at = ?, revoked_by = ?, revoke_reason = ? WHERE user_id = ? AND revoked_at IS NULL AND id <> ?',
-    [o.now ?? nowS(), o.by, o.reason, userId, o.keepHash ?? ''])
+    [now, o.by, o.reason, userId, o.keepHash ?? ''])
+  yield* recordTx(t, { tenantId: userId, actorId: o.by, correlationId: o.correlationId, action: 'session.revoked_all', resourceType: 'account', resourceId: userId, summary: { reason: o.reason, revoked: r.changes, kept_current: !!o.keepHash } }, now)
   return r.changes
 }
-export function revokeAllSessions(db: Db, userId: string, o: { by: string; reason: RevokeReason; keepHash?: string | null; now?: number }): Promise<number> {
+export function revokeAllSessions(db: Db, userId: string, o: { by: string; reason: RevokeReason; keepHash?: string | null; now?: number; correlationId?: string | null }): Promise<number> {
   return db.tx(t => revokeAllSessionsTx(t, userId, o))
 }
 

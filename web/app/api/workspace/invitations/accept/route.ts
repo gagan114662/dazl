@@ -7,6 +7,7 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { acceptInvitation, switchWorkspace } from '@/lib/workspace-members'
 import { memberFail } from '@/lib/workspace-access'
+import { requestIdOf } from '@/lib/ops/request-log'
 
 // Accept an invitation as the signed-in account, then act in that workspace. The account's email must be the one
 // invited; an unknown, used, revoked or expired link answers the same 410.
@@ -18,7 +19,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   try {
     const db = await getDb()
-    const m = await acceptInvitation(db, user, body?.token)
+    const m = await acceptInvitation(db, { ...user, correlationId: requestIdOf(req) }, body?.token)
     const token = (await cookies()).get('dazl_session')?.value
     if (token) await switchWorkspace(db, hashToken(token), user.actorId, m.tenantId)
     return NextResponse.json({ ok: true, tenant_id: m.tenantId, role: m.role })
