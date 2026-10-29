@@ -148,3 +148,37 @@ test('#349 HOLD caller paths: a progressive-form offer cannot draft, rewrite, fo
     assert.doesNotMatch(offerBlockFor(db, 'A', 'dental'), /CRM/)
   } finally { db.close() }
 })
+
+// Instinct's HOLD on #433 at 611d2aa: the target/exclusion check matched by prefix, so ordinary offers that start with a
+// preposition's letters ("insurance", "inbound", "inventory", "forecasting", "attribution") were silently dropped and
+// the recorded dental offer stayed active. Whole words only.
+const PREFIX_OFFERS = [['We sell insurance.', 'insurance'], ['We offer inbound marketing.', 'inbound marketing'], ['We provide inventory management.', 'inventory management'],
+  ['We sell forecasting software.', 'forecasting software'], ['We offer attribution software.', 'attribution software'], ['We sell no-code automation.', 'no-code automation'],
+  ['We offer in-house training.', 'in-house training'], ['We sell totes.', 'totes'], ['We sell notary services.', 'notary services'], ['We sell exclusive concierge travel.', 'exclusive concierge travel']] as const
+test('#349 HOLD-3 offers that begin with a preposition\'s letters are offers; whole-word targets and exclusions are not', () => {
+  for (const [t, o] of PREFIX_OFFERS) {
+    assert.equal(statedOffer(t), o, t)
+    assert.deepEqual(effectiveOffer({ seller: 'Dental reminders', query: t }, ''), { offer: null, source: 'conflict', conflict: { stated: o, recorded: 'Dental reminders' } }, t)
+  }
+  for (const t of ['We sell to dental practices.', 'We sell for agencies.', 'We sell into hospitals.', 'We sell in Toronto.', 'We sell at trade shows.', 'We sell within Ontario.',
+    'We sell only to clinics.', 'We sell no hardware.', 'We sell not just software.', 'Our offer: excluding agencies', 'Our offer: except chains'])
+    assert.equal(statedOffer(t), null, t)
+})
+
+test('#349 HOLD-3 caller paths: each prefix offer under an incompatible recorded dental seller is contested; template, rewrite and scoring refuse', async () => {
+  for (const [t, o] of PREFIX_OFFERS.slice(0, 5)) {
+    const db = setup(DENTAL_SELLER)
+    try {
+      db.prepare('UPDATE scan_jobs SET query = ? WHERE id = ?').run(`Find London SaaS startups hiring. ${t}`, 'london')
+      assert.deepEqual(await readPlayOffer(sqliteDb(db), 'A', 'london'), { offer: null, source: 'conflict', conflict: { stated: o, recorded: DENTAL_SELLER } }, t)
+      assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme'), /offer_conflict/, t)
+      db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status) VALUES ('m-p', 'A', 'lead-london', 'sales@buyer.invalid', 's', 'old dental body written before the fix', 'draft')").run()
+      const r = recording()
+      assert.deepEqual(await polishDraft(db, 'A', 'm-p', 'Acme', { master, providers: r.providers }), { rewritten: false, reason: 'offer_conflict' }, t)
+      assert.equal(r.prompts.length, 0, t)
+      assert.equal(offerBlockFor(db, 'A', 'london'), '', t)
+      // the dental play keeps its own offer
+      assert.equal((await readPlayOffer(sqliteDb(db), 'A', 'dental'))!.offer, DENTAL_SELLER)
+    } finally { db.close() }
+  }
+})

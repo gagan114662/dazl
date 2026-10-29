@@ -43,8 +43,10 @@ const TO_FOR = new RegExp(`${LEAD}${SPEAKER}\\s+(.{3,150}?)\\s+(?:to|for)\\s+\\S
 const SELLING_TO_FOR = new RegExp(`${LEAD}selling\\s+(.{3,150}?)\\s+(?:to|for)\\s+\\S`, 'i')
 const BARE = new RegExp(`${LEAD}${SPEAKER}\\s+(.{3,150})$`, 'i')
 const LABEL = new RegExp(`${LEAD}(?:(?:our|my)\\s+)?(?:offer|offering|product|service)s?\\s*:\\s*(.{3,150})$`, 'i')
-// a capture that is a target ("to dental practices") or itself an exclusion is not an offer
-const NOT_AN_OFFER = /^(?:to|for|into|in|at|within|only|exclud|except|no |not )/i
+// a capture that is a target ("to dental practices") or itself an exclusion is not an offer. Whole words only (an offer
+// like "insurance", "inbound marketing", "attribution software" or "no-code tools" starts with the same letters); the
+// one stem kept is exclud(e|es|ed|ing), since every form of it is an exclusion.
+const NOT_AN_OFFER = /^(?:(?:to|for|into|in|at|within|only|except|no|not)(?![\p{L}\p{N}'’-])|exclud)/iu
 export function statedOffer(query: string | null | undefined): string | null {
   const q = (query ?? '').replace(/[ \t]+/g, ' ').trim()
   if (!q) return null
