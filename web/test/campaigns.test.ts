@@ -3,6 +3,9 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { listCampaigns, nextAction } from '../lib/outreach/campaigns.ts'
+import { campaignStatus } from '../lib/run-status.ts'
+import { setQuarantine } from '../lib/scan/quarantine.ts'
+import { sqliteDb } from '../lib/db/client.ts'
 import { leadEvidenceState, draftBlockReason, approveBlockReason, sendBlockReason, saveSettings, approve } from '../lib/outreach/service.ts'
 
 function setup() {
@@ -82,6 +85,36 @@ test('next action follows the pipeline order and never skips a gate', () => {
   assert.deepEqual(at({ qualification: { ...base.qualification, unverified: 1 } }), { label: 'Check 1 unverified lead against their sources', href: '/app/leads?job_id=j' }, 'unverified leads are a research step, never "nothing waiting"')
   assert.deepEqual(at({ discovery: { candidates: 0, leads: 0 } }), { label: 'No leads from this search. Try a broader one', href: '/app/leads' })
   assert.deepEqual(at({}), { label: 'Nothing waiting on you', href: null })
+  assert.deepEqual(at({ qualification: { ...base.qualification, sourceChecked: 0, rejected: 3 } }), { label: 'None passed: every lead was rejected. Try a broader search', href: '/app/leads' }, 'rejected leads never leave "nothing waiting"')
+})
+
+// #350: the scan recorded 1 source-checked lead; the user then rejected it. Every surface of the card (status, tooltip,
+// funnel, next step) must follow the lead as it is now, and a fresh read (a reload) must say the same.
+test('rejecting the last lead turns the card into "none passed" on every surface, from a fresh read', async () => {
+  const db = setup()
+  const J = 'c'.repeat(24)
+  job(db, 'A', J, 'Dental practices in a big city - opening a new location', { candidates: 1 })
+  lead(db, J, 'only', { contact: 'hi@one.example' })
+  finish(db, J)
+  // What the scan recorded when it finished (the history read): 1 found, 1 source-checked.
+  const recorded = { id: J, status: 'done', error: null, candidates: 1, verified: 1, needs_review: 0, dropped: 0, lead_count: 1 }
+  const card = () => campaignStatus(listCampaigns(db, 'A')[0], recorded as never)
+  const before = card()
+  assert.deepEqual([before.run?.group, before.run?.tag], ['results', 'Leads found'])
+  assert.equal(before.run?.label, '1 lead found: 1 source-checked, 0 confirmed by you, 0 need your review, 0 rejected')
+  assert.notEqual(before.next.label, 'None passed: every lead was rejected. Try a broader search')
+
+  assert.equal((await setQuarantine(sqliteDb(db), 'A', 'only', 'quarantine', 'Rejected: Not a fit')).status, 'quarantined')
+  const after = card()
+  assert.deepEqual([after.run?.group, after.run?.tag], ['no_match', 'None passed'], 'status')
+  assert.equal(after.run?.label, 'None passed: you rejected the 1 lead this search found', 'tooltip: never the scan-time "1 source-checked"')
+  assert.deepEqual([after.discovery.leads, after.qualification.sourceChecked, after.qualification.rejected, after.contact.withContact], [1, 0, 1, 0], 'funnel')
+  assert.deepEqual(after.next, { label: 'Try a broader search', href: `/app/leads?q=${encodeURIComponent('Dental practices in a big city - opening a new location')}` }, 'next step')
+  // Without a history record the row still says none passed, from its own counts.
+  assert.equal(listCampaigns(db, 'A')[0].next.label, 'None passed: every lead was rejected. Try a broader search')
+  // Releasing it brings the run back.
+  await setQuarantine(sqliteDb(db), 'A', 'only', 'release')
+  assert.equal(card().run?.tag, 'Leads found')
 })
 
 // Instinct #239: qualification and "ready to draft" come from the same evidence state and draft gate as the server.
