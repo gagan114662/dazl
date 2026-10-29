@@ -1,6 +1,7 @@
 import type { Evidence, SourceAdapter, SafeGet } from './types.ts'
 import { decodeText } from './rss.ts'
 import { norm } from '../scan/evidence.ts'
+import { countriesIn, resolveSegment } from '../scan/countries.ts'
 import { parseWindowDays } from '../scan/window.ts'
 import { rolePhrases } from '../search/direct-queries.ts'
 import { domainSlug } from '../signals/entity-match.ts'
@@ -15,6 +16,8 @@ const MAX_DETAIL = 3 // per Greenhouse board
 const MAX_BOARDS = 10
 const MAX_GUESS_COMPANIES = 6 // companies whose boards are probed by slug guess, 3 boards each
 export const jobBoardsLimits = { budgetMs: 12_000, pageMs: 8_000 } // stop STARTING requests after this; each request is hard-bounded at 10 s, so 12 + 10 < the 25 s adapter deadline
+// The sales / go-to-market role family by title. Word-bounded, so "Senior SaaS Engineer" and "Sales Tax Accountant" style accidents are judged by the later gates, not widened here.
+export const SALES_TITLE = /\b(?:sales|account\s+(?:executive|manager|director)s?|sdrs?|bdrs?|business\s+development|go[-\s]to[-\s]market|gtm|revenue(?:\s+operations)?|revops)\b/i
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 const GENERIC = new Set(['hiring', 'roles', 'role', 'jobs', 'job', 'open', 'openings', 'positions', 'position', 'team', 'remote'])
 
@@ -52,10 +55,41 @@ const COUNTRY_PLACES: { ask: RegExp; name: string; ok: (l: string) => boolean }[
 ]
 export interface Place { name: string; ok: (...locs: (string | undefined)[]) => boolean }
 const placeOf = (c: { name: string; ok: (l: string) => boolean }): Place => ({ name: c.name, ok: (...l) => l.some(x => !!x && c.ok(x)) })
+// Any other "<City>, <Country>" in the request (Toronto, Canada / toronto canada / Cambridge, UK / Gurugram India): a posting is in the place when its location names the city as a whole word, in any
+// letter case, and does not name a different country. A city is taken from the words right before a country name when they are separated from it by a comma, follow "in / at / near / from", or are all
+// capitalized ("Berlin Germany"); a bare lowercase noun before a country ("dentists UK") is not a city. The CITY stays the place: "Cambridge, UK" is Cambridge, not the whole United Kingdom.
+const STOP = new Set(['in', 'at', 'near', 'from', 'of', 'the', 'a', 'an', 'and', 'or', 'for', 'with', 'to', 'by', 'find', 'hiring', 'hire', 'hires', 'startups', 'startup', 'companies', 'firms', 'firm', 'agencies', 'agency', 'based', 'new', 'recruiting', 'sales', 'staff', 'b2b', 'saas'])
+const LEAD_IN = new Set(['in', 'at', 'near', 'from'])
+export function genericPlace(query: string): Place | null {
+  const toks = query.match(/[\p{L}\p{M}'\u2019.-]+|,/gu) ?? []
+  for (let i = 0; i < toks.length; i++) {
+    let country: string | null = null
+    for (let n = Math.min(4, toks.length - i); n >= 1 && !country; n--) { if (toks.slice(i, i + n).includes(',')) continue; const c = resolveSegment(toks.slice(i, i + n).join(' '), true); if (c) country = c }
+    if (!country) continue
+    let j = i - 1; const comma = toks[j] === ','; if (comma) j--
+    const words: string[] = []
+    while (j >= 0 && toks[j] !== ',' && words.length < 3 && !STOP.has(toks[j].toLowerCase())) { words.unshift(toks[j]); j-- }
+    if (words.length === 0) continue
+    const lead = j >= 0 ? toks[j].toLowerCase() : ''
+    const allCap = words.every(w => /^\p{Lu}/u.test(w))
+    if (!(comma || LEAD_IN.has(lead) || allCap)) continue
+    const city = words.join(' '), key = norm(city); if (key.length < 3) continue
+    const re = new RegExp(`(^| )${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( |$)`)
+    const ok = (...locs: (string | undefined)[]) => locs.some(l => {
+      if (!l) return false
+      if (!re.test(norm(l))) return false
+      const named = countriesIn(l); return named.length === 0 || named.every(c => c === country)
+    })
+    return { name: city, ok }
+  }
+  return null
+}
 export function placeIn(query: string): Place | null {
   for (const c of CITY_PLACES) if (c.ask.test(query)) return placeOf(c)
   const st = stateIn(query)
   if (st) return { name: st, ok: (...l) => locationInState(st, ...l) }
+  // A named city with its country ("Cambridge, UK") is that CITY, so it is tried before the bare-country place, which would widen it to the whole country.
+  const g = genericPlace(query); if (g) return g
   for (const c of COUNTRY_PLACES) if (c.ask.test(query)) return placeOf(c)
   return null
 }
@@ -196,12 +230,15 @@ export const jobBoardsAdapter: SourceAdapter = {
     // 10-50 employees ... hiring sales staff" never reach "sales".
     const heads = rolePhrases(query, [], place ? [place.name] : []).map(p => p.split(' ').pop()!).filter(w => w.length >= 3)
     const fromKeywords = keywords.filter(k => !GENERIC.has(k) && !(place && place.name.toLowerCase().split(' ').includes(k)))
-    const roles = [...new Set([...fromKeywords, ...heads])] // the old keyword roles stay; the planner's role heads are added
+    // A SALES ask matches the role by title on the sales role family (Account Executive, SDR, BDR, business development, revenue ... not only the word "sales"), and NOT on the request's other words:
+    // "SaaS", "employees" and "startups" are words of the request, not roles, and admitted "Senior SaaS Engineer" as a sales posting while "Account Executive" was dropped (scan 8 trace).
+    const salesAsk = heads.includes('sales')
+    const roles = salesAsk ? ['sales'] : [...new Set([...fromKeywords, ...heads])] // other asks: the old keyword roles stay; the planner's role heads are added
     if (!place || roles.length === 0) return [] // never every place, never every role
     const windowDays = parseWindowDays(query) ?? WINDOW_DAYS // the user's own window when the request states one
     const fresh = (d: string | null) => !!d && Date.now() - Date.parse(d) <= windowDays * 86_400_000 && Date.parse(d) <= Date.now() + 86_400_000
     const out: Evidence[] = []
-    const roleOk = (t: string) => roles.some(k => t.toLowerCase().includes(k))
+    const roleOk = (t: string) => salesAsk ? SALES_TITLE.test(t) : roles.some(k => t.toLowerCase().includes(k))
     // Boards come from the given feeds and from discovered page/hit URLs (posting links). Deduped; a lookalike host never yields a board.
     const seenBoards = new Set<string>()
     type Board = { kind: 'gh' | 'ashby' | 'lever'; token: string; company?: string; byDomain?: boolean }

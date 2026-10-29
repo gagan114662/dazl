@@ -20,7 +20,9 @@ export type Verdict =
 export const MAX_AGE_DAYS = Number(process.env.SCAN_MAX_AGE_DAYS || 365)
 export const MIN_CONFIDENCE = 55
 
-export const norm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9@.+ ]+/g, ' ').replace(/\s+/g, ' ').trim()
+// Letters, their combining marks and digits of ANY script are kept (Devanagari, Arabic, Han, kana, Cyrillic, Greek ... as well as Latin with its accents folded). Before, everything outside a-z was erased, so a Hindi,
+// Arabic or Japanese quote normalized to "" and was dropped as no_excerpt: a business that does not write in Latin script could never be verified.
+export const norm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^\p{L}\p{M}\p{N}@.+ ]+/gu, ' ').replace(/\s+/g, ' ').trim()
 
 const SUFFIXES = new Set(['inc', 'incorporated', 'ltd', 'limited', 'llc', 'corp', 'corporation', 'co', 'company', 'the', 'plc', 'llp', 'lp'])
 export function companyKey(company: string): string {
@@ -28,7 +30,9 @@ export function companyKey(company: string): string {
   return words.join(' ')
 }
 
-export const hasPhrase = (hay: string, phrase: string) => !!phrase && new RegExp(`(^| )${phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( |$)`).test(hay)
+// Scripts written without spaces between words (Han, kana, Thai ...): a phrase there cannot be word-bounded by spaces, so it is a plain substring match.
+const UNSPACED = /[\u0e00-\u0eff\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]/
+export const hasPhrase = (hay: string, phrase: string) => !!phrase && (UNSPACED.test(phrase) ? hay.includes(phrase) : new RegExp(`(^| )${phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( |$)`).test(hay))
 
 export function dedupKey(c: { company: string; name: string }): string {
   return companyKey(c.company) || norm(c.name)

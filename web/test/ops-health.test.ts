@@ -180,3 +180,29 @@ test('readiness env: DAZL_MASTER_KEY passes exactly when the key consumer (getMa
     assert.equal(!missingEnv({ ...goodEnv(), DAZL_MASTER_KEY: k }).includes('DAZL_MASTER_KEY'), consumerAccepts, JSON.stringify(k))
   }
 })
+
+// /api/health's database check (lib/ops/health.ts dbHealth): SQLite always, Postgres only when configured. ok only when
+// every configured store answers; a throw or a hang past the budget fails it with a reason and no error text.
+test('dbHealth: each configured database must answer; Postgres unset is not_configured, not a failure', async () => {
+  const { dbHealth } = await import('../lib/ops/health.ts')
+  const { setErrorSinks } = await import('../lib/ops/errors.ts')
+  const restore = setErrorSinks([])
+  try {
+    const lite = { prepare: () => ({ get: () => ({ x: 1 }) }) }
+    const brokenLite = { prepare: () => { throw new Error('SQLITE_CANTOPEN /var/lib/secret.db') } }
+    const pg = (get: () => Promise<unknown>) => async () => ({ get } as never)
+    const strip = (h: { ok: boolean; checks: Record<string, Record<string, unknown>> }) =>
+      ({ ok: h.ok, checks: Object.fromEntries(Object.entries(h.checks).map(([k, v]) => [k, { ...v, ms: undefined }])) })
+    assert.deepEqual(strip(await dbHealth({ sqlite: () => lite, postgres: null }) as never),
+      { ok: true, checks: { sqlite: { ok: true, ms: undefined }, postgres: { ok: true, skipped: 'not_configured', ms: undefined } } })
+    assert.equal((await dbHealth({ sqlite: () => lite, postgres: pg(async () => ({ x: 1 })) })).ok, true)
+    const down = await dbHealth({ sqlite: () => lite, postgres: pg(async () => { throw new Error('ECONNREFUSED 10.0.0.5:5432') }) })
+    assert.deepEqual([down.ok, down.checks.postgres.ok, (down.checks.postgres as { reason: string }).reason], [false, false, 'error'])
+    assert.ok(!JSON.stringify(down).includes('ECONNREFUSED'))
+    const hang = await dbHealth({ sqlite: () => lite, postgres: pg(() => new Promise(() => {})), timeoutMs: 50 })
+    assert.deepEqual([hang.ok, (hang.checks.postgres as { reason: string }).reason], [false, 'timeout'])
+    const badLite = await dbHealth({ sqlite: () => brokenLite, postgres: null })
+    assert.deepEqual([badLite.ok, badLite.checks.sqlite.ok], [false, false])
+    assert.ok(!JSON.stringify(badLite).includes('secret.db'))
+  } finally { restore() }
+})

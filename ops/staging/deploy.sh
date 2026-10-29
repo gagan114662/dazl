@@ -6,7 +6,8 @@
 #      (MIN_FREE_BYTES, 2 GiB by default), and the build is stopped if free space falls to the floor while it runs
 #   3. builds the commit in its own release directory as the service user, with the env file's values passed in by
 #      root (the file itself stays root-only, mode 600), seeds (idempotent), switches `current`, restarts the service
-#   4. waits for /api/health to report the new commit; otherwise switches back and restarts the previous release
+#   4. waits for /api/health to answer ok (every configured database reachable) with the new commit (the smoke check,
+#      ops/health-smoke.mjs); otherwise switches back and restarts the previous release
 # A release that fails at any step is deleted at once. Complete releases are marked; the live one and the two before
 # it are kept, older ones are deleted. node_modules is hard-linked from the live release when package-lock.json is
 # unchanged, so a release then costs about the size of its build output.
@@ -169,11 +170,16 @@ trap - ERR
 # Cutover. From here until the new release is healthy, any failure (the switch, the restart command, readiness)
 # goes to cutover_fail, which puts the previous complete release back and checks it is really serving again.
 prev=$live
-healthy() { # the service on PORT reports commit $1
+# The smoke check: /api/health answers 200, ok, with commit $1, run with that release's own ops/health-smoke.mjs. A
+# release from before the smoke check existed (only ever a rollback target) is checked for its commit alone.
+healthy() {
+  local smoke="$ROOT/releases/$1/ops/health-smoke.mjs"
   for _ in $(seq 1 "$HEALTH_TRIES"); do
-    curl -fsS "http://127.0.0.1:$PORT/api/health" 2>/dev/null | grep -q "\"commit\":\"$1\"" && return 0
+    if [ -f "$smoke" ]; then node "$smoke" "http://127.0.0.1:$PORT" "$1" 2>/dev/null && return 0
+    else curl -fsS "http://127.0.0.1:$PORT/api/health" 2>/dev/null | grep -q "\"commit\":\"$1\"" && return 0; fi
     sleep 2
   done
+  [ -f "$smoke" ] && node "$smoke" "http://127.0.0.1:$PORT" "$1" >&2 || true # the last reason, in the journal
   return 1
 }
 cutover_fail() {
@@ -193,7 +199,7 @@ cutover_fail() {
 trap 'cutover_fail "a cutover step failed"' ERR
 ln -sfn "$rel" "$ROOT/current"; echo "DAZL_COMMIT_SHA=$new" > "$ROOT/release.env"
 $RESTART 9>&- || cutover_fail "the restart command failed" # the service must not inherit the deploy lock
-healthy "$new" || cutover_fail "it never reported commit $new on /api/health"
+healthy "$new" || cutover_fail "/api/health never answered ok with commit $new"
 trap - ERR
 touch "$rel/.complete"; echo "$new" > "$ROOT/current-sha"
 log "live: $new"
