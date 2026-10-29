@@ -35,7 +35,8 @@ import { isJobPage, needsEventBeyondHiring } from '../search/page-class.ts'
 import { extractionNote } from './extraction-note.ts'
 import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { crawlJob, defaultGet, sitecrawlEnabled } from '../connectors/sitecrawl.ts'
-import { anthropicCountTokens, guardProvider, ownerPool, reserveAllUsd, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
+import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
+import { ownerLimits, ownerSetting, sharedPool } from '../llm/spend-pool.ts'
 import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
 import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './verify-provenance.ts'
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
@@ -730,15 +731,11 @@ export interface RunBudget { paid_fallback?: boolean; credit_enrichment?: boolea
 // terminally as budget_stopped (the fallback that would re-pend is gated), so a
 // restricted job makes at most 1 paid call per attempt and only a post-extraction
 // crash/retry can produce further attempts - never a research call.
-// Operator setting DAZL_RUN_MAX_USD_USERS="<owner id>:<usd>,..." bounds every query job of the named owners (exact id match,
-// no schema). A malformed entry is ignored for that entry. The tighter of this and the job's own max_usd applies.
+// Operator settings DAZL_RUN_MAX_USD_USERS (per UTC day) and DAZL_OWNER_MONTH_MAX_USD_USERS (per UTC month), each
+// "<owner id>:<usd>,...", bound every query job of the named owners together, in the shared store
+// (lib/llm/spend-pool.ts). Exact id match; a malformed entry is ignored for that entry. Every limit applies.
 export function ownerMaxUsd(userId: string, env: Record<string, string | undefined> = process.env): number | null {
-  for (const part of (env.DAZL_RUN_MAX_USD_USERS ?? '').split(',')) {
-    const i = part.lastIndexOf(':'); if (i < 0) continue
-    if (part.slice(0, i).trim() !== userId) continue
-    const n = Number(part.slice(i + 1).trim()); return Number.isFinite(n) && n > 0 ? n : null
-  }
-  return null
+  return ownerSetting('DAZL_RUN_MAX_USD_USERS', userId, env)
 }
 export function parseRunBudget(raw: string | null | undefined): RunBudget | null {
   if (!raw) return null
@@ -769,7 +766,7 @@ export interface RunDeps {
   first5?: boolean; autopilot?: typeof runAutopilot; sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; salesHiringGate?: typeof applySalesHiringGate; jobBudgetMs?: number; clock?: () => number }
 
 // A free-trial scan's charge for each TinyFish call on dazl's key (lib/billing/trial-budget.ts), set while that scan runs.
-const trialCharges = new WeakMap<Job, (kind: 'search' | 'fetch', units: number) => void>()
+const trialCharges = new WeakMap<Job, (kind: 'search' | 'fetch', units: number) => Promise<void>>()
 
 // A free-trial scan whose budget refused a paid step (lib/billing/trial-budget.ts): it stops with what it has. Nothing
 // it found counts as checked, because a required check may not have run: every candidate and every lead it had verified
@@ -817,13 +814,14 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
   }
   try {
     const jobMax = job.csv_domain ? null : parseRunBudget(job.run_budget)?.max_usd ?? null
-    const ownerMax = job.csv_domain ? null : ownerMaxUsd(job.user_id)
+    const owner = job.csv_domain ? null : ownerLimits(job.user_id)
     // A free-trial scan runs on dazl's keys: every paid step counts against its reserve (lib/billing/trial-budget.ts). Its
     // own budget, if it set one, can only lower that limit. Without the trial's caps and prices it does not run.
     const trial = job.funded_by === 'trial' ? trialCaps() : null
     if (job.funded_by === 'trial' && !trial) { finish(db, job, 'failed', 'trial_unavailable', null, null, ledger); return 'failed' }
     // The job's guard starts from what this job already reserved (saved per call), so a retry, a re-claimed attempt or a
-    // restart cannot spend the limit again. The owner pool is in memory only and starts empty after a restart.
+    // restart cannot spend the limit again. The owner's day/month pool is in the shared store, so neither can a second job,
+    // a restart or another instance.
     const guardMax = trial ? Math.min(trial.reserveUsd, jobMax ?? Infinity) : jobMax
     const jobGuard = guardMax !== null ? new SpendGuard(guardMax, job.spend_reserved_usd ?? 0) : null
     if (jobGuard && trial) { jobGuard.label = TRIAL_BUDGET_REASON; trialGuard = jobGuard }
@@ -832,7 +830,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       const r = db.prepare("UPDATE scan_jobs SET spend_reserved_usd = ? WHERE id = ? AND user_id = ? AND attempts = ? AND status = 'running'").run(usd, job.id, job.user_id, job.attempts)
       if (r.changes !== 1) throw new SpendRefused('ownership_lost')
     }
-    const spendGuards = [...(jobGuard ? [jobGuard] : []), ...(ownerMax !== null ? [ownerPool(job.user_id, ownerMax)] : [])]
+    const spendGuards = [...(jobGuard ? [jobGuard] : []), ...(owner ? [new PooledGuard(sharedPool(db, job.user_id, owner))] : [])]
     const spendLimit = spendGuards.length ? 1 : null
     // Every model request of this run is counted at the provider boundary (model-usage.ts), inside the spend guard so a
     // refused request is not recorded as sent. Behaviour is unchanged: same calls, same text, same errors.
@@ -842,12 +840,12 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // not the token counter's estimate, and the model's own web search, whose cost has no bound, is refused. Its web
     // research is TinyFish, charged per call below. A run with its own max_usd refuses research too (run-budget.ts).
     const providers_ = spendLimit === null ? baseProviders : { ...baseProviders, [vendor]: guardProvider(baseProviders[vendor], spendGuards, vendor === 'anthropic' && !trial ? anthropicCountTokens : undefined) }
-    if (jobMax !== null || ownerMax !== null || trial) deps = { ...deps, creditEnrichment: false } // a budgeted run adds no other paid enrichment
+    if (jobMax !== null || owner || trial) deps = { ...deps, creditEnrichment: false } // a budgeted run adds no other paid enrichment
     // A trial scan makes no paid call outside its guard: no fallback to the model's web search (a trial with nothing
     // from TinyFish or the free news search ends as stopped, not empty), and no people search, advanced sources or
     // autopilot (TinyFish or other paid calls the trial charge does not see).
     if (trial) deps = { ...deps, paidFallback: false }
-    if (trial) trialCharges.set(job, (kind, units) => reserveAllUsd(spendGuards, units * (kind === 'search' ? trial.tinyfishSearchUsd : trial.tinyfishFetchUsd)))
+    if (trial) trialCharges.set(job, async (kind, units) => { await reserveAllUsd(spendGuards, units * (kind === 'search' ? trial.tinyfishSearchUsd : trial.tinyfishFetchUsd)) })
     // Narrowing flags of a query job's own budget (paid_fallback / credit_enrichment / judge = false). They only ever switch a paid
     // surface off; before this the query path honoured max_usd but ignored the flags.
     if (!job.csv_domain) deps = budgetDeps(deps, parseRunBudget(job.run_budget))
