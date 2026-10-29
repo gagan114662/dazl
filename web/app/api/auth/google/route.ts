@@ -9,7 +9,7 @@ export async function GET(req: NextRequest) {
   const cfg = signInConfig()
   if (!cfg) return redirectNoStore(new URL('/sign-in?error=google_unavailable', process.env.PUBLIC_BASE_URL || req.url))
   const rl = (await rateLimit(`google:${clientIp(req)}`, 20, 10 * 60 * 1000))
-  if (!rl.ok) return redirectNoStore(new URL('/sign-in?error=too_many', cfg.base))
+  if (!rl.ok) return redirectNoStore(new URL(`/sign-in?error=${rl.unavailable ? 'unavailable' : 'too_many'}`, cfg.base))
   const { url, cookie } = startAuth(cfg.clientId, cfg.redirectUri)
   const res = redirectNoStore(url)
   setOauthCookie(res, cfg.base, cookie)
