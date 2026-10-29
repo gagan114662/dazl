@@ -97,7 +97,8 @@ bothEngines('two owners demoting each other at once: exactly one wins, the works
   await add(db, 'A', 'D', 'owner')
   const r = await Promise.allSettled([changeRole(db, act('A', 'A', 'owner'), 'D', 'admin'), changeRole(db, act('A', 'D', 'owner'), 'A', 'admin')])
   assert.deepEqual(r.map(x => x.status).sort(), ['fulfilled', 'rejected'])
-  assert.ok(r.some(x => x.status === 'rejected' && code('last_owner')(x.reason)))
+  // the loser was already demoted to admin by the winner, so it is refused on authority (it may no longer touch an owner)
+  assert.ok(r.some(x => x.status === 'rejected' && code('forbidden')(x.reason)))
   assert.equal(Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM memberships WHERE tenant_id = 'A' AND role = 'owner'"))!.n), 1)
 }, { pgMax: 4 })
 
@@ -114,3 +115,68 @@ bothEngines('switching: only into a workspace the account belongs to, only for i
   assert.equal(await getSessionUser(tb, db), null)
   assert.equal((await getSessionUser(tb, db))?.tenantId, 'B')
 })
+
+// A request authenticates, then waits behind a demotion or removal before it reaches the workspace lock: it must act
+// with the member's role as it is under the lock, not the snapshot it started with (review of 0609796).
+const snapshotRows = async (db: Db) => JSON.stringify([
+  await db.all("SELECT tenant_id, member_id, role FROM memberships WHERE tenant_id = 'A' ORDER BY member_id"),
+  await db.all("SELECT id, email, role, revoked_at, accepted_at FROM invitations WHERE tenant_id = 'A' ORDER BY id"),
+])
+bothEngines('a stale Acting snapshot never carries authority: demoted or removed actors are refused and change nothing', async ({ db }) => {
+  await users(db, 'A', 'D', 'O')
+  await add(db, 'A', 'D', 'admin'); await add(db, 'A', 'O', 'operator')
+  const pending = await createInvitation(db, OWNER_A, 'p@example.test', 'viewer')
+  const dSnapshot = act('A', 'D', 'admin')
+  for (const lose of [() => changeRole(db, OWNER_A, 'D', 'viewer'), () => removeMember(db, OWNER_A, 'D')]) {
+    await lose()
+    const before = await snapshotRows(db)
+    await assert.rejects(changeRole(db, dSnapshot, 'O', 'admin'), code('forbidden'))
+    await assert.rejects(removeMember(db, dSnapshot, 'O'), code('forbidden'))
+    await assert.rejects(createInvitation(db, dSnapshot, 'x@example.test', 'operator'), code('forbidden'))
+    await assert.rejects(revokeInvitation(db, dSnapshot, pending.id), code('forbidden'))
+    assert.equal(await snapshotRows(db), before, 'no row changed after authority was lost')
+    assert.equal(await roleIn(db, 'A', 'O'), 'operator')
+    if (await roleIn(db, 'A', 'D') === null) break
+    await db.run("UPDATE memberships SET role = 'admin' WHERE tenant_id = 'A' AND member_id = 'D'") // restore for the removal case
+  }
+  // an owner demoted to admin keeps admin powers only: it can no longer touch owners
+  await changeRole(db, OWNER_A, 'O', 'owner')
+  await changeRole(db, act('A', 'O', 'owner'), 'A', 'admin')
+  await assert.rejects(changeRole(db, OWNER_A, 'O', 'admin'), code('forbidden'), "A's owner snapshot is stale: A is an admin now")
+  assert.equal(await roleIn(db, 'A', 'O'), 'owner')
+})
+
+bothEngines('a demotion racing the demoted admin\'s own change: the outcome is one of the two serial orders, never both', async ({ db }) => {
+  for (let i = 0; i < 5; i++) {
+    await db.run('DELETE FROM memberships'); await db.run('DELETE FROM invitations'); await db.run('DELETE FROM organizations'); await db.run('DELETE FROM users')
+    await users(db, 'A', 'D', 'O')
+    await add(db, 'A', 'D', 'admin'); await add(db, 'A', 'O', 'operator')
+    const [demote, act1, inv] = await Promise.allSettled([
+      changeRole(db, OWNER_A, 'D', 'viewer'),
+      changeRole(db, act('A', 'D', 'admin'), 'O', 'viewer'),
+      createInvitation(db, act('A', 'D', 'admin'), `r${i}@example.test`, 'operator'),
+    ])
+    assert.equal(demote.status, 'fulfilled')
+    assert.equal(await roleIn(db, 'A', 'D'), 'viewer')
+    // D's change landed only if it ran before the demotion; a refusal left O exactly as it was
+    assert.equal(await roleIn(db, 'A', 'O'), act1.status === 'fulfilled' ? 'viewer' : 'operator')
+    const invites = Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM invitations WHERE tenant_id = 'A'"))!.n)
+    assert.equal(invites, inv.status === 'fulfilled' ? 1 : 0)
+    for (const r of [act1, inv]) if (r.status === 'rejected') assert.ok(code('forbidden')(r.reason), String(r.reason))
+  }
+}, { pgMax: 4 })
+
+bothEngines('revoking and accepting the same link at once: exactly one wins', async ({ db }) => {
+  for (let i = 0; i < 5; i++) {
+    await db.run('DELETE FROM memberships'); await db.run('DELETE FROM invitations'); await db.run('DELETE FROM organizations'); await db.run('DELETE FROM users')
+    await users(db, 'A', 'B')
+    const inv = await createInvitation(db, OWNER_A, 'b@example.test', 'operator')
+    const [rev, acc] = await Promise.allSettled([revokeInvitation(db, OWNER_A, inv.id), acceptInvitation(db, me('B'), inv.token)])
+    const row = (await db.get<{ revoked_at: number | null; accepted_at: number | null }>('SELECT revoked_at, accepted_at FROM invitations WHERE id = ?', [inv.id]))!
+    if (acc.status === 'fulfilled') {
+      assert.equal(rev.status, 'rejected'); assert.equal(row.revoked_at, null); assert.equal(await roleIn(db, 'A', 'B'), 'operator')
+    } else {
+      assert.equal(rev.status, 'fulfilled'); assert.equal(row.accepted_at, null); assert.equal(await roleIn(db, 'A', 'B'), null)
+    }
+  }
+}, { pgMax: 4 })
