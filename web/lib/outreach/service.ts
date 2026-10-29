@@ -15,7 +15,7 @@ import { domainReviewFor } from './domain-review.ts'
 import { pickCrawledEmail } from './published-email.ts'
 import { getMemory } from '../memory.ts'
 import { isQuarantined } from '../scan/quarantine.ts'
-import { effectiveOffer } from '../scan/play-offer.ts'
+import { effectiveOffer } from '../scan/play-offer-text.ts'
 
 export const DAILY_CAP = Math.min(ACCOUNT_SEND_CAP, Number(process.env.OUTREACH_DAILY_CAP || 20))
 export const SENDING_STALE_S = 10 * 60

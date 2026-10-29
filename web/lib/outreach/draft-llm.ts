@@ -7,7 +7,7 @@ import { defaultVendor, getKey } from '../llm/key-store.ts'
 import type { Vendor } from '../llm/vendors.ts'
 import { providers, type Provider, type DetailedCompletion } from '../llm/provider.ts'
 import { getMasterKey } from '../secrets.ts'
-import { effectiveOffer } from '../scan/play-offer.ts'
+import { effectiveOffer } from '../scan/play-offer-text.ts'
 import { playOfferRow } from './service.ts'
 import { getMemory, memoryPromptBlock, type Memory } from '../memory.ts'
 
