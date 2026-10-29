@@ -16,7 +16,8 @@ globalThis.fetch = (async (u: unknown) => { fetchCalls.push(String(u)); throw ne
 
 function snapshot(db: Database.Database): string {
   // rate_limits and app_leases are global platform tables (no tenant data); rateLimit() writes there through getDb().
-  const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('rate_limits', 'app_leases') ORDER BY name").all() as { name: string }[]).map(t => t.name)
+  // audit_events is checked on its own: each refusal must add exactly its denied event (below).
+  const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('rate_limits', 'app_leases', 'audit_events') ORDER BY name").all() as { name: string }[]).map(t => t.name)
   return JSON.stringify(tables.map(t => [t, db.prepare(`SELECT * FROM "${t}" ORDER BY rowid`).all()]))
 }
 
@@ -75,6 +76,11 @@ test('a member whose role does not allow a route is refused with 403 and changes
     if (snapshot(db) !== before) failures.push(`stale owner ${r.method} /api/${r.path}: data changed`)
     stale++
   }
+  // every refusal is an attributable denied event in workspace A, by member M, naming what was needed
+  const events = db.prepare("SELECT action, actor_id, tenant_id, decision, summary FROM audit_events").all() as { action: string; actor_id: string; tenant_id: string; decision: string; summary: string }[]
+  assert.equal(events.filter(e => e.action === 'policy.denied' && e.actor_id === 'M' && e.tenant_id === 'A' && e.decision === 'denied').length, refused, 'one denied event per role refusal')
+  assert.equal(events.filter(e => e.action === 'policy.reauth_required' && e.actor_id === 'A' && e.decision === 'denied').length, stale, 'one denied event per stale-session refusal')
+  assert.ok(events.every(e => e.decision === 'denied'), 'nothing was allowed, so nothing else was recorded')
   assert.deepEqual(failures, [])
   assert.equal(fetchCalls.length, 0, 'no network call')
   console.log('ROLES', refused, reads, 'STALE', stale)

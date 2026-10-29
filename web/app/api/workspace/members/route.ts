@@ -18,8 +18,8 @@ export async function GET() {
 export async function PATCH(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  const no = denied(user, 'members'); if (no) return no
-  const old = stale(user); if (old) return old
+  const no = await denied(user, 'members'); if (no) return no
+  const old = await stale(user); if (old) return old
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   const body = await req.json().catch(() => null)
   if (!isId(body?.member_id)) return NextResponse.json({ error: 'not_found' }, { status: 404 })
@@ -34,8 +34,8 @@ export async function PATCH(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  const no = denied(user, 'members'); if (no) return no
-  const old = stale(user); if (old) return old
+  const no = await denied(user, 'members'); if (no) return no
+  const old = await stale(user); if (old) return old
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   const body = await req.json().catch(() => null)
   if (!isId(body?.member_id)) return NextResponse.json({ error: 'not_found' }, { status: 404 })

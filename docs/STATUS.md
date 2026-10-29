@@ -104,7 +104,9 @@ Updated by the builder on every branch. Newest first.
   workspace; docs/design/email-ownership.md) and increment 2
   (change email, explicit Google linking) in review;
   #371 increment 1 (append-only audit trail: member, session and recovery events, scoped search/export, retention;
-  docs/design/audit.md) in review; next: credential, billing, send, CRM, export and deletion events.
+  docs/design/audit.md) and increment 2
+  (route-level events and refusals for credentials, billing, sends, CRM, lead state, export, deletion) in review.
+  Support access needs an owner decision (docs/design/audit.md).
 
 ## Next (in order, for the scheduled builder; nothing business- or place-specific)
 

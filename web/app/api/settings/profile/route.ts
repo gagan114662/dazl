@@ -5,7 +5,7 @@ import { getDb } from '@/lib/db/client'
 import type { Db } from '@/lib/db/client'
 import { normalizeIcp } from '@/lib/scan/icp'
 import { rateLimit } from '@/lib/rate-limit'
-import { denied } from '@/lib/workspace-access'
+import { audited, denied } from '@/lib/workspace-access'
 
 // The stored buyer profile, re-normalized on the way out (null when none is saved or it no longer validates).
 async function buyer(db: Db, userId: string) {
@@ -24,7 +24,8 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  const no = denied(user, 'configure'); if (no) return no
+  const no = await denied(user, 'configure'); if (no) return no
+  const done = audited(user, 'settings.changed', 'profile')
   if (!(await rateLimit(`profile:${user.tenantId}`, 20, 60_000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   const body = await req.json().catch(() => null)
   const db = await getDb()
@@ -49,5 +50,5 @@ export async function POST(req: NextRequest) {
   // Optional: the name used in drafts. Only changed when the caller sends it; blank clears it (drafts then refuse).
   if (typeof body?.business_name === 'string') await writeBusinessName(db, user.tenantId, body.business_name)
   // Return the canonical stored values so the page never shows text the server did not keep.
-  return NextResponse.json({ ok: true, ...await readSellerProfile(db, user.tenantId), business_name: await readBusinessName(db, user.tenantId), buyer: await buyer(db, user.tenantId) })
+  return done({ ok: true, ...await readSellerProfile(db, user.tenantId), business_name: await readBusinessName(db, user.tenantId), buyer: await buyer(db, user.tenantId) })
 }

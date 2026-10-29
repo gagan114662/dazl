@@ -11,7 +11,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
   const { lead } = await params
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  const no = denied(user, 'operate'); if (no) return no
+  const no = await denied(user, 'operate'); if (no) return no
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad origin' }, { status: 403 })
   if (!/^[a-f0-9]{24}$/.test(lead)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   if (!(await rateLimit(`domain-review:${user.tenantId}`, 30, 60_000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })

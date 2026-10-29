@@ -5,7 +5,7 @@ import { getDb } from '@/lib/db/client'
 import { writeAudit, connectorStatus, removeCredential, readRecentAudit, writeCredential } from '@/lib/connectors/store'
 import { sameOriginJson } from '@/lib/same-origin'
 import { enrichmentWriteLimit } from '@/lib/settings/enrichment-guard'
-import { denied, stale } from '@/lib/workspace-access'
+import { audited, denied, stale } from '@/lib/workspace-access'
 
 const CONNECTORS = ['enrich:apollo', 'enrich:pdl']
 
@@ -21,8 +21,9 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  const no = denied(user, 'configure'); if (no) return no
-  const old = stale(user); if (old) return old
+  const no = await denied(user, 'configure'); if (no) return no
+  const done = audited(user, 'credential.changed', 'enrichment')
+  const old = await stale(user); if (old) return old
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad origin' }, { status: 403 })
   const limited = await enrichmentWriteLimit(user.tenantId)
   if (!limited.ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429, headers: { 'Retry-After': String(limited.retryAfterS) } })
@@ -32,11 +33,11 @@ export async function POST(req: NextRequest) {
   const db = await getDb()
   if (body.disconnect) {
     await removeCredential(db, user.tenantId, body.connector)
-    return NextResponse.json({ ok: true, disconnected: true })
+    return done({ ok: true, disconnected: true }, undefined, { connector: body.connector })
   }
   const key = (body.key ?? '').trim()
   if (key.length < 16 || key.length > 200) return NextResponse.json({ error: 'That does not look like an API key' }, { status: 400 })
   await writeCredential(db, user.tenantId, body.connector, key)
   await writeAudit(db, { tenantId: user.tenantId, connector: body.connector, lookup: 'key saved', status: 'ok', results: 0 })
-  return NextResponse.json({ ok: true })
+  return done({ ok: true }, undefined, { connector: body.connector })
 }

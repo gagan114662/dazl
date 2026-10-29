@@ -1,8 +1,8 @@
 # Durable actor audit trail (#371)
 
-Status: increment 1 built (contract, database enforcement, member/session/recovery events, scoped search and export,
-retention). Increment 2 covers credentials, billing, sends, CRM, pipeline, export, deletion and route-level policy
-refusals, plus time-bounded support access.
+Status: increment 1 (contract, database enforcement, member/session/recovery events, scoped search and export,
+retention) and increment 2 (route-level events and refusals for credentials, billing, sends, CRM, lead state,
+export and deletion) built. Time-bounded support access needs an owner decision; see the end of this note.
 
 ## Contract
 
@@ -44,8 +44,35 @@ refusals, plus time-bounded support access.
 
 ## Increment 2
 
-- Credential saves and removals (model key, connectors, CRM, Gmail), billing checkout/portal, outreach sends and
-  autopilot changes, CRM pushes, pipeline stage changes, exports, deletions.
-- Every `denied()` and `stale()` refusal at the route layer.
-- Support access: a grant an owner approves, with an expiry, recorded as `support` actor events, after which access
-  ends on its own.
+- `requireUser()` adds the request id (`correlationId`) to the session user, so every event a route records links
+  to its request log line (which names the route).
+- `denied()` and `stale()` are async and record every refusal: `policy.denied` (with `needs` and `role`) and
+  `policy.reauth_required`.
+- Privileged handlers record their success with `audit()` / `audited()` (`lib/workspace-access.ts`). An event
+  written at the route layer comes after the change. If writing it fails, the action is not undone; the failure is
+  reported through `captureError` and never dropped silently. The changes that run inside the Db layer's
+  transactions (members, sessions, recovery, Stripe plan changes) record in the same transaction.
+- Covered: credential saves, removals and rotations (model key, enrichment, social, Cal.com, CRM, Gmail
+  connect/callback/disconnect), settings (profile, memory, competitors, outreach), billing (checkout, portal, and the
+  Stripe webhook's plan changes as `service:stripe`), sends and send settings (message approve/skip/send/retry,
+  sequences, autopilot, replies/follow-ups), CRM pushes, lead state (confirm, unconfirm, quarantine, release), play
+  offer, scan launch, lead export, deletions (monitor, commenter import, warm connections, warm path), and email
+  change requests.
+- `test/tenant-isolation-manifest.ts` names the event of every configure, billing, members, send, export and fresh
+  handler (`audit`), and a test reads each handler and checks it records that event. The role sweep now asserts one
+  denied event per refusal.
+
+Not covered: sends made by the scheduled tick (sequences, follow-ups) have no human actor. They are already recorded
+per message in the outreach ledger; adding them here as `service:tick` events is a follow-up.
+
+## Support access: needs an owner decision
+
+dazl has no support or staff identity today: nobody outside a workspace can read it, and this PR adds no way to.
+A time-bounded grant could look like this:
+
+- an owner grants N hours (at most 72) from Settings;
+- every support request in that window is a `support` actor event;
+- the grant ends on its own.
+
+But that needs decisions first: who support is, how they authenticate (an internal IdP? per-person accounts?), and
+what they may see (read-only?). Until those exist, there is no support access to bound.

@@ -18,7 +18,7 @@ export async function GET(req:NextRequest){
 export async function POST(req:NextRequest){
  const user=await requireUser()
  if(!user)return NextResponse.json({error:'Not signed in'},{status:401})
- const no=denied(user,'operate');if(no)return no
+ const no=await denied(user,'operate');if(no)return no
  if(!sameOriginJson(req))return NextResponse.json({error:'Bad request'},{status:400})
  const raw=await req.text()
  if(raw.length>2000)return NextResponse.json({error:'That request is too large.'},{status:400})

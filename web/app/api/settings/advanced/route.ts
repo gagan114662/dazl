@@ -7,7 +7,7 @@ import { advFlags, UI_PLATFORMS, connectorId, CONSENT_VERSION, isAdvPlatform, pl
 import { tinyfishEnabled } from '@/lib/search/tinyfish'
 import { rateLimit } from '@/lib/rate-limit'
 import { sameOriginJson } from '@/lib/same-origin'
-import { denied, stale } from '@/lib/workspace-access'
+import { audited, denied, stale } from '@/lib/workspace-access'
 
 // Status never includes a credential. When the operator has not enabled the tier, it reports available: false.
 export async function GET() {
@@ -32,8 +32,9 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  const no = denied(user, 'configure'); if (no) return no
-  const old = stale(user); if (old) return old
+  const no = await denied(user, 'configure'); if (no) return no
+  const done = audited(user, 'credential.changed', 'social')
+  const old = await stale(user); if (old) return old
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   const body = await req.json().catch(() => null)
   const f = advFlags()
@@ -43,10 +44,10 @@ export async function POST(req: NextRequest) {
   if (body.action === 'consent') {
     if (body.accept !== true || body.version !== CONSENT_VERSION) return NextResponse.json({ error: 'Consent not recorded' }, { status: 400 })
     await writeConsent(db, user.tenantId, scopeFor(p))
-    return NextResponse.json({ ok: true })
+    return done({ ok: true }, undefined, { action: body.action })
   }
-  if (body.action === 'revoke') { await removeConsent(db, user.tenantId, scopeFor(p)); await setEnabled(db, user.tenantId, connectorId(p), false); return NextResponse.json({ ok: true }) }
-  if (body.action === 'toggle' && typeof body.enabled === 'boolean') return NextResponse.json({ ok: await setEnabled(db, user.tenantId, connectorId(p), body.enabled) })
+  if (body.action === 'revoke') { await removeConsent(db, user.tenantId, scopeFor(p)); await setEnabled(db, user.tenantId, connectorId(p), false); return done({ ok: true }, undefined, { action: body.action }) }
+  if (body.action === 'toggle' && typeof body.enabled === 'boolean') return done({ ok: await setEnabled(db, user.tenantId, connectorId(p), body.enabled) }, undefined, { action: body.action })
   if (body.action === 'save') {
     const rl = (await rateLimit(`adv:${user.tenantId}`, 10, 60 * 60 * 1000))
     if (!rl.ok) return NextResponse.json({ error: 'Too many attempts. Try again later.' }, { status: 429 })
@@ -55,7 +56,7 @@ export async function POST(req: NextRequest) {
     if (session.length < 10 || session.length > 8000) return NextResponse.json({ error: 'That does not look like a valid session' }, { status: 400 })
     if (!process.env.DAZL_MASTER_KEY) return NextResponse.json({ error: 'Key storage is not available right now' }, { status: 503 })
     await writeCredential(db, user.tenantId, connectorId(p), session)
-    return NextResponse.json({ ok: true, last4: session.slice(-4) })
+    return done({ ok: true, last4: session.slice(-4) }, undefined, { action: body.action })
   }
   return NextResponse.json({ error: 'Bad request' }, { status: 400 })
 }
@@ -63,9 +64,10 @@ export async function POST(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  const no = denied(user, 'configure'); if (no) return no
-  const old = stale(user); if (old) return old
+  const no = await denied(user, 'configure'); if (no) return no
+  const done = audited(user, 'credential.removed', 'social')
+  const old = await stale(user); if (old) return old
   const p = req.nextUrl.searchParams.get('platform')
   if (!isAdvPlatform(p)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
-  return NextResponse.json({ ok: await removeCredential(await getDb(), user.tenantId, connectorId(p)) })
+  return done({ ok: await removeCredential(await getDb(), user.tenantId, connectorId(p)) }, undefined, { platform: p })
 }

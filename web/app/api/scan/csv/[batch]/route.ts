@@ -13,7 +13,7 @@ import type { Action } from '@/lib/workspaces'
 async function load(req: NextRequest, batch: string, action: Action) {
   const user = await requireUser()
   if (!user) return { res: NextResponse.json({ error: 'Not signed in' }, { status: 401 }) }
-  const no = denied(user, action)
+  const no = await denied(user, action)
   if (no) return { res: no }
   if (!/^[a-f0-9]{24}$/.test(batch)) return { res: NextResponse.json({ error: 'Not found' }, { status: 404 }) }
   const status = batchStatus(getScanDb(), user.tenantId, batch)

@@ -71,6 +71,22 @@ test('every session handler that does more than read checks its role first, for 
   assert.deepEqual(failures, [])
 })
 
+test('every privileged handler records an audit event, under the name the manifest gives it', () => {
+  const failures: string[] = []
+  for (const r of ROUTES) {
+    if (r.auth !== 'session') continue
+    const privileged = ['configure', 'billing', 'members', 'send', 'export'].includes(r.role) || r.fresh
+    if (privileged && !r.audit) failures.push(`${r.method} /api/${r.path}: privileged (${r.role}${r.fresh ? ', fresh' : ''}) but names no audit event`)
+    if (!r.audit || r.audit === 'lib' || r.audit === 'read') continue
+    const src = readFileSync(path.join(web, 'app/api', r.path, 'route.ts'), 'utf8')
+    const start = src.search(new RegExp(`export (?:async )?function ${r.method}\\b`))
+    const next = src.slice(start + 1).search(/\nexport /)
+    const body = src.slice(start, next === -1 ? undefined : start + 1 + next)
+    if (!body.includes(`'${r.audit}'`) || !/\b(?:audit|audited|record)\(/.test(body)) failures.push(`${r.method} /api/${r.path}: does not record '${r.audit}'`)
+  }
+  assert.deepEqual(failures, [])
+})
+
 const SCOPED = ROUTES.filter(r => r.auth === 'session' && r.crossTenant === 'session-scope').length
 const SESSION = ROUTES.flatMap(r => r.auth === 'session' ? [r] : [])
 const REFUSED = ROLES.reduce((n, role) => n + SESSION.filter(r => !can(role, r.role)).length, 0)

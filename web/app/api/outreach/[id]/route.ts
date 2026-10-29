@@ -3,7 +3,7 @@ import { getScanDb, requireUser } from '@/lib/scan/service'
 import { approve, editDraft, OutreachError, resolveUncertain, sendMessage, skip } from '@/lib/outreach/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
-import { denied } from '@/lib/workspace-access'
+import { audited, denied } from '@/lib/workspace-access'
 import type { Action } from '@/lib/workspaces'
 
 const STATUS: Record<string, number> = { not_sales_contact: 422, lead_currentness_unconfirmed: 409, lead_ungraded: 409, lead_evidence_withdrawn: 409, domain_unconfirmed: 409, review_unreadable: 409, not_found: 404, already_sending: 409, already_uncertain: 409, not_approved: 409, not_a_draft: 409, not_editable: 409, not_skippable: 409, not_uncertain: 409, suppressed: 409, daily_cap: 429, gmail_rate_limited: 429 }
@@ -11,7 +11,7 @@ const STATUS: Record<string, number> = { not_sales_contact: 422, lead_currentnes
 async function guard(req: NextRequest, id: string, action: Action) {
   const user = await requireUser()
   if (!user) return { res: NextResponse.json({ error: 'Not signed in' }, { status: 401 }) }
-  const no = denied(user, action)
+  const no = await denied(user, action)
   if (no) return { res: no }
   if (!sameOriginJson(req)) return { res: NextResponse.json({ error: 'Bad request' }, { status: 400 }) }
   if (!/^[a-f0-9]{24}$/.test(id)) return { res: NextResponse.json({ error: 'Not found' }, { status: 404 }) }
@@ -40,6 +40,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   const { id } = await ctx.params
   const g = await guard(req, id, 'operate')
   if (!g.user) return g.res
+  const done = audited(g.user, 'outreach.message_action', 'outreach_message', id)
   const body = await req.json().catch(() => null)
   const action = body?.action
   const db = getScanDb()
@@ -49,10 +50,11 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     else if (action === 'mark_sent') resolveUncertain(db, g.user.tenantId, id, 'sent')
     else if (action === 'retry') resolveUncertain(db, g.user.tenantId, id, 'retry')
     else if (action === 'send') {
-      const no = denied(g.user, 'send'); if (no) return no
+      const no = await denied(g.user, 'send'); if (no) return no
       if (!(await rateLimit(`send:${g.user.tenantId}`, 60, 60 * 60 * 1000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
-      return NextResponse.json({ result: await sendMessage(db, g.user.tenantId, id) })
+      const result = await sendMessage(db, g.user.tenantId, id)
+      return done({ result }, undefined, { action })
     } else return NextResponse.json({ error: 'Bad request' }, { status: 400 })
-    return NextResponse.json({ ok: true })
+    return done({ ok: true }, undefined, { action })
   } catch (e) { return fail(e) }
 }

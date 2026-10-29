@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { writePlan } from '../plans.ts'
 import type { Db, Tx, TxBody } from '../db/client.ts'
+import { recordTx } from '../audit.ts'
 
 // Stripe-Signature check: HMAC-SHA256 over `${t}.${rawBody}`, 5-minute replay window.
 // Ported from the repo worker's billing.ts, using node:crypto.
@@ -195,6 +196,7 @@ export async function applyStripeEvent(db: Db, event: StripeEvent, deps: StripeD
     } else if (!fx.ends && created !== null && row.stripe_event_at != null && created < Number(row.stripe_event_at)) return 'stale'
     yield* link(t, tenantId, o.customer, fx.subscription)
     yield* writePlan(t, tenantId, fx.plan)
+    if (row.plan !== fx.plan) yield* recordTx(t, { tenantId, actorId: 'service:stripe', actorKind: 'service', action: 'billing.plan_changed', resourceType: 'billing', resourceId: tenantId, summary: { from: row.plan ?? 'free', to: fx.plan, event_type: event.type } })
     if (fx.status) yield* t.run('UPDATE tenant_plans SET subscription_status = ? WHERE tenant_id = ?', [fx.status, tenantId])
     if (created !== null) yield* t.run('UPDATE tenant_plans SET stripe_event_at = ? WHERE tenant_id = ? AND (stripe_event_at IS NULL OR stripe_event_at < ?)', [created, tenantId, created])
     return tie ? 'reconciled' : 'applied'

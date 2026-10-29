@@ -7,7 +7,7 @@ import { toCsv } from '@/lib/scan/csv'
 import { eventDateCopy } from '@/lib/scan/date-copy'
 import { exportEvidenceOrigin } from '@/lib/scan/evidence-origin'
 import { bestPeople } from '@/lib/people/best-person'
-import { denied } from '@/lib/workspace-access'
+import { audit, denied } from '@/lib/workspace-access'
 
 const COLUMNS = [
   { key: 'company', label: 'Company' },
@@ -44,7 +44,7 @@ const COLUMNS = [
 export async function GET(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  const no = denied(user, 'export'); if (no) return no
+  const no = await denied(user, 'export'); if (no) return no
   const jobId = req.nextUrl.searchParams.get('job_id') ?? ''
   const db = await getDb()
   if (jobId && !/^[a-f0-9]{24}$/.test(jobId)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
@@ -54,6 +54,7 @@ export async function GET(req: NextRequest) {
   const rows = await exportLeads(db, user.tenantId, jobId || undefined, 5000, includeFixtures)
   const via = await readGdeltAttribution(db, user.tenantId, rows.map(r => String(r.lead_id)))
   const people = await bestPeople(db, user.tenantId, rows as { lead_id: string; job_id: string }[])
+  await audit(user, 'export.leads', 'scan_job', jobId || null, { rows: rows.length, include_fixtures: includeFixtures })
   const csv = toCsv(rows.map(r => ({ ...r, ...people.get(r.lead_id as string), discovered_via: via.get(String(r.lead_id))?.text ?? '', discovered_via_link: via.get(String(r.lead_id))?.link ?? '', evidence_origin_label: exportEvidenceOrigin(r as Parameters<typeof exportEvidenceOrigin>[0]), date_context: eventDateCopy(typeof r.event_date === 'string' ? r.event_date : null, typeof r.date_status === 'string' ? r.date_status : null), created_at: typeof r.created_at === 'number' ? new Date(r.created_at * 1000).toISOString() : r.created_at })), COLUMNS)
   return new NextResponse(csv, {
     headers: {

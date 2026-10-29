@@ -4,7 +4,7 @@ import { getDb } from '@/lib/db/client'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { addUserReportedPath, removeUserReportedPath, warmPathsForLead } from '@/lib/warm/connections'
-import { denied } from '@/lib/workspace-access'
+import { audit, denied } from '@/lib/workspace-access'
 import type { Action } from '@/lib/workspaces'
 
 // Warm paths to one lead's contacts. Degrees are labelled honestly: first_degree comes
@@ -14,7 +14,7 @@ import type { Action } from '@/lib/workspaces'
 async function guard(req: NextRequest, leadId: string, action: Action) {
   const user = await requireUser()
   if (!user) return { res: NextResponse.json({ error: 'Not signed in' }, { status: 401 }) }
-  const no = denied(user, action)
+  const no = await denied(user, action)
   if (no) return { res: no }
   if (req.method !== 'GET' && !sameOriginJson(req)) return { res: NextResponse.json({ error: 'Bad origin' }, { status: 403 }) }
   if (!/^[a-f0-9]{24}$/.test(leadId)) return { res: NextResponse.json({ error: 'Not found' }, { status: 404 }) }
@@ -46,5 +46,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ l
   if (g.res) return g.res
   const body = await req.json().catch(() => null) as { id?: string } | null
   if (!body || typeof body.id !== 'string') return NextResponse.json({ error: 'id_required' }, { status: 400 })
-  return NextResponse.json({ deleted: await removeUserReportedPath(await getDb(), g.user!.tenantId, body.id) })
+  const deleted = await removeUserReportedPath(await getDb(), g.user!.tenantId, body.id)
+  if (deleted) await audit(g.user!, 'warm_path.deleted', 'lead', lead, { path_id: body.id })
+  return NextResponse.json({ deleted })
 }

@@ -14,13 +14,13 @@ import { recordTrialScan, trialStatus } from '@/lib/scan/trial'
 import { getAuthDb, sellerProfile } from '@/lib/auth-db'
 import { describeRunBudget, normalizeScanBudget } from '@/lib/scan/run-budget'
 import { admitTrialScan, linkTrialReservation } from '@/lib/billing/trial-budget'
-import { denied } from '@/lib/workspace-access'
+import { audit, denied } from '@/lib/workspace-access'
 import { cleanOffer, effectiveOffer } from '@/lib/scan/play-offer'
 
 export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  const no = denied(user, 'operate'); if (no) return no
+  const no = await denied(user, 'operate'); if (no) return no
 
   const rl = (await rateLimit(`scan:${user.tenantId}`, 10, 60 * 60 * 1000))
   // the shared limit could not be checked: no scan and no trial admission (lib/rate-limit.ts fails closed)
@@ -107,5 +107,6 @@ export async function POST(req: NextRequest) {
   }
   after(() => kickRunner(db))
   // A supplied budget is answered with exactly which paid surfaces it allows or refuses and what the limit is NOT.
+  await audit(user, 'scan.started', 'scan_job', job_id, { funded_by: funded, first5 })
   return NextResponse.json(nb.budget ? { job_id, budget: describeRunBudget(nb.budget) } : { job_id }, { status: 202 })
 }

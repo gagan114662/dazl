@@ -1,7 +1,8 @@
 import { migrateSourceReview } from './source-review.ts'
 import { migrateInsertionOrder } from '../db/insertion-order.ts'
 import { migrateSequences } from '../outreach/sequences.ts'
-import { cookies } from 'next/headers'
+import { cookies, headers } from 'next/headers'
+import { requestIdOf } from '../ops/request-log.ts'
 import { getAuthDb, getSessionUser } from '../auth-db'
 import { migrateScan } from './store.ts'
 import { migrateWatch } from '../watch.ts'
@@ -60,6 +61,8 @@ export function getScanDb() {
   return db
 }
 
+// The signed-in member, with the request id the proxy gave this request (recorded with its audit events).
 export async function requireUser() {
-  return await getSessionUser((await cookies()).get('dazl_session')?.value)
+  const user = await getSessionUser((await cookies()).get('dazl_session')?.value)
+  return user && { ...user, correlationId: requestIdOf({ headers: await headers() }) }
 }

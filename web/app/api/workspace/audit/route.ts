@@ -16,7 +16,7 @@ const csvCell = (v: unknown) => {
 export async function GET(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  const no = denied(user, 'members'); if (no) return no
+  const no = await denied(user, 'members'); if (no) return no
   const q = req.nextUrl.searchParams
   const num = (k: string) => { const n = Number(q.get(k)); return Number.isSafeInteger(n) && n > 0 ? n : undefined }
   const action = q.get('action') ?? undefined, actor = q.get('actor') ?? undefined

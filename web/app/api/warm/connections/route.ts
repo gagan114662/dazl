@@ -4,7 +4,7 @@ import { getDb } from '@/lib/db/client'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { connectionImportStatus, deleteConnections, importConnectionsCsv, MAX_IMPORT_ROWS } from '@/lib/warm/connections'
-import { denied } from '@/lib/workspace-access'
+import { audit, denied } from '@/lib/workspace-access'
 
 // The user's OWN LinkedIn connections export (Settings -> Data privacy -> Connections.csv),
 // uploaded intentionally by the user. Nothing is fetched, scraped or synced - this file is
@@ -21,7 +21,7 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  const no = denied(user, 'operate'); if (no) return no
+  const no = await denied(user, 'operate'); if (no) return no
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad origin' }, { status: 403 })
   if (!(await rateLimit(`warm-import:${user.tenantId}`, 10, 60_000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   const body = await req.json().catch(() => null) as { csv?: string; confirm_replace?: boolean } | null
@@ -41,8 +41,9 @@ export async function POST(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  const no = denied(user, 'operate'); if (no) return no
+  const no = await denied(user, 'operate'); if (no) return no
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad origin' }, { status: 403 })
   const deleted = await deleteConnections(await getDb(), user.tenantId)
+  await audit(user, 'warm.deleted', 'warm_connections', null, { deleted })
   return NextResponse.json({ deleted })
 }

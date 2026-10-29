@@ -11,7 +11,7 @@ import { denied } from '@/lib/workspace-access'
 export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  const no = denied(user, 'operate'); if (no) return no
+  const no = await denied(user, 'operate'); if (no) return no
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   const rl = (await rateLimit(`icp:${user.tenantId}`, 30, 60 * 60 * 1000))
   if (!rl.ok) return NextResponse.json({ error: 'Too many requests. Try again later.' }, { status: 429, headers: { 'Retry-After': String(rl.retryAfterS) } })

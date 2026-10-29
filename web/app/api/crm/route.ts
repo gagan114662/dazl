@@ -6,7 +6,7 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 import { rateLimit } from '@/lib/rate-limit'
-import { denied, stale } from '@/lib/workspace-access'
+import { audited, denied, stale } from '@/lib/workspace-access'
 
 export async function GET() {
   const user = await requireUser()
@@ -20,15 +20,16 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  const no = denied(user, 'operate'); if (no) return no
+  const no = await denied(user, 'operate'); if (no) return no
+  const done = audited(user, 'crm.changed', 'crm')
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   if (!(await rateLimit(`crm:${user.tenantId}`, 20, 60_000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   const body = await req.json().catch(() => null)
   const db = getScanDb()
   switch (body?.action) {
     case 'save': {
-      const cannot = denied(user, 'configure'); if (cannot) return cannot
-      const old = stale(user); if (old) return old
+      const cannot = await denied(user, 'configure'); if (cannot) return cannot
+      const old = await stale(user); if (old) return old
       const provider = body?.provider
       if (!['hubspot', 'pipedrive', 'webhook'].includes(provider)) return NextResponse.json({ error: 'Pick HubSpot, Pipedrive or webhook' }, { status: 400 })
       const key = typeof body?.key === 'string' ? body.key.trim() : ''
@@ -43,13 +44,13 @@ export async function POST(req: NextRequest) {
       if (provider !== 'webhook' && key.length < 8) return NextResponse.json({ error: 'That key looks too short' }, { status: 400 })
       if (!process.env.DAZL_MASTER_KEY) return NextResponse.json({ error: 'Key storage is not available right now' }, { status: 503 })
       saveCrmConfig(db, user.tenantId, provider === 'webhook' ? { provider, url } : { provider, key })
-      return NextResponse.json({ ok: true })
+      return done({ ok: true }, undefined, { action: 'save', provider })
     }
     case 'disconnect': {
-      const cannot = denied(user, 'configure'); if (cannot) return cannot
-      const old = stale(user); if (old) return old
+      const cannot = await denied(user, 'configure'); if (cannot) return cannot
+      const old = await stale(user); if (old) return old
       disconnectCrm(db, user.tenantId)
-      return NextResponse.json({ ok: true })
+      return done({ ok: true }, undefined, { action: 'disconnect' })
     }
     case 'push': {
       const cfg = getCrmConfig(db, user.tenantId)
@@ -60,7 +61,7 @@ export async function POST(req: NextRequest) {
       try {
         const msg = await pushLead(cfg, lead)
         auditPush(db, user.tenantId, cfg.provider, lead.company, true)
-        return NextResponse.json({ ok: true, message: msg })
+        return done({ ok: true, message: msg }, undefined, { action: 'push', lead_id: leadId, provider: cfg.provider })
       } catch (e) {
         auditPush(db, user.tenantId, cfg.provider, lead.company, false)
         captureError(e, { source: 'route', where: '/api/crm', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) })
