@@ -182,3 +182,57 @@ test('#349 HOLD-3 caller paths: each prefix offer under an incompatible recorded
     } finally { db.close() }
   }
 })
+
+// Instinct's live verification on #349 (Gagan's original account): a request stating the same product as the saved
+// seller sentence was a false conflict, because the parsed product was compared with the unparsed saved sentence. Both
+// sides now go through the same offer parsing, then an exact comparison.
+const DENTAL_PRODUCT = 'appointment booking and reminder software'
+test('#349 LIVE same product: the request and the saved dental seller sentence are one offer; no conflict, saved text kept', () => {
+  for (const query of [DENTAL_PRODUCT, `We sell ${DENTAL_PRODUCT}.`, `Find dental practices in NYC. We sell ${DENTAL_PRODUCT}.`, `Our product: ${DENTAL_PRODUCT}`, `We offer ${DENTAL_PRODUCT} to clinics`]) {
+    assert.deepEqual(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query }, ''), { offer: DENTAL_SELLER, source: 'recorded', conflict: null }, query)
+    assert.deepEqual(effectiveOffer({ query }, DENTAL_SELLER), { offer: DENTAL_SELLER, source: 'profile', conflict: null }, query)
+  }
+  assert.ok(sameOffer(DENTAL_PRODUCT, DENTAL_SELLER))
+  assert.ok(sameOffer('Appointment  Booking and Reminder Software', DENTAL_SELLER), 'case and spacing only')
+})
+
+test('#349 LIVE controls: genuinely different offers, negations and buyer-only sentences still conflict (no substring or word-set match)', () => {
+  // the London CRM/outbound request against the dental offer
+  assert.deepEqual(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: Q }, ''), { offer: null, source: 'conflict', conflict: { stated: CRM, recorded: DENTAL_SELLER } })
+  for (const [stated, saved] of [
+    ['appointment booking software', DENTAL_SELLER], // a subset of the words is a different offer
+    ['reminder software', DENTAL_SELLER],
+    ['appointment booking and reminder software and payroll', DENTAL_SELLER], // a superset too
+    ['reminder and appointment booking software', DENTAL_SELLER], // same words, other order
+    ['booking software', 'We sell booking software and reminder software to clinics.'],
+    [DENTAL_PRODUCT, `We do not sell ${DENTAL_PRODUCT}.`], // a negated saved sentence sells nothing
+    [DENTAL_PRODUCT, 'We sell to independent dental practices in New York City.'], // buyers, not an offer
+    ['SEO but not PPC', 'PPC but not SEO'],
+  ] as const) {
+    assert.equal(sameOffer(stated, saved), false, `${stated} | ${saved}`)
+    assert.equal(effectiveOffer({ query: `We sell ${stated}.` }, saved).source, 'conflict', `${stated} | ${saved}`)
+  }
+})
+
+test('#349 LIVE caller paths: the same-product play drafts, rewrites and scores with the saved dental offer; London still refuses', async () => {
+  const db = setup(DENTAL_SELLER)
+  try {
+    db.prepare('UPDATE scan_jobs SET query = ? WHERE id = ?').run(`Independent dental practices in New York City. We sell ${DENTAL_PRODUCT}.`, 'dental')
+    // resolver (Home, Campaign): the saved offer, unchanged, no conflict, nothing chosen or rewritten
+    assert.deepEqual(await readPlayOffer(sqliteDb(db), 'A', 'dental'), { offer: DENTAL_SELLER, source: 'recorded', conflict: null })
+    assert.equal((db.prepare("SELECT offer FROM scan_jobs WHERE id = 'dental'").get() as { offer: string | null }).offer, null, 'no offer chosen on the tenant\'s behalf')
+    assert.equal((db.prepare("SELECT sells FROM users WHERE id = 'A'").get() as { sells: string }).sells, DENTAL_SELLER, 'saved offer not rewritten')
+    // template drafting and scoring use the dental offer; the AI rewrite is not refused for a conflict
+    const draft = createDraft(db, 'A', 'lead-dental', 'Acme')
+    assert.match(body(db, draft), /appointment booking/)
+    assert.match(offerBlockFor(db, 'A', 'dental'), /appointment booking and reminder software/)
+    const r = recording()
+    const p = await polishDraft(db, 'A', draft, 'Acme', { master, providers: r.providers })
+    assert.notEqual((p as { reason?: string }).reason, 'offer_conflict')
+    assert.ok(r.prompts.some(x => x.includes('appointment booking and reminder software')), 'the rewrite states the saved offer')
+    // the London CRM play is still contested on every path
+    assert.equal((await readPlayOffer(sqliteDb(db), 'A', 'london'))!.source, 'conflict')
+    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme'), /offer_conflict/)
+    assert.equal(offerBlockFor(db, 'A', 'london'), '')
+  } finally { db.close() }
+})

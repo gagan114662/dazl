@@ -70,12 +70,17 @@ export function offerOfSeller(seller: string | null | undefined): string | null 
   return cleanOffer(offer) || null
 }
 
-// Two offers are the same only when they are the same text, ignoring case and spacing. Nothing else is normalized:
-// word order, negation ("SEO but not PPC" / "PPC but not SEO"), exclusions and buyer qualifiers all carry meaning, so
-// any other difference is a choice for the tenant, never inferred.
+// Two offers are the same only when the offer each one states is the same text, ignoring case and spacing. Both sides go
+// through the same parsing first (statedOffer: a seller sentence "We sell <offer> to <buyers>." states <offer>; text that
+// states nothing, like a bare product phrase, is taken as written), so "appointment booking and reminder software" and
+// the saved "We sell appointment booking and reminder software to independent dental practices in New York City." are
+// one offer (#349). Nothing else is normalized: word order, negation ("SEO but not PPC" / "PPC but not SEO"), a saved
+// sentence that sells nothing ("We do not sell hardware.", "We sell to dental practices."), and any other wording
+// difference are a choice for the tenant, never inferred. No substring or word-set matching.
 const exact = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase()
+const offerCore = (s: string) => exact(statedOffer(s) ?? s)
 export function sameOffer(a: string, b: string): boolean {
-  const x = exact(a), y = exact(b)
+  const x = offerCore(a), y = offerCore(b)
   return !!x && x === y
 }
 
