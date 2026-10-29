@@ -3,11 +3,12 @@
 // the page text, the model's reply and the lead - so a quote or contact that matched the page before still matches
 // after, and the replay reaches the same verdicts on the same structure.
 //
-// Redacted: email local parts (the domain is kept: contact-domain checks need it, and a company domain is not a
-// person), phone digits (separators kept, so phone-shaped values stay phone-shaped), LinkedIn /in/ slugs, and every
+// Redacted: email local parts (the domain is kept because contact-domain checks need it; a domain can still identify a
+// small company), phone digits (separators kept, so phone-shaped values stay phone-shaped), LinkedIn /in/ slugs, and every
 // person name the run itself extracted (a "name" field in a model reply or a lead). KNOWN LIMIT: a person named only in
-// page text, never extracted as a lead or contact name, is not found by this pass; recorded Worlds stay tenant-scoped
-// and are not published until a stronger name pass exists (docs/design/agent-evals.md, "Redaction").
+// page text, never extracted as a lead or contact name, is not found by this pass, and domains are kept. `redacted: true`
+// means this pass ran: it is not permission to publish and not proof of anonymisation. Recorded Worlds are private,
+// tenant-scoped and unpublished (docs/design/agent-evals.md, "Redaction").
 import { createHmac, randomBytes } from 'node:crypto'
 import type { Trace } from './trace.ts'
 
@@ -42,6 +43,7 @@ export function redactTrace(t: Trace, salt: Buffer = randomBytes(16)): Trace {
     for (const n of nameList) r = r.split(n).join(`Person-${h(n).slice(0, 6)}`)
     return r
   }
-  const deep = (v: unknown): unknown => typeof v === 'string' ? str(v) : Array.isArray(v) ? v.map(deep) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, deep(x)])) : v
+  // Object keys too: a World keys pages and HTTP answers by URL, and a URL can carry an email or a profile slug.
+  const deep = (v: unknown): unknown => typeof v === 'string' ? str(v) : Array.isArray(v) ? v.map(deep) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [str(k), deep(x)])) : v
   return { ...t, redacted: true, input: deep(t.input) as Trace['input'], spans: t.spans.map(s => ({ ...s, input: deep(s.input) as Record<string, unknown>, output: deep(s.output) })), ...(t.output ? { output: deep(t.output) as Trace['output'] } : {}) }
 }

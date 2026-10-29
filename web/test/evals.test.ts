@@ -199,7 +199,11 @@ test('redaction: emails, phones, LinkedIn slugs and extracted person names are r
   const r = redactTrace({ ...t, synthetic: false, synthetic_defaults: undefined }, Buffer.alloc(16, 7))
   const all = JSON.stringify(r)
   for (const pii of ['hello@querix.example', '7946 0958', 'jane-doe-123', 'Dana Example']) assert.ok(!all.includes(pii), pii)
-  assert.ok(all.includes('@querix.example'))                  // the company domain is kept
+  assert.ok(all.includes('@querix.example'))                  // the company domain is kept (a documented gap, not anonymisation)
+  // object keys are redacted too (a World keys pages by URL)
+  const keyed = redactTrace({ ...t, synthetic: false, synthetic_defaults: undefined, spans: [{ ...t.spans[0], output: { 'https://x.example/u/hello@querix.example': 1, 'linkedin.com/in/jane-doe-123': 2 } }] }, Buffer.alloc(16, 7))
+  const keys = Object.keys(keyed.spans[0].output as object).join(' ')
+  assert.ok(!keys.includes('hello@querix.example') && !keys.includes('jane-doe-123'), keys)
   assert.ok(all.includes('2026-10-10') && all.includes('2026-11-15') && all.includes('Updated 2026-10-10 12:30.')) // a date then a time is not a phone
   const tokens = all.match(/p[0-9a-f]{10}@querix\.example/g) ?? []
   assert.ok(tokens.length >= 2 && new Set(tokens).size === 1) // the same token in the page and in the model's reply
