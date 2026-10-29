@@ -80,8 +80,9 @@ export function newText(t: string): string {
     // a quote header in a language not listed above: a line naming an address in <...> and ending with ":"
     // ("Den mån 3 mars skrev Pat <pat@seller.example>:", undated "Pat Seller <pat@...> napisał:"). Known limit, chosen
     // on purpose: a new-text line of that shape ("my colleague <jo@...>:") also ends the new text, so words written
-    // after it are not read. That can miss an opt-out (the reply then grants nothing, and with no new text left it is
-    // held for review), but it never lets our own quoted pitch be read as the lead's interest.
+    // after it are not read. That can miss an opt-out: the reply then grants nothing, but it is held for review only
+    // when no new text is left before that line, and otherwise reads as "other" with nothing suppressed. It never
+    // lets our own quoted pitch be read as the lead's interest.
     if (QUOTE_ADDR_HEADER.test(l.trim())) break
     if (l.trimStart().startsWith('>')) continue
     out.push(l)
