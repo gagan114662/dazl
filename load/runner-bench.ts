@@ -23,10 +23,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { monitorEventLoopDelay } from 'node:perf_hooks'
 import { createRequire } from 'node:module'
+import { randomBytes } from 'node:crypto'
 
 process.env.SITECRAWL_ENABLED = '0'
 delete process.env.TINYFISH_API_KEY // TinyFish path stays disabled even if the shell exports a key
-process.env.DAZL_TRIAL_ANTHROPIC_KEY = 'load-harness-mock-key'
+// Each synthetic tenant gets its own stored (encrypted) key, the BYOK path: the trial path now needs TinyFish and
+// trial caps, which this offline bench never enables. The mock provider ignores the key; it never leaves the process.
+const MASTER = randomBytes(32)
+process.env.DAZL_MASTER_KEY = MASTER.toString('base64')
 process.env.SCAN_MAX_CONCURRENT = process.env.SCAN_MAX_CONCURRENT ?? '3'
 
 const TENANTS = num('LOAD_TENANTS', 20)
@@ -67,7 +71,7 @@ async function main() {
   const { migrateAutopilot } = await import('../web/lib/outreach/autopilot.ts')
   const { migrateLedger } = await import('../web/lib/outreach/ledger.ts')
   const { migrateSourceRuns } = await import('../web/lib/scan/source-runs.ts')
-  const { migrateKeys } = await import('../web/lib/llm/key-store.ts')
+  const { migrateKeys, saveKey } = await import('../web/lib/llm/key-store.ts')
   const { kickRunner } = await import('../web/lib/scan/runner.ts')
   const { syntheticBatch, mockProvider, mockFetchPage, fencedFetch } = await import('./mock.ts')
 
@@ -85,10 +89,11 @@ async function main() {
   for (let t = 0; t < TENANTS; t++) {
     const id = `load-tenant-${t}`
     db.prepare('INSERT INTO users (id, email, business_name, password_hash, salt) VALUES (?, ?, ?, ?, ?)').run(id, `${id}@loadtest.example`, `Loadtest ${t}`, 'x', 'x')
+    saveKey(db, id, 'anthropic', `sk-ant-api03-LOADHARNESS${String(t).padStart(6, '0')}MOCKONLY`, MASTER)
     tenants.push(id)
   }
 
-  // Synthetic jobs, all trial-funded so claimKeyedJob picks them up without a key store.
+  // Synthetic jobs on each tenant's own (mock) key.
   const batches: ReturnType<typeof syntheticBatch>[] = []
   const pageIndex = new Map<string, ReturnType<typeof syntheticBatch>[number]>()
   const jobIds: string[] = []
@@ -96,7 +101,6 @@ async function main() {
   for (let j = 0; j < TOTAL_JOBS; j++) {
     const tenant = tenants[j % tenants.length]
     const id = createQueryJob(db, tenant, { query: `load test query ${j}`, icp })
-    db.prepare("UPDATE scan_jobs SET funded_by = 'trial' WHERE id = ?").run(id)
     const batch = syntheticBatch(id, now, LEADS_PER_SCAN)
     batches.push(batch)
     for (const b of batch) pageIndex.set(b.lead.source_url, b)
@@ -117,6 +121,7 @@ async function main() {
     ground: false,
     score: false,
     memory: null,
+    master: MASTER,
   }
 
   // Web-style readers: status poll + lead-list read per iteration, like an open dashboard.
