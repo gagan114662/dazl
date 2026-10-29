@@ -271,3 +271,46 @@ test('COUNCIL-3 a quote header naming an address ends the new text, dated or not
   assert.equal(classifyReply(newText('Please send the deck to my colleague <jo@buyer.example>:\nAlso unsubscribe me')), 'uncertain')
   assert.equal(classifyReply(newText('Thanks.\nSam <sam@buyer.example>:\nunsubscribe')), 'other')
 })
+
+// Instinct's HOLD on #429: explicit rejections with positive words later, and the quoted-tail case.
+test('HOLD explicit rejections never grant consent, whatever positive words follow', () => {
+  for (const t of ['Hard pass, sounds good otherwise', 'Zero interest, call me if needed', "I'll pass, but sounds good", "We'll pass for now, let's talk next year", 'No interest, tell me more anyway', "We're good, thanks", 'Not for me, call me if that changes', 'I politely decline, sounds good though'])
+    assert.equal(classifyReply(t), 'negative', t)
+  // a bare "pass" or "zero" next to positive wording is held for review, never interest
+  for (const t of ['Please pass this along, sounds good', 'Zero budget this quarter, but tell me more'])
+    assert.equal(classifyReply(t), 'uncertain', t)
+  assert.equal(classifyReply('Sounds good, tell me more'), 'positive')
+})
+
+test('HOLD quoted-tail case: opt-out wording after an address-style quote header holds the thread for review, never a fresh opt-out', () => {
+  const plain = (s: string) => part('text/plain', s)
+  assert.equal(classify(plain('Thanks.\nSam <sam@buyer.example>:\nunsubscribe')), 'uncertain')
+  assert.equal(classify(plain("Sounds good, tell me more.\nPat Seller <pat@seller.example> napisał:\nHi Sam, quick question. To unsubscribe reply STOP")), 'uncertain')
+  assert.equal(classify(part('text/html', '<p>Sounds good, tell me more.</p><p>Pat Seller &lt;pat@seller.example&gt; napisał:</p><p>To unsubscribe reply STOP</p>')), 'uncertain', 'the HTML body too')
+  // a recognised quote header with ">" quoted lines: the quoted footer is excluded as before
+  assert.equal(classify(plain('Sounds good, tell me more\n\nOn Mon, Pat wrote:\n> To unsubscribe reply STOP')), 'positive')
+  // a tail with nothing opt-out-like changes nothing; a real opt-out in the new text still wins
+  assert.equal(classify(plain('Sounds good, tell me more.\nPat Seller <pat@seller.example> napisał:\nHi Sam, quick question about your hiring')), 'positive')
+  assert.equal(classify(plain('Please unsubscribe me.\nPat Seller <pat@seller.example> napisał:\nTo unsubscribe reply STOP')), 'opt_out')
+})
+
+test('HOLD sync, two tenants: a rejection with positive words grants nothing; the quoted-tail case stops only its own thread for review and suppresses no one', async () => {
+  const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db)
+  await tenant(db, 'A', 'me@a-seller.example'); await tenant(db, 'B', 'me@b-seller.example')
+  const a1 = sent(db, 'A', 'sam@buyer.example'), a2 = sent(db, 'A', 'kim@buyer.example'), b1 = sent(db, 'B', 'sam@buyer.example')
+  grantConsent(db, 'A', 'kim@buyer.example', { channel: 'email', scope: 'followup', basis: 'reply_interest', evidenceRef: 'gmail:earlier', now: NOW - 2 * DAY })
+  grantConsent(db, 'B', 'sam@buyer.example', { channel: 'email', scope: 'followup', basis: 'reply_interest', evidenceRef: 'gmail:earlier', now: NOW - 2 * DAY })
+  const rA = await syncReplies(db, 'A', { env: genv, master, now: NOW, fetchImpl: gmail({
+    [a1.thread]: [msg('h1', 'Sam <sam@buyer.example>', part('text/plain', 'Hard pass, sounds good otherwise'))],
+    [a2.thread]: [msg('h2', 'Kim <kim@buyer.example>', part('text/plain', 'Thanks.\nPat Seller <pat@a-seller.example> napisał:\nTo unsubscribe reply STOP'))],
+  }, []) })
+  assert.deepEqual([rA.consents, rA.reviews, rA.error], [0, 1, undefined])
+  assert.equal(cls(db, 'A', 'h1'), 'negative'); assert.equal(hasConsent(db, 'A', 'sam@buyer.example', 'email', 'followup', NOW), false)
+  assert.equal(cls(db, 'A', 'h2'), 'uncertain'); assert.equal(stopped(db, 'A', a2.thread), 'review')
+  assert.equal(hasConsent(db, 'A', 'kim@buyer.example', 'email', 'followup', NOW), false, 'follow-ups stop: consent revoked')
+  assert.equal(isSuppressed(db, 'A', 'kim@buyer.example'), false, 'the quoted words are not a fresh opt-out')
+  // tenant B, the same contact as A's first thread: untouched by A's sync
+  assert.equal(hasConsent(db, 'B', 'sam@buyer.example', 'email', 'followup', NOW), true)
+  assert.equal(isSuppressed(db, 'B', 'sam@buyer.example'), false)
+  assert.equal(stopped(db, 'B', b1.thread), null)
+})

@@ -78,6 +78,9 @@ const OPT_OUT = words([
 ])
 const NEGATIVE = words([
   'not interested', 'no thanks', 'no thank you', 'not for us', 'not a fit', 'no longer interested', 'wrong person',
+  // explicit rejections: a later positive word never turns them into interest
+  'hard pass', "(?:i'?ll|we'?ll|i will|we will|going to|gonna) pass", 'pass(?: on this| for now| on that)', 'zero interest', 'no interest',
+  'not for me', "(?:we'?re|i'?m) (?:all )?(?:good|set)(?:,? thanks)?", '(?:politely |respectfully )?decline', 'thanks,? but no',
   'no (?:me |nos )?interesa', 'no estoy interesad[oa]', 'no estamos interesados', 'pas int[ée]ress[ée]e?s?', 'non merci',
   'kein interesse', 'nicht interessiert', 'n[aã]o tenho interesse', 'n[aã]o estou interessad[oa]', 'non sono interessat[oa]', 'non siamo interessati',
   'geen interesse', 'niet ge[ïi]nteresseerd',
@@ -88,7 +91,7 @@ const AMBIGUOUS = words(['stop', 'stopp', 'remove', 'unsub\\p{L}*', 'spam', 'abu
 // dont call me", "Maybe interested later", "Why would I be interested?"): the positive wording cannot be trusted, so a
 // person reads it.
 const NEGATION = words(['not', 'never', 'no', 'nope', 'no longer', 'rather not', "\\p{L}+n['\u2019]t", 'dont', 'cant', 'wont', 'isnt', 'arent', 'doesnt', 'didnt', 'wouldnt', 'shouldnt', 'couldnt', 'havent', 'hasnt', 'wasnt', 'werent', 'cannot', 'aint', 'nah', 'hardly', 'barely', 'neither', 'without',
-  'maybe', 'perhaps', 'possibly', 'might', 'doubt\\p{L}*', 'unlikely', 'later', 'someday', 'would have', 'if ever', 'why (?:would|should)',
+  'pass', 'zero', 'maybe', 'perhaps', 'possibly', 'might', 'doubt\\p{L}*', 'unlikely', 'later', 'someday', 'would have', 'if ever', 'why (?:would|should)',
   'pas', 'jamais', 'kein\\p{L}*', 'nicht', 'nein', 'n[aã]o', 'non', 'nunca', 'mai', 'niet', 'geen', 'nooit'])
 const POSITIVE = /\b(interested|tell me more|send (me )?(more )?(info|information|details)|sounds good|let'?s (talk|chat|connect|schedule|set up)|call me|book (a|the) (call|time|meeting)|yes,? please|happy to (chat|talk|connect))\b/i
 const AUTO_SUBJECT = /^(automatic reply|auto[- ]?reply|autoreply|out of (the )?office|abwesenheitsnotiz|automatische antwort|r[ée]ponse automatique|absence|respuesta autom[áa]tica|resposta autom[áa]tica|risposta automatica|automatisch antwoord)/i
@@ -118,7 +121,15 @@ export function classifyReply(text: string, h: ReplyHeaders = {}, status: 'ok' |
 // One message, all of its readable bodies. When the plain and HTML alternatives disagree, no body is trusted to grant
 // anything: an explicit opt-out in either is honoured (the recipient asked to stop), any other disagreement is held
 // for review (uncertain), and positive only stands when both bodies say it.
-export function classifyMessage(t: { text: string; status: 'ok' | 'empty' | 'malformed'; alt?: string | null }, h: ReplyHeaders = {}): ReplyClass {
+export function classifyMessage(t: { text: string; status: 'ok' | 'empty' | 'malformed'; alt?: string | null; addrTail?: string }, h: ReplyHeaders = {}): ReplyClass {
+  const cls = classifyBodies(t, h)
+  // The text was cut at an address-style quote header (lib/outreach/reply-text.ts): what follows is probably the quoted
+  // earlier message, but it may be the lead's own words. When it carries opt-out or ambiguous wording, follow-ups stop
+  // for review (uncertain), without taking those quoted words as a fresh opt-out (no suppression).
+  if (t.addrTail && cls !== 'opt_out' && cls !== 'auto' && (OPT_OUT.test(t.addrTail) || AMBIGUOUS.test(t.addrTail))) return 'uncertain'
+  return cls
+}
+function classifyBodies(t: { text: string; status: 'ok' | 'empty' | 'malformed'; alt?: string | null }, h: ReplyHeaders): ReplyClass {
   const first = classifyReply(t.text, h, t.status)
   if (t.alt === undefined) return first
   const second = t.alt === null ? classifyReply('', h, 'malformed') : classifyReply(t.alt, h, 'ok')
