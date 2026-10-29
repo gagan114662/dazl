@@ -991,7 +991,7 @@ export default function LeadsClient() {
             <WarmPath leadId={l.id} company={l.company} signal={l.signal} />
             {l.enrichments && l.enrichments.some(e => e.kind !== 'contact' && e.kind !== 'person' && e.kind !== 'domain_review') && (
               <div className="text-xs mt-1 space-y-0.5">
-                {l.enrichments.filter(e => e.kind !== 'contact' && e.kind !== 'person' && e.kind !== 'domain_review').map(e => (
+                {l.enrichments.filter(e => e.kind !== 'contact' && e.kind !== 'person' && e.kind !== 'domain_review' && e.kind !== 'domain_check').map(e => (
                   <div key={e.kind + e.value} className="text-gray-400">
                     <span className="text-[#111]">{e.kind === 'domain' ? e.value.split('|')[0] : e.value}</span>{e.kind === 'domain' ? ` (${domainBasisText(e)})` : e.label && !e.label.startsWith('contact-context-v1:') ? ` (${dedupeLabel(e.label)})` : ''} <span className="text-gray-500">{e.kind === 'tech' ? 'seen on the company website' : e.connector === 'sitecrawl' ? 'from a company website page' : e.connector === 'hunter' ? 'via Hunter (earlier)' : `via ${e.connector}`}{e.confidence !== null && !e.connector.startsWith('signals:') ? `, ${e.confidence}% confidence` : ''}{e.entity_status === 'unconfirmed' ? ' - entity unconfirmed (name match only), check the source before relying on this' : e.entity_status === 'heuristic' ? ' - entity matched by name only (heuristic, not independently confirmed)' : ''}, seen {e.source_date}</span>{' '}
                     <a className="underline text-[#111]" href={e.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>

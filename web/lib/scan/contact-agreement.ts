@@ -5,10 +5,11 @@ import type Database from 'better-sqlite3'
 import { placeAgreement, cityScoped, US_STATES } from './place-agreement.ts'
 import { countriesIn } from './countries.ts'
 import { addEnrichment } from '../connectors/store.ts'
+import { domainConfirmed } from '../signals/domain-basis.ts'
 import { WHY_MAX } from './score.ts'
 
 export interface Candidate { domain?: string | null; place?: string | null; address?: string | null; keyedOnLeadDomain?: boolean } // keyedOnLeadDomain: the lookup was made BY the lead's own domain       // place: "City, ST" (or free text) as the source reports it
-export interface LeadSide { company_domain?: string | null; where: string[]; evidence?: string | null } // evidence: the lead's OWN evidence text (its quote, its cited page): a street address in it is a basis
+export interface LeadSide { company_domain?: string | null; where: string[]; evidence?: string | null; domainEstablished?: boolean } // evidence: the lead's OWN evidence text (its quote, its cited page): a street address in it is a basis
 export type Agreement = { ok: true; via: 'domain' | 'location' | 'address' | 'no_geography' } | { ok: false; reason: string }
 
 const registrable = (d: string | null | undefined): string | null => {
@@ -105,6 +106,20 @@ function foreignMarker(stated: string): boolean {
 }
 export function contactAgreement(lead: LeadSide, c: Candidate): Agreement {
   const ld = registrable(lead.company_domain), cd = registrable(c.domain)
+  // A domain that merely AGREES (a guess from the company name, a legacy row) is self-consistency, not identity: an explicit conflict - the
+  // record's own street address or place in another city, state or country than the lead's evidence and scan geography - still refuses. Only a
+  // domain the cited page itself is hosted on, or one the user confirmed (domainEstablished), stands over a conflicting place.
+  if (ld && cd && ld === cd && !lead.domainEstablished) {
+    if (addressAgreement(c.address, lead.evidence) === 'conflict') return { ok: false, reason: `contact rejected: address mismatch ${(streetKeys(c.address)[0] ?? 'another address').slice(0, 60)} vs ${(streetKeys(lead.evidence)[0] ?? 'the lead\'s address').slice(0, 60)} (the domain matches, the address does not)` }
+    const wh = effectiveWhere(lead)
+    if (wh.length) for (const stated of [(c.place ?? '').trim(), addressGeography(c.address)]) {
+      if (!stated) continue
+      const cc = countryConflict(stated, wh)
+      if (cc) return { ok: false, reason: `contact rejected: location mismatch ${stated.slice(0, 60)} vs ${leadPlaceLabel(wh).slice(0, 60)} (country ${cc} is not the lead's; the domain matches, the place does not)` }
+      const v = placeAgreement(stated, wh)
+      if (v === 'mismatch' || (v !== 'agrees' && foreignMarker(stated))) return { ok: false, reason: `contact rejected: location mismatch ${stated.slice(0, 60)} vs ${leadPlaceLabel(wh).slice(0, 60)} (the domain matches, the place does not)` }
+    }
+  }
   if (ld && cd) return ld === cd ? { ok: true, via: 'domain' } : { ok: false, reason: `contact rejected: domain mismatch ${cd} vs ${ld}` }
   if (ld && !cd && c.keyedOnLeadDomain) return { ok: true, via: 'domain' }
   // A street address in the lead's own evidence is a basis: the same address agrees; a DIFFERENT one conflicts (unresolved, not attached) unless the domain already agreed.
@@ -192,7 +207,9 @@ export function enforceContactSource(db: Database.Database, tenantId: string, jo
   const del = db.prepare('DELETE FROM lead_enrichments WHERE id = ? AND tenant_id = ?')
   let removed = 0
   for (const r of rows) {
-    const ld = registrable(r.company_domain)
+    // The lead's domain must be CONFIRMED (established, or its homepage passed the name + place check): a legacy name guess whose own
+    // contacts agree with it is not identity proof.
+    const ld = domainConfirmed(db, tenantId, r.lead_id, r.company_domain) ? registrable(r.company_domain) : null
     let host: string | null = null; try { host = registrable(new URL(r.source_url).hostname) } catch { host = null }
     const emailDomain = r.kind === 'email' && r.value.includes('@') ? registrable(r.value.split('@').pop()) : null
     let why: string | null = null

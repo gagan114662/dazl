@@ -447,6 +447,8 @@ const PLACE_AFTER = /\b(?:in|at|on|em|en|no|na|à|au|bei|im|nel|nella|op|w|в)\s
 // Words the evidence puts after "on / in / at" that are NOT places: weekdays, months and the company's own name ("open on Monday", "founded in March", "book at Smile Avenue Dental"). Any business page
 // mentions them, so counting them as places let a same-name site in another city look "consistent".
 const NOT_PLACE = new Set(['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december', 'today', 'tomorrow', 'yesterday', 'the', 'our', 'your', 'this', 'that', 'twitter', 'facebook', 'instagram', 'linkedin', 'youtube', 'google'])
+// A phrase that starts with a determiner or pronoun ("at Your Convenience", "in Our Offices", "on This Page") is a phrase, not a place.
+const NOT_PLACE_LEAD = new Set(['your', 'our', 'my', 'their', 'his', 'her', 'its', 'this', 'that', 'these', 'those', 'any', 'every', 'each', 'all', 'some', 'no', 'one', 'both', 'the'])
 export function placeTerms(where: string[], evidenceText: string, company = ''): string[] {
   const own = norm(company).split(' ').filter(Boolean), out = new Set<string>()
   const add = (s: string) => { const t = norm(s); if (t.length >= 4) out.add(t) }
@@ -455,7 +457,7 @@ export function placeTerms(where: string[], evidenceText: string, company = ''):
     add(clean); add(clean.replace(PLACE_SUFFIX, ''))
     for (const part of clean.split(',')) { add(part); add(part.trim().replace(PLACE_SUFFIX, '')) }
   }
-  for (const m of evidenceText.slice(0, 6000).matchAll(PLACE_AFTER)) { const t = norm(m[1]); const ws = t.split(' ').filter(Boolean); if (ws.length === 0 || ws.every(w => NOT_PLACE.has(w) || own.includes(w))) continue; add(m[1]) }
+  for (const m of evidenceText.slice(0, 6000).matchAll(PLACE_AFTER)) { const t = norm(m[1]); const ws = t.split(' ').filter(Boolean); if (ws.length === 0 || ws.every(w => NOT_PLACE.has(w) || own.includes(w)) || NOT_PLACE_LEAD.has(ws[0])) continue; add(m[1]) }
   return [...out]
 }
 // A domain taken from a NAME-ONLY guess (probeDomains) is not an identity: any same-name business anywhere passes the homepage name check, and its contacts sit on that same domain, so the domain and the
@@ -472,13 +474,19 @@ export function ownAddressElsewhere(home: string, where: string[]): boolean {
   for (const m of home.matchAll(ZIP_ADDRESS)) { if (!(m[2] in US_STATES)) continue; if (ours.has(m[2])) here = true; else elsewhere = true }
   return elsewhere && !here
 }
+const CITY_STATE = /([A-Z][\p{L}'.-]+(?: [A-Z][\p{L}'.-]+){0,2}),?\s+([A-Z]{2})\b/gu
+function writtenAsCityState(home: string, place: string): boolean {
+  for (const m of home.matchAll(CITY_STATE)) { if (m[2] in US_STATES && norm(m[1]) === place) return true }
+  return false
+}
 export function probeLocationAgrees(home: string | undefined, where: string[], lead: { company: string; signal?: string | null; evidence_excerpt?: string | null }, evidence?: { homeNorm: string | undefined; places: string[] }): boolean {
   const text = home ?? ''
   if (!text) return false
   if (where.length > 0 && ownAddressElsewhere(text, where)) return false   // the site's own address is in another state
   if (where.length > 0 && placeAgreement(text, where, lead.company) === 'agrees') return true
   // A scan that declares NO geography has only the lead's evidence to say where it is: a place that evidence names (weekdays, months, social names and the company's own name excluded) and the site's homepage repeats.
-  if (where.length === 0 && evidence && placeConsistent(evidence.homeNorm, evidence.places)) return true
+  // ...and with no declared geography the repeated place must be written as a place on the homepage ("City, ST"), not merely appear in running text.
+  if (where.length === 0 && evidence && placeConsistent(evidence.homeNorm, evidence.places) && evidence.places.some(p => writtenAsCityState(text, p))) return true
   return addressAgreement(text, `${lead.evidence_excerpt ?? ''} ${lead.signal ?? ''}`) === 'agrees'
 }
 function locationRefusal(probe: boolean, havePlaces: boolean, home: string | undefined, where: string[]): string {
@@ -599,6 +607,9 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         const basis = basisOf.get(site) ?? 'name_probe'
         addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'domain', value: `${site}|${basis}`, label: domainBasisToken(basis), confidence: null, source_url: basis === 'name_probe' ? `https://${site}/` : (ev?.finalUrl ?? l.source_url).slice(0, 500), source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) })
       }
+      // The identity check passed for this site (name on the homepage, and the place or street agreed or was not contradicted): record it,
+      // so the contact sweep and the score can tell this domain from a legacy name guess that only agrees with itself.
+      if (r.reason === 'ok' || r.reason === 'none_published') addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'domain_check', value: `${site}|identity_checked`, label: 'identity-check-v2: homepage names the company and the place or address agrees'.slice(0, 200), confidence: null, source_url: `https://${site}/`, source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) })
       for (const t of r.tech ?? []) {
         const e: Enrichment = { connector: 'sitecrawl', kind: 'tech', value: t.name.slice(0, 254), label: `seen on the company website (${t.where})`.slice(0, 200), confidence: null, source_url: `https://${site}/`, source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) }
         addEnrichment(db, tenantId, l.id, e); n++

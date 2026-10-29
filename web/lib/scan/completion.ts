@@ -4,6 +4,7 @@
 // the date is only ever a structured date on a page about the SAME event, and a lead is never promoted or demoted here.
 import type Database from 'better-sqlite3'
 import { addEnrichment } from '../connectors/store.ts'
+import { domainConfirmed } from '../signals/domain-basis.ts'
 import { NOT_A_FOUNDER_ROUTE, personMatchesRole, whoOf } from './actionable.ts'
 import type { ResolutionSummary } from './resolution.ts'
 
@@ -19,7 +20,8 @@ export const FACT_LABEL: Record<Fact, string> = { date: 'source date', domain: '
 export function evidenceScore(f: Facts, fit: number | null): number {
   return 40 + (f.date ? 15 : 0) + (f.domain ? 15 : 0) + (f.person ? 15 : 0) + (f.route ? 10 : 0) + (fit !== null && fit >= 4 ? 5 : 0)
 }
-const realDay = (d: string | null): boolean => !!d && /^\d{4}-\d{2}-\d{2}$/.test(d) && !Number.isNaN(Date.parse(d)) && Date.parse(d) <= Date.now() + 86_400_000
+// A real calendar day: 2026-02-31 is not (Date.parse would roll it over to March).
+const realDay = (d: string | null): boolean => !!d && /^\d{4}-\d{2}-\d{2}$/.test(d) && !Number.isNaN(Date.parse(d)) && new Date(`${d}T00:00:00Z`).toISOString().slice(0, 10) === d && Date.parse(d) <= Date.now() + 86_400_000
 
 type LeadRow = { id: string; company: string; event_date: string | null; company_domain: string | null; score: number; fit: number | null }
 function kept(db: Database.Database, tenantId: string, jobId: string): (LeadRow & { who: string })[] {
@@ -31,11 +33,12 @@ function kept(db: Database.Database, tenantId: string, jobId: string): (LeadRow 
 // site (or one that outlived a refused domain) is worth nothing here, however it got attached.
 const reg = (h: string | null | undefined): string | null => { const x = (h ?? '').trim().toLowerCase().replace(/^[a-z]+:\/\//, '').replace(/[/?#].*$/, '').replace(/^www\./, ''); const p = x.split('.'); return /^[a-z0-9.-]+\.[a-z]{2,}$/.test(x) ? p.slice(-2).join('.') : null }
 function factsOf(db: Database.Database, tenantId: string, l: LeadRow & { who: string }): Facts {
-  const ld = reg(l.company_domain)
+  const confirmed = domainConfirmed(db, tenantId, l.id, l.company_domain)
+  const ld = confirmed ? reg(l.company_domain) : null   // contacts count only against a CONFIRMED domain
   const rows = (db.prepare("SELECT kind, value, source_url FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'sitecrawl' AND kind IN ('person', 'phone', 'email')").all(l.id, tenantId) as { kind: string; value: string; source_url: string }[])
     .filter(r => { if (!ld) return false; let h: string | null = null; try { h = reg(new URL(r.source_url).hostname) } catch { h = null }; return h === ld && (r.kind !== 'email' || reg(r.value.split('@').pop()) === ld) })
   return {
-    date: realDay(l.event_date), domain: !!l.company_domain,
+    date: realDay(l.event_date), domain: confirmed,
     person: rows.some(r => r.kind === 'person' && personMatchesRole(r.value, l.who)),
     route: rows.some(r => r.kind === 'phone' || (r.kind === 'email' && !NOT_A_FOUNDER_ROUTE.test(r.value.split('@')[0].replace(/[._-]/g, '')))),
   }
