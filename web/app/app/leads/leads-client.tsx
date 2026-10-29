@@ -550,7 +550,7 @@ export default function LeadsClient() {
       {/* A scan's own page reads like a conversation: its progress and leads first, the next ask at the bottom. */}
       <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">{jobId ? 'Leads' : 'Plays'}</h1>
+          <h1 className="text-3xl font-bold tracking-tight">{jobId ? 'Leads' : 'Find leads'}</h1>
           <p className="text-[var(--ink-2)] text-sm mt-1">{jobId ? 'Approve the leads worth an email.' : 'Describe who you want to reach.'}<InfoTip>Companies matching your search, with the signal and source for each. Match is a heuristic - review fit yourself.</InfoTip></p>
         </div>
         <div className="flex gap-2 items-center">
@@ -817,7 +817,7 @@ export default function LeadsClient() {
       )}
       {watches.length > 0 && (
         <div className="card p-4 mb-4 text-sm">
-          <h2 className="text-sm font-semibold mb-1">Weekly watches</h2>
+          <h2 className="text-sm font-semibold mb-1">Weekly watches <a className="underline font-normal text-xs ml-1" href="/app/plays" data-testid="manage-plays">Manage in Plays</a></h2>
           <p className="text-gray-500 text-xs mb-2">These searches re-run once a week and only show leads you have not seen. They count toward your monthly scans.</p>
           {watches.map(w => (
             <div key={w.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2 border-t border-white/5 first:border-t-0">
