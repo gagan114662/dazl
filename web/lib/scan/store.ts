@@ -17,7 +17,7 @@ export interface ScanInput {
   location: string
 }
 // Free-text request. The legacy columns stay filled (placeholders) so older workers keep working.
-export interface QueryInput { query: string; icp?: string | null; sources?: string | null; seller?: string; watchId?: string; runBudget?: string | null }
+export interface QueryInput { query: string; icp?: string | null; sources?: string | null; seller?: string; offer?: string | null; watchId?: string; runBudget?: string | null }
 
 // Schema notes for the external worker (Hermes). Everything is enforced in
 // SQLite itself, so a writer that bypasses the web app cannot corrupt state:
@@ -89,6 +89,9 @@ function addColumns(db: Database.Database): void {
   const has = (t: string, c: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).some(r => r.name === c)
   const add = (t: string, c: string, def: string) => { if (!has(t, c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`) }
   add('scan_jobs', 'seller', 'TEXT')
+  // the offer reviewed for this play, and when (lib/scan/play-offer.ts); NULL: the play uses its recorded `seller`
+  add('scan_jobs', 'offer', 'TEXT CHECK (offer IS NULL OR length(offer) <= 150)')
+  add('scan_jobs', 'offer_set_at', 'INTEGER')
   add('leads', 'stage', 'TEXT')
   add('scan_jobs', 'watch_id', 'TEXT')
   add('leads', 'watch_new', 'INTEGER NOT NULL DEFAULT 0')
@@ -215,8 +218,9 @@ export function createJob(db: Database.Database, userId: string, input: ScanInpu
 export function createQueryJob(db: Database.Database, userId: string, input: QueryInput): string {
   const id = randomBytes(12).toString('hex')
   // run_budget is part of the INSERT, so a job is never visible to the runner without its budget.
-  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, icp_inferred, sources, seller, watch_id, run_budget) VALUES (?, ?, ?, '(from request)', '-', ?, ?, ?, ?, ?, ?, ?)").run(
-    id, userId, input.query.slice(0, 150) || '-', input.query, input.icp ?? null, input.icp ? 0 : null, input.sources ?? null, (input.seller ?? '').trim().slice(0, 300) || null, input.watchId ?? null, input.runBudget ?? null,
+  const offer = (input.offer ?? '').replace(/\s+/g, ' ').trim().slice(0, 150) || null
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, icp_inferred, sources, seller, offer, offer_set_at, watch_id, run_budget) VALUES (?, ?, ?, '(from request)', '-', ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
+    id, userId, input.query.slice(0, 150) || '-', input.query, input.icp ?? null, input.icp ? 0 : null, input.sources ?? null, (input.seller ?? '').trim().slice(0, 300) || null, offer, offer ? Math.floor(Date.now() / 1000) : null, input.watchId ?? null, input.runBudget ?? null,
   )
   return id
 }

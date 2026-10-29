@@ -14,6 +14,7 @@ import { recordTrialScan, trialStatus } from '@/lib/scan/trial'
 import { getAuthDb, sellerProfile } from '@/lib/auth-db'
 import { describeRunBudget, normalizeScanBudget } from '@/lib/scan/run-budget'
 import { admitTrialScan, linkTrialReservation } from '@/lib/billing/trial-budget'
+import { cleanOffer, effectiveOffer } from '@/lib/scan/play-offer'
 
 export async function POST(req: NextRequest) {
   const user = await requireUser()
@@ -34,6 +35,17 @@ export async function POST(req: NextRequest) {
   const location = cleanText(body?.location, 100)
   if (query.length < 3 && (!business_name || !industry || !location)) {
     return NextResponse.json({ error: 'Describe who you are looking for' }, { status: 400 })
+  }
+  // What the tenant sells for THIS play (lib/scan/play-offer.ts): the offer reviewed with the profile, stored with the
+  // play. Without one, the play records the business profile's offer; a request that states a different offer is
+  // refused until the caller chooses which one this play is for, before anything is queued or counted.
+  const seller = sellerProfile(getAuthDb(), user.id)
+  const offerSupplied = body?.offer !== undefined && body?.offer !== null
+  const offer = offerSupplied ? cleanOffer(body.offer) : ''
+  if (offerSupplied && offer.length < 3) return NextResponse.json({ error: 'Say in a few words what you sell for this play' }, { status: 400 })
+  if (query.length >= 3 && !offer) {
+    const e = effectiveOffer({ seller, query }, null)
+    if (e.conflict) return NextResponse.json({ error: 'offer_conflict', stated: e.conflict.stated, saved: e.conflict.recorded }, { status: 409 })
   }
 
   // Optional per-run cost controls. Validated BEFORE anything is queued or counted: an explicitly supplied budget that is not
@@ -80,7 +92,7 @@ export async function POST(req: NextRequest) {
     reservation = a.reservation
   }
   const sel = body?.sources ? normalizeSources(body.sources) : null
-  const job_id = query.length >= 3 ? createQueryJob(db, user.id, { query, icp: icp ? JSON.stringify(icp) : null, sources: sel ? JSON.stringify(sel) : null, seller: sellerProfile(getAuthDb(), user.id), runBudget: nb.value }) : createJob(db, user.id, { business_name, industry, location }, nb.value)
+  const job_id = query.length >= 3 ? createQueryJob(db, user.id, { query, icp: icp ? JSON.stringify(icp) : null, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget: nb.value }) : createJob(db, user.id, { business_name, industry, location }, nb.value)
   if (funded === 'trial') {
     db.prepare("UPDATE scan_jobs SET funded_by = 'trial' WHERE id = ?").run(job_id)
     recordTrialScan(db, user.id, job_id, ip)
