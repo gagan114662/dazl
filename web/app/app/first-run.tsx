@@ -200,7 +200,9 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
     // The fast first scan's own view, when the status read serves one: it decides what is shown while and after it runs.
     const f5 = first?.f5 ?? null
     const f5Live = !!f5 && f5.state === 'finding' && first?.status !== 'failed'
-    const f5Ready = f5 && !f5.enriching ? f5.verified : 0
+    const f5Ready = f5 && !f5.enriching ? f5.verified : 0   // source-checked leads the fast scan found
+    // Found is not ready: a lead is contact-ready only with a real event date, a graded fit of 4/5 or more and a named person. The fast scan's leads can have none of these (date, fit and name may all be null).
+    const f5Qualified = f5 && !f5.enriching ? f5.leads.filter(l => !l.provisional && !!l.event_date && l.fit_pct != null && l.fit_pct >= 80 && !!l.name).length : 0
     // The one sentence: what the user typed, else the top suggestion from the profile (so nothing has to be typed).
     const sentence = askIsSuggestion ? (ask || plays[0] || '') : ask
     const candidatesSoFar = f5 ? f5.sources.reduce<number | null>((n, x) => x.candidates == null ? n : (n ?? 0) + x.candidates, null) : null
@@ -248,7 +250,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
               <div className="text-center">
                 <span className="inline-flex w-14 h-14 rounded-full bg-[var(--lav-bg)] items-center justify-center"><Icon name="spark" className="w-6 h-6 text-[var(--lav)]" /></span>
                 <h1 className="text-4xl sm:text-[52px] leading-tight font-bold tracking-tight mt-4 text-[#2a0a24]">Your brain is ready.</h1>
-                <p className="text-[var(--ink-2)] text-lg mt-2" data-testid="ready-subhead">{f5 ? (f5Live ? 'dazl is finding your first leads now.' : f5Ready ? `dazl found ${f5Ready} lead${f5Ready === 1 ? '' : 's'} ready for your review.` : 'Your first play is done. See what it found.') : first?.status === 'done' ? (readyLeads.length ? `dazl found ${readyLeads.length} lead${readyLeads.length === 1 ? '' : 's'} ready for your review.` : 'Your first play is done. See what it found.') : active ? 'dazl is finding your first leads now.' : `dazl knows ${sells ? 'what you sell and ' : ''}who buys it. Review it, then find your first leads.`}</p>
+                <p className="text-[var(--ink-2)] text-lg mt-2" data-testid="ready-subhead">{f5 ? (f5Live ? 'dazl is finding your first leads now.' : f5Ready ? (f5Qualified ? `dazl found ${f5Ready} source-checked lead${f5Ready === 1 ? '' : 's'}; ${f5Qualified} ready to contact.` : `dazl found ${f5Ready} source-checked lead${f5Ready === 1 ? '' : 's'}. None is ready to contact yet: a date, a fit grade or a contact is still unknown.`) : 'Your first play is done. See what it found.') : first?.status === 'done' ? (readyLeads.length ? `dazl found ${readyLeads.length} lead${readyLeads.length === 1 ? '' : 's'} ready for your review.` : 'Your first play is done. See what it found.') : active ? 'dazl is finding your first leads now.' : `dazl knows ${sells ? 'what you sell and ' : ''}who buys it. Review it, then find your first leads.`}</p>
               </div>
               {error && <p className="text-sm mt-4 text-center text-[var(--pink)]" role="alert">{error}</p>}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mt-9">
@@ -262,7 +264,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                     {/* Submits the one sentence on the right (typed, or the top suggestion as shown there). */}
                     {!first ? <button type="submit" form="first-ask" className="btn-primary btn-lg w-full justify-center" disabled={busy || sentence.trim().length < 3} data-testid="ready-cta">{busy ? 'Starting...' : 'Find my first leads'}</button>
                       // Reaching out is offered only for leads that passed every check; otherwise the button says what is there.
-                      : <a className="btn-primary btn-lg w-full justify-center" href={`/app/leads?job_id=${first.id}`} data-testid="ready-cta">{f5 ? (f5Live ? 'Watch it live' : f5Ready ? 'Start reaching out' : 'See what happened')
+                      : <a className="btn-primary btn-lg w-full justify-center" href={`/app/leads?job_id=${first.id}`} data-testid="ready-cta">{f5 ? (f5Live ? 'Watch it live' : f5Ready ? (f5Qualified ? 'Start reaching out' : 'Review the leads') : 'See what happened')
                         : first.status === 'failed' ? 'See what happened'
                         : first.status !== 'done' ? 'Watch it live'
                         : !first.leads ? 'View results'
@@ -276,7 +278,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                 <section className="onb-card p-5 sm:p-8 min-w-0 order-first md:order-none" data-testid="first-customers">
                   <h2 className="text-xl font-bold tracking-tight" data-testid="first-heading">{!first ? 'Who do you want to find?'
                     : f5 ? (f5Live ? (f5.leads.length ? `${f5.leads.length} found - checking each one` : 'Finding your first leads')
-                      : f5Ready ? `${f5Ready} lead${f5Ready === 1 ? '' : 's'} ready for your review`
+                      : f5Ready ? `${f5Ready} lead${f5Ready === 1 ? '' : 's'} found - ${f5Qualified ? `${f5Qualified} ready to contact` : 'none ready to contact yet'}`
                       : first.status === 'failed' || f5.reason === 'failed' ? 'This play could not finish' : 'No leads in this first play')
                     : active ? 'Finding your first leads'
                     : first.status === 'failed' ? 'This play could not finish'

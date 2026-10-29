@@ -49,17 +49,18 @@ const src = (source, state, status, candidates) => ({ source, state, status, not
 const view = (o) => ({ target: 5, found: 0, verified: 0, enriching: false, next: null, state: 'finding', finding_more: true, reason: null, message: '', leads: [], sources: [], failed_sources: [], can_continue: false, ...o })
 // What the status read returns on each poll of the seeded run: queued, the news being read, job boards being read with
 // candidates counted, two leads still being checked, then 5 verified (or, for the short run, 2 of 5).
-const STEPS = full => [
+const UNKNOWN = LEADS.map(l => ({ ...l, name: null, event_date: null, fit_pct: null }))   // what the fast scan may truly return: verifier-passed, no date / fit / name yet
+const STEPS = (full, unknown = false) => [
   { status: 'running', first5: view({ sources: [src('search:news', 'running', 'running', null), src('adapter:jobboards', 'queued', 'running', null)] }) },
   { status: 'running', first5: view({ sources: [src('search:news', 'done', 'ok', 7), src('adapter:jobboards', 'running', 'running', 3)] }) },
   { status: 'enriching', first5: view({ enriching: true, found: 2, leads: LEADS.slice(0, 2).map(l => ({ ...l, provisional: true })), sources: [src('search:news', 'done', 'ok', 7), src('adapter:jobboards', 'done', 'ok', 5)] }) },
-  full ? { status: 'done', first5: view({ state: 'ready', finding_more: false, found: 5, verified: 5, can_continue: true, message: 'We found 5 customers you can look at today.', leads: LEADS, sources: [src('search:news', 'done', 'ok', 7), src('adapter:jobboards', 'done', 'ok', 5)] }) }
+  full ? { status: 'done', first5: view({ state: 'ready', finding_more: false, found: 5, verified: 5, can_continue: true, message: 'We found 5 customers you can look at today.', leads: unknown ? UNKNOWN : LEADS, sources: [src('search:news', 'done', 'ok', 7), src('adapter:jobboards', 'done', 'ok', 5)] }) }
     : { status: 'done', first5: view({ state: 'partial', finding_more: false, found: 2, verified: 2, can_continue: true, next: { action: 'wider_search', label: 'Search wider (a full scan, using your scan allowance)' }, message: '2 of 5 verified from the free sources.', leads: LEADS.slice(0, 2), sources: [src('search:news', 'done', 'ok', 7), src('adapter:jobboards', 'done', 'ok', 5)] }) },
 ]
 const b = await chromium.launch()
-async function run({ width, height, tag, how = 'cta', full = true }) {
+async function run({ width, height, tag, how = 'cta', full = true, unknown = false, tz = undefined }) {
   const st = { profile: { business_name: '', sells: '', website: '', buyer: null }, scanBodies: [], polls: 0 }
-  const ctx = await b.newContext({ viewport: { width, height } })
+  const ctx = await b.newContext({ viewport: { width, height }, ...(tz ? { timezoneId: tz } : {}) })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
   const writes = []
   await ctx.route('**/*', async route => {
@@ -72,7 +73,7 @@ async function run({ width, height, tag, how = 'cta', full = true }) {
     if (p === '/api/settings/profile' && m === 'POST') { st.profile = { ...st.profile, ...JSON.parse(req.postData()) }; return json({ ok: true }) }
     if (p === '/api/settings/profile') return json(st.profile)
     if (p === '/api/scan' && m === 'POST') { st.scanBodies.push(JSON.parse(req.postData())); return json({ job_id: J }) }
-    if (p === '/api/scan/status') { const s = STEPS(full)[Math.min(st.polls++, 3)]; return json({ job_id: J, ...s }) }
+    if (p === '/api/scan/status') { const s = STEPS(full, unknown)[Math.min(st.polls++, 3)]; return json({ job_id: J, ...s }) }
     if (p === '/api/scan/jobs') return json({ jobs: [] })
     if (p === '/api/usage') return json({ plan: 'free', scans_used: 0, scan_limit: 10, has_key: false, trial: { funded: true, remaining: 3 } })
     if (p === '/api/leads') return json({ leads: [], hidden_count: 0 })
@@ -122,14 +123,17 @@ async function run({ width, height, tag, how = 'cta', full = true }) {
   if (how === 'cta') await shot('3-checking')
   // 4. Settled.
   if (full) {
-    await page.waitForFunction(() => document.querySelector('[data-testid=first-heading]')?.textContent === '5 leads ready for your review', null, { timeout: 10000 })
+    // Found is not ready: 5 source-checked leads, of which only the first has a date, a fit of 80%+ AND a named person.
+    const want = unknown ? '5 leads found - none ready to contact yet' : '5 leads found - 1 ready to contact'
+    await page.waitForFunction(w => document.querySelector('[data-testid=first-heading]')?.textContent === w, want, { timeout: 10000 })
     assert.equal(await page.getByTestId('first-lead').count(), 5)
-    assert.match(await page.getByTestId('first-lead').nth(1).innerText(), /^Northgate Bookkeeping\n+fit 80%\n/)
-    assert.equal(await page.getByTestId('ready-cta').textContent(), 'Start reaching out')
-    assert.equal(await page.getByTestId('ready-subhead').textContent(), 'dazl found 5 leads ready for your review.')
+    if (!unknown) assert.match(await page.getByTestId('first-lead').nth(1).innerText(), /^Northgate Bookkeeping\n+fit 80%\n/)
+    assert.equal(await page.getByTestId('ready-cta').textContent(), unknown ? 'Review the leads' : 'Start reaching out', 'reaching out is offered only when a lead is proven ready')
+    assert.equal(await page.getByTestId('ready-subhead').textContent(), unknown ? 'dazl found 5 source-checked leads. None is ready to contact yet: a date, a fit grade or a contact is still unknown.' : 'dazl found 5 source-checked leads; 1 ready to contact.')
+    if (unknown) assert.doesNotMatch(await page.getByTestId('onboarding-screen').innerText(), /Start reaching out|ready for your review/)
     assert.equal(await page.getByTestId('search-wider').count(), 0)
   } else {
-    await page.waitForFunction(() => document.querySelector('[data-testid=first-heading]')?.textContent === '2 leads ready for your review', null, { timeout: 10000 })
+    await page.waitForFunction(() => document.querySelector('[data-testid=first-heading]')?.textContent === '2 leads found - 1 ready to contact', null, { timeout: 10000 })
     const wider = page.getByTestId('search-wider')
     assert.equal(await wider.textContent(), 'Search wider (a full scan, using your scan allowance)')
     assert.equal(await wider.getAttribute('href'), `/app/leads?q=${encodeURIComponent(query)}`, 'the wider search is a link to Plays, prefilled; it never starts by itself')
@@ -146,6 +150,11 @@ try {
   const m = await run({ width: 390, height: 844, tag: 'mobile' })
   const c = await run({ width: 1440, height: 900, tag: 'held', how: 'chip' })
   const t = await run({ width: 1440, height: 900, tag: 'held', how: 'typed', full: false })
+  // Readiness unknown (no date / fit / name in the payload): the screen must not offer outreach. Calendar days must not move in any timezone (Toronto showed 21 Oct as 20 Oct).
+  await run({ width: 1440, height: 900, tag: 'unknown-desktop', unknown: true })
+  await run({ width: 390, height: 844, tag: 'unknown-mobile', unknown: true })
+  await run({ width: 1440, height: 900, tag: 'toronto', tz: 'America/Toronto' })
+  await run({ width: 390, height: 844, tag: 'auckland', tz: 'Pacific/Auckland' })
   assert.deepEqual([d.typed, m.typed, c.typed], [1, 1, 1], 'the website is the only thing typed')
   assert.equal(t.typed, 2, 'a typed sentence is the second thing typed, only when the user chooses to')
   console.log(`MEASURE things typed before the first lead card: ${d.typed} (desktop), ${m.typed} (390px), ${c.typed} (suggestion click)`)
