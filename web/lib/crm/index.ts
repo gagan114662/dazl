@@ -169,6 +169,16 @@ export function finishClaim(db: Database.Database, tenantId: string, destination
   return db.prepare("UPDATE crm_push_claims SET status = ?, external_id = ?, updated_at = ? WHERE tenant_id = ? AND destination = ? AND lead_id = ? AND status = 'pending' AND attempt_id = ?")
     .run(status, externalId, now, tenantId, destination, leadId, attemptId).changes === 1
 }
+// Where a lead's push stands, read-only (the page's "Check again"): nothing is claimed or sent.
+//   none        nothing is held: a push may be made (never pushed, failed, or resolved as not created)
+//   in_progress a push is on its way; unknown: its result is not known (resolve it); done: the CRM has the record
+export type PushState = 'none' | 'in_progress' | 'unknown' | 'done'
+export function claimState(db: Database.Database, tenantId: string, destination: string, leadId: string, now = nowS()): { state: PushState; externalId: string | null } {
+  const c = db.prepare('SELECT status, external_id, claimed_at FROM crm_push_claims WHERE tenant_id = ? AND destination = ? AND lead_id = ?').get(tenantId, destination, leadId) as { status: string; external_id: string | null; claimed_at: number } | undefined
+  if (!c || c.status === 'failed' || c.status === 'resolved_not_created') return { state: 'none', externalId: null }
+  if (c.status === 'ok' || c.status === 'resolved_created') return { state: 'done', externalId: c.external_id }
+  return { state: c.status === 'pending' && c.claimed_at > now - STALE_CLAIM_SECONDS ? 'in_progress' : 'unknown', externalId: null }
+}
 // The user checked the CRM after an unknown outcome. Only an unknown claim (uncertain, or pending past the stale
 // limit) can be resolved, atomically: a second resolve, or one racing a fresh push, changes nothing.
 export function resolveClaim(db: Database.Database, tenantId: string, destination: string, leadId: string, created: boolean, now = nowS()): boolean {

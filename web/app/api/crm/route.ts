@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
-import { auditPush, claimPush, CrmPushError, crmDestination, disconnectCrm, finishClaim, getCrmConfig, pushLead, resolveClaim, saveCrmConfig } from '@/lib/crm/index'
+import { auditPush, claimPush, claimState, CrmPushError, crmDestination, disconnectCrm, finishClaim, getCrmConfig, pushLead, resolveClaim, saveCrmConfig } from '@/lib/crm/index'
 import { defaultLookup, resolvePublic } from '@/lib/net/public-fetch'
 import { sameOriginJson } from '@/lib/same-origin'
 import { captureError } from '@/lib/ops/errors'
@@ -45,6 +45,7 @@ export async function POST(req: NextRequest) {
       disconnectCrm(db, user.id)
       return NextResponse.json({ ok: true })
     case 'push':
+    case 'status':
     case 'resolve': {
       const cfg = getCrmConfig(db, user.id)
       if (!cfg) return NextResponse.json({ error: 'Connect a CRM in Settings first' }, { status: 400 })
@@ -53,6 +54,8 @@ export async function POST(req: NextRequest) {
       if (!lead) return NextResponse.json({ error: 'Not found' }, { status: 404 })
       // the generic webhook keeps its own protocol: no record id, no claim
       const dest = cfg.provider === 'webhook' ? null : crmDestination(cfg)
+      // read-only: where this lead's push stands (the page's recheck); nothing is claimed or sent
+      if (body.action === 'status') return NextResponse.json(dest ? (({ state, externalId }) => ({ state, external_id: externalId }))(claimState(db, user.id, dest, lead.id)) : { state: 'none', external_id: null })
       if (body.action === 'resolve') {
         // The user checked the CRM after an unknown result and says whether the record is there. Only then may the
         // lead be pushed again (when it is not there).

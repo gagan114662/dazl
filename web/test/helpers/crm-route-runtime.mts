@@ -178,3 +178,24 @@ test('disconnect and reconnect with a new key, same CRM: the unknown push stays 
   r = await push('A')
   assert.deepEqual([r.status, r.json.external_id, calls.length], [200, '777', 2])
 })
+
+test('status is read-only: none, in_progress, unknown and done from the durable claim; never sends; tenant-scoped', async () => {
+  db.prepare("DELETE FROM crm_push_claims").run(); calls.length = 0
+  as('A')
+  const status = async () => (await post({ action: 'status', lead_id: 'lead-A' })).json
+  assert.deepEqual(await status(), { state: 'none', external_id: null })
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare("INSERT INTO crm_push_claims (tenant_id, destination, lead_id, status, attempt_id, claimed_at, updated_at) VALUES ('A', 'hubspot', 'lead-A', 'pending', 'x', ?, ?)").run(now, now)
+  assert.deepEqual(await status(), { state: 'in_progress', external_id: null })
+  db.prepare("UPDATE crm_push_claims SET claimed_at = ? WHERE tenant_id = 'A'").run(now - 301)
+  assert.deepEqual(await status(), { state: 'unknown', external_id: null })
+  db.prepare("UPDATE crm_push_claims SET status = 'uncertain' WHERE tenant_id = 'A'").run()
+  assert.deepEqual(await status(), { state: 'unknown', external_id: null })
+  db.prepare("UPDATE crm_push_claims SET status = 'ok', external_id = '42' WHERE tenant_id = 'A'").run()
+  assert.deepEqual(await status(), { state: 'done', external_id: '42' })
+  db.prepare("UPDATE crm_push_claims SET status = 'failed', external_id = NULL WHERE tenant_id = 'A'").run()
+  assert.deepEqual(await status(), { state: 'none', external_id: null })
+  assert.equal(calls.length, 0, 'status never sends')
+  as('B')
+  assert.equal((await post({ action: 'status', lead_id: 'lead-A' })).status, 404)
+})
