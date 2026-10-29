@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { gmailStatus } from '../gmail/oauth.ts'
-import { createDraft, approve, getSettings, isSuppressed, OutreachError, sendMessage, suppress, type Deps } from './service.ts'
+import { createDraft, approve, draftBlockReason, getSettings, isSuppressed, OutreachError, sendMessage, suppress, type Deps } from './service.ts'
 import { polishDraft } from './draft-llm.ts'
 
 // Autopilot sends first-touch email to verified, business-published addresses through the user's own Gmail,
@@ -22,6 +22,8 @@ export const WARMUP_SENDS = (env: Record<string, string | undefined> = process.e
 export const MAX_DAILY = 50 // hard ceiling, whatever the user sets
 export const DEFAULT_DAILY = 20
 export const MIN_CONFIDENCE = 80
+// How many verified, undrafted leads a pass reads before asking the draft gate which can be emailed (it takes 25).
+const CANDIDATE_POOL = 200
 
 export const autopilotAvailable = (env: Record<string, string | undefined> = process.env) => env.AUTOPILOT_ENABLED === '1' && env.AUTOPILOT_KILL !== '1'
 
@@ -215,13 +217,17 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     if (await deliver(w.message_id, w.lead_id, w.attempts) === 'stop') return out
   }
 
-  // 2. Verified leads with no message yet.
-  const leads = db.prepare(
-    `SELECT l.id, l.contact FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
-     WHERE j.user_id = ? AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND l.contact IS NOT NULL AND l.quarantined_at IS NULL
+  // 2. Verified leads with no message yet. Autopilot's own bar (machine-verified evidence at MIN_CONFIDENCE) narrows the
+  // list; whether a lead can be emailed at all is the draft gate's answer (draftBlockReason, the same checks createDraft
+  // runs, recipient included via draftRecipient), never where its address happened to be stored (#412): a lead whose
+  // email came from its company's own site is a candidate; one with only a phone number, or a held lead, is not.
+  const pool = db.prepare(
+    `SELECT l.id FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
+     WHERE j.user_id = ? AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND l.quarantined_at IS NULL
        AND NOT EXISTS (SELECT 1 FROM outreach_messages m WHERE m.tenant_id = ? AND m.lead_id = l.id)
-     ORDER BY l.score DESC LIMIT 25`,
-  ).all(tenantId, MIN_CONFIDENCE, tenantId) as { id: string; contact: string }[]
+     ORDER BY l.score DESC LIMIT ${CANDIDATE_POOL}`,
+  ).all(tenantId, MIN_CONFIDENCE, tenantId) as { id: string }[]
+  const leads = pool.filter(l => draftBlockReason(db, tenantId, l.id) === null).slice(0, 25)
 
   for (const l of leads) {
     // re-read state each time so a pause or kill takes effect between sends

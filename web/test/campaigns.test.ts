@@ -2,11 +2,12 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
+import { migrateConnectors } from '../lib/connectors/store.ts'
 import { listCampaigns, nextAction } from '../lib/outreach/campaigns.ts'
 import { campaignStatus } from '../lib/run-status.ts'
 import { setQuarantine } from '../lib/scan/quarantine.ts'
 import { sqliteDb } from '../lib/db/client.ts'
-import { leadEvidenceState, draftBlockReason, approveBlockReason, sendBlockReason, saveSettings, approve } from '../lib/outreach/service.ts'
+import { draftRecipient, leadEvidenceState, draftBlockReason, approveBlockReason, sendBlockReason, saveSettings, approve } from '../lib/outreach/service.ts'
 
 function setup() {
   const db = new Database(':memory:')
@@ -188,4 +189,20 @@ test('missing setup plus an exhausted daily cap counts as held, not setup', () =
   const c = listCampaigns(db, 'A').find(x => x.id === 'jX')!
   assert.deepEqual([c.outreach.approvedReady, c.outreach.approvedSetup, c.outreach.approvedHeld], [0, 0, 1])
   assert.doesNotMatch(c.next.label, /sender details|connect Gmail|send/i)
+})
+
+// #412: "with a contact" is an email the draft would go to (draftRecipient), not any stored contact value: a lead whose
+// only contact is a phone number does not count; one whose company site published an email does, like the draft gate.
+test('#412 contact counts follow the draft recipient: a crawl-only email counts, a phone number does not', () => {
+  const db = setup()
+  migrateConnectors(db)
+  job(db, 'A', 'j1', 'Dental owners in Ohio', { candidates: 3 })
+  lead(db, 'j1', 'phone', { contact: '+1 614 555 0100' })
+  lead(db, 'j1', 'mail', { contact: 'hello@one.example' })
+  lead(db, 'j1', 'crawl', { contact: null })
+  db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', 'crawl', 'sitecrawl', 'email', 'sales@two.example', NULL, 'https://two.example/contact', '2026-10-22', 1)").run()
+  finish(db, 'j1')
+  const c = listCampaigns(db, 'A')[0]
+  assert.equal(c.contact.withContact, 2)
+  assert.deepEqual([draftRecipient(db, 'A', { id: 'phone', contact: '+1 614 555 0100', source_url: 'https://news.example/x' }).to, draftRecipient(db, 'A', { id: 'crawl', contact: null, source_url: 'https://news.example/x' }).to], ['+1 614 555 0100', 'sales@two.example'])
 })

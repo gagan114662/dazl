@@ -133,3 +133,28 @@ test('a crawled address whose website the user has not checked is never drafted 
   assert.equal(r.sent, 0); assert.equal(sent.length, 0)
   assert.equal(status(db).filter(m => m.to_email === 'info@guess.example').length, 0, 'autopilot only drafts for lead.contact; the crawled-address path is also closed inside createDraft')
 })
+
+// #412: whether autopilot considers a lead is the draft gate's answer, not where its address was stored. contact = NULL
+// (or a phone number) plus a verified address on the company's own site is a candidate; the same lead with a crawled
+// address that still needs the user's identity review, or a restricted-purpose, personal or suppressed one, is not.
+test('#412 a lead whose email was found on its own company site is sent by autopilot; excluded routes stay excluded', async () => {
+  const crawl = (db: Database.Database, id: string, email: string, domain: string) => {
+    db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', 'domain', ?, 'domain-basis-v1:evidence_own_domain', ?, '2026-10-22', 1)").run(id, `${domain}|evidence_own_domain`, `https://${domain}/`)
+    db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', 'email', ?, NULL, ?, '2026-10-22', 2)").run(id, email, `https://${domain}/contact`)
+  }
+  const db = await setup(); migrateConnectors(db); ok(db); const { sent, d } = sends()
+  db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, claimed_at) VALUES ('s1a2b3c4d5e6f7a8b9c0d1e2','A','x1','o1@z.example','s','bodybodybodybodybodybody','sent',1,1),('s2a2b3c4d5e6f7a8b9c0d1e2','A','x2','o2@z.example','s','bodybodybodybodybodybody','sent',1,1)").run()
+  const noContact = lead(db, null); crawl(db, noContact, 'sales@northside.example', 'northside.example')
+  const phoneOnly = lead(db, '+1 416 555 0100'); crawl(db, phoneOnly, 'hello@kitebase.example', 'kitebase.example')
+  const support = lead(db, null); crawl(db, support, 'support@helpdesk.example', 'helpdesk.example')
+  const personal = lead(db, null); crawl(db, personal, 'owner.name@gmail.com', 'gmail.com')
+  const unchecked = lead(db, null)
+  db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', 'email', 'info@guess.example', NULL, 'https://guess.example/contact', '2026-10-22', 1)").run(unchecked)
+  const r = await runAutopilot(db, 'A', 'Acme', d)
+  const to = (db.prepare("SELECT to_email FROM outreach_messages WHERE status = 'sent' AND id NOT LIKE 's%' ORDER BY to_email").all() as { to_email: string }[]).map(m => m.to_email)
+  assert.deepEqual(to, ['hello@kitebase.example', 'sales@northside.example'], 'contact NULL or a phone number: the company-published address is used')
+  assert.deepEqual([r.sent, sent.length], [2, 2])
+  // Never drafted: restricted purpose, personal mailbox, a crawled address still needing the user's identity review.
+  for (const e of ['support@helpdesk.example', 'owner.name@gmail.com', 'info@guess.example'])
+    assert.equal((db.prepare('SELECT count(*) AS n FROM outreach_messages WHERE to_email = ?').get(e) as { n: number }).n, 0, e)
+})

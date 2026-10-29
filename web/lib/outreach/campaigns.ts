@@ -2,7 +2,8 @@ import type Database from 'better-sqlite3'
 import { sequenceAnalytics } from './sequences.ts'
 import { evidenceStateOf } from './evidence-state.ts'
 import { currentnessHeld } from './currentness.ts'
-import { approveBlockReason, draftBlockReason, sendBlockReason } from './service.ts'
+import { approveBlockReason, draftBlockReason, draftRecipient, sendBlockReason } from './service.ts'
+import { EMAIL_RE } from '../gmail/mime.ts'
 
 // One row per search (a scan job is a campaign, as in the Outreach analytics): discovery -> qualification -> contact ->
 // outreach -> sequence -> reply, and the single next action. Read-only and tenant-scoped: every count is limited to the
@@ -33,9 +34,8 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     const n = (sql: string, ...a: unknown[]) => (db.prepare(sql).get(...a) as { n: number }).n
     // Leads of THIS job of THIS tenant only (scan_jobs.user_id is the tenant).
     const L = `FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE l.scan_job_id = ?`
-    const live = 'AND l.quarantined_at IS NULL'
-    type Row = { id: string; contact: string | null; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; quarantined_at: number | null }
-    const rows = db.prepare(`SELECT l.id, l.contact, l.evidence_excerpt, l.confidence, l.human_confirmed_at, l.review_reason, l.quarantined_at ${L}`).all(tenantId, j.id) as Row[]
+    type Row = { id: string; contact: string | null; source_url: string; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; quarantined_at: number | null }
+    const rows = db.prepare(`SELECT l.id, l.contact, l.source_url, l.evidence_excerpt, l.confidence, l.human_confirmed_at, l.review_reason, l.quarantined_at ${L}`).all(tenantId, j.id) as Row[]
     const leads = rows.length
     const liveRows = rows.filter(r => r.quarantined_at === null)
     const rejected = leads - liveRows.length
@@ -51,8 +51,11 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     // draftBlockReason runs every createDraft check without writing. A stored contact alone never counts as ready.
     const heldIds = new Set(liveRows.filter(r => evidenceStateOf(r) !== 'unverified' && currentnessHeld(db, tenantId, r.id)).map(r => r.id))
     const held = heldIds.size
-    const readyWithContact = liveRows.filter(r => evidenceStateOf(r) !== 'unverified' && !heldIds.has(r.id) && (r.contact ?? '').trim() !== '').length
-    const withContact = n(`SELECT count(*) AS n ${L} ${live} AND coalesce(trim(l.contact), '') <> ''`, tenantId, j.id)
+    // A contact is an email the draft would go to (draftRecipient, #412): the cited page's or the company's own published
+    // address; a phone number or an empty contact is not one.
+    const hasEmail = (r: Row) => EMAIL_RE.test(draftRecipient(db, tenantId, r).to)
+    const readyWithContact = liveRows.filter(r => evidenceStateOf(r) !== 'unverified' && !heldIds.has(r.id) && hasEmail(r)).length
+    const withContact = liveRows.filter(hasEmail).length
     const msg = (status: string) => n(`SELECT count(*) AS n FROM outreach_messages m JOIN leads l ON l.id = m.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE m.tenant_id = ? AND l.scan_job_id = ? AND m.status = ? AND coalesce(m.test, 0) = 0`, tenantId, tenantId, j.id, status)
     // Test sends (outreach_messages.test) are fixtures, never real work: excluded from every count here.
     const drafts = msg('draft'), approved = msg('approved'), sent = msg('sent')

@@ -49,5 +49,8 @@ test('a quarantined lead cannot be drafted, is held at the send gate, and is lef
 test('autopilot never selects a quarantined lead (the candidate query excludes it)', async () => {
   const { readFileSync } = await import('node:fs')
   const src = readFileSync(new URL('../lib/outreach/autopilot.ts', import.meta.url), 'utf8')
-  assert.match(src, /l\.contact IS NOT NULL AND l\.quarantined_at IS NULL/)
+  // #412: the contact filter moved to the draft gate (draftBlockReason, which also refuses lead_quarantined); the query
+  // itself still leaves quarantined leads out.
+  assert.match(src, /l\.confidence >= \? AND l\.quarantined_at IS NULL/)
+  assert.match(src, /draftBlockReason\(db, tenantId, l\.id\) === null/)
 })

@@ -211,25 +211,12 @@ export function createDraft(db: Database.Database, tenantId: string, leadId: str
   return db.transaction(() => createDraftInner(db, tenantId, leadId, businessName)).immediate()
 }
 
-// Every check createDraft makes before it writes, in the same order. Throws OutreachError on the first refusal.
-function draftChecks(db: Database.Database, tenantId: string, leadId: string) {
-  const lead = db.prepare(
-    `SELECT l.id, l.company, l.name, l.contact, l.signal, l.source_url, l.evidence_excerpt, l.confidence, l.fit, l.intent, l.human_confirmed_at
-     FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`,
-  ).get(leadId, tenantId) as Lead | undefined
-  if (!lead) throw new OutreachError('not_found')
-  if (isQuarantined(db, leadId)) throw new OutreachError('lead_quarantined')
-  if (requiredGateHeld(db,tenantId,leadId)) throw new OutreachError('sales_hiring_check_failed')   // confirming the lead or its domain never clears a failed required check
-  if (currentnessHeld(db,tenantId,leadId)) throw new OutreachError('lead_currentness_unconfirmed')
-  // Verified by dazl (quote confirmed on the cited page) OR confirmed by the user
-  // themselves from the needs-review list. A human confirmation is the user's own
-  // checked decision, labelled as such in the UI; it never rewrites the machine verdict.
-  if (evidenceStateOf(lead) === 'unverified') throw new OutreachError('lead_not_verified')
-  // Held lead: ICP grading failed, so it sits at fit 0 with intent unset. That hold is not a
-  // grade, and the lead must not be emailed until a rescan grades it successfully. A real
-  // grade of 0 (intent set) and never-scored leads (fit unset) are not affected.
-  if (lead.fit === 0 && lead.intent === null) throw new OutreachError('lead_ungraded')
-  // The address must be published: on the cited page (lead.contact) or on the company's own contact page (sitecrawl, with its source URL).
+// The address a draft for this lead would go to, whoever asks (createDraft, autopilot's candidate list, the Campaigns
+// contact count, #412): the address printed on the cited page (lead.contact) when that is an email, otherwise the
+// company's own published address found by the site crawl (pickCrawledEmail), with the page that shows it. Where the
+// address happened to be stored never decides eligibility; the purpose, identity and suppression checks run after this.
+// `to` is '' or not an email when there is none.
+export function draftRecipient(db: Database.Database, tenantId: string, lead: { id: string; contact: string | null; source_url: string }): { to: string; addressUrl: string; crawled: NonNullable<Parameters<typeof domainReviewFor>[1]> } {
   let published = lead.contact ?? ''
   let crawled: NonNullable<Parameters<typeof domainReviewFor>[1]> = []
   // The page that actually shows the address: the cited page for a direct contact, the company's own
@@ -251,7 +238,28 @@ function draftChecks(db: Database.Database, tenantId: string, leadId: string) {
       if (same?.source_url) addressUrl = same.source_url
     }
   } catch { /* enrichment table not present */ }
-  const to = norm(published)
+  return { to: norm(published), addressUrl, crawled }
+}
+
+// Every check createDraft makes before it writes, in the same order. Throws OutreachError on the first refusal.
+function draftChecks(db: Database.Database, tenantId: string, leadId: string) {
+  const lead = db.prepare(
+    `SELECT l.id, l.company, l.name, l.contact, l.signal, l.source_url, l.evidence_excerpt, l.confidence, l.fit, l.intent, l.human_confirmed_at
+     FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`,
+  ).get(leadId, tenantId) as Lead | undefined
+  if (!lead) throw new OutreachError('not_found')
+  if (isQuarantined(db, leadId)) throw new OutreachError('lead_quarantined')
+  if (requiredGateHeld(db,tenantId,leadId)) throw new OutreachError('sales_hiring_check_failed')   // confirming the lead or its domain never clears a failed required check
+  if (currentnessHeld(db,tenantId,leadId)) throw new OutreachError('lead_currentness_unconfirmed')
+  // Verified by dazl (quote confirmed on the cited page) OR confirmed by the user
+  // themselves from the needs-review list. A human confirmation is the user's own
+  // checked decision, labelled as such in the UI; it never rewrites the machine verdict.
+  if (evidenceStateOf(lead) === 'unverified') throw new OutreachError('lead_not_verified')
+  // Held lead: ICP grading failed, so it sits at fit 0 with intent unset. That hold is not a
+  // grade, and the lead must not be emailed until a rescan grades it successfully. A real
+  // grade of 0 (intent set) and never-scored leads (fit unset) are not affected.
+  if (lead.fit === 0 && lead.intent === null) throw new OutreachError('lead_ungraded')
+  const { to, addressUrl, crawled } = draftRecipient(db, tenantId, lead)
   if (!EMAIL_RE.test(to)) throw new OutreachError('no_email_contact')
   // Published is not the same as sales-contactable: press, support, privacy,
   // careers and similar inboxes exist for another purpose. Never aim a sales
