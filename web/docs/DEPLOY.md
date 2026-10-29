@@ -38,6 +38,16 @@ On the same box, beside production and sharing nothing with it:
 ## Error monitoring on the deployed app
 Server errors (uncaught route/page/action errors, process crashes, scan runner crashes) are already recorded as scrubbed JSON lines on stderr. They reach a person only once a destination is set in the production env file: `SENTRY_DSN` (Sentry or GlitchTip project DSN) and/or `OPS_ALERT_WEBHOOK_URL` (e.g. a Slack incoming webhook), then restart. Both are currently unset; setting them is an owner/Instinct production change. `/api/ready` does not require them.
 
+## Release gate (before every production deploy)
+`.github/workflows/release-gate.yml` runs on every PR touching `web/` or `ops/` and on every push to main. Deploy only a main commit whose release-gate run is green:
+- **browser**: the production build, then in Chromium every /app page (`test:smoke`), chunk-load recovery (`test:smoke:chunks`), the sign-in gate on every page (`test:smoke:auth`), two tenants with no cross-tenant data on any session GET route or page (`test:smoke:tenants`), and release identity plus readiness (`test:smoke:release`).
+- **migrations**: `scripts/migration-gate.mts` fills a database with the previous release's own staging seed, migrates it with this release (no row lost), migrates again (nothing changes), then starts the previous release on it (rollback still works).
+- Its `release-<sha>` artifact is `release.json` (`ops/release-manifest.mjs write`): commit, Next `BUILD_ID`, sha256 of the static tree and lockfile, PG migrations.
+
+After the cutover (step 3 and again after step 4), prove what is serving with the artifact's `release.json`:
+`node ops/release-manifest.mjs check release.json http://127.0.0.1:3100` then `node ops/release-manifest.mjs check release.json https://dazl.ai`.
+Exit 0 means: that exact commit, that exact build (its `/_next/static/<BUILD_ID>/` answers), and `/api/ready` ok. It prints one JSON line (commit, build id, ready) to paste into the deploy report. Building on the box gives a new `BUILD_ID`; then run `ops/release-manifest.mjs write web release.json` there and compare its `commit` and `lockfile_sha256` with the CI artifact before checking. Staging's `deploy.sh` logs the same line after each deploy (`journalctl -u dazl-staging-deploy`).
+
 ## Rollback
 1. `cp /etc/caddy/Caddyfile.pre-next /etc/caddy/Caddyfile && systemctl reload caddy` (back on the old app in seconds).
 2. Stop the new service. The old app and its database were never touched. The new DB file can stay or be deleted.

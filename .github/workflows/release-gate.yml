@@ -1,0 +1,95 @@
+name: release-gate
+# What must hold before a commit is deployed (issue #362; web/docs/DEPLOY.md "Release gate"). Runs on every pull request
+# touching web/ or ops/, and on every push to main, so the exact commit Instinct deploys has a run of its own:
+# - browser: the production build, then every production smoke check against it in Chromium: pages and chunks load,
+#   chunk-load recovery, the /app sign-in gate, the two-tenant leak check, and release identity plus readiness;
+# - migrations: the previous release's SQLite database (filled by its own synthetic staging seed) is migrated by this
+#   release without losing a row, a second migration changes nothing, and the previous release still starts on it
+#   (rollback). The base is the PR's base commit, or the commit main was at before the push.
+# The run's release-<sha> artifact is the release manifest (ops/release-manifest.mjs): commit, Next BUILD_ID, static
+# tree sha256, lockfile sha256, PG migrations. After a deploy, `node ops/release-manifest.mjs check release.json <url>`
+# proves the server serves exactly that build and is ready. No secrets: servers run under the test network fence with
+# throwaway databases and generated test-mode values, so nothing is scanned, sent, billed or fetched.
+on:
+  pull_request:
+    paths: ["web/**", "ops/**", ".github/workflows/release-gate.yml"]
+  push:
+    branches: [main]
+    paths: ["web/**", "ops/**", ".github/workflows/release-gate.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: release-gate-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - name: Release manifest
+        run: node ../ops/release-manifest.mjs write . release.json && cat release.json
+      # Playwright is not an app dependency: installed for this job only, the lockfile untouched
+      - run: npm install --no-save playwright@1.63.0 && npx playwright install --with-deps chromium
+      - name: Every /app page loads (no page/console error, no missing asset)
+        run: npm run test:smoke
+      - name: Chunk-load recovery
+        if: success() || failure()
+        run: npm run test:smoke:chunks
+      - name: Sign-in gate on every /app page
+        if: success() || failure()
+        run: npm run test:smoke:auth
+      - name: Two tenants, no cross-tenant data on any route or page
+        if: success() || failure()
+        run: npm run test:smoke:tenants
+      - name: Release identity and readiness
+        if: success() || failure()
+        run: npm run test:smoke:release
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: release-${{ github.event.pull_request.head.sha || github.sha }}
+          path: web/release.json
+          retention-days: 90
+          if-no-files-found: error
+
+  migrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - name: Previous release checkout
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          # a new branch or a forced push has no usable "before": fall back to the first parent
+          if ! git cat-file -e "${BASE}^{commit}" 2>/dev/null; then BASE=$(git rev-parse HEAD^); fi
+          echo "previous release: $BASE"
+          git worktree add --detach "$RUNNER_TEMP/prev" "$BASE"
+          # the previous release runs with this checkout's node_modules (better-sqlite3 is all a migration needs)
+          ln -s "$GITHUB_WORKSPACE/web/node_modules" "$RUNNER_TEMP/prev/web/node_modules"
+      - name: Forward, re-run and rollback on a seeded database
+        working-directory: web
+        run: node --experimental-strip-types --no-warnings scripts/migration-gate.mts "$RUNNER_TEMP/prev/web"
