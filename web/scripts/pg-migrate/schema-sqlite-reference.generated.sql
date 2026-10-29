@@ -113,6 +113,18 @@ CREATE TABLE consent_ledger (
       revoke_reason TEXT CHECK (revoke_reason IS NULL OR length(revoke_reason) <= 60)
     );
 
+CREATE TABLE crm_push_claims (
+      tenant_id   TEXT NOT NULL,
+      destination TEXT NOT NULL,
+      lead_id     TEXT NOT NULL,
+      status      TEXT NOT NULL CHECK (status IN ('pending', 'ok', 'failed', 'uncertain', 'resolved_created', 'resolved_not_created')),
+      external_id TEXT,
+      attempt_id  TEXT NOT NULL,
+      claimed_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL,
+      PRIMARY KEY (tenant_id, destination, lead_id)
+    );
+
 CREATE TABLE csv_batches (
       id         TEXT PRIMARY KEY,
       user_id    TEXT NOT NULL,
@@ -245,6 +257,15 @@ CREATE TABLE leads (
 
 CREATE TABLE mail_read_consent (tenant_id TEXT PRIMARY KEY, version TEXT NOT NULL, accepted_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)));
 
+CREATE TABLE memberships (
+    tenant_id TEXT NOT NULL,
+    member_id TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'operator', 'viewer')),
+    created_at INTEGER NOT NULL,
+    added_by TEXT,
+    PRIMARY KEY (tenant_id, member_id)
+  );
+
 CREATE TABLE monitor_runs (
       id         TEXT PRIMARY KEY,
       monitor_id TEXT NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
@@ -296,6 +317,14 @@ CREATE TABLE oauth_states (
       verifier   TEXT NOT NULL,
       expires_at INTEGER NOT NULL
     , read_scope INTEGER NOT NULL DEFAULT 0);
+
+CREATE TABLE organizations (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '' CHECK (length(name) <= 150),
+    kind TEXT NOT NULL CHECK (kind IN ('personal', 'team')),
+    created_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
 
 CREATE TABLE outreach_llm_usage (
       id            INTEGER PRIMARY KEY,
@@ -587,7 +616,7 @@ CREATE TABLE sessions (
       user_id TEXT NOT NULL,
       created_at INTEGER DEFAULT (unixepoch()),
       expires_at INTEGER NOT NULL
-    );
+    , active_tenant_id TEXT);
 
 CREATE TABLE source_reviews (
  id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, job_id TEXT NOT NULL, lead_id TEXT NOT NULL,
@@ -787,6 +816,8 @@ CREATE UNIQUE INDEX leads_dedup ON leads (scan_job_id, dedup_key) WHERE dedup_ke
 CREATE INDEX leads_insert_seq_idx ON leads (insert_seq);
 
 CREATE INDEX leads_job ON leads (scan_job_id);
+
+CREATE INDEX memberships_member ON memberships (member_id);
 
 CREATE INDEX monitor_runs_monitor ON monitor_runs (monitor_id, ran_at);
 
