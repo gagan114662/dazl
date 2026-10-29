@@ -26,8 +26,10 @@ import { migrateSourceStats } from '../lib/search/trace.ts'
 import { migrateSourceRuns } from '../lib/scan/source-runs.ts'
 import { migrateMemory } from '../lib/memory.ts'
 import { companyKey } from '../lib/scan/evidence.ts'
+import { parseWindowDays } from '../lib/scan/window.ts'
+import { whoOf } from '../lib/scan/actionable.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
-import { scoreSearch, scoreLead, scoreboardMarkdown, type ScoredLeadInput, type SearchScore } from '../lib/scan/scoreboard.ts'
+import { RUBRIC_VERSION, scoreSearch, scoreLead, scoreboardMarkdown, type ScoredLeadInput, type SearchScore } from '../lib/scan/scoreboard.ts'
 
 const key = process.env.SCOREBOARD_ANTHROPIC_KEY?.trim()
 if (!key) { console.error('SCOREBOARD_ANTHROPIC_KEY is required'); process.exit(2) }
@@ -68,17 +70,20 @@ for (const s of searches) {
   const j = db.prepare('SELECT status, error FROM scan_jobs WHERE id = ?').get(id) as { status: string; error: string | null }
   error = error ?? j.error
   const complete = !error?.startsWith('crashed') && !INCOMPLETE.has(j.error ?? '') && j.status !== 'pending' && j.status !== 'running'
-  const raw = db.prepare('SELECT id, name, company, contact, review_reason, event_date, fit, signal, source_url FROM leads WHERE scan_job_id = ?').all(id) as (ScoredLeadInput & { id: string; company: string; signal: string; source_url: string })[]
-  const contactsOf = db.prepare("SELECT value FROM lead_enrichments WHERE lead_id = ? AND kind = 'contact'")
-  const leads = raw.map(l => ({ ...l, contacts: (contactsOf.all(l.id) as { value: string }[]).map(r => r.value) }))
-  const score = scoreSearch(leads)
-  for (const l of leads) if (scoreLead(l).qualified) qualifiedCompanies.add(companyKey(l.company))
+  const raw = db.prepare('SELECT id, name, company, contact, review_reason, event_date, date_status, fit, intent, signal, source_url, evidence_excerpt, confidence, human_confirmed_at, quarantined_at, company_domain FROM leads WHERE scan_job_id = ?').all(id) as (ScoredLeadInput & { id: string; company: string; signal: string; source_url: string })[]
+  const enrichOf = db.prepare('SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ?')
+  const leads = raw.map(l => { const enrichments = enrichOf.all(l.id) as NonNullable<ScoredLeadInput['enrichments']>; return { ...l, enrichments, contacts: enrichments.filter(e => e.kind === 'contact').map(e => e.value) } })
+  // The request's own window and role, not a fixed 90 days / any person.
+  const icp = (db.prepare('SELECT icp FROM scan_jobs WHERE id = ?').get(id) as { icp: string | null } | undefined)?.icp ?? null
+  const opts = { windowDays: parseWindowDays(s.query) ?? undefined, who: whoOf(icp) || undefined }
+  const score = scoreSearch(leads, new Date(), opts)
+  for (const l of leads) if (scoreLead(l, new Date(), opts).qualified) qualifiedCompanies.add(companyKey(l.company))
   const status = complete ? j.status : 'INCOMPLETE'
   rows.push({ id: s.id, search: s.id, status, error, complete, seconds: Math.round((Date.now() - t0) / 1000), score, leads: leads.map(({ id: _id, ...l }) => l) })
   console.error(`${s.id}: ${status} ${error ?? ''} qualified=${score.qualified} leads=${score.leads} (${rows[rows.length - 1].seconds}s)`)
 }
 
-const md = scoreboardMarkdown(rows, { commit, date, model, rubric, uniqueQualified: qualifiedCompanies.size, budgetUsd: totalUsd })
+const md = scoreboardMarkdown(rows, { commit, date, model, rubric: `${RUBRIC_VERSION}/${rubric}`, uniqueQualified: qualifiedCompanies.size, budgetUsd: totalUsd })
 const out = path.join(root, 'scoreboard', 'results')
 mkdirSync(out, { recursive: true })
 writeFileSync(path.join(out, `${date}-${commit}.json`), JSON.stringify({ commit, date, model, rubric, budgetUsdTotal: totalUsd, uniqueQualifiedCompanies: qualifiedCompanies.size, rows }, null, 2))

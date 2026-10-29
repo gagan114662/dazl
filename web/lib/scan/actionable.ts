@@ -8,7 +8,7 @@
 // the run report gets the same counts, so the report and the card agree.
 import type Database from 'better-sqlite3'
 import { addEnrichment } from '../connectors/store.ts'
-import { titleMatches } from '../people/rank.ts'
+import { personMatchesRole } from './person-role.ts'
 import { salesHiringRequired } from './sales-hiring-required.ts'
 import { FIT_MIN } from './scoreboard.ts'
 import { getMemory, isExcluded } from '../memory.ts'
@@ -19,10 +19,7 @@ export const ACTIONABLE_CONNECTOR = 'scan:actionable'
 export type Missing = 'sales_hiring_check_failed' | 'quarantined' | 'excluded' | 'fit_below_threshold' | 'not_graded' | 'no_domain' | 'no_sales_vacancy' | 'no_contact_person' | 'no_published_contact'
 // Mailboxes that are not a way to reach a founder: support, privacy, legal, careers, recruiting, press, abuse, no-reply, billing.
 export const NOT_A_FOUNDER_ROUTE = /^(?:support|help|privacy|legal|dpo|security|abuse|careers?|jobs?|recruit\w*|hiring|talent|hr|people|press|media|pr|billing|accounts?|invoices?|noreply|no-reply|donotreply|webmaster|postmaster|compliance|gdpr)$/i
-const FOUNDER = /\b(?:founder|co-?founder|ceo|chief executive|managing director|owner|president)\b/i
-
-// A named person counts as the contact only when the title is a founder-level role or matches the role the request asked for (a dentist at a SaaS lead is not the decision-maker).
-export const personMatchesRole = (value: string, who: string): boolean => { const t = value.split(',').slice(1).join(',').trim(); return FOUNDER.test(t) || titleMatches(t, who).length > 0 }
+export { personMatchesRole }
 export interface LeadYield { held?: boolean; url?: string; lead_id: string; company: string; actionable: boolean; missing: Missing[]; person: string | null; route: string | null }
 export interface YieldSummary { held_leads?: { id: string; company: string; url: string }[]; source_checked: number; verified: number; actionable: number; missing: Record<string, number>; leads: { company: string; actionable: boolean; missing: Missing[] }[] }
 
