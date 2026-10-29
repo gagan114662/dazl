@@ -486,6 +486,29 @@ CREATE TABLE scan_source_stats (
     PRIMARY KEY (job_id, attempt, collector)
   );
 
+CREATE TABLE scheduler_progress (
+      tenant_id            TEXT NOT NULL,
+      kind                 TEXT NOT NULL CHECK (kind IN ('reply_sync','followups','sequences')),
+      last_attempt_at      INTEGER NOT NULL,
+      last_success_at      INTEGER,
+      last_error           TEXT CHECK (last_error IS NULL OR length(last_error) <= 200),
+      consecutive_failures INTEGER NOT NULL DEFAULT 0,
+      last_run_id          TEXT,
+      PRIMARY KEY (tenant_id, kind)
+    );
+
+CREATE TABLE scheduler_runs (
+      id                TEXT PRIMARY KEY,
+      started_at        INTEGER NOT NULL,
+      finished_at       INTEGER,
+      status            TEXT NOT NULL CHECK (status IN ('running','ok','partial','failed','lease_lost')),
+      lease_owner       TEXT NOT NULL,
+      lease_generation  INTEGER NOT NULL,
+      tenants_attempted INTEGER NOT NULL DEFAULT 0,
+      tenants_failed    INTEGER NOT NULL DEFAULT 0,
+      error             TEXT CHECK (error IS NULL OR length(error) <= 200)
+    );
+
 CREATE TABLE seo_audits (
     id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, domain TEXT NOT NULL,
     results TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
@@ -786,6 +809,8 @@ CREATE INDEX scan_jobs_status ON scan_jobs (status, created_at);
 CREATE INDEX scan_jobs_user ON scan_jobs (user_id, created_at);
 
 CREATE UNIQUE INDEX scan_model_calls_job ON scan_model_calls(job_id, attempt, seq);
+
+CREATE INDEX scheduler_runs_started ON scheduler_runs (started_at);
 
 CREATE INDEX seo_briefs_tenant ON seo_briefs (tenant_id, created_at);
 

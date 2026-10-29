@@ -19,6 +19,7 @@ export const ROUTE_TEMPLATES: readonly string[] = [
   '/api/health',
   '/api/health/live',
   '/api/health/ready',
+  '/api/health/scheduler',
   '/api/hooks/calcom',
   '/api/internal/tick',
   '/api/leads',
