@@ -2,10 +2,12 @@ import {contactPurposeRestricted} from './contact-purpose-db.ts'
 import {currentnessHeld} from './currentness.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend, tableExists } from './send-budget.ts'
 import type Database from 'better-sqlite3'
-import type { Db } from '../db/client.ts'
+import type { Db, Param } from '../db/client.ts'
+import { isMissingSchema } from '../scan/play-offer-text.ts'
+import { norm } from './store.ts'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
 import { getAccessToken, gmailSend, gmailStatus, readGmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
-import { auditAt, autopilotAvailable, getState, pause } from './autopilot.ts'
+import { auditAt, autopilotAvailable, CONSENT_VERSION, getState, pause } from './autopilot.ts'
 import { hasConsent } from './ledger.ts'
 import { composeBody, getSettings, isSuppressed, domainReviewStatus, leadEvidenceEligible, leadHeld, recipientAllowed, unsubToken, type Deps } from './service.ts'
 import { llmFollowupText } from './draft-llm.ts'
@@ -133,6 +135,11 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
 
 // Read model for the Follow-ups page: every sequence with its schedule state, plus the
 // follow-ups already sent. Read-only; nothing here starts or stops a sequence.
+// Why the runner (runFollowups) would send nothing right now, checked in its own order. Account-wide holds stop every
+// thread; thread holds stop one. Lead-level checks the runner makes at send time (lead review, website, currentness,
+// contact purpose, the daily cap) are not repeated here: a date shown can still be skipped then, never the reverse.
+export type FollowupHold = 'not_available' | 'autopilot_off' | 'autopilot_paused' | 'consent_outdated' | 'followups_off' | 'uncertain_send' | 'gmail_or_identity'
+export type ThreadHold = 'sequence' | 'suppressed' | 'no_consent'
 export interface FollowupThreadView {
   thread_id: string
   company: string
@@ -140,12 +147,17 @@ export interface FollowupThreadView {
   to_email: string
   last_lead_reply_at: number | null
   followups_sent: number
+  // when the gap schedule says the next follow-up would be due (configuration), and when it actually will be: null
+  // whenever something holds it (hold says what)
+  scheduled_at: number | null
   next_due_at: number | null
+  hold: FollowupHold | ThreadHold | null
   stopped: string | null
 }
 export interface FollowupOverview {
   enabled: boolean
   account: string | null
+  hold: FollowupHold | null
   threads: FollowupThreadView[]
   sent: { thread_id: string; company: string; to_email: string; step: number; status: string; created_at: number }[]
 }
@@ -154,34 +166,58 @@ export interface FollowupOverview {
 // (followup_threads.tenant_id, followup_messages.tenant_id), and the lead join adds a name and company only from a lead
 // of the tenant's own scan (OWN_LEAD), so a thread that named another tenant's lead shows no company rather than theirs.
 const OWN_LEAD = 'EXISTS (SELECT 1 FROM scan_jobs j WHERE j.id = l.scan_job_id AND j.user_id = t.tenant_id)'
-export async function followupOverview(db: Db, tenantId: string): Promise<FollowupOverview> {
-  const rows = await db.all<{ thread_id: string; to_email: string; last_activity_at: number; last_lead_reply_at: number | null; followups_sent: number; stopped: string | null; company: string; name: string }>(
-    `SELECT t.thread_id, t.to_email, t.last_activity_at, t.last_lead_reply_at, t.followups_sent, t.stopped,
+// A table an older database does not have yet holds nothing; any other read error is not "no hold" and throws.
+async function exists(db: Db, sql: string, args: Param[]): Promise<boolean> {
+  try { return !!(await db.get(sql, args)) } catch (e) { if (isMissingSchema(e)) return false; throw e }
+}
+async function accountHold(db: Db, tenantId: string, flags: Record<string, string | undefined>): Promise<FollowupHold | null> {
+  if (!autopilotAvailable(flags)) return 'not_available'
+  const st = await db.get<{ enabled: number; paused: number; consent_version: string | null; followups_enabled: number }>('SELECT enabled, paused, consent_version, followups_enabled FROM autopilot_settings WHERE tenant_id = ?', [tenantId])
+  if (!st || Number(st.enabled) !== 1) return 'autopilot_off'
+  if (Number(st.paused) === 1) return 'autopilot_paused'
+  if (st.consent_version !== CONSENT_VERSION) return 'consent_outdated'
+  if (Number(st.followups_enabled) !== 1) return 'followups_off'
+  for (const [table, status] of [['outreach_messages', 'uncertain'], ['followup_messages', 'uncertain'], ['sequence_steps', 'uncertain'], ['reopen_messages', 'approved']])
+    if (await exists(db, `SELECT 1 FROM ${table} WHERE tenant_id = ? AND status = ?`, [tenantId, status])) return 'uncertain_send'
+  const acct = await readGmailStatus(db, tenantId)
+  if (acct?.status !== 'active' || !(await exists(db, 'SELECT 1 FROM outreach_settings WHERE tenant_id = ?', [tenantId]))) return 'gmail_or_identity'
+  return null
+}
+async function threadHold(db: Db, tenantId: string, t: { lead_id: string; to_email: string }, now: number): Promise<ThreadHold | null> {
+  if (await exists(db, 'SELECT 1 FROM sequences WHERE tenant_id = ? AND lead_id = ?', [tenantId, t.lead_id])) return 'sequence'
+  if (await exists(db, 'SELECT 1 FROM suppressions WHERE tenant_id = ? AND email = ?', [tenantId, norm(t.to_email)])) return 'suppressed'
+  if (!(await exists(db, "SELECT 1 FROM consent_ledger WHERE tenant_id = ? AND contact = ? AND channel = 'email' AND scope = 'followup' AND revoked_at IS NULL AND expires_at > ?", [tenantId, norm(t.to_email), now]))) return 'no_consent'
+  return null
+}
+
+export async function followupOverview(db: Db, tenantId: string, opts: { flags?: Record<string, string | undefined>; now?: number } = {}): Promise<FollowupOverview> {
+  const now = opts.now ?? Math.floor(Date.now() / 1000)
+  const hold = await accountHold(db, tenantId, opts.flags ?? process.env)
+  const rows = await db.all<{ thread_id: string; lead_id: string; to_email: string; last_activity_at: number; last_lead_reply_at: number | null; followups_sent: number; stopped: string | null; company: string; name: string }>(
+    `SELECT t.thread_id, t.lead_id, t.to_email, t.last_activity_at, t.last_lead_reply_at, t.followups_sent, t.stopped,
             COALESCE(l.company, '') AS company, COALESCE(l.name, '') AS name
      FROM followup_threads t LEFT JOIN leads l ON l.id = t.lead_id AND ${OWN_LEAD}
      WHERE t.tenant_id = ? ORDER BY t.last_activity_at DESC, t.thread_id LIMIT 100`, [tenantId])
-  const threads = rows.map(r => ({
-    thread_id: r.thread_id,
-    company: r.company,
-    name: r.name,
-    to_email: r.to_email,
-    last_lead_reply_at: r.last_lead_reply_at,
-    followups_sent: r.followups_sent,
-    stopped: r.stopped,
-    // The next follow-up is due GAPS_DAYS[sent] days after the last activity; nothing is due for
-    // stopped or exhausted sequences, or threads with no interested reply yet.
-    next_due_at: r.stopped || r.followups_sent >= MAX_FOLLOWUPS || r.last_lead_reply_at === null
+  const threads: FollowupThreadView[] = []
+  for (const r of rows) {
+    // By the gap schedule the next follow-up is due GAPS_DAYS[sent] days after the last activity; nothing is scheduled
+    // for stopped or exhausted sequences, or threads with no interested reply yet.
+    const scheduled = r.stopped || Number(r.followups_sent) >= MAX_FOLLOWUPS || r.last_lead_reply_at === null
       ? null
-      : r.last_activity_at + (GAPS_DAYS[r.followups_sent] ?? GAPS_DAYS[GAPS_DAYS.length - 1]) * 86400,
-  }))
+      : Number(r.last_activity_at) + (GAPS_DAYS[Number(r.followups_sent)] ?? GAPS_DAYS[GAPS_DAYS.length - 1]) * 86400
+    // A date is promised only when the runner would actually send: no account-wide hold and none on this thread.
+    const h = scheduled === null ? null : hold ?? await threadHold(db, tenantId, r, now)
+    threads.push({ thread_id: r.thread_id, company: r.company, name: r.name, to_email: r.to_email, last_lead_reply_at: r.last_lead_reply_at,
+      followups_sent: Number(r.followups_sent), stopped: r.stopped, scheduled_at: scheduled, next_due_at: h ? null : scheduled, hold: h })
+  }
   const sent = await db.all<{ thread_id: string; company: string; to_email: string; step: number; status: string; created_at: number }>(
     `SELECT m.thread_id, m.step, m.status, m.created_at, t.to_email, COALESCE(l.company, '') AS company
      FROM followup_messages m JOIN followup_threads t ON t.tenant_id = m.tenant_id AND t.thread_id = m.thread_id
      LEFT JOIN leads l ON l.id = t.lead_id AND ${OWN_LEAD}
      WHERE m.tenant_id = ? ORDER BY m.created_at DESC, m.thread_id, m.step DESC LIMIT 100`, [tenantId])
   const acct = await readGmailStatus(db, tenantId)
-  const enabled = (await db.get<{ f: number }>(FOLLOWUPS_ENABLED_SQL, [tenantId]))?.f === 1
-  return { enabled, account: acct?.status === 'active' ? acct.email : null, threads, sent }
+  const enabled = Number((await db.get<{ f: number }>(FOLLOWUPS_ENABLED_SQL, [tenantId]))?.f) === 1
+  return { enabled, account: acct?.status === 'active' ? acct.email : null, hold, threads, sent }
 }
 
 // What the follow-ups page should ask for when automatic follow-ups are not running.

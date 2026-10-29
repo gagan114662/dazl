@@ -3,9 +3,22 @@ import { useEffect, useState } from 'react'
 import GmailGate from '../gmail-gate'
 import { followupAsk } from '@/lib/outreach/followups'
 
-interface Thread { thread_id: string; company: string; name: string; to_email: string; last_lead_reply_at: number | null; followups_sent: number; next_due_at: number | null; stopped: string | null }
+interface Thread { thread_id: string; company: string; name: string; to_email: string; last_lead_reply_at: number | null; followups_sent: number; scheduled_at: number | null; next_due_at: number | null; hold: string | null; stopped: string | null }
 interface Sent { thread_id: string; company: string; to_email: string; step: number; status: string; created_at: number }
-interface Overview { enabled: boolean; account: string | null; threads: Thread[]; sent: Sent[] }
+interface Overview { enabled: boolean; account: string | null; hold: string | null; threads: Thread[]; sent: Sent[] }
+// Why nothing will be sent (lib/outreach/followups.ts accountHold/threadHold): the runner's own checks, read-only.
+const HOLD: Record<string, string> = {
+  not_available: 'automatic sending is not available on this server',
+  autopilot_off: 'autopilot is off',
+  autopilot_paused: 'autopilot is paused',
+  consent_outdated: 'autopilot needs your consent again (the terms changed)',
+  followups_off: 'the follow-ups switch is off',
+  uncertain_send: 'an earlier send has an unknown result - check your Gmail Sent folder first',
+  gmail_or_identity: 'Gmail or your sender details need attention',
+  sequence: 'this lead is in a sequence, which sends instead',
+  suppressed: 'this address unsubscribed or bounced',
+  no_consent: 'no current follow-up consent from this person',
+}
 interface Warm { thread_id: string; company: string; name: string; to_email: string; last_reply_at: number; reply_excerpt: string; reopen: { status: string; body: string } | null }
 
 const STOPPED: Record<string, string> = { replied: 'They replied again - the sequence stops for you to handle', bounced: 'The address bounced', unsubscribed: 'They unsubscribed', manual: 'Stopped by you', domain_unconfirmed: 'The website is not confirmed as the right company. This thread is stopped and confirming it later does not restart it. Check the lead on the Leads page and start a new draft if you still want to write',
@@ -66,6 +79,9 @@ export default function FollowupsClient() {
         Automatic follow-ups only go to people who replied with interest, at most two per thread, 3 and 5 days after the last activity. A new reply from them stops the sequence.
         {data && !data.enabled && ' They are off right now.'}
       </p>
+      {data?.hold && data.hold !== 'followups_off' && data.threads.some(t => t.scheduled_at) && (
+        <p className="text-sm mb-6 border-l-2 border-[#e8b04a] pl-3" role="status" data-testid="followups-held">Nothing will be sent right now: {HOLD[data.hold] ?? data.hold}. Dates below are the schedule, not a promise.</p>
+      )}
       {data?.account && <p className="text-xs text-[#555] -mt-4 mb-6">Gmail connected as <span className="font-medium">{data.account}</span>.</p>}
       {error && <p className="text-[#111] text-sm border-l-2 border-[#111] pl-3" role="status">{error}</p>}
       {data && followupAsk(data) === 'connect' && (
@@ -93,6 +109,7 @@ export default function FollowupsClient() {
                 <div className="text-xs text-[#555] text-right">
                   {t.followups_sent} of 2 sent
                   {t.next_due_at && <div>{t.next_due_at <= Math.floor(Date.now() / 1000) ? 'next one due now' : `next one ${day(t.next_due_at)}`}</div>}
+                  {!t.next_due_at && t.scheduled_at && t.hold && <div data-testid="thread-held">held: {HOLD[t.hold] ?? t.hold}<br /><span className="text-[#999]">schedule said {day(t.scheduled_at)}</span></div>}
                 </div>
               </div>
             ))}
