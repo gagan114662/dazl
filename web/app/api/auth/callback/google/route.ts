@@ -1,7 +1,8 @@
 import { connection, NextRequest } from 'next/server'
-import { createSession, replacedSession, SESSION_TTL_S } from '@/lib/auth-db'
+import { createSession, getSessionUser, replacedSession, SESSION_TTL_S } from '@/lib/auth-db'
+import { FRESH_AUTH_S } from '@/lib/sessions'
 import { getDb } from '@/lib/db/client'
-import { exchangeCode, parseCookie, resolveUser, sameString, signInConfig, verifyIdToken } from '@/lib/auth-google'
+import { exchangeCode, linkGoogle, parseCookie, resolveUser, sameString, signInConfig, verifyIdToken } from '@/lib/auth-google'
 import { clearOauthCookie, clearReturnCookie, OAUTH_COOKIE, redirectNoStore, RETURN_COOKIE, setSessionCookie } from '@/lib/auth-google-response'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { deviceLabel } from '@/lib/sessions'
@@ -32,6 +33,17 @@ export async function GET(req: NextRequest) {
   if (typeof id === 'string') return back(base, id === 'email_not_verified' ? 'google_email_unverified' : 'google_failed')
 
   const db = await getDb()
+  if (req.cookies.get(RETURN_COOKIE)?.value === 'link') {
+    // Linking: only for the account signed in on this browser, signed in within the last hour; lib/auth-google.ts
+    // linkGoogle checks the verified, matching email. The session is kept; no new one is made.
+    const me = await getSessionUser(req.cookies.get('dazl_session')?.value, db)
+    const fresh = !!me && Math.floor(Date.now() / 1000) - me.authedAt <= FRESH_AUTH_S
+    const result = !me ? 'signed_out' : !fresh ? 'reauth_required' : await linkGoogle(db, me.actorId, id)
+    const res = redirectNoStore(new URL(`/app/settings?google=${result}#account`, base))
+    clearOauthCookie(res, base)
+    clearReturnCookie(res, base)
+    return res
+  }
   const r = await resolveUser(db, id)
   if ('error' in r) return back(base, 'google_email_exists')
 

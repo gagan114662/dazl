@@ -16,13 +16,13 @@ const b = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url')
 const sign = (claims: Record<string, unknown>) => { const h = b({ alg: 'RS256', kid: 'k1', typ: 'JWT' }), c = b(claims); return `${h}.${c}.${createSign('RSA-SHA256').update(`${h}.${c}`).sign(privateKey).toString('base64url')}` }
 // Google, stubbed: every call is recorded; the token endpoint answers with an ID token for the nonce under test
 const calls: { url: string; body: string }[] = []
-let nonce = ''
+let nonce = '', idEmail = 'pat@example.test', idSub = 'g-1'
 globalThis.fetch = (async (u: string | URL, init?: RequestInit) => {
   const url = String(u); calls.push({ url, body: String(init?.body ?? '') })
   if (url === 'https://www.googleapis.com/oauth2/v3/certs') return new Response(JSON.stringify({ keys: [jwk] }))
   if (url === 'https://oauth2.googleapis.com/token') {
     const aud = new URLSearchParams(String(init?.body)).get('client_id')
-    return new Response(JSON.stringify({ id_token: sign({ iss: 'https://accounts.google.com', aud, exp: Math.floor(Date.now() / 1000) + 600, nonce, sub: 'g-1', email: 'pat@example.test', email_verified: true, name: 'Pat' }) }))
+    return new Response(JSON.stringify({ id_token: sign({ iss: 'https://accounts.google.com', aud, exp: Math.floor(Date.now() / 1000) + 600, nonce, sub: idSub, email: idEmail, email_verified: true, name: 'Pat' }) }))
   }
   throw new Error(`Unexpected network call ${url}`)
 }) as typeof fetch
@@ -134,4 +134,32 @@ test('re-authenticating with Google from Settings replaces this account\'s sessi
   assert.equal(r2.headers.get('location'), 'https://staging.dazl.ai/app', 'no return cookie: the usual landing')
   assert.equal((getAuthDb().prepare('SELECT revoked_at FROM sessions WHERE user_id = ?').get('someone-else') as { revoked_at: number | null }).revoked_at, null)
   console.log('GOOGLE_REAUTH_OK')
+})
+
+test('linking Google from Settings: only the fresh, verified session of the account with that email; the session is kept', async () => {
+  setEnv(STAGING)
+  const { createPasswordUser, createSession } = await import('../../lib/auth-db.ts')
+  await createPasswordUser({ id: 'L', email: 'link@example.test', name: 'L', business_name: 'L', password_hash: 'h', salt: 's' })
+  getAuthDb().prepare("UPDATE users SET email_verified_at = 1 WHERE id = 'L'").run()
+  idEmail = 'link@example.test'; idSub = 'g-link'
+  const flow = async (session?: string) => {
+    const s = await start.GET(req('https://staging.dazl.ai/api/auth/google?link=1'))
+    assert.ok(s.headers.getSetCookie().some(c => /^dazl_return=link;/.test(c)))
+    const c = /dazl_oauth=([^;]+)/.exec(s.headers.getSetCookie().join('\n'))![1]
+    const [state, n] = c.split('.'); nonce = n
+    const r = await callback.GET(req(`https://staging.dazl.ai/api/auth/callback/google?code=l&state=${state}`, `dazl_oauth=${c}; dazl_return=link${session ? `; dazl_session=${session}` : ''}`))
+    assert.ok(!r.headers.getSetCookie().some(x => /^dazl_session=[0-9a-f]/.test(x)), 'linking never makes a new session')
+    return r.headers.get('location')
+  }
+  const linked = () => getAuthDb().prepare("SELECT user_id FROM oauth_identities WHERE subject = 'g-link'").get()
+  assert.equal(await flow(), 'https://staging.dazl.ai/app/settings?google=signed_out#account')
+  const stale = await createSession('L')
+  getAuthDb().prepare('UPDATE sessions SET authed_at = ? WHERE user_id = ?').run(Math.floor(Date.now() / 1000) - 7200, 'L')
+  assert.equal(await flow(stale), 'https://staging.dazl.ai/app/settings?google=reauth_required#account')
+  assert.equal(linked(), undefined)
+  const fresh = await createSession('L')
+  assert.equal(await flow(fresh), 'https://staging.dazl.ai/app/settings?google=linked#account')
+  assert.deepEqual(linked(), { user_id: 'L' })
+  idEmail = 'pat@example.test'; idSub = 'g-1'
+  console.log('GOOGLE_LINK_OK')
 })
