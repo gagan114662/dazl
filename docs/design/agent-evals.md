@@ -154,10 +154,20 @@ v1), clock frozen at `as_of`, env and global `fetch` restored afterwards.
 
 ### 6. Runs and the gate (`test/helpers/eval-suite.ts`, `scripts/evals.mts`)
 
-`runSuite` replays every case under `web/test/fixtures/evals/cases`, scores it, and `compareBaseline` checks the result
-against `web/test/fixtures/evals/baseline.json`, the committed list of known non-pass verdicts. The comparison is exact in
-both directions: a new non-pass verdict is a regression; a listed one that no longer happens must be removed in the PR
-that fixed it. `test/evals.test.ts` asserts the baseline match, so `npm test` in web-ci is already the gate.
+`runSuite` replays every case under `web/test/fixtures/evals/cases`, scores it, and `gate` checks the result against
+`web/test/fixtures/evals/baseline.json`, which is the suite's REGISTRY: every case is listed (passing ones with
+`non_pass: []`) with its known non-pass verdicts, plus `min_cases`. The gate is red when:
+
+- a case's non-pass verdicts differ from its list in either direction (a new one is a regression; a listed one that no
+  longer happens must be removed in the PR that fixed it);
+- a registered case did not run (its file was deleted, renamed, or no longer ends in `.case.json`);
+- a case ran that is not registered, or two case files share an id;
+- fewer than `min_cases` cases ran, or none did.
+
+So removing a case takes three visible edits (the file, its registry entry, the floor), and none of them alone leaves
+the gate green. A case or World file that fails to load stops the run with a non-zero exit. `test/evals.test.ts`
+asserts the committed suite passes the gate and runs the CLI on a copy with a case deleted (it must exit 1), so
+`npm test` in web-ci is the gate.
 
 ```bash
 cd web && npm run evals -- --json /tmp/evals.json
