@@ -10,7 +10,8 @@ import { Avatar, Pill, Stepper } from './ui/bits'
 import BrainGraph from './onboarding/brain-graph'
 import { brainFacts, type BrainFact } from '@/lib/brain'
 import { previewSplit, type PreviewLead } from '@/lib/journey'
-import { leadCardSummary } from '@/lib/scan/lead-card'
+import { approveState, leadCardSummary } from '@/lib/scan/lead-card'
+import { calendarDay } from '@/lib/day'
 import { sourceName, stateText } from '@/lib/source-progress-copy'
 import type { First5View } from '@/lib/scan/first5'
 import type { SourceProgress } from '@/lib/scan/progress'
@@ -195,16 +196,26 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   if (step === 'site' || step === 'building' || step === 'ready') {
     const split = first?.leads ? previewSplit(first.leads as PreviewLead[]) : null
     const readyLeads = split?.opportunities ?? []
+    // Ready to contact = what the approve gate accepts now (evidence, a published email, a confirmed company website,
+    // known timing: lib/scan/lead-card.ts approveState), on the full lead rows. Anything short of that needs research and
+    // is never offered for outreach. null until the rows are read.
+    const ready = first?.leads ? readyLeads.filter(l => approveState(l).ok) : null
+    const readyIds = new Set((ready ?? []).map(l => l.id))
+    const gapOf = (id: string) => { const row = readyLeads.find(l => l.id === id) ?? (first?.leads as PreviewLead[] | null)?.find(l => l.id === id); if (!row) return 'Not checked against the ready bar yet.'; const st = approveState(row)
+      // This card has no Details panel (the CTA below opens the leads, where it is), so that pointer is dropped here.
+      return st.ok ? null : st.reason.replace(/\s*See Details[^.]*\./, '')
+    }
     const active = first && first.status !== 'done' && first.status !== 'failed'
     // The fast first scan's own view, when the status read serves one: it decides what is shown while and after it runs.
     const f5 = first?.f5 ?? null
     const f5Live = !!f5 && f5.state === 'finding' && first?.status !== 'failed'
-    const f5Ready = f5 && !f5.enriching ? f5.verified : 0
+    const f5Ready = f5 && !f5Live && ready ? ready.length : 0
+    const f5Found = f5?.leads.length ?? 0
     // The one sentence: what the user typed, else the top suggestion from the profile (so nothing has to be typed).
     const sentence = askIsSuggestion ? (ask || plays[0] || '') : ask
     const candidatesSoFar = f5 ? f5.sources.reduce<number | null>((n, x) => x.candidates == null ? n : (n ?? 0) + x.candidates, null) : null
     const readingNow = f5?.sources.filter(x => x.state === 'running').map(x => sourceName(x.source)) ?? []
-    const day = (d: string | null) => { if (!d) return null; const t = new Date(d); return isNaN(t.getTime()) ? d : t.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) }
+    const day = calendarDay // the same calendar day in every time zone
     const host = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, '') } catch { return u } }
     const person = (l: PreviewLead) => {
       const c = leadCardSummary(l)
@@ -247,7 +258,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
               <div className="text-center">
                 <span className="inline-flex w-14 h-14 rounded-full bg-[var(--lav-bg)] items-center justify-center"><Icon name="spark" className="w-6 h-6 text-[var(--lav)]" /></span>
                 <h1 className="text-4xl sm:text-[52px] leading-tight font-bold tracking-tight mt-4 text-[#2a0a24]">Your brain is ready.</h1>
-                <p className="text-[var(--ink-2)] text-lg mt-2" data-testid="ready-subhead">{f5 ? (f5Live ? 'dazl is finding your first leads now.' : f5Ready ? `dazl found ${f5Ready} lead${f5Ready === 1 ? '' : 's'} ready for your review.` : 'Your first play is done. See what it found.') : first?.status === 'done' ? (readyLeads.length ? `dazl found ${readyLeads.length} lead${readyLeads.length === 1 ? '' : 's'} ready for your review.` : 'Your first play is done. See what it found.') : active ? 'dazl is finding your first leads now.' : `dazl knows ${sells ? 'what you sell and ' : ''}who buys it. Review it, then find your first leads.`}</p>
+                <p className="text-[var(--ink-2)] text-lg mt-2" data-testid="ready-subhead">{f5 ? (f5Live ? 'dazl is finding your first leads now.' : f5Ready ? `dazl found ${f5Ready} lead${f5Ready === 1 ? '' : 's'} ready to contact.` : f5Found && ready ? `dazl found ${f5Found} lead${f5Found === 1 ? '' : 's'}; each needs a contact or more evidence before outreach.` : 'Your first play is done. See what it found.') : first?.status === 'done' ? (ready?.length ? `dazl found ${ready.length} lead${ready.length === 1 ? '' : 's'} ready to contact.` : readyLeads.length ? `dazl found ${readyLeads.length} lead${readyLeads.length === 1 ? '' : 's'}; each needs a contact or more evidence before outreach.` : 'Your first play is done. See what it found.') : active ? 'dazl is finding your first leads now.' : `dazl knows ${sells ? 'what you sell and ' : ''}who buys it. Review it, then find your first leads.`}</p>
               </div>
               {error && <p className="text-sm mt-4 text-center text-[var(--pink)]" role="alert">{error}</p>}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mt-9">
@@ -261,11 +272,12 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                     {/* Submits the one sentence on the right (typed, or the top suggestion as shown there). */}
                     {!first ? <button type="submit" form="first-ask" className="btn-primary btn-lg w-full justify-center" disabled={busy || sentence.trim().length < 3} data-testid="ready-cta">{busy ? 'Starting...' : 'Find my first leads'}</button>
                       // Reaching out is offered only for leads that passed every check; otherwise the button says what is there.
-                      : <a className="btn-primary btn-lg w-full justify-center" href={`/app/leads?job_id=${first.id}`} data-testid="ready-cta">{f5 ? (f5Live ? 'Watch it live' : f5Ready ? 'Start reaching out' : 'See what happened')
+                      : <a className="btn-primary btn-lg w-full justify-center" href={`/app/leads?job_id=${first.id}`} data-testid="ready-cta">{f5 ? (f5Live ? 'Watch it live' : f5Ready ? 'Start reaching out' : f5Found ? 'See what needs research' : 'See what happened')
                         : first.status === 'failed' ? 'See what happened'
                         : first.status !== 'done' ? 'Watch it live'
                         : !first.leads ? 'View results'
-                        : readyLeads.length ? 'Start reaching out'
+                        : ready?.length ? 'Start reaching out'
+                        : readyLeads.length ? 'See what needs research'
                         : split && split.held.length ? 'Review held leads'
                         : 'View results'}</a>}
                     <button type="button" className="w-full mt-3 text-sm text-[var(--ink-2)] hover:text-[var(--ink)]" onClick={() => setStep('brain')}>Edit what dazl inferred</button>
@@ -275,12 +287,15 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                 <section className="onb-card p-5 sm:p-8 min-w-0 order-first md:order-none" data-testid="first-customers">
                   <h2 className="text-xl font-bold tracking-tight" data-testid="first-heading">{!first ? 'Who do you want to find?'
                     : f5 ? (f5Live ? (f5.leads.length ? `${f5.leads.length} found - checking each one` : 'Finding your first leads')
-                      : f5Ready ? `${f5Ready} lead${f5Ready === 1 ? '' : 's'} ready for your review`
+                      : first.status === 'done' && !first.leads ? 'Checking which are ready to contact'
+                      : f5Ready ? `${f5Ready} ready to contact${f5Found > f5Ready ? `, ${f5Found - f5Ready} need research` : ''}`
+                      : f5Found ? `${f5Found} found - research needed before outreach`
                       : first.status === 'failed' || f5.reason === 'failed' ? 'This play could not finish' : 'No leads in this first play')
                     : active ? 'Finding your first leads'
                     : first.status === 'failed' ? 'This play could not finish'
                     : !first.leads ? 'Loading your first leads'
-                    : readyLeads.length ? `${readyLeads.length} lead${readyLeads.length === 1 ? '' : 's'} ready for your review`
+                    : ready?.length ? `${ready.length} ready to contact${readyLeads.length > ready.length ? `, ${readyLeads.length - ready.length} need research` : ''}`
+                    : readyLeads.length ? `${readyLeads.length} found - research needed before outreach`
                     : split && split.held.length ? 'Leads held for your review'
                     : 'No leads in this first play'}</h2>
                   {!first && <>
@@ -316,12 +331,15 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                   {f5 && f5.leads.length > 0 && <ul className="mt-4 grid gap-2" aria-label="First leads">
                     {f5.leads.map(l => <li key={l.id} className="rounded-[10px] border border-[var(--line)] bg-white p-3" data-testid="first-lead">
                       <div className="flex items-start justify-between gap-2"><span className="min-w-0 font-semibold text-sm break-words">{l.company}{l.name ? <span className="font-normal text-[var(--ink-2)]"> · {l.name}</span> : null}</span>
-                        {l.provisional ? <Pill tone="peach">checking</Pill> : l.fit_pct != null ? <Pill tone="mint">fit {l.fit_pct}%</Pill> : null}</div>
+                        {/* Ready only on the ready bar (approve gate, full row); everything else needs research. */}
+                        {f5Live || l.provisional || !ready ? <Pill tone="peach">checking</Pill> : readyIds.has(l.id) ? <Pill tone="mint">ready to contact</Pill> : <Pill tone="grey">needs research</Pill>}</div>
                       <p className="text-sm text-[var(--ink-2)] mt-1 line-clamp-2 break-words">{l.signal}</p>
+                      {!f5Live && ready && !readyIds.has(l.id) && <p className="text-xs mt-1.5 text-[var(--ink-2)]" data-testid="lead-gap">To contact: {gapOf(l.id)}</p>}
+                      {!f5Live && ready && readyIds.has(l.id) && l.fit_pct != null && <p className="text-xs mt-1.5 text-[var(--ink-2)]">fit {l.fit_pct}%</p>}
                       <p className="text-xs mt-1.5 flex flex-wrap gap-x-2"><a className="underline" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">{host(l.source_url)}</a>{l.event_date ? <span>{day(l.event_date)}</span> : l.published_at ? <span>published {day(l.published_at)}</span> : null}</p>
                     </li>)}
                   </ul>}
-                  {f5 && !f5Live && f5Ready === 0 && <p className="text-sm text-[var(--ink-2)] mt-4" data-testid="f5-message">{f5.message}</p>}
+                  {f5 && !f5Live && f5Found === 0 && <p className="text-sm text-[var(--ink-2)] mt-4" data-testid="f5-message">{f5.message}</p>}
                   {f5 && !f5Live && f5.can_continue && f5.next && <a className="btn-ghost btn-sm mt-4 inline-flex" href={`/app/leads?q=${encodeURIComponent(first!.query)}`} data-testid="search-wider">{f5.next.label}</a>}
                   {!f5 && active && <div className="mt-4" data-testid="first-progress"><Stepper steps={[
                     { label: 'Read your brain and play', state: first!.status === 'pending' ? 'live' : 'done', note: first!.status === 'pending' ? 'Queued' : undefined },
@@ -334,10 +352,10 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                       {readyLeads.slice(0, FIRST).map(l => { const p = person(l); return <li key={l.id} className="flex items-center gap-3 py-3" data-testid="first-lead">
                         <Avatar name={p.name} size={36} />
                         <span className="min-w-0 flex-1"><span className="block font-semibold text-sm truncate">{p.name}</span><span className="block text-xs text-[var(--ink-2)] truncate">{p.line}</span></span>
-                        {l.fit != null && <Pill tone="mint">fit {l.fit}/5</Pill>}
+                        {readyIds.has(l.id) ? <Pill tone="mint">ready to contact</Pill> : <span title={gapOf(l.id) ?? ''}><Pill tone="grey">needs research</Pill></span>}
                       </li> })}
                     </ul> : <p className="text-sm text-[var(--ink-2)] mt-4">No lead passed every check in this first play yet.</p>}
-                    {readyLeads.length < FIRST && <p className="text-xs text-[var(--ink-2)] mt-3">{readyLeads.length} ready{split && split.held.length ? `, ${split.held.length} held for your review` : ''}. <a className="underline" href={`/app/leads?job_id=${first.id}`}>See them in Leads</a></p>}
+                    {(ready?.length ?? 0) < FIRST && <p className="text-xs text-[var(--ink-2)] mt-3">{ready?.length ?? 0} ready to contact{readyLeads.length > (ready?.length ?? 0) ? `, ${readyLeads.length - (ready?.length ?? 0)} need research` : ''}{split && split.held.length ? `, ${split.held.length} held for your review` : ''}. <a className="underline" href={`/app/leads?job_id=${first.id}`}>See them in Leads</a></p>}
                   </>}
                   {first?.status === 'failed' && !f5 && <p className="text-sm mt-4">This play could not finish. <button type="button" className="underline" onClick={() => setFirst(null)}>Try another</button></p>}
                 </section>
