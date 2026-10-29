@@ -695,7 +695,7 @@ async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, ht
   return parseLeads(await complete.call(provider, key, buildSourcePrompt(job.query!, icp, items), fetchImpl, 3000), items.map(i => i.url)) ?? null
 }
 
-export interface RunBudget { paid_fallback?: boolean; credit_enrichment?: boolean; judge?: boolean; max_usd?: number }
+export interface RunBudget { paid_fallback?: boolean; credit_enrichment?: boolean; judge?: boolean; max_usd?: number; first5?: boolean }   // first5: the fast first scan (lib/scan/first5.ts): free keyless sources only
 // Per-run explicit budget controls, stored on the job row by the CSV import route.
 // Absent or malformed JSON means current behavior - the control only ever NARROWS.
 // PAID SURFACES, honestly: the TinyFish-primary path ends in ONE paid LLM call
@@ -727,6 +727,7 @@ export function parseRunBudget(raw: string | null | undefined): RunBudget | null
     if (b.paid_fallback === false) out.paid_fallback = false
     if (b.credit_enrichment === false) out.credit_enrichment = false
     if (b.judge === false) out.judge = false
+    if (b.first5 === true) out.first5 = true
     if (typeof b.max_usd === 'number' && Number.isFinite(b.max_usd) && b.max_usd > 0) out.max_usd = b.max_usd
     return Object.keys(out).length ? out : null
   } catch { return null }
@@ -738,12 +739,13 @@ function budgetDeps(deps: RunDeps, budget: RunBudget | null): RunDeps {
     ...(budget.paid_fallback === false ? { paidFallback: false } : {}),
     ...(budget.credit_enrichment === false ? { creditEnrichment: false } : {}),
     ...(budget.judge === false ? { judge: null } : {}),
+    ...(budget.first5 ? { first5: true, paidFallback: false, creditEnrichment: false } : {}),
   }
 }
 
 export interface RunDeps {
   // newsHttp: the free news search's own HTTP (lib/search/news.ts), separate from the per-scan sources' sourceHttp.
-  autopilot?: typeof runAutopilot; sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; salesHiringGate?: typeof applySalesHiringGate; jobBudgetMs?: number; clock?: () => number }
+  first5?: boolean; autopilot?: typeof runAutopilot; sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; salesHiringGate?: typeof applySalesHiringGate; jobBudgetMs?: number; clock?: () => number }
 
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
   const ledger = new SourceRunLedger()
@@ -818,7 +820,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // deps.newsHttp always turns it on, so tests that exercise news do so explicitly.
     const newsOn = !!deps.newsHttp || newsEnabled()
     const diag = { trace: new SearchTrace(), info: {} as Partial<SourceStats>, hitUrls: [] as string[], tfTextUrls: [] as string[], newsUrls: [] as string[], held: undefined as HeldText | undefined, urls: undefined as UrlRecord[] | undefined }
-    if (job.query && icpForSources && complete && tinyfishEnabled()) {
+    if (job.query && icpForSources && complete && tinyfishEnabled() && !deps.first5) {   // first5: free sources only
       try {
         ledger.record('search:tinyfish', 'started')
         assertOwned(db, job)
@@ -1108,7 +1110,8 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     await runPostFinishBounded(db, job, deps, trace)
     // People search (person-first): the right people at each lead's company from public profile SEARCH RESULTS, for
     // companies whose own site lists nobody. Never throws; never an address; kill switch PEOPLE_SEARCH_ENABLED=0.
-    if (process.env.PEOPLE_SEARCH_ENABLED === '0') trace.note('people_search', 'skipped', 'PEOPLE_SEARCH_ENABLED=0')
+    if (deps.first5) trace.note('people_search', 'skipped', 'first5: free search sources only; people search is a paid TinyFish search')
+    else if (process.env.PEOPLE_SEARCH_ENABLED === '0') trace.note('people_search', 'skipped', 'PEOPLE_SEARCH_ENABLED=0')
     else try { const n = await findPeople(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl }); trace.note('people_search', n > 0 ? 'ok' : 'attempted_no_result', n > 0 ? null : 'no profile results named a role-matching person at a verified company, or no search key/quota', { people_stored: n }) } catch (e) { trace.note('people_search', 'failed', e instanceof Error ? e.message : 'error') }
     // Contacts refused for disagreeing with the lead (wrong place / wrong domain) leave nothing reachable: regrade the lead from the evidence actually kept.
     try { regradeFromKeptContacts(db, job.user_id, job.id) } catch (e) { console.error('regrade from kept contacts failed', e instanceof Error ? e.message : 'error') }
