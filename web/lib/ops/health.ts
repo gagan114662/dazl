@@ -10,8 +10,13 @@
 // store: which engine this instance serves from and its migration version, so a deploy can be verified from outside
 // (docs/PLATFORM.md "Postgres cutover"). split: on Postgres, modules still on the raw SQLite handle would keep reading
 // and writing the SQLite file, splitting the data between two stores, so the instance is not ready while any remain.
+// queue (#355): the shared queue's alerts (lib/queue/alerts.ts: a lane waiting too long, dead letters, expired claims),
+// as kinds and counts only. They inform, they do not make the instance unready: a backlog is not a reason to take an
+// instance out of rotation, and the alert reaches the error reporter when the set changes.
 import type { Db } from '../db/client.ts'
 import { captureError } from './errors.ts'
+import { DbQueue } from '../queue/db.ts'
+import { queueAlerts, type QueueAlert } from '../queue/alerts.ts'
 import { getMasterKey } from '../secrets.ts'
 
 export type CheckResult = { ok: true; ms: number } | { ok: false; ms: number; reason: 'error' | 'timeout' | 'behind' }
@@ -19,6 +24,8 @@ export interface Readiness {
   ok: boolean
   // applied: the highest PG migration recorded in the store (null on SQLite, or when it could not be read)
   store: { engine: Db['kind'] | 'unknown'; migrations: { shipped: number; applied: number | null }; raw_sqlite_modules: number }
+  // null when the queue could not be read (checks.queue says why)
+  queue: { alerts: QueueAlert[] } | null
   checks: {
     store: CheckResult & { engine: Db['kind'] | 'unknown' }
     schema: CheckResult | { ok: true; skipped: 'sqlite' }
@@ -113,8 +120,15 @@ export async function readiness(d: ReadinessDeps): Promise<Readiness> {
       return applied >= shipped ? 'ok' : 'behind'
     }, timeoutMs, clock)
   // the shared scan queue: its table answers in the configured store (reachability only; no tenant row is returned)
+  let alerts: QueueAlert[] | null = null
   const queue: CheckResult = !store.ok ? { ok: false, ms: 0, reason: store.reason === 'timeout' ? 'timeout' : 'error' }
-    : await timed('queue', async () => { await db!.get('SELECT 1 AS x FROM work_queue LIMIT 1'); return 'ok' }, timeoutMs, clock)
+    : await timed('queue', async () => {
+      await db!.get('SELECT 1 AS x FROM work_queue LIMIT 1')
+      // The alerts are extra: when they cannot be read the queue still answered, and the body says null.
+      try { alerts = queueAlerts(await new DbQueue(db!).stats()) } catch { alerts = null }
+      return 'ok'
+    }, timeoutMs, clock)
+  if (alerts) reportQueueAlerts(alerts)
   const sqlite = await timed('sqlite', async () => { d.sqlite().prepare('SELECT 1').get(); return 'ok' }, timeoutMs, clock)
   const raw = d.rawSqliteModules?.() ?? 0
   const split = engine === 'sqlite' ? { ok: true as const, skipped: 'sqlite' as const } : { ok: raw === 0, raw_sqlite_modules: raw }
@@ -122,8 +136,18 @@ export async function readiness(d: ReadinessDeps): Promise<Readiness> {
   return {
     ok: store.ok && schema.ok && queue.ok && sqlite.ok && split.ok && env.ok,
     store: { engine, migrations: { shipped, applied }, raw_sqlite_modules: raw },
+    queue: alerts ? { alerts } : null,
     checks: { store: { ...store, engine }, schema, queue, sqlite, split, env },
   }
+}
+
+// One error record when the set of queue alerts changes (not on every probe), like the env check.
+let lastAlerts = ''
+function reportQueueAlerts(alerts: QueueAlert[]): void {
+  const key = alerts.map(a => `${a.kind}:${a.alert}`).sort().join(',')
+  if (key === lastAlerts) return
+  lastAlerts = key
+  if (key) captureError(new Error(`queue alerts: ${key}`), { source: 'health', where: 'readiness:queue' })
 }
 
 // Database reachability for /api/health (lib/ops/health-route.ts): the SQLite file the app opens, and Postgres when
