@@ -35,6 +35,7 @@ const user = (id: string) => ({ id, email: `${id.toLowerCase()}@example.test`, n
 
 test('invite, join and switch through the routes; nothing of workspace A is reachable from workspace B', async () => {
   for (const id of ['A', 'B', 'C']) await createPasswordUser(user(id))
+  raw.prepare('UPDATE users SET email_verified_at = 1').run() // accepting an invitation needs a verified email
   const ta = await createSession('A'), tb = await createSession('B'), tc = await createSession('C')
 
   // A invites C as an operator; the link carries the token in its fragment

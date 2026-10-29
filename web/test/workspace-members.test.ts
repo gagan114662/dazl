@@ -9,8 +9,10 @@ import type { Db } from '../lib/db/client.ts'
 import { bothEngines } from './helpers/engines.ts'
 
 const code = (c: string) => (e: unknown) => e instanceof MemberError && e.code === c
+// accounts with verified emails (accepting an invitation needs one; the unverified case is tested below)
 async function users(db: Db, ...ids: string[]) {
   for (const id of ids) await createPasswordUser({ id, email: `${id.toLowerCase()}@example.test`, name: id, business_name: `Biz ${id}`, password_hash: 'h', salt: 's' }, db)
+  for (const id of ids) await db.run('UPDATE users SET email_verified_at = 1 WHERE id = ?', [id])
 }
 const add = (db: Db, tenant: string, member: string, role: Role) => db.run('INSERT INTO memberships (tenant_id, member_id, role, created_at) VALUES (?, ?, ?, 1)', [tenant, member, role])
 const roleIn = async (db: Db, tenant: string, member: string) => (await db.get<{ role: string }>('SELECT role FROM memberships WHERE tenant_id = ? AND member_id = ?', [tenant, member]))?.role ?? null
@@ -36,6 +38,16 @@ bothEngines('an invitation is accepted once, by the invited account only, and st
   await assert.rejects(acceptInvitation(db, me('B'), 'not-a-token'), code('invalid_invite'))
   assert.deepEqual((await listWorkspaces(db, 'B')).map(w => [w.tenant_id, w.role]), [['B', 'owner'], ['A', 'operator']])
   assert.deepEqual(await listInvitations(db, 'A'), [])
+})
+
+bothEngines('an account whose email is unverified cannot accept, even holding the link; once verified it can', async ({ db }) => {
+  await users(db, 'A')
+  await createPasswordUser({ id: 'U', email: 'u@example.test', name: 'U', business_name: 'U', password_hash: 'h', salt: 's' }, db)
+  const inv = await createInvitation(db, OWNER_A, 'u@example.test', 'admin')
+  await assert.rejects(acceptInvitation(db, me('U'), inv.token), code('email_unverified'))
+  assert.equal(await roleIn(db, 'A', 'U'), null)
+  await db.run("UPDATE users SET email_verified_at = 1 WHERE id = 'U'")
+  assert.deepEqual(await acceptInvitation(db, me('U'), inv.token), { tenantId: 'A', role: 'admin' })
 })
 
 bothEngines('expired, revoked and replaced links add nothing; an existing member cannot be invited', async ({ db }) => {

@@ -6,6 +6,8 @@ import type { Db } from './db/client.ts'
 import { BACKFILL_SQL, WORKSPACE_DDL, createPersonalWorkspace, resolveMembership } from './workspaces.ts'
 import type { Role } from './workspaces.ts'
 import { INVITATIONS_DDL } from './workspace-members.ts'
+import { EMAIL_TOKENS_DDL } from './email-ownership.ts'
+import { OUTBOX_DDL } from './system-mail.ts'
 import { SEEN_EVERY_S, SESSION_COLUMNS, SESSION_INDEXES, newPublicId } from './sessions.ts'
 
 let db: Database.Database | null = null
@@ -50,6 +52,10 @@ export function migrateAuth(d: Database.Database): void {
   d.transaction(() => { for (const r of unnamed) name.run(newPublicId(), r.id) })()
   d.exec('UPDATE sessions SET authed_at = coalesce(created_at, 0) WHERE authed_at IS NULL')
   d.exec(SESSION_INDEXES)
+  // Email ownership and recovery (lib/email-ownership.ts); Google accounts are backfilled in migrateOauth.
+  try { d.exec('ALTER TABLE users ADD COLUMN email_verified_at INTEGER') } catch { /* exists */ }
+  d.exec(EMAIL_TOKENS_DDL)
+  d.exec(OUTBOX_DDL)
   d.exec(WORKSPACE_DDL)
   d.exec(INVITATIONS_DDL)
   d.transaction(() => { for (const s of BACKFILL_SQL) d.prepare(s).run() })()

@@ -31,13 +31,13 @@ const nowS = () => Math.floor(Date.now() / 1000)
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex')
 export const isInviteToken = (t: unknown): t is string => typeof t === 'string' && /^[a-f0-9]{64}$/.test(t)
 
-type MemberErrorCode = 'forbidden' | 'not_found' | 'last_owner' | 'already_member' | 'too_many_invites' | 'invalid_invite' | 'wrong_account'
+type MemberErrorCode = 'forbidden' | 'not_found' | 'last_owner' | 'already_member' | 'too_many_invites' | 'invalid_invite' | 'wrong_account' | 'email_unverified'
 export class MemberError extends Error {
   readonly code: MemberErrorCode
   constructor(code: MemberErrorCode) { super(code); this.code = code }
 }
 export const MEMBER_ERROR_STATUS: Record<MemberError['code'], number> = {
-  forbidden: 403, not_found: 404, last_owner: 409, already_member: 409, too_many_invites: 429, invalid_invite: 410, wrong_account: 403,
+  forbidden: 403, not_found: 404, last_owner: 409, already_member: 409, too_many_invites: 429, invalid_invite: 410, wrong_account: 403, email_unverified: 403,
 }
 
 // The acting member: who, in which workspace, as what (from getSessionUser, never from the request).
@@ -154,7 +154,8 @@ export async function revokeInvitation(db: Db, by: Acting, id: string, now = now
   })
 }
 
-// Accepting: the signed-in account must hold the link (the token) and be the account it was sent to (its email). The
+// Accepting: the signed-in account must hold the link (the token) and be the account it was sent to (its email, which
+// it must have verified). The
 // token is used up in the same transaction that adds the membership, so a replay, an expired or a revoked link adds
 // nothing. Unknown, used, revoked and expired links all answer the same 'invalid_invite'. An account already in the
 // workspace keeps its role.
@@ -165,6 +166,8 @@ export async function acceptInvitation(db: Db, actor: { actorId: string; email: 
       'SELECT id, tenant_id, email, role, invited_by FROM invitations WHERE token_hash = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?', [sha256(token), now])
     if (!inv || !isRole(inv.role)) throw new MemberError('invalid_invite')
     if (inv.email !== actor.email.trim().toLowerCase()) throw new MemberError('wrong_account')
+    // the email binding means something only once the account has proved it owns that address (#357)
+    if (!(yield* t.get('SELECT 1 AS x FROM users WHERE id = ? AND email_verified_at IS NOT NULL', [actor.actorId]))) throw new MemberError('email_unverified')
     // the same lock every member and invitation change takes first, so a revoke and this accept are serialized; the
     // guarded update below then sees the outcome of whichever ran first
     yield* lockWorkspace(t, inv.tenant_id)

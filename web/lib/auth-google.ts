@@ -2,6 +2,7 @@ import { createHash, createPublicKey, createVerify, randomBytes, timingSafeEqual
 import type Database from 'better-sqlite3'
 import type { Db, TxBody } from './db/client.ts'
 import { createPersonalWorkspace } from './workspaces.ts'
+import { VERIFIED_BACKFILL_SQL } from './email-ownership.ts'
 
 // Sign in with Google: authorization code + PKCE + state + nonce, identity only
 // (openid email profile). The ID token is checked here before anyone is signed in.
@@ -131,6 +132,8 @@ export function migrateOauth(db: Database.Database): void {
     provider TEXT NOT NULL, subject TEXT NOT NULL, user_id TEXT NOT NULL, created_at INTEGER DEFAULT (strftime('%s','now')),
     PRIMARY KEY (provider, subject)
   )`)
+  // Google verified these addresses (verifyIdToken requires email_verified); after migrateAuth adds the column.
+  db.exec(VERIFIED_BACKFILL_SQL)
 }
 
 export type Resolved = { user_id: string; created: boolean } | { error: 'email_exists' }
@@ -156,8 +159,9 @@ export async function resolveUser(db: Db, id: GoogleIdentity): Promise<Resolved>
           return late ? { user_id: late.user_id, created: false } : { error: 'email_exists' }
         }
         const uid = randomBytes(16).toString('hex')
-        const u = yield* t.run('INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (email) DO NOTHING',
-          [uid, id.email, id.name, '', randomBytes(64).toString('hex'), randomBytes(16).toString('hex')])
+        // Google verified this address (verifyIdToken requires email_verified)
+        const u = yield* t.run('INSERT INTO users (id, email, name, business_name, password_hash, salt, email_verified_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (email) DO NOTHING',
+          [uid, id.email, id.name, '', randomBytes(64).toString('hex'), randomBytes(16).toString('hex'), Math.floor(Date.now() / 1000)])
         if (u.changes !== 1) throw new RaceLost()
         const o = yield* t.run("INSERT INTO oauth_identities (provider, subject, user_id) VALUES ('google', ?, ?) ON CONFLICT (provider, subject) DO NOTHING", [id.sub, uid])
         if (o.changes !== 1) throw new RaceLost()
