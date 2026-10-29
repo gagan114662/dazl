@@ -8,6 +8,7 @@ import InfoTip from './ui/info-tip'
 import { Icon } from './ui/icons'
 import { Avatar, Pill, Stepper } from './ui/bits'
 import BrainGraph from './onboarding/brain-graph'
+import FirstReview from './onboarding/first-review'
 import { brainFacts, type BrainFact } from '@/lib/brain'
 import { previewSplit, type PreviewLead } from '@/lib/journey'
 import { approveState, leadCardSummary } from '@/lib/scan/lead-card'
@@ -16,7 +17,7 @@ import { sourceName, stateText } from '@/lib/source-progress-copy'
 import type { First5View } from '@/lib/scan/first5'
 import type { SourceProgress } from '@/lib/scan/progress'
 
-type Step = 'site' | 'building' | 'ready' | 'brain' | 'ask'
+type Step = 'site' | 'building' | 'ready' | 'review' | 'brain' | 'ask'
 interface Usage { has_key: boolean; trial: { funded: boolean; remaining: number } | null }
 
 // Lists are separated by semicolons, as in Home's profile editor (lib/journey.ts), so an item that contains a comma
@@ -193,7 +194,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
 
   // Website, building and ready are one full-screen flow (no menu, the brain behind it); editing the profile and the
   // play step stay as regular pages for anyone who wants them.
-  if (step === 'site' || step === 'building' || step === 'ready') {
+  if (step === 'site' || step === 'building' || step === 'ready' || step === 'review') {
     const split = first?.leads ? previewSplit(first.leads as PreviewLead[]) : null
     const readyLeads = split?.opportunities ?? []
     // Ready to contact = what the approve gate accepts now (evidence, a published email, a confirmed company website,
@@ -225,11 +226,12 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
     }
     return (
       <div className="fixed inset-0 z-50 overflow-y-auto bg-[var(--canvas)] app-ui" data-testid="onboarding-screen" data-step={step}>
-        {step !== 'site' && <BrainGraph facts={facts} shown={step === 'ready' ? facts.length : shown} faint={step === 'ready'} reading={step === 'building'} />}
+        {step !== 'site' && <BrainGraph facts={facts} shown={step === 'ready' || step === 'review' ? facts.length : shown} faint={step === 'ready' || step === 'review'} reading={step === 'building'} />}
         <ul className="sr-only" aria-label="What dazl inferred">{facts.slice(0, step === 'ready' ? facts.length : shown).map(f => <li key={f.kind + f.text}>{f.label}: {f.text}</li>)}</ul>
         <div className="relative min-h-full flex flex-col">
           <div className="px-5 sm:px-10 py-5 flex items-center justify-between">
             <span className="text-xl font-bold tracking-tight">dazl<span className="text-[var(--pink)]">.</span></span>
+            {step === 'review' && <button type="button" className="text-sm text-[var(--ink-2)] hover:text-[var(--ink)]" onClick={() => setStep('ready')} data-testid="review-back">Back to your leads</button>}
             {step === 'ready' && <button type="button" className="text-sm text-[var(--ink-2)] hover:text-[var(--ink)]" onClick={() => setReady('home')}>Skip to Home</button>}
           </div>
           <div className="flex-1 flex items-center justify-center px-4 pb-16">
@@ -254,6 +256,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
               <p className="text-[var(--ink-2)] mt-1" data-testid="building-count">{shown > 0 ? `${shown} fact${shown === 1 ? '' : 's'} from ${readFrom || 'your site'}` : `Reading ${website.replace(/^https?:\/\//, '')}...`}</p>
             </div>}
 
+            {step === 'review' && first && <FirstReview jobId={first.id} />}
             {step === 'ready' && <div className="w-full max-w-5xl" data-testid="ready-step">
               <div className="text-center">
                 <span className="inline-flex w-14 h-14 rounded-full bg-[var(--lav-bg)] items-center justify-center"><Icon name="spark" className="w-6 h-6 text-[var(--lav)]" /></span>
@@ -272,6 +275,8 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                     {/* Submits the one sentence on the right (typed, or the top suggestion as shown there). */}
                     {!first ? <button type="submit" form="first-ask" className="btn-primary btn-lg w-full justify-center" disabled={busy || sentence.trim().length < 3} data-testid="ready-cta">{busy ? 'Starting...' : 'Find my first leads'}</button>
                       // Reaching out is offered only for leads that passed every check; otherwise the button says what is there.
+                      // With leads on the ready bar, reaching out starts here: review them one by one (the review step).
+                      : (f5 ? f5Ready > 0 : first.status === 'done' && (ready?.length ?? 0) > 0) ? <button type="button" className="btn-primary btn-lg w-full justify-center" onClick={() => setStep('review')} data-testid="ready-cta">Start reaching out</button>
                       : <a className="btn-primary btn-lg w-full justify-center" href={`/app/leads?job_id=${first.id}`} data-testid="ready-cta">{f5 ? (f5Live ? 'Watch it live' : f5Ready ? 'Start reaching out' : f5Found ? 'See what needs research' : 'See what happened')
                         : first.status === 'failed' ? 'See what happened'
                         : first.status !== 'done' ? 'Watch it live'
