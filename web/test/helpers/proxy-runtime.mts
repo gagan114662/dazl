@@ -64,7 +64,8 @@ test('proxy: /app redirects every request without a live session before any page
   }
   // /api routes check the session themselves (401, not a redirect): the proxy never looks one up for them
   assert.equal((await proxy(req('/api/leads', { cookie: `dazl_session=${signedOut}` }))).headers.get('location'), null)
-  // the lookup fails (store down): the request goes on and the layout's own check decides; no sign-in loop for a live user
+  // the lookup fails (store down): the request goes on to the static, data-free shell (its /api calls check the session
+  // themselves); no sign-in loop for a live user
   setDb({ get: async () => { throw new Error('store down') } } as unknown as Db)
   const down = await proxy(req('/app/leads', { cookie: `dazl_session=${live}` }))
   assert.equal(down.headers.get('location'), null)
