@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { campaignStatus, runStatusOf } from '../lib/run-status.ts'
+import { campaignStatus, currentQual, currentRun, runStatusOf } from '../lib/run-status.ts'
 
 const J = 'a'.repeat(24)
 const job = (o: Record<string, unknown>) => ({ id: J, status: 'done', error: null, candidates: 0, verified: 0, needs_review: 0, dropped: 0, lead_count: 0, ...o })
@@ -32,4 +32,19 @@ test('a run with results keeps the pipeline next action; a row with no record is
   assert.deepEqual(campaignStatus(row, null), { ...row, run: null })
   const running = { id: J, next: { label: 'Search still running', href: `/app/leads?job_id=${J}` } }
   assert.deepEqual(campaignStatus(running, job({ status: 'running' })).next, running.next)
+})
+
+test('a run with results is restated from its leads as they stand now', () => {
+  const found = runStatusOf(job({ candidates: 3, verified: 3, lead_count: 3 }) as never)
+  const row = (o: Record<string, unknown> = {}) => ({ evidence_excerpt: 'quoted', confidence: 80, human_confirmed_at: null, review_reason: null, quarantined_at: null, ...o })
+  const q = currentQual([row(), row({ evidence_excerpt: null, confidence: null, review_reason: 'quote_unconfirmed' }), row({ quarantined_at: 1 })])
+  assert.deepEqual(q, { leads: 3, sourceChecked: 1, confirmedByYou: 0, needsReview: 1, unverified: 0, rejected: 1 })
+  assert.equal(currentRun(found, q).label, '3 leads found: 1 source-checked, 0 confirmed by you, 1 needs your review, 1 rejected', 'not the scan-time 3 source-checked')
+  const reviewOnly = currentRun(found, currentQual([row({ evidence_excerpt: null, confidence: null, review_reason: 'x' }), row({ quarantined_at: 1 })]))
+  assert.deepEqual([reviewOnly.group, reviewOnly.tag], ['results', 'Needs your review'])
+  const none = currentRun(found, currentQual([row({ quarantined_at: 1 }), row({ quarantined_at: 2 })]), 'Dentists in Ohio')
+  assert.deepEqual([none.group, none.tag, none.label, none.next], ['no_match', 'None passed', 'None passed: you rejected all 2 leads this search found', { text: 'Try a broader search', href: '/app/leads?q=Dentists%20in%20Ohio' }])
+  // Not a run with results (failed, running, nothing extracted): left as recorded.
+  const failed = runStatusOf(job({ status: 'failed', error: 'key_rejected' }) as never)
+  assert.deepEqual(currentRun(failed, currentQual([row({ quarantined_at: 1 })])), failed)
 })

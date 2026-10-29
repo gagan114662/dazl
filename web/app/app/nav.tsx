@@ -9,8 +9,9 @@ type Item = { href: string; label: string; icon: IconName; match: (p: string, q:
 const HOME: Item = { href: '/app', label: 'Home', icon: 'home', match: p => p === '/app' }
 const GROUPS: { title: string; items: Item[] }[] = [
   { title: 'Find', items: [
-    { href: '/app/leads', label: 'Plays', icon: 'plays', match: (p, q) => p === '/app/leads' && !q.get('job_id') && !q.get('latest') },
-    { href: '/app/leads?latest=1', label: 'Leads', icon: 'leads', match: (p, q) => p === '/app/leads' && (!!q.get('job_id') || !!q.get('latest')) },
+    // Plays = saved, repeating searches and their schedules; Leads = searching and every run's results.
+    { href: '/app/plays', label: 'Plays', icon: 'plays', match: p => p.startsWith('/app/plays') },
+    { href: '/app/leads?latest=1', label: 'Leads', icon: 'leads', match: p => p === '/app/leads' },
   ] },
   { title: 'Engage', items: [
     { href: '/app/outcomes', label: 'Outcomes', icon: 'check', match: p => p.startsWith('/app/outcomes') },
