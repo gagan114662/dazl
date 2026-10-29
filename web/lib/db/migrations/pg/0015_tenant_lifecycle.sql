@@ -1,0 +1,603 @@
+-- Tenant deletion lifecycle (lib/tenant/lifecycle.ts, issue #359): the tombstone of every deleted tenant and the ids of
+-- its deleted parent rows, and on every tenant-scoped table a guard that refuses a new row for a deleted tenant (or
+-- under one of its deleted parents), so in-flight work or a late write cannot recreate erased data.
+CREATE TABLE tenant_tombstone_keys (
+      deleted_tenant TEXT NOT NULL,
+      tbl            TEXT NOT NULL,
+      key            TEXT NOT NULL,
+      PRIMARY KEY (tbl, key)
+    );
+
+CREATE TABLE tenant_tombstones (
+      deleted_tenant TEXT PRIMARY KEY,
+      requested_at   BIGINT NOT NULL,
+      requested_by   TEXT NOT NULL CHECK (char_length(requested_by) BETWEEN 1 AND 200),
+      state          TEXT NOT NULL CHECK (state IN ('requested','revoked','cancelled','erased','completed')),
+      policy         TEXT NOT NULL,
+      retained       TEXT,
+      completed_at   BIGINT
+    );
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_advanced_consent() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_advanced_consent ON advanced_consent;
+CREATE TRIGGER tomb_advanced_consent BEFORE INSERT ON advanced_consent FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_advanced_consent();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_autopilot_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_autopilot_audit ON autopilot_audit;
+CREATE TRIGGER tomb_autopilot_audit BEFORE INSERT ON autopilot_audit FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_autopilot_audit();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_autopilot_settings() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_autopilot_settings ON autopilot_settings;
+CREATE TRIGGER tomb_autopilot_settings BEFORE INSERT ON autopilot_settings FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_autopilot_settings();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_calcom_bookings() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_calcom_bookings ON calcom_bookings;
+CREATE TRIGGER tomb_calcom_bookings BEFORE INSERT ON calcom_bookings FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_calcom_bookings();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_calcom_hooks() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_calcom_hooks ON calcom_hooks;
+CREATE TRIGGER tomb_calcom_hooks BEFORE INSERT ON calcom_hooks FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_calcom_hooks();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_commenter_batches() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_commenter_batches ON commenter_batches;
+CREATE TRIGGER tomb_commenter_batches BEFORE INSERT ON commenter_batches FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_commenter_batches();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_commenter_rows() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'commenter_batches' AND key = NEW.batch_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_commenter_rows ON commenter_rows;
+CREATE TRIGGER tomb_commenter_rows BEFORE INSERT ON commenter_rows FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_commenter_rows();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_company_events() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_company_events ON company_events;
+CREATE TRIGGER tomb_company_events BEFORE INSERT ON company_events FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_company_events();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_connector_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_connector_audit ON connector_audit;
+CREATE TRIGGER tomb_connector_audit BEFORE INSERT ON connector_audit FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_connector_audit();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_consent_ledger() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_consent_ledger ON consent_ledger;
+CREATE TRIGGER tomb_consent_ledger BEFORE INSERT ON consent_ledger FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_consent_ledger();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_csv_batches() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_csv_batches ON csv_batches;
+CREATE TRIGGER tomb_csv_batches BEFORE INSERT ON csv_batches FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_csv_batches();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_csv_rows() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'csv_batches' AND key = NEW.batch_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_csv_rows ON csv_rows;
+CREATE TRIGGER tomb_csv_rows BEFORE INSERT ON csv_rows FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_csv_rows();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_email_candidates() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_email_candidates ON email_candidates;
+CREATE TRIGGER tomb_email_candidates BEFORE INSERT ON email_candidates FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_email_candidates();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_email_patterns() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_email_patterns ON email_patterns;
+CREATE TRIGGER tomb_email_patterns BEFORE INSERT ON email_patterns FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_email_patterns();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_evidence_purge_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_evidence_purge_audit ON evidence_purge_audit;
+CREATE TRIGGER tomb_evidence_purge_audit BEFORE INSERT ON evidence_purge_audit FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_evidence_purge_audit();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_followup_messages() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_followup_messages ON followup_messages;
+CREATE TRIGGER tomb_followup_messages BEFORE INSERT ON followup_messages FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_followup_messages();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_followup_threads() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_followup_threads ON followup_threads;
+CREATE TRIGGER tomb_followup_threads BEFORE INSERT ON followup_threads FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_followup_threads();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_gmail_accounts() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_gmail_accounts ON gmail_accounts;
+CREATE TRIGGER tomb_gmail_accounts BEFORE INSERT ON gmail_accounts FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_gmail_accounts();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_hiring_feed_crawl() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_hiring_feed_crawl ON hiring_feed_crawl;
+CREATE TRIGGER tomb_hiring_feed_crawl BEFORE INSERT ON hiring_feed_crawl FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_hiring_feed_crawl();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_inbound_messages() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_inbound_messages ON inbound_messages;
+CREATE TRIGGER tomb_inbound_messages BEFORE INSERT ON inbound_messages FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_inbound_messages();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_lead_enrichments() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_lead_enrichments ON lead_enrichments;
+CREATE TRIGGER tomb_lead_enrichments BEFORE INSERT ON lead_enrichments FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_lead_enrichments();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_lead_evidence_copies() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_lead_evidence_copies ON lead_evidence_copies;
+CREATE TRIGGER tomb_lead_evidence_copies BEFORE INSERT ON lead_evidence_copies FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_lead_evidence_copies();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_lead_qualifications() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_lead_qualifications ON lead_qualifications;
+CREATE TRIGGER tomb_lead_qualifications BEFORE INSERT ON lead_qualifications FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_lead_qualifications();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_lead_sources() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'leads' AND key = NEW.lead_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_lead_sources ON lead_sources;
+CREATE TRIGGER tomb_lead_sources BEFORE INSERT ON lead_sources FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_lead_sources();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_leads() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.scan_job_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_leads ON leads;
+CREATE TRIGGER tomb_leads BEFORE INSERT ON leads FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_leads();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_mail_read_consent() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_mail_read_consent ON mail_read_consent;
+CREATE TRIGGER tomb_mail_read_consent BEFORE INSERT ON mail_read_consent FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_mail_read_consent();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_monitor_runs() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_monitor_runs ON monitor_runs;
+CREATE TRIGGER tomb_monitor_runs BEFORE INSERT ON monitor_runs FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_monitor_runs();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_monitor_seen() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_monitor_seen ON monitor_seen;
+CREATE TRIGGER tomb_monitor_seen BEFORE INSERT ON monitor_seen FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_monitor_seen();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_monitors() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_monitors ON monitors;
+CREATE TRIGGER tomb_monitors BEFORE INSERT ON monitors FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_monitors();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_newsjacks() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_newsjacks ON newsjacks;
+CREATE TRIGGER tomb_newsjacks BEFORE INSERT ON newsjacks FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_newsjacks();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_oauth_identities() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_oauth_identities ON oauth_identities;
+CREATE TRIGGER tomb_oauth_identities BEFORE INSERT ON oauth_identities FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_oauth_identities();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_oauth_states() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_oauth_states ON oauth_states;
+CREATE TRIGGER tomb_oauth_states BEFORE INSERT ON oauth_states FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_oauth_states();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_outreach_llm_usage() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_outreach_llm_usage ON outreach_llm_usage;
+CREATE TRIGGER tomb_outreach_llm_usage BEFORE INSERT ON outreach_llm_usage FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_outreach_llm_usage();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_outreach_messages() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_outreach_messages ON outreach_messages;
+CREATE TRIGGER tomb_outreach_messages BEFORE INSERT ON outreach_messages FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_outreach_messages();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_outreach_settings() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_outreach_settings ON outreach_settings;
+CREATE TRIGGER tomb_outreach_settings BEFORE INSERT ON outreach_settings FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_outreach_settings();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_outreach_signal_context() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_outreach_signal_context ON outreach_signal_context;
+CREATE TRIGGER tomb_outreach_signal_context BEFORE INSERT ON outreach_signal_context FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_outreach_signal_context();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_reopen_messages() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_reopen_messages ON reopen_messages;
+CREATE TRIGGER tomb_reopen_messages BEFORE INSERT ON reopen_messages FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_reopen_messages();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_reply_drafts() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_reply_drafts ON reply_drafts;
+CREATE TRIGGER tomb_reply_drafts BEFORE INSERT ON reply_drafts FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_reply_drafts();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_reply_queries() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_reply_queries ON reply_queries;
+CREATE TRIGGER tomb_reply_queries BEFORE INSERT ON reply_queries FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_reply_queries();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_reply_threads() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_reply_threads ON reply_threads;
+CREATE TRIGGER tomb_reply_threads BEFORE INSERT ON reply_threads FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_reply_threads();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_scan_jobs() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_scan_jobs ON scan_jobs;
+CREATE TRIGGER tomb_scan_jobs BEFORE INSERT ON scan_jobs FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_scan_jobs();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_scan_model_calls() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_scan_model_calls ON scan_model_calls;
+CREATE TRIGGER tomb_scan_model_calls BEFORE INSERT ON scan_model_calls FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_scan_model_calls();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_scan_run_report() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_scan_run_report ON scan_run_report;
+CREATE TRIGGER tomb_scan_run_report BEFORE INSERT ON scan_run_report FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_scan_run_report();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_scan_source_runs() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_scan_source_runs ON scan_source_runs;
+CREATE TRIGGER tomb_scan_source_runs BEFORE INSERT ON scan_source_runs FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_scan_source_runs();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_scan_source_stats() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_scan_source_stats ON scan_source_stats;
+CREATE TRIGGER tomb_scan_source_stats BEFORE INSERT ON scan_source_stats FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_scan_source_stats();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_scheduler_progress() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_scheduler_progress ON scheduler_progress;
+CREATE TRIGGER tomb_scheduler_progress BEFORE INSERT ON scheduler_progress FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_scheduler_progress();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_seo_audits() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_seo_audits ON seo_audits;
+CREATE TRIGGER tomb_seo_audits BEFORE INSERT ON seo_audits FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_seo_audits();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_seo_briefs() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_seo_briefs ON seo_briefs;
+CREATE TRIGGER tomb_seo_briefs BEFORE INSERT ON seo_briefs FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_seo_briefs();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_seo_index_configs() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_seo_index_configs ON seo_index_configs;
+CREATE TRIGGER tomb_seo_index_configs BEFORE INSERT ON seo_index_configs FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_seo_index_configs();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_seo_index_keywords() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_seo_index_keywords ON seo_index_keywords;
+CREATE TRIGGER tomb_seo_index_keywords BEFORE INSERT ON seo_index_keywords FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_seo_index_keywords();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_seo_index_results() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_seo_index_results ON seo_index_results;
+CREATE TRIGGER tomb_seo_index_results BEFORE INSERT ON seo_index_results FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_seo_index_results();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_seo_index_runs() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_seo_index_runs ON seo_index_runs;
+CREATE TRIGGER tomb_seo_index_runs BEFORE INSERT ON seo_index_runs FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_seo_index_runs();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_sequence_settings() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_sequence_settings ON sequence_settings;
+CREATE TRIGGER tomb_sequence_settings BEFORE INSERT ON sequence_settings FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_sequence_settings();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_sequence_steps() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_sequence_steps ON sequence_steps;
+CREATE TRIGGER tomb_sequence_steps BEFORE INSERT ON sequence_steps FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_sequence_steps();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_sequences() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_sequences ON sequences;
+CREATE TRIGGER tomb_sequences BEFORE INSERT ON sequences FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_sequences();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_sessions() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_sessions ON sessions;
+CREATE TRIGGER tomb_sessions BEFORE INSERT ON sessions FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_sessions();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_source_reviews() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_source_reviews ON source_reviews;
+CREATE TRIGGER tomb_source_reviews BEFORE INSERT ON source_reviews FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_source_reviews();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_stripe_ended_subscriptions() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_stripe_ended_subscriptions ON stripe_ended_subscriptions;
+CREATE TRIGGER tomb_stripe_ended_subscriptions BEFORE INSERT ON stripe_ended_subscriptions FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_stripe_ended_subscriptions();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_suppressions() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_suppressions ON suppressions;
+CREATE TRIGGER tomb_suppressions BEFORE INSERT ON suppressions FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_suppressions();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_tenant_competitors() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_tenant_competitors ON tenant_competitors;
+CREATE TRIGGER tomb_tenant_competitors BEFORE INSERT ON tenant_competitors FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_tenant_competitors();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_tenant_connections() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_tenant_connections ON tenant_connections;
+CREATE TRIGGER tomb_tenant_connections BEFORE INSERT ON tenant_connections FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_tenant_connections();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_tenant_connectors() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_tenant_connectors ON tenant_connectors;
+CREATE TRIGGER tomb_tenant_connectors BEFORE INSERT ON tenant_connectors FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_tenant_connectors();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_tenant_llm_keys() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_tenant_llm_keys ON tenant_llm_keys;
+CREATE TRIGGER tomb_tenant_llm_keys BEFORE INSERT ON tenant_llm_keys FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_tenant_llm_keys();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_tenant_memory() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_tenant_memory ON tenant_memory;
+CREATE TRIGGER tomb_tenant_memory BEFORE INSERT ON tenant_memory FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_tenant_memory();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_tenant_plans() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_tenant_plans ON tenant_plans;
+CREATE TRIGGER tomb_tenant_plans BEFORE INSERT ON tenant_plans FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_tenant_plans();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_tinyfish_usage() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_tinyfish_usage ON tinyfish_usage;
+CREATE TRIGGER tomb_tinyfish_usage BEFORE INSERT ON tinyfish_usage FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_tinyfish_usage();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_trial_reservations() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_trial_reservations ON trial_reservations;
+CREATE TRIGGER tomb_trial_reservations BEFORE INSERT ON trial_reservations FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_trial_reservations();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_trial_scans() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_trial_scans ON trial_scans;
+CREATE TRIGGER tomb_trial_scans BEFORE INSERT ON trial_scans FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_trial_scans();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_users() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_users ON users;
+CREATE TRIGGER tomb_users BEFORE INSERT ON users FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_users();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_warm_user_paths() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_warm_user_paths ON warm_user_paths;
+CREATE TRIGGER tomb_warm_user_paths BEFORE INSERT ON warm_user_paths FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_warm_user_paths();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_watch_seen() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'watches' AND key = NEW.watch_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_watch_seen ON watch_seen;
+CREATE TRIGGER tomb_watch_seen BEFORE INSERT ON watch_seen FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_watch_seen();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_watches() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_watches ON watches;
+CREATE TRIGGER tomb_watches BEFORE INSERT ON watches FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_watches();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_work_queue() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_work_queue ON work_queue;
+CREATE TRIGGER tomb_work_queue BEFORE INSERT ON work_queue FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_work_queue();

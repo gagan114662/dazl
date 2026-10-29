@@ -1,5 +1,6 @@
 import { migrateSourceReview } from './source-review.ts'
 import { migrateSchedulerRuns } from '../ops/scheduler-runs.ts'
+import { migrateTenantLifecycle } from '../db/tenant-guard.ts'
 import { migrateInsertionOrder } from '../db/insertion-order.ts'
 import { migrateSequences } from '../outreach/sequences.ts'
 import { cookies } from 'next/headers'
@@ -57,6 +58,7 @@ export function getScanDb() {
     migrateMemory(db)
     migrateReopen(db)
     migrateInsertionOrder(db) // last: adds insert_seq to tables created above
+    migrateTenantLifecycle(db) // after it: a deleted-tenant guard trigger on every tenant-scoped table that now exists
     ready = true
   }
   return db
