@@ -74,7 +74,9 @@ export function leadEvidenceEligible(db: Database.Database, tenantId: string, le
 export const testFixtureSend = (db: Database.Database, tenantId: string, m: { to_email: string; test: number }): boolean =>
   m.test === 1 && testRecipientApproved(db, tenantId, m.to_email)
 
-export interface Deps extends OAuthDeps { baseUrl?: string; sendFn?: typeof gmailSend }
+// expectSender: the Gmail address the caller authorized this send from (autopilot's held drafts); the send is refused
+// (sender_changed) unless the connected account is that address at the moment the message is handed to Gmail.
+export interface Deps extends OAuthDeps { baseUrl?: string; sendFn?: typeof gmailSend; expectSender?: string }
 const nowS = (d: Deps) => d.now ?? Math.floor(Date.now() / 1000)
 const baseUrl = (d: Deps) => (d.baseUrl ?? process.env.PUBLIC_BASE_URL ?? 'https://dazl.ai').replace(/\/$/, '')
 
@@ -499,6 +501,10 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
 
   // Token refresh is asynchronous. Recheck authorization and suppression after it,
   // immediately before handing the immutable MIME bytes to Gmail.
+  // The sending identity first: the account may have been disconnected or reconnected to another address meanwhile. The
+  // message goes out only from the address read before the refresh (and, when given, the one the caller authorized).
+  const sender = db.prepare('SELECT email FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string } | undefined
+  if (!sender || sender.email.toLowerCase() !== acct!.email.toLowerCase() || (d.expectSender !== undefined && d.expectSender.toLowerCase() !== sender.email.toLowerCase())) release('sender_changed')
   if (contactPurposeRestricted(db,tenantId,m.lead_id,m.to_email)) release('not_sales_contact')
   if (!recipientAllowed(db,tenantId,m.to_email)) release('personal_email')
   if (leadHeld(db,tenantId,m.lead_id)) release('lead_ungraded')

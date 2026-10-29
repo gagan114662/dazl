@@ -163,3 +163,58 @@ test('#411 two passes at once (a tick and a finishing scan): one claim, one send
   await runAutopilot(db, 'A', 'Acme', at(slow, row.next_at + 60)); assert.equal(sent.length, 2, 'fresh claim: left alone')
   await runAutopilot(db, 'A', 'Acme', at(slow, row.next_at + 601)); assert.equal(sent.length, 3, 'stale claim: picked up once')
 })
+
+// Instinct's hold on a73a6a3: the Gmail account a held draft would go out from is part of its authority. A reconnect to
+// another address hands it back to the user; a disconnect waits; the same address (reconnected, or a token refresh)
+// sends; a change between autopilot's check and the send itself is refused at send commitment.
+const reconnect = (db: Database.Database, email: string | null) => {
+  const row = db.prepare('SELECT * FROM gmail_accounts WHERE tenant_id = ?').get('A') as Record<string, unknown> | undefined
+  const saved = row ?? (db as unknown as { _savedAcct?: Record<string, unknown> })._savedAcct
+  ;(db as unknown as { _savedAcct?: Record<string, unknown> })._savedAcct = saved
+  db.prepare('DELETE FROM gmail_accounts WHERE tenant_id = ?').run('A')
+  if (email === null || !saved) return
+  const r = { ...saved, email }
+  db.prepare(`INSERT INTO gmail_accounts (${Object.keys(r).join(', ')}) VALUES (${Object.keys(r).map(() => '?').join(', ')})`).run(...Object.values(r) as never[])
+}
+const heldAfterOneSend = async () => {
+  const db = await setup(); cap1(db); pastWarmup(db); const s = sends()
+  lead(db, 'a@one.example'); lead(db, 'b@two.example')
+  await runAutopilot(db, 'A', 'Acme', at(s.d, NOW)); assert.equal(s.sent.length, 1)
+  return { db, ...s }
+}
+const draftsBack = (db: Database.Database) => (db.prepare("SELECT count(*) AS n FROM outreach_messages WHERE status = 'draft' AND approved_hash IS NULL").get() as { n: number }).n
+
+test('#411 sender identity: a reconnect to a different Gmail address hands the held draft back (Instinct negative)', async () => {
+  const { db, sent, d } = await heldAfterOneSend()
+  db.prepare("UPDATE gmail_accounts SET email = 'different@other.example' WHERE tenant_id = 'A'").run()
+  const r = await runAutopilot(db, 'A', 'Acme', at(d, NOW + DAY + 1))
+  assert.deepEqual([r.sent, sent.length, work(db).length, draftsBack(db)], [0, 1, 0, 1], 'stub send called once, not twice')
+  assert.ok(recentAutopilotAudit(db, 'A').some(a => a.action === 'released'))
+})
+
+test('#411 sender identity: disconnected waits; the same address reconnected or a token refresh sends; another address is released', async () => {
+  { const { db, sent, d } = await heldAfterOneSend()
+    reconnect(db, null) // disconnected
+    await runAutopilot(db, 'A', 'Acme', at(d, NOW + DAY + 1))
+    assert.deepEqual([sent.length, work(db).length], [1, 1], 'disconnected: nothing sent, the work waits')
+    reconnect(db, 'me@acme.example') // the same address again
+    await runAutopilot(db, 'A', 'Acme', at(d, NOW + DAY + 2))
+    assert.deepEqual([sent.length, work(db).length], [2, 0], 'same address: sent once') }
+  { const { db, sent, d } = await heldAfterOneSend()
+    reconnect(db, null); reconnect(db, 'someone.else@other.example')
+    await runAutopilot(db, 'A', 'Acme', at(d, NOW + DAY + 1))
+    assert.deepEqual([sent.length, work(db).length, draftsBack(db)], [1, 0, 1], 'disconnect then another address: released') }
+  { const { db, sent, d } = await heldAfterOneSend()
+    db.prepare("UPDATE gmail_accounts SET refresh_ct = refresh_ct WHERE tenant_id = 'A'").run() // a token refresh: same identity
+    await runAutopilot(db, 'A', 'Acme', at(d, NOW + DAY + 1))
+    assert.deepEqual([sent.length, work(db).length], [2, 0], 'same address after a token refresh: sent') }
+})
+
+test('#411 sender identity is rechecked at send commitment: an address change during the token refresh sends nothing', async () => {
+  const { db, sent, d } = await heldAfterOneSend()
+  // The access-token request is the last await before the bytes go to Gmail: the account changes right there.
+  const swap = (async (url: string, init?: unknown) => { if (String(url).includes('token')) db.prepare("UPDATE gmail_accounts SET email = 'swapped@other.example' WHERE tenant_id = 'A'").run(); return (d.fetchImpl as unknown as (u: string, i?: unknown) => Promise<Response>)(url, init) }) as unknown as typeof fetch
+  const r = await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW + DAY + 1), fetchImpl: swap })
+  assert.deepEqual([r.sent, sent.length, work(db).length, draftsBack(db)], [0, 1, 0, 1])
+  assert.ok(recentAutopilotAudit(db, 'A').some(a => a.action === 'send_failed' && a.detail === 'sender_changed'))
+})
