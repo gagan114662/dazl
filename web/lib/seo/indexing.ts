@@ -104,18 +104,36 @@ export async function runIndexChecks(db: DbLike, tenantId: string, deps: { env?:
   if (!cfg || !tinyfishEnabled(env)) return null
   const keywords = await listKeywords(db, tenantId)
   if (keywords.length === 0) return null
-  const remaining = WEEKLY_ALLOWANCE - await weeklySpend(db, tenantId, now)
-  if (remaining <= 0) return null
+  // Claim this batch's searches from the weekly allowance BEFORE any request, in one short transaction (on Postgres a
+  // per-tenant lock held to commit; SQLite runs one write transaction at a time): two runs at once - a manual run
+  // and the tick, or two manual runs - cannot both spend the same allowance. No transaction stays open across a
+  // network wait. The claim is a seo_index_runs row for the whole batch; once the batch ends, the searches it did
+  // not send are given back as a negative row. A search that was sent counts even if it failed, and a run that
+  // crashes keeps its whole claim spent.
+  const claimed = await asDb(db).tx(function* (t: Tx): TxBody<number> {
+    if (t.kind === 'pg') yield* t.get("SELECT pg_advisory_xact_lock(hashtextextended('seo_index_runs:' || ?, 0)) AS x", [tenantId])
+    const used = Number((yield* t.get<{ n: number }>('SELECT COALESCE(SUM(searches), 0) AS n FROM seo_index_runs WHERE tenant_id = ? AND ran_at >= ?', [tenantId, now - WEEK_S]))!.n)
+    const n = Math.min(keywords.length, WEEKLY_ALLOWANCE - used)
+    if (n > 0) yield* t.run('INSERT INTO seo_index_runs (tenant_id, ran_at, searches) VALUES (?, ?, ?)', [tenantId, now, n])
+    return n
+  })
+  if (claimed <= 0) return null
   // The tenant-approved allowance for this feature is 10/user/week - raise only the per-batch
   // cap (default 4/scan); tenant-daily and global caps are untouched.
   const batchEnv = { ...env, TINYFISH_SEARCHES_PER_SCAN: String(WEEKLY_ALLOWANCE) }
-  const spent = { searches: 0 }
+  const spent = { searches: 0 } // searches actually sent (tfSearch counts one before each request, failed or not)
   const out: IndexCheck[] = []
-  for (const keyword of keywords.slice(0, remaining)) {
-    const r = await tfSearch(db, tenantId, `site:${cfg.domain} ${keyword}`.slice(0, 300), {}, spent, { env: batchEnv, fetchImpl: deps.fetchImpl, now })
-    if (!r.ok) break // cap/rate/auth/quota: stop the batch, keep what we have
-    const own = r.hits.find(h => hostMatches(h.url, cfg.domain))
-    out.push({ keyword, indexed: !!own, top_url: own?.url ?? null })
+  try {
+    for (const keyword of keywords.slice(0, claimed)) {
+      const r = await tfSearch(db, tenantId, `site:${cfg.domain} ${keyword}`.slice(0, 300), {}, spent, { env: batchEnv, fetchImpl: deps.fetchImpl, now })
+      if (!r.ok) break // cap/rate/auth/quota: stop the batch, keep what we have
+      const own = r.hits.find(h => hostMatches(h.url, cfg.domain))
+      out.push({ keyword, indexed: !!own, top_url: own?.url ?? null })
+    }
+  } finally {
+    // give back what was claimed but never sent (a throw included); what was sent stays spent
+    const unsent = claimed - spent.searches
+    if (unsent > 0) await asDb(db).run('INSERT INTO seo_index_runs (tenant_id, ran_at, searches) VALUES (?, ?, ?)', [tenantId, now, -unsent])
   }
   if (out.length > 0) {
     const stamp = deps.id ?? `${now.toString(36)}${Math.random().toString(36).slice(2, 8)}`
@@ -123,7 +141,6 @@ export async function runIndexChecks(db: DbLike, tenantId: string, deps: { env?:
       for (const [i, c] of out.entries()) {
         yield* t.run('INSERT INTO seo_index_results (id, tenant_id, keyword, indexed, top_url, checked_at) VALUES (?, ?, ?, ?, ?, ?)', [`${stamp}${i}`, tenantId, c.keyword, c.indexed ? 1 : 0, c.top_url, now])
       }
-      yield* t.run('INSERT INTO seo_index_runs (tenant_id, ran_at, searches) VALUES (?, ?, ?)', [tenantId, now, spent.searches])
       yield* t.run('UPDATE seo_index_configs SET next_run_at = ? WHERE tenant_id = ?', [now + WEEK_S, tenantId])
     })
   }

@@ -98,3 +98,74 @@ bothEngines('indexing: two instances adding keywords at once never pass the cap 
     assert.equal((await listKeywords(db, 'u1')).length, MAX_KEYWORDS)
   } finally { await Promise.all(pools.map(p => p.close())) }
 })
+
+// Running checks pays for TinyFish searches. Every run claims its batch from the weekly allowance before its first
+// request, so runs at once (two manual runs, or a manual run and the tick) never send more than 10 searches a week
+// between them. A sent search counts even when it failed, and a run that dies keeps its claim spent.
+const counting = (urls: string[]) => {
+  const sent: string[] = []
+  const f = (async (u: string) => { sent.push(String(u)); await new Promise(r => setTimeout(r, 5)); return hits(urls)(u) }) as unknown as typeof fetch
+  return { sent, f }
+}
+
+bothEngines('indexing: two runs at once never send more than the weekly 10 searches between them', async ({ db, kind, url, schema }) => {
+  await resetTinyfishState(db)
+  await saveDomain(db, 'u1', 'acme.com')
+  for (let i = 0; i < 10; i++) await addKeyword(db, 'u1', `keyword ${i}`)
+  // two workers: on Postgres two pools (two instances); on SQLite two runs interleaving in one process
+  const other = kind === 'pg' ? pgDb({ connectionString: url!, searchPath: schema, max: 1 }) : db
+  try {
+    const { sent, f } = counting(['https://acme.com/p'])
+    const [a, b] = await Promise.all([runIndexChecks(db, 'u1', { env, fetchImpl: f, now: NOW, id: 'runA' }), runIndexChecks(other, 'u1', { env, fetchImpl: f, now: NOW, id: 'runB' })])
+    assert.equal(sent.length, 10, `${sent.length} searches sent against an allowance of 10`)
+    assert.equal((a?.length ?? 0) + (b?.length ?? 0), 10)
+    assert.ok(a === null || b === null || a.length + b.length === 10, 'one run took the batch, the other found nothing left (or they split it)')
+    assert.equal(await weeklySpend(db, 'u1', NOW), 10)
+    assert.equal(await runIndexChecks(db, 'u1', { env, fetchImpl: f, now: NOW + 60 }), null, 'spent for the week')
+  } finally { if (other !== db) await other.close() }
+})
+
+bothEngines('indexing: a manual run and the tick at once (both call runIndexChecks) share the one allowance', async ({ db, kind, url, schema }) => {
+  await resetTinyfishState(db)
+  await saveDomain(db, 'u1', 'acme.com')
+  for (let i = 0; i < 6; i++) await addKeyword(db, 'u1', `keyword ${i}`)
+  // 6 searches already spent this week: 4 left for whichever run claims them
+  await runIndexChecks(db, 'u1', { env, fetchImpl: counting(['https://acme.com/p']).f, now: NOW - 3600 })
+  const tick = kind === 'pg' ? pgDb({ connectionString: url!, searchPath: schema, max: 1 }) : db
+  try {
+    const { sent, f } = counting(['https://acme.com/p'])
+    await Promise.all([runIndexChecks(db, 'u1', { env, fetchImpl: f, now: NOW, id: 'manual' }), runIndexChecks(tick, 'u1', { env, fetchImpl: f, now: NOW, id: 'tick' })])
+    assert.equal(sent.length, 4)
+    assert.equal(await weeklySpend(db, 'u1', NOW), 10)
+  } finally { if (tick !== db) await tick.close() }
+})
+
+bothEngines('indexing: a failed search still counts; the batch is claimed before its first request (a crash keeps it spent)', async ({ db }) => {
+  await resetTinyfishState(db)
+  await saveDomain(db, 'u1', 'acme.com')
+  for (let i = 0; i < 3; i++) await addKeyword(db, 'u1', `keyword ${i}`)
+  // the first search fails at TinyFish: nothing checked, the batch stops, but that request was sent and counts
+  let claimedAtFirstRequest = -1
+  const failing = (async () => { claimedAtFirstRequest = await weeklySpend(db, 'u1', NOW); return new Response('upstream', { status: 500 }) }) as unknown as typeof fetch
+  assert.deepEqual(await runIndexChecks(db, 'u1', { env, fetchImpl: failing, now: NOW }), [])
+  assert.equal(claimedAtFirstRequest, 3, 'all three searches were claimed before the first request went out')
+  assert.equal(await weeklySpend(db, 'u1', NOW), 1, 'the failed search counts; the two never sent are given back')
+})
+
+bothEngines('indexing: six instances claiming at once, repeatedly, never claim past 10', async ({ db, kind, url, schema }) => {
+  if (kind !== 'pg') return // SQLite runs one write transaction at a time; the race is between Postgres connections
+  const pools = Array.from({ length: 6 }, () => pgDb({ connectionString: url!, searchPath: schema, max: 1 }))
+  try {
+    for (let round = 0; round < 8; round++) {
+      const t = `t${round}`
+      await resetTinyfishState(db)
+      await saveDomain(db, t, 'acme.com')
+      for (let i = 0; i < 4; i++) await addKeyword(db, t, `keyword ${i}`)
+      const { sent, f } = counting(['https://acme.com/p'])
+      // six runs of 4 keywords: 24 wanted, 10 allowed
+      await Promise.all(pools.map((p, i) => runIndexChecks(p, t, { env: { ...env, TINYFISH_TENANT_DAILY: '1000', TINYFISH_PER_MINUTE: '1000' }, fetchImpl: f, now: NOW, id: `r${round}p${i}` })))
+      assert.equal(sent.length, 10, `round ${round}: ${sent.length} searches sent`)
+      assert.equal(await weeklySpend(db, t, NOW), 10)
+    }
+  } finally { await Promise.all(pools.map(p => p.close())) }
+})
