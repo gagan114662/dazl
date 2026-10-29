@@ -11,6 +11,9 @@ import BrainGraph from './onboarding/brain-graph'
 import { brainFacts, type BrainFact } from '@/lib/brain'
 import { previewSplit, type PreviewLead } from '@/lib/journey'
 import { leadCardSummary } from '@/lib/scan/lead-card'
+import { sourceName, stateText } from '@/lib/source-progress-copy'
+import type { First5View } from '@/lib/scan/first5'
+import type { SourceProgress } from '@/lib/scan/progress'
 
 type Step = 'site' | 'building' | 'ready' | 'brain' | 'ask'
 interface Usage { has_key: boolean; trial: { funded: boolean; remaining: number } | null }
@@ -19,7 +22,9 @@ interface Usage { has_key: boolean; trial: { funded: boolean; remaining: number 
 // ("London, UK", "Head of Sales, EMEA") stays one item from the read to the scan.
 const list = (s: string) => s.split(';').map(x => x.trim()).filter(Boolean)
 const REVEAL_MS = 180
-const POLL_MS = 3000
+// The ready screen's first play is the fast first scan (free sources, seconds rather than minutes): its read-only status
+// is polled more often so the live view and the first lead cards keep up with it.
+const POLL_MS = 1500
 const FIRST = 5
 const SITE_ERR: Record<string, string> = {
   invalid: 'That address is not a public website.', not_public: 'That address is not a public website.',
@@ -57,7 +62,9 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   const [facts, setFacts] = useState<BrainFact[]>([])
   const [shown, setShown] = useState(0)
   // The first play started from the ready screen, watched in place: its status and, once done, its ready leads.
-  const [first, setFirst] = useState<{ id: string; status: string; leads: PreviewLead[] | null } | null>(null)
+  // f5: the fast first scan's view (lib/scan/first5.ts, served by the status route for a mode=first5 job): live
+  // per-source progress, candidates so far and the verified leads. null for a job without it (then the leads read is used).
+  const [first, setFirst] = useState<{ id: string; status: string; leads: PreviewLead[] | null; f5: First5View | null; query: string } | null>(null)
 
   // Fills the step-2 buyer fields from a profile (the saved one on load, or a fresh website read).
   const fillBuyer = (b: Partial<Brain> & { sizes?: string[]; exclude?: string[] }) => {
@@ -102,10 +109,11 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       return
     }
     if (firstStatus === 'failed') return
-    const t = setInterval(() => {
-      void fetch(`/api/scan/status?job_id=${firstId}`).then(r => r.ok ? r.json() : null).catch(() => null).then(j => { if (j?.status) setFirst(f => f && f.id === firstId ? { ...f, status: j.status } : f) })
-    }, POLL_MS)
-    return () => clearInterval(t)
+    const poll = () => void fetch(`/api/scan/status?job_id=${firstId}`).then(r => r.ok ? r.json() : null).catch(() => null).then(j => { if (j?.status) setFirst(f => f && f.id === firstId ? { ...f, status: j.status, f5: j.first5 && typeof j.first5 === 'object' ? j.first5 : f.f5 } : f) })
+    // The first read right away (the live view should not sit empty for a whole interval), then every few seconds.
+    const t0 = setTimeout(poll, 400)
+    const t = setInterval(poll, POLL_MS)
+    return () => { clearTimeout(t0); clearInterval(t) }
   }, [firstId, firstStatus])
 
   if (ready === 'loading') return null
@@ -168,11 +176,13 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
     try {
       // The sentence and the profile from step 2, as the Leads page sends a reviewed profile. The server validates both;
       // nothing here changes what a scan checks.
-      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: sentence.trim(), icp: profile }) })
+      // From the ready screen the first play is the fast first scan (mode first5: the free sources only, the same
+      // extraction and checks as every scan), so the first leads come back quickly; a wider, full scan stays one click away.
+      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: sentence.trim(), icp: profile, ...(stay ? { mode: 'first5' } : {}) }) })
       const j = await r.json().catch(() => ({}))
       if (r.ok && j.job_id) {
         // From the ready screen the first play is watched in place; from the play step it opens its live progress.
-        if (stay) { setFirst({ id: j.job_id, status: 'pending', leads: null }); return }
+        if (stay) { setFirst({ id: j.job_id, status: 'pending', leads: null, f5: null, query: sentence.trim() }); return }
         router.push(`/app/leads?job_id=${encodeURIComponent(j.job_id)}`); return
       }
       if (j.error === 'no_api_key' || j.error === 'trial_exhausted') { setNeedKey(true); return setError(j.error === 'trial_exhausted' ? 'Your free scans are used up. Add your AI key to keep going.' : '') }
@@ -186,6 +196,16 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
     const split = first?.leads ? previewSplit(first.leads as PreviewLead[]) : null
     const readyLeads = split?.opportunities ?? []
     const active = first && first.status !== 'done' && first.status !== 'failed'
+    // The fast first scan's own view, when the status read serves one: it decides what is shown while and after it runs.
+    const f5 = first?.f5 ?? null
+    const f5Live = !!f5 && f5.state === 'finding' && first?.status !== 'failed'
+    const f5Ready = f5 && !f5.enriching ? f5.verified : 0
+    // The one sentence: what the user typed, else the top suggestion from the profile (so nothing has to be typed).
+    const sentence = askIsSuggestion ? (ask || plays[0] || '') : ask
+    const candidatesSoFar = f5 ? f5.sources.reduce<number | null>((n, x) => x.candidates == null ? n : (n ?? 0) + x.candidates, null) : null
+    const readingNow = f5?.sources.filter(x => x.state === 'running').map(x => sourceName(x.source)) ?? []
+    const day = (d: string | null) => { if (!d) return null; const t = new Date(d); return isNaN(t.getTime()) ? d : t.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) }
+    const host = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, '') } catch { return u } }
     const person = (l: PreviewLead) => {
       const c = leadCardSummary(l)
       // "Name, Title - email": the title may itself contain a hyphen ("Co-founder"); only " - " separates the address.
@@ -227,7 +247,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
               <div className="text-center">
                 <span className="inline-flex w-14 h-14 rounded-full bg-[var(--lav-bg)] items-center justify-center"><Icon name="spark" className="w-6 h-6 text-[var(--lav)]" /></span>
                 <h1 className="text-4xl sm:text-[52px] leading-tight font-bold tracking-tight mt-4 text-[#2a0a24]">Your brain is ready.</h1>
-                <p className="text-[var(--ink-2)] text-lg mt-2" data-testid="ready-subhead">{first?.status === 'done' ? (readyLeads.length ? `dazl found ${readyLeads.length} lead${readyLeads.length === 1 ? '' : 's'} ready for your review.` : 'Your first play is done. See what it found.') : active ? 'dazl is finding your first leads now.' : `dazl knows ${sells ? 'what you sell and ' : ''}who buys it. Review it, then find your first leads.`}</p>
+                <p className="text-[var(--ink-2)] text-lg mt-2" data-testid="ready-subhead">{f5 ? (f5Live ? 'dazl is finding your first leads now.' : f5Ready ? `dazl found ${f5Ready} lead${f5Ready === 1 ? '' : 's'} ready for your review.` : 'Your first play is done. See what it found.') : first?.status === 'done' ? (readyLeads.length ? `dazl found ${readyLeads.length} lead${readyLeads.length === 1 ? '' : 's'} ready for your review.` : 'Your first play is done. See what it found.') : active ? 'dazl is finding your first leads now.' : `dazl knows ${sells ? 'what you sell and ' : ''}who buys it. Review it, then find your first leads.`}</p>
               </div>
               {error && <p className="text-sm mt-4 text-center text-[var(--pink)]" role="alert">{error}</p>}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mt-9">
@@ -238,9 +258,11 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                   </ul>
                   {needKey && !hasKey && <div className="mt-5"><KeyInline reason="Searches run on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); setError(''); void loadUsage() }} /></div>}
                   <div className="mt-auto pt-7">
-                    {!first ? <button type="button" className="btn-primary btn-lg w-full justify-center" disabled={busy || !plays[0]} onClick={() => void start(plays[0], true)} data-testid="ready-cta">{busy ? 'Starting...' : 'Find my first leads'}</button>
+                    {/* Submits the one sentence on the right (typed, or the top suggestion as shown there). */}
+                    {!first ? <button type="submit" form="first-ask" className="btn-primary btn-lg w-full justify-center" disabled={busy || sentence.trim().length < 3} data-testid="ready-cta">{busy ? 'Starting...' : 'Find my first leads'}</button>
                       // Reaching out is offered only for leads that passed every check; otherwise the button says what is there.
-                      : <a className="btn-primary btn-lg w-full justify-center" href={`/app/leads?job_id=${first.id}`} data-testid="ready-cta">{first.status === 'failed' ? 'See what happened'
+                      : <a className="btn-primary btn-lg w-full justify-center" href={`/app/leads?job_id=${first.id}`} data-testid="ready-cta">{f5 ? (f5Live ? 'Watch it live' : f5Ready ? 'Start reaching out' : 'See what happened')
+                        : first.status === 'failed' ? 'See what happened'
                         : first.status !== 'done' ? 'Watch it live'
                         : !first.leads ? 'View results'
                         : readyLeads.length ? 'Start reaching out'
@@ -249,8 +271,12 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                     <button type="button" className="w-full mt-3 text-sm text-[var(--ink-2)] hover:text-[var(--ink)]" onClick={() => setStep('brain')}>Edit what dazl inferred</button>
                   </div>
                 </section>
-                <section className="onb-card p-5 sm:p-8 min-w-0" data-testid="first-customers">
-                  <h2 className="text-xl font-bold tracking-tight" data-testid="first-heading">{!first ? 'Pick your first play'
+                {/* On a phone this card comes first: the sentence, then the live view and the leads, are what to look at. */}
+                <section className="onb-card p-5 sm:p-8 min-w-0 order-first md:order-none" data-testid="first-customers">
+                  <h2 className="text-xl font-bold tracking-tight" data-testid="first-heading">{!first ? 'Who do you want to find?'
+                    : f5 ? (f5Live ? (f5.leads.length ? `${f5.leads.length} found - checking each one` : 'Finding your first leads')
+                      : f5Ready ? `${f5Ready} lead${f5Ready === 1 ? '' : 's'} ready for your review`
+                      : first.status === 'failed' || f5.reason === 'failed' ? 'This play could not finish' : 'No leads in this first play')
                     : active ? 'Finding your first leads'
                     : first.status === 'failed' ? 'This play could not finish'
                     : !first.leads ? 'Loading your first leads'
@@ -263,18 +289,47 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                     <dl className="mt-3 grid gap-1.5 text-xs" data-testid="ready-criteria">
                       {([['Who', profile.who], ['Industry', profile.industries], ['Where', profile.where], ['Size', profile.sizes], ['Signals', profile.signals], ['Skip', profile.exclude]] as const).filter(([, v]) => v.length).map(([k, v]) => <div key={k} className="flex gap-2 min-w-0"><dt className="w-14 shrink-0 text-[var(--ink-3)] pt-0.5">{k}</dt><dd className="flex flex-wrap gap-1 min-w-0" data-testid={`criteria-${k.toLowerCase()}`}>{v.map(x => <span key={x} className="pill pill-plain whitespace-normal break-words">{x}</span>)}</dd></div>)}
                     </dl>
-                    <p className="text-sm text-[var(--ink-2)] mt-4">Start with one of these plays:</p>
-                    <ul className="mt-4 divide-y divide-[var(--line)] border-y border-[var(--line)]">
-                      {plays.slice(0, 3).map(p => <li key={p}><button type="button" disabled={busy} className="w-full flex items-center gap-3 py-3 text-left text-sm hover:text-[var(--ink)]" onClick={() => void start(p, true)} data-testid="first-play"><Icon name="spark" className="w-4 h-4 shrink-0 text-[var(--lav)]" /><span className="flex-1 min-w-0 break-words">{p}</span><Icon name="arrow" className="w-4 h-4 shrink-0 text-[var(--ink-3)]" /></button></li>)}
-                    </ul>
+                    {/* One sentence. It starts as the top suggestion, so the website stays the only thing typed; a click on a
+                        suggestion starts that one at once. */}
+                    <form id="first-ask" className="mt-5" onSubmit={e => { e.preventDefault(); void start(sentence, true) }}>
+                      <label className="block text-sm font-semibold" htmlFor="first-ask-input">Describe who you want in one sentence</label>
+                      <textarea id="first-ask-input" className="field w-full mt-2 text-[15px]" rows={2} maxLength={300} value={sentence} data-testid="first-ask"
+                        onChange={e => { setAsk(e.target.value); setAskIsSuggestion(false) }} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }} />
+                    </form>
+                    <p className="text-xs text-[var(--ink-3)] mt-3">Or start with one of these:</p>
+                    <div className="mt-2 flex flex-col gap-2">
+                      {plays.slice(0, 3).map(p => <button key={p} type="button" disabled={busy} className="chip w-full justify-between text-left" onClick={() => { setAsk(p); setAskIsSuggestion(true); void start(p, true) }} data-testid="first-play"><span className="min-w-0 break-words">{p}</span><Icon name="arrow" className="w-4 h-4 shrink-0 text-[var(--ink-3)]" /></button>)}
+                    </div>
                   </>}
-                  {active && <div className="mt-4" data-testid="first-progress"><Stepper steps={[
+                  {/* Live: which source is being read and how many candidates so far, from the scan's own progress record. */}
+                  {f5Live && <div className="mt-4" data-testid="first-progress">
+                    <p className="text-sm font-semibold" data-testid="live-now">{readingNow.length ? `Reading ${readingNow.join(' and ')}...` : f5.enriching ? 'Checking each lead and looking up who to contact...' : 'Starting the sources...'}</p>
+                    <p className="text-xs text-[var(--ink-2)] mt-0.5" data-testid="live-candidates">{candidatesSoFar == null ? 'Counting candidates...' : `${candidatesSoFar} candidate${candidatesSoFar === 1 ? '' : 's'} found so far`}</p>
+                    {f5.sources.length > 0 && <ul className="mt-3 divide-y divide-[var(--line)] text-sm" aria-label="Sources">
+                      {f5.sources.map(x => <li key={x.source} className="flex items-center justify-between gap-3 py-2" data-testid="live-source" data-state={x.state}>
+                        <span className="min-w-0 truncate">{sourceName(x.source)}</span>
+                        <span className={`shrink-0 text-xs ${x.state === 'running' ? 'live-dot' : 'text-[var(--ink-2)]'}`}>{stateText(x as SourceProgress)}{x.candidates != null && x.state !== 'running' ? ` · ${x.candidates}` : ''}</span>
+                      </li>)}
+                    </ul>}
+                  </div>}
+                  {/* The first leads as they are verified (still being checked while the scan finishes). */}
+                  {f5 && f5.leads.length > 0 && <ul className="mt-4 grid gap-2" aria-label="First leads">
+                    {f5.leads.map(l => <li key={l.id} className="rounded-[10px] border border-[var(--line)] bg-white p-3" data-testid="first-lead">
+                      <div className="flex items-start justify-between gap-2"><span className="min-w-0 font-semibold text-sm break-words">{l.company}{l.name ? <span className="font-normal text-[var(--ink-2)]"> · {l.name}</span> : null}</span>
+                        {l.provisional ? <Pill tone="peach">checking</Pill> : l.fit_pct != null ? <Pill tone="mint">fit {l.fit_pct}%</Pill> : null}</div>
+                      <p className="text-sm text-[var(--ink-2)] mt-1 line-clamp-2 break-words">{l.signal}</p>
+                      <p className="text-xs mt-1.5 flex flex-wrap gap-x-2"><a className="underline" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">{host(l.source_url)}</a>{l.event_date ? <span>{day(l.event_date)}</span> : l.published_at ? <span>published {day(l.published_at)}</span> : null}</p>
+                    </li>)}
+                  </ul>}
+                  {f5 && !f5Live && f5Ready === 0 && <p className="text-sm text-[var(--ink-2)] mt-4" data-testid="f5-message">{f5.message}</p>}
+                  {f5 && !f5Live && f5.can_continue && f5.next && <a className="btn-ghost btn-sm mt-4 inline-flex" href={`/app/leads?q=${encodeURIComponent(first!.query)}`} data-testid="search-wider">{f5.next.label}</a>}
+                  {!f5 && active && <div className="mt-4" data-testid="first-progress"><Stepper steps={[
                     { label: 'Read your brain and play', state: first!.status === 'pending' ? 'live' : 'done', note: first!.status === 'pending' ? 'Queued' : undefined },
                     { label: 'Search and read sources', state: first!.status === 'running' ? 'live' : first!.status === 'pending' ? 'todo' : 'done', note: first!.status === 'running' ? 'Searching...' : undefined },
                     { label: 'Check fit and find contacts', state: first!.status === 'enriching' ? 'live' : 'todo' },
                   ]} /></div>}
-                  {first?.status === 'done' && !first.leads && <p className="text-sm text-[var(--ink-2)] mt-4">Loading your leads...</p>}
-                  {first?.status === 'done' && first.leads && <>
+                  {!f5 && first?.status === 'done' && !first.leads && <p className="text-sm text-[var(--ink-2)] mt-4">Loading your leads...</p>}
+                  {!f5 && first?.status === 'done' && first.leads && <>
                     {readyLeads.length > 0 ? <ul className="mt-4 divide-y divide-[var(--line)]" aria-label="First leads">
                       {readyLeads.slice(0, FIRST).map(l => { const p = person(l); return <li key={l.id} className="flex items-center gap-3 py-3" data-testid="first-lead">
                         <Avatar name={p.name} size={36} />
@@ -284,7 +339,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                     </ul> : <p className="text-sm text-[var(--ink-2)] mt-4">No lead passed every check in this first play yet.</p>}
                     {readyLeads.length < FIRST && <p className="text-xs text-[var(--ink-2)] mt-3">{readyLeads.length} ready{split && split.held.length ? `, ${split.held.length} held for your review` : ''}. <a className="underline" href={`/app/leads?job_id=${first.id}`}>See them in Leads</a></p>}
                   </>}
-                  {first?.status === 'failed' && <p className="text-sm mt-4">This play could not finish. <button type="button" className="underline" onClick={() => setFirst(null)}>Try another</button></p>}
+                  {first?.status === 'failed' && !f5 && <p className="text-sm mt-4">This play could not finish. <button type="button" className="underline" onClick={() => setFirst(null)}>Try another</button></p>}
                 </section>
               </div>
             </div>}
