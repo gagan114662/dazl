@@ -129,3 +129,48 @@ test('through the real verifier: another party’s address on the page (supplier
   const own = await verifyLeads([q2], pg2('Dent Blanche is in London, Ontario. Our UK office: 1 Old Street, London EC1V 9HX.'), new Date(), undefined, null, undefined, undefined, LON)
   assert.equal(own.leads.length, 1)
 })
+
+// Any other city, any country (#440: a Paris startup verified for a London request). A page that names only a different place is a
+// mismatch; "unconfirmed" is kept for a page that names no place at all; a page naming the requested city is unchanged.
+test('another city in any country is a mismatch, not unconfirmed', () => {
+  assert.equal(placeAgreement('Lumen Ledger, a Paris B2B SaaS startup, raised a seed round. The team works from its office in Paris, France.', LON, 'Lumen Ledger'), 'mismatch')
+  assert.equal(placeAgreement('Acme, a Berlin startup, raised a seed round.', LON, 'Acme'), 'mismatch')
+  assert.equal(placeAgreement('Acme opened its office in Toronto, ON this month.', LON, 'Acme'), 'mismatch')
+  assert.equal(placeAgreement('Acme opened in Austin, Texas.', LON, 'Acme'), 'mismatch', 'a bare first-name city is not listed, but "City, State" is still a place')
+  assert.equal(placeAgreement('Acme, a startup in Lyon, raised a seed round.', ['Paris, France'], 'Acme'), 'mismatch', 'another city of the same country, for a city request')
+  assert.equal(placeAgreement('Acme opened its first office in Manchester this month.', LON, 'Acme'), 'mismatch', 'a bare UK city with no London at all')
+})
+test('control: the requested city named in another country (or state) is a mismatch', () => {
+  assert.equal(placeAgreement('Acme, a startup in Paris, Texas, raised a seed round.', ['Paris, France'], 'Acme'), 'mismatch')
+  assert.equal(placeAgreement('Acme moved to Springfield, Illinois.', ['Springfield, Missouri'], 'Acme'), 'mismatch')
+  assert.equal(placeAgreement('Acme opened in London, Ontario.', LON, 'Acme'), 'mismatch')
+  // ...but not when the page also places it in the requested country
+  assert.equal(placeAgreement('Acme, a Paris, France startup, is not to be confused with Paris, Texas.', ['Paris, France'], 'Acme'), 'agrees')
+})
+test('control: a page that names no place stays unconfirmed', () => {
+  for (const t of ['Acme raised a seed round this month.', 'Acme is a United Kingdom company', 'Nice work from the Acme team: reading the room, they hired three people.', 'Acme is a modern dental practice'])
+    assert.equal(placeAgreement(t, LON, 'Acme'), 'unconfirmed', t)
+  assert.equal(placeAgreement('Acme raised a seed round this month.', ['Paris, France'], 'Acme'), 'unconfirmed')
+})
+test('control: a page naming the requested city still agrees, even beside another city', () => {
+  assert.equal(placeAgreement('Acme, a London startup, raised a seed round.', LON, 'Acme'), 'agrees')
+  assert.equal(placeAgreement('Acme, a London startup, plans to open in Paris, France next year.', LON, 'Acme'), 'agrees', 'an incidental foreign city does not override the named London')
+  assert.equal(placeAgreement('Acme, a Paris startup, raised a seed round.', ['Paris, France'], 'Acme'), 'agrees')
+  assert.equal(placeAgreement('Acme opened at 100 King Street West, Toronto, ON this month', ['Toronto, Canada'], 'Acme'), 'agrees')
+})
+test('a country or state request only rejects places outside it; US namesakes keep bare foreign names ambiguous', () => {
+  assert.notEqual(placeAgreement('Acme, a Berlin startup, raised a seed round.', ['Germany'], 'Acme'), 'mismatch', 'Berlin is in Germany')
+  assert.equal(placeAgreement('Acme, a Paris startup, raised a seed round.', ['Germany'], 'Acme'), 'mismatch')
+  assert.equal(placeAgreement('Dent Blanche, Rome, NY 13440', ['New York']), 'unconfirmed', 'a town in the requested state')
+  assert.equal(placeAgreement('Acme opened in Rome this spring.', ['New York'], 'Acme'), 'unconfirmed', 'Rome, NY exists: a bare foreign name is not clearly elsewhere for a US request')
+  assert.equal(placeAgreement('Acme opened in Rome, Italy this spring.', ['New York'], 'Acme'), 'mismatch')
+})
+test('verifier: a Paris page for a London request is held as location_mismatch, a London page still verifies', async () => {
+  const ago = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10)
+  const page = (text: string) => async () => ({ text: `${ago(5)}. ${text} ${'More about the company and its customers. '.repeat(15)}`, title: 'Seed round', retrievedAt: Math.floor(Date.now() / 1000) })
+  const cand = (company: string, excerpt: string) => ({ name: '', company, contact: null, signal: 'raised a seed round', source_url: 'https://news.example/a', score: 70, excerpt, event_date: ago(5) })
+  const paris = await verifyLeads([cand('Lumen Ledger', 'Lumen Ledger, a Paris B2B SaaS startup, raised a seed round this month')], page('Lumen Ledger, a Paris B2B SaaS startup, raised a seed round this month.'), new Date(), undefined, null, undefined, undefined, LON)
+  assert.equal(paris.leads.length, 0); assert.equal(paris.review[0].review_reason, 'location_mismatch')
+  const london = await verifyLeads([cand('Querix', 'Querix, a London B2B SaaS startup, raised a seed round this month')], page('Querix, a London B2B SaaS startup, raised a seed round this month.'), new Date(), undefined, null, undefined, undefined, LON)
+  assert.equal(london.leads.length, 1)
+})
