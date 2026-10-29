@@ -83,7 +83,7 @@ class Timeout extends Error { constructor() { super('readiness check timed out')
 // cannot be cut short on this thread: the probe waits for it, so a SQLite call blocked on a lock holds the probe for up
 // to better-sqlite3's busy timeout (5 s by default). Such a check is still reported as failed ('timeout') when it
 // returns over budget, so a slow store never reads as ready.
-async function timed(name: string, f: () => Promise<'ok' | 'behind'>, timeoutMs: number, clock: () => number): Promise<CheckResult> {
+export async function timed(name: string, f: () => Promise<'ok' | 'behind'>, timeoutMs: number, clock: () => number): Promise<CheckResult> {
   const t0 = clock()
   let timer: ReturnType<typeof setTimeout> | undefined
   const deadline = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Timeout()), timeoutMs) })
@@ -124,4 +124,20 @@ export async function readiness(d: ReadinessDeps): Promise<Readiness> {
     store: { engine, migrations: { shipped, applied }, raw_sqlite_modules: raw },
     checks: { store: { ...store, engine }, schema, queue, sqlite, split, env },
   }
+}
+
+// Database reachability for /api/health (lib/ops/health-route.ts): the SQLite file the app opens, and Postgres when
+// DATABASE_URL is set ('not_configured' otherwise, which is not a failure). One cheap query each, on the same 2 s budget
+// as readiness. ok only when every configured store answers. Lighter than readiness: no schema, queue or env checks.
+export interface DbHealth {
+  ok: boolean
+  checks: { sqlite: CheckResult; postgres: CheckResult | { ok: true; skipped: 'not_configured' } }
+}
+export async function dbHealth(d: { sqlite: () => { prepare(sql: string): { get(): unknown } }; postgres: (() => Promise<Db>) | null; timeoutMs?: number; clock?: () => number }): Promise<DbHealth> {
+  const timeoutMs = d.timeoutMs ?? 2000, clock = d.clock ?? Date.now
+  const sqlite = await timed('health:sqlite', async () => { d.sqlite().prepare('SELECT 1').get(); return 'ok' }, timeoutMs, clock)
+  const pg = d.postgres
+  const postgres = pg ? await timed('health:postgres', async () => { await (await pg()).get('SELECT 1 AS x'); return 'ok' }, timeoutMs, clock)
+    : { ok: true as const, skipped: 'not_configured' as const }
+  return { ok: sqlite.ok && postgres.ok, checks: { sqlite, postgres } }
 }

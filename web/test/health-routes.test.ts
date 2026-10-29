@@ -8,10 +8,10 @@ import { pgSkip } from './helpers/pg-test.ts'
 
 const TITLES: Record<string, string> = {
   'sqlite': 'SQLite store answers: 200 ready',
-  'pg-down': 'Postgres unreachable: 503 not ready, liveness (/api/health, /api/health/live) still 200',
+  'pg-down': 'Postgres unreachable: /api/health and readiness 503, liveness (/api/health/live) still 200',
   'pg': 'Postgres reachable with every shipped migration: store and schema ready (503 only while raw-SQLite modules remain)',
   'pg-behind': 'Postgres missing a shipped migration: 503 not ready (schema behind)',
-  'env-missing': 'a required environment variable missing: 503 not ready by count only, liveness still 200',
+  'env-missing': 'a required environment variable missing: 503 not ready by count only; /api/health (databases) and liveness 200',
 }
 
 for (const mode of ['sqlite', 'pg-down', 'pg', 'pg-behind', 'env-missing']) {

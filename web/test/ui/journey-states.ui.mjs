@@ -90,7 +90,7 @@ try {
     for (const [w, h, tag] of [[1400, 1000, 'desktop'], [390, 844, 'mobile']]) {
       const s = structuredClone(s0)
       const { ctx, page, writes } = await open(s, w, h)
-      await page.locator('main h1').waitFor()
+      await page.locator('main h1').first().waitFor() // a new account's full-screen onboarding adds its own h1
       if (name === 'new') {
         // New account: the website-first steps, no checklist, no journey yet.
         await page.getByRole('heading', { name: "What's your website?" }).waitFor()
