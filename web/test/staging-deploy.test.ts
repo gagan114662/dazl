@@ -310,3 +310,30 @@ test('low disk after or near the end of a build: never put live; the reserve abo
   assert.deepEqual(live(), [old, old]); assert.deepEqual(readdirSync(path.join(root, 'releases')), [old])
   assert.ok(lastAlert().free_bytes >= FLOOR, 'stopped while still above the protected floor')
 })
+
+// Sign in with Google on staging: a dedicated, identity-only client is allowed; the Gmail client and production's
+// client (or secret) are refused, and so is a sign-in client when production's env file is not there to compare with.
+test('staging sign-in client: a dedicated one passes; production\'s, the Gmail client, half a pair or an unverifiable one is refused', () => {
+  const SID = 'staging-signin-123.apps.googleusercontent.com', SSEC = 'GOCSPX-staging-only-secret'
+  const withSignin = good.replace('GOOGLE_SIGNIN_CLIENT_ID=', `GOOGLE_SIGNIN_CLIENT_ID=${SID}`).replace('GOOGLE_SIGNIN_CLIENT_SECRET=', `GOOGLE_SIGNIN_CLIENT_SECRET=${SSEC}`)
+  const prodWith = (extra: string) => { const f = path.join(dir, `prod${Math.random().toString(36).slice(2)}.env`); writeFileSync(f, `DB_PATH=${prodDb}\n${extra}`); return { PROD_ENV_FILE: f } }
+  const prodGoogle = prodWith('GOOGLE_CLIENT_ID=prod-gmail-9.apps.googleusercontent.com\nGOOGLE_CLIENT_SECRET=GOCSPX-production-secret\n')
+  assert.deepEqual(check(withSignin, prodGoogle), { ok: true, out: 'env ok\n' })
+  assert.deepEqual(check(good, prodGoogle), { ok: true, out: 'env ok\n' }, 'no sign-in client: unchanged')
+  const refused: [string, Record<string, string>, RegExp][] = [
+    [withSignin, { PROD_DB_PATH: prodDb }, /needs PROD_ENV_FILE/],                                     // nothing to compare with
+    [withSignin, prodWith(`GOOGLE_CLIENT_ID=${SID}\n`), /is production's Google client/],               // production's Gmail client id
+    [withSignin, prodWith(`GOOGLE_SIGNIN_CLIENT_ID=${SID}\n`), /is production's Google client/],        // production's sign-in client id
+    [withSignin, prodWith(`GOOGLE_CLIENT_SECRET=${SSEC}\n`), /secret is production's/],
+    [withSignin, prodWith(`GOOGLE_SIGNIN_CLIENT_SECRET="${SSEC}"\n`), /secret is production's/],
+    [good.replace('GOOGLE_SIGNIN_CLIENT_ID=', `GOOGLE_SIGNIN_CLIENT_ID=${SID}`), prodGoogle, /go together/],
+    [withSignin.replace(SID, 'not-a-client-id'), prodGoogle, /not a Google OAuth client id/],
+    [withSignin + 'GOOGLE_CLIENT_ID=staging-gmail.apps.googleusercontent.com\n', prodGoogle, /no Google credentials/], // the Gmail client, id alone
+    [withSignin + 'GOOGLE_CLIENT_SECRET=x\n', prodGoogle, /no Google credentials/],
+  ]
+  for (const [body, prod, why] of refused) {
+    const r = check(body, prod)
+    assert.equal(r.ok, false, String(why)); assert.match(r.out, why)
+    for (const v of [SSEC, 'GOCSPX-production-secret', SID]) assert.ok(!r.out.includes(v), 'values are never printed')
+  }
+})
