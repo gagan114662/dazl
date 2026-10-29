@@ -4,7 +4,7 @@ import { getDb } from '@/lib/db/client'
 import { getSecret, rotateSecret, listBookings } from '@/lib/calcom'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
-import { denied } from '@/lib/workspace-access'
+import { denied, stale } from '@/lib/workspace-access'
 
 // Manage the tenant's Cal.com webhook: generate/rotate the signing secret and list recent bookings
 // (matched ones show their lead, unmatched stay visible so the user can reconcile by hand).
@@ -25,6 +25,7 @@ export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const no = denied(user, 'configure'); if (no) return no
+  const old = stale(user); if (old) return old
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   if (!(await rateLimit(`calcom-cfg:${user.tenantId}`, 10, 60_000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   const body = await req.json().catch(() => null)

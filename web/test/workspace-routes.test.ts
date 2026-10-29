@@ -34,5 +34,5 @@ test("an account lists and revokes only its own sessions; revoked sessions fail 
     '--loader', './test/helpers/workspace-session-loader.mjs', '--test', './test/helpers/session-routes-runtime.mts'], { cwd: web, env, encoding: 'utf8', timeout: 120000 })
   assert.equal(r.error, undefined)
   assert.equal(r.status, 0, r.stdout + r.stderr)
-  assert.match(r.stdout, /SESSION ROUTES ok/)
+  assert.match(r.stdout, /SESSION ROUTES ok[\s\S]*REAUTH ok/)
 })

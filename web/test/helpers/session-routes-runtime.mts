@@ -9,6 +9,7 @@ import { NextRequest } from 'next/server'
 import { withJar } from './pg-session-headers.ts'
 import { setScanDb } from './tenant-route-db.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
+import { scryptSync } from 'node:crypto'
 import { createPasswordUser, createSession, getSessionUser, hashToken } from '../../lib/auth-db.ts'
 
 globalThis.fetch = (async (u: unknown) => { throw new Error(`Unexpected network call ${String(u)}`) }) as typeof fetch
@@ -18,6 +19,7 @@ migrateAllSqlite(raw)
 setScanDb(raw)
 const sessions = await import('../../app/api/auth/sessions/route.ts')
 const revokeAll = await import('../../app/api/auth/sessions/revoke-all/route.ts')
+const reauth = await import('../../app/api/auth/reauth/route.ts')
 
 const req = (path: string, method: string, body?: unknown) => new NextRequest(`http://localhost${path}`, {
   method, headers: { 'content-type': 'application/json', host: 'localhost', origin: 'http://localhost' }, body: body === undefined ? undefined : JSON.stringify(body) })
@@ -69,4 +71,24 @@ test("an account lists and revokes only its own sessions; revoked sessions fail 
   assert.equal(await getSessionUser(a1), null)
   assert.ok(await getSessionUser(b1), "B's session is untouched")
   console.log('SESSION ROUTES ok')
+})
+
+test('re-authentication: the right password makes only this session fresh; a wrong one changes nothing', async () => {
+  const salt = 'ab'.repeat(16)
+  await createPasswordUser({ ...user('P'), password_hash: scryptSync('correct horse battery', salt, 64).toString('hex'), salt })
+  const p1 = await createSession('P'), p2 = await createSession('P')
+  const old = Math.floor(Date.now() / 1000) - 2 * 60 * 60
+  raw.prepare("UPDATE sessions SET authed_at = ? WHERE user_id = 'P'").run(old)
+  const authed = (t: string) => (raw.prepare('SELECT authed_at AS a FROM sessions WHERE id = ?').get(hashToken(t)) as { a: number }).a
+  assert.equal((await call(p1, () => reauth.GET())).body.fresh, false)
+  // 'POST /api/auth/reauth'
+  const wrong = await call(p1, () => reauth.POST(req('/api/auth/reauth', 'POST', { password: 'wrong' })))
+  assert.equal(wrong.status, 401)
+  assert.equal(authed(p1), old)
+  const ok = await call(p1, () => reauth.POST(req('/api/auth/reauth', 'POST', { password: 'correct horse battery' })))
+  assert.equal(ok.status, 200)
+  assert.ok(authed(p1) > old)
+  assert.equal(authed(p2), old, "the account's other session is not made fresh")
+  assert.deepEqual({ fresh: (await call(p1, () => reauth.GET())).body.fresh, method: (await call(p1, () => reauth.GET())).body.method }, { fresh: true, method: 'password' })
+  console.log('REAUTH ok')
 })

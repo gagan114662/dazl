@@ -12,6 +12,7 @@ import MemoryPanel from './memory-panel'
 import UsagePanel from './usage-panel'
 import TeamPanel from './team-panel'
 import SessionsPanel from './sessions-panel'
+import ReauthGate from './reauth-gate'
 
 const SECTIONS = [['plan', 'Plan'], ['team', 'Team'], ['devices', 'Devices'], ['memory', 'Memory'], ['model-key', 'Model key'], ['connectors', 'Connectors'], ['enrichment', 'Enrichment'], ['gmail', 'Gmail'], ['autopilot', 'Autopilot'], ['replies', 'Replies']]
 
@@ -23,6 +24,7 @@ export default function Settings() {
       <nav aria-label="Settings sections" className="flex flex-wrap gap-x-5 gap-y-1 mb-6 text-xs font-mono uppercase tracking-wider">
         {SECTIONS.map(([id, label]) => <a key={id} href={`#${id}`} className="underline underline-offset-4 text-[#111]">{label}</a>)}
       </nav>
+      <ReauthGate />
       <div id="plan" className="scroll-mt-6"><PlanPanel /></div>
       <div id="team" className="scroll-mt-6"><TeamPanel /></div>
       <div id="devices" className="scroll-mt-6"><SessionsPanel /></div>

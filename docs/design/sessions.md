@@ -1,6 +1,6 @@
 # Sessions: inventory, revocation, cleanup, fresh authentication (#358)
 
-Status: increment 1 (inventory, revoke one/all, reaper) built; increment 2 (fresh authentication) next.
+Status: increment 1 (inventory, revoke one/all, reaper) and increment 2 (fresh authentication) built.
 
 ## Model
 
@@ -38,8 +38,25 @@ over several ticks.
 - `revokeAllSessionsTx(t, userId, { reason: 'recovery' | 'offboarded' })` is the step that account recovery (#357)
   and account disabling take, inside their own transaction.
 
-## Next: fresh authentication (increment 2)
+## Fresh authentication (increment 2)
 
-Changing secrets (model key, connectors, CRM, Gmail), billing, and members will require a sign-in within the last
-hour on this session (`sessions.authed_at`). Password accounts re-enter their password; Google accounts go through
-Google again. The route answers `403 { error: 'reauth_required' }` and the UI asks for it.
+`sessions.authed_at` records when this session last proved who it is (sign-in, or re-authentication). Existing
+sessions count from when they were created. The handlers that change secrets, billing or members call
+`stale(user)` (`lib/workspace-access.ts`). That answers `403 { error: 'reauth_required' }` once an hour
+(`FRESH_AUTH_S`) has passed:
+
+- model key (PUT/DELETE), enrichment keys, advanced/social credentials (POST/DELETE), Cal.com, CRM save/disconnect;
+- Gmail connect (a browser navigation, so it redirects to `/app/settings?reauth=1` instead) and disconnect;
+- billing checkout and portal;
+- member role changes, removal, invitations and their revocation.
+
+The manifest marks these handlers `fresh: true`. A static test checks that exactly those handlers call `stale(user)`,
+and the role sweep runs every one as an owner whose sign-in is two hours old: all are refused and nothing changes.
+
+Re-authenticating:
+- Password accounts use `POST /api/auth/reauth { password }`. Only this session becomes fresh; a wrong password
+  changes nothing. It is rate limited per account and per IP.
+- Google accounts use `/api/auth/google?reauth=1`, which is a full Google sign-in. The callback revokes this
+  browser's previous session for the same account (never another account's) and lands back on Settings.
+  Known limit: if the browser is still signed in to Google, Google may complete this without asking for a password.
+- Settings shows a "Confirm it is you" card whenever a request on the page answers `reauth_required`.

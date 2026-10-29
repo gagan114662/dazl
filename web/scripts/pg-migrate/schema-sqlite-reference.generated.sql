@@ -595,7 +595,7 @@ CREATE TABLE sessions (
       user_id TEXT NOT NULL,
       created_at INTEGER DEFAULT (unixepoch()),
       expires_at INTEGER NOT NULL
-    , active_tenant_id TEXT, public_id TEXT, last_seen_at INTEGER, device TEXT, revoked_at INTEGER, revoked_by TEXT, revoke_reason TEXT);
+    , active_tenant_id TEXT, public_id TEXT, last_seen_at INTEGER, device TEXT, revoked_at INTEGER, revoked_by TEXT, revoke_reason TEXT, authed_at INTEGER);
 
 CREATE TABLE source_reviews (
  id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, job_id TEXT NOT NULL, lead_id TEXT NOT NULL,

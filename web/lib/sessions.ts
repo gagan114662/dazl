@@ -12,7 +12,11 @@ export const SESSION_COLUMNS = [
   'ALTER TABLE sessions ADD COLUMN revoked_at INTEGER',
   'ALTER TABLE sessions ADD COLUMN revoked_by TEXT',
   'ALTER TABLE sessions ADD COLUMN revoke_reason TEXT',
+  // when this session last proved who it is (sign-in, or re-authentication); PG: 0017_session_fresh_auth.sql
+  'ALTER TABLE sessions ADD COLUMN authed_at INTEGER',
 ]
+// A session older than this since its last sign-in must re-authenticate before changing secrets, billing or members.
+export const FRESH_AUTH_S = 60 * 60
 export const SESSION_INDEXES = `
   CREATE UNIQUE INDEX IF NOT EXISTS sessions_public_id ON sessions (public_id);
   CREATE INDEX IF NOT EXISTS sessions_user ON sessions (user_id);

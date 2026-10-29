@@ -1,6 +1,6 @@
 import { connection, NextRequest } from 'next/server'
 import { signInConfig, startAuth } from '@/lib/auth-google'
-import { redirectNoStore, setOauthCookie } from '@/lib/auth-google-response'
+import { redirectNoStore, setOauthCookie, setReturnCookie } from '@/lib/auth-google-response'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 
 export async function GET(req: NextRequest) {
@@ -13,5 +13,7 @@ export async function GET(req: NextRequest) {
   const { url, cookie } = startAuth(cfg.clientId, cfg.redirectUri)
   const res = redirectNoStore(url)
   setOauthCookie(res, cfg.base, cookie)
+  // ?reauth=1: re-authenticating from Settings (fresh sign-in for secrets, billing, members); come back there
+  if (req.nextUrl.searchParams.get('reauth') === '1') setReturnCookie(res, cfg.base)
   return res
 }

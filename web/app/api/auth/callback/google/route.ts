@@ -1,8 +1,8 @@
 import { connection, NextRequest } from 'next/server'
-import { createSession, SESSION_TTL_S } from '@/lib/auth-db'
+import { createSession, replacedSession, SESSION_TTL_S } from '@/lib/auth-db'
 import { getDb } from '@/lib/db/client'
 import { exchangeCode, parseCookie, resolveUser, sameString, signInConfig, verifyIdToken } from '@/lib/auth-google'
-import { clearOauthCookie, OAUTH_COOKIE, redirectNoStore, setSessionCookie } from '@/lib/auth-google-response'
+import { clearOauthCookie, clearReturnCookie, OAUTH_COOKIE, redirectNoStore, RETURN_COOKIE, setSessionCookie } from '@/lib/auth-google-response'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { deviceLabel } from '@/lib/sessions'
 
@@ -35,8 +35,13 @@ export async function GET(req: NextRequest) {
   const r = await resolveUser(db, id)
   if ('error' in r) return back(base, 'google_email_exists')
 
-  const res = redirectNoStore(new URL('/app', base))
+  // Signing in again on a browser already signed in to this same account (a re-authentication) replaces that session
+  // rather than leaving it behind; another account's session in the cookie is left alone.
+  await replacedSession(req.cookies.get('dazl_session')?.value, r.user_id, db)
+  const landing = req.cookies.get(RETURN_COOKIE)?.value === 'settings' ? '/app/settings' : '/app'
+  const res = redirectNoStore(new URL(landing, base))
   setSessionCookie(res, base, await createSession(r.user_id, undefined, { device: deviceLabel(req.headers.get('user-agent')) }), SESSION_TTL_S)
   clearOauthCookie(res, base)
+  clearReturnCookie(res, base)
   return res
 }

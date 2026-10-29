@@ -556,7 +556,7 @@ CREATE TABLE sessions (
       user_id TEXT NOT NULL,
       created_at BIGINT DEFAULT (floor(extract(epoch from now()))),
       expires_at BIGINT NOT NULL
-    , active_tenant_id TEXT, public_id TEXT, last_seen_at BIGINT, device TEXT, revoked_at BIGINT, revoked_by TEXT, revoke_reason TEXT);
+    , active_tenant_id TEXT, public_id TEXT, last_seen_at BIGINT, device TEXT, revoked_at BIGINT, revoked_by TEXT, revoke_reason TEXT, authed_at BIGINT);
 
 CREATE TABLE source_reviews (
  id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, job_id TEXT NOT NULL, lead_id TEXT NOT NULL,

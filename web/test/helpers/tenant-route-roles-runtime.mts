@@ -21,10 +21,11 @@ function snapshot(db: Database.Database): string {
 }
 
 const id = 'aaaaaaaaaaaaaaaaaaaaaaaa'
+// crm POST checks freshness only for saving or removing its key, so the sweep asks to save
 const call = async (r: { path: string; method: string }) => {
   const mod = await import(`../../app/api/${r.path}/route.ts`) as Record<string, (req: NextRequest, ctx: unknown) => Promise<Response>>
   const url = `http://localhost/api/${r.path.replace(/\[[a-z]+\]/g, id)}?id=${id}&job_id=${id}&lead_id=${id}`
-  const body = r.method === 'GET' || r.method === 'DELETE' ? undefined : JSON.stringify({ id, job_id: id, lead_id: id, action: 'send' })
+  const body = r.method === 'GET' || r.method === 'DELETE' ? undefined : JSON.stringify({ id, job_id: id, lead_id: id, action: r.path === 'crm' ? 'save' : 'send' })
   const req = new NextRequest(url, { method: r.method, headers: { 'content-type': 'application/json', host: 'localhost', origin: 'http://localhost' }, body })
   return mod[r.method](req, { params: Promise.resolve({ id, lead: id, batch: id }) })
 }
@@ -60,7 +61,21 @@ test('a member whose role does not allow a route is refused with 403 and changes
     if (status === 403) failures.push(`viewer GET /api/${r.path}: refused a read`)
     reads++
   }
+  // an owner whose session signed in over an hour ago is refused every secrets, billing and member change until they
+  // re-authenticate (lib/workspace-access.ts stale)
+  let stale = 0
+  setUser({ id: 'A', role: 'owner', business_name: 'Acme', authedAt: Math.floor(Date.now() / 1000) - 2 * 60 * 60 })
+  for (const r of ROUTES) {
+    if (r.auth !== 'session' || !r.fresh) continue
+    const res = await call(r)
+    const body = res.status === 403 ? await res.json() : null
+    // a browser navigation (Gmail connect) is sent back to Settings to confirm instead
+    const back = res.status >= 300 && res.status < 400 && /\/app\/settings\?reauth=1/.test(res.headers.get('location') ?? '')
+    if (body?.error !== 'reauth_required' && !back) failures.push(`stale owner ${r.method} /api/${r.path}: got ${res.status} ${JSON.stringify(body)}`)
+    if (snapshot(db) !== before) failures.push(`stale owner ${r.method} /api/${r.path}: data changed`)
+    stale++
+  }
   assert.deepEqual(failures, [])
   assert.equal(fetchCalls.length, 0, 'no network call')
-  console.log('ROLES', refused, reads)
+  console.log('ROLES', refused, reads, 'STALE', stale)
 })

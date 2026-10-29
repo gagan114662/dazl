@@ -21,7 +21,8 @@ export interface Limit { ok: boolean; retryAfterS: number; unavailable?: true }
 //            count) are enforced in the send path itself, unchanged.
 export type Degraded = 'closed' | 'local'
 export const DEGRADED: Record<string, Degraded> = {
-  // auth
+  // auth (reauth: password re-entry for a fresh session, the same brute-force surface as sign-in)
+  reauth: 'closed', 'reauth-ip': 'closed',
   'signin-ip': 'closed', 'signin-acct': 'closed', signup: 'closed', google: 'closed', 'google-cb': 'closed',
   // scans, trial admission and paid or shared providers
   scan: 'closed', icp: 'closed', icpurl: 'closed', qualify: 'closed', 'qualify-preview': 'closed', 'hiring-feed': 'closed',

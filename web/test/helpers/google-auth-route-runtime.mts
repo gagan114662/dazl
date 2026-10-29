@@ -111,3 +111,27 @@ test('staging callback: a full sign-in sets the session, clears the one-time coo
   assert.ok(!calls.some(c => c.url.includes('gmail')))
   console.log('GOOGLE_AUTH_ROUTES_OK')
 })
+
+test('re-authenticating with Google from Settings replaces this account\'s session and lands back on Settings', async () => {
+  setEnv(STAGING)
+  const s = await start.GET(req('https://staging.dazl.ai/api/auth/google?reauth=1'))
+  const set = s.headers.getSetCookie()
+  const cookie = /dazl_oauth=([^;]+)/.exec(set.join('\n'))![1]
+  assert.ok(set.some(c => /^dazl_return=settings;.*Path=\/api\/auth/.test(c)))
+  const [state, n] = cookie.split('.'); nonce = n
+  const { createSession, getSessionUser } = await import('../../lib/auth-db.ts')
+  const uid = (getAuthDb().prepare("SELECT id FROM users WHERE email = 'pat@example.test'").get() as { id: string }).id
+  const old = await createSession(uid), other = await createSession('someone-else')
+  const r = await callback.GET(req(`https://staging.dazl.ai/api/auth/callback/google?code=c2&state=${state}`, `dazl_oauth=${cookie}; dazl_return=settings; dazl_session=${old}`))
+  assert.equal(r.headers.get('location'), 'https://staging.dazl.ai/app/settings')
+  assert.ok(r.headers.getSetCookie().some(c => /^dazl_return=;.*Max-Age=0/.test(c)))
+  assert.equal(await getSessionUser(old), null, 'the replaced session no longer works')
+  // a cookie for another account is never touched by this sign-in
+  const s2 = await start.GET(req('https://staging.dazl.ai/api/auth/google'))
+  const c2 = /dazl_oauth=([^;]+)/.exec(s2.headers.get('set-cookie')!)![1]
+  const [st2, n2] = c2.split('.'); nonce = n2
+  const r2 = await callback.GET(req(`https://staging.dazl.ai/api/auth/callback/google?code=c3&state=${st2}`, `dazl_oauth=${c2}; dazl_session=${other}`))
+  assert.equal(r2.headers.get('location'), 'https://staging.dazl.ai/app', 'no return cookie: the usual landing')
+  assert.equal((getAuthDb().prepare('SELECT revoked_at FROM sessions WHERE user_id = ?').get('someone-else') as { revoked_at: number | null }).revoked_at, null)
+  console.log('GOOGLE_REAUTH_OK')
+})

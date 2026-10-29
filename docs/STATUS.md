@@ -98,8 +98,8 @@ Updated by the builder on every branch. Newest first.
 - Teams & access (#353, then #358, #357, #371): design in docs/design/workspaces.md. Increment 1 (workspace and
   membership tables, backfill, server-side resolution, role table) increment 2 (routes use tenantId, role check
   on every non-read handler) and increment 3 (invitations, members, switching, Settings > Team) in review; then
-  #358 increment 1 (session inventory, revoke one/all, bounded reaper; docs/design/sessions.md) in review; next: fresh
-  authentication for secrets, billing and member changes.
+  #358 increment 1 (session inventory, revoke one/all, bounded reaper; docs/design/sessions.md) and
+  increment 2 (fresh authentication for secrets, billing and member changes) in review; next: #357.
 
 ## Next (in order, for the scheduled builder; nothing business- or place-specific)
 

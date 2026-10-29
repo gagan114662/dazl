@@ -6,7 +6,7 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 import { rateLimit } from '@/lib/rate-limit'
-import { denied } from '@/lib/workspace-access'
+import { denied, stale } from '@/lib/workspace-access'
 
 export async function GET() {
   const user = await requireUser()
@@ -28,6 +28,7 @@ export async function POST(req: NextRequest) {
   switch (body?.action) {
     case 'save': {
       const cannot = denied(user, 'configure'); if (cannot) return cannot
+      const old = stale(user); if (old) return old
       const provider = body?.provider
       if (!['hubspot', 'pipedrive', 'webhook'].includes(provider)) return NextResponse.json({ error: 'Pick HubSpot, Pipedrive or webhook' }, { status: 400 })
       const key = typeof body?.key === 'string' ? body.key.trim() : ''
@@ -46,6 +47,7 @@ export async function POST(req: NextRequest) {
     }
     case 'disconnect': {
       const cannot = denied(user, 'configure'); if (cannot) return cannot
+      const old = stale(user); if (old) return old
       disconnectCrm(db, user.tenantId)
       return NextResponse.json({ ok: true })
     }

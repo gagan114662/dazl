@@ -48,6 +48,7 @@ export function migrateAuth(d: Database.Database): void {
   const unnamed = d.prepare('SELECT id FROM sessions WHERE public_id IS NULL').all() as { id: string }[]
   const name = d.prepare('UPDATE sessions SET public_id = ? WHERE id = ?')
   d.transaction(() => { for (const r of unnamed) name.run(newPublicId(), r.id) })()
+  d.exec('UPDATE sessions SET authed_at = coalesce(created_at, 0) WHERE authed_at IS NULL')
   d.exec(SESSION_INDEXES)
   d.exec(WORKSPACE_DDL)
   d.exec(INVITATIONS_DDL)
@@ -67,8 +68,8 @@ const nowS = () => Math.floor(Date.now() / 1000)
 // coarse label from deviceLabel() (lib/sessions.ts), shown in the session list.
 export async function createSession(userId: string, d?: Db, meta: { device?: string } = {}): Promise<string> {
   const token = randomBytes(32).toString('hex'), now = nowS()
-  await (d ?? await getDb()).run('INSERT INTO sessions (id, user_id, expires_at, public_id, last_seen_at, device) VALUES (?, ?, ?, ?, ?, ?)',
-    [hashToken(token), userId, now + SESSION_TTL_S, newPublicId(), now, (meta.device ?? '').slice(0, 60) || null])
+  await (d ?? await getDb()).run('INSERT INTO sessions (id, user_id, expires_at, public_id, last_seen_at, device, authed_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [hashToken(token), userId, now + SESSION_TTL_S, newPublicId(), now, (meta.device ?? '').slice(0, 60) || null, now])
   return token
 }
 
@@ -159,15 +160,16 @@ export async function writeSellerProfile(db: Db, userId: string, sells: string, 
 // tenant-scoped read and write must use; role is their role there (check it with can(), lib/workspaces.ts). There is
 // deliberately no plain `id`: a caller names which one it means. email is the actor's. business_name is the
 // workspace's (its profile lives on the founder's users row, whose id is the workspace id). No membership in the
-// session's workspace: not signed in (null).
-export type SessionUser = { email: string; business_name: string; actorId: string; tenantId: string; role: Role }
+// session's workspace: not signed in (null). authedAt: when this session last proved who it is (lib/sessions.ts
+// FRESH_AUTH_S; checked by stale() in lib/workspace-access.ts).
+export type SessionUser = { email: string; business_name: string; actorId: string; tenantId: string; role: Role; authedAt: number }
 export async function getSessionUser(token: string | undefined, d?: Db): Promise<SessionUser | null> {
   if (!token || !/^[a-f0-9]{64}$/.test(token)) return null
   const db = d ?? await getDb()
   const id = hashToken(token)
   const now = nowS()
-  const row = await db.get<{ id: string; email: string; business_name: string; active_tenant_id: string | null; last_seen_at: number | null }>(
-    `SELECT u.id, u.email, u.business_name, s.active_tenant_id, s.last_seen_at FROM sessions s JOIN users u ON u.id = s.user_id
+  const row = await db.get<{ id: string; email: string; business_name: string; active_tenant_id: string | null; last_seen_at: number | null; authed_at: number | null }>(
+    `SELECT u.id, u.email, u.business_name, s.active_tenant_id, s.last_seen_at, coalesce(s.authed_at, s.created_at, 0) AS authed_at FROM sessions s JOIN users u ON u.id = s.user_id
      WHERE s.id = ? AND s.expires_at > ? AND s.revoked_at IS NULL`,
     [id, now])
   if (!row) return null
@@ -179,11 +181,22 @@ export async function getSessionUser(token: string | undefined, d?: Db): Promise
     return null
   }
   const business_name = m.tenantId === row.id ? row.business_name : await readBusinessName(db, m.tenantId)
-  return { email: row.email, business_name, actorId: row.id, tenantId: m.tenantId, role: m.role }
+  return { email: row.email, business_name, actorId: row.id, tenantId: m.tenantId, role: m.role, authedAt: Number(row.authed_at ?? 0) }
 }
 
 // Sign-out: the session is revoked (kept with who and when until the reaper's retention ends), not deleted.
 export async function deleteSession(token: string | undefined, d?: Db): Promise<void> {
   if (!token) return
   await (d ?? await getDb()).run("UPDATE sessions SET revoked_at = ?, revoked_by = user_id, revoke_reason = 'signed_out' WHERE id = ? AND revoked_at IS NULL", [nowS(), hashToken(token)])
+}
+
+// Re-authentication on this session: it may change secrets, billing and members for another FRESH_AUTH_S.
+export async function markSessionFresh(token: string, d?: Db): Promise<void> {
+  await (d ?? await getDb()).run('UPDATE sessions SET authed_at = ? WHERE id = ? AND revoked_at IS NULL', [nowS(), hashToken(token)])
+}
+
+// The session a new sign-in replaces on this browser: revoked when it is this same account's, untouched otherwise.
+export async function replacedSession(token: string | undefined, userId: string, d?: Db): Promise<void> {
+  if (!token || !/^[a-f0-9]{64}$/.test(token)) return
+  await (d ?? await getDb()).run("UPDATE sessions SET revoked_at = ?, revoked_by = user_id, revoke_reason = 'signed_out' WHERE id = ? AND user_id = ? AND revoked_at IS NULL", [nowS(), hashToken(token), userId])
 }

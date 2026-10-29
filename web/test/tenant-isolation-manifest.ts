@@ -15,12 +15,14 @@
 //                          keeps it at zero.
 // role (session routes): the action the handler checks with denied(user, action) before anything else
 // (lib/workspaces.ts ACTIONS). 'read' needs no check: every member reads. A handler may check a stricter action in a
-// branch (crm POST: configure to save keys). test/workspace-roles.test.ts holds every handler to this.
+// branch (crm POST: configure to save keys). test/tenant-isolation-manifest.test.ts holds every handler to this.
+// fresh (session routes that change secrets, billing or members): the handler also calls stale(user), so a session
+// that last signed in more than an hour ago must re-authenticate first (docs/design/sessions.md).
 import type { Action } from '../lib/workspaces.ts'
 export type CrossTenant = { covered: string } | 'session-scope' | 'pending'
 export type RouteEntry =
   | { path: string; method: string; auth: 'public'; note: string }
-  | { path: string; method: string; auth: 'session'; crossTenant: CrossTenant; role: Action }
+  | { path: string; method: string; auth: 'session'; crossTenant: CrossTenant; role: Action; fresh?: true }
 
 export const ROUTES: RouteEntry[] = [
   { path: 'auth/callback/google', method: 'GET', auth: 'public', note: 'Google OAuth callback: one-time state + PKCE cookie, ID token verified' },
@@ -28,21 +30,23 @@ export const ROUTES: RouteEntry[] = [
   { path: 'auth/signin', method: 'POST', auth: 'public', note: 'password sign-in; rate limited' },
   { path: 'auth/signout', method: 'POST', auth: 'public', note: "deletes only the caller's own session cookie" },
   { path: 'auth/signup', method: 'POST', auth: 'public', note: 'account creation; rate limited' },
+  { path: 'auth/reauth', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
+  { path: 'auth/reauth', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/session-routes-runtime.mts' }, role: 'read' },
   { path: 'auth/sessions', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/session-routes-runtime.mts' }, role: 'read' },
   { path: 'auth/sessions', method: 'DELETE', auth: 'session', crossTenant: { covered: 'helpers/session-routes-runtime.mts' }, role: 'read' },
   { path: 'auth/sessions/revoke-all', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/session-routes-runtime.mts' }, role: 'read' },
-  { path: 'billing/checkout', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'billing' },
-  { path: 'billing/portal', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'billing' },
+  { path: 'billing/checkout', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'billing', fresh: true },
+  { path: 'billing/portal', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'billing', fresh: true },
   { path: 'billing/webhook', method: 'POST', auth: 'public', note: 'Stripe signature over the raw body' },
   { path: 'campaigns', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'campaigns/[id]', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
   { path: 'campaigns/[id]', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/play-offer-route-runtime.mts' }, role: 'operate' },
   { path: 'client-errors', method: 'POST', auth: 'public', note: 'browser error reports: same origin, 8 KB, rate limited per IP; writes only a scrubbed error record; tenant from the session cookie, never the body' },
   { path: 'crm', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'read' },
-  { path: 'crm', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'operate' },
+  { path: 'crm', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'operate', fresh: true },
   { path: 'gmail/callback', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
-  { path: 'gmail/connect', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
-  { path: 'gmail/disconnect', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
+  { path: 'gmail/connect', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
+  { path: 'gmail/disconnect', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
   { path: 'health', method: 'GET', auth: 'public', note: 'no tenant data' },
   { path: 'health/live', method: 'GET', auth: 'public', note: 'liveness: no tenant data, touches no store' },
   { path: 'health/ready', method: 'GET', auth: 'public', note: 'readiness: check names and timings only, no tenant data' },
@@ -123,18 +127,18 @@ export const ROUTES: RouteEntry[] = [
   { path: 'seo/newsjack', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'read' },
   { path: 'seo/newsjack', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'operate' },
   { path: 'settings/advanced', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
-  { path: 'settings/advanced', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
-  { path: 'settings/advanced', method: 'DELETE', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
+  { path: 'settings/advanced', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
+  { path: 'settings/advanced', method: 'DELETE', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
   { path: 'settings/calcom', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
-  { path: 'settings/calcom', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
+  { path: 'settings/calcom', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
   { path: 'settings/competitors', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'settings/competitors', method: 'PUT', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
   { path: 'settings/connectors', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'settings/enrichment', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
-  { path: 'settings/enrichment', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
+  { path: 'settings/enrichment', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
   { path: 'settings/llm-key', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
-  { path: 'settings/llm-key', method: 'PUT', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
-  { path: 'settings/llm-key', method: 'DELETE', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
+  { path: 'settings/llm-key', method: 'PUT', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
+  { path: 'settings/llm-key', method: 'DELETE', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
   { path: 'settings/memory', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
   { path: 'settings/memory', method: 'PUT', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
   { path: 'settings/profile', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
@@ -150,11 +154,11 @@ export const ROUTES: RouteEntry[] = [
   { path: 'workspace', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'workspace/invitations/accept', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/workspace-members-runtime.mts' }, role: 'read' },
   { path: 'workspace/invitations', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'members' },
-  { path: 'workspace/invitations', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'members' },
-  { path: 'workspace/invitations', method: 'DELETE', auth: 'session', crossTenant: { covered: 'helpers/workspace-members-runtime.mts' }, role: 'members' },
+  { path: 'workspace/invitations', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'members', fresh: true },
+  { path: 'workspace/invitations', method: 'DELETE', auth: 'session', crossTenant: { covered: 'helpers/workspace-members-runtime.mts' }, role: 'members', fresh: true },
   { path: 'workspace/leave', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'workspace/members', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
-  { path: 'workspace/members', method: 'PATCH', auth: 'session', crossTenant: { covered: 'helpers/workspace-members-runtime.mts' }, role: 'members' },
-  { path: 'workspace/members', method: 'DELETE', auth: 'session', crossTenant: { covered: 'helpers/workspace-members-runtime.mts' }, role: 'members' },
+  { path: 'workspace/members', method: 'PATCH', auth: 'session', crossTenant: { covered: 'helpers/workspace-members-runtime.mts' }, role: 'members', fresh: true },
+  { path: 'workspace/members', method: 'DELETE', auth: 'session', crossTenant: { covered: 'helpers/workspace-members-runtime.mts' }, role: 'members', fresh: true },
   { path: 'workspace/switch', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/workspace-members-runtime.mts' }, role: 'read' },
 ]
