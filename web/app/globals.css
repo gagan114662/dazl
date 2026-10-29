@@ -194,3 +194,4 @@ body { font-size: 16px; line-height: 1.5; }
 .rc-dot { width: 1.75rem; height: 1.75rem; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-size: .78rem; font-weight: 700; flex-shrink: 0; background: #f3eeea; color: var(--ink-3); }
 .rc-dot-done { background: var(--mint-bg); color: #17694a; }
 .rc-dot-next { background: var(--ink); color: #fff; }
+.lp-quote { font-size: .92rem; line-height: 1.45; color: var(--ink); border-left: 2px solid var(--mint); padding-left: .65rem; }
