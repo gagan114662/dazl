@@ -6,6 +6,9 @@ export interface ResearchResult {
   text: string
   // URLs the vendor actually returned from search or cited. Leads may only cite these.
   citedUrls: string[]
+  // What the call used, as the vendor reported it (absent when it did not say): tokens billed, including search
+  // results read back as input, and how many web searches it ran. A trial scan's spend is settled to this.
+  usage?: { model?: string; input_tokens?: number; output_tokens?: number; web_search_requests?: number }
 }
 
 export class ProviderError extends Error {
@@ -88,7 +91,10 @@ export const anthropicProvider: Provider = {
         for (const r of arr(block.content)) if (typeof r.url === 'string') urls.add(r.url)
       }
     }
-    return { text, citedUrls: [...urls] }
+    const u = json.usage as { input_tokens?: unknown; output_tokens?: unknown; server_tool_use?: { web_search_requests?: unknown } } | undefined
+    const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
+    const usage = u ? { model: typeof json.model === 'string' ? json.model : undefined, input_tokens: num(u.input_tokens), output_tokens: num(u.output_tokens), web_search_requests: num(u.server_tool_use?.web_search_requests) } : undefined
+    return { text, citedUrls: [...urls], ...(usage ? { usage } : {}) }
   },
   configuredModel() {
     return process.env.DAZL_ANTHROPIC_MODEL || 'claude-sonnet-4-5'

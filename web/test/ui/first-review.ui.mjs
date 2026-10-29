@@ -137,7 +137,8 @@ async function run({ width, height, tag }) {
   assert.equal(await page.getByTestId('review-error').textContent(), 'Could not create the draft right now. Try again.')
   assert.equal(await page.getByTestId('review-count').textContent(), '4 of 4', 'a refused approval keeps the lead on screen')
   await card.getByRole('button', { name: 'Approve and draft' }).click()
-  await page.getByTestId('review-drafts').waitFor()
+  // The drafts link is already there after the first approval: wait for the queue to finish instead.
+  await page.waitForFunction(() => document.querySelector('[data-testid=review-step] h1')?.textContent === '2 drafts ready for you', null, { timeout: 10000 })
   assert.deepEqual(st.drafts, [ROWS[0].id, ROWS[3].id], 'one draft per approval, through the existing action')
   // 3. Send setup.
   assert.equal(await page.getByTestId('review-step').locator('h1').textContent(), '2 drafts ready for you')

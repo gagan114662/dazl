@@ -42,7 +42,7 @@ export function meterProvider(p: Provider, record: (c: ModelCall) => void): Prov
   const out: Provider = {
     research: async (k, prompt, f) => {
       const base = { stage: 'research', method: 'research' as const, model_requested: model(), model_served: null, input_tokens: null, output_tokens: null, max_tokens: null, prompt_chars: prompt.length }
-      try { const r = await p.research(k, prompt, f); note({ ...base, outcome: 'ok' }); return r } catch (e) { note({ ...base, outcome: 'error' }); throw e }
+      try { const r = await p.research(k, prompt, f); note({ ...base, model_served: r.usage?.model ?? null, input_tokens: r.usage?.input_tokens ?? null, output_tokens: r.usage?.output_tokens ?? null, outcome: 'ok' }); return r } catch (e) { note({ ...base, outcome: 'error' }); throw e }
     },
     ...(p.configuredModel ? { configuredModel: () => p.configuredModel!() } : {}),
   }

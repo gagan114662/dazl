@@ -9,7 +9,9 @@ Staging is the app on the same box as production, as a separate service. It has 
   - Connect needs no Google account.
   - A send makes no network call and gets a stub id.
   - Reply sync reads nothing.
-  - Google credentials are refused in the env file.
+  - Gmail's Google credentials (`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`) are refused in the env file.
+- **Sign in with Google** works only with a dedicated, identity-only staging OAuth client (see below); without one the
+  button reports "not available".
 - **Stripe is test mode only:** a live key is refused.
 - It has its **own database**, seeded with a demo account (`web/scripts/staging-seed.mts`):
   - a reviewed buyer profile;
@@ -18,7 +20,7 @@ Staging is the app on the same box as production, as a separate service. It has 
   - the stub Gmail connection.
 - **Error reports** are tagged `environment=staging`.
 
-Nothing in staging uses production data or keys: a fresh master key, test-mode Stripe and no Google credentials.
+Nothing in staging uses production data or keys: a fresh master key, test-mode Stripe, no Gmail credentials, and at most a dedicated staging sign-in client.
 
 ## Before installing: disk and safety checks (`ops/staging/deploy.sh`)
 - **Disk floor.** `MIN_FREE_BYTES` is 2 GiB by default, the host's floor. Every run of the 2-minute timer checks free space first:
@@ -102,6 +104,44 @@ Nothing in staging uses production data or keys: a fresh master key, test-mode S
    systemctl enable --now dazl-staging-deploy.timer
    systemctl list-timers dazl-staging-deploy.timer
    ```
+
+## Sign in with Google (runbook, Instinct)
+Staging can sign people in with Google through its **own** OAuth client, used for identity only. Gmail stays stubbed:
+the Gmail client is never configured on staging, and the app refuses sign-in on staging while it is.
+1. In Google Cloud, create a new OAuth client (Web application) for staging only. Its consent screen asks only for
+   `openid`, `email` and `profile`. Its single authorized redirect URI is
+   `https://staging.dazl.ai/api/auth/callback/google`. Do not reuse production's client.
+2. In `/etc/dazl-staging/env` set `GOOGLE_SIGNIN_CLIENT_ID` (`….apps.googleusercontent.com`) and
+   `GOOGLE_SIGNIN_CLIENT_SECRET`. Leave `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` unset.
+3. `PROD_ENV_FILE=<production's env file> bash ops/staging/deploy.sh --check-env /etc/dazl-staging/env` prints
+   `env ok`. With a sign-in client set, the check needs production's env file, and refuses an id or secret equal to any
+   Google client there. Values are never printed.
+4. `systemctl restart dazl-staging.service` (no rebuild needed: the sign-in routes read their configuration on each
+   request and are never cached). Then `curl -sI https://staging.dazl.ai/api/auth/google` shows a 307 to
+   `accounts.google.com` with this client's id, `redirect_uri=https://staging.dazl.ai/api/auth/callback/google`,
+   `scope=openid email profile` and `cache-control: no-store`.
+
+## Stripe in test mode (runbook, Instinct)
+Staging takes test-mode Stripe only: `deploy.sh --check-env` refuses any `sk_live_` or `rk_live_` key, and staging never holds a live key. Set these four values in `/etc/dazl-staging/env`, all from the Stripe dashboard with **Test mode** switched on:
+
+| Variable | Value | Where it comes from |
+|---|---|---|
+| `STRIPE_SECRET_KEY` | `sk_test_…`, or a restricted `rk_test_…` key | Developers → API keys. A restricted key needs: Checkout Sessions **write**, Customer portal **write**, Subscriptions **read**. These are the only three calls the app makes: `POST /v1/checkout/sessions`, `POST /v1/billing_portal/sessions`, `GET /v1/subscriptions/:id`. |
+| `STRIPE_PRICE_PRO` | `price_…` | Product catalog → the Pro product → its recurring price, created in test mode. |
+| `STRIPE_WEBHOOK_SECRET` | `whsec_…` | Developers → Webhooks → Add endpoint `https://staging.dazl.ai/api/stripe`, with the events `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted` and `invoice.payment_failed`. Then reveal its signing secret. |
+| `PUBLIC_BASE_URL` | `https://staging.dazl.ai` | Already set. Checkout returns to `…/app/settings?billing=success` (or `=cancelled`), and the portal returns to `…/app/settings`. |
+
+In Settings → Billing → Customer portal (test mode), save the portal configuration once, or portal sessions fail.
+
+Then check, in this order:
+1. `PROD_ENV_FILE=<production's env file> bash ops/staging/deploy.sh --check-env /etc/dazl-staging/env` prints `env ok`.
+2. `systemctl restart dazl-staging.service`. Then `curl -s localhost:3200/api/ready` shows `"env":{"ok":true,"missing":0}`; a malformed value counts as missing, by count only.
+3. In a browser on `https://staging.dazl.ai`:
+   - Sign in, open Settings → **Upgrade to Pro**, and pay with Stripe's test card `4242 4242 4242 4242` (any future date, any CVC). Stripe test mode moves no money.
+   - Back on Settings the plan reads **Pro**, and `/api/usage` shows `"plan":"pro","scan_limit":null`. In Stripe → Webhooks → the endpoint, the delivery shows **200** with `{"result":"applied"}`.
+4. Settings → **Manage billing** opens the portal; cancel there (at period end): still Pro. Then cancel the subscription immediately from the Stripe dashboard: the plan reads **Free** with `billing_status` `canceled`, and the Free monthly scan limit applies again.
+
+The same chain is pinned in CI without Stripe by `web/test/stripe-flow.test.ts`, on SQLite and Postgres. That chain is checkout → signed webhook → plan → the scan limit → cancel at period end → deleted → Free and limited again.
 
 ## Verify (the done check)
 - `https://staging.dazl.ai` loads with the yellow **Staging - test data** banner.

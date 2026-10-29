@@ -49,6 +49,14 @@ const NEW_SCAN = '/app/leads'
 // The scan page shows what the run recorded about it (search results, pages read, what extraction was given).
 const NONE_EXTRACTED = (open: string, why?: string | null): ScanOutcome => ({ kind: 'none_extracted', label: 'No candidates were extracted', detail: why || 'Nothing more was recorded about what the search returned. This does not show that no matching companies exist.', next: { text: 'See what the scan read', href: open } })
 const TRIAL_KEY: ScanOutcome = { kind: 'failed', label: 'Failed - the free-search key had trouble (not your key)', next: { text: 'Try again later', href: NEW_SCAN } }
+// A free scan that reached its spending limit (lib/billing/trial-budget.ts): it stopped early and kept what it found, in
+// the review list, since some checks may not have run.
+function trialStopped(j: ScanRecord, open: string): ScanOutcome {
+  const review = j.needs_review ?? 0
+  return review > 0
+    ? { kind: 'stopped', label: `Stopped early: this free scan reached its spending limit. It kept ${review} result${review === 1 ? '' : 's'} found before it stopped.`, detail: 'They are in your review list, because some checks may not have run on them before the scan stopped.', next: { text: `Review ${review === 1 ? 'it' : 'them'}`, href: open } }
+    : { kind: 'stopped', label: 'Stopped early: this free scan reached its spending limit before it found any companies.', detail: 'This is not an empty search: the scan stopped before it could finish looking.', next: { text: 'Try a narrower search', href: NEW_SCAN } }
+}
 
 const PARTIAL_KINDS: ScanOutcomeKind[] = ['leads', 'review_only', 'all_dropped', 'none_extracted', 'zero_match']
 export function scanOutcome(j: ScanRecord): ScanOutcome {
@@ -64,11 +72,15 @@ function baseOutcome(j: ScanRecord): ScanOutcome {
   if (j.status === 'failed') {
     switch (j.error) {
       case 'no_candidates': return sourcesFailed(j) ? { kind: 'failed', label: `Failed - ${j.failed_sources!.join(', ')} had an error`, detail: 'A source failed, so the empty result is not proof that nothing matches.', next: { text: 'Try again', href: NEW_SCAN } } : emptyResult(j, open)
-      case 'budget_stopped': return { kind: 'stopped', label: 'Stopped by its budget - not an empty search', next: { text: 'Run it again with a larger budget', href: NEW_SCAN } }
+      case 'budget_stopped': return j.funded_by === 'trial'
+        // a free scan searches the web only through calls with a fixed price, never the AI's own web search (trial-budget.ts)
+        ? { kind: 'stopped', label: 'This free scan found no companies within its spending limit', detail: 'A free scan searches the web only in ways whose cost is fixed in advance, so this does not show that no company matches.', next: { text: 'Try a broader search', href: NEW_SCAN } }
+        : { kind: 'stopped', label: 'Stopped by its budget - not an empty search', next: { text: 'Run it again with a larger budget', href: NEW_SCAN } }
       case 'scan_timeout': return { kind: 'stopped', label: 'Stopped at its time limit - nothing was saved', next: { text: 'Try a narrower search', href: NEW_SCAN } }
       case 'cancelled': return { kind: 'stopped', label: 'Cancelled', next: { text: 'Start a new scan', href: NEW_SCAN } }
       case 'key_unreadable': case 'no_api_key': return { kind: 'failed', label: 'Failed - your AI key could not be used', next: { text: 'Check your AI key in Settings', href: '/app/settings' } }
       case 'trial_key_invalid': return TRIAL_KEY
+      case 'trial_unavailable': return { kind: 'failed', label: 'Not started - free scans are not available right now', next: { text: 'Try again later', href: NEW_SCAN } }
       case 'key_rejected':
         return j.funded_by === 'trial' ? TRIAL_KEY
           : { kind: 'failed', label: 'Failed - the AI provider rejected the key this scan used', next: { text: 'Check your AI key in Settings', href: '/app/settings' } }
@@ -77,6 +89,7 @@ function baseOutcome(j: ScanRecord): ScanOutcome {
         : { kind: 'failed', label: 'Failed', next: { text: 'Try again', href: NEW_SCAN } }
     }
   }
+  if (j.status === 'done' && j.error === 'trial_budget_reached') return trialStopped(j, open)
   const enrich = enrichState(j)
   if (j.status === 'enriching' || enrich === 'running') return { kind: 'enriching', label: 'Finishing - finding contacts and checking fit', next: null }
   if (j.status !== 'done') return { kind: 'running', label: 'Still running', next: null }
