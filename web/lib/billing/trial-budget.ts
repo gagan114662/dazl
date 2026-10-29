@@ -17,10 +17,11 @@
 //     in turn (the trial_budget_lock row), so concurrent workers and instances cannot admit against the same room. A
 //     scan counts as its full reserve until ALL its paid work has ended - the scan, then its enrichment (buyer fit is
 //     a guarded model call after the scan reads 'done') - which the runner records as the reservation's settled_at at
-//     the very end of the run (settleTrialReservation). Only then does it count as what it recorded as spent. A retry
-//     after that counts as the full reserve again until it settles.
-//     For the day's ceiling, a scan admitted on an earlier day also counts if its paid work had not settled before
-//     today began, so work that runs past midnight is charged to both days, never to neither.
+//     the very end of the run (settleTrialReservation), with that run's attempt number. Only when the scan is finished
+//     AND its current attempt is the settled one does it count as what it recorded as spent: a retry (queued, or
+//     claimed again, which raises the attempt) counts as the full reserve again until that attempt settles.
+//     For the day's ceiling, a scan admitted on an earlier day also counts unless its current attempt settled before
+//     today began, so work that runs past midnight (a retry included) is charged to both days, never to neither.
 // Admission (admitTrialScan) also requires a verified Google account, and one trial per company email domain (consumer
 // mailboxes count per account). Owner-funded calls outside a scan are off: the search-profile preview of a trial
 // account returns the plain profile with no model call (lib/scan/runner.ts previewIcp), and "fill the profile from my
@@ -38,7 +39,8 @@ export function migrateTrialBudget(db: Database.Database): void {
       reserve_usd REAL NOT NULL CHECK (reserve_usd > 0),
       day         INTEGER NOT NULL,
       created_at  INTEGER NOT NULL,
-      settled_at  INTEGER
+      settled_at  INTEGER,
+      settled_attempt INTEGER
     );
     CREATE INDEX IF NOT EXISTS trial_reservations_day ON trial_reservations (day, tenant_id);
     CREATE TABLE IF NOT EXISTS trial_budget_lock (id INTEGER PRIMARY KEY CHECK (id = 1), n INTEGER NOT NULL DEFAULT 0);
@@ -82,13 +84,16 @@ export type Admission = { ok: true; reservation: string } | { ok: false; reason:
 // scan recorded as spent once it ended: scan_jobs.spend_reserved_usd, every paid step the runner counted against the
 // trial budget (the runner never records more than the reserve; if a row ever did, it counts in full). The rows: this account's reservations on any day, and every reservation that
 // counts toward today (admitted today, or admitted earlier and still running or ended today).
-const LEDGER_SQL = `SELECT r.tenant_id, r.reserve_usd, r.day, r.settled_at, j.status, j.finished_at, j.spend_reserved_usd
+// SETTLED_SQL and settled() are the same rule: the scan is finished and its current attempt's run has settled.
+const SETTLED_SQL = "(j.status IN ('done', 'failed') AND r.settled_at IS NOT NULL AND r.settled_attempt = j.attempts)"
+const LEDGER_SQL = `SELECT r.tenant_id, r.reserve_usd, r.day, r.settled_at, r.settled_attempt, j.status, j.attempts, j.spend_reserved_usd
   FROM trial_reservations r LEFT JOIN scan_jobs j ON j.id = r.job_id AND j.user_id = r.tenant_id
-  WHERE r.tenant_id = ? OR r.day = ? OR (r.day < ? AND (r.settled_at IS NULL OR r.settled_at >= ?))`
-export type LedgerRow = { tenant_id: string; reserve_usd: number; day: number; settled_at: number | null; status: string | null; finished_at: number | null; spend_reserved_usd: number | null }
-// Every paid step of the scan has ended: it is finished ('done' or 'failed', not queued for a retry) AND the run that
-// finished it has settled since (a scan reads 'done' before its enrichment, which can still pay for model calls).
-const settled = (r: LedgerRow) => (r.status === 'done' || r.status === 'failed') && r.settled_at !== null && Number(r.settled_at) >= Number(r.finished_at ?? 0)
+  WHERE r.tenant_id = ? OR r.day = ? OR (r.day < ? AND (NOT COALESCE(${SETTLED_SQL}, FALSE) OR r.settled_at >= ?))`
+export type LedgerRow = { tenant_id: string; reserve_usd: number; day: number; settled_at: number | null; settled_attempt: number | null; status: string | null; attempts: number | null; spend_reserved_usd: number | null }
+// Every paid step of the scan has ended: it is finished ('done' or 'failed', not queued for a retry) AND the attempt
+// that finished it has settled (a scan reads 'done' before its enrichment, which can still pay for model calls; an
+// earlier attempt's settle never releases a later attempt's reserve).
+const settled = (r: LedgerRow) => (r.status === 'done' || r.status === 'failed') && r.settled_at !== null && r.settled_attempt !== null && Number(r.settled_attempt) === Number(r.attempts)
 export const reservationCost = (r: LedgerRow) => settled(r) ? Math.max(0, Number(r.spend_reserved_usd ?? 0)) : Number(r.reserve_usd)
 const countsToday = (r: LedgerRow, day: number) => Number(r.day) === day || (Number(r.day) < day && (!settled(r) || Number(r.settled_at) >= day * 86400))
 export function ledger(rows: LedgerRow[], tenantId: string, day: number): { account: number; today: number } {
@@ -145,8 +150,8 @@ export async function trialRefusal(db: Db, user: { id: string; email: string }, 
 // Called by the runner as the very last step of a trial scan's run (lib/scan/runner.ts), after the scan, its enrichment
 // and every guarded paid call: the reservation may now count as what the scan recorded instead of its full reserve.
 // Best effort: if this write fails, the reservation keeps counting in full (never less than it could spend).
-export async function settleTrialReservation(db: DbLike, jobId: string, nowS = Math.floor(Date.now() / 1000)): Promise<void> {
-  try { await asDb(db).run('UPDATE trial_reservations SET settled_at = ? WHERE job_id = ?', [nowS, jobId]) } catch { /* stays at its full reserve */ }
+export async function settleTrialReservation(db: DbLike, jobId: string, attempt: number, nowS = Math.floor(Date.now() / 1000)): Promise<void> {
+  try { await asDb(db).run('UPDATE trial_reservations SET settled_at = ?, settled_attempt = ? WHERE job_id = ?', [nowS, attempt, jobId]) } catch { /* stays at its full reserve */ }
 }
 
 // The scan the reservation paid for, once it exists. Until then (or if creating it failed) the reservation counts as

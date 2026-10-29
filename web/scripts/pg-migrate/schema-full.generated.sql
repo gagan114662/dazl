@@ -617,7 +617,8 @@ CREATE TABLE trial_reservations (
       reserve_usd DOUBLE PRECISION NOT NULL CHECK (reserve_usd > 0),
       day         BIGINT NOT NULL,
       created_at  BIGINT NOT NULL,
-      settled_at  BIGINT
+      settled_at  BIGINT,
+      settled_attempt BIGINT
     );
 
 CREATE TABLE trial_scans (

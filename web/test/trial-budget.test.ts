@@ -34,7 +34,10 @@ const scan = async (db: Db, tenant: string, reservation: string, o: { status?: s
 // The scan reads 'done' (finish), then its enrichment runs (still paid: buyer fit), then the run settles the reservation
 const finish = (db: Db, jobId: string, spent: number, finishedAt = NOW) =>
   db.run("UPDATE scan_jobs SET status = 'done', spend_reserved_usd = ?, finished_at = ?, enrich_started_at = ?, enrich_finished_at = NULL WHERE id = ?", [spent, finishedAt, finishedAt, jobId])
-const settle = (db: Db, jobId: string, at = NOW) => settleTrialReservation(db, jobId, at)
+// the run of the job's CURRENT attempt settles (runner: the last step of runJob)
+const settle = async (db: Db, jobId: string, at = NOW) => settleTrialReservation(db, jobId, Number((await db.get<{ a: number }>('SELECT attempts AS a FROM scan_jobs WHERE id = ?', [jobId]))!.a), at)
+// a retry is claimed: a new attempt starts running
+const claimAgain = (db: Db, jobId: string) => db.run("UPDATE scan_jobs SET status = 'running', attempts = attempts + 1 WHERE id = ?", [jobId])
 const end = async (db: Db, jobId: string, spent: number, finishedAt = NOW) => { await finish(db, jobId, spent, finishedAt); await settle(db, jobId, finishedAt) }
 const reservation = (r: Awaited<ReturnType<typeof admitTrialScan>>) => { assert.ok(r.ok, JSON.stringify(r)); return r.reservation }
 
@@ -176,9 +179,49 @@ bothEngines('trial ceilings: enrichment that crosses midnight counts on the day 
   const jd = await scan(db, d.id, reservation(await admitTrialScan(db, d, { env: day, now: midnight + 100 })))
   await db.run("UPDATE scan_jobs SET status = 'pending', spend_reserved_usd = 0.01 WHERE id = ?", [jd]); await settle(db, jd, midnight + 110)
   assert.deepEqual(await admitTrialScan(db, e, { env: day, now: midnight + 120 }), { ok: false, reason: 'global_daily_cap' }, 'queued for a retry: in full despite the earlier settle')
-  await db.run("UPDATE scan_jobs SET status = 'running' WHERE id = ?", [jd])
+  await claimAgain(db, jd)
   await finish(db, jd, 0.02, midnight + 200)
   assert.deepEqual(await admitTrialScan(db, e, { env: day, now: midnight + 210 }), { ok: false, reason: 'global_daily_cap' }, 'finished again, enriching: in full until it settles again')
   await settle(db, jd, midnight + 300)
   assert.equal((await admitTrialScan(db, e, { env: day, now: midnight + 310 })).ok, true)
+})
+
+bothEngines('trial ceilings: a retry queued before midnight still counts in full on the next day', async ({ db }) => {
+  const day = { ...caps, DAZL_TRIAL_GLOBAL_DAILY_USD: '0.59' }
+  const a = await user(db, 'a'.repeat(32), 'a@gmail.com'), b = await user(db, 'b'.repeat(32), 'b@gmail.com')
+  const midnight = (DAY + 1) * 86400
+  // A, admitted yesterday: attempt 1 records $0.01, fails and goes back to the queue; its run settles yesterday
+  const ja = await scan(db, a.id, reservation(await admitTrialScan(db, a, { env: day, now: midnight - 600 })))
+  await db.run("UPDATE scan_jobs SET attempts = 1, status = 'pending', spend_reserved_usd = 0.01 WHERE id = ?", [ja])
+  await settle(db, ja, midnight - 300)
+  // today: A's retry can still spend its remaining reserve, so B ($0.30) does not fit $0.59
+  assert.deepEqual(await admitTrialScan(db, b, { env: day, now: midnight + 60 }), { ok: false, reason: 'global_daily_cap' })
+  await claimAgain(db, ja)
+  assert.deepEqual(await admitTrialScan(db, b, { env: day, now: midnight + 90 }), { ok: false, reason: 'global_daily_cap' }, 'claimed again: in full')
+  await finish(db, ja, 0.02, midnight + 100); await settle(db, ja, midnight + 120)
+  assert.equal((await admitTrialScan(db, b, { env: day, now: midnight + 130 })).ok, true, 'its current attempt settled today, at its spend')
+})
+
+bothEngines('trial ceilings: the settle of an earlier attempt never releases a later attempt, even in the same second', async ({ db }) => {
+  const day = { ...caps, DAZL_TRIAL_GLOBAL_DAILY_USD: '0.59' }
+  const a = await user(db, 'a'.repeat(32), 'a@gmail.com'), b = await user(db, 'b'.repeat(32), 'b@gmail.com')
+  const ja = await scan(db, a.id, reservation(await admitTrialScan(db, a, { env: day, now: NOW })))
+  await db.run("UPDATE scan_jobs SET attempts = 1 WHERE id = ?", [ja])
+  await db.run("UPDATE scan_jobs SET status = 'pending' WHERE id = ?", [ja]); await settle(db, ja, NOW + 10) // attempt 1 ends for a retry
+  await claimAgain(db, ja); await finish(db, ja, 0.01, NOW + 10) // attempt 2 reads done in that same second, still enriching
+  assert.deepEqual(await admitTrialScan(db, b, { env: day, now: NOW + 10 }), { ok: false, reason: 'global_daily_cap' }, 'attempt 1 settling does not settle attempt 2')
+  await settle(db, ja, NOW + 11)
+  assert.equal((await admitTrialScan(db, b, { env: day, now: NOW + 12 })).ok, true)
+})
+
+bothEngines('trial ceilings: a retry done before midnight but enriching after it is selected for the new day despite the old settle', async ({ db }) => {
+  const day = { ...caps, DAZL_TRIAL_GLOBAL_DAILY_USD: '0.59' }
+  const a = await user(db, 'a'.repeat(32), 'a@gmail.com'), b = await user(db, 'b'.repeat(32), 'b@gmail.com')
+  const midnight = (DAY + 1) * 86400
+  const ja = await scan(db, a.id, reservation(await admitTrialScan(db, a, { env: day, now: midnight - 900 })))
+  await db.run("UPDATE scan_jobs SET attempts = 1, status = 'pending' WHERE id = ?", [ja]); await settle(db, ja, midnight - 800) // attempt 1 settles yesterday
+  await claimAgain(db, ja); await finish(db, ja, 0.01, midnight - 60) // attempt 2 reads done yesterday, its enrichment runs past midnight
+  assert.deepEqual(await admitTrialScan(db, b, { env: day, now: midnight + 60 }), { ok: false, reason: 'global_daily_cap' })
+  await settle(db, ja, midnight + 90)
+  assert.equal((await admitTrialScan(db, b, { env: day, now: midnight + 120 })).ok, true)
 })

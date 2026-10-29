@@ -1217,7 +1217,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
   } finally {
     trialCharges.delete(job)
     // the run's paid work is over (scan, enrichment, buyer fit): the trial ledger may count what it recorded
-    if (job.funded_by === 'trial') await settleTrialReservation(db, job.id)
+    if (job.funded_by === 'trial') await settleTrialReservation(db, job.id, job.attempts)
   }
 }
 

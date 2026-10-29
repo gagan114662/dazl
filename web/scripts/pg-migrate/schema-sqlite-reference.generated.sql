@@ -656,7 +656,8 @@ CREATE TABLE trial_reservations (
       reserve_usd REAL NOT NULL CHECK (reserve_usd > 0),
       day         INTEGER NOT NULL,
       created_at  INTEGER NOT NULL,
-      settled_at  INTEGER
+      settled_at  INTEGER,
+      settled_attempt INTEGER
     );
 
 CREATE TABLE trial_scans (
