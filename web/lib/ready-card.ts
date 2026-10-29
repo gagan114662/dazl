@@ -53,7 +53,10 @@ export function readyItems(i: ReadinessInput): ReadyItem[] {
   // Qualified = source-checked or confirmed by you and not held for timing; a contact counts only on such a lead. Each
   // fix opens the newest search in that read that holds what the step needs, so the link always goes to the right one.
   type Camp = NonNullable<ReadinessInput['campaigns']>[number]
-  const camps = i.campaigns ?? null, msgs = i.messages ?? null
+  // The emails read is capped (newest 200): its completeness is judged as returned; test sends never count.
+  const camps = i.campaigns ?? null, msgsRaw = i.messages ?? null
+  const msgsComplete = !!msgsRaw && msgsRaw.length < MESSAGES_CAP
+  const msgs = msgsRaw ? msgsRaw.filter(m => !m.test) : null
   const campsComplete = !!camps && camps.length < CAMPAIGNS_CAP
   const ready = (c: Camp) => Math.max(0, (c.qualification.sourceChecked ?? 0) + (c.qualification.confirmedByYou ?? 0) - (c.qualification.held ?? 0))
   const sum = (f: (c: Camp) => number) => camps ? camps.reduce((n, c) => n + f(c), 0) : 0
@@ -61,7 +64,12 @@ export function readyItems(i: ReadinessInput): ReadyItem[] {
   const href = (c: Camp | null) => c ? `/app/leads?job_id=${c.id}` : null
   const qualifiedN = sum(ready), heldN = sum(c => c.qualification.held ?? 0)
   const contactN = sum(c => c.contact?.readyWithContact ?? 0)
-  const draftN = sum(c => c.outreach ? c.outreach.drafts + c.outreach.approved + c.outreach.sent : 0) + (msgs ? msgs.filter(m => m.status !== 'skipped').length : 0)
+  // The two reads overlap (a campaign's drafts are also in the emails read), so they are never added together. A complete
+  // emails read is the whole count; a capped one gives at least the larger of the two.
+  const campDrafts = sum(c => c.outreach ? c.outreach.drafts + c.outreach.approved + c.outreach.sent : 0)
+  const msgDrafts = msgs ? msgs.filter(m => m.status !== 'skipped').length : 0
+  const draftN = msgsComplete ? msgDrafts : Math.max(msgDrafts, campDrafts)
+  const draftAtLeast = !msgsComplete
   const campGap = !camps ? 'could not check - your searches\' results did not load' : `could not check - only your latest ${CAMPAIGNS_CAP} searches could be checked`
   const noSearchYet = finishedN === 0
   // Qualified: point at held or to-review leads first (something to act on), else the newest finished search.
@@ -74,8 +82,8 @@ export function readyItems(i: ReadinessInput): ReadyItem[] {
     : !campsComplete ? unknown('contact', 'Contact found', campGap)
     : { id: 'contact', label: 'Contact found', state: 'todo', detail: qualifiedN > 0 ? 'none of your qualified leads has a contact yet' : 'comes after a qualified lead', fix: contactCamp ? { href: href(contactCamp)!, label: 'Find contact' } : null }
   const draftCamp = first(c => (c.contact?.draftable ?? 0) > 0)
-  const draft: ReadyItem = draftN > 0 ? { id: 'draft', label: 'First draft', state: 'done', detail: `${draftN} email${draftN === 1 ? '' : 's'} drafted`, fix: null }
-    : !campsComplete || !msgs || msgs.length >= MESSAGES_CAP ? unknown('draft', 'First draft', !msgs ? 'could not check - your emails did not load' : campsComplete ? `could not check - only your latest ${MESSAGES_CAP} emails could be checked` : campGap)
+  const draft: ReadyItem = draftN > 0 ? { id: 'draft', label: 'First draft', state: 'done', detail: `${draftAtLeast ? 'at least ' : ''}${draftN} email${draftN === 1 ? '' : 's'} drafted`, fix: null }
+    : !campsComplete || !msgs || !msgsComplete ? unknown('draft', 'First draft', !msgs ? 'could not check - your emails did not load' : campsComplete ? `could not check - only your latest ${MESSAGES_CAP} emails could be checked` : campGap)
     : { id: 'draft', label: 'First draft', state: 'todo', detail: draftCamp ? 'approve a qualified lead with a contact and dazl drafts the email' : contactN > 0 ? 'a draft check is holding your leads with a contact; open one to see why' : 'comes after a qualified lead with a contact', fix: draftCamp ? { href: href(draftCamp)!, label: 'Review leads' } : contactN > 0 ? { href: href(first(c => (c.contact?.readyWithContact ?? 0) > 0))!, label: 'See why' } : null }
 
   // 7. Sender setup: Gmail connected, and the sender name and mailing address every email carries.

@@ -26,7 +26,7 @@ export interface ReadinessInput {
   // This account's emails (GET /api/outreach: the newest 200 only) and its recent campaigns (GET /api/campaigns: the
   // last 10 searches, with complete per-scan rejected and email counts). null when they could not be loaded; omitted by
   // callers that only check other rows.
-  messages?: { status: string; lead_id?: string }[] | null
+  messages?: { status: string; lead_id?: string; test?: number | boolean | null }[] | null
   campaigns?: { id: string; status?: string; qualification: { rejected: number; sourceChecked?: number; confirmedByYou?: number; needsReview?: number; held?: number }; contact?: { withContact: number; readyWithContact?: number; draftable?: number }; outreach?: { drafts: number; approved: number; sent: number } }[] | null
 }
 export type Fix = { kind: 'link'; href: string; label: string } | { kind: 'inline'; label: string }
@@ -120,8 +120,10 @@ export function readinessRows(i: ReadinessInput): Row[] {
   // Reviewed = a lead approved (an email made from it) or rejected. Both reads are capped (the newest 200 emails, the
   // last 10 campaigns), so finding one proves it, but finding none proves nothing unless the read was complete: then
   // the row is "?", never a to-do built on missing history.
-  const msgs = i.messages ?? null, camps = i.campaigns ?? null
-  const msgsComplete = !!msgs && msgs.length < MESSAGES_CAP, campsComplete = !!camps && camps.length < CAMPAIGNS_CAP
+  // Completeness is judged on the read as returned (it is capped); test sends are then left out of every count.
+  const msgsComplete = !!i.messages && i.messages.length < MESSAGES_CAP
+  const msgs = i.messages ? i.messages.filter(m => !m.test) : null, camps = i.campaigns ?? null
+  const campsComplete = !!camps && camps.length < CAMPAIGNS_CAP
   const made = msgs ? msgs.filter(m => m.status !== 'skipped').length : 0
   const campMade = camps ? camps.reduce((n, c) => n + (c.outreach ? c.outreach.drafts + c.outreach.approved + c.outreach.sent : 0), 0) : 0
   const rejected = camps ? camps.reduce((n, c) => n + (c.qualification?.rejected ?? 0), 0) : 0

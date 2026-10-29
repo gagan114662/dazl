@@ -54,6 +54,9 @@ test('one row per search with every stage counted from that search only', () => 
     reply: { replied: 1, interested: 1, bounced: 0, optOuts: 0 },
     next: { label: 'Check 1 lead that needs your review', href: '/app/leads?job_id=j1' },
   })
+  // A test send on a real lead is a fixture, never counted (Instinct #341).
+  db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, test) VALUES ('m-test', 'A', 'l4', 'a@b.example', 'Hello', 'A body that is long enough to pass the check.', 'sent', 1)").run()
+  assert.deepEqual([listCampaigns(db, 'A')[0].outreach.drafts, listCampaigns(db, 'A')[0].outreach.sent], [1, 1], 'the test send on l4 is not counted')
   assert.equal(listCampaigns(db, 'B')[0].outreach.drafts, 1)
   assert.equal(listCampaigns(db, 'B')[0].reply.interested, 0)
   assert.deepEqual(listCampaigns(db, 'B')[0].sequence, { active: 0, stopped: 1 })

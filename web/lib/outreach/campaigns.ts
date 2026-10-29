@@ -53,9 +53,10 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     const held = heldIds.size
     const readyWithContact = liveRows.filter(r => evidenceStateOf(r) !== 'unverified' && !heldIds.has(r.id) && (r.contact ?? '').trim() !== '').length
     const withContact = n(`SELECT count(*) AS n ${L} ${live} AND coalesce(trim(l.contact), '') <> ''`, tenantId, j.id)
-    const msg = (status: string) => n(`SELECT count(*) AS n FROM outreach_messages m JOIN leads l ON l.id = m.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE m.tenant_id = ? AND l.scan_job_id = ? AND m.status = ?`, tenantId, tenantId, j.id, status)
+    const msg = (status: string) => n(`SELECT count(*) AS n FROM outreach_messages m JOIN leads l ON l.id = m.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE m.tenant_id = ? AND l.scan_job_id = ? AND m.status = ? AND coalesce(m.test, 0) = 0`, tenantId, tenantId, j.id, status)
+    // Test sends (outreach_messages.test) are fixtures, never real work: excluded from every count here.
     const drafts = msg('draft'), approved = msg('approved'), sent = msg('sent')
-    const ids = (status: string) => (db.prepare(`SELECT m.id FROM outreach_messages m JOIN leads l ON l.id = m.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE m.tenant_id = ? AND l.scan_job_id = ? AND m.status = ?`).all(tenantId, tenantId, j.id, status) as { id: string }[]).map(r => r.id)
+    const ids = (status: string) => (db.prepare(`SELECT m.id FROM outreach_messages m JOIN leads l ON l.id = m.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE m.tenant_id = ? AND l.scan_job_id = ? AND m.status = ? AND coalesce(m.test, 0) = 0`).all(tenantId, tenantId, j.id, status) as { id: string }[]).map(r => r.id)
     // "setup" only when the account checks are the sole refusal: the same gate with them skipped must accept it.
     const sort = (list: string[], reason: (id: string, skipAccount: boolean) => string | null) => {
       const out = { ready: 0, setup: 0, held: 0 }

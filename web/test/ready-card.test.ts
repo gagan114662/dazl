@@ -94,3 +94,25 @@ test('Instinct #341: held or rejected contact rows never tick qualified or conta
   assert.deepEqual(st(i).slice(3, 6), ['qualified:todo*>Review leads@/app/leads?job_id=h1', 'contact:todo', 'draft:todo'])
   assert.equal(readyItems(i)[3].detail, '2 checked leads wait for their event date to be confirmed')
 })
+
+test('Instinct #341: one real draft in both reads is one draft; approved and sent too', () => {
+  for (const status of ['draft', 'approved', 'sent']) {
+    const i: ReadinessInput = { ...all, campaigns: [camp({ sc: 1, ready: 1, drafts: status === 'draft' ? 1 : 0, sent: status === 'sent' ? 1 : 0 })], messages: [{ status, lead_id: 'l1' }] }
+    if (status === 'approved') i.campaigns = [{ ...camp({ sc: 1, ready: 1 }), outreach: { drafts: 0, approved: 1, sent: 0 } }]
+    const d = readyItems(i)[5]
+    assert.deepEqual([d.state, d.detail], ['done', '1 email drafted'], status)
+  }
+  // A capped emails read cannot give the whole count: at least the larger of the two reads, never their sum.
+  const capped = readyItems({ ...all, campaigns: [camp({ sc: 1, ready: 1, drafts: 3 })], messages: Array.from({ length: 200 }, (_, n) => ({ status: n < 2 ? 'draft' : 'skipped' })) })[5]
+  assert.deepEqual([capped.state, capped.detail], ['done', 'at least 3 emails drafted'])
+})
+
+test('Instinct #341: a test-only send never completes a real-work step', () => {
+  const t = { status: 'draft', lead_id: 'test-l', test: 1 }
+  const i: ReadinessInput = { ...all, campaigns: [], messages: [t] }
+  assert.equal(readyItems(i)[5].state, 'todo', 'a test draft is not a first draft')
+  for (const status of ['approved', 'sent']) assert.equal(readyItems({ ...i, messages: [{ ...t, status }] })[5].state, 'todo', status)
+  assert.equal(readyComplete(readyItems(i)), false)
+  // Test sends are left out after the cap is judged: 200 rows of which only test ones are drafts is still a capped read.
+  assert.equal(readyItems({ ...all, campaigns: [camp({ sc: 1 })], messages: Array.from({ length: 200 }, () => t) })[5].state, 'unknown')
+})
