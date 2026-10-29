@@ -69,7 +69,7 @@ removed or demoted, nor leave, in one transaction that counts owners (so two con
 
 - SQLite (production today): `migrateAuth()` creates the tables, adds `sessions.active_tenant_id` and runs
   `BACKFILL_SQL` in one transaction on startup. Idempotent; it keys on "no `organizations` row".
-- Postgres: `0013_workspaces.sql`, same DDL and the same backfill statements (a test holds them equal).
+- Postgres: `0014_workspaces.sql`, same DDL and the same backfill statements (a test holds them equal).
 - New accounts: password signup and Google sign-up create the account and its workspace in one transaction.
 - Rollback: the old code ignores the new tables and column; nothing it reads changed.
 
