@@ -18,6 +18,8 @@ const HOLD: Record<string, string> = {
   sequence: 'this lead is in a sequence, which sends instead',
   suppressed: 'this address unsubscribed or bounced',
   no_consent: 'no current follow-up consent from this person',
+  replied_again: 'they replied again - this thread is left for you',
+  daily_cap: 'today\'s sending limit is reached; it sends when the 24-hour window has room',
 }
 interface Warm { thread_id: string; company: string; name: string; to_email: string; last_reply_at: number; reply_excerpt: string; reopen: { status: string; body: string } | null }
 

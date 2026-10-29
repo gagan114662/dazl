@@ -7,7 +7,8 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { sqliteDb, type Db } from '../lib/db/client.ts'
-import { followupOverview, GAPS_DAYS } from '../lib/outreach/followups.ts'
+import { followupOverview, GAPS_DAYS, runFollowups } from '../lib/outreach/followups.ts'
+import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { migrateReplies } from '../lib/outreach/replies.ts'
 import { CONSENT_VERSION, migrateAutopilot } from '../lib/outreach/autopilot.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
@@ -94,4 +95,61 @@ bothEngines('tenant-scoped: another tenant\'s holds, consent and threads never c
   const c = await view(db, 'tc'), d = await view(db, 'td')
   assert.deepEqual(c.threads.map(t => [t.thread_id, t.hold, t.next_due_at]), [['th-tc-1', null, due]])
   assert.deepEqual(d.threads.map(t => [t.thread_id, t.hold, t.next_due_at]), [['th-td-1', 'autopilot_paused', null]])
+})
+
+// Instinct's HOLD on e4f5b85: a follow-up claim left 'sending' past the runner's 600s boundary pauses the account in
+// runFollowups, so the page must not promise a date. Same boundary (created_at < now - 600), same tenant scope.
+const claim = (db: Db, t: string, age: number, status = 'sending') =>
+  db.run('INSERT INTO followup_messages (tenant_id, thread_id, step, status, created_at) VALUES (?, ?, 0, ?, ?)', [t, `th-${t}-1`, status, NOW - age])
+bothEngines('a stale sending claim holds every thread like the runner (599/600 no, 601 yes), read-only, other tenants untouched', async ({ db }) => {
+  await ready(db, 'te'); await ready(db, 'tf')
+  for (const [age, want] of [[599, null], [600, null], [601, 'uncertain_send']] as const) {
+    await claim(db, 'te', age)
+    const o = await view(db, 'te')
+    assert.deepEqual([o.hold, o.threads[0].hold, o.threads[0].scheduled_at, o.threads[0].next_due_at], [want, want, due, want ? null : due], `age ${age}`)
+    // read-only: the claim, the autopilot state and the consent are exactly as before
+    assert.deepEqual(await db.get("SELECT status, created_at FROM followup_messages WHERE tenant_id = 'te'"), { status: 'sending', created_at: NOW - age })
+    assert.deepEqual(await db.get("SELECT enabled, paused, pause_reason FROM autopilot_settings WHERE tenant_id = 'te'"), { enabled: 1, paused: 0, pause_reason: null })
+    assert.equal(Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM consent_ledger WHERE tenant_id = 'te' AND revoked_at IS NULL"))!.n), 1)
+    // another tenant's schedule never sees it
+    assert.deepEqual((await view(db, 'tf')).threads.map(t => [t.hold, t.next_due_at]), [[null, due]])
+    await db.run("DELETE FROM followup_messages WHERE tenant_id = 'te'")
+  }
+  // a stale claim on the other tenant holds only that tenant
+  await claim(db, 'tf', 601)
+  assert.deepEqual([(await view(db, 'te')).threads[0].next_due_at, (await view(db, 'tf')).hold], [due, 'uncertain_send'])
+  // cleared (the send was resolved as sent): the date is back
+  await db.run("UPDATE followup_messages SET status = 'sent' WHERE tenant_id = 'tf'")
+  assert.equal((await view(db, 'tf')).threads[0].next_due_at, due)
+})
+
+// Every runner-wide stop, audited: the cap holds a thread that is already due (and not a later one); a reply after our
+// last follow-up stops the thread at run time.
+bothEngines('the daily cap holds a due thread, not a later one; a newer reply holds its thread', async ({ db }) => {
+  await ready(db, 'tg', 2)
+  await db.run("UPDATE followup_threads SET last_activity_at = ? WHERE tenant_id = 'tg' AND thread_id = 'th-tg-1'", [NOW - 4 * DAY])
+  await db.run("UPDATE autopilot_settings SET daily_cap = 2 WHERE tenant_id = 'tg'")
+  const dueNow = NOW - 4 * DAY + GAPS_DAYS[0] * DAY
+  const by = async () => Object.fromEntries((await view(db, 'tg')).threads.map(t => [t.thread_id, [t.hold, t.next_due_at]]))
+  assert.deepEqual(await by(), { 'th-tg-1': [null, dueNow], 'th-tg-2': [null, due] })
+  for (const [i, at] of [[1, NOW - 3600], [2, NOW - 7200]]) await db.run("INSERT INTO followup_messages (tenant_id, thread_id, step, status, created_at) VALUES ('tg', ?, 0, 'sent', ?)", [`th-other-${i}`, at])
+  assert.deepEqual(await by(), { 'th-tg-1': ['daily_cap', null], 'th-tg-2': [null, due] })
+  // a send older than 24 hours no longer counts
+  await db.run("UPDATE followup_messages SET created_at = ? WHERE tenant_id = 'tg' AND thread_id = 'th-other-2'", [NOW - DAY - 1])
+  assert.deepEqual(await by(), { 'th-tg-1': [null, dueNow], 'th-tg-2': [null, due] })
+  // they replied after our last follow-up
+  await db.run("UPDATE followup_threads SET followups_sent = 1, last_followup_at = ?, last_lead_reply_at = ? WHERE tenant_id = 'tg' AND thread_id = 'th-tg-2'", [NOW - 2 * DAY, NOW - DAY])
+  assert.deepEqual((await by())['th-tg-2'], ['replied_again', null])
+})
+
+// The runner itself agrees at the same boundary (stubbed send; nothing leaves the process).
+test('runner parity: runFollowups pauses for a 601s sending claim and not for a 600s one', async () => {
+  for (const [age, stopped] of [[600, undefined], [601, 'uncertain_send']] as const) {
+    const raw = new Database(':memory:'); migrateAllSqlite(raw); const db = sqliteDb(raw)
+    await ready(db, 'tr'); await claim(db, 'tr', age)
+    let sends = 0
+    const r = await runFollowups(raw, 'tr', 'Biz', { flags: FLAGS, now: NOW, sendFn: async () => { sends++; return { id: 'x' } } })
+    assert.deepEqual([r.stopped, sends], [stopped, 0], `age ${age}`)
+    assert.equal((await followupOverview(db, 'tr', { flags: FLAGS, now: NOW })).hold, stopped === undefined ? null : 'autopilot_paused')
+  }
 })

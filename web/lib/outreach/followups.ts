@@ -7,7 +7,7 @@ import { isMissingSchema } from '../scan/play-offer-text.ts'
 import { norm } from './store.ts'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
 import { getAccessToken, gmailSend, gmailStatus, readGmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
-import { auditAt, autopilotAvailable, CONSENT_VERSION, getState, pause } from './autopilot.ts'
+import { auditAt, autopilotAvailable, CONSENT_VERSION, DEFAULT_DAILY, getState, pause } from './autopilot.ts'
 import { hasConsent } from './ledger.ts'
 import { composeBody, getSettings, isSuppressed, domainReviewStatus, leadEvidenceEligible, leadHeld, recipientAllowed, unsubToken, type Deps } from './service.ts'
 import { llmFollowupText } from './draft-llm.ts'
@@ -136,10 +136,11 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
 // Read model for the Follow-ups page: every sequence with its schedule state, plus the
 // follow-ups already sent. Read-only; nothing here starts or stops a sequence.
 // Why the runner (runFollowups) would send nothing right now, checked in its own order. Account-wide holds stop every
-// thread; thread holds stop one. Lead-level checks the runner makes at send time (lead review, website, currentness,
-// contact purpose, the daily cap) are not repeated here: a date shown can still be skipped then, never the reverse.
+// thread; thread holds stop one; the daily cap holds every thread that is already due. Lead-level checks the runner
+// makes at send time (lead review, website, currentness, contact purpose, evidence) are not repeated here: a date shown
+// can still be skipped then, never the reverse.
 export type FollowupHold = 'not_available' | 'autopilot_off' | 'autopilot_paused' | 'consent_outdated' | 'followups_off' | 'uncertain_send' | 'gmail_or_identity'
-export type ThreadHold = 'sequence' | 'suppressed' | 'no_consent'
+export type ThreadHold = 'sequence' | 'suppressed' | 'no_consent' | 'replied_again' | 'daily_cap'
 export interface FollowupThreadView {
   thread_id: string
   company: string
@@ -170,7 +171,9 @@ const OWN_LEAD = 'EXISTS (SELECT 1 FROM scan_jobs j WHERE j.id = l.scan_job_id A
 async function exists(db: Db, sql: string, args: Param[]): Promise<boolean> {
   try { return !!(await db.get(sql, args)) } catch (e) { if (isMissingSchema(e)) return false; throw e }
 }
-async function accountHold(db: Db, tenantId: string, flags: Record<string, string | undefined>): Promise<FollowupHold | null> {
+// A follow-up claim the runner left 'sending' (or 'uncertain') longer than this pauses the account (runFollowups).
+const STALE_CLAIM_SECONDS = 600
+async function accountHold(db: Db, tenantId: string, flags: Record<string, string | undefined>, now: number): Promise<FollowupHold | null> {
   if (!autopilotAvailable(flags)) return 'not_available'
   const st = await db.get<{ enabled: number; paused: number; consent_version: string | null; followups_enabled: number }>('SELECT enabled, paused, consent_version, followups_enabled FROM autopilot_settings WHERE tenant_id = ?', [tenantId])
   if (!st || Number(st.enabled) !== 1) return 'autopilot_off'
@@ -181,10 +184,26 @@ async function accountHold(db: Db, tenantId: string, flags: Record<string, strin
     if (await exists(db, `SELECT 1 FROM ${table} WHERE tenant_id = ? AND status = ?`, [tenantId, status])) return 'uncertain_send'
   const acct = await readGmailStatus(db, tenantId)
   if (acct?.status !== 'active' || !(await exists(db, 'SELECT 1 FROM outreach_settings WHERE tenant_id = ?', [tenantId]))) return 'gmail_or_identity'
+  // the runner's own stale-claim check (same boundary): a send it started and never finished pauses the account
+  if (await exists(db, "SELECT 1 FROM followup_messages WHERE tenant_id = ? AND status IN ('uncertain','sending') AND created_at < ?", [tenantId, now - STALE_CLAIM_SECONDS])) return 'uncertain_send'
   return null
 }
-async function threadHold(db: Db, tenantId: string, t: { lead_id: string; to_email: string }, now: number): Promise<ThreadHold | null> {
+// The runner's rolling 24-hour budget (send-budget.ts accountSendCount) on the Db layer: true when it would stop at the
+// daily cap now. A table an older database does not have yet counts nothing.
+async function capReached(db: Db, tenantId: string, now: number): Promise<boolean> {
+  const since = now - 86400
+  const count = async (sql: string) => { try { return Number((await db.get<{ n: number }>(sql, [tenantId, since]))?.n ?? 0) } catch (e) { if (isMissingSchema(e)) return 0; throw e } }
+  const n = await count("SELECT count(*) AS n FROM outreach_messages WHERE tenant_id = ? AND status IN ('sent','sending','uncertain') AND COALESCE(claimed_at,sent_at,created_at) >= ?")
+    + await count("SELECT count(*) AS n FROM followup_messages WHERE tenant_id = ? AND status IN ('sent','sending','uncertain') AND created_at >= ?")
+    + await count("SELECT count(*) AS n FROM sequence_steps WHERE tenant_id = ? AND step > 1 AND status IN ('sent','sending','uncertain') AND COALESCE(claimed_at,sent_at,created_at) >= ?")
+    + await count("SELECT count(*) AS n FROM reopen_messages WHERE tenant_id = ? AND status IN ('sent','approved') AND COALESCE(sent_at,created_at) >= ?")
+  const cap = Number((await db.get<{ c: number }>('SELECT daily_cap AS c FROM autopilot_settings WHERE tenant_id = ?', [tenantId]))?.c ?? DEFAULT_DAILY)
+  return n >= Math.min(ACCOUNT_SEND_CAP, cap)
+}
+async function threadHold(db: Db, tenantId: string, t: { lead_id: string; to_email: string; last_lead_reply_at: number | null; last_followup_at: number | null }, now: number): Promise<ThreadHold | null> {
   if (await exists(db, 'SELECT 1 FROM sequences WHERE tenant_id = ? AND lead_id = ?', [tenantId, t.lead_id])) return 'sequence'
+  // a reply after our last follow-up: the runner stops the thread and leaves it for the user
+  if (t.last_followup_at && Number(t.last_lead_reply_at) > Number(t.last_followup_at)) return 'replied_again'
   if (await exists(db, 'SELECT 1 FROM suppressions WHERE tenant_id = ? AND email = ?', [tenantId, norm(t.to_email)])) return 'suppressed'
   if (!(await exists(db, "SELECT 1 FROM consent_ledger WHERE tenant_id = ? AND contact = ? AND channel = 'email' AND scope = 'followup' AND revoked_at IS NULL AND expires_at > ?", [tenantId, norm(t.to_email), now]))) return 'no_consent'
   return null
@@ -192,9 +211,10 @@ async function threadHold(db: Db, tenantId: string, t: { lead_id: string; to_ema
 
 export async function followupOverview(db: Db, tenantId: string, opts: { flags?: Record<string, string | undefined>; now?: number } = {}): Promise<FollowupOverview> {
   const now = opts.now ?? Math.floor(Date.now() / 1000)
-  const hold = await accountHold(db, tenantId, opts.flags ?? process.env)
-  const rows = await db.all<{ thread_id: string; lead_id: string; to_email: string; last_activity_at: number; last_lead_reply_at: number | null; followups_sent: number; stopped: string | null; company: string; name: string }>(
-    `SELECT t.thread_id, t.lead_id, t.to_email, t.last_activity_at, t.last_lead_reply_at, t.followups_sent, t.stopped,
+  const hold = await accountHold(db, tenantId, opts.flags ?? process.env, now)
+  const capFull = hold ? false : await capReached(db, tenantId, now)
+  const rows = await db.all<{ thread_id: string; lead_id: string; to_email: string; last_activity_at: number; last_lead_reply_at: number | null; last_followup_at: number | null; followups_sent: number; stopped: string | null; company: string; name: string }>(
+    `SELECT t.thread_id, t.lead_id, t.to_email, t.last_activity_at, t.last_lead_reply_at, t.last_followup_at, t.followups_sent, t.stopped,
             COALESCE(l.company, '') AS company, COALESCE(l.name, '') AS name
      FROM followup_threads t LEFT JOIN leads l ON l.id = t.lead_id AND ${OWN_LEAD}
      WHERE t.tenant_id = ? ORDER BY t.last_activity_at DESC, t.thread_id LIMIT 100`, [tenantId])
@@ -205,8 +225,9 @@ export async function followupOverview(db: Db, tenantId: string, opts: { flags?:
     const scheduled = r.stopped || Number(r.followups_sent) >= MAX_FOLLOWUPS || r.last_lead_reply_at === null
       ? null
       : Number(r.last_activity_at) + (GAPS_DAYS[Number(r.followups_sent)] ?? GAPS_DAYS[GAPS_DAYS.length - 1]) * 86400
-    // A date is promised only when the runner would actually send: no account-wide hold and none on this thread.
-    const h = scheduled === null ? null : hold ?? await threadHold(db, tenantId, r, now)
+    // A date is promised only when the runner would actually send: no account-wide hold and none on this thread. The
+    // cap holds a thread that is due now; a later date stays, since the rolling window may have room by then.
+    const h = scheduled === null ? null : hold ?? await threadHold(db, tenantId, r, now) ?? (capFull && scheduled <= now ? 'daily_cap' : null)
     threads.push({ thread_id: r.thread_id, company: r.company, name: r.name, to_email: r.to_email, last_lead_reply_at: r.last_lead_reply_at,
       followups_sent: Number(r.followups_sent), stopped: r.stopped, scheduled_at: scheduled, next_due_at: h ? null : scheduled, hold: h })
   }
