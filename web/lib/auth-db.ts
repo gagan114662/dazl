@@ -5,6 +5,7 @@ import { getDb } from './db/client.ts'
 import type { Db } from './db/client.ts'
 import { BACKFILL_SQL, WORKSPACE_DDL, createPersonalWorkspace, resolveMembership } from './workspaces.ts'
 import type { Role } from './workspaces.ts'
+import { INVITATIONS_DDL } from './workspace-members.ts'
 
 let db: Database.Database | null = null
 
@@ -42,6 +43,7 @@ export function migrateAuth(d: Database.Database): void {
   // The workspace this session acts in (lib/workspaces.ts); NULL: the default one. PG: 0014_workspaces.sql.
   try { d.exec('ALTER TABLE sessions ADD COLUMN active_tenant_id TEXT') } catch { /* exists */ }
   d.exec(WORKSPACE_DDL)
+  d.exec(INVITATIONS_DDL)
   d.transaction(() => { for (const s of BACKFILL_SQL) d.prepare(s).run() })()
 }
 

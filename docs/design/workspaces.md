@@ -1,6 +1,6 @@
 # Workspaces, memberships and roles (#353)
 
-Status: increments 1 (model, resolution) and 2 (route layer) done; 3 (invitations, members, switching) next. Related: #358 (sessions/offboarding), #357 (email ownership),
+Status: increments 1 (model, resolution), 2 (route layer) and 3 (invitations, members, switching) built. Related: #358 (sessions/offboarding), #357 (email ownership),
 #371 (audit trail), product direction #204.
 
 ## Problem
@@ -84,9 +84,16 @@ removed or demoted, nor leave, in one transaction that counts owners (so two con
    `test/tenant-isolation-manifest.ts` names; a test reads each handler and holds it to that, and a runtime sweep calls
    every handler as every role that may not use it (403, nothing changed). The free trial stays the founder's own:
    another member acting in a keyless workspace gets `no_api_key`. Workers already carry each job's `tenant_id`.
-3. Invitations (hashed one-use expiring tokens, bound to the invited email, accepted only by a signed-in account
-   with that email; email stubbed), member list/role change/removal with last-owner protection, workspace switching.
-   This is the first point where `tenantId !== actorId` can happen, so it ships only after increment 2.
+3. **Invitations, members, switching** (`lib/workspace-members.ts`, `/api/workspace/*`, Settings > Team,
+   `/app/join`). An invitation is a random 256-bit token, stored as its SHA-256, valid 7 days, bound to one email;
+   inviting the same email again revokes the earlier link. Accepting needs the signed-in account whose email it was
+   sent to, and uses the token up in the same transaction that adds the membership (an unknown, used, revoked or
+   expired link all answer 410). dazl sends no email yet: the inviter gets the link once, with the token in the
+   `#fragment` so it never reaches a server log. Every member change locks the workspace row first, so two owners
+   demoting each other at once cannot both pass the last-owner check (tested on Postgres). Switching writes
+   `active_tenant_id` only for a workspace the account belongs to, and only on its own session.
+   Known limit until #357: password-account emails are unverified, so the token is the real proof; after #357,
+   accepting will also require a verified email.
 
 Then #358 (session inventory, revoke-all, revoke on removal/recovery), #357 (email verification, reset), #371
 (actor audit trail, which records `actorId` and `tenantId` separately from the start).
