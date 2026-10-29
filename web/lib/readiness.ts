@@ -7,7 +7,7 @@ import { coreSources, socialSources, type Advanced, type ServerSources } from '.
 
 export interface ReadinessInput {
   profile: { sells?: string; website?: string; business_name?: string; buyer?: { summary?: string; who?: string[] } | null } | null
-  usage: { has_key?: boolean; trial?: { funded?: boolean; remaining?: number } | null } | null
+  usage: { has_key?: boolean; trial?: { funded?: boolean; remaining?: number } | null; scans_used?: number; scan_limit?: number } | null
   outreach: { gmail?: { email?: string; status?: string } | null; sender?: { sender_name?: string; postal_address?: string; booking_url?: string | null } | null; daily_cap?: number; sent_24h?: number; account_sent_24h?: number } | null
   // The account's scan jobs; null when they could not be loaded, omitted by callers that only check the other rows.
   jobs?: JobRow[] | null
@@ -27,7 +27,7 @@ export interface ReadinessInput {
   // last 10 searches, with complete per-scan rejected and email counts). null when they could not be loaded; omitted by
   // callers that only check other rows.
   messages?: { status: string; lead_id?: string }[] | null
-  campaigns?: { id: string; qualification: { rejected: number; sourceChecked?: number; confirmedByYou?: number }; contact?: { withContact: number }; outreach?: { drafts: number; approved: number; sent: number } }[] | null
+  campaigns?: { id: string; status?: string; qualification: { rejected: number; sourceChecked?: number; confirmedByYou?: number; needsReview?: number; held?: number }; contact?: { withContact: number; readyWithContact?: number; draftable?: number }; outreach?: { drafts: number; approved: number; sent: number } }[] | null
 }
 export type Fix = { kind: 'link'; href: string; label: string } | { kind: 'inline'; label: string }
 export interface Row { id: 'site' | 'brain' | 'play' | 'key' | 'sources' | 'scan' | 'review' | 'gmail' | 'sender' | 'approved' | 'limit'; label: string; state: 'done' | 'todo' | 'unknown'; detail: string; fix: Fix | null; next?: boolean }

@@ -38,13 +38,14 @@ const PROFILE = { business_name: 'Brightsmile', sells: 'Online booking and remin
 const GMAIL = { email: 'dana@brightsmile.example', status: 'active' }, SENDER = { sender_name: 'Dana Smith', postal_address: '1 Main St, Brooklyn NY' }
 const job = (id, t, q) => ({ id: id.repeat(24), status: 'done', error: null, query: q, csv_domain: null, created_at: now - t * 86400, lead_count: 0, candidates: 2, verified: 0, needs_review: 0, dropped: 2, test_only: false })
 const JOBS = [job('a', 1, 'London B2B SaaS startups hiring sales'), job('b', 2, 'Dental practices in Brooklyn opening a new location'), job('c', 3, 'Queens dentists hiring front desk'), job('d', 4, 'NYC orthodontists expanding'), job('e', 5, 'Brooklyn dental groups raising funding'), job('f', 6, 'New York dental chains hiring')]
-const camp = (id, o = {}) => ({ id, qualification: { sourceChecked: o.sc ?? 0, confirmedByYou: 0, needsReview: 0, unverified: 0, held: o.held ?? 2, rejected: 0 }, contact: { withContact: o.contacts ?? 0 }, outreach: { drafts: o.drafts ?? 0, approved: 0, sent: 0 } })
+const camp = (id, o = {}) => ({ id, status: 'done', qualification: { sourceChecked: o.sc ?? 0, confirmedByYou: 0, needsReview: 0, unverified: 2, held: o.held ?? 0, rejected: 0 }, contact: { withContact: o.contacts ?? 0, readyWithContact: o.ready ?? 0, draftable: o.draftable ?? 0 }, outreach: { drafts: o.drafts ?? 0, approved: 0, sent: 0 } })
 const SCENES = {
   fresh: { profile: { ...PROFILE, buyer: null }, key: false, gmail: null, sender: null, jobs: [], camps: [], msgs: [] },
   reviewed: { profile: PROFILE, key: true, gmail: GMAIL, sender: { sender_name: '', postal_address: '' }, jobs: JOBS, camps: JOBS.map(j => camp(j.id)), msgs: [] },
-  midway: { profile: PROFILE, key: true, gmail: GMAIL, sender: SENDER, jobs: JOBS.slice(0, 2), camps: [camp(JOBS[0].id, { sc: 2, contacts: 1 }), camp(JOBS[1].id)], msgs: [] },
+  midway: { profile: PROFILE, key: true, gmail: GMAIL, sender: SENDER, jobs: JOBS.slice(0, 2), camps: [camp(JOBS[0].id), camp(JOBS[1].id, { sc: 2, contacts: 1, ready: 1, draftable: 1 })], msgs: [] },
+  quota: { profile: PROFILE, key: true, gmail: GMAIL, sender: SENDER, jobs: JOBS, camps: JOBS.map(j => camp(j.id)), msgs: [], used: 50 },
   campsfail: { profile: PROFILE, key: true, gmail: GMAIL, sender: SENDER, jobs: JOBS.slice(0, 2), camps: 'fail', msgs: [] },
-  done: { profile: PROFILE, key: true, gmail: GMAIL, sender: SENDER, jobs: JOBS.slice(0, 1), camps: [camp(JOBS[0].id, { sc: 2, contacts: 1, drafts: 1 })], msgs: [{ id: 'm1', lead_id: 'x', status: 'draft' }] },
+  done: { profile: PROFILE, key: true, gmail: GMAIL, sender: SENDER, jobs: JOBS.slice(0, 1), camps: [camp(JOBS[0].id, { sc: 2, contacts: 1, ready: 1, drafts: 1 })], msgs: [{ id: 'm1', lead_id: 'x', status: 'draft' }] },
 }
 const b = await chromium.launch()
 async function open(sc, width, height) {
@@ -63,7 +64,7 @@ async function open(sc, width, height) {
     if (p === '/api/leads') return json({ leads: [], hidden_count: 0 })
     if (p.startsWith('/api/campaigns/')) return json({ job: sc.jobs[0], leads: [], messages: [] })
     if (p === '/api/watch') return json({ watches: [] })
-    if (p === '/api/usage') return json({ plan: 'free', scans_used: sc.jobs.length, scan_limit: 50, has_key: sc.key, trial: null })
+    if (p === '/api/usage') return json({ plan: 'free', scans_used: sc.used ?? sc.jobs.length, scan_limit: 50, has_key: sc.key, trial: null })
     if (p === '/api/settings/llm-key') return json({ keys: sc.key ? [{ vendor: 'anthropic', last4: 'Ab12', validated_at: 1 }] : [], rejection: null })
     if (p === '/api/settings/advanced') return json({ available: true, version: '1', platforms: [{ platform: 'reddit', allowed: true, consent: false, connected: false, enabled: false }] })
     if (p === '/api/scan/sources') return json({ web_index: false, news: true, websites: true })
@@ -117,8 +118,17 @@ try {
     ;({ ctx, page, writes } = await open(SCENES.midway, w, h))
     await card(page).waitFor()
     assert.deepEqual(await states(page), ['profile:done', 'search:done', 'play:done', 'qualified:done', 'contact:done', 'draft:todo*', 'sender:done'])
-    assert.deepEqual((await fixes(page))[5], `Review leads>/app/leads?job_id=${A}`)
+    // The qualified lead with a contact is in the OLDER search: the draft fix opens that one, not the newest (Instinct #341).
+    assert.deepEqual((await fixes(page))[5], `Review leads>/app/leads?job_id=${JOBS[1].id}`)
     await shot(page, `midway-${tag}`)
+    await ctx.close()
+    // 3b. This month's scan allowance used up (50 of 50) with a working key: the search step says so and opens the plan.
+    ;({ ctx, page, writes } = await open(SCENES.quota, w, h))
+    await card(page).waitFor()
+    assert.equal((await states(page))[1], 'search:todo*', 'the allowance is the next thing to act on')
+    assert.match(await page.getByTestId('rc-search').innerText(), /this month's scan allowance is used up \(50 of 50\)/)
+    assert.equal((await fixes(page))[1], 'See your plan>/app/settings#plan')
+    await shot(page, `quota-${tag}`)
     await ctx.close()
     // 4. Results unreadable.
     ;({ ctx, page, writes } = await open(SCENES.campsfail, w, h))

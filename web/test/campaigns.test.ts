@@ -48,7 +48,7 @@ test('one row per search with every stage counted from that search only', () => 
     id: 'j1', query: 'Dental owners in Ohio', status: 'done', error: null, created_at: 0,
     discovery: { candidates: 9, leads: 5 },
     qualification: { sourceChecked: 2, confirmedByYou: 1, needsReview: 1, unverified: 0, held: 2, rejected: 1 },
-    contact: { withContact: 3 },
+    contact: { withContact: 3, readyWithContact: 1, draftable: 1 }, // l1 and l2 have contacts but are timing-held (held: 2); only l4 is qualified, not held, with a contact, and not drafted
     outreach: { drafts: 1, approved: 0, sent: 1, draftsReady: 0, draftsSetup: 0, draftsHeld: 1, approvedReady: 0, approvedSetup: 0, approvedHeld: 0 },
     sequence: { active: 1, stopped: 0 },
     reply: { replied: 1, interested: 1, bounced: 0, optOuts: 0 },
@@ -60,7 +60,7 @@ test('one row per search with every stage counted from that search only', () => 
 })
 
 test('next action follows the pipeline order and never skips a gate', () => {
-  const base = { id: 'j', query: 'q', status: 'done', error: null, created_at: 0, discovery: { candidates: 3, leads: 3 }, qualification: { sourceChecked: 3, confirmedByYou: 0, needsReview: 0, unverified: 0, held: 0, rejected: 0 }, contact: { withContact: 3 }, outreach: { drafts: 0, approved: 0, sent: 0, draftsReady: 0, draftsSetup: 0, draftsHeld: 0, approvedReady: 0, approvedSetup: 0, approvedHeld: 0 }, sequence: { active: 0, stopped: 0 }, reply: { replied: 0, interested: 0, bounced: 0, optOuts: 0 } }
+  const base = { id: 'j', query: 'q', status: 'done', error: null, created_at: 0, discovery: { candidates: 3, leads: 3 }, qualification: { sourceChecked: 3, confirmedByYou: 0, needsReview: 0, unverified: 0, held: 0, rejected: 0 }, contact: { withContact: 3, readyWithContact: 0, draftable: 0 }, outreach: { drafts: 0, approved: 0, sent: 0, draftsReady: 0, draftsSetup: 0, draftsHeld: 0, approvedReady: 0, approvedSetup: 0, approvedHeld: 0 }, sequence: { active: 0, stopped: 0 }, reply: { replied: 0, interested: 0, bounced: 0, optOuts: 0 } }
   const at = (o: object, undrafted = 0) => nextAction({ ...base, ...o } as typeof base, undrafted)
   assert.deepEqual(at({ status: 'running' }), { label: 'Search still running', href: '/app/leads?job_id=j' })
   assert.deepEqual(at({ status: 'failed', error: 'cancelled' }).label, 'Search cancelled. Run it again if you still want it')

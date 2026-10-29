@@ -4,13 +4,18 @@ import { readyComplete, readyItems } from '../lib/ready-card.ts'
 import type { ReadinessInput } from '../lib/readiness.ts'
 
 const job = (id: string, status: string, created_at = 1) => ({ id, status, error: null, query: `play ${id}`, csv_domain: null, created_at, lead_count: 3 })
-const camp = (o: { sc?: number; you?: number; contacts?: number; drafts?: number; sent?: number } = {}) => ({ id: 'c', qualification: { rejected: 0, sourceChecked: o.sc ?? 0, confirmedByYou: o.you ?? 0 }, contact: { withContact: o.contacts ?? 0 }, outreach: { drafts: o.drafts ?? 0, approved: 0, sent: o.sent ?? 0 } })
+// A campaign row as /api/campaigns returns it. ready = qualified leads not held; contacts default to ready ones.
+const camp = (o: { id?: string; sc?: number; you?: number; held?: number; review?: number; contacts?: number; ready?: number; draftable?: number; drafts?: number; sent?: number; status?: string } = {}) => ({
+  id: o.id ?? 'a1', status: o.status ?? 'done',
+  qualification: { rejected: 0, sourceChecked: o.sc ?? 0, confirmedByYou: o.you ?? 0, held: o.held ?? 0, needsReview: o.review ?? 0 },
+  contact: { withContact: o.contacts ?? o.ready ?? 0, readyWithContact: o.ready ?? 0, draftable: o.draftable ?? 0 },
+  outreach: { drafts: o.drafts ?? 0, approved: 0, sent: o.sent ?? 0 } })
 const all: ReadinessInput = {
   profile: { website: 'https://www.brightsmile.example', sells: 'Online booking for dental practices', business_name: 'Brightsmile', buyer: { summary: 'Independent dental practices with 2-10 chairs', who: ['Practice owner'] } },
   usage: { has_key: true }, keys: [{ vendor: 'anthropic', last4: 'Ab12', validated_at: 1 }], rejection: null,
   outreach: { gmail: { email: 'dana@brightsmile.example', status: 'active' }, sender: { sender_name: 'Dana Smith', postal_address: '1 Main St' }, daily_cap: 20 },
   sources: { web_index: false, news: true, websites: true }, advanced: { available: true, platforms: [{ platform: 'reddit', consent: false, connected: false, enabled: false }] },
-  jobs: [job('a1', 'done')], totals: { searches: 1, finished: 1 }, campaigns: [camp({ sc: 2, contacts: 1, drafts: 1 })], messages: [{ status: 'draft' }],
+  jobs: [job('a1', 'done')], totals: { searches: 1, finished: 1 }, campaigns: [camp({ sc: 2, ready: 1, drafts: 1 })], messages: [{ status: 'draft' }],
 }
 const st = (i: ReadinessInput) => readyItems(i).map(x => `${x.id}:${x.state}${x.next ? '*' : ''}${x.fix ? `>${x.fix.label}@${x.fix.href}` : ''}`)
 
@@ -33,7 +38,7 @@ test('a new account: one fix per step it can act on; later steps wait without a 
 })
 
 test('Hermes case: searches ran, 0 source-checked, 0 contacts, Gmail on but sender details missing', () => {
-  const i: ReadinessInput = { ...all, jobs: [job('a1', 'done', 1), job('b2', 'done', 5)], totals: { searches: 6, finished: 6 }, campaigns: [camp(), camp()], messages: [], outreach: { ...all.outreach, sender: { sender_name: '', postal_address: '' } } }
+  const i: ReadinessInput = { ...all, jobs: [job('a1', 'done', 1), job('b2', 'done', 5)], totals: { searches: 6, finished: 6 }, campaigns: [camp({ id: 'b2' }), camp({ id: 'a1' })], messages: [], outreach: { ...all.outreach, sender: { sender_name: '', postal_address: '' } } }
   assert.deepEqual(st(i), [
     'profile:done', 'search:done', 'play:done',
     'qualified:todo*>Review leads@/app/leads?job_id=b2', 'contact:todo', 'draft:todo', 'sender:todo>Add sender details@/app/settings#gmail'])
@@ -43,8 +48,10 @@ test('Hermes case: searches ran, 0 source-checked, 0 contacts, Gmail on but send
 test('contact then draft: each fix opens the latest search\'s leads', () => {
   const i: ReadinessInput = { ...all, campaigns: [camp({ sc: 3 })], messages: [] }
   assert.deepEqual(st(i).slice(3, 6), ['qualified:done', 'contact:todo*>Find contact@/app/leads?job_id=a1', 'draft:todo'])
-  const j: ReadinessInput = { ...all, campaigns: [camp({ sc: 3, contacts: 2 })], messages: [] }
+  const j: ReadinessInput = { ...all, campaigns: [camp({ sc: 3, ready: 2, draftable: 2 })], messages: [] }
   assert.deepEqual(st(j).slice(4, 6), ['contact:done', 'draft:todo*>Review leads@/app/leads?job_id=a1'])
+  // Contacts on qualified leads that a draft check still holds: the step says so and opens that search.
+  assert.equal(st({ ...all, campaigns: [camp({ sc: 2, ready: 2, draftable: 0 })], messages: [] })[5], 'draft:todo*>See why@/app/leads?job_id=a1')
   assert.equal(st({ ...all, campaigns: [camp({ you: 1 })] })[3], 'qualified:done', 'a lead you confirmed counts')
 })
 
@@ -59,4 +66,31 @@ test('failed or capped reads are "could not check": no button, never a tick, car
   const capped = readyItems({ ...all, campaigns: Array.from({ length: 10 }, () => camp()), messages: [] })
   assert.deepEqual(capped.slice(3, 6).map(x => x.state), ['unknown', 'unknown', 'unknown'])
   assert.equal(readyComplete(capped), false)
+})
+
+test('Instinct #341: a used-up scan allowance blocks the search step, and adding a key is not offered as the fix', () => {
+  const i: ReadinessInput = { ...all, usage: { has_key: true, scans_used: 50, scan_limit: 50 } }
+  const s = readyItems(i)[1]
+  assert.deepEqual([s.state, s.detail, s.fix], ['todo', "this month's scan allowance is used up (50 of 50)", { href: '/app/settings#plan', label: 'See your plan' }])
+  assert.equal(readyItems({ ...i, usage: { has_key: false, scans_used: 50, scan_limit: 50 }, keys: [] })[1].fix?.label, 'See your plan', 'the allowance, not the key, is the blocker named first')
+  assert.equal(readyItems({ ...all, usage: { has_key: true, scans_used: 49, scan_limit: 50 } })[1].state, 'done')
+})
+
+test('Instinct #341: each fix opens the search that holds what the step needs, not just the newest one', () => {
+  // Newest search found nothing; an older one has 2 checked leads without a contact.
+  const i: ReadinessInput = { ...all, campaigns: [camp({ id: 'new0' }), camp({ id: 'old2', sc: 2 })], messages: [] }
+  assert.deepEqual(st(i).slice(3, 5), ['qualified:done', 'contact:todo*>Find contact@/app/leads?job_id=old2'])
+  // Newest has a qualified lead with no contact; an older one has a draftable lead with a contact.
+  const j: ReadinessInput = { ...all, campaigns: [camp({ id: 'new1', sc: 1 }), camp({ id: 'old3', sc: 1, ready: 1, draftable: 1 })], messages: [] }
+  assert.equal(st(j)[5], 'draft:todo*>Review leads@/app/leads?job_id=old3')
+  // Every fix target is an id from the returned campaigns.
+  const ids = new Set(['new0', 'old2', 'new1', 'old3'])
+  for (const x of [...readyItems(i), ...readyItems(j)]) if (x.fix?.href.startsWith('/app/leads?job_id=')) assert.ok(ids.has(x.fix.href.split('=')[1]), x.fix.href)
+})
+
+test('Instinct #341: held or rejected contact rows never tick qualified or contact', () => {
+  // 2 source-checked leads with contacts, both held for timing; 1 rejected row with a contact is not counted at all.
+  const i: ReadinessInput = { ...all, campaigns: [camp({ id: 'h1', sc: 2, held: 2, contacts: 2, ready: 0 })], messages: [] }
+  assert.deepEqual(st(i).slice(3, 6), ['qualified:todo*>Review leads@/app/leads?job_id=h1', 'contact:todo', 'draft:todo'])
+  assert.equal(readyItems(i)[3].detail, '2 checked leads wait for their event date to be confirmed')
 })
