@@ -1,4 +1,5 @@
 'use client'
+import { calendarDay } from '@/lib/format-day'
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import KeyInline from './key-inline'
@@ -204,7 +205,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
     const sentence = askIsSuggestion ? (ask || plays[0] || '') : ask
     const candidatesSoFar = f5 ? f5.sources.reduce<number | null>((n, x) => x.candidates == null ? n : (n ?? 0) + x.candidates, null) : null
     const readingNow = f5?.sources.filter(x => x.state === 'running').map(x => sourceName(x.source)) ?? []
-    const day = (d: string | null) => { if (!d) return null; const t = new Date(d); return isNaN(t.getTime()) ? d : t.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) }
+    const day = calendarDay   // a calendar day, never converted through the viewer's timezone
     const host = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, '') } catch { return u } }
     const person = (l: PreviewLead) => {
       const c = leadCardSummary(l)
