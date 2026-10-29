@@ -123,14 +123,19 @@ const domainSentRecently = (db: Database.Database, tenantId: string, domain: str
 export interface RunResult { sent: number; held: number; skipped: number; stopped?: string }
 
 // What autopilot was allowed to send for this draft: its exact words and recipient, the sender identity and offer they
-// carry, and the consent version. Recomputed before a held draft is sent; a different value hands it back to the user.
+// carry, the Gmail account it goes out from, and the consent version. Recomputed before a held draft is sent; a different
+// value hands it back to the user.
 export function draftAuthority(db: Database.Database, tenantId: string, messageId: string): string | null {
   const m = db.prepare(`SELECT m.to_email, m.subject, m.body, j.offer, j.seller FROM outreach_messages m
     JOIN leads l ON l.id = m.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = m.tenant_id
     WHERE m.id = ? AND m.tenant_id = ?`).get(messageId, tenantId) as { to_email: string; subject: string; body: string; offer: string | null; seller: string | null } | undefined
   if (!m) return null
   const s = getSettings(db, tenantId) as { sender_name?: string; postal_address?: string } | undefined
-  return createHash('sha256').update(JSON.stringify([CONSENT_VERSION, m.to_email, m.subject, m.body, m.offer, m.seller, s?.sender_name ?? null, s?.postal_address ?? null])).digest('hex')
+  return createHash('sha256').update(JSON.stringify([CONSENT_VERSION, m.to_email, m.subject, m.body, m.offer, m.seller, s?.sender_name ?? null, s?.postal_address ?? null, gmailSender(db, tenantId)])).digest('hex')
+}
+// The address of the connected Gmail account (the one the send path sends from), or null when none is connected.
+function gmailSender(db: Database.Database, tenantId: string): string | null {
+  return (db.prepare('SELECT email FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string } | undefined)?.email.toLowerCase() ?? null
 }
 
 // A claim on a work row is held this long; a pass that died mid-way frees it after that.
@@ -166,6 +171,8 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
       ON CONFLICT (message_id) DO UPDATE SET reason = excluded.reason, next_at = excluded.next_at, attempts = excluded.attempts, claimed_at = NULL`).run(id, tenantId, leadId, reason, nextAt, auth, attempts, now)
   }
   const drop = (id: string) => db.prepare('DELETE FROM autopilot_work WHERE message_id = ? AND tenant_id = ?').run(id, tenantId)
+  // Autopilot gives a draft back: out of its queue, and unapproved again if autopilot had approved it, so the user decides.
+  const backToUser = (id: string) => { drop(id); db.prepare("UPDATE outreach_messages SET status = 'draft', approved_hash = NULL WHERE id = ? AND tenant_id = ? AND status = 'approved'").run(id, tenantId) }
 
   // The gates and the send, for a draft autopilot made (new, or held earlier). 'stop' ends the pass, with out.stopped set.
   const deliver = async (id: string, leadId: string, attempts: number): Promise<'stop' | void> => {
@@ -186,7 +193,8 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     if (isSuppressed(db, tenantId, to)) { out.skipped++; drop(id); audit(db, tenantId, 'skipped', 'suppressed', leadId, id); return }
     try {
       if (msg.status === 'draft') approve(db, tenantId, id)
-      const r = await sendMessage(db, tenantId, id, d)
+      // Only from the Gmail account the authority was taken with: the send path refuses at commitment if it changed.
+      const r = await sendMessage(db, tenantId, id, { ...d, expectSender: gmailSender(db, tenantId) ?? '' })
       drop(id)
       if (r === 'sent') { out.sent++; audit(db, tenantId, 'sent', undefined, leadId, id) }
       // An unknown outcome is never retried by autopilot: the message stays uncertain for the user.
@@ -196,8 +204,9 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
       audit(db, tenantId, 'send_failed', code, leadId, id)
       if (WAIT_FOR_USER.has(code)) { hold(id, leadId, code, now, attempts); if (code !== 'paused') pause(db, tenantId, code); out.held++; out.stopped = code; return 'stop' }
       if (TRANSIENT.has(code) && attempts + 1 < RETRY_MAX) { hold(id, leadId, code, now + 3600 * 2 ** attempts, attempts + 1); out.held++; return }
-      // Any other refusal (a check now holds the lead or the address, or retries ran out): the user decides.
-      drop(id); out.held++
+      // Any other refusal (a check now holds the lead or the address, the sending account changed, retries ran out):
+      // the user decides.
+      backToUser(id); out.held++
     }
   }
 
@@ -211,8 +220,11 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     const m = db.prepare('SELECT status FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(w.message_id, tenantId) as { status: string } | undefined
     // Sent, skipped or deleted by the user meanwhile: nothing left for autopilot.
     if (!m || (m.status !== 'draft' && m.status !== 'approved')) { drop(w.message_id); continue }
+    // Gmail disconnected: no sending account to check against yet. The work waits; reconnecting the same address resumes
+    // it, another address releases it below.
+    if (gmailSender(db, tenantId) === null) { db.prepare('UPDATE autopilot_work SET claimed_at = NULL WHERE message_id = ? AND tenant_id = ?').run(w.message_id, tenantId); out.held++; continue }
     if (draftAuthority(db, tenantId, w.message_id) !== w.authority) {
-      drop(w.message_id); out.held++; audit(db, tenantId, 'released', 'changed since autopilot drafted it: yours to approve', w.lead_id, w.message_id); continue
+      backToUser(w.message_id); out.held++; audit(db, tenantId, 'released', 'changed since autopilot drafted it: yours to approve', w.lead_id, w.message_id); continue
     }
     if (await deliver(w.message_id, w.lead_id, w.attempts) === 'stop') return out
   }
