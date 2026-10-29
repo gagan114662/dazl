@@ -238,7 +238,7 @@ Module-level Maps/Sets. Each is either a cache that is safe to lose, or state th
 | `lib/llm/spend-guard.ts:73` | `pools` (Map) | must share | owner spend pool; resets on restart and differs per instance (#363) |
 | `lib/ops/emitted.ts:14` | `seen` (Map) | safe to lose | which bundles this build emitted |
 | `lib/outreach/reopen.ts:202` | `inFlight` (Set) | must share | re-open sends running in this process; another instance cannot see them (row claim fences the send, this guards resolve) |
-| `lib/rate-limit.ts:55` | `local` (Map) | must share | per-process shadow used when the shared rate_limits store fails (#356, PR #400) |
+| `lib/rate-limit.ts:55` | `local` (Map) | safe to lose | per-process shadow, only for the low-risk 'local' kinds while the shared store fails; closed kinds refuse (#356, #400) |
 | `lib/scan/countries.ts:265` | `BY_NAME` (Map) | constant | filled once from a literal table |
 | `lib/scan/countries.ts:266` | `ALPHA3` (Map) | constant | filled once from a literal table |
 | `lib/scan/held-state.ts:15` | `inProcess` (Set) | must share | last-resort hold when no write succeeded; another instance would not see the hold |

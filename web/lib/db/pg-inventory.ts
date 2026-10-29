@@ -44,7 +44,7 @@ export const STATE_NOTES: Record<string, { share: 'must share' | 'safe to lose' 
   'lib/llm/spend-guard.ts:pools': { share: 'must share', note: 'owner spend pool; resets on restart and differs per instance (#363)' },
   'lib/ops/emitted.ts:seen': { share: 'safe to lose', note: 'which bundles this build emitted' },
   'lib/outreach/reopen.ts:inFlight': { share: 'must share', note: 're-open sends running in this process; another instance cannot see them (row claim fences the send, this guards resolve)' },
-  'lib/rate-limit.ts:local': { share: 'must share', note: 'per-process shadow used when the shared rate_limits store fails (#356, PR #400)' },
+  'lib/rate-limit.ts:local': { share: 'safe to lose', note: "per-process shadow, only for the low-risk 'local' kinds while the shared store fails; closed kinds refuse (#356, #400)" },
   'lib/scan/countries.ts:BY_NAME': { share: 'constant', note: 'filled once from a literal table' },
   'lib/scan/countries.ts:ALPHA3': { share: 'constant', note: 'filled once from a literal table' },
   'lib/scan/held-state.ts:inProcess': { share: 'must share', note: 'last-resort hold when no write succeeded; another instance would not see the hold' },
