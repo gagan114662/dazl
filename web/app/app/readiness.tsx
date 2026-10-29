@@ -6,6 +6,7 @@ import SenderInline from './sender-inline'
 import { normalizeWebsite } from '@/lib/onboarding'
 import { Icon } from './ui/icons'
 import { Pill } from './ui/bits'
+import { loadReadinessInput } from './readiness-input'
 import { readinessRows, recentPlays, type ReadinessInput, type Play } from '@/lib/readiness'
 
 // Home after the first search: the steps left before a useful scan and send, each with its fix (in place, or a link to
@@ -20,10 +21,10 @@ export default function Readiness() {
   const [siteMsg, setSiteMsg] = useState('')
 
   async function load() {
-    const get = (u: string) => fetch(u).then(r => r.ok ? r.json() : null).catch(() => null)
-    const [profile, usage, outreach, jobs, sources, keys, advanced, emails, campaigns] = await Promise.all([get('/api/settings/profile'), get('/api/usage'), get('/api/outreach/settings'), get('/api/scan/jobs'), get('/api/scan/sources'), get('/api/settings/llm-key'), get('/api/settings/advanced'), get('/api/outreach'), get('/api/campaigns')])
-    setInput({ profile, usage, outreach, jobs: jobs?.jobs ?? null, totals: jobs?.totals && typeof jobs.totals.searches === 'number' && typeof jobs.totals.finished === 'number' ? jobs.totals : null, sources, keys: Array.isArray(keys?.keys) ? keys.keys : null, rejection: Array.isArray(keys?.keys) && keys.rejection && typeof keys.rejection === 'object' ? keys.rejection : null, advanced: advanced && Array.isArray(advanced.platforms) ? advanced : null, messages: Array.isArray(emails?.messages) ? emails.messages : null, campaigns: Array.isArray(campaigns?.campaigns) ? campaigns.campaigns : null })
-    setPlays(jobs?.jobs ? recentPlays(jobs.jobs) : null)
+    const { input: next, jobs } = await loadReadinessInput()
+    const profile = next.profile
+    setInput(next)
+    setPlays(jobs ? recentPlays(jobs) : null)
     if (profile) setSite({ website: String(profile.website ?? ''), sells: String(profile.sells ?? ''), business_name: String(profile.business_name ?? '') })
   }
   useEffect(() => {

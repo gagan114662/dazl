@@ -74,10 +74,10 @@ test('a run that disabled the paid fallback makes no fallback search or extracti
   const r = await run({ board: false, paid: false })
   assert.equal(r.rows.find(x => x.collector === 'fallback:news'), undefined); assert.equal(state(r.lead), 'held:blocked_by_site')
 })
-test('fallbackTargets: only blocked review rows, one per company, at most 3; mergeFallback replaces only the blocked company\'s held row and keeps every gate decision', () => {
+test('fallbackTargets: only recoverable review rows (blocked, JavaScript-only, quote not on the page), one per company, at most 3; mergeFallback replaces only the blocked company\'s held row and keeps every gate decision', () => {
   const held = (company: string, reason: string) => ({ company, signal: 'raised a seed round', source_url: `https://${company.toLowerCase()}.example/x`, review_reason: reason })
   const t = fallbackTargets([held('Clera', 'blocked_by_site'), held('Clera Ltd', 'blocked_by_site'), held('Omni', 'needs_javascript'), held('Past', 'event_date_stale'), held('Quote', 'quote_unconfirmed'), held('A1', 'blocked_by_site'), held('B2', 'blocked_by_site'), held('C3', 'blocked_by_site')], ['London, UK'])
-  assert.equal(MAX_FALLBACK, 3); assert.deepEqual(t.map(x => x.company), ['Clera', 'Omni', 'A1']); assert.match(t[0].query, /^"Clera" raised a seed round London$/)
+  assert.equal(MAX_FALLBACK, 3); assert.deepEqual(t.map(x => x.company), ['Clera', 'Omni', 'Quote']); assert.match(t[0].query, /^"Clera" raised a seed round London$/)
   const outcome = { leads: [] as { company: string; source_url: string }[], review: [{ company: 'Clera', source_url: 'https://clera.example/x' }, { company: 'Omni', source_url: 'https://omni.example/x' }], dropped: {} as Record<string, number>, quotes: new Map() }
   const notes = mergeFallback(outcome, { leads: [{ company: 'Clera', source_url: 'https://press.example/clera' }, { company: 'Stranger', source_url: 'https://press.example/s' }], dropped: { stale: 1 } }, t)
   assert.deepEqual(notes.map(n => n.company), ['Clera']); assert.deepEqual(outcome.leads.map(l => l.company), ['Clera']); assert.deepEqual(outcome.review.map(r => r.company), ['Omni']); assert.equal(outcome.dropped.stale, 1)

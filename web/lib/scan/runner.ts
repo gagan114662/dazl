@@ -56,7 +56,7 @@ import { findPeople } from '../people/people-search.ts'
 import { EnrichmentTrace, noteFromAudit, auditSummary, mergeIntoRunReport } from './enrichment-trace.ts'
 import { recordActionability } from './actionable.ts'
 import { resolveBounded } from './resolution.ts'
-import { fallbackTargets, mergeFallback, rescuedNotes, recordFallbacks, type FallbackNote } from './blocked-fallback.ts'
+import { fallbackTargets, mergeFallback, rescuedNotes, recordFallbacks, recordRecovery, type FallbackNote, type FallbackTarget } from './blocked-fallback.ts'
 import { parseWindowDays, splitByWindow, windowStatus } from './window.ts'
 import { applyBuyerFitGate, failClosedBuyerFit } from './buyer-fit.ts'
 
@@ -639,14 +639,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   // A request that needs an event beyond hiring (seed funding, an opening) is not answered by job postings alone: within each window class
   // the pages that can carry the event come before job-board / careers pages, which only corroborate the hiring half. Nothing is excluded.
   const eventBeyondHiring = needsEventBeyondHiring(icp.signals, job.query ?? '')
-  const fetchRank = (u: string): number => {
-    if (isLoginWalled(u)) return 8
-    const st = windowStatus(hitByUrl.get(u)?.date ?? null, icp.window_days ?? 365, new Date())
-    const cls = st === 'inside' ? 0 : st === 'undated' ? 1 : 2
-    // Compound request: non-job inside / undated, then job-page inside / undated, then outside-window pages (which can never pass the window gate).
-    if (eventBeyondHiring && isJobPage(u)) return cls === 2 ? 5 : 2 + cls
-    return cls === 2 ? 4 : cls
-  }
+  const fetchRank = fetchRankFor(hitByUrl, icp.window_days ?? 365, eventBeyondHiring)
   const urls = pickFetchUrls(hits.map(h => h.url), tfLimits().fetchesPerScan, fetchRank) // exact duplicates removed, breadth first by host, nothing excluded
   const f = await tfFetchMany(db, job.user_id, urls, spent, diag ? { trace: diag.trace } : {})
   if (diag?.tfTextUrls && f.ok) diag.tfTextUrls.push(...f.pages.map(p => p.url)) // verify_provenance: pages TinyFish had text for
@@ -669,6 +662,18 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
 // are labels, not quotable text, so the article pages are fetched with the verifier's own cached fetcher and the model
 // quotes from that page text: the verifier then checks the same text it was quoted from.
 export const NEWS_PAGES = 8
+// Which result URLs get the scarce fetch slots, as a rank (lower first): dated inside the window, then undated, then dated outside it (can never pass), login-walled last; for a compound request
+// (an event beyond hiring) the job-board / careers pages sit behind the pages that can carry the event. Among equal ranks the caller keeps search order, breadth first by host: there is NO relevance signal.
+export function fetchRankFor(hitByUrl: Map<string, { date: string | null }>, windowDays: number, eventBeyondHiring: boolean, now = new Date()): (u: string) => number {
+  return (u: string): number => {
+    if (isLoginWalled(u)) return 8
+    const st = windowStatus(hitByUrl.get(u)?.date ?? null, windowDays, now)
+    const cls = st === 'inside' ? 0 : st === 'undated' ? 1 : 2
+    // Compound request: non-job inside / undated, then job-page inside / undated, then outside-window pages (which can never pass the window gate).
+    if (eventBeyondHiring && isJobPage(u)) return cls === 2 ? 5 : 2 + cls
+    return cls === 2 ? 4 : cls
+  }
+}
 // The ledger status of the news fallback, from its OWN request outcomes. 'empty' needs a completed search with every request answered and zero hits; request failures are
 // kept apart from the hits array: all failed = 'error' (a failed source), some failed with no hits = 'error_partial:<failed>_of_<attempted>' (failed and named), and hits with no
 // usable page evidence or no query to run stay 'unavailable' (unknown).
@@ -699,7 +704,7 @@ async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, ht
   return parseLeads(await complete.call(provider, key, buildSourcePrompt(job.query!, icp, items), fetchImpl, 3000), items.map(i => i.url)) ?? null
 }
 
-export interface RunBudget { paid_fallback?: boolean; credit_enrichment?: boolean; judge?: boolean; max_usd?: number }
+export interface RunBudget { paid_fallback?: boolean; credit_enrichment?: boolean; judge?: boolean; max_usd?: number; first5?: boolean }   // first5: the fast first scan (lib/scan/first5.ts): free keyless sources only
 // Per-run explicit budget controls, stored on the job row by the CSV import route.
 // Absent or malformed JSON means current behavior - the control only ever NARROWS.
 // PAID SURFACES, honestly: the TinyFish-primary path ends in ONE paid LLM call
@@ -731,6 +736,7 @@ export function parseRunBudget(raw: string | null | undefined): RunBudget | null
     if (b.paid_fallback === false) out.paid_fallback = false
     if (b.credit_enrichment === false) out.credit_enrichment = false
     if (b.judge === false) out.judge = false
+    if (b.first5 === true) out.first5 = true
     if (typeof b.max_usd === 'number' && Number.isFinite(b.max_usd) && b.max_usd > 0) out.max_usd = b.max_usd
     return Object.keys(out).length ? out : null
   } catch { return null }
@@ -742,12 +748,13 @@ function budgetDeps(deps: RunDeps, budget: RunBudget | null): RunDeps {
     ...(budget.paid_fallback === false ? { paidFallback: false } : {}),
     ...(budget.credit_enrichment === false ? { creditEnrichment: false } : {}),
     ...(budget.judge === false ? { judge: null } : {}),
+    ...(budget.first5 ? { first5: true, paidFallback: false, creditEnrichment: false } : {}),
   }
 }
 
 export interface RunDeps {
   // newsHttp: the free news search's own HTTP (lib/search/news.ts), separate from the per-scan sources' sourceHttp.
-  autopilot?: typeof runAutopilot; sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; salesHiringGate?: typeof applySalesHiringGate; jobBudgetMs?: number; clock?: () => number }
+  first5?: boolean; autopilot?: typeof runAutopilot; sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; salesHiringGate?: typeof applySalesHiringGate; jobBudgetMs?: number; clock?: () => number }
 
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
   const ledger = new SourceRunLedger()
@@ -822,7 +829,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // deps.newsHttp always turns it on, so tests that exercise news do so explicitly.
     const newsOn = !!deps.newsHttp || newsEnabled()
     const diag = { trace: new SearchTrace(), info: {} as Partial<SourceStats>, hitUrls: [] as string[], tfTextUrls: [] as string[], newsUrls: [] as string[], held: undefined as HeldText | undefined, urls: undefined as UrlRecord[] | undefined }
-    if (job.query && icpForSources && complete && tinyfishEnabled()) {
+    if (job.query && icpForSources && complete && tinyfishEnabled() && !deps.first5) {   // first5: free sources only
       try {
         ledger.record('search:tinyfish', 'started')
         assertOwned(db, job)
@@ -971,11 +978,18 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     assertOwned(db, job)
     let datesFinished: Awaited<ReturnType<typeof finishUndatedLeads>> = []
     let fallbackNotes: FallbackNote[] = []
+    let recoveryTargets: FallbackTarget[] = []; let recoveryRan: { searched: boolean; why?: string } = { searched: false, why: 'not needed' }
     let outcome = await verifyLeads(leads, fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [])
     const verifiedUrls = leads.map(l => l.source_url) // verify_provenance
     // A candidate whose OWN page blocks us is held with nothing readable. Look for the same company on other press (free news search): its pages go through the same extraction and verifier, and a
     // verified candidate for that company replaces the held row. Bounded (3 companies, one search+extraction), no extra model call for a run that disabled the paid fallback.
-    const blocked = deps.paidFallback === false || !newsOn || !complete || !icpForSources ? [] : fallbackTargets(outcome.review, icpForSources.where ?? [])
+    // One automatic recovery pass before anything is marked held: a verified lead with no date (when the request has a window) first gets the date the page itself declares (structured data), then the
+    // same company's dated coverage elsewhere; a held lead whose page is unreadable or lacks the quote gets the same search. Every replacement goes through the SAME verifier and window gate.
+    if (icpForSources?.window_days) { try { datesFinished = await finishUndatedLeads(outcome.leads, fetchP, 6, icpForSources.where ?? []) } catch { /* bonus only */ } }
+    const undated = icpForSources?.window_days ? outcome.leads.filter(l => !l.event_date) : []
+    const blocked = deps.paidFallback === false || !newsOn || !complete || !icpForSources ? [] : fallbackTargets(outcome.review, icpForSources.where ?? [], undated)
+    recoveryTargets = fallbackTargets(outcome.review, icpForSources?.where ?? [], undated)
+    recoveryRan = blocked.length > 0 ? { searched: true } : { searched: false, why: deps.paidFallback === false ? 'the run disabled the paid fallback' : !newsOn ? 'news search is off' : !complete ? 'no model for this run' : 'nothing recoverable' }
     if (blocked.length > 0) {
       const note = { searched: false, hits: 0, attempted: 0, failed: 0, malformed: 0 }
       ledger.record('fallback:news', 'started')
@@ -1112,7 +1126,8 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     await runPostFinishBounded(db, job, deps, trace)
     // People search (person-first): the right people at each lead's company from public profile SEARCH RESULTS, for
     // companies whose own site lists nobody. Never throws; never an address; kill switch PEOPLE_SEARCH_ENABLED=0.
-    if (process.env.PEOPLE_SEARCH_ENABLED === '0') trace.note('people_search', 'skipped', 'PEOPLE_SEARCH_ENABLED=0')
+    if (deps.first5) trace.note('people_search', 'skipped', 'first5: free search sources only; people search is a paid TinyFish search')
+    else if (process.env.PEOPLE_SEARCH_ENABLED === '0') trace.note('people_search', 'skipped', 'PEOPLE_SEARCH_ENABLED=0')
     else try { const n = await findPeople(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl }); trace.note('people_search', n > 0 ? 'ok' : 'attempted_no_result', n > 0 ? null : 'no profile results named a role-matching person at a verified company, or no search key/quota', { people_stored: n }) } catch (e) { trace.note('people_search', 'failed', e instanceof Error ? e.message : 'error') }
     // Contacts refused for disagreeing with the lead (wrong place / wrong domain) leave nothing reachable: regrade the lead from the evidence actually kept.
     try { regradeFromKeptContacts(db, job.user_id, job.id) } catch (e) { console.error('regrade from kept contacts failed', e instanceof Error ? e.message : 'error') }
@@ -1152,6 +1167,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       if (extra.length) { markHeldInProcess(job.user_id, extra.map(h => h.id)); reconcileRunReport(db, job.id, job.attempts, extra.map(h => ({ company: h.company, url: h.url, reason: 'sales_hiring_check_failed' }))) }
       // Code decides done: every candidate is checked for date / identity / contact; the unresolved carry specific reasons after bounded targeted lookups (lib/scan/resolution.ts).
       recordFallbacks(db, job, fallbackNotes)
+      recordRecovery(db, job, recoveryTargets, fallbackNotes, recoveryRan)
       let resolution: Awaited<ReturnType<typeof resolveBounded>> | null = null
       // ONE overall deadline and the job's own cancellation cover every lookup; a cancel destroys the request in flight (fetchPageDetailed takes the signal). Nothing here renders (no render service).
       const resCtrl = new AbortController()

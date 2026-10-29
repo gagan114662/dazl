@@ -131,7 +131,8 @@ try {
   await card2.getByTestId('card-error').waitFor()
   failSave = false
   await card2.getByRole('button', { name: 'Save' }).click()
-  await card2.getByTestId('draft-text').waitFor()
+  // Wait for the saved text itself: the element appears before the refresh that follows the save lands (Instinct, #333).
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid=thread-card]')[1]?.querySelector('[data-testid=draft-text]')?.textContent === 'Edited reply', null, { timeout: 10000 })
   assert.equal(await card2.getByTestId('draft-text').textContent(), 'Edited reply')
   assert.equal(await card2.getByTestId('card-error').count(), 0)
   assert.equal(await card2.getByTestId('draft-status').textContent(), 'Edited')
