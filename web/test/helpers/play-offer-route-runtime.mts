@@ -75,3 +75,16 @@ test('a contested play is resolved on its campaign page, by its owner only; the 
   assert.deepEqual((await campaign(A, legacy)).offer, { offer: CRM, source: 'play', conflict: null })
   assert.equal(JSON.stringify(row(dental)), before, 'the dental play keeps its context')
 })
+
+// #349 acceptance: Instinct's exact synthetic case, a bare "We sell X." sentence, through the real handlers.
+test('a bare "We sell X." sentence is a stated offer: a new scan asks first, and an existing play is contested on its campaign page', async () => {
+  const Q = 'Find London SaaS startups hiring. We sell CRM setup and outbound sales consulting. Exclude agencies.'
+  const SELLER = 'We sell appointment booking and reminder software to independent dental practices in New York City.'
+  const jobs0 = (db.prepare('SELECT count(*) AS n FROM scan_jobs').get() as { n: number }).n
+  assert.deepEqual(await scan(A, { query: Q }), { status: 409, error: 'offer_conflict', stated: 'CRM setup and outbound sales consulting', saved: DENTAL })
+  assert.equal((db.prepare('SELECT count(*) AS n FROM scan_jobs').get() as { n: number }).n, jobs0, 'nothing queued')
+  const existing = randomBytes(12).toString('hex')
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, seller) VALUES (?, ?, 'x', '(from request)', '-', ?, ?)").run(existing, A, Q, `${SELLER} - https://seller.example`)
+  assert.deepEqual((await campaign(A, existing)).offer, { offer: null, source: 'conflict', conflict: { stated: 'CRM setup and outbound sales consulting', recorded: SELLER } })
+  assert.equal(row(existing).seller, `${SELLER} - https://seller.example`, 'the historical offer is never rewritten')
+})
