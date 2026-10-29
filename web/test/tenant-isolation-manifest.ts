@@ -100,6 +100,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'scan/csv/[batch]', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' } },
   { path: 'scan/csv/[batch]', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' } },
   { path: 'scan/csv', method: 'POST', auth: 'session', crossTenant: 'session-scope' },
+  { path: 'scan/estimate', method: 'POST', auth: 'session', crossTenant: 'session-scope' },
   { path: 'scan/icp-from-url', method: 'POST', auth: 'session', crossTenant: 'session-scope' },
   { path: 'scan/icp', method: 'POST', auth: 'session', crossTenant: 'session-scope' },
   { path: 'scan/jobs', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' } },

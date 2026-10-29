@@ -119,6 +119,7 @@ function addColumns(db: Database.Database): void {
   add('scan_jobs', 'needs_review', 'INTEGER')
   add('scan_jobs', 'dropped', 'INTEGER')
   add('scan_jobs', 'run_budget', 'TEXT') // per-run budget controls (CSV company imports and POST /api/scan); null = current behavior
+  add('scan_jobs', 'estimate', 'TEXT') // the price estimate shown at start (JSON: total range, rows, payer, cap); null for older jobs
   add('scan_jobs', 'spend_reserved_usd', 'REAL') // what this job has already RESERVED under max_usd, saved per call so a retry/restart continues from it
   add('scan_jobs', 'drop_reasons', 'TEXT')
   add('scan_jobs', 'verified', 'INTEGER')
@@ -243,6 +244,10 @@ export function reapStaleJobs(db: Database.Database): void {
   ).run(MAX_ATTEMPTS, MAX_ATTEMPTS, MAX_ATTEMPTS, cutoff)
 }
 
+// The price estimate saved when the scan was started, with the job's reservation; null estimate for a scan started before this existed.
+export function jobCost(db: Database.Database, userId: string, id: string): { estimate: string | null; reserved_usd: number | null } {
+  try { const r = db.prepare('SELECT estimate, spend_reserved_usd FROM scan_jobs WHERE id = ? AND user_id = ?').get(id, userId) as { estimate: string | null; spend_reserved_usd: number | null } | undefined; return { estimate: r?.estimate ?? null, reserved_usd: r?.spend_reserved_usd ?? null } } catch { return { estimate: null, reserved_usd: null } }
+}
 export function getJob(db: Database.Database, userId: string, id: string) {
   reapStaleJobs(db)
   const job = db

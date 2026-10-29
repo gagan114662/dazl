@@ -13,6 +13,8 @@ import { kickRunner } from '@/lib/scan/runner'
 import { recordTrialScan, trialStatus } from '@/lib/scan/trial'
 import { getAuthDb, sellerProfile } from '@/lib/auth-db'
 import { describeRunBudget, normalizeScanBudget } from '@/lib/scan/run-budget'
+import { connectorStatus } from '@/lib/connectors/store'
+import { estimateForBody } from '@/lib/scan/estimate-request'
 import { admitTrialScan, linkTrialReservation } from '@/lib/billing/trial-budget'
 import { cleanOffer, effectiveOffer } from '@/lib/scan/play-offer'
 
@@ -93,8 +95,18 @@ export async function POST(req: NextRequest) {
     if (!a.ok) return NextResponse.json({ error: 'trial_unavailable', reason: a.reason }, { status: 402 })
     reservation = a.reservation
   }
+  // The price estimate and the hard cap come from one function. A run whose expected model cost is already above the limit left is
+  // refused with what to change (402 over_budget); a client that confirmed an estimate sends its ack, and a different current
+  // estimate (limit, mode or key changed since) is returned for a fresh confirmation (409 estimate_changed). No paid call happens here.
+  const est = estimateForBody(body, { userId: user.id, hasOwnKey: funded === 'user', enrichmentVendors: (await connectorStatus(await getDb(), user.id).catch(() => [])).filter(c => c.enabled).map(c => c.connector) })
+  if (est.ok) {
+    if (!est.estimate.verdict.ok) return NextResponse.json({ error: 'over_budget', message: est.estimate.verdict.message, change: est.estimate.verdict.change, estimate: est.estimate }, { status: 402 })
+    if (typeof body?.estimate_ack === 'string' && body.estimate_ack !== est.estimate.ack) return NextResponse.json({ error: 'estimate_changed', estimate: est.estimate }, { status: 409 })
+  }
   const sel = body?.sources ? normalizeSources(body.sources) : null
   const job_id = query.length >= 3 ? createQueryJob(db, user.id, { query, icp: icp ? JSON.stringify(icp) : null, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget: nb.value }) : createJob(db, user.id, { business_name, industry, location }, nb.value)
+  // Kept with the job so the finished scan can show actual against what was confirmed.
+  if (est.ok) db.prepare('UPDATE scan_jobs SET estimate = ? WHERE id = ?').run(JSON.stringify({ total: est.estimate.total, rows: est.estimate.rows, payer: est.estimate.payer, cap: est.estimate.cap, ack: est.estimate.ack }), job_id)
   if (funded === 'trial') {
     db.prepare("UPDATE scan_jobs SET funded_by = 'trial' WHERE id = ?").run(job_id)
     recordTrialScan(db, user.id, job_id, ip)

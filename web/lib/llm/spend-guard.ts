@@ -77,6 +77,8 @@ export function ownerPool(owner: string, limitUsd: number): SpendGuard {
   const n = new SpendGuard(limitUsd); pools.set(owner, n); return n
 }
 export function resetSpendPools(): void { pools.clear() }
+// What this owner's pool has reserved so far in this process (0 when none): the estimate subtracts it from the limit, so it agrees with the guard.
+export function poolReservedUsd(owner: string): number { return pools.get(owner)?.reservedUsd ?? 0 }
 
 // A flat dollar amount on every guard, all-or-nothing as reserveAll.
 export function reserveAllUsd(guards: SpendGuard[], usd: number): void {
