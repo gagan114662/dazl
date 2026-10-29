@@ -33,10 +33,14 @@ export const worldClosed: Evaluator = {
 }
 
 // A verified lead's event date is a real calendar day, not in the future, and inside the request's window at as_of.
+// Whole UTC calendar days, the convention of event dates and of the replay's as_of: the as_of day itself passes, the next
+// day is the future (fails) at any as_of time of day, and the window is inclusive (window_days days before as_of passes).
+// v2: v1 allowed one day of slack (age >= -1), so tomorrow passed.
 export const eventDateInWindow: Evaluator = {
-  id: 'event_date_in_window', version: 1, kind: 'deterministic', critical: true,
+  id: 'event_date_in_window', version: 2, kind: 'deterministic', critical: true,
   evaluate({ kase, world, result }) {
-    const asOf = Date.parse(world.as_of)
+    const at = new Date(Date.parse(world.as_of))
+    const asOfDay = Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate())
     const icpWindow = (kase.input.icp as { window_days?: unknown }).window_days
     const days = kase.expect.window_days ?? (typeof icpWindow === 'number' ? icpWindow : 90)
     return verified(result).map(l => {
@@ -45,10 +49,10 @@ export const eventDateInWindow: Evaluator = {
       const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d)
       const t = m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) : NaN
       if (!m || new Date(t).getUTCDate() !== +m[3] || new Date(t).getUTCMonth() !== +m[2] - 1) return v(this, subj(l), 'fail', `event date ${d} is not a real calendar date`, [l.source_url])
-      const age = (asOf - t) / 86_400_000
-      if (age < -1) return v(this, subj(l), 'fail', `event date ${d} is after as_of ${world.as_of.slice(0, 10)}`, [l.source_url])
-      if (age > days) return v(this, subj(l), 'fail', `event date ${d} is ${Math.floor(age)} days before as_of, outside the ${days}-day window`, [l.source_url])
-      return v(this, subj(l), 'pass', `event date ${d} is ${Math.floor(age)} days before as_of`, [l.source_url])
+      const age = Math.round((asOfDay - t) / 86_400_000) // both are UTC midnights: a whole number of days
+      if (age < 0) return v(this, subj(l), 'fail', `event date ${d} is after the as_of day ${new Date(asOfDay).toISOString().slice(0, 10)}`, [l.source_url])
+      if (age > days) return v(this, subj(l), 'fail', `event date ${d} is ${age} days before as_of, outside the ${days}-day window`, [l.source_url])
+      return v(this, subj(l), 'pass', `event date ${d} is ${age} days before as_of`, [l.source_url])
     })
   },
 }
