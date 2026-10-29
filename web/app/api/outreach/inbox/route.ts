@@ -11,18 +11,18 @@ export async function GET(req: NextRequest) {
   const threadId = req.nextUrl.searchParams.get('thread_id')
   if (threadId) {
     // Owner-scoped: threadMessages returns empty for another tenant's thread.
-    return NextResponse.json({ messages: threadMessages(db, user.id, threadId) })
+    return NextResponse.json({ messages: threadMessages(db, user.tenantId, threadId) })
   }
-  const acc = db.prepare('SELECT read_granted FROM gmail_accounts WHERE tenant_id = ?').get(user.id) as { read_granted: number } | undefined
-  const gmail = gmailStatus(db, user.id)
+  const acc = db.prepare('SELECT read_granted FROM gmail_accounts WHERE tenant_id = ?').get(user.tenantId) as { read_granted: number } | undefined
+  const gmail = gmailStatus(db, user.tenantId)
   return NextResponse.json({
     available: true,
-    consent_accepted: hasReadConsent(db, user.id),
+    consent_accepted: hasReadConsent(db, user.tenantId),
     read_granted: acc?.read_granted === 1,
     account: gmail?.status === 'active' ? gmail.email : null,
-    rows: inboxRows(db, user.id),
+    rows: inboxRows(db, user.tenantId),
     // The tenant's own booking link, shown back only to that tenant. Validated https-only
     // on save (cleanBookingUrl). Display is a handoff - it never proves availability or books.
-    booking_url: getSettings(db, user.id)?.booking_url ?? null,
+    booking_url: getSettings(db, user.tenantId)?.booking_url ?? null,
   })
 }

@@ -11,7 +11,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const { id } = await params
   const db = await getDb()
-  const d = /^[a-f0-9]{24}$/.test(id) ? await campaignDetail(db, user.id, id) : null
+  const d = /^[a-f0-9]{24}$/.test(id) ? await campaignDetail(db, user.tenantId, id) : null
   if (!d) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  return NextResponse.json({ ...d, job: { ...d.job, empty_reason: await recordedEmptyReason(db, user.id, d.job) } })
+  return NextResponse.json({ ...d, job: { ...d.job, empty_reason: await recordedEmptyReason(db, user.tenantId, d.job) } })
 }

@@ -14,12 +14,14 @@ import { recordTrialScan, trialStatus } from '@/lib/scan/trial'
 import { getAuthDb, sellerProfile } from '@/lib/auth-db'
 import { describeRunBudget, normalizeScanBudget } from '@/lib/scan/run-budget'
 import { admitTrialScan, linkTrialReservation } from '@/lib/billing/trial-budget'
+import { denied } from '@/lib/workspace-access'
 
 export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
+  const no = denied(user, 'operate'); if (no) return no
 
-  const rl = (await rateLimit(`scan:${user.id}`, 10, 60 * 60 * 1000))
+  const rl = (await rateLimit(`scan:${user.tenantId}`, 10, 60 * 60 * 1000))
   if (!rl.ok) return NextResponse.json({ error: 'Too many scans. Try again later.' }, { status: 429, headers: { 'Retry-After': String(rl.retryAfterS) } })
 
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
@@ -51,8 +53,11 @@ export async function POST(req: NextRequest) {
   // per day. With no trial configured, queuing a keyless job would hang forever and burn a scan.
   let funded: 'user' | 'trial' = 'user'
   const ip = clientIp(req)
-  if (!hasKey(db, user.id)) {
-    const t = trialStatus(db, user.id, ip)
+  if (!hasKey(db, user.tenantId)) {
+    // The free trial belongs to the account that founded this workspace (its Google sign-in and email are what the
+    // trial's abuse limits check), so only that account, acting in its own workspace, can draw on it.
+    if (user.actorId !== user.tenantId) return NextResponse.json({ error: 'no_api_key' }, { status: 400 })
+    const t = trialStatus(db, user.tenantId, ip)
     if (!t.funded) {
       if (t.reason === 'account_cap' || t.reason === 'ip_throttle') {
         return NextResponse.json({ error: 'trial_exhausted', used: t.used }, { status: 402 })
@@ -63,11 +68,11 @@ export async function POST(req: NextRequest) {
   }
   // One scan at a time per account: a scan that is running, queued OR still enriching (contacts, people, fit) is active. The Find leads button is
   // disabled for the same reason, but this is the guard: a second paid scan must not start beside an unfinished one.
-  if (countActiveJobs(db, user.id) >= 1) {
+  if (countActiveJobs(db, user.tenantId) >= 1) {
     return NextResponse.json({ error: 'scan_active', message: 'A scan is still running or finishing. Wait for it to end before starting another.' }, { status: 409 })
   }
   // the plan from the shared store (the Stripe webhook writes it there); the count from where this route writes scans
-  const q = planQuota(await readPlan(await getDb(), user.id), scansThisMonth(db, user.id))
+  const q = planQuota(await readPlan(await getDb(), user.tenantId), scansThisMonth(db, user.tenantId))
   if (!q.allowed) {
     return NextResponse.json({ error: 'quota_exceeded', plan: q.plan, used: q.used, limit: q.limit }, { status: 402 })
   }
@@ -75,16 +80,16 @@ export async function POST(req: NextRequest) {
   // (lib/billing/trial-budget.ts). Checked last, so a refused request above never holds a reservation.
   let reservation: string | null = null
   if (funded === 'trial') {
-    const a = await admitTrialScan(await getDb(), { id: user.id, email: user.email })
+    const a = await admitTrialScan(await getDb(), { id: user.tenantId, email: user.email })
     if (!a.ok) return NextResponse.json({ error: 'trial_unavailable', reason: a.reason }, { status: 402 })
     reservation = a.reservation
   }
   const sel = body?.sources ? normalizeSources(body.sources) : null
-  const job_id = query.length >= 3 ? createQueryJob(db, user.id, { query, icp: icp ? JSON.stringify(icp) : null, sources: sel ? JSON.stringify(sel) : null, seller: sellerProfile(getAuthDb(), user.id), runBudget: nb.value }) : createJob(db, user.id, { business_name, industry, location }, nb.value)
+  const job_id = query.length >= 3 ? createQueryJob(db, user.tenantId, { query, icp: icp ? JSON.stringify(icp) : null, sources: sel ? JSON.stringify(sel) : null, seller: sellerProfile(getAuthDb(), user.tenantId), runBudget: nb.value }) : createJob(db, user.tenantId, { business_name, industry, location }, nb.value)
   if (funded === 'trial') {
     db.prepare("UPDATE scan_jobs SET funded_by = 'trial' WHERE id = ?").run(job_id)
-    recordTrialScan(db, user.id, job_id, ip)
-    if (reservation) await linkTrialReservation(await getDb(), user.id, reservation, job_id)
+    recordTrialScan(db, user.tenantId, job_id, ip)
+    if (reservation) await linkTrialReservation(await getDb(), user.tenantId, reservation, job_id)
   }
   after(() => kickRunner(db))
   // A supplied budget is answered with exactly which paid surfaces it allows or refuses and what the limit is NOT.

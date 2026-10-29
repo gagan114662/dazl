@@ -6,6 +6,7 @@ import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
+import { denied } from '@/lib/workspace-access'
 
 const MSG: Record<string, [number, string]> = {
   domain_unconfirmed: [409, 'Check that this website is the right company on Leads ("This website is the right company") before drafting. That check is not need, consent or a send approval.'],
@@ -26,18 +27,19 @@ const MSG: Record<string, [number, string]> = {
 export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  return NextResponse.json({ messages: listMessages(getScanDb(), user.id) })
+  return NextResponse.json({ messages: listMessages(getScanDb(), user.tenantId) })
 }
 
 export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
+  const no = denied(user, 'operate'); if (no) return no
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
-  if (!(await rateLimit(`draft:${user.id}`, 60, 60 * 60 * 1000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!(await rateLimit(`draft:${user.tenantId}`, 60, 60 * 60 * 1000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   const body = await req.json().catch(() => null)
   if (typeof body?.lead_id !== 'string' || !/^[a-f0-9]{24}$/.test(body.lead_id)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   try {
-    const id = createDraft(getScanDb(), user.id, body.lead_id, user.business_name)
+    const id = createDraft(getScanDb(), user.tenantId, body.lead_id, user.business_name)
     // Drafts are template-only here: an LLM rewrite bills the tenant's provider key,
     // so it happens only via an explicit click on POST /api/outreach/polish.
     return NextResponse.json({ id }, { status: 201 })
@@ -45,7 +47,7 @@ export async function POST(req: NextRequest) {
     if (e instanceof OutreachError) { const [s, m] = MSG[e.code] ?? [400, 'Could not create the draft']; return NextResponse.json({ error: m, code: e.code }, { status: s }) }
     // Not a known business refusal (for example SQLITE_BUSY under a second writer). Fixed body, so the client always gets JSON.
     const f = draftFailure(e)
-    captureError(e, { source: 'route', where: '/api/outreach', method: 'POST', tenantId: user.id, requestId: requestIdOf(req) })
+    captureError(e, { source: 'route', where: '/api/outreach', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) })
     return NextResponse.json(f.body, { status: f.status })
   }
 }

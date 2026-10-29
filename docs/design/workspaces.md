@@ -1,6 +1,6 @@
 # Workspaces, memberships and roles (#353)
 
-Status: increment 1 of 3 shipped with this note. Related: #358 (sessions/offboarding), #357 (email ownership),
+Status: increments 1 (model, resolution) and 2 (route layer) done; 3 (invitations, members, switching) next. Related: #358 (sessions/offboarding), #357 (email ownership),
 #371 (audit trail), product direction #204.
 
 ## Problem
@@ -78,9 +78,12 @@ removed or demoted, nor leave, in one transaction that counts owners (so two con
 1. **This PR.** Tables, backfill, resolution, role table, tests. `requireUser()` gains `actorId`/`tenantId`/`role`;
    `id` is unchanged. No behaviour change: until switching exists, `tenantId === actorId` for everyone.
    Also fixes the `/app` layout gate, which tested an unawaited promise and so never redirected.
-2. Route layer: every tenant-scoped call site uses `tenantId` (data) and `actorId` (who), and every mutating route
-   checks `can()` (viewers cannot launch or send). Workers already carry the job's `tenant_id`; they keep doing so.
-   Two-workspace tests: a viewer's launch/send are refused; foreign resources stay 404.
+2. **Route layer.** `SessionUser` has no plain `id` any more, so the compiler finds every caller: tenant-scoped
+   reads and writes use `tenantId`, and `actorId` is there for "who". Every session handler that does more than read
+   calls `denied(user, action)` (`lib/workspace-access.ts`) right after the sign-in check, for the action
+   `test/tenant-isolation-manifest.ts` names; a test reads each handler and holds it to that, and a runtime sweep calls
+   every handler as every role that may not use it (403, nothing changed). The free trial stays the founder's own:
+   another member acting in a keyless workspace gets `no_api_key`. Workers already carry each job's `tenant_id`.
 3. Invitations (hashed one-use expiring tokens, bound to the invited email, accepted only by a signed-in account
    with that email; email stubbed), member list/role change/removal with last-owner protection, workspace switching.
    This is the first point where `tenantId !== actorId` can happen, so it ships only after increment 2.

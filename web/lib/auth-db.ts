@@ -145,10 +145,11 @@ export async function writeSellerProfile(db: Db, userId: string, sells: string, 
 }
 
 // The signed-in actor and the workspace they act in. actorId is the person (users.id); tenantId is the workspace every
-// tenant-scoped read and write must use; role is their role there. `id` is the actor too, kept for the callers that
-// have not moved to actorId/tenantId yet: until workspace switching ships, tenantId is always the actor's personal
-// workspace, whose id is their user id. No membership in the session's workspace: not signed in (null).
-export type SessionUser = { id: string; email: string; business_name: string; actorId: string; tenantId: string; role: Role }
+// tenant-scoped read and write must use; role is their role there (check it with can(), lib/workspaces.ts). There is
+// deliberately no plain `id`: a caller names which one it means. email is the actor's. business_name is the
+// workspace's (its profile lives on the founder's users row, whose id is the workspace id). No membership in the
+// session's workspace: not signed in (null).
+export type SessionUser = { email: string; business_name: string; actorId: string; tenantId: string; role: Role }
 export async function getSessionUser(token: string | undefined, d?: Db): Promise<SessionUser | null> {
   if (!token || !/^[a-f0-9]{64}$/.test(token)) return null
   const db = d ?? await getDb()
@@ -164,7 +165,8 @@ export async function getSessionUser(token: string | undefined, d?: Db): Promise
     if (row.active_tenant_id !== null) await db.run('UPDATE sessions SET active_tenant_id = NULL WHERE id = ? AND active_tenant_id = ?', [id, row.active_tenant_id])
     return null
   }
-  return { id: row.id, email: row.email, business_name: row.business_name, actorId: row.id, tenantId: m.tenantId, role: m.role }
+  const business_name = m.tenantId === row.id ? row.business_name : await readBusinessName(db, m.tenantId)
+  return { email: row.email, business_name, actorId: row.id, tenantId: m.tenantId, role: m.role }
 }
 
 export async function deleteSession(token: string | undefined, d?: Db): Promise<void> {
