@@ -18,10 +18,15 @@ export interface Outcomes {
   exceptions: { kind: 'scan' | 'send' | 'held'; text: string; href: string }[] | null
 }
 
-// Replies that need the owner: an interested answer, or a human answer the rules could not sort. A "no", an opt-out
-// (already honoured by the send rails) and auto-replies are not counted as needing the owner, and neither is a thread
-// that is already stopped.
-const NEEDS_OWNER = new Set(['positive', 'other'])
+// Replies that need the owner: an interested answer, a human answer the rules could not sort, or one held for review
+// (uncertain: unreadable or unclear). A "no", an opt-out (already honoured by the send rails) and auto-replies are not
+// counted as needing the owner. A stopped thread is not either, except one held for review, or an uncertain reply on a
+// thread stopped for a weaker reason (re-opened, evidence withdrawn...): a person still has to read it. Only an
+// opt-out, a "no", a bounce or a suppression settles a thread.
+const NEEDS_OWNER = new Set(['positive', 'other', 'uncertain'])
+const SETTLED = new Set(['opt_out', 'negative', 'bounce', 'suppressed'])
+const NOT_A_PERSON = new Set(['auto', 'soft_bounce'])
+const needsOwner = (r: OutcomeReply) => NEEDS_OWNER.has(r.classification) && (!r.stopped || r.stopped === 'review' || (r.classification === 'uncertain' && !SETTLED.has(r.stopped)))
 const FAILED_SEND = new Set(['failed', 'uncertain'])
 
 export function outcomes(i: { jobId: string; scanFailed: string | null; leads: PreviewLead[] | null; messages: OutcomeMsg[] | null; replies: OutcomeReply[] | null }): Outcomes {
@@ -29,11 +34,12 @@ export function outcomes(i: { jobId: string; scanFailed: string | null; leads: P
   const ids = i.leads ? new Set(i.leads.map(l => l.id)) : null
   const mine = i.messages && ids ? i.messages.filter(m => ids.has(m.lead_id)) : i.messages
   const by = (st: string) => mine ? mine.filter(m => m.status === st) : null
-  // One conversation per thread: its newest reply decides (a later "no" or opt-out closes an earlier "yes").
+  // One conversation per thread: its newest reply from a person decides (a later "no" or opt-out closes an earlier
+  // "yes"; a later auto-reply changes nothing).
   const newest = new Map<string, OutcomeReply>()
-  for (const r of i.replies ?? []) { const cur = newest.get(r.thread_id); if (!cur || r.received_at > cur.received_at) newest.set(r.thread_id, r) }
+  for (const r of i.replies ?? []) { if (NOT_A_PERSON.has(r.classification)) continue; const cur = newest.get(r.thread_id); if (!cur || r.received_at > cur.received_at) newest.set(r.thread_id, r) }
   const conversations = i.replies && ids
-    ? { rows: [...newest.values()].filter(r => r.lead_id && ids.has(r.lead_id) && NEEDS_OWNER.has(r.classification) && !r.stopped).sort((a, b) => b.received_at - a.received_at), complete: i.replies.length < INBOX_CAP }
+    ? { rows: [...newest.values()].filter(r => r.lead_id && ids.has(r.lead_id) && needsOwner(r)).sort((a, b) => b.received_at - a.received_at), complete: i.replies.length < INBOX_CAP }
     : null
   let exceptions: Outcomes['exceptions'] = []
   if (i.scanFailed) exceptions.push({ kind: 'scan', text: i.scanFailed, href: `/app/leads?job_id=${i.jobId}` })

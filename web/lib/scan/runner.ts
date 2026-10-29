@@ -15,7 +15,8 @@ import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, verifyEvidence, type Candidate } from './evidence.ts'
 import { fallbackIcp, inferIcp, normalizeIcp, type Icp } from './icp.ts'
-import { effectiveOffer, isMissingSchema } from './play-offer-text.ts'
+import { isMissingSchema, draftOffer } from './play-offer-text.ts'
+import { readTenantOffer } from '../outreach/play-memory.ts'
 import { collectAdvanced, xSearchQuery } from '../advanced/index.ts'
 import { markWatchLeads } from '../watch.ts'
 import type { AdvPlatform } from '../advanced/config.ts'
@@ -160,13 +161,10 @@ export interface ReviewLead extends LeadDraft { review_reason: string }
 // failure throws, so scoring never runs on a guessed offer.
 export function offerBlockFor(db: Database.Database, userId: string, jobId?: string): string {
   try {
-    let positioning: string | undefined, sells: string | undefined
-    try { positioning = getMemory(db, userId)?.positioning?.trim() } catch (e) { if (!isMissingSchema(e)) throw e /* else: no Memory table yet */ }
-    try { if (!positioning) sells = (db.prepare('SELECT sells FROM users WHERE id = ?').get(userId) as { sells?: string } | undefined)?.sells } catch (e) { if (!isMissingSchema(e)) throw e /* else: no profile table */ }
-    const profile = positioning || sells
+    const tenant = readTenantOffer(db, userId)
     let play: { offer: string | null; seller: string | null; query: string | null } | undefined
     try { play = jobId ? db.prepare('SELECT offer, seller, query FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, userId) as typeof play : undefined } catch (e) { if (!isMissingSchema(e)) throw e /* else: a database from before per-play offers */ }
-    return sellerOfferBlock(play ? effectiveOffer(play, profile).offer : profile)
+    return sellerOfferBlock(draftOffer(play, tenant).offer)
   } catch (e) { if (isMissingSchema(e)) return ''; throw e } // unreadable: scoring stops rather than guess the offer
 }
 // What buyer-fit scoring is told about the seller for one play: the tenant's Memory WITHOUT its positioning (a global
