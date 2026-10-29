@@ -70,9 +70,11 @@ export default function Home() {
       <section className="px-4 sm:px-6 pb-16 max-w-6xl mx-auto w-full" data-testid="proof">
         <div className="lp-card p-6 md:p-8 grid md:grid-cols-3 gap-6">
           {PROOF.map(([t, d]) => (
-            <div key={t}>
-              <span className="pill pill-mint mb-3">✓ {t}</span>
-              <p className="text-sm text-[var(--ink-2)] leading-relaxed">{d}</p>
+            <div key={t} className="min-w-0" data-testid="proof-item">
+              {/* Headings wrap: the Autopilot one is long and must stay inside the card at 390px. */}
+              {/* .pill is unlayered CSS with white-space: nowrap, which beats Tailwind utilities: wrap it inline. */}
+              <span className="pill pill-mint mb-3 max-w-full leading-snug" style={{ whiteSpace: 'normal' }}>✓ {t}</span>
+              <p className="text-sm text-[var(--ink-2)] leading-relaxed break-words">{d}</p>
             </div>
           ))}
         </div>

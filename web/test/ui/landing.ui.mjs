@@ -75,6 +75,14 @@ try {
     // 3. Steps, proof, pricing, footer.
     assert.deepEqual((await page.getByTestId('step').locator('h3').allInnerTexts()), ['Paste your website', 'Get new leads every week', 'Approve and send'])
     assert.match(await page.getByTestId('proof').innerText(), /Quoted and linked[\s\S]*Company and date checked/)
+    // Every proof heading and body stays inside the card's padded content box (Instinct #338, 390px): element bounds,
+    // not only the document width.
+    const inside = await page.getByTestId('proof').locator('.lp-card').evaluate(card => {
+      const cs = getComputedStyle(card), r = card.getBoundingClientRect()
+      const left = r.left + parseFloat(cs.paddingLeft) - 0.5, right = r.right - parseFloat(cs.paddingRight) + 0.5
+      return [...card.querySelectorAll('*')].filter(n => { const b = n.getBoundingClientRect(); return b.width > 0 && (b.left < left || b.right > right || n.scrollWidth > n.clientWidth + 1) }).map(n => n.textContent.slice(0, 40))
+    })
+    assert.deepEqual(inside, [], `proof text stays inside its card (${kind})`)
     if (process.env.SHOTS) await page.getByTestId('proof').screenshot({ path: path.join(process.env.SHOTS, `${kind}-proof.png`) })
     assert.match(await page.locator('#pricing').innerText(), /\$0[\s\S]*\$49/)
     assert.match(await page.locator('footer').innerText(), /Terms[\s\S]*Privacy/)
