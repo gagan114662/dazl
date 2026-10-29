@@ -220,6 +220,13 @@ healthy "$new" || cutover_fail "/api/health never answered ok with commit $new"
 trap - ERR
 touch "$rel/.complete"; echo "$new" > "$ROOT/current-sha"
 log "live: $new"
+# Release identity (ops/release-manifest.mjs): the exact commit, build id and readiness the live service reports, in the
+# journal and in the release's release.json. A report only; the gate above is /api/health with the commit.
+if [ -f "$rel/ops/release-manifest.mjs" ]; then
+  if node "$rel/ops/release-manifest.mjs" write "$rel/web" "$rel/release.json" >/dev/null 2>&1; then
+    log "release identity: $(node "$rel/ops/release-manifest.mjs" check "$rel/release.json" "http://127.0.0.1:$PORT" 2>&1 | tr '\n' ' ')"
+  else log "release identity: not recorded (no build output to describe)"; fi
+fi
 # keep the live release and the two complete ones before it
 ls -1dt "$ROOT"/releases/*/ | while read -r d; do [ -e "$d/.complete" ] && echo "$d"; done | tail -n +4 | xargs -r rm -rf
 exit 0

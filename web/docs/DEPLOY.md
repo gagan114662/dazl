@@ -38,6 +38,16 @@ On the same box, beside production and sharing nothing with it:
 ## Error monitoring on the deployed app
 Server errors (uncaught route/page/action errors, process crashes, scan runner crashes) are already recorded as scrubbed JSON lines on stderr. They reach a person only once a destination is set in the production env file: `SENTRY_DSN` (Sentry or GlitchTip project DSN) and/or `OPS_ALERT_WEBHOOK_URL` (e.g. a Slack incoming webhook), then restart. Both are currently unset; setting them is an owner/Instinct production change. `/api/ready` does not require them.
 
+## Release gate (before every production deploy)
+`.github/workflows/release-gate.yml` runs on every PR touching `web/` or `ops/` and on every push to main. Deploy only a main commit whose release-gate run is green:
+- **browser**: the production build, then in Chromium every /app page (`test:smoke`), chunk-load recovery (`test:smoke:chunks`), the sign-in gate on every page (`test:smoke:auth`), two tenants with no cross-tenant data on any session GET route or page (`test:smoke:tenants`), and release identity plus readiness (`test:smoke:release`).
+- **migrations**: `scripts/migration-gate.mts` fills a database with the previous release's own staging seed plus a stored API key, migrates it with this release (every previous row kept by key with every value; a migration that must rewrite values lists the table and column in `EXPECTED_CHANGES`), migrates again (schema and values unchanged), runs the previous release's migration on it (no value changed), and has each release's own code verify the demo password and decrypt the key. `scripts/rollback-start-check.mjs` then starts the previous release's production build on that database: `/api/ready` ok, the demo account signs in, its scans and leads read back, `/app/leads` renders.
+- Its `release-<sha>` artifact is `release.json` (`ops/release-manifest.mjs write`): commit, Next `BUILD_ID`, the sha256 of every static file, the lockfile's sha256, PG migrations.
+
+After the cutover (step 3 and again after step 4), prove what is serving with the artifact's `release.json`:
+`node ops/release-manifest.mjs check release.json http://127.0.0.1:3100` then `node ops/release-manifest.mjs check release.json https://dazl.ai`.
+Exit 0 means: that exact commit, every static file served with exactly the bytes recorded (so the same commit and `BUILD_ID` with a changed chunk fails), and `/api/ready` ok. It prints one JSON line (commit, build id, static files matched, ready) to paste into the deploy report. A build made on the box is a different build (its own `BUILD_ID` and chunk bytes), so the CI manifest will not match it: run `node ops/release-manifest.mjs write web release.json` on the box after its build, compare that file's `commit` and `lockfile_sha256` with the CI artifact, and check against the box's own manifest. Byte identity with what CI tested holds only when the CI-built `.next` is what is deployed. Staging's `deploy.sh` logs the same line after each deploy (`journalctl -u dazl-staging-deploy`).
+
 ## Rollback
 1. `cp /etc/caddy/Caddyfile.pre-next /etc/caddy/Caddyfile && systemctl reload caddy` (back on the old app in seconds).
 2. Stop the new service. The old app and its database were never touched. The new DB file can stay or be deleted.
