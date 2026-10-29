@@ -6,6 +6,7 @@ import type { Db } from './db/client.ts'
 import { BACKFILL_SQL, WORKSPACE_DDL, createPersonalWorkspace, resolveMembership } from './workspaces.ts'
 import type { Role } from './workspaces.ts'
 import { INVITATIONS_DDL } from './workspace-members.ts'
+import { SEEN_EVERY_S, SESSION_COLUMNS, SESSION_INDEXES, newPublicId } from './sessions.ts'
 
 let db: Database.Database | null = null
 
@@ -42,6 +43,10 @@ export function migrateAuth(d: Database.Database): void {
   try { d.exec('ALTER TABLE users ADD COLUMN buyer_profile TEXT') } catch { /* exists */ }
   // The workspace this session acts in (lib/workspaces.ts); NULL: the default one. PG: 0014_workspaces.sql.
   try { d.exec('ALTER TABLE sessions ADD COLUMN active_tenant_id TEXT') } catch { /* exists */ }
+  // Session inventory and revocation (lib/sessions.ts). PG: 0016_session_inventory.sql.
+  for (const c of SESSION_COLUMNS) { try { d.exec(c) } catch { /* exists */ } }
+  d.exec('UPDATE sessions SET public_id = lower(hex(randomblob(12))) WHERE public_id IS NULL')
+  d.exec(SESSION_INDEXES)
   d.exec(WORKSPACE_DDL)
   d.exec(INVITATIONS_DDL)
   d.transaction(() => { for (const s of BACKFILL_SQL) d.prepare(s).run() })()
@@ -56,10 +61,12 @@ export const SESSION_TTL_S = 60 * 60 * 24 * 30
 
 const nowS = () => Math.floor(Date.now() / 1000)
 
-// Sessions and sign-in run on the Db layer (docs/PLATFORM.md step 2). `d` defaults to the app's store.
-export async function createSession(userId: string, d?: Db): Promise<string> {
-  const token = randomBytes(32).toString('hex')
-  await (d ?? await getDb()).run('INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)', [hashToken(token), userId, nowS() + SESSION_TTL_S])
+// Sessions and sign-in run on the Db layer (docs/PLATFORM.md step 2). `d` defaults to the app's store. `device` is the
+// coarse label from deviceLabel() (lib/sessions.ts), shown in the session list.
+export async function createSession(userId: string, d?: Db, meta: { device?: string } = {}): Promise<string> {
+  const token = randomBytes(32).toString('hex'), now = nowS()
+  await (d ?? await getDb()).run('INSERT INTO sessions (id, user_id, expires_at, public_id, last_seen_at, device) VALUES (?, ?, ?, ?, ?, ?)',
+    [hashToken(token), userId, now + SESSION_TTL_S, newPublicId(), now, (meta.device ?? '').slice(0, 60) || null])
   return token
 }
 
@@ -156,11 +163,13 @@ export async function getSessionUser(token: string | undefined, d?: Db): Promise
   if (!token || !/^[a-f0-9]{64}$/.test(token)) return null
   const db = d ?? await getDb()
   const id = hashToken(token)
-  const row = await db.get<{ id: string; email: string; business_name: string; active_tenant_id: string | null }>(
-    `SELECT u.id, u.email, u.business_name, s.active_tenant_id FROM sessions s JOIN users u ON u.id = s.user_id
-     WHERE s.id = ? AND s.expires_at > ?`,
-    [id, nowS()])
+  const now = nowS()
+  const row = await db.get<{ id: string; email: string; business_name: string; active_tenant_id: string | null; last_seen_at: number | null }>(
+    `SELECT u.id, u.email, u.business_name, s.active_tenant_id, s.last_seen_at FROM sessions s JOIN users u ON u.id = s.user_id
+     WHERE s.id = ? AND s.expires_at > ? AND s.revoked_at IS NULL`,
+    [id, now])
   if (!row) return null
+  if (row.last_seen_at === null || now - Number(row.last_seen_at) >= SEEN_EVERY_S) await db.run('UPDATE sessions SET last_seen_at = ? WHERE id = ?', [now, id])
   const m = await resolveMembership(db, row, row.active_tenant_id)
   if (!m) {
     // The chosen workspace is gone for this member: this request fails, the next one uses their default workspace.
@@ -171,7 +180,8 @@ export async function getSessionUser(token: string | undefined, d?: Db): Promise
   return { email: row.email, business_name, actorId: row.id, tenantId: m.tenantId, role: m.role }
 }
 
+// Sign-out: the session is revoked (kept with who and when until the reaper's retention ends), not deleted.
 export async function deleteSession(token: string | undefined, d?: Db): Promise<void> {
   if (!token) return
-  await (d ?? await getDb()).run('DELETE FROM sessions WHERE id = ?', [hashToken(token)])
+  await (d ?? await getDb()).run("UPDATE sessions SET revoked_at = ?, revoked_by = user_id, revoke_reason = 'signed_out' WHERE id = ? AND revoked_at IS NULL", [nowS(), hashToken(token)])
 }

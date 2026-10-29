@@ -11,6 +11,7 @@ import { getDb, type Tx } from '@/lib/db/client'
 import { LeaseLost, StaleLeaseWrite, tryLease } from '@/lib/shared/lease'
 import type { Lease } from '@/lib/shared/lease'
 import { dueTenants, runIndexChecks } from '@/lib/seo/indexing'
+import { reapSessions } from '@/lib/sessions'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 
@@ -75,5 +76,9 @@ async function tick(lease: Lease, requestId?: string) {
     await lease.keep()
     try { const r = await runIndexChecks(shared, t); if (r && r.length > 0) indexChecked++ } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:index-checks', tenantId: t, requestId }) }
   }
-  return NextResponse.json({ ok: true, tenants: done, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, index_checks: indexChecked })
+  // Expired and long-revoked sessions, at most 500 per tick (lib/sessions.ts); working sessions never match.
+  await lease.keep()
+  let sessionsReaped = 0
+  try { sessionsReaped = await reapSessions(shared, { fence }) } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:sessions', requestId }) }
+  return NextResponse.json({ ok: true, tenants: done, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, index_checks: indexChecked, sessions_reaped: sessionsReaped })
 }

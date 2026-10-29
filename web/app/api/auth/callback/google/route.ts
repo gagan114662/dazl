@@ -4,6 +4,7 @@ import { getDb } from '@/lib/db/client'
 import { exchangeCode, parseCookie, resolveUser, sameString, signInConfig, verifyIdToken } from '@/lib/auth-google'
 import { clearOauthCookie, OAUTH_COOKIE, redirectNoStore, setSessionCookie } from '@/lib/auth-google-response'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
+import { deviceLabel } from '@/lib/sessions'
 
 const back = (base: string, err: string) => {
   const res = redirectNoStore(new URL(`/sign-in?error=${err}`, base))
@@ -35,7 +36,7 @@ export async function GET(req: NextRequest) {
   if ('error' in r) return back(base, 'google_email_exists')
 
   const res = redirectNoStore(new URL('/app', base))
-  setSessionCookie(res, base, await createSession(r.user_id), SESSION_TTL_S)
+  setSessionCookie(res, base, await createSession(r.user_id, undefined, { device: deviceLabel(req.headers.get('user-agent')) }), SESSION_TTL_S)
   clearOauthCookie(res, base)
   return res
 }

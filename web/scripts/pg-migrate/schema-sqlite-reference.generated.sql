@@ -595,7 +595,7 @@ CREATE TABLE sessions (
       user_id TEXT NOT NULL,
       created_at INTEGER DEFAULT (unixepoch()),
       expires_at INTEGER NOT NULL
-    , active_tenant_id TEXT);
+    , active_tenant_id TEXT, public_id TEXT, last_seen_at INTEGER, device TEXT, revoked_at INTEGER, revoked_by TEXT, revoke_reason TEXT);
 
 CREATE TABLE source_reviews (
  id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, job_id TEXT NOT NULL, lead_id TEXT NOT NULL,
@@ -827,6 +827,12 @@ CREATE INDEX seo_briefs_tenant ON seo_briefs (tenant_id, created_at);
 CREATE INDEX seo_index_results_tenant ON seo_index_results (tenant_id, keyword, checked_at);
 
 CREATE INDEX sequences_tenant ON sequences (tenant_id, status);
+
+CREATE INDEX sessions_expires ON sessions (expires_at);
+
+CREATE UNIQUE INDEX sessions_public_id ON sessions (public_id);
+
+CREATE INDEX sessions_user ON sessions (user_id);
 
 CREATE INDEX source_reviews_tenant ON source_reviews(tenant_id,lead_id);
 

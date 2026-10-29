@@ -3,6 +3,8 @@
 export const ROUTE_TEMPLATES: readonly string[] = [
   '/api/auth/callback/google',
   '/api/auth/google',
+  '/api/auth/sessions',
+  '/api/auth/sessions/revoke-all',
   '/api/auth/signin',
   '/api/auth/signout',
   '/api/auth/signup',

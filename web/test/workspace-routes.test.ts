@@ -26,3 +26,13 @@ test('invite, join and switch through the routes; nothing of workspace A is reac
   assert.equal(r.status, 0, r.stdout + r.stderr)
   assert.match(r.stdout, /WORKSPACE MEMBERS ok/)
 })
+
+test("an account lists and revokes only its own sessions; revoked sessions fail at once (real sessions, real routes)", () => {
+  const env = { ...process.env }
+  delete env.NODE_TEST_CONTEXT
+  const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts',
+    '--loader', './test/helpers/workspace-session-loader.mjs', '--test', './test/helpers/session-routes-runtime.mts'], { cwd: web, env, encoding: 'utf8', timeout: 120000 })
+  assert.equal(r.error, undefined)
+  assert.equal(r.status, 0, r.stdout + r.stderr)
+  assert.match(r.stdout, /SESSION ROUTES ok/)
+})
