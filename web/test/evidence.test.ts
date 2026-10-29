@@ -356,3 +356,23 @@ test('round 2: an extended or lookalike label is not the claimed company\'s doma
   // A first-party page of the validated domain whose employer is a different company never attaches for the claimed one.
   assert.equal(supportedEvidenceWindow({ company: 'Acme', signal: 'Acme is hiring software engineers.', excerpt: 'Acme is actively hiring software engineers' }, { ...page, url: 'https://acme.com/careers' }, 'acme.com') !== null, true, 'control: acme.com / Acme attaches')
 })
+
+// --- #442 review round 3: the complete employer subject is bound for both constructions, in any case ---
+test('round 3: a longer foreign name ending in the claimed name, or "Join <foreign>", never attaches (expected: null)', async () => {
+  const { supportedEvidenceWindow } = await import('../lib/scan/evidence.ts')
+  const claim = { company: 'Acme', signal: 'Acme is hiring software engineers.', excerpt: 'Acme is actively hiring software engineers' }
+  const at = (text: string) => supportedEvidenceWindow(claim, { text, title: 'Acme', url: 'https://acme.com/careers' }, 'acme.com')
+  for (const t of [
+    'Acme careers. rival acme is hiring software engineers. Apply today.',
+    'Acme careers. RIVAL ACME is hiring software engineers. Apply today.',
+    'Acme careers. Rival Acme is hiring software engineers. Apply today.',
+    'Acme careers. Join rival robotics as software engineers. Apply today.',
+    'Acme careers. JOIN RIVAL ROBOTICS as software engineers. Apply today.',
+    'Acme careers. Joining Rival Acme as software engineers. Apply today.',
+  ]) assert.equal(at(t), null, t)
+  // Positive controls: the company itself (any case, legal suffix), first-party pronoun, and "join our team" still attach.
+  assert.equal(at('Acme careers. Now Acme is hiring software engineers. Apply today.')?.includes('hiring software engineers'), true)
+  assert.equal(at('Acme careers. Here at Acme we are hiring software engineers. Apply today.')?.includes('hiring software engineers'), true)
+  assert.equal(at('Acme careers. Join acme as software engineers. Apply today.')?.includes('software engineers'), true)
+  assert.equal(at('Acme careers. Join our team as software engineers. Acme is hiring software engineers. Apply today.')?.includes('hiring software engineers'), true)
+})

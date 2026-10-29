@@ -114,29 +114,35 @@ function claimFacets(claimText: string) {
   return { roles: deduped, multi }
 }
 
-// A hiring/join clause whose subject is not the company. The subject of "X is hiring ..." is bound by the words right before the verb, in ANY case
-// ("rival robotics is hiring", "RIVAL ROBOTICS is hiring"): the claimed company must be exactly that subject (legal suffixes aside). A pronoun "we/our/us"
-// is the first-party voice and binds the page owner, so it is not flagged foreign. "Join <Capitalized name>" keeps its capitalized match.
+// A hiring/join clause whose subject is not the company. The subject of "X is hiring ..." is the WHOLE clause before the verb (back to the segment
+// start or the last delimiter), in ANY case: "rival acme is hiring" and "RIVAL ROBOTICS is hiring" are not Acme, so a longer foreign name that merely
+// ENDS in the claimed name cannot pass. Only leading filler ("now", "and", "today") is dropped. A pronoun "we/our/us" ending the clause is the
+// first-party voice and binds the page owner. "Join <name> ..." binds the complete name up to a stop word or punctuation, case-blind; a determiner
+// or pronoun after "join" ("join our team", "join the team") names no employer, so it is not foreign.
 const HIRING_CLAUSE = /\b(?:is|are|was|were|has been|will be)\s+(?:currently |actively |now )?(?:hiring|recruiting|looking to hire)\b/gi
-const JOIN_CLAUSE = /[Jj]oin(?:ing)? ([A-Z][A-Za-z0-9&.'-]*(?: [A-Z][A-Za-z0-9&.'-]*){0,3})/g
+const JOIN_CLAUSE = /\bjoin(?:ing)?\s+([^,.;:!?()\u2013\u2014]{1,60})/gi
+const LEAD_FILLER = new Set(['and', 'but', 'also', 'now', 'today', 'still', 'currently', 'yes'])
+const JOIN_NON_NAME = new Set(['we', 'our', 'us', 'the', 'a', 'an', 'my', 'your', 'their', 'this', 'that', 'these', 'those', 'one', 'it', 'its', 'team', 'teams'])
+const JOIN_STOP = new Set(['as', 'for', 'in', 'at', 'to', 'on', 'and', 'or', 'with', 'today', 'now', 'when', 'where', 'if', 'so', 'us', 'our', 'the', 'a', 'an'])
 function foreignSubject(rawSegment: string, key: string): boolean {
   HIRING_CLAUSE.lastIndex = 0
   let h: RegExpExecArray | null
   while ((h = HIRING_CLAUSE.exec(rawSegment))) {
     const clause = rawSegment.slice(0, h.index).replace(/,\s*(Inc|Ltd|LLC|Corp|Co|Plc)\b/gi, ' $1').split(/[,;:()]|\s[-\u2013\u2014]\s/).pop() ?? ''
-    const ws = clause.split(/\s+/).filter(Boolean).slice(-4)
-    if (ws.length === 0) return true                               // a clause with no subject in the window cannot be bound to the company: fail closed
-    if (['we', 'our', 'us'].includes(ws[ws.length - 1].toLowerCase())) continue
-    let bound = false
-    for (let n = 1; n <= ws.length && !bound; n++) bound = companyKey(ws.slice(-n).join(' ')) === key
-    if (!bound) return true
+    const ws = clause.split(/\s+/).filter(Boolean)
+    if (ws.length > 0 && ['we', 'our', 'us'].includes(ws[ws.length - 1].toLowerCase())) continue
+    while (ws.length > 0 && LEAD_FILLER.has(ws[0].toLowerCase())) ws.shift()
+    if (ws.length === 0 || ws.length > 6) return true            // no subject, or too long to be a name: cannot be bound to the company, fail closed
+    if (companyKey(ws.join(' ')) !== key) return true
   }
   JOIN_CLAUSE.lastIndex = 0
   let m: RegExpExecArray | null
   while ((m = JOIN_CLAUSE.exec(rawSegment))) {
-    const subj = norm(m[1])
-    if (['we', 'our', 'us'].includes(subj)) continue
-    if (!subj.startsWith(key) && !key.startsWith(subj)) return true
+    const ws = m[1].trim().split(/\s+/).filter(Boolean)
+    if (ws.length === 0 || JOIN_NON_NAME.has(ws[0].toLowerCase())) continue
+    const name: string[] = []
+    for (const w of ws) { if (JOIN_STOP.has(w.toLowerCase())) break; name.push(w) }
+    if (name.length === 0 || name.length > 5 || companyKey(name.join(' ')) !== key) return true
   }
   return false
 }
