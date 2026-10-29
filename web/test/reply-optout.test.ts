@@ -385,3 +385,55 @@ test('HOLD-3 sync, two tenants with prior consent: a hedged rejection behind an 
   assert.equal(hasConsent(db, 'B', 'sam@buyer.example', 'email', 'followup', NOW), true)
   assert.equal(stopped(db, 'B', b1.thread), null)
 })
+
+// Instinct's fourth check on #429 (at 5690c9c): every body guard of a person's reply applies under auto-reply markers
+// too, in one pass. A table of every guard, each body classified with no markers and under each auto marker.
+test('HOLD-4 auto-reply markers change only positive/other to auto; every uncertainty guard holds as without them', () => {
+  const MARKERS = [{ subject: 'Out of office' }, { autoSubmitted: 'auto-replied' }, { precedence: 'bulk' }, { xAutoreply: 'yes' }, { xAutorespond: '1' }]
+  const rows: [string, 'ok' | 'empty' | 'malformed', string, string][] = [
+    // [body, status, class without markers, class with markers]
+    ['不要再联系我', 'ok', 'uncertain', 'uncertain'], // script the rules cannot read
+    ['Σταματήστε να μου στέλνετε email', 'ok', 'uncertain', 'uncertain'],
+    ['Пожалуйста, больше не пишите', 'ok', 'uncertain', 'uncertain'],
+    ['', 'malformed', 'uncertain', 'uncertain'], // undecodable
+    ['stop', 'ok', 'uncertain', 'uncertain'], // ambiguous
+    ['Not really interested.', 'ok', 'uncertain', 'uncertain'], // positive + negation/hedge
+    ['Maybe interested later.', 'ok', 'uncertain', 'uncertain'],
+    ['Please unsubscribe me', 'ok', 'opt_out', 'opt_out'],
+    ['No thanks', 'ok', 'negative', 'negative'],
+    ['Yes please, tell me more', 'ok', 'positive', 'auto'], // template positivity is no one's interest
+    ['I am away until Monday.', 'ok', 'other', 'auto'],
+    ['', 'empty', 'uncertain', 'auto'], // blank auto-ack
+    ['   ', 'ok', 'uncertain', 'auto'],
+  ]
+  for (const [t, st, plain, marked] of rows) {
+    assert.equal(classifyReply(t, {}, st), plain, `${JSON.stringify(t)} no markers`)
+    for (const h of MARKERS) assert.equal(classifyReply(t, h, st), marked, `${JSON.stringify(t)} ${JSON.stringify(h)}`)
+  }
+})
+
+test('HOLD-4 sync, two tenants with prior consent: non-Latin text behind an Out of office subject revokes consent and holds only that thread', async () => {
+  const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db)
+  await tenant(db, 'A', 'me@a-seller.example'); await tenant(db, 'B', 'me@b-seller.example')
+  const a1 = sent(db, 'A', 'li@buyer.example'), a2 = sent(db, 'A', 'eleni@buyer.example'), a3 = sent(db, 'A', 'kim@buyer.example'), b1 = sent(db, 'B', 'li@buyer.example')
+  for (const [t, e] of [['A', 'li@buyer.example'], ['A', 'eleni@buyer.example'], ['A', 'kim@buyer.example'], ['B', 'li@buyer.example']])
+    grantConsent(db, t, e, { channel: 'email', scope: 'followup', basis: 'reply_interest', evidenceRef: 'gmail:earlier', now: NOW - 2 * DAY })
+  const ooo = [{ name: 'Subject', value: 'Out of office' }]
+  const r = await syncReplies(db, 'A', { env: genv, master, now: NOW, fetchImpl: gmail({
+    [a1.thread]: [msg('z1', 'Li <li@buyer.example>', part('text/plain', '不要再联系我'), ooo)],
+    [a2.thread]: [msg('z2', 'Eleni <eleni@buyer.example>', part('text/plain', 'Σταματήστε να μου στέλνετε email'), ooo)],
+    [a3.thread]: [msg('z3', 'Kim <kim@buyer.example>', part('text/plain', ''), ooo)],
+  }, []) })
+  assert.deepEqual([r.consents, r.reviews, r.optOuts, r.error], [0, 2, 0, undefined])
+  for (const [id, th, who] of [['z1', a1.thread, 'li@buyer.example'], ['z2', a2.thread, 'eleni@buyer.example']] as const) {
+    assert.equal(cls(db, 'A', id), 'uncertain'); assert.equal(stopped(db, 'A', th), 'review')
+    assert.equal(hasConsent(db, 'A', who, 'email', 'followup', NOW), false, `${who} prior consent revoked`)
+    assert.equal(isSuppressed(db, 'A', who), false)
+  }
+  // the blank auto-ack changes nothing
+  assert.equal(cls(db, 'A', 'z3'), 'auto'); assert.equal(stopped(db, 'A', a3.thread), null)
+  assert.equal(hasConsent(db, 'A', 'kim@buyer.example', 'email', 'followup', NOW), true)
+  // tenant B, same contact as z1: untouched
+  assert.equal(hasConsent(db, 'B', 'li@buyer.example', 'email', 'followup', NOW), true)
+  assert.equal(stopped(db, 'B', b1.thread), null)
+})

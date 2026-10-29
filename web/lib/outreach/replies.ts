@@ -98,22 +98,18 @@ const AUTO_SUBJECT = /^(automatic reply|auto[- ]?reply|autoreply|out of (the )?o
 // Letters outside the Latin script (Cyrillic, Greek, CJK, Arabic, Hebrew...): these rules do not read them.
 const nonLatinShare = (t: string) => { const l = t.match(/\p{L}/gu) ?? []; return l.length ? l.filter(c => !/\p{Script=Latin}/u.test(c)).length / l.length : 0 }
 export interface ReplyHeaders { autoSubmitted?: string; precedence?: string; subject?: string; xAutoreply?: string; xAutorespond?: string }
-// Order matters: an auto-reply is no one's answer; an unreadable body or any opt-out, negative or ambiguous wording wins
-// over positive wording; unsure never grants consent.
+// Order matters: an unreadable body or any opt-out, negative or ambiguous wording wins over positive wording; unsure
+// never grants consent. Auto-reply markers (a subject, a list header) change only the two outcomes that would credit the
+// body as a person's answer: positive and other become auto (a template's "interested parties may call me" is no one's
+// interest), and a blank auto-ack is auto. Every body guard below (unreadable, opt-out, negative, ambiguous, script the
+// rules cannot read, positive next to a negation or hedge) applies with or without the markers, in one pass.
 export function classifyReply(text: string, h: ReplyHeaders = {}, status: 'ok' | 'empty' | 'malformed' = 'ok'): ReplyClass {
   const auto = (h.autoSubmitted && h.autoSubmitted.toLowerCase() !== 'no') || /^(bulk|junk|auto_reply|list)$/i.test(h.precedence ?? '') || !!h.xAutoreply || !!h.xAutorespond || AUTO_SUBJECT.test(h.subject ?? '')
-  // Auto-reply markers (a subject, a list header) never hide what the body says: an opt-out or a "no" is honoured,
-  // and ambiguous wording or an undecodable body is held for review, as without the marker. A blank auto-ack stays auto.
-  if (auto) {
-    if (status === 'malformed') return 'uncertain'
-    if (status !== 'ok') return 'auto'
-    if (OPT_OUT.test(text)) return 'opt_out'
-    if (NEGATIVE.test(text)) return 'negative'
-    // the same body rules as a person's reply: ambiguous wording, or positive words next to a negation or hedge, hold for
-    // review; an auto-reply template's own positive words ("interested parties may call me") stay auto, never consent
-    if (AMBIGUOUS.test(text) || (POSITIVE.test(text) && NEGATION.test(text))) return 'uncertain'
-    return 'auto'
-  }
+  if (auto && status !== 'malformed' && !text.trim()) return 'auto'
+  const body = bodyClass(text, status)
+  return auto && (body === 'positive' || body === 'other') ? 'auto' : body
+}
+function bodyClass(text: string, status: 'ok' | 'empty' | 'malformed'): ReplyClass {
   if (status !== 'ok' || !text.trim()) return 'uncertain'
   if (OPT_OUT.test(text)) return 'opt_out'
   if (NEGATIVE.test(text)) return 'negative'
