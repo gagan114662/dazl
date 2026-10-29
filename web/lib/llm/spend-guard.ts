@@ -1,4 +1,5 @@
 import type { Provider } from './provider.ts'
+import type { SharedPool } from './spend-pool.ts'
 
 // A run-scoped spend guard. It RESERVES the worst case of every paid call before the call is made and refuses a call
 // that would pass the limit. It is a bound from what the code sends and allows, not a bill:
@@ -33,11 +34,7 @@ export class SpendGuard {
   // memory would be lost on a restart and spent again.
   persist?: (reservedUsd: number) => void
   constructor(limitUsd: number, alreadyReservedUsd = 0) { this.limitUsd = limitUsd; this.reservedUsd = Number.isFinite(alreadyReservedUsd) && alreadyReservedUsd > 0 ? alreadyReservedUsd : 0 }
-  private cost(model: string | undefined, promptBytes: number, maxOut: number): number {
-    const p = model ? PRICES_USD_PER_M[model] : undefined
-    if (!p) throw new SpendRefused('model_unpriced')
-    return ((promptBytes + INPUT_MARGIN_TOKENS) * p.in + maxOut * p.out) / 1e6
-  }
+  private cost(model: string | undefined, promptBytes: number, maxOut: number): number { return callCostUsd(model, promptBytes, maxOut) }
   check(model: string | undefined, promptBytes: number, maxOut: number): void {
     this.checkUsd(this.cost(model, promptBytes, maxOut))
   }
@@ -67,21 +64,45 @@ export class SpendGuard {
   }
 }
 
-// One pool per owner for the life of the process: every job of that owner draws on the same limit, so a second job, a
-// retry or a re-claimed attempt cannot spend it again. A process restart starts a new pool, so do not restart during a
-// budgeted test.
-const pools = new Map<string, SpendGuard>()
-export function ownerPool(owner: string, limitUsd: number): SpendGuard {
-  const g = pools.get(owner)
-  if (g) { g.limitUsd = Math.min(g.limitUsd, limitUsd); return g }
-  const n = new SpendGuard(limitUsd); pools.set(owner, n); return n
+// The owner's workspace pool, held in the shared store (lib/llm/spend-pool.ts): every job, retry, restart and instance of
+// that owner draws on the same day/month limits. Local checks only price the call (an unpriced model still refuses);
+// the limit itself is checked atomically in the store when the reservation is made.
+export class PooledGuard extends SpendGuard {
+  readonly pool: SharedPool
+  private at: number[] = []
+  constructor(pool: SharedPool) { super(Infinity); this.pool = pool }
+  override checkUsd(usd: number): void { if (this.refused || !(Number.isFinite(usd) && usd >= 0)) { this.refused = true; throw new SpendRefused(this.label) } }
+  override reserveUsd(): void { throw new Error('a pooled guard reserves through reserveAll / reserveAllUsd') }
+  async reserveShared(usd: number, nowS = Math.floor(Date.now() / 1000)): Promise<void> {
+    try { await this.pool.reserve(usd, nowS) } catch (e) { this.refused = true; throw e instanceof SpendRefused ? (e.reason === 'over_limit' ? new SpendRefused(this.label) : e) : new SpendRefused('reservation_not_saved') }
+    this.reservedUsd += usd; this.calls++; this.at.push(nowS)
+  }
+  async settleShared(deltaUsd: number, reportedUsd: number | null): Promise<void> {
+    const at = this.at.shift() ?? Math.floor(Date.now() / 1000)
+    this.reservedUsd = Math.max(0, this.reservedUsd + (Number.isFinite(deltaUsd) ? deltaUsd : 0))
+    await this.pool.settle(deltaUsd, reportedUsd, at)
+  }
 }
-export function resetSpendPools(): void { pools.clear() }
+const pooled = (g: SpendGuard): g is PooledGuard => g instanceof PooledGuard
 
-// A flat dollar amount on every guard, all-or-nothing as reserveAll.
-export function reserveAllUsd(guards: SpendGuard[], usd: number): void {
+// A flat dollar amount on every guard, all-or-nothing. Order: shared pools first (atomic in the store, may refuse), then
+// guards that save their reservation (a job guard), then in-memory ones. A refusal at any step releases what the earlier
+// steps reserved, so no partial reservation is left anywhere.
+export async function reserveAllUsd(guards: SpendGuard[], usd: number): Promise<void> {
   for (const g of guards) g.checkUsd(usd)
-  for (const g of [...guards].sort((a, b) => Number(!!b.persist) - Number(!!a.persist))) g.reserveUsd(usd)
+  const shared = guards.filter(pooled)
+  const done: PooledGuard[] = []
+  try {
+    for (const p of shared) { await p.reserveShared(usd); done.push(p) }
+    for (const g of guards.filter(g => !pooled(g)).sort((a, b) => Number(!!b.persist) - Number(!!a.persist))) g.reserveUsd(usd)
+  } catch (e) {
+    for (const p of done) await p.settleShared(-usd, null).catch(() => {}) // best effort: a failed release over-counts, never under
+    throw e
+  }
+}
+// After a paid call: move every guard's reservation by delta; reportedUsd is the vendor's own figure, when it gave one.
+export async function settleAll(guards: SpendGuard[], deltaUsd: number, reportedUsd: number | null): Promise<void> {
+  for (const g of guards) { if (pooled(g)) await g.settleShared(deltaUsd, reportedUsd); else g.settle(deltaUsd) }
 }
 
 // Anthropic's listed price for the web search tool: $10 per 1,000 searches (https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/web-search-tool).
@@ -94,11 +115,15 @@ export function researchCostUsd(usage: { model?: string; input_tokens?: number; 
   return (usage.input_tokens * p.in + usage.output_tokens * p.out) / 1e6 + (usage.web_search_requests ?? 0) * WEB_SEARCH_USD
 }
 
-export function reserveAll(guards: SpendGuard[], model: string | undefined, promptBytes: number, maxOut: number): void {
-  // check every guard before committing to any, so a refusal leaves no partial reservation. Guards that must SAVE their
-  // reservation (a job guard) go first: if saving fails nothing has been reserved on any other guard.
+export async function reserveAll(guards: SpendGuard[], model: string | undefined, promptBytes: number, maxOut: number): Promise<void> {
+  // Every guard prices the call first (an unpriced model refuses), then the same amount is reserved all-or-nothing.
   for (const g of guards) g.check(model, promptBytes, maxOut)
-  for (const g of [...guards].sort((a, b) => Number(!!b.persist) - Number(!!a.persist))) g.reserve(model, promptBytes, maxOut)
+  await reserveAllUsd(guards, callCostUsd(model, promptBytes, maxOut))
+}
+export function callCostUsd(model: string | undefined, promptBytes: number, maxOut: number): number {
+  const p = model ? PRICES_USD_PER_M[model] : undefined
+  if (!p) throw new SpendRefused('model_unpriced')
+  return ((promptBytes + INPUT_MARGIN_TOKENS) * p.in + maxOut * p.out) / 1e6
 }
 
 // Anthropic's free token-count request (https://docs.anthropic.com/en/docs/build-with-claude/token-counting): no inference,
@@ -137,16 +162,16 @@ export function guardProvider(p: Provider, gs: SpendGuard | SpendGuard[], count?
   const out: Provider = {
     research: research
       ? async (k, prompt, f) => {
-        reserveAllUsd(g, research.reserveUsd)
+        await reserveAllUsd(g, research.reserveUsd)
         const r = await p.research(k, prompt, f)
         const actual = researchCostUsd(r.usage, model())
-        if (actual !== null) for (const x of g) x.settle(actual - research.reserveUsd)
+        if (actual !== null) await settleAll(g, actual - research.reserveUsd, actual)
         return r
       }
       : async () => { throw new SpendRefused('research_unbounded') },
     ...(p.configuredModel ? { configuredModel: () => p.configuredModel!() } : {}),
   }
-  if (p.complete) out.complete = async (k, prompt, f, max = 10) => { reserveAll(g, model(), await inputTokens(k, prompt, f), max); return p.complete!(k, prompt, f, max) }
-  if (p.completeDetailed) out.completeDetailed = async (k, prompt, f, max = 10) => { reserveAll(g, model(), await inputTokens(k, prompt, f), max); return p.completeDetailed!(k, prompt, f, max) }
+  if (p.complete) out.complete = async (k, prompt, f, max = 10) => { await reserveAll(g, model(), await inputTokens(k, prompt, f), max); return p.complete!(k, prompt, f, max) }
+  if (p.completeDetailed) out.completeDetailed = async (k, prompt, f, max = 10) => { await reserveAll(g, model(), await inputTokens(k, prompt, f), max); return p.completeDetailed!(k, prompt, f, max) }
   return out
 }
