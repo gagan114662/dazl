@@ -26,6 +26,7 @@ import BudgetPanel from './budget-panel'
 import { budgetFromForm, EMPTY_BUDGET_FORM, type BudgetForm } from '@/lib/scan/run-budget-form'
 import { evidenceOriginLabel, purgedNote } from '@/lib/scan/evidence-origin'
 import { playSuggestions, type PlaySuggestions } from '@/lib/play-suggestions'
+import { runStatus } from '@/lib/run-status'
 import { scanOutcome } from '@/lib/scan/scan-outcome'
 import InfoTip from '../ui/info-tip'
 import { Icon } from '../ui/icons'
@@ -820,8 +821,9 @@ export default function LeadsClient() {
           {pastJobs.map(j => {
             // What the scan record says it ended as (lib/scan/scan-outcome.ts), with its one next step beside it.
             const o = scanOutcome(j)
-            const tone: Tone = o.kind === 'leads' ? 'mint' : o.kind === 'review_only' ? 'lav' : o.kind === 'running' || o.kind === 'enriching' ? 'peach' : o.kind === 'failed' ? 'pink' : 'grey'
-            const pill = o.kind === 'leads' ? 'Leads ready' : o.kind === 'review_only' ? 'Needs review' : o.kind === 'running' ? 'Running' : o.kind === 'enriching' ? 'Finishing' : o.kind === 'failed' ? 'Failed' : o.kind === 'stopped' ? 'Stopped' : 'No leads'
+            // The run's state in the same words as Campaigns and the campaign page (lib/run-status.ts).
+            const run = runStatus(o, j.lead_count), pill = run.tag
+            const tone: Tone = o.kind === 'leads' ? 'mint' : o.kind === 'review_only' ? 'lav' : run.group === 'running' ? 'peach' : run.group === 'technical' ? 'pink' : 'grey'
             return (
               <div key={j.id} className="card p-4 sm:p-5 flex flex-col" data-testid="past-scan" data-outcome={o.kind}>
                 <div className="flex items-start justify-between gap-3 mb-2">
