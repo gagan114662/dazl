@@ -1,0 +1,12 @@
+# Alerts when backups are stale, missing, modified, or the last recovery drill failed (scripts/backup/backup-check.mts).
+# A TEMPLATE, installed with dazl-backup.service. OPS_ALERT_WEBHOOK_URL (https, e.g. a Slack incoming webhook) is the
+# alert destination; without it problems go to the journal only.
+[Unit]
+Description=dazl backup freshness check
+
+[Service]
+Type=oneshot
+User=CHANGE-ME-app-user
+EnvironmentFile=/etc/dazl-backup/env
+WorkingDirectory=CHANGE-ME-release/web
+ExecStart=/usr/bin/env node --experimental-strip-types --no-warnings scripts/backup/backup-check.mts --dir ${BACKUP_DIR} --max-age-s 7200 --drill-report /var/lib/dazl-drill/latest.json --drill-max-age-s 691200

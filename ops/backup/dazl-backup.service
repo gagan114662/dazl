@@ -1,0 +1,15 @@
+# Hourly backup of the dazl SQLite database (ops/backup/run-backup.sh; docs/RECOVERY.md). A TEMPLATE: Instinct installs
+# it after the owner approves the targets and the off-host destination. Copy to /etc/systemd/system/, set the env file,
+# then: systemctl daemon-reload && systemctl enable --now dazl-backup.timer dazl-backup-check.timer
+[Unit]
+Description=dazl database backup (online snapshot, restore check, encrypted off-host copy)
+
+[Service]
+Type=oneshot
+User=CHANGE-ME-app-user
+# /etc/dazl-backup/env (root-owned, 640, group = the app user): DB_PATH, BACKUP_DIR, WEB_DIR, and optionally
+# OFFHOST_AGE_RECIPIENTS (a file of age PUBLIC keys) and OFFHOST_DEST (dir or rclone:REMOTE:PATH). No secrets.
+EnvironmentFile=/etc/dazl-backup/env
+ExecStart=/usr/bin/env bash CHANGE-ME-release/ops/backup/run-backup.sh
+Nice=10
+IOSchedulingClass=idle
