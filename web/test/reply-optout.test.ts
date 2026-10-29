@@ -351,3 +351,37 @@ test('HOLD-2 sync, two tenants with prior consent: both exact cases hold the thr
   assert.equal(isSuppressed(db, 'B', 'sam@buyer.example'), false)
   assert.equal(stopped(db, 'B', b1.thread), null)
 })
+
+// Instinct's third check on #429 (at 2dc284d): auto-reply markers never skip the positive-negation/hedge rule.
+test('HOLD-3 negated or hedged interest under an auto marker is held for review; a genuine auto-reply stays auto', () => {
+  for (const h of [{ subject: 'Out of office' }, { autoSubmitted: 'auto-replied' }, { precedence: 'list' }, { xAutoreply: 'yes' }])
+    for (const t of ['Not really interested.', 'Maybe interested later.', 'Please dont call me.', "I'm not currently interested"])
+      assert.equal(classifyReply(t, h), 'uncertain', `${t} ${JSON.stringify(h)}`)
+  // genuine auto-replies: blank, and a template whose own words are positive, stay auto (never consent)
+  assert.equal(classify(part('text/plain', ''), { subject: 'Out of office' }), 'auto')
+  assert.equal(classifyReply('I am out of the office. Interested parties may call me.', { subject: 'Out of office' }), 'auto')
+  assert.equal(classifyReply('I am away until Monday with limited access to email.', { autoSubmitted: 'auto-replied' }), 'auto')
+})
+
+test('HOLD-3 sync, two tenants with prior consent: a hedged rejection behind an Out of office subject revokes consent and holds only that thread', async () => {
+  const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db)
+  await tenant(db, 'A', 'me@a-seller.example'); await tenant(db, 'B', 'me@b-seller.example')
+  const a1 = sent(db, 'A', 'sam@buyer.example'), a2 = sent(db, 'A', 'kim@buyer.example'), b1 = sent(db, 'B', 'sam@buyer.example')
+  for (const [t, e] of [['A', 'sam@buyer.example'], ['A', 'kim@buyer.example'], ['B', 'sam@buyer.example']])
+    grantConsent(db, t, e, { channel: 'email', scope: 'followup', basis: 'reply_interest', evidenceRef: 'gmail:earlier', now: NOW - 2 * DAY })
+  const ooo = [{ name: 'Subject', value: 'Out of office' }]
+  const r = await syncReplies(db, 'A', { env: genv, master, now: NOW, fetchImpl: gmail({
+    [a1.thread]: [msg('y1', 'Sam <sam@buyer.example>', part('text/plain', 'Not really interested.'), ooo)],
+    [a2.thread]: [msg('y2', 'Kim <kim@buyer.example>', part('text/plain', 'I am out of the office until Monday.'), ooo)],
+  }, []) })
+  assert.deepEqual([r.consents, r.reviews, r.optOuts, r.error], [0, 1, 0, undefined])
+  assert.equal(cls(db, 'A', 'y1'), 'uncertain'); assert.equal(stopped(db, 'A', a1.thread), 'review')
+  assert.equal(hasConsent(db, 'A', 'sam@buyer.example', 'email', 'followup', NOW), false, 'prior consent revoked')
+  assert.equal(isSuppressed(db, 'A', 'sam@buyer.example'), false)
+  // the genuine auto-reply on the other thread changes nothing
+  assert.equal(cls(db, 'A', 'y2'), 'auto'); assert.equal(stopped(db, 'A', a2.thread), null)
+  assert.equal(hasConsent(db, 'A', 'kim@buyer.example', 'email', 'followup', NOW), true)
+  // tenant B, same contact as y1: untouched
+  assert.equal(hasConsent(db, 'B', 'sam@buyer.example', 'email', 'followup', NOW), true)
+  assert.equal(stopped(db, 'B', b1.thread), null)
+})

@@ -107,7 +107,12 @@ export function classifyReply(text: string, h: ReplyHeaders = {}, status: 'ok' |
   if (auto) {
     if (status === 'malformed') return 'uncertain'
     if (status !== 'ok') return 'auto'
-    return OPT_OUT.test(text) ? 'opt_out' : NEGATIVE.test(text) ? 'negative' : AMBIGUOUS.test(text) ? 'uncertain' : 'auto'
+    if (OPT_OUT.test(text)) return 'opt_out'
+    if (NEGATIVE.test(text)) return 'negative'
+    // the same body rules as a person's reply: ambiguous wording, or positive words next to a negation or hedge, hold for
+    // review; an auto-reply template's own positive words ("interested parties may call me") stay auto, never consent
+    if (AMBIGUOUS.test(text) || (POSITIVE.test(text) && NEGATION.test(text))) return 'uncertain'
+    return 'auto'
   }
   if (status !== 'ok' || !text.trim()) return 'uncertain'
   if (OPT_OUT.test(text)) return 'opt_out'
