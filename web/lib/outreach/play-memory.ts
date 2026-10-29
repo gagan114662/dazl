@@ -29,5 +29,5 @@ export function readProfileSells(db: Database.Database, tenantId: string): strin
 export function readTenantOffer(db: Database.Database, tenantId: string): string | null {
   let positioning = ''
   try { positioning = getMemory(db, tenantId)?.positioning ?? '' } catch (e) { if (!isMissingSchema(e)) throw e /* else: no Memory table yet */ }
-  return tenantOffer(positioning, readProfileSells(db, tenantId))
+  return tenantOffer(positioning, positioning.trim() ? '' : readProfileSells(db, tenantId)) // Memory wins: the profile is read only without it
 }

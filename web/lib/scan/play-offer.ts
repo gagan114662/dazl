@@ -30,8 +30,10 @@ export async function readPlayOffer(db: DbLike, tenantId: string, jobId: string)
 export async function profileOffer(db: Db, tenantId: string): Promise<string> {
   let positioning = ''
   try { positioning = (await db.get<{ positioning: string }>('SELECT positioning FROM tenant_memory WHERE tenant_id = ?', [tenantId]))?.positioning ?? '' } catch (e) { if (!isMissingSchema(e)) throw e /* else: no Memory table yet */ }
-  const sells = (await db.get<{ sells: string | null }>('SELECT sells FROM users WHERE id = ?', [tenantId]))?.sells ?? ''
-  return tenantOffer(positioning, sells) ?? ''
+  if (positioning.trim()) return tenantOffer(positioning, '') ?? ''
+  let sells = ''
+  try { sells = (await db.get<{ sells: string | null }>('SELECT sells FROM users WHERE id = ?', [tenantId]))?.sells ?? '' } catch (e) { if (!isMissingSchema(e)) throw e /* else: no profile table */ }
+  return tenantOffer('', sells) ?? ''
 }
 
 // Sets the offer of one play of this tenant, and nothing else: the profile and every other play keep theirs.
