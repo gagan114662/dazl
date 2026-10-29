@@ -85,3 +85,11 @@ test('onboarding "brain ready" copy matches behaviour: no approve-every-send, no
   assert.match(fr, /autopilot is off unless you turn it on/)
   assert.match(fr, /held for your review/)
 })
+
+test('first-review copy names the Autopilot exception wherever it says you approve before sending (as on the homepage, #338)', () => {
+  const fr = read('app/app/onboarding/first-review.tsx')
+  assert.doesNotMatch(fr, /Nothing sends until you approve/)
+  const claims = fr.split(/(?<=[.!?'])\s+/).filter(x => /\bapprove\b/i.test(x) && /Outreach|\bsends?\b/.test(x))
+  assert.ok(claims.length >= 2)
+  for (const c of claims) assert.match(c, /unless you turn on Autopilot/, c)
+})

@@ -20,6 +20,7 @@
     "test:smoke:staging": "node --experimental-strip-types --no-warnings test/smoke/staging.smoke.mjs",
     "test:smoke:tenants": "node --experimental-strip-types --no-warnings test/smoke/two-tenant.smoke.mjs",
     "test:smoke:release": "node test/smoke/release-identity.smoke.mjs",
+    "staging:scenarios": "node --experimental-strip-types --no-warnings --import ./test/helpers/net-fence.ts scripts/staging-send-scenarios.mts",
     "test:smoke:recovery": "node --experimental-strip-types --no-warnings test/smoke/recovery-drill.smoke.mjs"
   },
   "dependencies": {

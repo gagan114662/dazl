@@ -29,19 +29,34 @@ export type PlayOffer =
 
 export const cleanOffer = (s: unknown): string => typeof s === 'string' ? s.replace(/\s+/g, ' ').trim().slice(0, MAX_OFFER) : ''
 
-// The offer a request states, if it states one: "selling X to ...", "we sell X to ...", "I offer X for ...",
-// "offer: X". Plain targeting ("dental practices in NYC hiring a receptionist") states none.
+// The offer a request states, if it states one. Only a positive seller assertion counts, and only at the start of a
+// sentence or clause (after ",", ";", ":" or a dash), never words embedded in targeting or an exclusion:
+//   "We sell / we're selling / I am offering / we provide <offer> to|for ..."   "Selling <offer> to ..."
+//   "We sell <offer>." (the whole sentence)                                     "Offer: <offer>" / "Our product: <offer>"
+// Plain targeting ("dental practices in NYC hiring a receptionist"), exclusions ("Exclude agencies selling CRM to
+// founders.", "Do not target people selling services to dental practices.") and negations ("We don't sell to agencies.",
+// "We are not selling hardware.") state none, and neither does "We sell to <buyers>" (a target, not an offer).
+const SENTENCE_STOP = /[.!?;\n]/
+const LEAD = String.raw`(?:^|[,;:\u2013\u2014]\s*|\s-\s*)(?:(?:hi|hello|note|fyi|also|and|but|so|ps)[,:]?\s+)?`
+const SPEAKER = String.raw`(?:i|we|i'm|we're|i am|we are)\s+(?:sell|selling|offer|offering|provide|providing)`
+const TO_FOR = new RegExp(`${LEAD}${SPEAKER}\\s+(.{3,150}?)\\s+(?:to|for)\\s+\\S`, 'i')
+const SELLING_TO_FOR = new RegExp(`${LEAD}selling\\s+(.{3,150}?)\\s+(?:to|for)\\s+\\S`, 'i')
+const BARE = new RegExp(`${LEAD}${SPEAKER}\\s+(.{3,150})$`, 'i')
+const LABEL = new RegExp(`${LEAD}(?:(?:our|my)\\s+)?(?:offer|offering|product|service)s?\\s*:\\s*(.{3,150})$`, 'i')
+// a capture that is a target ("to dental practices") or itself an exclusion is not an offer. Whole words only (an offer
+// like "insurance", "inbound marketing", "attribution software" or "no-code tools" starts with the same letters); the
+// one stem kept is exclud(e|es|ed|ing), since every form of it is an exclusion.
+const NOT_AN_OFFER = /^(?:(?:to|for|into|in|at|within|only|except|no|not)(?![\p{L}\p{N}'’-])|exclud)/iu
 export function statedOffer(query: string | null | undefined): string | null {
-  const q = (query ?? '').replace(/\s+/g, ' ').trim()
+  const q = (query ?? '').replace(/[ \t]+/g, ' ').trim()
   if (!q) return null
-  const pats = [
-    /\b(?:i|we|i'm|we're|i am|we are)\s+(?:sell|selling|offer|offering|provide|providing)\s+(.{3,150}?)\s+(?:to|for)\s+\S/i,
-    /\bselling\s+(.{3,150}?)\s+(?:to|for)\s+\S/i,
-    /\b(?:offer|offering|product|service)\s*:\s*([^.;\n]{3,150})/i,
-  ]
-  for (const p of pats) {
-    const m = p.exec(q)
-    if (m) { const o = cleanOffer(m[1].replace(/^(?:our|my|a|an)\s+/i, '')); if (o.length >= 3) return o }
+  for (const sentence of q.split(SENTENCE_STOP).map(x => x.trim()).filter(Boolean)) {
+    for (const p of [TO_FOR, SELLING_TO_FOR, LABEL, BARE]) {
+      const m = p.exec(sentence)
+      if (!m) continue
+      const o = cleanOffer(m[1].replace(/^(?:our|my|a|an)\s+/i, ''))
+      if (o.length >= 3 && !NOT_AN_OFFER.test(o)) return o
+    }
   }
   return null
 }
@@ -74,4 +89,19 @@ export function effectiveOffer(play: { offer?: string | null; seller?: string | 
   if (base) return { offer: base, source: recorded ? 'recorded' : 'profile', conflict: null }
   if (stated) return { offer: stated, source: 'request', conflict: null }
   return { offer: null, source: 'none', conflict: null }
+}
+
+// The tenant's own selling context, for a play without an offer of its own (#349): the Memory positioning set in
+// Settings, else what onboarding saved (users.sells), so nobody needs a second hidden form. Every drafting path (template,
+// rewrite, follow-ups), scoring and the offer card read it through these two functions, so they cannot disagree.
+export function tenantOffer(memoryPositioning: string | null | undefined, profileSells: string | null | undefined): string | null {
+  return cleanOffer(memoryPositioning) || cleanOffer(profileSells) || null
+}
+// The offer a draft for a lead of this play states: the play's effective offer, with the tenant context as its base. A
+// contested play refuses (offer_conflict). offer null and no refusal: there is nothing to state.
+export type DraftOffer = { offer: string | null; refuse: 'offer_conflict' | null }
+export function draftOffer(play: { offer?: string | null; seller?: string | null; query?: string | null } | null | undefined, tenant: string | null): DraftOffer {
+  const e = effectiveOffer(play ?? {}, tenant ?? '')
+  if (e.conflict) return { offer: null, refuse: 'offer_conflict' }
+  return { offer: e.offer, refuse: null }
 }
