@@ -44,6 +44,19 @@ export function migrateConnectors(db: Database.Database): void {
       UNIQUE (lead_id, connector, kind, value)
     );
     CREATE INDEX IF NOT EXISTS lead_enrichments_lead ON lead_enrichments (lead_id);
+    -- One claim per tenant, CRM destination (provider and account) and lead (lib/crm/index.ts, #365): taken before a
+    -- native CRM create is sent, so two requests or two workers can never both send it, and an unknown outcome blocks
+    -- a retry until the user resolves it, across restarts.
+    CREATE TABLE IF NOT EXISTS crm_push_claims (
+      tenant_id   TEXT NOT NULL,
+      destination TEXT NOT NULL,
+      lead_id     TEXT NOT NULL,
+      status      TEXT NOT NULL CHECK (status IN ('pending', 'ok', 'failed', 'uncertain', 'resolved_created', 'resolved_not_created')),
+      external_id TEXT,
+      claimed_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL,
+      PRIMARY KEY (tenant_id, destination, lead_id)
+    );
   `)
   migrateInsertionOrder(db, ['lead_enrichments', 'connector_audit']) // insert_seq (lib/db/insertion-order.ts)
 }

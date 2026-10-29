@@ -2,6 +2,7 @@
 // connectors vault (never returned by any API). Three targets: HubSpot (private-app
 // token), Pipedrive (API token), or a generic HTTPS webhook the tenant controls.
 // A push failure is reported to the caller, never swallowed silently.
+import { createHash } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getEnabledCredential, saveCredential, deleteCredential, audit } from '../connectors/store.ts'
 import { fetchPublicHtml, defaultLookup, type Lookup } from '../net/public-fetch.ts'
@@ -125,16 +126,48 @@ export async function pushLead(cfg: CrmConfig, lead: CrmLead, fetchImpl?: typeof
   return { message: 'Lead sent to your webhook', externalId: null }
 }
 
-// Audit one push attempt on the connectors settings page: ok, worker_error (nothing created), or uncertain (unknown:
-// it may have been created). The lead is identified by its scan and company, the same key pushBlocked reads.
+// Audit one push attempt on the connectors settings page: ok, worker_error (nothing created), uncertain (unknown: it
+// may have been created), or what the user found when resolving an unknown push.
 export type PushAudit = 'ok' | 'worker_error' | 'uncertain' | 'resolved_created' | 'resolved_not_created'
 export function auditPush(db: Database.Database, tenantId: string, provider: string, lead: { company: string; scan_job_id?: string | null }, status: PushAudit): void {
   audit(db, { tenantId, connector: `crm:${provider}`, jobId: lead.scan_job_id ?? null, lookup: lead.company.slice(0, 200), status, results: status === 'ok' || status === 'resolved_created' ? 1 : 0 })
 }
-// True while this tenant's latest push of this lead to this CRM has an unknown result: pushing again could create a
-// duplicate, so the push waits until the user checks the CRM and records what they found (resolve). Tenant-scoped.
-export function pushBlocked(db: Database.Database, tenantId: string, provider: string, lead: { company: string; scan_job_id: string }): boolean {
-  const r = db.prepare('SELECT status FROM connector_audit WHERE tenant_id = ? AND connector = ? AND scan_job_id = ? AND lookup = ? ORDER BY created_at DESC, insert_seq DESC LIMIT 1')
-    .get(tenantId, `crm:${provider}`, lead.scan_job_id, lead.company.slice(0, 200)) as { status: string } | undefined
-  return r?.status === 'uncertain'
+
+// ---------- push claims (crm_push_claims, lib/connectors/store.ts) ----------
+// A native CRM create (HubSpot, Pipedrive) is sent only by the request that claimed (tenant, destination, lead) first.
+// The destination is the provider and the account the key opens (a fingerprint of the key, never the key), so a claim
+// follows the lead id, not its company text, and another CRM account is another destination. The generic webhook
+// keeps its own protocol and takes no claim.
+//   pending   a create is (or was) on its way. A claim still pending after STALE_CLAIM_SECONDS belongs to a request
+//             that crashed or could not record its result: it is unknown.
+//   uncertain the CRM's answer did not say whether the record exists.
+//   Both block a new push until the user resolves it (resolveClaim). ok, failed and the resolved states may be claimed
+//   again. A claim that could not be finished stays pending, so a failure to record never makes a retry look safe.
+export const STALE_CLAIM_SECONDS = 300
+export type ClaimBlock = 'in_progress' | 'unknown'
+export const crmDestination = (tenantId: string, cfg: CrmConfig): string =>
+  `${cfg.provider}:${createHash('sha256').update(`dazl-crm-destination\0${tenantId}\0${cfg.provider}\0${cfg.key ?? ''}`).digest('hex').slice(0, 24)}`
+const nowS = () => Math.floor(Date.now() / 1000)
+
+// Claims the push atomically. Returns the claim time (the fence finishClaim needs), or why the lead is blocked.
+export function claimPush(db: Database.Database, tenantId: string, destination: string, leadId: string, now = nowS()): { claimedAt: number } | { blocked: ClaimBlock } {
+  const r = db.prepare(`INSERT INTO crm_push_claims (tenant_id, destination, lead_id, status, claimed_at, updated_at) VALUES (?, ?, ?, 'pending', ?, ?)
+    ON CONFLICT (tenant_id, destination, lead_id) DO UPDATE SET status = 'pending', external_id = NULL, claimed_at = excluded.claimed_at, updated_at = excluded.updated_at
+    WHERE crm_push_claims.status IN ('ok', 'failed', 'resolved_created', 'resolved_not_created')`).run(tenantId, destination, leadId, now, now)
+  if (r.changes === 1) return { claimedAt: now }
+  const c = db.prepare('SELECT status, claimed_at FROM crm_push_claims WHERE tenant_id = ? AND destination = ? AND lead_id = ?').get(tenantId, destination, leadId) as { status: string; claimed_at: number }
+  return { blocked: c.status === 'pending' && c.claimed_at > now - STALE_CLAIM_SECONDS ? 'in_progress' : 'unknown' }
+}
+// Records the outcome of the claim this request holds. False when the claim is no longer this request's (resolved as
+// stale meanwhile); the caller then reports the outcome as unknown.
+export function finishClaim(db: Database.Database, tenantId: string, destination: string, leadId: string, claimedAt: number, status: 'ok' | 'failed' | 'uncertain', externalId: string | null, now = nowS()): boolean {
+  return db.prepare("UPDATE crm_push_claims SET status = ?, external_id = ?, updated_at = ? WHERE tenant_id = ? AND destination = ? AND lead_id = ? AND status = 'pending' AND claimed_at = ?")
+    .run(status, externalId, now, tenantId, destination, leadId, claimedAt).changes === 1
+}
+// The user checked the CRM after an unknown outcome. Only an unknown claim (uncertain, or pending past the stale
+// limit) can be resolved, atomically: a second resolve, or one racing a fresh push, changes nothing.
+export function resolveClaim(db: Database.Database, tenantId: string, destination: string, leadId: string, created: boolean, now = nowS()): boolean {
+  return db.prepare(`UPDATE crm_push_claims SET status = ?, updated_at = ? WHERE tenant_id = ? AND destination = ? AND lead_id = ?
+    AND (status = 'uncertain' OR (status = 'pending' AND claimed_at <= ?))`)
+    .run(created ? 'resolved_created' : 'resolved_not_created', now, tenantId, destination, leadId, now - STALE_CLAIM_SECONDS).changes === 1
 }

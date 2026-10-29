@@ -6,7 +6,12 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { CrmPushError, pushLead, type CrmConfig, type CrmLead } from '../lib/crm/index.ts'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import Database from 'better-sqlite3'
+import { claimPush, CrmPushError, crmDestination, finishClaim, pushLead, resolveClaim, STALE_CLAIM_SECONDS, type CrmConfig, type CrmLead } from '../lib/crm/index.ts'
+import { migrateConnectors } from '../lib/connectors/store.ts'
 import type { Lookup } from '../lib/net/public-fetch.ts'
 
 const LEAD = { company: 'Synthetic Co', name: 'Pat Example', contact: 'pat@synthetic.example', signal: 's', source_url: 'https://news.example/a' }
@@ -85,6 +90,34 @@ test('route: truthful outcomes, audit rows, unknown blocks a blind retry until r
     '--test', './test/helpers/crm-route-runtime.mts'], { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 120000 })
   assert.equal(r.error, undefined)
   assert.equal(r.status, 0, r.stdout + r.stderr)
-  assert.match(r.stdout, /# pass 4\b/)
+  assert.match(r.stdout, /# pass 8\b/)
   assert.match(r.stdout, /# fail 0\b/)
+})
+
+// Two workers (two connections to one database file) claiming the same push: exactly one wins, every time.
+test('claims across two workers: one winner; resolution races change one row once; tenants and CRM accounts are separate', () => {
+  const file = path.join(mkdtempSync(path.join(tmpdir(), 'dazl-claims-')), 'app.db')
+  const w1 = new Database(file); migrateConnectors(w1); const w2 = new Database(file)
+  const dest = crmDestination('A', HS), NOW = 1_800_000_000
+  for (let i = 0; i < 20; i++) {
+    const lead = `lead-${i}`
+    const [a, b] = [claimPush(w1, 'A', dest, lead, NOW), claimPush(w2, 'A', dest, lead, NOW)]
+    assert.equal([a, b].filter(c => 'claimedAt' in c).length, 1, lead)
+    assert.deepEqual([a, b].find(c => 'blocked' in c), { blocked: 'in_progress' })
+  }
+  // the winner records unknown; two resolves race: one changes the row, the other finds nothing to resolve
+  assert.ok(finishClaim(w1, 'A', dest, 'lead-0', NOW, 'uncertain', null, NOW))
+  assert.deepEqual([resolveClaim(w1, 'A', dest, 'lead-0', false, NOW), resolveClaim(w2, 'A', dest, 'lead-0', true, NOW)], [true, false])
+  // after "not created" exactly one worker may claim again
+  assert.equal([claimPush(w1, 'A', dest, 'lead-0', NOW + 1), claimPush(w2, 'A', dest, 'lead-0', NOW + 1)].filter(c => 'claimedAt' in c).length, 1)
+  // a stale claim cannot be finished by its late request once resolved
+  assert.ok(resolveClaim(w2, 'A', dest, 'lead-0', true, NOW + 1 + STALE_CLAIM_SECONDS))
+  assert.equal(finishClaim(w1, 'A', dest, 'lead-0', NOW + 1, 'ok', '9', NOW + 2 + STALE_CLAIM_SECONDS), false)
+  // the destination is the tenant, provider and account: another tenant, another key or another CRM is another claim
+  assert.ok('claimedAt' in claimPush(w1, 'B', crmDestination('B', HS), 'lead-1', NOW))
+  assert.ok('claimedAt' in claimPush(w1, 'A', crmDestination('A', { provider: 'hubspot', key: 'other-account' }), 'lead-1', NOW))
+  assert.ok('claimedAt' in claimPush(w1, 'A', crmDestination('A', PD), 'lead-1', NOW))
+  assert.notEqual(crmDestination('A', HS), crmDestination('B', HS))
+  assert.doesNotMatch(crmDestination('A', HS), /synthetic/, 'never the key itself')
+  w1.close(); w2.close()
 })

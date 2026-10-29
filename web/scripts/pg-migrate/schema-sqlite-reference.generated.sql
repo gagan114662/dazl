@@ -113,6 +113,17 @@ CREATE TABLE consent_ledger (
       revoke_reason TEXT CHECK (revoke_reason IS NULL OR length(revoke_reason) <= 60)
     );
 
+CREATE TABLE crm_push_claims (
+      tenant_id   TEXT NOT NULL,
+      destination TEXT NOT NULL,
+      lead_id     TEXT NOT NULL,
+      status      TEXT NOT NULL CHECK (status IN ('pending', 'ok', 'failed', 'uncertain', 'resolved_created', 'resolved_not_created')),
+      external_id TEXT,
+      claimed_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL,
+      PRIMARY KEY (tenant_id, destination, lead_id)
+    );
+
 CREATE TABLE csv_batches (
       id         TEXT PRIMARY KEY,
       user_id    TEXT NOT NULL,

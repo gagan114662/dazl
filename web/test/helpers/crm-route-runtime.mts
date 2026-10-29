@@ -27,12 +27,14 @@ for (const [t, provider] of [['A', 'hubspot'], ['B', 'hubspot'], ['C', 'pipedriv
   // the same company and email in every tenant: nothing of one tenant's push state may reach another
   db.prepare("INSERT INTO leads (id, scan_job_id, company, name, contact, signal, source_url, evidence_excerpt, confidence) VALUES (?, ?, 'Synthetic Co', 'Pat Example', 'pat@synthetic.example', 's', 'https://news.example/a', 'q', 80)").run(`lead-${t}`, `job-${t}`)
 }
-const as = (id: string) => setUser({ id, business_name: id })
+// each test starts under the route's per-tenant rate limit (20 a minute), which the whole file would exceed
+const as = (id: string) => { db.prepare('DELETE FROM rate_limits').run(); setUser({ id, business_name: id }) }
 const post = async (body: unknown) => {
   const r = (await crm.POST(new NextRequest('http://localhost/api/crm', { method: 'POST', headers: { 'content-type': 'application/json', host: 'localhost' }, body: JSON.stringify(body) })))!
   return { status: r.status, json: await r.json() as Record<string, unknown> }
 }
 const push = (t: string) => post({ action: 'push', lead_id: `lead-${t}` })
+const claimOf = (t: string) => db.prepare('SELECT status, external_id FROM crm_push_claims WHERE tenant_id = ?').all(t)
 const auditOf = (t: string) => (db.prepare('SELECT connector, scan_job_id, lookup, status, results FROM connector_audit WHERE tenant_id = ? ORDER BY created_at, insert_seq').all(t) as { status: string }[])
 const reply = (body: string | null, status = 200) => () => new Response(body, { status })
 
@@ -107,4 +109,57 @@ test('Pipedrive through the route: string id is unknown, success:false is failed
   assert.deepEqual([r.status, r.json.message, r.json.external_id], [200, 'Person created in Pipedrive', '5'])
   assert.deepEqual(auditOf('C').map(a => a.status), ['uncertain', 'resolved_not_created', 'worker_error', 'ok'])
   assert.ok(calls.every(u => /^https:\/\/api\.(hubapi|pipedrive)\.com\//.test(u)), 'only the mocked CRM endpoints were addressed')
+})
+
+// Instinct's HOLD on 9ff1eb0: the claim is taken atomically before the create is sent, follows the lead id (not its
+// company text), survives a crash as unknown, and a result that cannot be recorded never makes a retry safe.
+test('two concurrent pushes of one lead send ONE create; the other is refused as in progress', async () => {
+  db.prepare("DELETE FROM crm_push_claims").run(); calls.length = 0
+  as('A')
+  let release!: () => void
+  const gate = new Promise<void>(r => { release = r })
+  answer = async () => { await gate; return new Response('{}', { status: 200 }) }
+  const both = Promise.all([push('A'), push('A')])
+  await new Promise(r => setTimeout(r, 20))
+  release()
+  const rs = await both
+  assert.equal(calls.length, 1, 'exactly one create left the handler')
+  assert.deepEqual(rs.map(r => [r.status, r.json.outcome]).sort(), [[409, 'in_progress'], [502, 'unknown']])
+  assert.deepEqual(claimOf('A'), [{ status: 'uncertain', external_id: null }])
+})
+
+test('the hold follows the lead, not its company text: a rename in the same scan keeps the unknown push blocked', async () => {
+  as('A'); calls.length = 0
+  db.prepare("UPDATE leads SET company = 'Synthetic Co (renamed)' WHERE id = 'lead-A'").run()
+  const r = await push('A')
+  assert.deepEqual([r.status, r.json.outcome, calls.length], [409, 'unknown', 0])
+  assert.equal((await post({ action: 'resolve', lead_id: 'lead-A', created: false })).status, 200)
+  db.prepare("UPDATE leads SET company = 'Synthetic Co' WHERE id = 'lead-A'").run()
+})
+
+test('a crashed request (claim left pending) blocks as in progress, then as unknown once stale; only then can it be resolved', async () => {
+  as('A'); calls.length = 0
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare("UPDATE crm_push_claims SET status = 'pending', claimed_at = ? WHERE tenant_id = 'A'").run(now - 10)
+  let r = await push('A')
+  assert.deepEqual([r.status, r.json.outcome, calls.length], [409, 'in_progress', 0])
+  assert.equal((await post({ action: 'resolve', lead_id: 'lead-A', created: false })).status, 409, 'a live claim cannot be resolved')
+  db.prepare("UPDATE crm_push_claims SET claimed_at = ? WHERE tenant_id = 'A'").run(now - 301)
+  r = await push('A')
+  assert.deepEqual([r.status, r.json.outcome, calls.length], [409, 'unknown', 0])
+  assert.equal((await post({ action: 'resolve', lead_id: 'lead-A', created: true })).status, 200)
+  assert.deepEqual(claimOf('A'), [{ status: 'resolved_created', external_id: null }])
+})
+
+test('a result that cannot be recorded after the create answers ok: reported unknown, and the retry stays blocked', async () => {
+  as('A'); calls.length = 0
+  db.exec("CREATE TRIGGER crm_claim_write_fails BEFORE UPDATE ON crm_push_claims WHEN NEW.status <> 'pending' BEGIN SELECT RAISE(ABORT, 'disk full'); END")
+  try {
+    answer = reply(JSON.stringify({ id: '555' }), 201)
+    const r = await push('A')
+    assert.deepEqual([r.status, r.json.outcome, calls.length], [502, 'unknown', 1])
+  } finally { db.exec('DROP TRIGGER crm_claim_write_fails') }
+  assert.deepEqual(claimOf('A'), [{ status: 'pending', external_id: null }])
+  const again = await push('A')
+  assert.deepEqual([again.status, again.json.outcome, calls.length], [409, 'in_progress', 1], 'no second create')
 })
