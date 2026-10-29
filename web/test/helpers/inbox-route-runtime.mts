@@ -11,7 +11,7 @@ import { GET, POST } from '../../app/api/outreach/inbox/route.ts'
 globalThis.fetch = (async () => { throw new Error('Unexpected network call') }) as typeof fetch
 const A = { id: 'A', business_name: 'Acme' }, B = { id: 'B', business_name: 'Beta' }
 const get = (q: string) => GET(new NextRequest(`http://localhost/api/outreach/inbox${q}`, { method: 'GET' }))
-const post = (body: unknown) => POST(new NextRequest('http://localhost/api/outreach/inbox', { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json' } }))
+const post = (body: unknown) => POST(new NextRequest('http://localhost/api/outreach/inbox', { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json', origin: 'http://localhost', host: 'localhost' } }))
 const NOW = 1_800_000_000
 const PA = 'a'.repeat(24), PA2 = 'c'.repeat(24), PB = 'b'.repeat(24)
 
@@ -55,6 +55,11 @@ test('GET /api/outreach/inbox paged list and POST /api/outreach/inbox read: own 
   assert.equal((await get('?status=everything')).status, 400)
   assert.equal((await get('?cursor=garbage')).status, 400)
   assert.equal((await post({ thread_id: 'AMARKER-T1' })).status, 400)
+  // Same-origin JSON only (lib/same-origin.ts), as the neighbouring cookie-authenticated writes: nothing is marked.
+  const foreign = (headers: Record<string, string>) => POST(new NextRequest('http://localhost/api/outreach/inbox', { method: 'POST', body: JSON.stringify({ thread_id: 'AMARKER-T3', action: 'read' }), headers }))
+  assert.equal((await foreign({ 'content-type': 'application/json', origin: 'https://evil.example' })).status, 400)
+  assert.equal((await foreign({ 'content-type': 'text/plain' })).status, 400)
+  assert.equal((db.prepare("SELECT count(*) AS n FROM inbox_thread_reads WHERE thread_id = 'AMARKER-T3'").get() as { n: number }).n, 0)
 
   // Mark read: own thread only; another tenant's thread answers exactly like an unknown one and writes nothing.
   assert.equal((await post({ thread_id: 'AMARKER-T1', action: 'read' })).status, 200)

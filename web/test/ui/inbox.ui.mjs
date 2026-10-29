@@ -50,7 +50,8 @@ function serve(u, reads) {
 }
 
 const b = await chromium.launch()
-async function open(url, width = 1280, height = 900) {
+// delay(u, method) -> ms: hold that response back (the body is computed when the request arrives, as a server would)
+async function open(url, width = 1280, height = 900, delay = () => 0) {
   const ctx = await b.newContext({ viewport: { width, height } })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
   const reads = new Set(), calls = [], posts = []
@@ -59,10 +60,11 @@ async function open(url, width = 1280, height = 900) {
     if (u.origin !== base) return route.abort()
     if (!p.startsWith('/api/')) return route.continue()
     const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
-    if (p === '/api/outreach/inbox' && req.method() === 'POST') { const body = JSON.parse(req.postData() || '{}'); posts.push(body); reads.add(body.thread_id); return json({ ok: true }) }
+    const wait = ms => new Promise(r => setTimeout(r, ms))
+    if (p === '/api/outreach/inbox' && req.method() === 'POST') { const body = JSON.parse(req.postData() || '{}'); posts.push(body); reads.add(body.thread_id); await wait(delay(u, 'POST')); return json({ ok: true }) }
     if (p === '/api/outreach/inbox') {
       if (u.searchParams.get('thread_id')) return json({ messages: [{ dir: 'in', kind: 'reply', subject: null, body: 'Yes - send details', at: now, classification: 'positive' }] })
-      calls.push(u.search); return json(serve(u, reads))
+      calls.push(u.search); const body = serve(u, reads); await wait(delay(u, 'GET')); return json(body)
     }
     if (p === '/api/outreach/conversion') return json({ rows: [] })
     return json({}, 404)
@@ -111,7 +113,68 @@ try {
     await shot(page, 'inbox-play-mobile')
     await ctx.close()
   }
-  console.log('inbox UI check passed: server-side filters and totals, paging to the end with no duplicates, play-scoped Outcomes link finds the older conversation, opening marks read once')
+  // Stale responses (Instinct #425 review): a response to an earlier query never shows under, or changes, a later one.
+  const pressed = async (page, st) => (await page.getByTestId(`inbox-filter-${st}`).getAttribute('aria-pressed')) === 'true'
+  const settle = ms => new Promise(r => setTimeout(r, ms))
+  {
+    // Slow first, fast second: Needs you is held back 1.2 s; Unread is clicked right after and answers at once.
+    const { ctx, page } = await open('/app/inbox', 1280, 900, u => u.searchParams.get('status') === 'needs_owner' ? 1200 : 0)
+    await page.getByTestId('inbox-filters').waitFor({ timeout: 15000 })
+    await page.getByTestId('inbox-filter-needs_owner').click()
+    await page.getByTestId('inbox-filter-unread').click()
+    await settle(1800)
+    assert.ok(await pressed(page, 'unread'))
+    const rows = await ids(page)
+    assert.equal(rows.length, 50)
+    const unreadIds = new Set(THREADS.filter(t => t.unread).map(t => t.company))
+    assert.equal(rows.filter(r => ![...unreadIds].some(c => r.includes(c + ' ') || r.includes(c + '('))).length, 0, 'no read row from the late Needs you response under Unread')
+    assert.equal(await page.locator('[data-testid=inbox-thread] [aria-label=Unread]').count(), 50, 'every row shown under Unread is unread')
+    assert.match(await page.getByTestId('inbox-filter-unread').textContent(), /Unread\s*61/, 'Unread total from its own response')
+    await ctx.close()
+  }
+  {
+    // Load more, then switch: the older page is held back; Needs you is clicked meanwhile. The late page must not be
+    // appended to the Needs you list.
+    const { ctx, page } = await open('/app/inbox', 1280, 900, u => u.searchParams.get('cursor') ? 1200 : 0)
+    await page.getByTestId('inbox-filters').waitFor({ timeout: 15000 })
+    await page.getByTestId('inbox-more').click()
+    await page.getByTestId('inbox-filter-needs_owner').click()
+    await settle(1800)
+    assert.ok(await pressed(page, 'needs_owner'))
+    const rows = await ids(page)
+    assert.equal(rows.length, 50, 'only the Needs you first page')
+    assert.equal(rows.filter(r => /not interested/.test(r)).length, 0, 'no row of the All list (not interested) appended')
+    await ctx.close()
+  }
+  {
+    // Play scope: start in one play, pick Unread for it (held back), then Show every play (fast). The late play-scoped
+    // page must not replace the every-play list.
+    const { ctx, page } = await open(`/app/inbox?job_id=${OLD}`, 1280, 900, u => u.searchParams.get('job_id') && u.searchParams.get('status') === 'unread' ? 1200 : 0)
+    await page.getByTestId('inbox-filters').waitFor({ timeout: 15000 })
+    await page.getByTestId('inbox-filter-unread').click()
+    await page.getByRole('button', { name: 'Show every play' }).click()
+    await settle(1800)
+    assert.equal(await page.getByTestId('inbox-play-scope').count(), 0)
+    const rows = await ids(page)
+    assert.equal(rows.length, 50, 'the every-play Unread page, not the one-thread play page')
+    assert.match(await page.getByTestId('inbox-filter-unread').textContent(), /Unread\s*61/)
+    await ctx.close()
+  }
+  {
+    // A late mark-read: open an unread thread under All (its POST held back), switch to Needs you before it answers.
+    // The Needs you counts are the server's; the late success does not decrement them again.
+    const { ctx, page, posts } = await open('/app/inbox', 1280, 900, (u, m) => m === 'POST' ? 1200 : 0)
+    await page.getByTestId('inbox-filters').waitFor({ timeout: 15000 })
+    await page.getByTestId('inbox-thread').first().getByRole('button', { name: 'View thread' }).click()
+    await page.getByTestId('inbox-filter-needs_owner').click()
+    await settle(1800)
+    assert.equal(posts.length, 1)
+    assert.ok(await pressed(page, 'needs_owner'))
+    // The server counted the read when the POST arrived (before the Needs you page was computed): 60 unread, once.
+    assert.match(await page.getByTestId('inbox-filter-unread').textContent(), /Unread\s*60/, 'not decremented a second time by the late response')
+    await ctx.close()
+  }
+  console.log('inbox UI check passed: server-side filters and totals, paging to the end with no duplicates, play-scoped Outcomes link finds the older conversation, opening marks read once; stale responses (slow first filter, load-more then switch, play-scope change, late mark-read) never reach a later query')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }

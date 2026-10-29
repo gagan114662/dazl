@@ -4,6 +4,7 @@ import { hasReadConsent, threadMessages } from '@/lib/outreach/replies'
 import { inboxPage, markThreadRead, parseInboxQuery, InboxQueryError } from '@/lib/outreach/inbox'
 import { gmailStatus } from '@/lib/gmail/oauth'
 import { getSettings } from '@/lib/outreach/service'
+import { sameOriginJson } from '@/lib/same-origin'
 
 // GET ?thread_id=<id>             one thread's messages (owner-scoped; another tenant's thread answers like an unknown one)
 // GET ?job_id&status&class&thread&cursor&limit
@@ -42,6 +43,8 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
+  // Cookie-authenticated write: JSON only, and same-origin when the browser says where it came from (lib/same-origin.ts).
+  if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   const b = await req.json().catch(() => null) as { thread_id?: unknown; action?: unknown } | null
   if (!b || typeof b.thread_id !== 'string' || !b.thread_id || b.thread_id.length > 200 || b.action !== 'read') return NextResponse.json({ error: 'bad_request' }, { status: 400 })
   const ok = await markThreadRead(getScanDb(), user.id, b.thread_id)
