@@ -24,9 +24,9 @@ const NYC_STREET = new RegExp(`\\b\\d{1,5}(?:-\\d{1,4})?\\s+[\\p{L}0-9'\\- ]{2,4
 // is a short allow-list of own-address phrasing, not a list of third parties. A mixed page whose address is unbound stays out of agreement.
 const sentences = (text: string) => text.split(/(?<=[.!?])\s+(?=[A-Z])|\n+/)
 const normName = (x: string) => x.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/&/g, 'and').replace(/\b(inc|ltd|llc|limited|gmbh|corp|corporation|co|company|plc|pty|group|the)\b/g, ' ').replace(/[^a-z0-9]+/g, '')
-const CONNECT = new Set(['a', 'an', 'is', 'are', 'located', 'based', 'situated', 'found', 'at', 'on', 'in', 'office', 'offices', 'headquarters', 'hq', 'head', 'registered', 'address', 'visit', 'find', 'contact', 'come', 'see', 'us', 'we', 'were', 'our', 'main', 'second', 'new', 'flagship', 'principal', 'primary', 'home', 'uk', 'london', 'nyc', 'york', 'local', 'clinic', 'studio', 'practice', 'branch', 'dental', 'and', 'the'])
+const CONNECT = new Set(['is', 'are', 'located', 'based', 'situated', 'found', 'at', 'on', 'in', 'office', 'offices', 'headquarters', 'hq', 'head', 'registered', 'address', 'visit', 'find', 'contact', 'come', 'see', 'us', 'we', 'were', 'our', 'main', 'second', 'new', 'flagship', 'principal', 'primary', 'home', 'uk', 'london', 'nyc', 'york', 'local', 'clinic', 'studio', 'practice', 'branch', 'dental', 'and', 'the'])
 const FIRST_PERSON = new Set(['our', 'we', 'us', 'were'])
-function bindsToCompany(prefix: string, company?: string): boolean {
+function bindsToCompany(prefix: string, company?: string, appositive = false): boolean {
   let rest = prefix.trim()
   const n = company ? normName(company) : ''
   let named = false
@@ -40,7 +40,8 @@ function bindsToCompany(prefix: string, company?: string): boolean {
   }
   if (named) rest = rest.replace(/\b(inc|incorporated|ltd|limited|llc|llp|gmbh|corp|corporation|co|company|plc|pty|group|the)\b/gi, ' ')   // "Smile Avenue Dental Group, Pico Rivera, CA" is still the company's own address line
   const toks = rest.toLowerCase().replace(/[’']/g, '').split(/[^a-z]+/).filter(Boolean)
-  if (!toks.every(w => CONNECT.has(w))) return false
+  // appositive ("Smile Avenue Dental, a Pico Rivera, CA practice"): a leading article is allowed after the company's own name.
+  if (!toks.every(w => CONNECT.has(w) || (appositive && named && (w === 'a' || w === 'an')))) return false
   return named || toks.some(w => FIRST_PERSON.has(w))
 }
 const ownAddress = (text: string, re: RegExp, company?: string) => sentences(text).some(sn => { const m = re.exec(sn); return !!m && bindsToCompany(sn.slice(0, m.index), company) })
@@ -184,12 +185,12 @@ function boundOtherUsPlace(text: string, terms: string[], company?: string): boo
   for (const sn of sentences(text)) {
     for (const m of sn.matchAll(STATE_AB)) {
       const ab = m[1].toUpperCase(); const prefix = sn.slice(0, m.index)
-      if (oursAb.has(ab) || !bindsToCompany(prefix, company)) continue
+      if (oursAb.has(ab) || !bindsToCompany(prefix, company, true)) continue
       other = true
     }
   }
   if (!other) return false
-  const askedBound = sentences(text).some(sn => city.some(c => { const i = sn.toLowerCase().indexOf(c); return i >= 0 && bindsToCompany(sn.slice(0, i), company) }))
+  const askedBound = sentences(text).some(sn => city.some(c => { const i = sn.toLowerCase().indexOf(c); return i >= 0 && bindsToCompany(sn.slice(0, i), company, true) }))
   return !askedBound
 }
 const US_STATES_NAMES = new Set(Object.values(US_STATES))
