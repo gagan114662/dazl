@@ -10,6 +10,7 @@ import { getMasterKey } from '../secrets.ts'
 import { effectiveOffer } from '../scan/play-offer-text.ts'
 import { playOfferRow } from './service.ts'
 import { getMemory, memoryPromptBlock, type Memory } from '../memory.ts'
+import { memoryForLead } from './play-memory.ts'
 
 export interface LlmDeps { fetchImpl?: typeof fetch; master?: Buffer; providers?: Record<string, Provider> }
 
@@ -165,11 +166,11 @@ Match the seller's tone when given. No invented facts or numbers. Reply with the
 }
 
 // LLM follow-up body on the tenant's key with Memory; null means "use the template".
-export async function llmFollowupText(db: Database.Database, tenantId: string, step: number, lead: LeadCtx, businessName: string, bookingUrl: string | null | undefined, deps: LlmDeps = {}): Promise<string | null> {
+export async function llmFollowupText(db: Database.Database, tenantId: string, step: number, lead: LeadCtx & { lead_id?: string }, businessName: string, bookingUrl: string | null | undefined, deps: LlmDeps = {}): Promise<string | null> {
   const p = pickProvider(db, tenantId, deps)
   if (!p) return null
   try {
-    const text = (await p.provider.complete!(p.key, followupPrompt(step, businessName, lead, bookingUrl, memoryPromptBlock(getMemory(db, tenantId))), deps.fetchImpl, 400)).trim().slice(0, 3000)
+    const text = (await p.provider.complete!(p.key, followupPrompt(step, businessName, lead, bookingUrl, memoryPromptBlock(lead.lead_id ? memoryForLead(db, tenantId, lead.lead_id) : getMemory(db, tenantId))), deps.fetchImpl, 400)).trim().slice(0, 3000)
     if (text.length < 20 || /^\s*Subject:/im.test(text)) return null
     if (bookingUrl && !text.includes(bookingUrl)) return null // a dropped booking link is a broken draft
     return text

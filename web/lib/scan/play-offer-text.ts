@@ -48,19 +48,13 @@ export function offerOfSeller(seller: string | null | undefined): string | null 
   return cleanOffer(offer) || null
 }
 
-// Words that never change what an offer is. Everything else counts, including negations ("no", "without", "except")
-// and buyer qualifiers ("for veterinary practices"): those are exactly the differences a tenant must decide.
-const FILLER = new Set(['a', 'an', 'the', 'and', 'our', 'my', 'your'])
-const offerWords = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').split(' ').filter(w => w && !FILLER.has(w)).map(w => w.length > 3 ? w.replace(/s$/, '') : w)
-// Two offers name the same thing only when they say the same words (order, case, punctuation, articles and plural
-// endings aside). Any added, removed or replaced word is a difference to choose between, never a guess: a near match
-// ("appointment software for dental practices" / "... for veterinary practices", "CRM setup and outbound consulting" /
-// "CRM setup but no outbound consulting") is a different offer.
+// Two offers are the same only when they are the same text, ignoring case and spacing. Nothing else is normalized:
+// word order, negation ("SEO but not PPC" / "PPC but not SEO"), exclusions and buyer qualifiers all carry meaning, so
+// any other difference is a choice for the tenant, never inferred.
+const exact = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase()
 export function sameOffer(a: string, b: string): boolean {
-  const wa = offerWords(a), wb = offerWords(b)
-  if (!wa.length || !wb.length) return false
-  const sa = [...new Set(wa)].sort().join(' '), sb = [...new Set(wb)].sort().join(' ')
-  return sa === sb
+  const x = exact(a), y = exact(b)
+  return !!x && x === y
 }
 
 export function effectiveOffer(play: { offer?: string | null; seller?: string | null; query?: string | null }, profileSells: string | null | undefined): PlayOffer {

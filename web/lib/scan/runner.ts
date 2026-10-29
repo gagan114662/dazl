@@ -38,7 +38,7 @@ import { anthropicCountTokens, guardProvider, ownerPool, reserveAllUsd, SpendGua
 import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
 import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './verify-provenance.ts'
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
-import { getMemory, isExcluded, memoryPromptBlock } from '../memory.ts'
+import { getMemory, isExcluded, memoryPromptBlock, type Memory } from '../memory.ts'
 import { enrichJobSignals } from '../signals/index.ts'
 import { applySalesHiringGate, failClosedSalesHiring, persistHeldState, type QuoteEvidence, type HeldLead } from './sales-hiring-gate.ts'
 import { beginEnrichment, endEnrichment } from './enrichment.ts'
@@ -154,14 +154,22 @@ export type PageFetcher = (url: string) => Promise<Page | FetchFail | null>
 
 export interface ReviewLead extends LeadDraft { review_reason: string }
 // The seller's own offer text for THIS play (lib/scan/play-offer.ts): the offer reviewed for the play, else the one it
-// was created with, else the account's profile offer. A play whose offer is contested gets no offer block (scoring never
-// assumes one). A missing column or row means no block.
+// was created with, else the tenant's selling context (Memory positioning, else the profile offer). A play whose offer
+// is contested gets no offer block (scoring never assumes one). A missing column or row means no block.
 export function offerBlockFor(db: Database.Database, userId: string, jobId?: string): string {
   try {
-    const sells = (db.prepare('SELECT sells FROM users WHERE id = ?').get(userId) as { sells?: string } | undefined)?.sells
+    let positioning: string | undefined, sells: string | undefined
+    try { positioning = getMemory(db, userId)?.positioning?.trim() } catch { /* no Memory table yet */ }
+    try { if (!positioning) sells = (db.prepare('SELECT sells FROM users WHERE id = ?').get(userId) as { sells?: string } | undefined)?.sells } catch { /* no profile table */ }
+    const profile = positioning || sells
     const play = jobId ? db.prepare('SELECT offer, seller, query FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, userId) as { offer: string | null; seller: string | null; query: string | null } | undefined : undefined
-    return sellerOfferBlock(play ? effectiveOffer(play, sells).offer : sells)
+    return sellerOfferBlock(play ? effectiveOffer(play, profile).offer : profile)
   } catch { return '' }
+}
+// What buyer-fit scoring is told about the seller for one play: the tenant's Memory WITHOUT its positioning (a global
+// offer that may not be this play's), then this play's offer block, which is the only statement of what is sold.
+export function scoringSellerContext(db: Database.Database, userId: string, jobId: string, memory: Memory | null): string {
+  return memoryPromptBlock(memory ? { ...memory, positioning: '' } : null) + offerBlockFor(db, userId, jobId)
 }
 export interface VerifyOutcome { leads: VerifiedLead[]; review: ReviewLead[]; dropped: Record<string, number>; quotes?: Map<string, QuoteEvidence[]> } // quotes: every VERIFIED candidate's quote by company key, even when a duplicate candidate was the one kept; the sales-hiring gate reads them only through its identity-compatibility check
 
@@ -1127,7 +1135,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // per scan; a scoring failure never fails the scan - but it no longer passes the raw
     // candidate score through as if it were a grade. Ungraded leads are held at fit 0.
     if (complete && outcome.leads.length > 0 && (deps.score !== false)) {
-      const icpText = (icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`) + memoryPromptBlock(memory ?? null) + offerBlockFor(db, job.user_id, job.id)
+      const icpText = (icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`) + scoringSellerContext(db, job.user_id, job.id, memory ?? null)
       assertOwned(db, job)
       const grades = await scoreLeads(providers_[vendor], key, icpText, outcome.leads, deps.fetchImpl)
       if (grades) {

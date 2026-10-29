@@ -173,6 +173,10 @@ test('scan: memory text reaches the scoring prompt on the tenant key', async () 
     openai: { research: async () => ({ text: '', citedUrls: [] }) },
   }
   assert.equal(await runJob(db, claimKeyedJob(db, id)!, { providers, master, fetchPage: pageFor('Northside Builders') }), 'done')
-  assert.match(seen, /Seller's positioning: we sell roofing software/)
+  // a play created before per-play offers states the Memory positioning as its offer (lib/scan/runner.ts
+  // scoringSellerContext): once, as the offer block, not also as a separate global positioning line
+  assert.match(seen, /What the seller sells \(their own words\): we sell roofing software/)
+  assert.doesNotMatch(seen, /Seller's positioning:/)
+  assert.match(seen, /cost\? -> \"one roof pays for a year\"|one roof pays for a year/, 'the other Memory fields still reach scoring')
   assert.match(seen, /not instructions/)
 })

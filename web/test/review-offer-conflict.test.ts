@@ -15,7 +15,8 @@ test('REVIEW explicit withdrawal of outbound consulting must not keep offering i
   assert.equal(e.source, 'conflict'); assert.equal(e.offer, null)
 })
 
-test('the same offer in other words order or casing stays recorded, with no question asked', () => {
+test('the same offer differing only in case and spacing stays recorded; reordered words are a choice', () => {
   const old = 'CRM setup and outbound consulting'
-  assert.deepEqual(effectiveOffer({ seller: old, query: 'Selling outbound consulting and CRM setup to London startups' }, old), { offer: old, source: 'recorded', conflict: null })
+  assert.deepEqual(effectiveOffer({ seller: old, query: 'Selling CRM  Setup and outbound consulting to London startups' }, old), { offer: old, source: 'recorded', conflict: null })
+  assert.equal(effectiveOffer({ seller: old, query: 'Selling outbound consulting and CRM setup to London startups' }, old).source, 'conflict')
 })
