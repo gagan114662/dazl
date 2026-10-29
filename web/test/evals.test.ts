@@ -88,6 +88,7 @@ test('gate: the case set itself is checked - a missing, unregistered or duplicat
   const row = (id: string): SuiteRow => ({ ...rows[0], case: id })
   const missing = gate([], b)
   assert.equal(missing.ok, false); assert.deepEqual(missing.missing, ['scan-london-seed-traps']); assert.equal(missing.ran, 0)
+  assert.deepEqual(compareBaseline([], b), [{ case: 'scan-london-seed-traps', regressions: ['case_did_not_run'], fixed: [] }]) // the comparison alone is never empty for a missing case
   const two = { ...b, min_cases: 2, cases: { ...b.cases, 'other-case': { status: 'pass', non_pass: [] } } }
   const dropped = gate(rows, two)                                     // one of two registered cases deleted
   assert.equal(dropped.ok, false); assert.deepEqual(dropped.missing, ['other-case'])

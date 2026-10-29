@@ -37,12 +37,17 @@ export function loadBaseline(file: string): Baseline {
 }
 
 // Exact per-case comparison: anything not in the baseline is a regression, anything in it that no longer happens is fixed (and
-// must be removed from the baseline). Which cases ran at all is gate()'s job, below.
+// must be removed from the baseline); a registered case that did not run is a regression. gate() below adds the rest of the
+// case-set checks (unregistered, duplicate, min_cases, empty).
+export const CASE_DID_NOT_RUN = 'case_did_not_run'
 export function compareBaseline(rows: SuiteRow[], b: Baseline): BaselineDiff[] {
-  return rows.map(r => {
+  const ran = rows.map(r => {
     const known = new Set(b.cases[r.case]?.non_pass ?? [])
     return { case: r.case, regressions: r.nonPass.filter(k => !known.has(k)), fixed: [...known].filter(k => !r.nonPass.includes(k)) }
   })
+  // A registered case that did not run is a diff too, so no caller of this comparison can read "no change" for a missing case.
+  const ids = new Set(rows.map(r => r.case))
+  return [...ran, ...Object.keys(b.cases).filter(id => !ids.has(id)).sort().map(id => ({ case: id, regressions: [CASE_DID_NOT_RUN], fixed: [] }))]
 }
 
 export interface GateResult {
