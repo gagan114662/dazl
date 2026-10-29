@@ -33,6 +33,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'auth/signout', method: 'POST', auth: 'public', note: "deletes only the caller's own session cookie" },
   { path: 'auth/signup', method: 'POST', auth: 'public', note: 'account creation; rate limited' },
   { path: 'auth/email', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
+  { path: 'auth/email', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'read', fresh: true },
   { path: 'auth/email/send-verification', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'auth/reauth', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'auth/reauth', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/session-routes-runtime.mts' }, role: 'read' },

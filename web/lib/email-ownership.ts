@@ -28,6 +28,7 @@ export const EMAIL_TOKENS_DDL = `
 export const VERIFIED_BACKFILL_SQL = `UPDATE users SET email_verified_at = coalesce(created_at, 0)
   WHERE email_verified_at IS NULL AND EXISTS (SELECT 1 FROM oauth_identities o WHERE o.user_id = users.id AND o.provider = 'google')`
 
+type Purpose = 'verify' | 'reset' | 'change'
 export const VERIFY_TTL_S = 24 * 60 * 60
 export const RESET_TTL_S = 30 * 60
 const nowS = () => Math.floor(Date.now() / 1000)
@@ -36,7 +37,7 @@ export const isEmailToken = (t: unknown): t is string => typeof t === 'string' &
 const base = () => process.env.PUBLIC_BASE_URL || 'https://dazl.ai'
 
 // A new token for (user, purpose); earlier unused tokens of that purpose stop working.
-function* issue(t: Tx, userId: string, purpose: 'verify' | 'reset', email: string, ttl: number, now: number): TxBody<string> {
+function* issue(t: Tx, userId: string, purpose: Purpose, email: string, ttl: number, now: number): TxBody<string> {
   yield* t.run('UPDATE email_tokens SET used_at = ? WHERE user_id = ? AND purpose = ? AND used_at IS NULL', [now, userId, purpose])
   const token = randomBytes(32).toString('hex')
   yield* t.run('INSERT INTO email_tokens (id, user_id, purpose, email, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -45,9 +46,9 @@ function* issue(t: Tx, userId: string, purpose: 'verify' | 'reset', email: strin
 }
 
 // The token's row, used up, when it is valid for `purpose` now; undefined otherwise.
-function* consume(t: Tx, purpose: 'verify' | 'reset', token: string, now: number): TxBody<{ user_id: string; email: string } | undefined> {
-  const row = yield* t.get<{ id: string; user_id: string; email: string }>(
-    'SELECT id, user_id, email FROM email_tokens WHERE token_hash = ? AND purpose = ? AND used_at IS NULL AND expires_at > ?', [sha256(token), purpose, now])
+function* consume(t: Tx, purposes: Purpose[], token: string, now: number): TxBody<{ user_id: string; email: string; purpose: Purpose } | undefined> {
+  const row = yield* t.get<{ id: string; user_id: string; email: string; purpose: Purpose }>(
+    `SELECT id, user_id, email, purpose FROM email_tokens WHERE token_hash = ? AND purpose IN (${purposes.map(() => '?').join(', ')}) AND used_at IS NULL AND expires_at > ?`, [sha256(token), ...purposes, now])
   if (!row) return undefined
   const used = yield* t.run('UPDATE email_tokens SET used_at = ? WHERE id = ? AND used_at IS NULL', [now, row.id])
   return used.changes === 1 ? row : undefined
@@ -76,15 +77,41 @@ export async function sendVerification(db: Db, userId: string, now = nowS()): Pr
   return true
 }
 
-// Opens a verification link. Valid only while the account's email is still the one the link was sent to.
+// Opens a verification link: either the account's own address (valid only while the account still has the email it
+// was sent to), or a change of address (the account's email becomes the new one, verified; refused if another account
+// took that address meanwhile).
 export async function verifyEmail(db: Db, token: unknown, now = nowS()): Promise<boolean> {
   if (!isEmailToken(token)) return false
-  return db.tx(function* (t) {
-    const row = yield* consume(t, 'verify', token, now)
-    if (!row) return false
-    const r = yield* t.run('UPDATE users SET email_verified_at = coalesce(email_verified_at, ?) WHERE id = ? AND email = ?', [now, row.user_id, row.email])
-    return r.changes === 1
+  try {
+    return await db.tx(function* (t) {
+      const row = yield* consume(t, ['verify', 'change'], token, now)
+      if (!row) return false
+      if (row.purpose === 'verify') {
+        const r = yield* t.run('UPDATE users SET email_verified_at = coalesce(email_verified_at, ?) WHERE id = ? AND email = ?', [now, row.user_id, row.email])
+        return r.changes === 1
+      }
+      if (yield* t.get('SELECT 1 AS x FROM users WHERE email = ? AND id <> ?', [row.email, row.user_id])) return false
+      const r = yield* t.run('UPDATE users SET email = ?, email_verified_at = ? WHERE id = ?', [row.email, now, row.user_id])
+      return r.changes === 1
+    })
+  } catch { return false } // a concurrent sign-up took the new address: the unique email refused the change, nothing changed
+}
+
+// Change of email, from a signed-in, freshly authenticated session: a confirmation link goes to the NEW address and a
+// notice to the current one; nothing changes until the link is opened. The same outcome for the caller whether or not
+// the new address already belongs to an account (then nothing is sent to it), so this reveals no accounts.
+export async function requestEmailChange(db: Db, userId: string, newEmail: string, now = nowS()): Promise<void> {
+  const out = await db.tx(function* (t) {
+    const u = yield* t.get<{ email: string }>('SELECT email FROM users WHERE id = ?', [userId])
+    if (!u || u.email === newEmail) return null
+    const taken = !!(yield* t.get('SELECT 1 AS x FROM users WHERE email = ?', [newEmail]))
+    return { old: u.email, token: taken ? null : yield* issue(t, userId, 'change', newEmail, VERIFY_TTL_S, now) }
   })
+  if (!out) return
+  if (out.token) await sendSystemMail(db, { userId, to: newEmail, subject: 'Confirm your new email for dazl',
+    text: `Confirm that this is the new email address of your dazl account:\n\n${base()}/verify#t=${out.token}\n\nThe link works once, for 24 hours. If you did not ask for this, ignore this email.` })
+  await sendSystemMail(db, { userId, to: out.old, subject: 'Your dazl email is being changed',
+    text: `Someone signed in to your dazl account asked to change its email address. It changes only once the new address is confirmed. If it was not you, reset your password at ${base()}/reset and sign out other devices in Settings.` })
 }
 
 // "Forgot password": always the same outcome for the caller. A password account gets a reset link; a Google-only
@@ -109,7 +136,7 @@ export async function requestReset(db: Db, email: string, now = nowS()): Promise
 export async function resetPassword(db: Db, token: unknown, next: { password_hash: string; salt: string }, now = nowS()): Promise<boolean> {
   if (!isEmailToken(token)) return false
   return db.tx(function* (t) {
-    const row = yield* consume(t, 'reset', token, now)
+    const row = yield* consume(t, ['reset'], token, now)
     if (!row) return false
     const r = yield* t.run('UPDATE users SET password_hash = ?, salt = ?, email_verified_at = coalesce(email_verified_at, ?) WHERE id = ? AND email = ?',
       [next.password_hash, next.salt, now, row.user_id, row.email])

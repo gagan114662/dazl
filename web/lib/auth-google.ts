@@ -174,3 +174,21 @@ export async function resolveUser(db: Db, id: GoogleIdentity): Promise<Resolved>
   }
   throw new Error('google sign-in: identity kept changing while resolving it')
 }
+
+export type LinkResult = 'linked' | 'already' | 'taken' | 'mismatch' | 'unverified'
+
+// Adds a Google identity to the signed-in account, never by email alone. The caller has already checked that the
+// request comes from that account's own session, signed in within the last hour (lib/workspace-access.ts stale). Here:
+// the account's email must be verified and be the Google identity's (verified by Google) email, and that Google
+// identity must not belong to another account. Then Google sign-in reaches this account.
+export async function linkGoogle(db: Db, userId: string, id: GoogleIdentity): Promise<LinkResult> {
+  return db.tx(function* (t): TxBody<LinkResult> {
+    const hit = yield* t.get<{ user_id: string }>("SELECT user_id FROM oauth_identities WHERE provider = 'google' AND subject = ?", [id.sub])
+    if (hit) return hit.user_id === userId ? 'already' : 'taken'
+    const u = yield* t.get<{ email: string; v: number | null }>('SELECT email, email_verified_at AS v FROM users WHERE id = ?', [userId])
+    if (!u || u.email !== id.email) return 'mismatch'
+    if (u.v === null) return 'unverified'
+    yield* t.run("INSERT INTO oauth_identities (provider, subject, user_id) VALUES ('google', ?, ?)", [id.sub, userId])
+    return 'linked'
+  })
+}

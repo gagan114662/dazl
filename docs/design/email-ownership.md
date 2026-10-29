@@ -1,7 +1,7 @@
 # Email ownership and account recovery (#357)
 
 Status: increment 1 (verification, reset, recovery revokes sessions, verified email required to join a workspace)
-built. Increment 2 (change email; linking Google to an existing account after fresh proof) is next.
+and increment 2 (change email, explicit Google linking) built.
 
 ## Tokens
 
@@ -34,7 +34,7 @@ built. Increment 2 (change email; linking Google to an existing account after fr
 | action | rule |
 |---|---|
 | accept a workspace invitation | the invitation is bound to an email, so the account must have proved it owns that address (`email_unverified`, 403) |
-| link a Google identity to an existing account | still never by email alone. Increment 2 adds explicit linking from a signed-in, freshly authenticated, verified account |
+| link a Google identity to an existing account | never by email alone; see "Google linking" below |
 | free trial scans (dazl's own key) | already require Google sign-in, which Google verifies |
 | outreach sends | go through the tenant's own Gmail OAuth, which proves the mailbox |
 
@@ -46,3 +46,24 @@ Google accounts count as verified: new ones at sign-up, existing ones by the bac
 set (nodemailer). Otherwise nothing leaves the host: the message goes to `system_mail_outbox`, which is reaped after
 24 hours by the tick. Production and staging have no SMTP today, so links sit in the outbox until the owner picks a
 provider. Tests read the outbox and never send.
+
+## Change email (increment 2)
+
+`POST /api/auth/email { email }` needs a session signed in within the last hour. It sends a `change` link to the new
+address and a notice to the current one. The email changes, already verified, only when the link is opened, and only
+if no other account has taken that address meanwhile. The answer is the same whether or not the new address is in
+use; when it is, nothing is sent to it.
+
+## Google linking (increment 2)
+
+Signing in with Google using the email of an existing password account is still refused (`email_exists`). Linking
+is an explicit action instead: Settings > Account > "Add Google sign-in" (`/api/auth/google?link=1`). The callback
+links the Google identity only when all of these hold:
+
+- the request carries that account's own session, signed in within the last hour;
+- the account's email is verified;
+- the account's email is the Google identity's email (Google verified it);
+- the Google identity belongs to no other account.
+
+Otherwise it lands on Settings with the reason (`mismatch`, `unverified`, `taken`, `reauth_required`,
+`signed_out`). Linking keeps the current session and never creates one.

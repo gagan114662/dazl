@@ -27,6 +27,6 @@ test('the real routes: dynamic, no-store, staging client and callback checks', (
   { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 120000 })
   assert.equal(r.error, undefined, String(r.error))
   assert.equal(r.status, 0, r.stdout + r.stderr)
-  assert.match(r.stdout, /# pass 5\b/)
-  assert.match(r.stdout, /GOOGLE_AUTH_ROUTES_OK[\s\S]*GOOGLE_REAUTH_OK/)
+  assert.match(r.stdout, /# pass 6\b/)
+  assert.match(r.stdout, /GOOGLE_AUTH_ROUTES_OK[\s\S]*GOOGLE_REAUTH_OK[\s\S]*GOOGLE_LINK_OK/)
 })
