@@ -15,6 +15,7 @@ import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, verifyEvidence, type Candidate } from './evidence.ts'
 import { fallbackIcp, inferIcp, normalizeIcp, type Icp } from './icp.ts'
+import { effectiveOffer } from './play-offer.ts'
 import { collectAdvanced, xSearchQuery } from '../advanced/index.ts'
 import { markWatchLeads } from '../watch.ts'
 import type { AdvPlatform } from '../advanced/config.ts'
@@ -152,9 +153,15 @@ export type Judge = (c: LeadDraft, passage: string) => Promise<Judgement>
 export type PageFetcher = (url: string) => Promise<Page | FetchFail | null>
 
 export interface ReviewLead extends LeadDraft { review_reason: string }
-// The seller's own offer text, read from the same account row the profile page writes. A missing column or row means no block.
-export function offerBlockFor(db: Database.Database, userId: string): string {
-  try { return sellerOfferBlock((db.prepare('SELECT sells FROM users WHERE id = ?').get(userId) as { sells?: string } | undefined)?.sells) } catch { return '' }
+// The seller's own offer text for THIS play (lib/scan/play-offer.ts): the offer reviewed for the play, else the one it
+// was created with, else the account's profile offer. A play whose offer is contested gets no offer block (scoring never
+// assumes one). A missing column or row means no block.
+export function offerBlockFor(db: Database.Database, userId: string, jobId?: string): string {
+  try {
+    const sells = (db.prepare('SELECT sells FROM users WHERE id = ?').get(userId) as { sells?: string } | undefined)?.sells
+    const play = jobId ? db.prepare('SELECT offer, seller, query FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, userId) as { offer: string | null; seller: string | null; query: string | null } | undefined : undefined
+    return sellerOfferBlock(play ? effectiveOffer(play, sells).offer : sells)
+  } catch { return '' }
 }
 export interface VerifyOutcome { leads: VerifiedLead[]; review: ReviewLead[]; dropped: Record<string, number>; quotes?: Map<string, QuoteEvidence[]> } // quotes: every VERIFIED candidate's quote by company key, even when a duplicate candidate was the one kept; the sales-hiring gate reads them only through its identity-compatibility check
 
@@ -1120,7 +1127,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // per scan; a scoring failure never fails the scan - but it no longer passes the raw
     // candidate score through as if it were a grade. Ungraded leads are held at fit 0.
     if (complete && outcome.leads.length > 0 && (deps.score !== false)) {
-      const icpText = (icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`) + memoryPromptBlock(memory ?? null) + offerBlockFor(db, job.user_id)
+      const icpText = (icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`) + memoryPromptBlock(memory ?? null) + offerBlockFor(db, job.user_id, job.id)
       assertOwned(db, job)
       const grades = await scoreLeads(providers_[vendor], key, icpText, outcome.leads, deps.fetchImpl)
       if (grades) {
@@ -1180,7 +1187,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     if (!(complete && deps.score !== false)) trace.note('buyer_fit', 'skipped', deps.score === false ? 'scoring disabled for this run' : 'no model provider for this run')
     if (complete && deps.score !== false) {
       try {
-        const icpText = (icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`) + offerBlockFor(db, job.user_id)
+        const icpText = (icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`) + offerBlockFor(db, job.user_id, job.id)
         await applyBuyerFitGate(db, job.id, providers_[vendor], key, icpText, { fetchPage: deps.fetchPage, fetchImpl: deps.fetchImpl }); trace.note('buyer_fit', 'ok')
       } catch (e) { const msg = e instanceof Error ? e.message : 'error'; let capped = 0; try { capped = failClosedBuyerFit(db, job.id, msg) } catch { /* the cap is best effort */ } trace.note('buyer_fit', 'failed', `${msg} - ${capped} hiring lead(s) capped below the qualified bar`); console.error('buyer-fit gate failed', msg) }
     }

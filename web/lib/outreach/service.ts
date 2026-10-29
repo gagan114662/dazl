@@ -15,6 +15,7 @@ import { domainReviewFor } from './domain-review.ts'
 import { pickCrawledEmail } from './published-email.ts'
 import { getMemory } from '../memory.ts'
 import { isQuarantined } from '../scan/quarantine.ts'
+import { effectiveOffer } from '../scan/play-offer.ts'
 
 export const DAILY_CAP = Math.min(ACCOUNT_SEND_CAP, Number(process.env.OUTREACH_DAILY_CAP || 20))
 export const SENDING_STALE_S = 10 * 60
@@ -271,6 +272,13 @@ export function draftBlockReason(db: Database.Database, tenantId: string, leadId
   try { draftChecks(db, tenantId, leadId); return null } catch (e) { if (e instanceof OutreachError) return e.code; throw e }
 }
 
+// The play a lead came from, with what is needed to resolve its offer (older databases without the columns: null).
+export function playOfferRow(db: Database.Database, tenantId: string, leadId: string): { offer: string | null; seller: string | null; query: string | null } | null {
+  try {
+    return (db.prepare('SELECT j.offer, j.seller, j.query FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as { offer: string | null; seller: string | null; query: string | null } | undefined) ?? null
+  } catch { return null }
+}
+
 function createDraftInner(db: Database.Database, tenantId: string, leadId: string, businessName: string): string {
   const { lead, to, addressUrl, test } = draftChecks(db, tenantId, leadId)
   // Older local databases may not have Memory yet. No default positioning is
@@ -286,6 +294,15 @@ function createDraftInner(db: Database.Database, tenantId: string, leadId: strin
       const profile = db.prepare('SELECT sells FROM users WHERE id = ?').get(tenantId) as { sells: string | null } | undefined
       positioning = profile?.sells ?? ''
     }
+  }
+  // What this lead's play sells (lib/scan/play-offer.ts): the offer reviewed for the play, else the one it was created
+  // with, else the tenant's current context above. A play whose request states a different offer than the one it
+  // recorded gets no draft until the tenant chooses which offer the play is for.
+  const play = playOfferRow(db, tenantId, lead.id)
+  if (play) {
+    const e = effectiveOffer(play, positioning)
+    if (e.conflict) throw new OutreachError('offer_conflict')
+    positioning = e.offer ?? ''
   }
   const t = draftTemplate(lead, businessName, positioning, addressUrl)
   const id = id24()

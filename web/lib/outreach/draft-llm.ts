@@ -7,6 +7,8 @@ import { defaultVendor, getKey } from '../llm/key-store.ts'
 import type { Vendor } from '../llm/vendors.ts'
 import { providers, type Provider, type DetailedCompletion } from '../llm/provider.ts'
 import { getMasterKey } from '../secrets.ts'
+import { effectiveOffer } from '../scan/play-offer.ts'
+import { playOfferRow } from './service.ts'
 import { getMemory, memoryPromptBlock, type Memory } from '../memory.ts'
 
 export interface LlmDeps { fetchImpl?: typeof fetch; master?: Buffer; providers?: Record<string, Provider> }
@@ -14,12 +16,12 @@ export interface LlmDeps { fetchImpl?: typeof fetch; master?: Buffer; providers?
 export interface PolishUsage { model: string | null; input_tokens?: number; output_tokens?: number }
 export type PolishResult =
   | { rewritten: true; vendor: Vendor; usage?: PolishUsage }
-  | { rewritten: false; reason: 'no_key' | 'no_profile' | 'unusable' | 'blocked_claim' | 'error'; usage?: PolishUsage }
+  | { rewritten: false; reason: 'no_key' | 'no_profile' | 'offer_conflict' | 'unusable' | 'blocked_claim' | 'error'; usage?: PolishUsage }
 
 // Accounting only: vendor, requested + served model, bounded outcome code, token
 // counts, request id. Never secrets, never the prompt, never the output text,
 // never raw provider error text.
-type PolishOutcome = 'pending' | 'rewritten' | 'unusable' | 'blocked_claim' | 'error' | 'no_key' | 'no_profile' | 'superseded'
+type PolishOutcome = 'pending' | 'rewritten' | 'unusable' | 'blocked_claim' | 'error' | 'no_key' | 'no_profile' | 'offer_conflict' | 'superseded'
 
 // A durable PENDING attempt is written before any provider call. If it cannot be
 // recorded, the paid call is refused - no invisible spend. Null means "do not call".
@@ -106,8 +108,16 @@ export async function polishDraft(db: Database.Database, tenantId: string, messa
   if (!p) { recordRefusal(db, tenantId, messageId, null, 'no_key'); return { rewritten: false, reason: 'no_key' } }
   const msg = db.prepare("SELECT m.id, m.lead_id, l.company, l.name, l.signal, l.source_url, l.evidence_excerpt FROM outreach_messages m JOIN leads l ON l.id = m.lead_id WHERE m.id = ? AND m.tenant_id = ? AND m.status = 'draft'").get(messageId, tenantId) as { lead_id: string } & LeadCtx & { id: string } | undefined
   if (!msg) { recordRefusal(db, tenantId, messageId, p.vendor, 'superseded'); return { rewritten: false, reason: 'error' } }
-  const memory = getMemory(db, tenantId)
+  let memory = getMemory(db, tenantId)
   if (!hasOffer(memory)) { recordRefusal(db, tenantId, messageId, p.vendor, 'no_profile'); return { rewritten: false, reason: 'no_profile' } }
+  // The rewrite says what THIS lead's play sells (lib/scan/play-offer.ts), as the template draft did; a play whose
+  // offer is contested is refused before any paid call.
+  const play = playOfferRow(db, tenantId, msg.lead_id)
+  if (play && memory) {
+    const e = effectiveOffer(play, memory.positioning)
+    if (e.conflict) { recordRefusal(db, tenantId, messageId, p.vendor, 'offer_conflict'); return { rewritten: false, reason: 'offer_conflict' } }
+    if (e.offer) memory = { ...memory, positioning: e.offer }
+  }
   const attemptId = beginAttempt(db, tenantId, messageId, p.vendor, p.provider.configuredModel?.() ?? null)
   if (attemptId === null) return { rewritten: false, reason: 'error' } // audit unavailable: refuse the paid call
   const finish = (outcome: PolishOutcome, d?: DetailedCompletion) => finishAttempt(db, attemptId, outcome, d)

@@ -10,6 +10,7 @@ import { rateLimit } from '@/lib/rate-limit'
 const MSG: Record<string, [number, string]> = {
   domain_unconfirmed: [409, 'Check that this website is the right company on Leads ("This website is the right company") before drafting. That check is not need, consent or a send approval.'],
   seller_context_required: [422, 'Add your business name on the Home page ("What you sell") before creating a draft.'],
+  offer_conflict: [409, 'This play\'s request names a different offer than the one it was created with. Choose what this play sells on its campaign page (or Home) before drafting.'],
   seller_offer_required: [422, 'Add a short description of what you offer (Memory or onboarding) before creating a draft. dazl will not invent one.'],
   sales_hiring_check_failed: [409, 'The required sales-hiring check failed for this lead, so it cannot be drafted or sent. Confirming the lead or its website does not clear it; run the scan again.'],
   lead_currentness_unconfirmed: [409, 'This is quote-backed research with unknown event timing. Review the source on Leads before using it for drafting; that is not a freshness or consent verdict.'],
