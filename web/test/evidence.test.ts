@@ -294,7 +294,7 @@ test('control: changed employer - the domain must belong to the claimed company,
 })
 async function companyOwnsDomainCases() {
   const { companyOwnsDomain } = await import('../lib/scan/evidence.ts')
-  return companyOwnsDomain('Ohm', 'ohm.ai') && companyOwnsDomain('Acme Robotics', 'acme.com') && companyOwnsDomain('Northside Builders Inc.', 'northsidebuilders.com') && companyOwnsDomain('Acme', 'acme.co.uk') &&
+  return companyOwnsDomain('Ohm', 'ohm.ai') && !companyOwnsDomain('Acme Robotics', 'acme.com') && companyOwnsDomain('Northside Builders Inc.', 'northsidebuilders.com') && companyOwnsDomain('Acme', 'acme.co.uk') &&
     !companyOwnsDomain('Initech', 'ohm.ai') && !companyOwnsDomain('Ohm', 'ohm') && !companyOwnsDomain('', 'ohm.ai') && !companyOwnsDomain('Ab', 'ab.io')
 }
 
@@ -329,4 +329,30 @@ test('control: exact source - a verbatim excerpt needs no repair and the verifie
   assert.equal(supportedEvidenceWindow({ ...OHM_CLAIM, excerpt: exact }, OHM_PAGE('https://ohm.ai/careers'), 'ohm.ai'), null)
   const v = verifyEvidence({ name: '', company: 'Ohm', contact: null, signal: OHM_SIGNAL, source_url: 'https://ohm.ai/careers', excerpt: exact, event_date: '2026-10-10' } as never, { text: OHM_TEXT, title: 'Ohm', retrievedAt: 1_800_000_000 }, NOW)
   assert.equal(v.ok, true)
+})
+
+// --- #442 review round 2: bind the hiring subject without relying on capitalization; a domain belongs to the claimed company only when its label IS the company ---
+test('round 2: a foreign employer is refused in lower, upper and mixed case (expected: null)', async () => {
+  const { supportedEvidenceWindow } = await import('../lib/scan/evidence.ts')
+  const claim = { company: 'Acme', signal: 'Acme is hiring software engineers.', excerpt: 'Acme is actively hiring software engineers' }   // a paraphrase: not verbatim, so the repair is what is being tested
+  for (const rival of ['rival robotics', 'RIVAL ROBOTICS', 'Rival Robotics', 'rIVAL rOBOTICS', 'rival robotics inc']) {
+    const p = { text: `Acme careers. ${rival} is hiring software engineers. Apply today to ${rival}.`, title: 'Acme', url: 'https://acme.com/careers' }
+    assert.equal(supportedEvidenceWindow(claim, p, 'acme.com'), null, rival)
+  }
+  // The same page with the company itself as subject still attaches, in any case the page uses.
+  for (const self of ['Acme', 'ACME', 'acme', 'Acme Inc.', 'Acme, Inc.']) {
+    const p = { text: `Acme careers. ${self} is hiring software engineers. Apply today.`, title: 'Acme', url: 'https://acme.com/careers' }
+    assert.equal(supportedEvidenceWindow(claim, p, 'acme.com'), `${self} is hiring software engineers.`, self)
+  }
+})
+
+test('round 2: an extended or lookalike label is not the claimed company\'s domain (expected: false / null)', async () => {
+  const { companyOwnsDomain, supportedEvidenceWindow } = await import('../lib/scan/evidence.ts')
+  for (const d of ['acme-rival.com', 'acmerival.com', 'acme-labs.io', 'myacme.com', 'acme2.com', 'acmecorp-careers.com', 'rival-acme.com', 'acme.com.evil.example']) assert.equal(companyOwnsDomain('Acme', d), false, d)
+  // Positive controls: the exact label, a leading www, a subdomain, a country TLD, and legal-name forms of the company.
+  for (const [c, d] of [['Acme', 'acme.com'], ['Acme', 'www.acme.com'], ['Acme', 'acme.co.uk'], ['Acme Inc.', 'acme.com'], ['Acme, Inc.', 'acme.com'], ['ACME LLC', 'acme.com'], ['Northside Builders Inc.', 'northsidebuilders.com'], ['Northside Builders', 'northside-builders.com'], ['Ohm', 'ohm.ai']] as const) assert.equal(companyOwnsDomain(c, d), true, `${c} / ${d}`)
+  const page = { text: 'Acme careers. Software Engineer - Join our team and build products. Acme is hiring software engineers. Apply today.', title: 'Acme', url: 'https://acme-rival.com/careers' }
+  assert.equal(supportedEvidenceWindow({ company: 'Acme', signal: 'Acme is hiring software engineers.', excerpt: 'Acme is actively hiring software engineers' }, page, 'acme-rival.com'), null, 'the validated CSV domain is the target domain, not proof the claimed employer owns it')
+  // A first-party page of the validated domain whose employer is a different company never attaches for the claimed one.
+  assert.equal(supportedEvidenceWindow({ company: 'Acme', signal: 'Acme is hiring software engineers.', excerpt: 'Acme is actively hiring software engineers' }, { ...page, url: 'https://acme.com/careers' }, 'acme.com') !== null, true, 'control: acme.com / Acme attaches')
 })

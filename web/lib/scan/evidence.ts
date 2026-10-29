@@ -114,24 +114,34 @@ function claimFacets(claimText: string) {
   return { roles: deduped, multi }
 }
 
-// A hiring/join clause whose capitalized subject is not the company. Pronoun "we/our" is the
-// first-party voice and binds the page owner, so it is not flagged foreign.
-const SUBJECT_CLAUSE = /([A-Z][A-Za-z0-9&.'-]*(?: [A-Z][A-Za-z0-9&.'-]*){0,3}) (?:is|are|was|were|has been|will be) (?:currently |actively |now )?(?:hiring|recruiting|looking to hire)/g
+// A hiring/join clause whose subject is not the company. The subject of "X is hiring ..." is bound by the words right before the verb, in ANY case
+// ("rival robotics is hiring", "RIVAL ROBOTICS is hiring"): the claimed company must be exactly that subject (legal suffixes aside). A pronoun "we/our/us"
+// is the first-party voice and binds the page owner, so it is not flagged foreign. "Join <Capitalized name>" keeps its capitalized match.
+const HIRING_CLAUSE = /\b(?:is|are|was|were|has been|will be)\s+(?:currently |actively |now )?(?:hiring|recruiting|looking to hire)\b/gi
 const JOIN_CLAUSE = /[Jj]oin(?:ing)? ([A-Z][A-Za-z0-9&.'-]*(?: [A-Z][A-Za-z0-9&.'-]*){0,3})/g
 function foreignSubject(rawSegment: string, key: string): boolean {
-  for (const re of [SUBJECT_CLAUSE, JOIN_CLAUSE]) {
-    re.lastIndex = 0
-    let m: RegExpExecArray | null
-    while ((m = re.exec(rawSegment))) {
-      const subj = norm(m[1])
-      if (['we', 'our', 'us'].includes(subj)) continue
-      if (!subj.startsWith(key) && !key.startsWith(subj)) return true
-    }
+  HIRING_CLAUSE.lastIndex = 0
+  let h: RegExpExecArray | null
+  while ((h = HIRING_CLAUSE.exec(rawSegment))) {
+    const clause = rawSegment.slice(0, h.index).replace(/,\s*(Inc|Ltd|LLC|Corp|Co|Plc)\b/gi, ' $1').split(/[,;:()]|\s[-\u2013\u2014]\s/).pop() ?? ''
+    const ws = clause.split(/\s+/).filter(Boolean).slice(-4)
+    if (ws.length === 0) return true                               // a clause with no subject in the window cannot be bound to the company: fail closed
+    if (['we', 'our', 'us'].includes(ws[ws.length - 1].toLowerCase())) continue
+    let bound = false
+    for (let n = 1; n <= ws.length && !bound; n++) bound = companyKey(ws.slice(-n).join(' ')) === key
+    if (!bound) return true
+  }
+  JOIN_CLAUSE.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = JOIN_CLAUSE.exec(rawSegment))) {
+    const subj = norm(m[1])
+    if (['we', 'our', 'us'].includes(subj)) continue
+    if (!subj.startsWith(key) && !key.startsWith(subj)) return true
   }
   return false
 }
 
-const SEG_SPLIT = /(?<=[.!?])\s+|\s+[\u00b7\u2022|]\s+|\s+-\s+/
+const SEG_SPLIT = /(?<=[.!?])(?<!\b(?:Inc|Ltd|Corp|Co|LLC|Plc)\.)\s+|\s+[\u00b7\u2022|]\s+|\s+-\s+/
 
 function windowSupports(win: string, pageText: string, company: string, facets: ReturnType<typeof claimFacets>): boolean {
   const w = norm(win)
@@ -168,7 +178,7 @@ function windowSupports(win: string, pageText: string, company: string, facets: 
 }
 
 // "ohm.ai" belongs to "Ohm"; "acme.com" to "Acme" / "Acme Robotics"; never a lookalike. Bare hostnames only (no scheme, path, port or
-// whitespace). The company name and the domain's registrable label must contain one another (3+ letters), so a company the domain
+// whitespace). The domain label must equal the company name (3+ letters, legal suffixes aside), so a company the domain
 // does not name can never borrow the domain's first-party status.
 const BARE_HOST = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/
 export function companyOwnsDomain(company: string, knownDomain: string | null | undefined): boolean {
@@ -176,7 +186,8 @@ export function companyOwnsDomain(company: string, knownDomain: string | null | 
   if (!BARE_HOST.test(d)) return false
   const labels = d.split('.'), label = (labels.length > 2 && /^(co|com|org|net|ac|gov)$/.test(labels[labels.length - 2]) ? labels[labels.length - 3] : labels[labels.length - 2]).replace(/-/g, '')
   const key = companyKey(company).replace(/[^a-z0-9]/g, '')
-  return label.length >= 3 && key.length >= 3 && (key.includes(label) || label.includes(key))
+  // The domain's label IS the company (legal suffixes and spacing aside). A label that merely contains the name ("acme-rival", "myacme", "acme2") is another business.
+  return label.length >= 3 && key.length >= 3 && label === key
 }
 
 
@@ -206,7 +217,7 @@ export function supportedEvidenceWindow(claim: { company: string; signal: string
   // Keep separators in the pieces so a chosen window stays a raw substring of the
   // whitespace-flattened page - verbatim for display, not only after normalization.
   const flat = text.replace(/\s+/g, ' ')
-  const pieces = flat.split(/((?<=[.!?])\s+|\s+[\u00b7\u2022|]\s+|\s+-\s+)/)
+  const pieces = flat.split(/((?<=[.!?])(?<!\b(?:Inc|Ltd|Corp|Co|LLC|Plc)\.)\s+|\s+[\u00b7\u2022|]\s+|\s+-\s+)/)
   const idx: number[] = [] // indices of the content pieces (separators sit between them)
   for (let i = 0; i < pieces.length; i += 2) if (norm(pieces[i]).length >= 8 || i === 0) idx.push(i)
   let best: string | null = null

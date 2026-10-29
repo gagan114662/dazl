@@ -344,3 +344,48 @@ test('supported-signal extraction: analyst gloss in the claim routes to review w
   assert.equal(rows[0].signal, signal, 'the original claim text is preserved untouched')
   assert.equal(rows[0].evidence_excerpt, 'Ohm is actively hiring for multiple senior go-to-market roles', "the model's original failed excerpt is preserved on the review row")
 }))
+
+// Production-caller negatives (round 2): the same runJob path as the Ohm positive, with a page/domain that must NOT attach.
+const stubFor = (host: string, text: string) => (async (url: string | URL) => {
+  const u = String(url)
+  if (u.startsWith('https://api.search.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: `https://www.${host}/careers`, title: 'Careers | Ohm', snippet: 'Ohm is hiring', date: recent }] }), { status: 200 })
+  if (u.startsWith('https://api.fetch.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: `https://www.${host}/careers`, title: 'Careers | Ohm', text }] }), { status: 200 })
+  return new Response('{}', { status: 200 })
+}) as typeof fetch
+const providersFor = (calls: { complete: number; research: number }, signal: string, host: string, excerpt = 'Ohm is actively hiring for multiple senior go-to-market roles'): Record<'anthropic' | 'openai', Provider> => ({
+  anthropic: {
+    research: async () => { calls.research++; return { text: '', citedUrls: [] } },
+    complete: async () => { calls.complete++; return 'Here: ' + JSON.stringify([{ name: '', company: 'Ohm', contact: null, signal, source_url: `https://www.${host}/careers`, score: 95, excerpt, event_date: recent }]) },
+  },
+  openai: { research: async () => ({ text: '', citedUrls: [] }) },
+})
+const OHM_CLAIM_SIGNAL = 'Ohm is actively hiring for multiple senior go-to-market roles including two Founding Account Executive positions and a Chief of Staff.'
+async function negativeRun(domain: string, host: string, text: string, signal = OHM_CLAIM_SIGNAL, excerpt?: string) {
+  const { resetTinyfishState } = await import('../lib/search/tinyfish.ts')
+  resetTinyfishState()
+  const db = setup(); const b = createBatch(db, 'A', [domain]); queuePendingRows(db, 'A', b, RESTRICTED)
+  const job = claimKeyedJob(db)!; const calls = { complete: 0, research: 0 }
+  const live = async () => ({ text, title: 'Careers | Ohm', retrievedAt: 1_700_000_000 })
+  assert.equal(await runJob(db, job, { providers: providersFor(calls, signal, host, excerpt), master, fetchPage: live, fetchImpl: stubFor(host, text) }), 'done')
+  const rows = db.prepare('SELECT signal, evidence_excerpt, review_reason FROM leads').all() as { signal: string; evidence_excerpt: string | null; review_reason: string | null }[]
+  return { calls, rows }
+}
+for (const rival of ['rival robotics', 'RIVAL ROBOTICS', 'Rival Robotics']) {
+  test(`production caller: a ${rival === rival.toLowerCase() ? 'lowercase' : rival === rival.toUpperCase() ? 'uppercase' : 'mixed-case'} foreign employer on the company's own page never attaches - review, original text kept, ONE complete call`, withTinyfishEnv(async () => {
+    const { calls, rows } = await negativeRun('ohm.ai', 'ohm.ai', `Ohm careers. ${rival} is hiring software engineers. Apply today to ${rival}.`, 'Ohm is hiring software engineers.', 'Ohm is actively hiring software engineers')
+    assert.equal(calls.complete, 1); assert.equal(rows.length, 1)
+    assert.equal(rows[0].review_reason, 'quote_unconfirmed', 'the foreign employer\'s sentence was not attached as Ohm\'s evidence')
+    assert.equal(rows[0].evidence_excerpt, 'Ohm is actively hiring software engineers', "the model's original failed excerpt is preserved")
+  }))
+}
+test('production caller: a lookalike validated domain (ohm-rival.ai) never attaches Ohm evidence - review, original text kept, ONE complete call', withTinyfishEnv(async () => {
+  const { calls, rows } = await negativeRun('ohm-rival.ai', 'ohm-rival.ai', 'Ohm careers. Ohm is hiring software engineers. Apply today.', 'Ohm is hiring software engineers.', 'Ohm is actively hiring software engineers')
+  assert.equal(calls.complete, 1); assert.equal(rows.length, 1)
+  assert.equal(rows[0].review_reason, 'quote_unconfirmed'); assert.equal(rows[0].evidence_excerpt, 'Ohm is actively hiring software engineers')
+}))
+
+test('production caller control: the same simple claim on the real validated domain attaches and verifies (expected: verified, ONE complete call)', withTinyfishEnv(async () => {
+  const { calls, rows } = await negativeRun('ohm.ai', 'ohm.ai', 'Ohm careers. Ohm is hiring software engineers. Apply today.', 'Ohm is hiring software engineers.', 'Ohm is actively hiring software engineers')
+  assert.equal(calls.complete, 1); assert.equal(rows.length, 1)
+  assert.equal(rows[0].review_reason, null); assert.equal(rows[0].evidence_excerpt, 'Ohm is hiring software engineers.')
+}))
