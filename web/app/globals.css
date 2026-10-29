@@ -65,7 +65,7 @@ body { font-size: 16px; line-height: 1.5; }
   --canvas: #faf6f1;
   --panel: #fffdfa;
   --row: #ffffff;
-  --ink: #2c002a;
+  --ink: #2a0a24;
   --ink-2: #5e4a5c;   /* secondary text, ~8:1 on white */
   --ink-3: #7a6878;   /* tertiary text, ~5:1 on white */
   --line: rgba(44, 0, 42, 0.08);
@@ -85,7 +85,7 @@ body { font-size: 16px; line-height: 1.5; }
 }
 .app-ui main { background: var(--canvas); }
 .app-ui h1, .app-ui h2 { letter-spacing: -0.025em; }
-.app-ui .card { background: var(--panel); border: 1px solid var(--line); border-radius: 22px; box-shadow: 0 1px 1px rgba(44,0,42,.02), 0 18px 40px -24px rgba(44,0,42,.18); }
+.app-ui .card { background: #fff; border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 1px 2px rgba(42,10,36,.04), 0 12px 32px -22px rgba(42,10,36,.22); }
 .app-ui .row-box { background: var(--row); border: 1px solid var(--line); border-radius: 10px; }
 .app-ui .field { border-radius: 12px; border-color: var(--line-2); background: #fff; padding: .7rem .95rem; color: var(--ink); }
 .app-ui .field::placeholder { color: var(--ink-3); }
@@ -155,6 +155,20 @@ body { font-size: 16px; line-height: 1.5; }
 @keyframes dazl-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 .step-live { animation: dazl-pulse 1.4s ease-in-out infinite; }
 
+/* Onboarding brain graph (app/app/onboarding/brain-graph.tsx): facts drifting across the screen. */
+.brain-graph { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.brain-node { position: absolute; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; gap: .1rem; max-width: 15rem; text-align: center; animation-name: brain-drift; animation-iteration-count: infinite; animation-timing-function: ease-in-out; animation-direction: alternate; opacity: 0; animation-fill-mode: both; }
+.brain-node { animation: brain-in .5s ease-out forwards, brain-drift 16s ease-in-out infinite alternate; }
+.brain-dot { width: .5rem; height: .5rem; border-radius: 999px; box-shadow: 0 0 0 5px rgba(255,255,255,.7); }
+.brain-label { font-size: .62rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.brain-text { font-size: .8rem; color: #2a0a24; line-height: 1.3; }
+.brain-ghost .brain-dot { animation: dazl-pulse 1.4s ease-in-out infinite; }
+.brain-faint { opacity: .28; filter: saturate(.8); }
+@keyframes brain-in { from { opacity: 0; scale: .85; } to { opacity: 1; scale: 1; } }
+@keyframes brain-drift { from { translate: -8px -6px; } to { translate: 8px 6px; } }
+@media (prefers-reduced-motion: reduce) { .brain-node { animation: brain-in .01s forwards; } }
+.app-ui .onb-card { background: #fff; border: 1px solid rgba(42,10,36,.09); border-radius: 12px; box-shadow: 0 1px 2px rgba(42,10,36,.04), 0 16px 40px -24px rgba(42,10,36,.25); }
+
 /* Marketing homepage: the app's canvas and tokens, 12px white cards, one dark accent. */
 .lp { overflow-x: clip; }
 .lp-h1 { font-size: clamp(2.6rem, 7vw, 4.5rem); font-weight: 700; line-height: 1.02; letter-spacing: -0.04em; color: var(--ink); }
@@ -173,3 +187,4 @@ body { font-size: 16px; line-height: 1.5; }
 .lp-fade { opacity: .25; transform: translateY(4px); transition: opacity .45s, transform .45s; }
 .lp-fade.lp-in { opacity: 1; transform: none; }
 @media (prefers-reduced-motion: reduce) { .lp-fade, .lp-tick { transition: none; } .lp-caret, .lp-tick-now { animation: none; } }
+.lp-quote { font-size: .92rem; line-height: 1.45; color: var(--ink); border-left: 2px solid var(--mint); padding-left: .65rem; }

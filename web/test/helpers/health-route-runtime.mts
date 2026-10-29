@@ -38,16 +38,32 @@ test(`health routes (${mode})`, async () => {
   // the store this instance is configured for: DATABASE_URL -> postgres (pg, pg-behind, pg-down), else sqlite
   const backend = mode === 'sqlite' || mode === 'env-missing' ? 'sqlite' : 'postgres'
   const ids = new Set<string>()
-  // liveness, /api/health and /api/health/live: 200 in every mode, even with the store down; no check runs
-  for (const get of [live, health]) {
-    const l = await get()
-    assert.equal(l.status, 200)
-    assert.equal(l.headers.get('cache-control'), 'no-store')
-    const body = await l.json()
-    assert.deepEqual(Object.keys(body).sort(), ['commit', 'db', 'instance', 'ok'])
-    assert.equal(body.ok, true)
-    assert.equal(body.db, backend)
-    ids.add(body.instance)
+  // liveness, /api/health/live: 200 in every mode, even with the store down; no check runs
+  const l = await live()
+  assert.equal(l.status, 200)
+  assert.equal(l.headers.get('cache-control'), 'no-store')
+  const lb = await l.json()
+  assert.deepEqual(Object.keys(lb).sort(), ['commit', 'db', 'instance', 'ok'])
+  assert.deepEqual([lb.ok, lb.db], [true, backend])
+  ids.add(lb.instance)
+  // /api/health: the commit and whether each configured database answers. SQLite always; Postgres only with
+  // DATABASE_URL (not_configured otherwise). 503 when one does not answer, with no error text in the body.
+  const h = await health()
+  const hb = await h.json()
+  assert.equal(h.headers.get('cache-control'), 'no-store')
+  assert.deepEqual(Object.keys(hb).sort(), ['checks', 'commit', 'db', 'instance', 'ok'])
+  assert.equal(hb.commit, lb.commit)
+  assert.equal(hb.db, backend)
+  assert.equal(hb.checks.sqlite.ok, true, JSON.stringify(hb))
+  ids.add(hb.instance)
+  if (backend === 'sqlite') {
+    assert.deepEqual([h.status, hb.ok, hb.checks.postgres], [200, true, { ok: true, skipped: 'not_configured' }])
+  } else if (mode === 'pg-down') {
+    assert.deepEqual([h.status, hb.ok, hb.checks.postgres.ok], [503, false, false], JSON.stringify(hb))
+    assert.ok(!JSON.stringify(hb).includes('ECONNREFUSED') && !JSON.stringify(hb).includes('127.0.0.1:1'), 'no error text or URL')
+  } else {
+    // reachable Postgres: ok, even when a migration is missing (that is readiness, not reachability)
+    assert.deepEqual([h.status, hb.ok, hb.checks.postgres.ok], [200, true, true], JSON.stringify(hb))
   }
   for (const get of [ready, apiReady]) {
     const res = await get()

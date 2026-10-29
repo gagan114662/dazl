@@ -81,6 +81,9 @@ test('a staging env file passes; anything that could touch production or send fo
 // restart and a tiny health server standing in for the service. Faults are injected per commit:
 //   fail-restart-<sha>  the restart command exits non-zero while <sha> is current
 //   unready-<sha>       the service never reports <sha> on /api/health
+//   sick-<sha>          the service reports <sha>, but 503 with ok: false (a database not answering)
+// The first commit predates ops/health-smoke.mjs (its release is checked by commit alone, as a rollback target); every
+// later commit carries the real smoke script, which deploy.sh runs from the release it checks.
 // After any failed cutover the previous complete release must be current, release.env must name it, it must be
 // serving again, and the failed release must be gone. A failed first deployment must leave no current pointer.
 test('cutover: a failed restart or readiness restores and re-checks the previous release; a failed first deploy leaves no live pointer', async () => {
@@ -101,7 +104,10 @@ test('cutover: a failed restart or readiness restores and re-checks the previous
   // the "service": serves the commit the last successful restart started
   const served = path.join(T, 'served')
   writeFileSync(path.join(T, 'health.mjs'), `import http from 'node:http'; import fs from 'node:fs'
-http.createServer((q, s) => { let c = ''; try { c = fs.readFileSync(${JSON.stringify(served)}, 'utf8').trim() } catch {} s.end(JSON.stringify({ ok: true, commit: c })) }).listen(${port}, '127.0.0.1')`)
+http.createServer((q, s) => { let c = ''; try { c = fs.readFileSync(${JSON.stringify(served)}, 'utf8').trim() } catch {}
+  const sick = c && fs.existsSync(${JSON.stringify(T)} + '/sick-' + c)
+  s.statusCode = sick ? 503 : 200
+  s.end(JSON.stringify({ ok: !sick, commit: c, checks: { sqlite: { ok: !sick } } })) }).listen(${port}, '127.0.0.1')`)
   const server = spawn(process.execPath, [path.join(T, 'health.mjs')], { stdio: 'ignore' })
   const restart = path.join(T, 'restart.sh')
   writeFileSync(restart, `#!/usr/bin/env bash
@@ -134,6 +140,9 @@ if [ -e ${T}/unready-$sha ]; then echo starting > ${served}; else echo "$sha" > 
     // the first deployment that works
     r = deploy(); assert.equal(r.code, 0, r.out); assert.match(r.out, /live: /)
     assert.deepEqual([current(), releaseEnv(), servedNow()], [s0, `DAZL_COMMIT_SHA=${s0}`, s0])
+    // from here on every commit carries the smoke check
+    mkdirSync(path.join(repo, 'ops'))
+    writeFileSync(path.join(repo, 'ops', 'health-smoke.mjs'), readFileSync(new URL('../../ops/health-smoke.mjs', import.meta.url)))
 
     // the restart command fails at once for the new release (the earlier code exited here, current left on it)
     const s1 = commit('restart fails')
@@ -146,7 +155,17 @@ if [ -e ${T}/unready-$sha ]; then echo starting > ${served}; else echo "$sha" > 
     const s2 = commit('never ready')
     writeFileSync(path.join(T, `unready-${s2}`), '')
     r = deploy()
-    assert.equal(r.code, 1); assert.match(r.out, /never reported commit/); assert.match(r.out, /is live again/)
+    assert.equal(r.code, 1); assert.match(r.out, /never answered ok with commit/); assert.match(r.out, /is live again/)
+    assert.match(r.out, /health-smoke: serves commit "starting", expected/)
+    assert.deepEqual([current(), releaseEnv(), servedNow(), releases()], [s0, `DAZL_COMMIT_SHA=${s0}`, s0, [s0]])
+
+    // the new release serves its commit, but /api/health is 503, not ok (its database does not answer): rolled back
+    const s2b = commit('database down')
+    writeFileSync(path.join(T, `sick-${s2b}`), '')
+    r = deploy()
+    assert.equal(r.code, 1); assert.match(r.out, new RegExp(`never answered ok with commit ${s2b}`))
+    assert.match(r.out, /health-smoke: HTTP 503, not ok \(sqlite not answering\)/)
+    assert.match(r.out, new RegExp(`rolled back: ${s0} is live again`))
     assert.deepEqual([current(), releaseEnv(), servedNow(), releases()], [s0, `DAZL_COMMIT_SHA=${s0}`, s0, [s0]])
 
     // the new release fails AND the rollback's own restart fails: reported as no live service, not as recovered

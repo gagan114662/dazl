@@ -154,11 +154,19 @@ export async function applyStripeEvent(db: Db, event: StripeEvent, deps: StripeD
       try { authoritative = await (deps.subscriptionStatus ?? (id => fetchSubscriptionStatus(id)))(eventFx.subscription) } catch { authoritative = undefined } // held below
     }
   }
-  let unknownTenant = false
+  let ignoredWhy: IgnoredReason | null = null
   const result = await db.tx(function* (t): TxBody<ApplyResult> {
     if ((yield* t.run('INSERT INTO stripe_events (id, type) VALUES (?, ?) ON CONFLICT (id) DO NOTHING', [event.id, event.type])).changes === 0) return 'duplicate'
     const tenantId = yield* tenantFor(t, o)
-    if (!tenantId) { unknownTenant = true; return 'ignored' }
+    if (!tenantId) { ignoredWhy = 'unknown_tenant'; return 'ignored' }
+    // One Stripe customer is one tenant's: an event that names this tenant with another tenant's customer changes nothing.
+    // The check and the link that follows must be atomic, or two different events naming the same unbound customer for
+    // two tenants both pass it at once. On Postgres every event naming this customer first takes a lock on it, held to
+    // commit, so the second waits and then reads the first's link (READ COMMITTED: each statement sees what committed
+    // before it). SQLite runs one write transaction at a time. A customer two tenants already share (rows from before
+    // this check) is refused for both.
+    if (o.customer && t.kind === 'pg') yield* t.get("SELECT pg_advisory_xact_lock(hashtextextended('stripe_customer:' || ?, 0)) AS x", [o.customer])
+    if (o.customer && (yield* t.get('SELECT 1 AS x FROM tenant_plans WHERE stripe_customer_id = ? AND tenant_id <> ?', [o.customer, tenantId]))) { ignoredWhy = 'customer_conflict'; return 'ignored' }
     if (event.type === 'invoice.payment_failed') return yield* paymentFailed(t, tenantId, o.subscription ?? o.parent?.subscription_details?.subscription, created)
     if (!eventFx) return 'ignored'
     yield* t.run('INSERT INTO tenant_plans (tenant_id) VALUES (?) ON CONFLICT (tenant_id) DO NOTHING', [tenantId])
@@ -192,20 +200,25 @@ export async function applyStripeEvent(db: Db, event: StripeEvent, deps: StripeD
     return tie ? 'reconciled' : 'applied'
   })
   // A verified event naming no tenant this store knows (no client_reference_id or metadata.tenant_id, and a customer id
-  // no tenant has): nothing changes but the event's own processed record, so a replay stays a no-op. Logged, so a
-  // misconfigured price or a checkout made outside the app shows up instead of vanishing.
-  if (unknownTenant) (deps.log ?? logLine)(ignoredLine(event))
+  // no tenant has), or a tenant whose customer is another tenant's: nothing changes but the event's own processed record,
+  // so a replay stays a no-op. Logged, so a misconfigured price, a checkout made outside the app or a subscription moved
+  // between customers in Stripe shows up instead of vanishing.
+  if (ignoredWhy) (deps.log ?? logLine)(ignoredLine(event, new Date(), ignoredWhy))
   return result
 }
 
-export interface StripeLogLine { level: 'warn'; type: 'stripe_event'; ts: string; event_id: string; event_type: string; result: 'ignored'; reason: 'unknown_tenant' }
+// unknown_tenant: the event names no tenant this store knows. customer_conflict: it names a tenant, but its Stripe customer
+// already belongs to another tenant; applying it would link one customer to two tenants (and later customer-only events,
+// and the billing portal, to the wrong one), so it changes nothing.
+export type IgnoredReason = 'unknown_tenant' | 'customer_conflict'
+export interface StripeLogLine { level: 'warn'; type: 'stripe_event'; ts: string; event_id: string; event_type: string; result: 'ignored'; reason: IgnoredReason }
 // Only the event's own id and type, each checked against its shape; never a customer, email or amount.
-export function ignoredLine(event: StripeEvent, now = new Date()): StripeLogLine {
+export function ignoredLine(event: StripeEvent, now = new Date(), reason: IgnoredReason = 'unknown_tenant'): StripeLogLine {
   return {
     level: 'warn', type: 'stripe_event', ts: now.toISOString(),
     event_id: /^evt_[A-Za-z0-9]{1,64}$/.test(event.id) ? event.id : '[unrecognized]',
     event_type: /^[a-z_]{1,40}(\.[a-z_]{1,40}){1,3}$/.test(event.type) ? event.type : '[unrecognized]',
-    result: 'ignored', reason: 'unknown_tenant',
+    result: 'ignored', reason,
   }
 }
 const logLine = (l: StripeLogLine) => { process.stdout.write(JSON.stringify(l) + '\n') }
