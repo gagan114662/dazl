@@ -1,6 +1,7 @@
 // The Play card on Home: a short name for a play, its Who / Signal / Pace rows and status, the "searched with" pills,
 // and the next actions when a play found nothing useful. Pure and display-only: nothing here runs a scan; an action only
 // prefills the Plays box (/app/leads?q=...) for the user to start.
+import type { ResearchCause } from './lead-state.ts'
 export interface PlayIcp { summary?: string; who?: string[]; industries?: string[]; where?: string[]; sizes?: string[]; signals?: string[]; exclude?: string[]; window_days?: number }
 export interface PlayWatch { query: string; active: boolean; next_run_at: number | null; paused_reason: string | null }
 
@@ -69,7 +70,10 @@ export const PILLS_SHOWN = 6
 // leads. Only a rewrite that is exact is made for the user: the time window's day count is swapped and every other word
 // of the request is kept. Place and signal are not rewritten here (a sentence cannot be edited safely by pattern): those
 // actions open the full original request for the user to change, and say so.
-export function widenActions(query: string | null, icp: PlayIcp | null): { label: string; href: string; testid: string }[] {
+// `causes` (why the held leads are research only) makes the list reason-aware: widening the window is offered only when
+// a dated lead was just too old, never for a missing date; undated or customer-mention leads get a way to change the
+// source or signal instead. Omitted, the generic list is kept.
+export function widenActions(query: string | null, icp: PlayIcp | null, causes?: ResearchCause[]): { label: string; href: string; testid: string }[] {
   const q = (query ?? '').trim()
   if (!q) return [{ label: 'Write a new play', href: '/app/leads', testid: 'widen-new' }]
   const plays = (s: string) => `/app/leads?q=${encodeURIComponent(s)}`
@@ -77,8 +81,10 @@ export function widenActions(query: string | null, icp: PlayIcp | null): { label
   const days = icp?.window_days
   const inText = /\b(\d+)\s*days?\b/i.exec(q)
   // Only when the request states its window as "<N> days" and N is the saved window: that one number changes.
-  if (typeof days === 'number' && days < 180 && inText && Number(inText[1]) === days) out.push({ label: 'Widen to 180 days', href: plays(q.replace(inText[0], `${180} days`)), testid: 'widen-window' })
+  if ((!causes || causes.includes('older')) && typeof days === 'number' && days < 180 && inText && Number(inText[1]) === days) out.push({ label: 'Widen to 180 days', href: plays(q.replace(inText[0], `${180} days`)), testid: 'widen-window' })
   out.push({ label: icp?.where?.length ? 'Change the place' : 'Add a place', href: plays(q), testid: 'widen-city' })
-  if ((icp?.signals?.length ?? 0) > 0) out.push({ label: 'Change the signal', href: plays(q), testid: 'widen-signal' })
+  if (causes?.some(c => c === 'undated' || c === 'unsupported' || c === 'closed')) out.unshift({ label: 'Try a signal with dated sources', href: plays(q), testid: 'recover-dated' })
+  if ((icp?.signals?.length ?? 0) > 0 || causes?.length) out.push({ label: 'Change the signal', href: plays(q), testid: 'widen-signal' })
+  if (causes?.includes('customer')) out.push({ label: 'Search another source', href: plays(q), testid: 'recover-source' })
   return out
 }
