@@ -4,13 +4,20 @@ import { providers, type Provider } from '../llm/provider.ts'
 import { fetchPublicHtml, type Lookup, type PublicFetchError } from '../net/public-fetch.ts'
 import { normalizeIcp, type Icp } from './icp.ts'
 import { pickVendor } from './runner.ts'
+import { guardProvider, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
+import type { SiteReadAdmission, SiteReadRefusal } from './trial-site-read.ts'
 
 // "Fill the profile from my website": the user pastes their own URL, we read the page
-// (SSRF-guarded), and their OWN key turns it into an editable ICP draft. The draft is
+// (SSRF-guarded), and a model turns it into an editable ICP draft. The draft is
 // returned for review and is never auto-saved - it only persists if the user then runs
-// a scan with it. Trial scans never pay for this: no tenant key, no call.
+// a scan with it. The model call runs on the tenant's own key; an account without one may
+// have it run on dazl's trial key only when deps.trial admits it (lib/scan/trial-site-read.ts,
+// #409), after the page was fetched and found readable, under a per-read spend ceiling.
 
-export type IcpFromSiteError = PublicFetchError | 'js_only' | 'no_api_key' | 'key_unreadable' | 'key_rejected'
+export type IcpFromSiteError = PublicFetchError | 'js_only' | 'no_api_key' | 'key_unreadable' | 'key_rejected' | 'trial_read_failed'
+// The most one trial-funded read may cost, reserved from the prompt's size and the output cap before the call
+// (lib/llm/spend-guard.ts): a page capped at 5000 characters plus 700 output tokens fits well inside it.
+export const TRIAL_SITE_READ_MAX_USD = 0.05
 
 const ENTITIES: [RegExp, string][] = [[/&amp;/g, '&'], [/&lt;/g, '<'], [/&gt;/g, '>'], [/&quot;/g, '"'], [/&#0?39;|&apos;/g, "'"], [/&nbsp;/g, ' ']]
 const unescape = (s: string) => ENTITIES.reduce((t, [re, v]) => t.replace(re, v), s)
@@ -48,36 +55,50 @@ From what this company sells, describe their ideal buyer as JSON with exactly th
  "exclude": string[] (buyers to skip, up to 3, [] if none)}
 Rules: only what the page supports, no invented facts, no hype words. Reply with the JSON object only.`
 
-export interface IcpFromSiteDeps { fetchImpl?: typeof fetch; lookup?: Lookup; master?: Buffer; providers?: Record<string, Provider> }
+export interface IcpFromSiteDeps { fetchImpl?: typeof fetch; lookup?: Lookup; master?: Buffer; providers?: Record<string, Provider>; trial?: () => Promise<SiteReadAdmission> }
+export type IcpFromSiteResult = { icp: Icp; source: string; sells: string; funded: 'own' | 'trial' } | { error: IcpFromSiteError; trial?: SiteReadRefusal }
 
-export async function icpFromWebsite(db: Database.Database, tenantId: string, rawUrl: string, deps: IcpFromSiteDeps = {}): Promise<{ icp: Icp; source: string; sells: string } | { error: IcpFromSiteError }> {
-  // Key first: no key of their own, no fetch and no call. This feature never uses the
-  // trial or an operator key - the cost always lands on the tenant's own key.
+export async function icpFromWebsite(db: Database.Database, tenantId: string, rawUrl: string, deps: IcpFromSiteDeps = {}): Promise<IcpFromSiteResult> {
+  // The tenant's own key first: with one, the read always runs on it, as before.
   const vendor = pickVendor(db, tenantId)
-  if (!vendor) return { error: 'no_api_key' }
-  const read = readKey(db, tenantId, vendor, deps.master)
-  if (read.unreadable) return { error: 'key_unreadable' }
-  if (!read.key) return { error: 'no_api_key' }
-  const provider = (deps.providers ?? providers)[vendor]
-  if (!provider?.complete) return { error: 'key_rejected' }
+  const read = vendor ? readKey(db, tenantId, vendor, deps.master) : null
+  if (read?.unreadable) return { error: 'key_unreadable' }
+  // No key of its own and no trial path: no fetch and no call.
+  if (!read?.key && !deps.trial) return { error: 'no_api_key' }
 
   const page = await fetchPublicHtml(rawUrl, deps)
   if ('error' in page) return page
   const { title, text } = extractSiteText(page.html)
   if (text.length < 200) return { error: 'js_only' } // nothing readable without running JS
 
+  // The paid call: the tenant's key, or (admitted only now, after a readable page) dazl's trial key under a ceiling.
+  let call: { key: string; provider: Provider; funded: 'own' | 'trial' }
+  if (read?.key) {
+    const provider = (deps.providers ?? providers)[vendor!]
+    if (!provider?.complete) return { error: 'key_rejected' }
+    call = { key: read.key, provider, funded: 'own' }
+  } else {
+    const a = await deps.trial!()
+    if (!a.ok) return { error: 'no_api_key', trial: a.reason }
+    const provider = (deps.providers ?? providers)[a.key.vendor]
+    if (!provider?.complete) return { error: 'trial_read_failed' }
+    call = { key: a.key.key, provider: guardProvider(provider, new SpendGuard(TRIAL_SITE_READ_MAX_USD)), funded: 'trial' }
+  }
+
   let icp: Icp | null = null
   let sells = ''
   try {
-    const out = await provider.complete(read.key, PROMPT(new URL(page.finalUrl).hostname, title, text), deps.fetchImpl, 700)
+    const out = await call.provider.complete!(call.key, PROMPT(new URL(page.finalUrl).hostname, title, text), deps.fetchImpl, 700)
     const json = /^\s*```(?:json)?\s*([\s\S]*?)\s*```\s*$/.exec(out)?.[1] ?? out
     const parsed = JSON.parse(json)
     icp = normalizeIcp(parsed)
     // Optional: what the seller offers, for the editable onboarding profile. Never required, never saved here.
     if (typeof parsed?.sells === 'string') sells = parsed.sells.replace(/\s+/g, ' ').trim().slice(0, 150)
-  } catch {
+  } catch (e) {
+    // On the trial key a failure (refused by the ceiling, provider error, unreadable answer) is dazl's, never "your key".
+    if (call.funded === 'trial' || e instanceof SpendRefused) return { error: 'trial_read_failed' }
     return { error: 'key_rejected' }
   }
-  if (!icp) return { error: 'key_rejected' }
-  return { icp, source: page.finalUrl, sells }
+  if (!icp) return { error: call.funded === 'trial' ? 'trial_read_failed' : 'key_rejected' }
+  return { icp, source: page.finalUrl, sells, funded: call.funded }
 }

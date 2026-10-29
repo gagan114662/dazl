@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sameOriginJson } from '@/lib/same-origin'
-import { rateLimit } from '@/lib/rate-limit'
+import { clientIp, rateLimit } from '@/lib/rate-limit'
+import { getDb } from '@/lib/db/client'
+import { admitTrialSiteRead } from '@/lib/scan/trial-site-read'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { icpFromWebsite } from '@/lib/scan/icp-from-site'
 
 // Turns the user's own homepage into an editable ICP draft (returned, never saved).
-// Tight rate limit: it fetches an arbitrary URL server-side and makes an LLM call.
+// Tight rate limit: it fetches an arbitrary URL server-side and makes an LLM call. Without the user's own key the call may
+// run on the trial key, admitted per read and bounded (lib/scan/trial-site-read.ts); otherwise the refusal reason is
+// returned with no_api_key so the page can say why and offer the key or the manual profile.
 export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
@@ -16,11 +20,11 @@ export async function POST(req: NextRequest) {
   let url = typeof body?.url === 'string' ? body.url.trim().slice(0, 300) : ''
   if (url && !/^https?:\/\//i.test(url)) url = `https://${url}`
   if (url.length < 5) return NextResponse.json({ error: 'invalid' }, { status: 400 })
-  const out = await icpFromWebsite(getScanDb(), user.id, url)
+  const out = await icpFromWebsite(getScanDb(), user.id, url, { trial: async () => admitTrialSiteRead(await getDb(), { id: user.id, email: user.email }, clientIp(req)) })
   if ('error' in out) {
     const status = out.error === 'no_api_key' || out.error === 'key_unreadable' || out.error === 'invalid' || out.error === 'not_public' ? 400
       : out.error === 'js_only' || out.error === 'not_html' ? 422 : 502
-    return NextResponse.json({ error: out.error }, { status })
+    return NextResponse.json({ error: out.error, ...(out.trial ? { trial: out.trial } : {}) }, { status })
   }
   return NextResponse.json(out)
 }
