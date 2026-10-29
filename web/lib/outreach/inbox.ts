@@ -11,8 +11,9 @@
 // from leads joined through the tenant's own scan_jobs, so another tenant's lead id never labels or filters a row.
 import { asDb, type DbLike, type Param } from '../db/client.ts'
 
-// Owner-facing states. needs_owner: a reply the rules flagged for review ('uncertain': the thread is stopped as 'review'
-// until the owner reads it), or an interested / unsorted human answer on a thread that is not stopped for another reason.
+// Owner-facing states. needs_owner (the same rule as lib/outcomes.ts): an interested, unsorted or uncertain reply on a
+// thread that is not stopped, or stopped for review; an uncertain reply also on a thread stopped for a weaker reason.
+// Only an opt-out, a "no", a bounce or a suppression settles a thread.
 export const NEEDS_OWNER_CLASSES = ['positive', 'other', 'uncertain'] as const
 const MACHINE = "('auto','soft_bounce')"
 export type InboxStatus = 'all' | 'needs_owner' | 'unread'
@@ -50,7 +51,8 @@ function threadsSql(jobFilter: boolean): string {
       SELECT r.thread_id, r.gmail_id, r.lead_id, j.id AS job_id, r.from_email, r.excerpt, r.classification, r.received_at, r.replies,
              l.company, l.name AS lead_name, t.followups_sent, t.stopped,
              CASE WHEN rd.read_upto IS NULL OR r.last_at > rd.read_upto THEN 1 ELSE 0 END AS unread,
-             CASE WHEN r.classification = 'uncertain' OR (r.classification IN ('positive','other') AND (t.stopped IS NULL OR t.stopped = 'review')) THEN 1 ELSE 0 END AS needs_owner
+             CASE WHEN r.classification IN ('positive','other','uncertain') AND (t.stopped IS NULL OR t.stopped = 'review'
+               OR (r.classification = 'uncertain' AND t.stopped NOT IN ('opt_out','negative','bounce','suppressed'))) THEN 1 ELSE 0 END AS needs_owner
       FROM ranked r
       LEFT JOIN leads l ON l.id = r.lead_id AND EXISTS (SELECT 1 FROM scan_jobs sj WHERE sj.id = l.scan_job_id AND sj.user_id = ?)
       LEFT JOIN scan_jobs j ON j.id = l.scan_job_id

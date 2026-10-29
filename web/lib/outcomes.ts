@@ -20,10 +20,15 @@ export interface Outcomes {
   exceptions: { kind: 'scan' | 'send' | 'held'; text: string; href: string }[] | null
 }
 
-// Replies that need the owner: an interested answer, a human answer the rules could not sort, or a reply flagged for
-// review ('uncertain', which stops the thread as 'review'). A "no", an opt-out (already honoured by the send rails) and
-// auto-replies are not counted as needing the owner, and neither is a thread stopped for any other reason.
+// Replies that need the owner: an interested answer, a human answer the rules could not sort, or one held for review
+// (uncertain: unreadable or unclear). A "no", an opt-out (already honoured by the send rails) and auto-replies are not
+// counted as needing the owner. A stopped thread is not either, except one held for review, or an uncertain reply on a
+// thread stopped for a weaker reason (re-opened, evidence withdrawn...): a person still has to read it. Only an
+// opt-out, a "no", a bounce or a suppression settles a thread.
 const NEEDS_OWNER = new Set(['positive', 'other', 'uncertain'])
+const SETTLED = new Set(['opt_out', 'negative', 'bounce', 'suppressed'])
+const NOT_A_PERSON = new Set(['auto', 'soft_bounce'])
+const needsOwner = (r: OutcomeReply) => NEEDS_OWNER.has(r.classification) && (!r.stopped || r.stopped === 'review' || (r.classification === 'uncertain' && !SETTLED.has(r.stopped)))
 const FAILED_SEND = new Set(['failed', 'uncertain'])
 
 export interface RepliesPage { threads: OutcomeReply[]; complete: boolean; needsOwner: number }
@@ -33,10 +38,11 @@ export function outcomes(i: { jobId: string; scanFailed: string | null; leads: P
   const mine = i.messages && ids ? i.messages.filter(m => ids.has(m.lead_id)) : i.messages
   const by = (st: string) => mine ? mine.filter(m => m.status === st) : null
   // The server already gives one row per thread (its deciding reply), this play only, needing the owner. The same rules
-  // are re-applied here so a row that does not meet them can never be shown or counted.
+  // are re-applied here so a row that does not meet them can never be shown or counted: one conversation per thread, its
+  // newest reply from a person decides (a later "no" or opt-out closes an earlier "yes"; a later auto-reply changes nothing).
   const newest = new Map<string, OutcomeReply>()
-  for (const r of i.replies?.threads ?? []) { const cur = newest.get(r.thread_id); if (!cur || r.received_at > cur.received_at) newest.set(r.thread_id, r) }
-  const rows = [...newest.values()].filter(r => r.lead_id && ids?.has(r.lead_id) && NEEDS_OWNER.has(r.classification) && (!r.stopped || r.stopped === 'review')).sort((a, b) => b.received_at - a.received_at)
+  for (const r of i.replies?.threads ?? []) { if (NOT_A_PERSON.has(r.classification)) continue; const cur = newest.get(r.thread_id); if (!cur || r.received_at > cur.received_at) newest.set(r.thread_id, r) }
+  const rows = [...newest.values()].filter(r => r.lead_id && ids?.has(r.lead_id) && needsOwner(r)).sort((a, b) => b.received_at - a.received_at)
   const conversations = i.replies && ids
     ? { rows, total: i.replies.complete ? rows.length : Math.max(i.replies.needsOwner, rows.length), complete: i.replies.complete }
     : null

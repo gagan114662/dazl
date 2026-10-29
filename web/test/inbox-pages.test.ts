@@ -111,7 +111,10 @@ bothEngines('the deciding reply: a person\'s newest message decides; an auto-rep
   await lead(db, play, 'l4', 'l4'); await lead(db, play, 'l5', 'l5')
   await reply(db, 'T', 'flagged', 'l4', 'uncertain', NOW - 2)
   await reply(db, 'T', 'stopped-yes', 'l5', 'positive', NOW - 3)
-  for (const [th, l, why] of [['flagged', 'l4', 'review'], ['stopped-yes', 'l5', 'replied']]) {
+  await lead(db, play, 'l6', 'l6'); await lead(db, play, 'l7', 'l7')
+  await reply(db, 'T', 'uncertain-reopened', 'l6', 'uncertain', NOW - 4)
+  await reply(db, 'T', 'uncertain-optout', 'l7', 'uncertain', NOW - 5)
+  for (const [th, l, why] of [['flagged', 'l4', 'review'], ['stopped-yes', 'l5', 'replied'], ['uncertain-reopened', 'l6', 'reopened'], ['uncertain-optout', 'l7', 'opt_out']]) {
     await db.run("INSERT INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at, stopped) VALUES ('T', ?, ?, 'pat@x.example', 'r', ?, ?)", [th, l, NOW, why])
   }
   const rows = Object.fromEntries((await inboxPage(db, 'T')).threads.map(t => [t.thread_id, t]))
@@ -119,7 +122,9 @@ bothEngines('the deciding reply: a person\'s newest message decides; an auto-rep
   assert.equal(rows['yes-then-no'].classification, 'negative'); assert.equal(rows['yes-then-no'].needs_owner, false)
   assert.equal(rows['only-ooo'].classification, 'auto')
   assert.equal(rows.flagged.needs_owner, true); assert.equal(rows['stopped-yes'].needs_owner, false)
-  assert.deepEqual((await inboxPage(db, 'T', { jobId: play, status: 'needs_owner' })).threads.map(t => t.thread_id), ['flagged', 'yes-then-ooo'], 'newest deciding reply first')
+  // An uncertain reply still needs a person on a thread stopped for a weaker reason; an opt-out settles it (as lib/outcomes.ts).
+  assert.equal(rows['uncertain-reopened'].needs_owner, true); assert.equal(rows['uncertain-optout'].needs_owner, false)
+  assert.deepEqual((await inboxPage(db, 'T', { jobId: play, status: 'needs_owner' })).threads.map(t => t.thread_id), ['flagged', 'uncertain-reopened', 'yes-then-ooo'], 'newest deciding reply first')
 })
 
 bothEngines('tenant scope: another tenant\'s rows, leads, plays and threads never show, filter or get marked', async ({ db }) => {
