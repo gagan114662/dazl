@@ -4,7 +4,8 @@ import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { migrateKeys, readKey, saveKey } from '../lib/llm/key-store.ts'
 import { migrateScan, getJob } from '../lib/scan/store.ts'
-import { migratePlans, setPlan } from '../lib/plans.ts'
+import { migratePlans } from '../lib/plans.ts'
+import { setPlan } from './helpers/plan-fixture.ts'
 import { claimKeyedJob, previewIcp, runJob } from '../lib/scan/runner.ts'
 
 const master = randomBytes(32)

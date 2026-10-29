@@ -5,7 +5,8 @@ import Database from 'better-sqlite3'
 import { decryptSecret, encryptSecret } from '../lib/secrets.ts'
 import { deleteKey, getKey, keyStatus, migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { looksLikeKey, validateKey } from '../lib/llm/vendors.ts'
-import { migratePlans, scanQuota, setPlan } from '../lib/plans.ts'
+import { migratePlans, scanQuota } from '../lib/plans.ts'
+import { setPlan } from './helpers/plan-fixture.ts'
 import { createJob, migrateScan } from '../lib/scan/store.ts'
 
 const master = randomBytes(32)
