@@ -43,11 +43,21 @@ export const MEMBER_ERROR_STATUS: Record<MemberError['code'], number> = {
 // The acting member: who, in which workspace, as what (from getSessionUser, never from the request).
 export type Acting = { actorId: string; tenantId: string; role: Role }
 
-// Serializes member changes per workspace: PG holds this row lock until commit; SQLite transactions are already
-// serialized (IMMEDIATE).
+// Serializes member and invitation changes per workspace: PG holds this row lock until commit; SQLite transactions are
+// already serialized (IMMEDIATE). Every write takes it first (the one lock order), then reads the acting member's current
+// role (actingRole), the target and the owner count, so none of them can change under the decision.
 function* lockWorkspace(t: Tx, tenantId: string): TxBody<void> {
   const r = yield* t.run('UPDATE organizations SET name = name WHERE id = ?', [tenantId])
   if (r.changes !== 1) throw new MemberError('not_found')
+}
+
+// The acting member's role NOW, read under the workspace lock: never the snapshot the request authenticated with. A
+// member demoted or removed while their request waited for the lock acts with their new role, or not at all.
+function* actingRole(t: Tx, by: Acting): TxBody<Role> {
+  yield* lockWorkspace(t, by.tenantId)
+  const r = yield* roleOf(t, by.tenantId, by.actorId)
+  if (!r) throw new MemberError('forbidden')
+  return r
 }
 
 function* roleOf(t: Tx, tenantId: string, memberId: string): TxBody<Role | null> {
@@ -78,10 +88,10 @@ export async function listWorkspaces(db: Db, actorId: string) {
 
 export async function changeRole(db: Db, by: Acting, memberId: string, role: Role): Promise<void> {
   await db.tx(function* (t) {
-    yield* lockWorkspace(t, by.tenantId)
+    const me = yield* actingRole(t, by)
     const current = yield* roleOf(t, by.tenantId, memberId)
     if (!current) throw new MemberError('not_found')
-    if (!mayManage(by.role, current, role)) throw new MemberError('forbidden')
+    if (!mayManage(me, current, role)) throw new MemberError('forbidden')
     if (current === 'owner' && role !== 'owner' && (yield* owners(t, by.tenantId)) <= 1) throw new MemberError('last_owner')
     yield* t.run('UPDATE memberships SET role = ? WHERE tenant_id = ? AND member_id = ?', [role, by.tenantId, memberId])
   })
@@ -91,10 +101,10 @@ export async function changeRole(db: Db, by: Acting, memberId: string, role: Rol
 export async function removeMember(db: Db, by: Acting, memberId: string): Promise<void> {
   if (memberId === by.actorId) throw new MemberError('forbidden')
   await db.tx(function* (t) {
-    yield* lockWorkspace(t, by.tenantId)
+    const me = yield* actingRole(t, by)
     const current = yield* roleOf(t, by.tenantId, memberId)
     if (!current) throw new MemberError('not_found')
-    if (!mayManage(by.role, current, null)) throw new MemberError('forbidden')
+    if (!mayManage(me, current, null)) throw new MemberError('forbidden')
     if (current === 'owner' && (yield* owners(t, by.tenantId)) <= 1) throw new MemberError('last_owner')
     yield* t.run('DELETE FROM memberships WHERE tenant_id = ? AND member_id = ?', [by.tenantId, memberId])
   })
@@ -113,10 +123,10 @@ export async function leave(db: Db, by: Acting): Promise<void> {
 // A new invitation for `email` (lowercased by the caller's validateEmail). A pending invitation for the same email is
 // replaced, so only the newest link works. Returns the raw token once; only its hash is stored.
 export async function createInvitation(db: Db, by: Acting, email: string, role: Role, now = nowS()): Promise<{ id: string; token: string; expires_at: number }> {
-  if (!mayManage(by.role, null, role)) throw new MemberError('forbidden')
+  if (!mayManage(by.role, null, role)) throw new MemberError('forbidden') // fast refusal; re-checked under the lock
   const token = randomBytes(32).toString('hex'), id = randomBytes(12).toString('hex')
   await db.tx(function* (t) {
-    yield* lockWorkspace(t, by.tenantId)
+    if (!mayManage(yield* actingRole(t, by), null, role)) throw new MemberError('forbidden')
     if (yield* t.get('SELECT 1 AS x FROM memberships m JOIN users u ON u.id = m.member_id WHERE m.tenant_id = ? AND lower(u.email) = ?', [by.tenantId, email])) throw new MemberError('already_member')
     yield* t.run('UPDATE invitations SET revoked_at = ? WHERE tenant_id = ? AND email = ? AND accepted_at IS NULL AND revoked_at IS NULL', [now, by.tenantId, email])
     const pending = Number((yield* t.get<{ n: number }>('SELECT count(*) AS n FROM invitations WHERE tenant_id = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?', [by.tenantId, now]))?.n ?? 0)
@@ -136,9 +146,10 @@ export async function listInvitations(db: Db, tenantId: string, now = nowS()) {
 
 export async function revokeInvitation(db: Db, by: Acting, id: string, now = nowS()): Promise<void> {
   await db.tx(function* (t) {
+    const me = yield* actingRole(t, by)
     const inv = yield* t.get<{ role: string }>('SELECT role FROM invitations WHERE id = ? AND tenant_id = ? AND accepted_at IS NULL AND revoked_at IS NULL', [id, by.tenantId])
     if (!inv || !isRole(inv.role)) throw new MemberError('not_found')
-    if (!mayManage(by.role, null, inv.role)) throw new MemberError('forbidden')
+    if (!mayManage(me, null, inv.role)) throw new MemberError('forbidden')
     yield* t.run('UPDATE invitations SET revoked_at = ? WHERE id = ? AND tenant_id = ?', [now, id, by.tenantId])
   })
 }
@@ -154,8 +165,10 @@ export async function acceptInvitation(db: Db, actor: { actorId: string; email: 
       'SELECT id, tenant_id, email, role, invited_by FROM invitations WHERE token_hash = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?', [sha256(token), now])
     if (!inv || !isRole(inv.role)) throw new MemberError('invalid_invite')
     if (inv.email !== actor.email.trim().toLowerCase()) throw new MemberError('wrong_account')
+    // the same lock every member and invitation change takes first, so a revoke and this accept are serialized; the
+    // guarded update below then sees the outcome of whichever ran first
     yield* lockWorkspace(t, inv.tenant_id)
-    const used = yield* t.run('UPDATE invitations SET accepted_at = ?, accepted_by = ? WHERE id = ? AND accepted_at IS NULL AND revoked_at IS NULL', [now, actor.actorId, inv.id])
+    const used = yield* t.run('UPDATE invitations SET accepted_at = ?, accepted_by = ? WHERE id = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?', [now, actor.actorId, inv.id, now])
     if (used.changes !== 1) throw new MemberError('invalid_invite')
     yield* t.run('INSERT INTO memberships (tenant_id, member_id, role, created_at, added_by) VALUES (?, ?, ?, ?, ?) ON CONFLICT (tenant_id, member_id) DO NOTHING',
       [inv.tenant_id, actor.actorId, inv.role, now, inv.invited_by])
