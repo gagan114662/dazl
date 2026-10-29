@@ -6,7 +6,7 @@ Tracking: #354 (Postgres port). Gate: `web/lib/db/pg-port-status.ts` empty (docs
 - 910 SQL statements in lib/ and app/; 234 already on the async Db layer; 37 built at runtime.
 - **116 modules** still need the synchronous SQLite handle; **70 of their statements** Postgres rejects as written.
 - 19 modules use SQLite transaction or lock idioms; 12 module-level Maps/Sets hold per-process state.
-- 154 test files touch a store but run on SQLite only; 45 already run on both engines.
+- 154 test files touch a store but run on SQLite only; 46 already run on both engines.
 
 ## Modules on the raw SQLite handle
 
@@ -238,7 +238,7 @@ Module-level Maps/Sets. Each is either a cache that is safe to lose, or state th
 | `lib/llm/spend-guard.ts:73` | `pools` (Map) | must share | owner spend pool; resets on restart and differs per instance (#363) |
 | `lib/ops/emitted.ts:14` | `seen` (Map) | safe to lose | which bundles this build emitted |
 | `lib/outreach/reopen.ts:202` | `inFlight` (Set) | must share | re-open sends running in this process; another instance cannot see them (row claim fences the send, this guards resolve) |
-| `lib/rate-limit.ts:18` | `local` (Map) | must share | per-process shadow used when the shared rate_limits store fails (#356, PR #400) |
+| `lib/rate-limit.ts:55` | `local` (Map) | must share | per-process shadow used when the shared rate_limits store fails (#356, PR #400) |
 | `lib/scan/countries.ts:265` | `BY_NAME` (Map) | constant | filled once from a literal table |
 | `lib/scan/countries.ts:266` | `ALPHA3` (Map) | constant | filled once from a literal table |
 | `lib/scan/held-state.ts:15` | `inProcess` (Set) | must share | last-resort hold when no write succeeded; another instance would not see the hold |
