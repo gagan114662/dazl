@@ -29,10 +29,10 @@ for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } ca
 // GET /api/usage as the route builds it (app/api/usage/route.ts): a keyless account's trial block with its reason.
 const usage = trial => ({ plan: 'free', scans_used: 0, scan_limit: 50, has_key: false, billing_status: null, trial })
 const SCENES = [
-  ['fresh-unavailable', usage({ funded: false, remaining: 0, cap: 3, blocked: 'not_configured' }), 'unavailable', "Free trial scans aren't available here right now, so none have been used.", 'Add your AI key to scan'],
+  ['fresh-unavailable', usage({ funded: false, remaining: 0, cap: 3, blocked: 'not_configured' }), 'unavailable', "Free trial scans aren't available here right now.", 'Add your AI key to scan'],
   ['available', usage({ funded: true, remaining: 2, cap: 3, blocked: null }), 'available', '2 of 3 free trial scans left.', 'Add your AI key for the full plan'],
-  ['used-up', usage({ funded: false, remaining: 0, cap: 3, blocked: 'account_cap' }), 'exhausted', 'Your 3 free trial scans are used up.', 'Add your AI key to keep scanning'],
-  ['throttled', usage({ funded: false, remaining: 3, cap: 3, blocked: 'ip_throttle' }), 'throttled', 'Too many free trial scans from your network today. Try again tomorrow. You have used 0 of 3.', 'Or add your AI key to scan now'],
+  ['used-up', usage({ funded: false, remaining: 0, cap: 3, blocked: 'account_cap' }), 'exhausted', 'You have used all 3 free trial scan attempts (failed attempts count too).', 'Add your AI key to keep scanning'],
+  ['throttled', usage({ funded: false, remaining: 3, cap: 3, blocked: 'ip_throttle' }), 'throttled', 'Too many free trial scans from your network today. Try again tomorrow. You have used 0 of 3 free trial scan attempts.', 'Or add your AI key to scan now'],
 ]
 const b = await chromium.launch()
 try {
@@ -56,7 +56,8 @@ try {
       assert.equal(await line.getAttribute('data-state'), state, name)
       assert.equal((await line.innerText()).trim(), `${text} ${link}`, name)
       assert.equal(await line.getByRole('link', { name: link }).getAttribute('href'), '#model-key')
-      if (name !== 'used-up') assert.doesNotMatch(await page.getByTestId('plan-panel').innerText(), /used up/, `${name}: never "used up"`)
+      if (name !== 'used-up') assert.doesNotMatch(await page.getByTestId('plan-panel').innerText(), /used up|used all/, `${name}: never "used up"`)
+      if (name === 'fresh-unavailable') assert.doesNotMatch(await line.innerText(), /none|used/, 'an unavailable trial claims nothing about past use')
       assert.match(await page.getByTestId('plan-panel').innerText(), /0 of 50 scans used this month\./, 'usage stays separate from the trial line')
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `no horizontal scroll at ${width}px`)
       if (process.env.SHOTS) await page.getByTestId('plan-panel').screenshot({ path: path.join(process.env.SHOTS, `${name}-${tag}.png`) })
@@ -64,7 +65,7 @@ try {
       await ctx.close()
     }
   }
-  console.log('trial status UI check passed: fresh/unavailable says none used, available counts down, used-up says used up, network limit says try tomorrow; desktop + 390px, no writes')
+  console.log('trial status UI check passed: fresh/unavailable says unavailable (no claim about past use), available counts down, used-up says all 3 attempts used, network limit says try tomorrow; desktop + 390px, no writes')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }

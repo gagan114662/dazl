@@ -1,6 +1,7 @@
 // The free-trial line in Settings (#410): what the account's trial can do now and why, from GET /api/usage's trial block
 // ({ funded, remaining, cap, blocked }). Availability and usage are kept apart: a trial that is not set up on this
-// deployment, a network or daily limit, or an eligibility rule is never described as scans the account has used.
+// deployment, a network or daily limit, an eligibility rule or a missing reason is never described as scans the account
+// has used, and an unavailable trial claims nothing about past use either.
 // Pure and client-safe. Nothing here reveals the operator key, budgets or caps beyond the account's own scan count.
 
 export interface TrialBlock { funded: boolean; remaining: number; cap: number; blocked?: string | null }
@@ -10,22 +11,23 @@ export interface TrialCopy { state: TrialCopyState; text: string; next: { label:
 // The one working next step in every state is the account's own key; the link carries that wording, the text the state.
 const key = (label: string) => ({ label, href: '#model-key' })
 const SCAN = key('Add your AI key to scan'), KEEP = key('Add your AI key to keep scanning'), NOW = key('Or add your AI key to scan now')
-const plural = (n: number) => `${n} free trial scan${n === 1 ? '' : 's'}`
 
 export function trialCopy(t: TrialBlock): TrialCopy {
   const used = Math.max(0, t.cap - t.remaining)
-  const usedText = `You have used ${used} of ${t.cap}.`
+  // The cap counts admitted attempts, failed ones included (lib/billing/trial-budget.ts), not finished scans.
+  const usedText = `You have used ${used} of ${t.cap} free trial scan attempts.`
   switch (t.blocked ?? null) {
     case null:
       if (t.funded && t.remaining > 0) return { state: 'available', text: `${t.remaining} of ${t.cap} free trial scans left.`, next: key('Add your AI key for the full plan') }
-      // Funded but nothing left: the account's own scans are what used it.
-      return { state: 'exhausted', text: `Your ${plural(t.cap)} are used up.`, next: KEEP }
+      // Not funded (or nothing left) with no reason given: say it cannot run, never that scans were used.
+      return { state: 'unavailable', text: "Free trial scans can't run right now.", next: SCAN }
     case 'not_configured':
-      // No operator key on this deployment: nothing was used, the trial simply is not offered here.
-      return { state: 'unavailable', text: "Free trial scans aren't available here right now, so none have been used.", next: SCAN }
+      // No operator key on this deployment. The trial is simply not offered here; this reason is returned before the
+      // account's trial history is read, so it says nothing about what this account has or has not used.
+      return { state: 'unavailable', text: "Free trial scans aren't available here right now.", next: SCAN }
     case 'account_cap':
     case 'attempts_cap':
-      return { state: 'exhausted', text: `Your ${plural(t.cap)} are used up.`, next: KEEP }
+      return { state: 'exhausted', text: `You have used all ${t.cap} free trial scan attempts (failed attempts count too).`, next: KEEP }
     case 'account_total_cap':
       return { state: 'exhausted', text: `Your free trial's allowance is used up. ${usedText}`, next: KEEP }
     case 'ip_throttle':
