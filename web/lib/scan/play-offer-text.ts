@@ -29,27 +29,32 @@ export type PlayOffer =
 
 export const cleanOffer = (s: unknown): string => typeof s === 'string' ? s.replace(/\s+/g, ' ').trim().slice(0, MAX_OFFER) : ''
 
-// The offer a request states, if it states one: "selling X to ...", "we sell X to ...", "I offer X for ...",
-// "offer: X", and a whole sentence that is only that statement ("We sell CRM setup and outbound sales consulting.").
-// A pattern never reaches past its sentence. Plain targeting ("dental practices in NYC hiring a receptionist"),
-// exclusions ("Exclude agencies.") and negated sentences ("We don't sell to agencies.") state none.
+// The offer a request states, if it states one. Only a positive seller assertion counts, and only at the start of a
+// sentence or clause (after ",", ";", ":" or a dash), never words embedded in targeting or an exclusion:
+//   "We sell / we're selling / I am offering / we provide <offer> to|for ..."   "Selling <offer> to ..."
+//   "We sell <offer>." (the whole sentence)                                     "Offer: <offer>" / "Our product: <offer>"
+// Plain targeting ("dental practices in NYC hiring a receptionist"), exclusions ("Exclude agencies selling CRM to
+// founders.", "Do not target people selling services to dental practices.") and negations ("We don't sell to agencies.",
+// "We are not selling hardware.") state none, and neither does "We sell to <buyers>" (a target, not an offer).
 const SENTENCE_STOP = /[.!?;\n]/
+const LEAD = String.raw`(?:^|[,;:\u2013\u2014]\s*|\s-\s*)(?:(?:hi|hello|note|fyi|also|and|but|so|ps)[,:]?\s+)?`
+const SPEAKER = String.raw`(?:i|we|i'm|we're|i am|we are)\s+(?:sell|selling|offer|offering|provide|providing)`
+const TO_FOR = new RegExp(`${LEAD}${SPEAKER}\\s+(.{3,150}?)\\s+(?:to|for)\\s+\\S`, 'i')
+const SELLING_TO_FOR = new RegExp(`${LEAD}selling\\s+(.{3,150}?)\\s+(?:to|for)\\s+\\S`, 'i')
+const BARE = new RegExp(`${LEAD}${SPEAKER}\\s+(.{3,150})$`, 'i')
+const LABEL = new RegExp(`${LEAD}(?:(?:our|my)\\s+)?(?:offer|offering|product|service)s?\\s*:\\s*(.{3,150})$`, 'i')
+// a capture that is a target ("to dental practices") or itself an exclusion is not an offer
+const NOT_AN_OFFER = /^(?:to|for|into|in|at|within|only|exclud|except|no |not )/i
 export function statedOffer(query: string | null | undefined): string | null {
   const q = (query ?? '').replace(/[ \t]+/g, ' ').trim()
   if (!q) return null
-  const pats = [
-    /\b(?:i|we|i'm|we're|i am|we are)\s+(?:sell|selling|offer|offering|provide|providing)\s+([^.!?;\n]{3,150}?)\s+(?:to|for)\s+\S/i,
-    /\bselling\s+([^.!?;\n]{3,150}?)\s+(?:to|for)\s+\S/i,
-    /\b(?:offer|offering|product|service)\s*:\s*([^.;\n]{3,150})/i,
-  ]
-  for (const p of pats) {
-    const m = p.exec(q)
-    if (m) { const o = cleanOffer(m[1].replace(/^(?:our|my|a|an)\s+/i, '')); if (o.length >= 3) return o }
-  }
-  // a sentence that is nothing but "we sell / I offer / we provide <offer>"
-  for (const sentence of q.split(SENTENCE_STOP)) {
-    const m = /^(?:i|we|i'm|we're|i am|we are)\s+(?:sell|offer|provide)\s+(.{3,150})$/i.exec(sentence.trim())
-    if (m) { const o = cleanOffer(m[1].replace(/^(?:our|my|a|an)\s+/i, '')); if (o.length >= 3) return o }
+  for (const sentence of q.split(SENTENCE_STOP).map(x => x.trim()).filter(Boolean)) {
+    for (const p of [TO_FOR, SELLING_TO_FOR, LABEL, BARE]) {
+      const m = p.exec(sentence)
+      if (!m) continue
+      const o = cleanOffer(m[1].replace(/^(?:our|my|a|an)\s+/i, ''))
+      if (o.length >= 3 && !NOT_AN_OFFER.test(o)) return o
+    }
   }
   return null
 }

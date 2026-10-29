@@ -114,3 +114,37 @@ test('#349 onboarding only (users.sells, no Memory): template and AI rewrite sta
     assert.equal(r.prompts.length, 1)
   } finally { db.close() }
 })
+
+// Instinct's HOLD on #433 at 0e6d6c7: the bare-statement family covers every speaker/verb form of the to/for family, and
+// only a positive seller assertion counts - never selling words inside targeting or an exclusion.
+test('#349 HOLD every speaker/verb form is read; exclusions, targets and negations never fabricate an offer', () => {
+  for (const [t, o] of [['We are selling CRM setup.', 'CRM setup'], ['We are offering CRM setup.', 'CRM setup'], ['We are providing CRM setup.', 'CRM setup'], ['I am offering CRM setup.', 'CRM setup'],
+    ["We're selling CRM setup to London founders", 'CRM setup'], ['London SaaS founders - we sell CRM setup', 'CRM setup'], ['Our product: CRM setup', 'CRM setup']] as const)
+    assert.equal(statedOffer(t), o, t)
+  for (const t of ['Exclude agencies selling CRM to founders.', 'Do not target people selling services to dental practices.', 'We are not selling hardware.', 'We sell to dental practices.',
+    'Find agencies offering SEO services to restaurants', 'Companies providing payroll for startups in Austin'])
+    assert.equal(statedOffer(t), null, t)
+  assert.deepEqual(effectiveOffer({ seller: 'Dental reminders', query: 'We are selling CRM setup.' }, ''), { offer: null, source: 'conflict', conflict: { stated: 'CRM setup', recorded: 'Dental reminders' } })
+})
+
+test('#349 HOLD caller paths: a progressive-form offer cannot draft, rewrite, follow up or score the recorded dental offer; exclusion-only text fabricates none', async () => {
+  const db = setup(DENTAL_SELLER)
+  try {
+    db.prepare("UPDATE scan_jobs SET query = 'Find London SaaS startups hiring. We are offering CRM setup. Exclude agencies.' WHERE id = 'london'").run()
+    db.prepare("UPDATE scan_jobs SET query = 'Find dental clinics hiring. Exclude agencies selling CRM to founders. Do not target people selling services to dental practices.' WHERE id = 'dental'").run()
+    // progressive form: contested everywhere
+    assert.equal((await readPlayOffer(sqliteDb(db), 'A', 'london'))!.source, 'conflict')
+    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme'), /offer_conflict/)
+    db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status) VALUES ('m-l', 'A', 'lead-london', 'sales@buyer.invalid', 's', 'old dental body written before the fix', 'draft')").run()
+    const r = recording()
+    assert.deepEqual(await polishDraft(db, 'A', 'm-l', 'Acme', { master, providers: r.providers }), { rewritten: false, reason: 'offer_conflict' })
+    assert.equal(r.prompts.length, 0)
+    assert.equal(memoryForLead(db, 'A', 'lead-london')?.positioning ?? '', '')
+    assert.equal(offerBlockFor(db, 'A', 'london'), '')
+    // exclusion-only text: no stated offer, no conflict; the play keeps its recorded dental offer and nothing says CRM
+    assert.deepEqual(await readPlayOffer(sqliteDb(db), 'A', 'dental'), { offer: DENTAL_SELLER, source: 'recorded', conflict: null })
+    const text = body(db, createDraft(db, 'A', 'lead-dental', 'Acme'))
+    assert.match(text, /appointment booking/); assert.doesNotMatch(text, /CRM|services to dental/)
+    assert.doesNotMatch(offerBlockFor(db, 'A', 'dental'), /CRM/)
+  } finally { db.close() }
+})
