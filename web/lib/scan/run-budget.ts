@@ -100,7 +100,7 @@ export function describeRunBudget(b: RunBudget | null): BudgetDisclosure {
       row('judge', b?.judge === false ? { status: 'off', note: 'judge=false' } : llm('Verification judge')),
       row('fallback_research', fallbackOff ? { status: 'refused', note: 'paid_fallback=false: the run stops as budget_stopped instead of using web-search research' } : capped ? { status: 'refused', note: 'Web-search research cannot be bounded, so a run with max_usd refuses it. This is NOT the same search behaviour as an ordinary scan: when search finds nothing the run ends as budget_stopped' } : { status: 'allowed', note: 'Web-search research when search finds nothing; cost is not bounded by anything dazl sends' }),
       row('credit_enrichment', b?.credit_enrichment === false || capped ? { status: 'off', note: capped ? 'Off for any run with max_usd' : 'credit_enrichment=false' } : { status: 'allowed', note: 'Bring-your-own-key Apollo/People Data Labs, on your own credits' }),
-      row('search_and_fetch', { status: 'not_covered', note: `TinyFish search and fetch are bounded by count (${DEFAULT_TINYFISH.searchesPerScan} searches + ${DEFAULT_TINYFISH.fetchesPerScan} pages per scan by default), not by max_usd` }),
+      row('search_and_fetch', b?.first5 ? { status: 'off', note: 'first5: no TinyFish search, fetch or post-scan people search; free sources only. Model calls (extraction, scoring) still run and are not free' } : { status: 'not_covered', note: `TinyFish search and fetch are bounded by count (${DEFAULT_TINYFISH.searchesPerScan} searches + ${DEFAULT_TINYFISH.fetchesPerScan} pages per scan by default), not by max_usd` }),
       row('autopilot', { status: 'off', note: 'A job with a budget does not start autopilot after the scan' }),
     ],
     limits: [

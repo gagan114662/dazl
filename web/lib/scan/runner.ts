@@ -1110,7 +1110,8 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     await runPostFinishBounded(db, job, deps, trace)
     // People search (person-first): the right people at each lead's company from public profile SEARCH RESULTS, for
     // companies whose own site lists nobody. Never throws; never an address; kill switch PEOPLE_SEARCH_ENABLED=0.
-    if (process.env.PEOPLE_SEARCH_ENABLED === '0') trace.note('people_search', 'skipped', 'PEOPLE_SEARCH_ENABLED=0')
+    if (deps.first5) trace.note('people_search', 'skipped', 'first5: free search sources only; people search is a paid TinyFish search')
+    else if (process.env.PEOPLE_SEARCH_ENABLED === '0') trace.note('people_search', 'skipped', 'PEOPLE_SEARCH_ENABLED=0')
     else try { const n = await findPeople(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl }); trace.note('people_search', n > 0 ? 'ok' : 'attempted_no_result', n > 0 ? null : 'no profile results named a role-matching person at a verified company, or no search key/quota', { people_stored: n }) } catch (e) { trace.note('people_search', 'failed', e instanceof Error ? e.message : 'error') }
     // Contacts refused for disagreeing with the lead (wrong place / wrong domain) leave nothing reachable: regrade the lead from the evidence actually kept.
     try { regradeFromKeptContacts(db, job.user_id, job.id) } catch (e) { console.error('regrade from kept contacts failed', e instanceof Error ? e.message : 'error') }

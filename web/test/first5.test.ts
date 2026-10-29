@@ -8,7 +8,8 @@ import { scanOutcome } from '../lib/scan/scan-outcome.ts'
 import { sourceRuns } from '../lib/scan/source-runs.ts'
 import { runReportFor } from '../lib/scan/run-report.ts'
 import { first5Of, isFirst5, verifiedLeads, FIRST5_TARGET, type First5Lead } from '../lib/scan/first5.ts'
-import { normalizeScanBudget } from '../lib/scan/run-budget.ts'
+import { normalizeScanBudget, describeRunBudget } from '../lib/scan/run-budget.ts'
+import { migrateTinyfish } from '../lib/search/tinyfish.ts'
 import { parseRunBudget } from '../lib/scan/runner.ts'
 
 const REQUEST = 'Find London UK B2B SaaS startups that announced seed funding within the past 90 days.'
@@ -96,4 +97,22 @@ test('PUBLICATION DATE is not the EVENT date: a lead with only a published_at ke
   r.db.prepare("UPDATE leads SET event_date = NULL, published_at = '2026-10-01' WHERE scan_job_id = ?").run(jobId)
   const l = verifiedLeads(r.db, 'A', jobId)[0]; assert.deepEqual([l.event_date, l.published_at], [null, '2026-10-01'])
   r.db.prepare("UPDATE leads SET event_date = '2026-09-20' WHERE scan_job_id = ?").run(jobId); const l2 = verifiedLeads(r.db, 'A', jobId)[0]; assert.deepEqual([l2.event_date, l2.published_at], ['2026-09-20', '2026-10-01'])
+})
+test('FIRST5 makes NO post-finish TinyFish people search (real runner, tinyfish tables initialised so a missing table cannot hide it); an ordinary scan still does', async () => {
+  const prev = process.env.PEOPLE_SEARCH_ENABLED; process.env.PEOPLE_SEARCH_ENABLED = '1'
+  try {
+    const run = async (runBudget?: string) => {
+      const reqs: string[] = []
+      const fetchImpl = (async (u: string) => { reqs.push(u); return new Response(JSON.stringify({ results: [] }), { status: 200 }) }) as typeof fetch
+      await runFixture(fx({ runBudget, onVerify: db => migrateTinyfish(db), deps: { fetchImpl, newsHttp: async () => ({ status: 200, body: gdelt }) } }))
+      return reqs.filter(u => u.startsWith('https://api.search.tinyfish.ai') && /linkedin/i.test(decodeURIComponent(u))).length
+    }
+    assert.equal(await run(BUDGET), 0, 'first5: zero profile-search requests after finish')
+    assert.ok(await run(JSON.stringify({ paid_fallback: false, credit_enrichment: false })) >= 1, 'control: without first5 the people search does run (so the zero above is the gate, not a broken probe)')
+  } finally { if (prev === undefined) delete process.env.PEOPLE_SEARCH_ENABLED; else process.env.PEOPLE_SEARCH_ENABLED = prev }
+})
+test('first5 budget disclosure reports TinyFish search/fetch/people search as OFF, not not_covered, and does not call model calls free', () => {
+  const d = describeRunBudget({ first5: true, paid_fallback: false, credit_enrichment: false })
+  const s = d.surfaces.find(x => x.surface === 'search_and_fetch')!; assert.equal(s.status, 'off'); assert.match(s.note, /not free/)
+  assert.equal(describeRunBudget({ paid_fallback: false }).surfaces.find(x => x.surface === 'search_and_fetch')!.status, 'not_covered')
 })
