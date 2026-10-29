@@ -5,6 +5,7 @@ import { getSecret, rotateSecret, listBookings } from '@/lib/calcom'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { denied, stale } from '@/lib/workspace-access'
+import { can } from '@/lib/workspaces'
 
 // Manage the tenant's Cal.com webhook: generate/rotate the signing secret and list recent bookings
 // (matched ones show their lead, unmatched stay visible so the user can reconcile by hand).
@@ -13,9 +14,13 @@ export async function GET(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const db = await getDb()
   const secret = await getSecret(db, user.tenantId)
+  // The signing secret can sign forged booking webhooks: only a member who may configure the workspace (admin, owner)
+  // sees it, to paste into Cal.com. Everyone else reads the status and the bookings.
+  const reveal = can(user.role, 'configure')
   return NextResponse.json({
     configured: !!secret,
-    secret, // the user's own secret - they must paste it into Cal.com
+    secret: reveal ? secret : null,
+    secret_hidden: !!secret && !reveal,
     webhook_url: `${(process.env.PUBLIC_BASE_URL || req.nextUrl.origin).replace(/\/$/, '')}/api/hooks/calcom?u=${encodeURIComponent(user.tenantId)}`,
     bookings: await listBookings(db, user.tenantId),
   })

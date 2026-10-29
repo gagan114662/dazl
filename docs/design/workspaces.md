@@ -82,7 +82,11 @@ removed or demoted, nor leave, in one transaction that counts owners (so two con
    reads and writes use `tenantId`, and `actorId` is there for "who". Every session handler that does more than read
    calls `denied(user, action)` (`lib/workspace-access.ts`) right after the sign-in check, for the action
    `test/tenant-isolation-manifest.ts` names; a test reads each handler and holds it to that, and a runtime sweep calls
-   every handler as every role that may not use it (403, nothing changed). The free trial stays the founder's own:
+   every handler as every role that may not use it (403, nothing changed). Reads are held to what they return, not only
+   who may call them: a runtime test calls every session GET as owner, admin, operator and viewer of a workspace whose
+   credential stores hold marker secrets, and no response may carry a credential, a ciphertext or a capability URL.
+   The one secret a read may show is the Cal.com signing secret, and only to admins and owners (configure), who paste it
+   into Cal.com. The free trial stays the founder's own:
    another member acting in a keyless workspace gets `no_api_key`. Workers already carry each job's `tenant_id`.
 3. **Invitations, members, switching** (`lib/workspace-members.ts`, `/api/workspace/*`, Settings > Team,
    `/app/join`). An invitation is a random 256-bit token, stored as its SHA-256, valid 7 days, bound to one email;
