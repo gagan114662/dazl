@@ -77,30 +77,41 @@ export function offerOfSeller(seller: string | null | undefined): string | null 
   return cleanOffer(offer) || null
 }
 
-// Whether two texts state the same offer (#349). Each is read as an offer statement: the offer itself, the rest of its
-// sentence (the buyers it is sold to, "but not ..." clauses), and every other sentence in which the seller says what
-// they do or do not sell ("We do not offer outbound consulting."). Targeting sentences of a request ("Find London SaaS
-// startups hiring.", "Exclude agencies.") are not part of it. Text that states no offer ("appointment booking and
-// reminder software", "We do not sell hardware.", "We sell to dental practices.") is taken as written.
-//   - A side that states ONLY an offer (nothing more about buyers, exclusions or other services) agrees with any side
-//     stating the same offer: "appointment booking and reminder software" and the saved "We sell appointment booking
-//     and reminder software to independent dental practices in New York City." are one offer.
-//   - Otherwise both whole statements must be the same: another buyer ("to veterinary practices"), a withdrawn service
-//     ("but not outbound consulting") or another negation ("We do not offer outbound consulting.") is a difference.
-// Every comparison is exact text, ignoring only case and spacing: no substring or word-set matching, no reordering.
+// Whether two texts state the same offer (#349). Each is read as an offer statement with three parts:
+//   offer     what is sold ("CRM setup"); text that states no offer ("appointment booking and reminder software", "We do
+//             not sell hardware.", "We sell to dental practices.") is taken whole, as written
+//   audience  who it is sold to: "to/for ..." after the offer, up to the first ",", "but", "except", "excluding" or
+//             "without"
+//   terms     everything else the seller says about the offer: the rest of that sentence (", but not outbound
+//             consulting"), any other sentence where the seller says what they sell ("We also offer payroll."), and any
+//             other sentence with a negation or exclusion that is not a targeting instruction ("Do not offer outbound
+//             consulting.", "No outbound consulting.", "We never do outbound consulting."). Targeting instructions of a
+//             request ("Find London SaaS startups hiring.", "Exclude agencies.", "Do not target ...") are not terms.
+// Two statements are the same offer when the offers match, the terms match, and the audiences match or one side names
+// none: "appointment booking and reminder software" and the saved "We sell appointment booking and reminder software to
+// independent dental practices in New York City." are one offer (#349 live case). Only a missing audience is allowed:
+// a different audience ("to veterinary practices"), or any withdrawn service or exclusion on one side only, is a
+// difference. Exact text throughout, ignoring only case and spacing: no substring or word-set matching, no reordering.
 const exact = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase()
 const SELLER_SENTENCE = /\b(?:i|we|i'm|we're|i've|we've|our (?:company|team|business|firm))\b.*\b(?:sells?|selling|sold|offers?|offering|provides?|providing)\b/i
-type Statement = { offer: string; more: string }
+const NEGATION = /\b(?:not|no|never|none|nor|neither|without|except|excluding|exclude[sd]?|no longer|cannot)\b|n['\u2019]t\b/i
+const TARGETING = /^(?:(?:please|and|also|but)\s+)?(?:(?:do not|don['\u2019]t|never)\s+)?(?:find|search|look|target|targeting|contact|reach|email|message|include|exclude|excluding|skip|avoid|ignore)\b/i
+const AUDIENCE = /^(?:to|for)\s+(.*?)(?=\s*(?:,|\bbut\b|\bexcept\b|\bexcluding\b|\bwithout\b)|$)/i
+type Statement = { offer: string; audience: string; terms: string }
 function statement(text: string): Statement {
   const f = findOffer(text)
-  if (!f) return { offer: exact(text), more: '' }
-  const others = f.sentences.filter((x, i) => i !== f.sentence && SELLER_SENTENCE.test(x)).map(exact)
-  return { offer: exact(f.offer), more: [exact(f.tail), ...others].filter(Boolean).join(' | ') }
+  if (!f) return { offer: exact(text), audience: '', terms: '' }
+  const tail = f.tail.trim()
+  const a = AUDIENCE.exec(tail)
+  const audience = a ? exact(a[1]) : ''
+  const rest = exact((a ? tail.slice(a[0].length) : tail).replace(/^[\s,;:]+/, ''))
+  const others = f.sentences.filter((x, i) => i !== f.sentence && (SELLER_SENTENCE.test(x) || (NEGATION.test(x) && !TARGETING.test(x.trim())))).map(exact)
+  return { offer: exact(f.offer), audience, terms: [rest, ...others].filter(Boolean).join(' | ') }
 }
 export function sameOffer(a: string, b: string): boolean {
   const x = statement(a), y = statement(b)
-  if (!x.offer || x.offer !== y.offer) return false
-  return !x.more || !y.more || x.more === y.more
+  if (!x.offer || x.offer !== y.offer || x.terms !== y.terms) return false
+  return !x.audience || !y.audience || x.audience === y.audience
 }
 
 export function effectiveOffer(play: { offer?: string | null; seller?: string | null; query?: string | null }, profileSells: string | null | undefined): PlayOffer {

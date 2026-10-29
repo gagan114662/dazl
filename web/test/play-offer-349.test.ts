@@ -259,3 +259,28 @@ test('#349 LIVE-2 explicit buyers, withdrawn services and seller negations are n
   assert.ok(sameOffer(DENTAL_PRODUCT, DENTAL_SELLER))
   assert.deepEqual(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: DENTAL_PRODUCT }, ''), { offer: DENTAL_SELLER, source: 'recorded', conflict: null })
 })
+
+// Instinct's HOLD on 1d479f6: service exclusions without an explicit "we sell/offer" subject were dropped, and a
+// product-only side matched a side that withdraws services. Only a missing audience may be filled in by the other side;
+// terms (withdrawn services, exclusions, other offers) must match on both.
+test('#349 LIVE-3 service exclusions of every form are material; a product-only side may omit only the audience', () => {
+  const P = 'We sell CRM setup to founders.'
+  for (const restricted of ['We sell CRM setup to founders. Do not offer outbound consulting.', 'We sell CRM setup to founders. No outbound consulting.',
+    'We sell CRM setup to founders. We never do outbound consulting.', 'We sell CRM setup to founders. Never outbound consulting.', 'We sell CRM setup to founders, without outbound consulting.']) {
+    assert.equal(sameOffer(restricted, P), false, restricted); assert.equal(sameOffer(P, restricted), false, restricted)
+    assert.equal(effectiveOffer({ seller: P, query: restricted }, '').source, 'conflict', restricted)
+    assert.equal(effectiveOffer({ seller: restricted, query: P }, '').source, 'conflict', `saved: ${restricted}`)
+  }
+  // a product-only side never matches a side with terms
+  for (const [bare, restricted] of [['CRM setup', 'We sell CRM setup. We do not offer outbound consulting.'], ['CRM setup', 'We sell CRM setup to founders. No outbound consulting.'],
+    [DENTAL_PRODUCT, `${DENTAL_SELLER} We do not offer payroll.`]] as const) {
+    assert.equal(sameOffer(bare, restricted), false, restricted); assert.equal(sameOffer(restricted, bare), false, restricted)
+  }
+  // the same terms on both sides agree; targeting instructions of a request are not terms
+  assert.ok(sameOffer('We sell CRM setup to founders. No outbound consulting.', 'we sell CRM setup to founders. no outbound consulting'))
+  for (const q of [`Find dental practices in NYC. We sell ${DENTAL_PRODUCT}. Exclude chains.`, `Find dental clinics. Do not target agencies. We sell ${DENTAL_PRODUCT}.`, `Independent dental practices hiring. Skip chains. We sell ${DENTAL_PRODUCT}.`])
+    assert.deepEqual(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: q }, ''), { offer: DENTAL_SELLER, source: 'recorded', conflict: null }, q)
+  // the original live case and the London control
+  assert.deepEqual(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: DENTAL_PRODUCT }, ''), { offer: DENTAL_SELLER, source: 'recorded', conflict: null })
+  assert.equal(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: Q }, '').source, 'conflict')
+})
