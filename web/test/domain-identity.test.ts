@@ -72,3 +72,19 @@ test('placeTerms: weekdays, months, social names and the company\'s own name are
   for (const bad of ['monday', 'march', 'smileavenuedental', 'instagram']) assert.ok(!t.includes(bad), bad)
   for (const good of ['sunnysideny', 'sunnyside', 'hunterspoint']) assert.ok(t.includes(good), `${good} in ${t}`)
 })
+
+// ---- the namesake mentions the lead's place only as somewhere it SERVES; its own address is elsewhere ----
+const SERVES = pad('<html><body><h1>Smile Avenue Dental Group</h1><p>Smile Avenue Dental Group, Pico Rivera, CA 90660. We proudly serve patients from Sunnyside and Queens. Open Monday through Friday.</p> <a href="/team">Team</a> <a href="/contact">Contact</a>')
+test('SERVICE-AREA NAMESAKE: the homepage names Sunnyside only as an area it serves, and gives its own Pico Rivera, CA address -> no domain, no contact', async () => {
+  const x = await run({ home: SERVES, contact: PICO_CONTACT })
+  assert.equal(x.lead?.company_domain, null, JSON.stringify(x.lead)); assert.deepEqual(x.attached, [], JSON.stringify(x.enr))
+  const linked = await run({ home: SERVES, contact: PICO_CONTACT, link: true }); assert.equal(linked.lead?.company_domain, null); assert.deepEqual(linked.attached, [])
+})
+
+test('ownAddressElsewhere: a "City, ST 12345" address in another state is the site owner\'s; the asked state\'s address (alone or beside another office) is not elsewhere', async () => {
+  const { ownAddressElsewhere } = await import('../lib/connectors/sitecrawl.ts')
+  assert.equal(ownAddressElsewhere('Smile Avenue Dental Group, Pico Rivera, CA 90660. We serve Sunnyside.', ['Sunnyside, NY']), true)
+  assert.equal(ownAddressElsewhere('45-12 Queens Boulevard, Sunnyside, NY 11104. Second office: Pico Rivera, CA 90660.', ['Sunnyside, NY']), false)
+  assert.equal(ownAddressElsewhere('Family dentistry at 45-12 Queens Boulevard, Sunnyside, NY 11104.', ['Sunnyside, NY']), false)
+  assert.equal(ownAddressElsewhere('Open Monday through Friday. We serve Sunnyside.', ['Sunnyside, NY']), false, 'no address printed: nothing to conflict (the positive-agreement rule still decides)')
+})

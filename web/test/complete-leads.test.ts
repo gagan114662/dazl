@@ -80,3 +80,19 @@ test('NO GATE MOVES: the dated lead without a window keeps its quote date, the u
   const { rows } = await run()
   const by = Object.fromEntries(rows.map(r => [r.company, r])); assert.equal(by['Efive Dental'].event_date, daysAgo(8)); assert.equal(by['Aone Dental'].event_date, daysAgo(10)); assert.ok(rows.every(r => r.review_reason === null))
 })
+
+// ---- the score counts only evidence that belongs to the lead ----
+import { completeLeads, snapshotLeads } from '../lib/scan/completion.ts'
+import { addEnrichment } from '../lib/connectors/store.ts'
+test('NOT EVIDENCE: a person / phone / email from a namesake\'s domain, or any site contact on a lead with no confirmed domain, adds nothing to the score and is not "filled"', async () => {
+  const { x, rows } = await run()
+  const dfour = rows.find(r => r.company === 'Dfour Dental')!, bt = rows.find(r => r.company === 'Btwo Dental')!, job = (x.db.prepare('SELECT scan_job_id AS j FROM leads WHERE id = ?').get(dfour.id) as { j: string }).j
+  const add = (id: string, kind: string, value: string, host: string) => addEnrichment(x.db, 'A', id, { connector: 'sitecrawl', kind, value, label: 'x', confidence: 60, source_url: `https://${host}/team`, source_date: '2026-10-20', retrieved_at: 1 })
+  add(dfour.id, 'person', 'Maria Lopez, Chief Executive Officer', 'dfourdental.com'); add(dfour.id, 'email', 'hello@dfourdental.com', 'dfourdental.com')   // lead has NO confirmed domain
+  add(bt.id, 'person', 'Maria Lopez, Chief Executive Officer', 'btwo-picorivera.com'); add(bt.id, 'email', 'hello@btwo-picorivera.com', 'btwo-picorivera.com')   // wrong domain
+  add(bt.id, 'email', 'owner@somewhere-else.com', 'btwodental.com')   // right page, email at another domain
+  const before = snapshotLeads(x.db, 'A', job)
+  const out = completeLeads(x.db, { id: job, user_id: 'A' }, before, { windowed: false })
+  const d4 = out.find(o => o.company === 'Dfour Dental')!, b2 = out.find(o => o.company === 'Btwo Dental')!
+  assert.deepEqual([d4.after.person, d4.after.route, d4.score_after], [false, false, 60]); assert.deepEqual([b2.after.person, b2.after.route, b2.score_after], [false, true, 85])
+})

@@ -10,7 +10,7 @@ import { audit, addEnrichment, type Enrichment } from './store.ts'
 import { detectTech, type TechHit } from './techstack.ts'
 import { emailGuessEnabled, personalLocals, recordEmailGuesses } from '../people/email-pattern.ts'
 import { roleContradicted, titleMatches } from '../people/rank.ts'
-import { placeAgreement, cityScoped } from '../scan/place-agreement.ts'
+import { placeAgreement, cityScoped, geoTerms, US_STATES } from '../scan/place-agreement.ts'
 import { addressAgreement, streetKeys, firstPlaceLabel, leadPlaceLabel, recordContactRejection } from '../scan/contact-agreement.ts'
 
 // Contact-page crawl. No key. For a verified lead it finds the company's own website, reads a handful of
@@ -462,9 +462,20 @@ export function placeTerms(where: string[], evidenceText: string, company = ''):
 // contacts "agree" with each other. Only the site's OWN location can tell the lead's company from a namesake: the homepage must state a place that POSITIVELY agrees with the scan's geography, or a street
 // address that is the lead's own (from its evidence). Words the lead's evidence merely puts after "on / in / at" ("on Monday", "in March", "at Smile Avenue Dental") are not places and no longer count.
 // With no scan geography, a place the lead's own evidence names (filtered as below) that the homepage repeats, or an address match, accepts the guess. Anything else: the domain is not saved and no contact is attached.
+// A homepage that prints a full "City, ST 12345" address is giving the SITE OWNER's own address (that is what an address line on a company's own page is). When none of those addresses is in the asked state
+// and the asked place does not appear in one, the page belongs to a business somewhere else - however many times it also names the asked city as an area it serves.
+const ZIP_ADDRESS = /([A-Z][\p{L}'.-]+(?: [A-Z][\p{L}'.-]+){0,2}),\s*([A-Z]{2})\s+\d{5}(?:-\d{4})?\b/gu
+export function ownAddressElsewhere(home: string, where: string[]): boolean {
+  const terms = geoTerms(where)
+  const ours = new Set(Object.entries(US_STATES).filter(([ab, name]) => terms.some(x => x === name || x === ab.toLowerCase() || x.endsWith(`, ${ab.toLowerCase()}`))).map(([ab]) => ab))
+  let elsewhere = false, here = false
+  for (const m of home.matchAll(ZIP_ADDRESS)) { if (!(m[2] in US_STATES)) continue; if (ours.has(m[2])) here = true; else elsewhere = true }
+  return elsewhere && !here
+}
 export function probeLocationAgrees(home: string | undefined, where: string[], lead: { company: string; signal?: string | null; evidence_excerpt?: string | null }, evidence?: { homeNorm: string | undefined; places: string[] }): boolean {
   const text = home ?? ''
   if (!text) return false
+  if (where.length > 0 && ownAddressElsewhere(text, where)) return false   // the site's own address is in another state
   if (where.length > 0 && placeAgreement(text, where, lead.company) === 'agrees') return true
   // A scan that declares NO geography has only the lead's evidence to say where it is: a place that evidence names (weekdays, months, social names and the company's own name excluded) and the site's homepage repeats.
   if (where.length === 0 && evidence && placeConsistent(evidence.homeNorm, evidence.places)) return true
@@ -560,7 +571,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         }
         if (r.reason !== 'name_mismatch' && r.reason !== 'site_unreachable' && where.length > 0 && basisOf.get(cand) !== 'evidence_own_domain') {
           const v = r.homeText ? placeAgreement(r.homeText, where, l.company) : 'unconfirmed'
-          if (v === 'mismatch' || (v !== 'agrees' && v !== 'no_geography' && cityScoped(where) && basisOf.get(cand) === 'name_probe')) {
+          if (v === 'mismatch' || (r.homeText && ownAddressElsewhere(r.homeText, where)) || (v !== 'agrees' && v !== 'no_geography' && cityScoped(where) && basisOf.get(cand) === 'name_probe')) {
             // Reason in plain words, e.g. "contact rejected: location mismatch Pico Rivera, CA vs New York, NY".
             audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: `contact rejected: location ${v === 'mismatch' ? 'mismatch' : 'unconfirmed'} ${firstPlaceLabel(r.homeText ?? '') ?? 'another place'} vs ${leadPlaceLabel(where)}`.slice(0, 180), results: 0 })
             if (r.homeText) recordContactRejection(db, tenantId, l.id, { connector: 'sitecrawl', reason: (`contact rejected: location ${v === 'mismatch' ? 'mismatch' : 'unconfirmed'} ${firstPlaceLabel(r.homeText ?? '') ?? 'another place'} vs ${leadPlaceLabel(where)}`.slice(0, 180)).slice(0, 180), sourceUrl: `https://${cand}/` })

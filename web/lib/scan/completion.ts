@@ -27,8 +27,13 @@ function kept(db: Database.Database, tenantId: string, jobId: string): (LeadRow 
   return (db.prepare(`SELECT l.id, l.company, l.event_date, l.company_domain, l.score, l.fit FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
     WHERE l.scan_job_id = ? AND j.user_id = ? AND l.review_reason IS NULL AND l.confidence IS NOT NULL AND l.quarantined_at IS NULL AND l.company <> '' ORDER BY l.score DESC`).all(jobId, tenantId) as LeadRow[]).map(r => ({ ...r, who }))
 }
+// Site contacts count only while their SOURCE is the lead's confirmed domain (the page is on it; a published email is at it) and only for a lead that has a confirmed domain at all: a contact from a namesake's
+// site (or one that outlived a refused domain) is worth nothing here, however it got attached.
+const reg = (h: string | null | undefined): string | null => { const x = (h ?? '').trim().toLowerCase().replace(/^[a-z]+:\/\//, '').replace(/[/?#].*$/, '').replace(/^www\./, ''); const p = x.split('.'); return /^[a-z0-9.-]+\.[a-z]{2,}$/.test(x) ? p.slice(-2).join('.') : null }
 function factsOf(db: Database.Database, tenantId: string, l: LeadRow & { who: string }): Facts {
-  const rows = db.prepare("SELECT kind, value FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'sitecrawl' AND kind IN ('person', 'phone', 'email')").all(l.id, tenantId) as { kind: string; value: string }[]
+  const ld = reg(l.company_domain)
+  const rows = (db.prepare("SELECT kind, value, source_url FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'sitecrawl' AND kind IN ('person', 'phone', 'email')").all(l.id, tenantId) as { kind: string; value: string; source_url: string }[])
+    .filter(r => { if (!ld) return false; let h: string | null = null; try { h = reg(new URL(r.source_url).hostname) } catch { h = null }; return h === ld && (r.kind !== 'email' || reg(r.value.split('@').pop()) === ld) })
   return {
     date: realDay(l.event_date), domain: !!l.company_domain,
     person: rows.some(r => r.kind === 'person' && personMatchesRole(r.value, l.who)),
