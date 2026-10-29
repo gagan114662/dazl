@@ -151,6 +151,40 @@ The same chain is pinned in CI without Stripe by `web/test/stripe-flow.test.ts`,
 - `curl -s https://staging.dazl.ai/api/health` reports the commit at the head of `main`. After the next merge it changes within about 2 minutes plus build time.
 - Locally, the same checks run in Chromium: `DAZL_ENV=staging npm run build && npm run test:smoke:staging` (in `web/`).
 
+## Send-safety scenarios (runbook, Instinct; issue #362)
+`web/scripts/staging-send-scenarios.mts` drives the app's real send, sequence, reply-sync, unsubscribe and uncertain-send code through six scenarios and writes `evidence.json`:
+
+| scenario | proves |
+|---|---|
+| owned-inbox | an approved message reaches the owned staging inbox exactly once; a message edited after approval is refused (approval hash) |
+| reply-stop | a reply in the thread stops the sequence, so step 2 is never sent. A control sequence with no reply does send step 2 at the same time. |
+| opt-out | the unsubscribe link from the sent message suppresses the address for that tenant only; another tenant can still send to it |
+| bounce | a mailer-daemon 5.x.x bounce suppresses the address, and the next message is not sent |
+| uncertain | a send with an unknown outcome is marked uncertain and never retried, and blocks the tenant's other sends until resolved |
+| restart | a process killed inside the provider call leaves the claim held. A fresh process reaps it as uncertain, makes no second provider call, and blocks the tenant. |
+
+**Sending stays off.**
+- The only transport is a recorder (`transport.log`). It returns fake ids and refuses any recipient outside a fixed allowlist of reserved `@staging.dazl.test` addresses.
+- The script runs under the network fence, so any non-loopback connection throws. Gmail token and thread reads come from an in-process stub, and the master key is generated per run.
+- It uses its own new SQLite file in `--out`. It refuses to run without `DAZL_ENV=staging`, onto a non-empty directory, or inside `DB_PATH`'s or `PROD_DB_PATH`'s directory. The staging and production databases are never opened.
+
+Run it on the staging box after a deploy, as the service user, from the live release:
+
+```bash
+sudo install -d -o dazl-staging -m 750 /var/lib/dazl-staging-scenarios
+cd /srv/dazl-staging/current/web && sudo -u dazl-staging env DAZL_ENV=staging DB_PATH=/var/lib/dazl-staging/app.db npm run -s staging:scenarios -- --out /var/lib/dazl-staging-scenarios/$(date -u +%Y%m%dT%H%M%SZ)
+```
+
+Exit codes: 0 means all passed, 1 means a scenario failed (named), 2 means it refused to run. To attach the evidence to #362, copy `evidence.json` to the issue. It records the commit, time, each check and the recorded recipients, and holds no secrets.
+
+**Before any real send (not built; owner decisions):**
+- A real owned-inbox send through a real provider needs a sending identity approved by the owner: a dedicated nonproduction Gmail account, and its own staging-only OAuth client with the send scope.
+- It needs the exact recipient addresses, which must be inboxes the owner controls.
+- It needs the exact approved words.
+- It needs a separately reviewed change that adds a real transport behind an explicit staging flag and that allowlist.
+
+Until then `deploy.sh` keeps refusing Google send credentials on staging, and the staging Gmail stub sends nothing.
+
 ## Day to day
 - **Deploys** are automatic. `journalctl -u dazl-staging-deploy` shows each one. A build or health-check failure keeps the previous release serving, and the journal ends with `rolling back`.
 - **Pause tracking:** `systemctl stop dazl-staging-deploy.timer`.
