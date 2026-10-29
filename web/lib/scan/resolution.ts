@@ -19,7 +19,8 @@ export const RESOLUTION_CONNECTOR = 'scan:resolution'
 export interface CandidateResolution {
   lead_id: string; company: string
   date: 'found' | 'stale' | 'missing' | 'invalid' | 'future' | 'unconfirmed'; identity: 'confirmed' | 'unconfirmed' | 'conflict'; contact: 'attached' | 'missing' | 'refused'
-  resolved: boolean; reasons: string[]; tried: string[]; fallbacks: string[]   // fallbacks: sources used instead of a blocked page (e.g. other press)
+  resolved: boolean; reasons: string[]; tried: string[]; evidence_hold: 'no_event_evidence' | 'no_sales_hiring_evidence' | null
+  fallbacks: string[]   // fallbacks: sources used instead of a blocked page (e.g. other press)
   late_date?: { date: string; url: string }
   skipped?: string   // the own-site date lookup was not (fully) run: why (deadline / cancelled / scan-wide cap)
 }
@@ -69,8 +70,12 @@ export function resolveFacts(db: Database.Database, job: JobLike, tried: Map<str
     const contact: CandidateResolution['contact'] = person && route ? 'attached' : refused && !person && !route ? 'refused' : 'missing'
     if (contact === 'refused') reasons.push(`every contact found was refused (${[...new Set(rows.filter(r => r.kind === 'contact_rejected').map(r => r.label))].join(', ')})`)
     if (contact === 'missing') reasons.push(person ? 'a person is named but no route is published' : wrongRole ? `the named person (${people[0].value}) is not the requested role (${who})` : route ? 'a route is published but no named decision-maker' : 'no named decision-maker with a published route')
+    // The event / hiring proof is its own dimension, apart from date and contact: a publication date is not event proof, and a clean contact does not make up for a quote that never affirms the event.
+    const evidence_hold = l.review_reason === 'no_event_evidence' || l.review_reason === 'no_sales_hiring_evidence' ? l.review_reason : null
+    if (evidence_hold === 'no_event_evidence') reasons.push('no source quote affirms the event (no_event_evidence): the publication date is not event proof')
+    if (evidence_hold === 'no_sales_hiring_evidence') reasons.push('no verified source shows sales hiring (no_sales_hiring_evidence)')
     const fallbacks = rows.filter(r => r.connector === 'scan:fallback').map(r => r.value)
-    return { lead_id: l.id, company: l.company, date, identity, contact, resolved: reasons.length === 0, reasons, tried: t, fallbacks }
+    return { lead_id: l.id, company: l.company, date, identity, contact, resolved: reasons.length === 0, reasons, tried: t, evidence_hold, fallbacks }
   })
 }
 

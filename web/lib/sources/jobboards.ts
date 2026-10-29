@@ -16,6 +16,8 @@ const MAX_DETAIL = 3 // per Greenhouse board
 const MAX_BOARDS = 10
 const MAX_GUESS_COMPANIES = 6 // companies whose boards are probed by slug guess, 3 boards each
 export const jobBoardsLimits = { budgetMs: 12_000, pageMs: 8_000 } // stop STARTING requests after this; each request is hard-bounded at 10 s, so 12 + 10 < the 25 s adapter deadline
+// The sales / go-to-market role family by title. Word-bounded, so "Senior SaaS Engineer" and "Sales Tax Accountant" style accidents are judged by the later gates, not widened here.
+export const SALES_TITLE = /\b(?:sales|account\s+(?:executive|manager|director)s?|sdrs?|bdrs?|business\s+development|go[-\s]to[-\s]market|gtm|revenue(?:\s+operations)?|revops)\b/i
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 const GENERIC = new Set(['hiring', 'roles', 'role', 'jobs', 'job', 'open', 'openings', 'positions', 'position', 'team', 'remote'])
 
@@ -228,12 +230,15 @@ export const jobBoardsAdapter: SourceAdapter = {
     // 10-50 employees ... hiring sales staff" never reach "sales".
     const heads = rolePhrases(query, [], place ? [place.name] : []).map(p => p.split(' ').pop()!).filter(w => w.length >= 3)
     const fromKeywords = keywords.filter(k => !GENERIC.has(k) && !(place && place.name.toLowerCase().split(' ').includes(k)))
-    const roles = [...new Set([...fromKeywords, ...heads])] // the old keyword roles stay; the planner's role heads are added
+    // A SALES ask matches the role by title on the sales role family (Account Executive, SDR, BDR, business development, revenue ... not only the word "sales"), and NOT on the request's other words:
+    // "SaaS", "employees" and "startups" are words of the request, not roles, and admitted "Senior SaaS Engineer" as a sales posting while "Account Executive" was dropped (scan 8 trace).
+    const salesAsk = heads.includes('sales')
+    const roles = salesAsk ? ['sales'] : [...new Set([...fromKeywords, ...heads])] // other asks: the old keyword roles stay; the planner's role heads are added
     if (!place || roles.length === 0) return [] // never every place, never every role
     const windowDays = parseWindowDays(query) ?? WINDOW_DAYS // the user's own window when the request states one
     const fresh = (d: string | null) => !!d && Date.now() - Date.parse(d) <= windowDays * 86_400_000 && Date.parse(d) <= Date.now() + 86_400_000
     const out: Evidence[] = []
-    const roleOk = (t: string) => roles.some(k => t.toLowerCase().includes(k))
+    const roleOk = (t: string) => salesAsk ? SALES_TITLE.test(t) : roles.some(k => t.toLowerCase().includes(k))
     // Boards come from the given feeds and from discovered page/hit URLs (posting links). Deduped; a lookalike host never yields a board.
     const seenBoards = new Set<string>()
     type Board = { kind: 'gh' | 'ashby' | 'lever'; token: string; company?: string; byDomain?: boolean }
