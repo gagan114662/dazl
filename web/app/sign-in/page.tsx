@@ -11,7 +11,7 @@ export default function SignIn() {
     const m: Record<string, string> = {
       google_failed: 'Google sign-in did not work. Try again.', google_unavailable: 'Google sign-in is not available right now.',
       google_email_unverified: 'Your Google email is not verified, so we cannot use it.',
-      google_email_exists: 'An account with this email already exists. Sign in with your password.', too_many: 'Too many attempts. Try again later.',
+      google_email_exists: 'An account with this email already exists. Sign in with your password.', too_many: 'Too many attempts. Try again later.', unavailable: 'Sign-in is briefly unavailable. Try again in a moment.',
     }
     if (e && m[e]) setError(m[e])
   }, [])
