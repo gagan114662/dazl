@@ -69,8 +69,9 @@ export async function createMonitor(db: Db, userId: string, input: { query: stri
 
 export function listMonitors(db: Db, userId: string) {
   return db.all(
-    `SELECT m.id, m.query, m.interval_hours, m.enabled, m.paused_reason, m.last_run_at, m.next_run_at, m.created_at,
+    `SELECT m.id, m.query, m.icp, m.interval_hours, m.enabled, m.paused_reason, m.last_run_at, m.next_run_at, m.created_at,
        (SELECT new_count FROM monitor_runs r WHERE r.monitor_id = m.id ORDER BY r.ran_at DESC LIMIT 1) AS last_new_count,
+       (SELECT job_id FROM monitor_runs r WHERE r.monitor_id = m.id ORDER BY r.ran_at DESC LIMIT 1) AS last_job_id,
        (SELECT count(*) FROM monitor_runs r WHERE r.monitor_id = m.id) AS run_count
      FROM monitors m WHERE m.user_id = ? ORDER BY m.created_at DESC, m.id DESC`, [userId])
 }
