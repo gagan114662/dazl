@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { gmailStatus } from '../gmail/oauth.ts'
 import { createDraft, approve, getSettings, isSuppressed, OutreachError, sendMessage, suppress, type Deps } from './service.ts'
@@ -48,6 +48,24 @@ export function migrateAutopilot(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS autopilot_audit_tenant ON autopilot_audit (tenant_id, created_at);
   `)
   try { db.exec('ALTER TABLE autopilot_settings ADD COLUMN followups_enabled INTEGER NOT NULL DEFAULT 0') } catch { /* exists */ }
+  // #411: first touches autopilot drafted but could not send yet (a daily or per-company cap, a temporary Gmail error),
+  // with why and when they may go next. next_at NULL = the user decides (warm-up drafts stay the user's to approve).
+  // authority = the exact words, recipient, sender identity, offer and consent autopilot was allowed to send; any
+  // change hands the draft back to the user instead of sending it.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS autopilot_work (
+      message_id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      lead_id TEXT NOT NULL,
+      reason TEXT NOT NULL CHECK (length(reason) <= 40),
+      next_at INTEGER,
+      authority TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      claimed_at INTEGER,
+      created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+    );
+    CREATE INDEX IF NOT EXISTS autopilot_work_due ON autopilot_work (tenant_id, next_at);
+  `)
 }
 
 export interface AutopilotState { enabled: boolean; paused: boolean; pause_reason: string | null; consent_current: boolean; daily_cap: number }
@@ -102,7 +120,28 @@ const domainSentRecently = (db: Database.Database, tenantId: string, domain: str
 
 export interface RunResult { sent: number; held: number; skipped: number; stopped?: string }
 
-// One pass over this tenant's verified leads that have no message yet. Safe to call repeatedly.
+// What autopilot was allowed to send for this draft: its exact words and recipient, the sender identity and offer they
+// carry, and the consent version. Recomputed before a held draft is sent; a different value hands it back to the user.
+export function draftAuthority(db: Database.Database, tenantId: string, messageId: string): string | null {
+  const m = db.prepare(`SELECT m.to_email, m.subject, m.body, j.offer, j.seller FROM outreach_messages m
+    JOIN leads l ON l.id = m.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = m.tenant_id
+    WHERE m.id = ? AND m.tenant_id = ?`).get(messageId, tenantId) as { to_email: string; subject: string; body: string; offer: string | null; seller: string | null } | undefined
+  if (!m) return null
+  const s = getSettings(db, tenantId) as { sender_name?: string; postal_address?: string } | undefined
+  return createHash('sha256').update(JSON.stringify([CONSENT_VERSION, m.to_email, m.subject, m.body, m.offer, m.seller, s?.sender_name ?? null, s?.postal_address ?? null])).digest('hex')
+}
+
+// A claim on a work row is held this long; a pass that died mid-way frees it after that.
+const CLAIM_S = 600
+// Known-not-sent, temporary refusals of the send path: retried with backoff, at most RETRY_MAX times.
+const TRANSIENT = new Set(['gmail_unavailable', 'gmail_rate_limited', 'daily_cap'])
+const RETRY_MAX = 3
+// The account must reconnect Gmail or resume: the work stays due and goes on the first pass after that.
+const WAIT_FOR_USER = new Set(['gmail_reconnect_needed', 'gmail_not_connected', 'paused'])
+
+// One pass for this tenant: first the held first touches that are due again (#411), then verified leads that have no
+// message yet. Safe to call repeatedly and from two places at once (the scheduler tick and a finishing scan): a work row
+// is claimed before it is touched, a lead can have only one draft, and the send path claims each message once.
 export async function runAutopilot(db: Database.Database, tenantId: string, businessName: string, d: Deps & { flags?: Record<string, string | undefined> } = {}): Promise<RunResult> {
   const out: RunResult = { sent: 0, held: 0, skipped: 0 }
   const env = d.flags ?? process.env
@@ -116,7 +155,67 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
   if (!st.consent_current) return stop('consent_required')
   const uncertain = db.prepare("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND status = 'uncertain'").get(tenantId)
   if (uncertain) { pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send') }
+  const live = () => { const s2 = getState(db, tenantId); return !s2.paused && s2.enabled && autopilotAvailable(env) }
 
+  const hold = (id: string, leadId: string, reason: string, nextAt: number | null, attempts = 0) => {
+    const auth = draftAuthority(db, tenantId, id)
+    if (!auth) return
+    db.prepare(`INSERT INTO autopilot_work (message_id, tenant_id, lead_id, reason, next_at, authority, attempts, claimed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)
+      ON CONFLICT (message_id) DO UPDATE SET reason = excluded.reason, next_at = excluded.next_at, attempts = excluded.attempts, claimed_at = NULL`).run(id, tenantId, leadId, reason, nextAt, auth, attempts, now)
+  }
+  const drop = (id: string) => db.prepare('DELETE FROM autopilot_work WHERE message_id = ? AND tenant_id = ?').run(id, tenantId)
+
+  // The gates and the send, for a draft autopilot made (new, or held earlier). 'stop' ends the pass, with out.stopped set.
+  const deliver = async (id: string, leadId: string, attempts: number): Promise<'stop' | void> => {
+    const msg = db.prepare('SELECT to_email, status FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(id, tenantId) as { to_email: string; status: string }
+    const to = msg.to_email
+    // Warm-up drafts are the user's to approve: never sent by autopilot later, whatever happens to the caps.
+    if (sentTotal(db, tenantId) < WARMUP_SENDS(env)) { out.held++; hold(id, leadId, 'warmup', null); audit(db, tenantId, 'held_warmup', 'needs your approval', leadId, id); return }
+    if (autoSent24h(db, tenantId, now) >= st.daily_cap) {
+      // Due again when the oldest autopilot send of the last 24 hours drops out of the window (inclusive at its edge).
+      const oldest = (db.prepare("SELECT min(created_at) AS t FROM autopilot_audit WHERE tenant_id = ? AND action = 'sent' AND created_at >= ?").get(tenantId, now - 86400) as { t: number | null }).t ?? now
+      out.held++; hold(id, leadId, 'daily_cap', oldest + 86400 + 1, attempts); audit(db, tenantId, 'daily_cap', `cap ${st.daily_cap}`, leadId, id); out.stopped = 'daily_cap'; return 'stop'
+    }
+    const domain = to.split('@')[1]
+    if (domainSentRecently(db, tenantId, domain, now)) {
+      const last = (db.prepare("SELECT max(claimed_at) AS t FROM outreach_messages WHERE tenant_id = ? AND status IN ('sent','sending','uncertain') AND to_email LIKE ?").get(tenantId, `%@${domain}`) as { t: number | null }).t ?? now
+      out.held++; hold(id, leadId, 'domain_cap', last + 7 * 86400 + 1, attempts); audit(db, tenantId, 'held_domain_cap', 'one email per company per 7 days', leadId, id); return
+    }
+    if (isSuppressed(db, tenantId, to)) { out.skipped++; drop(id); audit(db, tenantId, 'skipped', 'suppressed', leadId, id); return }
+    try {
+      if (msg.status === 'draft') approve(db, tenantId, id)
+      const r = await sendMessage(db, tenantId, id, d)
+      drop(id)
+      if (r === 'sent') { out.sent++; audit(db, tenantId, 'sent', undefined, leadId, id) }
+      // An unknown outcome is never retried by autopilot: the message stays uncertain for the user.
+      else { audit(db, tenantId, 'uncertain', 'send outcome unknown', leadId, id); pause(db, tenantId, 'uncertain_send'); out.stopped = 'uncertain_send'; return 'stop' }
+    } catch (e) {
+      const code = e instanceof OutreachError ? e.code : 'error'
+      audit(db, tenantId, 'send_failed', code, leadId, id)
+      if (WAIT_FOR_USER.has(code)) { hold(id, leadId, code, now, attempts); if (code !== 'paused') pause(db, tenantId, code); out.held++; out.stopped = code; return 'stop' }
+      if (TRANSIENT.has(code) && attempts + 1 < RETRY_MAX) { hold(id, leadId, code, now + 3600 * 2 ** attempts, attempts + 1); out.held++; return }
+      // Any other refusal (a check now holds the lead or the address, or retries ran out): the user decides.
+      drop(id); out.held++
+    }
+  }
+
+  // 1. Held first touches that are due again.
+  const due = db.prepare('SELECT message_id, lead_id, authority, attempts FROM autopilot_work WHERE tenant_id = ? AND next_at IS NOT NULL AND next_at <= ? AND (claimed_at IS NULL OR claimed_at < ?) ORDER BY next_at, created_at LIMIT 25')
+    .all(tenantId, now, now - CLAIM_S) as { message_id: string; lead_id: string; authority: string; attempts: number }[]
+  for (const w of due) {
+    if (!live()) return stop('paused')
+    // Claimed by this pass only: another pass (a second tick, a finishing scan) skips it.
+    if (db.prepare('UPDATE autopilot_work SET claimed_at = ? WHERE message_id = ? AND tenant_id = ? AND (claimed_at IS NULL OR claimed_at < ?)').run(now, w.message_id, tenantId, now - CLAIM_S).changes !== 1) continue
+    const m = db.prepare('SELECT status FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(w.message_id, tenantId) as { status: string } | undefined
+    // Sent, skipped or deleted by the user meanwhile: nothing left for autopilot.
+    if (!m || (m.status !== 'draft' && m.status !== 'approved')) { drop(w.message_id); continue }
+    if (draftAuthority(db, tenantId, w.message_id) !== w.authority) {
+      drop(w.message_id); out.held++; audit(db, tenantId, 'released', 'changed since autopilot drafted it: yours to approve', w.lead_id, w.message_id); continue
+    }
+    if (await deliver(w.message_id, w.lead_id, w.attempts) === 'stop') return out
+  }
+
+  // 2. Verified leads with no message yet.
   const leads = db.prepare(
     `SELECT l.id, l.contact FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
      WHERE j.user_id = ? AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND l.contact IS NOT NULL AND l.quarantined_at IS NULL
@@ -126,7 +225,7 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
 
   for (const l of leads) {
     // re-read state each time so a pause or kill takes effect between sends
-    if (getState(db, tenantId).paused || !autopilotAvailable(env) || !getState(db, tenantId).enabled) return stop('paused')
+    if (!live()) return stop('paused')
     let id: string
     try {
       id = createDraft(db, tenantId, l.id, businessName)
@@ -134,23 +233,7 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     } catch (e) {
       out.skipped++; audit(db, tenantId, 'skipped', e instanceof OutreachError ? e.code : 'error', l.id); continue
     }
-    const to = (db.prepare('SELECT to_email FROM outreach_messages WHERE id = ?').get(id) as { to_email: string }).to_email
-    if (sentTotal(db, tenantId) < WARMUP_SENDS(env)) { out.held++; audit(db, tenantId, 'held_warmup', 'needs your approval', l.id, id); continue }
-    if (autoSent24h(db, tenantId, now) >= st.daily_cap) { audit(db, tenantId, 'daily_cap', `cap ${st.daily_cap}`, l.id, id); return { ...out, held: out.held + 1, stopped: 'daily_cap' } }
-    const domain = to.split('@')[1]
-    if (domainSentRecently(db, tenantId, domain, now)) { out.held++; audit(db, tenantId, 'held_domain_cap', 'one email per company per 7 days', l.id, id); continue }
-    if (isSuppressed(db, tenantId, to)) { out.skipped++; audit(db, tenantId, 'skipped', 'suppressed', l.id, id); continue }
-    try {
-      approve(db, tenantId, id)
-      const r = await sendMessage(db, tenantId, id, d)
-      if (r === 'sent') { out.sent++; audit(db, tenantId, 'sent', undefined, l.id, id) }
-      else { audit(db, tenantId, 'uncertain', 'send outcome unknown', l.id, id); pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send') }
-    } catch (e) {
-      const code = e instanceof OutreachError ? e.code : 'error'
-      audit(db, tenantId, 'send_failed', code, l.id, id)
-      if (code === 'gmail_reconnect_needed' || code === 'gmail_not_connected') { pause(db, tenantId, code); return stop(code) }
-      out.held++
-    }
+    if (await deliver(id, l.id, 0) === 'stop') return out
   }
   return out
 }

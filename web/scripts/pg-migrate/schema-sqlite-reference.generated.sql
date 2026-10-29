@@ -30,6 +30,18 @@ CREATE TABLE autopilot_settings (
       daily_cap INTEGER NOT NULL DEFAULT 20 CHECK (daily_cap BETWEEN 1 AND 50)
     , followups_enabled INTEGER NOT NULL DEFAULT 0);
 
+CREATE TABLE autopilot_work (
+      message_id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      lead_id TEXT NOT NULL,
+      reason TEXT NOT NULL CHECK (length(reason) <= 40),
+      next_at INTEGER,
+      authority TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      claimed_at INTEGER,
+      created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+    );
+
 CREATE TABLE calcom_bookings (
       tenant_id      TEXT NOT NULL,
       booking_uid    TEXT NOT NULL,
@@ -728,6 +740,8 @@ CREATE TABLE work_queue (
 CREATE TABLE work_queue_meta (k TEXT PRIMARY KEY, v INTEGER NOT NULL);
 
 CREATE INDEX autopilot_audit_tenant ON autopilot_audit (tenant_id, created_at);
+
+CREATE INDEX autopilot_work_due ON autopilot_work (tenant_id, next_at);
 
 CREATE INDEX commenter_batches_user ON commenter_batches (user_id, created_at);
 

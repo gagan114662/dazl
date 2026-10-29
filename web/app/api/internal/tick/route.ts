@@ -4,6 +4,7 @@ import { timingSafeEqual } from 'node:crypto'
 import { getScanDb } from '@/lib/scan/service'
 import { syncReplies } from '@/lib/outreach/replies'
 import { runFollowups } from '@/lib/outreach/followups'
+import { runAutopilot } from '@/lib/outreach/autopilot'
 import { runDueWatches } from '@/lib/watch'
 import { collectMonitorResults, runDueMonitors } from '@/lib/monitors'
 import { kickRunner } from '@/lib/scan/runner'
@@ -15,7 +16,8 @@ import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 
 // Called by a scheduler (cron or a systemd timer) with AUTOPILOT_TICK_SECRET. Reads replies and sends due
-// follow-ups for tenants who turned both on. Without the secret configured the route does not exist.
+// follow-ups for tenants who turned both on, and runs autopilot's first touches (held drafts due again, then new
+// verified leads) for tenants with autopilot on. Without the secret configured the route does not exist.
 export async function POST(req: NextRequest) {
   const secret = process.env.AUTOPILOT_TICK_SECRET
   const got = req.headers.get('authorization') ?? ''
@@ -51,6 +53,13 @@ async function tick(lease: Lease, requestId?: string) {
     await lease.keep()
     try { const sync = await syncReplies(db, t.tenant_id); if (sync.error) continue; await runFollowups(db, t.tenant_id, t.business_name ?? ''); done++ } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:replies', tenantId: t.tenant_id, requestId }) }
   }
+  // #411: first touches no longer wait for the next scan to finish. A pass drains held drafts that are due (a cap lifted,
+  // Gmail back after a reconnect and resume) and then new verified leads, within every autopilot and send check.
+  let firstTouches = 0
+  for (const t of db.prepare('SELECT s.tenant_id, u.business_name FROM autopilot_settings s JOIN users u ON u.id = s.tenant_id WHERE s.enabled = 1 AND s.paused = 0').all() as { tenant_id: string; business_name: string | null }[]) {
+    await lease.keep()
+    try { firstTouches += (await runAutopilot(db, t.tenant_id, t.business_name ?? '')).sent } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:autopilot', tenantId: t.tenant_id, requestId }) }
+  }
   let sequences = 0
   for (const t of db.prepare("SELECT DISTINCT tenant_id FROM sequences WHERE status IN ('approved','active')").all() as { tenant_id: string }[]) {
     await lease.keep()
@@ -75,5 +84,5 @@ async function tick(lease: Lease, requestId?: string) {
     await lease.keep()
     try { const r = await runIndexChecks(shared, t); if (r && r.length > 0) indexChecked++ } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:index-checks', tenantId: t, requestId }) }
   }
-  return NextResponse.json({ ok: true, tenants: done, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, index_checks: indexChecked })
+  return NextResponse.json({ ok: true, tenants: done, first_touches: firstTouches, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, index_checks: indexChecked })
 }
