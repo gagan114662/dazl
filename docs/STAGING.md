@@ -9,7 +9,9 @@ Staging is the app on the same box as production, as a separate service. It has 
   - Connect needs no Google account.
   - A send makes no network call and gets a stub id.
   - Reply sync reads nothing.
-  - Google credentials are refused in the env file.
+  - Gmail's Google credentials (`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`) are refused in the env file.
+- **Sign in with Google** works only with a dedicated, identity-only staging OAuth client (see below); without one the
+  button reports "not available".
 - **Stripe is test mode only:** a live key is refused.
 - It has its **own database**, seeded with a demo account (`web/scripts/staging-seed.mts`):
   - a reviewed buyer profile;
@@ -18,7 +20,7 @@ Staging is the app on the same box as production, as a separate service. It has 
   - the stub Gmail connection.
 - **Error reports** are tagged `environment=staging`.
 
-Nothing in staging uses production data or keys: a fresh master key, test-mode Stripe and no Google credentials.
+Nothing in staging uses production data or keys: a fresh master key, test-mode Stripe, no Gmail credentials, and at most a dedicated staging sign-in client.
 
 ## Before installing: disk and safety checks (`ops/staging/deploy.sh`)
 - **Disk floor.** `MIN_FREE_BYTES` is 2 GiB by default, the host's floor. Every run of the 2-minute timer checks free space first:
@@ -102,6 +104,22 @@ Nothing in staging uses production data or keys: a fresh master key, test-mode S
    systemctl enable --now dazl-staging-deploy.timer
    systemctl list-timers dazl-staging-deploy.timer
    ```
+
+## Sign in with Google (runbook, Instinct)
+Staging can sign people in with Google through its **own** OAuth client, used for identity only. Gmail stays stubbed:
+the Gmail client is never configured on staging, and the app refuses sign-in on staging while it is.
+1. In Google Cloud, create a new OAuth client (Web application) for staging only. Its consent screen asks only for
+   `openid`, `email` and `profile`. Its single authorized redirect URI is
+   `https://staging.dazl.ai/api/auth/callback/google`. Do not reuse production's client.
+2. In `/etc/dazl-staging/env` set `GOOGLE_SIGNIN_CLIENT_ID` (`….apps.googleusercontent.com`) and
+   `GOOGLE_SIGNIN_CLIENT_SECRET`. Leave `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` unset.
+3. `PROD_ENV_FILE=<production's env file> bash ops/staging/deploy.sh --check-env /etc/dazl-staging/env` prints
+   `env ok`. With a sign-in client set, the check needs production's env file, and refuses an id or secret equal to any
+   Google client there. Values are never printed.
+4. `systemctl restart dazl-staging.service` (no rebuild needed: the sign-in routes read their configuration on each
+   request and are never cached). Then `curl -sI https://staging.dazl.ai/api/auth/google` shows a 307 to
+   `accounts.google.com` with this client's id, `redirect_uri=https://staging.dazl.ai/api/auth/callback/google`,
+   `scope=openid email profile` and `cache-control: no-store`.
 
 ## Stripe in test mode (runbook, Instinct)
 Staging takes test-mode Stripe only: `deploy.sh --check-env` refuses any `sk_live_` or `rk_live_` key, and staging never holds a live key. Set these four values in `/etc/dazl-staging/env`, all from the Stripe dashboard with **Test mode** switched on:
