@@ -310,3 +310,49 @@ test('low disk after or near the end of a build: never put live; the reserve abo
   assert.deepEqual(live(), [old, old]); assert.deepEqual(readdirSync(path.join(root, 'releases')), [old])
   assert.ok(lastAlert().free_bytes >= FLOOR, 'stopped while still above the protected floor')
 })
+
+// Low-disk alerts by email: OPS_ALERT_EMAIL in the staging env file, sent through the host's own sendmail (here a
+// stand-in that records what it was given). One plain address only; anything else is refused and logged. No mail
+// service is wired into the repo: the route is the box's own mail setup.
+test('low disk: an email alert through the host sendmail, to one plain address; refused for anything else', async () => {
+  const { execFileSync } = await import('node:child_process')
+  const { existsSync } = await import('node:fs')
+  const T = mkdtempSync(path.join(tmpdir(), 'staging-mail-'))
+  const root = path.join(T, 'root'); mkdirSync(root)
+  const mail = path.join(T, 'mail'), args = path.join(T, 'args')
+  const sendmail = path.join(T, 'sendmail')
+  writeFileSync(sendmail, `#!/usr/bin/env bash\necho "$@" >> ${args}\ncat >> ${mail}\n`); execFileSync('chmod', ['+x', sendmail])
+  const run = (envBody: string, over: Record<string, string> = {}) => {
+    const env = path.join(T, `env${Math.random().toString(36).slice(2)}`); writeFileSync(env, envBody)
+    const r = spawnSync('bash', [script], { encoding: 'utf8', env: {
+      PATH: process.env.PATH, HOME: process.env.HOME, STAGING_ROOT: root, STAGING_ENV_FILE: env, STAGING_PORT: '1',
+      STAGING_USER: execFileSync('id', ['-un'], { encoding: 'utf8' }).trim(), STAGING_REPO_URL: 'file:///nonexistent', STAGING_RESTART: 'true',
+      STAGING_BUILD: 'true', PROD_DB_PATH: prodDb, MIN_FREE_BYTES: String(1e15), STAGING_SENDMAIL: sendmail, STAGING_ALERT_EVERY_S: '0', ...over,
+    } as unknown as NodeJS.ProcessEnv })
+    return { code: r.status, out: r.stdout + r.stderr }
+  }
+  const read = (f: string) => existsSync(f) ? readFileSync(f, 'utf8') : ''
+  // below the floor: skipped (exit 0) and one email, with the reason and the numbers, no recipient but the one given
+  let r = run(good + 'OPS_ALERT_EMAIL=ops@example.test\n')
+  assert.equal(r.code, 0, r.out)
+  assert.equal(read(args).trim(), '-t -i')
+  const m = read(mail)
+  assert.match(m, /^To: ops@example\.test\nSubject: \[dazl staging\] low_disk on .+\n/)
+  assert.match(m, /floor bytes: 1000000000000000/)
+  assert.match(m, /"reason":"low_disk"/)
+  assert.equal((m.match(/^To:/gm) ?? []).length, 1)
+  assert.ok(!/Bcc|Cc:/i.test(m))
+  // more than one plain address, or an injected header: refused, logged, nothing sent
+  for (const bad of ['ops@example.test,other@example.test', 'ops@example.test Bcc: x@example.test', 'not-an-address']) {
+    writeFileSync(mail, ''); writeFileSync(args, '')
+    r = run(good + `OPS_ALERT_EMAIL=${bad}\n`)
+    assert.equal(r.code, 0); assert.match(r.out, /OPS_ALERT_EMAIL is not one plain address: not used/)
+    assert.equal(read(mail), '', bad)
+  }
+  // sendmail not installed: said so in the journal, nothing else happens
+  r = run(good + 'OPS_ALERT_EMAIL=ops@example.test\n', { STAGING_SENDMAIL: path.join(T, 'missing') })
+  assert.equal(r.code, 0); assert.match(r.out, /OPS_ALERT_EMAIL set but .* is not installed: no email sent/)
+  // no destination at all: journal only
+  r = run(good)
+  assert.match(r.out, /no alert destination: set OPS_ALERT_EMAIL or OPS_ALERT_WEBHOOK_URL/)
+})

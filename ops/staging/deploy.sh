@@ -35,9 +35,12 @@ PROD_ENV_FILE=${PROD_ENV_FILE:-}
 # The build, run in the release's web/ directory as the service user with the env file's values. Tests replace it.
 BUILD=${STAGING_BUILD:-'{ [ -d node_modules ] || npm ci --no-audit --no-fund --loglevel=error; } && NODE_OPTIONS=--max-old-space-size=2048 nice -n 10 npx next build && rm -rf .next/cache && npm run -s db:migrate && node --experimental-strip-types --no-warnings scripts/staging-seed.mts'}
 HEALTH_TRIES=${STAGING_HEALTH_TRIES:-60}
-# Low-disk alerts: OPS_ALERT_WEBHOOK_URL from the staging env file (https), or STAGING_ALERT_CMD (tests). One alert per
-# reason per STAGING_ALERT_EVERY_S while the condition lasts; every skip is still logged to the journal.
+# Low-disk alerts, from the staging env file: OPS_ALERT_EMAIL (an email through this host's own sendmail, so the
+# box's mail setup decides the route; no mail service is wired in here) and/or OPS_ALERT_WEBHOOK_URL (https), or
+# STAGING_ALERT_CMD (tests). One alert per reason per STAGING_ALERT_EVERY_S while the condition lasts; every skip is
+# still logged to the journal. Alerts carry disk numbers, the reason and the host name only.
 ALERT_CMD=${STAGING_ALERT_CMD:-}
+SENDMAIL=${STAGING_SENDMAIL:-/usr/sbin/sendmail}
 ALERT_EVERY_S=${STAGING_ALERT_EVERY_S:-3600}
 
 log() { echo "staging-deploy: $*"; }
@@ -91,11 +94,23 @@ alert() { # reason, free bytes, bytes needed (0 when only the floor matters), me
   local body
   body=$(printf '{"level":"warn","type":"staging_deploy","reason":"%s","free_bytes":%s,"needed_bytes":%s,"floor_bytes":%s,"host":"%s"}' "$reason" "$free" "$need" "$MIN_FREE_BYTES" "$(hostname -s 2>/dev/null || echo unknown)")
   if [ -n "$ALERT_CMD" ]; then $ALERT_CMD "$body" || log "alert command failed"; return 0; fi
-  local url; url=$(val OPS_ALERT_WEBHOOK_URL "$ENV_FILE")
+  local url email sent=0; url=$(val OPS_ALERT_WEBHOOK_URL "$ENV_FILE"); email=$(val OPS_ALERT_EMAIL "$ENV_FILE")
   case "$url" in
-    https://*) curl -fsS -m 10 -H 'content-type: application/json' -d "$body" "$url" >/dev/null || log "alert webhook failed" ;;
-    *) log "no alert destination: set OPS_ALERT_WEBHOOK_URL (https) in $ENV_FILE" ;;
+    https://*) sent=1; curl -fsS -m 10 -H 'content-type: application/json' -d "$body" "$url" >/dev/null || log "alert webhook failed" ;;
+    '') ;;
+    *) log "OPS_ALERT_WEBHOOK_URL is not https: not used" ;;
   esac
+  if [ -n "$email" ]; then
+    # one plain address, nothing that could add a header or a second recipient
+    if [[ "$email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]] && [ -x "$SENDMAIL" ]; then
+      sent=1
+      printf 'To: %s\nSubject: [dazl staging] %s on %s\nContent-Type: text/plain; charset=utf-8\n\n%s\n\nfree bytes: %s\nneeded bytes: %s\nfloor bytes: %s\n\n%s\n' \
+        "$email" "$reason" "$(hostname -s 2>/dev/null || echo unknown)" "$msg" "$free" "$need" "$MIN_FREE_BYTES" "$body" \
+        | timeout 20 "$SENDMAIL" -t -i || log "alert email failed"
+    elif [ -x "$SENDMAIL" ]; then log "OPS_ALERT_EMAIL is not one plain address: not used"
+    else log "OPS_ALERT_EMAIL set but $SENDMAIL is not installed: no email sent"; fi
+  fi
+  [ "$sent" = 1 ] || log "no alert destination: set OPS_ALERT_EMAIL or OPS_ALERT_WEBHOOK_URL (https) in $ENV_FILE"
 }
 disk_ok() { rm -f "$ROOT"/.alert-low_disk*; } # back above the floor: the next low-disk event alerts at once
 
