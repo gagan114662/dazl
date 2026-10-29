@@ -47,18 +47,25 @@ const LABEL = new RegExp(`${LEAD}(?:(?:our|my)\\s+)?(?:offer|offering|product|se
 // like "insurance", "inbound marketing", "attribution software" or "no-code tools" starts with the same letters); the
 // one stem kept is exclud(e|es|ed|ing), since every form of it is an exclusion.
 const NOT_AN_OFFER = /^(?:(?:to|for|into|in|at|within|only|except|no|not)(?![\p{L}\p{N}'’-])|exclud)/iu
-export function statedOffer(query: string | null | undefined): string | null {
-  const q = (query ?? '').replace(/[ \t]+/g, ' ').trim()
+// The first offer a text states: the offer, the rest of that sentence after it (buyers, "but not ..." clauses), and
+// which sentence it was in.
+type Found = { offer: string; tail: string; sentence: number; sentences: string[] }
+function findOffer(text: string | null | undefined): Found | null {
+  const q = (text ?? '').replace(/[ \t]+/g, ' ').trim()
   if (!q) return null
-  for (const sentence of q.split(SENTENCE_STOP).map(x => x.trim()).filter(Boolean)) {
+  const sentences = q.split(SENTENCE_STOP).map(x => x.trim()).filter(Boolean)
+  for (const [i, sentence] of sentences.entries()) {
     for (const p of [TO_FOR, SELLING_TO_FOR, LABEL, BARE]) {
       const m = p.exec(sentence)
       if (!m) continue
       const o = cleanOffer(m[1].replace(/^(?:our|my|a|an)\s+/i, ''))
-      if (o.length >= 3 && !NOT_AN_OFFER.test(o)) return o
+      if (o.length >= 3 && !NOT_AN_OFFER.test(o)) return { offer: o, tail: sentence.slice(m.index + m[0].indexOf(m[1]) + m[1].length).trim(), sentence: i, sentences }
     }
   }
   return null
+}
+export function statedOffer(query: string | null | undefined): string | null {
+  return findOffer(query)?.offer ?? null
 }
 
 // The offer part of a recorded seller line "<sells> - <website>" (the website, a URL or a bare domain, dropped).
@@ -70,18 +77,30 @@ export function offerOfSeller(seller: string | null | undefined): string | null 
   return cleanOffer(offer) || null
 }
 
-// Two offers are the same only when the offer each one states is the same text, ignoring case and spacing. Both sides go
-// through the same parsing first (statedOffer: a seller sentence "We sell <offer> to <buyers>." states <offer>; text that
-// states nothing, like a bare product phrase, is taken as written), so "appointment booking and reminder software" and
-// the saved "We sell appointment booking and reminder software to independent dental practices in New York City." are
-// one offer (#349). Nothing else is normalized: word order, negation ("SEO but not PPC" / "PPC but not SEO"), a saved
-// sentence that sells nothing ("We do not sell hardware.", "We sell to dental practices."), and any other wording
-// difference are a choice for the tenant, never inferred. No substring or word-set matching.
+// Whether two texts state the same offer (#349). Each is read as an offer statement: the offer itself, the rest of its
+// sentence (the buyers it is sold to, "but not ..." clauses), and every other sentence in which the seller says what
+// they do or do not sell ("We do not offer outbound consulting."). Targeting sentences of a request ("Find London SaaS
+// startups hiring.", "Exclude agencies.") are not part of it. Text that states no offer ("appointment booking and
+// reminder software", "We do not sell hardware.", "We sell to dental practices.") is taken as written.
+//   - A side that states ONLY an offer (nothing more about buyers, exclusions or other services) agrees with any side
+//     stating the same offer: "appointment booking and reminder software" and the saved "We sell appointment booking
+//     and reminder software to independent dental practices in New York City." are one offer.
+//   - Otherwise both whole statements must be the same: another buyer ("to veterinary practices"), a withdrawn service
+//     ("but not outbound consulting") or another negation ("We do not offer outbound consulting.") is a difference.
+// Every comparison is exact text, ignoring only case and spacing: no substring or word-set matching, no reordering.
 const exact = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase()
-const offerCore = (s: string) => exact(statedOffer(s) ?? s)
+const SELLER_SENTENCE = /\b(?:i|we|i'm|we're|i've|we've|our (?:company|team|business|firm))\b.*\b(?:sells?|selling|sold|offers?|offering|provides?|providing)\b/i
+type Statement = { offer: string; more: string }
+function statement(text: string): Statement {
+  const f = findOffer(text)
+  if (!f) return { offer: exact(text), more: '' }
+  const others = f.sentences.filter((x, i) => i !== f.sentence && SELLER_SENTENCE.test(x)).map(exact)
+  return { offer: exact(f.offer), more: [exact(f.tail), ...others].filter(Boolean).join(' | ') }
+}
 export function sameOffer(a: string, b: string): boolean {
-  const x = offerCore(a), y = offerCore(b)
-  return !!x && x === y
+  const x = statement(a), y = statement(b)
+  if (!x.offer || x.offer !== y.offer) return false
+  return !x.more || !y.more || x.more === y.more
 }
 
 export function effectiveOffer(play: { offer?: string | null; seller?: string | null; query?: string | null }, profileSells: string | null | undefined): PlayOffer {
@@ -90,7 +109,8 @@ export function effectiveOffer(play: { offer?: string | null; seller?: string | 
   const recorded = offerOfSeller(play.seller)
   const base = recorded ?? (cleanOffer(profileSells) || null)
   const stated = statedOffer(play.query)
-  if (stated && base && !sameOffer(stated, base)) return { offer: null, source: 'conflict', conflict: { stated, recorded: base } }
+  // the request's whole offer statement is compared (its buyers and seller negations too), not only the offer words
+  if (stated && base && !sameOffer(play.query ?? '', base)) return { offer: null, source: 'conflict', conflict: { stated, recorded: base } }
   if (base) return { offer: base, source: recorded ? 'recorded' : 'profile', conflict: null }
   if (stated) return { offer: stated, source: 'request', conflict: null }
   return { offer: null, source: 'none', conflict: null }

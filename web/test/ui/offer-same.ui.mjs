@@ -6,7 +6,8 @@
 //   1. a play whose request states "appointment booking and reminder software" while the saved offer is "We sell
 //      appointment booking and reminder software to independent dental practices in New York City." shows that saved
 //      offer on its Campaign and Outreach pages, with no choice to make;
-//   2. the London CRM/outbound play is still shown as a choice on both pages;
+//   2. the London CRM/outbound play, and the same product sold explicitly to veterinary practices, are still shown as a
+//      choice on both pages;
 //   3. viewing writes nothing: no offer is chosen for a play and the saved offer is not rewritten.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
@@ -25,13 +26,14 @@ if (!existsSync(path.join(dir, '.next/BUILD_ID'))) notRun('no production build (
 const Database = require('better-sqlite3'); const { createHash, randomBytes } = require('crypto')
 const { migrateAllSqlite } = await import(path.join(dir, 'lib/db/sqlite-migrations.ts'))
 const SAVED = 'We sell appointment booking and reminder software to independent dental practices in New York City.'
-const DENTAL = 'd'.repeat(24), LONDON = 'e'.repeat(24)
+const DENTAL = 'd'.repeat(24), LONDON = 'e'.repeat(24), VET = 'f'.repeat(24)
 const tmp = mkdtempSync(path.join(tmpdir(), 'dazl-offersame-')); const DB = path.join(tmp, 'app.db'); const db = new Database(DB)
 migrateAllSqlite(db)
 db.prepare("INSERT INTO users (id, email, password_hash, salt, sells, website) VALUES ('u1', 's@example.test', 'x', 'y', ?, 'https://seller.example')").run(SAVED)
 const token = randomBytes(32).toString('hex'); db.prepare('INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)').run(createHash('sha256').update(token).digest('hex'), 'u1', Math.floor(Date.now() / 1000) + 3600)
 for (const [id, query] of [[DENTAL, 'Independent dental practices in New York City hiring a front-desk coordinator. We sell appointment booking and reminder software.'],
-  [LONDON, 'Find London SaaS startups hiring. We sell CRM setup and outbound sales consulting. Exclude agencies.']]) {
+  [LONDON, 'Find London SaaS startups hiring. We sell CRM setup and outbound sales consulting. Exclude agencies.'],
+  [VET, 'Veterinary clinics in New York City hiring. We sell appointment booking and reminder software to veterinary practices.']]) {
   db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, query, seller) VALUES (?, 'u1', 'Synthetic Co', 'i', 'l', 'running', ?, ?)").run(id, query, `${SAVED} - https://seller.example`)
   db.prepare("INSERT INTO leads (id, scan_job_id, company, name, contact, signal, source_url, evidence_excerpt, confidence) VALUES (?, ?, 'Synthetic Buyer', 'Pat', 'pat@buyer.example', 'Hiring', 'https://news.example/a', 'Synthetic Buyer is hiring.', 80)").run(`lead-${id}`, id)
   db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status) VALUES (?, 'u1', ?, 'pat@buyer.example', 'Hello', 'A synthetic draft body.', 'draft')").run(`m-${id}`, `lead-${id}`)
@@ -64,6 +66,11 @@ try {
       const r = await check(url, wrap, name)
       assert.equal(r.conflict, 1, `${name}@${w}: the CRM request is still a choice`)
       assert.match(r.text, /CRM setup and outbound sales consulting/); assert.match(r.text, /appointment booking and reminder software/)
+    }
+    // the same product sold to an explicitly different buyer is a choice too, never the dental offer
+    for (const [url, wrap, name] of [[`/app/campaigns/${VET}`, 'campaign-offer', 'campaign-vet'], [`/app/outreach?job_id=${VET}`, 'outreach-play-offer', 'outreach-vet']]) {
+      const r = await check(url, wrap, name)
+      assert.equal(r.conflict, 1, `${name}@${w}: another buyer is a choice: ${r.text}`)
     }
     await ctx.close()
   }

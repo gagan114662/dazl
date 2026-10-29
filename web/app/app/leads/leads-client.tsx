@@ -387,7 +387,7 @@ export default function LeadsClient() {
   function startOffer(q: string) {
     const stated = statedOffer(q)
     setOfferText(stated ?? savedOffer ?? '')
-    setOfferConflict(stated && savedOffer && !sameOffer(stated, savedOffer) ? { stated, saved: savedOffer, direct: false } : null)
+    setOfferConflict(stated && savedOffer && !sameOffer(q, savedOffer) ? { stated, saved: savedOffer, direct: false } : null)
   }
   // Extra sources this page asked the run for (unknown for a scan adopted after a reload: null).
   const [runExtras, setRunExtras] = useState<string[] | null>(null)

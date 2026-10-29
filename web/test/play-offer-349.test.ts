@@ -188,7 +188,7 @@ test('#349 HOLD-3 caller paths: each prefix offer under an incompatible recorded
 // sides now go through the same offer parsing, then an exact comparison.
 const DENTAL_PRODUCT = 'appointment booking and reminder software'
 test('#349 LIVE same product: the request and the saved dental seller sentence are one offer; no conflict, saved text kept', () => {
-  for (const query of [DENTAL_PRODUCT, `We sell ${DENTAL_PRODUCT}.`, `Find dental practices in NYC. We sell ${DENTAL_PRODUCT}.`, `Our product: ${DENTAL_PRODUCT}`, `We offer ${DENTAL_PRODUCT} to clinics`]) {
+  for (const query of [DENTAL_PRODUCT, `We sell ${DENTAL_PRODUCT}.`, `Find dental practices in NYC. We sell ${DENTAL_PRODUCT}. Exclude chains.`, `Our product: ${DENTAL_PRODUCT}`, `We offer ${DENTAL_PRODUCT} to independent dental practices in New York City`]) {
     assert.deepEqual(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query }, ''), { offer: DENTAL_SELLER, source: 'recorded', conflict: null }, query)
     assert.deepEqual(effectiveOffer({ query }, DENTAL_SELLER), { offer: DENTAL_SELLER, source: 'profile', conflict: null }, query)
   }
@@ -235,4 +235,27 @@ test('#349 LIVE caller paths: the same-product play drafts, rewrites and scores 
     assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme'), /offer_conflict/)
     assert.equal(offerBlockFor(db, 'A', 'london'), '')
   } finally { db.close() }
+})
+
+// Instinct's HOLD on 5294651: comparing only the extracted product dropped explicit buyers, withdrawn services and
+// seller negations. An offer that says only the product may agree with a fuller one; two statements that each say more
+// must say the same.
+test('#349 LIVE-2 explicit buyers, withdrawn services and seller negations are never collapsed into the same offer', () => {
+  for (const [a, b] of [
+    ['We sell appointment software to dental practices.', 'We sell appointment software to veterinary practices.'],
+    ['We sell CRM setup to founders, but not outbound consulting.', 'We sell CRM setup to founders.'],
+    ['We sell CRM setup to founders. We do not offer outbound consulting.', 'We sell CRM setup to founders.'],
+    [`We offer ${DENTAL_PRODUCT} to clinics`, DENTAL_SELLER],
+    [`We sell ${DENTAL_PRODUCT}. We do not offer payroll.`, `We sell ${DENTAL_PRODUCT} to independent dental practices in New York City. We also offer payroll.`],
+  ] as const) {
+    assert.equal(sameOffer(a, b), false, `${a} | ${b}`); assert.equal(sameOffer(b, a), false, `${b} | ${a}`)
+  }
+  assert.deepEqual(effectiveOffer({ seller: 'We sell appointment software to dental practices.', query: 'We sell appointment software to veterinary practices.' }, ''),
+    { offer: null, source: 'conflict', conflict: { stated: 'appointment software', recorded: 'We sell appointment software to dental practices.' } })
+  assert.equal(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: `Find clinics. We offer ${DENTAL_PRODUCT} to clinics.` }, '').source, 'conflict')
+  assert.equal(effectiveOffer({ query: 'We sell CRM setup to founders. We do not offer outbound consulting.' }, 'We sell CRM setup to founders.').source, 'conflict')
+  // the same full statement on both sides, and the product-only request, still agree
+  assert.ok(sameOffer('We sell CRM setup to founders, but not outbound consulting.', 'we sell  CRM setup to Founders, but not outbound consulting'))
+  assert.ok(sameOffer(DENTAL_PRODUCT, DENTAL_SELLER))
+  assert.deepEqual(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: DENTAL_PRODUCT }, ''), { offer: DENTAL_SELLER, source: 'recorded', conflict: null })
 })
