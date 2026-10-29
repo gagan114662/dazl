@@ -36,8 +36,9 @@ export default function CampaignsClient() {
                 : <span className="text-xs text-[#555] shrink-0" data-testid="next-action">{c.next.label}</span>}
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 border-t border-black/10 pt-3">
-              {stage('Discovery', `${c.discovery.leads} lead${c.discovery.leads === 1 ? '' : 's'}`, c.discovery.candidates == null ? 'candidates not recorded' : `from ${c.discovery.candidates} candidates`)}
-              {stage('Qualification', `${c.qualification.sourceChecked} source-checked, ${c.qualification.confirmedByYou} confirmed by you, ${c.qualification.needsReview} to review`, `${c.qualification.held} timing not confirmed, ${c.qualification.unverified} unverified, ${c.qualification.rejected} rejected`)}
+              {/* Found = extracted and saved by the scan; what is still in play after your review is under Qualification. */}
+              {stage('Discovery', `${c.discovery.leads} found`, c.discovery.candidates == null ? 'candidates not recorded' : `from ${c.discovery.candidates} candidates`)}
+              {stage('Qualification', c.discovery.leads > 0 && c.qualification.rejected >= c.discovery.leads ? `None passed: ${c.qualification.rejected} rejected` : `${c.qualification.sourceChecked} source-checked, ${c.qualification.confirmedByYou} confirmed by you, ${c.qualification.needsReview} to review`, `${c.qualification.held} timing not confirmed, ${c.qualification.unverified} unverified, ${c.qualification.rejected} rejected`)}
               {stage('Contact', `${c.contact.withContact} with a contact`)}
               {stage('Outreach', `${c.outreach.drafts} draft, ${c.outreach.approved} approved, ${c.outreach.sent} sent`, `${c.outreach.draftsHeld + c.outreach.approvedHeld} held, ${c.outreach.draftsSetup + c.outreach.approvedSetup} waiting on setup`)}
               {stage('Sequence', `${c.sequence.active} running`, `${c.sequence.stopped} finished or stopped`)}
