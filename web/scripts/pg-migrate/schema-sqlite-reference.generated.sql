@@ -1,4 +1,4 @@
-CREATE TABLE adv_budget_lock (tenant_id TEXT NOT NULL, connector TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (tenant_id, connector));
+CREATE TABLE adv_budget_lock (tenant_id TEXT NOT NULL, connector TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0, since INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (tenant_id, connector));
 
 CREATE TABLE adv_requests (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, connector TEXT NOT NULL, at INTEGER NOT NULL, consumer TEXT NOT NULL);
 

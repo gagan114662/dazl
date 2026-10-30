@@ -63,10 +63,11 @@ bothEngines('NEGATIVE: throttling, a challenge or an unauthorised answer STOPS t
     const { t, seen } = recorder([{ status }, ok('never-asked')])
     assert.deepEqual(await collectLinkedInPeople(db, tenant, 'j', ICP, { transport: t, env: ENV, now: NOW }), []); assert.equal(seen.length, 1, `${status}: one request, then stop`)
     assert.ok((await audits(db, tenant)).includes(`linkedin:stopped_${status}`))
-    assert.deepEqual(await collectLinkedInPeople(db, tenant, 'j2', ICP, { transport: t, env: ENV, now: NOW + COOLDOWN_S - 10 }), []); assert.equal(seen.length, 1, 'still cooling down: nothing requested')
+    const stoppedAt = Number((await db.get<{ at: number }>("SELECT MAX(created_at) AS at FROM connector_audit WHERE tenant_id = ? AND status LIKE 'stopped_%'", [tenant]))!.at)   // the database clock, so the test does not depend on how long it took to get here
+    assert.deepEqual(await collectLinkedInPeople(db, tenant, 'j2', ICP, { transport: t, env: ENV, now: stoppedAt + COOLDOWN_S - 10 }), []); assert.equal(seen.length, 1, 'still cooling down: nothing requested')
     assert.ok((await audits(db, tenant)).includes('linkedin-people:cooldown'))
     const o = recorder([ok('bob-b')]); assert.ok((await collectLinkedInPeople(db, other, 'j', ICP, { transport: o.t, env: ENV, now: NOW })).length > 0, 'another tenant is unaffected'); assert.ok(o.seen.length > 0)
-    const after = recorder([ok('carol-c')]); assert.ok((await collectLinkedInPeople(db, tenant, 'j3', ICP, { transport: after.t, env: ENV, now: NOW + COOLDOWN_S + 5 })).length > 0, 'cooldown ends')
+    const after = recorder([ok('carol-c')]); assert.ok((await collectLinkedInPeople(db, tenant, 'j3', ICP, { transport: after.t, env: ENV, now: stoppedAt + COOLDOWN_S + 5 })).length > 0, 'cooldown ends')
   }
 })
 
@@ -147,4 +148,29 @@ bothEngines('CONTRACT: one transport call is exactly one upstream request - a ca
   const paging: LinkedInTransport = { fetch: async () => { calls++; return { status: 'ok', items: [person('paged-one'), person('paged-two')], upstream_requests: 3 } } }
   assert.deepEqual(await collectLinkedInPeople(db, 'A', 'j', ICP, { transport: paging, env: ENV, now: Math.floor(Date.now() / 1000) }), []); assert.equal(calls, 1)
   assert.ok((await audits(db)).includes('linkedin:stopped_contract'))
+})
+
+
+// ---- upgrade controls: usage recorded BEFORE reservations existed still counts, and a new request is never counted twice ----
+const legacyAudit = async (db: Db, tenant: string, n: number, agoS: number, status = 'ok') => { const now = Math.floor(Date.now() / 1000); for (let i = 0; i < n; i++) await db.run("INSERT INTO connector_audit (id, tenant_id, connector, lookup, status, results, created_at) VALUES (?, ?, 'adv:linkedin', 'x', ?, 0, ?)", [`legacy-${tenant}-${i}-${agoS}-${status}`, tenant, status, now - agoS]) }
+
+bothEngines('UPGRADE (non-empty): 2 calls made before the upgrade (audit rows, no reservations) leave exactly 1 request for concurrent consumers; older calls and other tenants do not count', async ({ db }) => {
+  await ready(db); await ready(db, 'B')
+  await legacyAudit(db, 'A', 2, 600); await legacyAudit(db, 'A', 5, 7200); await legacyAudit(db, 'B', 9, 60)       // A: 2 in the hour, 5 two hours ago; B: another tenant
+  const nowS = Math.floor(Date.now() / 1000), seen: string[] = []
+  const t: LinkedInTransport = { fetch: async r => { seen.push(r.kind); await new Promise(res => setTimeout(res, 10)); return ok(`up-${seen.length}-x`) } }
+  await Promise.all([collectLinkedInPeople(db, 'A', 'j1', ICP, { transport: t, env: ADV_ENV, now: nowS }), collectLinkedInPeople(db, 'A', 'j2', ICP, { transport: t, env: ADV_ENV, now: nowS }), collectAdvanced(db, 'A', 'j3', ['linkedin'], 'payroll', { worker: advWorker(seen), env: ADV_ENV, now: nowS })])
+  assert.equal(seen.length, 1, `2 of 3 were used before the upgrade, so exactly 1 more is allowed; got ${seen.length}`)
+  assert.equal((await collectLinkedInPeople(db, 'B', 'jB', ICP, { transport: recorder([ok('bob-b')]).t, env: ADV_ENV, now: nowS })).length, 0, 'tenant B used 9 in the hour: rate limited, and A\'s history is not B\'s')
+})
+
+bothEngines('NO DOUBLE COUNT: a new request is a reservation AND an audit row, and counts once; three new requests use exactly the budget of 3', async ({ db }) => {
+  await ready(db); const nowS = Math.floor(Date.now() / 1000), seen: string[] = []
+  const t: LinkedInTransport = { fetch: async r => { seen.push(r.kind); return ok(`once-${seen.length}-x`) } }
+  await collectLinkedInPeople(db, 'A', 'j1', ICP, { transport: t, env: ADV_ENV, now: nowS })          // 2 requests: reservation + audit row each
+  assert.equal(seen.length, 2); assert.equal(await requestsInWindow(db, 'A', 'adv:linkedin', nowS), 2)
+  const used = Number((await db.get<{ n: number }>("SELECT COUNT(*) AS n FROM connector_audit WHERE tenant_id = 'A' AND connector = 'adv:linkedin' AND status IN ('ok','empty','worker_error','error')"))!.n); assert.equal(used, 2, 'two audit rows too - and the budget still reads 2, not 4')
+  await collectLinkedInPeople(db, 'A', 'j2', ICP, { transport: t, env: ADV_ENV, now: nowS + 1 })      // 1 request left
+  assert.equal(seen.length, 3, 'the third request is allowed (2 + 1 = 3, not 4 + 1)')
+  await collectLinkedInPeople(db, 'A', 'j3', ICP, { transport: t, env: ADV_ENV, now: nowS + 2 }); assert.equal(seen.length, 3, 'then rate limited')
 })

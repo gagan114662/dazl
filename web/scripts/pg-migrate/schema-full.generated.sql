@@ -27,7 +27,7 @@ CREATE SEQUENCE IF NOT EXISTS scan_jobs_insert_seq_seq;
 
 CREATE SEQUENCE IF NOT EXISTS warm_user_paths_insert_seq_seq;
 
-CREATE TABLE adv_budget_lock (tenant_id TEXT NOT NULL, connector TEXT NOT NULL, n BIGINT NOT NULL DEFAULT 0, PRIMARY KEY (tenant_id, connector));
+CREATE TABLE adv_budget_lock (tenant_id TEXT NOT NULL, connector TEXT NOT NULL, n BIGINT NOT NULL DEFAULT 0, since BIGINT NOT NULL DEFAULT 0, PRIMARY KEY (tenant_id, connector));
 
 CREATE TABLE adv_requests (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, connector TEXT NOT NULL, at BIGINT NOT NULL, consumer TEXT NOT NULL);
 
