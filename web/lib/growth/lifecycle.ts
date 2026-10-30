@@ -17,7 +17,7 @@
 // by sign-up. No private mailbox data, no third-party destination.
 import type Database from 'better-sqlite3'
 import type { Db, Tx, TxBody } from '../db/client.ts'
-import { retention, RETENTION } from './retention.ts'
+import { retention, RETENTION, type Coverage } from './retention.ts'
 
 export function migrateLifecycle(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS lifecycle_events (
@@ -62,14 +62,15 @@ export const DEFINITIONS = {
   activated: 'the tenant has a scan that finished successfully (status done) with at least one real lead. A scan with zero real leads is not activation, nor is a failed, cancelled or unfinished scan that saved leads, nor entering a key or starting a scan',
   repeat: 'after activating, a second successfully finished scan with at least one real lead, started at least REPEAT_GAP_S after the activating scan started',
   paid: 'a Stripe invoice paid with an amount above zero that has not been fully refunded: fully refunded once any refund event for it says so, or its charges\' largest recorded refunded total reaches the amount paid, in whatever order the events arrived (a failed payment is not paid; a partial refund still is)',
-  retained: `${RETENTION.label} (the shared definition, lib/growth/retention.ts). Customers not yet eligible are in neither count`,
+  retained: `${RETENTION.labels.day30} (the shared definition, lib/growth/retention.ts)`,
+  covered: `${RETENTION.labels.coverage} (the shared definition)`,
   as_of: 'every count is as of the report cutoff: accounts created, scans started and finished, leads saved and events that happened after it do not exist yet, whatever their row order or delivery time',
   churned: 'paid, then the subscription ended, without being retained',
   source: 'the first-party tag the sign-up came with; none recorded = unknown (never guessed). A tag says where the sign-up link came from: it is not causal credit',
 } as const
 export const REPEAT_GAP_S = 24 * 3600
 // From the shared definition (lib/growth/retention.ts): when a paying customer becomes eligible for the headline.
-export const RETAIN_MATURE_S = (RETENTION.headline_days + RETENTION.maturity_extra_days) * 86400
+export const RETAIN_MATURE_S = (RETENTION.headline_days + RETENTION.renewal_late_days) * 86400
 const RESERVED = /@([a-z0-9-]+\.)*(example\.(com|net|org)|[a-z0-9-]+\.(test|example|invalid|localhost))$/i
 
 export type Stage = 'excluded' | 'signed_up_only' | 'zero_result' | 'activated' | 'repeat' | 'payment_failed' | 'refunded' | 'paid' | 'retained' | 'churned'
@@ -79,7 +80,8 @@ export interface TenantFunnel {
   activated_at: number | null; repeat_at: number | null
   paid_at: number | null; payments: number; failed_payments: number; refunded_payments: number
   retained: boolean | null           // the shared headline; null: not eligible yet (or never paid)
-  renewal: boolean; covered_at_cutoff: boolean | null   // the labelled evidence behind it
+  renewal_at: number | null                // the day-30 renewal it rests on, if any
+  covered_at_cutoff: Coverage | null        // the separate current metric: covered / not_covered / unknown; null never paid
   churned_at: number | null
   stage: Stage                       // the furthest distinct state, for the per-tenant table
 }
@@ -120,7 +122,7 @@ export async function tenantFunnels(db: Db, opts: FunnelOptions): Promise<Tenant
     const ended = first ? ev.find(e => e.kind === 'subscription_ended' && Number(e.occurred_at) >= Number(first.occurred_at)) ?? null : null
     const ret = retention({ payments: paidOk.map(e => ({ at: Number(e.occurred_at), refunded: false })), ended_at: ended ? Number(ended.occurred_at) : null, cutoff: cut },
       opts.retainDays ? { headlineDays: opts.retainDays } : {})
-    const retained = ret.retained
+    const retained = ret.day30.retained
     const churnedAt = ended && retained !== true ? Number(ended.occurred_at) : null
     const failed = ev.filter(e => e.kind === 'payment_failed').length
     const signup = ev.find(e => e.kind === 'signup')
@@ -135,7 +137,7 @@ export async function tenantFunnels(db: Db, opts: FunnelOptions): Promise<Tenant
       activated_at: activated ? Number(activated.created_at) : null, repeat_at: repeat ? Number(repeat.created_at) : null,
       paid_at: first ? Number(first.occurred_at) : null, payments: paidOk.length, failed_payments: failed,
       refunded_payments: succeeded.filter(e => refundedInvoices.has(e.ref)).length,
-      retained, renewal: ret.renewal, covered_at_cutoff: ret.covered_at_cutoff, churned_at: churnedAt, stage,
+      retained, renewal_at: ret.day30.renewal_at, covered_at_cutoff: ret.coverage_at_cutoff, churned_at: churnedAt, stage,
     }
   })
 }
@@ -143,13 +145,15 @@ export async function tenantFunnels(db: Db, opts: FunnelOptions): Promise<Tenant
 export interface FunnelRow {
   source: string
   signed_up: number; activated: number; repeat: number; paid: number
-  retained: number; retention_mature: number            // the shared headline: retained of the ELIGIBLE (same cohort)
-  covered_at_cutoff: number                             // labelled evidence: paying tenants still covered at the cutoff
+  retained: number; retention_mature: number            // day-30 retention: retained of its cohort (renewal window closed)
+  covered_at_cutoff: number; coverage_unknown: number   // coverage at the cutoff, over its own cohort: every paid tenant
   churned: number; zero_result: number; signed_up_only: number; payment_failed: number; refunded: number
 }
-const zero = (source: string): FunnelRow => ({ source, signed_up: 0, activated: 0, repeat: 0, paid: 0, retained: 0, retention_mature: 0, covered_at_cutoff: 0, churned: 0, zero_result: 0, signed_up_only: 0, payment_failed: 0, refunded: 0 })
+const zero = (source: string): FunnelRow => ({ source, signed_up: 0, activated: 0, repeat: 0, paid: 0, retained: 0, retention_mature: 0, covered_at_cutoff: 0, coverage_unknown: 0, churned: 0, zero_result: 0, signed_up_only: 0, payment_failed: 0, refunded: 0 })
 export interface FunnelReport {
   as_of: number; definitions: typeof DEFINITIONS
+  // each metric's cohort, named: day-30 retention over tenants whose renewal window has closed; coverage over every paid tenant
+  cohorts: { retained: string; covered_at_cutoff: string }
   excluded_tenants: number; source_coverage: { tagged: number; unknown: number }
   total: FunnelRow; by_source: FunnelRow[]
   note: string
@@ -163,7 +167,8 @@ export function funnelReport(tenants: TenantFunnel[], now: number): FunnelReport
     if (t.paid_at !== null) r.paid++
     if (t.retained !== null) r.retention_mature++
     if (t.retained === true) r.retained++
-    if (t.paid_at !== null && t.covered_at_cutoff === true) r.covered_at_cutoff++
+    if (t.covered_at_cutoff === 'covered') r.covered_at_cutoff++
+    if (t.covered_at_cutoff === 'unknown') r.coverage_unknown++
     if (t.churned_at !== null) r.churned++
     if (t.stage === 'zero_result') r.zero_result++
     if (t.stage === 'signed_up_only') r.signed_up_only++
@@ -174,6 +179,7 @@ export function funnelReport(tenants: TenantFunnel[], now: number): FunnelReport
   for (const t of counted) { add(total, t); const r = by.get(t.source) ?? zero(t.source); add(r, t); by.set(t.source, r) }
   return {
     as_of: now, definitions: DEFINITIONS,
+    cohorts: { retained: 'paying tenants whose day-30 renewal window has closed (retention_mature)', covered_at_cutoff: 'every tenant that has paid by the cutoff (paid); coverage_unknown counts those whose last paid period ran out with no end recorded' },
     excluded_tenants: tenants.length - counted.length,
     source_coverage: { tagged: counted.filter(t => t.source !== 'unknown').length, unknown: counted.filter(t => t.source === 'unknown').length },
     total, by_source: [...by.values()].sort((a, b) => b.signed_up - a.signed_up || a.source.localeCompare(b.source)),

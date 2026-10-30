@@ -112,11 +112,11 @@ test('funnel: exact counts per tenant and per source from real events; every dis
   const r = funnelReport(tenants, NOW)
   assert.equal(r.excluded_tenants, 1)
   assert.deepEqual(r.source_coverage, { tagged: 5, unknown: 3 })
-  assert.deepEqual(r.total, { source: 'all', signed_up: 8, activated: 6, repeat: 1, paid: 3, retained: 1, retention_mature: 2, covered_at_cutoff: 2, churned: 1, zero_result: 1, signed_up_only: 1, payment_failed: 1, refunded: 1 })
+  assert.deepEqual(r.total, { source: 'all', signed_up: 8, activated: 6, repeat: 1, paid: 3, retained: 1, retention_mature: 2, covered_at_cutoff: 1, coverage_unknown: 1, churned: 1, zero_result: 1, signed_up_only: 1, payment_failed: 1, refunded: 1 })
   assert.deepEqual(r.by_source, [
-    { source: 'newsletter', signed_up: 3, activated: 2, repeat: 1, paid: 2, retained: 1, retention_mature: 1, covered_at_cutoff: 2, churned: 0, zero_result: 0, signed_up_only: 1, payment_failed: 0, refunded: 0 },
-    { source: 'unknown', signed_up: 3, activated: 2, repeat: 0, paid: 1, retained: 0, retention_mature: 1, covered_at_cutoff: 0, churned: 1, zero_result: 1, signed_up_only: 0, payment_failed: 0, refunded: 0 },
-    { source: 'linkedin-post', signed_up: 2, activated: 2, repeat: 0, paid: 0, retained: 0, retention_mature: 0, covered_at_cutoff: 0, churned: 0, zero_result: 0, signed_up_only: 0, payment_failed: 1, refunded: 1 },
+    { source: 'newsletter', signed_up: 3, activated: 2, repeat: 1, paid: 2, retained: 1, retention_mature: 1, covered_at_cutoff: 1, coverage_unknown: 1, churned: 0, zero_result: 0, signed_up_only: 1, payment_failed: 0, refunded: 0 },
+    { source: 'unknown', signed_up: 3, activated: 2, repeat: 0, paid: 1, retained: 0, retention_mature: 1, covered_at_cutoff: 0, coverage_unknown: 0, churned: 1, zero_result: 1, signed_up_only: 0, payment_failed: 0, refunded: 0 },
+    { source: 'linkedin-post', signed_up: 2, activated: 2, repeat: 0, paid: 0, retained: 0, retention_mature: 0, covered_at_cutoff: 0, coverage_unknown: 0, churned: 0, zero_result: 0, signed_up_only: 0, payment_failed: 1, refunded: 1 },
   ])
   assert.ok(Object.keys(DEFINITIONS).includes('activated') && /not causal|not proof/.test(r.note + DEFINITIONS.source))
 })
@@ -223,7 +223,7 @@ test('retention window: one rule, N days; 30 (one monthly renewal) and 60 (two) 
   assert.equal(r30.A, true); assert.equal(r60.A, false)
   // F paid 60 days ago and never again: mature for both windows, retained in neither
   assert.equal(r30.F, false); assert.equal(r60.F, null, 'at 60 days F is not mature yet (needs 65)')
-  assert.match(DEFINITIONS.retained, /Retained at 30 days.*shared definition/)
+  assert.match(DEFINITIONS.retained, /Retained at day 30.*shared definition/)
 })
 
 // Instinct review of #404 @4a6db2c: the report is as of its cutoff, for every kind of row
@@ -267,4 +267,14 @@ test('retention in the funnel is the shared definition: same eligible cohort in 
   const r = funnelReport(await tenantFunnels(db, { now: NOW }), NOW)
   assert.equal(r.total.retention_mature, 1); assert.equal(r.total.retained, 1, 'never more retained than eligible')
   assert.ok(r.total.retained <= r.total.retention_mature)
+})
+
+test('coverage per tenant is positive evidence or unknown: A lapsed with no end recorded is unknown, G inside its period is covered, F ended is not covered', async () => {
+  const { db } = await world()
+  const by = Object.fromEntries((await tenantFunnels(db, { now: NOW })).map(t => [t.tenant_id, t]))
+  assert.equal(by.A.covered_at_cutoff, 'unknown', 'last payment 86 days ago, no end recorded: not "covered"')
+  assert.equal(by.A.retained, true, 'renewed at day 30: day-30 retention is historical and still holds')
+  assert.equal(by.G.covered_at_cutoff, 'covered'); assert.equal(by.F.covered_at_cutoff, 'not_covered'); assert.equal(by.C.covered_at_cutoff, null, 'never paid: not in the coverage cohort')
+  const r = funnelReport(await tenantFunnels(db, { now: NOW }), NOW)
+  assert.match(r.cohorts.retained, /renewal window has closed/); assert.match(r.cohorts.covered_at_cutoff, /every tenant that has paid/)
 })

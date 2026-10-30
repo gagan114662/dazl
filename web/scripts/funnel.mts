@@ -17,12 +17,12 @@ const report = funnelReport(tenants, now)
 const rows = process.argv.includes('--tenants') ? tenants.map(t => ({ tenant_id: t.tenant_id, source: t.source, stage: t.stage, real_leads: t.real_leads, payments: t.payments, retained: t.retained })) : undefined
 if (!process.argv.includes('--markdown')) { console.log(JSON.stringify({ ...report, tenants: rows }, null, 2)); process.exit(0) }
 const pct = (n: number, d: number) => d ? `${Math.round((n / d) * 100)}%` : 'n/a'
-const line = (r: FunnelRow) => `| ${r.source} | ${r.signed_up} | ${r.activated} (${pct(r.activated, r.signed_up)}) | ${r.repeat} | ${r.paid} (${pct(r.paid, r.signed_up)}) | ${r.retained} of ${r.retention_mature} mature (${pct(r.retained, r.retention_mature)}) | ${r.churned} | ${r.signed_up_only} | ${r.zero_result} | ${r.payment_failed} | ${r.refunded} |`
+const line = (r: FunnelRow) => `| ${r.source} | ${r.signed_up} | ${r.activated} (${pct(r.activated, r.signed_up)}) | ${r.repeat} | ${r.paid} (${pct(r.paid, r.signed_up)}) | ${r.retained} of ${r.retention_mature} (${pct(r.retained, r.retention_mature)}) | ${r.covered_at_cutoff} of ${r.paid} (${r.coverage_unknown} unknown) | ${r.churned} | ${r.signed_up_only} | ${r.zero_result} | ${r.payment_failed} | ${r.refunded} |`
 console.log([
   `# Dazl acquisition funnel, as of ${new Date(now * 1000).toISOString()}`, '',
   `${report.excluded_tenants} synthetic or staging tenant(s) excluded. Source coverage: ${report.source_coverage.tagged} tagged, ${report.source_coverage.unknown} unknown.`, '',
-  '| Source | Signed up | Activated | Repeat | Paid | Retained | Churned | No scan | Scans, no real lead | Payment failed | Refunded |',
-  '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+  '| Source | Signed up | Activated | Repeat | Paid | Retained at day 30 (of window closed) | Covered now (of paid) | Churned | No scan | Scans, no real lead | Payment failed | Refunded |',
+  '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
   line(report.total), ...report.by_source.map(line), '', report.note,
   ...(rows ? ['', '| Tenant | Source | Stage |', '| --- | --- | --- |', ...rows.map(r => `| ${r.tenant_id} | ${r.source} | ${r.stage} |`)] : []),
 ].join('\n'))
