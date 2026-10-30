@@ -49,8 +49,10 @@ const ev = (id: string, type: string, created: number, object: Record<string, un
 async function subscribe(db: Db, tenantId: string, at: number) {
   await applyStripeEvent(db, ev(`evt_co_${tenantId}`, 'checkout.session.completed', at, { mode: 'subscription', client_reference_id: tenantId, customer: `cus_${tenantId}`, subscription: `sub_${tenantId}` }))
 }
-const paid = (db: Db, tenantId: string, invoice: string, at: number, cents = 4900, type = 'invoice.paid', evId = `evt_${type}_${invoice}`) =>
-  applyStripeEvent(db, ev(evId, type, at, { id: invoice, customer: `cus_${tenantId}`, subscription: `sub_${tenantId}`, amount_paid: cents }))
+// a Stripe-shaped invoice: its subscription line carries the service period it bought (30 days unless given)
+const paid = (db: Db, tenantId: string, invoice: string, at: number, cents = 4900, type = 'invoice.paid', evId = `evt_${type}_${invoice}`, period: [number, number] | null = [at, at + 30 * 86400]) =>
+  applyStripeEvent(db, ev(evId, type, at, { id: invoice, customer: `cus_${tenantId}`, subscription: `sub_${tenantId}`, amount_paid: cents,
+    lines: { data: period ? [{ type: 'subscription', period: { start: period[0], end: period[1] } }] : [] } }))
 
 async function world() {
   const { raw, db } = store()
@@ -277,4 +279,19 @@ test('coverage per tenant is positive evidence or unknown: A lapsed with no end 
   assert.equal(by.G.covered_at_cutoff, 'covered'); assert.equal(by.F.covered_at_cutoff, 'not_covered'); assert.equal(by.C.covered_at_cutoff, null, 'never paid: not in the coverage cohort')
   const r = funnelReport(await tenantFunnels(db, { now: NOW }), NOW)
   assert.match(r.cohorts.retained, /renewal window has closed/); assert.match(r.cohorts.covered_at_cutoff, /every tenant that has paid/)
+})
+
+test('coverage from the webhook\'s recorded service periods: annual, one-off, immediate cancellation, cancellation with prepaid service', async () => {
+  const { raw, db } = store()
+  const go = async (t: string) => { await tenant(db, raw, t); scan(raw, t, NOW - 300 * DAY, 1); await subscribe(db, t, NOW - 200 * DAY) }
+  await go('AN'); await paid(db, 'AN', 'in_AN', NOW - 200 * DAY, 49000, 'invoice.paid', undefined, [NOW - 200 * DAY, NOW + 165 * DAY])
+  await go('ON'); await paid(db, 'ON', 'in_ON', NOW - 5 * DAY, 4900, 'invoice.paid', undefined, null)
+  await go('IC'); await paid(db, 'IC', 'in_IC', NOW - 20 * DAY)
+  await applyStripeEvent(db, ev('evt_del_IC', 'customer.subscription.deleted', NOW - 15 * DAY, { id: 'sub_IC', customer: 'cus_IC', status: 'canceled', ended_at: NOW - 15 * DAY }))
+  await go('PP'); await paid(db, 'PP', 'in_PP', NOW - 20 * DAY)
+  await applyStripeEvent(db, ev('evt_del_PP', 'customer.subscription.deleted', NOW - 15 * DAY, { id: 'sub_PP', customer: 'cus_PP', status: 'canceled', ended_at: NOW + 10 * DAY }))
+  const by = Object.fromEntries((await tenantFunnels(db, { now: NOW })).map(t => [t.tenant_id, t.covered_at_cutoff]))
+  assert.deepEqual(by, { AN: 'covered', ON: 'unknown', IC: 'not_covered', PP: 'covered' })
+  const row = raw.prepare("SELECT period_start, period_end FROM lifecycle_events WHERE ref = 'in_AN'").get() as { period_start: number; period_end: number }
+  assert.equal(row.period_end - row.period_start, 365 * DAY, 'the annual period is stored as Stripe gave it')
 })

@@ -51,6 +51,9 @@ interface StripeObject {
   amount_paid?: number                  // invoice
   invoice?: string | null               // charge: the invoice it paid
   amount_refunded?: number; refunded?: boolean   // charge
+  // invoice lines: the service period each line bought (unix seconds); subscription: when it actually ended
+  lines?: { data?: { type?: string; period?: { start?: number; end?: number } }[] }
+  ended_at?: number | null
 }
 export interface StripeEvent {
   id: string
@@ -213,18 +216,28 @@ export async function applyStripeEvent(db: Db, event: StripeEvent, deps: StripeD
   return result
 }
 
+// The service period an invoice bought: its subscription line's period (or, with none, the span of every line's
+// period). An invoice with no line periods (a one-off charge) has none: it is never coverage evidence.
+function servicePeriod(o: StripeObject): { period_start: number | null; period_end: number | null } {
+  const lines = (o.lines?.data ?? []).filter(l => typeof l.period?.start === 'number' && typeof l.period?.end === 'number' && l.period.end > l.period.start)
+  const subs = lines.filter(l => l.type === 'subscription')
+  const use = subs.length ? subs : lines
+  if (!use.length) return { period_start: null, period_end: null }
+  return { period_start: Math.min(...use.map(l => l.period!.start!)), period_end: Math.max(...use.map(l => l.period!.end!)) }
+}
+
 // Payments as they happened, for the acquisition funnel (issue #404). Idempotent on (kind, ref): invoice.paid and
 // invoice.payment_succeeded for one invoice are one payment, and a redelivered event is already stopped above.
 function* recordLifecycle(t: Tx, tenantId: string, event: StripeEvent, created: number | null): TxBody<void> {
   const o = event.data?.object ?? {}
   const at = created ?? Math.floor(Date.now() / 1000)
   if ((event.type === 'invoice.paid' || event.type === 'invoice.payment_succeeded') && o.id && typeof o.amount_paid === 'number' && o.amount_paid > 0)
-    yield* recordEventTx(t, { kind: 'payment_succeeded', ref: o.id, tenant_id: tenantId, occurred_at: at, amount_cents: o.amount_paid })
+    yield* recordEventTx(t, { kind: 'payment_succeeded', ref: o.id, tenant_id: tenantId, occurred_at: at, amount_cents: o.amount_paid, ...servicePeriod(o) })
   else if (event.type === 'invoice.payment_failed' && o.id) yield* recordEventTx(t, { kind: 'payment_failed', ref: o.id, tenant_id: tenantId, occurred_at: at })
   // one row per charge and refunded total: a later, larger refund of the same charge is a new row (history kept); the
   // same total delivered again (a retry, or another refund event type) is not
   else if (event.type === 'charge.refunded' && o.id) yield* recordEventTx(t, { kind: 'refund', ref: `${o.id}:${o.amount_refunded ?? 'unknown'}`, tenant_id: tenantId, occurred_at: at, amount_cents: o.amount_refunded ?? null, invoice: o.invoice ?? null, full_refund: o.refunded === true })
-  else if (event.type === 'customer.subscription.deleted' && o.id) yield* recordEventTx(t, { kind: 'subscription_ended', ref: o.id, tenant_id: tenantId, occurred_at: at })
+  else if (event.type === 'customer.subscription.deleted' && o.id) yield* recordEventTx(t, { kind: 'subscription_ended', ref: o.id, tenant_id: tenantId, occurred_at: at, service_until: typeof o.ended_at === 'number' ? o.ended_at : null })
 }
 
 // unknown_tenant: the event names no tenant this store knows. customer_conflict: it names a tenant, but its Stripe customer
