@@ -1,0 +1,15 @@
+{
+ "contract": "dazl.evals/1",
+ "note": "The suite's registry. Every case is listed, passing ones with non_pass []. The gate fails when a listed case does not run, a case runs that is not listed, two cases share an id, fewer than min_cases run, or a case's non-pass verdicts differ from its list in EITHER direction (a new failure is a regression; a fixed one must be removed here in the PR that fixes it). Lowering min_cases or removing an entry needs a reason in the PR.",
+ "min_cases": 1,
+ "cases": {
+  "scan-london-seed-traps": {
+   "status": "fail",
+   "non_pass": [
+    "expected_outcomes|expect:Lumen Ledger|fail",
+    "place_on_page|lead:Lumen Ledger|unknown"
+   ],
+   "why": "Agent gap found by this case: for a London request, lib/scan/place-agreement.ts returns 'unconfirmed' (not 'mismatch') for a page that names a non-UK city (Paris, Berlin), and the runner holds only on 'mismatch', so a Paris company verifies."
+  }
+ }
+}
