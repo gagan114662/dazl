@@ -69,7 +69,9 @@ export async function POST(req: NextRequest) {
     const t = trialStatus(db, user.id, ip)
     if (!t.funded) {
       if (t.reason === 'account_cap' || t.reason === 'ip_throttle') {
-        return NextResponse.json({ error: 'trial_exhausted', used: t.used }, { status: 402 })
+        // reason (#410): the account's own attempts are used up (account_cap), or its network is throttled (ip_throttle),
+        // so the page never calls a throttle "used up"
+        return NextResponse.json({ error: 'trial_exhausted', reason: t.reason, used: t.used }, { status: 402 })
       }
       return NextResponse.json({ error: 'no_api_key' }, { status: 400 })
     }

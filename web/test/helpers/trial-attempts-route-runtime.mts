@@ -49,6 +49,7 @@ test('three paid trial failures use the three attempts: the fourth request is re
   const fourth = await start('10.0.0.9')
   assert.equal(fourth.status, 402, JSON.stringify(fourth))
   assert.equal(fourth.error, 'trial_exhausted')
+  assert.equal(fourth.reason, 'account_cap', '#410: the page can say why (its own attempts, not a throttle)')
   assert.equal(trialStatus(db, id, '10.0.0.9').remaining, 0)
   // admission refuses on its own too (the count it keeps under its lock), however the first check is reached
   assert.deepEqual(await admitTrialScan(sqliteDb(db), { id, email: 'pat@gmail.com' }), { ok: false, reason: 'attempts_cap' })

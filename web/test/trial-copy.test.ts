@@ -43,3 +43,30 @@ test('each reason has its own state and wording; only real account usage reads a
     assert.doesNotMatch(c.text, /\$|sk-|usd|budget/i)
   }
 })
+
+// #410, scan start: a refused free trial (POST /api/scan) says why. Only the account's own caps read as used; a network
+// throttle, a full day, an eligibility rule, an unavailable trial, a missing or unknown reason never claim past use.
+test('#410 scan start: each trial refusal reason has its own true sentence and a next step', async () => {
+  const { scanRefusalCopy } = await import('../lib/trial-copy.ts')
+  const used = /used (all|up)/
+  const cases: [Record<string, unknown>, RegExp, boolean][] = [
+    [{ error: 'trial_exhausted', reason: 'account_cap', used: 3 }, /used all your free trial scan attempts/, true],
+    [{ error: 'trial_unavailable', reason: 'attempts_cap' }, /used all your free trial scan attempts/, true],
+    [{ error: 'trial_unavailable', reason: 'account_total_cap' }, /allowance is used up/, true],
+    [{ error: 'trial_exhausted', reason: 'ip_throttle', used: 0 }, /network today\. Try again tomorrow/, false],
+    [{ error: 'trial_unavailable', reason: 'global_daily_cap' }, /fully booked\. Try again tomorrow/, false],
+    [{ error: 'trial_unavailable', reason: 'google_required' }, /signs in with Google/, false],
+    [{ error: 'trial_unavailable', reason: 'domain_used' }, /domain has already had its free trial/, false],
+    [{ error: 'trial_unavailable', reason: 'not_configured' }, /can't run right now/, false],
+    [{ error: 'trial_exhausted' }, /can't run right now/, false],          // an older server without a reason
+    [{ error: 'trial_unavailable', reason: 'something_new' }, /can't run right now/, false],
+  ]
+  for (const [j, re, claimsUse] of cases) {
+    const t = scanRefusalCopy(j)!
+    assert.match(t, re, JSON.stringify(j))
+    assert.equal(used.test(t), claimsUse, `${JSON.stringify(j)}: claims past use only for the account's own caps`)
+    assert.match(t, /AI key in Settings/, 'every refusal names the step that works now')
+    assert.doesNotMatch(t, /\$|budget|operator|sk-/i, 'nothing about dazl\'s keys or budgets')
+  }
+  for (const e of ['no_api_key', 'quota_exceeded', 'scan_active', undefined]) assert.equal(scanRefusalCopy({ error: e }), null)
+})

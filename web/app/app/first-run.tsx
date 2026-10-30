@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import KeyInline from './key-inline'
 import { normalizeWebsite, suggestPlays, type Brain } from '@/lib/onboarding'
+import { scanRefusalCopy } from '@/lib/trial-copy'
 import { knownErrorCopy } from '@/lib/error-copy'
 import InfoTip from './ui/info-tip'
 import { Icon } from './ui/icons'
@@ -187,7 +188,8 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         if (stay) { setFirst({ id: j.job_id, status: 'pending', leads: null, f5: null, query: sentence.trim() }); return }
         router.push(`/app/leads?job_id=${encodeURIComponent(j.job_id)}`); return
       }
-      if (j.error === 'no_api_key' || j.error === 'trial_exhausted') { setNeedKey(true); return setError(j.error === 'trial_exhausted' ? 'Your free scans are used up. Add your AI key to keep going.' : '') }
+      // #410: a refused free trial says why (lib/trial-copy.ts); only the account's own caps read as used
+      if (j.error === 'no_api_key' || j.error === 'trial_exhausted' || j.error === 'trial_unavailable') { setNeedKey(true); return setError(scanRefusalCopy(j) ?? '') }
       setError(knownErrorCopy(j.error) ?? (j.error === 'quota_exceeded' ? `You have used ${j.used} of ${j.limit} scans on your plan.` : j.error || 'Could not start the search.'))
     } catch { setError('Could not reach the server. Check your connection and try again.') } finally { setBusy(false) }
   }

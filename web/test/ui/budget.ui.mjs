@@ -38,6 +38,8 @@ async function open(scanReply) {
   await page.getByText(/Profile used:/).click() // the restored profile is inside a closed <details>
   await page.getByText('Edit and run again').click()
   await page.getByTestId('budget-panel').waitFor()
+  // what the play sells (needed before a scan can start); synthetic
+  const offer = page.getByTestId('review-offer-input').first(); if (await offer.count()) await offer.fill('Online booking for dental practices')
   return { page, calls, posts }
 }
 
