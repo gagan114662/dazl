@@ -31,7 +31,9 @@ test('agreement: same-name business in another state rejected; the lead’s doma
   const W = ['New York City']
   assert.equal(contactAgreement({ where: W }, { place: 'Pico Rivera, CA' }).ok, false)
   assert.equal(contactAgreement({ company_domain: 'smileavenue.com', where: W }, { domain: 'smileavenue-pr.com', place: 'New York, NY' }).ok, false, 'a different domain overrides a matching city')
-  assert.equal(contactAgreement({ company_domain: 'smileavenue.com', where: W }, { domain: 'www.smileavenue.com', place: 'Pico Rivera, CA' }).ok, true, 'the same domain')
+  assert.equal(contactAgreement({ company_domain: 'smileavenue.com', where: W, domainEstablished: true }, { domain: 'www.smileavenue.com', place: 'Pico Rivera, CA' }).ok, true, 'the same ESTABLISHED domain')
+  assert.equal(contactAgreement({ company_domain: 'smileavenue.com', where: W }, { domain: 'www.smileavenue.com', place: 'Pico Rivera, CA' }).ok, false, 'a guessed domain does not excuse an explicit other-state place')
+  assert.equal(contactAgreement({ company_domain: 'smileavenue.com', where: W }, { domain: 'www.smileavenue.com', place: 'New York, NY' }).ok, true, 'the same domain and a consistent place')
   assert.equal(contactAgreement({ where: W }, { place: 'Brooklyn, NY' }).ok, true, 'the same city')
 })
 
