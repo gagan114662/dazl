@@ -26,7 +26,7 @@ const sentences = (text: string) => text.split(/(?<=[.!?])\s+(?=[A-Z])|\n+/)
 const normName = (x: string) => x.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/&/g, 'and').replace(/\b(inc|ltd|llc|limited|gmbh|corp|corporation|co|company|plc|pty|group|the)\b/g, ' ').replace(/[^a-z0-9]+/g, '')
 const CONNECT = new Set(['is', 'are', 'located', 'based', 'situated', 'found', 'at', 'on', 'in', 'office', 'offices', 'headquarters', 'headquartered', 'hq', 'head', 'registered', 'address', 'visit', 'find', 'contact', 'come', 'see', 'us', 'we', 'were', 'our', 'main', 'second', 'new', 'flagship', 'principal', 'primary', 'home', 'uk', 'london', 'nyc', 'york', 'local', 'clinic', 'studio', 'practice', 'branch', 'dental', 'and', 'the'])
 const FIRST_PERSON = new Set(['our', 'we', 'us', 'were'])
-function bindsToCompany(prefix: string, company?: string): boolean {
+function bindsToCompany(prefix: string, company?: string, appositive = false): boolean {
   let rest = prefix.trim()
   const n = company ? normName(company) : ''
   let named = false
@@ -38,8 +38,10 @@ function bindsToCompany(prefix: string, company?: string): boolean {
       if (normName(cand).length >= 3 && normName(cand) === n) { const re = new RegExp(esc(cand).replace(/\\? /g, '[\\s,.]+'), 'i'); if (re.test(rest)) { rest = rest.replace(re, ' '); named = true; break } }
     }
   }
+  if (named) rest = rest.replace(/\b(inc|incorporated|ltd|limited|llc|llp|gmbh|corp|corporation|co|company|plc|pty|group|the)\b/gi, ' ')   // "Smile Avenue Dental Group, Pico Rivera, CA" is still the company's own address line
   const toks = rest.toLowerCase().replace(/[’']/g, '').split(/[^a-z]+/).filter(Boolean)
-  if (!toks.every(w => CONNECT.has(w))) return false
+  // appositive ("Smile Avenue Dental, a Pico Rivera, CA practice"): a leading article is allowed after the company's own name.
+  if (!toks.every(w => CONNECT.has(w) || (appositive && named && (w === 'a' || w === 'an')))) return false
   return named || toks.some(w => FIRST_PERSON.has(w))
 }
 const ownAddress = (text: string, re: RegExp, company?: string) => sentences(text).some(sn => { const m = re.exec(sn); return !!m && bindsToCompany(sn.slice(0, m.index), company) })
@@ -357,6 +359,26 @@ function boundElsewhere(text: string, where: string[], company?: string): string
 
 export type PlaceVerdict = 'agrees' | 'unconfirmed' | 'mismatch' | 'no_geography'
 // `company` (optional) is the candidate company's name: an address binds the company when its own sentence names it. Without it only first-person addresses bind.
+// A page that gives the COMPANY's own address in another US state ("Smile Avenue Dental Group, Pico Rivera, CA 90660") is that other place's business, however many times it also mentions the asked city as
+// somewhere it serves ("patients from Sunnyside and Queens"). Same own-address rule as the NYC / London / India paths: the other place counts only when the page binds it to the company (its name or "our / we"),
+// and it does not count when the asked place is bound to the company too (a business with offices in both).
+const STATE_AB = new RegExp(`\\b(?:[A-Z][\\p{L}'.-]+(?: [A-Z][\\p{L}'.-]+){0,2}),\\s*(${Object.keys(US_STATES).map(a => a.toUpperCase()).join('|')})\\b`, 'gu')
+function boundOtherUsPlace(text: string, terms: string[], company?: string): boolean {
+  const oursAb = new Set(Object.entries(US_STATES).filter(([ab, name]) => terms.some(x => x === name || x === ab.toLowerCase() || x.endsWith(`, ${ab.toLowerCase()}`))).map(([ab]) => ab.toUpperCase()))
+  const city = terms.map(t => t.split(',')[0].trim()).filter(t => t.length >= 4 && !US_STATES_NAMES.has(t))
+  let other = false
+  for (const sn of sentences(text)) {
+    for (const m of sn.matchAll(STATE_AB)) {
+      const ab = m[1].toUpperCase(); const prefix = sn.slice(0, m.index)
+      if (oursAb.has(ab) || !bindsToCompany(prefix, company, true)) continue
+      other = true
+    }
+  }
+  if (!other) return false
+  const askedBound = sentences(text).some(sn => city.some(c => { const i = sn.toLowerCase().indexOf(c); return i >= 0 && bindsToCompany(sn.slice(0, i), company, true) }))
+  return !askedBound
+}
+const US_STATES_NAMES = new Set(Object.values(US_STATES))
 export function placeAgreement(text: string, where: string[], company?: string): PlaceVerdict {
   const terms = geoTerms(where); if (terms.length === 0) return 'no_geography'
   if (boundElsewhere(text, where, company)) return 'mismatch' // the company itself is placed elsewhere: outranks any mention of the requested place
@@ -365,6 +387,7 @@ export function placeAgreement(text: string, where: string[], company?: string):
   if (where.some(w => /\blondon\b/i.test(w))) verdicts.push(londonVerdict(text, company))
   if (verdicts.length) return verdicts.includes('agrees') ? 'agrees' : verdicts.includes('mismatch') ? 'mismatch' : 'unconfirmed'
   if (boundOtherListedCity(text, terms, company)) return 'mismatch'
+  if (boundOtherUsPlace(text, terms, company)) return 'mismatch'
   if (otherPlace(text, where)?.kind === 'same_name') return 'mismatch' // "Paris, Texas" for "Paris, France": the bare name would agree below
   if (namesPlace(text, cityLevelTerms(terms))) return 'agrees'
   if (askedMetroAlias(text, terms)) return 'agrees'
