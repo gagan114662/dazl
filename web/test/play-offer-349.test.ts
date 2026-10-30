@@ -472,3 +472,35 @@ test('#349 HOLD-9 the whole sentence is checked: a predicate after a place or bu
   assert.deepEqual(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: DENTAL_PRODUCT }, ''), { offer: DENTAL_SELLER, source: 'recorded', conflict: null })
   assert.equal(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: Q }, '').source, 'conflict')
 })
+
+test('#349 HOLD-10 places are verified, never inferred from capitalisation; an unverified place tail is material', async () => {
+  const P = 'We sell CRM setup to founders.'
+  const negatives = ['Email providers in Canada Cost Extra.', 'Search providers in Canada Are Unavailable.', 'Email providers in Canada Support Agencies.',
+    'Email providers in Canada cost extra.', 'email providers in canada cost extra.', 'EMAIL PROVIDERS IN CANADA COST EXTRA.',
+    'Email founders in New York City Pay More.', 'Contact clinics in Leeds And Manchester Cost Extra.', 'Email providers in Premium Tiers.',
+    'Email marketing won customers.', 'Email marketing costs extra.', 'Search advertising is discontinued.']
+  for (const extra of negatives) {
+    const restricted = `${P} ${extra}`
+    assert.equal(sameOffer(restricted, P), false, restricted); assert.equal(sameOffer(P, restricted), false, restricted)
+    for (const seller of [P, 'CRM setup']) assert.equal(effectiveOffer({ seller: `${seller} - https://seller.example`, query: restricted }, '').source, 'conflict', `${restricted} | ${seller}`)
+    assert.equal(effectiveOffer({ seller: `${restricted} - https://seller.example`, query: P }, '').source, 'conflict', `saved: ${restricted}`)
+    assert.equal(effectiveOffer({ seller: null, query: restricted }, 'CRM setup').source, 'conflict', `profile: ${restricted}`)
+  }
+  const db = setup('CRM setup')
+  try {
+    db.prepare('UPDATE scan_jobs SET query = ?, seller = ? WHERE id = ?').run(`${P} Email providers in Canada Cost Extra.`, 'We sell CRM setup to founders. - https://seller.example', 'london')
+    assert.equal((await readPlayOffer(sqliteDb(db), 'A', 'london'))!.source, 'conflict')
+    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme'), /offer_conflict/)
+    assert.equal(offerBlockFor(db, 'A', 'london'), '')
+  } finally { db.close() }
+  // verified places, in any case, stay targeting
+  for (const t of ['Email providers in Canada.', 'email providers in canada.', 'Contact clinics in New York City.', 'Contact clinics in new york city.',
+    'Find agencies based in Leeds.', 'Find dental practices in NYC.', 'Email founders in the United States.', 'Find agencies in London, Leeds and Manchester.',
+    'Email founders in Texas.', 'Email founders who are hiring.', 'Find SaaS startups hiring in London.']) {
+    const q = `${t} ${P}`
+    assert.equal(sameOffer(q, P), true, q)
+    assert.deepEqual(effectiveOffer({ seller: `${P} - https://seller.example`, query: q }, ''), { offer: P, source: 'recorded', conflict: null }, q)
+  }
+  assert.deepEqual(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: DENTAL_PRODUCT }, ''), { offer: DENTAL_SELLER, source: 'recorded', conflict: null })
+  assert.equal(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: Q }, '').source, 'conflict')
+})

@@ -137,12 +137,39 @@ function buyerGroup(words: string[]): number {
 }
 // What may follow the buyer group in a targeting instruction, each consumed whole; anything left over that is none of
 // these (a predicate such as "cost extra" after "in Canada") makes the sentence material:
-//   a place: in/at/from/near/across/within/around/outside/inside or "based in", then capitalised words ("in New York City",
-//            "based in Leeds"), optionally after "the"
+//   a place: in/at/from/near/across/within/around/outside/inside or "based in", then a verified place (PLACES:
+//            "in New York City", "based in Leeds"), optionally after "the"
 //   another buyer group after of/for/at/with ("owners of clinics") or after a list separator (", resellers and consultancies")
 //   a short who/that clause: "who are hiring", "that are growing" (who/that, is/are, one -ing word)
 const PLACE_PREP = /^(?:in|at|from|near|across|within|around|outside|inside|based in)$/i
-const isPlaceWord = (w: string) => /^(?:[A-Z][\p{L}'’.-]*|[A-Z]{2,})$/u.test(w)
+// A place is verified, never inferred from capitalisation: a country or region name (from Intl.DisplayNames over the
+// two-letter region codes), a US state, or a listed city or abbreviation, matched whole and ignoring case. An unknown
+// place phrase is not provably targeting, so the sentence stays material.
+const PLACES: Set<string> = (() => {
+  const out = new Set<string>()
+  try {
+    const names = new Intl.DisplayNames(['en'], { type: 'region' })
+    const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    for (const x of A) for (const y of A) {
+      try { const n = names.of(x + y); if (n && n !== x + y && !/unknown/i.test(n)) out.add(n.toLowerCase()) } catch { /* not a region code */ }
+    }
+  } catch { /* no Intl.DisplayNames: only the lists below */ }
+  for (const p of ('alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|florida|georgia|hawaii|idaho|illinois|indiana|iowa|' +
+    'kansas|kentucky|louisiana|maine|maryland|massachusetts|michigan|minnesota|mississippi|missouri|montana|nebraska|nevada|new hampshire|' +
+    'new jersey|new mexico|new york|north carolina|north dakota|ohio|oklahoma|oregon|pennsylvania|rhode island|south carolina|south dakota|' +
+    'tennessee|texas|utah|vermont|virginia|washington|west virginia|wisconsin|wyoming|' +
+    'new york city|nyc|los angeles|san francisco|bay area|silicon valley|chicago|boston|seattle|austin|denver|miami|atlanta|dallas|houston|' +
+    'philadelphia|phoenix|san diego|portland|toronto|vancouver|montreal|london|manchester|leeds|birmingham|bristol|edinburgh|glasgow|' +
+    'liverpool|dublin|paris|berlin|munich|amsterdam|madrid|barcelona|lisbon|stockholm|copenhagen|zurich|sydney|melbourne|auckland|' +
+    'singapore|dubai|bangalore|mumbai|delhi|tel aviv|' +
+    'us|usa|uk|eu|uae|emea|apac|latam|north america|europe|asia|africa|south america|oceania|the midwest|the bay area').split('|')) out.add(p)
+  return out
+})()
+// how many words from the start of `words` name a known place (longest first), 0 if none
+function placeLength(words: string[]): number {
+  for (let n = Math.min(words.length, 5); n >= 1; n--) if (PLACES.has(words.slice(0, n).join(' ').toLowerCase())) return n
+  return 0
+}
 function tailOk(words: string[]): boolean {
   if (!words.length) return true
   const [w0, w1] = [words[0].toLowerCase(), (words[1] ?? '').toLowerCase()]
@@ -150,10 +177,16 @@ function tailOk(words: string[]): boolean {
   const prepLen = w0 === 'based' && w1 === 'in' ? 2 : PLACE_PREP.test(w0) ? 1 : 0
   if (prepLen) {
     let k = prepLen
-    if ((words[k] ?? '').toLowerCase() === 'the') k++
-    const start = k
-    while (k < words.length && k - start < 4 && isPlaceWord(words[k])) k++
-    if (k > start && tailOk(words.slice(k))) return true
+    if ((words[k] ?? '').toLowerCase() === 'the' && !placeLength(words.slice(k))) k++
+    let n = placeLength(words.slice(k))
+    // more verified places in a list: "in London, Leeds and Manchester"
+    while (n) {
+      k += n
+      if (tailOk(words.slice(k))) return true
+      const sep = words[k] === ',' ? (['and', 'or'].includes((words[k + 1] ?? '').toLowerCase()) ? 2 : 1) : ['and', 'or'].includes((words[k] ?? '').toLowerCase()) ? 1 : 0
+      n = sep ? placeLength(words.slice(k + sep)) : 0
+      if (n) k += sep
+    }
   }
   // another buyer group
   const sepLen = w0 === ',' ? (['and', 'or'].includes(w1) ? 2 : 1) : ['and', 'or', 'of', 'for', 'at', 'with'].includes(w0) ? 1 : 0
