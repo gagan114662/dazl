@@ -39,11 +39,12 @@ const MESSAGES_CAP = 200, CAMPAIGNS_CAP = 10, JOBS_CAP = 20
 
 export function readinessRows(i: ReadinessInput): Row[] {
   const p = i.profile, u = i.usage, o = i.outreach
-  const missing = p ? [!p.business_name && 'business name', !p.sells && 'what you sell', !p.website && 'website'].filter(Boolean) as string[] : []
-  // Business details only (name, what it sells, website): the buyer profile is not checked here.
+  const missing = p ? [!p.business_name && 'business name', !p.sells && 'what you sell'].filter(Boolean) as string[] : []
+  // Business details only (name, what it sells; the website when there is one): the buyer profile is not checked here.
+  // A website is not required: a profile entered by hand is as complete as one read from a site (#420).
   const SITE = 'Website and business details'
   const site: Row = !p ? { id: 'site', label: SITE, state: 'unknown', detail: 'could not check - your profile did not load', fix: null }
-    : missing.length === 0 ? { id: 'site', label: SITE, state: 'done', detail: `${p.business_name} - ${p.sells} (${p.website!.replace(/^https:\/\//, '')})`, fix: null }
+    : missing.length === 0 ? { id: 'site', label: SITE, state: 'done', detail: `${p.business_name} - ${p.sells}${p.website ? ` (${p.website.replace(/^https:\/\//, '')})` : ''}`, fix: null }
     : { id: 'site', label: SITE, state: 'todo', detail: `missing ${missing.join(', ')}`, fix: { kind: 'inline', label: 'Add' } }
   // The brain: the saved buyer profile (who buys it), which the first search is built on. It is built and edited in the
   // Home setup steps, which the fix link reopens at that step.

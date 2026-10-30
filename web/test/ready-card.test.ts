@@ -116,3 +116,28 @@ test('Instinct #341: a test-only send never completes a real-work step', () => {
   // Test sends are left out after the cap is judged: 200 rows of which only test ones are drafts is still a capped read.
   assert.equal(readyItems({ ...all, campaigns: [camp({ sc: 1 })], messages: Array.from({ length: 200 }, () => t) })[5].state, 'unknown')
 })
+
+// #420: a saved manual business profile (what you sell + the buyer profile, no website) completes the business-profile
+// step, as one read from a website does; the next action is the step actually unmet. Search-can-run stays separate.
+const manual: ReadinessInput['profile'] = { sells: 'Bookkeeping for trades businesses', business_name: 'Ledgerly', website: '', buyer: { summary: 'Plumbing and electrical firms with 5-50 staff in Ontario', who: ['Owner', 'Office manager'] } }
+
+test('#420 a saved manual profile (no website) completes the business profile step; reload reads the same', () => {
+  const noKey: ReadinessInput = { ...all, profile: manual, usage: { has_key: false, trial: { funded: false, remaining: 0 } }, keys: [], jobs: [], totals: { searches: 0, finished: 0 }, campaigns: [], messages: [] }
+  for (const input of [noKey, JSON.parse(JSON.stringify(noKey)) as ReadinessInput]) { // the same saved rows after a reload
+    const [profile, search] = readyItems(input)
+    assert.deepEqual([profile.state, profile.fix, profile.detail], ['done', null, 'Plumbing and electrical firms with 5-50 staff in Ontario'])
+    assert.equal(search.state, 'todo', 'search-can-run is still its own step when no key or trial is available')
+    assert.equal(readyItems(input).find(x => x.next)?.id, 'search', 'the next action is the step actually unmet, not "Add website"')
+  }
+  assert.ok(!st(noKey).some(x => x.includes('Add website')))
+})
+
+test('#420 missing or partial profiles stay to-do with the right fix; a later edit that empties the buyer profile reopens it', () => {
+  const at = (profile: ReadinessInput['profile']) => st({ ...all, profile })[0]
+  assert.equal(at({ ...manual, buyer: null }), 'profile:todo*>Add website@/app?setup=site', 'no website and no buyer profile')
+  assert.equal(at({ ...manual, buyer: { summary: '  ', who: [] } }), 'profile:todo*>Add website@/app?setup=site', 'an empty buyer profile is not a profile')
+  assert.equal(at({ ...manual, sells: '' }), 'profile:todo*>Add what you sell@/app?setup=site')
+  assert.equal(at({ ...manual, website: 'https://ledgerly.example', buyer: null }), 'profile:todo*>Build profile@/app?setup=brain', 'website saved, buyer profile not built')
+  assert.equal(at({ ...manual, website: 'https://ledgerly.example' }), 'profile:done', 'the website path still completes it')
+  assert.equal(readyItems({ ...all, profile: null })[0].state, 'unknown', 'a profile that did not load is never shown as to-do or done')
+})

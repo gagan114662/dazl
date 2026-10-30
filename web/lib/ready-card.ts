@@ -20,12 +20,15 @@ export function readyItems(i: ReadinessInput): ReadyItem[] {
   const site = row('site'), brainRow = row('brain'), key = row('key'), gmail = row('gmail'), sender = row('sender'), src = row('sources')
   const unknown = (id: ReadyId, label: string, detail: string): ReadyItem => ({ id, label, state: 'unknown', detail, fix: null })
 
-  // 1. Business profile: the website, and the buyer profile drafted from it.
+  // 1. Business profile: what the business sells and the buyer profile, built from its website or entered by hand (#420:
+  // a saved manual profile is complete without a website). The website is shown when there is one; it is not required.
   const p = i.profile
+  const sells = !!p?.sells?.trim()
   const profile: ReadyItem = site.state === 'unknown' || brainRow.state === 'unknown' ? unknown('profile', 'Business profile', site.detail)
-    : !p?.website ? { id: 'profile', label: 'Business profile', state: 'todo', detail: 'add your website so dazl can read who buys from you', fix: { href: '/app?setup=site', label: 'Add website' } }
-    : brainRow.state === 'todo' ? { id: 'profile', label: 'Business profile', state: 'todo', detail: `${host(p.website)} saved; who buys from you is not built yet`, fix: { href: '/app?setup=brain', label: 'Build profile' } }
-    : { id: 'profile', label: 'Business profile', state: 'done', detail: `${host(p.website)} - ${brainRow.detail}`, fix: null }
+    : brainRow.state === 'done' && sells ? { id: 'profile', label: 'Business profile', state: 'done', detail: p?.website ? `${host(p.website)} - ${brainRow.detail}` : brainRow.detail, fix: null }
+    : brainRow.state === 'done' ? { id: 'profile', label: 'Business profile', state: 'todo', detail: 'add what you sell', fix: { href: '/app?setup=site', label: 'Add what you sell' } }
+    : !p?.website ? { id: 'profile', label: 'Business profile', state: 'todo', detail: 'add your website so dazl can read who buys from you, or describe them yourself', fix: { href: '/app?setup=site', label: 'Add website' } }
+    : { id: 'profile', label: 'Business profile', state: 'todo', detail: `${host(p.website)} saved; who buys from you is not built yet`, fix: { href: '/app?setup=brain', label: 'Build profile' } }
 
   // 2. A search can run: a working AI key (or free searches) and the sources a scan here can use. Only usable ones named.
   const core = coreSources(i.sources ?? null, i.usage ? { has_key: i.usage.has_key, trial: i.usage.trial } : null)

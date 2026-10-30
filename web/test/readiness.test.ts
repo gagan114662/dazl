@@ -55,7 +55,7 @@ test('free searches cover the first scan: the key row is done while they last an
 
 test('Gmail that needs reconnecting and a half-filled sender are to-dos', () => {
   const r = byId(readinessRows({ profile: { sells: 'x', website: '' }, usage: { has_key: true }, outreach: { gmail: { email: 'a@b.example', status: 'revoked' }, sender: { sender_name: 'Dana', postal_address: '' } } }))
-  assert.equal(r.site.detail, 'missing business name, website')
+  assert.equal(r.site.detail, 'missing business name', 'a website is not required (#420)')
   assert.equal(r.gmail.fix?.label, 'Reconnect')
   assert.equal(r.sender.state, 'todo')
 })
