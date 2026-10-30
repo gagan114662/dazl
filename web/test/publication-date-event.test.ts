@@ -203,3 +203,23 @@ test('council r2: another subject in between unbinds; datelines, place lists, pa
   // the predicate of the quote skips adverbs: "today announced" finds "announced"
   assert.equal(eventDateBound('2026-10-15', 'Aurora Agency today announced its expansion to Austin. Aurora Agency announced the Austin expansion office on October 15, 2026.', 'Aurora Agency today announced its expansion to Austin', 'Aurora Agency').bound, true)
 })
+
+test('council r3: a connective starts another statement whatever case its subject is in; the quote\'s own capitals and suffixes stay the company\'s', () => {
+  const Q = 'Aurora Agency opened a new office in Austin'
+  const b = (text: string, quote = Q) => eventDateBound('2026-10-15', text, quote, 'Aurora Agency').bound
+  for (const t of [
+    `${Q}, while the city launched a grant program on 2026-10-15.`, `${Q}, while its former parent launched a tool on 2026-10-15.`, `${Q}, but eBay launched a tool on 2026-10-15.`,
+    `${Q} but its former landlord sold the building on 2026-10-15.`, `${Q}, and a local bakery next door opened on 2026-10-15.`, `${Q}, months before the city held a festival on 2026-10-15.`,
+    'UnrelatedCo launched a tool on 2026-10-15, while Aurora Agency opened a new office in Austin.', 'UnrelatedCo left Austin on 2026-10-15 before Aurora Agency opened a new office in Austin.',
+    `${Q} next to UnrelatedCo, which launched a tool on 2026-10-15.`, 'Aurora Agency opened a new office in Austin, Zenith Corp opened one in Toronto on 2026-10-15.',
+  ]) assert.equal(b(t), false, t)
+  assert.equal(b('Aurora Agency sold its old office to UnrelatedCo, which launched a tool on 2026-10-15.', 'Aurora Agency sold its old office to UnrelatedCo'), false)
+  assert.equal(b('Aurora Agency hired a director from Zenith, who launched a tool on 2026-10-15.', 'Aurora Agency hired a director from Zenith'), false)
+  // positives: the quote's own capitals, the company's own suffix and "which", and the same statement continued
+  assert.equal(b('Aurora Agency opened its Toronto office on 2026-10-15.', 'Aurora Agency opened its Toronto office'), true)
+  assert.equal(b('Aurora Agency CEO Jane Smith opened a new office in Berlin on 2026-10-15.', 'Aurora Agency CEO Jane Smith opened a new office in Berlin'), true)
+  assert.equal(b('Aurora Agency Inc. opened a new office in Austin on 2026-10-15.', 'Aurora Agency Inc. opened a new office in Austin'), true)
+  assert.equal(b('Aurora Agency, which opened a new office in Austin on 2026-10-15, is hiring.', 'Aurora Agency, which opened a new office in Austin'), true)
+  assert.equal(b(`${Q}, and on 2026-10-15 the ribbon was cut.`), true)
+  assert.equal(b('TORONTO, Oct. 15, 2026 /PRNewswire/ — Aurora Agency today opened a new office in Austin.', 'Aurora Agency today opened a new office in Austin'), true)
+})

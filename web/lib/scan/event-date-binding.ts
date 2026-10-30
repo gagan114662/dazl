@@ -63,9 +63,26 @@ function clauses(text: string, s: Span, protectedSpans: Span[], name = ''): Span
 // planning" put no other subject in between and still bind. Known fail-closed losses: a joint announcement ("Aurora and Beta
 // Labs opened ...") and an aside naming a non-place ("Aurora - the firm Gartner ranked - opened ...") read undated.
 const PREP = new Set(['in', 'at', 'on', 'along', 'onto', 'across', 'near', 'from', 'to', 'throughout', 'around', 'into', 'outside', 'inside'])
-const PLAIN_CAPS = new Set('the a an it its this that these those today yesterday on in at by for with and but while after before as so also then inc ltd llc corp co plc gmbh mr ms mrs dr st'.split(' '))
+const PLAIN_CAPS = new Set('the a an it its this that these those today yesterday on in at by for with and but while after before as so also then mr ms mrs dr st prnewswire businesswire globenewswire'.split(' '))
+const LEGAL = new Set('inc ltd llc corp co plc gmbh'.split(' '))
 const CAL = /^(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\.?$/i
 const fold = (t: string) => Array.from(t, ch => { const f = ch.normalize('NFKD').replace(/[\u0300-\u036f]/g, ''); return f.length === ch.length ? f : ch }).join('')
+// A connective between the mention and the day starts another statement, whatever case its subject is in: "; ", " while ",
+// " whereas ", " but ", " meanwhile ", " although ", " though ", ", which / who / whose" (not right after the company's own
+// name), and " after / before / following / until " or " and " when a subject (not a prepositional phrase) and a past-tense
+// verb follow before the next comma ("before UnrelatedCo launched", "and its former parent sold"), so "after months of planning, opened", "runs until
+// <day>", "in Toronto and Vancouver on <day>" and "and on <day> the ribbon was cut" still bind (#460 review). Matched on the
+// text from the gap onwards (the lookahead may read past the day); only a match that starts inside the gap counts.
+const PAST = String.raw`\b(?:[a-z]{2,}ed|held|sold|won|made|began|broke|took|ran|met|built|cut|set|hit|led|left|became|got|gave|bought|brought|chose|drew|fell|found|grew|kept|lost|paid|put|rose|said|sent|spent|struck|told|went|wrote)\b`
+const LATIN_BREAK = new RegExp(String.raw`;|\s+(?:while|whereas|but|meanwhile|although|though)\s+|,\s+(?:which|who|whose)\s+|,?\s+(?:and|after|before|following|until)\s+(?=(?!(?:on|in|at|by|for|to|from|with|of)\s)(?:[^\s,;.]+\s+){1,6}?${PAST})`, 'gi')
+function connectiveIn(tail: string, gap: number): boolean {
+  const own = /^\s*,\s+(?:which|who|whose)\s/i.test(tail)   // "Aurora Agency, which opened ..." is still Aurora's
+  for (const m of tail.matchAll(LATIN_BREAK)) {
+    if (m.index! >= gap) break
+    if (!(own && m.index! === 0)) return true
+  }
+  return false
+}
 function otherSubjectBetween(segment: string, co: string[], known: Set<string> = new Set()): boolean {
   if (segment.includes(';')) return true
   segment = segment.replace(/^\s*\([^()]*\)/, ' ')   // an aside right after the name ("Aurora Agency (Toronto) opened ...") is about the company
@@ -79,7 +96,9 @@ function otherSubjectBetween(segment: string, co: string[], known: Set<string> =
       const capPrev = /^[A-Z]/.test(toks[i - 1] ?? '')
       // a place: right after a preposition, or chained to a place by "and", a comma or another capitalised word - unless the
       // word is followed by a verb, which makes it a subject ("in Austin, UnrelatedCo launched ...")
-      const verbNext = /^[a-z]+(?:ed|es|s)$/.test(next) && !PREP.has(next)
+      if (LEGAL.has(lw) && (i === 0 || co.includes(prev.replace(/[.'’]+$/, '')))) continue   // "Aurora Agency Inc. opened ..."
+      // followed by a verb or a legal suffix, the word is a subject ("in Austin, UnrelatedCo launched", "in Ottawa, Zenith Corp opened")
+      const verbNext = (/^[a-z]+(?:ed|es|s)$/.test(next) && !PREP.has(next)) || LEGAL.has(next.toLowerCase().replace(/[.'’]+$/, ''))
       if (PREP.has(prev)) place = !verbNext
       else if (place && (prev === 'and' || prev === ',' || capPrev)) place = !verbNext
       else place = false
@@ -129,7 +148,10 @@ export function eventDateBound(eventDate: string | null, pageText: string, quote
       const near = ms.reduce((a, m) => dist(m) < dist(a) ? m : a)
       const between = h.index >= near.end ? text.slice(near.end, h.index) : text.slice(h.end, near.start)
       // in another sentence, the quote's own capitalised words (its places and the office it names) are not someone else
-      if (otherSubjectBetween(between, co, qSent && s.start === qSent.start ? undefined : qCaps)) { unbound = true; continue }                // the day belongs to someone else named in between
+      const tail = h.index >= near.end ? text.slice(near.end, s.end) : text.slice(h.end, s.end)
+      if (connectiveIn(tail, between.length)) { unbound = true; continue }                // another statement starts between them
+      // the quote's own capitalised words (its places, the office it names) are the company's statement, not someone else
+      if (otherSubjectBetween(between, co, qCaps)) { unbound = true; continue }           // the day belongs to someone else named in between
       cw = new Set(words(sent))
     } else {
       // other scripts (no a-z words to find subjects by): the clause, split at native and English connectives, must contain the name itself
