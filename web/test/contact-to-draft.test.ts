@@ -31,12 +31,12 @@ test('fixture site -> crawl stores role mailbox plus listed person with sources 
   }
   const get: Get = async url => { const p = pages[new URL(url).pathname]; return p !== undefined ? { status: 200, body: p, finalUrl: url } : { status: 404, body: '', finalUrl: url } }
   await crawlJob(db, 'A', job, { get, gapMs: 0, env: {}, now: Date.parse('2026-10-23T12:00:00Z') })
-  const rows = db.prepare("SELECT kind, value, source_url, source_date FROM lead_enrichments WHERE kind <> 'domain' ORDER BY kind").all()
+  const rows = db.prepare("SELECT kind, value, source_url, source_date FROM lead_enrichments WHERE kind NOT IN ('domain', 'domain_check') ORDER BY kind").all()
   assert.deepEqual(rows, [
     { kind: 'email', value: 'hello@brightsidedental.com', source_url: 'https://brightsidedental.com/contact', source_date: '2026-10-23' },
     { kind: 'person', value: 'Dana Lee, Owner', source_url: 'https://brightsidedental.com/about', source_date: '2026-10-23' },
   ])
-  const enr = db.prepare("SELECT connector, kind, value, label, source_url FROM lead_enrichments WHERE kind <> 'domain'").all() as never[]
+  const enr = db.prepare("SELECT connector, kind, value, label, source_url FROM lead_enrichments WHERE kind NOT IN ('domain', 'domain_check')").all() as never[]
   const lead = { contact: null, enrichments: enr }
   assert.equal(publishedContact(lead)!.email, 'hello@brightsidedental.com')
   // The currentness gate is real: without a confirmed event date createDraft refuses. The fixture uses the same human-review baseline as sequences.test.ts.
