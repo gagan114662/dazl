@@ -274,3 +274,13 @@ bothEngines('releasing an unlinked reservation gives the attempt and budget back
   assert.equal(await releaseTrialReservation(db, a.id, linked), false, 'a reservation linked to a scan is never released')
   assert.equal((await admit(db, a)).ok, false, 'the cap counts the three real scans, not the released attempt')
 })
+
+bothEngines('a reservation pre-linked to a job whose creation was rolled back is released; if that job exists it is never released', async ({ db }) => {
+  const a = await user(db, 'e'.repeat(32), 'e@gmail.com')
+  const r = reservation(await admit(db, a)); const jid = 'f'.repeat(24)
+  await linkTrialReservation(db, a.id, r, jid)
+  assert.equal(await releaseTrialReservation(db, a.id, r), false, 'linked: the plain release leaves it')
+  assert.equal(await releaseTrialReservation(db, a.id, r, jid), true, 'the job was never created: given back')
+  const r2 = reservation(await admit(db, a)); const real = await scan(db, a.id, r2, { status: 'running' })
+  assert.equal(await releaseTrialReservation(db, a.id, r2, real), false, 'a real scan\'s reservation is never released')
+})

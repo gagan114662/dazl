@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import { after, NextRequest, NextResponse } from 'next/server'
 import { cleanText } from '@/lib/validate'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
@@ -105,6 +106,7 @@ export async function POST(req: NextRequest) {
   // A trial scan runs on dazl's own key: it must also fit dazl's daily trial budget and abuse limits
   // (lib/billing/trial-budget.ts). Checked last, so a refused request above never holds a reservation.
   let reservation: string | null = null
+  let job_id: string | null = null
   if (funded === 'trial') {
     const a = await admitTrialScan(await getDb(), { id: user.tenantId, email: user.email })
     if (!a.ok) return NextResponse.json({ error: 'trial_unavailable', reason: a.reason }, { status: 402 })
@@ -113,19 +115,27 @@ export async function POST(req: NextRequest) {
   // From here a reservation exists with no job: any throw before the job is linked releases it, so an error can never leave an attempt and budget consumed with no run.
   try {
     const sel = body?.sources ? normalizeSources(body.sources) : null
-    const job_id = query.length >= 3 ? createQueryJob(db, user.tenantId, { query, icp: icp ? JSON.stringify(icp) : null, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget: nb.value }) : createJob(db, user.tenantId, { business_name, industry, location }, nb.value)
-    // Kept with the job so the finished scan can show actual against what was confirmed.
-    if (est.ok) db.prepare('UPDATE scan_jobs SET estimate = ? WHERE id = ?').run(JSON.stringify({ total: est.estimate.total, rows: est.estimate.rows, payer: est.estimate.payer, cap: est.estimate.cap, ack: est.estimate.ack }), job_id)
-    if (funded === 'trial') {
-      db.prepare("UPDATE scan_jobs SET funded_by = 'trial' WHERE id = ?").run(job_id)
-      recordTrialScan(db, user.tenantId, job_id, ip)
-      if (reservation) await linkTrialReservation(await getDb(), user.tenantId, reservation, job_id)
-    }
+    // The job id is fixed FIRST and the trial reservation is linked to it BEFORE the job exists; then the job, its estimate, its funding mark and the trial count are written in ONE
+    // transaction. So there is never a pending job that a background worker could claim without its estimate / funding / trial count, and a failure at any step rolls the job back entirely and
+    // releases the reservation: no partial job, no consumed attempt.
+    job_id = randomBytes(12).toString('hex')
+    if (reservation) await linkTrialReservation(await getDb(), user.tenantId, reservation, job_id)
+    const jid = job_id
+    db.transaction(() => {
+      if (query.length >= 3) createQueryJob(db, user.tenantId, { id: jid, query, icp: icp ? JSON.stringify(icp) : null, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget: nb.value })
+      else createJob(db, user.tenantId, { id: jid, business_name, industry, location }, nb.value)
+      // Kept with the job so the finished scan can show actual against what was confirmed.
+      if (est.ok) db.prepare('UPDATE scan_jobs SET estimate = ? WHERE id = ?').run(JSON.stringify({ total: est.estimate.total, rows: est.estimate.rows, payer: est.estimate.payer, cap: est.estimate.cap, ack: est.estimate.ack }), jid)
+      if (funded === 'trial') {
+        db.prepare("UPDATE scan_jobs SET funded_by = 'trial' WHERE id = ?").run(jid)
+        recordTrialScan(db, user.tenantId, jid, ip)
+      }
+    })()
     after(() => kickRunner(db))
     // A supplied budget is answered with exactly which paid surfaces it allows or refuses and what the limit is NOT.
     return NextResponse.json(nb.budget ? { job_id, budget: describeRunBudget(nb.budget) } : { job_id }, { status: 202 })
   } catch (e) {
-    if (reservation) await releaseTrialReservation(await getDb(), user.tenantId, reservation).catch(() => { /* stays at its full reserve (never less than it could spend) */ })
+    if (reservation) await releaseTrialReservation(await getDb(), user.tenantId, reservation, job_id ?? undefined).catch(() => { /* stays at its full reserve (never less than it could spend) */ })
     throw e
   }
 }

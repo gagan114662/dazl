@@ -14,6 +14,7 @@ import { GET as STATUS } from '../../app/api/scan/status/route.ts'
 import { migrateModelUsage, writeModelCalls } from '../../lib/scan/model-usage.ts'
 import { POST as ESTIMATE } from '../../app/api/scan/estimate/route.ts'
 import { periodOf } from '../../lib/llm/spend-pool.ts'
+import { claimKeyedJob } from '../../lib/scan/runner.ts'
 
 // Real POST /api/scan/estimate and POST /api/scan handlers, in-memory db, network fenced, runner never started.
 process.env.DAZL_MASTER_KEY = randomBytes(32).toString('base64')
@@ -161,4 +162,38 @@ test('reduced remaining room: reserving $1.50 of a $2 limit after the confirmati
   assert.equal(r.status, 409); assert.equal(j.error, 'estimate_changed'); assert.equal(j.estimate.cap.reserved_usd, 1.5); assert.equal(j.estimate.cap.remaining_usd, 0.5)
   assert.ok(j.estimate.verdict.warning, 'the reduced room raised a warning the person has not seen'); assert.equal(jobs(db).length, 0)
   assert.equal((await scan({ ...body, estimate_ack: j.estimate.ack })).status, 202)
+})
+
+// ---- no partial job: a failure at ANY step of starting a scan leaves no job a worker could claim, no consumed attempt, and a clean retry ----
+const STEPS: [string, string][] = [
+  ['linking the reservation', "CREATE TRIGGER boom BEFORE UPDATE ON trial_reservations BEGIN SELECT RAISE(ABORT, 'boom'); END"],
+  ['creating the job', "CREATE TRIGGER boom BEFORE INSERT ON scan_jobs BEGIN SELECT RAISE(ABORT, 'boom'); END"],
+  ['writing the estimate', "CREATE TRIGGER boom BEFORE UPDATE OF estimate ON scan_jobs BEGIN SELECT RAISE(ABORT, 'boom'); END"],
+  ['marking the job trial-funded', "CREATE TRIGGER boom BEFORE UPDATE OF funded_by ON scan_jobs BEGIN SELECT RAISE(ABORT, 'boom'); END"],
+  ['counting the trial scan', "CREATE TRIGGER boom BEFORE INSERT ON trial_scans BEGIN SELECT RAISE(ABORT, 'boom'); END"],
+]
+for (const [step, trigger] of STEPS) {
+  test(`keyless: a failure while ${step} leaves no job (pending or otherwise), no reservation and no trial count; a background claim finds nothing; the retry runs with everything set`, async () => {
+    await keyless(async db => {
+      const body = { query: Q, budget: { max_usd: 1, judge: false } }
+      db.exec(trigger)
+      await assert.rejects(scan(body))
+      assert.equal(jobs(db).length, 0, 'no partial job'); assert.equal(reservations(db).length, 0, 'the attempt and budget are given back')
+      assert.equal((db.prepare('SELECT count(*) AS c FROM trial_scans').get() as { c: number }).c, 0, 'no trial count')
+      assert.equal(claimKeyedJob(db), null, 'a background worker has nothing to claim')
+      db.exec('DROP TRIGGER boom')
+      const r = await scan(body); assert.equal(r.status, 202)
+      const j = db.prepare('SELECT id, funded_by, estimate, status FROM scan_jobs').all() as { id: string; funded_by: string | null; estimate: string | null; status: string }[]
+      assert.equal(j.length, 1); assert.equal(j[0].funded_by, 'trial'); assert.ok(j[0].estimate); assert.equal(j[0].status, 'pending')
+      const rs = reservations(db); assert.equal(rs.length, 1); assert.equal(rs[0].job_id, j[0].id, 'the reservation is linked to the job that exists')
+      assert.equal((db.prepare('SELECT count(*) AS c FROM trial_scans').get() as { c: number }).c, 1)
+    })
+  })
+}
+
+test('own-key account: a failure while writing the estimate leaves no job either (nothing to block a retry); the retry runs', async () => {
+  const db = setup(); as(db)
+  db.exec("CREATE TRIGGER boom BEFORE UPDATE OF estimate ON scan_jobs BEGIN SELECT RAISE(ABORT, 'boom'); END")
+  await assert.rejects(scan({ query: Q, budget: { max_usd: 1, judge: false } })); assert.equal(jobs(db).length, 0); assert.equal(claimKeyedJob(db), null)
+  db.exec('DROP TRIGGER boom'); assert.equal((await scan({ query: Q, budget: { max_usd: 1, judge: false } })).status, 202); assert.equal(jobs(db).length, 1)
 })

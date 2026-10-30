@@ -18,7 +18,7 @@ export interface ScanInput {
   location: string
 }
 // Free-text request. The legacy columns stay filled (placeholders) so older workers keep working.
-export interface QueryInput { query: string; icp?: string | null; sources?: string | null; seller?: string; offer?: string | null; watchId?: string; runBudget?: string | null }
+export interface QueryInput { id?: string; query: string; icp?: string | null; sources?: string | null; seller?: string; offer?: string | null; watchId?: string; runBudget?: string | null }
 
 // Schema notes for the external worker (Hermes). Everything is enforced in
 // SQLite itself, so a writer that bypasses the web app cannot corrupt state:
@@ -209,8 +209,8 @@ function widenWhyCap(db: Database.Database): void {
   `)
 }
 
-export function createJob(db: Database.Database, userId: string, input: ScanInput, runBudget: string | null = null): string {
-  const id = randomBytes(12).toString('hex')
+export function createJob(db: Database.Database, userId: string, input: ScanInput & { id?: string }, runBudget: string | null = null): string {
+  const id = input.id ?? randomBytes(12).toString('hex')
   db.prepare('INSERT INTO scan_jobs (id, user_id, business_name, industry, location, run_budget) VALUES (?, ?, ?, ?, ?, ?)').run(
     id, userId, input.business_name, input.industry, input.location, runBudget,
   )
@@ -219,7 +219,7 @@ export function createJob(db: Database.Database, userId: string, input: ScanInpu
 
 // icp is a JSON string the user already saw and accepted/edited; null means "infer it when the job runs".
 export function createQueryJob(db: Database.Database, userId: string, input: QueryInput): string {
-  const id = randomBytes(12).toString('hex')
+  const id = input.id ?? randomBytes(12).toString('hex')   // a caller may fix the id first (a trial reservation is linked to it before the job exists)
   // run_budget is part of the INSERT, so a job is never visible to the runner without its budget.
   const offer = (input.offer ?? '').replace(/\s+/g, ' ').trim().slice(0, 150) || null
   db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, icp_inferred, sources, seller, offer, offer_set_at, watch_id, run_budget) VALUES (?, ?, ?, '(from request)', '-', ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
