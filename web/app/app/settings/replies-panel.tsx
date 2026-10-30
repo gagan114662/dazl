@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 
-interface Info { available: boolean; gmail_connected: boolean; consent: { version: string; text: string[]; accepted: boolean }; read_granted: boolean; followups_enabled: boolean; autopilot_on: boolean; inbound: { from_email: string; excerpt: string; classification: string; received_at: number }[] }
+interface Info { available: boolean; gmail_connected: boolean; consent: { version: string; text: string[]; accepted: boolean }; read_granted: boolean; bounce_coverage?: 'checked' | 'unknown'; followups_enabled: boolean; autopilot_on: boolean; inbound: { from_email: string; excerpt: string; classification: string; received_at: number }[] }
 
 export default function RepliesPanel() {
   const [i, setI] = useState<Info | null>(null)
@@ -38,6 +38,8 @@ export default function RepliesPanel() {
           </div>
         </div>
       )}
+      {/* #415: without reading, bounces are not seen: delivery is unknown, never shown as fine. */}
+      {i.bounce_coverage && <p data-testid="bounce-coverage" className={`text-sm mt-2 ${i.bounce_coverage === 'checked' ? 'text-[#555]' : 'text-[#8a4b00]'}`}>{i.bounce_coverage === 'checked' ? 'Bounces are checked, including delivery-failure notices that arrive outside the original thread.' : "Bounces aren't being checked, so whether your emails were delivered is unknown. Turn on reply reading to check them."}</p>}
       {msg && <p className="text-sm text-[#555] mt-2">{msg}</p>}
       {i.inbound.length > 0 && <details className="mt-3 text-sm"><summary className="cursor-pointer text-[#555]">Recent replies ({i.inbound.length})</summary><ul className="mt-2 text-xs text-[#555] space-y-1">{i.inbound.map((m, n) => <li key={n}>{new Date(m.received_at * 1000).toLocaleString()}: {m.from_email}, {m.classification.replace(/_/g, ' ')}: {m.excerpt}</li>)}</ul></details>}
     </div>

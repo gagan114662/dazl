@@ -8,11 +8,14 @@ import { grantConsent, revokeAll } from './ledger.ts'
 import { norm } from './store.ts'
 import { suppress } from './service.ts'
 import { fullText, messageText, type GPart } from './reply-text.ts'
+import { dazlMessageRef, parseDsn, permanentFailure } from './dsn.ts'
 export { newText, messageText, htmlToText } from './reply-text.ts'
 
 // Reading replies is its own consent and its own Gmail scope (gmail.readonly). dazl opens only threads it started,
-// by thread id. It never lists or searches the mailbox, stores only a 200-character excerpt of a reply, and
-// reads nothing when the user has not consented or has turned it off.
+// by thread id, plus delivery-failure notices for the emails it sent (#415): a search limited to mail from
+// mailer-daemon/postmaster that names one of those recipients, and of what it finds only a notice whose structured fields
+// return a dazl email to that exact recipient is acted on or kept (lib/outreach/dsn.ts). It stores only a 200-character
+// excerpt of a reply, and reads nothing when the user has not consented or has turned it off.
 export const READ_CONSENT_VERSION = '2026-10-21'
 export const READ_CONSENT_TEXT = [
   'dazl will read replies in the email threads it started for you, and delivery-failure notices for them. It will not read any other email.',
@@ -219,7 +222,72 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
       auditAt(db, tenantId, 'sync_error', e instanceof Error ? e.message : 'error', m.lead_id, m.id, now)
     }
   }
+  try { await readDeliveryNotices(db, tenantId, acct.email, sent, get, out, now) } catch (e) {
+    out.error = 'reply_sync_failed'
+    auditAt(db, tenantId, 'sync_error', `delivery notices: ${e instanceof Error ? e.message : 'error'}`, undefined, undefined, now)
+  }
   return out
+}
+
+// #415: delivery-failure notices that arrived outside the original thread. Gmail is searched only for mail from
+// mailer-daemon/postmaster since the oldest email being read that names one of the recipients still being emailed
+// (in small batches), and a notice is acted on only when its structured delivery-status fields report a permanent failure
+// (failed, 5.x.x) for a recipient AND its returned original carries the dazl Message-ID of an email sent from this
+// account to that same recipient. Anything else (a forged or unrelated notice, a soft or delayed failure without a
+// match, a quoted code) changes nothing and is not stored. A matched notice is recorded once (by its Gmail id), and one
+// email's bounce is counted once however many notices arrive for it.
+const DSN_BATCH = 15
+const DSN_PAGES = 3
+async function readDeliveryNotices(db: Database.Database, tenantId: string, sender: string, sent: { id: string; lead_id: string; to_email: string; thread_id: string | null; sent_at: number }[], get: (path: string) => Promise<unknown>, out: SyncResult, now: number): Promise<void> {
+  const senderDomain = sender.split('@')[1]?.toLowerCase()
+  const open = sent.filter(m => !db.prepare("SELECT 1 FROM suppressions WHERE tenant_id = ? AND email = ?").get(tenantId, norm(m.to_email)))
+  if (!open.length || !senderDomain) return
+  const since = Math.min(...open.map(m => m.sent_at ?? now)) - 86400
+  const recipients = [...new Set(open.map(m => norm(m.to_email)))]
+  const seen = new Set<string>()
+  for (let i = 0; i < recipients.length; i += DSN_BATCH) {
+    const q = `from:(mailer-daemon OR postmaster) after:${since} {${recipients.slice(i, i + DSN_BATCH).map(r => `"${r.replace(/"/g, '')}"`).join(' ')}}`
+    let page: string | undefined
+    for (let n = 0; n < DSN_PAGES; n++) {
+      const list = await get(`messages?q=${encodeURIComponent(q)}&includeSpamTrash=true&maxResults=100${page ? `&pageToken=${encodeURIComponent(page)}` : ''}`) as { messages?: { id: string }[]; nextPageToken?: string }
+      for (const { id } of list.messages ?? []) {
+        if (seen.has(id)) continue
+        seen.add(id)
+        if (db.prepare('SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND gmail_id = ?').get(tenantId, id)) continue // read already (in its thread or before)
+        const g = await get(`messages/${id}?format=full`) as GMsg
+        if (!/^(mailer-daemon|postmaster)@/.test(addr(header(g, 'from')))) continue
+        const dsn = parseDsn(g.payload)
+        if (!dsn) continue
+        for (const ref of dsn.originalIds.map(dazlMessageRef)) {
+          if (!ref || ref.domain !== senderDomain) continue
+          const m = sent.find(s => s.id === ref.id)
+          if (!m) continue
+          const r = dsn.recipients.find(x => x.recipient === norm(m.to_email))
+          if (!r) continue // the notice is about someone else: never suppresses this or any other recipient
+          const at = Math.floor(Number(g.internalDate ?? 0) / 1000) || now
+          const permanent = permanentFailure(r)
+          const counted = !!db.prepare("SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND outreach_message_id = ? AND classification = 'bounce'").get(tenantId, m.id)
+          db.prepare('INSERT OR IGNORE INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            .run(g.id, tenantId, m.thread_id ?? g.threadId, m.lead_id, addr(header(g, 'from')), `Delivery ${r.action} for ${r.recipient} (${r.status})`.slice(0, 200), permanent ? 'bounce' : 'soft_bounce', at, m.id)
+          if (permanent && !counted) {
+            recordBounce(db, tenantId, m.to_email, now)
+            if (m.thread_id) db.prepare("UPDATE followup_threads SET stopped = 'bounce' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, m.thread_id)
+            out.bounces++
+          }
+          break
+        }
+      }
+      page = list.nextPageToken
+      if (!page) break
+    }
+  }
+}
+
+// #415: whether bounces for this account's emails are being checked at all. Without read consent or Gmail's read
+// access nothing is read, so delivery is unknown, never reported as healthy.
+export function bounceCoverage(db: Database.Database, tenantId: string): 'checked' | 'unknown' {
+  const acct = db.prepare('SELECT read_granted, status FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { read_granted: number; status: string } | undefined
+  return hasReadConsent(db, tenantId) && acct?.read_granted === 1 && acct.status === 'active' ? 'checked' : 'unknown'
 }
 
 // The Inbox list itself (one row per thread, paginated and filtered on the server) is lib/outreach/inbox.ts.

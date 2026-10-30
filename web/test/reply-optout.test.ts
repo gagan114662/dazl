@@ -141,6 +141,7 @@ function gmail(threads: Record<string, unknown[]>, calls: string[]) {
     const u = String(url); calls.push(u)
     if (u.includes('oauth2')) return json({ access_token: 'at' })
     const m = u.match(/threads\/([^?]+)/); if (m) return json({ messages: threads[m[1]] ?? [] })
+    if (String(url).includes('/messages?q=')) return json({ messages: [] }) // #415 delivery-notice search
     return json({}, 404)
   }) as unknown as typeof fetch
 }
@@ -178,11 +179,17 @@ test('sync, two tenants: HTML unsubscribe suppresses and stops only A\'s thread;
   assert.equal(cls(db, 'A', 'a2-r'), 'positive'); assert.equal(hasConsent(db, 'A', 'kim@other.example', 'email', 'followup', NOW), true)
   assert.equal(hasConsent(db, 'B', 'kim@other.example', 'email', 'followup', NOW), false)
   assert.equal(cls(db, 'B', 'b2-r'), 'auto'); assert.equal(stopped(db, 'B', b2.thread), null)
-  // each tenant's sync opened only its own threads, by id, and nothing else (no list, search or other scope)
+  // each tenant's sync opened only its own threads, by id, plus (#415) a delivery-notice search limited to mail-system
+  // senders that names only that tenant's own recipients; nothing else (no labels, no other scope, no send)
   const gm = (c: string[]) => c.filter(u => u.includes('gmail.googleapis.com'))
-  assert.deepEqual(gm(callsA).map(u => u.replace(/.*threads\//, '').replace(/\?.*/, '')).sort(), [a1.thread, a2.thread].sort())
-  assert.deepEqual(gm(callsB).map(u => u.replace(/.*threads\//, '').replace(/\?.*/, '')).sort(), [b1.thread, b2.thread].sort())
-  assert.ok(![...callsA, ...callsB].some(u => /messages\?|q=|labels|\/send/.test(u)))
+  const threads = (c: string[]) => gm(c).filter(u => u.includes('/threads/'))
+  const searches = (c: string[]) => gm(c).filter(u => u.includes('/messages?q=')).map(u => decodeURIComponent(new URL(u).searchParams.get('q')!))
+  assert.deepEqual(threads(callsA).map(u => u.replace(/.*threads\//, '').replace(/\?.*/, '')).sort(), [a1.thread, a2.thread].sort())
+  assert.deepEqual(threads(callsB).map(u => u.replace(/.*threads\//, '').replace(/\?.*/, '')).sort(), [b1.thread, b2.thread].sort())
+  assert.equal(gm(callsA).length + gm(callsB).length, threads(callsA).length + threads(callsB).length + searches(callsA).length + searches(callsB).length)
+  for (const [c, own] of [[callsA, ['sam@buyer.example', 'kim@other.example']], [callsB, ['sam@buyer.example', 'lee@third.example']]] as [string[], string[]][])
+    for (const q of searches(c)) { assert.match(q, /^from:\(mailer-daemon OR postmaster\) after:\d+ \{.*\}$/); for (const r of q.match(/"[^"]+"/g) ?? []) assert.ok(own.includes(r.slice(1, -1)), r) }
+  assert.ok(![...callsA, ...callsB].some(u => /labels|\/send/.test(u)))
   // stored excerpts are the new text only (the quoted "Interested, call me" is not kept)
   assert.equal((db.prepare("SELECT excerpt FROM inbound_messages WHERE gmail_id = 'a1-r'").get() as { excerpt: string }).excerpt, 'Bitte abmelden, danke.')
   // a later sync does not re-read or re-classify what was stored

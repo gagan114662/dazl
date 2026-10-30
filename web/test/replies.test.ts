@@ -46,6 +46,7 @@ function gmail(threads: Record<string, unknown[]>, calls: string[] = []) {
     const u = String(url); calls.push(u)
     if (u.includes('oauth2')) return json({ access_token: 'at' })
     const m = u.match(/threads\/([^?]+)/); if (m) return json({ messages: threads[m[1]] ?? [] })
+    if (u.includes('/messages?q=')) return json({ messages: [] }) // #415 delivery-notice search: none out of thread
     return json({}, 404)
   }) as unknown as typeof fetch
 }
@@ -70,14 +71,16 @@ test('consent ledger: grant, expiry, revoke-all, and suppression revokes', () =>
   assert.equal(hasConsent(db, 'A', 'x@co.example', 'email', 'followup', NOW + 3 * DAY), false)
 })
 
-test('reading needs consent and the read grant; it opens only threads dazl started', async () => {
+test('reading needs consent and the read grant; it opens only threads dazl started and searches only for their delivery notices', async () => {
   const db = await setup(false); const calls: string[] = []
   assert.equal((await syncReplies(db, 'A', { env: genv, master, now: NOW, fetchImpl: gmail({}, calls) })).error, 'reading_not_enabled') // no read scope
   assert.equal(calls.length, 0)
   const db2 = await setup(true); const s = sentLead(db2, 'a@co.example'); const calls2: string[] = []
   await syncReplies(db2, 'A', { env: genv, master, now: NOW, fetchImpl: gmail({ [s.thread]: [] }, calls2) })
-  assert.ok(calls2.filter(u => u.includes('gmail.googleapis.com')).every(u => u.includes(`threads/${s.thread}`)))
-  assert.ok(!calls2.some(u => /messages\?|q=|labels/.test(u)))
+  // Its own threads by id, plus (#415) one search limited to mail-system senders naming its own recipients.
+  const q = (u: string) => decodeURIComponent(new URL(u).searchParams.get('q') ?? '')
+  assert.ok(calls2.filter(u => u.includes('gmail.googleapis.com')).every(u => u.includes(`threads/${s.thread}`) || /^from:\(mailer-daemon OR postmaster\) after:\d+ \{"a@co\.example"\}$/.test(q(u))))
+  assert.ok(!calls2.some(u => /labels/.test(u)))
   db2.prepare('DELETE FROM mail_read_consent').run()
   assert.equal((await syncReplies(db2, 'A', { env: genv, master, now: NOW, fetchImpl: gmail({}) })).error, 'reading_not_enabled')
 })

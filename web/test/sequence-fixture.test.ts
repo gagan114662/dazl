@@ -35,6 +35,7 @@ function mock() {
     const url = String(u)
     if (url.includes('oauth2')) return json({ access_token: 'at' })
     if (url.includes('/threads/')) return json({ messages: [] })
+    if (String(url).includes('/messages?q=')) return json({ messages: [] }) // #415 delivery-notice search
     return json({}, 404)
   }) as typeof fetch
   const sendFn = (async (_t: string, raw: string) => { calls.push(Buffer.from(raw, 'base64url').toString('utf8')); return { id: `gm${calls.length}`, threadId: 'thread-1' } })
@@ -200,7 +201,7 @@ test('reply-stop fixture: a human reply before step 2 stops the sequence and ste
 
   // A neutral human reply lands in the thread before step 2 is due.
   const reply = { id: 'g-reply', threadId: 'thread-1', internalDate: String((NOW + 60) * 1000), payload: { mimeType: 'text/plain', body: { data: Buffer.from('Hi, this is a test reply for the dazl sequence test. Nothing is needed.').toString('base64url') }, headers: [{ name: 'From', value: 'Owner <owner@example.com>' }] } }
-  const withReply = { ...m, fetchImpl: (async (u: unknown) => { const url = String(u); if (url.includes('oauth2')) return json({ access_token: 'at' }); if (url.includes('/threads/')) return json({ messages: [reply] }); return json({}, 404) }) as typeof fetch }
+  const withReply = { ...m, fetchImpl: (async (u: unknown) => { const url = String(u); if (url.includes('oauth2')) return json({ access_token: 'at' }); if (url.includes('/threads/')) return json({ messages: [reply] }); if (url.includes('/messages?q=')) return json({ messages: [] }); return json({}, 404) }) as typeof fetch }
 
   // Activation tick sees the reply and stops the sequence; the +3m tick sends nothing.
   assert.equal((await withTenantAsync(() => runSequences(db, 'A', '', { ...withReply, now: NOW + 1 }))).sent, 0)
