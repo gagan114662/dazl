@@ -1,16 +1,18 @@
 import { after, NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
-import { getJob, MAX_ATTEMPTS } from '@/lib/scan/store'
+import { MAX_ATTEMPTS } from '@/lib/scan/store'
+import { getJob, reapStaleJobs } from '@/lib/scan/store-db'
+import { getDb } from '@/lib/db/client'
 import { kickRunner } from '@/lib/scan/runner'
-import { sourceRuns } from '@/lib/scan/source-runs'
-import { sourceStats } from '@/lib/search/trace'
-import { modelUsage } from '@/lib/scan/model-usage'
-import { runReportFor } from '@/lib/scan/run-report'
+import { readSourceRuns } from '@/lib/scan/source-runs'
+import { readSourceStats } from '@/lib/search/trace'
+import { readModelUsage } from '@/lib/scan/model-usage'
+import { readRunReport } from '@/lib/scan/run-report'
 import { effectiveStatus, enrichState } from '@/lib/scan/enrichment'
 import { emptyExtractionReason } from '@/lib/scan/extraction-note'
 import { progressOf, outcomeInputs } from '@/lib/scan/progress'
 import { scanOutcome } from '@/lib/scan/scan-outcome'
-import { first5Of, isFirst5, verifiedLeads } from '@/lib/scan/first5'
+import { first5Of, readIsFirst5, readVerifiedLeads } from '@/lib/scan/first5'
 
 // What a scan never stored, so a reader cannot mistake absence for a zero. Fixed list, not derived from data.
 const NOT_RECORDED = ['search_queries', 'raw_search_hits', 'fetched_pages']
@@ -22,21 +24,24 @@ export async function GET(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const jobId = req.nextUrl.searchParams.get('job_id') ?? ''
+  // Every read of this polled route is on the Db layer (the shared store: Postgres when the app runs on it, #354); only
+  // the runner kick still takes the raw handle. Stale running jobs are reaped first, as the poll always did.
+  const db = await getDb()
   // Same 404 for "does not exist" and "belongs to someone else".
-  const job = /^[a-f0-9]{24}$/.test(jobId) ? getJob(getScanDb(), user.tenantId, jobId) : undefined
+  const job = /^[a-f0-9]{24}$/.test(jobId) ? (await reapStaleJobs(db), await getJob(db, user.tenantId, jobId)) : undefined
   if (!job) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   // polling also restarts retries and jobs reaped after a crash or restart
   // ?passive=1 is the explicit no-kick QA mode: it never starts provider work, though getJob may still reap a stale job.
   if (job.status === 'pending' && req.nextUrl.searchParams.get('passive') !== '1') after(() => kickRunner(getScanDb()))
   // Owner-scoped (sourceRuns joins scan_jobs.user_id), read only. Values are passed through as stored: NULL stays null (unknown), never 0.
-  const source_runs = (sourceRuns(getScanDb(), user.tenantId, job.id) as Record<string, unknown>[]).map(r => Object.fromEntries(SOURCE_RUN_FIELDS.map(f => [f, r[f] ?? null])))
+  const source_runs = (await readSourceRuns(db, user.tenantId, job.id)).map(r => Object.fromEntries(SOURCE_RUN_FIELDS.map(f => [f, r[f] ?? null])))
   // null = the table was never created (stats recording is off or this scan predates it): "not recorded". [] = table exists, nothing for this job.
-  const source_stats = sourceStats(getScanDb(), user.tenantId, job.id)
+  const source_stats = await readSourceStats(db, user.tenantId, job.id)
   const recorded = !!source_stats && source_stats.length > 0
   // Owner-scoped model request/token totals; recorded:false (all null) when nothing was stored. Never a fabricated zero.
-  const model_usage = modelUsage(getScanDb(), user.tenantId, job.id)
+  const model_usage = await readModelUsage(db, user.tenantId, job.id)
   // Per-stage run report (queries, every result URL with date/selected/text/own-fetch, each candidate's fate and reason, funnel, model): null = not recorded.
-  const run_report = runReportFor(getScanDb(), user.tenantId, job.id)
+  const run_report = await readRunReport(db, user.tenantId, job.id)
   // Why a scan that searched and read pages still extracted nothing (counts only). null when extraction produced candidates or was not recorded.
   const empty_reason = emptyExtractionReason((run_report as { extraction?: never }[] | null)?.at(-1)?.extraction)
   const notRecorded = (recorded ? NOT_RECORDED_WITH_STATS : NOT_RECORDED).filter(x => !(x === 'model_token_usage' && model_usage.recorded && model_usage.tokens_complete) && !(x === 'per_url_fetch_outcomes' && run_report))
@@ -46,6 +51,6 @@ export async function GET(req: NextRequest) {
   // Code-decided completion: how many candidates are resolved (dated, company confirmed, contact attached) and the specific reason for each that is not.
   const resolution = (run_report as { resolution?: { candidates: number; resolved: number; unresolved: number; by_reason: Record<string, number> } }[] | null)?.findLast(r => r.resolution)?.resolution ?? null
   // The fast first scan: verified leads so far, live per-source progress, "finding more" and the distinct stop reason; never an empty state. Only for a job started with mode=first5.
-  const first5 = isFirst5(getScanDb(), user.tenantId, job.id) ? first5Of({ status: effectiveStatus(job), leads: verifiedLeads(getScanDb(), user.tenantId, job.id), progress, outcome }) : undefined
+  const first5 = await readIsFirst5(db, user.tenantId, job.id) ? first5Of({ status: effectiveStatus(job), leads: await readVerifiedLeads(db, user.tenantId, job.id), progress, outcome }) : undefined
   return NextResponse.json({ ...(first5 ? { first5 } : {}), progress, outcome, resolution, job_id: job.id, status: effectiveStatus(job), enrichment: { state: enrichState(job), started_at: job.enrich_started_at ?? null, finished_at: job.enrich_finished_at ?? null }, created_at: job.created_at, claimed_at: job.claimed_at, attempts: job.attempts, max_attempts: MAX_ATTEMPTS, lead_count: job.lead_count, quality: job.candidates === null ? null : { candidates: job.candidates, passed: job.verified, needs_review: job.needs_review, dropped: job.dropped, drop_reasons: job.drop_reasons ? JSON.parse(job.drop_reasons) : {} }, error: job.error === 'key_rejected' && (job as { funded_by?: string }).funded_by === 'trial' ? 'trial_key_invalid' : job.error, source_runs, source_stats, model_usage, run_report, empty_reason, not_recorded: notRecorded, query: job.query, icp: job.icp ? JSON.parse(job.icp) : null, icp_source: job.icp_inferred === 1 ? 'inferred' : job.icp_inferred === 2 ? 'request_only' : job.icp_inferred === 0 ? 'user' : null })
 }

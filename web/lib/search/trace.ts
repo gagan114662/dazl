@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import type { Db } from '../db/client.ts'
 import type { Evidence } from '../sources/types.ts'
 
 // Per-scan record of what the TinyFish collector actually did, so a low-yield scan can be explained from data
@@ -144,10 +145,17 @@ export function writeSourceStats(db: Database.Database, jobId: string, attempt: 
 }
 
 // null = the table does not exist (nothing was ever recorded). [] = table exists, no rows for this owner's job.
+const SOURCE_STATS_SQL = `SELECT s.* FROM scan_source_stats s JOIN scan_jobs j ON j.id=s.job_id WHERE j.user_id=? AND j.id=? ORDER BY s.attempt,s.collector`
+type StatsRow = Record<string, unknown> & { queries: string[] | null; query_source: string | null; hits_raw: number | null }
+const shapeStats = (rows: Record<string, unknown>[]): StatsRow[] => {
+  const parse = (v: unknown) => { try { return typeof v === 'string' ? JSON.parse(v) : null } catch { return null } }
+  return rows.map(r => ({ ...r, queries: parse(r.queries), per_query: parse(r.per_query), searches_failed: parse(r.searches_failed), searches_not_attempted: parse(r.searches_not_attempted) })) as unknown as StatsRow[]
+}
 export function sourceStats(db: Database.Database, tenantId: string, jobId: string) {
-  try {
-    const rows = db.prepare(`SELECT s.* FROM scan_source_stats s JOIN scan_jobs j ON j.id=s.job_id WHERE j.user_id=? AND j.id=? ORDER BY s.attempt,s.collector`).all(tenantId, jobId) as Record<string, unknown>[]
-    const parse = (v: unknown) => { try { return typeof v === 'string' ? JSON.parse(v) : null } catch { return null } }
-    return rows.map(r => ({ ...r, queries: parse(r.queries), per_query: parse(r.per_query), searches_failed: parse(r.searches_failed), searches_not_attempted: parse(r.searches_not_attempted) })) as unknown as (Record<string, unknown> & { queries: string[] | null; query_source: string | null; hits_raw: number | null })[]
-  } catch { return null }
+  try { return shapeStats(db.prepare(SOURCE_STATS_SQL).all(tenantId, jobId) as Record<string, unknown>[]) } catch { return null }
+}
+// sourceStats on the Db layer (SQLite or Postgres): the same query, the same parsing, and the same null when the table
+// cannot be read ("not recorded").
+export async function readSourceStats(db: Db, tenantId: string, jobId: string): Promise<StatsRow[] | null> {
+  try { return shapeStats(await db.all<Record<string, unknown>>(SOURCE_STATS_SQL, [tenantId, jobId])) } catch { return null }
 }

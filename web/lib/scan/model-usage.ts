@@ -13,6 +13,7 @@
 //   - Prompt text and responses are NOT stored (only prompt length and a fixed-template stage label).
 // ON by default; DAZL_MODEL_USAGE=0 turns recording off. Never throws into the scan.
 import type Database from 'better-sqlite3'
+import type { Db } from '../db/client.ts'
 import type { Provider } from '../llm/provider.ts'
 
 export const modelUsageEnabled = (env: Record<string, string | undefined> = process.env) => env.DAZL_MODEL_USAGE !== '0'
@@ -124,20 +125,25 @@ export const MODEL_USAGE_UNKNOWN = [
   'profile_generation_before_run (stored per tenant with no job, not in these totals)',
 ]
 // null table / no rows => recorded:false with null totals, never zeros.
+const MODEL_CALLS_SQL = 'SELECT c.* FROM scan_model_calls c JOIN scan_jobs j ON j.id=c.job_id WHERE j.user_id=? AND j.id=? ORDER BY c.attempt,c.seq'
+const NO_USAGE: ModelUsage = { recorded: false, requests_recorded: 0, requests_with_reported_tokens: 0, requests_without_reported_tokens: 0, by_stage: {}, input_tokens: null, output_tokens: null, tokens_complete: false, served_models: [], requested_models: [], errors: 0, unknown: MODEL_USAGE_UNKNOWN, note: 'No model usage was recorded for this scan (older scan, recording off, or no model request was made). This is not a zero.' }
+function summarize(rows: (ModelCall & Record<string, unknown>)[]): ModelUsage {
+  if (rows.length === 0) return NO_USAGE
+  const sum = (k: 'input_tokens' | 'output_tokens') => rows.some(r => r[k] != null) ? rows.reduce((a, r) => a + (r[k] ?? 0), 0) : null
+  const by_stage: Record<string, number> = {}; for (const r of rows) by_stage[r.stage] = (by_stage[r.stage] ?? 0) + 1
+  const withTokens = rows.filter(r => r.input_tokens != null && r.output_tokens != null).length
+  return {
+    recorded: true, requests_recorded: rows.length, requests_with_reported_tokens: withTokens, requests_without_reported_tokens: rows.length - withTokens,
+    by_stage, input_tokens: sum('input_tokens'), output_tokens: sum('output_tokens'), tokens_complete: withTokens === rows.length,
+    served_models: [...new Set(rows.map(r => r.model_served).filter((x): x is string => !!x))], requested_models: [...new Set(rows.map(r => r.model_requested).filter((x): x is string => !!x))],
+    errors: rows.filter(r => r.outcome === 'error').length, unknown: MODEL_USAGE_UNKNOWN,
+    note: 'Recorded requests and the tokens the provider reported for them. Totals are a lower bound whenever tokens_complete is false. Not an invoice.',
+  }
+}
 export function modelUsage(db: Database.Database, tenantId: string, jobId: string): ModelUsage {
-  const none: ModelUsage = { recorded: false, requests_recorded: 0, requests_with_reported_tokens: 0, requests_without_reported_tokens: 0, by_stage: {}, input_tokens: null, output_tokens: null, tokens_complete: false, served_models: [], requested_models: [], errors: 0, unknown: MODEL_USAGE_UNKNOWN, note: 'No model usage was recorded for this scan (older scan, recording off, or no model request was made). This is not a zero.' }
-  try {
-    const rows = db.prepare('SELECT c.* FROM scan_model_calls c JOIN scan_jobs j ON j.id=c.job_id WHERE j.user_id=? AND j.id=? ORDER BY c.attempt,c.seq').all(tenantId, jobId) as (ModelCall & Record<string, unknown>)[]
-    if (rows.length === 0) return none
-    const sum = (k: 'input_tokens' | 'output_tokens') => rows.some(r => r[k] != null) ? rows.reduce((a, r) => a + (r[k] ?? 0), 0) : null
-    const by_stage: Record<string, number> = {}; for (const r of rows) by_stage[r.stage] = (by_stage[r.stage] ?? 0) + 1
-    const withTokens = rows.filter(r => r.input_tokens != null && r.output_tokens != null).length
-    return {
-      recorded: true, requests_recorded: rows.length, requests_with_reported_tokens: withTokens, requests_without_reported_tokens: rows.length - withTokens,
-      by_stage, input_tokens: sum('input_tokens'), output_tokens: sum('output_tokens'), tokens_complete: withTokens === rows.length,
-      served_models: [...new Set(rows.map(r => r.model_served).filter((x): x is string => !!x))], requested_models: [...new Set(rows.map(r => r.model_requested).filter((x): x is string => !!x))],
-      errors: rows.filter(r => r.outcome === 'error').length, unknown: MODEL_USAGE_UNKNOWN,
-      note: 'Recorded requests and the tokens the provider reported for them. Totals are a lower bound whenever tokens_complete is false. Not an invoice.',
-    }
-  } catch { return none }
+  try { return summarize(db.prepare(MODEL_CALLS_SQL).all(tenantId, jobId) as (ModelCall & Record<string, unknown>)[]) } catch { return NO_USAGE }
+}
+// modelUsage on the Db layer (SQLite or Postgres): the same query and summary; unreadable reads as not recorded.
+export async function readModelUsage(db: Db, tenantId: string, jobId: string): Promise<ModelUsage> {
+  try { return summarize(await db.all<ModelCall & Record<string, unknown>>(MODEL_CALLS_SQL, [tenantId, jobId])) } catch { return NO_USAGE }
 }

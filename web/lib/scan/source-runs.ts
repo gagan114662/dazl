@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import type { Db } from '../db/client.ts'
 import { dedupKey } from './evidence.ts'
 import type { Candidate } from './evidence.ts'
 import { writeSourceStats, type SourceStats } from '../search/trace.ts'
@@ -122,9 +123,14 @@ export class SourceRunLedger {
   }
 }
 
+const SOURCE_RUNS_SQL = `SELECT r.* FROM scan_source_runs r JOIN scan_jobs j ON j.id=r.job_id
+    WHERE j.user_id=? AND j.id=? ORDER BY r.attempt,r.collector`
 export function sourceRuns(db: Database.Database, tenantId: string, jobId: string) {
-  return db.prepare(`SELECT r.* FROM scan_source_runs r JOIN scan_jobs j ON j.id=r.job_id
-    WHERE j.user_id=? AND j.id=? ORDER BY r.attempt,r.collector`).all(tenantId, jobId)
+  return db.prepare(SOURCE_RUNS_SQL).all(tenantId, jobId)
+}
+// sourceRuns on the Db layer (SQLite or Postgres): the same query, owner-scoped the same way.
+export function readSourceRuns(db: Db, tenantId: string, jobId: string): Promise<Record<string, unknown>[]> {
+  return db.all<Record<string, unknown>>(SOURCE_RUNS_SQL, [tenantId, jobId])
 }
 export function sourcesForLead(db: Database.Database, tenantId: string, leadId: string) {
   return db.prepare(`SELECT s.collector,s.attempt FROM lead_sources s JOIN leads l ON l.id=s.lead_id
