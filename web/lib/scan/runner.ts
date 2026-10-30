@@ -26,6 +26,7 @@ import { directQueries, hasHiringSignal } from '../search/direct-queries.ts'
 import { placeIn, atsKindOf } from '../sources/jobboards.ts'
 import { corroborationTargets } from './corroborate.ts'
 import { resolveTiming } from './page-timing.ts'
+import { dateStatedInText, hasStructuredPostingDate } from './date-in-text.ts'
 import { ownPlaceAgreement } from './own-block.ts'
 import { HeldText, COPY_ORIGIN, type HeldPage } from './held-text.ts'
 import { markHeldInProcess } from './held-state.ts'
@@ -288,9 +289,21 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
   const fetched = await Promise.all(candidates.map(async c => ({ c, page: await get(c.source_url) })))
 
   const passed: { c: LeadDraft; v: Extract<ReturnType<typeof verifyEvidence>, { ok: true }>; copy?: { failure: string; sha256: string; page: HeldPage } }[] = []
-  for (const { c: c0, page } of fetched) {
+  for (const { c: c00, page } of fetched) {
+    let c0 = c00
     // A candidate with no date gets one read from the text we already fetched (or a season label). Same rules apply to it afterwards.
     let c = c0
+    // An event date the page TEXT never states (it matches only the page's publication metadata, or the extraction supplied it) is not a dated event:
+    // the lead is treated as undated, so a republished archive page cannot make an old event verify as recent (#460). A public job board posting
+    // (Greenhouse/Lever/Ashby) keeps its structured publish date. Everything else downstream is unchanged.
+    let undatedWhy: string | null = null
+    // Default: the claimed day IS the page's own publication metadata and the text never states it (the replayed #460 case). DAZL_EVENT_DATE_STRICT=1 widens it to ANY
+    // claimed day the text does not state (a date only the extraction or a search result supplied), which also demotes news leads dated by their search-hit day.
+    const metaOnly = (page as { published?: string | null } | undefined)?.published === c0.event_date
+    if (page && !isFail(page) && c0.event_date && (metaOnly || process.env.DAZL_EVENT_DATE_STRICT === '1') && !dateStatedInText(c0.event_date, `${page.text} ${c0.excerpt}`) && !hasStructuredPostingDate(c0.source_url)) {
+      undatedWhy = `the claimed event date ${c0.event_date} is not stated in the page text${(page as { published?: string | null }).published === c0.event_date ? ' (it is only the page\'s publication date)' : ''}; treated as undated`
+      c0 = { ...c0, event_date: null }; c = c0
+    }
     if (page && !isFail(page) && !c0.event_date) {
       // What the page says about WHEN is kept apart from what the quote says happened: a publication day is a label, never the event date
       // (a 2019 opening on a page republished this month is still a 2019 opening), and a past year named in the quote makes the claim stale.
@@ -301,7 +314,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
         else drop('duplicate')
         note(c0, 'review', why); continue
       }
-      if (t.published || t.note) c = { ...c0, published_at: t.published, timing_note: t.note }
+      if (t.published || t.note || undatedWhy) c = { ...c0, published_at: t.published, timing_note: [undatedWhy, t.note].filter(Boolean).join('; ').slice(0, 300) || null }
     }
     if (!page) { drop('page_unreachable'); note(c, 'dropped', 'page_unreachable'); continue }
     if (isFail(page)) {
