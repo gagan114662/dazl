@@ -7,6 +7,7 @@ import { advFlags, UI_PLATFORMS, connectorId, CONSENT_VERSION, isAdvPlatform, pl
 import { tinyfishEnabled } from '@/lib/search/tinyfish'
 import { rateLimit } from '@/lib/rate-limit'
 import { sameOriginJson } from '@/lib/same-origin'
+import { audit } from '@/lib/audit-route'
 
 // Status never includes a credential. When the operator has not enabled the tier, it reports available: false.
 export async function GET() {
@@ -40,10 +41,19 @@ export async function POST(req: NextRequest) {
   if (body.action === 'consent') {
     if (body.accept !== true || body.version !== CONSENT_VERSION) return NextResponse.json({ error: 'Consent not recorded' }, { status: 400 })
     await writeConsent(db, user.id, scopeFor(p))
+    await audit(user, req, { action: 'consent.accepted', resource: 'social', id: p, summary: { platform: p, version: CONSENT_VERSION } })
     return NextResponse.json({ ok: true })
   }
-  if (body.action === 'revoke') { await removeConsent(db, user.id, scopeFor(p)); await setEnabled(db, user.id, connectorId(p), false); return NextResponse.json({ ok: true }) }
-  if (body.action === 'toggle' && typeof body.enabled === 'boolean') return NextResponse.json({ ok: await setEnabled(db, user.id, connectorId(p), body.enabled) })
+  if (body.action === 'revoke') {
+    await removeConsent(db, user.id, scopeFor(p)); await setEnabled(db, user.id, connectorId(p), false)
+    await audit(user, req, { action: 'consent.revoked', resource: 'social', id: p, summary: { platform: p } })
+    return NextResponse.json({ ok: true })
+  }
+  if (body.action === 'toggle' && typeof body.enabled === 'boolean') {
+    const ok = await setEnabled(db, user.id, connectorId(p), body.enabled)
+    if (ok) await audit(user, req, { action: body.enabled ? 'connector.enabled' : 'connector.disabled', resource: 'social', id: p, summary: { platform: p } })
+    return NextResponse.json({ ok })
+  }
   if (body.action === 'save') {
     const rl = (await rateLimit(`adv:${user.id}`, 10, 60 * 60 * 1000))
     if (!rl.ok) return NextResponse.json({ error: 'Too many attempts. Try again later.' }, { status: 429 })
@@ -52,6 +62,7 @@ export async function POST(req: NextRequest) {
     if (session.length < 10 || session.length > 8000) return NextResponse.json({ error: 'That does not look like a valid session' }, { status: 400 })
     if (!process.env.DAZL_MASTER_KEY) return NextResponse.json({ error: 'Key storage is not available right now' }, { status: 503 })
     await writeCredential(db, user.id, connectorId(p), session)
+    await audit(user, req, { action: 'credential.saved', resource: 'social', id: p, summary: { platform: p } })
     return NextResponse.json({ ok: true, last4: session.slice(-4) })
   }
   return NextResponse.json({ error: 'Bad request' }, { status: 400 })
@@ -62,5 +73,7 @@ export async function DELETE(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const p = req.nextUrl.searchParams.get('platform')
   if (!isAdvPlatform(p)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
-  return NextResponse.json({ ok: await removeCredential(await getDb(), user.id, connectorId(p)) })
+  const ok = await removeCredential(await getDb(), user.id, connectorId(p))
+  if (ok) await audit(user, req, { action: 'credential.removed', resource: 'social', id: p, summary: { platform: p } })
+  return NextResponse.json({ ok })
 }

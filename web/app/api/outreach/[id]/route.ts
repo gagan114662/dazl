@@ -3,6 +3,7 @@ import { getScanDb, requireUser } from '@/lib/scan/service'
 import { approve, editDraft, OutreachError, resolveUncertain, sendMessage, skip } from '@/lib/outreach/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
+import { audit } from '@/lib/audit-route'
 
 const STATUS: Record<string, number> = { not_sales_contact: 422, lead_currentness_unconfirmed: 409, lead_ungraded: 409, lead_evidence_withdrawn: 409, domain_unconfirmed: 409, review_unreadable: 409, not_found: 404, already_sending: 409, already_uncertain: 409, not_approved: 409, not_a_draft: 409, not_editable: 409, not_skippable: 409, not_uncertain: 409, suppressed: 409, daily_cap: 429, gmail_rate_limited: 429 }
 
@@ -46,8 +47,12 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     else if (action === 'retry') resolveUncertain(db, g.user.id, id, 'retry')
     else if (action === 'send') {
       if (!(await rateLimit(`send:${g.user.id}`, 60, 60 * 60 * 1000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
-      return NextResponse.json({ result: await sendMessage(db, g.user.id, id) })
+      const result = await sendMessage(db, g.user.id, id)
+      // the outcome only; the recipient, subject and body stay in the outreach store
+      await audit(g.user, req, { action: 'outreach.send', resource: 'message', id, summary: { outcome: result } })
+      return NextResponse.json({ result })
     } else return NextResponse.json({ error: 'Bad request' }, { status: 400 })
+    await audit(g.user, req, { action: `outreach.${action}`, resource: 'message', id })
     return NextResponse.json({ ok: true })
   } catch (e) { return fail(e) }
 }

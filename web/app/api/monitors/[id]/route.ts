@@ -3,6 +3,7 @@ import { requireUser } from '@/lib/scan/service'
 import { getDb } from '@/lib/db/client'
 import { sameOriginJson } from '@/lib/same-origin'
 import { deleteMonitor, setMonitorEnabled } from '@/lib/monitors'
+import { audit } from '@/lib/audit-route'
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const user = await requireUser()
@@ -23,5 +24,6 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   const { id } = await params
   if (!/^[a-f0-9]{24}$/.test(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   if (!(await deleteMonitor(await getDb(), user.id, id))) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  await audit(user, req, { action: 'data.deleted', resource: 'monitor', id })
   return NextResponse.json({ ok: true })
 }

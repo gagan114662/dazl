@@ -10,6 +10,7 @@ import EnrichmentPanel from './enrichment-panel'
 import CompetitorsPanel from './competitors-panel'
 import MemoryPanel from './memory-panel'
 import UsagePanel from './usage-panel'
+import AuditPanel from './audit-panel'
 
 const SECTIONS = [['plan', 'Plan'], ['memory', 'Memory'], ['model-key', 'Model key'], ['connectors', 'Connectors'], ['enrichment', 'Enrichment'], ['gmail', 'Gmail'], ['autopilot', 'Autopilot'], ['replies', 'Replies']]
 
@@ -33,6 +34,7 @@ export default function Settings() {
       <div id="crm" className="scroll-mt-6"><CrmPanel /></div>
       <CalcomPanel />
       <div id="enrichment" className="scroll-mt-6"><EnrichmentPanel /></div>
+      <AuditPanel />
     </div>
   )
 }

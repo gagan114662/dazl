@@ -7,6 +7,7 @@ import { toCsv } from '@/lib/scan/csv'
 import { eventDateCopy } from '@/lib/scan/date-copy'
 import { exportEvidenceOrigin } from '@/lib/scan/evidence-origin'
 import { bestPeople } from '@/lib/people/best-person'
+import { audit } from '@/lib/audit-route'
 
 const COLUMNS = [
   { key: 'company', label: 'Company' },
@@ -53,6 +54,7 @@ export async function GET(req: NextRequest) {
   const via = await readGdeltAttribution(db, user.id, rows.map(r => String(r.lead_id)))
   const people = await bestPeople(db, user.id, rows as { lead_id: string; job_id: string }[])
   const csv = toCsv(rows.map(r => ({ ...r, ...people.get(r.lead_id as string), discovered_via: via.get(String(r.lead_id))?.text ?? '', discovered_via_link: via.get(String(r.lead_id))?.link ?? '', evidence_origin_label: exportEvidenceOrigin(r as Parameters<typeof exportEvidenceOrigin>[0]), date_context: eventDateCopy(typeof r.event_date === 'string' ? r.event_date : null, typeof r.date_status === 'string' ? r.date_status : null), created_at: typeof r.created_at === 'number' ? new Date(r.created_at * 1000).toISOString() : r.created_at })), COLUMNS)
+  await audit(user, req, { action: 'export.leads', resource: jobId ? 'scan_job' : 'leads', id: jobId || null, summary: { rows: rows.length, fixtures: includeFixtures } })
   return new NextResponse(csv, {
     headers: {
       'content-type': 'text/csv; charset=utf-8',

@@ -13,6 +13,7 @@ import type { Lease } from '@/lib/shared/lease'
 import { dueTenants, runIndexChecks } from '@/lib/seo/indexing'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
+import { purgeAudit } from '@/lib/audit'
 
 // Called by a scheduler (cron or a systemd timer) with AUTOPILOT_TICK_SECRET. Reads replies and sends due
 // follow-ups for tenants who turned both on. Without the secret configured the route does not exist.
@@ -75,5 +76,10 @@ async function tick(lease: Lease, requestId?: string) {
     await lease.keep()
     try { const r = await runIndexChecks(shared, t); if (r && r.length > 0) indexChecked++ } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:index-checks', tenantId: t, requestId }) }
   }
-  return NextResponse.json({ ok: true, tenants: done, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, index_checks: indexChecked })
+  // Audit retention (lib/audit.ts): events older than AUDIT_RETAIN_S, a bounded batch per tick, inside the only
+  // transaction the delete trigger allows, fenced like every other write here.
+  await lease.keep()
+  let auditPurged = 0
+  try { auditPurged = await purgeAudit(shared, { fence }) } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:audit-retention', requestId }) }
+  return NextResponse.json({ ok: true, tenants: done, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, index_checks: indexChecked, audit_purged: auditPurged })
 }

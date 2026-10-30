@@ -141,4 +141,5 @@ export const ROUTES: RouteEntry[] = [
   { path: 'warm/connections', method: 'DELETE', auth: 'session', crossTenant: 'session-scope' },
   { path: 'watch', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' } },
   { path: 'watch', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' } },
+  { path: 'workspace/audit', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/audit-routes-runtime.mts' } },
 ]

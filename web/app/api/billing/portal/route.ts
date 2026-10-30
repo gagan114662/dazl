@@ -5,6 +5,7 @@ import { createPortalUrl } from '@/lib/billing/stripe'
 import { sameOriginJson } from '@/lib/same-origin'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
+import { audit } from '@/lib/audit-route'
 
 export async function POST(req: NextRequest) {
   const user = await requireUser()
@@ -13,6 +14,7 @@ export async function POST(req: NextRequest) {
   if (!process.env.STRIPE_SECRET_KEY) return NextResponse.json({ error: 'Billing is not available yet' }, { status: 503 })
   try {
     const url = await createPortalUrl(await getDb(), user.id)
+    if (url) await audit(user, req, { action: 'billing.portal_opened', resource: 'plan' })
     return url ? NextResponse.json({ url }) : NextResponse.json({ error: 'No subscription found' }, { status: 404 })
   } catch (e) {
     captureError(e, { source: 'route', where: '/api/billing/portal', method: 'POST', tenantId: user.id, requestId: requestIdOf(req) })

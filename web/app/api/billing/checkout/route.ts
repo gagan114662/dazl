@@ -7,6 +7,7 @@ import { rateLimit } from '@/lib/rate-limit'
 import { sameOriginJson } from '@/lib/same-origin'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
+import { audit } from '@/lib/audit-route'
 
 export async function POST(req: NextRequest) {
   const user = await requireUser()
@@ -17,7 +18,9 @@ export async function POST(req: NextRequest) {
   const db = await getDb()
   if (await readPlan(db, user.id) === 'pro') return NextResponse.json({ error: 'Already on Pro' }, { status: 409 })
   try {
-    return NextResponse.json({ url: await createCheckoutUrl(db, user.id, user.email) })
+    const url = await createCheckoutUrl(db, user.id, user.email)
+    await audit(user, req, { action: 'billing.checkout_started', resource: 'plan', summary: { plan: 'pro' } })
+    return NextResponse.json({ url })
   } catch (e) {
     captureError(e, { source: 'route', where: '/api/billing/checkout', method: 'POST', tenantId: user.id, requestId: requestIdOf(req) })
     return NextResponse.json({ error: 'Could not start checkout' }, { status: 502 })

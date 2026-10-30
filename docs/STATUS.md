@@ -96,8 +96,12 @@ Updated by the builder on every branch. Newest first.
 
 - Blocked-source verification: the narrow copy path is in review (#222); wider use waits for #188 data from a live run.
 - Teams & access (#353, then #358, #357, #371): design in docs/design/workspaces.md. Increment 1 (workspace and
-  membership tables, backfill, server-side resolution, role table) in review; next: route-layer tenantId/role checks,
-  then invitations, member management and switching.
+  membership tables, backfill, server-side resolution, role table) merged; route-layer tenantId/role checks (#424) in
+  review; then invitations, member management and switching.
+- Audit trail (#371): design in docs/design/audit.md. Append-only `audit_events` (PG 0018), events for credential,
+  billing, Stripe plan, sending, CRM, pipeline, consent, export and deletion actions, Settings > Audit trail and
+  `GET /api/workspace/audit` (owners and admins; CSV), 400-day retention on the tick. Support access needs an owner
+  decision.
 
 ## Next (in order, for the scheduled builder; nothing business- or place-specific)
 

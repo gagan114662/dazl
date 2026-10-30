@@ -6,6 +6,7 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 import { rateLimit } from '@/lib/rate-limit'
+import { audit } from '@/lib/audit-route'
 
 export async function GET() {
   const user = await requireUser()
@@ -39,10 +40,12 @@ export async function POST(req: NextRequest) {
       if (provider !== 'webhook' && key.length < 8) return NextResponse.json({ error: 'That key looks too short' }, { status: 400 })
       if (!process.env.DAZL_MASTER_KEY) return NextResponse.json({ error: 'Key storage is not available right now' }, { status: 503 })
       saveCrmConfig(db, user.id, provider === 'webhook' ? { provider, url } : { provider, key })
+      await audit(user, req, { action: 'credential.saved', resource: 'crm', id: provider, summary: { provider } })
       return NextResponse.json({ ok: true })
     }
     case 'disconnect':
       disconnectCrm(db, user.id)
+      await audit(user, req, { action: 'credential.removed', resource: 'crm' })
       return NextResponse.json({ ok: true })
     case 'push':
     case 'status':
@@ -62,6 +65,7 @@ export async function POST(req: NextRequest) {
         if (typeof body?.created !== 'boolean') return NextResponse.json({ error: 'Say whether the contact is in your CRM' }, { status: 400 })
         if (!dest || !resolveClaim(db, user.id, dest, lead.id, body.created)) return NextResponse.json({ error: 'Nothing to resolve for this lead' }, { status: 409 })
         auditPush(db, user.id, cfg.provider, lead, body.created ? 'resolved_created' : 'resolved_not_created')
+        await audit(user, req, { action: 'crm.resolved', resource: 'lead', id: lead.id, summary: { provider: cfg.provider, created: body.created } })
         return NextResponse.json({ ok: true })
       }
       let attemptId = ''
@@ -88,11 +92,13 @@ export async function POST(req: NextRequest) {
         const unknown = e instanceof CrmPushError && e.outcome === 'unknown'
         if (!finish(unknown ? 'uncertain' : 'failed', null)) return unknownReply()
         auditPush(db, user.id, cfg.provider, lead, unknown ? 'uncertain' : 'worker_error')
+        await audit(user, req, { action: 'crm.pushed', resource: 'lead', id: lead.id, summary: { provider: cfg.provider, outcome: unknown ? 'unknown' : 'failed' } })
         captureError(e, { source: 'route', where: '/api/crm', method: 'POST', tenantId: user.id, requestId: requestIdOf(req) })
         return NextResponse.json({ error: e instanceof Error ? e.message : 'Push failed', outcome: unknown ? 'unknown' : 'failed' }, { status: 502 })
       }
       if (!finish('ok', r.externalId)) return unknownReply()
       auditPush(db, user.id, cfg.provider, lead, 'ok')
+      await audit(user, req, { action: 'crm.pushed', resource: 'lead', id: lead.id, summary: { provider: cfg.provider, outcome: 'ok' } })
       return NextResponse.json({ ok: true, message: r.message, external_id: r.externalId })
     }
     default:

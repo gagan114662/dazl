@@ -10,6 +10,23 @@ CREATE TABLE app_leases (
       expires_at INTEGER NOT NULL
     , generation INTEGER NOT NULL DEFAULT 0);
 
+CREATE TABLE audit_events (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    actor_id TEXT NOT NULL CHECK (length(actor_id) <= 80),
+    actor_kind TEXT NOT NULL CHECK (actor_kind IN ('user', 'service', 'support')),
+    action TEXT NOT NULL CHECK (length(action) <= 64),
+    resource_type TEXT NOT NULL CHECK (length(resource_type) <= 40),
+    resource_id TEXT CHECK (resource_id IS NULL OR length(resource_id) <= 80),
+    decision TEXT NOT NULL CHECK (decision IN ('allowed', 'denied')),
+    summary TEXT NOT NULL DEFAULT '{}' CHECK (length(summary) <= 2000),
+    correlation_id TEXT CHECK (correlation_id IS NULL OR length(correlation_id) <= 80),
+    at INTEGER NOT NULL,
+    seq INTEGER NOT NULL
+  );
+
+CREATE TABLE audit_purge_gate (id INTEGER PRIMARY KEY CHECK (id = 1));
+
 CREATE TABLE autopilot_audit (
       id TEXT PRIMARY KEY,
       tenant_id TEXT NOT NULL,
@@ -765,6 +782,10 @@ CREATE TABLE work_queue (
 
 CREATE TABLE work_queue_meta (k TEXT PRIMARY KEY, v INTEGER NOT NULL);
 
+CREATE INDEX audit_events_seq ON audit_events (seq);
+
+CREATE INDEX audit_events_tenant_at ON audit_events (tenant_id, at);
+
 CREATE INDEX autopilot_audit_tenant ON autopilot_audit (tenant_id, created_at);
 
 CREATE INDEX commenter_batches_user ON commenter_batches (user_id, created_at);
@@ -859,6 +880,12 @@ CREATE INDEX work_queue_claimable
 CREATE UNIQUE INDEX work_queue_dedupe
         ON work_queue(tenant_id, kind, dedupe_key)
         WHERE dedupe_key IS NOT NULL AND status IN ('pending','claimed');
+
+CREATE TRIGGER audit_events_no_delete BEFORE DELETE ON audit_events
+    WHEN NOT EXISTS (SELECT 1 FROM audit_purge_gate)
+    BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END;
+
+CREATE TRIGGER audit_events_no_update BEFORE UPDATE ON audit_events BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END;
 
 CREATE TRIGGER connector_audit_insert_seq AFTER INSERT ON connector_audit WHEN NEW.insert_seq IS NULL BEGIN UPDATE connector_audit SET insert_seq = (SELECT coalesce(max(insert_seq), 0) + 1 FROM connector_audit) WHERE rowid = NEW.rowid; END;
 
