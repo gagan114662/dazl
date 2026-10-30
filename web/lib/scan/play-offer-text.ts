@@ -190,8 +190,8 @@ const ROLES = new Set(('coordinator receptionist manager assistant administrator
   'coo cmo vp officer specialist analyst consultant agent operator associate executive').split(' '))
 const ROLE_MODIFIERS = new Set('office sales marketing dental medical clinical senior junior first new full-time part-time account customer support operations finance front-desk'.split(' '))
 const roleNoun = (w: string) => { const x = w.toLowerCase(); return ROLES.has(x) || (x.endsWith('s') && ROLES.has(x.slice(0, -1))) }
-function roleLength(words: string[]): number {
-  let k = /^(?:a|an|the|their|its|your|our)$/i.test(words[0] ?? '') ? 1 : 0
+function roleLength(words: string[], possessive = true): number {
+  let k = (possessive ? /^(?:a|an|the|their|its|your|our)$/i : /^(?:a|an|the)$/i).test(words[0] ?? '') ? 1 : 0
   const start = k
   while (k < words.length && k - start <= 3) {
     if (roleNoun(words[k])) return k + 1
@@ -258,13 +258,18 @@ const EVENT_WORDS = new Set(('a an the their its another additional new second t
   'partnership partnerships award awards certification certifications license licenses licence licences permit permits expansion acquisition merger ipo exit ' +
   'publicly public').split(' '))
 const AUX = /^(?:have|has|had|are|is|were|was|recently|just|newly|also|now|been|being)$/i
+const EVENT_BASE = new Set('open launch raise announce post expand move relocate acquire add sign secure close start grow double rebrand renovate remodel recruit appoint promote partner merge register incorporate list'.split(' '))
 function eventLengths(words: string[]): number[] {
-  let k = 0, gated = false
+  let k = 0, gated = false, pronoun = false, aux = false
   if (/^(?:,|and|or)$/i.test(words[k] ?? '')) { k++; gated = true }
-  if (/^(?:that|who|which)$/i.test(words[k] ?? '')) { k++; gated = true }
-  if (gated) while (AUX.test(words[k] ?? '')) k++
-  if (!EVENT_VERBS.has((words[k] ?? '').toLowerCase())) return []
+  if (/^(?:that|who|which)$/i.test(words[k] ?? '')) { k++; gated = true; pronoun = true }
+  if (gated) while (AUX.test(words[k] ?? '')) { k++; aux = true }
+  const verb = (words[k] ?? '').toLowerCase()
+  if (!EVENT_VERBS.has(verb)) return []
   if (!gated && !(k === 0 && /ing$/i.test(words[0]))) return []
+  // "Customers, add a product." is an instruction to the seller, not an event: after a bare joiner only a past or
+  // -ing form counts
+  if (gated && !pronoun && !aux && EVENT_BASE.has(verb)) return []
   k++
   const out = [k]
   while (k < words.length) {
@@ -314,7 +319,7 @@ function qualifierLengths(words: string[], mode: Mode): number[] {
     else if (/^(?:who|that)$/.test(w1) && /^(?:is|are)$/.test((words[2] ?? '').toLowerCase()) && (words[3] ?? '').toLowerCase() === 'hiring') hireAt = 4
   }
   if (hireAt) {
-    const n = roleLength(words.slice(hireAt))
+    const n = roleLength(words.slice(hireAt), !mode.narrow)
     if (n) {
       let k = hireAt + n
       out.add(k)
@@ -383,12 +388,15 @@ function isOutputInstruction(x: string): boolean {
     // words, and the person noun it ends in): "an owner or practice manager contact" yes, "dental practices a new
     // website and contact details" no, since a report noun in between is something handed to the buyers
     let person = false
-    return item.every(w => {
-      // a report noun is read as one first: "company" and "lead" are columns of the report, not people handed something
-      const who = !REPORT_NOUNS.has(w) && (BUYERS.has(w) || BUYER_SINGULAR.has(w) || roleNoun(w) || ROLE_MODIFIERS.has(w))
-      if (who) person = true
-      if (person) return who || OUTPUT_FILLER.has(w) || OUTPUT_ADJ.has(w) || PERSON_NOUNS.has(w)
-      return OUTPUT_FILLER.has(w) || OUTPUT_ADJ.has(w) || REPORT_NOUNS.has(w) || NUMBER.test(w)
+    // a report noun is read as one first: "company" and "lead" are columns of the report, not people handed something
+    const isWho = (w: string) => !REPORT_NOUNS.has(w) && (BUYERS.has(w) || BUYER_SINGULAR.has(w) || roleNoun(w) || ROLE_MODIFIERS.has(w))
+    return item.every((w, i) => {
+      if (isWho(w)) person = true
+      if (!person) return OUTPUT_FILLER.has(w) || OUTPUT_ADJ.has(w) || REPORT_NOUNS.has(w) || NUMBER.test(w)
+      // "owner or practice manager contact": a joiner inside the person joins person words; "a receptionist and a
+      // contact" starts a second thing handed over, so it is not a report item
+      if (w === 'and' || w === 'or') return isWho(item[i + 1] ?? '')
+      return isWho(w) || OUTPUT_FILLER.has(w) || OUTPUT_ADJ.has(w) || PERSON_NOUNS.has(w)
     }) && (!person || PERSON_NOUNS.has(item[item.length - 1]))
   })
 }
@@ -401,7 +409,8 @@ function isTargeting(x: string): boolean {
   const m = IMPERATIVE.exec(x)
   const body = m ? m[3].replace(LEADING, '') : x
   // EXCLUDABLE nouns only after an excluding verb or a negated one ("Do not target directories.")
-  const mode: Mode = { excl: !!m && (!!m[1] || /^(?:exclude|skip|avoid|ignore)$/i.test(m[2])), narrow: false }
+  // ... or a negated targeting verb ("Do not target directories."); never a negated include/find, which narrows the offer
+  const mode: Mode = { excl: !!m && (/^(?:exclude|skip|avoid|ignore)$/i.test(m[2]) || (!!m[1] && /^(?:target|contact|reach|email|message)$/i.test(m[2]))), narrow: false }
   const words = body.replace(/,/g, ' , ').trim().split(/\s+/).filter(Boolean)
   return buyerGroup(words, mode.excl).some(n => tailOk(words.slice(n), mode))
 }

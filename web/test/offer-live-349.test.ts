@@ -67,6 +67,8 @@ const TARGETING_OR_OUTPUT = [
   'Find independent dental practices in New York City, 1-5 locations, hiring receptionists.',
   'Show the evidence with dates.',
   'Show practices an owner contact.',
+  'Report practice manager phone numbers.',
+  'Find practices that opened a new location or raised a round.',
 ]
 test('#349 class: a targeting or output instruction of the request is never a commercial term', () => {
   const failures: string[] = []
@@ -112,6 +114,15 @@ const STILL_A_CHOICE: [string, string][] = [
   ['buyer object before a person noun', `Show dental practices a new website and contact details. We sell ${P}.`],
   ['buyer object before a person noun', `Show dental practices leads and contacts. We sell ${P}.`],
   ['buyer object before a person noun', `Show clinics a new location and contacts. We sell ${P}.`],
+  ['a role given, not reported', `Show practices a receptionist and a contact. We sell ${P}.`],
+  ['a role given, not reported', `Show practices a receptionist or a contact. We sell ${P}.`],
+  // council seat 1: a negated include/find narrows the offer; only an excluding verb skips these nouns
+  ['negated include', `Do not include customer portals. We sell ${P}.`],
+  ['negated include', `Don't include directory listings. We sell ${P}.`],
+  ['negated find', `Never find marketplaces. We sell ${P}.`],
+  // council seat 3: an instruction to the seller after a comma is not a buyer event
+  ['instruction after a comma', `Customers, add a product. We sell ${P}.`],
+  ['instruction after a comma', `Find practices, open a new location. We sell ${P}.`],
 ]
 test('#349 class controls: changed product, audience, withdrawals, commercial terms and unproved sentences stay a choice', () => {
   const failures: string[] = []
@@ -217,7 +228,7 @@ test('#349 council: service, product and claim sentences stay material next to t
   }
   assert.deepEqual(failures, [])
   // the excluding verbs still skip these nouns, and a negated targeting verb counts as excluding
-  for (const s of ['Exclude directories and job boards.', 'Skip marketplaces.', 'Do not target franchises or competitors.', 'Never include aggregators.'])
+  for (const s of ['Exclude directories and job boards.', 'Skip marketplaces.', 'Do not target franchises or competitors.', 'Never contact aggregators.'])
     assert.equal(resolve(`${s} We sell ${P}.`).source, 'recorded', s)
 })
 
@@ -225,7 +236,8 @@ test('#349 council: service, product and claim sentences stay material next to t
 // qualifiers could read (a size, a window, an event) is still a choice, as before this change.
 test('#349 council: the withdrawal gate is not loosened by the qualifier grammars', () => {
   for (const q of ['We no longer offer free onboarding with 1-5 seats.', 'We no longer offer refunds in the last 90 days.', 'We do not offer phone support recently.',
-    'We no longer offer support that launched a new product.', 'Find dental practices in NYC. We no longer offer refunds in the last 90 days.'])
+    'We no longer offer support that launched a new product.', 'Find dental practices in NYC. We no longer offer refunds in the last 90 days.',
+    'We no longer offer refunds to practices hiring our account manager.'])
     assert.equal(resolve(q).source, 'conflict', q)
   // and the unrelated term exclusions that resolved before still resolve
   for (const q of ['Find dental practices in NYC hiring. We do not offer free trials.', "Independent dental practices in New York City hiring a front-desk coordinator. We don't provide on-site training.", 'We do not offer refunds to restaurants.'])
