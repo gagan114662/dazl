@@ -89,6 +89,21 @@ const STILL_A_CHOICE: [string, string][] = [
   ['predicate after the window', `Find dental practices in the last 90 days cost extra. We sell ${P}.`],
   ['result claim', `Independent dental practices hiring a coordinator won customers. We sell ${P}.`],
   ['extra service', `${TARGETING_OR_OUTPUT[2]} We sell ${P} and payroll software.`],
+  // council: a sentence that hands the buyers something is an offer, never a report ("what to show")
+  ['hands the buyers leads', `Provide dental practices with leads. We sell ${P}.`],
+  ['hands the buyers leads', `Provide dental practices with new leads. We sell ${P}.`],
+  ['hands the buyers a quote', `Give dental practices a quote. We sell ${P}.`],
+  ['hands the buyers a website', `Give dental practices a new website. We sell ${P}.`],
+  ['hands the buyers a website', `Provide dental practices with a website. We sell ${P}.`],
+  ['hands the buyers a brand', `Provide dental practices with a new brand. We sell ${P}.`],
+  ['hands the buyers a location', `Give dental practices a new location. We sell ${P}.`],
+  ['hands the buyers a receptionist', `Provide dental practices with a new receptionist. We sell ${P}.`],
+  ['hands the buyers contact data', `Provide dental practices with email addresses and phone numbers. We sell ${P}.`],
+  ['buyers as the object of a report verb', `Show dental practices a new website. We sell ${P}.`],
+  ['buyers as the object of a report verb', `Show dental practices leads. We sell ${P}.`],
+  ['from us is the seller, not a place', `Find dental practices that recruited a receptionist from us. We sell ${P}.`],
+  ['a contract length is not a window', `Find dental practices for 3 months. We sell ${P}.`],
+  ['a contract length is not a window', `Find dental practices for one year. We sell ${P}.`],
 ]
 test('#349 class controls: changed product, audience, withdrawals, commercial terms and unproved sentences stay a choice', () => {
   const failures: string[] = []

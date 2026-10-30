@@ -224,7 +224,7 @@ function timeLength(words: string[]): number {
   if (/^(?:this|last|past|next)$/.test(w0) && PERIOD.test(w1)) return 2
   if (w0 === 'since' && (/^\d{4}$/.test(w1) || /^(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)$/.test(w1))) return /^\d{4}$/.test((words[2] ?? '')) && !/^\d{4}$/.test(w1) ? 3 : 2
   let k = 0
-  if (/^(?:in|within|over|during|from|for)$/.test(w0)) k++
+  if (/^(?:in|within|over|during|from)$/.test(w0)) k++ // never "for": "for 3 months" reads as a contract length
   if ((words[k] ?? '').toLowerCase() === 'the') k++
   if (/^(?:last|past|previous|next|recent|first)$/i.test(words[k] ?? '')) k++
   else if (k === 0) return 0
@@ -275,8 +275,11 @@ function qualifierLengths(words: string[]): number[] {
   const prepLen = w0 === 'based' && w1 === 'in' ? 2 : PLACE_PREP.test(w0) ? 1 : 0
   if (prepLen) {
     let k = prepLen
-    if ((words[k] ?? '').toLowerCase() === 'the' && !placeLength(words.slice(k))) k++
+    const the = (words[k] ?? '').toLowerCase() === 'the' && !placeLength(words.slice(k))
+    if (the) k++
     let n = placeLength(words.slice(k))
+    // a bare "us" is the country only after "the" ("in the US"); "from us" is the seller
+    if (n === 1 && (words[k] ?? '').toLowerCase() === 'us' && !the) n = 0
     while (n) {
       k += n
       out.add(k)
@@ -336,22 +339,38 @@ function tailOk(words: string[]): boolean {
 // company, website and a named contact."): a reporting verb, then only words that name what to show (evidence, dates,
 // sources, contacts, names, links), who (a buyer or role), or how many. A price, discount, term or product word is not
 // among them, so "Show the dated evidence and our discount." stays material.
-const OUTPUT_IMPERATIVE = /^(?:(?:please|and|also|then|just)\s+)?(?:show|list|return|report|display|give|surface|cite|attach|present|output|provide)(?:\s+(?:me|us))?\s+(?:with\s+)?(.+)$/i
-const OUTPUT_WORDS = new Set(('a an the each every all any its their your our per of for with plus and or me us as well too also only ' +
-  'evidence source sources contact contacts email emails phone phones number numbers date dates link links url urls name names title titles role roles ' +
-  'summary summaries reason reasons quote quotes excerpt excerpts snippet snippets signal signals proof address addresses website websites domain domains ' +
-  'linkedin profile profiles headcount size location locations detail details info information context note notes line lines page pages score scores fit ' +
-  'rationale why lead leads result results person timestamp timestamps publication article articles posting postings listing listings citation citations ' +
-  'column columns field fields match matches explanation explanations description descriptions industry decision-maker decision-makers decisionmaker decisionmakers ' +
-  'dated verified direct primary named public recent relevant original exact full short brief one-line top best key main specific supporting matching confirmed ' +
-  'cited linked clickable working valid current latest first second new buyer seller decision-making').split(' '))
+// Only reporting verbs: never give/provide/offer, which hand the buyers something and so can state an offer ("Provide
+// dental practices with leads."). The object is a list of report items, each ending in a report noun; a buyer or role
+// word may appear only as the modifier of a contact-type noun ("an owner or practice manager contact", "founder or
+// head of sales contacts"), never as the object itself ("dental practices a new website" is not a report item).
+const OUTPUT_IMPERATIVE = /^(?:(?:please|and|also|then|just)\s+)?(?:show|list|return|report|display|surface|cite|attach|output)(?:\s+(?:me|us))?\s+(.+)$/i
+const OUTPUT_FILLER = new Set('a an the each every all any its their your our per of for plus and or as well too also only'.split(' '))
+const OUTPUT_ADJ = new Set(('dated verified direct primary named public recent relevant original exact full short brief one-line top best key main specific ' +
+  'supporting matching confirmed cited linked clickable working valid current latest first second new decision-making').split(' '))
+const REPORT_NOUNS = new Set(('evidence source sources contact contacts email emails phone phones number numbers date dates link links url urls name names ' +
+  'title titles role roles summary summaries reason reasons excerpt excerpts snippet snippets signal signals proof address addresses domain domains linkedin ' +
+  'profile profiles headcount size location locations detail details info information context note notes line lines page pages score scores fit rationale ' +
+  'why result results timestamp timestamps publication article articles posting postings listing listings citation citations column columns field fields ' +
+  'match matches explanation explanations description descriptions industry company website websites lead leads decision-maker decision-makers decisionmaker decisionmakers').split(' '))
+// the report nouns a person or role may qualify: who the contact is, not what they get
+const PERSON_NOUNS = new Set('contact contacts name names email emails phone phones number numbers title titles detail details profile profiles address addresses linkedin'.split(' '))
 function isOutputInstruction(x: string): boolean {
   const m = OUTPUT_IMPERATIVE.exec(x)
   if (!m) return false
-  const words = m[1].replace(/,/g, ' , ').trim().split(/\s+/).filter(Boolean)
-  return words.length > 0 && words.every(w => {
-    const y = w.toLowerCase()
-    return y === ',' || OUTPUT_WORDS.has(y) || BUYERS.has(y) || BUYER_SINGULAR.has(y) || roleNoun(y) || ROLE_MODIFIERS.has(y) || NUMBER.test(y)
+  const words = m[1].replace(/,/g, ' , ').trim().split(/\s+/).filter(Boolean).map(w => w.toLowerCase())
+  if (!words.length) return false
+  // every item (between commas) ends in a report noun, and a person/role word inside an item is followed, within that
+  // item, by a person noun
+  const items: string[][] = [[]]
+  for (const w of words) { if (w === ',') items.push([]); else items[items.length - 1].push(w) }
+  return items.every(item => {
+    if (!item.length) return true
+    if (!REPORT_NOUNS.has(item[item.length - 1])) return false
+    return item.every((w, i) => {
+      if (OUTPUT_FILLER.has(w) || OUTPUT_ADJ.has(w) || REPORT_NOUNS.has(w) || NUMBER.test(w)) return true
+      if (BUYERS.has(w) || BUYER_SINGULAR.has(w) || roleNoun(w) || ROLE_MODIFIERS.has(w)) return item.slice(i + 1).some(y => PERSON_NOUNS.has(y))
+      return false
+    })
   })
 }
 // A targeting instruction, a plain description of the buyers with no verb ("Independent dental practices in New
