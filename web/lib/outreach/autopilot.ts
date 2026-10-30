@@ -150,6 +150,10 @@ const TRANSIENT = new Set(['gmail_unavailable', 'gmail_rate_limited', 'daily_cap
 const RETRY_MAX = 3
 // The account must reconnect Gmail or resume: the work stays due and goes on the first pass after that.
 const WAIT_FOR_USER = new Set(['gmail_reconnect_needed', 'gmail_not_connected', 'paused'])
+// Autopilot's own authority ended while the send was in progress (turned off, operator flag off, consent no longer
+// current, or its reserved slot gone): known not sent, the slot is released, and the draft stays held and unapproved
+// until autopilot runs again under current authority.
+const AUTHORITY_ENDED = new Set(['autopilot_off', 'autopilot_unavailable', 'consent_required', 'reservation_lost'])
 
 // One pass for this tenant: first the held first touches that are due again (#411), then verified leads that have no
 // message yet. Safe to call repeatedly and from two places at once (the scheduler tick and a finishing scan): a work row
@@ -179,8 +183,21 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
   // Autopilot gives a draft back: out of its queue, and unapproved again if autopilot had approved it, so the user decides.
   const backToUser = (id: string) => { drop(id); db.prepare("UPDATE outreach_messages SET status = 'draft', approved_hash = NULL WHERE id = ? AND tenant_id = ? AND status = 'approved'").run(id, tenantId) }
 
+  // Autopilot may send right now: on, not paused, consent current, operator flag on. Re-read after every await.
+  const authority = (): string | null => {
+    const s2 = getState(db, tenantId)
+    return !autopilotAvailable(env) ? 'autopilot_unavailable' : !s2.enabled ? 'autopilot_off' : s2.paused ? 'paused' : !s2.consent_current ? 'consent_required' : null
+  }
+  const keepHeld = (id: string, leadId: string, code: string, attempts: number) => {
+    hold(id, leadId, code, now, attempts)
+    db.prepare("UPDATE outreach_messages SET status = 'draft', approved_hash = NULL WHERE id = ? AND tenant_id = ? AND status = 'approved'").run(id, tenantId)
+  }
+
   // The gates and the send, for a draft autopilot made (new, or held earlier). 'stop' ends the pass, with out.stopped set.
   const deliver = async (id: string, leadId: string, attempts: number): Promise<'stop' | void> => {
+    // A draft polished (or a held one re-checked) across an await: autopilot may have been turned off meanwhile.
+    const before = authority()
+    if (before) { out.held++; if (before === 'paused') hold(id, leadId, before, now, attempts); else keepHeld(id, leadId, before, attempts); out.stopped = before; return 'stop' }
     const msg = db.prepare('SELECT to_email, status FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(id, tenantId) as { to_email: string; status: string }
     const to = msg.to_email
     // Warm-up drafts are the user's to approve: never sent by autopilot later, whatever happens to the caps.
@@ -213,7 +230,8 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     try {
       if (msg.status === 'draft') approve(db, tenantId, id)
       // Only from the Gmail account the authority was taken with: the send path refuses at commitment if it changed.
-      const r = await sendMessage(db, tenantId, id, { ...d, expectSender: gmailSender(db, tenantId) ?? '' })
+      // authorize: re-read by the send path as its last check, after the token refresh, immediately before Gmail.
+      const r = await sendMessage(db, tenantId, id, { ...d, expectSender: gmailSender(db, tenantId) ?? '', authorize: () => authority() ?? (db.prepare("SELECT 1 FROM autopilot_audit WHERE id = ? AND tenant_id = ? AND action = 'send_reserved'").get(admit.reservation, tenantId) ? null : 'reservation_lost') })
       drop(id)
       // The reservation becomes the send's record ('sent', counted once) or stays counted as possibly sent.
       if (r === 'sent') { out.sent++; settle('sent') }
@@ -225,6 +243,7 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
       // else may have happened after the bytes left, so it keeps counting.
       settle(e instanceof OutreachError ? null : 'send_uncertain')
       audit(db, tenantId, 'send_failed', code, leadId, id)
+      if (AUTHORITY_ENDED.has(code)) { keepHeld(id, leadId, code, attempts); out.held++; out.stopped = code; return 'stop' }
       if (WAIT_FOR_USER.has(code)) { hold(id, leadId, code, now, attempts); if (code !== 'paused') pause(db, tenantId, code); out.held++; out.stopped = code; return 'stop' }
       if (TRANSIENT.has(code) && attempts + 1 < RETRY_MAX) { hold(id, leadId, code, now + 3600 * 2 ** attempts, attempts + 1); out.held++; return }
       // Any other refusal (a check now holds the lead or the address, the sending account changed, retries ran out):

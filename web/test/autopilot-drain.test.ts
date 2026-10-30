@@ -7,8 +7,9 @@ import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { completeOAuth, startOAuth } from '../lib/gmail/oauth.ts'
-import { saveSettings, type Deps } from '../lib/outreach/service.ts'
-import { ATTESTATIONS, CONSENT_VERSION, disable, enable, getState, migrateAutopilot, recentAutopilotAudit, resume, runAutopilot } from '../lib/outreach/autopilot.ts'
+import { approve, saveSettings, sendMessage, type Deps } from '../lib/outreach/service.ts'
+import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
+import { ATTESTATIONS, CONSENT_VERSION, disable, enable, getState, pause, migrateAutopilot, recentAutopilotAudit, resume, runAutopilot } from '../lib/outreach/autopilot.ts'
 import { GmailSendError } from '../lib/gmail/oauth.ts'
 
 const master = randomBytes(32)
@@ -271,4 +272,60 @@ test('#411 sender identity is rechecked at send commitment: an address change du
   const r = await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW + DAY + 1), fetchImpl: swap })
   assert.deepEqual([r.sent, sent.length, work(db).length, draftsBack(db)], [0, 1, 0, 1])
   assert.ok(recentAutopilotAudit(db, 'A').some(a => a.action === 'send_failed' && a.detail === 'sender_changed'))
+})
+
+// Instinct's hold on 881ed67: autopilot's own authority (on, operator flag, current consent, its reserved slot) is
+// re-read by the send path as its last check, after the token refresh, immediately before Gmail; and again after the
+// draft-polish await. Ended authority: nothing sent, the slot released, the draft held and unapproved. Pause keeps its
+// existing handling; a manual send never needs autopilot.
+const reservations = (db: Database.Database) => (db.prepare("SELECT count(*) AS n FROM autopilot_audit WHERE action = 'send_reserved'").get() as { n: number }).n
+const msgStatus = (db: Database.Database, to: string) => (db.prepare('SELECT status FROM outreach_messages WHERE to_email = ?').get(to) as { status: string }).status
+
+test('#448 autopilot turned off, its operator flag off or its consent changed during the token refresh: the held draft is not sent (Instinct negative)', async () => {
+  for (const change of ['disable', 'kill', 'consent'] as const) {
+    const { db, sent, d } = await heldAfterOneSend()
+    const flags = { ...d.flags }
+    const fetchImpl = (async (url: string) => {
+      if (String(url).includes('token')) {
+        if (change === 'disable') disable(db, 'A')
+        if (change === 'kill') flags.AUTOPILOT_ENABLED = '0'
+        if (change === 'consent') db.prepare("UPDATE autopilot_settings SET consent_version = 'older' WHERE tenant_id = 'A'").run()
+      }
+      return tokenOk(url as never)
+    }) as unknown as typeof fetch
+    const r = await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW + DAY + 1), flags, fetchImpl })
+    assert.deepEqual([r.sent, sent.length], [0, 1], `${change}: nothing more sent`)
+    assert.equal(reservations(db), 0, `${change}: the reserved slot is released`)
+    assert.deepEqual(work(db).map(w => w.reason), [{ disable: 'autopilot_off', kill: 'autopilot_unavailable', consent: 'consent_required' }[change]], `${change}: still held`)
+    assert.equal(msgStatus(db, 'b@two.example'), 'draft', `${change}: unapproved again, nothing to send by accident`)
+  }
+})
+
+test('#448 autopilot turned off during the draft-polish await: the new draft is held, not sent', async () => {
+  const db = await setup(); ok(db); pastWarmup(db); migrateKeys(db); saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
+  const { sent, d } = sends(); lead(db, 'a@one.example')
+  const providers = { anthropic: { complete: async () => { disable(db, 'A'); return 'not a usable draft' } } }
+  const r = await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW), providers } as never)
+  assert.deepEqual([r.sent, sent.length, r.stopped], [0, 0, 'autopilot_off'])
+  assert.deepEqual(work(db).map(w => w.reason), ['autopilot_off'])
+  assert.equal(msgStatus(db, 'a@one.example'), 'draft')
+})
+
+test('#448 positive controls: a pause during the token refresh holds as before; re-enabled, the held draft sends once; a manual send needs no autopilot', async () => {
+  { const { db, sent, d } = await heldAfterOneSend()
+    const fetchImpl = (async (url: string) => { if (String(url).includes('token')) pause(db, 'A'); return tokenOk(url as never) }) as unknown as typeof fetch
+    await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW + DAY + 1), fetchImpl })
+    assert.deepEqual([sent.length, work(db).map(w => w.reason), reservations(db)], [1, ['paused'], 0]) }
+  { const { db, sent, d } = await heldAfterOneSend()
+    const fetchImpl = (async (url: string) => { if (String(url).includes('token')) disable(db, 'A'); return tokenOk(url as never) }) as unknown as typeof fetch
+    await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW + DAY + 1), fetchImpl })
+    cap1(db)
+    await runAutopilot(db, 'A', 'Acme', at(d, NOW + DAY + 2))
+    assert.deepEqual([sent.length, work(db).length], [2, 0], 'turned on again: the held draft goes once') }
+  { const db = await setup(); const { sent, d } = sends(); lead(db, 'm@manual.example')
+    disable(db, 'A')
+    const id = (db.prepare('SELECT id FROM leads').get() as { id: string }).id
+    const { createDraft } = await import('../lib/outreach/service.ts')
+    const mid = createDraft(db, 'A', id, 'Acme'); approve(db, 'A', mid, true)
+    assert.equal(await sendMessage(db, 'A', mid, at(d, NOW)), 'sent'); assert.equal(sent.length, 1) }
 })

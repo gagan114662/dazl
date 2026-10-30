@@ -76,7 +76,10 @@ export const testFixtureSend = (db: Database.Database, tenantId: string, m: { to
 
 // expectSender: the Gmail address the caller authorized this send from (autopilot's held drafts); the send is refused
 // (sender_changed) unless the connected account is that address at the moment the message is handed to Gmail.
-export interface Deps extends OAuthDeps { baseUrl?: string; sendFn?: typeof gmailSend; expectSender?: string }
+// authorize: the caller's own authority, re-read synchronously as the last check before the message is handed to Gmail
+// (after every await of the send path); a returned code refuses the send, known not sent. Autopilot passes one (on,
+// not paused, current consent, operator flag, its reserved slot); a manual send passes none and is unchanged.
+export interface Deps extends OAuthDeps { baseUrl?: string; sendFn?: typeof gmailSend; expectSender?: string; authorize?: () => string | null }
 const nowS = (d: Deps) => d.now ?? Math.floor(Date.now() / 1000)
 const baseUrl = (d: Deps) => (d.baseUrl ?? process.env.PUBLIC_BASE_URL ?? 'https://dazl.ai').replace(/\/$/, '')
 
@@ -519,6 +522,7 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
     if (set && set.status !== 'approved') release('approve_sequence_set')
   }
   if (tableExists(db,'autopilot_settings') && (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as {paused:number}|undefined)?.paused) release('paused')
+  if (d.authorize) { const why = d.authorize(); if (why) release(why) }
   const master = d.master ?? getMasterKey()
   const unsubUrl = `${baseUrl(d)}/api/unsubscribe?t=${unsubToken(id, master)}`
   const raw = toBase64Url(buildMime({
