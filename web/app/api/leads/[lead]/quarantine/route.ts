@@ -4,6 +4,7 @@ import { getDb } from '@/lib/db/client'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { setQuarantine } from '@/lib/scan/quarantine'
+import { isReason, recordLeadRejection, revertLeadRejection } from '@/lib/scan/reject-feedback'
 import { denied } from '@/lib/workspace-access'
 import type { Action } from '@/lib/workspaces'
 
@@ -25,10 +26,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
   const { lead } = await params
   const g = await guard(req, lead, 'operate')
   if (g.res) return g.res
-  const body = await req.json().catch(() => ({})) as { reason?: unknown }
+  const body = await req.json().catch(() => ({})) as { reason?: unknown; feedback_reason?: unknown; person?: unknown }
   const r = await setQuarantine(await getDb(), g.user!.tenantId, lead, 'quarantine', typeof body.reason === 'string' ? body.reason : '')
   if (r.status === 'not_found') return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  return NextResponse.json({ quarantined: true })
+  // An optional structured reason (wrong_industry, wrong_person, wrong_location, wrong_timing, competitor, existing_relationship, not_useful) is learned from: the account/person/event is not
+  // reintroduced by later runs. Without one the lead is still quarantined, and nothing is learned. A bad value is refused before anything changes.
+  let learned = false
+  if (body.feedback_reason !== undefined && r.status !== 'unchanged') learned = !!(await recordLeadRejection(await getDb(), g.user!.tenantId, lead, body.feedback_reason as never, typeof body.person === 'string' ? body.person.slice(0, 120) : null))
+  return NextResponse.json({ quarantined: true, learned })
 }
 
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ lead: string }> }) {
@@ -37,5 +42,6 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ l
   if (g.res) return g.res
   const r = await setQuarantine(await getDb(), g.user!.tenantId, lead, 'release')
   if (r.status === 'not_found') return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  return NextResponse.json({ quarantined: false })
+  const reverted = r.status === 'released' ? await revertLeadRejection(await getDb(), g.user!.tenantId, lead) : 0
+  return NextResponse.json({ quarantined: false, reverted })
 }
