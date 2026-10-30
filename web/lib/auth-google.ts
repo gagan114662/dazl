@@ -1,3 +1,4 @@
+import { recordLifecycleEventTx, signupKey, verifiedKey } from './outreach/lifecycle.ts'
 import { createHash, createPublicKey, createVerify, randomBytes, timingSafeEqual } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type { Db, TxBody } from './db/client.ts'
@@ -148,7 +149,8 @@ export async function resolveUser(db: Db, id: GoogleIdentity): Promise<Resolved>
       return await db.tx(function* (t): TxBody<Resolved> {
         const identity = () => t.get<{ user_id: string }>("SELECT user_id FROM oauth_identities WHERE provider='google' AND subject = ?", [id.sub])
         const hit = yield* identity()
-        if (hit) return { user_id: hit.user_id, created: false }
+        // #417: Google verified this address now; the evidence commits with the sign-in (off unless configured)
+        if (hit) { yield* recordLifecycleEventTx(t, { key: verifiedKey(hit.user_id, id.email), kind: 'signup_verified', userId: hit.user_id, email: id.email }); return { user_id: hit.user_id, created: false } }
         if (yield* t.get('SELECT 1 AS x FROM users WHERE email = ?', [id.email])) {
           // On PG each statement sees the latest commit: a concurrent sign-in for this same identity may have committed
           // its user and identity between the two reads above. Look again before calling the email someone else's.
@@ -162,6 +164,8 @@ export async function resolveUser(db: Db, id: GoogleIdentity): Promise<Resolved>
         const o = yield* t.run("INSERT INTO oauth_identities (provider, subject, user_id) VALUES ('google', ?, ?) ON CONFLICT (provider, subject) DO NOTHING", [id.sub, uid])
         if (o.changes !== 1) throw new RaceLost()
         yield* createPersonalWorkspace(t, uid, '')
+        yield* recordLifecycleEventTx(t, { key: signupKey(uid, id.email), kind: 'signup_unverified', userId: uid, email: id.email })
+        yield* recordLifecycleEventTx(t, { key: verifiedKey(uid, id.email), kind: 'signup_verified', userId: uid, email: id.email })
         return { user_id: uid, created: true }
       })
     } catch (e) {

@@ -4,7 +4,9 @@
 // subscription, but neither the sign-up hook nor any payment webhook reached the lifecycle record. The catch-up records
 // an unverified sign-up and a checkout without payment (never "paid": a plan status is not money taken), stops the
 // approved email and the sequence, and stays that way on the next tick. Only a later webhook showing money taken makes it
-// "paid"; a trial checkout does not; a redelivered event is recorded once. Synthetic rows and Stripe-shaped bodies signed
+// "paid"; a trial checkout does not; a payment whose lifecycle write failed (500) is recorded on Stripe's redelivery,
+// exactly once. A Google verification whose apply step was missed is recovered as verified, from the evidence the sign-in
+// recorded in its own transaction. Synthetic rows and Stripe-shaped bodies signed
 // with a test secret; no call leaves the process.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -25,6 +27,7 @@ const { runPgMigrations } = await import('../../lib/db/migrate-pg.ts')
 const { getAuthDb } = await import('../../lib/auth-db.ts')
 const webhook = await import('../../app/api/billing/webhook/route.ts')
 const { reconcileLifecycle } = await import('../../lib/outreach/lifecycle.ts')
+const { resolveUser } = await import('../../lib/auth-google.ts')
 
 globalThis.fetch = (async (input: unknown) => { throw new Error(`Unexpected network call: ${String(input)}`) }) as typeof fetch
 
@@ -68,13 +71,38 @@ async function scenario(engine: 'sqlite' | 'pg') {
   const trial = { id: 'evt_' + id(), object: 'event', created: NOW + 200, type: 'checkout.session.completed', data: { object: { id: 'cs_' + id(), object: 'checkout.session', mode: 'subscription', payment_status: 'no_payment_required', amount_total: 0, client_reference_id: P, customer: CUS, subscription: 'sub_' + id(), metadata: {} } } }
   assert.equal((await deliver(trial)).status, 200)
   assert.deepEqual((await state()).hold, 'checkout_unpaid')
-  // 4. Money taken (a paid invoice above zero): now paid; the same event redelivered is recorded once.
+  // 4. Money taken (a paid invoice above zero), but the lifecycle write fails after the Stripe event committed: the webhook
+  //    answers 500, so Stripe redelivers. The redelivery (a duplicate for billing) records it: paid, exactly once.
   const paid = { id: 'evt_' + id(), object: 'event', created: NOW + 300, type: 'invoice.paid', data: { object: { id: 'in_' + id(), object: 'invoice', customer: CUS, paid: true, amount_paid: 4900 } } }
-  assert.equal((await deliver(paid)).status, 200)
+  await db.run('ALTER TABLE acquisition_lifecycle_events RENAME TO acquisition_lifecycle_events_down')
+  const failed = await deliver(paid)
+  await db.run('ALTER TABLE acquisition_lifecycle_events_down RENAME TO acquisition_lifecycle_events')
+  assert.equal(failed.status, 500, 'the lifecycle write failed: Stripe is asked to deliver again')
+  assert.ok(await db.get('SELECT 1 AS x FROM stripe_events WHERE id = ?', [paid.id]), 'the billing side of the event committed')
+  assert.equal((await state()).hold, 'checkout_unpaid', 'not paid until the payment is recorded')
+  const again = await deliver(paid)
+  assert.deepEqual(again, { status: 200, result: 'duplicate' })
   assert.equal((await deliver(paid)).status, 200)
   const s4 = await state()
   assert.deepEqual([s4.hold, s4.sequence!.stop_reason], ['paid', 'converted_paid'])
-  assert.equal((await db.get<{ n: number }>("SELECT count(*) AS n FROM acquisition_lifecycle_events WHERE event_key = ?", ['stripe:' + paid.id]))!.n, 1)
+  assert.equal((await db.get<{ n: number }>("SELECT count(*) AS n FROM acquisition_lifecycle_events WHERE event_key = ?", ['stripe:' + paid.id]))!.n, 1, 'recorded once')
+
+  // 5. Google verification whose apply step never ran (the callback's write after the sign-in failed): the evidence was
+  //    recorded in the sign-in's own transaction, so the catch-up applies it as a verified sign-up, not merely a hold.
+  const G = 'g.owner@prospect2.example', lead2 = id(), mid2 = id(), seq2 = id()
+  const job2 = id()
+  await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, created_at) VALUES (?, 'acq', 'dazl', 'x', 'y', 'running', ?)", [job2, NOW])
+  await db.run("INSERT INTO leads (id, scan_job_id, company, signal, source_url) VALUES (?, ?, 'Prospect Two', 'hiring', 'https://p2.example/jobs')", [lead2, job2])
+  await db.run("UPDATE scan_jobs SET status = 'done' WHERE id = ?", [job2])
+  await db.run("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, approved_hash) VALUES (?, 'acq', ?, ?, 'Hi', 'A synthetic first email body.', 'approved', 'h')", [mid2, lead2, G])
+  await db.run("INSERT INTO sequences (id, tenant_id, lead_id, message_id, to_email, status) VALUES (?, 'acq', ?, ?, ?, 'active')", [seq2, lead2, mid2, G])
+  const r = await resolveUser(db, { sub: 'google-sub-' + id(), email: G, name: 'Synthetic Owner' })
+  assert.ok('user_id' in r && r.created)
+  assert.deepEqual((await db.all<{ kind: string }>('SELECT kind FROM acquisition_lifecycle_events WHERE user_id = ? ORDER BY kind', [(r as { user_id: string }).user_id])).map(x => x.kind), ['signup_unverified', 'signup_verified'], 'recorded with the sign-in')
+  await reconcileLifecycle(db, process.env, NOW + 400)
+  const held2 = await db.get<{ status: string }>("SELECT h.status FROM acquisition_holds h JOIN acquisition_lifecycle_events e ON e.email_hash = h.email_hash WHERE h.tenant_id = 'acq' AND e.user_id = ? LIMIT 1", [(r as { user_id: string }).user_id])
+  assert.equal(held2?.status, 'signed_up', 'recovered as verified, not only as an unverified hold')
+  assert.deepEqual(await db.get('SELECT status, stop_reason FROM sequences WHERE id = ?', [seq2]), { status: 'stopped', stop_reason: 'converted_signup' })
   console.log('LIFECYCLE_RECOVERY', engine)
 }
 

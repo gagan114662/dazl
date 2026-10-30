@@ -26,8 +26,9 @@ import { norm } from './store.ts'
 // payment evidence. A hold is
 // only ever promoted by stronger evidence, never relabelled from weaker. Nothing here verifies an account, blocks
 // verification or sends an onboarding email.
-// Durability: the sign-up and Google hooks record and apply in their own try, after their own commit, so a failure
-// never undoes a sign-up; reconcileLifecycle (every scheduler tick) records an unverified sign-up for any account whose
+// Durability: a Google sign-in records its verification (and, for a new account, its sign-up) inside the transaction
+// that resolves the account (lib/auth-google.ts resolveUser), so that evidence is never missed; applying it, and the
+// email sign-up hook, run after the commit in their own try, so a failure there never undoes a sign-up; reconcileLifecycle (every scheduler tick) records an unverified sign-up for any account whose
 // current address has none (a crash between the commit and the hook, or sign-ups while this was off), records a checkout
 // for any subscription without one, and applies every pending event. Payment is never reconstructed from plan status: the
 // Stripe webhook records it, and answers 500 when it cannot, so Stripe delivers the event again (a duplicate is recorded
@@ -77,6 +78,14 @@ export function lifecycleHold(db: Database.Database, tenantId: string, email: st
   const held = (db.prepare('SELECT status FROM acquisition_holds WHERE tenant_id = ? AND email_hash = ?').get(tenantId, h) as { status: HoldStatus } | undefined)?.status ?? null
   const kinds = (db.prepare('SELECT kind FROM acquisition_lifecycle_events WHERE email_hash = ?').all(h) as { kind: LifecycleKind }[]).map(r => STATUS[r.kind])
   return [held, ...kinds].filter((s): s is HoldStatus => !!s).sort((a, b) => RANK[b] - RANK[a])[0] ?? null
+}
+
+// The same, as a step of the caller's own transaction (the Google sign-in records its verification evidence in the
+// transaction that resolves the account, so it commits with the sign-in or not at all). Off: nothing.
+export function* recordLifecycleEventTx(t: Parameters<Parameters<Db['tx']>[0]>[0], e: { key: string; kind: LifecycleKind; userId: string; email: string; at?: number }, env: Record<string, string | undefined> = process.env): TxBody<boolean> {
+  if (!acquisitionTenants(env).length || !e.email.includes('@')) return false
+  return (yield* t.run('INSERT INTO acquisition_lifecycle_events (event_key, kind, user_id, email_hash, received_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (event_key) DO NOTHING',
+    [e.key.slice(0, 200), e.kind, e.userId, lifecycleEmailHash(e.email), e.at ?? Math.floor(Date.now() / 1000)])).changes === 1
 }
 
 // Records one event (idempotent by its key). Off: nothing is recorded. Returns whether a new row was written.
@@ -138,8 +147,8 @@ function* applyOne(t: Parameters<Parameters<Db['tx']>[0]>[0], tenantId: string, 
 //   - an unverified sign-up for every account's current address that has none (key signup:<user>:<address hash>);
 //   - a checkout without payment evidence for every subscription the plans table shows (key checkout:<tenant>). Plan or
 //     subscription status is entitlement only: it never becomes "paid" here.
-// Verification is recorded only by the Google sign-in itself, for the address Google verified; payment only by the
-// Stripe webhook.
+// Verification is recorded only by the Google sign-in itself (durably, in its own transaction), for the address Google
+// verified; payment only by the Stripe webhook (which answers 500 until it is recorded, so Stripe redelivers).
 export async function reconcileLifecycle(db: Db, env: Record<string, string | undefined> = process.env, now = Math.floor(Date.now() / 1000)): Promise<ApplyResult & { recorded: number }> {
   if (!acquisitionTenants(env).length) return { recorded: 0, applied: 0, stopped: { held: 0, drafts: 0, sequences: 0, followups: 0 } }
   let recorded = 0

@@ -4,7 +4,7 @@ import { getDb } from '@/lib/db/client'
 import { exchangeCode, parseCookie, resolveUser, sameString, signInConfig, verifyIdToken } from '@/lib/auth-google'
 import { clearOauthCookie, OAUTH_COOKIE, redirectNoStore, setSessionCookie } from '@/lib/auth-google-response'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
-import { applyPendingLifecycle, recordLifecycleEvent, signupKey, verifiedKey } from '@/lib/outreach/lifecycle'
+import { applyPendingLifecycle } from '@/lib/outreach/lifecycle'
 import { captureError } from '@/lib/ops/errors'
 
 const back = (base: string, err: string) => {
@@ -35,12 +35,9 @@ export async function GET(req: NextRequest) {
   const db = await getDb()
   const r = await resolveUser(db, id)
   if ('error' in r) return back(base, 'google_email_exists')
-  // #417: a Google-verified account (off unless configured). Never fails the sign-in; anything missed here is recorded
-  // and applied by the scheduler's reconciliation.
+  // #417: the verification evidence was recorded with the sign-in itself (resolveUser); here it is only applied. A
+  // failure never fails the sign-in: the scheduler's catch-up applies what is pending.
   try {
-    // Bound to the address Google verified now, never to whatever the account's email becomes later.
-    if (r.created) await recordLifecycleEvent(db, { key: signupKey(r.user_id, id.email), kind: 'signup_unverified', userId: r.user_id, email: id.email })
-    await recordLifecycleEvent(db, { key: verifiedKey(r.user_id, id.email), kind: 'signup_verified', userId: r.user_id, email: id.email })
     await applyPendingLifecycle(db)
   } catch (e) { captureError(e, { source: 'route', where: '/api/auth/callback/google:lifecycle' }) }
 
