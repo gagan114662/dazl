@@ -62,6 +62,7 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/outreach/conversion.ts': 1,
   'lib/outreach/currentness.ts': 0,
   'lib/outreach/draft-llm.ts': 0,
+  'lib/outreach/dsn.ts': 0,
   'lib/outreach/followups.ts': 1,
   'lib/outreach/ledger.ts': 0,
   'lib/outreach/play-memory.ts': 0,
