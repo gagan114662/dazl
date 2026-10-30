@@ -914,10 +914,11 @@ export default function LeadsClient() {
                   <div className="min-w-0 break-words">
                     <div className="font-semibold text-base leading-tight">{l.company_domain ? <a className="hover:underline" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{c.company}</a> : c.company}{!!l.watch_new && <span className="ml-2"><Pill tone="mint">new</Pill></span>}{l.quarantined_at && <span className="ml-2"><Pill tone="pink">Rejected</Pill></span>}{!l.quarantined_at && (draftedLeads?.has(l.id) || approved[l.id]) && <span className="ml-2"><Pill tone="mint">Approved</Pill></span>}</div>
                     <div className="text-[var(--ink-2)] text-xs mt-0.5">{c.contact ?? 'No contact found yet'}</div>
+                    {c.contactRoute && <div data-testid="contact-route" className="text-[var(--ink-2)] text-xs mt-0.5">{c.contactRoute.route === 'company' && c.contact !== c.contactRoute.email ? <>Company inbox: {c.contactRoute.email}</> : c.contactRoute.email} <span className="text-gray-500">({c.contactRoute.text})</span></div>}
                     {/* A plain confirmation (one sentence, nothing in doubt) is a small mark with its basis behind the (i); any
                         doubt - unconfirmed, role not verified, no current buyer - stays on screen in full. */}
                     {c.contactStatus && (c.contactStatus.confirmed && /^Confirmed: [^.]+\.$/.test(c.contactStatus.text)
-                      ? <div className="text-xs mt-1"><Pill tone="mint">Contact confirmed</Pill><InfoTip label="How the contact was confirmed"><span data-testid="contact-status">{c.contactStatus.text}</span></InfoTip></div>
+                      ? <div className="text-xs mt-1"><Pill tone="mint">Company site confirmed</Pill><InfoTip label="How the company site was confirmed (not a mailbox check)"><span data-testid="contact-status">{c.contactStatus.text}</span></InfoTip></div>
                       : <div data-testid="contact-status" className={`text-xs ${c.contactStatus.confirmed ? 'text-[var(--ink-2)] mt-0.5' : 'text-[#111] font-medium border-l-2 border-black pl-2 mt-0.5'}`}>{c.contactStatus.text}</div>)}
                   </div>
                   </div>

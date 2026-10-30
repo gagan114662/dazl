@@ -3,6 +3,7 @@
 // "Approve" creates a draft for review (POST /api/outreach), which never sends; createDraft re-checks every gate on the
 // server. approveState mirrors the conditions under which the existing "Draft email" button appears, plus the window
 // and timing holds, so the card never offers an action the server would refuse for those reasons.
+import { leadContactFacts } from '../outreach/lead-contact.ts'
 import { contactIdentity, opportunityCard, type CardLead } from './opportunity.ts'
 import { publishedContact, publishedEmail } from '../outreach/published-email.ts'
 import { domainReviewFor } from '../outreach/domain-review.ts'
@@ -16,6 +17,8 @@ export interface LeadCardSummary {
   // Shown beside the contact, never only in Details: how far it is established. `confirmed` is true only for the cited
   // page, the company's own page, or the user's own website check, with no restricted inbox or quarantine.
   contactStatus: { confirmed: boolean; text: string } | null
+  // The address, kept apart from the person: where it was published, whether the mailbox is deliverable (unknown unless checked), and whether it is the person's route or a company inbox (#384).
+  contactRoute: { email: string; route: 'person' | 'company'; text: string } | null
   why: string
   sourceUrl: string
   sourceHost: string
@@ -65,7 +68,9 @@ export function cardCounts(leads: { id: string; quarantined_at?: number | null }
 export function leadCardSummary(l: CardLead & { name?: string; published_at?: string | null }, buyerRoles = ''): LeadCardSummary {
   const card = opportunityCard(l, buyerRoles)
   const email = publishedEmail(l)
-  const contact = card.who ? `${card.who.name}${card.who.title ? `, ${card.who.title}` : ''}${email ? ` - ${email}` : ''}` : email ?? (l.contact?.trim() || null)
+  const facts = leadContactFacts(l, card.who ? { name: card.who.name } : null)
+  // A person is joined to an address on one line ONLY when the address is theirs; a generic inbox is shown on its own line as a company inbox.
+  const contact = card.who ? `${card.who.name}${card.who.title ? `, ${card.who.title}` : ''}${email && facts?.route === 'person' ? ` - ${email}` : ''}` : email ?? (l.contact?.trim() || null)
   const contactStatus = contact ? statusOf(l, !!card.who) : null
   let sourceHost = l.source_url
   try { sourceHost = new URL(l.source_url).hostname.replace(/^www\./, '') } catch { /* keep the raw value */ }
@@ -73,6 +78,7 @@ export function leadCardSummary(l: CardLead & { name?: string; published_at?: st
     company: l.company || l.name || 'Unnamed company',
     contact,
     contactStatus,
+    contactRoute: facts ? { email: facts.email, route: facts.route, text: facts.text } : null,
     // The research rationale when there is one, else the saved signal claim itself. One line, never invented.
     why: firstSentence(l.why?.trim() || l.signal),
     sourceUrl: l.source_url,

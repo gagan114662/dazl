@@ -106,3 +106,20 @@ test('a legacy lead with a confidence but no stored excerpt is not approvable (s
   assert.equal(a.ok, false)
   assert.match(a.ok ? '' : a.reason, /Not verified/)
 })
+
+// #384: provenance, deliverability and person-route are three separate facts on the card.
+const danaRow = { connector: 'sitecrawl', kind: 'person', value: 'Dana Smith, Practice owner', label: 'x', source_url: 'https://brightdental.example/team' }
+test('NEGATIVE: a generic hello@ is shown as a company inbox on its own line, never joined to the recommended person as their route', () => {
+  const s = leadCardSummary({ ...base, enrichments: [danaRow] }, 'Practice owner')
+  assert.match(s.contact!, /^Dana Smith, Practice owner$/); assert.doesNotMatch(s.contact!, /hello@/)
+  assert.equal(s.contactRoute!.route, 'company'); assert.match(s.contactRoute!.text, /company inbox, not tied to Dana Smith/)
+})
+test('NEGATIVE: "printed on the cited page" is provenance only - the card never says deliverable/verified for it', () => {
+  const s = leadCardSummary({ ...base, enrichments: [danaRow] }, 'Practice owner')
+  assert.match(s.contactRoute!.text, /printed on the cited page/); assert.match(s.contactRoute!.text, /deliverability not checked/)
+  assert.doesNotMatch(s.contactRoute!.text, /deliverable;|verified|valid|mailbox check passed/)
+})
+test('CONTROL: an address that spells the person\'s name IS their route and may be joined to them', () => {
+  const s = leadCardSummary({ ...base, contact: 'dana.smith@brightdental.example', enrichments: [danaRow] }, 'Practice owner')
+  assert.match(s.contact!, /Dana Smith, Practice owner - dana\.smith@brightdental\.example/); assert.equal(s.contactRoute!.route, 'person')
+})

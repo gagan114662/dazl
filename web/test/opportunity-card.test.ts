@@ -31,7 +31,7 @@ test('real evidence_own_domain: identity is a fact; draft is about the offer, th
   assert.ok(c.facts.includes('The quoted text was found on the cited page when the scan ran.'))
   assert.ok(c.assumptions.includes('No live buying trigger was confirmed.'))
   assert.deepEqual(c.missing, ['company size (not shown in the evidence)'])
-  assert.equal(c.next, 'Draft a first message to Dana Lee introducing your offer; mention the event only as context.')
+  assert.equal(c.next, 'Draft a first message to the company inbox (hello@brightteeth.example), which is not tied to Dana Lee: ask for them by name and mention the event only as context.', 'a generic hello@ is the company inbox, not Dana\'s route')
 })
 
 test('linked-but-unverified ownership is an assumption, never a fact, and must be confirmed first', () => {

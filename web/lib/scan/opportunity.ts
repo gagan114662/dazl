@@ -8,6 +8,7 @@
 // Pure: built only from what the lead already stores. Nothing here is fetched, guessed or invented; anything unknown
 // is listed under missing. Identity reuses the outreach provenance rules (weakest recorded basis governs, the user's
 // own website review, several websites = conflict), so the card never claims more than the send gate accepts.
+import { leadContactFacts } from '../outreach/lead-contact.ts'
 import { recommendedPerson, type PersonContact } from '../people/rank.ts'
 import { domainBasisFor, publishedContact, PUBLISHED_EMAIL_RE, type DomainBasisKind } from '../outreach/published-email.ts'
 import { eventDateCopy } from './date-copy.ts'
@@ -138,7 +139,7 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
     : l.currentness_held ? 'Review the source to confirm the timing before any outreach.'
     : !top ? 'Find the decision-maker before reaching out.'
     : identityOpen ? (ident?.state === 'conflict' ? 'Settle which website is theirs before reaching out.' : ident ? `Confirm ${ident.site} is their site before reaching out.` : 'Identify the company\'s own website before reaching out.')
-    : draftable ? `Draft a first message to ${top.name} introducing your offer; mention the event only as context.`
+    : draftable ? (leadContactFacts({ contact: l.contact, source_url: l.source_url, evidence_excerpt: l.evidence_excerpt, enrichments: rows }, { name: top.name })?.route === 'person' ? `Draft a first message to ${top.name} introducing your offer; mention the event only as context.` : `Draft a first message to the company inbox (${pc!.email}), which is not tied to ${top.name}: ask for them by name and mention the event only as context.`)
     : phone ? `Call using the published number; there is no usable email to draft to.`
     : `Find a way to reach ${top.name}.`
 
