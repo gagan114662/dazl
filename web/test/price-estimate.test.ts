@@ -99,7 +99,7 @@ test('monthly pool: the room left is the tighter of day and month, unknown pool 
   const base = { budget: { max_usd: 2 } as const, payer: 'you' as const }
   const none = estimateRun({ ...base })
   const month = estimateRun({ ...base, ownerMonthCapUsd: 3, reservedMonthUsd: 2.99 })
-  assert.equal(month.cap.remaining_usd < 0.02, true); assert.equal(month.verdict.ok, false); assert.equal(month.verdict.reason, 'over_budget'); assert.match(month.verdict.message, /monthly limit/)
+  assert.ok(month.cap.remaining_usd !== null && month.cap.remaining_usd < 0.02); assert.equal(month.verdict.ok, false); assert.equal(month.verdict.reason, 'over_budget'); assert.match(month.verdict.message, /monthly limit/)
   assert.equal(estimateRun({ ...base, ownerMonthCapUsd: 10, reservedMonthUsd: 1 }).cap.remaining_usd, 2, 'the day limit is tighter')
   assert.notEqual(estimateRun({ ...base, ownerMonthCapUsd: 3, reservedMonthUsd: 1 }).ack, estimateRun({ ...base, ownerMonthCapUsd: 3, reservedMonthUsd: 1.2 }).ack)
   assert.notEqual(estimateRun({ ...base, ownerMonthCapUsd: 3 }).ack, none.ack)
