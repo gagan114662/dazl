@@ -91,8 +91,12 @@ claim), on both engines, including two SQLite connections to one file as two ins
 - **Per-play limits** exist only for scans (`run_budget.max_usd`). Polish, follow-ups and qualification for a play
   count against the owner pool, not a per-play limit.
 - **TinyFish and Apollo/PDL** are bounded by counts, not dollars. For BYOK enrichment that is the disclosed limit.
-- **Disclosure:** the prelaunch estimate (lib/scan/estimate-request.ts) reads the owner pool rows. Still to prove:
-  - its included/excluded costs;
-  - the "estimate" vs "reported" labels;
-  - that the threshold/stop events a user sees match this enforcement.
+- **Disclosure:** the prelaunch estimate (lib/scan/estimate-request.ts) reads the owner pool rows.
+  - Proved: a stale or failed pending marker blocks the estimate with the reason (`accounting_unsettled`), and
+    `POST /api/scan` refuses with 409 and creates no job, the same rule the pool enforces. A fresh marker does not block.
+  - Still to prove:
+    - "already reserved" now includes settled costs, so the label should say "reserved or spent";
+    - its included/excluded costs;
+    - the "estimate" vs "reported" labels;
+    - that the threshold/stop events a user sees match this enforcement.
 - **Operator removal of a failed or stale marker** is a manual store edit today.
