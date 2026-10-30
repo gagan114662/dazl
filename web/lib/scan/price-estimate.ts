@@ -23,10 +23,10 @@ export interface EstimateRow {
   capped: boolean                    // counted against max_usd by the spend guard
   note: string
 }
-export interface Verdict { ok: boolean; reason: 'over_budget' | null; message: string; change: string[]; warning: string | null }
+export interface Verdict { ok: boolean; reason: 'over_budget' | 'budget_unknown' | null; message: string; change: string[]; warning: string | null }
 export interface RunEstimate {
   rows: EstimateRow[]; total: Range; unpriced: string[]; assumptions: string[]
-  payer: 'you' | 'trial'; cap: { max_usd: number | null; reserved_usd: number; remaining_usd: number | null; capped_total: Range }
+  payer: 'you' | 'trial'; cap: { max_usd: number | null; reserved_usd: number; remaining_usd: number | null; capped_total: Range; month_cap_usd: number | null; month_reserved_usd: number; unknown: boolean }
   verdict: Verdict; ack: string
 }
 export interface EstimateInput {
@@ -37,6 +37,9 @@ export interface EstimateInput {
   hiringRequest?: boolean            // the buyer-fit company-page check runs for hiring requests
   reservedUsd?: number               // already reserved against the same owner pool
   ownerCapUsd?: number | null        // the operator's cap for this owner (DAZL_RUN_MAX_USD_USERS); the tighter of it and budget.max_usd applies
+  ownerMonthCapUsd?: number | null   // the operator's monthly cap for this owner (DAZL_OWNER_MONTH_MAX_USD_USERS); the room left is the tighter of the day's and the month's
+  reservedMonthUsd?: number          // already reserved against the owner's monthly pool
+  poolUnknown?: boolean              // the shared pool could not be read: the reserved amounts above are NOT known (never treated as zero)
   env?: Record<string, string | undefined>
 }
 
@@ -59,7 +62,9 @@ const modelCost = (model: string, calls: number, inK: number, outK: number): num
 export function estimateRun(i: EstimateInput): RunEstimate {
   const env = i.env ?? process.env, b = i.budget, model = i.model ?? DEFAULT_MODEL
   const limit = Math.min(typeof b?.max_usd === 'number' ? b.max_usd : Infinity, i.ownerCapUsd ?? Infinity)
-  const capped = Number.isFinite(limit)
+  const monthCap = typeof i.ownerMonthCapUsd === 'number' && i.ownerMonthCapUsd > 0 ? i.ownerMonthCapUsd : null
+  const capped = Number.isFinite(limit) || monthCap !== null
+  const unknown = i.poolUnknown === true
   const rows: EstimateRow[] = []
   const p = PRICES_USD_PER_M[model]
   const modelUnit = p ? `$${p.in.toFixed(2)} in / $${p.out.toFixed(2)} out per 1M tokens (${model})` : `${model}: no listed price`
@@ -89,14 +94,24 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   const unpriced = rows.filter(r => r.usd === null).map(r => r.label)
   const sum = (rs: EstimateRow[]): Range => ({ min: rs.reduce((a, r) => a + (r.usd?.min ?? 0), 0), max: rs.reduce((a, r) => a + (r.usd?.max ?? 0), 0) })
   const total = sum(rows), cappedTotal = sum(rows.filter(r => r.capped))
-  const reserved = Math.max(0, i.reservedUsd ?? 0), remaining = capped ? Math.max(0, limit - reserved) : null
+  const reserved = Math.max(0, i.reservedUsd ?? 0), monthReserved = Math.max(0, i.reservedMonthUsd ?? 0)
+  // The room left is the TIGHTER of what the day's limit and the month's limit allow; the label names the one that binds.
+  const dayLeft = Number.isFinite(limit) ? limit - reserved : Infinity, monthLeft = monthCap === null ? Infinity : monthCap - monthReserved
+  const monthBinds = monthLeft < dayLeft
+  const remaining = capped ? Math.max(0, Math.min(dayLeft, monthLeft)) : null
+  const shownLimit = monthBinds ? (monthCap as number) : limit, shownReserved = monthBinds ? monthReserved : reserved, limitWord = monthBinds ? 'monthly limit' : 'limit'
   const change: string[] = []
   let ok = true, reason: Verdict['reason'] = null, message = 'Within your limit.', warning: string | null = null
-  if (capped && remaining !== null) {
+  if (capped && unknown) {
+    // The reserved amount is unknown, so the room left is unknown: refuse to confirm. It is never read as zero reserved.
+    ok = false; reason = 'budget_unknown'
+    message = 'Blocked: your shared spend limit could not be read right now, so what is left of it is unknown. Nothing was started or reserved. Try again in a moment.'
+    change.push('Try again shortly; the estimate cannot be confirmed until your remaining limit can be read.')
+  } else if (capped && remaining !== null) {
     if (cappedTotal.min > remaining) {
       ok = false; reason = 'over_budget'
-      message = `Blocked: the model requests alone are expected to cost at least ${money(cappedTotal.min)} but only ${money(remaining)} of your ${money(limit)} limit is left${reserved > 0 ? ` (${money(reserved)} already reserved)` : ''}.`
-      change.push(`Raise the dollar limit to at least ${money(cappedTotal.min + reserved)} (about ${money(cappedTotal.max + reserved)} covers the worst case).`)
+      message = `Blocked: the model requests alone are expected to cost at least ${money(cappedTotal.min)} but only ${money(remaining)} of your ${money(shownLimit)} ${limitWord} is left${shownReserved > 0 ? ` (${money(shownReserved)} already reserved)` : ''}.`
+      change.push(`Raise the ${monthBinds ? 'monthly ' : ''}dollar limit to at least ${money(cappedTotal.min + shownReserved)} (about ${money(cappedTotal.max + shownReserved)} covers the worst case).`)
       const judge = rows.find(r => r.id === 'judge')
       if (judge?.usd && judge.usd.min > 0) change.push(`Skip the verification judge (saves about ${money(judge.usd.min)}-${money(judge.usd.max)}).`)
       change.push('Narrow the request so fewer candidates need extracting and grading.')
@@ -111,7 +126,7 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     ...(i.payer === 'trial' ? ['This run is paid by the shared free trial, not billed to you; the trial allows 3 scans per account.'] : []),
     ...(unpriced.length ? [`Not priced, so not in the total: ${unpriced.join(', ')}.`] : []),
   ]
-  const cap = { max_usd: capped ? limit : null, reserved_usd: reserved, remaining_usd: remaining, capped_total: cappedTotal }
+  const cap = { max_usd: Number.isFinite(limit) ? limit : null, reserved_usd: reserved, remaining_usd: remaining, capped_total: cappedTotal, month_cap_usd: monthCap, month_reserved_usd: monthReserved, unknown }
   const verdict = { ok, reason, message, change, warning }
   // The confirmation covers everything the person was shown and agreed to: WHO PAYS (own key vs the shared trial), every row (what it is, its units, price, whether the cap bounds it, and its
   // note: on/off), the totals, the unpriced list, and the cap with the reserved and remaining room, plus the verdict with its warning and what to change. If any of it differs when the run is
@@ -121,7 +136,7 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     payer: i.payer, model,
     rows: rows.map(r => [r.id, r.kind, r.capped, r.units, r.unit_usd, r.usd && { min: r4(r.usd.min), max: r4(r.usd.max) }, r.note]),
     total: { min: r4(total.min), max: r4(total.max) }, unpriced,
-    cap: { max: cap.max_usd, reserved: r4(cap.reserved_usd), remaining: r4(cap.remaining_usd), capped_total: { min: r4(cappedTotal.min), max: r4(cappedTotal.max) } },
+    cap: { max: cap.max_usd, reserved: r4(cap.reserved_usd), remaining: r4(cap.remaining_usd), month: cap.month_cap_usd, month_reserved: r4(cap.month_reserved_usd), unknown: cap.unknown, capped_total: { min: r4(cappedTotal.min), max: r4(cappedTotal.max) } },
     verdict,
   })).digest('hex').slice(0, 16)
   return { rows, total, unpriced, assumptions, payer: i.payer, cap, verdict, ack }

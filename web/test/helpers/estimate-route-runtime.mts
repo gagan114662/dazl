@@ -164,6 +164,38 @@ test('reduced remaining room: reserving $1.50 of a $2 limit after the confirmati
   assert.equal((await scan({ ...body, estimate_ack: j.estimate.ack })).status, 202)
 })
 
+test('unknown pool state: a pool read failure is NOT zero reserved - the estimate refuses to confirm and POST /api/scan returns 503 with no job; once readable it runs', async () => {
+  const db = setup(); as(db)
+  const body = { query: Q, budget: { max_usd: 2, judge: false } }
+  db.exec('ALTER TABLE tenant_spend_pools RENAME TO tenant_spend_pools_x')   // the shared-pool read now fails
+  const e = await (await est(body)).json() as { estimate: { ack: string; verdict: { ok: boolean; reason: string; message: string }; cap: { unknown: boolean } } }
+  assert.equal(e.estimate.verdict.ok, false); assert.equal(e.estimate.verdict.reason, 'budget_unknown'); assert.equal(e.estimate.cap.unknown, true)
+  assert.doesNotMatch(e.estimate.verdict.message, /Within your limit/)
+  const r = await scan(body); const j = await r.json() as { error: string }
+  assert.equal(r.status, 503); assert.equal(j.error, 'budget_unknown'); assert.equal(jobs(db).length, 0)
+  const r2 = await scan({ ...body, estimate_ack: e.estimate.ack }); assert.equal(r2.status, 503); assert.equal(jobs(db).length, 0)
+  db.exec('ALTER TABLE tenant_spend_pools_x RENAME TO tenant_spend_pools')
+  const ok = await (await est(body)).json() as { estimate: { ack: string; verdict: { ok: boolean }; cap: { unknown: boolean } } }
+  assert.equal(ok.estimate.verdict.ok, true); assert.equal(ok.estimate.cap.unknown, false); assert.notEqual(ok.estimate.ack, e.estimate.ack)
+  assert.equal((await scan({ ...body, estimate_ack: ok.estimate.ack })).status, 202)
+})
+
+test('monthly limit: with the owner month pool exhausted the estimate does not advertise room (402, no job); the tighter of day/month binds and the month is in the confirmation', async () => {
+  const db = setup(); as(db)
+  const tenant = `E${n}`, now = Math.floor(Date.now() / 1000)
+  process.env.DAZL_OWNER_MONTH_MAX_USD_USERS = `${tenant}:3`
+  try {
+    const body = { query: Q, budget: { max_usd: 2, judge: false } }
+    const e = await (await est(body)).json() as { estimate: { ack: string; cap: { remaining_usd: number; month_cap_usd: number } } }
+    assert.equal(e.estimate.cap.month_cap_usd, 3); assert.equal(e.estimate.cap.remaining_usd, 2)   // day (2) is tighter than month (3)
+    db.prepare('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, 2.999, 0, 1, ?)').run(tenant, periodOf('month', now), now)
+    const r = await scan({ ...body, estimate_ack: e.estimate.ack }); const j = await r.json() as { error: string; message: string; estimate: { cap: { remaining_usd: number } } }
+    assert.equal(r.status, 402); assert.equal(j.error, 'over_budget'); assert.equal(j.estimate.cap.remaining_usd < 0.0011, true); assert.match(j.message, /monthly limit/); assert.equal(jobs(db).length, 0)
+    const e2 = await (await est(body)).json() as { estimate: { ack: string; verdict: { ok: boolean; message: string } } }
+    assert.equal(e2.estimate.verdict.ok, false); assert.doesNotMatch(e2.estimate.verdict.message, /Within your limit/); assert.notEqual(e2.estimate.ack, e.estimate.ack)
+  } finally { delete process.env.DAZL_OWNER_MONTH_MAX_USD_USERS }
+})
+
 // ---- no partial job: a failure at ANY step of starting a scan leaves no job a worker could claim, no consumed attempt, and a clean retry ----
 const STEPS: [string, string][] = [
   ['linking the reservation', "CREATE TRIGGER boom BEFORE UPDATE ON trial_reservations BEGIN SELECT RAISE(ABORT, 'boom'); END"],
