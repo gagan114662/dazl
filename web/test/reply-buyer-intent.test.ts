@@ -51,7 +51,7 @@ test('buyer-intent grading: buyer thread stored with verdict, internship thread 
     const worker = async () => CANDIDATES
     const r = await refreshReplies(d, 't1', { worker, fetchImpl, master, env: ENV_ON, now: NOW })
     assert.equal(r.added, 1)
-    assert.equal(r.filtered, 2) // the internship thread is graded 'no' once per platform pass
+    assert.equal(r.filtered, 2) // the internship thread is screened (job seeker) once per platform pass, never graded
     const threads = listThreads(d, 't1')
     assert.equal(threads.length, 1)
     assert.match(threads[0].title, /filters/)
@@ -75,7 +75,7 @@ test('no AI key: no grading calls, keyword behavior unchanged', async () => {
   migrateThreadReplies(d); migrateOutreach(d); migrateScan(d); migrateSequences(d); migrateConnectors(d); migrateAdvanced(d); migrateKeys(d)
   acceptConsent(d, 't1', 'advanced')
   setQueries(d, 't1', ['cold email software'])
-  const worker = async () => [CANDIDATES[1]] // internship thread passes the keyword gate
+  const worker = async () => [CANDIDATES[0]] // a buyer thread passes the keyword gate
   const r = await refreshReplies(d, 't1', { worker, env: ENV_ON, now: NOW })
   assert.equal(r.added, 1) // keyword-only storage, honestly labelled (buyer_intent NULL)
   assert.equal(listThreads(d, 't1')[0].buyer_intent, null)
@@ -112,9 +112,11 @@ test('refresh reports graded count: new candidates graded once each, no backlog 
   }) as unknown as typeof fetch
   const worker = async () => CANDIDATES
   const r = await refreshReplies(d, 't1', { worker, fetchImpl, master, env: ENV_ON, now: NOW })
-  // The mock worker returns the same 2 candidates for both platforms (reddit + x), and each
-  // platform pass grades them independently: 2 candidates x 2 platforms = 4 verdicts.
-  assert.equal(r.graded, 4)
+  // The mock worker returns the same 2 candidates for both platforms (reddit + x). The internship
+  // thread is screened as a job seeker before grading (#401), so only the buyer thread is graded,
+  // once per platform pass: 1 candidate x 2 platforms = 2 verdicts.
+  assert.equal(r.graded, 2)
+  assert.equal(r.filtered, 2)
   assert.equal(r.ungraded_remaining, 0)
 })
 
@@ -150,7 +152,7 @@ test('provider errors count nothing: graded 0, rows stay NULL, ungraded_remainin
 test('unreadable stored key: refresh completes keyword-only, rows stay NULL, graded 0, backlog counted', async () => {
   const { d, master } = setup()
   d.prepare("UPDATE tenant_llm_keys SET ciphertext = 'not-valid-ciphertext' WHERE tenant_id = 't1'").run()
-  const worker = async () => [CANDIDATES[1]] // internship thread passes the keyword gate
+  const worker = async () => [CANDIDATES[0]] // a buyer thread passes the keyword gate
   const r = await refreshReplies(d, 't1', { worker, master, env: ENV_ON, now: NOW })
   assert.equal(r.added, 1)
   assert.equal(r.graded, 0)
