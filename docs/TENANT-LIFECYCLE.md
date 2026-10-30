@@ -43,7 +43,7 @@ Each step is one transaction and moves the tombstone (`tenant_tombstones`) to th
   The retention is never silently widened. Keeping a parent while its children go is allowed. Retained rows are left byte-identical.
 - The tombstone holds the tenant id, who asked, when, the policy and what was retained. It holds no tenant content.
 
-**Recreation guard.** A `BEFORE INSERT` trigger on every tenant-scoped table (SQLite at startup; Postgres migration `0017`) refuses a row for a tombstoned tenant, or under one of its deleted parent rows. A scan still running when the deletion starts, a late scheduler tick or a stale request therefore cannot bring erased data back. A late `UPDATE` matches no rows. Retained tables are guarded too: nothing new is added for a deleted tenant.
+**Recreation guard.** A `BEFORE INSERT` trigger on every tenant-scoped table (SQLite at startup; Postgres migration `0019`) refuses a row for a tombstoned tenant, or under one of its deleted parent rows. A scan still running when the deletion starts, a late scheduler tick or a stale request therefore cannot bring erased data back. A late `UPDATE` matches no rows. Retained tables are guarded too: nothing new is added for a deleted tenant.
 
 **Restored backups.**
 - A restore brings back rows deleted after the backup and loses tombstones written since.
@@ -57,7 +57,7 @@ Each step is one transaction and moves the tombstone (`tenant_tombstones`) to th
 
 ## Proved in `test/tenant-lifecycle.test.ts` (synthetic, SQLite)
 
-The fixture is two tenants with a marked row in **every** tenant-scoped table (73 tables each; `test/helpers/tenant-seed-sqlite.ts`, which fails on any table it cannot fill).
+The fixture is two tenants with a marked row in **every** tenant-scoped table (75 tables each since inbox_thread_reads and tenant_spend_pools; `test/helpers/tenant-seed-sqlite.ts`, which fails on any table it cannot fill).
 - **Export:** complete for the target; nothing of the other tenant; no secret.
 - **Deletion:**
   - every table is empty for the target, checked by ownership and by scanning every table for the target's marker, so orphans are caught;

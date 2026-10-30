@@ -625,3 +625,19 @@ BEGIN
 END $$;
 DROP TRIGGER IF EXISTS tomb_work_queue ON work_queue;
 CREATE TRIGGER tomb_work_queue BEFORE INSERT ON work_queue FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_work_queue();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_inbox_thread_reads() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_inbox_thread_reads ON inbox_thread_reads;
+CREATE TRIGGER tomb_inbox_thread_reads BEFORE INSERT ON inbox_thread_reads FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_inbox_thread_reads();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_tenant_spend_pools() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_tenant_spend_pools ON tenant_spend_pools;
+CREATE TRIGGER tomb_tenant_spend_pools BEFORE INSERT ON tenant_spend_pools FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_tenant_spend_pools();

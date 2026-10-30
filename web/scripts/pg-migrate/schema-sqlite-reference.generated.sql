@@ -195,6 +195,8 @@ CREATE TABLE inbound_messages (
       PRIMARY KEY (tenant_id, gmail_id)
     );
 
+CREATE TABLE inbox_thread_reads (tenant_id TEXT NOT NULL, thread_id TEXT NOT NULL, read_upto INTEGER NOT NULL, PRIMARY KEY (tenant_id, thread_id));
+
 CREATE TABLE lead_enrichments (
       id          TEXT PRIMARY KEY,
       lead_id     TEXT NOT NULL,
@@ -697,6 +699,13 @@ CREATE TABLE tenant_plans (
       stripe_subscription_id TEXT
     , stripe_event_at INTEGER, stripe_reconcile_at INTEGER, subscription_status TEXT);
 
+CREATE TABLE tenant_spend_pools (
+    tenant_id TEXT NOT NULL, period TEXT NOT NULL CHECK (length(period) <= 12),
+    reserved_usd REAL NOT NULL DEFAULT 0 CHECK (reserved_usd >= 0), reported_usd REAL NOT NULL DEFAULT 0 CHECK (reported_usd >= 0),
+    calls INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL,
+    PRIMARY KEY (tenant_id, period)
+  );
+
 CREATE TABLE tenant_tombstone_keys (
       deleted_tenant TEXT NOT NULL,
       tbl            TEXT NOT NULL,
@@ -821,6 +830,8 @@ CREATE UNIQUE INDEX hiring_feed_crawl_company ON hiring_feed_crawl(tenant_id, co
 CREATE INDEX hiring_feed_crawl_job ON hiring_feed_crawl(tenant_id, job_id);
 
 CREATE INDEX idx_evidence_copies_tenant ON lead_evidence_copies(tenant_id, expires_at);
+
+CREATE INDEX inbound_messages_thread ON inbound_messages (tenant_id, thread_id, received_at);
 
 CREATE INDEX lead_enrichments_insert_seq_idx ON lead_enrichments (insert_seq);
 
@@ -979,6 +990,8 @@ CREATE TRIGGER tomb_hiring_feed_crawl BEFORE INSERT ON hiring_feed_crawl WHEN EX
 
 CREATE TRIGGER tomb_inbound_messages BEFORE INSERT ON inbound_messages WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
+CREATE TRIGGER tomb_inbox_thread_reads BEFORE INSERT ON inbox_thread_reads WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
 CREATE TRIGGER tomb_lead_enrichments BEFORE INSERT ON lead_enrichments WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
 CREATE TRIGGER tomb_lead_evidence_copies BEFORE INSERT ON lead_evidence_copies WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
@@ -1072,6 +1085,8 @@ CREATE TRIGGER tomb_tenant_llm_keys BEFORE INSERT ON tenant_llm_keys WHEN EXISTS
 CREATE TRIGGER tomb_tenant_memory BEFORE INSERT ON tenant_memory WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
 CREATE TRIGGER tomb_tenant_plans BEFORE INSERT ON tenant_plans WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_tenant_spend_pools BEFORE INSERT ON tenant_spend_pools WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
 CREATE TRIGGER tomb_tinyfish_usage BEFORE INSERT ON tinyfish_usage WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 

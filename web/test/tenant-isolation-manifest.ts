@@ -77,6 +77,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'outreach/conversion', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' } },
   { path: 'outreach/followups', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' } },
   { path: 'outreach/inbox', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' } },
+  { path: 'outreach/inbox', method: 'POST', auth: 'session', crossTenant: { covered: 'inbox-route.test.ts' } },
   { path: 'outreach/polish', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' } },
   { path: 'outreach/reopen', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' } },
   { path: 'outreach/reopen', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' } },

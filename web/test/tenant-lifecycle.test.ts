@@ -45,7 +45,7 @@ function leftovers(db: Database.Database, tag: string, keep: string[]): string[]
 // evidence_purge_audit is always kept (append-only audit, ALWAYS_RETAINED)
 const emptyExcept = (snap: Record<string, string>, keep: string[]) => Object.entries(snap).filter(([t, rows]) => ![...keep, 'evidence_purge_audit'].includes(t) && rows !== '[]').map(([t]) => t)
 
-test('the registry covers the live schema: every tenant-scoped table is in scope (73 tables seeded for each tenant)', async () => {
+test('the registry covers the live schema: every tenant-scoped table is in scope (every one seeded for each tenant)', async () => {
   const db = fixture()
   const scope = (await tenantScope(sqliteDb(db))).map(s => s.table).sort()
   assert.deepEqual(scope, [...tenantTablesSqlite(db).keys()].sort())
