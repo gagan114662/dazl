@@ -15,6 +15,7 @@
 import type Database from 'better-sqlite3'
 import { asDb, sqliteDb, getDb, type Db, type DbLike, type Param } from '../db/client.ts'
 import { resolveLead } from './graph.ts'
+import { exclusionsEnabled, relationshipForLead } from './relationships.ts'
 
 const days = (v: string | undefined, dflt: number) => { const n = Number(v); return v !== undefined && v !== '' && Number.isFinite(n) && n >= 0 ? n : dflt }
 export function cooldownDays(env: Record<string, string | undefined> = process.env) {
@@ -25,6 +26,9 @@ const AT = 'COALESCE(sent_at, claimed_at, created_at)'
 
 export type CooldownHold = 'recipient_contacted_recently' | 'account_contacted_recently'
 export type IdentityHold = 'identity_review_required' | 'identity_unresolved'
+// The tenant's own list says this company is a customer or an open deal (lib/accounts/relationships.ts); only with
+// DAZL_ACCOUNT_EXCLUSIONS=1.
+export type RelationshipHold = 'existing_customer' | 'open_deal'
 
 export function crossPlayHold(db: Database.Database, tenantId: string, leadId: string, toEmail: string, o: { now?: number; env?: Record<string, string | undefined> } = {}): CooldownHold | 'identity_unresolved' | null {
   // An unreadable store cannot prove there is no cooldown: it holds, like an unresolved identity.
@@ -73,11 +77,16 @@ export function graphStore(raw: Database.Database, env: Record<string, string | 
 // left, then apply the account rule. A lead whose identity is held for a person (quarantined) is held too, and so is one
 // whose identity could not be decided (the store failed): an unresolved identity is never treated as "no account".
 // null: no hold (a lead that is not the tenant's is left to the caller's own not-found).
-export async function firstTouchHold(graph: DbLike, outreach: DbLike, tenantId: string, leadId: string, o: { now?: number; env?: Record<string, string | undefined> } = {}): Promise<IdentityHold | 'account_contacted_recently' | null> {
+export async function firstTouchHold(graph: DbLike, outreach: DbLike, tenantId: string, leadId: string, o: { now?: number; env?: Record<string, string | undefined> } = {}): Promise<IdentityHold | RelationshipHold | 'account_contacted_recently' | null> {
   let link
   try { link = await resolveLead(graph, tenantId, leadId, { now: o.now }) } catch { return 'identity_unresolved' }
   if (!link) return null
   if (link.status !== 'linked') return 'identity_review_required'
+  if (exclusionsEnabled(o.env ?? process.env)) {
+    let rel
+    try { rel = await relationshipForLead(graph, tenantId, leadId) } catch { return 'identity_unresolved' }
+    if (rel) return rel.status === 'customer' ? 'existing_customer' : 'open_deal'
+  }
   try {
     // The leads already emailed inside the window are resolved too, so a backlog cannot hide the account they belong to.
     // A send-capped set; past the bound the check cannot be complete and holds.

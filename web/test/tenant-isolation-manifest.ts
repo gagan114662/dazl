@@ -23,6 +23,9 @@ export type RouteEntry =
   | { path: string; method: string; auth: 'session'; crossTenant: CrossTenant; role: Action }
 
 export const ROUTES: RouteEntry[] = [
+  { path: 'accounts/relationships', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
+  { path: 'accounts/relationships', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/relationships-route-runtime.mts' }, role: 'configure' },
+  { path: 'accounts/relationships', method: 'DELETE', auth: 'session', crossTenant: { covered: 'helpers/relationships-route-runtime.mts' }, role: 'configure' },
   { path: 'auth/callback/google', method: 'GET', auth: 'public', note: 'Google OAuth callback: one-time state + PKCE cookie, ID token verified' },
   { path: 'auth/google', method: 'GET', auth: 'public', note: 'starts Google OAuth; no tenant data' },
   { path: 'auth/signin', method: 'POST', auth: 'public', note: 'password sign-in; rate limited' },

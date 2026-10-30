@@ -1,6 +1,7 @@
 // Every API route and app page, as templates. Request logs (lib/ops/request-log.ts) carry the matching template, never the
 // caller's path text. test/request-log.test.ts fails when this list and the route files under app/ differ: add new routes here.
 export const ROUTE_TEMPLATES: readonly string[] = [
+  '/api/accounts/relationships',
   '/api/auth/callback/google',
   '/api/auth/google',
   '/api/auth/signin',

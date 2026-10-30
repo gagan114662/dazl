@@ -3,6 +3,7 @@
 // today. Production can move to Postgres only when this is empty (docs/PLATFORM.md "Postgres cutover").
 // Porting a module to the Db layer removes its line; a new raw-SQLite module, or a new rejected statement, fails the test.
 export const RAW_SQLITE_MODULES: Record<string, number> = {
+  'app/api/accounts/relationships/route.ts': 0,
   'app/api/campaigns/route.ts': 0,
   'app/api/crm/route.ts': 0,
   'app/api/gmail/callback/route.ts': 0,

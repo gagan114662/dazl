@@ -150,6 +150,8 @@ export const APP_ERROR_CLASSES: ReadonlySet<string> = new Set(['CopyRefused', 'C
   // lib/accounts/graph.ts (#364): a merge/split/assign refused (unknown, inactive, same account), and a concurrent link
   // of the same identity key (retried; only escapes after three attempts)
   'IdentityError', 'AliasRace',
+  // lib/accounts/relationships.ts (#364): a customer / open-deal list entry refused (invalid, unknown account, duplicate)
+  'RelationshipError',
   // lib/crm/index.ts (#365): a CRM push that failed (nothing created) or has an unknown outcome
   'CrmPushError'])
 export const outboundType = (name: string): string => BUILTIN_ERRORS.has(name) || APP_ERROR_CLASSES.has(name) ? name : 'Error'

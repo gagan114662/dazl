@@ -29,6 +29,8 @@ const MSG: Record<string, [number, string]> = {
   recipient_contacted_recently: [409, 'This person was already emailed from another play recently, so this play will not email them again for now'],
   identity_review_required: [409, 'dazl could not tell which company this lead is (it may be another business with the same name, or its email belongs to another company). Nothing was drafted; it waits for you to decide which account it belongs to'],
   identity_unresolved: [503, 'Which company this lead belongs to could not be checked just now, so nothing was drafted. Try again in a moment'],
+  existing_customer: [409, 'Your customer list says this company is already a customer, so dazl will not start prospecting it. The lead and its evidence are kept'],
+  open_deal: [409, 'Your customer list says this company is an open deal, so dazl will not start a new prospecting conversation with it. The lead and its evidence are kept'],
   account_contacted_recently: [409, 'Someone at this company was already emailed from another play recently, so this play will not start another conversation with them for now'],
   already_drafted: [409, 'A draft for this lead already exists'],
 }

@@ -623,6 +623,16 @@ CREATE TABLE suppressions (
       PRIMARY KEY (tenant_id, email)
     );
 
+CREATE TABLE tenant_account_relationships (
+      tenant_id TEXT NOT NULL, id TEXT NOT NULL,
+      match_kind TEXT NOT NULL CHECK (match_kind IN ('account_id','domain')), match_value TEXT NOT NULL CHECK (length(match_value) <= 253),
+      status TEXT NOT NULL CHECK (status IN ('customer','open_deal')),
+      source TEXT NOT NULL CHECK (source IN ('manual')), actor TEXT NOT NULL CHECK (length(actor) <= 100),
+      note TEXT CHECK (note IS NULL OR length(note) <= 300),
+      created_at INTEGER NOT NULL, removed_at INTEGER, removed_by TEXT CHECK (removed_by IS NULL OR length(removed_by) <= 100),
+      PRIMARY KEY (tenant_id, id)
+    );
+
 CREATE TABLE tenant_accounts (
       tenant_id TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL CHECK (length(name) <= 150), domain TEXT CHECK (domain IS NULL OR length(domain) <= 253),
       status TEXT NOT NULL CHECK (status IN ('active','merged')), merged_into TEXT, created_at INTEGER NOT NULL,
@@ -869,6 +879,8 @@ CREATE INDEX seo_index_results_tenant ON seo_index_results (tenant_id, keyword, 
 CREATE INDEX sequences_tenant ON sequences (tenant_id, status);
 
 CREATE INDEX source_reviews_tenant ON source_reviews(tenant_id,lead_id);
+
+CREATE INDEX tenant_account_relationships_match ON tenant_account_relationships (tenant_id, match_kind, match_value);
 
 CREATE INDEX tenant_connections_tenant ON tenant_connections (tenant_id);
 

@@ -18,6 +18,8 @@ const ERR: Record<string, string> = {
   gmail_reconnect_needed: 'Gmail needs to be reconnected in Settings.',
   suppressed: 'This address unsubscribed, so it will not be emailed.',
   recipient_contacted_recently: 'This person was already emailed from another play recently. The draft is kept; it will not be sent for now.',
+  existing_customer: 'Your customer list says this company is already a customer. The draft is kept; it will not be sent.',
+  open_deal: 'Your customer list says this company is an open deal. The draft is kept; it will not be sent.',
   identity_review_required: 'dazl could not tell which company this lead is. The draft is kept; it will not be sent until you decide which account it belongs to.',
   identity_unresolved: 'Which company this lead belongs to could not be checked just now. Nothing was sent. Try again in a moment.',
   account_contacted_recently: 'Someone at this company was already emailed from another play recently. The draft is kept; it will not be sent for now.',

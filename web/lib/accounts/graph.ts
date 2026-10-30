@@ -19,6 +19,7 @@
 // through the tenant's own scan_jobs.
 import { randomBytes } from 'node:crypto'
 import { asDb, type Db, type DbLike, type Tx, type TxBody } from '../db/client.ts'
+import { migrateAccountRelationships } from './relationships.ts'
 
 export type LinkStatus = 'linked' | 'quarantined'
 export type LinkBasis = 'company_domain' | 'email_domain' | 'name_only' | 'manual'
@@ -48,6 +49,7 @@ const newId = () => randomBytes(12).toString('hex')
 const sameSite = (a: string, b: string) => a === b || a.endsWith(`.${b}`) || b.endsWith(`.${a}`)
 
 export function migrateAccountGraph(db: { exec(sql: string): unknown }): void {
+  migrateAccountRelationships(db) // the tenant's own customer / open-deal list (lib/accounts/relationships.ts)
   db.exec(`
     CREATE TABLE IF NOT EXISTS tenant_accounts (
       tenant_id TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL CHECK (length(name) <= 150), domain TEXT CHECK (domain IS NULL OR length(domain) <= 253),
