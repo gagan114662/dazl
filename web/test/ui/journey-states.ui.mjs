@@ -37,6 +37,12 @@ const NO_CONTACT = lead('2'.repeat(24), 'Maple Family Dentistry', { contact: nul
 const WRONG_CO = lead('3'.repeat(24), 'Gramercy Dental Practice', { review_reason: 'identity_mismatch' })
 const UNDATED = lead('4'.repeat(24), 'Lakeside Smiles', { event_date: null, date_status: 'undated' })
 const OUT_OF_WINDOW = lead('5'.repeat(24), 'Old Town Dental', { window_held: true })
+// Synthetic shapes of the two reported failures (no real company, run or URL): customer-mention + undated; blocked + undated.
+const R_CUSTOMER = lead('6'.repeat(24), 'Harbor Dental Studio', { review_reason: 'counterparty_signal', window_held: true, event_date: null, date_status: 'undated' })
+const R_UNDATED = lead('7'.repeat(24), 'Elm Street Orthodontics', { review_reason: 'outside_window_undated', window_held: true, event_date: null, date_status: 'undated' })
+const L_CUSTOMER = lead('8'.repeat(24), 'Canal Dental Group', { review_reason: 'counterparty_signal', event_date: null, date_status: 'undated' })
+const L_BLOCKED = lead('9'.repeat(24), 'Mews Smile Clinic', { review_reason: 'blocked_by_site', window_held: true, event_date: null, date_status: 'undated' })
+const QUOTE = lead('a'.repeat(24), 'Pine Dental', { review_reason: 'quote_unconfirmed' })
 const PROFILE = { business_name: 'Brightsmile', sells: 'Appointment booking software', website: 'https://brightsmile.example', buyer: BUYER }
 
 // Each state: what the stubbed account returns, and what Home must show.
@@ -46,7 +52,9 @@ const STATES = {
   'running': { profile: PROFILE, jobs: [job({ status: 'running', finished_at: null })] },
   'failed-source': { profile: PROFILE, jobs: [job({ status: 'failed', error: 'key_rejected', candidates: null, verified: null, needs_review: null, dropped: null, lead_count: 0 })] },
   'zero-extracted': { profile: PROFILE, jobs: [job({ status: 'failed', error: 'no_candidates', candidates: 0, verified: null, needs_review: null, dropped: null, lead_count: 0 })] },
-  'all-held': { profile: PROFILE, jobs: [job()], leads: [WRONG_CO, UNDATED, OUT_OF_WINDOW] },
+  'all-held': { profile: PROFILE, jobs: [job()], leads: [QUOTE, WRONG_CO, UNDATED, OUT_OF_WINDOW] },
+  'research-only-nyc': { profile: PROFILE, jobs: [job({ candidates: 2, verified: 0, needs_review: 2 })], leads: [R_CUSTOMER, R_UNDATED] },
+  'research-only-london': { profile: PROFILE, jobs: [job({ candidates: 2, verified: 0, needs_review: 2 })], leads: [L_CUSTOMER, L_BLOCKED] },
   'useful': { profile: PROFILE, jobs: [job()], leads: [GOOD, NO_CONTACT, WRONG_CO, UNDATED, OUT_OF_WINDOW], messages: [{ lead_id: GOOD.id, status: 'draft' }, { lead_id: NO_CONTACT.id, status: 'approved' }] },
   'useful-campaign-error': { profile: PROFILE, jobs: [job()], leads: [GOOD], campaignFails: true },
 }
@@ -114,15 +122,32 @@ try {
         if (name === 'zero-extracted') { assert.equal(stage, 'zero'); assert.equal(await page.getByTestId('journey-line').textContent(), 'This play found 0 companies.'); assert.equal(await preview.count(), 0) }
         if (name === 'all-held') {
           assert.equal(stage, 'all_held'); assert.equal(await preview.count(), 0, 'wrong-company, undated and out-of-window leads never enter the preview')
-          assert.equal(await page.getByTestId('journey-line').textContent(), '0 opportunities. 3 leads need review.')
-          assert.match(await page.getByTestId('journey-held').textContent(), /^3 held for review/)
+          assert.equal(await page.getByTestId('journey-line').textContent(), '0 opportunities. 1 lead needs review.')
+          assert.match(await page.getByTestId('journey-held').textContent(), /^1 needs your review/)
+          assert.match(await page.getByTestId('journey-research').textContent(), /^3 research only/)
+        }
+        if (name.startsWith('research-only')) {
+          // Zero actionable review: nothing to review, the leads are research only, and recovery can change the outcome.
+          assert.equal(stage, 'research_only'); assert.equal(await preview.count(), 0)
+          assert.deepEqual([actionText, href], ['Change the search', `/app/leads?q=${encodeURIComponent('Dental practice owners in Ohio - opened a new location')}`])
+          assert.equal(await page.getByTestId('journey-held').count(), 0, 'no review link when nothing is reviewable')
+          assert.match(await page.getByTestId('journey-research').textContent(), /^2 research only/)
+          assert.match(await page.getByTestId('journey-line').textContent(), /^0 opportunities\. 2 research-only leads: checking them cannot make them ready\.$/)
+          const text = await page.getByTestId('journey-results').textContent()
+          assert.doesNotMatch(text, /Review \d+ held|a few leads need your eyes|Widen to \d+ days|need review/)
+          assert.equal(await page.getByTestId('stat-held').locator('div').first().textContent().then(t => t.trim()), '0')
+          assert.equal(await page.getByTestId('widen-window').count(), 0, 'no date widening for a missing date')
+          for (const t of ['recover-dated', 'widen-signal']) assert.equal(await page.getByTestId(t).count(), 1, t)
+          assert.equal(await page.getByTestId('recover-source').count(), name.endsWith('london') ? 1 : 0, 'another source is offered for a customer mention')
+          assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `${name} ${tag}: no horizontal overflow`)
         }
         if (name === 'useful') {
           assert.equal(stage, 'useful')
           assert.deepEqual((await preview.allTextContents()).map(t => t.match(/Bright Dental|Maple Family Dentistry|Gramercy|Lakeside|Old Town/)?.[0]), ['Bright Dental', 'Maple Family Dentistry'])
           assert.deepEqual(await page.getByTestId('journey-contact').allTextContents(), ['Contact ready', 'No published contact yet'])
           assert.equal(await page.getByTestId('journey-line').textContent(), '2 opportunities in this play.', 'held leads never inflate the count')
-          assert.match(await page.getByTestId('journey-held').textContent(), /^3 held for review/)
+          assert.equal(await page.getByTestId('journey-held').count(), 0, 'research-only leads are not a review task')
+          assert.match(await page.getByTestId('journey-research').textContent(), /^3 research only/)
           // Same campaign: the drafts action points at this play only; approved-unsent is reported apart from drafts.
           assert.deepEqual([actionText, href], ['Review 1 draft', `/app/outreach?job_id=${P}`])
           assert.equal(await page.getByTestId('journey-approved').textContent(), '1 approved, not sent yet')
