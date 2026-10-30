@@ -1,7 +1,14 @@
 'use client'
 import { useEffect, useState } from 'react'
 
-interface Info { available: boolean; gmail_connected: boolean; consent: { version: string; text: string[]; accepted: boolean }; read_granted: boolean; followups_enabled: boolean; autopilot_on: boolean; inbound: { from_email: string; excerpt: string; classification: string; received_at: number }[] }
+interface Info { available: boolean; gmail_connected: boolean; consent: { version: string; text: string[]; accepted: boolean }; read_granted: boolean; reply_freshness?: 'fresh' | 'stale' | 'unknown'; followups_enabled: boolean; autopilot_on: boolean; inbound: { from_email: string; excerpt: string; classification: string; received_at: number }[] }
+
+// #413: whether the replies, opt-outs and bounces dazl acts on were read in full recently (GET reply_freshness).
+const FRESHNESS = {
+  fresh: 'Replies, opt-outs and bounces were read in full in the last 2 hours.',
+  stale: 'Replies were last read in full more than 2 hours ago. Autopilot reads them again before its next email.',
+  unknown: "Replies haven't been read in full yet, or the last check couldn't read every thread. Autopilot sends no new email until a full read succeeds.",
+} as const
 
 export default function RepliesPanel() {
   const [i, setI] = useState<Info | null>(null)
@@ -31,6 +38,7 @@ export default function RepliesPanel() {
       ) : (
         <div className="text-sm space-y-2">
           <div>Reading replies: on. Follow-ups: {i.followups_enabled ? 'on' : 'off'}. Up to 2 follow-ups, only to people who showed interest, never after they opt out.</div>
+          {i.reply_freshness && <p data-testid="reply-freshness" className={i.reply_freshness === 'fresh' ? 'text-[#555]' : 'text-[#8a4b00]'}>{FRESHNESS[i.reply_freshness]}</p>}
           <div className="flex gap-4">
             <button className="underline underline-offset-2" onClick={() => act('sync')}>Check replies now</button>
             {i.followups_enabled ? <button className="underline underline-offset-2" onClick={() => act('followups_off')}>Turn off follow-ups</button> : <button className="underline underline-offset-2" disabled={!i.autopilot_on} onClick={() => act('followups_on')}>{i.autopilot_on ? 'Turn on follow-ups' : 'Turn on autopilot first'}</button>}

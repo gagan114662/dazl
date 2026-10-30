@@ -7,10 +7,11 @@ import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
 import { saveSettings, isSuppressed } from '../lib/outreach/service.ts'
-import { ATTESTATIONS, CONSENT_VERSION, disable, enable, migrateAutopilot, pause } from '../lib/outreach/autopilot.ts'
+import { ATTESTATIONS, CONSENT_VERSION, disable, enable, migrateAutopilot, pause, runAutopilot } from '../lib/outreach/autopilot.ts'
 import { migrateLedger } from '../lib/outreach/ledger.ts'
 import { acceptReadConsent, migrateReplies, readingTenants, readRepliesForAll, replyFreshness, revokeReadConsent, syncReplies } from '../lib/outreach/replies.ts'
 import { setFollowups } from '../lib/outreach/followups.ts'
+import { seedOffers } from './helpers/seed-offer.ts'
 
 const master = randomBytes(32)
 const genv = { GOOGLE_CLIENT_ID: 'cid.apps.googleusercontent.com', GOOGLE_CLIENT_SECRET: 'cs', PUBLIC_BASE_URL: 'https://app.test' }
@@ -110,4 +111,28 @@ test('#413 the scheduler pass skips accounts already read this tick and reads ea
   let kept = 0
   assert.deepEqual(await readRepliesForAll(db, new Set(), { each: async () => { kept++ }, d: D(gmail({ [s.thread]: [] }, calls)) }), { read: 1, failed: 0 })
   assert.equal(kept, 1, 'the lease hook runs before each account')
+})
+
+test('#413 autopilot sends no new first touch on a failed or partial read; a full read lets it send', async () => {
+  for (const read of ['fails', 'partial', 'full'] as const) {
+    const db = await setup(); seedOffers(db, ['A']); const a = sentLead(db, 'a@co.example'); const b = sentLead(db, 'b@two.example')
+    // A new verified lead with no message yet: autopilot's next first touch.
+    const job = (db.prepare('SELECT scan_job_id FROM leads WHERE id = ?').get(a.lead) as { scan_job_id: string }).scan_job_id
+    db.prepare("INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence, score, human_confirmed_at, human_confirmed_from) VALUES ('new', ?, 'Fresh Co', 'c@three.example', 'Hiring', 'https://f.example/a', 'Fresh Co is hiring', 90, 99, 1800000000, 'test_review')").run(job)
+    const sent: string[] = []
+    const fetchImpl = (async (url: string) => {
+      const u = String(url)
+      if (u.includes('oauth2') || u.includes('token')) return read === 'fails' ? json({}, 503) : json({ access_token: 'at' })
+      if (read === 'partial' && u.includes(b.thread)) return json({}, 500)
+      return json({ messages: [] })
+    }) as unknown as typeof fetch
+    const r = await runAutopilot(db, 'A', 'Acme', { flags: { AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '1' }, env: genv, master, now: NOW, baseUrl: 'https://app.test', fetchImpl, sendFn: (async (_t: string, raw: string) => { sent.push(raw); return { id: 'g' } }) as never })
+    if (read === 'full') { assert.equal(r.stopped, undefined, read); assert.equal(sent.length, 1, read) }
+    else {
+      assert.equal(r.stopped, 'replies_unread', read)
+      assert.equal(sent.length, 0, `${read}: nothing sent on an incomplete read`)
+      assert.equal(db.prepare("SELECT count(*) AS n FROM outreach_messages WHERE lead_id = 'new'").pluck().get(), 0, `${read}: no draft either`)
+      assert.equal(replyFreshness(db, 'A', 3600, NOW), 'unknown')
+    }
+  }
 })

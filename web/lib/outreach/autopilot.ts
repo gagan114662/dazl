@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3'
 import { gmailStatus } from '../gmail/oauth.ts'
 import { createDraft, approve, getSettings, isSuppressed, OutreachError, sendMessage, suppress, type Deps } from './service.ts'
 import { polishDraft } from './draft-llm.ts'
+import { readsReplies, syncReplies } from './replies.ts'
 
 // Autopilot sends first-touch email to verified, business-published addresses through the user's own Gmail,
 // inside hard limits. It never sends follow-ups, never re-contacts, and never touches suppressed addresses.
@@ -116,6 +117,9 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
   if (!st.consent_current) return stop('consent_required')
   const uncertain = db.prepare("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND status = 'uncertain'").get(tenantId)
   if (uncertain) { pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send') }
+  // #413: an account that reads its replies sends nothing new on a failed or partial read, since an opt-out or bounce it
+  // missed could belong to the next recipient. Accounts without read consent are unchanged (nothing to read).
+  if (readsReplies(db, tenantId, now) && (await syncReplies(db, tenantId, d)).error) return stop('replies_unread')
 
   const leads = db.prepare(
     `SELECT l.id, l.contact FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id

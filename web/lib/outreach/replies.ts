@@ -61,11 +61,15 @@ export const READ_WINDOW_S = 120 * 86400
 // window, whatever its sending settings (autopilot off or paused, follow-ups off, no sequence). Reading replies, opt-outs
 // and bounces is the recipients' safety, not part of sending; revoking read consent removes the account at once.
 export function readingTenants(db: Database.Database, now = Math.floor(Date.now() / 1000)): string[] {
-  if (!tableExists(db, 'gmail_accounts') || !tableExists(db, 'outreach_messages')) return []
+  return readers(db, now)
+}
+export const readsReplies = (db: Database.Database, tenantId: string, now = Math.floor(Date.now() / 1000)): boolean => readers(db, now, tenantId).length > 0
+function readers(db: Database.Database, now: number, only?: string): string[] {
+  if (!tableExists(db, 'mail_read_consent') || !tableExists(db, 'gmail_accounts') || !tableExists(db, 'outreach_messages')) return []
   return (db.prepare(`SELECT c.tenant_id FROM mail_read_consent c JOIN gmail_accounts g ON g.tenant_id = c.tenant_id
-    WHERE c.version = ? AND g.read_granted = 1 AND g.status = 'active'
+    WHERE ${only ? 'c.tenant_id = ? AND ' : ''}c.version = ? AND g.read_granted = 1 AND g.status = 'active'
       AND EXISTS (SELECT 1 FROM outreach_messages m WHERE m.tenant_id = c.tenant_id AND m.status = 'sent' AND m.gmail_id IS NOT NULL AND m.sent_at >= ?)
-    ORDER BY c.tenant_id`).all(READ_CONSENT_VERSION, now - READ_WINDOW_S) as { tenant_id: string }[]).map(r => r.tenant_id)
+    ORDER BY c.tenant_id`).all(...(only ? [only] : []), READ_CONSENT_VERSION, now - READ_WINDOW_S) as { tenant_id: string }[]).map(r => r.tenant_id)
 }
 
 // The scheduler's read-only pass (#413): sync every reading tenant not already read this tick. Nothing is sent. `each`
