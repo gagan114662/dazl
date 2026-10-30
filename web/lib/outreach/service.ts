@@ -9,7 +9,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypt
 import type Database from 'better-sqlite3'
 import { getMasterKey } from '../secrets.ts'
 import { buildMime, EMAIL_RE, toBase64Url } from '../gmail/mime.ts'
-import { GmailError, GmailSendError, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
+import { GmailError, GmailSendError, confirmedSendResult, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { norm } from './store.ts'
 import { domainReviewFor } from './domain-review.ts'
 import { pickCrawledEmail } from './published-email.ts'
@@ -520,7 +520,7 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
     body: composeBody(m.body, settings!, unsubUrl), messageId: `dazl.${id}@${acct!.email.split('@')[1]}`, unsubscribeUrl: unsubUrl, date: new Date(nowS(d) * 1000),
   }))
   try {
-    const out = await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl)
+    const out = confirmedSendResult(await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl))
     if (m.test) console.log('outreach TEST MODE send', id, m.to_email)
     db.prepare("UPDATE outreach_messages SET status = 'sent', sent_at = ?, gmail_id = ?, thread_id = ?, error = NULL WHERE id = ? AND status = 'sending'").run(nowS(d), out.id, (out as { threadId?: string }).threadId ?? null, id)
     return 'sent'
