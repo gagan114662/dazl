@@ -13,7 +13,8 @@ const ev = (customer: string, d: number, e: Record<string, unknown>) => ({ id: `
 const signup = (c: string, d: number, over: Record<string, unknown> = {}) => ev(c, d, { kind: 'signup', viaTaggedLink: false, consented: false, identity: `${c}@co.test`, ...over })
 const touch = (c: string, d: number) => ev(c, d, { kind: 'touch', channel: 'email', identity: `${c}@co.test` })
 const run = (c: string, d: number, usableLeads: number) => ev(c, d, { kind: 'run', status: 'done', usableLeads })
-const pay = (c: string, d: number, status = 'paid') => ev(c, d, { kind: 'payment', status })
+// a paid payment bills a 30-day service period from its date, as a monthly invoice line would (a one-off has none)
+const pay = (c: string, d: number, status = 'paid', days: number | null = 30) => ev(c, d, { kind: 'payment', status, ...(status === 'paid' && days !== null ? { periodStart: at(d), periodEnd: at(d + days) } : {}) })
 // a successful monthly payment from day `from` up to and including day `to`
 const monthly = (c: string, from: number, to: number) => Array.from({ length: Math.floor((to - from) / 30) + 1 }, (_, i) => pay(c, from + i * 30))
 
@@ -165,4 +166,14 @@ test('retention rate: numerator and denominator are the same cohort, so renewed-
   assert.deepEqual([im1.stage, im1.retention.day30.eligible, im1.retention.day30.renewal_at], ['paid', false, at(31) / 1000])
   const r = cohortReport(es, [], at(0), at(30), at(H + L))
   assert.deepEqual([r.retention.eligible, r.retention.retained, r.retention.rate, r.costPerRetainedPaying], [1, 0, 0, null])
+})
+
+test('coverage through this file\'s events: actual service periods; an early cancel stops it unless billing shows prepaid service', () => {
+  const cov = (es: LifecycleEvent[], d: number) => customerState(es[0].customer, es, at(d)).retention.coverage_at_cutoff
+  assert.equal(cov([signup('an', 0), pay('an', 0, 'paid', 365)], 200), 'covered', 'annual')
+  assert.equal(cov([signup('on', 0), pay('on', 0, 'paid', null)], 5), 'unknown', 'one-off, no period')
+  assert.equal(cov([signup('pr', 0), pay('pr', 10, 'paid', 8)], 20), 'unknown', 'prorated period ran out')
+  assert.equal(cov([signup('ic', 0), pay('ic', 0), ev('ic', 5, { kind: 'cancel' })], 10), 'not_covered', 'cancelled on day 5')
+  assert.equal(cov([signup('pp', 0), pay('pp', 0), ev('pp', 5, { kind: 'cancel', serviceUntil: at(30) })], 10), 'covered', 'cancelled, paid to day 30')
+  assert.equal(cov([signup('pp2', 0), pay('pp2', 0), ev('pp2', 5, { kind: 'cancel', serviceUntil: at(30) })], 31), 'not_covered')
 })

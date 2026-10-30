@@ -18,8 +18,10 @@ export type LifecycleEvent =
   | { id: string; at: number; customer: string; kind: 'signup'; viaTaggedLink: boolean; consented: boolean; identity: string | null }
   | { id: string; at: number; customer: string; kind: 'setup'; step: 'key' | 'mailbox' | 'offer' }
   | { id: string; at: number; customer: string; kind: 'run'; status: 'done' | 'failed'; usableLeads: number }
-  | { id: string; at: number; customer: string; kind: 'payment'; status: 'paid' | 'failed' | 'refunded' }
-  | { id: string; at: number; customer: string; kind: 'cancel' }
+  // a paid payment carries the service period it bought, from the billing (absent: a one-off charge, no coverage evidence)
+  | { id: string; at: number; customer: string; kind: 'payment'; status: 'paid' | 'failed' | 'refunded'; periodStart?: number; periodEnd?: number }
+  // serviceUntil: billing evidence that the paid service ran on past the cancellation (cancel at period end)
+  | { id: string; at: number; customer: string; kind: 'cancel'; serviceUntil?: number }
   | { id: string; at: number; customer: string; kind: 'cost'; usd: number; what: 'research' | 'enrichment' | 'evaluation' | 'model' | 'send' }
 
 export interface CustomerMeta { customer: string; synthetic: boolean; staging: boolean }
@@ -48,14 +50,18 @@ export function upTo(events: LifecycleEvent[], asOf: number): LifecycleEvent[] {
 // Map this file's events onto the shared retention input (unix seconds). A refund event refunds the latest paid payment
 // before it that is not already refunded; the recorded subscription end is the latest cancel.
 function retentionOf(ev: LifecycleEvent[], now: number): RetentionResult {
-  const payments: { at: number; refunded: boolean }[] = []
+  const payments: { at: number; refunded: boolean; periodStart?: number; periodEnd?: number }[] = []
   for (const e of ev) {
     if (e.kind !== 'payment') continue
-    if (e.status === 'paid') payments.push({ at: e.at, refunded: false })
+    if (e.status === 'paid') payments.push({ at: e.at, refunded: false, periodStart: e.periodStart, periodEnd: e.periodEnd })
     else if (e.status === 'refunded') { const p = payments.findLast(x => !x.refunded); if (p) p.refunded = true }
   }
-  const ended = ev.filter(e => e.kind === 'cancel').at(-1)?.at ?? null
-  return retention({ payments: payments.map(p => ({ at: p.at / 1000, refunded: p.refunded })), ended_at: ended === null ? null : ended / 1000, cutoff: now / 1000 })
+  const end = ev.filter((e): e is Extract<LifecycleEvent, { kind: 'cancel' }> => e.kind === 'cancel').at(-1) ?? null
+  const s = (ms: number | undefined) => ms === undefined ? null : ms / 1000
+  return retention({
+    payments: payments.map(p => ({ at: p.at / 1000, refunded: p.refunded, period_start: s(p.periodStart), period_end: s(p.periodEnd) })),
+    ended_at: end ? end.at / 1000 : null, service_until: end ? s(end.serviceUntil) : null, cutoff: now / 1000,
+  })
 }
 
 function dedupe(events: LifecycleEvent[]): LifecycleEvent[] {
