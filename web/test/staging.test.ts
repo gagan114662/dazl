@@ -31,7 +31,7 @@ test('staging: connecting Gmail is a stub account, tokens and sends make no netw
     assert.equal(sent.threadId, sent.id)
     assert.equal((await gmailSend(token, 'cmF3', noNetwork, 'thread1')).threadId, 'thread1')
     acceptReadConsent(db, T)
-    assert.deepEqual(await syncReplies(db, T, { fetchImpl: noNetwork, master }), { threads: 0, replies: 0, optOuts: 0, bounces: 0, consents: 0, reviews: 0 })
+    assert.deepEqual(await syncReplies(db, T, { fetchImpl: noNetwork, master }), { threads: 0, replies: 0, optOuts: 0, bounces: 0, consents: 0, reviews: 0, partial: false, remaining: 0 })
     await disconnectGmail(db, T, { fetchImpl: noNetwork, master })
     assert.equal(gmailStatus(db, T), null)
   })
