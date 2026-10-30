@@ -50,8 +50,8 @@ bothEngines('SEO brief: no limit set -> unchanged; a limit -> reserved first in 
     assert.ok(!('error' in await generateBrief(db, 'T', 'lead generation', { fetchImpl: answering(BRIEF), master })))
     assert.equal(calls.length, 2)
     const rows = await reserved(db, 'T')
-    assert.deepEqual(rows.map(r => [r[0], r[2], r[3]]), [['d:', 0, 1], ['m:', 0, 1]], 'day and month each hold one reservation; no billed figure is claimed')
-    assert.ok((rows[0][1] as number) > 0.02 && (rows[0][1] as number) < 0.05, `the worst case is reserved: ${rows[0][1]}`)
+    // Reserved at the worst case, then settled to what the stub reported: 10 in + 10 out at $3/$15 per million.
+    assert.deepEqual(rows, [['d:', 0.00018, 0.00018, 1], ['m:', 0.00018, 0.00018, 1]], 'day and month each hold the settled cost; no pending marker is left')
     // Another paid path (the scan runner, another instance) has used the rest of the day: the next brief is refused.
     await sharedPool(db, 'T', { day: 5 }).reserve(5 - (rows[0][1] as number) - 0.001)
     assert.deepEqual(await generateBrief(db, 'T', 'lead generation', { fetchImpl: answering(BRIEF), master }), { error: 'spend_limit' })

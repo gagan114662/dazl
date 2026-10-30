@@ -7,15 +7,19 @@
 // one the provider is returned unchanged. With one, a model without a listed price is refused (fails closed), and so is
 // a reservation the store could not save. A refused call is never made: the caller's own fallback (a template, an
 // error) applies, and nothing is billed.
-// Reservations here stay at the worst case: a plain completion reports no usage, so no billed figure is recorded
-// (reported_usd stays as the vendor reported it: untouched).
+// After the call each completion is settled to what the vendor reported (guardProvider's settle, lib/llm/spend-guard.ts):
+// the served model's price with cache writes and reads, so an overrun past the limit is recorded and refuses every later
+// call; no usage keeps the worst-case reservation; an unknown cost (unpriced served model, invalid counts) counts the rest
+// of the day (or, with only a month limit, the month) as spent. When that accounting cannot be saved, SpendAccountingFailed is thrown: the call happened, so a
+// caller must not treat it as a refusal (spendRefused is false for it).
 import type { DbLike } from '../db/client.ts'
 import type { Provider } from './provider.ts'
-import { guardProvider, PooledGuard, SpendRefused } from './spend-guard.ts'
+import { guardProvider, PooledGuard, SpendAccountingFailed, SpendRefused } from './spend-guard.ts'
 import { ownerLimits, sharedPool } from './spend-pool.ts'
 
 export function ownerGuarded(d: DbLike, ownerId: string, p: Provider, env: Record<string, string | undefined> = process.env): Provider {
   const limits = ownerLimits(ownerId, env)
-  return limits ? guardProvider(p, new PooledGuard(sharedPool(d, ownerId, limits))) : p
+  return limits ? guardProvider(p, new PooledGuard(sharedPool(d, ownerId, limits), { trackPending: true }), undefined, undefined, true) : p
 }
 export const spendRefused = (e: unknown): e is SpendRefused => e instanceof SpendRefused
+export const spendAccountingFailed = (e: unknown): e is SpendAccountingFailed => e instanceof SpendAccountingFailed

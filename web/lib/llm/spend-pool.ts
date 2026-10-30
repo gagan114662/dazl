@@ -27,16 +27,31 @@ export function periodOf(w: PoolWindow, nowS: number): string {
 
 // Rounding guard: amounts are stored as doubles; a reservation that fits to within a nano-dollar fits.
 const EPS = 1e-9
+// A pending-settlement marker this old belongs to a call whose accounting did not land (a call takes minutes at most).
+export const PENDING_STALE_S = 15 * 60
+const pendingPeriod = (id: string) => {
+  if (!/^[0-9a-f]{10}$/.test(id)) throw new Error('spend pool: invalid pending id')
+  return `p:${id}`
+}
 
 export interface SharedPool {
   readonly owner: string
   readonly limits: PoolLimits
   // The pool's clock (epoch seconds): the one time source for which day and month a reservation lands in.
   now(): number
-  reserve(usd: number, nowS?: number): Promise<void>
+  // pendingId: also write a pending-settlement marker (period 'p:<id>') that only this reservation's settle or exhaust
+  // removes. While any marker of the owner is older than PENDING_STALE_S, every reservation is refused
+  // ('accounting_unsettled'): a paid call whose cost was never recorded stops the owner's paid calls until it is cleared.
+  reserve(usd: number, nowS?: number, pendingId?: string): Promise<void>
   // delta moves the reservation (negative releases what the call did not use); reportedUsd adds the vendor's figure.
   // reservedAtS is when the reservation was made: it settles in the windows it was reserved in.
-  settle(deltaUsd: number, reportedUsd: number | null, reservedAtS: number): Promise<void>
+  // With pendingId the marker is removed in the same transaction; a marker already gone means this reservation was
+  // settled before, and nothing moves (a retry is a no-op).
+  settle(deltaUsd: number, reportedUsd: number | null, reservedAtS: number, pendingId?: string): Promise<void>
+  // A call whose cost is unknown: the shortest window it was reserved in (the day when a day limit is set, else the
+  // month) counts as spent up to its limit, so every later reservation in it is refused until the window turns; the
+  // month keeps the call's full reservation. Throws (nothing written) when the row is missing.
+  exhaust(reservedAtS: number, pendingId?: string): Promise<void>
 }
 
 function windows(limits: PoolLimits): [PoolWindow, number][] {
@@ -55,12 +70,15 @@ export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: 
   return {
     owner, limits,
     now: clock,
-    async reserve(usd, nowS = clock()) {
+    async reserve(usd, nowS = clock(), pendingId) {
       if (!(Number.isFinite(usd) && usd >= 0)) throw new SpendRefused('reservation_invalid')
-      if (ws.length === 0 || usd === 0) return
+      if (ws.length === 0 || (usd === 0 && !pendingId)) return
+      const marker = pendingId === undefined ? null : pendingPeriod(pendingId)
       let ok: boolean
       try {
         ok = await db.tx(function* (t: Tx): TxBody<boolean> {
+          if (yield* t.get("SELECT 1 AS k FROM tenant_spend_pools WHERE tenant_id = ? AND period LIKE 'p:%' AND updated_at <= ?", [owner, nowS - PENDING_STALE_S])) throw new SpendRefused('accounting_unsettled')
+          if (marker) yield* t.run('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, ?, 0, 0, ?)', [owner, marker, usd, nowS])
           for (const [w, limit] of ws) {
             const period = periodOf(w, nowS)
             yield* t.run('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, 0, 0, 0, ?) ON CONFLICT (tenant_id, period) DO NOTHING', [owner, period, nowS])
@@ -77,19 +95,39 @@ export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: 
       }
       if (!ok) throw new SpendRefused('over_limit')
     },
-    async settle(deltaUsd, reportedUsd, reservedAtS) {
+    async settle(deltaUsd, reportedUsd, reservedAtS, pendingId) {
       const nowS = clock()
       if (ws.length === 0) return
       const delta = Number.isFinite(deltaUsd) ? deltaUsd : 0
       const rep = reportedUsd !== null && Number.isFinite(reportedUsd) && reportedUsd > 0 ? reportedUsd : 0
-      if (delta === 0 && rep === 0) return
+      const marker = pendingId === undefined ? null : pendingPeriod(pendingId)
+      if (delta === 0 && rep === 0 && !marker) return
       // The windows of the reservation's own time: a call that started before midnight settles on the day it was reserved
       // in. Money already spent is recorded even past the limit (later reservations are then refused); never below zero.
       const at = Number.isFinite(reservedAtS) ? reservedAtS : nowS
+      // Every window row must exist (the reservation created it): a settle that changes nothing throws and rolls back
+      // the windows already moved, so it is never a silent no-op.
       await db.tx(function* (t: Tx): TxBody<void> {
+        if (marker && (yield* t.run('DELETE FROM tenant_spend_pools WHERE tenant_id = ? AND period = ?', [owner, marker])).changes !== 1) return
+        if (delta === 0 && rep === 0) return
         for (const [w] of ws) {
-          yield* t.run('UPDATE tenant_spend_pools SET reserved_usd = CASE WHEN reserved_usd + ? < 0 THEN 0 ELSE reserved_usd + ? END, reported_usd = reported_usd + ?, updated_at = ? WHERE tenant_id = ? AND period = ?',
+          const r = yield* t.run('UPDATE tenant_spend_pools SET reserved_usd = CASE WHEN reserved_usd + ? < 0 THEN 0 ELSE reserved_usd + ? END, reported_usd = reported_usd + ?, updated_at = ? WHERE tenant_id = ? AND period = ?',
             [delta, delta, rep, nowS, owner, periodOf(w, at)])
+          if (r.changes !== 1) throw new Error('spend pool settle: window row missing')
+        }
+      })
+    },
+    async exhaust(reservedAtS, pendingId) {
+      const nowS = clock()
+      if (ws.length === 0) return
+      const at = Number.isFinite(reservedAtS) ? reservedAtS : nowS
+      const marker = pendingId === undefined ? null : pendingPeriod(pendingId)
+      await db.tx(function* (t: Tx): TxBody<void> {
+        if (marker && (yield* t.run('DELETE FROM tenant_spend_pools WHERE tenant_id = ? AND period = ?', [owner, marker])).changes !== 1) return
+        for (const [w, limit] of ws.slice(0, 1)) {
+          const r = yield* t.run('UPDATE tenant_spend_pools SET reserved_usd = CASE WHEN reserved_usd < ? THEN ? ELSE reserved_usd END, updated_at = ? WHERE tenant_id = ? AND period = ?',
+            [limit, limit, nowS, owner, periodOf(w, at)])
+          if (r.changes !== 1) throw new Error('spend pool exhaust: window row missing')
         }
       })
     },
