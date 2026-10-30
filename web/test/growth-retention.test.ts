@@ -78,7 +78,7 @@ test('day-30 window: renewals from day 25 to day 35 count; outside it they do no
 })
 
 test('each rule is one named setting: early and late move only their own boundary; future rows ignored', () => {
-  const r = (days: number[], cutoffDay: number, rules = {}) => retention({ payments: pays(days.map(d => [d] as P)), ends: [], cutoff: day(cutoffDay) }, rules)
+  const r = (days: number[], cutoffDay: number, rules = {}) => retention({ payments: pays(days.map(d => [d, d, d + 30] as P)), ends: [], cutoff: day(cutoffDay) }, rules)
   assert.equal(r([0, 27], 40, { renewalEarlyDays: 2 }).day30.retained, false); assert.equal(r([0, 28], 40, { renewalEarlyDays: 2 }).day30.retained, true)
   assert.equal(r([0, 40], 60, { renewalLateDays: 10 }).day30.retained, true); assert.equal(r([0, 30], 39, { renewalLateDays: 10 }).day30.eligible, false)
   assert.equal(cov([[0, 0, 30], [50, 50, 80]], 40), 'unknown', 'a payment after the cutoff does not exist yet')
@@ -139,5 +139,27 @@ test('day 30 is scoped to the renewed service: a sibling ending on day 20 does n
   assert.equal(d30([{ at: day(20), subscription: 'sub_ended' }], 'sub_ended').day30.retained, false)
   // a renewal with no subscription identity is stopped by any end by day 30
   assert.equal(d30([{ at: day(20), subscription: 'sub_ended' }], null).day30.retained, false)
-  assert.equal(d30([], null).day30.retained, true, 'with no end at all, an unidentified renewal still counts')
+  // missing identity is conservative: with no end at all, an unidentified renewal still cannot show continuity
+  assert.deepEqual([d30([], null).day30.retained, d30([], null).day30.outcome], [false, 'unverified'])
+})
+
+test('a new subscription is not retention: day 30 needs continuity with a first-paid service', () => {
+  const svc = (d: number, sub: string | null) => ({ at: day(d), refunded: false, periods: [{ start: day(d), end: day(d + 30), subscription: sub }] })
+  const d30 = (payments: ReturnType<typeof svc>[], ends: { at: number; subscription?: string | null }[]) => retention({ payments, ends, cutoff: day(40) }).day30
+  // Instinct's case: the original service paid on day 0 and ended on day 20; a completely new subscription first paid on day 30
+  assert.deepEqual(d30([svc(0, 'sub_orig'), svc(30, 'sub_new')], [{ at: day(20), subscription: 'sub_orig' }]),
+    { eligible: true, retained: false, renewal_at: null, outcome: 'new_service' })
+  // a new subscription in the window with the original still running and not renewed: still not a renewal
+  assert.equal(d30([svc(0, 'sub_orig'), svc(30, 'sub_new')], []).outcome, 'new_service')
+  // the same subscription restarted after it ended by day 30 (a rejoin): not retention either
+  assert.deepEqual([d30([svc(0, 'sub_orig'), svc(30, 'sub_orig')], [{ at: day(20), subscription: 'sub_orig' }]).retained, d30([svc(0, 'sub_orig'), svc(30, 'sub_orig')], [{ at: day(20), subscription: 'sub_orig' }]).outcome], [false, 'new_service'])
+  // missing identity on the first invoice: continuity cannot be shown
+  assert.equal(d30([svc(0, null), svc(30, 'sub_new')], []).outcome, 'unverified')
+  // positives: the first-paid service renews; a continuing sibling renews while the other first-paid one ended
+  assert.deepEqual(d30([svc(0, 'sub_orig'), svc(30, 'sub_orig')], []), { eligible: true, retained: true, renewal_at: day(30), outcome: 'renewed' })
+  const both = { at: day(0), refunded: false, periods: [{ start: day(0), end: day(30), subscription: 'sub_a' }, { start: day(0), end: day(30), subscription: 'sub_b' }] }
+  assert.equal(retention({ payments: [both, svc(30, 'sub_b')], ends: [{ at: day(20), subscription: 'sub_a' }], cutoff: day(40) }).day30.outcome, 'renewed')
+  // nothing paid in the window
+  assert.equal(d30([svc(0, 'sub_orig')], []).outcome, 'none')
+  assert.equal(retention({ payments: [svc(0, 'sub_orig')], ends: [], cutoff: day(10) }).day30.outcome, null, 'not eligible yet')
 })
