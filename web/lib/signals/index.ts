@@ -11,6 +11,7 @@ import { companyKey, recordCompanyEvent } from '../events/store.ts'
 import { listLeads } from '../scan/store.ts'
 import { classifyEntityMatch, domainSlug, withinEventWindow } from './entity-match.ts'
 import { atsGtmBoard, postingEvidence } from './ats-gtm.ts'
+import { storeFilingOfficers, CONNECTOR as OFFICERS_CONNECTOR } from '../people/sec-officers.ts'
 import { domainRelationship, HEURISTIC_NOTE } from './domain-basis.ts'
 
 const TIMEOUT = 8000
@@ -124,7 +125,7 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
   const { fundingNews, fundingRoundFor } = await import('./funding-round.ts')
   const news = process.env.SIGNALS_FUNDING_RSS === '0' ? [] : await fundingNews(fetchImpl).catch(() => [])
   const jinaLeft = { n: 2 }
-  let funding = 0, hiring = 0, rounds = 0, gtm = 0
+  let funding = 0, hiring = 0, rounds = 0, gtm = 0, officers = 0
   const today = new Date().toISOString().slice(0, 10)
   const now = Math.floor(Date.now() / 1000)
   for (const lead of leads) {
@@ -139,6 +140,8 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
     const gb = await atsGtmBoard(lead.company, lead.company_domain, fetchImpl).catch(() => ({ hiring: null, contradictory: false }))
     // A filing far from the claimed round date is a real fact about the entity but not
     // corroboration of THIS raise (fund filings and stale filings both collide here).
+    // People named in the entity-matched filing (executive officers/directors): a fact about the entity, so it uses f0, not the round-date-gated f.
+    if (f0) officers += await storeFilingOfficers(db, tenantId, lead.id, f0, { fetchImpl })
     const f = f0 && withinEventWindow(f0.date, (lead as { event_date?: string | null }).event_date ?? null) ? f0 : null
     if (f) {
       addEnrichment(db, tenantId, lead.id, { connector: 'signals:sec-edgar', kind: 'funding', value: `SEC Form D filed ${f.date}`, label: f.entity.slice(0, 120), confidence: 80, source_url: f.url, source_date: f.date, retrieved_at: now })
@@ -176,6 +179,7 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
     }
   }
   audit(db, { tenantId, connector: 'signals:sec-edgar', jobId, lookup: `${leads.length} leads`, status: funding ? 'ok' : 'empty', results: funding })
+  audit(db, { tenantId, connector: OFFICERS_CONNECTOR, jobId, lookup: `${leads.length} leads`, status: officers ? 'ok' : 'empty', results: officers })
   audit(db, { tenantId, connector: 'signals:ats-gtm', jobId, lookup: `${leads.length} leads`, status: gtm ? 'ok' : 'empty', results: gtm })
   audit(db, { tenantId, connector: 'signals:ats', jobId, lookup: `${leads.length} leads`, status: hiring ? 'ok' : 'empty', results: hiring })
   audit(db, { tenantId, connector: 'signals:funding-round', jobId, lookup: `${leads.length} leads, ${news.length} raise reports`, status: rounds ? 'ok' : 'empty', results: rounds })
