@@ -1,6 +1,7 @@
 // Lead scoring: ICP fit, intent/timing and actionability, graded by the tenant's own model.
 // The verifier proves the quoted evidence is real; this stage answers "is this lead worth the
 // user's time, and why now". Every grade must cite the lead's already-verified evidence.
+import { fitRationale, timingOf, type Timing } from './timing-proof.ts'
 import type { Provider } from '../llm/provider.ts'
 import type { Icp } from './icp.ts'
 
@@ -60,6 +61,7 @@ export interface IcpMatch {
 const UNKNOWN_MATCH: IcpMatch = { role: 'unknown', industry: 'unknown', size: 'unknown', location: 'unknown', note: '' }
 
 export interface LeadScore {
+  timing?: Timing      // set by scoreLeads: whether the event timing is supported by verified proof (lib/scan/timing-proof.ts)
   fit: number        // 0-5 ICP fit: would this user sell to this company
   intent: number     // 0-5 is there a reason to contact them NOW
   action: number     // 0-5 can the user act: identifiable company, reachable, right size
@@ -98,7 +100,7 @@ Rules:
 - Event date is a claim unless event association is verified. Publication, copyright and retrieval dates never prove a live trigger. Unknown timing means intent 0 and no NOW assertion.
 - Grade ONLY from the evidence shown. If the evidence does not show timing, intent is low. A true quote about the wrong company is still fit 0.
 - Announcements, listicles and news about a company are not the same as that company being a buyer; grade fit on who the company is, intent on what just happened to them.
-- why: 2-3 sentences, "why this lead, why now": the live trigger from the evidence, why this company fits the ICP, and what to say first. Ground every claim in the quoted evidence - if the evidence does not show it, do not say it. No flattery.
+- why: 2-3 sentences: why this company fits the ICP and the seller's offer, and what to say first. Ground every claim in the quoted evidence - if the evidence does not show it, do not say it. Do not state or imply WHEN something happened or that the need is current unless the quote itself states it. No flattery.
 - signals: pick from this list only, and only when the evidence supports them: ${SIGNALS.join(', ')}
 - match: four letters, one per ICP criterion, in this order: role, industry, size, location.
   y = the evidence shows the lead matches that criterion, n = the evidence shows it does NOT,
@@ -147,16 +149,19 @@ export function parseScores(text: string, count: number): LeadScore[] | null {
 
 // One model call per scan (not per lead). Returns null when the model cannot score - the scan
 // then completes unscored rather than failing.
-export async function scoreLeads(provider: Provider, apiKey: string, icpText: string, leads: { company: string; name: string; signal: string; excerpt: string | null; event_date?: string | null; date_status?: string | null }[], fetchImpl?: typeof fetch): Promise<LeadScore[] | null> {
+export async function scoreLeads(provider: Provider, apiKey: string, icpText: string, leads: { company: string; name: string; signal: string; excerpt: string | null; event_date?: string | null; date_status?: string | null; confidence?: number | null }[], fetchImpl?: typeof fetch): Promise<LeadScore[] | null> {
   if (!provider.complete || leads.length === 0) return null
   try {
     const text = await provider.complete(apiKey, scorePrompt(icpText, leads.slice(0, 40)), fetchImpl, 2500)
     const parsed = parseScores(text, Math.min(leads.length, 40))
     if (!parsed) console.error('lead scoring: could not parse model output', text.slice(0, 300))
-    if (parsed) parsed.forEach(g => {
-      // No generic candidate carries structured event-association proof.
-      g.intent = 0
-      g.why = 'Event timing is unconfirmed. Review the source before treating this as a current buying need.'
+    // Fit and the written rationale are kept as graded. Timing is judged separately from verified proof (lib/scan/timing-proof.ts): intent is the model's grade
+    // only when the quote itself ties a stated event day to this company, otherwise 0 (unknown). A model grade or a copied date alone never upgrades timing.
+    if (parsed) parsed.forEach((g, i) => {
+      const t = timingOf({ company: leads[i].company, excerpt: leads[i].excerpt, event_date: leads[i].event_date, date_status: leads[i].date_status, confidence: leads[i].confidence ?? 1, review_reason: null })
+      g.timing = t
+      if (!t.supported) g.intent = 0
+      g.why = fitRationale(g.why, t.supported)
     })
     return parsed
   } catch (e) {

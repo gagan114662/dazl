@@ -6,7 +6,8 @@ const lead={company:'Acme',name:'',signal:'Raised yesterday',excerpt:'Acme raise
 test('scoring cannot assign NOW from unverified dates even if provider ignores instructions',async()=>{
  const provider={research:async()=>({text:'',citedUrls:[]}),complete:async()=> 'LEAD 1 | fit 4 | intent 5 | action 3 | signals raised_funding | why urgent need right now'}
  const grades=await scoreLeads(provider,'test','ICP',[lead])
- assert.equal(grades?.[0].fit,4);assert.equal(grades?.[0].intent,0);assert.match(grades?.[0].why??'',/timing is unconfirmed/)
+ assert.equal(grades?.[0].fit,4);assert.equal(grades?.[0].intent,0);assert.equal(grades?.[0].timing?.status,'unknown')
+ assert.doesNotMatch(grades?.[0].why??'',/urgent need right now/);assert.match(grades?.[0].why??'',/Event timing is unconfirmed/)
  assert.match(scorePrompt('ICP',[lead]),/event association: unverified/)
 })
 test('publication, observation, invalid dates and stale rereads cannot create event freshness',()=>{

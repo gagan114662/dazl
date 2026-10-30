@@ -7,6 +7,7 @@ import { sqliteLeadsRead } from '@/lib/db/leads-read'
 import { rankLeads } from '@/lib/events/prioritize'
 import { gdeltAttribution } from '@/lib/search/news-attribution'
 import { savedGradeWhy } from '@/lib/scan/leads-view'
+import { timingOf } from '@/lib/scan/timing-proof'
 import { classifyEntityMatch, classifyBoardMatch, qualifyEvent, withinEventWindow } from '@/lib/signals/entity-match'
 
 export async function GET(req: NextRequest) {
@@ -23,13 +24,17 @@ export async function GET(req: NextRequest) {
   const evts = await db.eventsForLeads(user.id, leads)
   const pri = await db.leadPriorities(user.id, leads)
   const look = await db.lookalikeSignals(user.id, leads.map(l => ({ id: l.id, signal: l.signal, industry: job.industry, location: job.location })))
-  // Read-time only: preserve stored grade/rationale for inspection, but never
-  // rank legacy unsupported timing as a live need. No history is rewritten.
-  const safeLeads = leads.map(l => ({...l, stored_intent:l.intent, intent:0,
-    stored_why:(l as typeof l & {why?:string|null}).why ?? null,
-    why:savedGradeWhy(l as typeof l & {why?:string|null}),
-    currentness_held:currentnessHeld(getScanDb(),user.id,l.id), window_held:leadWindowHeld(getScanDb(),user.id,l.id)}))
-  for (const p of Object.values(pri)) if (p) p.intent=0
+  // Read-time only; no history is rewritten. Fit/use-case rationale is kept as saved and shown as such. Timing is judged separately from verified proof
+  // (lib/scan/timing-proof.ts): the saved intent counts, and ranks, only when the quote itself ties a stated event day to this company; otherwise it is
+  // unknown/held and ranks as 0. A model grade or a publication date alone never upgrades timing.
+  const safeLeads = leads.map(l => {
+    const x = l as typeof l & { why?: string | null; evidence_excerpt?: string | null; date_status?: string | null; confidence?: number | null; review_reason?: string | null; quarantined_at?: number | null }
+    const currentness_held = currentnessHeld(getScanDb(), user.id, l.id), window_held = leadWindowHeld(getScanDb(), user.id, l.id)
+    const timing = timingOf({ company: l.company, evidence_excerpt: x.evidence_excerpt, event_date: l.event_date, date_status: x.date_status, confidence: x.confidence, review_reason: x.review_reason, quarantined_at: x.quarantined_at, currentness_held, window_held })
+    return { ...l, stored_intent: l.intent, intent: timing.supported ? l.intent : 0, timing, fit_rationale: x.why ?? null,
+      stored_why: x.why ?? null, why: x.why ?? savedGradeWhy(x), currentness_held, window_held }
+  })
+  for (const l of safeLeads) { const p = pri[l.id]; if (p && !l.timing.supported) p.intent = 0 }
   const ranked = rankLeads(safeLeads, pri)
   const via = gdeltAttribution(getScanDb(), user.id, ranked.map(l => l.id))
   return NextResponse.json({ job_id: job.id, status: job.status, hidden_count: includeHidden ? 0 : await db.countHiddenLeads(user.id, job.id), leads: ranked.map(l => ({ ...l, discovered_via: via.get(l.id)?.text ?? null, discovered_via_link: via.get(l.id)?.link ?? null, contact_context:leadContactContext(getScanDb(),user.id,l.id), source_check: sourceCheckForLead(getScanDb(), user.id, l.id), sequence: sequences.get(l.id) ?? null, enrichments: (enr[l.id] ?? []).map(e => ({ ...e, entity_status:
