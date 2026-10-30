@@ -32,22 +32,63 @@ function sentences(text: string, protectedSpans: Span[]): Span[] {
   out.push({ start, end: text.length }); return out
 }
 
-// Clause spans inside one sentence: a connective that starts another statement ("; ", " while ", " whereas ", " but ",
-// " after ", " before ", " following ", " until ", ", and ", " and " + a capitalised subject, " - ",
+// (Other scripts only.) Clause spans inside one sentence: a connective that starts another statement ("; ", " while ", " whereas ", " but ",
+// " after ", " before ", " following ", " until ", ", and ", " and " + a capitalised subject AND a verb ("and UnrelatedCo
+// launched", not "Toronto and Vancouver on"), ", which / who / whose" (unless it follows this company's own name), " - ",
 // " meanwhile ", " although ", and the native clause commas 、，، ) begins a new clause. A date's own text and the company's
 // own name ("Smith and Sons", "Better But Cheaper") are never split. A day inside parentheses has the parenthetical as its
 // clause ("(UnrelatedCo launched a tool on <day>)"); parentheses split nothing else, so "Aurora (Toronto) opened ... on <day>" stays whole. (", as" is not a break: "..., as the firm said on <day>"
 // is still the company's own statement.)
-const CLAUSE_BREAK = /;\s*|\s+(?:while|whereas|but|meanwhile|although|though|after|before|following|until)\s+|,\s+(?:and|while|whereas|but|meanwhile)\s+|\s+and\s+(?=[A-Z])|\s+[-–—]\s+|[、，،]\s*/g
-function clauses(text: string, s: Span, protectedSpans: Span[]): Span[] {
+const CLAUSE_BREAK = /;\s*|\s+(?:while|whereas|but|meanwhile|although|though|after|before|following|until)\s+|,\s+(?:and|while|whereas|but|meanwhile)\s+|\s+and\s+(?=(?:[A-Z][\w&.'’-]*\s+){1,4}[a-z]+(?:ed|es|s)\b)|,\s+(?:which|who|whose)\s+|\s+[-–—]\s+|[、，،]\s*/g
+// Known fail-closed losses: an aside ("Aurora - the Toronto firm - opened ...") or "after months of ..." cuts the company off its
+// own day; such an event reads undated (held), never wrongly dated.
+function clauses(text: string, s: Span, protectedSpans: Span[], name = ''): Span[] {
   const out: Span[] = []; let start = s.start
   const part = text.slice(s.start, s.end)
   for (const m of part.matchAll(CLAUSE_BREAK)) {
     const at = s.start + m.index!
     if (protectedSpans.some(p => at >= p.start && at < p.end)) continue
+    if (/^,\s+(?:which|who|whose)\s/i.test(m[0]) && name && text.slice(Math.max(s.start, at - name.length), at).toLowerCase() === name.toLowerCase()) continue // "Aurora Agency, which opened ..." is still Aurora's clause
     out.push({ start, end: at }); start = at + m[0].length
   }
   out.push({ start, end: s.end }); return out
+}
+
+// Latin script: another subject between this company's mention and the day. A capitalised word that is not part of the
+// company's name, not a month / weekday / sentence word, and not a place (a capitalised run after "in / at / on / along /
+// across / near / from / to / throughout / around", or chained to one by "and" or a comma: "in Toronto and Vancouver", "in
+// Toronto, ON" - but not when a verb follows it: "in Austin, UnrelatedCo launched") names someone else, so
+// the day belongs to that someone: "Aurora opened an office, while UnrelatedCo launched a tool on <day>" (#460 review). A ';'
+// between them ends the statement too. Datelines ("TORONTO, Oct. 15, 2026 - Aurora ..."), "(on <day>)" and "after months of
+// planning" put no other subject in between and still bind. Known fail-closed losses: a joint announcement ("Aurora and Beta
+// Labs opened ...") and an aside naming a non-place ("Aurora - the firm Gartner ranked - opened ...") read undated.
+const PREP = new Set(['in', 'at', 'on', 'along', 'onto', 'across', 'near', 'from', 'to', 'throughout', 'around', 'into', 'outside', 'inside'])
+const PLAIN_CAPS = new Set('the a an it its this that these those today yesterday on in at by for with and but while after before as so also then inc ltd llc corp co plc gmbh mr ms mrs dr st'.split(' '))
+const CAL = /^(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\.?$/i
+const fold = (t: string) => Array.from(t, ch => { const f = ch.normalize('NFKD').replace(/[\u0300-\u036f]/g, ''); return f.length === ch.length ? f : ch }).join('')
+function otherSubjectBetween(segment: string, co: string[], known: Set<string> = new Set()): boolean {
+  if (segment.includes(';')) return true
+  segment = segment.replace(/^\s*\([^()]*\)/, ' ')   // an aside right after the name ("Aurora Agency (Toronto) opened ...") is about the company
+  const toks = [...segment.matchAll(/[A-Za-z0-9][A-Za-z0-9&'’.-]*|,/g)].map(m => m[0])
+  let place = false
+  for (let i = 0; i < toks.length; i++) {
+    const w = toks[i], prev = (toks[i - 1] ?? '').toLowerCase(), next = toks[i + 1] ?? ''
+    if (w === ',') continue
+    const lw = w.toLowerCase().replace(/[.'’]+$/, '')
+    if (/^[A-Z]/.test(w) && w.length > 1) {
+      const capPrev = /^[A-Z]/.test(toks[i - 1] ?? '')
+      // a place: right after a preposition, or chained to a place by "and", a comma or another capitalised word - unless the
+      // word is followed by a verb, which makes it a subject ("in Austin, UnrelatedCo launched ...")
+      const verbNext = /^[a-z]+(?:ed|es|s)$/.test(next) && !PREP.has(next)
+      if (PREP.has(prev)) place = !verbNext
+      else if (place && (prev === 'and' || prev === ',' || capPrev)) place = !verbNext
+      else place = false
+      if (!(place || co.includes(lw) || known.has(lw) || PLAIN_CAPS.has(lw) || CAL.test(w))) return true
+      continue
+    }
+    if (lw !== 'and') place = false
+  }
+  return false
 }
 
 export function eventDateBound(eventDate: string | null, pageText: string, quote: string, company: string): { bound: boolean; why: string } {
@@ -67,18 +108,36 @@ export function eventDateBound(eventDate: string | null, pageText: string, quote
   const qSent = qAt >= 0 ? sentOf(qAt) : null
   const co = companyTokens(company), qWords = new Set(words(q).filter(w => w.length >= 4 && !STOP.has(w) && !co.includes(w)))
   // the quote's own predicate: the first content word after the company's name ("opened" in "Aurora Agency opened a new office")
-  const afterName = co.length ? words(q.slice(Math.max(0, q.toLowerCase().indexOf(co[co.length - 1]) + co[co.length - 1].length))).find(w => w.length >= 3 && !STOP.has(w)) ?? null : null
+  const lastTok = co.length ? new RegExp(`\\b${co[co.length - 1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').exec(q) : null
+  const AUX = new Set(['today', 'recently', 'officially', 'also', 'just', 'now', 'has', 'have', 'had', 'is', 'was', 'will', 'would', 'which', 'who', 'that', 'inc', 'ltd', 'llc'])
+  const afterName = lastTok ? words(q.slice(lastTok.index + lastTok[0].length)).find(w => w.length >= 3 && !STOP.has(w) && !AUX.has(w)) ?? null : null
+  const qCaps = new Set([...q.matchAll(/\b[A-Z][A-Za-z0-9&'’.-]*/g)].map(m => m[0].toLowerCase().replace(/[.'’]+$/, '')))
   let stamped = false, unbound = false
   for (const h of hits) {
     const before = text.slice(Math.max(0, h.index - 40), h.index).slice(-30)
-    if (STAMP.test(before) || NOT_EVENT.test(before)) { stamped = true; continue }      // the page's own date, not the event's
+    // the page's own date, not the event's - including a dateline that opens the sentence ("Announced on <day>: ...")
+    if (STAMP.test(before) || NOT_EVENT.test(before) || /(?:^|[.!?:]\s*)announced(?:\s+on)?\s*$/i.test(text.slice(Math.max(0, h.index - 30), h.index))) { stamped = true; continue }
     const s = sentOf(h.index)
-    const paren = [...text.slice(s.start, s.end).matchAll(/\(([^()]*)\)/g)].map(m => ({ start: s.start + m.index!, end: s.start + m.index! + m[0].length })).find(p => h.index > p.start && h.index < p.end)
-    const cl = paren ?? clauses(text, s, [...dateSpans, ...nameSpans]).find(c => h.index >= c.start && h.index < c.end) ?? s
-    const clauseText = text.slice(cl.start, cl.end), cw = new Set(words(clauseText))
-    // Latin-script names by their words; any script (Devanagari, Arabic, Japanese ... where words() finds no a-z tokens) by the name itself in the clause
-    const namesCompany = co.length > 0 ? co.every(t => cw.has(t)) : normalise(company).length >= 2 && clauseText.toLowerCase().includes(normalise(company).toLowerCase())
-    if (!namesCompany) { unbound = true; continue }                                      // the day's own clause is about something else
+    let cw: Set<string>
+    if (co.length > 0) {
+      // Latin script: the sentence names the company by its words, and no other subject stands between its nearest mention and the day
+      const mention = new RegExp(`\\b${co.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[^a-z0-9]+')}\\b`, 'gi')
+      const sent = fold(text.slice(s.start, s.end))   // accents folded per character, so positions stay the same ("Müller" is "muller")
+      const ms = [...sent.matchAll(mention)].map(m => ({ start: s.start + m.index!, end: s.start + m.index! + m[0].length }))
+      if (!ms.length) { unbound = true; continue }
+      const dist = (m: Span) => Math.min(Math.abs(m.start - h.index), Math.abs(m.end - h.index))
+      const near = ms.reduce((a, m) => dist(m) < dist(a) ? m : a)
+      const between = h.index >= near.end ? text.slice(near.end, h.index) : text.slice(h.end, near.start)
+      // in another sentence, the quote's own capitalised words (its places and the office it names) are not someone else
+      if (otherSubjectBetween(between, co, qSent && s.start === qSent.start ? undefined : qCaps)) { unbound = true; continue }                // the day belongs to someone else named in between
+      cw = new Set(words(sent))
+    } else {
+      // other scripts (no a-z words to find subjects by): the clause, split at native and English connectives, must contain the name itself
+      const cl = clauses(text, s, [...dateSpans, ...nameSpans], name).find(c => h.index >= c.start && h.index < c.end) ?? s
+      const clauseText = text.slice(cl.start, cl.end)
+      if (!(name.length >= 2 && clauseText.toLowerCase().includes(name.toLowerCase()))) { unbound = true; continue }
+      cw = new Set(words(clauseText))
+    }
     if (qSent && s.start === qSent.start) return { bound: true, why: 'stated in the clause of the evidence sentence that names this company' }
     // another sentence must describe the same event: share the quote's predicate (not "closed" for "opened") and two content words
     const shared = [...qWords].filter(w => cw.has(w)).length

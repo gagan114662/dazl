@@ -104,8 +104,8 @@ test('hold 1: a day in ANOTHER clause about another company does not date this e
   assert.equal(eventDateBound('2026-10-15', 'Nova opened a new office in Berlin on October 15, 2026.', 'Nova opened a new office in Berlin', 'Nova').bound, true)
   // ", as the firm said on <day>" is the company's own statement: still bound
   assert.equal(eventDateBound('2026-10-15', `${QUOTE}, as Aurora Agency said on October 15, 2026.`, QUOTE, 'Aurora Agency').bound, true)
-  // fail-closed by design: a day in a clause that does not name the company stays undated, even when it is about the same event
-  assert.equal(eventDateBound('2026-10-15', `${QUOTE}, and on 2026-10-15 the ribbon was cut.`, QUOTE, 'Aurora Agency').bound, false)
+  // no other subject between Aurora and the day: the continuation of its own statement still dates it
+  assert.equal(eventDateBound('2026-10-15', `${QUOTE}, and on 2026-10-15 the ribbon was cut.`, QUOTE, 'Aurora Agency').bound, true)
   const ok = (await run(lead('2026-10-15'), page(`${dated[0]}${filler}`))).lead
   assert.deepEqual([ok.event_date, ok.date_status], ['2026-10-15', 'unverified'])
 })
@@ -171,6 +171,13 @@ test('council: other-clause days stay unbound for more joins and scripts; genuin
   // another sentence about a DIFFERENT event of the same company does not date this one
   assert.equal(b(`${QUOTE}. Aurora Agency closed its office on King Street West in Toronto on October 15, 2026.`), false)
   assert.equal(b(`${QUOTE}. Aurora Agency opened the King Street West office in Toronto on October 15, 2026.`), true)
+  // relative clauses about another company split; one about this company does not
+  for (const rel of ['which', 'who']) assert.equal(b(`Aurora Agency opened a new office in Berlin with UnrelatedCo, ${rel} launched a tool on October 15, 2026.`, 'Aurora Agency opened a new office in Berlin'), false, rel)
+  assert.equal(b('Aurora Agency, which opened a new office on King Street West on October 15, 2026, is hiring.', 'Aurora Agency, which opened a new office on King Street West'), true)
+  // " and " splits only before another subject's verb: place and partner lists stay whole
+  assert.equal(b('Aurora Agency opened new offices in Toronto and Vancouver on October 15, 2026.', 'Aurora Agency opened new offices in Toronto and Vancouver'), true)
+  // a dateline opening the sentence is a stamp, like Posted / Published
+  assert.equal(b('Announced on October 15, 2026: Aurora Agency opened a new office on King Street West.', 'Aurora Agency opened a new office on King Street West'), false)
   // a cut quote's ellipsis does not hide it
   assert.equal(b(`${QUOTE} on October 15, 2026.`, `...${QUOTE}`), true)
 })
@@ -182,4 +189,17 @@ test('council: a held copy with a future or malformed claimed day stays held too
     const r = await verifyLeads([lead(d)], blocked, NOW, undefined, null, { text: HeldText.seal('job1:1', [url], [{ url, title: 'Aurora Agency', text: `${QUOTE}.${filler}` }]), attempt: 'job1:1' })
     assert.equal(r.leads.length, 0, d); assert.equal(r.review[0]?.review_reason, 'blocked_by_site', d)
   }
+})
+
+// ---- council round 2: no other subject between the company and its day (Latin script) ----
+test('council r2: another subject in between unbinds; datelines, place lists, parentheses and asides without one still bind', () => {
+  const Q = 'Aurora Agency opened a new office in Austin'
+  const b = (text: string, quote = Q) => eventDateBound('2026-10-15', text, quote, 'Aurora Agency').bound
+  for (const t of [`${Q}, as UnrelatedCo launched a tool on October 15, 2026.`, `${Q}, so UnrelatedCo launched a tool on October 15, 2026.`, `${Q}: UnrelatedCo launched a tool on October 15, 2026.`, `${Q}, UnrelatedCo launched a tool on October 15, 2026.`,
+    `${Q} and rival firm UnrelatedCo launched a tool on October 15, 2026.`, `${Q} and the CEO of UnrelatedCo launched a tool on October 15, 2026.`, `${Q} with UnrelatedCo, which launched a tool on October 15, 2026.`]) assert.equal(b(t), false, t)
+  for (const t of ['TORONTO, Oct. 15, 2026 — Aurora Agency opened a new office in Austin.', 'AUSTIN, Texas, October 15, 2026 - Aurora Agency opened a new office in Austin.', 'TORONTO (October 15, 2026) - Aurora Agency opened a new office in Austin.',
+    'Aurora Agency opened a new office in Austin (October 15, 2026).', 'Aurora Agency opened new offices in Austin and Vancouver on October 15, 2026.', 'Aurora Agency, after months of planning, opened a new office in Austin on October 15, 2026.',
+    'Aurora Agency opened a pop-up office in Austin that runs until October 15, 2026.', 'Aurora Agency, as the firm said on October 15, 2026, opened a new office in Austin.']) assert.equal(b(t), true, t)
+  // the predicate of the quote skips adverbs: "today announced" finds "announced"
+  assert.equal(eventDateBound('2026-10-15', 'Aurora Agency today announced its expansion to Austin. Aurora Agency announced the Austin expansion office on October 15, 2026.', 'Aurora Agency today announced its expansion to Austin', 'Aurora Agency').bound, true)
 })
