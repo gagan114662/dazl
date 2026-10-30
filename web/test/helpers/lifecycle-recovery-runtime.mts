@@ -6,7 +6,7 @@
 // approved email and the sequence, and stays that way on the next tick. Only a later webhook showing money taken makes it
 // "paid"; a trial checkout does not; a payment whose lifecycle write failed (500) is recorded on Stripe's redelivery,
 // exactly once. A Google verification whose apply step was missed is recovered as verified, from the evidence the sign-in
-// recorded in its own transaction. Synthetic rows and Stripe-shaped bodies signed
+// recorded in its own transaction, including on the late-identity path. Synthetic rows and Stripe-shaped bodies signed
 // with a test secret; no call leaves the process.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -103,6 +103,29 @@ async function scenario(engine: 'sqlite' | 'pg') {
   const held2 = await db.get<{ status: string }>("SELECT h.status FROM acquisition_holds h JOIN acquisition_lifecycle_events e ON e.email_hash = h.email_hash WHERE h.tenant_id = 'acq' AND e.user_id = ? LIMIT 1", [(r as { user_id: string }).user_id])
   assert.equal(held2?.status, 'signed_up', 'recovered as verified, not only as an unverified hold')
   assert.deepEqual(await db.get('SELECT status, stop_reason FROM sequences WHERE id = ?', [seq2]), { status: 'stopped', stop_reason: 'converted_signup' })
+  // 6. The "late identity" path: another sign-in for the same Google identity committed between this callback's two
+  //    identity reads (deterministic ordering: the first read is shown nothing, as on Postgres before that commit is
+  //    visible). This callback still records its own verification proof, for the address Google verified to it.
+  const L = 'late.owner@prospect3.example', LSUB = 'google-sub-' + id()
+  const first = await resolveUser(db, { sub: LSUB, email: L, name: 'Synthetic Late' })
+  assert.ok('user_id' in first && first.created)
+  const uid = (first as { user_id: string }).user_id
+  await db.run("DELETE FROM acquisition_lifecycle_events WHERE user_id = ? AND kind = 'signup_verified'", [uid]) // the concurrent sign-in's own record is not this callback's proof
+  const late = Object.create(db) as typeof db
+  late.tx = (body => db.tx(function* (t) {
+    let hidden = false
+    const g = body(t)
+    let step = g.next()
+    while (!step.done) {
+      const op = step.value as { op: string; sql: string }
+      if (!hidden && op.op === 'get' && /FROM oauth_identities/.test(op.sql)) { hidden = true; step = g.next(undefined); continue }
+      step = g.next(yield op as never)
+    }
+    return step.value
+  })) as typeof db.tx
+  const r6 = await resolveUser(late, { sub: LSUB, email: L, name: 'Synthetic Late' })
+  assert.deepEqual(r6, { user_id: uid, created: false }, 'the late path: the existing account, signed in')
+  assert.deepEqual((await db.all<{ kind: string }>("SELECT kind FROM acquisition_lifecycle_events WHERE user_id = ? AND kind = 'signup_verified'", [uid])).map(x => x.kind), ['signup_verified'], 'its own verification proof was recorded')
   console.log('LIFECYCLE_RECOVERY', engine)
 }
 

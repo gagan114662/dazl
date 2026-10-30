@@ -155,7 +155,11 @@ export async function resolveUser(db: Db, id: GoogleIdentity): Promise<Resolved>
           // On PG each statement sees the latest commit: a concurrent sign-in for this same identity may have committed
           // its user and identity between the two reads above. Look again before calling the email someone else's.
           const late = yield* identity()
-          return late ? { user_id: late.user_id, created: false } : { error: 'email_exists' }
+          if (!late) return { error: 'email_exists' }
+          // #417: this callback's own verification proof, for the address Google verified now; never assumed to be the one
+          // a concurrent sign-in recorded
+          yield* recordLifecycleEventTx(t, { key: verifiedKey(late.user_id, id.email), kind: 'signup_verified', userId: late.user_id, email: id.email })
+          return { user_id: late.user_id, created: false }
         }
         const uid = randomBytes(16).toString('hex')
         const u = yield* t.run('INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (email) DO NOTHING',
