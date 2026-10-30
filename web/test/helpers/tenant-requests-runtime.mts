@@ -55,6 +55,12 @@ test('a deletion request records the request only; wrong confirmation, email or 
     const r = await call(del.POST(req('/api/settings/data/deletion', 'POST', body)))
     assert.equal(r.status, status, JSON.stringify(body)); assert.match(String(r.body.error), why)
   }
+  // the four refusals above used four of the five attempts an hour; the fifth and sixth tell the limit holds
+  assert.equal((await call(del.POST(req('/api/settings/data/deletion', 'POST', { ...ok, password: 'wrong again' })))).status, 403)
+  const limited = await call(del.POST(req('/api/settings/data/deletion', 'POST', ok)))
+  assert.equal(limited.status, 429, 'a sixth attempt within the hour is refused, even with the right password')
+  // this fixture's own limiter state (rate_limits lives in the test store): a fresh hour for the rest of the test
+  db.prepare("DELETE FROM rate_limits WHERE key = ?").run(`deletion:${A}`)
   const r1 = await call(del.POST(req('/api/settings/data/deletion', 'POST', { ...ok, confirm: '  Delete My Account ', email: 'A@ACME.IO' })))
   assert.equal(r1.status, 200); const id = (r1.body.request as { id: string }).id
   const r2 = await call(del.POST(req('/api/settings/data/deletion', 'POST', ok)))
