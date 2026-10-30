@@ -1,4 +1,5 @@
 import { migrateSourceReview } from './source-review.ts'
+import { migrateSchedulerRuns } from '../ops/scheduler-runs.ts'
 import { migrateInsertionOrder } from '../db/insertion-order.ts'
 import { migrateSequences } from '../outreach/sequences.ts'
 import { cookies } from 'next/headers'
@@ -30,6 +31,7 @@ let ready = false
 export function getScanDb() {
   const db = getAuthDb()
   if (!ready) {
+    migrateSchedulerRuns(db)
     migrateScan(db)
     migrateSourceReview(db)
     migrateWatch(db)

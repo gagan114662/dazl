@@ -1,0 +1,14 @@
+# Alerts when the scheduler is stale, crashed, or tenants are blocked or overdue (web/scripts/ops/scheduler-check.mts;
+# docs/SCHEDULER.md). A TEMPLATE for Instinct: copy with the .timer to /etc/systemd/system/, replace CHANGE-ME, then
+# systemctl daemon-reload && systemctl enable --now dazl-scheduler-check.timer. It only reads the app's health endpoint.
+[Unit]
+Description=dazl scheduler freshness check
+
+[Service]
+Type=oneshot
+User=CHANGE-ME-app-user
+WorkingDirectory=CHANGE-ME-release/web
+# OPS_ALERT_WEBHOOK_URL=https://... (the alert destination; without it problems go to the journal only)
+EnvironmentFile=-/etc/dazl-scheduler-check/env
+StateDirectory=dazl-scheduler-check
+ExecStart=/usr/bin/env node --experimental-strip-types --no-warnings scripts/ops/scheduler-check.mts --url http://127.0.0.1:CHANGE-ME-port/api/health/scheduler --state-dir /var/lib/dazl-scheduler-check
