@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { customerState, cohortReport, DAY, type LifecycleEvent } from '../lib/gtm/lifecycle.ts'
+import { customerState, cohortReport, DAY, RETENTION_MATURE_DAYS, type LifecycleEvent } from '../lib/gtm/lifecycle.ts'
 
 // Synthetic customers and identities only.
 const T0 = Date.UTC(2026, 6, 1)
@@ -102,4 +102,59 @@ test('report: rates, cost per activated and per retained paying customer, covera
   assert.deepEqual(r.byStage, { retained: 1, activated: 1, abandoned_setup: 1 })
   assert.equal(cohortReport(es, meta, at(0), at(30), at(60)).mature, false)
   assert.equal(cohortReport([], [], at(0), at(30), at(60)).activationRate, null)
+})
+
+test('retention rate: numerator and denominator are the same eligible set, so retained-but-immature customers cannot push it over 100%', () => {
+  const M = RETENTION_MATURE_DAYS
+  // Two customers renewed and still paying, but their first payment is one day short of maturity; one mature customer paid once.
+  const es = [
+    signup('im1', 0), pay('im1', 1), pay('im1', 31), pay('im1', 61),
+    signup('im2', 0), pay('im2', 1), pay('im2', 31), pay('im2', 61),
+    signup('m', 0), pay('m', 0),
+  ]
+  assert.equal(customerState('im1', es, at(M)).stage, 'retained')
+  const r = cohortReport(es, [], at(0), at(30), at(M))
+  assert.equal(r.retentionMature, 1)
+  assert.equal(r.retentionRate, 0)
+  assert.equal(r.costPerRetainedPaying, null)
+})
+
+test('maturity boundary: one tick before RETENTION_MATURE_DAYS the customer is in neither side; at the boundary in both', () => {
+  const M = RETENTION_MATURE_DAYS
+  const es = [signup('b', 0), pay('b', 0), pay('b', 30), pay('b', 60)]
+  const before = cohortReport(es, [], at(0), at(30), at(M) - 1)
+  assert.equal(before.retentionMature, 0)
+  assert.equal(before.retentionRate, null)
+  const onTime = cohortReport(es, [], at(0), at(30), at(M))
+  assert.equal(onTime.retentionMature, 1)
+  assert.equal(onTime.retentionRate, 1)
+  // At the boundary, a mature customer without a later payment counts against retention.
+  const once = cohortReport([signup('o', 0), pay('o', 0)], [], at(0), at(30), at(M))
+  assert.equal(once.retentionMature, 1)
+  assert.equal(once.retentionRate, 0)
+})
+
+test('one as-of cutoff for every row: future-dated signups, runs, payments and replays never count', () => {
+  const now = at(100)
+  const es = [
+    signup('a', 1), run('a', 2, 2),
+    pay('a', 150),                                   // a payment dated after as-of: not paid yet
+    run('a', 120, 5),                                // a run dated after as-of: not a repeat
+    signup('future', 101), run('future', 102, 3),   // a signup after as-of: not a customer yet
+    signup('fake', 150),                             // excluded customer seen only after as-of: not counted as excluded either
+  ]
+  const s = customerState('a', es, now)
+  assert.equal(s.paidAt, null)
+  assert.equal(s.usefulRuns, 1)
+  assert.equal(s.stage, 'activated')
+  const r = cohortReport(es, [{ customer: 'fake', synthetic: true, staging: false }], at(0), at(200), now)
+  assert.equal(r.customers, 1)
+  assert.equal(r.excluded, 0)
+  assert.equal(r.paidRate, 0)
+  // A replay of an existing id with a later date cannot displace the original, whichever order the rows arrive in.
+  const orig = { id: 'p1', at: at(5), customer: 'r', kind: 'payment', status: 'paid' } as LifecycleEvent
+  const late = { ...orig, at: at(150) } as LifecycleEvent
+  for (const order of [[orig, late], [late, orig]]) assert.equal(customerState('r', [signup('r', 1), ...order], now).paidAt, at(5))
+  // Moving as-of past the rows brings them in.
+  assert.equal(customerState('a', es, at(160)).paidAt, at(150))
 })

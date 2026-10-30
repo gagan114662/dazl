@@ -40,13 +40,20 @@ export interface CustomerState {
   usefulRuns: number; zeroResultRuns: number; costUsd: number
 }
 
+// One as-of cutoff for every row, whatever its kind (signups, runs, payments, costs): a row dated after asOf has not
+// happened yet as far as this report is concerned, so a future-dated or replayed-late row never counts. The cutoff is
+// applied before de-duplication, so a replay of an id with a later date cannot displace the original.
+export function upTo(events: LifecycleEvent[], asOf: number): LifecycleEvent[] {
+  return events.filter(e => Number.isFinite(e.at) && e.at <= asOf)
+}
+
 function dedupe(events: LifecycleEvent[]): LifecycleEvent[] {
   const seen = new Set<string>()
   return events.filter(e => (seen.has(e.id) ? false : (seen.add(e.id), true))).sort((a, b) => a.at - b.at || a.id.localeCompare(b.id))
 }
 
 export function customerState(customer: string, events: LifecycleEvent[], now: number): CustomerState {
-  const ev = dedupe(events.filter(e => e.customer === customer))
+  const ev = dedupe(upTo(events, now).filter(e => e.customer === customer))
   const s: CustomerState = { customer, stage: 'prospect', attribution: 'unknown', signupAt: null, activatedAt: null, paidAt: null, lastPaidAt: null, renewedAt: null, usefulRuns: 0, zeroResultRuns: 0, costUsd: 0 }
   let qualified = false, ranAny = false, paying = false, refunded = false, cancelled = false, paymentFailed = false
   const usefulDays = new Set<number>()
@@ -93,8 +100,8 @@ export interface CohortReport {
   cohortStart: number; cohortEnd: number; mature: boolean
   customers: number; byStage: Partial<Record<Stage, number>>; byAttribution: Record<Attribution, number>
   activationRate: number | null; paidRate: number | null
-  retentionRate: number | null   // retained of the paying customers whose first payment is old enough for the renewal to be due
-  retentionMature: number
+  retentionRate: number | null   // retained / retentionMature, both over the same eligible set
+  retentionMature: number        // paying customers whose first payment is old enough for the renewal to be due
   costUsd: number; costPerActivated: number | null; costPerRetainedPaying: number | null
   sourceCoverage: number | null  // share of signups whose attribution is known (direct or assisted)
   excluded: number               // synthetic or staging customers left out
@@ -107,15 +114,18 @@ const rate = (a: number, b: number) => (b === 0 ? null : a / b)
 // payment is at least RETENTION_MATURE_DAYS old count toward the retention rate.
 export function cohortReport(events: LifecycleEvent[], meta: CustomerMeta[], start: number, end: number, now: number): CohortReport {
   const excludedIds = new Set(meta.filter(m => m.synthetic || m.staging).map(m => m.customer))
-  const ids = [...new Set(events.map(e => e.customer))]
+  const ids = [...new Set(upTo(events, now).map(e => e.customer))]
   const states = ids.filter(id => !excludedIds.has(id)).map(id => customerState(id, events, now)).filter(s => s.signupAt !== null && s.signupAt >= start && s.signupAt < end)
   const byStage: Partial<Record<Stage, number>> = {}
   const byAttribution: Record<Attribution, number> = { direct: 0, assisted: 0, unknown: 0 }
   for (const s of states) { byStage[s.stage] = (byStage[s.stage] ?? 0) + 1; byAttribution[s.attribution]++ }
   const activated = states.filter(s => s.activatedAt !== null).length
   const paidEver = states.filter(s => s.paidAt !== null).length
-  const retained = states.filter(s => s.stage === 'retained').length
-  const retentionMature = states.filter(s => s.paidAt !== null && now - s.paidAt >= RETENTION_MATURE_DAYS * DAY).length
+  // Retention uses one eligible set for both sides of the rate: paying customers whose first payment is old enough for
+  // the renewal to be due. A retained customer who is not yet mature is in neither, so the rate can never exceed 100%.
+  const eligible = states.filter(s => s.paidAt !== null && now - s.paidAt >= RETENTION_MATURE_DAYS * DAY)
+  const retentionMature = eligible.length
+  const retained = eligible.filter(s => s.stage === 'retained').length
   const costUsd = Math.round(states.reduce((t, s) => t + s.costUsd, 0) * 100) / 100
   return {
     cohortStart: start, cohortEnd: end, mature: now - end >= RETENTION_MATURE_DAYS * DAY,

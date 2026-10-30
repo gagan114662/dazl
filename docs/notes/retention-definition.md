@@ -44,4 +44,26 @@ Both branches share these rules:
 - an immature cohort is never read as final;
 - refunds and failed payments are never retained.
 
-Neither branch wires webhooks. Both compute from recorded events only.
+## Webhooks and event recording
+
+The branches differ here:
+
+- **The ops branch adds Stripe event recording.** In `web/lib/billing/stripe.ts`, the existing Stripe webhook handler writes lifecycle events into a new `lifecycle_events` table (migration 0018). The events are payment succeeded, payment failed, refund and subscription ended. This recording is not activated yet.
+- **This branch adds no webhook, Stripe hook or table.** It is a pure function over events passed in by the caller.
+
+## Same cutoff and eligible set
+
+This branch now applies these rules (tests in `web/test/gtm-lifecycle.test.ts`):
+
+- **One as-of cutoff for every row.** Signups, runs, payments and costs dated after as-of are left out (`upTo`). The cutoff is applied before de-duplication, so a replayed id with a later date cannot displace the original.
+- **One eligible set for both sides of the retention rate.** Both the numerator and the denominator are paying customers whose first payment is old enough for the renewal to be due. A customer who is retained but not yet mature is in neither, so the rate cannot exceed 100%.
+- **Maturity boundaries are tested.** One tick before maturity, the customer is in neither side; at maturity, in both.
+
+The ops branch needs the same as-of cutoff on its users, scans and events queries.
+
+## Shared definition (pending)
+
+Instinct's pick is a 30-day headline with labelled current-coverage evidence, defined once and used by both implementations. The ops builder is adding it on `claude/epic-cannon-xrw9ut-acquisition-funnel`.
+
+- **What the ops branch has now** (as of `4a6db2c4`): a 30-day window (`RETAIN_DAYS`, ±5 days of grace) computed inline inside `tenantFunnels`. It has no exported function and no current-coverage check yet.
+- **What this branch will do:** once that shared definition is exported, drop its own 60-day rule (`RETAINED_DAYS`, `PAID_COVER_DAYS`) and import it, rather than keep a second definition.
