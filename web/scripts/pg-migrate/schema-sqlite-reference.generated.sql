@@ -257,6 +257,18 @@ CREATE TABLE leads (
       CHECK (name <> '' OR company <> '')
     );
 
+CREATE TABLE lifecycle_events (
+    kind TEXT NOT NULL CHECK (kind IN ('signup','payment_succeeded','payment_failed','refund','subscription_ended')),
+    ref TEXT NOT NULL CHECK (length(ref) BETWEEN 1 AND 200),
+    tenant_id TEXT NOT NULL,
+    occurred_at INTEGER NOT NULL,
+    amount_cents INTEGER,
+    invoice TEXT,
+    full_refund INTEGER,
+    source TEXT CHECK (source IS NULL OR length(source) <= 40),
+    PRIMARY KEY (kind, ref)
+  );
+
 CREATE TABLE mail_read_consent (tenant_id TEXT PRIMARY KEY, version TEXT NOT NULL, accepted_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)));
 
 CREATE TABLE memberships (
@@ -676,6 +688,13 @@ CREATE TABLE tenant_plans (
       stripe_subscription_id TEXT
     , stripe_event_at INTEGER, stripe_reconcile_at INTEGER, subscription_status TEXT);
 
+CREATE TABLE tenant_spend_pools (
+    tenant_id TEXT NOT NULL, period TEXT NOT NULL CHECK (length(period) <= 12),
+    reserved_usd REAL NOT NULL DEFAULT 0 CHECK (reserved_usd >= 0), reported_usd REAL NOT NULL DEFAULT 0 CHECK (reported_usd >= 0),
+    calls INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL,
+    PRIMARY KEY (tenant_id, period)
+  );
+
 CREATE TABLE tinyfish_usage (day TEXT NOT NULL, tenant_id TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('search','fetch')), n INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (day, tenant_id, kind));
 
 CREATE TABLE trial_budget_lock (id INTEGER PRIMARY KEY CHECK (id = 1), n INTEGER NOT NULL DEFAULT 0);
@@ -797,6 +816,8 @@ CREATE UNIQUE INDEX leads_dedup ON leads (scan_job_id, dedup_key) WHERE dedup_ke
 CREATE INDEX leads_insert_seq_idx ON leads (insert_seq);
 
 CREATE INDEX leads_job ON leads (scan_job_id);
+
+CREATE INDEX lifecycle_events_tenant ON lifecycle_events (tenant_id, kind);
 
 CREATE INDEX memberships_member ON memberships (member_id);
 
