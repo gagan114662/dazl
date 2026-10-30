@@ -13,7 +13,7 @@ import { kickSharedScanQueue, sharedScanQueue } from '../queue/scan-claimer.ts'
 import { getDb, sqliteDb } from '../db/client.ts'
 import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
-import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, verifyEvidence, type Candidate } from './evidence.ts'
+import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, supportedEvidenceWindow, verifyEvidence, type Candidate } from './evidence.ts'
 import { fallbackIcp, inferIcp, normalizeIcp, type Icp } from './icp.ts'
 import { isMissingSchema, draftOffer } from './play-offer-text.ts'
 import { readTenantOffer } from '../outreach/play-memory.ts'
@@ -539,7 +539,14 @@ async function tinyfishCompany(db: Database.Database, job: Job, domain: string, 
   const items = toEvidence(hits, f.ok ? f.pages : [])
   if (items.length === 0) return null
   const text = await complete.call(provider, key, buildSourcePrompt(`The company at https://${domain}`, { company_domain: domain }, items), fetchImpl, 3000)
-  return parseLeads(text, items.map(i => i.url)) ?? null
+  const leads = parseLeads(text, items.map(i => i.url))
+  if (!leads) return null
+  // Deterministic supported-signal extraction inside the paid envelope: attach a verbatim
+  // window only when it supports every material facet of the claim (entity/event/role/
+  // quantity; negation and boilerplate rejected). Otherwise the excerpt stays the model's
+  // and fails verification honestly. The verifier still re-fetches and re-checks.
+  for (const l of leads) { const ev = items.find(i => i.url === l.source_url); if (ev) { const win = supportedEvidenceWindow({ company: l.company, signal: l.signal, excerpt: l.excerpt }, { text: ev.quote, title: ev.title, url: ev.url }, domain); if (win) l.excerpt = win } }
+  return leads
 }
 
 // CSV import job: research one known company domain through the same
@@ -715,7 +722,15 @@ async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, ht
   }))).filter((p): p is { url: string; title: string; text: string } => !!p)
   const items = toEvidence(hits.filter(h => pages.some(p => p.url === h.url)), pages).map(i => ({ ...i, source: NEWS_SOURCE }))
   if (items.length === 0) return null
-  return parseLeads(await complete.call(provider, key, buildSourcePrompt(job.query!, icp, items), fetchImpl, 3000), items.map(i => i.url)) ?? null
+  const text = await complete.call(provider, key, buildSourcePrompt(job.query!, icp, items), fetchImpl, 3000)
+  const leads = parseLeads(text, items.map(i => i.url))
+  if (!leads) return null
+  // Deterministic supported-signal extraction inside the paid envelope: attach a verbatim
+  // window only when it supports every material facet of the claim (entity/event/role/
+  // quantity; negation and boilerplate rejected). Otherwise the excerpt stays the model's
+  // and fails verification honestly. The verifier still re-fetches and re-checks.
+  for (const l of leads) { const ev = items.find(i => i.url === l.source_url); if (ev) { const win = supportedEvidenceWindow({ company: l.company, signal: l.signal, excerpt: l.excerpt }, { text: ev.quote, title: ev.title, url: ev.url }); if (win) l.excerpt = win } }
+  return leads
 }
 
 export interface RunBudget { paid_fallback?: boolean; credit_enrichment?: boolean; judge?: boolean; max_usd?: number; first5?: boolean }   // first5: the fast first scan (lib/scan/first5.ts): free keyless sources only
