@@ -8,8 +8,8 @@ import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateReplies } from '../lib/outreach/replies.ts'
 import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
-import { saveSettings, type Deps } from '../lib/outreach/service.ts'
-import { ATTESTATIONS, auditAt, CONSENT_VERSION, enable, getState, migrateAutopilot, recentAutopilotAudit, runAutopilot } from '../lib/outreach/autopilot.ts'
+import { saveSettings, suppress, type Deps } from '../lib/outreach/service.ts'
+import { ATTESTATIONS, auditAt, CONSENT_VERSION, disable, enable, getState, migrateAutopilot, pause, recentAutopilotAudit, runAutopilot } from '../lib/outreach/autopilot.ts'
 import { acceptLaunchPolicy, launchGate, parsePolicy, readLaunchPolicy, reserveLaunchSpend, LAUNCH_POLICY_VERSION, ROLLOUT_DAILY_CAP, ROLLOUT_DAYS } from '../lib/outreach/launch-policy.ts'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { callCostUsd } from '../lib/llm/spend-guard.ts'
@@ -380,4 +380,76 @@ test('HOLD: the send service rechecks the same acceptance after its token refres
   const counting = (async (url: string, init?: RequestInit) => { if (String(url).includes('token')) refreshed++; return (gb.d.fetchImpl as typeof fetch)(url, init) }) as typeof fetch
   const rb = await runAutopilot(b.db, 'A', 'Acme', { ...gb.d, fetchImpl: counting })
   assert.ok(refreshed > 0); assert.deepEqual([rb.sent, gb.to()], [1, ['d@four.example']])
+})
+
+// ---------- the final send boundary (#405 review HOLD on 3571b7ee) ----------
+// Everything autopilot requires in order to send is re-read from the store after the Gmail token refresh, immediately
+// before the bytes go to Gmail. Each case below changes exactly one thing from inside that await: the policy's own stops
+// (reply, bounce rate, an unreadable stop store), the tenant's switches (off, paused, consent, the operator kill flag),
+// the cap, the sender identity, the mailbox, an uncertain send elsewhere, and the recipient's opt-out. The unchanged
+// control sends exactly once.
+async function launched() {
+  const db = await setup(); const job = play(db); for (let i = 0; i < 3; i++) lead(db, job, `s${i}@cal${i}.example`)
+  acceptLaunchPolicy(db, 'A', policy([job]), NOW)
+  assert.equal((await runCalibration(db, 'A', 'Acme', gmail().d)).ok, true)
+  lead(db, job, 'd@four.example')
+  return { db, job }
+}
+// one autopilot pass whose first Gmail token refresh applies `change` to the store before answering
+async function duringRefresh(db: Database.Database, change: (flags: Record<string, string>) => void) {
+  const g = gmail(); const flags = { ...ON }
+  let changed = false
+  const fetchImpl = (async (url: string, init?: RequestInit) => {
+    if (String(url).includes('token') && !changed) { changed = true; change(flags) }
+    return (g.d.fetchImpl as typeof fetch)(url, init)
+  }) as typeof fetch
+  const r = await runAutopilot(db, 'A', 'Acme', { ...g.d, fetchImpl, flags, now: NOW + 2 })
+  assert.ok(changed, 'the change happened inside the send path')
+  const m = db.prepare("SELECT status, error FROM outreach_messages WHERE to_email = 'd@four.example'").get() as { status: string; error: string | null }
+  const st = getState(db, 'A')
+  return { sent: g.sent.length, run: [r.sent, r.stopped ?? null], msg: [m.status, m.error], pause: st.paused ? st.pause_reason : null, warmup: recentAutopilotAudit(db, 'A').some(a => a.action === 'held_warmup') }
+}
+type Case = { change: (db: Database.Database, flags: Record<string, string>) => void; stopped: string | null; pause: string | null; msg: [string, string | null] }
+const boundaryCases: Record<string, Case> = {
+  // the accepted policy's own stops (pauseOnAnyReply: true, maxBounceRate: 0.05)
+  reply_received: { change: db => db.prepare("INSERT INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at) VALUES ('r1', 'A', 't1', NULL, 's0@cal0.example', 'thanks', 'positive', ?)").run(NOW + 1), stopped: 'reply_received', pause: 'reply_received', msg: ['draft', 'reply_received'] },
+  bounce_rate: { change: db => auditAt(db, 'A', 'bounce', 'gone@co9.example', undefined, undefined, NOW + 1), stopped: 'bounce_rate', pause: 'bounce_rate', msg: ['draft', 'bounce_rate'] },
+  stop_check_unavailable: { change: db => db.exec('DROP TABLE inbound_messages'), stopped: 'stop_check_unavailable', pause: 'stop_check_unavailable', msg: ['draft', 'stop_check_unavailable'] },
+  // the tenant's own switches and the operator's
+  disabled: { change: db => disable(db, 'A'), stopped: 'off', pause: null, msg: ['draft', 'off'] },
+  paused: { change: db => pause(db, 'A'), stopped: 'paused', pause: 'paused_by_user', msg: ['draft', 'paused'] },
+  kill_flag: { change: (_db, flags) => { flags.AUTOPILOT_KILL = '1' }, stopped: 'not_available', pause: null, msg: ['draft', 'not_available'] },
+  consent_replaced: { change: db => db.prepare("UPDATE autopilot_settings SET consent_version = '2000-01-01' WHERE tenant_id = 'A'").run(), stopped: 'consent_required', pause: null, msg: ['draft', 'consent_required'] },
+  // volume, identity, mailbox, an uncertain send elsewhere
+  daily_cap_lowered: { change: db => db.prepare("UPDATE autopilot_settings SET daily_cap = 1 WHERE tenant_id = 'A'").run(), stopped: 'daily_cap', pause: null, msg: ['draft', 'daily_cap'] },
+  sender_identity_removed: { change: db => db.prepare("DELETE FROM outreach_settings WHERE tenant_id = 'A'").run(), stopped: null, pause: null, msg: ['approved', 'sender_identity_missing'] },
+  mailbox_disconnected: { change: db => db.prepare("DELETE FROM gmail_accounts WHERE tenant_id = 'A'").run(), stopped: 'gmail_not_connected', pause: 'gmail_not_connected', msg: ['approved', 'gmail_not_connected'] },
+  uncertain_elsewhere: { change: db => db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, claimed_at) VALUES ('u1a2b3c4d5e6f7a8b9c0d1e2', 'A', 'xu', 'u@other.example', 's', 'bodybodybodybodybodybody', 'uncertain', ?)").run(NOW), stopped: 'uncertain_send', pause: 'uncertain_send', msg: ['draft', 'already_uncertain'] },
+  // the recipient opts out: the service's own suppression check, unchanged
+  recipient_opted_out: { change: db => suppress(db, 'A', 'd@four.example', 'unsubscribe'), stopped: null, pause: null, msg: ['skipped', 'suppressed'] },
+}
+
+test('HOLD: every stop is re-read after the token refresh, right before Gmail: no send, the specific reason, the message released', async () => {
+  const got: Record<string, unknown> = {}, want: Record<string, unknown> = {}
+  for (const [name, c] of Object.entries(boundaryCases)) {
+    const { db } = await launched()
+    if (name === 'daily_cap_lowered') auditAt(db, 'A', 'sent', undefined, undefined, undefined, NOW - 100) // one autopilot send already today
+    got[name] = await duringRefresh(db, flags => c.change(db, flags))
+    want[name] = { sent: 0, run: [0, c.stopped], msg: c.msg, pause: c.pause, warmup: false }
+  }
+  assert.deepEqual(got, want)
+})
+
+test('HOLD: unchanged state at the same boundary sends exactly once; two competing passes never send a lead twice', async () => {
+  const { db } = await launched()
+  const got = await duringRefresh(db, () => {})
+  assert.deepEqual(got, { sent: 1, run: [1, null], msg: ['sent', null], pause: null, warmup: false })
+
+  const b = await launched(); lead(b.db, b.job, 'e@five.example')
+  const g1 = gmail(), g2 = gmail()
+  const [r1, r2] = await Promise.all([runAutopilot(b.db, 'A', 'Acme', { ...g1.d, now: NOW + 2 }), runAutopilot(b.db, 'A', 'Acme', { ...g2.d, now: NOW + 2 })])
+  const to = [...g1.to(), ...g2.to()].sort()
+  assert.deepEqual(to, ['d@four.example', 'e@five.example'], 'each lead is sent exactly once across both passes')
+  assert.equal(r1.sent + r2.sent, 2)
+  assert.deepEqual(statuses(b.db).filter(s => s !== 'draft'), ['sent', 'sent'])
 })
