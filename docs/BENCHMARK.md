@@ -37,7 +37,8 @@ A run is one system on one task set. Each returned result has a verdict on **ide
 - **Validated:** all four fields pass. Unknown is never a pass.
 - **Precision@5/@10** counts unknown results as not validated. The unknown rate and contradicted results are reported separately.
 - **Incomplete, failed, unsupported and not-run tasks** are reported as such, never as zero. A competitor that cannot express a task is `unsupported`, with the reason.
-- **Unknown cost** stays unknown; it is never $0. Cost per validated company is reported only when every complete task has a cost.
+- **Cost is what the run incurred.** Every attempted task (complete, incomplete, failed, and any unsupported or not-run task that reports a cost) counts toward the run total and cost per validated company. **Unknown cost** stays unknown and is never $0: one attempted task without a cost makes the run total unknown. A complete-tasks-only figure is shown separately, labelled as not the run's cost, and no threshold uses it.
+- **Negative tasks must run.** A false-alerts result exists only when every negative task in the set completed; a negative task that was not run, failed or stopped is insufficient sample, never "0 false alerts".
 - **Breakdowns** by region and sector, false alerts on negative tasks, unique validated companies across tasks, and median time.
 - **Recorded with every run:** system and version, commit, configuration (model, rubric, sources, budget) and the evaluator.
 
@@ -77,12 +78,12 @@ All are proposals, built from #393's suggestions. Set the final values and sampl
 | id | proposal | minimum sample |
 | --- | --- | --- |
 | precision-at-10 | precision@10 ≥ 0.90 (unknown = not validated) | 10 complete tasks |
-| no-false-alerts | 0 validated results on negative tasks | 10 complete tasks |
+| no-false-alerts | 0 validated results on negative tasks | 10 complete tasks and every negative task complete |
 | no-contradicted | 0 contradicted results (no wrong company or contact) | 10 complete tasks |
 | unknown-rate | unknown rate ≤ 25% | 10 complete tasks |
 | coverage | ≥ 12 of 14 tasks complete within budget | none |
 | unique-yield | ≥ 20 distinct validated companies (placeholder; the real target comes from competitors on the same tasks) | 10 complete tasks |
-| cost-per-validated | ≤ $2 per validated company (unknown cost cannot meet it) | 10 complete tasks |
+| cost-per-validated | ≤ $2 per validated company, all attempts' cost included (unknown cost cannot meet it) | 10 complete tasks |
 
 The report always reads *"thresholds are proposed: owner approval required; nothing is accepted by this report"*. A threshold result is `meets`, `misses`, `insufficient_sample` or `not_evaluable`.
 

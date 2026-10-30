@@ -109,3 +109,49 @@ test('CLI: scorecard with thresholds, compare exits 1 on a regression, history p
     const h = cli('history'); assert.equal(h.status, 0); assert.match(h.stdout, /verified=0/); assert.match(h.stdout, /not yet run with a real key/)
   } finally { rmSync(T, { recursive: true, force: true }) }
 })
+
+// #459 review: a false-alert threshold cannot be met by a negative task that never ran, and failed/incomplete attempts'
+// spend belongs to the run.
+test('no-false-alerts needs every negative task complete: not run / incomplete -> insufficient_sample; complete -> meets or misses', () => {
+  const neg = set.tasks.filter(t => t.kind === 'negative')
+  assert.ok(neg.length >= 1)
+  const std = set.tasks.filter(t => t.kind === 'standard').slice(0, 10).map(t => ({ task_id: t.id, status: 'complete' as const, seconds: 10, cost_usd: 1, results: [row(1, t.id)] }))
+  const fa = (tasks: BenchmarkRun['tasks'], ths: ThresholdSet = thresholds) => evaluateThresholds(scorecard(set, run({}, tasks)), ths).results.find(r => r.id === 'no-false-alerts')!
+  const none = fa(std)
+  assert.equal(none.result, 'insufficient_sample', 'ten standard tasks, no negative task run'); assert.match(none.detail, /0 of 1 negative/)
+  assert.equal(fa([...std, ...neg.map(t => ({ task_id: t.id, status: 'incomplete' as const, reason: 'timeout', seconds: 60, cost_usd: 1, results: [] }))]).result, 'insufficient_sample', 'incomplete negative')
+  assert.equal(fa([...std, ...neg.map(t => ({ task_id: t.id, status: 'failed' as const, reason: 'crash', seconds: 1, cost_usd: 1, results: [] }))]).result, 'insufficient_sample', 'failed negative')
+  assert.equal(fa([...std, ...neg.map(t => ({ task_id: t.id, status: 'complete' as const, seconds: 5, cost_usd: 1, results: [] }))]).result, 'meets', 'complete negative, nothing returned')
+  const alert = fa([...std, ...neg.map(t => ({ task_id: t.id, status: 'complete' as const, seconds: 5, cost_usd: 1, results: [row(1, 'Fake Clinic')] }))])
+  assert.equal(alert.result, 'misses'); assert.equal(alert.observed, 1)
+  // a threshold file that forgets `sample: negative` still cannot meet on an unrun negative task
+  const stripped = { ...thresholds, thresholds: thresholds.thresholds.map(t => { const { sample: _, ...rest } = t; return rest }) }
+  assert.equal(fa(std, stripped).result, 'insufficient_sample')
+  const md = scorecard(set, run({}, std))
+  assert.equal(md.totals.negative_tasks, neg.length); assert.equal(md.totals.negative_tasks_complete, 0)
+})
+
+test('cost counts every attempt: failed and incomplete spend is in the total and per validated; unknown attempt cost propagates', () => {
+  const std = set.tasks.filter(t => t.kind === 'standard')
+  const ten = std.slice(0, 10).map(t => ({ task_id: t.id, status: 'complete' as const, seconds: 10, cost_usd: 1, results: [row(1, t.id)] }))
+  const extra = std[10].id
+  const known = scorecard(set, run({}, [...ten, { task_id: extra, status: 'incomplete', reason: 'budget_stopped', seconds: 600, cost_usd: 100, results: [] }])).totals
+  assert.equal(known.cost_usd, 110, 'the incomplete attempt\'s $100 is part of the run'); assert.equal(known.cost_per_validated_usd, 11)
+  assert.equal(known.cost_complete_only_usd, 10, 'complete-only reported separately'); assert.equal(known.cost_attempted_tasks, 11); assert.equal(known.cost_unknown_tasks, 0)
+  const failed = scorecard(set, run({}, [...ten, { task_id: extra, status: 'failed', reason: 'crash', seconds: 3, cost_usd: 5, results: [] }])).totals
+  assert.equal(failed.cost_usd, 15); assert.equal(failed.cost_per_validated_usd, 1.5)
+  const unknown = scorecard(set, run({}, [...ten, { task_id: extra, status: 'failed', reason: 'crash', seconds: 3, cost_usd: null, results: [] }])).totals
+  assert.equal(unknown.cost_usd, null, 'a failed attempt with unknown cost makes the run cost unknown'); assert.equal(unknown.cost_per_validated_usd, null)
+  assert.equal(unknown.cost_unknown_tasks, 1); assert.equal(unknown.cost_complete_only_usd, 10)
+  const cpv = evaluateThresholds(scorecard(set, run({}, [...ten, { task_id: extra, status: 'incomplete', seconds: 600, cost_usd: 100, results: [] }])), thresholds).results.find(r => r.id === 'cost-per-validated')!
+  assert.equal(cpv.result, 'misses', '$11 per validated, not $1'); assert.equal(cpv.observed, 11)
+  // no complete task at all: the spend is still reported, nothing per validated
+  const zero = scorecard(set, run({}, [{ task_id: extra, status: 'incomplete', seconds: 600, cost_usd: 7, results: [] }, { task_id: std[0].id, status: 'failed', seconds: 1, cost_usd: 0.5, results: [] }])).totals
+  assert.equal(zero.complete, 0); assert.equal(zero.cost_usd, 7.5); assert.equal(zero.cost_per_validated_usd, null); assert.equal(zero.cost_complete_only_usd, null)
+  const zeroUnknown = scorecard(set, run({}, [{ task_id: extra, status: 'incomplete', seconds: 600, cost_usd: null, results: [] }])).totals
+  assert.equal(zeroUnknown.cost_usd, null); assert.equal(zeroUnknown.cost_unknown_tasks, 1)
+  // unsupported / not run with no cost incurred nothing; with a reported cost it counts
+  const uns = scorecard(set, run({}, [...ten, { task_id: extra, status: 'unsupported', seconds: null, cost_usd: null, results: [] }])).totals
+  assert.equal(uns.cost_usd, 10); assert.equal(uns.cost_attempted_tasks, 10)
+  assert.equal(scorecard(set, run({}, [...ten, { task_id: extra, status: 'unsupported', seconds: 2, cost_usd: 3, results: [] }])).totals.cost_usd, 13)
+})

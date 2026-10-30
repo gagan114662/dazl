@@ -17,7 +17,8 @@
       "op": "<=",
       "value": 0,
       "min_complete_tasks": 10,
-      "why": "a negative task (no such market) must return no validated result"
+      "why": "a negative task (no such market) must return no validated result; every negative task must have completed, or the result is insufficient_sample",
+      "sample": "negative"
     },
     {
       "id": "no-contradicted",
@@ -57,7 +58,7 @@
       "op": "<=",
       "value": 2,
       "min_complete_tasks": 10,
-      "why": "cost per usable opportunity, not per extracted row; unknown cost cannot meet it"
+      "why": "cost per usable opportunity, not per extracted row, counting every attempted task (failed and incomplete included); unknown cost cannot meet it"
     }
   ]
 }

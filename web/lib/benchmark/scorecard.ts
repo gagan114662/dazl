@@ -9,7 +9,10 @@
 // Each verdict is pass | fail | unknown | contradicted. A result is VALIDATED only when all four pass: unknown is never
 // a pass, and every precision denominator counts unknown results as not validated (the unknown rate is reported on
 // its own). A task that did not complete (budget, timeout, crash, not run, unsupported by the system) is reported as
-// such and never as zero results. Unknown cost stays unknown (null), never 0.
+// such and never as zero results. Unknown cost stays unknown (null), never 0. Cost is what the run INCURRED: every
+// attempted task (complete, incomplete, failed, and any other task that reports a cost) counts toward the total and
+// toward cost per validated company; one attempted task with an unknown cost makes the total unknown. The
+// complete-task-only figure is reported separately and labelled as such.
 //
 // Who judged matters: a run records its evaluator. Verdicts derived from the pipeline's own fields
 // (fromScoreboardResult) are a self-report; no release threshold can be met by a self-report, by synthetic data, or by
@@ -83,8 +86,11 @@ export interface Scorecard {
     returned: number; validated: number; unique_validated_entities: number; unknown_results: number; contradicted_results: number
     precision_at_10: number | null          // pooled over complete tasks' top 10s (unknown = not validated)
     unknown_rate: number | null
-    false_alerts: number; negative_tasks_complete: number
-    cost_usd: number | null; cost_unknown_tasks: number; cost_per_validated_usd: number | null
+    false_alerts: number; negative_tasks: number; negative_tasks_complete: number
+    cost_usd: number | null               // every attempted task, failed and incomplete included
+    cost_attempted_tasks: number; cost_unknown_tasks: number  // attempted tasks / those of them without a cost
+    cost_per_validated_usd: number | null // cost_usd / validated
+    cost_complete_only_usd: number | null // complete tasks only: NOT the run's cost, never used by a threshold
     median_seconds: number | null
   }
   by_region: Record<string, { tasks: number; complete: number; validated: number }>
@@ -102,8 +108,10 @@ export function scorecard(set: TaskSet, run: BenchmarkRun): Scorecard {
   const top10 = set.tasks.flatMap(t => (byId.get(t.id)?.status === 'complete' ? [...byId.get(t.id)!.results].sort((a, b) => a.rank - b.rank).slice(0, 10) : []))
   const all = run.tasks.flatMap(t => t.results)
   const entities = new Set(all.filter(validated).map(r => r.entity_key.trim().toLowerCase()))
-  const costKnown = done.filter(t => t.cost_usd !== null)
-  const cost = costKnown.length === done.length && done.length ? costKnown.reduce((a, t) => a + t.cost_usd!, 0) : null
+  const sum = (xs: TaskScore[]) => xs.length && xs.every(t => t.cost_usd !== null) ? Math.round(xs.reduce((a, t) => a + t.cost_usd!, 0) * 1e6) / 1e6 : null
+  // an attempt incurred cost whether or not it finished; unsupported / not_run count only when they report a cost
+  const attempted = tasks.filter(t => ['complete', 'incomplete', 'failed'].includes(t.status) || t.cost_usd !== null)
+  const cost = sum(attempted)
   const secs = done.map(t => t.seconds).filter((s): s is number => s !== null).sort((a, b) => a - b)
   const group = (key: 'region' | 'sector') => {
     const out: Record<string, { tasks: number; complete: number; validated: number }> = {}
@@ -126,8 +134,11 @@ export function scorecard(set: TaskSet, run: BenchmarkRun): Scorecard {
       returned: tasks.reduce((a, t) => a + t.returned, 0), validated: validatedTotal, unique_validated_entities: entities.size,
       unknown_results: tasks.reduce((a, t) => a + t.unknown_results, 0), contradicted_results: tasks.reduce((a, t) => a + t.contradicted_results, 0),
       precision_at_10: ratio(top10.filter(validated).length, top10.length), unknown_rate: ratio(all.filter(hasUnknown).length, all.length),
-      false_alerts: tasks.reduce((a, t) => a + (t.false_alerts ?? 0), 0), negative_tasks_complete: done.filter(t => t.kind === 'negative').length,
-      cost_usd: cost, cost_unknown_tasks: done.length - costKnown.length, cost_per_validated_usd: cost !== null && validatedTotal ? Math.round((cost / validatedTotal) * 100) / 100 : null,
+      false_alerts: tasks.reduce((a, t) => a + (t.false_alerts ?? 0), 0),
+      negative_tasks: tasks.filter(t => t.kind === 'negative').length, negative_tasks_complete: done.filter(t => t.kind === 'negative').length,
+      cost_usd: cost, cost_attempted_tasks: attempted.length, cost_unknown_tasks: attempted.filter(t => t.cost_usd === null).length,
+      cost_per_validated_usd: cost !== null && validatedTotal ? Math.round((cost / validatedTotal) * 100) / 100 : null,
+      cost_complete_only_usd: sum(done),
       median_seconds: secs.length ? secs[Math.floor((secs.length - 1) / 2)] : null,
     },
     by_region: group('region'), by_sector: group('sector'), tasks,
@@ -136,7 +147,11 @@ export function scorecard(set: TaskSet, run: BenchmarkRun): Scorecard {
 }
 
 // ---------- proposed release thresholds (for the owner; never accepted here) ----------
-export interface Threshold { id: string; metric: keyof Scorecard['totals']; op: '>=' | '<=' | '=='; value: number; min_complete_tasks: number; why: string }
+// sample 'negative': the metric is only decided by negative tasks, so EVERY negative task in the set must have run to
+// completion (and the set must have one); otherwise it is insufficient_sample, never meets. A false_alerts threshold
+// always needs this, whether or not its definition says so.
+export const NEGATIVE_METRICS: (keyof Scorecard['totals'])[] = ['false_alerts']
+export interface Threshold { id: string; metric: keyof Scorecard['totals']; op: '>=' | '<=' | '=='; value: number; min_complete_tasks: number; sample?: 'negative'; why: string }
 export interface ThresholdSet { status: 'proposed'; version: string; thresholds: Threshold[] }
 export type ThresholdResult = { id: string; result: 'meets' | 'misses' | 'insufficient_sample' | 'not_evaluable'; observed: number | null; detail: string }
 export function evaluateThresholds(card: Scorecard, set: ThresholdSet): { status: string; results: ThresholdResult[] } {
@@ -144,6 +159,10 @@ export function evaluateThresholds(card: Scorecard, set: ThresholdSet): { status
     const observed = card.totals[t.metric] as number | null
     if (!card.evaluable) return { id: t.id, result: 'not_evaluable', observed, detail: card.not_evaluable_reason! }
     if (card.totals.complete < t.min_complete_tasks) return { id: t.id, result: 'insufficient_sample', observed, detail: `${card.totals.complete} complete task(s), at least ${t.min_complete_tasks} needed` }
+    if (t.sample === 'negative' || NEGATIVE_METRICS.includes(t.metric)) {
+      const { negative_tasks: n, negative_tasks_complete: c } = card.totals
+      if (n === 0 || c < n) return { id: t.id, result: 'insufficient_sample', observed, detail: n === 0 ? 'the task set has no negative task' : `${c} of ${n} negative task(s) complete: ${t.metric} on a negative task that did not run is unknown, not 0` }
+    }
     if (observed === null) return { id: t.id, result: 'insufficient_sample', observed, detail: `${t.metric} has no value (no denominator)` }
     const ok = t.op === '>=' ? observed >= t.value : t.op === '<=' ? observed <= t.value : observed === t.value
     return { id: t.id, result: ok ? 'meets' : 'misses', observed, detail: `${t.metric} ${observed} ${t.op} ${t.value}` }
@@ -199,8 +218,8 @@ export function scorecardMarkdown(card: Scorecard, thresholds?: ReturnType<typeo
     ...(card.evaluable ? [] : ['', `**Not release evidence:** ${card.not_evaluable_reason}.`]),
     '',
     `Tasks: ${t.tasks} (complete ${t.complete}, incomplete ${t.incomplete}, failed ${t.failed}, unsupported ${t.unsupported}, not run ${t.not_run}). Incomplete and not-run tasks are unknown, not zero.`,
-    `Results ${t.returned}; validated ${t.validated} (all four fields pass); unique validated companies ${t.unique_validated_entities}; precision@10 ${pct(t.precision_at_10)} (unknown counts as not validated); unknown rate ${pct(t.unknown_rate)}; false alerts on negative tasks ${t.false_alerts} (${t.negative_tasks_complete} complete).`,
-    `Cost ${t.cost_usd === null ? `unknown (${t.cost_unknown_tasks} complete task(s) without a cost)` : `$${t.cost_usd}`}; per validated ${t.cost_per_validated_usd === null ? 'n/a' : `$${t.cost_per_validated_usd}`}; median ${t.median_seconds ?? 'n/a'} s.`,
+    `Results ${t.returned}; validated ${t.validated} (all four fields pass); unique validated companies ${t.unique_validated_entities}; precision@10 ${pct(t.precision_at_10)} (unknown counts as not validated); unknown rate ${pct(t.unknown_rate)}; false alerts on negative tasks ${t.false_alerts} (${t.negative_tasks_complete} of ${t.negative_tasks} negative task(s) complete${t.negative_tasks_complete < t.negative_tasks ? ': not established' : ''}).`,
+    `Cost of all ${t.cost_attempted_tasks} attempted task(s), failed and incomplete included: ${t.cost_usd === null ? `unknown (${t.cost_unknown_tasks} attempted task(s) without a cost)` : `$${t.cost_usd}`}; complete tasks only (not the run's cost) ${t.cost_complete_only_usd === null ? 'unknown' : `$${t.cost_complete_only_usd}`}; per validated ${t.cost_per_validated_usd === null ? 'n/a' : `$${t.cost_per_validated_usd}`}; median ${t.median_seconds ?? 'n/a'} s.`,
     '',
     '| Task | Region | Kind | Status | Returned | Validated | P@10 | Unknown | Identity p/f/u/c | Constraints p/f/u/c | Date p/f/u/c | Contact p/f/u/c |',
     '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
