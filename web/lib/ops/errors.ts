@@ -139,7 +139,7 @@ export function captureError(e: unknown, ctx: ErrorContext): ErrorRecord | null 
 // event is built field by field below. The full scrubbed record stays in the server's own log (stderr).
 const BUILTIN_ERRORS = new Set(['Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError', 'URIError', 'EvalError', 'AggregateError', 'AbortError', 'TimeoutError', 'DOMException', 'ChunkLoadError'])
 // This app's error classes (test/ops-sentry.test.ts fails when a class extending an Error in lib/ or app/ is missing).
-export const APP_ERROR_CLASSES: ReadonlySet<string> = new Set(['CopyRefused', 'CopyVerifyError', 'EnrichError', 'FixtureError', 'GmailError', 'GmailSendError', 'InboxQueryError', 'JobFeedError',
+export const APP_ERROR_CLASSES: ReadonlySet<string> = new Set(['CopyRefused', 'CopyVerifyError', 'EnrichError', 'FixtureError', 'GmailError', 'GmailSendError', 'GmailUnconfirmedSend', 'InboxQueryError', 'JobFeedError',
   'LeaseLost', 'MemoryError', 'OutreachError', 'ProviderError', 'RaceLost', 'ScanStopped', 'ScanTimedOut', 'SequenceError', 'SourceReviewError', 'SpendRefused',
   'StaleLeaseWrite', 'StatementFailedInTx', 'Timeout',
   // lib/evals (docs/design/agent-evals.md): a malformed World or case file. Offline eval tooling only.
