@@ -5,14 +5,15 @@ import { coverageAt, coverageCounts, retention, retentionRate, RETENTION } from 
 
 const D = 86400, T = 1_800_000_000 // day 0 = T
 const day = (d: number) => T + d * D
-// payments as [day paid, service period start day, end day] (no period: a one-off charge)
-type P = [number, number?, number?]
-const pays = (ps: P[], refunded: number[] = []) => ps.map(([d, s, e]) => ({ at: day(d), refunded: refunded.includes(d), period_start: s === undefined ? null : day(s), period_end: e === undefined ? null : day(e) }))
+// payments as [day paid, service period start day, end day, ...more periods] (no period: a one-off charge)
+type P = [number, ...number[]]
+const pays = (ps: P[], refunded: number[] = []) => ps.map(([d, ...se]) => ({ at: day(d), refunded: refunded.includes(d),
+  periods: Array.from({ length: Math.floor(se.length / 2) }, (_, k) => ({ start: day(se[2 * k]), end: day(se[2 * k + 1]), subscription: `sub_${k}` })) }))
 const at = (days: number[], cutoffDay: number, o: { endDay?: number; refunded?: number[] } = {}) => retention({
   payments: pays(days.map(d => [d, d, d + 30] as P), o.refunded), ended_at: o.endDay === undefined ? null : day(o.endDay), cutoff: day(cutoffDay),
 })
-const cov = (ps: P[], cutoffDay: number, o: { endDay?: number; serviceUntil?: number; refunded?: number[] } = {}) =>
-  retention({ payments: pays(ps, o.refunded), ended_at: o.endDay === undefined ? null : day(o.endDay), service_until: o.serviceUntil === undefined ? null : day(o.serviceUntil), cutoff: day(cutoffDay) }).coverage_at_cutoff
+const cov = (ps: P[], cutoffDay: number, o: { endDay?: number; refunded?: number[] } = {}) =>
+  retention({ payments: pays(ps, o.refunded), ended_at: o.endDay === undefined ? null : day(o.endDay), cutoff: day(cutoffDay) }).coverage_at_cutoff
 
 test('review cases: one payment and no end is not covered 200 days later; a renewal at day 100 is not day-30 retention', () => {
   const single = at([0], 200)
@@ -32,12 +33,27 @@ test('coverage uses each invoice\'s actual service period: monthly, annual, pror
   assert.equal(cov([[0, 0, 30], [30, 30, 60]], 45), 'covered', 'a renewal\'s own period')
 })
 
-test('cancellation versus prepaid service: an end on day 5 is not covered on day 10 unless billing shows the service ran on', () => {
+test('one invoice with two service periods and a gap: each period covered on its own dates, the gap is not', () => {
+  // the review case: a paid invoice with periods 30-20 days before the cutoff and 20-30 days after it
+  const twoPeriods: P = [-30, -30, -20, 20, 30]
+  assert.equal(cov([twoPeriods], 0), 'unknown', 'today falls in the gap between the two periods: no coverage invented')
+  assert.equal(cov([twoPeriods], -25), 'covered', 'inside the first period')
+  assert.equal(cov([twoPeriods], 25), 'covered', 'inside the second period')
+  assert.equal(cov([twoPeriods], 19.99), 'unknown', 'just before the second period starts'); assert.equal(cov([twoPeriods], 20), 'covered', 'its first day')
+  const later = { payments: pays([twoPeriods]), ended_at: null, cutoff: day(25) }
+  assert.equal(coverageAt(later, day(0)), 'unknown', 'the gap, seen from a later cutoff, is still a gap')
+  assert.equal(coverageAt(later, day(-20)), 'unknown', 'a period end is exclusive')
+  // two subscriptions on one invoice keep their own identity and intervals
+  const ids = pays([[0, 0, 10, 40, 50]])[0].periods.map(p => p.subscription)
+  assert.deepEqual(ids, ['sub_0', 'sub_1'])
+})
+
+test('an end is when service stopped: an end on day 5 is not covered on day 10, whatever the invoice period said', () => {
   assert.equal(cov([[0, 0, 30]], 10, { endDay: 5 }), 'not_covered', 'immediate cancellation: the invoice period does not outlive the end')
   assert.equal(cov([[0, 0, 30]], 4, { endDay: 5 }), 'covered', 'before the end')
-  assert.equal(cov([[0, 0, 30]], 10, { endDay: 5, serviceUntil: 30 }), 'covered', 'cancelled on day 5 with service paid to day 30')
-  assert.equal(cov([[0, 0, 30]], 31, { endDay: 5, serviceUntil: 30 }), 'not_covered', 'after the prepaid service ran out')
   assert.equal(cov([[0, 0, 365]], 100, { endDay: 60 }), 'not_covered', 'an annual plan cancelled immediately on day 60')
+  // a cancellation scheduled for the period end is no end yet: covered until the end arrives (see the webhook test)
+  assert.equal(cov([[0, 0, 30]], 10), 'covered'); assert.equal(cov([[0, 0, 30]], 31, { endDay: 30 }), 'not_covered')
 })
 
 test('rejoin: ended, then paid again: not day-30 retained, covered in the new period, not covered between', () => {
@@ -46,6 +62,7 @@ test('rejoin: ended, then paid again: not day-30 retained, covered in the new pe
   assert.equal(r.day30.retained, false); assert.equal(r.coverage_at_cutoff, 'covered')
   assert.equal(coverageAt(rejoin, day(50)), 'not_covered'); assert.equal(coverageAt(rejoin, day(20)), 'covered')
   assert.equal(retention({ payments: pays([[0, 0, 30], [100]]), ended_at: day(40), cutoff: day(110) }).coverage_at_cutoff, 'unknown', 'a rejoin payment without a period proves nothing either way')
+  assert.equal(coverageAt({ payments: pays([[0, 0, 30], [10, 10, 60]]), ended_at: day(40), cutoff: day(50) }, day(50)), 'not_covered', 'paid before the end: the service still stopped at the end')
 })
 
 test('day-30 window: renewals from day 25 to day 35 count; outside it they do not; the cohort waits for the window to close', () => {

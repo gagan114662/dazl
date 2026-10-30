@@ -12,16 +12,18 @@
 //    and no subscription end before day 30. A renewal after the window (a lapse, then a rejoin) is not day-30
 //    retention. Numerator and denominator come from the same cohort, so the rate cannot exceed 100%.
 // 2. COVERAGE AT A DATE (current, e.g. the cutoff). Cohort: every customer who has paid by that date. It uses each
-//    payment's ACTUAL service period (the invoice line's period start and end), never an assumed length: a monthly,
-//    annual or prorated period is whatever the billing says, and a payment with no service period (a one-off charge)
-//    is no coverage evidence at all.
-//      covered      a paid, not refunded payment's service period includes the date, and the service had not been
-//                   stopped by a recorded end (see below), or the payment came after that end (a rejoin)
+//    payment's ACTUAL service periods, one interval per invoice line (a subscription line's period start and end),
+//    never an assumed length and never one span from the earliest start to the latest end: an invoice for two
+//    periods with a gap between them covers the two periods, not the gap. A payment with no service period (a
+//    one-off charge) is no coverage evidence at all.
+//      covered      one of a paid, not refunded payment's service intervals includes the date, and no recorded end
+//                   had stopped the service first, or the payment came after that end (a rejoin)
 //      not_covered  a recorded end stopped the service on or before the date, and nothing paid after it covers it
-//      unknown      neither: no service period covers the date and no end was recorded; never reported as covered
-//    Cancellation versus prepaid service: an end stops the service at its own date (an immediate cancellation), unless
-//    the billing evidence says the paid service runs on (service_until, e.g. Stripe's ended_at or cancel_at for a
-//    cancellation at period end). An end on day 5 is not covered on day 10 unless service_until says otherwise.
+//      unknown      neither: no interval covers the date and no end was recorded; never reported as covered
+//    Cancellation: an end is when the service actually stopped (Stripe's customer.subscription.deleted), and coverage
+//    stops there. A cancellation scheduled for the end of the paid period is not an end: Stripe keeps the subscription
+//    active and sends customer.subscription.deleted when the period ends (docs.stripe.com/billing/subscriptions/cancel),
+//    so the paid interval covers the rest of the period until that end arrives.
 // The 5-day values are carried-over defaults, not owner decisions; every report changes with them here.
 
 export const RETENTION = {
@@ -41,14 +43,15 @@ const rules = (o: RetentionRules) => ({
 })
 
 export interface RetentionInput {
-  // paid payments (amount above 0); refunded = fully refunded; period = the service period it bought, from the invoice
-  // (absent: a one-off charge, or a payment recorded without one: never coverage evidence)
-  payments: { at: number; refunded: boolean; period_start?: number | null; period_end?: number | null }[]
-  ended_at: number | null                         // the latest subscription end recorded, if any
-  service_until?: number | null                   // billing evidence that the paid service ran on past that end
+  // paid payments (amount above 0); refunded = fully refunded; periods = the service intervals it bought, one per
+  // invoice line, each with the line's own identity (empty: a one-off charge, never coverage evidence)
+  payments: { at: number; refunded: boolean; periods?: ServicePeriod[] }[]
+  ended_at: number | null                         // when the service actually stopped (the latest end recorded), if any
   cutoff: number                                  // the report's as-of time
 }
 export type Coverage = 'covered' | 'not_covered' | 'unknown'
+// [start, end) of one invoice line's service, with which subscription and price it is for
+export interface ServicePeriod { start: number; end: number; subscription?: string | null; price?: string | null }
 export interface RetentionResult {
   first_paid_at: number | null
   day30: { eligible: boolean; retained: boolean | null; renewal_at: number | null }
@@ -63,12 +66,11 @@ export function coverageAt(i: RetentionInput, at: number): Coverage | null {
   const paid = i.payments.filter(p => !p.refunded && p.at <= when)
   if (!paid.length) return null
   const ended = i.ended_at !== null && i.ended_at <= when ? i.ended_at : null
-  // when a recorded end stopped the service: at the end itself, or later if billing says the paid service ran on
-  const stop = ended === null ? null : Math.max(ended, i.service_until ?? ended)
-  const covering = paid.filter(p => p.period_start != null && p.period_end != null && p.period_start <= when && when < p.period_end)
-  // a covering period counts unless the service was stopped first; a payment made after the end (a rejoin) counts
-  if (covering.some(p => stop === null || when < stop || p.at > ended!)) return 'covered'
-  if (stop !== null && when >= stop && !paid.some(p => p.at > ended!)) return 'not_covered'
+  // each interval on its own: the date must fall inside one of them, never in a gap between two
+  const covering = paid.filter(p => (p.periods ?? []).some(iv => iv.end > iv.start && iv.start <= when && when < iv.end))
+  // a covering interval counts unless the service had stopped first; a payment made after the end (a rejoin) counts
+  if (covering.some(p => ended === null || p.at > ended)) return 'covered'
+  if (ended !== null && !paid.some(p => p.at > ended)) return 'not_covered'
   return 'unknown'
 }
 

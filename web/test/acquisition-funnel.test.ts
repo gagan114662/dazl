@@ -52,7 +52,7 @@ async function subscribe(db: Db, tenantId: string, at: number) {
 // a Stripe-shaped invoice: its subscription line carries the service period it bought (30 days unless given)
 const paid = (db: Db, tenantId: string, invoice: string, at: number, cents = 4900, type = 'invoice.paid', evId = `evt_${type}_${invoice}`, period: [number, number] | null = [at, at + 30 * 86400]) =>
   applyStripeEvent(db, ev(evId, type, at, { id: invoice, customer: `cus_${tenantId}`, subscription: `sub_${tenantId}`, amount_paid: cents,
-    lines: { data: period ? [{ type: 'subscription', period: { start: period[0], end: period[1] } }] : [] } }))
+    lines: { data: period ? [{ type: 'subscription', subscription: `sub_${tenantId}`, period: { start: period[0], end: period[1] } }] : [] } }))
 
 async function world() {
   const { raw, db } = store()
@@ -281,17 +281,33 @@ test('coverage per tenant is positive evidence or unknown: A lapsed with no end 
   assert.match(r.cohorts.retained, /renewal window has closed/); assert.match(r.cohorts.covered_at_cutoff, /every tenant that has paid/)
 })
 
-test('coverage from the webhook\'s recorded service periods: annual, one-off, immediate cancellation, cancellation with prepaid service', async () => {
+test('coverage from the webhook\'s recorded service periods: annual, one-off, a two-period gap, immediate and end-of-period cancellation', async () => {
   const { raw, db } = store()
   const go = async (t: string) => { await tenant(db, raw, t); scan(raw, t, NOW - 300 * DAY, 1); await subscribe(db, t, NOW - 200 * DAY) }
-  await go('AN'); await paid(db, 'AN', 'in_AN', NOW - 200 * DAY, 49000, 'invoice.paid', undefined, [NOW - 200 * DAY, NOW + 165 * DAY])
-  await go('ON'); await paid(db, 'ON', 'in_ON', NOW - 5 * DAY, 4900, 'invoice.paid', undefined, null)
-  await go('IC'); await paid(db, 'IC', 'in_IC', NOW - 20 * DAY)
-  await applyStripeEvent(db, ev('evt_del_IC', 'customer.subscription.deleted', NOW - 15 * DAY, { id: 'sub_IC', customer: 'cus_IC', status: 'canceled', ended_at: NOW - 15 * DAY }))
-  await go('PP'); await paid(db, 'PP', 'in_PP', NOW - 20 * DAY)
-  await applyStripeEvent(db, ev('evt_del_PP', 'customer.subscription.deleted', NOW - 15 * DAY, { id: 'sub_PP', customer: 'cus_PP', status: 'canceled', ended_at: NOW + 10 * DAY }))
-  const by = Object.fromEntries((await tenantFunnels(db, { now: NOW })).map(t => [t.tenant_id, t.covered_at_cutoff]))
-  assert.deepEqual(by, { AN: 'covered', ON: 'unknown', IC: 'not_covered', PP: 'covered' })
-  const row = raw.prepare("SELECT period_start, period_end FROM lifecycle_events WHERE ref = 'in_AN'").get() as { period_start: number; period_end: number }
-  assert.equal(row.period_end - row.period_start, 365 * DAY, 'the annual period is stored as Stripe gave it')
+  // Stripe-shaped invoice line items (docs.stripe.com/api/invoice-line-item/object): type, subscription, period, price
+  const line = (sub: string | null, start: number, end: number, type = 'subscription') => ({ object: 'line_item', type, subscription: sub, period: { start, end }, price: { id: 'price_pro' } })
+  const invoice = (t: string, id: string, at: number, lines: unknown[]) => applyStripeEvent(db, ev(`evt_${id}`, 'invoice.paid', at, { id, object: 'invoice', customer: `cus_${t}`, subscription: `sub_${t}`, amount_paid: 4900, lines: { object: 'list', data: lines } }))
+  await go('AN'); await invoice('AN', 'in_AN', NOW - 200 * DAY, [line('sub_AN', NOW - 200 * DAY, NOW + 165 * DAY)])
+  // a one-off invoice item (no subscription): not service
+  await go('ON'); await invoice('ON', 'in_ON', NOW - 5 * DAY, [line(null, NOW - 5 * DAY, NOW - 5 * DAY + 1, 'invoiceitem')])
+  // the review case: one paid invoice with periods 30-20 days ago and 20-30 days ahead
+  await go('GP'); await invoice('GP', 'in_GP', NOW - 30 * DAY, [line('sub_GP', NOW - 30 * DAY, NOW - 20 * DAY), line('sub_GP2', NOW + 20 * DAY, NOW + 30 * DAY)])
+  // immediate cancellation (Stripe cancels at once and sends customer.subscription.deleted with ended_at = now)
+  await go('IC'); await invoice('IC', 'in_IC', NOW - 20 * DAY, [line('sub_IC', NOW - 20 * DAY, NOW + 10 * DAY)])
+  await applyStripeEvent(db, ev('evt_del_IC', 'customer.subscription.deleted', NOW - 15 * DAY, { id: 'sub_IC', object: 'subscription', customer: 'cus_IC', status: 'canceled', canceled_at: NOW - 15 * DAY, ended_at: NOW - 15 * DAY, cancel_at_period_end: false }))
+  // cancellation at the end of the period, as Stripe documents it (docs.stripe.com/billing/subscriptions/cancel): the
+  // subscription stays active with cancel_at_period_end, customer.subscription.updated is sent, and
+  // customer.subscription.deleted only arrives when the paid period ends
+  await go('PP'); await invoice('PP', 'in_PP', NOW - 20 * DAY, [line('sub_PP', NOW - 20 * DAY, NOW + 10 * DAY)])
+  await applyStripeEvent(db, ev('evt_upd_PP', 'customer.subscription.updated', NOW - 15 * DAY, { id: 'sub_PP', object: 'subscription', customer: 'cus_PP', status: 'active', cancel_at_period_end: true, cancel_at: NOW + 10 * DAY, canceled_at: NOW - 15 * DAY }))
+  const now = Object.fromEntries((await tenantFunnels(db, { now: NOW })).map(t => [t.tenant_id, t.covered_at_cutoff]))
+  assert.deepEqual(now, { AN: 'covered', ON: 'unknown', GP: 'unknown', IC: 'not_covered', PP: 'covered' })
+  // positives inside each of GP's periods, and PP once its period ends and Stripe sends the deletion
+  assert.equal((await tenantFunnels(db, { now: NOW - 25 * DAY })).find(t => t.tenant_id === 'GP')!.covered_at_cutoff, 'covered')
+  await applyStripeEvent(db, ev('evt_del_PP', 'customer.subscription.deleted', NOW + 10 * DAY, { id: 'sub_PP', object: 'subscription', customer: 'cus_PP', status: 'canceled', canceled_at: NOW - 15 * DAY, ended_at: NOW + 10 * DAY, cancel_at_period_end: true }))
+  const later = Object.fromEntries((await tenantFunnels(db, { now: NOW + 25 * DAY })).map(t => [t.tenant_id, t.covered_at_cutoff]))
+  assert.equal(later.GP, 'covered', 'inside the second period'); assert.equal(later.PP, 'not_covered', 'after the period ended and the subscription was deleted')
+  const stored = JSON.parse((raw.prepare("SELECT service_periods FROM lifecycle_events WHERE ref = 'in_GP'").get() as { service_periods: string }).service_periods)
+  assert.deepEqual(stored.map((p: { subscription: string; price: string }) => [p.subscription, p.price]), [['sub_GP', 'price_pro'], ['sub_GP2', 'price_pro']], 'each line kept with its identity')
+  assert.equal((raw.prepare("SELECT service_periods FROM lifecycle_events WHERE ref = 'in_ON'").get() as { service_periods: string | null }).service_periods, null)
 })
