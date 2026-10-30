@@ -1,0 +1,77 @@
+{
+  "note": "Recorded evidence so far (issue #372). Counts as reported at the time; no per-result verdicts exist for any of them, and no exact request text is recorded, so none is mapped to a v1 task. None is release evidence. Denominators kept as reported.",
+  "observations": [
+    {
+      "date": "2026-10-25",
+      "source": "docs/STATUS.md (Instinct, live Ohio scan)",
+      "commit": "94e3c645",
+      "request": "Ohio (exact query not recorded)",
+      "maps_to_task": null,
+      "counts": {
+        "search_hits": 2,
+        "candidates": 1,
+        "verified": 0,
+        "qualified_reachable": 0
+      }
+    },
+    {
+      "date": "2026-10-26",
+      "source": "docs/STATUS.md (Instinct, isolated discovery+verifier run)",
+      "commit": "21521e7",
+      "request": "Ohio (exact query not recorded)",
+      "maps_to_task": null,
+      "counts": {
+        "search_hits": 78,
+        "candidates": 3,
+        "verified": 0
+      }
+    },
+    {
+      "date": "2026-10-26",
+      "source": "docs/STATUS.md (Instinct, isolated discovery+verifier run)",
+      "commit": "21521e7",
+      "request": "Lisbon (exact query not recorded)",
+      "maps_to_task": null,
+      "counts": {
+        "search_hits": 53,
+        "candidates": 3,
+        "verified": 0
+      },
+      "note": "5 candidates across both runs blocked by their source sites, 1 quote unconfirmed"
+    },
+    {
+      "date": "2026-10-29",
+      "source": "issue #352 (owner live signed-in test), run d2e67ea235567418b0b932d8",
+      "commit": null,
+      "request": "NYC dental (exact query not recorded)",
+      "maps_to_task": null,
+      "counts": {
+        "found": 2,
+        "actionable": 0
+      },
+      "note": "both leads undated, research-only"
+    },
+    {
+      "date": "2026-10-29",
+      "source": "issue #352 (owner live signed-in test), run c53bb81d0b6d00d2a2f31144",
+      "commit": null,
+      "request": "London (exact query not recorded)",
+      "maps_to_task": null,
+      "counts": {
+        "found": 2,
+        "source_checked": 0,
+        "held": 2,
+        "actionable": 0
+      }
+    },
+    {
+      "date": "never",
+      "source": "web/scripts/scoreboard.mts",
+      "commit": null,
+      "request": "the six scoreboard searches (v1 tasks marked from_scoreboard)",
+      "maps_to_task": "from_scoreboard",
+      "counts": {},
+      "note": "not yet run with a real key (docs/STATUS.md); no result file exists"
+    }
+  ]
+}
