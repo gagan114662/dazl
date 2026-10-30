@@ -8,6 +8,7 @@ import { getEnabledCredential, saveCredential, deleteCredential, audit } from '.
 import { fetchPublicHtml, defaultLookup, type Lookup } from '../net/public-fetch.ts'
 
 export type CrmProvider = 'hubspot' | 'pipedrive' | 'webhook'
+export const CRM_PROVIDERS: readonly CrmProvider[] = ['hubspot', 'pipedrive', 'webhook']
 export interface CrmConfig { provider: CrmProvider; key?: string; url?: string }
 export interface CrmLead { company: string; name: string; contact: string | null; signal: string; source_url: string; fit?: number | null; intent?: number | null; why?: string | null }
 
@@ -22,7 +23,7 @@ export function getCrmConfig(db: Database.Database, tenantId: string, master?: B
   if (!raw) return null
   try {
     const c = JSON.parse(raw) as CrmConfig
-    if (!['hubspot', 'pipedrive', 'webhook'].includes(c.provider)) return null
+    if (!CRM_PROVIDERS.includes(c.provider)) return null
     if (c.provider === 'webhook' && !/^https:\/\/\S{4,400}$/.test(c.url ?? '')) return null
     if (c.provider !== 'webhook' && !(c.key ?? '').trim()) return null
     return c
