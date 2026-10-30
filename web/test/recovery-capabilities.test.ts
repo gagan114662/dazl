@@ -62,3 +62,16 @@ bothEngines('a change request admitted before recovery cannot issue through its 
  await requestEmailChange(db,'late','fresh@example.test',Math.floor(Date.now()/1000),fresh)
  assert.ok(await db.get("SELECT 1 AS x FROM email_tokens WHERE user_id='late' AND purpose='change' AND used_at IS NULL"))
 })
+
+bothEngines('a password sign-in admitted before recovery cannot create a fresh session with superseded credentials',async({db})=>{
+ const {createPasswordSession,findPasswordUser}=await import('../lib/auth-db.ts')
+ await createPasswordUser({id:'late-signin',email:'late-signin@example.test',name:'Owner',business_name:'Owner',password_hash:'old',salt:'salt'},db)
+ const admitted=(await findPasswordUser('late-signin@example.test',db))!
+ await requestReset(db,'late-signin@example.test')
+ const reset=await tokenFor(db,'late-signin@example.test','Reset your dazl password')
+ assert.equal(await resetPassword(db,reset,{password_hash:'replacement',salt:'new'}),true)
+ assert.equal(await createPasswordSession(admitted,db),null)
+ assert.equal(await db.get('SELECT 1 FROM sessions WHERE user_id=?',['late-signin']),undefined)
+ const fresh=(await findPasswordUser('late-signin@example.test',db))!
+ assert.ok(await createPasswordSession(fresh,db))
+})

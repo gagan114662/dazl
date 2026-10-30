@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { scryptSync, timingSafeEqual } from 'crypto'
 import { cookies } from 'next/headers'
-import { createSession, findPasswordUser, SESSION_TTL_S } from '@/lib/auth-db'
+import { createPasswordSession, findPasswordUser, SESSION_TTL_S } from '@/lib/auth-db'
 import { validateEmail } from '@/lib/validate'
 import { clientIp, rateLimit, UNAVAILABLE_RETRY_S } from '@/lib/rate-limit'
 import { captureError } from '@/lib/ops/errors'
@@ -32,7 +32,8 @@ export async function POST(req: NextRequest) {
     const stored = Buffer.from(user?.password_hash ?? '0'.repeat(128), 'hex')
     if (!user || !timingSafeEqual(computed, stored)) return fail()
 
-    const token = await createSession(user.id, undefined, { device: deviceLabel(req.headers.get('user-agent')) })
+    const token = await createPasswordSession(user, undefined, { device: deviceLabel(req.headers.get('user-agent')) })
+    if (!token) return fail()
     const cookieStore = await cookies()
     cookieStore.set('dazl_session', token, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: SESSION_TTL_S, path: '/' })
     return NextResponse.json({ ok: true, redirect: '/app' })

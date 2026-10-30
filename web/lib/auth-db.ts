@@ -72,6 +72,19 @@ export const SESSION_TTL_S = 60 * 60 * 24 * 30
 
 const nowS = () => Math.floor(Date.now() / 1000)
 
+// Final password sign-in commitment, serialized with recovery. Verification outside
+// this lock may have used a password snapshot that recovery has since replaced.
+export async function createPasswordSession(credentials: {id:string;password_hash:string;salt:string}, d?:Db, meta:{device?:string}={}):Promise<string|null>{
+  return (d ?? await getDb()).tx(function*(t){
+    yield* t.run('UPDATE users SET email=email WHERE id=?',[credentials.id])
+    const live=yield* t.get<{password_hash:string;salt:string}>('SELECT password_hash,salt FROM users WHERE id=?',[credentials.id])
+    if(!live || live.password_hash!==credentials.password_hash || live.salt!==credentials.salt)return null
+    const token=randomBytes(32).toString('hex'),now=nowS()
+    yield* t.run('INSERT INTO sessions (id,user_id,expires_at,public_id,last_seen_at,device,authed_at) VALUES(?,?,?,?,?,?,?)',[hashToken(token),credentials.id,now+SESSION_TTL_S,newPublicId(),now,(meta.device??'').slice(0,60)||null,now])
+    return token
+  })
+}
+
 // Sessions and sign-in run on the Db layer (docs/PLATFORM.md step 2). `d` defaults to the app's store. `device` is the
 // coarse label from deviceLabel() (lib/sessions.ts), shown in the session list.
 export async function createSession(userId: string, d?: Db, meta: { device?: string } = {}): Promise<string> {
