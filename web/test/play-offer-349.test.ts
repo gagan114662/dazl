@@ -352,3 +352,32 @@ test('#349 HOLD-5 a service named like an instruction ("Email marketing", "Conta
   assert.deepEqual(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: DENTAL_PRODUCT }, ''), { offer: DENTAL_SELLER, source: 'recorded', conflict: null })
   assert.equal(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: Q }, '').source, 'conflict')
 })
+
+test('#349 HOLD-6 only a recognised imperative with a buyer object is targeting; any other statement about a service is material', async () => {
+  const P = 'We sell CRM setup to founders.'
+  for (const extra of ['Email marketing costs extra.', 'Contact enrichment requires a paid add-on.', 'Search advertising carries a separate fee.',
+    'Email marketing is unavailable.', 'Contact enrichment is no longer offered.', 'Search advertising is discontinued.',
+    'Message templates are billed separately.', 'Target accounts cost more.']) {
+    const restricted = `${P} ${extra}`
+    assert.equal(sameOffer(restricted, P), false, restricted); assert.equal(sameOffer(P, restricted), false, restricted)
+    for (const seller of [P, 'CRM setup']) assert.equal(effectiveOffer({ seller: `${seller} - https://seller.example`, query: restricted }, '').source, 'conflict', `${restricted} | ${seller}`)
+    assert.equal(effectiveOffer({ seller: `${restricted} - https://seller.example`, query: P }, '').source, 'conflict', `saved: ${restricted}`)
+    assert.equal(effectiveOffer({ seller: null, query: restricted }, 'CRM setup').source, 'conflict', `profile: ${restricted}`)
+  }
+  const db = setup('CRM setup')
+  try {
+    db.prepare('UPDATE scan_jobs SET query = ?, seller = ? WHERE id = ?').run(`${P} Email marketing costs extra.`, 'CRM setup - https://seller.example', 'london')
+    assert.equal((await readPlayOffer(sqliteDb(db), 'A', 'london'))!.source, 'conflict')
+    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme'), /offer_conflict/)
+    assert.equal(offerBlockFor(db, 'A', 'london'), '')
+  } finally { db.close() }
+  // imperatives naming buyers stay targeting instructions
+  for (const t of ['Email founders in London.', 'Email founders who are hiring.', 'Contact clinics in Leeds.', 'Search for agencies that are growing.',
+    'Find London SaaS startups hiring.', 'Reach out to dental practices.', 'Do not email agencies.', 'Exclude agencies, resellers and consultancies.', 'Skip chains.']) {
+    const q = `${t} ${P}`
+    assert.equal(sameOffer(q, P), true, q)
+    assert.deepEqual(effectiveOffer({ seller: `${P} - https://seller.example`, query: q }, ''), { offer: P, source: 'recorded', conflict: null }, q)
+  }
+  assert.deepEqual(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: DENTAL_PRODUCT }, ''), { offer: DENTAL_SELLER, source: 'recorded', conflict: null })
+  assert.equal(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: Q }, '').source, 'conflict')
+})

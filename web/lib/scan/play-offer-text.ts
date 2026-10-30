@@ -94,14 +94,25 @@ export function offerOfSeller(seller: string | null | undefined): string | null 
 // a different audience ("to veterinary practices"), or any withdrawn service or exclusion on one side only, is a
 // difference. Exact text throughout, ignoring only case and spacing: no substring or word-set matching, no reordering.
 const exact = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase()
-const TARGETING = /^(?:(?:please|and|also|but)\s+)?(?:(?:do not|don['\u2019]t|never)\s+)?(?:find|search|look|target|targeting|contact|reach|email|message|include|exclude|excluding|skip|avoid|ignore)\b/i
-// The same first words also start service names ("Email marketing", "Contact enrichment", "Search advertising"): a
-// sentence that asserts a service's status is never a targeting instruction. It asserts one when it says a service is
-// unavailable, discontinued, no longer or not offered, or when its leading noun phrase is the subject of is/are/was/were
-// (before any "who"/"that"/"which" clause, so "Email founders who are hiring." stays an instruction).
-const SERVICE_STATUS = /\b(?:unavailable|discontinued|deprecated|retired|no longer|not (?:offered|available|included|provided|sold|supported)|(?:is|are|was|were|isn['’]t|aren['’]t)\s+(?:offered|available|included|provided|sold|supported|paused|stopped|ended|cancell?ed))\b/i
-const SUBJECT_COPULA = /^(?:(?:please|and|also|but)\s+)?[\p{L}\p{N}&'’-]+(?:\s+(?!(?:who|that|which|whose|where|when|if)\b)[\p{L}\p{N}&'’-]+){0,5}?\s+(?:is|are|was|were|isn['’]t|aren['’]t|has been|have been)\b/iu
-const isTargeting = (x: string) => TARGETING.test(x) && !SERVICE_STATUS.test(x) && !SUBJECT_COPULA.test(x)
+// A targeting instruction of a request: an imperative whose object is the buyers to find or skip ("Find dental practices
+// in NYC.", "Email founders who are hiring.", "Search for agencies that are growing.", "Do not target agencies.", "Skip
+// chains."). Recognised conservatively, never by the first word alone: after the verb (and "for"/"to"/"only"/...), the
+// words up to the first comma, preposition, conjunction or who/that/which clause must name a plural group (optionally
+// with one -ing word: "startups hiring"). The same first words also start service names, and a statement about such a
+// service ("Email marketing costs extra.", "Contact enrichment requires a paid add-on.", "Search advertising is
+// discontinued.") has no such object, so it stays a term. Anything not recognised is material.
+const IMPERATIVE = /^(?:(?:please|and|also|but)\s+)?(?:(?:do not|don['’]t|never)\s+)?(?:find|search|look|target|contact|reach|email|message|include|exclude|skip|avoid|ignore)\s+(.+)$/i
+const LEADING = /^(?:(?:for|to|out|at|up|only|all|any|the|more|new|every|other)\s+)+/i
+const OBJECT_END = /\s*(?:[,;:()]|\s(?:in|at|from|near|across|within|with|on|around|based|who|that|which|whose|where|when|if|by|of|outside|inside|except|excluding|but|and|or|nor)\b)/i
+const BUYER_GROUP = /^(?:[\p{L}\p{N}&'’.-]+\s+){0,5}[\p{L}\p{N}'’-]*s(?:\s+[\p{L}-]+ing)?$/iu
+function isTargeting(x: string): boolean {
+  const m = IMPERATIVE.exec(x)
+  if (!m) return false
+  const rest = m[1].replace(LEADING, '')
+  const end = OBJECT_END.exec(rest)
+  const object = (end ? rest.slice(0, end.index) : rest).trim()
+  return BUYER_GROUP.test(object)
+}
 const AUDIENCE = /^(?:to|for)\s+(.*?)(?=\s*(?:,|\bbut\b|\bexcept\b|\bexcluding\b|\bwithout\b)|$)/i
 type Statement = { offer: string; audience: string; rest: string; others: string[] }
 function statement(text: string): Statement {
