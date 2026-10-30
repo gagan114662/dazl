@@ -221,7 +221,9 @@ function* recordLifecycle(t: Tx, tenantId: string, event: StripeEvent, created: 
   if ((event.type === 'invoice.paid' || event.type === 'invoice.payment_succeeded') && o.id && typeof o.amount_paid === 'number' && o.amount_paid > 0)
     yield* recordEventTx(t, { kind: 'payment_succeeded', ref: o.id, tenant_id: tenantId, occurred_at: at, amount_cents: o.amount_paid })
   else if (event.type === 'invoice.payment_failed' && o.id) yield* recordEventTx(t, { kind: 'payment_failed', ref: o.id, tenant_id: tenantId, occurred_at: at })
-  else if (event.type === 'charge.refunded' && o.id) yield* recordEventTx(t, { kind: 'refund', ref: o.id, tenant_id: tenantId, occurred_at: at, amount_cents: o.amount_refunded ?? null, invoice: o.invoice ?? null, full_refund: o.refunded === true })
+  // one row per charge and refunded total: a later, larger refund of the same charge is a new row (history kept); the
+  // same total delivered again (a retry, or another refund event type) is not
+  else if (event.type === 'charge.refunded' && o.id) yield* recordEventTx(t, { kind: 'refund', ref: `${o.id}:${o.amount_refunded ?? 'unknown'}`, tenant_id: tenantId, occurred_at: at, amount_cents: o.amount_refunded ?? null, invoice: o.invoice ?? null, full_refund: o.refunded === true })
   else if (event.type === 'customer.subscription.deleted' && o.id) yield* recordEventTx(t, { kind: 'subscription_ended', ref: o.id, tenant_id: tenantId, occurred_at: at })
 }
 

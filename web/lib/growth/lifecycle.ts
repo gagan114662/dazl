@@ -9,7 +9,9 @@
 //                      normalised; no event means the source is unknown, and the signup stays unattributed
 //   payment_succeeded  a Stripe invoice paid with amount_paid > 0 (ref = invoice id)
 //   payment_failed     a Stripe invoice whose payment failed (ref = invoice id)
-//   refund             a Stripe charge refunded (ref = charge id; invoice = the invoice it paid, full = whole amount)
+//   refund             a Stripe charge's refunded total as of one event (ref = <charge id>:<cumulative amount_refunded>,
+//                      so a later, larger refund on the same charge is its own row and the history is kept; invoice =
+//                      the invoice it paid; full = Stripe's refunded flag)
 //   subscription_ended a subscription Stripe ended (ref = subscription id)
 // Written by the Stripe webhook (lib/billing/stripe.ts) in the same transaction as the event's processed record, and
 // by sign-up. No private mailbox data, no third-party destination.
@@ -56,16 +58,19 @@ export const DEFINITIONS = {
   excluded: 'synthetic and staging tenants: an account whose email is at a reserved test domain (example.com/.net/.org, or a .test, .example, .invalid or .localhost name), and any tenant listed in excludeTenants',
   signed_up: 'the account exists (users.created_at)',
   real_lead: 'a lead from one of the tenant\'s scans that a user would see as verified: not held for review (review_reason empty, confidence set, not held by a failed required gate), not quarantined, has a company, not a hidden low-fit lead (fit 1), and not a test-source lead',
-  activated: 'the tenant has a scan with at least one real lead (a scan with zero real leads is not activation, nor is entering a key or starting a scan)',
-  repeat: 'after activating, a second scan with at least one real lead, started at least REPEAT_GAP_S after the activating scan started',
-  paid: 'a Stripe invoice paid with an amount above zero that has not been fully refunded (a failed payment is not paid)',
-  retained: 'a second paid, not fully refunded invoice at least RETAIN_AFTER_S after the first one; tenants whose first payment is younger than RETAIN_MATURE_S are not yet mature and are left out of the retention rate',
+  activated: 'the tenant has a scan that finished successfully (status done) with at least one real lead. A scan with zero real leads is not activation, nor is a failed, cancelled or unfinished scan that saved leads, nor entering a key or starting a scan',
+  repeat: 'after activating, a second successfully finished scan with at least one real lead, started at least REPEAT_GAP_S after the activating scan started',
+  paid: 'a Stripe invoice paid with an amount above zero that has not been fully refunded: fully refunded once any refund event for it says so, or its charges\' largest recorded refunded total reaches the amount paid, in whatever order the events arrived (a failed payment is not paid; a partial refund still is)',
+  retained: 'retained at N days (retainDays, default 30): a paid, not fully refunded invoice dated at least N-5 days after the first one, i.e. evidence of a renewal, not just the absence of a cancellation; a tenant whose first payment is younger than N+5 days is not mature and stays out of the retention rate. N=30 is one monthly renewal, N=60 two',
   churned: 'paid, then the subscription ended, without being retained',
   source: 'the first-party tag the sign-up came with; none recorded = unknown (never guessed). A tag says where the sign-up link came from: it is not causal credit',
 } as const
 export const REPEAT_GAP_S = 24 * 3600
-export const RETAIN_AFTER_S = 25 * 86400
-export const RETAIN_MATURE_S = 35 * 86400
+// Retention at N days: a renewal at least N - RETAIN_GRACE_DAYS after the first payment; mature at N + RETAIN_GRACE_DAYS.
+export const RETAIN_DAYS = 30
+export const RETAIN_GRACE_DAYS = 5
+export const RETAIN_AFTER_S = (RETAIN_DAYS - RETAIN_GRACE_DAYS) * 86400
+export const RETAIN_MATURE_S = (RETAIN_DAYS + RETAIN_GRACE_DAYS) * 86400
 const RESERVED = /@([a-z0-9-]+\.)*(example\.(com|net|org)|[a-z0-9-]+\.(test|example|invalid|localhost))$/i
 
 export type Stage = 'excluded' | 'signed_up_only' | 'zero_result' | 'activated' | 'repeat' | 'payment_failed' | 'refunded' | 'paid' | 'retained' | 'churned'
@@ -83,28 +88,34 @@ const REAL_LEAD = `l.review_reason IS NULL AND l.confidence IS NOT NULL AND l.qu
   AND (l.fit IS NULL OR l.fit > 1) AND (l.source_kind IS NULL OR l.source_kind <> 'test')
   AND NOT EXISTS (SELECT 1 FROM lead_enrichments h WHERE h.lead_id = l.id AND h.connector = 'scan:gate' AND h.kind = 'gate_failed')`
 const USERS_SQL = 'SELECT id, email, created_at FROM users ORDER BY created_at, id'
-const SCANS_SQL = `SELECT j.user_id AS tenant_id, j.id, j.created_at, (SELECT count(*) FROM leads l WHERE l.scan_job_id = j.id AND ${REAL_LEAD}) AS real_leads
+const SCANS_SQL = `SELECT j.user_id AS tenant_id, j.id, j.created_at, j.status, (SELECT count(*) FROM leads l WHERE l.scan_job_id = j.id AND ${REAL_LEAD}) AS real_leads
   FROM scan_jobs j ORDER BY j.created_at, j.id`
 const EVENTS_SQL = 'SELECT kind, ref, tenant_id, occurred_at, amount_cents, invoice, full_refund, source FROM lifecycle_events ORDER BY occurred_at, kind, ref'
 
-export interface FunnelOptions { now: number; excludeTenants?: string[] }
+export interface FunnelOptions { now: number; excludeTenants?: string[]; retainDays?: number }
 export async function tenantFunnels(db: Db, opts: FunnelOptions): Promise<TenantFunnel[]> {
   const users = await db.all<{ id: string; email: string; created_at: number | null }>(USERS_SQL)
-  const scans = await db.all<{ tenant_id: string; id: string; created_at: number; real_leads: number }>(SCANS_SQL)
+  const scans = await db.all<{ tenant_id: string; id: string; created_at: number; status: string; real_leads: number }>(SCANS_SQL)
   const events = await db.all<{ kind: LifecycleKind; ref: string; tenant_id: string; occurred_at: number; amount_cents: number | null; invoice: string | null; full_refund: number | null; source: string | null }>(EVENTS_SQL)
   const exclude = new Set(opts.excludeTenants ?? [])
+  const retainDays = opts.retainDays ?? RETAIN_DAYS
+  const retainAfter = (retainDays - RETAIN_GRACE_DAYS) * 86400, retainMature = (retainDays + RETAIN_GRACE_DAYS) * 86400
   return users.map(u => {
     const mine = scans.filter(s => s.tenant_id === u.id)
     const ev = events.filter(e => e.tenant_id === u.id)
-    const useful = mine.filter(s => Number(s.real_leads) > 0)
+    // delivered value: a scan that finished (a failed or unfinished scan's saved leads are not a delivered result)
+    const useful = mine.filter(s => s.status === 'done' && Number(s.real_leads) > 0)
     const activated = useful[0] ?? null
     const repeat = activated ? useful.find(s => s.id !== activated.id && Number(s.created_at) - Number(activated.created_at) >= REPEAT_GAP_S) ?? null : null
-    const refundedInvoices = new Set(ev.filter(e => e.kind === 'refund' && e.full_refund === 1 && e.invoice).map(e => e.invoice!))
     const succeeded = ev.filter(e => e.kind === 'payment_succeeded' && Number(e.amount_cents) > 0)
+    // Refund rows are cumulative totals per charge, kept as history; the projection is order-independent: an invoice is
+    // fully refunded once any row says so, or once the largest refunded total recorded for it reaches what was paid.
+    const refunds = ev.filter(e => e.kind === 'refund' && e.invoice)
+    const refundedInvoices = new Set(succeeded.filter(p => refunds.some(r => r.invoice === p.ref && (r.full_refund === 1 || Number(r.amount_cents) >= Number(p.amount_cents)))).map(p => p.ref))
     const paidOk = succeeded.filter(e => !refundedInvoices.has(e.ref))
     const first = paidOk[0] ?? null
-    const second = first ? paidOk.find(e => Number(e.occurred_at) - Number(first.occurred_at) >= RETAIN_AFTER_S) ?? null : null
-    const mature = !!first && opts.now - Number(first.occurred_at) >= RETAIN_MATURE_S
+    const second = first ? paidOk.find(e => Number(e.occurred_at) - Number(first.occurred_at) >= retainAfter) ?? null : null
+    const mature = !!first && opts.now - Number(first.occurred_at) >= retainMature
     const retained = !first ? null : second ? true : mature ? false : null
     const ended = first ? ev.find(e => e.kind === 'subscription_ended' && Number(e.occurred_at) >= Number(first.occurred_at)) ?? null : null
     const churnedAt = ended && !second ? Number(ended.occurred_at) : null

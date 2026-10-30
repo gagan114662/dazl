@@ -1,7 +1,7 @@
 // Dazl's own acquisition funnel (issue #404; lib/growth/lifecycle.ts holds every definition). Read-only: it opens the
 // SQLite store read-only, writes nothing and sends nothing anywhere. Prints JSON, or a table with --markdown.
 //   node --experimental-strip-types --no-warnings scripts/funnel.mts --db /path/to/app.db [--markdown] [--tenants]
-//     [--exclude id1,id2] [--now <unix seconds>]
+//     [--exclude id1,id2] [--now <unix seconds>] [--retain-days 30]
 // --tenants adds the per-tenant rows (ids and stages only: no email, no lead or payment detail).
 import Database from 'better-sqlite3'
 import { sqliteDb } from '../lib/db/client.ts'
@@ -12,7 +12,7 @@ const file = arg('--db') ?? process.env.DB_PATH
 if (!file) { console.error('usage: funnel.mts --db APP.db [--markdown] [--tenants] [--exclude a,b] [--now SECONDS]'); process.exit(2) }
 const now = Number(arg('--now') ?? Math.floor(Date.now() / 1000))
 const raw = new Database(file, { readonly: true, fileMustExist: true })
-const tenants = await tenantFunnels(sqliteDb(raw), { now, excludeTenants: arg('--exclude')?.split(',').filter(Boolean) })
+const tenants = await tenantFunnels(sqliteDb(raw), { now, excludeTenants: arg('--exclude')?.split(',').filter(Boolean), retainDays: arg('--retain-days') ? Number(arg('--retain-days')) : undefined })
 const report = funnelReport(tenants, now)
 const rows = process.argv.includes('--tenants') ? tenants.map(t => ({ tenant_id: t.tenant_id, source: t.source, stage: t.stage, real_leads: t.real_leads, payments: t.payments, retained: t.retained })) : undefined
 if (!process.argv.includes('--markdown')) { console.log(JSON.stringify({ ...report, tenants: rows }, null, 2)); process.exit(0) }

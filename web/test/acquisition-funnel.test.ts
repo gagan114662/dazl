@@ -22,7 +22,7 @@ async function tenant(db: Db, raw: Database.Database, id: string, opts: { email?
   raw.prepare('UPDATE users SET created_at = ? WHERE id = ?').run(opts.at ?? T0, id)
 }
 // a scan with `real` verified leads and any number of leads a user would NOT see as verified
-function scan(raw: Database.Database, tenantId: string, at: number, real: number, notReal: ('review' | 'quarantined' | 'unscored' | 'lowfit' | 'test' | 'gate' | 'nocompany')[] = []) {
+function scan(raw: Database.Database, tenantId: string, at: number, real: number, notReal: ('review' | 'quarantined' | 'unscored' | 'lowfit' | 'test' | 'gate' | 'nocompany')[] = [], end: 'done' | 'failed' | 'running' = 'done') {
   const job = `job${++seq}`
   raw.prepare("INSERT INTO scan_jobs (id, user_id, status, business_name, industry, location, query, created_at, finished_at) VALUES (?, ?, 'running', 'B', 'dental', 'Ohio', 'q', ?, NULL)").run(job, tenantId, at)
   const lead = (extra: Record<string, unknown>) => {
@@ -41,7 +41,8 @@ function scan(raw: Database.Database, tenantId: string, at: number, real: number
     if (k === 'nocompany') lead({ company: '', name: 'Someone' })
     if (k === 'gate') { const id = lead({}); raw.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, source_url, source_date, retrieved_at) VALUES (?, ?, ?, 'scan:gate', 'gate_failed', 'x', 'https://acme.example/', '2026-01-01', ?)").run(`e${++seq}`, id, tenantId, at) }
   }
-  raw.prepare("UPDATE scan_jobs SET status = 'done', finished_at = ? WHERE id = ?").run(at + 60, job)
+  if (end === 'done') raw.prepare("UPDATE scan_jobs SET status = 'done', finished_at = ? WHERE id = ?").run(at + 60, job)
+  if (end === 'failed') raw.prepare("UPDATE scan_jobs SET status = 'failed', error = 'provider_error', finished_at = ? WHERE id = ?").run(at + 60, job)
   return job
 }
 const ev = (id: string, type: string, created: number, object: Record<string, unknown>): StripeEvent => ({ id, type, created, data: { object } } as StripeEvent)
@@ -175,4 +176,52 @@ test('report command: read-only on the store file, JSON and markdown, no emails 
   assert.doesNotMatch(r.stdout, /@/, 'no email address in the output')
   r = run('--markdown'); assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /\| all \| 1 \| 1 \(100%\)/); assert.match(r.stdout, /1 synthetic or staging tenant\(s\) excluded/)
   assert.equal(statSync(file).mtimeMs, mtime, 'the store file was not written')
+})
+
+// Instinct review of #404 @0d26e1cc, reproduced
+test('activation needs a scan that finished: a failed or unfinished scan that saved a real lead is not activation', async () => {
+  const { raw, db } = store()
+  await tenant(db, raw, 'F'); scan(raw, 'F', T0 + DAY, 1, [], 'failed')
+  await tenant(db, raw, 'R'); scan(raw, 'R', T0 + DAY, 2, [], 'running')
+  await tenant(db, raw, 'L'); scan(raw, 'L', T0 + DAY, 1, [], 'failed'); scan(raw, 'L', T0 + 2 * DAY, 1)
+  // a failed scan between two finished ones is not the repeat either
+  await tenant(db, raw, 'P'); scan(raw, 'P', T0 + DAY, 1); scan(raw, 'P', T0 + 3 * DAY, 4, [], 'failed')
+  const by = Object.fromEntries((await tenantFunnels(db, { now: NOW })).map(t => [t.tenant_id, t]))
+  assert.equal(by.F.activated_at, null); assert.equal(by.F.stage, 'zero_result')
+  assert.equal(by.R.activated_at, null); assert.equal(by.R.stage, 'zero_result')
+  assert.equal(by.L.activated_at, T0 + 2 * DAY, 'the later finished scan activates')
+  assert.equal(by.P.activated_at, T0 + DAY); assert.equal(by.P.repeat_at, null, 'a failed later scan is not repeat use')
+})
+
+test('refunds: partial then full on one charge is not paid, in either order, redelivered or not; history is kept', async () => {
+  const refund = (db: Db, t: string, evt: string, at: number, amount: number, full: boolean, invoice: string, type = 'charge.refunded') =>
+    applyStripeEvent(db, ev(evt, type, at, { id: `ch_${invoice}`, customer: `cus_${t}`, invoice, amount_refunded: amount, refunded: full }))
+  const { raw, db } = store()
+  const setup = async (t: string) => { await tenant(db, raw, t); scan(raw, t, T0 + DAY, 1); await subscribe(db, t, T0 + 2 * DAY); await paid(db, t, `in_${t}`, T0 + 2 * DAY, 4900) }
+  // in order: partial, then the rest
+  await setup('IO'); await refund(db, 'IO', 'e_io1', T0 + 3 * DAY, 1000, false, 'in_IO'); await refund(db, 'IO', 'e_io2', T0 + 4 * DAY, 4900, true, 'in_IO')
+  // out of order: the full refund's event arrives first, the earlier partial one after it
+  await setup('OO'); await refund(db, 'OO', 'e_oo2', T0 + 4 * DAY, 4900, true, 'in_OO'); await refund(db, 'OO', 'e_oo1', T0 + 3 * DAY, 1000, false, 'in_OO')
+  // duplicates: the partial delivered twice (same event), and once more under another event id with the same total
+  await setup('DP'); for (const e of ['e_dp1', 'e_dp1', 'e_dp1b']) await refund(db, 'DP', e, T0 + 3 * DAY, 1000, false, 'in_DP')
+  // two partials adding up to the whole amount, without Stripe's refunded flag on the last one
+  await setup('SUM'); await refund(db, 'SUM', 'e_s1', T0 + 3 * DAY, 2000, false, 'in_SUM'); await refund(db, 'SUM', 'e_s2', T0 + 4 * DAY, 4900, false, 'in_SUM')
+  const by = Object.fromEntries((await tenantFunnels(db, { now: NOW })).map(t => [t.tenant_id, t]))
+  for (const t of ['IO', 'OO', 'SUM']) { assert.equal(by[t].paid_at, null, `${t}: fully refunded is not paid`); assert.equal(by[t].stage, 'refunded', t); assert.equal(by[t].refunded_payments, 1) }
+  assert.equal(by.DP.paid_at, T0 + 2 * DAY, 'only a partial refund: still paid'); assert.equal(by.DP.refunded_payments, 0)
+  const rows = (t: string) => (raw.prepare("SELECT ref FROM lifecycle_events WHERE tenant_id = ? AND kind = 'refund' ORDER BY ref").all(t) as { ref: string }[]).map(r => r.ref)
+  assert.deepEqual(rows('IO'), ['ch_in_IO:1000', 'ch_in_IO:4900'], 'both refund states kept as history')
+  assert.deepEqual(rows('OO'), ['ch_in_OO:1000', 'ch_in_OO:4900'])
+  assert.deepEqual(rows('DP'), ['ch_in_DP:1000'], 'the same refunded total is one row however often it arrives')
+})
+
+test('retention window: one rule, N days; 30 (one monthly renewal) and 60 (two) answer differently on the same events', async () => {
+  const { db } = await world()
+  const r30 = Object.fromEntries((await tenantFunnels(db, { now: NOW })).map(t => [t.tenant_id, t.retained]))
+  const r60 = Object.fromEntries((await tenantFunnels(db, { now: NOW, retainDays: 60 })).map(t => [t.tenant_id, t.retained]))
+  // A renewed 30 days after its first payment: retained at 30, not at 60 (it needs a payment 55+ days on)
+  assert.equal(r30.A, true); assert.equal(r60.A, false)
+  // F paid 60 days ago and never again: mature for both windows, retained in neither
+  assert.equal(r30.F, false); assert.equal(r60.F, null, 'at 60 days F is not mature yet (needs 65)')
+  assert.match(DEFINITIONS.retained, /evidence of a renewal/)
 })
