@@ -31,8 +31,11 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci
       - run: npm run build
-      # Playwright is not an app dependency: installed for this job only, the lockfile untouched
-      - run: npm install --no-save playwright@1.63.0 && npx playwright install --with-deps chromium
+      # Playwright (and esbuild, for the rendered check) are not app dependencies: installed for this job only, the lockfile untouched
+      - run: npm install --no-save playwright@1.63.0 esbuild@0.25.0 && npx playwright install --with-deps chromium
+      # The rendered price-estimate check (stubbed: no server, db, network or key). esbuild bundles the page; installed with playwright for this job only, the lockfile untouched. It must run, not skip.
+      - name: Rendered price-estimate and budget check
+        run: node test/ui/budget.ui.mjs | tee /tmp/budget-ui.out && ! grep -q '^SKIP' /tmp/budget-ui.out
       - name: Screenshots of every page
         run: npm run preview:shots -- preview
         env:
