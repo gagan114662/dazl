@@ -22,6 +22,8 @@ const MSG: Record<string, [number, string]> = {
   personal_email: [422, 'This is a personal email address (Gmail, Yahoo, etc.), so dazl will not email it'],
   lead_ungraded: [422, 'This lead could not be ICP-graded (scoring failed), so it cannot be emailed. Re-run the scan to grade it.'],
   suppressed: [409, 'This address unsubscribed or is on your suppression list'],
+  recipient_contacted_recently: [409, 'This person was already emailed from another play recently, so this play will not email them again for now'],
+  account_contacted_recently: [409, 'Someone at this company was already emailed from another play recently, so this play will not start another conversation with them for now'],
   already_drafted: [409, 'A draft for this lead already exists'],
 }
 

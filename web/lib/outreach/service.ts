@@ -1,3 +1,4 @@
+import { crossPlayHold } from '../accounts/cooldown.ts'
 import {contactPurposeRestricted} from './contact-purpose-db.ts'
 import { evidenceStateOf, type EvidenceState } from './evidence-state.ts'
 import {currentnessHeld} from './currentness.ts'
@@ -263,6 +264,9 @@ function draftChecks(db: Database.Database, tenantId: string, leadId: string) {
   const test = testRecipientApproved(db, tenantId, to) ? 1 : 0
   if (!recipientAllowed(db,tenantId,to)) throw new OutreachError('personal_email')
   if (isSuppressed(db, tenantId, to)) throw new OutreachError('suppressed')
+  // Another play already emailed this person, or someone at this company (lib/accounts/cooldown.ts, #364).
+  const cool = crossPlayHold(db, tenantId, leadId, to)
+  if (cool) throw new OutreachError(cool)
   return { lead, to, addressUrl, test }
 }
 
@@ -434,6 +438,7 @@ function sendPreChecks(db: Database.Database, tenantId: string, pre: StoredMsg):
   if (!testFixtureSend(db, tenantId, pre) && !leadEvidenceEligible(db, tenantId, pre.lead_id)) throw new OutreachError('lead_evidence_withdrawn')
   if (!testFixtureSend(db, tenantId, pre) && domainReviewHeld(db, tenantId, pre.lead_id, pre.to_email)) throw new OutreachError(domainHoldCode(db, tenantId, pre.lead_id, pre.to_email))
   if (anyUncertainSend(db, tenantId)) throw new OutreachError('already_uncertain')
+  { const cool = crossPlayHold(db, tenantId, pre.lead_id, pre.to_email); if (cool) throw new OutreachError(cool) }
   if (tableExists(db, 'autopilot_settings') && (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as { paused: number } | undefined)?.paused) throw new OutreachError('paused')
   if (pre.status !== 'approved') throw new OutreachError(pre.status === 'sending' || pre.status === 'uncertain' ? `already_${pre.status}` : 'not_approved')
 }
@@ -506,6 +511,7 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   if (!testFixtureSend(db,tenantId,m) && !leadEvidenceEligible(db,tenantId,m.lead_id)) release('lead_evidence_withdrawn')
   if (!testFixtureSend(db,tenantId,m) && domainReviewHeld(db,tenantId,m.lead_id,m.to_email)) release(domainHoldCode(db,tenantId,m.lead_id,m.to_email))
   if (isSuppressed(db,tenantId,m.to_email)) release('suppressed')
+  { const cool = crossPlayHold(db, tenantId, m.lead_id, m.to_email, { now: nowS(d) }); if (cool) release(cool) }
   const final = getMsg(db,tenantId,id)!
   if (final.approved_hash !== hash(final.to_email,final.subject,final.body) || final.body !== m.body || final.subject !== m.subject || final.to_email !== m.to_email) release('changed_since_approval')
   if (tableExists(db,'sequences')) {
