@@ -1,3 +1,4 @@
+import { sqliteDb } from '../lib/db/client.ts'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
@@ -17,12 +18,12 @@ const ICP = { summary: 'Ohio employers that need payroll help', who: ['HR manage
 const ENV = { ADVANCED_CONNECTORS: '1', ADVANCED_LINKEDIN: '1', ADVANCED_WORKER_URL: 'http://w', ADVANCED_WORKER_TOKEN: 't' }
 const person = (id: string, quote: string) => ({ url: `https://www.linkedin.com/in/${id}/`, title: id, quote, date: '2026-10-20', login_walled: true })
 
-function setup(consent = true, session = true) {
+async function setup(consent = true, session = true) {
   const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migrateConnectors(db); migrateAdvanced(db); migrateCompetitors(db)
   saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
   if (consent) acceptConsent(db, 'A', 'linkedin')
   if (session) saveCredential(db, 'A', 'adv:linkedin', 'li_at=abc; JSESSIONID="ajax:1"', master)
-  setCompetitors(db, 'A', ['Rippling', 'Gusto'])
+  await setCompetitors(sqliteDb(db), 'A', ['Rippling', 'Gusto'])
   return db
 }
 
@@ -35,14 +36,14 @@ test('queries: one people search first, then competitor engagers, within the hou
 test('gates: flag, consent and the tenant session are all required; nothing reaches the worker otherwise', async () => {
   let calls = 0
   const worker = async () => { calls++; return [] }
-  assert.deepEqual(await collectLinkedInPeople(setup(), 'A', 'j', ICP, { worker, master, env: { ...ENV, ADVANCED_LINKEDIN: '0' } }), [])
-  assert.deepEqual(await collectLinkedInPeople(setup(false), 'A', 'j', ICP, { worker, master, env: ENV }), [])
-  assert.deepEqual(await collectLinkedInPeople(setup(true, false), 'A', 'j', ICP, { worker, master, env: ENV }), [])
+  assert.deepEqual(await collectLinkedInPeople(await setup(), 'A', 'j', ICP, { worker, master, env: { ...ENV, ADVANCED_LINKEDIN: '0' } }), [])
+  assert.deepEqual(await collectLinkedInPeople(await setup(false), 'A', 'j', ICP, { worker, master, env: ENV }), [])
+  assert.deepEqual(await collectLinkedInPeople(await setup(true, false), 'A', 'j', ICP, { worker, master, env: ENV }), [])
   assert.equal(calls, 0)
 })
 
 test('the hourly LinkedIn budget is shared and enforced across scans', async () => {
-  const db = setup(); const sent: string[] = []
+  const db = await setup(); const sent: string[] = []
   const worker = async (r: { query: string }) => { sent.push(r.query); return [] }
   await collectLinkedInPeople(db, 'A', 'j1', ICP, { worker, master, env: ENV })
   await collectLinkedInPeople(db, 'A', 'j2', ICP, { worker, master, env: ENV })
@@ -50,7 +51,7 @@ test('the hourly LinkedIn budget is shared and enforced across scans', async () 
 })
 
 test('a scan turns LinkedIn people into review-lane leads (login_required), never verified', async () => {
-  const db = setup()
+  const db = await setup()
   const saved = { ...process.env }; Object.assign(process.env, ENV)
   try {
     const id = createQueryJob(db, 'A', { query: 'Ohio employers that need payroll help', icp: JSON.stringify(ICP) } as never)
