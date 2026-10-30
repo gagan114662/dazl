@@ -8,7 +8,8 @@
 //    model's listed price), NOT a bill and not a vendor-enforced ceiling. Web-search research cannot be bounded, so a run with
 //    max_usd REFUSES it. A refused call ends the run as `budget_stopped`, which is not the same as "nothing found".
 //  - the job's own reservation is saved after every reserved call, so a retry or a restart of THAT job continues from what it
-//    already reserved; the per-owner pool (DAZL_RUN_MAX_USD_USERS) lives in process memory and resets on a restart.
+//    already reserved; the per-owner day/month pools (DAZL_RUN_MAX_USD_USERS, DAZL_OWNER_MONTH_MAX_USD_USERS) are rows in the
+//    shared store (lib/llm/spend-pool.ts), so no restart, retry or second instance resets them.
 // Absent budget = today's behaviour, unbounded. A supplied budget is validated strictly: a caller expecting a restricted
 // run is never silently widened into a full one.
 import type { RunBudget } from './runner.ts'
@@ -66,7 +67,7 @@ export const BUDGET_EXCLUDED_PATHS = [
   'Weekly watches take their own budget (each weekly run is bounded separately, not the watch in total); CSV imports take the narrowing flags only, no max_usd',
   'Bring-your-own-key Apollo / People Data Labs enrichment is switched OFF only when the budget has max_usd or credit_enrichment=false; under judge=false or paid_fallback=false alone it still runs, on your own credits, unbounded',
   'NOT BOUNDED AT ALL: retries below dazl (provider or platform), the provider\'s real billing and cache-token charges - requests are counted where dazl sends them and reservations are estimates',
-  'NOT BOUNDED ACROSS RESTARTS: the per-owner pool (DAZL_RUN_MAX_USD_USERS) is in memory and resets on a restart',
+  'Per-owner pools (operator setting, per UTC day and month) are kept in the shared store: a restart, retry or second instance does not reset them. They cover the same model and trial calls as max_usd, not the paths listed above',
 ]
 export interface BudgetDisclosure {
   scope: 'partial'
@@ -105,7 +106,7 @@ export function describeRunBudget(b: RunBudget | null): BudgetDisclosure {
     ],
     limits: [
       'A refused call ends the run as budget_stopped. That is a budget stop, not zero results.',
-      'The job reservation is saved after every reserved call and survives a retry or restart of that job; the per-owner pool (DAZL_RUN_MAX_USD_USERS) is in memory and resets when the process restarts.',
+      'The job reservation is saved after every reserved call and survives a retry or restart of that job; the per-owner day and month pools are saved in the shared store and survive restarts too.',
       'Token counts come from the provider count endpoint x 1.2 (a chosen margin, not a documented maximum), or prompt bytes when no counter is available.',
       'Only models with a listed price are allowed under max_usd; an unpriced model refuses every call.',
     ],

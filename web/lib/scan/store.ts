@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { migrateSpendPools } from '../llm/spend-pool.ts'
 import { migrateInsertionOrder } from '../db/insertion-order.ts'
 import type Database from 'better-sqlite3'
 import { primarySignalKind } from './score.ts'
@@ -17,7 +18,7 @@ export interface ScanInput {
   location: string
 }
 // Free-text request. The legacy columns stay filled (placeholders) so older workers keep working.
-export interface QueryInput { query: string; icp?: string | null; sources?: string | null; seller?: string; offer?: string | null; watchId?: string; runBudget?: string | null }
+export interface QueryInput { id?: string; query: string; icp?: string | null; sources?: string | null; seller?: string; offer?: string | null; watchId?: string; runBudget?: string | null }
 
 // Schema notes for the external worker (Hermes). Everything is enforced in
 // SQLite itself, so a writer that bypasses the web app cannot corrupt state:
@@ -25,6 +26,7 @@ export interface QueryInput { query: string; icp?: string | null; sources?: stri
 //  - lengths are capped by CHECK
 //  - a lead needs a signal (reason) and an http(s) source_url
 export function migrateScan(db: Database.Database): void {
+  migrateSpendPools(db) // the owner day/month spend pools the scan runner reserves against (lib/llm/spend-pool.ts)
   db.exec(`
     CREATE TABLE IF NOT EXISTS scan_jobs (
       id            TEXT PRIMARY KEY,
@@ -119,6 +121,7 @@ function addColumns(db: Database.Database): void {
   add('scan_jobs', 'needs_review', 'INTEGER')
   add('scan_jobs', 'dropped', 'INTEGER')
   add('scan_jobs', 'run_budget', 'TEXT') // per-run budget controls (CSV company imports and POST /api/scan); null = current behavior
+  add('scan_jobs', 'estimate', 'TEXT') // the price estimate shown at start (JSON: total range, rows, payer, cap); null for older jobs
   add('scan_jobs', 'spend_reserved_usd', 'REAL') // what this job has already RESERVED under max_usd, saved per call so a retry/restart continues from it
   add('scan_jobs', 'drop_reasons', 'TEXT')
   add('scan_jobs', 'verified', 'INTEGER')
@@ -206,8 +209,8 @@ function widenWhyCap(db: Database.Database): void {
   `)
 }
 
-export function createJob(db: Database.Database, userId: string, input: ScanInput, runBudget: string | null = null): string {
-  const id = randomBytes(12).toString('hex')
+export function createJob(db: Database.Database, userId: string, input: ScanInput & { id?: string }, runBudget: string | null = null): string {
+  const id = input.id ?? randomBytes(12).toString('hex')
   db.prepare('INSERT INTO scan_jobs (id, user_id, business_name, industry, location, run_budget) VALUES (?, ?, ?, ?, ?, ?)').run(
     id, userId, input.business_name, input.industry, input.location, runBudget,
   )
@@ -216,7 +219,7 @@ export function createJob(db: Database.Database, userId: string, input: ScanInpu
 
 // icp is a JSON string the user already saw and accepted/edited; null means "infer it when the job runs".
 export function createQueryJob(db: Database.Database, userId: string, input: QueryInput): string {
-  const id = randomBytes(12).toString('hex')
+  const id = input.id ?? randomBytes(12).toString('hex')   // a caller may fix the id first (a trial reservation is linked to it before the job exists)
   // run_budget is part of the INSERT, so a job is never visible to the runner without its budget.
   const offer = (input.offer ?? '').replace(/\s+/g, ' ').trim().slice(0, 150) || null
   db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, icp_inferred, sources, seller, offer, offer_set_at, watch_id, run_budget) VALUES (?, ?, ?, '(from request)', '-', ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
@@ -243,6 +246,10 @@ export function reapStaleJobs(db: Database.Database): void {
   ).run(MAX_ATTEMPTS, MAX_ATTEMPTS, MAX_ATTEMPTS, cutoff)
 }
 
+// The price estimate saved when the scan was started, with the job's reservation; null estimate for a scan started before this existed.
+export function jobCost(db: Database.Database, userId: string, id: string): { estimate: string | null; reserved_usd: number | null } {
+  try { const r = db.prepare('SELECT estimate, spend_reserved_usd FROM scan_jobs WHERE id = ? AND user_id = ?').get(id, userId) as { estimate: string | null; spend_reserved_usd: number | null } | undefined; return { estimate: r?.estimate ?? null, reserved_usd: r?.spend_reserved_usd ?? null } } catch { return { estimate: null, reserved_usd: null } }
+}
 export function getJob(db: Database.Database, userId: string, id: string) {
   reapStaleJobs(db)
   const job = db

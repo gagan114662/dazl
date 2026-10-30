@@ -14,7 +14,6 @@ import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateEvents } from '../lib/events/store.ts'
 import { ProviderError, type Provider } from '../lib/llm/provider.ts'
 import { resetTinyfishState } from '../lib/search/tinyfish.ts'
-import { resetSpendPools } from '../lib/llm/spend-guard.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 
 const master = randomBytes(32)
@@ -27,14 +26,13 @@ const ICP = { summary: 'Ohio SMBs hiring payroll', who: ['Controller'], industri
 
 
 type Calls = { complete: number; research: number; maxTokens: number[]; promptBytes: number }
-function run(budgetJson: string | null, model: string | undefined, tinyfishHits = true, failExtraction = false, noIcp = false, keepPools = false, countMode: 'ok' | 'huge' | 'fail' = 'ok') {
+// sameDb: run a second job in the store of an earlier run (the owner pool lives in that store, as in the app).
+function run(budgetJson: string | null, model: string | undefined, tinyfishHits = true, failExtraction = false, noIcp = false, sameDb: Database.Database | null = null, countMode: 'ok' | 'huge' | 'fail' = 'ok') {
   const counts: { model: string; content: string }[] = []
   resetTinyfishState()
-  if (!keepPools) resetSpendPools()
   const calls: Calls = { complete: 0, research: 0, maxTokens: [], promptBytes: 0 }
-  const db = new Database(':memory:')
-  migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
-  saveKey(db, 'A', 'anthropic', KEY, master)
+  const db = sameDb ?? new Database(':memory:')
+  if (!sameDb) { migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db); saveKey(db, 'A', 'anthropic', KEY, master) }
   createQueryJob(db, 'A', noIcp ? { query: REQUEST } : { query: REQUEST, icp: JSON.stringify(ICP) })
   if (budgetJson) db.prepare('UPDATE scan_jobs SET run_budget = ?').run(budgetJson)
   const job = claimKeyedJob(db)!
@@ -61,7 +59,7 @@ function run(budgetJson: string | null, model: string | undefined, tinyfishHits 
   globalThis.fetch = fetchImpl
   process.env.TINYFISH_API_KEY = 'test-tinyfish-key'
   return runJob(db, job, { providers, master, fetchPage: page, fetchImpl, score: false, judge: null })
-    .then(r => ({ r, calls, counts, db, err: (db.prepare('SELECT error FROM scan_jobs').get() as { error: string | null }).error }))
+    .then(r => ({ r, calls, counts, db, err: (db.prepare('SELECT error FROM scan_jobs WHERE id = ?').get(job.id) as { error: string | null }).error }))
     .finally(() => { globalThis.fetch = realFetch; delete process.env.TINYFISH_API_KEY })
 }
 
@@ -147,12 +145,12 @@ test('reservation arithmetic: (prompt bytes + 1000 margin) * $3/M + max output *
   assert.throws(() => big.reserve('claude-sonnet-4-5', 100_000, 100), SpendRefused) // same output, large prompt: input bytes count
 })
 
-test('the owner limit is ONE pool across all of that owner jobs in the process: a second job cannot spend the same limit again', async () => {
+test('the owner limit is ONE pool across all of that owner jobs in the store: a second job cannot spend the same limit again', async () => {
   process.env.DAZL_RUN_MAX_USD_USERS = 'A:0.1' // covers one scan's worst case (about 0.07) but not two
   try {
     const first = await run(null, 'claude-sonnet-4-5')
     assert.ok(first.calls.complete >= 2); assert.notEqual(first.err, 'budget_stopped')
-    const second = await run(null, 'claude-sonnet-4-5', true, false, false, true)
+    const second = await run(null, 'claude-sonnet-4-5', true, false, false, first.db)
     assert.equal(second.err, 'budget_stopped')
     assert.ok(second.calls.complete < first.calls.complete)
   } finally { delete process.env.DAZL_RUN_MAX_USD_USERS }
@@ -166,11 +164,11 @@ test('count_tokens preflight: every paid call is preceded by a free token count 
 })
 
 test('count_tokens preflight: a counted size that does not fit the limit refuses the call, even if the byte estimate would have fit', async () => {
-  const x = await run('{"max_usd":5}', 'claude-sonnet-4-5', true, false, false, false, 'huge')
+  const x = await run('{"max_usd":5}', 'claude-sonnet-4-5', true, false, false, null, 'huge')
   assert.equal(x.calls.complete, 0); assert.equal(x.err, 'budget_stopped')
 })
 
 test('count_tokens preflight: a failed or rate-limited count refuses the paid call (fail closed)', async () => {
-  const x = await run('{"max_usd":5}', 'claude-sonnet-4-5', true, false, false, false, 'fail')
+  const x = await run('{"max_usd":5}', 'claude-sonnet-4-5', true, false, false, null, 'fail')
   assert.equal(x.calls.complete, 0); assert.equal(x.err, 'budget_stopped')
 })

@@ -1,11 +1,12 @@
 import {contactPurposeRestricted} from './contact-purpose-db.ts'
+import { ownerGuarded } from '../llm/owner-guard.ts'
 import {currentnessHeld} from './currentness.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend } from './send-budget.ts'
 import { hasReadConsent, syncReplies } from './replies.ts'
 import { randomBytes, createHash } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
-import { getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
+import { confirmedSendResult, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { auditAt, getState, pause } from './autopilot.ts'
 import { grantConsent } from './ledger.ts'
 import { composeBody, getSettings, isSuppressed, domainReviewHeld, domainHoldCode, domainReviewStatus, leadEvidenceEligible, leadHeld, recipientAllowed, testFixtureSend, testRecipientApproved, unsubToken, type Deps } from './service.ts'
@@ -117,7 +118,8 @@ async function llmStepText(db: Database.Database, tenantId: string, step: 2 | 3,
   if (!vendor) return null
   const read = readKey(db, tenantId, vendor, d.master)
   if (read.unreadable || !read.key) return null
-  const provider = providers[vendor]
+  // The owner's spend pool (lib/llm/owner-guard.ts): a refused reservation makes no call and the template is used.
+  const provider = providers[vendor] && ownerGuarded(db, tenantId, providers[vendor])
   if (!provider?.complete) return null
   try {
     const text = (await provider.complete(read.key, seqPrompt(step, businessName, lead, bookingUrl, memoryPromptBlock(lead.lead_id ? memoryForLead(db, tenantId, lead.lead_id) : getMemory(db, tenantId))), d.fetchImpl, 400)).trim().slice(0, 3000)
@@ -404,7 +406,7 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
         unsubscribeUrl: unsubUrl, date: new Date(now * 1000),
         inReplyTo: `dazl.${s.message_id}@${acct.email.split('@')[1]}`,
       }))
-      const r = await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, s.thread_id ?? undefined)
+      const r = confirmedSendResult(await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, s.thread_id ?? undefined))
       db.prepare("UPDATE sequence_steps SET status = 'sent', sent_at = ?, gmail_id = ? WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(now, r.id, tenantId, s.id, stepRow.step)
       if (testRecipientApproved(db,tenantId,s.to_email)) auditAt(db,tenantId,'test_mode','sequence test inbox',s.lead_id,s.message_id,now)
       auditAt(db, tenantId, 'sequence_sent', `step ${stepRow.step}`, s.lead_id, s.message_id, now)
@@ -442,7 +444,7 @@ export function sequenceAnalytics(db: Database.Database, tenantId: string, leadI
   const warm = n(`SELECT count(*) AS n FROM followup_messages fm JOIN followup_threads ft ON ft.tenant_id = fm.tenant_id AND ft.thread_id = fm.thread_id WHERE fm.tenant_id = ? AND fm.status = 'sent' ${scoped ? (leadIds!.length ? `AND ft.lead_id IN (${ph})` : 'AND 1=0') : ''}`,tenantId,...args)
   const sent = step1 + later + warm
   const cls = (list: string) => n(`SELECT count(DISTINCT thread_id) AS n FROM inbound_messages WHERE tenant_id = ? AND classification IN (${list}) ${inList}`, tenantId, ...args)
-  const replied = cls("'positive','negative','other','opt_out'")
+  const replied = cls("'positive','negative','other','opt_out','uncertain'")
   const bounced = cls("'bounce'")
   const optOutReplies = cls("'opt_out'")
   const scopedSupp = scoped ? (leadIds!.length ? `AND email IN (SELECT to_email FROM outreach_messages WHERE tenant_id = ? ${inList})` : 'AND 1=0') : ''
