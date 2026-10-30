@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { bothEngines } from './helpers/engines.ts'
 import type { Db } from '../lib/db/client.ts'
 import { recordLeadRejection, revertLeadRejection, isReason } from '../lib/scan/reject-feedback.ts'
-import { activeFeedback, heldBy } from '../lib/scan/feedback.ts'
+import { activeFeedback, heldBy, rejectedPeople } from '../lib/scan/feedback.ts'
 import { setQuarantine } from '../lib/scan/quarantine.ts'
 
 async function seed(db: Db, tenant: string, id: string, o: { company?: string; domain?: string | null; date?: string | null; url?: string } = {}) {
@@ -29,8 +29,8 @@ bothEngines('reason decides the level: wrong_person -> person, wrong_timing -> t
   const t = await recordLeadRejection(db, 'A', 'l1', 'wrong_timing'); assert.equal(t!.entity_kind, 'event')
   const lead = { company: 'Harbor Dental', company_domain: 'harbordental.example' }, rows = await activeFeedback(db, 'A')
   assert.ok(heldBy(rows, lead, { event: { date: '2026-06-01', source_url: 'https://news.example/a' } }), 'the same event stays held')
-  assert.equal(heldBy(rows, lead, { person: 'Bob Other', event: { date: '2026-10-20', source_url: 'https://news.example/new' } }), null, 'a different person at a new event is not held')
-  assert.ok(heldBy(rows, lead, { person: 'Fay Buyer', event: { date: '2026-10-20', source_url: 'https://news.example/new' } }), 'the rejected person is still held')
+  assert.equal(heldBy(rows, lead, { event: { date: '2026-10-20', source_url: 'https://news.example/new' } }), null, 'a strictly later event day lifts the timing rejection')
+  assert.equal(rejectedPeople(rows, lead, ['Bob Other']).length, 0); assert.equal(rejectedPeople(rows, lead, ['Fay Buyer']).length, 1, 'the rejected person is stripped, the company is not held')
 })
 
 bothEngines('releasing the lead reverts exactly its rejection (history kept); a bare quarantine teaches nothing; a bad reason is not a reason', async ({ db }) => {

@@ -867,6 +867,8 @@ CREATE INDEX trial_scans_ip ON trial_scans (ip_hash, created_at);
 
 CREATE INDEX trial_scans_tenant ON trial_scans (tenant_id, created_at);
 
+CREATE UNIQUE INDEX uq_lead_feedback_version ON lead_feedback (tenant_id, version);
+
 CREATE INDEX warm_user_paths_insert_seq_idx ON warm_user_paths (insert_seq);
 
 CREATE INDEX warm_user_paths_lead ON warm_user_paths (tenant_id, lead_id);

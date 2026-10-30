@@ -27,6 +27,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
   const g = await guard(req, lead, 'operate')
   if (g.res) return g.res
   const body = await req.json().catch(() => ({})) as { reason?: unknown; feedback_reason?: unknown; person?: unknown }
+  // Validate BEFORE any mutation: a bad feedback_reason is a 400 and the lead is not quarantined.
+  if (body.feedback_reason !== undefined && !isReason(body.feedback_reason)) return NextResponse.json({ error: 'invalid_feedback_reason' }, { status: 400 })
+  if (body.feedback_reason === 'wrong_person' && !(typeof body.person === 'string' && body.person.trim())) return NextResponse.json({ error: 'person_required' }, { status: 400 })
   const r = await setQuarantine(await getDb(), g.user!.tenantId, lead, 'quarantine', typeof body.reason === 'string' ? body.reason : '')
   if (r.status === 'not_found') return NextResponse.json({ error: 'Not found' }, { status: 404 })
   // An optional structured reason (wrong_industry, wrong_person, wrong_location, wrong_timing, competitor, existing_relationship, not_useful) is learned from: the account/person/event is not

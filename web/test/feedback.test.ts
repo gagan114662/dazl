@@ -2,7 +2,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { bothEngines } from './helpers/engines.ts'
-import { accountKey, personKey, eventKey, recordFeedback, revertFeedback, activeFeedback, heldBy, filterRejected, sourceYield, rankAdjustment, proposeProfileImprovements, FeedbackError, type FeedbackRow } from '../lib/scan/feedback.ts'
+import { accountKey, personKey, eventKey, recordFeedback, revertFeedback, activeFeedback, heldBy, rejectedPeople, filterRejected, sourceYield, rankAdjustment, proposeProfileImprovements, FeedbackError, type FeedbackRow } from '../lib/scan/feedback.ts'
 
 const L = { company: 'Harbor Dental Inc.', company_domain: 'https://www.harbordental.example/about' }
 const rej = (reason: any, extra: object = {}) => ({ entity_kind: 'account' as const, entity_key: accountKey(L), account_key: accountKey(L), polarity: 'reject' as const, reason, ...extra })
@@ -37,17 +37,17 @@ bothEngines('validation: a reject needs a listed reason; a passive opt-out is ne
 })
 
 test('only a timing rejection lifts, and only for a DIFFERENT newly surfaced event; other reasons hold until reset', () => {
-  const e1 = { date: '2026-06-01', source_url: 'https://news.example/a' }, e2 = { date: '2026-10-01', source_url: 'https://news.example/b' }
-  const row = (reason: string): FeedbackRow => ({ id: 'x', entity_kind: 'account', entity_key: accountKey(L), account_key: accountKey(L), polarity: 'reject', reason: reason as any, origin: 'explicit', source: null, query_key: null, event_key: eventKey(L, e1), note: null, version: 1, created_at: 1, reverted_at: null })
+  const e1 = { date: '2026-06-01', source_url: 'https://news.example/a' }, e2 = { date: '2026-10-01', source_url: 'https://news.example/b' }  // e2 is a LATER day
+  const row = (reason: string): FeedbackRow => ({ id: 'x', entity_kind: reason === 'wrong_timing' ? 'event' : 'account', entity_key: reason === 'wrong_timing' ? eventKey(L, e1) : accountKey(L), account_key: accountKey(L), polarity: 'reject', reason: reason as any, origin: 'explicit', source: null, query_key: null, event_key: eventKey(L, e1), note: null, version: 1, created_at: 1, reverted_at: null })
   assert.ok(heldBy([row('wrong_timing')], L, { event: e1 }), 'same event stays held')
   assert.equal(heldBy([row('wrong_timing')], L, { event: e2 }), null, 'a new relevant event lifts a timing rejection')
   for (const r of ['wrong_industry', 'competitor', 'existing_relationship', 'wrong_location', 'not_useful']) assert.ok(heldBy([row(r)], L, { event: e2 }), `${r} holds despite a new event`)
   assert.ok(heldBy([row('wrong_timing')], L), 'no event context: stays held')
 })
 
-test('person-level rejection holds that person, not the account', () => {
+test('person-level rejection strips that person, it does not hold the account', () => {
   const r: FeedbackRow = { id: 'p', entity_kind: 'person', entity_key: personKey(L, 'Bob Other'), account_key: accountKey(L), polarity: 'reject', reason: 'wrong_person', origin: 'explicit', source: null, query_key: null, event_key: null, note: null, version: 1, created_at: 1, reverted_at: null }
-  assert.ok(heldBy([r], L, { person: 'Bob Other' })); assert.equal(heldBy([r], L, { person: 'Fay Buyer' }), null); assert.equal(heldBy([r], L), null)
+  assert.equal(rejectedPeople([r], L, ['Bob Other']).length, 1); assert.equal(rejectedPeople([r], L, ['Fay Buyer']).length, 0); assert.equal(heldBy([r], L), null, 'the company is not held for a wrong person')
 })
 
 test('filterRejected splits a batch with a reason for each held lead', () => {

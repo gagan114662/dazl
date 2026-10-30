@@ -17,3 +17,4 @@ CREATE TABLE lead_feedback (
     reverted_at BIGINT
   );
 CREATE INDEX idx_lead_feedback_tenant ON lead_feedback (tenant_id, entity_kind, entity_key);
+CREATE UNIQUE INDEX uq_lead_feedback_version ON lead_feedback (tenant_id, version);
