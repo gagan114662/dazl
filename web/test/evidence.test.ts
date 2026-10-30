@@ -12,7 +12,7 @@ const NOW = new Date('2026-10-20T12:00:00Z')
 const QUOTE = 'Northside Builders opened a second yard and is hiring five roofers this month'
 const cand = (o: Partial<Candidate> = {}): Candidate => ({ name: '', company: 'Northside Builders Inc.', contact: null, signal: 'Expanding', source_url: 'https://northsidebuilders.example/a', score: 70, excerpt: QUOTE, event_date: '2026-10-01', ...o })
 const page = (text: string, title = '') => ({ text, title, retrievedAt: 1_800_000_000 })
-const good = page(`October 2026 local news. ${QUOTE}. Call 416-555-0199 or email jobs@northside.example.`)
+const good = page(`October 2026 local news. ${QUOTE}. Call 416-555-0199 or email office@northside.example.`)
 
 test('good evidence passes with high confidence and a verified date', () => {
   const v = verifyEvidence(cand(), good, NOW)
@@ -47,9 +47,9 @@ test('undated or unverified dates lower confidence but can still pass; contacts 
   const undated = verifyEvidence(cand({ event_date: null }), page(`${QUOTE}.`), NOW)
   assert.equal(undated.ok, true)
   if (undated.ok) { assert.equal(undated.dateStatus, 'undated'); assert.equal(undated.confidence, 55) }
-  const withContact = verifyEvidence(cand({ contact: 'jobs@northside.example' }), good, NOW)
+  const withContact = verifyEvidence(cand({ contact: 'office@northside.example' }), good, NOW)
   const fakeContact = verifyEvidence(cand({ contact: 'ceo@northside.example' }), good, NOW)
-  assert.equal(withContact.ok && withContact.contact, 'jobs@northside.example')
+  assert.equal(withContact.ok && withContact.contact, 'office@northside.example')
   assert.equal(fakeContact.ok && fakeContact.contact, null)
   const phone = verifyEvidence(cand({ contact: '(416) 555-0199' }), good, NOW)
   assert.equal(phone.ok && phone.contact, '(416) 555-0199')
@@ -58,10 +58,10 @@ test('undated or unverified dates lower confidence but can still pass; contacts 
 test('company key ignores legal suffixes and case; dedup picks the best lead per company', async () => {
   assert.equal(companyKey('The Northside Builders, Inc.'), 'northside builders')
   assert.equal(dedupKey({ company: 'NORTHSIDE BUILDERS LTD', name: 'x' }), dedupKey({ company: 'Northside Builders', name: 'y' }))
-  const fetchPage = async (u: string) => (u.endsWith('/b') ? page(`Posted 2026. ${QUOTE}. Email jobs@northside.example`) : page(`${QUOTE}.`))
+  const fetchPage = async (u: string) => (u.endsWith('/b') ? page(`Posted 2026. ${QUOTE}. Email office@northside.example`) : page(`${QUOTE}.`))
   const { leads, dropped } = await verifyLeads([
     cand({ source_url: 'https://northsidebuilders.example/a', event_date: null }),
-    cand({ source_url: 'https://northsidebuilders.example/b', company: 'Northside Builders Ltd', contact: 'jobs@northside.example' }),
+    cand({ source_url: 'https://northsidebuilders.example/b', company: 'Northside Builders Ltd', contact: 'office@northside.example' }),
     cand({ source_url: 'https://northsidebuilders.example/c', company: 'Someone Else', excerpt: 'this quote does not exist anywhere on the page at all' }),
   ], fetchPage, NOW)
   assert.equal(leads.length, 1)
