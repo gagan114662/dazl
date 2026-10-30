@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { audit, getEnabledCredential } from '../connectors/store.ts'
 import { hasConsent, httpWorker, type WorkerFetch } from '../advanced/index.ts'
+import { requesterRole } from './requester.ts'
 import { advFlags, connectorId, maxCallsPerHour, platformAllowed, scopeFor } from '../advanced/config.ts'
 import { readKey, keyStatus } from '../llm/key-store.ts'
 import { getAuthDb, getSellerProfile } from '../auth-db.ts'
@@ -197,7 +198,9 @@ export async function refreshReplies(db: Database.Database, tenantId: string, de
       const items = await worker({ platform: p, query: q, session }).catch(() => null)
       if (items === null) { audit(db, { tenantId, connector, lookup: q, status: 'worker_error', results: 0 }); anyError = true; continue }
       const fresh = items.filter(i => i.date && new Date(i.date).getTime() >= cutoff && looksLikeQuestion(i.title))
-      let qualified = fresh.filter(i => isRelevantToQuery(q, i.title, i.quote))
+      // relevant to the search, and written by someone who could be a buyer (lib/replies/requester.ts, #401): a job
+      // seeker, a recruiter, a vendor promoting itself, a consumer or an announcement is filtered here, before grading
+      let qualified = fresh.filter(i => isRelevantToQuery(q, i.title, i.quote) && requesterRole(i.title, i.quote) === null)
       out.filtered += fresh.length - qualified.length
       const graded: ({ title: string; quote: string } & typeof qualified[number] & { buyer_intent: string | null })[] = []
       for (const it of qualified) {
