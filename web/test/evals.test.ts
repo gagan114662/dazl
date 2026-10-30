@@ -335,13 +335,13 @@ test('redaction: emails, phones, LinkedIn slugs and extracted person names are r
   assert.equal(statuses(contactDomainMatchesCompany, { kase, world: w, result: res })['lead:Querix'], 'pass')
 })
 
-test('case 2 (#395 traps): the publication-date-only event and the recruiting inbox are caught by independent evaluators', async () => {
+test('case 2 (#395 traps): the publication-date-only event is held (#460); the recruiting inbox is caught by an independent evaluator', async () => {
   const { kase, world } = loadCase(`${DIR}cases/scan-toronto-office-traps.case.json`)
   const result = await replayCase(kase, world)
   assert.deepEqual(result.misses, [])
   const got = Object.fromEntries(result.leads.map(l => [l.company, [l.review_reason, l.event_date, l.contact]]))
   assert.deepEqual(got['Maple Leaf Marketing'], [null, '2026-10-08', 'hello@mapleleaf.example'])
-  assert.deepEqual(got['Northern Lights Agency'], [null, '2026-10-15', null])        // agent gap: verified on a publication date only
+  assert.deepEqual(got['Northern Lights Agency'], ['outside_window_undated', null, null]) // #460: a publication day is not the event's date; held as undated
   assert.deepEqual(got['Lakeshore Creative'], [null, '2026-10-12', 'careers@lakeshore.example']) // agent gap: recruiting inbox kept
   const s = scoreCase({ kase, world, result })
   assert.equal(s.status, 'fail')

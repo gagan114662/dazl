@@ -16,8 +16,8 @@ const URL1 = 'https://news.example/brightsmile-opens'
 const fx = (over: Partial<Fixture> = {}): Fixture => ({
   request: REQUEST, modelIcp: ICP, modelQueries: ['dental practice opens new location New York City'],
   hits: [{ url: URL1, title: 'BrightSmile Dental opens in Brooklyn', snippet: Q, date: daysAgo(20) }],
-  tfPages: { [URL1]: { title: 'BrightSmile Dental opens in Brooklyn', text: pad(`Published ${daysAgo(20)}. ${Q}.`) } },
-  own: { [URL1]: { title: 'BrightSmile Dental opens in Brooklyn', text: pad(`Published ${daysAgo(20)}. ${Q}.`) } },
+  tfPages: { [URL1]: { title: 'BrightSmile Dental opens in Brooklyn', text: pad(`On ${daysAgo(20)}, ${Q}.`) } },
+  own: { [URL1]: { title: 'BrightSmile Dental opens in Brooklyn', text: pad(`On ${daysAgo(20)}, ${Q}.`) } },
   extraction: [{ company: 'BrightSmile Dental', signal: 'opened a second location', source_url: URL1, excerpt: Q, event_date: daysAgo(20) }],
   ...over,
 })
