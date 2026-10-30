@@ -9,7 +9,11 @@
 // 1. RETAINED AT DAY 30 (historical). Cohort: customers whose first paid payment is old enough that their day-30
 //    renewal window has closed by the cutoff (first payment + headline + renewal_late_days). Retained: a paid, not
 //    refunded renewal inside the window [first + headline - renewal_early_days, first + headline + renewal_late_days]
-//    for a subscription that had not ended by day 30 (ends are scoped: a sibling subscription ending does not count).
+//    for a subscription that had not ended by day 30 (ends are scoped: a sibling subscription ending does not count),
+//    and that subscription must CONTINUE a first-paid service: it was on the first paid invoice. A completely new
+//    subscription first paid inside the window, or a restart after the first service ended, is a new service, not
+//    retention (day30.outcome 'new_service'). A renewal or first invoice that names no subscription cannot show that
+//    continuity and is not counted as retained (outcome 'unverified').
 //    A renewal after the window (a lapse, then a rejoin) is not day-30 retention. Numerator and denominator come from the same cohort, so the rate cannot exceed 100%.
 // 2. COVERAGE AT A DATE (current, e.g. the cutoff). Cohort: every customer who has paid by that date. It uses each
 //    payment's ACTUAL service periods, one interval per invoice line (a subscription line's period start and end),
@@ -58,9 +62,13 @@ export interface RetentionInput {
 export type Coverage = 'covered' | 'not_covered' | 'unknown'
 // [start, end) of one invoice line's service, with which subscription and price it is for
 export interface ServicePeriod { start: number; end: number; subscription?: string | null; price?: string | null }
+export type Day30Outcome = 'renewed' | 'new_service' | 'unverified' | 'none'
 export interface RetentionResult {
   first_paid_at: number | null
-  day30: { eligible: boolean; retained: boolean | null; renewal_at: number | null }
+  // outcome: 'renewed' (retained), 'new_service' (only a new or restarted subscription paid in the window),
+  // 'unverified' (a window payment whose continuity cannot be shown: no subscription identity), 'none' (nothing paid
+  // in the window); null while not yet eligible
+  day30: { eligible: boolean; retained: boolean | null; renewal_at: number | null; outcome: Day30Outcome | null }
   coverage_at_cutoff: Coverage | null              // null: never paid by the cutoff (not in the coverage cohort)
 }
 
@@ -93,19 +101,24 @@ export function retention(i: RetentionInput, o: RetentionRules = {}): RetentionR
   const r = rules(o)
   const paid = paidTimes(i, i.cutoff)
   const first = paid[0] ?? null
-  if (first === null) return { first_paid_at: null, day30: { eligible: false, retained: null, renewal_at: null }, coverage_at_cutoff: null }
+  if (first === null) return { first_paid_at: null, day30: { eligible: false, retained: null, renewal_at: null, outcome: null }, coverage_at_cutoff: null }
   const eligible = i.cutoff >= first + r.headline + r.late
-  // a renewal is retention only for the service it renews: a payment in the window whose subscription had not ended
-  // by day 30. Another subscription on the same customer ending (a sibling on the first invoice) does not undo it. A
-  // renewal that names no subscription is stopped by any end by day 30 (missing identity never invents retention).
+  // a renewal is retention only when it continues a first-paid service: its subscription was on the first paid
+  // invoice and had not ended by day 30. Another subscription on the same customer ending (a sibling on the first
+  // invoice) does not undo it. Missing identity (a renewal or first invoice naming no subscription) never invents
+  // retention: it is 'unverified'.
   const endsBy30 = i.ends.filter(e => e.at <= i.cutoff && e.at <= first + r.headline)
   const subsOf = (p: RetentionInput['payments'][number]) => (p.periods ?? []).length ? (p.periods ?? []).map(iv => iv.subscription ?? null) : [null]
-  const continues = (sub: string | null) => !endsBy30.some(e => !e.subscription || !sub || e.subscription === sub)
-  const renewal = i.payments.filter(p => !p.refunded && p.at <= i.cutoff && p.at >= first + r.headline - r.early && p.at <= first + r.headline + r.late && subsOf(p).some(continues))
-    .map(p => p.at).sort((a, b) => a - b)[0] ?? null
+  const firstSubs = new Set(i.payments.filter(p => !p.refunded && p.at === first).flatMap(subsOf))
+  const continues = (sub: string | null) => sub !== null && firstSubs.has(sub) && !endsBy30.some(e => !e.subscription || e.subscription === sub)
+  const inWindow = i.payments.filter(p => !p.refunded && p.at <= i.cutoff && p.at >= first + r.headline - r.early && p.at <= first + r.headline + r.late)
+    .sort((a, b) => a.at - b.at)
+  const renewal = inWindow.find(p => subsOf(p).some(continues))?.at ?? null
+  const unproven = firstSubs.has(null) || inWindow.some(p => subsOf(p).includes(null))
+  const outcome: Day30Outcome = renewal !== null ? 'renewed' : !inWindow.length ? 'none' : unproven ? 'unverified' : 'new_service'
   return {
     first_paid_at: first,
-    day30: { eligible, retained: eligible ? renewal !== null : null, renewal_at: renewal },
+    day30: { eligible, retained: eligible ? renewal !== null : null, renewal_at: renewal, outcome: eligible ? outcome : null },
     coverage_at_cutoff: coverageAt(i, i.cutoff),
   }
 }
