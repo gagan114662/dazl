@@ -212,6 +212,8 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
     const f5Live = !!f5 && f5.state === 'finding' && first?.status !== 'failed'
     const f5Ready = f5 && !f5Live && ready ? ready.length : 0
     const f5Found = f5?.leads.length ?? 0
+    // The cards shown that still need research. A ready lead can sit outside the five shown (the full rows hold every lead), so this is counted on the cards, not as found minus ready.
+    const f5NeedResearch = f5 && ready ? f5.leads.filter(l => !readyIds.has(l.id)).length : 0
     // The one sentence: what the user typed, else the top suggestion from the profile (so nothing has to be typed).
     const sentence = askIsSuggestion ? (ask || plays[0] || '') : ask
     const candidatesSoFar = f5 ? f5.sources.reduce<number | null>((n, x) => x.candidates == null ? n : (n ?? 0) + x.candidates, null) : null
@@ -293,7 +295,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                   <h2 className="text-xl font-bold tracking-tight" data-testid="first-heading">{!first ? 'Who do you want to find?'
                     : f5 ? (f5Live ? (f5.leads.length ? `${f5.leads.length} found - checking each one` : 'Finding your first leads')
                       : first.status === 'done' && !first.leads ? 'Checking which are ready to contact'
-                      : f5Ready ? `${f5Ready} ready to contact${f5Found > f5Ready ? `, ${f5Found - f5Ready} need research` : ''}`
+                      : f5Ready ? `${f5Ready} ready to contact${f5NeedResearch > 0 ? `, ${f5NeedResearch} need research` : ''}`
                       : f5Found ? `${f5Found} found - research needed before outreach`
                       : first.status === 'failed' || f5.reason === 'failed' ? 'This play could not finish' : 'No leads in this first play')
                     : active ? 'Finding your first leads'
