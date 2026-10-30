@@ -9,7 +9,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ kind: string; 
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const { kind, id } = await ctx.params
   if ((kind !== 'watch' && kind !== 'monitor') || !/^[0-9a-f]{24}$/.test(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  const runs = await playRuns(await getDb(), user.id, kind, id)
+  const runs = await playRuns(await getDb(), user.tenantId, kind, id)
   if (!runs) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   return NextResponse.json({ runs })
 }

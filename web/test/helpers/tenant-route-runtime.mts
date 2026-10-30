@@ -134,6 +134,11 @@ test('tenant B cannot read or change tenant A rows through the real route handle
   assert.equal((await confirmDELETE(req(`/api/leads/${lead}/confirm`, 'DELETE'), ctx({ lead }))).status, 200)
   const runsA = await playRunsGET(req(`/api/plays/monitor/${mon}/runs`, 'GET'), ctx({ kind: 'monitor', id: mon }))
   assert.equal(runsA.status, 200); assert.deepEqual(await runsA.json(), { runs: [] }) // #351: A reads its own play's runs
+  // #351: a viewer member of workspace A (a different person from the owner) reads the workspace's play runs too
+  setUser({ ...A, actorId: 'M', role: 'viewer' })
+  const runsM = await playRunsGET(req(`/api/plays/monitor/${mon}/runs`, 'GET'), ctx({ kind: 'monitor', id: mon }))
+  assert.equal(runsM.status, 200); assert.deepEqual(await runsM.json(), { runs: [] })
+  setUser(A)
   assert.equal((await monitorPATCH(req(`/api/monitors/${mon}`, 'PATCH', { enabled: false }), ctx({ id: mon }))).status, 200)
   assert.equal((db.prepare('SELECT enabled FROM monitors WHERE id=?').get(mon) as { enabled: number }).enabled, 0)
   assert.equal((await monitorDELETE(req(`/api/monitors/${mon}`, 'DELETE'), ctx({ id: mon }))).status, 200)

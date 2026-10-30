@@ -8,6 +8,7 @@ import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { ROUTES } from './tenant-isolation-manifest.ts'
+import { ACTIONS, ROLES, can } from '../lib/workspaces.ts'
 
 const web = fileURLToPath(new URL('../', import.meta.url))
 // Handlers that take resource ids and have no two-tenant test. Every one has a test now: a new id-taking route must
@@ -50,11 +51,34 @@ test('each cited two-tenant test names the route it covers; the pending list doe
   assert.ok(pending.length <= PENDING_MAX, `pending grew to ${pending.length}: ${pending.map(r => `${r.method} /api/${r.path}`).join(', ')}`)
 })
 
+test('every session handler that does more than read checks its role first, for the action the manifest names', () => {
+  const failures: string[] = []
+  for (const r of ROUTES) {
+    if (r.auth !== 'session') continue
+    assert.ok(r.role in ACTIONS, `${r.method} /api/${r.path}: unknown action ${r.role}`)
+    const src = readFileSync(path.join(web, 'app/api', r.path, 'route.ts'), 'utf8')
+    const start = src.search(new RegExp(`export (?:async )?function ${r.method}\\b`))
+    const next = src.slice(start + 1).search(/\nexport /)
+    const body = src.slice(start, next === -1 ? undefined : start + 1 + next)
+    // the check: denied(user, 'x') in the handler, or a shared guard/load helper given 'x' (which calls denied itself)
+    const named = [...body.matchAll(/\b(?:denied\(\s*[\w.]+\s*,|guard\([^)]*,|load\([^)]*,)\s*'(\w+)'\s*\)/g)].map(m => m[1])
+    if (r.role === 'read') { if (named.some(a => a !== 'read')) failures.push(`${r.method} /api/${r.path}: listed as read but checks ${named}`) }
+    else if (named[0] !== r.role) failures.push(`${r.method} /api/${r.path}: first role check is ${named[0] ?? 'missing'}, manifest says ${r.role}`)
+    if (/guard\(|load\(/.test(body) && !/denied\(user, action\)/.test(src) && named.length && !body.includes('denied(')) failures.push(`${r.method} /api/${r.path}: helper does not call denied`)
+  }
+  assert.deepEqual(failures, [])
+})
+
 const SCOPED = ROUTES.filter(r => r.auth === 'session' && r.crossTenant === 'session-scope').length
+const SESSION = ROUTES.flatMap(r => r.auth === 'session' ? [r] : [])
+const REFUSED = ROLES.reduce((n, role) => n + SESSION.filter(r => !can(role, r.role)).length, 0)
+const VIEWER_READS = SESSION.filter(r => r.method === 'GET' && r.role === 'read').length
 
 // The route runtimes load route modules through a resolver hook, so each runs in its own process.
 for (const [name, file, expect] of [
   ['every session route refuses an unauthenticated caller and changes nothing', 'tenant-route-unauth-runtime.mts', /UNAUTH 108/],
+  ['a member whose role does not allow a route is refused with 403 and changes nothing; viewers still read', 'tenant-route-roles-runtime.mts',
+    new RegExp(`ROLES ${REFUSED} ${VIEWER_READS}\\b`)],
   ["tenant B cannot read or change tenant A's rows through the id-taking lead, batch and reply routes", 'tenant-route-ids-runtime.mts', /COHORT 17/],
   ["tenant B cannot read or change tenant A's rows through the list, body-id and query-id routes, or any session-scope route", 'tenant-route-pending-runtime.mts',
     // 13 targeted handlers, then the sweep over every session-scope handler (the cohort counts both)
