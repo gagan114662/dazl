@@ -9,7 +9,7 @@ import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateEvents } from '../lib/events/store.ts'
 import type { Provider } from '../lib/llm/provider.ts'
 import { resetTinyfishState } from '../lib/search/tinyfish.ts'
-import { resetSpendPools, SpendGuard } from '../lib/llm/spend-guard.ts'
+import { SpendGuard } from '../lib/llm/spend-guard.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import { describeRunBudget, normalizeScanBudget, MAX_BUDGET_USD } from '../lib/scan/run-budget.ts'
 
@@ -54,7 +54,7 @@ test('SpendGuard: starts from what was already reserved, reports every reservati
 
 type Counts = { research: number; judge: number; complete: number }
 async function run(budget: string | null, opts: { reserved?: number; model?: string; tinyfish?: boolean; leads?: boolean; beforeRun?: (db: Database.Database, id: string) => void; onFirstComplete?: (db: Database.Database, id: string) => void } = {}) {
-  resetTinyfishState(); resetSpendPools()
+  resetTinyfishState()
   const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
   saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
   const id = createQueryJob(db, 'A', { query: REQUEST, icp: JSON.stringify(ICP), runBudget: budget })
