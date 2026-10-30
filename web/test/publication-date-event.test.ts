@@ -94,6 +94,11 @@ test('hold 1: a day in ANOTHER clause about another company does not date this e
   // genuinely dated Aurora events still bind, in the same clause, before or after
   const dated = [`${QUOTE} on 2026-10-15, while UnrelatedCo launched a tool.`, `On October 15, 2026, ${QUOTE}, while UnrelatedCo launched a tool.`, `${QUOTE} on 15 October 2026.`]
   for (const t of dated) assert.equal(eventDateBound('2026-10-15', `${t}${filler}`, QUOTE, 'Aurora Agency').bound, true, t)
+  // non-Latin names bind by the name itself (no a-z words to match): Hindi, Arabic, Japanese
+  for (const [co, q] of [['शर्मा कोचिंग सेंटर', 'शर्मा कोचिंग सेंटर ने इस महीने दिल्ली में अपनी नई शाखा खोली है'], ['شركة الخليج للشحن', 'شركة الخليج للشحن افتتحت مستودعا جديدا في دبي'], ['さくら歯科クリニック', 'さくら歯科クリニックは東京の渋谷に新しい医院を開業しました']]) {
+    assert.equal(eventDateBound('2026-10-15', `2026-10-15: ${q}. ${filler}`, q, co).bound, true, co)
+    assert.equal(eventDateBound('2026-10-15', `${q}; UnrelatedCo launched a tool on 2026-10-15.`, q, co).bound, false, `${co}: another clause`)
+  }
   const ok = (await run(lead('2026-10-15'), page(`${dated[0]}${filler}`))).lead
   assert.deepEqual([ok.event_date, ok.date_status], ['2026-10-15', 'unverified'])
 })

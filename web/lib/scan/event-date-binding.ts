@@ -60,8 +60,9 @@ export function eventDateBound(eventDate: string | null, pageText: string, quote
     if (CUE.test(before) || NOT_EVENT.test(before)) { stamped = true; continue }        // the page's own date, not the event's
     const s = sentOf(h.index)
     const cl = clauses(text, s, dateSpans).find(c => h.index >= c.start && h.index < c.end) ?? s
-    const cw = new Set(words(text.slice(cl.start, cl.end)))
-    const namesCompany = co.length > 0 && co.every(t => cw.has(t))
+    const clauseText = text.slice(cl.start, cl.end), cw = new Set(words(clauseText))
+    // Latin-script names by their words; any script (Devanagari, Arabic, Japanese ... where words() finds no a-z tokens) by the name itself in the clause
+    const namesCompany = (co.length > 0 && co.every(t => cw.has(t))) || (normalise(company).length >= 2 && clauseText.toLowerCase().includes(normalise(company).toLowerCase()))
     if (!namesCompany) { unbound = true; continue }                                      // the day's own clause is about something else
     if (qSent && s.start === qSent.start) return { bound: true, why: 'stated in the clause of the evidence sentence that names this company' }
     const shared = [...qWords].filter(w => cw.has(w)).length
