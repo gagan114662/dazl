@@ -99,14 +99,13 @@ const exact = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase()
 // chains."). Only a sentence that is DEMONSTRABLY one is ignored; everything else, including any statement about a
 // service whose name starts with the same word ("Email marketing supports agencies.", "Contact enrichment costs
 // credits."), is material, so an unknown wording is a conflict (fail closed) and never a silent match.
-// Demonstrably: a targeting verb, then (after "for"/"to"/"out"/"only"/...) an object that is, up to the first comma,
-// preposition, conjunction or who/that/which clause, at most three plain modifiers, a known buyer noun, and at most one
-// -ing word ("startups hiring"). Each modifier must be provably descriptive (safeModifier), so a declarative sentence
-// ("Email marketing won customers.") can never pass as an object. Both lists only decide what may be ignored: a buyer or modifier they
-// do not know makes the sentence a term, never the other way round.
+// Demonstrably: a targeting verb, then (after "for"/"to"/"out"/"only"/...) a buyer group (buyerGroup), and nothing after
+// it except what tailOk can consume whole: the whole sentence is checked, never cut at a preposition. Each modifier
+// must be provably descriptive (safeModifier), so a declarative sentence ("Email marketing won customers.") can never
+// pass as an object. The lists only decide what may be ignored: a buyer, modifier or trailing phrase they do not know
+// makes the sentence a term, never the other way round.
 const IMPERATIVE = /^(?:(?:please|and|also|but)\s+)?(?:(?:do not|don['’]t|never)\s+)?(?:find|search|look|target|contact|reach|email|message|include|exclude|skip|avoid|ignore)\s+(.+)$/i
 const LEADING = /^(?:(?:for|to|out|at|up|only|all|any|the|more|new|every|other)\s+)+/i
-const OBJECT_END = /\s*(?:[,;:()]|\s(?:in|at|from|near|across|within|with|on|around|based|who|that|which|whose|where|when|if|by|of|for|to|outside|inside|except|excluding|but|and|or|nor)\b)/i
 const BUYERS = new Set(('founders owners ceos ctos cfos cmos coos executives leaders managers directors heads teams companies businesses startups ' +
   'firms agencies consultancies consultants clinics practices dentists doctors physicians practitioners hospitals schools universities ' +
   'retailers stores shops restaurants brands organizations organisations nonprofits charities people prospects buyers customers vendors ' +
@@ -124,15 +123,54 @@ const safeModifier = (w: string) => {
   const x = w.toLowerCase()
   return SAFE_MODIFIERS.has(x) || BUYER_SINGULAR.has(x) || /^[a-z0-9]+-(?:backed|funded|stage|owned|based|sized|led)$/.test(x)
 }
+// One buyer group: at most three safe modifiers, a buyer noun, at most one -ing word ("dental practices", "SaaS startups
+// hiring"). Returns how many words it used, or 0.
+function buyerGroup(words: string[]): number {
+  for (let n = Math.min(words.length, 5); n >= 1; n--) {
+    const w = words.slice(0, n)
+    const ing = n >= 2 && /ing$/i.test(w[n - 1]) && BUYERS.has(w[n - 2].toLowerCase())
+    const head = ing ? w[n - 2] : w[n - 1]
+    const mods = w.slice(0, ing ? n - 2 : n - 1)
+    if (BUYERS.has(head.toLowerCase()) && mods.length <= 3 && mods.every(safeModifier)) return n
+  }
+  return 0
+}
+// What may follow the buyer group in a targeting instruction, each consumed whole; anything left over that is none of
+// these (a predicate such as "cost extra" after "in Canada") makes the sentence material:
+//   a place: in/at/from/near/across/within/around/outside/inside or "based in", then capitalised words ("in New York City",
+//            "based in Leeds"), optionally after "the"
+//   another buyer group after of/for/at/with ("owners of clinics") or after a list separator (", resellers and consultancies")
+//   a short who/that clause: "who are hiring", "that are growing" (who/that, is/are, one -ing word)
+const PLACE_PREP = /^(?:in|at|from|near|across|within|around|outside|inside|based in)$/i
+const isPlaceWord = (w: string) => /^(?:[A-Z][\p{L}'’.-]*|[A-Z]{2,})$/u.test(w)
+function tailOk(words: string[]): boolean {
+  if (!words.length) return true
+  const [w0, w1] = [words[0].toLowerCase(), (words[1] ?? '').toLowerCase()]
+  // a place
+  const prepLen = w0 === 'based' && w1 === 'in' ? 2 : PLACE_PREP.test(w0) ? 1 : 0
+  if (prepLen) {
+    let k = prepLen
+    if ((words[k] ?? '').toLowerCase() === 'the') k++
+    const start = k
+    while (k < words.length && k - start < 4 && isPlaceWord(words[k])) k++
+    if (k > start && tailOk(words.slice(k))) return true
+  }
+  // another buyer group
+  const sepLen = w0 === ',' ? (['and', 'or'].includes(w1) ? 2 : 1) : ['and', 'or', 'of', 'for', 'at', 'with'].includes(w0) ? 1 : 0
+  if (sepLen) {
+    const n = buyerGroup(words.slice(sepLen))
+    if (n && tailOk(words.slice(sepLen + n))) return true
+  }
+  // who/that are -ing
+  if ((w0 === 'who' || w0 === 'that') && /^(?:is|are)$/.test(w1) && words.length === 3 && /ing$/i.test(words[2])) return true
+  return false
+}
 function isTargeting(x: string): boolean {
   const m = IMPERATIVE.exec(x)
   if (!m) return false
-  const rest = m[1].replace(LEADING, '')
-  const end = OBJECT_END.exec(rest)
-  const words = (end ? rest.slice(0, end.index) : rest).trim().split(/\s+/).filter(Boolean)
-  if (words.length && /ing$/i.test(words[words.length - 1]) && words.length >= 2 && BUYERS.has(words[words.length - 2].toLowerCase())) words.pop()
-  const head = words.pop()
-  return !!head && BUYERS.has(head.toLowerCase()) && words.length <= 3 && words.every(safeModifier)
+  const words = m[1].replace(LEADING, '').replace(/,/g, ' , ').trim().split(/\s+/).filter(Boolean)
+  const n = buyerGroup(words)
+  return n > 0 && tailOk(words.slice(n))
 }
 const AUDIENCE = /^(?:to|for)\s+(.*?)(?=\s*(?:,|\bbut\b|\bexcept\b|\bexcluding\b|\bwithout\b)|$)/i
 type Statement = { offer: string; audience: string; rest: string; others: string[] }
