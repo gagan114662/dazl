@@ -13,6 +13,8 @@
 // of the day (or, with only a month limit, the month) as spent. When that accounting cannot be saved, SpendAccountingFailed is thrown: the call happened, so a
 // caller must not treat it as a refusal (spendRefused is false for it), and every later reservation of the owner, from any
 // caller or instance, is refused until an operator clears the pending marker.
+// One unsettled call per owner (lib/llm/spend-pool.ts reserve): a second call of the same owner waits for the first to
+// settle, then is refused ('busy'), so no call is ever admitted while another of the owner's costs is uncertain.
 import type { DbLike } from '../db/client.ts'
 import type { Provider } from './provider.ts'
 import { guardProvider, PooledGuard, SpendAccountingFailed, SpendRefused } from './spend-guard.ts'
@@ -20,7 +22,11 @@ import { ownerLimits, sharedPool } from './spend-pool.ts'
 
 export function ownerGuarded(d: DbLike, ownerId: string, p: Provider, env: Record<string, string | undefined> = process.env): Provider {
   const limits = ownerLimits(ownerId, env)
-  return limits ? guardProvider(p, new PooledGuard(sharedPool(d, ownerId, limits), { trackPending: true }), undefined, undefined, true) : p
+  if (!limits) return p
+  // DAZL_SPEND_BUSY_WAIT_MS: how long a call waits for another call of the same owner to settle (default 10 s).
+  const wait = Number(env.DAZL_SPEND_BUSY_WAIT_MS)
+  const pool = sharedPool(d, ownerId, limits, undefined, Number.isFinite(wait) && wait >= 0 ? wait : undefined)
+  return guardProvider(p, new PooledGuard(pool, { trackPending: true }), undefined, undefined, true)
 }
 export const spendRefused = (e: unknown): e is SpendRefused => e instanceof SpendRefused
 export const spendAccountingFailed = (e: unknown): e is SpendAccountingFailed => e instanceof SpendAccountingFailed

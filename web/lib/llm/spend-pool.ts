@@ -36,6 +36,9 @@ export const PENDING_STALE_S = 5 * 60
 // answers, so other instances are stopped too. Lost on a restart: the marker itself stays and refuses once stale.
 const unflushed = new WeakMap<object, Map<string, Set<string>>>()
 const RETRY_MS = 5_000
+// How long a reservation waits for another call of the same owner to settle before it is refused ('busy').
+export const BUSY_WAIT_MS = 10_000
+const BUSY_POLL_MS = 100
 function pendingMarks(d: object, owner: string): Set<string> {
   let byOwner = unflushed.get(d); if (!byOwner) { byOwner = new Map(); unflushed.set(d, byOwner) }
   let set = byOwner.get(owner); if (!set) { set = new Set(); byOwner.set(owner, set) }
@@ -52,9 +55,11 @@ export interface SharedPool {
   // The pool's clock (epoch seconds): the one time source for which day and month a reservation lands in.
   now(): number
   // pendingId: also write a pending-settlement marker (period 'p:<id>') that only this reservation's settle or exhaust
-  // removes. While any marker of the owner is older than PENDING_STALE_S, every reservation is refused
-  // ('accounting_unsettled'): a paid call whose cost was never recorded stops the owner's paid calls until it is cleared.
-  reserve(usd: number, nowS?: number, pendingId?: string): Promise<void>
+  // removes. One unsettled call per owner: while any marker of the owner exists, every reservation (any guard, path or
+  // instance) is refused. A fresh marker (a call in flight) is waited on for up to busyWaitMs, then 'busy'; a stale one
+  // (a crash) or one marked failed refuses with 'accounting_unsettled' until an operator clears it. The marker carries no
+  // cost of its own: clearing it leaves every reservation in the windows as it is.
+  reserve(usd: number, nowS?: number, pendingId?: string, busyUntilMs?: number): Promise<void>
   // delta moves the reservation (negative releases what the call did not use); reportedUsd adds the vendor's figure.
   // reservedAtS is when the reservation was made: it settles in the windows it was reserved in.
   // With pendingId the marker is removed in the same transaction; a marker already gone means this reservation was
@@ -80,7 +85,7 @@ function windows(limits: PoolLimits): [PoolWindow, number][] {
   return out
 }
 
-export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: () => number = () => Math.floor(Date.now() / 1000)): SharedPool {
+export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: () => number = () => Math.floor(Date.now() / 1000), busyWaitMs = BUSY_WAIT_MS): SharedPool {
   const db = asDb(d)
   const ws = windows(limits)
   for (const [, v] of ws) if (!(Number.isFinite(v) && v > 0)) throw new Error('spend pool limit must be a positive number')
@@ -106,7 +111,7 @@ export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: 
       if (!(await flush())) retryLater()
     },
     flushFailed: flush,
-    async reserve(usd, nowS = clock(), pendingId) {
+    async reserve(usd, nowS = clock(), pendingId, busyUntil = Date.now() + busyWaitMs) {
       if (!(Number.isFinite(usd) && usd >= 0)) throw new SpendRefused('reservation_invalid')
       if (ws.length === 0 || (usd === 0 && !pendingId)) return
       // A known accounting failure this process could not record yet: record it first, or refuse.
@@ -115,8 +120,6 @@ export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: 
       let ok: boolean
       try {
         ok = await db.tx(function* (t: Tx): TxBody<boolean> {
-          if (yield* t.get("SELECT 1 AS k FROM tenant_spend_pools WHERE tenant_id = ? AND period LIKE 'p:%' AND updated_at <= ?", [owner, nowS - PENDING_STALE_S])) throw new SpendRefused('accounting_unsettled')
-          if (marker) yield* t.run('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, ?, 0, 0, ?)', [owner, marker, usd, nowS])
           for (const [w, limit] of ws) {
             const period = periodOf(w, nowS)
             yield* t.run('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, 0, 0, 0, ?) ON CONFLICT (tenant_id, period) DO NOTHING', [owner, period, nowS])
@@ -124,10 +127,20 @@ export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: 
             // A window that does not fit: throw so the transaction rolls back every window already raised.
             if (r.changes !== 1) throw new SpendRefused('over_limit')
           }
+          // Checked under the window row locks (Postgres: held to commit; SQLite: one writer), so a racing reservation
+          // has either committed its marker (seen here) or waits for this one. Any unsettled marker of the owner refuses:
+          // a stale or failed one until it is cleared, a fresh one (a call in flight) for now.
+          const open = yield* t.get<{ oldest: number | string }>("SELECT MIN(updated_at) AS oldest FROM tenant_spend_pools WHERE tenant_id = ? AND period LIKE 'p:%' HAVING COUNT(*) > 0", [owner])
+          if (open) throw new SpendRefused(Number(open.oldest) <= nowS - PENDING_STALE_S ? 'accounting_unsettled' : 'busy')
+          if (marker) yield* t.run('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, ?, 0, 0, ?)', [owner, marker, usd, nowS])
           return true
         })
       } catch (e) {
-        if (e instanceof SpendRefused) throw e
+        if (e instanceof SpendRefused) {
+          // Another paid call of this owner is in flight: wait for it to settle, for a bounded time.
+          if (e.reason === 'busy' && Date.now() < busyUntil) { await new Promise(r => setTimeout(r, BUSY_POLL_MS)); return this.reserve(usd, clock(), pendingId, busyUntil) }
+          throw e
+        }
         // The store did not answer: no reservation exists, so the paid call must not happen (fail closed).
         throw new SpendRefused('reservation_not_saved')
       }
