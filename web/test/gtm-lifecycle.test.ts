@@ -11,6 +11,8 @@ const signup = (c: string, d: number, over: Record<string, unknown> = {}) => ev(
 const touch = (c: string, d: number) => ev(c, d, { kind: 'touch', channel: 'email', identity: `${c}@co.test` })
 const run = (c: string, d: number, usableLeads: number) => ev(c, d, { kind: 'run', status: 'done', usableLeads })
 const pay = (c: string, d: number, status = 'paid') => ev(c, d, { kind: 'payment', status })
+// a successful monthly payment from day `from` up to and including day `to`
+const monthly = (c: string, from: number, to: number) => Array.from({ length: Math.floor((to - from) / 30) + 1 }, (_, i) => pay(c, from + i * 30))
 
 test('counted once: repeated visits, messages and plays for one customer are one customer; replayed events do not double', () => {
   const es = [touch('a', 0), touch('a', 1), touch('a', 2), signup('a', 3, { viaTaggedLink: true, consented: true }), run('a', 4, 3)]
@@ -30,7 +32,7 @@ test('attribution: unrelated signup stays unknown; touch without consented tagge
   assert.equal(customerState('l', [signup('l', 1), touch('l', 2)], at(5)).attribution, 'unknown')
 })
 
-test('distinct outcomes: abandoned setup, zero results, activation, repeat, failed payment, refund, churn, retention', () => {
+test('distinct outcomes: abandoned setup, zero results, activation, repeat, failed payment, refund, churn, lapse, retention', () => {
   const now = at(200)
   const cases: [string, LifecycleEvent[], string][] = [
     ['ab', [signup('ab', 1), ev('ab', 1, { kind: 'setup', step: 'key' }), ev('ab', 2, { kind: 'run', status: 'failed', usableLeads: 0 })], 'abandoned_setup'],
@@ -41,20 +43,46 @@ test('distinct outcomes: abandoned setup, zero results, activation, repeat, fail
     ['pf', [signup('pf', 1), run('pf', 2, 2), pay('pf', 3, 'failed')], 'payment_failed'],
     ['rf', [signup('rf', 1), run('rf', 2, 2), pay('rf', 3), pay('rf', 5, 'refunded')], 'refunded'],
     ['ch', [signup('ch', 1), run('ch', 2, 2), pay('ch', 3), ev('ch', 40, { kind: 'cancel' })], 'churned'],
-    ['ret', [signup('ret', 1), run('ret', 2, 2), pay('ret', 3)], 'retained'],
-    ['recovered', [signup('recovered', 1), run('recovered', 2, 2), pay('recovered', 3, 'failed'), pay('recovered', 4)], 'retained'],
+    ['ret', [signup('ret', 1), run('ret', 2, 2), ...monthly('ret', 3, 183)], 'retained'],
+    ['recovered', [signup('recovered', 1), run('recovered', 2, 2), pay('recovered', 3, 'failed'), ...monthly('recovered', 4, 184)], 'retained'],
   ]
   for (const [c, es, stage] of cases) assert.equal(customerState(c, es, now).stage, stage, c)
   assert.equal(customerState('young', [signup('young', 198)], now).stage, 'signed_up')
   assert.equal(customerState('paid-young', [signup('paid-young', 190), pay('paid-young', 195)], now).stage, 'paid')
+  assert.equal(customerState('late-renewal', [signup('late-renewal', 1), ...monthly('late-renewal', 3, 153), pay('late-renewal', 187)], now).stage, 'retained')
   assert.equal(customerState('q', [ev('q', 0, { kind: 'conversation', qualified: true })], now).stage, 'qualified')
   // a key entered or a scan started is not activation
   assert.equal(customerState('k', [signup('k', 1), ev('k', 1, { kind: 'setup', step: 'key' })], now).activatedAt, null)
 })
 
+test('retention needs a later payment, not elapsed time: one early payment is never retained', () => {
+  const now = at(200)
+  // Paid once on day 3, nothing since: lapsed on day 200, not retained.
+  const once = customerState('once', [signup('once', 1), run('once', 2, 2), pay('once', 3)], now)
+  assert.equal(once.stage, 'lapsed')
+  assert.equal(once.renewedAt, null)
+  // Still inside the first paid month: paid, not yet retained.
+  assert.equal(customerState('once', [signup('once', 1), run('once', 2, 2), pay('once', 3)], at(30)).stage, 'paid')
+  // Renewed, but every renewal is less than RETAINED_DAYS after the first payment: paid, not retained.
+  assert.equal(customerState('short', [signup('short', 140), ...monthly('short', 150, 180)], now).stage, 'paid')
+  // Renewed past RETAINED_DAYS, then stopped paying with no cancel: lapsed, not retained.
+  assert.equal(customerState('stopped', [signup('stopped', 1), ...monthly('stopped', 3, 63)], now).stage, 'lapsed')
+  // A failed payment after the renewal is payment_failed, not retained.
+  assert.equal(customerState('pf2', [signup('pf2', 1), ...monthly('pf2', 3, 183), pay('pf2', 195, 'failed')], now).stage, 'payment_failed')
+  // In the report, the single early payer counts against retention once mature.
+  const r = cohortReport([signup('once', 1), run('once', 2, 2), pay('once', 3), signup('r', 2), run('r', 3, 1), ...monthly('r', 4, 184)], [], at(0), at(30), now)
+  assert.equal(r.retentionMature, 2)
+  assert.equal(r.retentionRate, 1 / 2)
+  assert.deepEqual(r.byStage, { lapsed: 1, retained: 1 })
+  // Too young for the renewal to be due: left out of the rate rather than counted as lost.
+  const young = cohortReport([signup('y', 1), pay('y', 3)], [], at(0), at(30), at(40))
+  assert.equal(young.retentionMature, 0)
+  assert.equal(young.retentionRate, null)
+})
+
 test('report: rates, cost per activated and per retained paying customer, coverage, maturity; synthetic/staging excluded', () => {
   const es = [
-    touch('a', 0), signup('a', 1, { viaTaggedLink: true, consented: true }), run('a', 2, 3), pay('a', 3), ev('a', 0, { kind: 'cost', usd: 6, what: 'research' }),
+    touch('a', 0), signup('a', 1, { viaTaggedLink: true, consented: true }), run('a', 2, 3), ...monthly('a', 3, 183), ev('a', 0, { kind: 'cost', usd: 6, what: 'research' }),
     signup('b', 2), run('b', 3, 1), ev('b', 2, { kind: 'cost', usd: 4, what: 'enrichment' }),
     signup('c', 4), ev('c', 4, { kind: 'cost', usd: 2, what: 'evaluation' }),
     signup('fake', 1), run('fake', 2, 9), pay('fake', 3),
