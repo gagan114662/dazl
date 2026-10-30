@@ -152,7 +152,7 @@ bothEngines('CONTRACT: one transport call is exactly one upstream request - a ca
 
 
 // ---- upgrade controls: usage recorded BEFORE reservations existed still counts, and a new request is never counted twice ----
-const legacyAudit = async (db: Db, tenant: string, n: number, agoS: number, status = 'ok') => { const now = Math.floor(Date.now() / 1000); for (let i = 0; i < n; i++) await db.run("INSERT INTO connector_audit (id, tenant_id, connector, lookup, status, results, created_at) VALUES (?, ?, 'adv:linkedin', 'x', ?, 0, ?)", [`legacy-${tenant}-${i}-${agoS}-${status}`, tenant, status, now - agoS]) }
+const legacyAudit = async (db: Db, tenant: string, n: number, agoS: number, status = 'ok', connector = 'adv:linkedin', at = Math.floor(Date.now() / 1000) - agoS) => { for (let i = 0; i < n; i++) await db.run("INSERT INTO connector_audit (id, tenant_id, connector, lookup, status, results, created_at) VALUES (?, ?, ?, 'x', ?, 0, ?)", [`legacy-${tenant}-${connector}-${i}-${at}-${status}`, tenant, connector, status, at]) }
 
 bothEngines('UPGRADE (non-empty): 2 calls made before the upgrade (audit rows, no reservations) leave exactly 1 request for concurrent consumers; older calls and other tenants do not count', async ({ db }) => {
   await ready(db); await ready(db, 'B')
@@ -173,4 +173,20 @@ bothEngines('NO DOUBLE COUNT: a new request is a reservation AND an audit row, a
   await collectLinkedInPeople(db, 'A', 'j2', ICP, { transport: t, env: ADV_ENV, now: nowS + 1 })      // 1 request left
   assert.equal(seen.length, 3, 'the third request is allowed (2 + 1 = 3, not 4 + 1)')
   await collectLinkedInPeople(db, 'A', 'j3', ICP, { transport: t, env: ADV_ENV, now: nowS + 2 }); assert.equal(seen.length, 3, 'then rate limited')
+})
+
+bothEngines('UPGRADE equal-timestamp: 2 legacy audit rows stamped with the SAME second as the first reservation still count - exactly 1 more is admitted', async ({ db }) => {
+  await ready(db); const nowS = Math.floor(Date.now() / 1000)
+  await legacyAudit(db, 'A', 2, 0, 'ok', 'adv:linkedin', nowS)
+  const got = await Promise.all([1, 2, 3, 4, 5].map(() => reserveRequest(db, 'A', 'adv:linkedin', 3, 'people', nowS)))
+  assert.equal(got.filter(Boolean).length, 1, `2 of 3 already consumed, same second: exactly 1 admitted; got ${got.filter(Boolean).length}`)
+  assert.equal(await requestsInWindow(db, 'A', 'adv:linkedin', nowS), 3)
+})
+
+bothEngines('UPGRADE concurrent (seeded): per tenant/connector budget, legacy usage + 5 concurrent reservations admit exactly limit - legacy; budgets do not leak across tenants or connectors', async ({ db }) => {
+  await ready(db); await ready(db, 'B'); const nowS = Math.floor(Date.now() / 1000)
+  await legacyAudit(db, 'A', 2, 600); await legacyAudit(db, 'A', 1, 600, 'ok', 'adv:other'); await legacyAudit(db, 'B', 3, 60); await legacyAudit(db, 'B', 0, 60)
+  const run = (tenant: string, connector: string) => Promise.all([1, 2, 3, 4, 5].map(() => reserveRequest(db, tenant, connector, 3, 'people', nowS + 1))).then(r => r.filter(Boolean).length)
+  const [aLi, aOther, bLi, bFresh] = await Promise.all([run('A', 'adv:linkedin'), run('A', 'adv:other'), run('B', 'adv:linkedin'), run('B', 'adv:fresh')])
+  assert.deepEqual([aLi, aOther, bLi, bFresh], [1, 2, 0, 3], 'A/linkedin 2 used -> 1; A/other 1 used -> 2; B/linkedin 3 used -> 0; B/fresh none used -> 3')
 })

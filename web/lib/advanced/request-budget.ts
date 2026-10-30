@@ -17,14 +17,15 @@ let seq = 0
 export async function reserveRequest(db: Db, tenantId: string, connector: string, limit: number, consumer: string, now = Math.floor(Date.now() / 1000)): Promise<boolean> {
   const id = `${now.toString(36)}${(++seq).toString(36)}${Math.random().toString(36).slice(2, 10)}`
   return db.tx(function* (t: Tx): TxBody<boolean> {
-    // `since` is the moment this tenant/connector first reserved a request (set once). Audit rows BEFORE it are usage recorded before reservations existed: they still count. Audit rows after it belong
-    // to requests that were reserved (and are counted as reservations), so they are not counted again.
+    // The first reservation for a tenant/connector (n = 1 after the upsert; the row lock makes exactly one transaction see it) SNAPSHOTS the legacy usage: every audit row in the window becomes a
+    // reservation row ('legacy:<audit id>', consumer 'legacy') in this same transaction, whatever its second-resolution timestamp (including one equal to now). From then on the budget counts
+    // ONLY adv_requests, so legacy usage + new in-flight/unrefunded requests are summed, a request is never counted in both stores (post-cutover audit rows are never read), and there is no
+    // timestamp boundary to get wrong. The legacy rows age out of the window like any reservation.
     yield* t.run('INSERT INTO adv_budget_lock (tenant_id, connector, n, since) VALUES (?, ?, 1, ?) ON CONFLICT (tenant_id, connector) DO UPDATE SET n = adv_budget_lock.n + 1', [tenantId, connector, now])
-    const lock = yield* t.get<{ since: number }>('SELECT since FROM adv_budget_lock WHERE tenant_id = ? AND connector = ?', [tenantId, connector])
-    const since = Number(lock?.since ?? now)
+    const lock = yield* t.get<{ n: number }>('SELECT n FROM adv_budget_lock WHERE tenant_id = ? AND connector = ?', [tenantId, connector])
+    if (Number(lock?.n ?? 0) === 1) yield* t.run("INSERT INTO adv_requests (id, tenant_id, connector, at, consumer) SELECT 'legacy:' || id, tenant_id, connector, created_at, 'legacy' FROM connector_audit WHERE tenant_id = ? AND connector = ? AND status IN ('ok','empty','worker_error','error') AND created_at > ? ON CONFLICT (id) DO NOTHING", [tenantId, connector, now - WINDOW_S])
     const r = yield* t.get<{ n: number }>('SELECT COUNT(*) AS n FROM adv_requests WHERE tenant_id = ? AND connector = ? AND at > ?', [tenantId, connector, now - WINDOW_S])
-    const legacy = yield* t.get<{ n: number }>("SELECT COUNT(*) AS n FROM connector_audit WHERE tenant_id = ? AND connector = ? AND status IN ('ok','empty','worker_error','error') AND created_at > ? AND created_at < ?", [tenantId, connector, now - WINDOW_S, since])
-    if (Number(r?.n ?? 0) + Number(legacy?.n ?? 0) >= limit) return false
+    if (Number(r?.n ?? 0) >= limit) return false
     yield* t.run('INSERT INTO adv_requests (id, tenant_id, connector, at, consumer) VALUES (?, ?, ?, ?, ?)', [id, tenantId, connector, now, consumer])
     yield* t.run('DELETE FROM adv_requests WHERE tenant_id = ? AND connector = ? AND at <= ?', [tenantId, connector, now - 2 * WINDOW_S])
     return true
