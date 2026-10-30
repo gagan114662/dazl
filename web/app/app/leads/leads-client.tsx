@@ -37,7 +37,7 @@ import { Avatar, Pill, Stepper, type Tone } from '../ui/bits'
 import Caveat from '@/app/app/caveat'
 import SourceProgressList from './source-progress'
 import type { SourceProgress } from '@/lib/scan/progress'
-import { sameOffer, statedOffer } from '@/lib/scan/play-offer-text'
+import { sameOffer, statedOffer, withdrawnOffer } from '@/lib/scan/play-offer-text'
 
 // Reject on the card is the existing reversible quarantine, with its own reason so the card can say "Rejected".
 // Reject asks for an optional reason (a preset or a few words); it is stored as "Rejected" or "Rejected: <reason>".
@@ -381,9 +381,15 @@ export default function LeadsClient() {
   useEffect(() => { void fetch('/api/settings/profile').then(r => r.ok ? r.json() : null).then(p => setSavedOffer(typeof p?.sells === 'string' && p.sells.trim() ? p.sells.trim() : null)).catch(() => {}) }, [])
   const [offerText, setOfferText] = useState('')
   // A choice still to make: from the review step, or from the server refusing a direct run (409 offer_conflict).
-  const [offerConflict, setOfferConflict] = useState<{ stated: string; saved: string; direct: boolean } | null>(null)
+  const [offerConflict, setOfferConflict] = useState<{ stated: string | null; saved: string; withdrawn?: string; direct: boolean } | null>(null)
   function startOffer(q: string) {
     const stated = statedOffer(q)
+    // a request that withdraws an offer never falls back to the saved one: the user keeps it or writes this play's offer
+    const withdrawn = withdrawnOffer(q)
+    if (withdrawn && savedOffer) {
+      const replacement = stated && !sameOffer(stated, withdrawn) ? stated : null
+      setOfferText(replacement ?? ''); setOfferConflict({ stated: replacement, saved: savedOffer, withdrawn, direct: false }); return
+    }
     setOfferText(stated ?? savedOffer ?? '')
     setOfferConflict(stated && savedOffer && !sameOffer(q, savedOffer) ? { stated, saved: savedOffer, direct: false } : null)
   }
@@ -416,7 +422,7 @@ export default function LeadsClient() {
       const j = await r.json().catch(() => ({}))
       // The request names a different offer than the business profile: nothing was queued; ask which one this play is for.
       if ((r.status === 409 && j.error === 'estimate_changed') || (r.status === 402 && j.error === 'over_budget')) { setPendingEst({ est: j.estimate as RunEstimate, withIcp, offer }); return }
-      if (r.status === 409 && j.error === 'offer_conflict') { setPendingEst(null); setOfferConflict({ stated: String(j.stated), saved: String(j.saved), direct: !withIcp || withIcp === reuseIcp }); return }
+      if (r.status === 409 && j.error === 'offer_conflict') { setPendingEst(null); setOfferConflict({ stated: typeof j.stated === 'string' ? j.stated : null, saved: String(j.saved), withdrawn: typeof j.withdrawn === 'string' ? j.withdrawn : undefined, direct: !withIcp || withIcp === reuseIcp }); return }
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : j.error === 'trial_exhausted' ? 'Your 3 free scans are used up. Add your own AI key in Settings to keep scanning.' : j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')); if (j.error === 'invalid_budget' && j.detail) setError(`The spend limit was not accepted: ${String(j.detail).slice(0, 200)}`); return }
       setOfferConflict(null); setPendingEst(null)
       setRunExtras(extraLabels(srcBody)); passiveJob.current = false; setJobId(j.job_id); setStatus('pending'); setEnrichInterrupted(false); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0
@@ -727,7 +733,7 @@ export default function LeadsClient() {
           </div>
           {/* What this play sells: reviewed with the profile, stored with this play only. */}
           <div className="mb-3" data-testid="review-offer">
-            {offerConflict ? <OfferChooser c={offerConflict} onChoose={o => { setOfferText(o); setOfferConflict(null) }} />
+            {offerConflict ? <OfferChooser c={offerConflict} onChoose={o => { setOfferText(o); setOfferConflict(null) }} onWrite={() => { setOfferText(''); setOfferConflict(null) }} />
               : <>
                 <label className="block text-xs text-gray-500 mb-1" htmlFor="play-offer">What you sell for this play</label>
                 <input id="play-offer" className={`${input} w-full`} maxLength={150} value={offerText} onChange={e => setOfferText(e.target.value)} placeholder="e.g. CRM setup and outbound consulting" data-testid="review-offer-input" />
@@ -1178,13 +1184,19 @@ function DiscoveredVia({ l }: { l: { discovered_via?: string | null; discovered_
 
 // The request names a different offer than the business profile: the user picks which one this play is for before it
 // runs. Nothing is changed in the profile.
-function OfferChooser({ c, onChoose }: { c: { stated: string; saved: string }; onChoose: (offer: string) => void }) {
+// A request that only withdraws an offer ("We no longer sell X.") names nothing to use instead: the user keeps the saved
+// offer or writes this play's own (onWrite empties the offer field below; nothing is invented).
+function OfferChooser({ c, onChoose, onWrite }: { c: { stated: string | null; saved: string; withdrawn?: string }; onChoose: (offer: string) => void; onWrite?: () => void }) {
   return <div className="rounded-xl border border-[#e8b04a] bg-[#fff7e6] px-4 py-3 text-sm" role="alert" data-testid="offer-chooser">
     <p className="font-semibold">Which offer is this play for?</p>
-    <p className="mt-1 text-[var(--ink-2)]">Your request says you sell <strong>{c.stated}</strong>; your business profile says <strong>{c.saved}</strong>. dazl researches and drafts this play for the one you choose. Your profile is not changed.</p>
+    {c.stated
+      ? <p className="mt-1 text-[var(--ink-2)]">Your request says you sell <strong>{c.stated}</strong>; your business profile says <strong>{c.saved}</strong>. dazl researches and drafts this play for the one you choose. Your profile is not changed.</p>
+      : <p className="mt-1 text-[var(--ink-2)]" data-testid="offer-withdrawn">Your request says you do not sell <strong>{c.withdrawn}</strong>; your business profile says <strong>{c.saved}</strong>. Say what this play sells before it runs. Your profile is not changed.</p>}
     <div className="mt-2 flex flex-wrap gap-2">
-      <button type="button" className="btn-primary btn-sm" onClick={() => onChoose(c.stated)} data-testid="offer-use-stated">Use: {c.stated}</button>
+      {c.stated && <button type="button" className="btn-primary btn-sm" onClick={() => onChoose(c.stated!)} data-testid="offer-use-stated">Use: {c.stated}</button>}
       <button type="button" className="btn-ghost btn-sm" onClick={() => onChoose(c.saved)} data-testid="offer-use-saved">Use: {c.saved}</button>
+      {!c.stated && onWrite && <button type="button" className="btn-primary btn-sm" onClick={onWrite} data-testid="offer-write">Write what this play sells</button>}
     </div>
+    {!c.stated && !onWrite && <p className="mt-2 text-xs text-[var(--ink-2)]">Or use Review profile first to write what this play sells.</p>}
   </div>
 }

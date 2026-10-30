@@ -24,7 +24,8 @@ export function isMissingSchema(e: unknown): boolean {
 export type OfferSource = 'play' | 'recorded' | 'profile' | 'request'
 export type PlayOffer =
   | { offer: string; source: OfferSource; conflict: null }
-  | { offer: null; source: 'conflict'; conflict: { stated: string; recorded: string } }
+  // stated: the offer the request names instead (null when it only withdraws one); withdrawn: what it says is no longer sold
+  | { offer: null; source: 'conflict'; conflict: { stated: string | null; recorded: string; withdrawn?: string } }
   | { offer: null; source: 'none'; conflict: null }
 
 export const cleanOffer = (s: unknown): string => typeof s === 'string' ? s.replace(/\s+/g, ' ').trim().slice(0, MAX_OFFER) : ''
@@ -259,12 +260,26 @@ export function sameOffer(a: string, b: string): boolean {
   return !x.audience || !y.audience || x.audience === y.audience
 }
 
+// What a request says the seller no longer or does not sell ("We do not sell X.", "We no longer offer X.", "We are not
+// selling X."), when it names an offer (not a target such as "to agencies"). Such a request contradicts any saved offer
+// it might otherwise fall back to, so the play cannot silently use one: it waits for an explicit choice.
+const WITHDRAWN = new RegExp(String.raw`(?:^|[.!?;,]\s*|(?:and|but)\s+)(?:i|we)\s+(?:do not|don['’]t|no longer|are not|aren['’]t|am not|have stopped|stopped|will not|won['’]t|cannot|can['’]t)\s+(?:sell|selling|offer|offering|provide|providing)\s+([^.!?;]{3,150})`, 'i')
+export function withdrawnOffer(query: string | null | undefined): string | null {
+  const m = WITHDRAWN.exec((query ?? '').replace(/\s+/g, ' '))
+  if (!m) return null
+  const o = cleanOffer(m[1].replace(/^(?:our|my|a|an|the)\s+/i, '').replace(/\s+(?:any ?more|anymore)$/i, ''))
+  return o.length >= 3 && !NOT_AN_OFFER.test(o) ? o : null
+}
+
 export function effectiveOffer(play: { offer?: string | null; seller?: string | null; query?: string | null }, profileSells: string | null | undefined): PlayOffer {
   const reviewed = cleanOffer(play.offer)
   if (reviewed) return { offer: reviewed, source: 'play', conflict: null }
   const recorded = offerOfSeller(play.seller)
   const base = recorded ?? (cleanOffer(profileSells) || null)
   const stated = statedOffer(play.query)
+  // a request that withdraws an offer never resolves to a saved one by default: explicit choice only
+  const withdrawn = withdrawnOffer(play.query)
+  if (withdrawn && base) return { offer: null, source: 'conflict', conflict: { stated: stated && !sameOffer(stated, withdrawn) ? stated : null, recorded: base, withdrawn } }
   // the request's whole offer statement is compared (its buyers and seller negations too), not only the offer words
   if (stated && base && !sameOffer(play.query ?? '', base)) return { offer: null, source: 'conflict', conflict: { stated, recorded: base } }
   if (base) return { offer: base, source: recorded ? 'recorded' : 'profile', conflict: null }

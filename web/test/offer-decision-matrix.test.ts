@@ -42,6 +42,11 @@ const MATRIX: Row[] = [
   ['unknown place', `Email providers in Canada Cost Extra. We sell ${P}.`, 'choice'],
   ['unparsed', `Independent dental practices hiring a coordinator won customers. We sell ${P}.`, 'choice'],
   ['unparsed', `Email marketing agencies. We sell ${P}.`, 'choice'],
+  // a request that withdraws the saved offer never resolves to it, with or without a replacement
+  ['withdrawn', `We do not sell ${P}.`, 'choice'],
+  ['withdrawn', `We no longer sell ${P}.`, 'choice'],
+  ['withdrawn', `Find London SaaS startups. We don't sell ${P} anymore.`, 'choice'],
+  ['withdrawn', `We have stopped selling ${P}. We sell CRM setup and outbound consulting.`, 'choice'],
 ]
 
 test('#349 decision matrix: equivalents stay equivalent; changed product/buyer, qualifications and unknown places ask for a choice', () => {
