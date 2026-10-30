@@ -304,7 +304,7 @@ test('a stop during research starts no complaint-source, grounding or later prov
   migrateConnectors(db); migrateAdvanced(db); migrateCompetitors(db)
   acceptConsent(db, 'A', 'advanced'); await setCompetitors(sqliteDb(db), 'A', ['Salesforce'])
   const savedEnv = { ...process.env }
-  Object.assign(process.env, { ADVANCED_CONNECTORS: '1', ADVANCED_WORKER_URL: 'http://w', ADVANCED_WORKER_TOKEN: 't' })
+  Object.assign(process.env, { ADVANCED_CONNECTORS: '1', ADVANCED_WORKER_URL: 'http://w', ADVANCED_WORKER_TOKEN: 't', NEWS_SEARCH_ENABLED: '0' })   // pinned: `npm test` sets it; a bare `node --test` must not change what this test measures
   try {
     const id = createQueryJob(db, 'A', { query: 'teams unhappy with their crm', icp: JSON.stringify({ summary: 'x', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] }) } as never)
     let workerCalls = 0, completeCalls = 0, researchCalls = 0
@@ -313,6 +313,28 @@ test('a stop during research starts no complaint-source, grounding or later prov
     prov.anthropic.complete = async () => { completeCalls++; return 'supports' }
     assert.equal(await runJob(db, claimKeyedJob(db, id)!, { providers: prov, master, fetchPage: page, advancedWorker: worker }), 'done')
     assert.deepEqual([researchCalls, workerCalls, completeCalls], [1, 0, 0])
+    assert.equal(listLeads(db, 'A', id).length, 0)
+  } finally { for (const k of Object.keys(process.env)) if (!(k in savedEnv)) delete process.env[k]; Object.assign(process.env, savedEnv) }
+})
+
+// Cancellation is checked before every later unit of work. With the free news search ON (production default) its query-planning completion runs BEFORE research, so it is not
+// "after the stop"; what must hold is that NOTHING starts once the cancel has happened: no further provider completion, worker call or fetch.
+test('after a cancel during research, no provider completion, advanced-worker call or page fetch starts (news search enabled)', async () => {
+  const db = setup()
+  migrateConnectors(db); migrateAdvanced(db); migrateCompetitors(db)
+  acceptConsent(db, 'A', 'advanced'); await setCompetitors(sqliteDb(db), 'A', ['Salesforce'])
+  const savedEnv = { ...process.env }
+  Object.assign(process.env, { ADVANCED_CONNECTORS: '1', ADVANCED_WORKER_URL: 'http://w', ADVANCED_WORKER_TOKEN: 't', NEWS_SEARCH_ENABLED: '1' })
+  try {
+    const id = createQueryJob(db, 'A', { query: 'teams unhappy with their crm', icp: JSON.stringify({ summary: 'x', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] }) } as never)
+    let cancelled = false; const after: string[] = []
+    const prov = fake(async () => { cancelJob(db, 'A', id); cancelled = true; return { text: 'Here: ' + JSON.stringify([lead('https://a.com')]), citedUrls: ['https://a.com'] } })
+    prov.anthropic.complete = async () => { if (cancelled) after.push('complete'); return '{"queries":[]}' }
+    const worker = async () => { if (cancelled) after.push('worker'); return [] }
+    const fetchP = (async (u: string) => { if (cancelled) after.push(`fetch ${u}`); return page() }) as typeof page
+    const newsHttp = (async () => { if (cancelled) after.push('news'); return { ok: true, status: 200, text: async () => '{}', json: async () => ({}) } }) as never
+    assert.equal(await runJob(db, claimKeyedJob(db, id)!, { providers: prov, master, fetchPage: fetchP, advancedWorker: worker, newsHttp }), 'done')
+    assert.deepEqual(after, [], 'work started after the cancel')
     assert.equal(listLeads(db, 'A', id).length, 0)
   } finally { for (const k of Object.keys(process.env)) if (!(k in savedEnv)) delete process.env[k]; Object.assign(process.env, savedEnv) }
 })
