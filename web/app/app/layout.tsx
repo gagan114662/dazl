@@ -2,13 +2,14 @@ import Link from 'next/link'
 import { Suspense } from 'react'
 import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
-import { getSessionUser } from '@/lib/auth-db'
+import { hasLiveSession } from '@/lib/auth-db'
 import Nav from './nav'
 import { Icon } from './ui/icons'
 
 async function AuthGate({ children }: { children: React.ReactNode }) {
   const token = (await cookies()).get('dazl_session')?.value
-  if (!(await getSessionUser(token))) redirect('/sign-in')
+  if (!(await hasLiveSession(token))) redirect('/sign-in')
+
   return <>{children}</>
 }
 
