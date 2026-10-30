@@ -177,6 +177,43 @@ CREATE TABLE followup_threads (
       PRIMARY KEY (tenant_id, thread_id)
     );
 
+CREATE TABLE fp_domains (
+      tenant_id TEXT NOT NULL,
+      domain TEXT NOT NULL,
+      PRIMARY KEY (tenant_id, domain)
+    );
+
+CREATE TABLE fp_events (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      domain TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('form','demo_request','product_event','visitor')),
+      account_key TEXT NOT NULL,
+      company TEXT,
+      person_email TEXT,
+      identity_confidence INTEGER NOT NULL CHECK (identity_confidence BETWEEN 0 AND 100),
+      level TEXT NOT NULL CHECK (level IN ('person','account')),
+      occurred_at INTEGER NOT NULL,
+      received_at INTEGER NOT NULL,
+      dedup_key TEXT NOT NULL,
+      UNIQUE (tenant_id, dedup_key)
+    );
+
+CREATE TABLE fp_nonces (
+      tenant_id TEXT NOT NULL,
+      nonce TEXT NOT NULL,
+      seen_at INTEGER NOT NULL,
+      PRIMARY KEY (tenant_id, nonce)
+    );
+
+CREATE TABLE fp_settings (
+      tenant_id TEXT PRIMARY KEY,
+      collection_enabled INTEGER NOT NULL DEFAULT 0,
+      visitor_enabled INTEGER NOT NULL DEFAULT 0,
+      retention_days INTEGER NOT NULL DEFAULT 90 CHECK (retention_days BETWEEN 1 AND 730),
+      updated_at INTEGER NOT NULL
+    );
+
 CREATE TABLE gmail_accounts (
       tenant_id    TEXT PRIMARY KEY,
       email        TEXT NOT NULL,
@@ -784,6 +821,8 @@ CREATE INDEX consent_ledger_lookup ON consent_ledger (tenant_id, contact, channe
 CREATE INDEX csv_batches_user ON csv_batches (user_id, created_at);
 
 CREATE INDEX csv_rows_batch ON csv_rows (batch_id);
+
+CREATE INDEX fp_events_tenant ON fp_events (tenant_id, occurred_at);
 
 CREATE UNIQUE INDEX hiring_feed_crawl_company ON hiring_feed_crawl(tenant_id, company_key);
 
