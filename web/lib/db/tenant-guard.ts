@@ -1,7 +1,8 @@
 // Schema machinery for the tenant deletion lifecycle (lib/tenant/lifecycle.ts, issue #359), like insertion-order.ts:
-// the tombstone tables, and a BEFORE INSERT guard on every tenant-scoped table that exists when it runs (it runs after
-// every other migration). The guard refuses a row for a deleted tenant, or under one of its deleted parent rows, so
-// in-flight work or a late write cannot recreate erased data. Postgres: lib/db/migrations/pg/0020_tenant_lifecycle.sql.
+// the tombstone tables, and on every tenant-scoped table that exists when it runs (it runs after every other migration)
+// a BEFORE INSERT guard and a BEFORE UPDATE OF <tenant column or parent key> guard. They refuse a row for a deleted
+// tenant, or under one of its deleted parent rows, whether inserted or moved there by an update, so in-flight work or
+// a late write cannot recreate erased data and no row can change hands into a deleted tenant. Postgres: lib/db/migrations/pg/0020_tenant_lifecycle.sql.
 import type Database from 'better-sqlite3'
 import type { Db } from './client.ts'
 import { classify, type Scope } from '../tenant/scope.ts'
@@ -56,14 +57,40 @@ export function migrateTenantLifecycle(db: Database.Database): void {
     );
   `)
   // the recreation guard on every tenant-scoped table that exists now (this runs after every other migration)
-  for (const s of scopeOfSqlite(db)) {
-    if (UNGUARDED.has(s.table)) continue
-    const name = `tomb_${s.table}`
-    const when = s.how === 'direct'
-      ? `EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.${s.col})`
-      : `EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = '${s.parent}' AND key = NEW.${s.col})`
-    db.exec(`CREATE TRIGGER IF NOT EXISTS ${name} BEFORE INSERT ON ${s.table} WHEN ${when} BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;`)
+  const hasOrganizations = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'organizations'").get()
+  for (const g of guardTriggers(scopeOfSqlite(db).filter(s => !UNGUARDED.has(s.table)))) {
+    if (g.table === 'organizations' && !hasOrganizations) continue
+    db.exec(g.sql)
   }
-  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'organizations'").get()) db.exec(`CREATE TRIGGER IF NOT EXISTS tomb_organizations BEFORE INSERT ON organizations WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;`)
-  db.exec(`CREATE TRIGGER IF NOT EXISTS tomb_users BEFORE INSERT ON users WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;`)
+}
+
+// The guard triggers for a set of guarded tables, plus the tenant's own identity rows (users, organizations), as
+// SQLite DDL. The Postgres migration is the translation of these (scripts/pg-migrate/translate-schema.ts), so both
+// engines carry the same guards. Two per table: BEFORE INSERT, and BEFORE UPDATE OF the tenant column or parent key,
+// so a row can neither be created for a tombstoned tenant or under a deleted parent, nor moved there by re-pointing
+// its ownership (the invariant: ownership and parent keys never move under a tombstoned tenant or deleted parent). A
+// parent key is refused when the parent row was deleted (tenant_tombstone_keys) and, while the deletion is still in
+// progress or the parent is retained, when the parent row's own chain belongs to a tombstoned tenant.
+export function guardTriggers(scope: Scope[]): { name: string; table: string; sql: string }[] {
+  const byTable = new Map(scope.map(s => [s.table, s]))
+  // rows of `table` that belong to a tombstoned tenant, as a WHERE clause over that table (through its parent chain)
+  const tombstoned = (table: string): string | undefined => {
+    const s = byTable.get(table)
+    if (!s) return undefined
+    if (s.how === 'direct') return `${s.col} IN (SELECT deleted_tenant FROM tenant_tombstones)`
+    const up = tombstoned(s.parent)
+    return up && `${s.col} IN (SELECT id FROM ${s.parent} WHERE ${up})`
+  }
+  const out: { name: string; table: string; sql: string }[] = []
+  const guard = (table: string, col: string, when: string) => {
+    for (const [name, event] of [[`tomb_${table}`, 'INSERT'], [`tomb_upd_${table}`, `UPDATE OF ${col}`]])
+      out.push({ name, table, sql: `CREATE TRIGGER IF NOT EXISTS ${name} BEFORE ${event} ON ${table} WHEN ${when} BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;` })
+  }
+  for (const s of scope) {
+    if (s.how === 'direct') { guard(s.table, s.col, `EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.${s.col})`); continue }
+    const live = tombstoned(s.parent)
+    guard(s.table, s.col, `EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = '${s.parent}' AND key = NEW.${s.col})${live ? ` OR NEW.${s.col} IN (SELECT id FROM ${s.parent} WHERE ${live})` : ''}`)
+  }
+  for (const t of ['organizations', 'users']) guard(t, 'id', `EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.id)`)
+  return out
 }

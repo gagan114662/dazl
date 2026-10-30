@@ -960,7 +960,7 @@ CREATE TRIGGER tomb_calcom_hooks BEFORE INSERT ON calcom_hooks WHEN EXISTS (SELE
 
 CREATE TRIGGER tomb_commenter_batches BEFORE INSERT ON commenter_batches WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
-CREATE TRIGGER tomb_commenter_rows BEFORE INSERT ON commenter_rows WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'commenter_batches' AND key = NEW.batch_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+CREATE TRIGGER tomb_commenter_rows BEFORE INSERT ON commenter_rows WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'commenter_batches' AND key = NEW.batch_id) OR NEW.batch_id IN (SELECT id FROM commenter_batches WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones)) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
 CREATE TRIGGER tomb_company_events BEFORE INSERT ON company_events WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
@@ -972,7 +972,7 @@ CREATE TRIGGER tomb_crm_push_claims BEFORE INSERT ON crm_push_claims WHEN EXISTS
 
 CREATE TRIGGER tomb_csv_batches BEFORE INSERT ON csv_batches WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
-CREATE TRIGGER tomb_csv_rows BEFORE INSERT ON csv_rows WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'csv_batches' AND key = NEW.batch_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+CREATE TRIGGER tomb_csv_rows BEFORE INSERT ON csv_rows WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'csv_batches' AND key = NEW.batch_id) OR NEW.batch_id IN (SELECT id FROM csv_batches WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones)) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
 CREATE TRIGGER tomb_email_candidates BEFORE INSERT ON email_candidates WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
@@ -998,17 +998,17 @@ CREATE TRIGGER tomb_lead_evidence_copies BEFORE INSERT ON lead_evidence_copies W
 
 CREATE TRIGGER tomb_lead_qualifications BEFORE INSERT ON lead_qualifications WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
-CREATE TRIGGER tomb_lead_sources BEFORE INSERT ON lead_sources WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'leads' AND key = NEW.lead_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+CREATE TRIGGER tomb_lead_sources BEFORE INSERT ON lead_sources WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'leads' AND key = NEW.lead_id) OR NEW.lead_id IN (SELECT id FROM leads WHERE scan_job_id IN (SELECT id FROM scan_jobs WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
-CREATE TRIGGER tomb_leads BEFORE INSERT ON leads WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.scan_job_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+CREATE TRIGGER tomb_leads BEFORE INSERT ON leads WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.scan_job_id) OR NEW.scan_job_id IN (SELECT id FROM scan_jobs WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones)) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
 CREATE TRIGGER tomb_mail_read_consent BEFORE INSERT ON mail_read_consent WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
 CREATE TRIGGER tomb_memberships BEFORE INSERT ON memberships WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
-CREATE TRIGGER tomb_monitor_runs BEFORE INSERT ON monitor_runs WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+CREATE TRIGGER tomb_monitor_runs BEFORE INSERT ON monitor_runs WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id) OR NEW.monitor_id IN (SELECT id FROM monitors WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones)) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
-CREATE TRIGGER tomb_monitor_seen BEFORE INSERT ON monitor_seen WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+CREATE TRIGGER tomb_monitor_seen BEFORE INSERT ON monitor_seen WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id) OR NEW.monitor_id IN (SELECT id FROM monitors WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones)) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
 CREATE TRIGGER tomb_monitors BEFORE INSERT ON monitors WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
@@ -1040,11 +1040,11 @@ CREATE TRIGGER tomb_scan_jobs BEFORE INSERT ON scan_jobs WHEN EXISTS (SELECT 1 F
 
 CREATE TRIGGER tomb_scan_model_calls BEFORE INSERT ON scan_model_calls WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
-CREATE TRIGGER tomb_scan_run_report BEFORE INSERT ON scan_run_report WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+CREATE TRIGGER tomb_scan_run_report BEFORE INSERT ON scan_run_report WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR NEW.job_id IN (SELECT id FROM scan_jobs WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones)) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
-CREATE TRIGGER tomb_scan_source_runs BEFORE INSERT ON scan_source_runs WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+CREATE TRIGGER tomb_scan_source_runs BEFORE INSERT ON scan_source_runs WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR NEW.job_id IN (SELECT id FROM scan_jobs WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones)) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
-CREATE TRIGGER tomb_scan_source_stats BEFORE INSERT ON scan_source_stats WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+CREATE TRIGGER tomb_scan_source_stats BEFORE INSERT ON scan_source_stats WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR NEW.job_id IN (SELECT id FROM scan_jobs WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones)) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
 CREATE TRIGGER tomb_scheduler_progress BEFORE INSERT ON scheduler_progress WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
@@ -1094,11 +1094,167 @@ CREATE TRIGGER tomb_trial_reservations BEFORE INSERT ON trial_reservations WHEN 
 
 CREATE TRIGGER tomb_trial_scans BEFORE INSERT ON trial_scans WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
+CREATE TRIGGER tomb_upd_advanced_consent BEFORE UPDATE OF tenant_id ON advanced_consent WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_autopilot_audit BEFORE UPDATE OF tenant_id ON autopilot_audit WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_autopilot_settings BEFORE UPDATE OF tenant_id ON autopilot_settings WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_calcom_bookings BEFORE UPDATE OF tenant_id ON calcom_bookings WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_calcom_hooks BEFORE UPDATE OF tenant_id ON calcom_hooks WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_commenter_batches BEFORE UPDATE OF user_id ON commenter_batches WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_commenter_rows BEFORE UPDATE OF batch_id ON commenter_rows WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'commenter_batches' AND key = NEW.batch_id) OR NEW.batch_id IN (SELECT id FROM commenter_batches WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones)) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_company_events BEFORE UPDATE OF tenant_id ON company_events WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_connector_audit BEFORE UPDATE OF tenant_id ON connector_audit WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_consent_ledger BEFORE UPDATE OF tenant_id ON consent_ledger WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_crm_push_claims BEFORE UPDATE OF tenant_id ON crm_push_claims WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_csv_batches BEFORE UPDATE OF user_id ON csv_batches WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_csv_rows BEFORE UPDATE OF batch_id ON csv_rows WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'csv_batches' AND key = NEW.batch_id) OR NEW.batch_id IN (SELECT id FROM csv_batches WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones)) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_email_candidates BEFORE UPDATE OF tenant_id ON email_candidates WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_email_patterns BEFORE UPDATE OF tenant_id ON email_patterns WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_evidence_purge_audit BEFORE UPDATE OF tenant_id ON evidence_purge_audit WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_followup_messages BEFORE UPDATE OF tenant_id ON followup_messages WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_followup_threads BEFORE UPDATE OF tenant_id ON followup_threads WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_gmail_accounts BEFORE UPDATE OF tenant_id ON gmail_accounts WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_hiring_feed_crawl BEFORE UPDATE OF tenant_id ON hiring_feed_crawl WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_inbound_messages BEFORE UPDATE OF tenant_id ON inbound_messages WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_inbox_thread_reads BEFORE UPDATE OF tenant_id ON inbox_thread_reads WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_lead_enrichments BEFORE UPDATE OF tenant_id ON lead_enrichments WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_lead_evidence_copies BEFORE UPDATE OF tenant_id ON lead_evidence_copies WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_lead_qualifications BEFORE UPDATE OF tenant_id ON lead_qualifications WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_lead_sources BEFORE UPDATE OF lead_id ON lead_sources WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'leads' AND key = NEW.lead_id) OR NEW.lead_id IN (SELECT id FROM leads WHERE scan_job_id IN (SELECT id FROM scan_jobs WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_leads BEFORE UPDATE OF scan_job_id ON leads WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.scan_job_id) OR NEW.scan_job_id IN (SELECT id FROM scan_jobs WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones)) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_mail_read_consent BEFORE UPDATE OF tenant_id ON mail_read_consent WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_memberships BEFORE UPDATE OF tenant_id ON memberships WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_monitor_runs BEFORE UPDATE OF monitor_id ON monitor_runs WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id) OR NEW.monitor_id IN (SELECT id FROM monitors WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones)) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_monitor_seen BEFORE UPDATE OF monitor_id ON monitor_seen WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id) OR NEW.monitor_id IN (SELECT id FROM monitors WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones)) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_monitors BEFORE UPDATE OF user_id ON monitors WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_newsjacks BEFORE UPDATE OF tenant_id ON newsjacks WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_oauth_identities BEFORE UPDATE OF user_id ON oauth_identities WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_oauth_states BEFORE UPDATE OF tenant_id ON oauth_states WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_organizations BEFORE UPDATE OF id ON organizations WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_outreach_llm_usage BEFORE UPDATE OF tenant_id ON outreach_llm_usage WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_outreach_messages BEFORE UPDATE OF tenant_id ON outreach_messages WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_outreach_settings BEFORE UPDATE OF tenant_id ON outreach_settings WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_outreach_signal_context BEFORE UPDATE OF tenant_id ON outreach_signal_context WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_reopen_messages BEFORE UPDATE OF tenant_id ON reopen_messages WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_reply_drafts BEFORE UPDATE OF tenant_id ON reply_drafts WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_reply_queries BEFORE UPDATE OF tenant_id ON reply_queries WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_reply_threads BEFORE UPDATE OF tenant_id ON reply_threads WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_scan_jobs BEFORE UPDATE OF user_id ON scan_jobs WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_scan_model_calls BEFORE UPDATE OF tenant_id ON scan_model_calls WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_scan_run_report BEFORE UPDATE OF job_id ON scan_run_report WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR NEW.job_id IN (SELECT id FROM scan_jobs WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones)) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_scan_source_runs BEFORE UPDATE OF job_id ON scan_source_runs WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR NEW.job_id IN (SELECT id FROM scan_jobs WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones)) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_scan_source_stats BEFORE UPDATE OF job_id ON scan_source_stats WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR NEW.job_id IN (SELECT id FROM scan_jobs WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones)) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_scheduler_progress BEFORE UPDATE OF tenant_id ON scheduler_progress WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_seo_audits BEFORE UPDATE OF tenant_id ON seo_audits WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_seo_briefs BEFORE UPDATE OF tenant_id ON seo_briefs WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_seo_index_configs BEFORE UPDATE OF tenant_id ON seo_index_configs WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_seo_index_keywords BEFORE UPDATE OF tenant_id ON seo_index_keywords WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_seo_index_results BEFORE UPDATE OF tenant_id ON seo_index_results WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_seo_index_runs BEFORE UPDATE OF tenant_id ON seo_index_runs WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_sequence_settings BEFORE UPDATE OF tenant_id ON sequence_settings WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_sequence_steps BEFORE UPDATE OF tenant_id ON sequence_steps WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_sequences BEFORE UPDATE OF tenant_id ON sequences WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_sessions BEFORE UPDATE OF user_id ON sessions WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_source_reviews BEFORE UPDATE OF tenant_id ON source_reviews WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_stripe_ended_subscriptions BEFORE UPDATE OF tenant_id ON stripe_ended_subscriptions WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_suppressions BEFORE UPDATE OF tenant_id ON suppressions WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_tenant_competitors BEFORE UPDATE OF tenant_id ON tenant_competitors WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_tenant_connections BEFORE UPDATE OF tenant_id ON tenant_connections WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_tenant_connectors BEFORE UPDATE OF tenant_id ON tenant_connectors WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_tenant_llm_keys BEFORE UPDATE OF tenant_id ON tenant_llm_keys WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_tenant_memory BEFORE UPDATE OF tenant_id ON tenant_memory WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_tenant_plans BEFORE UPDATE OF tenant_id ON tenant_plans WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_tenant_spend_pools BEFORE UPDATE OF tenant_id ON tenant_spend_pools WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_tinyfish_usage BEFORE UPDATE OF tenant_id ON tinyfish_usage WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_trial_reservations BEFORE UPDATE OF tenant_id ON trial_reservations WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_trial_scans BEFORE UPDATE OF tenant_id ON trial_scans WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_users BEFORE UPDATE OF id ON users WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_warm_user_paths BEFORE UPDATE OF tenant_id ON warm_user_paths WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_watch_seen BEFORE UPDATE OF watch_id ON watch_seen WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'watches' AND key = NEW.watch_id) OR NEW.watch_id IN (SELECT id FROM watches WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones)) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_watches BEFORE UPDATE OF user_id ON watches WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_work_queue BEFORE UPDATE OF tenant_id ON work_queue WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
 CREATE TRIGGER tomb_users BEFORE INSERT ON users WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
 CREATE TRIGGER tomb_warm_user_paths BEFORE INSERT ON warm_user_paths WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
-CREATE TRIGGER tomb_watch_seen BEFORE INSERT ON watch_seen WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'watches' AND key = NEW.watch_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+CREATE TRIGGER tomb_watch_seen BEFORE INSERT ON watch_seen WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'watches' AND key = NEW.watch_id) OR NEW.watch_id IN (SELECT id FROM watches WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones)) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
 CREATE TRIGGER tomb_watches BEFORE INSERT ON watches WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 

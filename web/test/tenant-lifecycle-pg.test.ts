@@ -1,4 +1,4 @@
-// Tenant export and deletion (lib/tenant/lifecycle.ts) on Postgres: the schema from every migration (0015 adds the
+// Tenant export and deletion (lib/tenant/lifecycle.ts) on Postgres: the schema from every migration (the lifecycle migration adds the
 // tombstone tables and the guard triggers), a marked row in every tenant-scoped table for two tenants
 // (test/helpers/tenant-seed.ts). Export is complete and leak-free; deletion empties the target, leaves the other tenant
 // byte-identical, records what was retained; the guard refuses late writes. Skipped without DAZL_TEST_PG_URL; CI's

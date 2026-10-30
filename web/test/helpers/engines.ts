@@ -9,14 +9,15 @@ import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { runPgMigrations } from '../../lib/db/migrate-pg.ts'
 import { PG_URL, pgSkip, freshSchema } from './pg-test.ts'
 
-export interface EngineCtx { db: Db; kind: Db['kind']; url?: string; schema?: string }
+// raw: the SQLite handle behind db (for helpers that seed or inspect the store directly); absent on Postgres.
+export interface EngineCtx { db: Db; kind: Db['kind']; url?: string; schema?: string; raw?: Database.Database }
 
 export function bothEngines(name: string, body: (c: EngineCtx) => Promise<void>, opts: { pgMax?: number } = {}): void {
   test(`[sqlite] ${name}`, async () => {
     const raw = new Database(':memory:')
     migrateAllSqlite(raw)
     const db = sqliteDb(raw)
-    try { await body({ db, kind: 'sqlite' }) } finally { await db.close() }
+    try { await body({ db, kind: 'sqlite', raw }) } finally { await db.close() }
   })
   test(`[pg] ${name}`, { skip: pgSkip }, async () => {
     const s = await freshSchema()

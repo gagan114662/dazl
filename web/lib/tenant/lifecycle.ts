@@ -16,9 +16,11 @@
 // A step that fails leaves the state at the last completed step; deleteTenant() again resumes there. Re-running a
 // completed deletion changes nothing.
 //
-// Recreation guard: migrateTenantLifecycle() (lib/db/tenant-guard.ts) adds a BEFORE INSERT trigger to every tenant-scoped table refusing a row
-// for a tombstoned tenant (or under a deleted parent), so in-flight jobs, a late tick or a stale request cannot bring
-// erased data back. Retained tables are guarded too: nothing new is added for a deleted tenant.
+// Recreation guard: migrateTenantLifecycle() (lib/db/tenant-guard.ts) adds to every tenant-scoped table a BEFORE INSERT
+// trigger and a BEFORE UPDATE OF <tenant column / parent key> trigger refusing a row for a tombstoned tenant (or under a
+// deleted parent), so in-flight jobs, a late tick, a stale request or an ownership reassignment cannot bring erased data
+// back or move another tenant's row under the deleted one. Retained tables are guarded too: nothing new is added or
+// moved in for a deleted tenant.
 //
 // Backups: a restore brings back rows deleted after the backup was taken, and loses tombstones written since. The
 // tombstone is also appended to an off-database ledger (tombstoneLedgerEntry; the operator stores it with the backups'
