@@ -19,6 +19,7 @@ import { estimateForBody } from '@/lib/scan/estimate-request'
 import { admitTrialScan, linkTrialReservation, releaseTrialReservation } from '@/lib/billing/trial-budget'
 import { denied } from '@/lib/workspace-access'
 import { cleanOffer, effectiveOffer } from '@/lib/scan/play-offer'
+import { readTenantOffer } from '@/lib/outreach/play-memory'
 
 export async function POST(req: NextRequest) {
   const user = await requireUser()
@@ -51,7 +52,11 @@ export async function POST(req: NextRequest) {
   const offer = offerSupplied ? cleanOffer(body.offer) : ''
   if (offerSupplied && offer.length < 3) return NextResponse.json({ error: 'Say in a few words what you sell for this play' }, { status: 400 })
   if (query.length >= 3 && !offer) {
-    const e = effectiveOffer({ seller, query }, null)
+    // the same inputs drafting reads later (draftOffer: this play's seller snapshot, then the tenant's Memory positioning or
+    // profile offer), so a conflict surfaces here, at creation, for a Memory-only tenant too
+    let tenant: string | null
+    try { tenant = readTenantOffer(getScanDb(), user.tenantId) } catch { return NextResponse.json({ error: 'offer_unreadable' }, { status: 503 }) }
+    const e = effectiveOffer({ seller, query }, tenant)
     if (e.conflict) return NextResponse.json({ error: 'offer_conflict', stated: e.conflict.stated, saved: e.conflict.recorded, ...(e.conflict.withdrawn ? { withdrawn: e.conflict.withdrawn } : {}) }, { status: 409 })
   }
 

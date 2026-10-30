@@ -558,8 +558,9 @@ test('#349 HOLD-12 a request that withdraws the saved offer stays unresolved: no
   for (const q of ['Find dental practices in NYC hiring. We do not offer free trials.', "We don't offer refunds."])
     assert.deepEqual(effectiveOffer({ seller: saved, query: q }, ''), { offer: DENTAL_SELLER, source: 'recorded', conflict: null }, q)
   // the overlap is read on the product words only: an exclusion that shares just the audience is not a withdrawal
-  for (const q of ["We don't offer refunds to restaurants.", "We can't offer discounts for payroll software."])
-    assert.equal(effectiveOffer({ seller: 'Payroll software to restaurants - https://s.example', query: q }, '').source, 'recorded', q)
+  assert.equal(effectiveOffer({ seller: 'Payroll software to restaurants - https://s.example', query: "We don't offer refunds to restaurants." }, '').source, 'recorded')
+  // a term qualified by the saved product is not an unrelated term: it is a choice (offer-withdrawal-classes, class A)
+  assert.equal(effectiveOffer({ seller: 'Payroll software to restaurants - https://s.example', query: "We can't offer discounts for payroll software." }, '').source, 'conflict')
   assert.equal(effectiveOffer({ seller: 'Payroll software to restaurants - https://s.example', query: 'We do not sell payroll software to chains.' }, '').source, 'conflict', 'same product, buyer excluded: a choice')
   // fails closed for a withdrawal that names the saved product in other words; terms only (refunds, trials) do not withdraw it
   const syn = effectiveOffer({ seller: saved, query: 'We no longer sell scheduling tools.' }, '')
@@ -567,10 +568,10 @@ test('#349 HOLD-12 a request that withdraws the saved offer stays unresolved: no
   // a term-only withdrawal still conflicts when the saved product is made of those words
   const tr = effectiveOffer({ seller: 'Sales training courses for SaaS teams - https://s.example', query: 'We no longer sell training.' }, '')
   assert.deepEqual([tr.source, tr.conflict!.withdrawn], ['conflict', 'training'])
-  // a comma-joined replacement is not swallowed into the withdrawn text. statedOffer does not read an offer after a comma
-  // clause, so stated is null: the chooser offers keep-saved or write-this-play's-offer, never the withdrawn text
+  // a comma-joined replacement is read as the stated offer, never swallowed into the withdrawn text (more joiners in
+  // offer-withdrawal-classes, class C)
   const comma = effectiveOffer({ seller: saved, query: `We do not sell ${DENTAL_PRODUCT} anymore, we now sell CRM setup and outbound consulting.` }, '')
-  assert.deepEqual([comma.source, comma.conflict!.withdrawn, comma.conflict!.stated], ['conflict', DENTAL_PRODUCT, null])
+  assert.deepEqual([comma.source, comma.conflict!.withdrawn, comma.conflict!.stated], ['conflict', DENTAL_PRODUCT, 'CRM setup and outbound consulting'])
   // with no saved offer anywhere a withdrawal states none: nothing to draft with (no_profile), nothing invented
   const none = draftOffer({ seller: null, query: `We no longer sell ${DENTAL_PRODUCT}.` }, '')
   assert.equal(none.offer, null)

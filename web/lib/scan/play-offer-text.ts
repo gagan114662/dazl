@@ -263,33 +263,68 @@ export function sameOffer(a: string, b: string): boolean {
 // What a request says the seller no longer or does not sell ("We do not sell X.", "We no longer offer X.", "We are not
 // selling X."), when it names an offer (not a target such as "to agencies"). Such a request contradicts any saved offer
 // it might otherwise fall back to, so the play cannot silently use one: it waits for an explicit choice.
-// Anywhere in the request (after "Note:", "As of May", ...): a seller subject, then a negated sell verb or a stop verb. The
-// capture ends at a sentence end or a comma that starts a new clause ("..., we now sell CRM setup").
-const WITHDRAWN = new RegExp(String.raw`\b(?:i|we|our (?:company|business|team|firm|agency|studio|shop)|the company|we['’]re|we['’]ve)\s+(?:(?:do not|dont|don['’]t|does not|doesnt|doesn['’]t|no longer|are not|are no longer|aren['’]t|is not|is no longer|isn['’]t|am not|will not|won['’]t|cannot|can['’]t)\s+(?:(?:currently|now|really|actually)\s+)?(?:sell|sells|selling|offer|offers|offering|provide|provides|providing)|used to (?:sell|offer|provide)|(?:have |has )?(?:stopped|ceased|quit)\s+(?:selling|offering|providing)|(?:have |has )?discontinued)\s+((?:(?!,\s*(?:we|i|but|and|now|instead)\b)[^.!?;]){2,150})`, 'i')
-// The text a request says is not (or no longer) sold.
-export function withdrawnOffer(query: string | null | undefined): string | null {
-  const m = WITHDRAWN.exec((query ?? '').replace(/\s+/g, ' '))
-  if (!m) return null
-  const o = cleanOffer(m[1].replace(/^(?:our|my|a|an|the)\s+/i, '').replace(/\s+(?:any ?more|anymore)$/i, ''))
+// Anywhere in the request (after "Note:", "As of May", ...): a seller subject, then a negated sell verb or a stop verb, then
+// the rest of the clause up to a sentence end.
+const WITHDRAWN = new RegExp(String.raw`\b(?:i|we|our (?:company|business|team|firm|agency|studio|shop)|the company|we['’]re|we['’]ve)\s+(?:(?:do not|dont|don['’]t|does not|doesnt|doesn['’]t|no longer|are not|are no longer|aren['’]t|is not|is no longer|isn['’]t|am not|will not|won['’]t|cannot|can['’]t)\s+(?:(?:currently|now|really|actually)\s+)?(?:sell|sells|selling|offer|offers|offering|provide|provides|providing)|used to (?:sell|offer|provide)|(?:have |has )?(?:stopped|ceased|quit)\s+(?:selling|offering|providing)|(?:have |has )?discontinued)\s+([^.!?;]{2,300})`, 'i')
+// A replacement named in the same clause: a joiner (comma, colon, dash, or but/and/so/instead/now/only/just), then a sell
+// verb ("..., we now sell X", "... but we do sell X", "... and instead offer X") or only/just/instead ("..., only X").
+const SELL_CLAUSE = String.raw`(?:(?:but|and|so|instead|now)\s+)*(?:(?:i|we)\s+)?(?:(?:now|instead|only|do|also|just)\s+)*(?:sell|sells|offer|offers|provide|provides)\s+`
+const SPLIT = new RegExp(String.raw`(?:\s*[,:]\s*|\s+[-–—]\s+|\s+(?=(?:but|and|so|instead|now|only|just)\s))(?=${SELL_CLAUSE}|(?:(?:but|and)\s+)?(?:only|just|instead)\s+)`, 'i')
+const REPLACEMENT_IN_CLAUSE = new RegExp(String.raw`^(?:${SELL_CLAUSE}|(?:(?:but|and)\s+)?(?:only|just|instead)\s+)(.+)$`, 'i')
+// ... or the next clause or sentence, with a seller subject ("; instead we sell X", ". Now we sell X")
+const REPLACEMENT_NEXT = /^[\s.;!?]+(?:(?:instead|now|but|so)\s*,?\s+)*(?:i|we)\s+(?:(?:now|instead|only|also|just|do)\s+)*(?:sell|sells|offer|offers|provide|provides)\s+([^.!?;]{2,150})/i
+const offerText = (t: string) => {
+  const o = cleanOffer(t.replace(/^(?:our|my|a|an|the)\s+/i, '').replace(/\s+(?:any ?more|anymore)\s*$/i, ''))
   return o.length >= 2 && !NOT_AN_OFFER.test(o) ? o : null
 }
-// A withdrawal contradicts the saved offer unless it only names a commercial term (refunds, free trials, on-site
-// training, ...): it fails closed, since a withdrawal may name the saved product in other words ("scheduling tools" for
-// appointment booking software). One that names only terms is left to the ordinary comparison.
-const TERMS = new Set(['refund', 'refunds', 'discount', 'discounts', 'free', 'trial', 'trials', 'guarantee', 'guarantees', 'warranty', 'warranties',
-  'support', 'training', 'onboarding', 'on', 'site', 'onsite', 'contract', 'contracts', 'long', 'term', 'payment', 'payments', 'plan', 'plans', 'credit',
-  'invoicing', 'terms', 'returns', 'exchanges', 'shipping', 'delivery', 'international', 'weekend', 'phone', 'live', 'chat', '24', '7', 'custom', 'pricing'])
-const GENERIC = new Set(['we', 'sell', 'sells', 'selling', 'and', 'the', 'for', 'to', 'in', 'of', 'with', 'our', 'your', 'a', 'an', 'at', 'or', 'any'])
-const contentWords = (t: string) => t.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(w => w && !GENERIC.has(w))
-// the product words only: an audience clause ("... to restaurants") is a buyer, not what is sold
-const productPart = (t: string) => t.split(/\s+(?:to|for|in|at|across|within|with)\s+/i)[0]
+// What a request says is not (or no longer) sold, and the offer it names instead, if any.
+export function readWithdrawal(query: string | null | undefined): { withdrawn: string; replacement: string | null } | null {
+  const q = (query ?? '').replace(/\s+/g, ' ')
+  const m = WITHDRAWN.exec(q)
+  if (!m) return null
+  const split = SPLIT.exec(m[1])
+  const withdrawn = offerText(split ? m[1].slice(0, split.index) : m[1])
+  if (!withdrawn) return null
+  const inClause = split ? REPLACEMENT_IN_CLAUSE.exec(m[1].slice(split.index + split[0].length)) : null
+  const next = inClause ? null : REPLACEMENT_NEXT.exec(q.slice(m.index + m[0].length))
+  const r = inClause?.[1] ?? next?.[1]
+  const replacement = r ? offerText(r) : null
+  return { withdrawn, replacement: replacement && replacement.length >= 3 && !sameOffer(replacement, withdrawn) ? replacement : null }
+}
+export function withdrawnOffer(query: string | null | undefined): string | null {
+  return readWithdrawal(query)?.withdrawn ?? null
+}
+// A withdrawal leaves the saved offer in place only when it is demonstrably a commercial-term exclusion unrelated to it:
+// its object is commercial terms only (refunds, free trials, on-site training, ...), any complement is wholly a buyer or
+// place audience (buyerGroup/tailOk: "to restaurants"), and no term word appears in the saved offer in any number
+// ("warranties" against "warranty management software"). Any other object, complement or relation - a product named in
+// other words ("scheduling tools"), a term qualified by a product ("support for payroll software"), an unparsed tail -
+// keeps the play unresolved (fail closed).
+const TERMS = new Set(['refund', 'discount', 'free', 'trial', 'guarantee', 'warranty', 'support', 'training', 'onboarding', 'onsite', 'contract',
+  'long', 'term', 'payment', 'plan', 'credit', 'invoicing', 'return', 'exchange', 'shipping', 'delivery', 'international', 'weekend', 'phone', 'live',
+  'chat', '247', 'custom', 'pricing', 'annual', 'monthly'])
+// one word in any number: warranties/warranty, deliveries/delivery, classes/class, batches/batch, payments/payment
+const fold = (w: string) => {
+  const x = w.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+  if (x.length > 4 && x.endsWith('ies')) return `${x.slice(0, -3)}y`
+  if (/(?:ss|sh|ch|x|z)es$/.test(x)) return x.slice(0, -2)
+  if (x.length > 3 && x.endsWith('s') && !/(?:ss|us|is)$/.test(x)) return x.slice(0, -1)
+  return x
+}
+const GENERIC = new Set(['we', 'sell', 'and', 'the', 'for', 'to', 'in', 'of', 'with', 'our', 'your', 'a', 'an', 'at', 'or', 'any', 'https', 'http', 'www'])
+function unrelatedTermExclusion(withdrawn: string, saved: string): boolean {
+  const words = withdrawn.replace(/,/g, ' , ').trim().split(/\s+/).filter(Boolean)
+  let k = 0
+  while (k < words.length && (TERMS.has(fold(words[k])) || (k > 0 && [',', 'and', 'or'].includes(words[k].toLowerCase())))) k++
+  if (k === 0 || !TERMS.has(fold(words[k - 1]))) return false
+  const tail = words.slice(k)
+  const audience = !tail.length || (tail[0].toLowerCase() === 'to' ? buyerGroup(tail.slice(1)).some(n => tailOk(tail.slice(1 + n))) : tailOk(tail))
+  if (!audience) return false
+  const savedWords = new Set(saved.split(/[^\p{L}\p{N}]+/u).filter(w => w && !GENERIC.has(w.toLowerCase())).map(fold))
+  return !words.slice(0, k).some(w => savedWords.has(fold(w)))
+}
 function withdrawsSaved(withdrawn: string, saved: string): boolean {
-  if (sameOffer(withdrawn, saved)) return true
-  const words = contentWords(productPart(withdrawn))
-  // a term is only exempt when the saved product is not made of it ("We no longer sell training" for a training offer)
-  const stem = (w: string) => w.length > 3 ? w.replace(/s$/, '') : w
-  const savedWords = new Set(contentWords(productPart(saved)).map(stem))
-  return words.length === 0 || words.some(w => savedWords.has(stem(w))) || !words.every(w => TERMS.has(w))
+  return !unrelatedTermExclusion(withdrawn, saved)
 }
 
 export function effectiveOffer(play: { offer?: string | null; seller?: string | null; query?: string | null }, profileSells: string | null | undefined): PlayOffer {
@@ -299,8 +334,11 @@ export function effectiveOffer(play: { offer?: string | null; seller?: string | 
   const base = recorded ?? (cleanOffer(profileSells) || null)
   const stated = statedOffer(play.query)
   // a request that withdraws an offer never resolves to a saved one by default: explicit choice only
-  const withdrawn = withdrawnOffer(play.query)
-  if (withdrawn && base && withdrawsSaved(withdrawn, base)) return { offer: null, source: 'conflict', conflict: { stated: stated && !sameOffer(stated, withdrawn) ? stated : null, recorded: base, withdrawn } }
+  const w = readWithdrawal(play.query)
+  if (w && base && withdrawsSaved(w.withdrawn, base)) {
+    const named = w.replacement ?? (stated && !sameOffer(stated, w.withdrawn) ? stated : null)
+    return { offer: null, source: 'conflict', conflict: { stated: named, recorded: base, withdrawn: w.withdrawn } }
+  }
   // the request's whole offer statement is compared (its buyers and seller negations too), not only the offer words
   if (stated && base && !sameOffer(play.query ?? '', base)) return { offer: null, source: 'conflict', conflict: { stated, recorded: base } }
   if (base) return { offer: base, source: recorded ? 'recorded' : 'profile', conflict: null }

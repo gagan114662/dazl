@@ -70,6 +70,12 @@ const MATRIX: Row[] = [
   ['withdrawn', 'We no longer sell it.', 'choice'],
   ['withdrawn', 'We no longer sell that product.', 'choice'],
   ['withdrawn', 'We stopped selling our dental product.', 'choice'],
+  // a commercial term qualified by the saved product, or whose relation to it is unresolved, is a choice
+  ['qualified term', `We no longer offer support for ${P}.`, 'choice'],
+  ['qualified term', `We don't offer free trials of our ${P}.`, 'choice'],
+  ['qualified term', `We no longer offer discounts on appointment booking.`, 'choice'],
+  ['qualified term', 'We no longer offer onboarding for the reminder platform.', 'choice'],
+  ['qualified term', 'We do not offer support on weekends for dental practices in Premium Tiers.', 'choice'],
   ['unrelated exclusion', 'Find dental practices in NYC hiring. We do not offer free trials.', 'equivalent'],
   ['unrelated exclusion', 'Independent dental practices in New York City hiring a front-desk coordinator. We don\'t provide on-site training.', 'equivalent'],
 ]
