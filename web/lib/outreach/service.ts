@@ -74,7 +74,10 @@ export function leadEvidenceEligible(db: Database.Database, tenantId: string, le
 export const testFixtureSend = (db: Database.Database, tenantId: string, m: { to_email: string; test: number }): boolean =>
   m.test === 1 && testRecipientApproved(db, tenantId, m.to_email)
 
-export interface Deps extends OAuthDeps { baseUrl?: string; sendFn?: typeof gmailSend }
+// sendAuthority: a caller's own final authorization for THIS send (autopilot under a calibrated launch: the same accepted
+// policy, mailbox and claim authority it started with). Checked at the claim and again after the token refresh,
+// immediately before the bytes go to Gmail; a refusal code releases the claim like any other final check.
+export interface Deps extends OAuthDeps { baseUrl?: string; sendFn?: typeof gmailSend; sendAuthority?: () => string | null }
 const nowS = (d: Deps) => d.now ?? Math.floor(Date.now() / 1000)
 const baseUrl = (d: Deps) => (d.baseUrl ?? process.env.PUBLIC_BASE_URL ?? 'https://dazl.ai').replace(/\/$/, '')
 
@@ -489,6 +492,8 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   const acct = db.prepare('SELECT email FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string } | undefined
   if (!acct) release('gmail_not_connected')
   if (accountSendCount(db, tenantId, nowS(d)) > DAILY_CAP) release('daily_cap') // this claim counts itself
+  const authorityAtClaim = d.sendAuthority?.() ?? null
+  if (authorityAtClaim) release(authorityAtClaim)
 
   let token: string
   try {
@@ -513,6 +518,8 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
     if (set && set.status !== 'approved') release('approve_sequence_set')
   }
   if (tableExists(db,'autopilot_settings') && (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as {paused:number}|undefined)?.paused) release('paused')
+  const authorityAtHandoff = d.sendAuthority?.() ?? null
+  if (authorityAtHandoff) release(authorityAtHandoff)
   const master = d.master ?? getMasterKey()
   const unsubUrl = `${baseUrl(d)}/api/unsubscribe?t=${unsubToken(id, master)}`
   const raw = toBase64Url(buildMime({

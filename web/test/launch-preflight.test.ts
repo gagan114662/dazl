@@ -8,7 +8,7 @@ const policy = (over: Partial<LaunchPolicy> = {}): LaunchPolicy => ({
   version: LAUNCH_POLICY_VERSION, sender: 'founder@seller.test', audience: { playIds: ['play-1'] },
   exclusions: { domains: ['customer.test'], emails: ['ceo@partner.test'] }, dailyCap: 20, spendCapUsd: 25,
   claims: { mayStatePrice: true, benchmarkUrls: [] }, stops: { pauseOnAnyReply: false, maxBounceRate: 0.05 },
-  testInbox: 'qa@seller.test', ...over,
+  testInbox: 'founder@seller.test', ...over,
 })
 const sample = (i: number, over: Partial<SampleDraft> = {}): SampleDraft => ({ leadId: `l${i}`, to: `buyer${i}@prospect${i}.test`, body: 'Saw your second clinic opening.', evidenceOk: true, dateOk: true, contactOk: true, claimIssues: [], ...over })
 const input = (over: Partial<PreflightInput> = {}): PreflightInput => ({
@@ -30,6 +30,10 @@ test('policy problems: limits, owned test inbox only, https benchmarks, current 
   // calibration mail never goes to an arbitrary address: only the sender or its own domain
   assert.deepEqual(policyProblems(policy({ testInbox: 'someone@prospect.test' })), ['test_inbox_not_owned'])
   assert.deepEqual(policyProblems(policy({ testInbox: 'founder@seller.test' })), [])
+  // a shared domain proves nothing: another mailbox on the sender's domain, or on a consumer domain, is not owned
+  assert.deepEqual(policyProblems(policy({ testInbox: 'qa@seller.test' })), ['test_inbox_not_owned'])
+  assert.deepEqual(policyProblems(policy({ sender: 'founder@gmail.com', testInbox: 'unrelated-person@gmail.com' })), ['test_inbox_not_owned'])
+  assert.deepEqual(policyProblems(policy({ sender: 'founder@gmail.com', testInbox: 'Founder@Gmail.com' })), [])
   assert.deepEqual(policyProblems(policy({ claims: { mayStatePrice: true, benchmarkUrls: ['http://x.test'] } })), ['benchmark_not_https'])
   assert.deepEqual(policyProblems(policy({ version: '2026-01-01' })), ['version_not_current'])
 })
@@ -64,4 +68,21 @@ test('rollout cap: strict for the first week, then the policy cap, never above t
   assert.equal(calibratedDailyCap(policy({ dailyCap: 2 }), t0, t0 + 3600), 2)
   assert.equal(calibratedDailyCap(policy(), t0, t0 + 8 * 86400), 20)
   assert.equal(calibratedDailyCap(policy({ dailyCap: 999 }), t0, t0 + 8 * 86400), 50)
+})
+
+test('HOLD: stops are checked by name and fail closed; samples must be distinct leads with every field present', () => {
+  // an empty, partial or wrongly-typed stops object never passes vacuously
+  for (const stops of [{}, { reply: true }, { reply: true, optOut: true, bounce: true, uncertainPause: true, domainCap: 'yes' }, { other: true }])
+    assert.ok(preflight(input({ stopsEnforced: stops as unknown as PreflightInput['stopsEnforced'] })).failures.includes('stop_not_enforced'), JSON.stringify(stops))
+  assert.ok(preflight(input({ stopsEnforced: undefined as unknown as PreflightInput['stopsEnforced'] })).failures.includes('stop_not_enforced'))
+  // the same sample, or the same lead, three times is one sample
+  const one = sample(1)
+  assert.ok(preflight(input({ samples: [one, one, one] })).failures.includes('too_few_samples'))
+  assert.ok(preflight(input({ samples: [sample(1), sample(1, { to: 'other@prospect9.test' }), sample(1)] })).failures.includes('too_few_samples'))
+  // malformed samples are invalid and do not count
+  for (const bad of [{ leadId: '' }, { to: 'not-an-email' }, { body: '  ' }, { evidenceOk: undefined }, { claimIssues: undefined }]) {
+    const r = preflight(input({ samples: [sample(1), sample(2), sample(3, bad as Partial<SampleDraft>)] }))
+    assert.equal(r.ok, false, JSON.stringify(bad)); assert.ok(r.failures.includes('sample_invalid') && r.failures.includes('too_few_samples'), JSON.stringify(bad))
+  }
+  assert.deepEqual(preflight(input()), { ok: true, failures: [], heldLeads: [] })
 })

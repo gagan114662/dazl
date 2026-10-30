@@ -60,7 +60,7 @@ const fixture = (over: Partial<AcceptanceFixture> = {}): AcceptanceFixture => ({
   policy: {
     version: LAUNCH_POLICY_VERSION, sender: 'founder@dazl.test', audience: { playIds: ['founder-led-b2b', 'agencies', 'outbound-teams'] },
     exclusions: { domains: ['existingcustomer.test'], emails: [] }, dailyCap: 10, spendCapUsd: 20,
-    claims: { mayStatePrice: true, benchmarkUrls: [] }, stops: { pauseOnAnyReply: true, maxBounceRate: 0.05 }, testInbox: 'qa@dazl.test',
+    claims: { mayStatePrice: true, benchmarkUrls: [] }, stops: { pauseOnAnyReply: true, maxBounceRate: 0.05 }, testInbox: 'founder@dazl.test',
   },
   launch: { acceptedVersion: LAUNCH_POLICY_VERSION, connectedMailbox: 'founder@dazl.test', testInboxDelivered: true, stopsEnforced: { reply: true, optOut: true, bounce: true, uncertainPause: true, domainCap: true } },
   answerPolicy: { cta: 'signup', maxAutoReplies: 2 },
@@ -135,7 +135,8 @@ test('the path holds at the step that fails, and later steps get nothing to work
   const held = runAcceptance(fixture({ candidates: cands }), NOW)
   assert.ok(held.holds.includes('preflight'))
   assert.deepEqual(held.preflight?.heldLeads, ['lead-1', 'lead-2'])
-  assert.ok(held.preflight?.failures.includes('sample_excluded') && held.preflight?.failures.includes('sample_contact'))
+  // no contact at all is not a well-formed sample (#405 preflight): held as sample_invalid, never counted
+  assert.ok(held.preflight?.failures.includes('sample_excluded') && held.preflight?.failures.includes('sample_invalid'))
 
   // an unaccepted launch policy holds every send
   const unaccepted = runAcceptance(fixture({ launch: { ...fixture().launch, acceptedVersion: null } }), NOW)

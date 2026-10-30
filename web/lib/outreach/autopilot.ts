@@ -2,7 +2,9 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { gmailStatus } from '../gmail/oauth.ts'
 import { createDraft, approve, getSettings, isSuppressed, OutreachError, sendMessage, suppress, type Deps } from './service.ts'
-import { polishDraft } from './draft-llm.ts'
+import { polishDraft, type LlmDeps } from './draft-llm.ts'
+import { calibratedStop, claimIssuesFor, launchGate, launchProviders, migrateLaunchPolicy, outsidePolicy, type SpendStop } from './launch-policy.ts'
+import { providers as defaultProviders } from '../llm/provider.ts'
 
 // Autopilot sends first-touch email to verified, business-published addresses through the user's own Gmail,
 // inside hard limits. It never sends follow-ups, never re-contacts, and never touches suppressed addresses.
@@ -26,6 +28,7 @@ export const MIN_CONFIDENCE = 80
 export const autopilotAvailable = (env: Record<string, string | undefined> = process.env) => env.AUTOPILOT_ENABLED === '1' && env.AUTOPILOT_KILL !== '1'
 
 export function migrateAutopilot(db: Database.Database): void {
+  migrateLaunchPolicy(db) // a calibrated launch's accepted policy (lib/outreach/launch-policy.ts, #405)
   db.exec(`
     CREATE TABLE IF NOT EXISTS autopilot_settings (
       tenant_id TEXT PRIMARY KEY,
@@ -118,37 +121,79 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
   if (uncertain) { pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send') }
 
   const leads = db.prepare(
-    `SELECT l.id, l.contact FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
+    `SELECT l.id, l.contact, l.source_url, j.id AS play FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
      WHERE j.user_id = ? AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND l.contact IS NOT NULL AND l.quarantined_at IS NULL
        AND NOT EXISTS (SELECT 1 FROM outreach_messages m WHERE m.tenant_id = ? AND m.lead_id = l.id)
      ORDER BY l.score DESC LIMIT 25`,
-  ).all(tenantId, MIN_CONFIDENCE, tenantId) as { id: string; contact: string }[]
+  ).all(tenantId, MIN_CONFIDENCE, tenantId) as { id: string; contact: string; source_url: string | null; play: string }[]
+  // A calibrated launch (#405): an accepted, current policy launched by a passing preflight, from the policy's own
+  // mailbox. It replaces only the hand-approval warmup; it narrows every send to the policy and adds its stops and
+  // rollout cap. Without one, everything below is exactly as before.
+  const mailbox = () => { const g = gmailStatus(db, tenantId); return g?.status === 'active' ? g.email : null }
 
   for (const l of leads) {
     // re-read state each time so a pause or kill takes effect between sends
     if (getState(db, tenantId).paused || !autopilotAvailable(env) || !getState(db, tenantId).enabled) return stop('paused')
+    const gate = launchGate(db, tenantId, mailbox(), now)
+    if (gate.calibrated) {
+      const halt = calibratedStop(db, tenantId, gate)
+      if (halt) { pause(db, tenantId, halt); return stop(halt) }
+      const outside = outsidePolicy(gate.policy, l.play, l.contact)
+      if (outside) { out.skipped++; audit(db, tenantId, 'skipped', outside, l.id); continue }
+    }
     let id: string
     try {
       id = createDraft(db, tenantId, l.id, businessName)
-      try { await polishDraft(db, tenantId, id, businessName, d) } catch { /* template stays */ }
+      // under a calibrated launch every model call reserves its worst case against the launch's spend cap first
+      let refused: SpendStop | null = null
+      const pd = gate.calibrated ? { ...d, providers: launchProviders((d as LlmDeps).providers ?? defaultProviders, db, tenantId, gate.launchedAt, gate.policy.spendCapUsd, now, why => { refused = why }) } : d
+      try { await polishDraft(db, tenantId, id, businessName, pd) } catch { /* template stays */ }
+      if (refused) { audit(db, tenantId, 'held_spend', refused, l.id, id); pause(db, tenantId, refused); return { ...out, held: out.held + 1, stopped: refused } }
     } catch (e) {
       out.skipped++; audit(db, tenantId, 'skipped', e instanceof OutreachError ? e.code : 'error', l.id); continue
     }
-    const to = (db.prepare('SELECT to_email FROM outreach_messages WHERE id = ?').get(id) as { to_email: string }).to_email
-    if (sentTotal(db, tenantId) < WARMUP_SENDS(env)) { out.held++; audit(db, tenantId, 'held_warmup', 'needs your approval', l.id, id); continue }
-    if (autoSent24h(db, tenantId, now) >= st.daily_cap) { audit(db, tenantId, 'daily_cap', `cap ${st.daily_cap}`, l.id, id); return { ...out, held: out.held + 1, stopped: 'daily_cap' } }
+    // Drafting awaited a model: re-read the launch. A calibrated launch must still be the SAME acceptance it was when this
+    // lead started; any change (another policy accepted, launch cleared, mailbox changed) holds the draft and stops the
+    // run, never falling back to the warmup or to the stale policy.
+    if (gate.calibrated) {
+      const now2 = launchGate(db, tenantId, mailbox(), now)
+      if (!now2.calibrated || now2.acceptanceId !== gate.acceptanceId) { audit(db, tenantId, 'held_policy_changed', 'the launch policy changed while drafting', l.id, id); return { ...out, held: out.held + 1, stopped: 'policy_changed' } }
+    }
+    const final = db.prepare('SELECT to_email, subject, body FROM outreach_messages WHERE id = ?').get(id) as { to_email: string; subject: string; body: string }
+    const to = final.to_email
+    // the accepted policy's claim authority on the final words, after drafting and polish, every time: anything the policy
+    // does not allow (a price, an unlisted link) stays a draft for the tenant instead of being sent
+    if (gate.calibrated && claimIssuesFor(gate.policy, `${final.subject}\n${final.body}`, l.source_url ? [l.source_url] : []).length) { out.held++; audit(db, tenantId, 'held_claims', 'outside the launch policy', l.id, id); continue }
+    if (!gate.calibrated && sentTotal(db, tenantId) < WARMUP_SENDS(env)) { out.held++; audit(db, tenantId, 'held_warmup', 'needs your approval', l.id, id); continue }
+    const cap = gate.calibrated ? Math.min(st.daily_cap, gate.cap) : st.daily_cap
+    if (autoSent24h(db, tenantId, now) >= cap) { audit(db, tenantId, 'daily_cap', `cap ${cap}`, l.id, id); return { ...out, held: out.held + 1, stopped: 'daily_cap' } }
     const domain = to.split('@')[1]
     if (domainSentRecently(db, tenantId, domain, now)) { out.held++; audit(db, tenantId, 'held_domain_cap', 'one email per company per 7 days', l.id, id); continue }
     if (isSuppressed(db, tenantId, to)) { out.skipped++; audit(db, tenantId, 'skipped', 'suppressed', l.id, id); continue }
+    // Under a calibrated launch the send service re-checks, at its claim and again after its own awaits right before
+    // Gmail, that the launch is still the same acceptance from the same mailbox and that the final words are inside it.
+    const sendAuthority = gate.calibrated ? () => {
+      const g = launchGate(db, tenantId, mailbox(), now)
+      if (!g.calibrated || g.acceptanceId !== gate.acceptanceId) return 'launch_policy_changed'
+      const m = db.prepare('SELECT to_email, subject, body FROM outreach_messages WHERE id = ?').get(id) as { to_email: string; subject: string; body: string }
+      if (outsidePolicy(g.policy, l.play, m.to_email) || claimIssuesFor(g.policy, `${m.subject}\n${m.body}`, l.source_url ? [l.source_url] : []).length) return 'launch_policy_changed'
+      return null
+    } : undefined
     try {
       approve(db, tenantId, id)
-      const r = await sendMessage(db, tenantId, id, d)
+      const r = await sendMessage(db, tenantId, id, sendAuthority ? { ...d, sendAuthority } : d)
       if (r === 'sent') { out.sent++; audit(db, tenantId, 'sent', undefined, l.id, id) }
       else { audit(db, tenantId, 'uncertain', 'send outcome unknown', l.id, id); pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send') }
     } catch (e) {
       const code = e instanceof OutreachError ? e.code : 'error'
       audit(db, tenantId, 'send_failed', code, l.id, id)
       if (code === 'gmail_reconnect_needed' || code === 'gmail_not_connected') { pause(db, tenantId, code); return stop(code) }
+      // the launch changed under the send: the message goes back to a draft for the tenant (its approval was autopilot's,
+      // under authority that no longer holds) and the run stops
+      if (code === 'launch_policy_changed') {
+        db.prepare("UPDATE outreach_messages SET status = 'draft', approved_hash = NULL, error = ? WHERE id = ? AND tenant_id = ? AND status = 'approved'").run(code, id, tenantId)
+        return { ...out, held: out.held + 1, stopped: 'policy_changed' }
+      }
       out.held++
     }
   }
