@@ -21,7 +21,7 @@ export type Env = Record<string, string | undefined>
 export const DEFAULT_RETENTION_DAYS = 14
 export const MAX_RETENTION_DAYS = 365
 export const MAX_STRING_CHARS = 50_000      // one prompt, page or body; longer values are cut and marked
-export const MAX_TRACE_BYTES = 2_000_000     // the whole stored trace; above this only span metadata is kept
+export const MAX_TRACE_BYTES = 2_000_000     // the whole stored trace as UTF-8 JSON: a hard bound (capTrace), never exceeded on insert
 export const SETTLE_MS = 5_000
 export const FINISH_MS = 15_000
 
@@ -79,16 +79,24 @@ export function beginScanTrace<D extends { trace?: TraceRecorder; fetchImpl?: ty
       }
       const stored = capTrace(redactTrace(raw))
       const json = JSON.stringify(stored)
+      if (Buffer.byteLength(json) > MAX_TRACE_BYTES) throw new Error('trace over MAX_TRACE_BYTES') // capTrace guarantees this; never insert past it
       const at = Math.floor(now() / 1000)
       await db.run('INSERT INTO scan_traces (id, tenant_id, job_id, attempt, created_at, bytes, trace) VALUES (?, ?, ?, ?, ?, ?, ?)', [stored.id, job.user_id, job.id, job.attempts, at, Buffer.byteLength(json), json])
       await db.run('DELETE FROM scan_traces WHERE tenant_id = ? AND created_at < ?', [job.user_id, at - cfg.retentionDays * 86_400])
       return stored.id
     } catch (e) {
-      // Never into the run: the scan's outcome stands whether or not its trace was kept. No trace content in the log.
-      console.error(JSON.stringify({ trace_capture: 'failed', job: job.id, error: e instanceof Error ? e.message.slice(0, 200) : 'error' }))
+      // Never into the run: the scan's outcome stands whether or not its trace was kept. Never the error's message in the
+      // log: a store error can quote the row it refused (trace content). Its class and code only.
+      console.error(JSON.stringify({ trace_capture: 'failed', job: job.id, error: errorKind(e) }))
       return null
     }
   }
+}
+
+const errorKind = (e: unknown): string => {
+  const code = (e as { code?: unknown } | null)?.code
+  const name = e instanceof Error ? e.name : typeof e
+  return typeof code === 'string' && /^[A-Z0-9_]{1,40}$/.test(code) ? `${name}:${code}` : name
 }
 
 const parseIcp = (s: string | null | undefined): unknown => { try { return s ? JSON.parse(s) : undefined } catch { return undefined } }
@@ -102,20 +110,55 @@ async function jobLeads(db: Db, job: TraceJob): Promise<TraceLead[]> {
   } catch { return [] }
 }
 
-// Cuts every string to MAX_STRING_CHARS; if the whole trace is still over MAX_TRACE_BYTES, keeps only span metadata.
-// What was cut is recorded in `capture`, so a stored trace never looks more complete than it is.
-export function capTrace(t: Trace): Trace {
+// Fits a trace into `maxBytes` of UTF-8 JSON - the exact bytes stored - dropping content in stages, each recorded in
+// `capture` (with complete: false), so a stored trace never looks more complete than it is:
+//   1. every string and key cut to MAX_STRING_CHARS (never splitting a surrogate pair);
+//   2. span inputs/outputs dropped, span metadata kept;
+//   3. output leads dropped (count kept);
+//   4. input dropped and spans dropped (count kept): a header only.
+// Throws when even the header does not fit (an absurdly small bound): the caller then stores nothing.
+export function capTrace(t: Trace, maxBytes = MAX_TRACE_BYTES): Trace {
   let cut = 0
+  const cutStr = (v: string): string => {
+    if (v.length <= MAX_STRING_CHARS) return v
+    cut++
+    let n = MAX_STRING_CHARS
+    const c = v.charCodeAt(n - 1)
+    if (c >= 0xd800 && c <= 0xdbff) n-- // a high surrogate whose pair would be cut off
+    return `${v.slice(0, n)}…[truncated]`
+  }
   const deep = (v: unknown): unknown => {
-    if (typeof v === 'string') { if (v.length <= MAX_STRING_CHARS) return v; cut++; return `${v.slice(0, MAX_STRING_CHARS)}…[truncated]` }
+    if (typeof v === 'string') return cutStr(v)
     if (Array.isArray(v)) return v.map(deep)
-    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, deep(x)]))
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [cutStr(k), deep(x)]))
     return v
   }
-  const capped = { ...(deep(t) as Trace) }
-  capped.capture = { truncated_strings: cut, ...(t.capture ?? {}) }
-  if (Buffer.byteLength(JSON.stringify(capped)) <= MAX_TRACE_BYTES) return capped
-  return { ...capped, spans: capped.spans.map(s => ({ ...s, input: { url: (s.input as { url?: unknown }).url ?? null, stage: (s.input as { stage?: unknown }).stage ?? null }, output: null })), capture: { ...capped.capture, spans_metadata_only: true } }
+  const fits = (x: Trace) => Buffer.byteLength(JSON.stringify(x)) <= maxBytes
+  const base = deep(t) as Trace
+  const prior = t.capture ?? {}
+  const mark = (x: Trace, more: NonNullable<Trace['capture']>): Trace => {
+    const truncated = (prior.truncated_strings ?? 0) + cut
+    const c = { ...prior, ...more, ...(truncated ? { truncated_strings: truncated } : {}) }
+    const dropped = !!(c.truncated_strings || c.spans_metadata_only || c.spans_omitted || c.leads_omitted || c.input_omitted || prior.complete === false)
+    return { ...x, capture: { ...c, complete: !dropped, max_bytes: maxBytes } }
+  }
+  const s1 = mark(base, {})
+  if (fits(s1)) return s1
+  const meta = base.spans.map(s => ({ ...s, input: { url: typeof (s.input as { url?: unknown }).url === 'string' ? cutStr(String((s.input as { url: string }).url)).slice(0, 2_000) : null, stage: (s.input as { stage?: unknown }).stage ?? null }, output: null, ...(s.error ? { error: s.error.slice(0, 300) } : {}) }))
+  const s2 = mark({ ...base, spans: meta }, { spans_metadata_only: true })
+  if (fits(s2)) return s2
+  const leads = base.output?.leads.length ?? 0
+  const s3 = mark({ ...base, spans: meta, ...(base.output ? { output: { status: base.output.status.slice(0, 200), leads: [] } } : {}) }, { spans_metadata_only: true, ...(leads ? { leads_omitted: leads } : {}) })
+  if (fits(s3)) return s3
+  const header: Trace = {
+    v: base.v, kind: base.kind, id: base.id, path: base.path, synthetic: base.synthetic, redacted: base.redacted, started_at: base.started_at.slice(0, 40),
+    agent: { commit: base.agent.commit ? base.agent.commit.slice(0, 64) : null, ...(base.agent.label ? { label: base.agent.label.slice(0, 64) } : {}) },
+    input: { request: '', as_of: base.input.as_of.slice(0, 40) }, spans: [],
+    ...(base.output ? { output: { status: base.output.status.slice(0, 200), leads: [] } } : {}),
+  }
+  const s4 = mark(header, { spans_metadata_only: true, input_omitted: true, ...(base.spans.length ? { spans_omitted: base.spans.length } : {}), ...(leads ? { leads_omitted: leads } : {}) })
+  if (fits(s4)) return s4
+  throw new Error('trace header alone is over the byte bound')
 }
 
 export interface StoredTraceRow { id: string; job_id: string; attempt: number; created_at: number; bytes: number }

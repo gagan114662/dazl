@@ -34,7 +34,8 @@ export interface Trace {
   // code happens to build (ATS boards, filings, feeds). Never on a real trace: a recorded World answers only what it saw.
   synthetic_defaults?: { http?: { status: number; body: string } }
   // A captured production trace (lib/evals/capture.ts) that had to be cut to fit the store says so here.
-  capture?: { truncated_strings?: number; spans_metadata_only?: boolean }
+  // `complete: false` whenever anything was dropped; worldFromTrace refuses such a trace.
+  capture?: { complete?: boolean; max_bytes?: number; truncated_strings?: number; spans_metadata_only?: boolean; spans_omitted?: number; leads_omitted?: number; input_omitted?: boolean }
 }
 export interface TraceLead { company: string; name: string; contact: string | null; source_url: string; excerpt: string | null; event_date: string | null; review_reason: string | null; confidence: number | null }
 

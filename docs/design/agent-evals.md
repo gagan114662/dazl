@@ -206,12 +206,14 @@ resolves: model providers and the verifier's page fetch via `deps.trace`, TinyFi
 `fetchImpl` call. Off, `runJob` is exactly the untraced run: no wrapper, no `trace`, nothing stored. A seam whose
 presence changes behaviour is never added (`newsHttp` turns news search on; `fetchPage` changes the resolution call).
 
-On finish the trace is redacted (`redactTrace`: secrets, emails, phones, profile slugs, extracted names), size-capped
-(50,000 characters per string, 2 MB per trace, beyond which only span metadata is kept; the `capture` field says what was
-cut), and written to `scan_traces` in the app's own store: tenant-scoped, one row per attempt, PG
-`0017_scan_traces.sql`. There is no third-party trace store. Reads (`listTraces`, `getTrace`) always take the tenant; another
+On finish the trace is redacted (`redactTrace`, over every string of the trace including span errors and metadata:
+secrets, emails, phones, profile slugs, extracted names), size-capped, and written. The cap is a hard bound on the exact
+UTF-8 JSON bytes stored (2 MB): strings are cut to 50,000 characters, then span contents, then output leads, then input
+and spans are dropped until it fits, and the insert refuses anything over it. `capture` records each drop with
+`complete: false`, and `worldFromTrace` refuses an incomplete capture. It is written to `scan_traces` in the app's own store: tenant-scoped, one row per attempt, PG
+`0018_scan_traces.sql`. There is no third-party trace store. Reads (`listTraces`, `getTrace`) always take the tenant; another
 tenant's trace id answers like an unknown one. Recording or storing never reaches the run: a failure is logged as
-`{"trace_capture":"failed"}` without content, and the scan's outcome stands. Response bodies are read from a clone in the
+`{"trace_capture":"failed"}` with the error's class and code only (never its message, which can quote the row), and the scan's outcome stands. Response bodies are read from a clone in the
 background (capped), so no caller waits on capture; a model provider's own API records no request or response body.
 Storing happens after the run's own work and is bounded: body reads get 5 s (then what was read is kept, marked
 `truncated`, and the stream is cancelled) and the whole finish 15 s, so a stalled stream or store can never keep `runJob`,

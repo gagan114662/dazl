@@ -58,5 +58,9 @@ export function redactTrace(t: Trace, salt: Buffer = randomBytes(16)): Trace {
   }
   // Object keys too: a World keys pages and HTTP answers by URL, and a URL can carry an email or a profile slug.
   const deep = (v: unknown): unknown => typeof v === 'string' ? str(v) : Array.isArray(v) ? v.map(deep) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [str(k), deep(x)])) : v
-  return { ...t, redacted: true, input: deep(t.input) as Trace['input'], spans: t.spans.map(s => ({ ...s, input: deep(s.input) as Record<string, unknown>, output: deep(s.output) })), ...(t.output ? { output: deep(t.output) as Trace['output'] } : {}) }
+  // EVERY string of the trace goes through the pass - span errors (an inner call's error message can quote a URL, a
+  // header or an address), names, the agent label, metadata - except the structural identifiers this module's own code
+  // wrote (trace and span ids, kinds, the path), which are put back as they were.
+  const all = deep(t) as Trace
+  return { ...all, v: t.v, kind: t.kind, id: t.id, path: t.path, redacted: true, spans: all.spans.map((s, i) => ({ ...s, id: t.spans[i].id, kind: t.spans[i].kind })) }
 }
