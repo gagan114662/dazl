@@ -1,4 +1,5 @@
 import {contactPurposeRestricted} from './contact-purpose-db.ts'
+import { ownerGuarded } from '../llm/owner-guard.ts'
 import {currentnessHeld} from './currentness.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend } from './send-budget.ts'
 import { hasReadConsent, syncReplies } from './replies.ts'
@@ -117,7 +118,8 @@ async function llmStepText(db: Database.Database, tenantId: string, step: 2 | 3,
   if (!vendor) return null
   const read = readKey(db, tenantId, vendor, d.master)
   if (read.unreadable || !read.key) return null
-  const provider = providers[vendor]
+  // The owner's spend pool (lib/llm/owner-guard.ts): a refused reservation makes no call and the template is used.
+  const provider = providers[vendor] && ownerGuarded(db, tenantId, providers[vendor])
   if (!provider?.complete) return null
   try {
     const text = (await provider.complete(read.key, seqPrompt(step, businessName, lead, bookingUrl, memoryPromptBlock(lead.lead_id ? memoryForLead(db, tenantId, lead.lead_id) : getMemory(db, tenantId))), d.fetchImpl, 400)).trim().slice(0, 3000)
