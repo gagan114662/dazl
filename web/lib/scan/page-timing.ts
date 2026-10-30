@@ -18,11 +18,14 @@ const iso = (y: number, m: number, d: number): string | null => {
   if (!(y >= 2000 && y <= 2100 && m >= 1 && m <= 12 && d >= 1 && d <= 31)) return null
   const t = new Date(Date.UTC(y, m - 1, d)); return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d ? t.toISOString().slice(0, 10) : null
 }
+const BACKGROUND_YEAR = /\b(?:founded|established|incorporated|formed|est\.?|since|in business since|operating since|dating back to)\s+(?:in\s+)?$/i
 export interface PageTiming { published: string | null; olderYear: number | null; note: string | null }
 // `published` is the page's own metadata when the fetcher found exactly one publication date in the markup (fetch-page.ts publishedDate).
 export function resolveTiming(pageText: string, quote: string, published: string | null | undefined, nowYear: number): PageTiming {
   // 1. The quote names an old year: the claim itself is old. (Years before last year only; last year alone is left to the window gate.)
-  const years = [...quote.matchAll(/\b(19[89]\d|20\d{2})\b/g)].map(m => +m[1]).filter(y => y <= nowYear - 2)
+  // Company background ("founded in 2020", "established 2019", "since 2015") says when the company began, not when this event happened.
+  const q = quote.replace(/\s+/g, ' ')
+  const years = [...q.matchAll(/\b(19[89]\d|20\d{2})\b/g)].filter(m => !BACKGROUND_YEAR.test(q.slice(Math.max(0, m.index! - 40), m.index!))).map(m => +m[1]).filter(y => y <= nowYear - 2)
   const olderYear = years.length ? Math.min(...years) : null
   // 2. Publication day of the page.
   let pub: string | null = published && /^\d{4}-\d{2}-\d{2}$/.test(published) ? published : null

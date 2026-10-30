@@ -112,3 +112,9 @@ test('a claim whose own quote names an old year is held: never qualified', async
   assert.equal(leadRow(r).review_reason, 'event_date_stale')
   assert.equal(scoreJob(r.db, job(r)).score.qualified, 0)
 })
+
+test('a company background year ("founded in 2020") is not an old event year: the fresh claim still qualifies', async () => {
+  const r = await runCrawl(fixture({ site: SITE, quote: 'Brightloop, a London B2B SaaS startup founded in 2020 with 24 employees, raised a 3m GBP seed round' }))
+  assert.equal(leadRow(r).review_reason, null)
+  assert.equal(scoreJob(r.db, job(r)).score.qualified, 1)
+})
