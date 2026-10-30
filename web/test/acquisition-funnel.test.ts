@@ -311,3 +311,18 @@ test('coverage from the webhook\'s recorded service periods: annual, one-off, a 
   assert.deepEqual(stored.map((p: { subscription: string; price: string }) => [p.subscription, p.price]), [['sub_GP', 'price_pro'], ['sub_GP2', 'price_pro']], 'each line kept with its identity')
   assert.equal((raw.prepare("SELECT service_periods FROM lifecycle_events WHERE ref = 'in_ON'").get() as { service_periods: string | null }).service_periods, null)
 })
+
+test('through the webhook: deleting another subscription on the same customer keeps this one covered; deleting this one ends it', async () => {
+  const { raw, db } = store()
+  await tenant(db, raw, 'MU'); scan(raw, 'MU', NOW - 60 * DAY, 1); await subscribe(db, 'MU', NOW - 20 * DAY)
+  const line = (sub: string, start: number, end: number) => ({ object: 'line_item', type: 'subscription', subscription: sub, period: { start, end }, price: { id: `price_${sub}` } })
+  await applyStripeEvent(db, ev('evt_in_MU', 'invoice.paid', NOW - 20 * DAY, { id: 'in_MU', object: 'invoice', customer: 'cus_MU', subscription: 'sub_MULTI', amount_paid: 9800,
+    lines: { object: 'list', data: [line('sub_MULTI', NOW - 20 * DAY, NOW + 10 * DAY), line('sub_other', NOW - 20 * DAY, NOW + 10 * DAY)] } }))
+  const cov = async () => (await tenantFunnels(db, { now: NOW })).find(t => t.tenant_id === 'MU')!
+  await applyStripeEvent(db, ev('evt_del_other', 'customer.subscription.deleted', NOW - 5 * DAY, { id: 'sub_other', object: 'subscription', customer: 'cus_MU', status: 'canceled', ended_at: NOW - 5 * DAY }))
+  let t = await cov()
+  assert.equal(t.covered_at_cutoff, 'covered', 'sub_MULTI is still paid through today'); assert.equal(t.churned_at, null, 'not churned while one subscription runs')
+  await applyStripeEvent(db, ev('evt_del_multi', 'customer.subscription.deleted', NOW - 2 * DAY, { id: 'sub_MULTI', object: 'subscription', customer: 'cus_MU', status: 'canceled', ended_at: NOW - 2 * DAY }))
+  t = await cov()
+  assert.equal(t.covered_at_cutoff, 'not_covered', 'both subscriptions deleted'); assert.equal(t.stage, 'churned')
+})
