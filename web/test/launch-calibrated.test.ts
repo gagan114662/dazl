@@ -48,7 +48,7 @@ function lead(db: Database.Database, job: string, contact: string) {
 const policy = (playIds: string[], over: Record<string, unknown> = {}) => ({
   version: LAUNCH_POLICY_VERSION, sender: 'me@acme.example', audience: { playIds }, exclusions: { domains: ['customer.example'], emails: [] },
   dailyCap: 20, spendCapUsd: 25, claims: { mayStatePrice: true, benchmarkUrls: [] }, stops: { pauseOnAnyReply: true, maxBounceRate: 0.05 },
-  testInbox: 'qa@acme.example', ...over,
+  testInbox: 'me@acme.example', ...over,
 })
 const gmail = (fail = false) => {
   const sent: string[] = []
@@ -75,7 +75,7 @@ test('calibration: samples stay drafts, the only message goes to the owned test 
   const cal = gmail()
   const r = await runCalibration(db, 'A', 'Acme', cal.d)
   assert.deepEqual(r, { ok: true, failures: [], heldLeads: [] })
-  assert.deepEqual(cal.to(), ['qa@acme.example'], 'calibration emails only the owned test inbox')
+  assert.deepEqual(cal.to(), ['me@acme.example'], 'calibration emails only the authenticated sender itself')
   assert.deepEqual(statuses(db), ['draft', 'draft', 'draft'], 'sample drafts are not sent')
   assert.equal(readLaunchPolicy(db, 'A')!.launchedAt, NOW)
   // launched: autopilot now sends new first touches without ten hand approvals, through every existing guard. The sample
@@ -100,6 +100,7 @@ test('failed checks hold the launch: test inbox not reached, too few samples, a 
   const priced = await runCalibration(db, 'A', 'Acme', gmail().d)
   if (!priced.ok) assert.ok(priced.failures.includes('sample_claims'))
   // invalid policies are refused at acceptance
+  for (const inbox of ['qa@acme.example', 'someone@else.example']) assert.deepEqual(acceptLaunchPolicy(db, 'A', policy([job], { testInbox: inbox }), NOW), { ok: false, problems: ['test_inbox_not_owned'] }, inbox)
   const bad = acceptLaunchPolicy(db, 'A', policy([job], { testInbox: 'someone@else.example', dailyCap: 500 }), NOW)
   assert.deepEqual(bad, { ok: false, problems: ['daily_cap_invalid', 'test_inbox_not_owned'] })
   // a different connected mailbox: the policy's authority does not carry over

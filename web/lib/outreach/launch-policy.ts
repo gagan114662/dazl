@@ -21,7 +21,7 @@ export interface LaunchPolicy {
   spendCapUsd: number                   // model and enrichment spend ceiling for the launch
   claims: { mayStatePrice: boolean; benchmarkUrls: string[] }
   stops: { pauseOnAnyReply: boolean; maxBounceRate: number }
-  testInbox: string                     // owned inbox for the integration check: the sender itself or its own domain
+  testInbox: string                     // inbox for the integration check: exactly the authenticated sender (a shared domain proves nothing)
 }
 
 export type PolicyProblem =
@@ -42,8 +42,10 @@ export function policyProblems(p: LaunchPolicy): PolicyProblem[] {
   if (!Number.isInteger(p.dailyCap) || p.dailyCap < 1 || p.dailyCap > MAX_DAILY) out.push('daily_cap_invalid')
   if (!(p.spendCapUsd > 0)) out.push('spend_cap_invalid')
   if (!(p.stops.maxBounceRate > 0 && p.stops.maxBounceRate <= 0.1)) out.push('bounce_stop_invalid')
+  // The only inbox the tenant has proved it owns is the authenticated sender itself: a shared domain (gmail.com, a
+  // company domain with other people on it) is no proof of owning another mailbox, so no other address is accepted.
   const inbox = p.testInbox.trim().toLowerCase()
-  if (!senderDomain || !(inbox === p.sender.trim().toLowerCase() || domainOf(inbox) === senderDomain)) out.push('test_inbox_not_owned')
+  if (!senderDomain || inbox !== p.sender.trim().toLowerCase()) out.push('test_inbox_not_owned')
   if (p.claims.benchmarkUrls.some(u => !/^https:\/\/\S+$/.test(u))) out.push('benchmark_not_https')
   return out
 }
@@ -59,7 +61,12 @@ export interface PreflightInput {
 }
 
 export type PreflightFailure = PolicyProblem | 'policy_not_accepted' | 'mailbox_mismatch' | 'test_inbox_failed' | 'too_few_samples'
-  | 'sample_evidence' | 'sample_date' | 'sample_contact' | 'sample_claims' | 'sample_excluded' | 'stop_not_enforced'
+  | 'sample_evidence' | 'sample_date' | 'sample_contact' | 'sample_claims' | 'sample_excluded' | 'sample_invalid' | 'stop_not_enforced'
+
+export const REQUIRED_STOPS = ['reply', 'optOut', 'bounce', 'uncertainPause', 'domainCap'] as const
+const validSample = (s: SampleDraft) => !!s && typeof s === 'object' && typeof s.leadId === 'string' && s.leadId.trim() !== ''
+  && typeof s.to === 'string' && !!domainOf(s.to) && typeof s.body === 'string' && s.body.trim() !== ''
+  && typeof s.evidenceOk === 'boolean' && typeof s.dateOk === 'boolean' && typeof s.contactOk === 'boolean' && Array.isArray(s.claimIssues)
 
 export interface PreflightResult { ok: boolean; failures: PreflightFailure[]; heldLeads: string[] }
 
@@ -71,11 +78,15 @@ export function preflight(input: PreflightInput): PreflightResult {
   if (input.acceptedVersion !== LAUNCH_POLICY_VERSION || policy.version !== LAUNCH_POLICY_VERSION) failures.add('policy_not_accepted')
   if (!input.connectedMailbox || input.connectedMailbox.trim().toLowerCase() !== policy.sender.trim().toLowerCase()) failures.add('mailbox_mismatch')
   if (!input.testInboxDelivered) failures.add('test_inbox_failed')
-  if (input.samples.length < MIN_SAMPLE_DRAFTS) failures.add('too_few_samples')
+  // distinct leads only, each with every field present and typed: a repeated or malformed sample is not a sample
+  const valid = input.samples.filter(validSample)
+  if (valid.length !== input.samples.length) failures.add('sample_invalid')
+  if (new Set(valid.map(s => s.leadId)).size < MIN_SAMPLE_DRAFTS) failures.add('too_few_samples')
   const excludedDomains = new Set(policy.exclusions.domains.map(d => d.trim().toLowerCase()))
   const excludedEmails = new Set(policy.exclusions.emails.map(e => e.trim().toLowerCase()))
   const held = new Set<string>()
   for (const s of input.samples) {
+    if (!valid.includes(s)) { if (typeof s?.leadId === 'string' && s.leadId) held.add(s.leadId); continue }
     const to = s.to.trim().toLowerCase()
     const bad: PreflightFailure[] = []
     if (!s.evidenceOk) bad.push('sample_evidence')
@@ -85,7 +96,9 @@ export function preflight(input: PreflightInput): PreflightResult {
     if (excludedEmails.has(to) || excludedDomains.has(domainOf(to) ?? '')) bad.push('sample_excluded')
     if (bad.length) { held.add(s.leadId); bad.forEach(b => failures.add(b)) }
   }
-  if (!Object.values(input.stopsEnforced).every(Boolean)) failures.add('stop_not_enforced')
+  // every required stop, by name, must be exactly true: a missing, extra-only or empty object fails closed
+  const stops = (input.stopsEnforced ?? {}) as Record<string, unknown>
+  if (!REQUIRED_STOPS.every(k => stops[k] === true)) failures.add('stop_not_enforced')
   return { ok: failures.size === 0, failures: [...failures], heldLeads: [...held] }
 }
 

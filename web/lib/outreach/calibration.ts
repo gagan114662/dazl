@@ -3,8 +3,8 @@
 //   - sample drafts: the first touches autopilot would write for the policy's audience, saved as ordinary drafts the
 //     tenant can read. Each is checked with the same pre-approval gate a hand approval uses (approveBlockReason:
 //     identity, date window, contact, evidence) and against the policy's claim authority.
-//   - integration check: one plain message from the connected Gmail to the policy's OWNED test inbox (the sender itself
-//     or its own domain, enforced by policyProblems), never to anyone else.
+//   - integration check: one plain message from the connected Gmail to the policy's test inbox, which policyProblems
+//     only accepts when it is exactly the authenticated sender; never to anyone else.
 //   - stops: the guards autopilot enforces on every send, as implemented (reply/opt-out/bounce suppression, the
 //     uncertain-send pause, the per-company cap).
 import type Database from 'better-sqlite3'
