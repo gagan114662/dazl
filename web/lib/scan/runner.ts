@@ -26,7 +26,7 @@ import { directQueries, hasHiringSignal } from '../search/direct-queries.ts'
 import { placeIn, atsKindOf } from '../sources/jobboards.ts'
 import { corroborationTargets } from './corroborate.ts'
 import { resolveTiming } from './page-timing.ts'
-import { dateStatedInText, hasStructuredPostingDate } from './date-in-text.ts'
+import { dateStatedInText } from './date-in-text.ts'
 import { ownPlaceAgreement } from './own-block.ts'
 import { HeldText, COPY_ORIGIN, type HeldPage } from './held-text.ts'
 import { markHeldInProcess } from './held-state.ts'
@@ -264,7 +264,7 @@ export async function groundLeads(provider: Provider, apiKey: string, query: str
 }
 
 // (shown to the user, never emailed) instead of vanishing. Dedup by company keeps the best.
-export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetcher = fetchPageDetailed, now = new Date(), judge?: Judge, knownDomain: string | null = null, held?: { text: HeldText; attempt: string }, audit?: CandidateAudit[], geo: string[] = []): Promise<VerifyOutcome> {
+export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetcher = fetchPageDetailed, now = new Date(), judge?: Judge, knownDomain: string | null = null, held?: { text: HeldText; attempt: string }, audit?: CandidateAudit[], geo: string[] = [], structuredDates?: ReadonlyMap<string, string>): Promise<VerifyOutcome> {
   const cache = new Map<string, Promise<Page | FetchFail | null>>()
   const get = (u: string) => { if (!cache.has(u)) cache.set(u, fetchPage(u).catch(() => null)); return cache.get(u)! }
   const dropped: Record<string, number> = {}
@@ -297,10 +297,11 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     // the lead is treated as undated, so a republished archive page cannot make an old event verify as recent (#460). A public job board posting
     // (Greenhouse/Lever/Ashby) keeps its structured publish date. Everything else downstream is unchanged.
     let undatedWhy: string | null = null
-    // Default: the claimed day IS the page's own publication metadata and the text never states it (the replayed #460 case). DAZL_EVENT_DATE_STRICT=1 widens it to ANY
-    // claimed day the text does not state (a date only the extraction or a search result supplied), which also demotes news leads dated by their search-hit day.
-    const metaOnly = (page as { published?: string | null } | undefined)?.published === c0.event_date
-    if (page && !isFail(page) && c0.event_date && (metaOnly || process.env.DAZL_EVENT_DATE_STRICT === '1') && !dateStatedInText(c0.event_date, `${page.text} ${c0.excerpt}`) && !hasStructuredPostingDate(c0.source_url)) {
+    // An event date counts only when the FETCHED PAGE's text states it, or when a public job board's own structured publish date for exactly this posting URL was collected
+    // (structuredDates: Greenhouse first_published / Lever createdAt / Ashby publishedAt, recorded by the job-board source). The model's own excerpt, the search-hit day and the
+    // page's publication metadata are not evidence of WHEN the event happened; an ATS URL alone proves no date exists. Anything else is undated.
+    const sourced = structuredDates?.get(canonUrl(c0.source_url)) === c0.event_date
+    if (page && !isFail(page) && c0.event_date && !sourced && !dateStatedInText(c0.event_date, page.text)) {
       undatedWhy = `the claimed event date ${c0.event_date} is not stated in the page text${(page as { published?: string | null }).published === c0.event_date ? ' (it is only the page\'s publication date)' : ''}; treated as undated`
       c0 = { ...c0, event_date: null }; c = c0
     }
@@ -966,6 +967,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     if (job.query && icpForSources && !autoBoards) ledger.record('adapter:jobboards', job.sources ? 'skipped_explicit_sources' : !hiringRequest ? 'skipped_no_hiring_signal' : 'skipped_no_place')
     const sel = job.query && job.sources ? normalizeSources(safeJson(job.sources)) : autoBoards ? { adapters: ['jobboards'], feeds: [] as string[], pages: [] as string[] } : null
     const walledLeads: LeadDraft[] = []
+    const boardDates = new Map<string, string>()   // posting URL -> the job board's own structured publish date (from the job-board source only)
     const selfDescribedLeads: LeadDraft[] = []
     let complaints: ComplaintItem[] = []
     if (sel && icpForSources && complete) {
@@ -973,6 +975,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         assertOwned(db, job)
         const collected = await collectEvidenceReport(sel, job.query!, deps.sourceHttp, undefined, sel.adapters.includes('jobboards') ? [...diag.hitUrls, ...leads.map(l => l.source_url)] : [], async url => { try { const r = await fetchP(url); return r && 'text' in r && typeof r.text === 'string' ? r.text : null } catch { return null } }, sel.adapters.includes('jobboards') ? [...new Map(leads.filter(l => l.company).map(l => [l.company.toLowerCase(), { name: l.company }])).values()] : [])
         const items = collected.items
+        for (const it of items) if (it.source === 'jobboards' && it.date && /^\d{4}-\d{2}-\d{2}$/.test(it.date)) boardDates.set(canonUrl(it.url), it.date)
         const leadsBefore = leads.length
         for (const run of collected.runs) ledger.record(run.collector, run.status, run.evidence)
         if (items.length > 0) {
@@ -1048,7 +1051,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     let datesFinished: Awaited<ReturnType<typeof finishUndatedLeads>> = []
     let fallbackNotes: FallbackNote[] = []
     let recoveryTargets: FallbackTarget[] = []; let recoveryRan: { searched: boolean; why?: string } = { searched: false, why: 'not needed' }
-    let outcome = partial.outcome = await verifyLeads(leads, fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [])
+    let outcome = partial.outcome = await verifyLeads(leads, fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [], boardDates)
     const verifiedUrls = leads.map(l => l.source_url) // verify_provenance
     // A candidate whose OWN page blocks us is held with nothing readable. Look for the same company on other press (free news search): its pages go through the same extraction and verifier, and a
     // verified candidate for that company replaces the held row. Bounded (3 companies, one search+extraction), no extra model call for a run that disabled the paid fallback.

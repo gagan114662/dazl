@@ -55,7 +55,7 @@ test('#198 end to end: window stored on the profile; the April lead lands in rev
     anthropic: { research: async () => ({ text: JSON.stringify([lead('Smile Avenue Dental', '2026-04-15', OLD), lead('Bright Teeth Studio', '2026-10-10', NEW)]), citedUrls: ['https://news.example/SmileAvenueDental', 'https://news.example/BrightTeethStudio'] }) },
     openai: { research: async () => ({ text: '', citedUrls: [] }) },
   }
-  const page = async (url: string) => ({ text: `News. ${url.includes('Smile') ? OLD : NEW}. More.`, title: url.includes('Smile') ? 'Smile Avenue Dental' : 'Bright Teeth Studio', retrievedAt: 1 })
+  const page = async (url: string) => ({ text: `News, reported ${url.includes('Smile') ? '2026-04-15' : '2026-10-10'}. ${url.includes('Smile') ? OLD : NEW}. More.`, title: url.includes('Smile') ? 'Smile Avenue Dental' : 'Bright Teeth Studio', retrievedAt: 1 })
   assert.equal(await runJob(db, claimKeyedJob(db, id)!, { providers: prov, master, fetchPage: page, judge: null, score: false, ground: false, now: NOW }), 'done')
   assert.equal(JSON.parse(getJob(db, 'A', id)!.icp!).window_days, 90)
   const leads = listLeads(db, 'A', id, 200, true) as { company: string; review_reason: string | null }[]
@@ -75,7 +75,8 @@ test('window counts end to end: an undated lead is review, not verified; funnel 
     anthropic: { research: async () => ({ text: JSON.stringify([lead(names[0], '2026-04-15'), lead(names[1], '2026-10-10'), lead(names[2], null)]), citedUrls: names.map(n => `https://news.example/${n.replace(/\s/g, '')}`) }) },
     openai: { research: async () => ({ text: '', citedUrls: [] }) },
   }
-  const page = async (url: string) => { const n = names.find(x => url.includes(x.replace(/\s/g, '')))!; return { text: `News. ${Q(n)}. More.`, title: n, retrievedAt: 1 } }
+  const stated: Record<string, string> = { [names[0]]: '2026-04-15', [names[1]]: '2026-10-10' }   // the fetched page states each dated lead's day
+  const page = async (url: string) => { const n = names.find(x => url.includes(x.replace(/\s/g, '')))!; return { text: `News${stated[n] ? `, reported ${stated[n]}` : ''}. ${Q(n)}. More.`, title: n, retrievedAt: 1 } }
   assert.equal(await runJob(db, claimKeyedJob(db, id)!, { providers: prov, master, fetchPage: page, judge: null, score: false, ground: false, now: NOW }), 'done')
   const leads = listLeads(db, 'A', id, 200, true) as { company: string; review_reason: string | null }[]
   assert.deepEqual(leads.map(l => [l.company, l.review_reason]).sort(), [['Bright Teeth Studio', null], ['Smile Avenue Dental', 'outside_window'], ['Undated Dental', 'outside_window_undated']])

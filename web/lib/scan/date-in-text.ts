@@ -27,8 +27,3 @@ export function datesStatedIn(text: string): Set<string> {
   return out
 }
 export const dateStatedInText = (isoDay: string, text: string): boolean => datesStatedIn(text).has(isoDay)
-
-// Public job boards whose documented API gives each posting its own publish date (Greenhouse first_published, Lever createdAt, Ashby publishedAt).
-// The posting page itself often does not print it; a posting URL on one of these hosts is the only case where the date may come from structured data.
-export const STRUCTURED_DATE_HOST = /^(?:(?:boards|job-boards)(?:\.eu)?\.greenhouse\.io|jobs\.lever\.co|jobs\.ashbyhq\.com)$/i
-export function hasStructuredPostingDate(url: string): boolean { try { return STRUCTURED_DATE_HOST.test(new URL(url).hostname) } catch { return false } }
