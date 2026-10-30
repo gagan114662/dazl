@@ -65,6 +65,8 @@ const TARGETING_OR_OUTPUT = [
   'Please show dated evidence for each lead.',
   // council: a size as a list item
   'Find independent dental practices in New York City, 1-5 locations, hiring receptionists.',
+  'Show the evidence with dates.',
+  'Show practices an owner contact.',
 ]
 test('#349 class: a targeting or output instruction of the request is never a commercial term', () => {
   const failures: string[] = []
@@ -106,6 +108,11 @@ const STILL_A_CHOICE: [string, string][] = [
   ['from us is the seller, not a place', `Find dental practices that recruited a receptionist from us. We sell ${P}.`],
   ['a contract length is not a window', `Find dental practices for 3 months. We sell ${P}.`],
   ['a contract length is not a window', `Find dental practices for one year. We sell ${P}.`],
+  // council seat 3: a later person noun must not license an earlier buyer object
+  ['buyer object before a person noun', `Show dental practices a new website and contact details. We sell ${P}.`],
+  ['buyer object before a person noun', `Show dental practices leads and contacts. We sell ${P}.`],
+  ['buyer object before a person noun', `Show clinics a new location and contacts. We sell ${P}.`],
+  ['a role given, not reported', `Show practices a receptionist and a contact. We sell ${P}.`],
 ]
 test('#349 class controls: changed product, audience, withdrawals, commercial terms and unproved sentences stay a choice', () => {
   const failures: string[] = []

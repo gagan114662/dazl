@@ -357,7 +357,7 @@ function tailOk(words: string[], mode: Mode = PLAIN): boolean {
 // word may appear only as the modifier of a contact-type noun ("an owner or practice manager contact", "founder or
 // head of sales contacts"), never as the object itself ("dental practices a new website" is not a report item).
 const OUTPUT_IMPERATIVE = /^(?:(?:please|and|also|then|just)\s+)?(?:show|list|return|report|display|surface|cite|attach|output)(?:\s+(?:me|us))?\s+(.+)$/i
-const OUTPUT_FILLER = new Set('a an the each every all any its their your our per of for plus and or as well too also only'.split(' '))
+const OUTPUT_FILLER = new Set('a an the each every all any its their your our per of for with plus and or as well too also only'.split(' '))
 const OUTPUT_ADJ = new Set(('dated verified direct primary named public recent relevant original exact full short brief one-line top best key main specific ' +
   'supporting matching confirmed cited linked clickable working valid current latest first second new decision-making').split(' '))
 const REPORT_NOUNS = new Set(('evidence source sources contact contacts email emails phone phones number numbers date dates link links url urls name names ' +
@@ -379,11 +379,16 @@ function isOutputInstruction(x: string): boolean {
   return items.every(item => {
     if (!item.length) return true
     if (!REPORT_NOUNS.has(item[item.length - 1])) return false
-    return item.every((w, i) => {
-      if (OUTPUT_FILLER.has(w) || OUTPUT_ADJ.has(w) || REPORT_NOUNS.has(w) || NUMBER.test(w)) return true
-      if (BUYERS.has(w) || BUYER_SINGULAR.has(w) || roleNoun(w) || ROLE_MODIFIERS.has(w)) return item.slice(i + 1).some(y => PERSON_NOUNS.has(y))
-      return false
-    })
+    // once a person or role word appears, the rest of the item names only that person (a role list, descriptive
+    // words, and the person noun it ends in): "an owner or practice manager contact" yes, "dental practices a new
+    // website and contact details" no, since a report noun in between is something handed to the buyers
+    let person = false
+    return item.every(w => {
+      const who = BUYERS.has(w) || BUYER_SINGULAR.has(w) || roleNoun(w) || ROLE_MODIFIERS.has(w)
+      if (who) person = true
+      if (person) return who || OUTPUT_FILLER.has(w) || OUTPUT_ADJ.has(w) || PERSON_NOUNS.has(w)
+      return OUTPUT_FILLER.has(w) || OUTPUT_ADJ.has(w) || REPORT_NOUNS.has(w) || NUMBER.test(w)
+    }) && (!person || PERSON_NOUNS.has(item[item.length - 1]))
   })
 }
 // A targeting instruction, a plain description of the buyers with no verb ("Independent dental practices in New
