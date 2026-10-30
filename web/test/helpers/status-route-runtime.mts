@@ -6,6 +6,7 @@ import { NextRequest } from 'next/server'
 // @ts-expect-error test shim export
 import { flushAfter } from 'next/server'
 import { setScanDb } from './sequence-route-db.ts'
+import { setDb, sqliteDb } from '../../lib/db/client.ts'
 import { migrateScan, createJob, getJob } from '../../lib/scan/store.ts'
 import { migrateKeys, saveKey } from '../../lib/llm/key-store.ts'
 import { GET } from '../../app/api/scan/status/route.ts'
@@ -22,6 +23,7 @@ function setup() {
   migrateScan(db); migrateKeys(db)
   saveKey(db, 'A', 'anthropic', 'sk-ant-synthetic-test-key')
   setScanDb(db)
+  setDb(sqliteDb(db)) // the route's reads are on the Db layer (#354): the same fixture connection, as in the app
   return db
 }
 const get = (id: string, passive: boolean) =>
