@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3'
 import { asDb, type Db, type DbLike } from '../db/client.ts'
 import { readEnabledCredential, writeAudit } from '../connectors/store.ts'
 import type { Evidence } from '../sources/types.ts'
-import { advFlags, CONSENT_VERSION, connectorId, maxCallsPerHour, platformAllowed, scopeFor, type AdvPlatform, type ConsentScope } from './config.ts'
+import { advFlags, CONSENT_VERSION, connectorId, isSupported, maxCallsPerHour, platformAllowed, scopeFor, type AdvPlatform, type ConsentScope } from './config.ts'
 import { tfSearch, tinyfishEnabled } from '../search/tinyfish.ts'
 
 export function migrateAdvanced(db: Database.Database): void {
@@ -40,25 +40,41 @@ export async function readConsent(db: Db, tenantId: string, scope: ConsentScope)
 }
 
 export interface WorkerItem { url: string; title: string; quote: string; date: string | null; login_walled: boolean }
-export type WorkerFetch = (req: { platform: AdvPlatform; query: string; session: string }) => Promise<WorkerItem[] | null>
+// Why the worker gave no answer (session-worker/src/handle.ts). Each is its own audit status, so a failure or an
+// unsupported platform is never recorded as a search that found nothing (#436).
+export const WORKER_FAILURES = { unsupported: 'unsupported', no_session: 'no_session', auth: 'auth_failed', throttled: 'throttled', schema: 'schema_error', upstream: 'worker_error', worker_error: 'worker_error' } as const
+export type WorkerFailureKind = keyof typeof WORKER_FAILURES
+export interface WorkerFailure { failure: WorkerFailureKind }
+// null is an unexplained failure (a test double, or a worker too old to say why): audited as worker_error.
+export type WorkerFetch = (req: { platform: AdvPlatform; query: string; session: string }) => Promise<WorkerItem[] | WorkerFailure | null>
+export const isWorkerFailure = (r: unknown): r is WorkerFailure => !!r && typeof r === 'object' && !Array.isArray(r) && typeof (r as WorkerFailure).failure === 'string'
+// For callers that only need "items or not": every failure is null.
+export const itemsOrNull = (r: WorkerItem[] | WorkerFailure | null): WorkerItem[] | null => Array.isArray(r) ? r : null
 
-// Worker protocol: POST {platform, query, session} with a bearer token, reply {items:[{url,title,quote,date,login_walled}]}.
-// The request carries one tenant's own session and nothing else: no tenant id, no DB access, no other keys.
+// Worker protocol: POST {platform, query, session} with a bearer token, reply 200 {items:[{url,title,quote,date,
+// login_walled}]}, or a non-2xx {error: kind}. The request carries one tenant's own session and nothing else: no tenant
+// id, no DB access, no other keys.
 export function httpWorker(env: Record<string, string | undefined> = process.env, fetchImpl: typeof fetch = fetch): WorkerFetch {
   return async req => {
+    let res: Response
     try {
-      const res = await fetchImpl(`${env.ADVANCED_WORKER_URL!.replace(/\/$/, '')}/fetch`, {
+      res = await fetchImpl(`${env.ADVANCED_WORKER_URL!.replace(/\/$/, '')}/fetch`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${env.ADVANCED_WORKER_TOKEN}` },
         body: JSON.stringify(req),
         redirect: 'error',
         signal: AbortSignal.timeout(45_000),
       })
-      if (!res.ok) return null
-      const text = await res.text()
-      if (text.length > 1_000_000) return null
-      return parseWorkerItems(JSON.parse(text))
-    } catch { return null }
+    } catch { return { failure: 'worker_error' } }
+    let body: unknown
+    try { const text = await res.text(); body = text.length > 1_000_000 ? null : JSON.parse(text) } catch { body = null }
+    if (!res.ok) {
+      const kind = (body as { error?: unknown } | null)?.error
+      return { failure: typeof kind === 'string' && Object.hasOwn(WORKER_FAILURES, kind) ? kind as WorkerFailureKind : 'worker_error' }
+    }
+    // a 200 must carry an items array; anything else is not "found nothing"
+    if (!Array.isArray((body as { items?: unknown } | null)?.items)) return { failure: 'schema' }
+    return parseWorkerItems(body)
   }
 }
 
@@ -77,7 +93,7 @@ export function parseWorkerItems(raw: unknown): WorkerItem[] {
 }
 
 async function callsLastHour(db: Db, tenantId: string, platform: AdvPlatform, now: number): Promise<number> {
-  return Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM connector_audit WHERE tenant_id = ? AND connector = ? AND status IN ('ok','empty','worker_error') AND created_at >= ?", [tenantId, connectorId(platform), now - 3600]))!.n)
+  return Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM connector_audit WHERE tenant_id = ? AND connector = ? AND status IN ('ok','empty','worker_error','no_session','auth_failed','throttled','schema_error') AND created_at >= ?", [tenantId, connectorId(platform), now - 3600]))!.n)
 }
 
 // X search AND-matches every token, so a full natural-language scan sentence returns
@@ -109,6 +125,8 @@ export async function collectAdvanced(store: DbLike, tenantId: string, jobId: st
     const q = p === 'x' && deps.xQuery ? deps.xQuery : query
     const skip = (status: string) => writeAudit(db, { tenantId, connector: id, jobId, lookup: q, status, results: 0 })
     if (!platformAllowed(p, flags)) { await skip('disabled'); continue }
+    // no fetcher exists: no consent, session or worker call is used, and the scan records why
+    if (!isSupported(p)) { await skip('unsupported'); continue }
     if (!(await readConsent(db, tenantId, scopeFor(p)))) { await skip('no_consent'); continue }
     if (await callsLastHour(db, tenantId, p, deps.now ?? Math.floor(Date.now() / 1000)) >= maxCallsPerHour(p, env)) { await skip('rate_limited'); continue }
     // X path 1: operator-key web search of the public index (TinyFish free tier, capped
@@ -133,10 +151,12 @@ export async function collectAdvanced(store: DbLike, tenantId: string, jobId: st
     // X path 2 (worker): tenant's own session when stored; '' otherwise - the worker falls back to the
     // throwaway sessions in its env (X_SESSION_COOKIE / REDDIT_SESSION_COOKIE),
     // which the site owner placed there for the connector fetchers. A worker with
-    // neither answers no_session, which audits as worker_error here.
+    // neither answers no_session, audited as no_session.
     const session = (await readEnabledCredential(db, tenantId, id, deps.master)) || ''
-    const items = await worker({ platform: p, query: q.slice(0, 300), session })
-    if (items === null) { await skip('worker_error'); continue }
+    const r = await worker({ platform: p, query: q.slice(0, 300), session }).catch(() => null)
+    if (r === null) { await skip('worker_error'); continue }
+    if (isWorkerFailure(r)) { await skip(WORKER_FAILURES[r.failure] ?? 'worker_error'); continue }
+    const items = r
     await writeAudit(db, { tenantId, connector: id, jobId, lookup: q, status: items.length ? 'ok' : 'empty', results: items.length })
     for (const it of items) out.push({ source: id, url: it.url, title: it.title, quote: it.quote, date: it.date, login_walled: it.login_walled })
   }

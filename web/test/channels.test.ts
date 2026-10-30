@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { CHANNELS } from '../lib/channels.ts'
 import { ADAPTERS } from '../lib/sources/index.ts'
-import { ADV_PLATFORMS } from '../lib/advanced/config.ts'
+import { isSupported, ADV_PLATFORMS } from '../lib/advanced/config.ts'
 
 test('channel registry is honest about what runs', () => {
   assert.equal(CHANNELS.length, 13)
@@ -10,7 +10,9 @@ test('channel registry is honest about what runs', () => {
   for (const c of CHANNELS) {
     if (c.id === 'github' || c.id === 'rss') assert.ok(ADAPTERS[c.id], c.id)
     if (c.status === 'worker') assert.ok(c.platform && (ADV_PLATFORMS as readonly string[]).includes(c.platform), c.id)
-    if (c.status === 'soon') assert.ok(!c.platform, c.id) // no connect flow for unbuilt channels
+    // no connect flow for unbuilt channels: either no platform, or one the worker cannot fetch (Settings shows it as
+    // not built and offers no consent or session, #436)
+    if (c.status === 'soon') assert.ok(!c.platform || !isSupported(c.platform), c.id)
   }
   assert.ok(!JSON.stringify(CHANNELS).toLowerCase().includes('hunter'))
 })

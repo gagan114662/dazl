@@ -9,10 +9,20 @@ export const latinUsable = (s: string) => { const t = latinRun(s); return t.leng
 
 export interface FetchOptions { cookie?: string; headers?: Record<string, string>; timeoutMs?: number }
 
-// Plain GET JSON with the tenant's session cookie. 15s cap, 1MB body cap, no redirects off-site.
-export async function getJson(url: string, opts: FetchOptions = {}): Promise<unknown | null> {
+// Why a fetch produced no answer, so the app can tell it apart from a search that genuinely found nothing (#436):
+//   no_session  the session is missing what the platform needs (no cookie, or the wrong one)
+//   auth        the platform refused the session (401/403)
+//   throttled   the platform rate-limited it (429)
+//   schema      the platform answered, but not with the JSON the fetcher reads (or too large)
+//   upstream    anything else: network, timeout, a redirect, another HTTP error
+export type FailureKind = 'no_session' | 'auth' | 'throttled' | 'schema' | 'upstream'
+export class FetchFailure extends Error { kind: FailureKind; constructor(kind: FailureKind) { super(kind); this.kind = kind } }
+
+// Plain GET JSON with the tenant's session cookie. 15s cap, 1MB body cap, no redirects off-site. Throws FetchFailure.
+export async function getJson(url: string, opts: FetchOptions = {}): Promise<unknown> {
+  let res: Response
   try {
-    const res = await fetch(url, {
+    res = await fetch(url, {
       headers: {
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
         accept: 'application/json',
@@ -22,11 +32,14 @@ export async function getJson(url: string, opts: FetchOptions = {}): Promise<unk
       redirect: 'error',
       signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000),
     })
-    if (!res.ok) return null
-    const text = await res.text()
-    if (text.length > 1_000_000) return null
-    return JSON.parse(text)
-  } catch { return null }
+  } catch { throw new FetchFailure('upstream') }
+  if (res.status === 401 || res.status === 403) throw new FetchFailure('auth')
+  if (res.status === 429) throw new FetchFailure('throttled')
+  if (!res.ok) throw new FetchFailure('upstream')
+  let text: string
+  try { text = await res.text() } catch { throw new FetchFailure('upstream') }
+  if (text.length > 1_000_000) throw new FetchFailure('schema')
+  try { return JSON.parse(text) } catch { throw new FetchFailure('schema') }
 }
 
 export const item = (url: string, title: string, quote: string, date: string | null, login_walled = true): WorkerItem | null => {

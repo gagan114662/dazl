@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import { CHANNELS, TIER_LABEL, type Channel } from '@/lib/channels'
 import Caveat from '@/app/app/caveat'
 
-interface P { platform: string; allowed: boolean; consent: boolean; connected: boolean; enabled: boolean; last4: string | null; high_risk: boolean }
+interface P { platform: string; allowed: boolean; supported?: boolean; unsupported_reason?: string | null; consent: boolean; connected: boolean; enabled: boolean; last4: string | null; high_risk: boolean }
 const NAMES: Record<string, string> = { linkedin: 'LinkedIn', x: 'X', reddit: 'Reddit', xiaohongshu: 'XiaoHongShu', bilibili: 'Bilibili' }
 const BADGE = { live: 'Working', worker: 'Needs worker', soon: 'Coming soon' } as const
 
@@ -23,7 +23,12 @@ export default function AdvancedPanel() {
   function Row(c: Channel, p: P) {
     return (
       <>
-        {!p.allowed ? (
+        {p.supported === false ? (
+          <div className="flex flex-col gap-2" data-testid={`unsupported-${p.platform}`}>
+            <p className="text-[#555]">{p.unsupported_reason ?? 'Not built yet.'} dazl does not search {c.name}, so it does not ask for a session for it.</p>
+            {p.connected && <button className="underline underline-offset-2 w-fit" onClick={async () => { await fetch(`/api/settings/advanced?platform=${p.platform}`, { method: 'DELETE' }); void load() }}>Remove the session saved earlier (ending in {p.last4})</button>}
+          </div>
+        ) : !p.allowed ? (
           <p className="text-[#555]">Off on this server. The operator turns it on with ADVANCED_CONNECTORS.</p>
         ) : !p.consent ? (
           <div className="flex flex-col gap-2">

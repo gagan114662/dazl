@@ -5,7 +5,7 @@
 
 export interface ServerSources { web_index: boolean; news: boolean; websites: boolean }
 export interface KeyState { has_key?: boolean; trial?: { funded?: boolean; remaining?: number } | null }
-export interface SocialPlatform { platform: string; allowed?: boolean; consent: boolean; connected: boolean; enabled: boolean; operator_index?: boolean }
+export interface SocialPlatform { platform: string; allowed?: boolean; consent: boolean; connected: boolean; enabled: boolean; operator_index?: boolean; supported?: boolean }
 export interface Advanced { available: boolean; platforms: SocialPlatform[] }
 
 export type Fix = { href: string; label: string }
@@ -39,6 +39,8 @@ export function socialSources(adv: Advanced | null): SourceRow[] {
   return adv.platforms.filter(p => p.allowed !== false).map(p => {
     const label = socialLabel(p.platform)
     const id = `social:${p.platform}`
+    // no fetcher exists (#436): say so, and offer no fix, since there is nothing to set up
+    if (p.supported === false) return { id, label, usable: false, reason: 'not built yet' }
     if (!p.consent) return { id, label, usable: false, reason: 'consent needed', fix: SOCIAL_FIX }
     if (p.operator_index || (p.connected && p.enabled)) return { id, label, usable: true }
     if (!p.connected) return { id, label, usable: false, reason: 'not connected', fix: SOCIAL_FIX }

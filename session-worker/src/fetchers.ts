@@ -2,7 +2,7 @@
 // risk notice) and a query, and returns items for the app's evidence pipeline. Platforms that
 // disallow automated access (X, Instagram, Facebook, LinkedIn) can rate-limit or ban the account:
 // that risk is the tenant's acknowledged choice, and calls are rate-limited server-side.
-import { epochDay, getJson, item, latinRun, latinUsable, type WorkerItem } from './util.ts'
+import { epochDay, FetchFailure, getJson, item, latinRun, latinUsable, type WorkerItem } from './util.ts'
 
 export type Platform = 'x' | 'reddit' | 'instagram' | 'facebook' | 'bilibili' | 'xiaohongshu' | 'linkedin'
 export type Fetcher = (query: string, session: string, env: Record<string, string | undefined>) => Promise<WorkerItem[]>
@@ -22,7 +22,7 @@ export function parseReddit(raw: unknown): WorkerItem[] {
 }
 const reddit: Fetcher = async (query, session) => {
   const json = await getJson(`https://www.reddit.com/search.json?q=${encodeURIComponent(query)}&sort=new&limit=15&raw_json=1`, { cookie: session, headers: { referer: 'https://www.reddit.com/search/' } })
-  return json ? parseReddit(json) : []
+  return parseReddit(json)
 }
 
 // --- X: the web app's GraphQL SearchTimeline with the tenant's auth_token/ct0 cookies.
@@ -54,7 +54,7 @@ const x: Fetcher = async (query, session, env) => {
   const authToken = session.match(/auth_token=([a-f0-9]{40})/)?.[1]
   const ct0 = session.match(/ct0=([a-f0-9]{32,})/)?.[1]
   const qid = env.X_SEARCH_QUERY_ID ?? 'nK1dw4tV3a2UD7G2b5E1AA' // SearchTimeline query id; rotates
-  if (!authToken || !ct0) return []
+  if (!authToken || !ct0) throw new FetchFailure('no_session')
   const variables = JSON.stringify({ rawQuery: query, count: 15, querySource: 'typed_query', product: 'Latest' })
   const features = JSON.stringify({ rweb_video_screen_enabled: false, payments_enabled: false, profile_label_improvements_pcf_label_in_post_enabled: true })
   const url = `https://x.com/i/api/graphql/${qid}/SearchTimeline?variables=${encodeURIComponent(variables)}&features=${encodeURIComponent(features)}`
@@ -102,12 +102,11 @@ const instagram: Fetcher = async (query, session) => {
 const linkedin: Fetcher = async (query, session) => {
   const liAt = session.match(/li_at=([^;]+)/)?.[1]
   const jsession = session.match(/JSESSIONID="?([^";]+)"?/)?.[1]
-  if (!liAt || !jsession) return []
+  if (!liAt || !jsession) throw new FetchFailure('no_session')
   const json = await getJson(`https://www.linkedin.com/voyager/api/search/blended?keywords=${encodeURIComponent(query)}&count=10`, {
     cookie: `li_at=${liAt}; JSESSIONID="${jsession}"`,
     headers: { 'csrf-token': jsession, 'x-restli-protocol-version': '2.0.0', referer: 'https://www.linkedin.com/search/results/all/' },
   })
-  if (!json) return []
   // Voyager payloads shift; walk for posts with commentary text.
   const out: WorkerItem[] = []
   const walk = (v: unknown) => {
@@ -127,10 +126,14 @@ const linkedin: Fetcher = async (query, session) => {
   return out
 }
 
-// --- Not fetchable without a real browser or request signing. Honest stubs: they return nothing,
-// so the app records worker_error and the platform stays "Needs worker" in the UI until done. ---
-const facebook: Fetcher = async () => [] // FB has no cookie-only JSON search; needs a browser worker
-const xiaohongshu: Fetcher = async () => [] // XHS signs every web request (x-s/x-t); signing is not implemented
+// --- Not fetchable without a real browser or request signing: there is no fetcher, and the worker answers
+// 501 unsupported for them (server.ts), never an empty successful search. The app keeps the same list
+// (web/lib/advanced/config.ts UNSUPPORTED) and does not offer, store or send a session for them (#436). ---
+export const UNSUPPORTED: Partial<Record<Platform, string>> = {
+  facebook: 'Facebook has no cookie-only search; it needs a browser worker, which is not built',
+  xiaohongshu: 'XiaoHongShu signs every web request; request signing is not implemented',
+}
 
-export const FETCHERS: Record<Platform, Fetcher> = { x, reddit, instagram, facebook, bilibili, xiaohongshu, linkedin }
-export const isPlatform = (v: unknown): v is Platform => typeof v === 'string' && Object.hasOwn(FETCHERS, v)
+export const FETCHERS: Partial<Record<Platform, Fetcher>> = { x, reddit, instagram, bilibili, linkedin }
+export const PLATFORMS: Platform[] = ['x', 'reddit', 'instagram', 'facebook', 'bilibili', 'xiaohongshu', 'linkedin']
+export const isPlatform = (v: unknown): v is Platform => typeof v === 'string' && (PLATFORMS as string[]).includes(v)

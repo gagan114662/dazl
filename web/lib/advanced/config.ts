@@ -19,6 +19,15 @@ export function advFlags(env: Record<string, string | undefined> = process.env):
   return { enabled, linkedin: enabled && env.ADVANCED_LINKEDIN === '1' }
 }
 export const platformAllowed = (p: AdvPlatform, f: AdvFlags) => (p === 'linkedin' ? f.linkedin : f.enabled)
+
+// Platforms the session worker cannot fetch at all (session-worker/src/fetchers.ts UNSUPPORTED, the same list; a test
+// holds them equal). For these dazl offers no consent and stores, sends or uses no session; a scan that names one
+// records 'unsupported', never an empty search (#436).
+export const UNSUPPORTED: Partial<Record<AdvPlatform, string>> = {
+  facebook: 'Not built yet: Facebook has no search a session cookie alone can use, so it needs a browser worker, which dazl does not have.',
+  xiaohongshu: 'Not built yet: XiaoHongShu signs every web request, and dazl does not implement that signing.',
+}
+export const isSupported = (p: AdvPlatform) => !UNSUPPORTED[p]
 export const scopeFor = (p: AdvPlatform): ConsentScope => (p === 'linkedin' ? 'linkedin' : 'advanced')
 export const connectorId = (p: AdvPlatform) => `adv:${p}`
 

@@ -9,7 +9,7 @@ import type { Db, Tx, TxBody } from '../db/client.ts'
 import type { Evidence } from '../sources/types.ts'
 import { audit, getEnabledCredential, readEnabledCredential, writeAudit, type AuditEntry } from '../connectors/store.ts'
 import { advFlags, connectorId, maxCallsPerHour, platformAllowed, scopeFor } from '../advanced/config.ts'
-import { hasConsent, httpWorker, readConsent, type WorkerFetch } from '../advanced/index.ts'
+import { hasConsent, httpWorker, itemsOrNull, readConsent, type WorkerFetch } from '../advanced/index.ts'
 
 export const MAX_COMPETITORS = 5
 const MAX_POST_AGE_DAYS = 30
@@ -79,7 +79,7 @@ async function complaints(store: ComplaintStore, tenantId: string, jobId: string
   const out: ComplaintItem[] = []
   for (const name of competitors.slice(0, budget)) {
     const q = complaintQuery(name)
-    const items = await worker({ platform: 'reddit', query: q.slice(0, 300), session }).catch(() => null)
+    const items = itemsOrNull(await worker({ platform: 'reddit', query: q.slice(0, 300), session }).catch(() => null))
     if (items === null) { await store.audit({ tenantId, connector: COMPLAINT_CONNECTOR, jobId, lookup: q, status: 'worker_error', results: 0 }); continue }
     const fresh = items.filter(i => i.date && new Date(i.date).getTime() >= cutoff)
     await store.audit({ tenantId, connector: COMPLAINT_CONNECTOR, jobId, lookup: q, status: fresh.length ? 'ok' : 'empty', results: fresh.length })

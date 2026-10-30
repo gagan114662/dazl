@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { audit, getEnabledCredential } from '../connectors/store.ts'
-import { hasConsent, httpWorker, type WorkerFetch } from '../advanced/index.ts'
+import { hasConsent, httpWorker, itemsOrNull, type WorkerFetch } from '../advanced/index.ts'
 import { advFlags, connectorId, maxCallsPerHour, platformAllowed, scopeFor } from '../advanced/config.ts'
 import { readKey, keyStatus } from '../llm/key-store.ts'
 import { getAuthDb, getSellerProfile } from '../auth-db.ts'
@@ -194,7 +194,7 @@ export async function refreshReplies(db: Database.Database, tenantId: string, de
     const connector = `adv:${p}-replies`
     let anyError = false
     for (const q of queries.slice(0, budget)) {
-      const items = await worker({ platform: p, query: q, session }).catch(() => null)
+      const items = itemsOrNull(await worker({ platform: p, query: q, session }).catch(() => null))
       if (items === null) { audit(db, { tenantId, connector, lookup: q, status: 'worker_error', results: 0 }); anyError = true; continue }
       const fresh = items.filter(i => i.date && new Date(i.date).getTime() >= cutoff && looksLikeQuestion(i.title))
       let qualified = fresh.filter(i => isRelevantToQuery(q, i.title, i.quote))

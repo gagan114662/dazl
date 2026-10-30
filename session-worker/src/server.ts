@@ -1,8 +1,9 @@
 // dazl session worker: serves POST /fetch for the web app's advanced (session) connectors.
-// The app sends {platform, query, session} with a bearer token; the worker replies {items:[...]}.
+// The app sends {platform, query, session} with a bearer token; the worker replies {items:[...]}, or a non-2xx
+// {error} naming why there is no answer (src/handle.ts): never an empty list for a failure or an unsupported platform.
 // The request carries one tenant's own session cookie and nothing else. Nothing is stored.
 import http from 'node:http'
-import { FETCHERS, isPlatform } from './fetchers.ts'
+import { handleFetch } from './handle.ts'
 
 const TOKEN = process.env.ADVANCED_WORKER_TOKEN ?? ''
 const PORT = Number(process.env.PORT || 3210)
@@ -22,21 +23,8 @@ const server = http.createServer((req, res) => {
   req.on('data', (c: Buffer) => { body += c.toString('utf8'); if (body.length > MAX_BODY) { tooBig = true; req.destroy() } })
   req.on('end', async () => {
     if (tooBig) return reply(413, { error: 'too large' })
-    let parsed: { platform?: unknown; query?: unknown; session?: unknown }
-    try { parsed = JSON.parse(body) } catch { return reply(400, { error: 'bad json' }) }
-    if (!isPlatform(parsed.platform)) return reply(400, { error: 'unknown platform' })
-    const query = typeof parsed.query === 'string' ? parsed.query.slice(0, 300) : ''
-    const session = typeof parsed.session === 'string' ? parsed.session.slice(0, 8000) : ''
-    if (!query || !session) return reply(400, { error: 'missing query or session' })
-    try {
-      const items = await Promise.race([
-        FETCHERS[parsed.platform](query, session, process.env),
-        new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 40_000)),
-      ])
-      return reply(200, { items: items.slice(0, 20) })
-    } catch {
-      return reply(200, { items: [] }) // the app records worker_error / empty, never a crash
-    }
+    const r = await handleFetch(body, process.env)
+    return reply(r.status, r.body)
   })
 })
 

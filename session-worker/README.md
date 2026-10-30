@@ -24,11 +24,18 @@ plus `ADVANCED_CONNECTORS=1` (and `ADVANCED_LINKEDIN=1` for LinkedIn). Node 22+.
 | bilibili    | api.bilibili.com web search with SESSDATA      | parser unit-tested only; Bilibili may demand wbi signing, not implemented |
 | instagram   | web topsearch with sessionid                   | parser unit-tested only      |
 | linkedin    | voyager blended search with li_at + JSESSIONID | untested; app caps it at 3 calls/hour |
-| facebook    | none (no cookie-only JSON search exists)       | returns [] by design         |
-| xiaohongshu | none (web requests need x-s signing)           | returns [] by design         |
+| facebook    | none (no cookie-only JSON search exists)       | 501 unsupported, not fetched |
+| xiaohongshu | none (web requests need x-s signing)           | 501 unsupported, not fetched |
 
-Facebook and XiaoHongShu return nothing until a browser-based fetcher or request signing is
-built; the app records those as empty and their channels stay "Needs worker" in Settings.
+Facebook and XiaoHongShu have no fetcher (`UNSUPPORTED` in `src/fetchers.ts`; the app keeps the
+same list in `web/lib/advanced/config.ts`). The worker answers them `501 {error:'unsupported'}` and
+fetches nothing; the app never calls it for them, offers no consent or session in Settings ("Coming
+soon"), and a scan records `unsupported`, never an empty search.
+
+Any answer but `200 {items}` is a non-2xx `{error}` naming why (`src/handle.ts`): `no_session`
+(400), `unsupported` (501), or `auth`, `throttled`, `schema`, `upstream`, `worker_error` (502). The
+app audits these as `no_session`, `unsupported`, `auth_failed`, `throttled`, `schema_error` and
+`worker_error`. `200 {items:[]}` means the platform answered and found nothing.
 
 X, Instagram, Facebook and LinkedIn disallow automated access in their terms. Tenants are told
 this in the consent text before saving a session, and calls are rate-limited per tenant.
