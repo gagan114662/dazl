@@ -15,5 +15,5 @@ export async function onRequestError(err: unknown, request: { path: string; meth
   if (process.env.NEXT_RUNTIME !== 'nodejs') return
   const { handleRequestError } = await import('./lib/ops/request-error.ts')
   const { getSessionUser } = await import('./lib/auth-db.ts')
-  await handleRequestError(err, request, context, { tenantFor: async t => (await getSessionUser(t))?.id ?? null })
+  await handleRequestError(err, request, context, { tenantFor: async t => (await getSessionUser(t))?.tenantId ?? null })
 }

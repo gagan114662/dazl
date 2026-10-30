@@ -4,21 +4,23 @@ import { getDb } from '@/lib/db/client'
 import { recentAudits, runAudit } from '@/lib/seo/audit'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
+import { denied } from '@/lib/workspace-access'
 
 export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  return NextResponse.json({ audits: await recentAudits(await getDb(), user.id) })
+  return NextResponse.json({ audits: await recentAudits(await getDb(), user.tenantId) })
 }
 
 export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
+  const no = denied(user, 'operate'); if (no) return no
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
-  if (!(await rateLimit(`seo:${user.id}`, 10, 60 * 60 * 1000)).ok) return NextResponse.json({ error: 'Too many audits - try again in an hour.' }, { status: 429 })
+  if (!(await rateLimit(`seo:${user.tenantId}`, 10, 60 * 60 * 1000)).ok) return NextResponse.json({ error: 'Too many audits - try again in an hour.' }, { status: 429 })
   const body = await req.json().catch(() => null)
   if (typeof body?.domain !== 'string' || body.domain.length > 300) return NextResponse.json({ error: 'Enter a domain like acme.com.' }, { status: 400 })
-  const r = await runAudit(await getDb(), user.id, body.domain)
+  const r = await runAudit(await getDb(), user.tenantId, body.domain)
   if ('error' in r && !('checks' in r)) return NextResponse.json({ error: r.error }, { status: 400 })
   return NextResponse.json(r)
 }
