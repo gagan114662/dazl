@@ -1,0 +1,130 @@
+{
+ "v": 1,
+ "kind": "dazl.world",
+ "id": "scan-london-seed-traps",
+ "origin": "synthetic",
+ "redacted": false,
+ "as_of": "2026-10-20T12:00:00.000Z",
+ "from_trace": "synthetic-scan-london-seed-traps",
+ "search": {
+  "by_query": {
+   "london saas seed London, UK": [
+    {
+     "url": "https://news.example/london/querix-seed",
+     "title": "Querix raises seed round",
+     "snippet": "2026-10-10. Querix, a London B2B SaaS startup, raised a 3m GBP seed round this month to grow its sales team. Press contact: hello@querix.exa",
+     "date": "2026-10-10"
+    },
+    {
+     "url": "https://news.example/london/northwind-profile",
+     "title": "Northwind Analytics profile",
+     "snippet": "Northwind Analytics opened its London office in 2019 and raised a seed round from local angels. The firm builds dashboards for retailers in "
+    },
+    {
+     "url": "https://news.example/paris/lumen-ledger",
+     "title": "Lumen Ledger raises seed in Paris",
+     "snippet": "2026-10-05. Lumen Ledger, a Paris B2B SaaS startup, raised a seed round this month. The team works from its office in Paris, France. Lumen L",
+     "date": "2026-10-05"
+    },
+    {
+     "url": "https://news.example/london/startup-roundup",
+     "title": "London startup roundup",
+     "snippet": "2026-10-12. A roundup of London startup news this week, covering events and meetups across the city. Founders met at a London meetup to talk",
+     "date": "2026-10-12"
+    },
+    {
+     "url": "https://news.example/london/seine-systems",
+     "title": "seine systems raises seed",
+     "snippet": "2026-10-09. seine systems is based in paris, france and raised a seed round this month. Market news: London startups raised more this year. ",
+     "date": "2026-10-09"
+    },
+    {
+     "url": "https://news.example/london/orbit-labs",
+     "title": "Orbit Labs to announce seed",
+     "snippet": "Orbit Labs, a London B2B SaaS startup, will announce its seed round at a launch event on 2026-11-15. Orbit Labs builds scheduling tools for "
+    }
+   ]
+  }
+ },
+ "tinyfish_pages": {
+  "https://news.example/london/querix-seed": {
+   "title": "Querix raises seed round",
+   "text": "2026-10-10. Querix, a London B2B SaaS startup, raised a 3m GBP seed round this month to grow its sales team. Press contact: hello@querix.example. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London."
+  },
+  "https://news.example/london/northwind-profile": {
+   "title": "Northwind Analytics profile",
+   "text": "Northwind Analytics opened its London office in 2019 and raised a seed round from local angels. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK."
+  },
+  "https://news.example/paris/lumen-ledger": {
+   "title": "Lumen Ledger raises seed in Paris",
+   "text": "2026-10-05. Lumen Ledger, a Paris B2B SaaS startup, raised a seed round this month. The team works from its office in Paris, France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France."
+  },
+  "https://news.example/london/startup-roundup": {
+   "title": "London startup roundup",
+   "text": "2026-10-12. A roundup of London startup news this week, covering events and meetups across the city. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring."
+  },
+  "https://news.example/london/seine-systems": {
+   "title": "seine systems raises seed",
+   "text": "2026-10-09. seine systems is based in paris, france and raised a seed round this month. Market news: London startups raised more this year. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers."
+  },
+  "https://news.example/london/orbit-labs": {
+   "title": "Orbit Labs to announce seed",
+   "text": "Orbit Labs, a London B2B SaaS startup, will announce its seed round at a launch event on 2026-11-15. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London."
+  }
+ },
+ "pages": {
+  "https://news.example/london/querix-seed": {
+   "title": "Querix raises seed round",
+   "text": "2026-10-10. Querix, a London B2B SaaS startup, raised a 3m GBP seed round this month to grow its sales team. Press contact: hello@querix.example. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London. The company sells workflow software to finance teams in London."
+  },
+  "https://news.example/london/northwind-profile": {
+   "title": "Northwind Analytics profile",
+   "text": "Northwind Analytics opened its London office in 2019 and raised a seed round from local angels. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK. The firm builds dashboards for retailers in London, UK."
+  },
+  "https://news.example/paris/lumen-ledger": {
+   "title": "Lumen Ledger raises seed in Paris",
+   "text": "2026-10-05. Lumen Ledger, a Paris B2B SaaS startup, raised a seed round this month. The team works from its office in Paris, France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France. Lumen Ledger sells accounting software across France."
+  },
+  "https://news.example/london/startup-roundup": {
+   "title": "London startup roundup",
+   "text": "2026-10-12. A roundup of London startup news this week, covering events and meetups across the city. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring. Founders met at a London meetup to talk about hiring."
+  },
+  "https://news.example/london/seine-systems": {
+   "title": "seine systems raises seed",
+   "text": "2026-10-09. seine systems is based in paris, france and raised a seed round this month. Market news: London startups raised more this year. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers. seine systems sells billing software to European retailers."
+  },
+  "https://news.example/london/orbit-labs": {
+   "title": "Orbit Labs to announce seed",
+   "text": "Orbit Labs, a London B2B SaaS startup, will announce its seed round at a launch event on 2026-11-15. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London. Orbit Labs builds scheduling tools for clinics in London."
+  }
+ },
+ "http": {},
+ "model": {
+  "search_queries": [
+   {
+    "method": "completeDetailed",
+    "text": "[\"london saas seed\"]",
+    "model": "stub-model-served",
+    "usage": {
+     "input_tokens": 400,
+     "output_tokens": 20
+    }
+   }
+  ],
+  "extraction": [
+   {
+    "method": "completeDetailed",
+    "text": "[{\"name\":\"\",\"company\":\"Querix\",\"contact\":\"hello@querix.example\",\"signal\":\"Raised a 3m GBP seed round this month\",\"source_url\":\"https://news.example/london/querix-seed\",\"score\":80,\"excerpt\":\"Querix, a London B2B SaaS startup, raised a 3m GBP seed round this month to grow its sales team\",\"event_date\":\"2026-10-10\"},{\"name\":\"\",\"company\":\"Northwind Analytics\",\"contact\":null,\"signal\":\"Raised a seed round\",\"source_url\":\"https://news.example/london/northwind-profile\",\"score\":60,\"excerpt\":\"Northwind Analytics opened its London office in 2019 and raised a seed round from local angels\",\"event_date\":null},{\"name\":\"\",\"company\":\"Lumen Ledger\",\"contact\":null,\"signal\":\"Raised a seed round\",\"source_url\":\"https://news.example/paris/lumen-ledger\",\"score\":70,\"excerpt\":\"Lumen Ledger, a Paris B2B SaaS startup, raised a seed round this month\",\"event_date\":\"2026-10-05\"},{\"name\":\"Dana Example\",\"company\":\"Brightpath AI\",\"contact\":null,\"signal\":\"Raised a seed round led by a London fund\",\"source_url\":\"https://news.example/london/startup-roundup\",\"score\":75,\"excerpt\":\"Brightpath AI closed a 2m GBP seed round led by a London fund\",\"event_date\":\"2026-10-12\"},{\"name\":\"\",\"company\":\"Seine Systems\",\"contact\":null,\"signal\":\"Raised a seed round\",\"source_url\":\"https://news.example/london/seine-systems\",\"score\":70,\"excerpt\":\"seine systems is based in paris, france and raised a seed round this month\",\"event_date\":\"2026-10-09\"},{\"name\":\"\",\"company\":\"Orbit Labs\",\"contact\":null,\"signal\":\"Announcing a seed round\",\"source_url\":\"https://news.example/london/orbit-labs\",\"score\":65,\"excerpt\":\"Orbit Labs, a London B2B SaaS startup, will announce its seed round at a launch event on 2026-11-15\",\"event_date\":\"2026-11-15\"}]",
+    "model": "stub-model-served",
+    "usage": {
+     "input_tokens": 1000,
+     "output_tokens": 100
+    }
+   }
+  ]
+ },
+ "http_default": {
+  "status": 404,
+  "body": ""
+ }
+}

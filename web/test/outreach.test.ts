@@ -441,3 +441,18 @@ test('current email contact + unreadable crawl table is held with review_unreada
   db.exec('DROP TABLE lead_enrichments')
   assert.throws(() => approve(db, 'A', 'mu'), /review_unreadable/)
 })
+
+test('an unverifiable handoff (no usable provider message id) is never marked sent: uncertain, tenant paused, no automatic retry', async () => {
+  for (const bad of [undefined, null, {}, { id: '' }, { id: '   ' }, { id: 7 }, { id: ['x'] }, { threadId: 'th1' }]) {
+    const db = setup(); await connect(db, 'A'); ready(db)
+    const id = createDraft(db, 'A', addLead(db, 'A'), 'Acme'); approve(db, 'A', id)
+    let calls = 0
+    const sendFn = (async () => { calls++; return bad }) as never
+    assert.equal(await sendMessage(db, 'A', id, deps({ sendFn })), 'uncertain', JSON.stringify(bad))
+    const row = db.prepare('SELECT status, gmail_id, error FROM outreach_messages WHERE id = ?').get(id) as { status: string; gmail_id: string | null; error: string }
+    assert.equal(row.status, 'uncertain'); assert.ok(!row.gmail_id, 'no empty or fake provider id is stored'); assert.equal(row.error, 'send_outcome_unknown')
+    assert.equal((db.prepare('SELECT count(*) AS n FROM outreach_messages WHERE status = ?').get('sent') as { n: number }).n, 0)
+    await assert.rejects(sendMessage(db, 'A', id, deps({ sendFn })), /already_uncertain/)
+    assert.equal(calls, 1, 'no automatic second send')
+  }
+})
