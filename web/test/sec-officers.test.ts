@@ -4,7 +4,8 @@ import Database from 'better-sqlite3'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { parseRelatedPersons, storeFilingOfficers, confirmFilingIdentity, filingIssuerPlace, unitsIn, CANDIDATE_KIND, CONNECTOR } from '../lib/people/sec-officers.ts'
-import { contactsFromEnrichments } from '../lib/people/rank.ts'
+import { contactsFromEnrichments, recommendedPerson } from '../lib/people/rank.ts'
+import { opportunityCard, type CardLead } from '../lib/scan/opportunity.ts'
 
 // TEST-ONLY fixture shaped like a Form D primary_doc.xml; no network.
 const rp = (f: string, l: string, rels: string[], clar = '') => `<relatedPersonInfo><relatedPersonName><firstName>${f}</firstName><lastName>${l}</lastName></relatedPersonName><relatedPersonAddress><street1>1 Main St</street1></relatedPersonAddress><relatedPersonRelationshipList>${rels.map(r => `<relationship>${r}</relationship>`).join('')}</relatedPersonRelationshipList>${clar ? `<relationshipClarification>${clar}</relationshipClarification>` : ''}</relatedPersonInfo>`
@@ -38,7 +39,8 @@ test('stores labelled person rows that the right-people ranker reads; ICP role r
   const rows = db.prepare("SELECT kind,value,label,source_url,connector FROM lead_enrichments WHERE lead_id = ? AND kind = 'person'").all('L1') as { kind: string; value: string; label: string; source_url: string; connector: string }[]
   assert.ok(rows.every(r => r.connector === CONNECTOR && r.kind === 'person' && r.source_url === URL && /not verified as current/.test(r.label)))
   const ranked = contactsFromEnrichments(rows, 'CEO; Executive Officer')
-  assert.equal(ranked[0].name, 'Jane Doe'); assert.equal(ranked[0].tier, 'strong')
+  assert.equal(ranked.length, 3, 'the history stays visible'); assert.ok(ranked.every(r => r.historical && r.tier === 'none' && r.score === 0), 'but is never ranked for action')
+  assert.equal(ranked.find(r => r.name === 'Jane Doe')!.matched.length, 0)
   assert.equal(ranked[0].linkedin, null); assert.equal(ranked[0].source, URL)
 })
 
@@ -156,4 +158,26 @@ test('identity review: confirming the filer (CIK) promotes ITS quarantined peopl
   const again = nyc(NO_STREET); confirmFilingIdentity(again, 'A', 'L1', '123456'); assert.equal(await store(again, body(issuer('Acme, Inc.', 'New York', 'NY'))), 3)
   const other = await storeFilingOfficers(again, 'A', 'L1', { ...filing, url: 'https://www.sec.gov/Archives/edgar/data/777777/000777777726000001/primary_doc.xml' }, { fetchImpl: (async () => new Response(body(issuer('Acme, Inc.', 'New York', 'NY')))) as typeof fetch })
   assert.equal(other, 0); assert.equal(rows(again, CANDIDATE_KIND).length, 3)
+})
+
+test('SEC-only historical officer + a generic hello@ company email: NOT "Who: Jane Doe, CEO", no "Draft a first message to Jane Doe", no approval path; the history stays visible and unranked', () => {
+  const lead: CardLead = {
+    id: 'a'.repeat(24), company: 'Acme Dental', signal: 'Opened a second location', source_url: 'https://acme-dental.example/news', evidence_excerpt: 'Acme Dental opened a second location',
+    event_date: '2026-10-10', date_status: 'verified', review_reason: null, fit: 5, intent: 0, why: 'Expanding.', confidence: 90, human_confirmed_at: 1,
+    icp_match: JSON.stringify({ role: 'match', industry: 'match', size: 'unknown', location: 'match', note: '' }), company_domain: 'acme-dental.example', contact: null, currentness_held: false, window_held: false,
+    enrichments: [
+      { connector: 'sitecrawl', kind: 'domain', value: 'acme-dental.example|evidence_own_domain', label: 'domain-basis-v1:evidence_own_domain', source_url: 'https://acme-dental.example/news' },
+      { connector: CONNECTOR, kind: 'person', value: 'Jane Doe, Chief Executive Officer', label: 'named in SEC Form D filed 2021-03-01 (as of filing, not verified as current; identity confirmed by review)', source_url: URL },
+      { connector: 'sitecrawl', kind: 'email', value: 'hello@acme-dental.example', label: null, source_url: 'https://acme-dental.example/contact' },
+    ],
+  }
+  const c = opportunityCard(lead, 'CEO; Chief Executive Officer', new Date('2026-10-26T12:00:00Z'))
+  assert.equal(c.who, null, 'the historical officer is not the recommended person')
+  assert.doesNotMatch(c.next, /Jane Doe/); assert.doesNotMatch(c.next, /^Draft/); assert.match(c.next, /Find the decision-maker/)
+  assert.ok(c.missing.some(m => /SEC filing: historical, not current/.test(m)))
+  assert.ok(c.assumptions.some(a => /Jane Doe/.test(a) && /not a current role and not a contact/.test(a)), 'the history stays visible, as history')
+  assert.equal(recommendedPerson([{ name: 'Jane Doe', title: 'Chief Executive Officer', linkedin: null, connector: CONNECTOR, historical: true }], 'CEO'), null)
+  // with independent current evidence (a company-site listing) the SITE person is recommended, never the filing's
+  const withSite = opportunityCard({ ...lead, enrichments: [...lead.enrichments!, { connector: 'sitecrawl', kind: 'person', value: 'Dana Lee, CEO', label: 'x', source_url: 'https://acme-dental.example/team' }] }, 'CEO', new Date('2026-10-26T12:00:00Z'))
+  assert.equal(withSite.who?.name, 'Dana Lee')
 })

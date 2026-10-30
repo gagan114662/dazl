@@ -974,7 +974,7 @@ export default function LeadsClient() {
                   {people.map(p => (
                     <div key={p.name + (p.title ?? '')} className="text-gray-400">
                       <span className="text-[#111]">{p.name}</span>{p.title ? ` - ${p.title}` : ''}{' '}
-                      <span className="text-gray-500">via {PEOPLE_SOURCE[p.connector] ?? p.connector}{p.tier === 'strong' ? `, title matches: ${p.matched.join(', ')}` : p.tier === 'weak' ? `, weak title match: ${p.matched.join(', ')}` : ', no title match'}</span>{' '}
+                      <span className="text-gray-500">via {PEOPLE_SOURCE[p.connector] ?? p.connector}{p.historical ? ', historical (past filing): not ranked, not a current contact' : p.tier === 'strong' ? `, title matches: ${p.matched.join(', ')}` : p.tier === 'weak' ? `, weak title match: ${p.matched.join(', ')}` : ', no title match'}</span>{' '}
                       {p.linkedin && <a className="underline text-[#111]" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow">profile</a>}
                       {!p.linkedin && p.source && <a className="underline text-[#111]" href={p.source} target="_blank" rel="noopener noreferrer nofollow">source</a>}
                     </div>

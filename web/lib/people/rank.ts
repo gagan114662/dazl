@@ -10,7 +10,11 @@ export interface PersonContact {
   linkedin: string | null
   connector: string
   source?: string // page the person was found on, when it is not a profile
+  historical?: boolean // named only in a past filing (SEC Form D): visible history, never ranked for action, never recommended
 }
+
+// Connectors whose people are history, not current buyers. An SEC Form D names officers AS OF the filing: that is research, not an outreach target.
+export const HISTORICAL_CONNECTORS = new Set(['signals:sec-form-d'])
 
 export type MatchTier = 'strong' | 'weak' | 'none'
 
@@ -61,12 +65,12 @@ export function rankPeople<T extends PersonContact>(contacts: T[], icpText: stri
   const icp = new Set(words(icpText))
   return contacts
     .map(c => {
-      if (!c.title || icp.size === 0 || roleContradicted(c.title, icpText)) return { ...c, score: 0, matched: [], tier: 'none' as MatchTier }
+      if (c.historical || !c.title || icp.size === 0 || roleContradicted(c.title, icpText)) return { ...c, score: 0, matched: [], tier: 'none' as MatchTier }
       const matched = [...new Set(words(c.title).filter(w => icp.has(w)))]
       const tier: MatchTier = matched.length >= 2 ? 'strong' : matched.length === 1 ? 'weak' : 'none'
       return { ...c, score: matched.length, matched, tier }
     })
-    .sort((a, b) => b.score - a.score)
+    .sort((a, b) => Number(!!a.historical) - Number(!!b.historical) || b.score - a.score)
 }
 
 // The ONE place a person is RECOMMENDED (opportunity card "who", CSV Best Person). A stored person whose title explicitly
@@ -75,7 +79,7 @@ export function rankPeople<T extends PersonContact>(contacts: T[], icpText: stri
 // recommendation refuses them. Same rule whichever connector stored the row and with or without an ICP: explicit
 // contradiction is not a matter of ICP fit. A row with no title is not contradicted (it ranks last, as before).
 export function recommendedPerson<T extends PersonContact>(contacts: T[], icpText: string): (T & RankedPerson) | null {
-  return rankPeople(contacts, icpText).find(c => !c.title || !roleContradicted(c.title, icpText)) ?? null
+  return rankPeople(contacts, icpText).find(c => !c.historical && (!c.title || !roleContradicted(c.title, icpText))) ?? null
 }
 
 // Stored enrichment rows carry a contact as value "Name - Title" (title optional),
@@ -106,6 +110,7 @@ export function contactsFromEnrichments(rows: ContactEnrichment[], icpText: stri
         title: i === -1 ? null : r.value.slice(i + sep.length).trim(),
         linkedin: r.kind === 'contact' ? r.source_url || null : PROFILE_URL.test(r.source_url) ? r.source_url : null,
         connector: r.connector ?? r.label ?? 'enrichment',
+        ...(r.connector && HISTORICAL_CONNECTORS.has(r.connector) ? { historical: true } : {}),
         ...(r.kind === 'person' && !PROFILE_URL.test(r.source_url) ? { source: r.source_url } : {}),
       }
     })
