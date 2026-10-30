@@ -7,6 +7,7 @@ import { domainReviewFor } from './outreach/domain-review.ts'
 import { publishedEmail } from './outreach/published-email.ts'
 import { scanOutcome, type ScanOutcomeKind } from './scan/scan-outcome.ts'
 import type { CardLead } from './scan/opportunity.ts'
+import { heldState, type ResearchCause } from './lead-state.ts'
 
 export type PreviewLead = CardLead & { id: string; seen_before?: number | boolean | null }
 
@@ -23,12 +24,18 @@ export function heldReason(l: PreviewLead): string | null {
   return null
 }
 
-export interface PreviewSplit { opportunities: (PreviewLead & { contactReady: boolean })[]; held: { lead: PreviewLead; reason: string }[] }
+export interface PreviewSplit { opportunities: (PreviewLead & { contactReady: boolean })[]; held: { lead: PreviewLead; reason: string }[]; review: PreviewLead[]; research: { lead: PreviewLead; cause: ResearchCause }[]; rejected: PreviewLead[] }
 export function previewSplit(leads: PreviewLead[]): PreviewSplit {
-  const out: PreviewSplit = { opportunities: [], held: [] }
+  const out: PreviewSplit = { opportunities: [], held: [], review: [], research: [], rejected: [] }
   for (const l of leads) {
     const why = heldReason(l)
-    if (why) out.held.push({ lead: l, reason: why })
+    if (why) {
+      out.held.push({ lead: l, reason: why })
+      const h = heldState(l)
+      if (h?.state === 'review') out.review.push(l)
+      else if (h?.state === 'rejected') out.rejected.push(l)
+      else out.research.push({ lead: l, cause: h?.cause ?? 'unsupported' })
+    }
     else out.opportunities.push({ ...l, contactReady: !!publishedEmail(l) })
   }
   return out
@@ -41,7 +48,7 @@ export interface JourneyInput {
   leads: PreviewLead[] | null                                              // the current play's leads; null: not loaded / failed
   drafts: { drafts: number; approved: number } | null                      // the SAME campaign's unsent emails; null: unknown
 }
-export type Stage = 'unknown' | 'no_profile' | 'no_play' | 'running' | 'failed' | 'zero' | 'all_held' | 'useful'
+export type Stage = 'unknown' | 'no_profile' | 'no_play' | 'running' | 'failed' | 'zero' | 'all_held' | 'research_only' | 'useful'
 export interface Journey { stage: Stage; play: JourneyJob | null; split: PreviewSplit | null; action: { label: string; href: string } | null; line: string }
 
 const own = (j: JourneyJob) => !!j.query && !j.csv_domain && !j.test_only
@@ -70,7 +77,13 @@ export function journey(i: JourneyInput): Journey {
   const split = previewSplit(i.leads)
   if (split.opportunities.length === 0) {
     if (split.held.length === 0) return { ...base, play, split, stage: 'zero', action: kind === 'all_dropped' ? { label: 'See why they were dropped', href: leadsHref } : { label: 'Try a broader play', href: '/app/leads' }, line: 'This play has 0 opportunities.' }
-    return { ...base, play, split, stage: 'all_held', action: { label: `Review ${split.held.length} held lead${split.held.length === 1 ? '' : 's'}`, href: leadsHref }, line: `0 opportunities. ${split.held.length} lead${split.held.length === 1 ? ' needs' : 's need'} review.` }
+    const r = split.review.length, plural = (n: number) => n === 1 ? '' : 's'
+    // Only leads a person's check can change are "review". Research-only leads (no usable date, outside the window,
+    // someone else's customer, a different place) are shown as such and never offered as a review task.
+    if (r > 0) return { ...base, play, split, stage: 'all_held', action: { label: `Review ${r} held lead${plural(r)}`, href: leadsHref }, line: `0 opportunities. ${r} lead${r === 1 ? ' needs' : 's need'} review.` }
+    const q = play.query ? `/app/leads?q=${encodeURIComponent(play.query)}` : '/app/leads'
+    const n = split.research.length
+    return { ...base, play, split, stage: 'research_only', action: { label: 'Change the search', href: q }, line: `0 opportunities. ${n} research-only lead${plural(n)}: checking ${n === 1 ? 'it' : 'them'} cannot make ${n === 1 ? 'it' : 'them'} ready.` }
   }
   const n = split.opportunities.length
   // Drafts are read from this play's own campaign only; unknown drafts never borrow another campaign's count.
