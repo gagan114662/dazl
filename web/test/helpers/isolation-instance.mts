@@ -51,7 +51,7 @@ if (process.env.ISO_MODE === 'write') {
     otherExport: await S.exportLeads(db, T, other.job, 5000, true),
     cancelOther: await S.cancelJob(db, T, other.query, now + 20),
     approveOtherNews: await approveNewsjack(db, T, `news-${other.tenant.slice(0, 1)}`),
-    otherSessionAsMe: (await getSessionUser(other.session, db))?.id ?? null, // a token resolves only to its own tenant
+    otherSessionAsMe: (await getSessionUser(other.session, db))?.tenantId ?? null, // a token resolves only to its own tenant
     // this tenant's own lists and exports: everything returned
     jobs: await S.listJobs(db, T),
     exportAll: await S.exportLeads(db, T, undefined, 5000, true),

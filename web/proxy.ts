@@ -3,11 +3,10 @@ import { logRequest, newRequestId, requestLogLine } from '@/lib/ops/request-log'
 import { getSessionUser } from '@/lib/auth-db'
 
 // Runs before /app pages and /api routes (Node runtime). Gives each request an id (lib/ops/request-log.ts), logs it
-// as one JSON line, and keeps /app behind a signed-in session. This is the /app sign-in gate: the session is looked up
-// here, before any HTML is sent, so a cookie that is no longer a session (expired, signed out elsewhere, malformed)
-// gets a 307 to /sign-in, never the app shell. The /app pages are static (app/app/layout.tsx reads nothing per request)
-// and carry no tenant data; every /api route checks the session itself. If the lookup itself fails (store down), the
-// request goes on to that data-free shell, whose API calls then fail on their own checks: no sign-in loop.
+// as one JSON line, and keeps /app behind a signed-in session. The session is looked up here, before any HTML is sent:
+// the layout's own check (app/app/layout.tsx) streams behind a Suspense boundary, so on its own a cookie that is no
+// longer a session (expired, signed out elsewhere, malformed) got a 200 with the app shell and only a late in-page
+// redirect. If the lookup itself fails, the request goes on and the layout's check still decides.
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl
   const id = newRequestId() // never the caller's x-request-id

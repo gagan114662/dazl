@@ -1,4 +1,4 @@
-// Production smoke check of the /app sign-in gate (proxy.ts; the /app pages themselves are static), on every /app page of a production
+// Production smoke check of the /app sign-in gate (proxy.ts, app/app/layout.tsx), on every /app page of a production
 // build. NOT part of `npm test` (needs a build and a browser). Run:  cd web && npm run build && npm run test:smoke:auth
 // Isolation as harness.mjs: throwaway database, server under the test network fence, off-host browser requests aborted.
 // - Signed out (no cookie), and a cookie that is no longer a session (signed out elsewhere, expired, malformed): a 307

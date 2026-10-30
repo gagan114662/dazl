@@ -1,13 +1,22 @@
 import Link from 'next/link'
 import { Suspense } from 'react'
+import { cookies } from 'next/headers'
+import { redirect } from 'next/navigation'
+import { getSessionUser } from '@/lib/auth-db'
 import Nav from './nav'
 import { Icon } from './ui/icons'
 
-// The /app sign-in gate is proxy.ts: a request without a live session gets a 307 to /sign-in before any HTML is sent.
-// The layout itself reads nothing per request, so every /app page is prerendered once at build and served as static
-// HTML. The shell carries no tenant data: everything a page shows comes from /api routes that check the session
-// themselves. (A per-request session read here made Next render each /app request's dynamic part again, which under
-// concurrency took seconds: load/README.md, "app-load".)
+// Two gates. proxy.ts is the first: a request with no session cookie gets a 307 to /sign-in before any HTML is sent.
+// AuthGate is the second, inside the Suspense boundary below: a cookie whose session is expired, revoked or unknown is
+// sent to /sign-in too. The shell around it (nav, layout) reads nothing per request and is prerendered; only the gated
+// page streams per request. The shell carries no tenant data: what a page shows comes from /api routes that check the
+// session themselves.
+async function AuthGate({ children }: { children: React.ReactNode }) {
+  const token = (await cookies()).get('dazl_session')?.value
+  if (!(await getSessionUser(token))) redirect('/sign-in')
+  return <>{children}</>
+}
+
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="app-ui flex flex-col md:flex-row h-screen">
@@ -24,7 +33,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <form action="/api/auth/signout" method="POST" className="mt-4"><button className="flex items-center gap-2.5 text-sm text-[var(--ink-3)] hover:text-[var(--ink)] px-3 py-2 transition"><Icon name="signout" className="w-[18px] h-[18px]" />Sign out</button></form>
       </aside>
       <main className="flex-1 min-w-0 overflow-auto">
-        <Suspense fallback={null}>{children}</Suspense>
+        <Suspense fallback={null}>
+          <AuthGate>{children}</AuthGate>
+        </Suspense>
       </main>
     </div>
   )
