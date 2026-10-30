@@ -21,6 +21,9 @@ const CASE_FILE = `${DIR}cases/scan-london-seed-traps.case.json`
 const TRACE = JSON.parse(readFileSync(`${DIR}traces/scan-london-seed-traps.trace.json`, 'utf8')) as Trace
 const clone = <T>(x: T): T => structuredClone(x)
 const statuses = (e: Evaluator, ctx: EvalContext) => Object.fromEntries(e.evaluate(ctx).map(v => [v.subject, v.status]))
+// The result the scan produced before the place fix: the Paris company verified for a London request. Evaluator tests use it
+// as their known "verified but wrong" lead, so they keep exercising that path now that the real scan holds it.
+const parisVerified = <T extends { result: ReplayResult }>(ctx: T): T => { const c = clone(ctx); for (const l of c.result.leads) if (l.company === 'Lumen Ledger') l.review_reason = null; return c }
 
 let cached: { kase: Case; world: World; result: ReplayResult } | null = null
 async function base() {
@@ -34,16 +37,19 @@ test('the committed World is exactly what worldFromTrace derives from the commit
   assert.equal(world.origin, 'synthetic')
 })
 
-test('replay runs the real scan offline against the World: closed, deterministic, and the agent gap is visible', async () => {
+test('replay runs the real scan offline against the World: closed, deterministic, every trap handled', async () => {
   const { kase, world, result } = await base()
   assert.equal(result.outcome, 'done')
   assert.deepEqual(result.misses, [])
   const got = Object.fromEntries(result.leads.map(l => [l.company, l.review_reason]))
-  assert.deepEqual(got, { 'Querix': null, 'Northwind Analytics': 'event_date_stale', 'Orbit Labs': 'event_date_future_date', 'Lumen Ledger': null })
-  // Lumen Ledger (Paris page, London request) verifying is the agent gap the baseline records, caught by two evaluators.
+  // Lumen Ledger (a Paris company on a Paris page, London request) is held: the gap this case found in #440, fixed in lib/scan/place-agreement.ts.
+  assert.deepEqual(got, { 'Querix': null, 'Northwind Analytics': 'event_date_stale', 'Orbit Labs': 'event_date_future_date', 'Lumen Ledger': 'location_mismatch', 'Seine Systems': 'location_mismatch' })
   const s = scoreCase({ kase, world, result })
-  assert.equal(s.status, 'fail')
-  assert.deepEqual(s.verdicts.filter(v => v.status !== 'pass').map(v => `${v.evaluator}|${v.subject}|${v.status}`).sort(), ['expected_outcomes|expect:Lumen Ledger|fail', 'place_on_page|lead:Lumen Ledger|unknown'])
+  assert.equal(s.status, 'pass')
+  assert.deepEqual(s.verdicts.filter(v => v.status !== 'pass'), [])
+  // the pre-fix result is caught by two independent evaluators
+  const before = scoreCase(parisVerified({ kase, world, result }))
+  assert.deepEqual(before.verdicts.filter(v => v.status !== 'pass').map(v => `${v.evaluator}|${v.subject}|${v.status}`).sort(), ['expected_outcomes|expect:Lumen Ledger|fail', 'place_on_page|lead:Lumen Ledger|unknown'])
   const again = await replayCase(kase, world)
   assert.deepEqual(again.leads, result.leads)
   assert.deepEqual(scoreCase({ kase, world, result: again }).verdicts, s.verdicts)
@@ -60,26 +66,22 @@ test('a replay trace freezes back into the same World (search, pages, model repl
   assert.ok(Object.keys(w2.http).length > 0)
   for (const r of Object.values(w2.http)) assert.deepEqual(r, world.http_default)
   const t = totals(result.trace)
-  assert.equal(t.model_calls, 2); assert.equal(t.page_fetches, 5); assert.equal(t.cost_usd, null) // stub model has no listed price: unknown, not $0
+  assert.equal(t.model_calls, 2); assert.equal(t.page_fetches, 6); assert.equal(t.cost_usd, null) // stub model has no listed price: unknown, not $0
 })
 
 test('the suite matches the committed baseline exactly, and a verdict change in either direction is reported', async () => {
   const rows = await runSuite(`${DIR}cases`)
   const b = loadBaseline(`${DIR}baseline.json`)
-  // registered, with the two known Paris-for-London failures this case found (fixed in the place-agreement PR)
-  const KNOWN = ['expected_outcomes|expect:Lumen Ledger|fail', 'place_on_page|lead:Lumen Ledger|unknown']
-  assert.deepEqual(b.cases['scan-london-seed-traps'].non_pass, KNOWN)
+  // registered with no known failures: the Paris-for-London gap this case found is fixed by lib/scan/place-agreement.ts
+  assert.deepEqual(b.cases['scan-london-seed-traps'], { status: 'pass', non_pass: [] })
   assert.deepEqual(compareBaseline(rows, b), [{ case: 'scan-london-seed-traps', regressions: [], fixed: [] }])
   assert.equal(gate(rows, b).ok, true)
-  const stale = { ...b, cases: { 'scan-london-seed-traps': { status: 'fail', non_pass: [...KNOWN, 'event_date_in_window|lead:Querix|fail'] } } }
-  assert.deepEqual(compareBaseline(rows, stale)[0].fixed, ['event_date_in_window|lead:Querix|fail'])  // a fixed entry left in the baseline fails the gate
+  const stale = { ...b, cases: { 'scan-london-seed-traps': { status: 'fail', non_pass: ['expected_outcomes|expect:Lumen Ledger|fail'] } } }
+  assert.deepEqual(compareBaseline(rows, stale)[0].fixed, ['expected_outcomes|expect:Lumen Ledger|fail'])  // a fixed entry left in the baseline fails the gate
   assert.equal(gate(rows, stale).ok, false)
-  const regressed = rows.map(r => ({ ...r, nonPass: [...r.nonPass, 'event_date_in_window|lead:Querix|fail'] }))
-  assert.deepEqual(compareBaseline(regressed, b)[0], { case: 'scan-london-seed-traps', regressions: ['event_date_in_window|lead:Querix|fail'], fixed: [] })
+  const regressed = rows.map(r => ({ ...r, nonPass: ['place_on_page|lead:Lumen Ledger|unknown'] }))
+  assert.deepEqual(compareBaseline(regressed, b)[0], { case: 'scan-london-seed-traps', regressions: ['place_on_page|lead:Lumen Ledger|unknown'], fixed: [] })
   assert.equal(gate(regressed, b).ok, false)
-  const unlisted = { ...b, cases: { 'scan-london-seed-traps': { status: 'pass', non_pass: [] } } }
-  assert.deepEqual(compareBaseline(rows, unlisted)[0].regressions, KNOWN)                       // known failures must be listed, not dropped
-  assert.equal(gate(rows, unlisted).ok, false)
 })
 
 test('gate: the case set itself is checked - a missing, unregistered or duplicate case, or too few cases, is red', async () => {
@@ -211,10 +213,11 @@ test('evidence_in_world: a quote that is not on the frozen page, a URL the World
 })
 
 test('place_on_page: the requested city on the page passes; a page without it is unknown, never pass', async () => {
-  const ctx = await base()
+  const ctx = parisVerified(await base())
   const s = statuses(placeOnPage, ctx)
   assert.equal(s['lead:Querix'], 'pass')
   assert.equal(s['lead:Lumen Ledger'], 'unknown')
+  assert.equal(statuses(placeOnPage, await base())['lead:Lumen Ledger'], undefined) // held leads are not judged
   const c = clone(ctx); (c.kase.input.icp as { where: string[] }).where = []
   assert.deepEqual(placeOnPage.evaluate(c), [])
   // "Londonderry" is not London
@@ -248,7 +251,7 @@ test('no_tenant_leak: canary data in a prompt, a lead or a changed canary row fa
 })
 
 test('expected_outcomes: wrong outcome, wrong hold reason and an unexpected verified lead each fail', async () => {
-  const ctx = await base()
+  const ctx = parisVerified(await base())
   const c = clone(ctx)
   c.kase.expect.leads = [{ company: 'Querix', outcome: 'held' }, { company: 'Orbit Labs', outcome: 'held', review_reason: 'event_date_stale' }]
   const s = statuses(expectedOutcomes, c)
@@ -258,7 +261,7 @@ test('expected_outcomes: wrong outcome, wrong hold reason and an unexpected veri
 })
 
 test('scoreCase: unknown is never pass, and unknowns stay in the validated-rate denominator', async () => {
-  const ctx = await base()
+  const ctx = parisVerified(await base())
   const c = clone(ctx); c.kase.expect.leads = [{ company: 'Lumen Ledger', outcome: 'verified' }]; c.kase.expect.exhaustive = false
   const s = scoreCase(c, [placeOnPage, expectedOutcomes])
   assert.equal(s.status, 'unknown')

@@ -204,11 +204,12 @@ a future event. Replayed through the real scan:
 | Northwind Analytics | quote names 2019 | held `event_date_stale` | pass |
 | Brightpath AI | quote and company not on page | dropped | pass |
 | Orbit Labs | event after as_of | held `event_date_future_date` | pass |
-| Lumen Ledger | Paris company, London request | **verified** | `expected_outcomes` fail, `place_on_page` unknown |
+| Lumen Ledger | Paris company, London request | held `location_mismatch` (was **verified** before the fix) | pass (before the fix: `expected_outcomes` fail, `place_on_page` unknown) |
 
-The Lumen Ledger result is a real agent gap, not a fixture artefact: for a London request `placeAgreement`
-(`lib/scan/place-agreement.ts`) returns `unconfirmed`, not `mismatch`, for a page naming a non-UK city (Paris, Berlin), and
-the runner holds only on `mismatch`. It is recorded in the baseline; fixing it flips the baseline in the same PR.
+The Lumen Ledger result was a real agent gap: for a London request `placeAgreement` (`lib/scan/place-agreement.ts`) returned
+`unconfirmed`, not `mismatch`, for a page naming a non-UK city (Paris, Berlin), and the runner holds only on `mismatch`. Fixed by
+`otherPlace` (any city, any country; the requested city's name in another country), and the baseline entry was removed in the
+same PR, so the case now passes outright.
 
 ## Next increments (one PR each)
 
