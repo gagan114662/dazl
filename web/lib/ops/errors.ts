@@ -142,6 +142,8 @@ const BUILTIN_ERRORS = new Set(['Error', 'TypeError', 'RangeError', 'ReferenceEr
 export const APP_ERROR_CLASSES: ReadonlySet<string> = new Set(['CopyRefused', 'CopyVerifyError', 'EnrichError', 'FixtureError', 'GmailError', 'GmailSendError', 'JobFeedError',
   'LeaseLost', 'MemoryError', 'OutreachError', 'ProviderError', 'RaceLost', 'ScanStopped', 'ScanTimedOut', 'SequenceError', 'SourceReviewError', 'SpendRefused',
   'StaleLeaseWrite', 'StatementFailedInTx', 'Timeout',
+  // lib/benchmark/runner.ts (#397): a batch that cannot run as asked (no preset budget, mixed origins). Offline benchmark tooling only.
+  'BenchmarkRunError',
   // lib/ops/client-errors.ts (#312): the wrapper for a browser report. Its runtime name is always replaced by an
   // allowlisted built-in type before capture, so this class name itself is never what is sent.
   'ClientReport',

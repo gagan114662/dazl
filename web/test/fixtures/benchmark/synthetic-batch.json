@@ -1,0 +1,330 @@
+{
+ "note": "SYNTHETIC benchmark batch (#397): every company, domain and output is invented. It exercises the runner; it is not a result of dazl or any competitor.",
+ "as_of": "2026-10-20",
+ "seed": 7,
+ "budget": {
+  "usd_per_task": 2.0,
+  "seconds_per_task": 30,
+  "batch_usd": 40
+ },
+ "task_set": {
+  "version": "synthetic-1",
+  "frozen_at": "2026-10-20",
+  "tasks": [
+   {
+    "id": "toronto-agency-office",
+    "region": "Toronto",
+    "country": "CA",
+    "sector": "marketing",
+    "kind": "standard",
+    "language": "en",
+    "brief": {
+     "seller": "Office fit-out service"
+    },
+    "query": "Toronto marketing agencies that opened a new office in the past 90 days",
+    "constraints": {
+     "all_of": [
+      {
+       "geo": "Toronto, CA"
+      },
+      {
+       "event": "office_opening",
+       "within_days": 90
+      }
+     ]
+    }
+   },
+   {
+    "id": "london-seed-saas",
+    "region": "London",
+    "country": "GB",
+    "sector": "software",
+    "kind": "standard",
+    "language": "en",
+    "brief": {
+     "seller": "Outbound SDR agency"
+    },
+    "query": "London B2B SaaS startups that raised a seed round in the past 60 days",
+    "constraints": {
+     "all_of": [
+      {
+       "geo": "London, GB"
+      },
+      {
+       "event": "funding",
+       "stage": "seed",
+       "within_days": 60
+      }
+     ]
+    }
+   },
+   {
+    "id": "munich-maschinenbau",
+    "region": "Munich",
+    "country": "DE",
+    "sector": "manufacturing",
+    "kind": "standard",
+    "language": "de",
+    "brief": {
+     "seller": "Industrial IoT sensors"
+    },
+    "query": "Maschinenbau-Firmen in München, die in den letzten 90 Tagen eine neue Produktionshalle eröffnet haben",
+    "constraints": {
+     "all_of": [
+      {
+       "geo": "München, DE"
+      },
+      {
+       "event": "facility_opening",
+       "within_days": 90
+      }
+     ]
+    }
+   },
+   {
+    "id": "negative-reykjavik-ipo",
+    "region": "Reykjavik",
+    "country": "IS",
+    "sector": "software",
+    "kind": "negative",
+    "language": "en",
+    "query": "Reykjavik SaaS companies that completed an IPO in the past 30 days",
+    "constraints": {
+     "all_of": [
+      {
+       "geo": "Reykjavik, IS"
+      },
+      {
+       "event": "ipo",
+       "within_days": 30
+      }
+     ]
+    },
+    "expect": {
+     "expected_empty": true
+    }
+   }
+  ]
+ },
+ "systems": [
+  {
+   "system": "dazl",
+   "origin": "synthetic",
+   "config": {
+    "product": "dazl",
+    "product_version": "synthetic-1",
+    "model": "synthetic",
+    "sources": [
+     "news",
+     "web"
+    ],
+    "paid": false,
+    "notes": "SYNTHETIC fixture output, written by hand; not a run of this product"
+   },
+   "tasks": {
+    "toronto-agency-office": {
+     "items": [
+      {
+       "company": "Maple Leaf Marketing",
+       "domain": "mapleleaf.example",
+       "contact": "hello@mapleleaf.example",
+       "event_date": "2026-10-08",
+       "evidence_urls": [
+        "https://news.example/toronto/maple-leaf"
+       ]
+      },
+      {
+       "company": "Lakeshore Creative",
+       "domain": "https://www.lakeshore.example/",
+       "contact": null,
+       "event_date": "2026-10-12",
+       "evidence_urls": [
+        "https://news.example/toronto/lakeshore"
+       ]
+      }
+     ],
+     "cost_usd": 0.42,
+     "seconds": 18,
+     "interventions": 0
+    },
+    "london-seed-saas": {
+     "items": [
+      {
+       "company": "Querix Ltd",
+       "domain": "querix.example",
+       "contact": "founders@querix.example",
+       "event_date": "2026-10-01",
+       "evidence_urls": [
+        "https://news.example/london/querix"
+       ]
+      },
+      {
+       "company": "Fernhill Labs",
+       "domain": "fernhill.example",
+       "contact": null,
+       "event_date": "2025-11-02",
+       "evidence_urls": [
+        "https://news.example/london/fernhill"
+       ]
+      }
+     ],
+     "cost_usd": 0.38,
+     "seconds": 21,
+     "interventions": 0
+    },
+    "munich-maschinenbau": {
+     "items": [],
+     "cost_usd": 0.3,
+     "seconds": 30,
+     "interventions": 0,
+     "stopped": "budget",
+     "detail": "stopped at the task cost limit before extraction"
+    },
+    "negative-reykjavik-ipo": {
+     "items": [],
+     "cost_usd": 0.2,
+     "seconds": 9,
+     "interventions": 0
+    }
+   }
+  },
+  {
+   "system": "chatgpt-web-baseline",
+   "origin": "synthetic",
+   "config": {
+    "product": "plain chat assistant baseline",
+    "product_version": "synthetic-1",
+    "model": "synthetic",
+    "sources": [
+     "web browsing"
+    ],
+    "paid": false,
+    "notes": "SYNTHETIC fixture output, written by hand; not a run of this product"
+   },
+   "tasks": {
+    "toronto-agency-office": {
+     "items": [
+      {
+       "company": "Maple Leaf Marketing",
+       "domain": "mapleleaf.example",
+       "contact": null,
+       "event_date": "2026-10-08",
+       "evidence_urls": [
+        "https://news.example/toronto/maple-leaf"
+       ]
+      },
+      {
+       "company": "Northern Lights Agency",
+       "domain": "northernlights.example",
+       "contact": null,
+       "event_date": "2026-10-15",
+       "evidence_urls": [
+        "https://news.example/toronto/northern-lights-profile"
+       ]
+      }
+     ],
+     "cost_usd": 0.1,
+     "seconds": 40,
+     "interventions": 2
+    },
+    "london-seed-saas": {
+     "error": "session expired"
+    },
+    "munich-maschinenbau": {
+     "items": [
+      {
+       "company": "Isar Werkzeugbau GmbH",
+       "domain": "isar-werkzeugbau.example",
+       "contact": "info@isar-werkzeugbau.example",
+       "event_date": "2026-09-30",
+       "evidence_urls": [
+        "https://presse.example/isar"
+       ]
+      }
+     ],
+     "cost_usd": 0.1,
+     "seconds": 35,
+     "interventions": 1
+    },
+    "negative-reykjavik-ipo": {
+     "items": [
+      {
+       "company": "Geysir Cloud",
+       "domain": "geysir.example",
+       "contact": null,
+       "event_date": "2026-10-10",
+       "evidence_urls": [
+        "https://news.example/geysir"
+       ]
+      }
+     ],
+     "cost_usd": 0.1,
+     "seconds": 20,
+     "interventions": 1
+    }
+   }
+  }
+ ],
+ "unavailable": [
+  {
+   "system": "pancake",
+   "reason": "no authorized Pancake account or adapter (needs the owner's account and plan)"
+  },
+  {
+   "system": "gojiberry",
+   "reason": "no authorized Gojiberry account or adapter (needs the owner's account and plan)"
+  }
+ ],
+ "labels": {
+  "toronto-agency-office": {
+   "domain:mapleleaf.example": {
+    "identity": "pass",
+    "constraints": "pass",
+    "event_date": "pass",
+    "contact": "pass"
+   },
+   "domain:lakeshore.example": {
+    "identity": "pass",
+    "constraints": "pass",
+    "event_date": "pass",
+    "contact": "unknown"
+   },
+   "domain:northernlights.example": {
+    "identity": "pass",
+    "constraints": "pass",
+    "event_date": "unknown",
+    "contact": "pass"
+   }
+  },
+  "london-seed-saas": {
+   "domain:querix.example": {
+    "identity": "pass",
+    "constraints": "pass",
+    "event_date": "pass",
+    "contact": "pass"
+   },
+   "domain:fernhill.example": {
+    "identity": "pass",
+    "constraints": "pass",
+    "event_date": "contradicted",
+    "contact": "pass"
+   }
+  },
+  "munich-maschinenbau": {
+   "domain:isar-werkzeugbau.example": {
+    "identity": "pass",
+    "constraints": "pass",
+    "event_date": "pass",
+    "contact": "pass"
+   }
+  },
+  "negative-reykjavik-ipo": {
+   "domain:geysir.example": {
+    "identity": "pass",
+    "constraints": "pass",
+    "event_date": "fail",
+    "contact": "pass"
+   }
+  }
+ }
+}

@@ -58,6 +58,54 @@ node --experimental-strip-types scripts/benchmark.mts scorecard --run /tmp/run.j
 node --experimental-strip-types scripts/benchmark.mts compare --before /tmp/cards/A.json --after /tmp/cards/B.json
 ```
 
+## The batch runner (`web/lib/benchmark/runner.ts`, #397)
+
+`node --experimental-strip-types scripts/benchmark.mts run --batch BATCH.json [--store STORE.json] [--out DIR]` runs one
+blinded, equal-budget batch. It produces each system's benchmark run, scores each one with the scorecard above (it is not
+a second scoreboard), and writes one batch report with, per system:
+- precision@5 and precision@10;
+- unique actionable yield: validated companies no other system in the batch validated;
+- coverage: complete tasks out of all tasks;
+- elapsed seconds, spend and operator interventions.
+
+**Same task for every system:**
+- Briefs are frozen (deep-frozen and hashed) before the first run.
+- Every system gets the identical brief, the same as-of day and window, and the same per-task cost and time limits.
+- The order rotates per task, seeded, so every system goes first equally often.
+
+**Idempotent:** every (batch, system, task) has a stable run id. With `--store`, a re-run reuses what is recorded and
+calls nothing again. A change to the briefs, systems, budget or seed is a different batch.
+
+**Honest gaps:**
+
+| situation | recorded as |
+| --- | --- |
+| no authorized adapter (e.g. no Pancake or Gojiberry account) | `unsupported`, with the reason; the system is **not ranked**, never a zero-result loser |
+| budget, timeout or rate-limit stop | `incomplete` |
+| login wall, paywall or missing feature | `unsupported`; it is never bypassed |
+| adapter error | `failed` |
+
+None of these is an empty market.
+
+**Durable budget:** the batch total is reserved before each task. A task with an unknown cost reserves its full limit. Once
+the total would be exceeded, the remaining tasks are `not_run`. A paid live adapter needs explicit authorization and a
+preset finite budget, or it does not run.
+
+**Blind scoring:** outputs are canonicalised (one row per company, by domain, else by normalised name; the raw output is
+kept beside it). They are then pooled per task across systems, given opaque ids, shuffled, and judged without the system,
+product, model or configuration. An evaluator failure, or an item it leaves out, is `unknown`.
+
+**Origin is never upgraded:** a batch is all synthetic, all recorded or all live, and mixing is refused, so a synthetic
+fixture can never sit beside, or be presented as, a product's live result. The scorecard refuses to evaluate thresholds on
+synthetic data.
+
+`web/test/fixtures/benchmark/synthetic-batch.json` is a SYNTHETIC batch: four invented tasks, `dazl` and a plain-chat
+baseline as hand-written outputs, and Pancake and Gojiberry unavailable. It exercises the runner and is no result of any
+product.
+
+**Not built:** live adapters (a dazl adapter over `runJob`, and the competitor ones). Each needs owner-authorized accounts,
+keys and a budget. Repeated runs with uncertainty are #398.
+
 ## Recorded evidence so far (`scoreboard/benchmark/history.json`)
 
 | date | source | request | counts |
