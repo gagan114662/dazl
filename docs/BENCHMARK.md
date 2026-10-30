@@ -58,6 +58,24 @@ node --experimental-strip-types scripts/benchmark.mts scorecard --run /tmp/run.j
 node --experimental-strip-types scripts/benchmark.mts compare --before /tmp/cards/A.json --after /tmp/cards/B.json
 ```
 
+## Independent evaluation (part 2: tools only, no labels exist yet)
+A dazl run becomes evaluable only through an evaluator that is independent of dazl. `lib/benchmark/labels.ts` is how one is applied:
+1. **`label-sheet --run RUN.json --out SHEET.csv`**: a blind sheet of every returned result, one row per task and company. It shows the task's query, the company and its evidence links. It never shows the system's name, its rank or its own verdicts, and its order is shuffled by a seed (`--seed`), so it can be regenerated for audit.
+2. The labeller fills one verdict per field (identity, constraints, event_date, contact: pass, fail, unknown or contradicted) into a `dazl-benchmark-labels` file, naming itself and the systems it judged blind (`evaluator.independent_of`).
+3. **`apply-labels --run RUN.json --labels LABELS.json --out RUN2.json`** replaces the run's verdicts with the labels. A result with no label is `unknown` on every field, and a field left blank is `unknown`; neither ever inherits the system's own verdict. It prints the coverage: results, labelled, unlabelled, blank fields, and labels that matched nothing. The evaluator is independent only for a system listed in `independent_of`.
+4. **`agreement --a L1.json --b L2.json`**: two labellers on the same rows, per field: rows both labelled, observed agreement and Cohen's kappa (undefined, not perfect, when both put every row in one category). Low agreement means the contract or the evidence is ambiguous; it is a reason to fix the contract before trusting either label set.
+
+What these tools cannot check, and the owner must decide: who labels, that they really did not see the system's verdicts, and how many rows each task needs. They do not create a label.
+
+## Comparing systems over repeated runs
+**`paired --a A1.json,A2.json --b B1.json,B2.json [--metric validated_at_10]`** (`lib/benchmark/paired.ts`) compares two systems on the same task set from every scorecard of each:
+- per task, each system's metric is averaged over its **complete** runs; only tasks both systems completed at least once are paired. Every other task is listed with the reason, and is never counted as zero;
+- the result is the mean per-task difference B - A with a seeded bootstrap 95% interval over tasks: `b_better` or `a_better` only when the interval excludes 0, otherwise `inconclusive`; fewer than 5 paired tasks is `insufficient_sample`;
+- run-to-run spread (the mean within-task standard deviation) is shown for a system with repeats;
+- `release_evidence` is false, with the reason, when any scorecard is synthetic, a self-report or an aggregate.
+
+Metrics: `validated_at_10` (default), `precision_at_10`, `validated`, `unknown_rate` (lower is better). No repeated runs exist yet; the tests use synthetic scorecards only.
+
 ## Recorded evidence so far (`scoreboard/benchmark/history.json`)
 
 | date | source | request | counts |
