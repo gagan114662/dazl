@@ -18,6 +18,16 @@ test('a member acts in the workspace they chose, within their role, until remove
   assert.match(r.stdout, /WORKSPACE ROUTES ok/)
 })
 
+test('invite, join and switch through the routes; nothing of workspace A is reachable from workspace B', () => {
+  const env = { ...process.env }
+  delete env.NODE_TEST_CONTEXT
+  const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts',
+    '--loader', './test/helpers/workspace-session-loader.mjs', '--test', './test/helpers/workspace-members-runtime.mts'], { cwd: web, env, encoding: 'utf8', timeout: 120000 })
+  assert.equal(r.error, undefined)
+  assert.equal(r.status, 0, r.stdout + r.stderr)
+  assert.match(r.stdout, /WORKSPACE MEMBERS ok/)
+})
+
 test('no read returns a secret, a ciphertext or a capability URL to any role; the Cal.com signing secret only to admins and owners (real sessions)', () => {
   const env = { ...process.env }
   delete env.NODE_TEST_CONTEXT

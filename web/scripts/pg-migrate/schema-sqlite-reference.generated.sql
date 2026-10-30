@@ -197,6 +197,20 @@ CREATE TABLE inbound_messages (
 
 CREATE TABLE inbox_thread_reads (tenant_id TEXT NOT NULL, thread_id TEXT NOT NULL, read_upto INTEGER NOT NULL, PRIMARY KEY (tenant_id, thread_id));
 
+CREATE TABLE invitations (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    email TEXT NOT NULL CHECK (length(email) <= 254),
+    role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'operator', 'viewer')),
+    token_hash TEXT NOT NULL UNIQUE,
+    invited_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    accepted_at INTEGER,
+    accepted_by TEXT,
+    revoked_at INTEGER
+  );
+
 CREATE TABLE lead_enrichments (
       id          TEXT PRIMARY KEY,
       lead_id     TEXT NOT NULL,
@@ -792,6 +806,8 @@ CREATE INDEX hiring_feed_crawl_job ON hiring_feed_crawl(tenant_id, job_id);
 CREATE INDEX idx_evidence_copies_tenant ON lead_evidence_copies(tenant_id, expires_at);
 
 CREATE INDEX inbound_messages_thread ON inbound_messages (tenant_id, thread_id, received_at);
+
+CREATE INDEX invitations_tenant ON invitations (tenant_id, created_at);
 
 CREATE INDEX lead_enrichments_insert_seq_idx ON lead_enrichments (insert_seq);
 

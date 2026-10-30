@@ -5,6 +5,7 @@ import { getDb } from './db/client.ts'
 import type { Db } from './db/client.ts'
 import { BACKFILL_SQL, WORKSPACE_DDL, createPersonalWorkspace, resolveMembership } from './workspaces.ts'
 import type { Role } from './workspaces.ts'
+import { INVITATIONS_DDL } from './workspace-members.ts'
 
 let db: Database.Database | null = null
 
@@ -42,6 +43,7 @@ export function migrateAuth(d: Database.Database): void {
   // The workspace this session acts in (lib/workspaces.ts); NULL: the default one. PG: 0015_workspaces.sql.
   try { d.exec('ALTER TABLE sessions ADD COLUMN active_tenant_id TEXT') } catch { /* exists */ }
   d.exec(WORKSPACE_DDL)
+  d.exec(INVITATIONS_DDL)
   d.transaction(() => { for (const s of BACKFILL_SQL) d.prepare(s).run() })()
 }
 
@@ -167,6 +169,15 @@ export async function getSessionUser(token: string | undefined, d?: Db): Promise
   }
   const business_name = m.tenantId === row.id ? row.business_name : await readBusinessName(db, m.tenantId)
   return { email: row.email, business_name, actorId: row.id, tenantId: m.tenantId, role: m.role }
+}
+
+// Whether the cookie is a live session (signed in, not expired): authentication only, for the page gates (proxy.ts,
+// the /app layout). Which workspace a request may act in is the API's decision (getSessionUser): a member removed from
+// the workspace their session chose still gets the app shell, and its first API request meant for that workspace is
+// refused there, never sent to the sign-in page as if signed out.
+export async function hasLiveSession(token: string | undefined, d?: Db): Promise<boolean> {
+  if (!token || !/^[a-f0-9]{64}$/.test(token)) return false
+  return !!(await (d ?? await getDb()).get('SELECT 1 AS x FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = ? AND s.expires_at > ?', [hashToken(token), nowS()]))
 }
 
 export async function deleteSession(token: string | undefined, d?: Db): Promise<void> {

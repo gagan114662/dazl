@@ -96,8 +96,9 @@ Updated by the builder on every branch. Newest first.
 
 - Blocked-source verification: the narrow copy path is in review (#222); wider use waits for #188 data from a live run.
 - Teams & access (#353, then #358, #357, #371): design in docs/design/workspaces.md. Increment 1 (workspace and
-  membership tables, backfill, server-side resolution, role table) and increment 2 (routes use tenantId, role check
-  on every non-read handler) in review; next: invitations, member management and switching.
+  membership tables, backfill, server-side resolution, role table) increment 2 (routes use tenantId, role check
+  on every non-read handler) and increment 3 (invitations, members, switching, Settings > Team) in review; next:
+  #358 sessions and offboarding.
 
 ## Next (in order, for the scheduled builder; nothing business- or place-specific)
 
