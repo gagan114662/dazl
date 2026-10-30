@@ -1,4 +1,5 @@
 'use client'
+import { CrmPush } from './crm-push'
 import { windowNotice } from '@/lib/scan/window-notice'
 import { KEY_UNREADABLE_COPY, knownErrorCopy } from '@/lib/error-copy'
 import { useEffect, useRef, useState } from 'react'
@@ -155,7 +156,6 @@ export default function LeadsClient() {
   const lines = (v: string) => v.split('\n').map(x => x.trim()).filter(Boolean)
 
   const [drafted, setDrafted] = useState<Record<string, string>>({})
-  const [pushed, setPushed] = useState<Record<string, string>>({})
   const [crmOn, setCrmOn] = useState(false)
   const [watches, setWatches] = useState<Watch[]>([])
   const [watchNote, setWatchNote] = useState('')
@@ -250,11 +250,6 @@ export default function LeadsClient() {
   const [siteBusy, setSiteBusy] = useState(false)
   const [showHidden, setShowHidden] = useState(false)
   const [showSeen, setShowSeen] = useState(false)
-  async function pushCrm(leadId: string) {
-    const r = await fetch('/api/crm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'push', lead_id: leadId }) })
-    const j = await r.json().catch(() => ({}))
-    setPushed(d => ({ ...d, [leadId]: r.ok ? (j.message || 'Pushed to CRM') : j.error || 'Push failed' }))
-  }
   async function confirmReview(leadId: string) {
     const r = await fetch(`/api/leads/${leadId}/confirm`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
     if (r.ok) setLeads(ls => ls.map(l => l.id === leadId ? { ...l, human_confirmed_at: Math.floor(Date.now() / 1000), human_confirmed_from: l.review_reason ?? 'legacy_currentness_review', review_reason: null, currentness_held: !!l.window_held } : l))
@@ -1074,9 +1069,7 @@ export default function LeadsClient() {
                     : l.currentness_held ? <button onClick={()=>confirmReview(l.id)} className="font-mono text-xs border border-black px-2 py-1">I reviewed the source - use for drafting (not consent)</button> : <button onClick={() => void approveLead(l.id)} className="font-mono text-xs uppercase border border-black px-2 py-1 ml-3 hover:bg-black hover:text-white">Draft email</button>)}
               </>
             })()}
-            {crmOn && (pushed[l.id]
-              ? <span className="text-gray-400 text-xs ml-2">{pushed[l.id]}</span>
-              : <button onClick={() => pushCrm(l.id)} className="font-mono text-xs uppercase border border-black px-2 py-1 ml-2 hover:bg-black hover:text-white">Push to CRM</button>)}
+            {crmOn && <CrmPush leadId={l.id} />}
               </div>
             </details>
           </div>
