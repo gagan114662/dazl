@@ -1,4 +1,5 @@
 import {contactContext} from '../outreach/contact-context.ts'
+import type { Db } from '../db/client.ts'
 import {randomBytes} from 'node:crypto'
 import type Database from 'better-sqlite3'
 import {fetchPageDetailed,isFail,type Page,type FetchFail} from './fetch-page.ts'
@@ -47,7 +48,13 @@ export async function createSourceReview(db:Database.Database,tenant:string,inpu
  })()
  return {job_id:jobId,lead_id:leadId,check}
 }
+const SOURCE_CHECK_SQL='SELECT r.fetch_status,r.quote_match,r.company_named,r.contact_match,r.checked_at FROM source_reviews r JOIN leads l ON l.id=r.lead_id JOIN scan_jobs j ON j.id=l.scan_job_id AND j.id=r.job_id WHERE r.tenant_id=? AND r.lead_id=? AND j.user_id=?'
+type SourceCheckRow={fetch_status:string;quote_match:number;company_named:number;contact_match:number;checked_at:number}
+const checkOf=(r:SourceCheckRow|undefined):SourceCheck|null=>r?{...r,quote_match:!!r.quote_match,company_named:!!r.company_named,contact_match:!!r.contact_match}:null
 export function sourceCheckForLead(db:Database.Database,tenant:string,lead:string):SourceCheck|null{
- const r=db.prepare('SELECT r.fetch_status,r.quote_match,r.company_named,r.contact_match,r.checked_at FROM source_reviews r JOIN leads l ON l.id=r.lead_id JOIN scan_jobs j ON j.id=l.scan_job_id AND j.id=r.job_id WHERE r.tenant_id=? AND r.lead_id=? AND j.user_id=?').get(tenant,lead,tenant) as {fetch_status:string;quote_match:number;company_named:number;contact_match:number;checked_at:number}|undefined
- return r?{...r,quote_match:!!r.quote_match,company_named:!!r.company_named,contact_match:!!r.contact_match}:null
+ return checkOf(db.prepare(SOURCE_CHECK_SQL).get(tenant,lead,tenant) as SourceCheckRow|undefined)
+}
+// sourceCheckForLead on the Db layer (SQLite or Postgres): the same query and shaping.
+export async function readSourceCheckForLead(db:Db,tenant:string,lead:string):Promise<SourceCheck|null>{
+ return checkOf(await db.get<SourceCheckRow>(SOURCE_CHECK_SQL,[tenant,lead,tenant]))
 }

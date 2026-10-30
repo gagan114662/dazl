@@ -6,6 +6,7 @@
 //   - this process's memory (when nothing at all could be persisted).
 // It clears only when the gate runs again and passes (applySalesHiringGate removes the marker for a lead it passes).
 import type Database from 'better-sqlite3'
+import type { Db } from '../db/client.ts'
 import { salesHiringRequired } from './sales-hiring-required.ts'
 
 export const SALES_GATE_HELD = 'sales_hiring_check_failed'
@@ -16,13 +17,14 @@ const inProcess = new Set<string>()
 export function markHeldInProcess(tenantId: string, leadIds: string[]): void { for (const id of leadIds) { if (inProcess.size >= 10_000) inProcess.clear(); inProcess.add(`${tenantId}:${id}`) } }
 
 // The run report is a separate row, and the one place #282 itself writes the held leads: `held_lead_ids`. It survives a rejected review write AND a rejected marker write.
+const REPORT_HOLD_SQL = 'SELECT r.report FROM scan_run_report r JOIN leads l ON l.scan_job_id = r.job_id JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ? ORDER BY r.attempt DESC LIMIT 1'
+const reportNames = (r: { report: string } | undefined, leadId: string) => {
+  if (!r) return false
+  const ids = (JSON.parse(r.report) as { held_lead_ids?: unknown }).held_lead_ids
+  return Array.isArray(ids) && ids.includes(leadId)
+}
 function reportHolds(db: Database.Database, tenantId: string, leadId: string): boolean {
-  try {
-    const r = db.prepare('SELECT r.report FROM scan_run_report r JOIN leads l ON l.scan_job_id = r.job_id JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ? ORDER BY r.attempt DESC LIMIT 1').get(leadId, tenantId) as { report: string } | undefined
-    if (!r) return false
-    const ids = (JSON.parse(r.report) as { held_lead_ids?: unknown }).held_lead_ids
-    return Array.isArray(ids) && ids.includes(leadId)
-  } catch { return false }
+  try { return reportNames(db.prepare(REPORT_HOLD_SQL).get(leadId, tenantId) as { report: string } | undefined, leadId) } catch { return false }
 }
 
 // A gate that RAN AGAIN AND PASSED releases the lead: the marker, the report entry and the in-process entry all go.
@@ -40,20 +42,40 @@ export function releaseHeld(db: Database.Database, tenantId: string, jobId: stri
   } catch { /* no report table */ }
 }
 
+const HELD_ROW_SQL = 'SELECT l.review_reason, l.human_confirmed_from, l.confidence, l.company, l.created_at, j.query, j.icp FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?'
+const GATE_FAILED_SQL = "SELECT 1 AS k FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'scan:gate' AND kind = 'gate_failed' LIMIT 1"
+const GATE_PASSED_SQL = "SELECT 1 AS k FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'scan:gate' AND kind = 'gate_passed' LIMIT 1"
+type HeldRow = { review_reason: string | null; human_confirmed_from: string | null; confidence: number | null; company: string | null; created_at: number | null; query: string | null; icp: string | null }
+// DEFAULT-DENY, durable across processes, whatever the lead's age: when the request needs the sales-hiring proof, a machine-verified lead is usable only with a recorded PASS.
+// A lead with no pass record (the gate failed, was cut off, or every write of its failure was rejected, and the process was restarted) is held, whatever human confirmation
+// was given. There is no creation-date exemption and no dependency on any marker the gate writes before judging: nothing but a durable pass makes the lead draftable.
+const unpassedHeld = (row: HeldRow, passed: boolean) => !passed && row.review_reason === null && row.confidence !== null && !!row.company && salesHiringRequired(row.query, row.icp)
+const storedHeld = (row: HeldRow) => row.review_reason === SALES_GATE_HELD || row.human_confirmed_from === SALES_GATE_HELD
+
 export function requiredGateHeld(db: Database.Database, tenantId: string, leadId: string): string | null {
   if (inProcess.has(`${tenantId}:${leadId}`)) return SALES_GATE_HELD
-  const row = db.prepare('SELECT l.review_reason, l.human_confirmed_from, l.confidence, l.company, l.created_at, j.query, j.icp FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as { review_reason: string | null; human_confirmed_from: string | null; confidence: number | null; company: string | null; created_at: number | null; query: string | null; icp: string | null } | undefined
+  const row = db.prepare(HELD_ROW_SQL).get(leadId, tenantId) as HeldRow | undefined
   if (!row) return null
-  if (row.review_reason === SALES_GATE_HELD || row.human_confirmed_from === SALES_GATE_HELD) return SALES_GATE_HELD
+  if (storedHeld(row)) return SALES_GATE_HELD
   let passed = false
   try {
-    if (db.prepare("SELECT 1 FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'scan:gate' AND kind = 'gate_failed' LIMIT 1").get(leadId, tenantId)) return SALES_GATE_HELD
-    passed = !!db.prepare("SELECT 1 FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'scan:gate' AND kind = 'gate_passed' LIMIT 1").get(leadId, tenantId)
+    if (db.prepare(GATE_FAILED_SQL).get(leadId, tenantId)) return SALES_GATE_HELD
+    passed = !!db.prepare(GATE_PASSED_SQL).get(leadId, tenantId)
   } catch { /* no enrichments table: nothing was marked */ }
   if (reportHolds(db, tenantId, leadId)) return SALES_GATE_HELD
-  // DEFAULT-DENY, durable across processes, whatever the lead's age: when the request needs the sales-hiring proof, a machine-verified lead is usable only with a recorded PASS.
-  // A lead with no pass record (the gate failed, was cut off, or every write of its failure was rejected, and the process was restarted) is held, whatever human confirmation
-  // was given. There is no creation-date exemption and no dependency on any marker the gate writes before judging: nothing but a durable pass makes the lead draftable.
-  if (!passed && row.review_reason === null && row.confidence !== null && !!row.company && salesHiringRequired(row.query, row.icp)) return SALES_GATE_HELD
-  return null
+  return unpassedHeld(row, passed) ? SALES_GATE_HELD : null
+}
+
+// requiredGateHeld on the Db layer (SQLite or Postgres): the same reads in the same order and the same decision.
+export async function readRequiredGateHeld(db: Db, tenantId: string, leadId: string): Promise<string | null> {
+  if (inProcess.has(`${tenantId}:${leadId}`)) return SALES_GATE_HELD
+  const row = await db.get<HeldRow>(HELD_ROW_SQL, [leadId, tenantId])
+  if (!row) return null
+  if (storedHeld(row)) return SALES_GATE_HELD
+  if (await db.get(GATE_FAILED_SQL, [leadId, tenantId])) return SALES_GATE_HELD
+  const passed = !!(await db.get(GATE_PASSED_SQL, [leadId, tenantId]))
+  let report = false
+  try { report = reportNames(await db.get<{ report: string }>(REPORT_HOLD_SQL, [leadId, tenantId]), leadId) } catch { report = false }
+  if (report) return SALES_GATE_HELD
+  return unpassedHeld(row, passed) ? SALES_GATE_HELD : null
 }

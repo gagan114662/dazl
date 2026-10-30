@@ -1,5 +1,7 @@
-// Postgres port, batch 3 (#354 part 2): the scan status route (GET /api/scan/status), the most-polled read in the app,
-// moved to the Db layer with its per-source reads (source runs, search stats, model usage, run report, first-5 leads).
+// Postgres port, batch 3 (#354 part 2): the two most-read routes, moved to the Db layer. GET /api/scan/status (polled
+// for every running scan) with its per-source reads (source runs, search stats, model usage, run report, first-5
+// leads), and GET /api/leads with its per-lead reads (timing and required-gate holds, contact context, source check,
+// news attribution).
 // The real handler runs on SQLite and on Postgres from the same seed, two tenants; every response and the rows the
 // stale-job reap leaves must be identical on both engines. On Postgres the raw SQLite handle is a trap (getScanDb()
 // throws and getAuthDb() cannot open), so a read still on it fails the run. Synthetic data only; any fetch fails.
@@ -15,6 +17,7 @@ import { PG_URL, freshSchema } from './pg-test.ts'
 
 process.env.DB_PATH = '/nonexistent-dazl-dir/app.db' // getAuthDb() cannot open: any raw access fails
 const status = await import('../../app/api/scan/status/route.ts')
+const leadsRoute = await import('../../app/api/leads/route.ts')
 globalThis.fetch = (async (u: unknown) => { throw new Error(`Unexpected network call: ${String(u)}`) }) as typeof fetch
 
 const A = 'tenantA_fixture', B = 'tenantB_fixture'
@@ -47,6 +50,13 @@ async function seed(db: Db): Promise<void> {
     await run("INSERT INTO scan_model_calls (tenant_id, job_id, attempt, seq, stage, method, model_requested, model_served, input_tokens, output_tokens, outcome, max_tokens, prompt_chars, recorded_at) VALUES (?, ?, 1, ?, ?, 'messages', 'claude-sonnet-4-5', 'claude-sonnet-4-5', ?, ?, ?, 800, 5000, ?)", [A, J.done, seq, stage, inTok, outTok, outcome, T])
   }
   await run('INSERT INTO scan_run_report (job_id, attempt, report, created_at) VALUES (?, 1, ?, ?)', [J.done, JSON.stringify({ attempt: 1, extraction: { pages: 3, candidates: 2 }, resolution: { candidates: 2, resolved: 1, unresolved: 1, by_reason: { no_contact: 1 } } }), T])
+  // The per-lead reads of the leads route: a source review with a contact context, a gate pass, a lead the run report holds.
+  await run("INSERT INTO source_reviews (id, tenant_id, job_id, lead_id, input_json, fetch_status, quote_match, company_named, contact_match, checked_at) VALUES ('sr1', ?, ?, ?, ?, 'ok', 1, 1, 0, ?)",
+    [A, J.done, 'c1'.repeat(12), JSON.stringify({ contact_context: { excerpt: 'Email our hiring manager', source_url: 'https://news.example/a' } }), T])
+  await run("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, source_url, source_date, retrieved_at) VALUES ('e1', ?, ?, 'scan:gate', 'gate_passed', 'ok', 'https://news.example/a', '2026-10-01', ?)", ['c2'.repeat(12), A, T])
+  await run('INSERT INTO scan_run_report (job_id, attempt, report, created_at) VALUES (?, 1, ?, ?)', [J.first5, JSON.stringify({ attempt: 1, held_lead_ids: ['c3'.repeat(12)] }), T])
+  await run('UPDATE leads SET confidence = 85, event_date = ? WHERE scan_job_id = ?', ['2026-10-01', J.first5])
+  await run("UPDATE leads SET human_confirmed_at = ?, human_confirmed_from = 'test_review' WHERE id IN (?, ?)", [T, 'c2'.repeat(12), 'c3'.repeat(12)])
   await run("UPDATE scan_jobs SET status = 'done', finished_at = ?, candidates = 3, verified = 2, needs_review = 1, dropped = 0, drop_reasons = '{}' WHERE id IN (?, ?, ?, ?)", [T + 10, J.done, J.first5, J.bare, J.other])
   // Stale: running and claimed long ago; one with attempts left (back to pending), one on its last attempt (failed).
   await run('UPDATE scan_jobs SET claimed_at = ? WHERE id IN (?, ?)', [NOW - 10 * 3600, J.stale, J.staleLast])
@@ -62,6 +72,7 @@ async function call(name: string, res: Response | Promise<Response>): Promise<Ou
   return { name, status: r.status, body }
 }
 const get = (job: string) => status.GET(new NextRequest(`https://app.dazl.test/api/scan/status?job_id=${job}&passive=1`))
+const leads = (job: string, all = false) => leadsRoute.GET(new NextRequest(`https://app.dazl.test/api/leads?job_id=${job}${all ? '&all=1' : ''}`))
 // finished_at of a job the reap failed is the clock: compare as 'now'.
 const norm = (v: unknown, k = ''): unknown => Array.isArray(v) ? v.map(x => norm(x, k)) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([kk, x]) => [kk, norm(x, kk)])) : typeof v === 'number' && /_at$/.test(k) && v >= NOW - 5 ? 'now' : v
 
@@ -70,10 +81,15 @@ async function scenario(db: Db): Promise<{ out: Out[]; rows: unknown }> {
   setUser({ id: A, business_name: 'Co' })
   for (const [n, j] of Object.entries(J)) out.push(await call(`A ${n}`, get(j)))
   out.push(await call('A malformed id', get('not-a-job')))
+  out.push(await call('A leads done', leads(J.done)))
+  out.push(await call('A leads first5', leads(J.first5)))
+  out.push(await call('A leads first5 all', leads(J.first5, true)))
   setUser({ id: B, business_name: 'Co' })
   out.push(await call('B asks for A done', get(J.done)))
   out.push(await call('B asks for A first5', get(J.first5)))
   out.push(await call('B own', get(J.other)))
+  out.push(await call('B leads of A', leads(J.first5)))
+  out.push(await call('B own leads', leads(J.other)))
   const rows = await db.all('SELECT id, status, error, attempts, claimed_at, finished_at FROM scan_jobs ORDER BY id')
   return { out: norm(out) as Out[], rows: norm(rows) }
 }
@@ -101,7 +117,7 @@ const by = (out: Out[], n: string) => out.find(o => o.name === n)!
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- response bodies are read loosely and compared exactly
 type Body = Record<string, any>
 
-test('batch 3 on SQLite: the status route serves the owner\'s scan with every per-source read, and nothing of another tenant', async () => {
+test('batch 3 on SQLite: the status and leads routes serve the owner\'s scan with every per-source and per-lead read, and nothing of another tenant', async () => {
   const { out, rows } = await onSqlite()
   const o = (n: string) => by(out, n).body as Body
   const done = o('A done')
@@ -122,6 +138,14 @@ test('batch 3 on SQLite: the status route serves the owner\'s scan with every pe
   for (const n of ['B asks for A done', 'B asks for A first5']) assert.deepEqual([by(out, n).status, by(out, n).body], [404, { error: 'Not found' }], n)
   assert.deepEqual(o('B own').source_runs.length, 2)
   assert.ok(!JSON.stringify(out.filter(x => x.name.startsWith('A '))).includes('Other Tenant Dental'))
+  const ld = o('A leads done').leads as Body[]
+  assert.deepEqual(ld.map(l => [l.company, l.contact_context?.excerpt ?? null, l.source_check?.quote_match ?? null]), [['First Dental', 'Email our hiring manager', true]])
+  const lf = Object.fromEntries((o('A leads first5 all').leads as Body[]).map(l => [l.company, l]))
+  assert.equal(lf['Third Dental'].currentness_held, true, 'confirmed by the owner, but the run report holds it')
+  assert.equal(lf['Second Dental'].currentness_held, false, 'confirmed by the owner, with a recorded gate pass')
+  assert.equal(lf['Low Fit Dental'].currentness_held, true, 'machine-verified only: held until confirmed')
+  assert.equal(by(out, 'B leads of A').status, 404)
+  assert.deepEqual((o('B own leads').leads as Body[]).map(l => l.company), ['Other Tenant Dental'])
   void rows
 })
 

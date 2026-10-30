@@ -1,5 +1,5 @@
 // Runs test/helpers/pg-port-routes-3-runtime.mts in its own process (it loads the route handler through the test route
-// loader): the Postgres port's batch 3, the scan status route and its per-source reads, on SQLite and on Postgres.
+// loader): the Postgres port's batch 3, the scan status and leads routes and their reads, on SQLite and on Postgres.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 
 const web = fileURLToPath(new URL('../', import.meta.url))
 
-test('Postgres port batch 3: scan status route parity on both engines', () => {
+test('Postgres port batch 3: scan status and leads route parity on both engines', () => {
   const env = { ...process.env }
   delete env.NODE_TEST_CONTEXT // the child reports as its own run, so its TAP output is readable here
   const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts',
