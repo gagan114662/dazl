@@ -106,6 +106,47 @@ product.
 **Not built:** live adapters (a dazl adapter over `runJob`, and the competitor ones). Each needs owner-authorized accounts,
 keys and a budget. Repeated runs with uncertainty are #398.
 
+## Repeated-run superiority (`web/lib/benchmark/superiority.ts`, #398)
+
+`benchmark.mts superiority --plan PLAN.json --hash HASH --ledger LOOKS.json --batches A.json,B.json,...` compares a candidate
+with a baseline over repeated batches from the runner. It returns `win`, `loss` or `inconclusive` for each metric, overall
+and per segment (region, sector). Each answer comes with its interval and its pair and cluster counts.
+
+**Preregistered.** The plan is frozen and hashed before any result is viewed. It fixes:
+- the metrics and their direction, and each one's minimum effect;
+- the precision floor (proposed 0.90) and the yield advantage (proposed ×1.25, i.e. +25%);
+- the cost ceiling and the critical floors;
+- the minimum pairs and clusters, the cluster unit, the bootstrap, the stop rule, and a stated power rationale.
+
+The analysis refuses a plan whose hash differs from the registered one. A look ledger counts analyses, and the stop rule
+refuses past `max_looks`, so results are not re-examined until they look like a win. All the values are configuration, not
+code.
+
+**Paired and clustered:**
+- One pair is a (task, repetition) where both systems completed the task.
+- A task one side did not complete is listed as a missing pair, never scored as zero. The failure rate itself is measured.
+- Intervals are a cluster bootstrap over tasks (or briefs or accounts), so ten repetitions of one task are one cluster,
+  not ten pieces of evidence.
+
+**Decisions:**
+- Too few pairs or clusters, or an interval that reaches inside the minimum effect, is `inconclusive`. The interval decides,
+  never the average.
+- There is **no overall winner** when a critical floor fails: contradicted results, false alerts, precision@10 under the
+  floor, or cost per validated over the ceiling. That holds whatever the other metrics say.
+- Overall `win` needs every primary metric to win, every floor to hold and the registered yield advantage to be shown.
+
+**Evidence kept apart:** this measures evaluator-validated performance only. Customer outcomes come from an opted-in
+pilot (#399) and are reported as not measured here. Batches of different origins, or with different frozen briefs, are
+never pooled, and synthetic batches are labelled as saying nothing about any product.
+
+**Monitoring** (`monitoring(snapshots)`) covers repeated runs of one monitor:
+- net-new validated events per day;
+- the duplicate rate;
+- freshness: the median age of a new event when it first appears;
+- correction retention: a corrected event that comes back as new counts against it.
+
+A span under 14 days is reported as `adequate: false`, never stretched.
+
 ## Recorded evidence so far (`scoreboard/benchmark/history.json`)
 
 | date | source | request | counts |

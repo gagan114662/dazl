@@ -106,6 +106,7 @@ export interface SystemReport {
 export interface BatchResult {
   manifest: { batch_id: string; task_set_version: string; as_of: string; briefs_hash: string; seed: number; budget: Budget; origin: AdapterOrigin; label: string; order: Record<string, string[]>; systems: { system: string; origin: AdapterOrigin; config: AdapterConfig; available: Adapter['available'] }[]; evaluator: { name: string; version: string; independent: boolean } }
   runs: BenchmarkRun[]; scorecards: Scorecard[]; report: SystemReport[]; spent_usd: number
+  interventions: Record<string, Record<string, number>>   // system -> task -> operator interventions
 }
 
 const rng = (seed: number) => { let s = (seed >>> 0) || 1; return () => { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; return ((s >>> 0) % 1_000_000) / 1_000_000 } }
@@ -217,6 +218,7 @@ export async function runBatch(o: BatchOptions): Promise<BatchResult> {
   return {
     manifest: { batch_id, task_set_version: set.version, as_of: o.asOf, briefs_hash: hash, seed: o.seed, budget, origin, label: origin === 'synthetic' ? 'SYNTHETIC fixtures: not live results of any product' : origin === 'recorded' ? 'recorded outputs' : 'live runs', order, systems: systems.map(a => ({ system: a.system, origin: a.origin, config: a.config, available: avail.get(a.system)! })), evaluator: { name: o.evaluator.name, version: o.evaluator.version, independent: o.evaluator.independent } },
     runs, scorecards: cards, report, spent_usd: Math.round(spent * 1e6) / 1e6,
+    interventions: Object.fromEntries(systems.map(a => [a.system, Object.fromEntries(briefs.map(b => [b.task_id, stored.get(`${a.system}|${b.task_id}`)!.interventions]))])),
   }
 }
 

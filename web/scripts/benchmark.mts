@@ -9,12 +9,16 @@
 //   node --experimental-strip-types scripts/benchmark.mts run --batch BATCH.json [--store STORE.json] [--out DIR]
 //     a blinded, equal-budget batch (#397, lib/benchmark/runner.ts): every system's runs, scorecards and one batch report;
 //     --store resumes (a run already recorded there is reused, nothing is called again)
+//   node --experimental-strip-types scripts/benchmark.mts superiority --plan PLAN.json --hash HASH --ledger LOOKS.json --batches A.json,B.json,...
+//     repeated-run paired comparison (#398, lib/benchmark/superiority.ts) against a plan registered (hashed) before the
+//     results; LOOKS.json counts looks and the stop rule refuses past max_looks. Prints the plan hash with --hash-only.
 //   node --experimental-strip-types scripts/benchmark.mts history
 //     the recorded evidence so far, with its denominators
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { evaluateThresholds, fromScoreboardResult, regressions, scorecard, scorecardMarkdown, type BenchmarkRun, type Scorecard, type TaskSet, type ThresholdSet } from '../lib/benchmark/scorecard.ts'
-import { batchFromFile, batchMarkdown, memoryStore, runBatch, type BatchFile, type StoredRun } from '../lib/benchmark/runner.ts'
+import { batchFromFile, batchMarkdown, memoryStore, runBatch, type BatchFile, type BatchResult, type StoredRun } from '../lib/benchmark/runner.ts'
+import { analyze, preregHash, type LookLedger, type Prereg } from '../lib/benchmark/superiority.ts'
 
 const dir = path.resolve(import.meta.dirname, '..', '..', 'scoreboard', 'benchmark')
 const arg = (f: string) => { const i = process.argv.indexOf(f); return i >= 0 ? process.argv[i + 1] : undefined }
@@ -45,6 +49,15 @@ if (cmd === 'scorecard') {
   const r = regressions(a, b, Number(arg('--tolerance') ?? 0))
   if (r.length) { console.log(`benchmark: ${r.length} regression(s)\n${r.map(x => `  ${x}`).join('\n')}`); process.exit(1) }
   console.log('benchmark: no regression')
+} else if (cmd === 'superiority') {
+  const plan = json<Prereg>(arg('--plan') ?? die('--plan PLAN.json is required'))
+  if (process.argv.includes('--hash-only')) { console.log(preregHash(plan)); process.exit(0) }
+  const lf = arg('--ledger') ?? die('--ledger LOOKS.json is required (created on the first look)')
+  const ledger: LookLedger = existsSync(lf) ? json<LookLedger>(lf) : { plan_hash: preregHash(plan), looks: [] }
+  const batches = (arg('--batches') ?? die('--batches A.json,B.json is required')).split(',').map(f => json<BatchResult>(f))
+  const s = analyze(plan, arg('--hash') ?? die('--hash (the plan hash registered before the results) is required'), ledger, batches)
+  writeFileSync(lf, JSON.stringify(ledger, null, 2) + '\n')
+  console.log(JSON.stringify(s, null, 2))
 } else if (cmd === 'history') {
   const h = json<{ note: string; observations: { date: string; source: string; commit: string | null; request: string; counts: Record<string, number>; note?: string }[] }>(path.join(dir, 'history.json'))
   console.log(h.note + '\n')
@@ -64,4 +77,4 @@ if (cmd === 'scorecard') {
     writeFileSync(path.join(out, `batch-${r.manifest.batch_id}.md`), batchMarkdown(r) + '\n')
   }
   process.stdout.write(batchMarkdown(r) + `\n\nruns: ${store.runs.size - before} new, ${before} reused from the store\n`)
-} else die('usage: benchmark.mts scorecard|from-scoreboard|compare|run|history (see the header)')
+} else die('usage: benchmark.mts scorecard|from-scoreboard|compare|run|superiority|history (see the header)')
