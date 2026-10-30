@@ -41,7 +41,8 @@ export const LOCKS: { id: string; re: RegExp; note: string }[] = [
 // test/pg-inventory.test.ts until it is classified here.
 export const STATE_NOTES: Record<string, { share: 'must share' | 'safe to lose' | 'constant' ; note: string }> = {
   'lib/connectors/sitecrawl.ts:lastHit': { share: 'safe to lose', note: 'per-host crawl politeness delay; each instance waits on its own' },
-  'lib/llm/spend-guard.ts:pools': { share: 'must share', note: 'owner spend pool; resets on restart and differs per instance (#363)' },
+  'lib/scan/place-agreement.ts:REGION_BY_ALIAS': { share: 'constant', note: 'region alias lookup, filled once at load from the fixed country / state / province lists in the file, then only read' },
+  'lib/scan/place-agreement.ts:NEEDS_CAPITALS': { share: 'constant', note: 'which of those aliases must be written in capitals (ON, NY, NSW), filled once at load beside REGION_BY_ALIAS, then only read' },
   'lib/ops/emitted.ts:seen': { share: 'safe to lose', note: 'which bundles this build emitted' },
   'lib/outreach/reopen.ts:inFlight': { share: 'must share', note: 're-open sends running in this process; another instance cannot see them (row claim fences the send, this guards resolve)' },
   'lib/rate-limit.ts:local': { share: 'safe to lose', note: "per-process shadow, only for the low-risk 'local' kinds while the shared store fails; closed kinds refuse (#356, #400)" },
