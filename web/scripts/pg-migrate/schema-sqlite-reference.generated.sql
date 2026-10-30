@@ -623,6 +623,20 @@ CREATE TABLE suppressions (
       PRIMARY KEY (tenant_id, email)
     );
 
+CREATE TABLE tech_observations (
+    tenant_id TEXT NOT NULL,
+    domain TEXT NOT NULL,
+    tech TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('present','absent_in_scope')),
+    page_url TEXT NOT NULL,
+    page_kind TEXT NOT NULL,
+    detector_version INTEGER NOT NULL,
+    confidence INTEGER NOT NULL CHECK (confidence BETWEEN 0 AND 100),
+    matched TEXT,
+    observed_at INTEGER NOT NULL,
+    PRIMARY KEY (tenant_id, domain, tech, page_url, observed_at)
+  );
+
 CREATE TABLE tenant_competitors (
     tenant_id TEXT NOT NULL, name TEXT NOT NULL, position INTEGER NOT NULL,
     PRIMARY KEY (tenant_id, name)
@@ -836,6 +850,8 @@ CREATE INDEX seo_index_results_tenant ON seo_index_results (tenant_id, keyword, 
 CREATE INDEX sequences_tenant ON sequences (tenant_id, status);
 
 CREATE INDEX source_reviews_tenant ON source_reviews(tenant_id,lead_id);
+
+CREATE INDEX tech_obs_domain ON tech_observations (tenant_id, domain, tech, observed_at);
 
 CREATE INDEX tenant_connections_tenant ON tenant_connections (tenant_id);
 

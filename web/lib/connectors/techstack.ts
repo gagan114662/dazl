@@ -1,6 +1,8 @@
 // Tech-stack detection over the HTML sitecrawl already downloads - no extra fetches.
 // High-precision signatures only: each one names a product the page itself loads or declares.
 // A weak signal (a bare class name, a common word) is worse than a miss, so this list stays short.
+// Bump when SIGS changes: observations from different detector versions are not comparable, so a changed signature list can never look like a technology change.
+export const TECH_DETECTOR_VERSION = 1
 export interface TechHit { name: string; where: string }
 
 const SIGS: { name: string; test: RegExp }[] = [
