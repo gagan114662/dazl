@@ -105,17 +105,23 @@ const exact = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase()
 // must be provably descriptive (safeModifier), so a declarative sentence ("Email marketing won customers.") can never
 // pass as an object. The lists only decide what may be ignored: a buyer, modifier or trailing phrase they do not know
 // makes the sentence a term, never the other way round.
-const IMPERATIVE = /^(?:(?:please|and|also|but|only|just)\s+)?(?:(?:do not|don['’]t|never)\s+)?(?:find|search|look|target|contact|reach|email|message|include|exclude|skip|avoid|ignore)\s+(.+)$/i
+const IMPERATIVE = /^(?:(?:please|and|also|but|only|just)\s+)?((?:do not|don['’]t|never)\s+)?(find|search|look|target|contact|reach|email|message|include|exclude|skip|avoid|ignore)\s+(.+)$/i
 const LEADING = /^(?:(?:for|to|out|at|up|only|all|any|the|more|new|every|other)\s+)+/i
-// Buyer nouns, and the nouns a request excludes that are never buyers (directories, job boards, franchises): both are
-// provably about who to find or skip, never about what is sold.
 const BUYERS = new Set(('founders owners ceos ctos cfos cmos coos executives leaders managers directors heads teams companies businesses startups ' +
   'firms agencies consultancies consultants clinics practices dentists doctors physicians practitioners hospitals schools universities ' +
   'retailers stores shops restaurants brands organizations organisations nonprofits charities people prospects buyers customers vendors ' +
   'resellers chains contractors plumbers electricians landlords investors recruiters developers engineers marketers freelancers ' +
-  'coaches therapists lawyers accountants manufacturers distributors wholesalers merchants sellers operators providers labs ' +
-  'directories listings marketplaces aggregators franchises franchisees competitors suppliers networks associations portals boards ' +
-  'brokers dealers intermediaries individuals students hobbyists governments municipalities').split(' '))
+  'coaches therapists lawyers accountants manufacturers distributors wholesalers merchants sellers operators providers labs').split(' '))
+// What a request skips that is never a buyer (directories, job boards, franchises, competitors). Accepted only after an
+// excluding verb ("Exclude ...", "Skip ...", "Do not target ..."): after "Include" or "Find", or in a plain description,
+// "customer portals" or "marketplace listings" could name something sold, so the sentence stays material.
+const EXCLUDABLE = new Set(('directories listings marketplaces aggregators franchises franchisees competitors suppliers networks associations ' +
+  'portals boards brokers dealers intermediaries individuals students hobbyists governments municipalities').split(' '))
+// Which grammars a tail may use: excl admits EXCLUDABLE nouns as buyer heads; narrow keeps the pre-#349-live tail
+// (places, buyer lists, who/that -ing, hiring a role) for the withdrawal gate, which this change must not loosen.
+type Mode = { excl: boolean; narrow: boolean }
+const PLAIN: Mode = { excl: false, narrow: false }
+const NARROW: Mode = { excl: false, narrow: true }
 // A modifier before the buyer noun is safe only when it is provably descriptive: a known describing word, the singular
 // of a buyer noun ("restaurant owners", "clinic managers"), or a hyphenated -backed/-funded/-stage/-owned/-based/-sized/
 // -led form ("VC-backed startups"). Any other word (a verb in any tense, a service name, an unknown word) means the
@@ -130,14 +136,15 @@ const safeModifier = (w: string) => {
 }
 // One buyer group: at most three safe modifiers, a buyer noun, at most one -ing word ("dental practices", "SaaS startups
 // hiring"). Returns every length that parses, longest first ("startups hiring SDRs" may be "startups" + "hiring SDRs").
-function buyerGroup(words: string[]): number[] {
+function buyerGroup(words: string[], excl = false): number[] {
   const out: number[] = []
+  const isHead = (w: string) => BUYERS.has(w.toLowerCase()) || (excl && EXCLUDABLE.has(w.toLowerCase()))
   for (let n = Math.min(words.length, 5); n >= 1; n--) {
     const w = words.slice(0, n)
-    const ing = n >= 2 && /ing$/i.test(w[n - 1]) && BUYERS.has(w[n - 2].toLowerCase())
+    const ing = n >= 2 && /ing$/i.test(w[n - 1]) && isHead(w[n - 2])
     const head = ing ? w[n - 2] : w[n - 1]
     const mods = w.slice(0, ing ? n - 2 : n - 1)
-    if (BUYERS.has(head.toLowerCase()) && mods.length <= 3 && mods.every(safeModifier)) out.push(n)
+    if (isHead(head) && mods.length <= 3 && mods.every(safeModifier)) out.push(n)
   }
   return out
 }
@@ -233,29 +240,31 @@ function timeLength(words: string[]): number {
 }
 // a signal event the buyers went through: "that opened a new location", "or that raised seed funding", "launching a
 // product". A relative pronoun or a list joiner, optional auxiliaries, an event verb, then only words that name what
-// such an event is about (a round, a location, a product, a job, a role). Never won/bought/sold/paid and never a
-// commercial noun, so "bought payroll software from us" or "won customers" stays material.
+// such an event is about (a round, a location, a product, a job, a role). Without a pronoun or joiner only an -ing verb
+// right after the buyers qualifies ("startups raising seed funding"): "Customers also receive a new app." or
+// "Practices launched a website." is a claim about them, so it stays material. Never won/bought/sold/paid/receive and
+// never a commercial noun, so "bought payroll software from us" or "won customers" stays material.
 const EVENT_VERBS = new Set(('open opened opening opens launch launched launching launches raise raised raising raises announce announced announcing announces ' +
   'post posted posting posts expand expanded expanding expands move moved moving moves relocate relocated relocating relocates acquire acquired acquiring acquires ' +
-  'add added adding adds sign signed signing signs secure secured securing secures receive received receiving receives close closed closing closes ' +
+  'add added adding adds sign signed signing signs secure secured securing secures close closed closing closes ' +
   'start started starting starts grow grew growing grows double doubled doubling rebrand rebranded rebranding renovate renovated renovating remodel remodeled remodelled ' +
   'recruit recruited recruiting recruits appoint appointed appointing appoints promote promoted promoting partner partnered partnering merge merged merging ' +
   'register registered registering incorporate incorporated incorporating list listed listing').split(' '))
 const EVENT_WORDS = new Set(('a an the their its another additional new second third fresh latest recent first more big major ' +
   'seed pre-seed series a b c d round rounds funding capital investment money venture vc angel grant grants ' +
   'location locations office offices clinic clinics site sites store stores branch branches practice practices facility facilities building buildings warehouse hq headquarters ' +
-  'product products app apps platform website line brand feature features ' +
+  'product products ' +
   'job jobs role roles position positions posting postings listing listings opening openings vacancy vacancies team teams department hire hires staff employees ' +
   'partnership partnerships award awards certification certifications license licenses licence licences permit permits expansion acquisition merger ipo exit ' +
   'publicly public').split(' '))
 const AUX = /^(?:have|has|had|are|is|were|was|recently|just|newly|also|now|been|being)$/i
 function eventLengths(words: string[]): number[] {
-  let k = 0
-  if (/^(?:,|and|or)$/i.test(words[k] ?? '')) k++
-  if (/^(?:that|who|which)$/i.test(words[k] ?? '')) k++
-  while (AUX.test(words[k] ?? '')) k++
+  let k = 0, gated = false
+  if (/^(?:,|and|or)$/i.test(words[k] ?? '')) { k++; gated = true }
+  if (/^(?:that|who|which)$/i.test(words[k] ?? '')) { k++; gated = true }
+  if (gated) while (AUX.test(words[k] ?? '')) k++
   if (!EVENT_VERBS.has((words[k] ?? '').toLowerCase())) return []
-  if (k === 0 && !/ing$/i.test(words[0])) return [] // a bare past-tense verb right after the buyers is a claim, not a qualifier
+  if (!gated && !(k === 0 && /ing$/i.test(words[0]))) return []
   k++
   const out = [k]
   while (k < words.length) {
@@ -268,7 +277,7 @@ function eventLengths(words: string[]): number[] {
   return out.reverse()
 }
 // the lengths every qualifier grammar can consume from the start of `words` (longest first)
-function qualifierLengths(words: string[]): number[] {
+function qualifierLengths(words: string[], mode: Mode): number[] {
   const out = new Set<number>()
   const [w0, w1] = [(words[0] ?? '').toLowerCase(), (words[1] ?? '').toLowerCase()]
   // a place, or a list of verified places: "in London, Leeds and Manchester", "outside the UK"
@@ -290,14 +299,14 @@ function qualifierLengths(words: string[]): number[] {
   }
   // another buyer group after a list separator or of/for/at/with
   const sepLen = w0 === ',' ? (['and', 'or'].includes(w1) ? 2 : 1) : ['and', 'or', 'of', 'for', 'at', 'with'].includes(w0) ? 1 : 0
-  if (sepLen) for (const n of buyerGroup(words.slice(sepLen))) out.add(sepLen + n)
+  if (sepLen) for (const n of buyerGroup(words.slice(sepLen), mode.excl)) out.add(sepLen + n)
   // who/that are -ing
   if ((w0 === 'who' || w0 === 'that') && /^(?:is|are)$/.test(w1) && /ing$/i.test(words[2] ?? '') && !EVENT_VERBS.has((words[2] ?? '').toLowerCase())) out.add(3)
   // hiring a role: "hiring a front-desk coordinator", "who are hiring SDRs", "or are hiring their first sales representative"
   let hireAt = 0
   if (w0 === 'hiring') hireAt = 1
   else if ((w0 === 'who' || w0 === 'that') && /^(?:is|are)$/.test(w1) && (words[2] ?? '').toLowerCase() === 'hiring') hireAt = 3
-  else if (/^(?:,|and|or)$/.test(w0)) {
+  else if (!mode.narrow && /^(?:,|and|or)$/.test(w0)) {
     if (w1 === 'hiring') hireAt = 2
     else if (/^(?:is|are)$/.test(w1) && (words[2] ?? '').toLowerCase() === 'hiring') hireAt = 3
     else if (/^(?:who|that)$/.test(w1) && /^(?:is|are)$/.test((words[2] ?? '').toLowerCase()) && (words[3] ?? '').toLowerCase() === 'hiring') hireAt = 4
@@ -308,7 +317,7 @@ function qualifierLengths(words: string[]): number[] {
       let k = hireAt + n
       out.add(k)
       // a list of roles: "an office manager or a receptionist"
-      let sep = /^(?:,|and|or)$/.test((words[k] ?? '').toLowerCase()) ? (words[k] === ',' && /^(?:and|or)$/.test((words[k + 1] ?? '').toLowerCase()) ? 2 : 1) : 0
+      let sep = mode.narrow ? 0 : /^(?:,|and|or)$/.test((words[k] ?? '').toLowerCase()) ? (words[k] === ',' && /^(?:and|or)$/.test((words[k + 1] ?? '').toLowerCase()) ? 2 : 1) : 0
       while (sep) {
         const r = roleLength(words.slice(k + sep)); if (!r) break
         k += sep + r; out.add(k)
@@ -316,20 +325,22 @@ function qualifierLengths(words: string[]): number[] {
       }
     }
   }
-  const size = sizeLength(words); if (size) out.add(size)
-  const time = timeLength(words); if (time) out.add(time)
-  for (const n of eventLengths(words)) out.add(n)
+  if (!mode.narrow) {
+    const size = sizeLength(words); if (size) out.add(size)
+    const time = timeLength(words); if (time) out.add(time)
+    for (const n of eventLengths(words)) out.add(n)
+  }
   return [...out].filter(n => n > 0).sort((a, b) => b - a)
 }
 // Whether `words` is wholly a sequence of qualifiers (memoised per start index: the grammars overlap, so a sentence
 // is tried every way it parses, never only the greedy one).
-function tailOk(words: string[]): boolean {
+function tailOk(words: string[], mode: Mode = PLAIN): boolean {
   const memo = new Map<number, boolean>()
   const from = (i: number): boolean => {
     if (i >= words.length) return true
     const hit = memo.get(i); if (hit !== undefined) return hit
     memo.set(i, false)
-    const ok = qualifierLengths(words.slice(i)).some(n => from(i + n))
+    const ok = qualifierLengths(words.slice(i), mode).some(n => from(i + n))
     memo.set(i, ok)
     return ok
   }
@@ -380,9 +391,11 @@ function isOutputInstruction(x: string): boolean {
 function isTargeting(x: string): boolean {
   if (isOutputInstruction(x)) return true
   const m = IMPERATIVE.exec(x)
-  const body = m ? m[1].replace(LEADING, '') : x
+  const body = m ? m[3].replace(LEADING, '') : x
+  // EXCLUDABLE nouns only after an excluding verb or a negated one ("Do not target directories.")
+  const mode: Mode = { excl: !!m && (!!m[1] || /^(?:exclude|skip|avoid|ignore)$/i.test(m[2])), narrow: false }
   const words = body.replace(/,/g, ' , ').trim().split(/\s+/).filter(Boolean)
-  return buyerGroup(words).some(n => tailOk(words.slice(n)))
+  return buyerGroup(words, mode.excl).some(n => tailOk(words.slice(n), mode))
 }
 const AUDIENCE = /^(?:to|for)\s+(.*?)(?=\s*(?:,|\bbut\b|\bexcept\b|\bexcluding\b|\bwithout\b)|$)/i
 type Statement = { offer: string; audience: string; rest: string; others: string[] }
@@ -470,7 +483,8 @@ function unrelatedTermExclusion(withdrawn: string, saved: string): boolean {
   while (k < words.length && (TERMS.has(fold(words[k])) || (k > 0 && [',', 'and', 'or'].includes(words[k].toLowerCase())))) k++
   if (k === 0 || !TERMS.has(fold(words[k - 1]))) return false
   const tail = words.slice(k)
-  const audience = !tail.length || (tail[0].toLowerCase() === 'to' ? buyerGroup(tail.slice(1)).some(n => tailOk(tail.slice(1 + n))) : tailOk(tail))
+  // the pre-live-fix tail only (places, buyer lists, hiring a role): the #349 qualifier grammars must not loosen this gate
+  const audience = !tail.length || (tail[0].toLowerCase() === 'to' ? buyerGroup(tail.slice(1)).some(n => tailOk(tail.slice(1 + n), NARROW)) : tailOk(tail, NARROW))
   if (!audience) return false
   const savedWords = new Set(saved.split(/[^\p{L}\p{N}]+/u).filter(w => w && !GENERIC.has(w.toLowerCase())).map(fold))
   return !words.slice(0, k).some(w => savedWords.has(fold(w)))

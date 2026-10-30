@@ -191,3 +191,35 @@ test('#349 live records: drafting, rewrite, follow-ups and scoring use the denta
     assert.deepEqual(db.prepare('SELECT sells FROM users WHERE id = ?').get(T), { sells: SAVED })
   } finally { db.close() }
 })
+
+// Council round 1 (seats 1 and 2): sentences the widened grammars must still treat as material, each one checked
+// against the saved dental offer with the offer sentence restated. All were material on the previous resolver.
+const COUNCIL_STILL_A_CHOICE = [
+  'Provide phone support.', 'Provide customer support.', 'Provide an account manager.', 'Provide a named account manager for each practice.',
+  'Provide 1 sales rep per location.', 'Provide quotes for each practice.',
+  'Include customer portals.', 'Include directory listings.', 'Include marketplace listings and job boards.', 'Find customer portals.', 'Customer portals.',
+  'Customers also receive a new app.', 'Practices also receive a website.', 'Customers have received a new platform.',
+  'Customers also receive a new account manager.', 'Customers recently signed a new partnership.', 'Practices launched a website.',
+]
+test('#349 council: service, product and claim sentences stay material next to the restated offer', () => {
+  const failures: string[] = []
+  for (const s of COUNCIL_STILL_A_CHOICE) {
+    const q = `We sell ${P}. ${s}`
+    if (resolve(q).source !== 'conflict' || sameOffer(q, SAVED)) failures.push(s)
+  }
+  assert.deepEqual(failures, [])
+  // the excluding verbs still skip these nouns, and a negated targeting verb counts as excluding
+  for (const s of ['Exclude directories and job boards.', 'Skip marketplaces.', 'Do not target franchises or competitors.', 'Never include aggregators.'])
+    assert.equal(resolve(`${s} We sell ${P}.`).source, 'recorded', s)
+})
+
+// Council seat 1: the withdrawal gate keeps the narrow tail. A commercial-term withdrawal whose tail the new
+// qualifiers could read (a size, a window, an event) is still a choice, as before this change.
+test('#349 council: the withdrawal gate is not loosened by the qualifier grammars', () => {
+  for (const q of ['We no longer offer free onboarding with 1-5 seats.', 'We no longer offer refunds in the last 90 days.', 'We do not offer phone support recently.',
+    'We no longer offer support that launched a new product.', 'Find dental practices in NYC. We no longer offer refunds in the last 90 days.'])
+    assert.equal(resolve(q).source, 'conflict', q)
+  // and the unrelated term exclusions that resolved before still resolve
+  for (const q of ['Find dental practices in NYC hiring. We do not offer free trials.', "Independent dental practices in New York City hiring a front-desk coordinator. We don't provide on-site training.", 'We do not offer refunds to restaurants.'])
+    assert.equal(resolve(q).source, 'recorded', q)
+})
