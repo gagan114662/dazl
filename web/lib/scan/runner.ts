@@ -63,6 +63,8 @@ import { resolveBounded } from './resolution.ts'
 import { fallbackTargets, mergeFallback, rescuedNotes, recordFallbacks, recordRecovery, type FallbackNote, type FallbackTarget } from './blocked-fallback.ts'
 import { parseWindowDays, splitByWindow, windowStatus } from './window.ts'
 import { applyBuyerFitGate, failClosedBuyerFit } from './buyer-fit.ts'
+import { runAdaptiveRound } from './adaptive-stage.ts'
+import { DEFAULT_BUDGET as ADAPTIVE_BUDGET } from './discovery-rounds.ts'
 
 export interface Job { spend_reserved_usd?: number | null; id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string; seller?: string | null; watch_id?: string | null; csv_domain?: string | null; run_budget?: string | null }
 export interface LeadDraft extends Candidate {}
@@ -1102,6 +1104,47 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       } catch (e) {
         if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e
+      }
+    }
+    // Adaptive discovery (#381), OFF unless ADAPTIVE_DISCOVERY=1: when the first batch left fewer actionable leads than the target, ONE bounded extra round - the planner diagnoses where
+    // candidates were lost, picks queries not tried or failed before, the free news search finds candidates, and they go through the same verifier and gates. Never widens the request;
+    // a limit is reported as a limit. A failure here never fails the scan.
+    if (process.env.ADAPTIVE_DISCOVERY === '1' && job.query && icpForSources && complete && newsOn && deps.paidFallback !== false && !budgetRefused && outcome.leads.length < ADAPTIVE_BUDGET.target) {
+      try {
+        assertOwned(db, job)
+        const t0 = Date.now(), windowed = !!icpForSources.window_days
+        const note = { searched: false, hits: 0, attempted: 0, failed: 0, malformed: 0 }
+        let fresh: LeadDraft[] = []
+        const rep = await runAdaptiveRound({
+          db: sqliteDb(db), tenantId: job.user_id, jobId: job.id, query: job.query, icp: { signals: icpForSources.signals ?? [], where: icpForSources.where ?? [] }, source: 'search:news', now: deps.now ?? new Date(),
+          funnel: { candidates: audit.length, verified: outcome.leads.length, fit_ok: outcome.leads.length, timed: windowed ? outcome.leads.filter(l => !!l.event_date).length : outcome.leads.length, identified: outcome.leads.length, actionable: outcome.leads.length },
+          spent: { searches: 0, pages: 0, ms: 0 },
+          search: async queries => {
+            ledger.record('adaptive:news', 'started')
+            const found = await newsLeads(job, icpForSources, providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl, note, queries)
+            ledger.record('adaptive:news', newsStatus(found, note), note.searched ? note.hits : null)
+            if (!found) return null
+            const have = new Set([...leads, ...outcome.leads, ...outcome.review].map(l => `${l.source_url}|${companyKey(l.company)}`))
+            fresh = found.filter(l => !have.has(`${l.source_url}|${companyKey(l.company)}`))
+            if (fresh.length) ledger.candidates('adaptive:news', fresh)
+            return { found: fresh.length }
+          },
+          verify: async () => {
+            assertOwned(db, job)
+            verifiedUrls.push(...fresh.map(l => l.source_url))
+            const o2 = await verifyLeads(fresh, fetchP, deps.now, judge, null, undefined, audit, icpForSources.where ?? [])
+            const seenKeys = new Set(outcome.leads.map(dedupKey)); for (const l of o2.leads) { const k = dedupKey(l); if (!seenKeys.has(k)) { seenKeys.add(k); outcome.leads.push(l) } }
+            const seenReview = new Set(outcome.review.map(dedupKey)); for (const r of o2.review) { const k = dedupKey(r); if (!seenKeys.has(k) && !seenReview.has(k)) { seenReview.add(k); outcome.review.push(r) } }
+            for (const [r, n] of Object.entries(o2.dropped)) outcome.dropped[r] = (outcome.dropped[r] ?? 0) + n
+            return outcome.leads.length
+          },
+        })
+        void t0
+        ledger.report({ adaptive: rep })
+      } catch (e) {
+        if (e instanceof ScanStopped || e instanceof ScanTimedOut || e instanceof SpendRefused) throw e
+        if (e instanceof ProviderError && e.kind === 'auth') throw e
+        ledger.record('adaptive:news', 'error')
       }
     }
     ledger.report({ dropCounts: outcome.dropped })

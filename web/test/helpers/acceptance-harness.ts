@@ -1,6 +1,7 @@
 // SYNTHETIC fixture harness for the #204 NYC/London regression tests. Every external call is a stub: the "model" (profile,
 // query writing, extraction), TinyFish search/fetch, and the verifier's own page fetch. Nothing here replays the real runs:
 // their search responses were never stored, so what the stubs return is invented, labelled, and only exercises the code.
+import { migrateRounds } from '../../lib/scan/discovery-rounds.ts'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { migrateKeys, saveKey } from '../../lib/llm/key-store.ts'
@@ -41,7 +42,7 @@ export interface Fixture {
 }
 export async function runFixture(f: Fixture) {
   resetTinyfishState()
-  const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
+  const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db); migrateRounds(db)
   saveKey(db, 'A', 'anthropic', KEY, master)
   db.exec('CREATE TABLE IF NOT EXISTS users (id TEXT, business_name TEXT)'); db.prepare('INSERT INTO users VALUES (?, ?)').run('A', 'Acme')
   const icpProvider = { complete: async () => JSON.stringify(f.modelIcp) } as unknown as Provider

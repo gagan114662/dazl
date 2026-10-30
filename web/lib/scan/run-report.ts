@@ -21,6 +21,7 @@ export interface ReportParts {
   audit?: CandidateAudit[]
   ownFetch?: Map<string, string>
   dropCounts?: Record<string, number>
+  adaptive?: unknown   // the one bounded adaptive round (lib/scan/adaptive-stage.ts): decision, queries, found, actionable before/after
   model?: { requests_recorded: number; requests_with_reported_tokens: number; input_tokens: number | null; output_tokens: number | null; tokens_complete: boolean }
   observed?: { search: boolean; extraction: boolean; verification: boolean }
 }
@@ -70,6 +71,7 @@ export function buildRunReport(p: ReportParts, verified: FinalRow[] | null, revi
     evidence: p.evidence ?? null, extracted_candidates: p.extracted_candidates ?? null, extraction: p.extraction ?? null,
     candidates: fates.slice(0, MAX_CANDIDATES),
     funnel: { candidates: p.extracted_candidates ?? (measured ? fates.length : null), verified: measured ? count('verified') : null, needs_review: measured ? count('review') : null, dropped: measured ? count('dropped') : null, review_reasons: reasons('review'), drop_reasons: reasons('dropped'), verifier_drop_counts: p.dropCounts ?? null },
+    adaptive: p.adaptive ?? null,
     model: p.model ?? null,
     truncated: { urls: Math.max(0, (p.urls?.length ?? 0) - MAX_URLS), candidates: Math.max(0, fates.length - MAX_CANDIDATES) },
   }
