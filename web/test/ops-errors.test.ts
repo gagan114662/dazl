@@ -57,7 +57,8 @@ test('every emitted field is scrubbed or shape-checked: PII in a name, cause nam
   for (const ctx of hostile) {
     const r = toRecord(e, ctx, AT)
     // ts is the capture time, not input: only it is left out; every input-derived field is still checked.
-    const out = JSON.stringify({ ...r, ts: undefined })
+    // fingerprint is a hex hash of the error shape (stack frames include the checkout path): a digit run planted as a leak marker can occur in it by chance, so it is left out like ts; every input-derived field is still checked.
+    const out = JSON.stringify({ ...r, ts: undefined, fingerprint: undefined })
     assert.equal(r.ts, AT.toISOString())
     for (const leak of leaks) assert.ok(!out.includes(leak), `${leak} leaked from ${JSON.stringify(ctx)}: ${out}`)
     assert.equal(r.error.name, '[unrecognized-name]')
