@@ -5,7 +5,7 @@ import { hasReadConsent, syncReplies } from './replies.ts'
 import { randomBytes, createHash } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
-import { getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
+import { confirmedSendResult, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { auditAt, getState, pause } from './autopilot.ts'
 import { grantConsent } from './ledger.ts'
 import { composeBody, getSettings, isSuppressed, domainReviewHeld, domainHoldCode, domainReviewStatus, leadEvidenceEligible, leadHeld, recipientAllowed, testFixtureSend, testRecipientApproved, unsubToken, type Deps } from './service.ts'
@@ -414,7 +414,7 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
         unsubscribeUrl: unsubUrl, date: new Date(now * 1000),
         inReplyTo: `dazl.${s.message_id}@${acct.email.split('@')[1]}`,
       }))
-      const r = await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, s.thread_id ?? undefined)
+      const r = confirmedSendResult(await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, s.thread_id ?? undefined))
       db.prepare("UPDATE sequence_steps SET status = 'sent', sent_at = ?, gmail_id = ? WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(now, r.id, tenantId, s.id, stepRow.step)
       if (testRecipientApproved(db,tenantId,s.to_email)) auditAt(db,tenantId,'test_mode','sequence test inbox',s.lead_id,s.message_id,now)
       auditAt(db, tenantId, 'sequence_sent', `step ${stepRow.step}`, s.lead_id, s.message_id, now)
