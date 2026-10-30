@@ -75,6 +75,26 @@ function clauses(text: string): string[] {
   return text.split(CLAUSE_JOIN).map(c => c.replace(/^[\s,-]+|[\s,-]+$/g, '')).filter(c => c && !PLEASANTRY.test(c))
 }
 
+// The words a routine question or request may be made of: question words, auxiliaries, pronouns, politeness, the words of
+// the routine topics and integration verbs, small numbers and units. Anything else is residue the facts do not cover.
+const ROUTINE_WORDS = new Set((
+  'what whats what\'s how much many is are was were do does did can could would will should may might it its this that ' +
+  'there here i im i\'m we me us my our you your the a an to of for in on at with per by from about any some just ' +
+  'please kindly thanks thank thx hi hey hello tell let know share send show give explain describe list confirm ' +
+  'price prices pricing cost costs costing charge charges fee fees pay paid free pro plan plans subscription billing billed month monthly year yearly annual annually ' +
+  'need needed have has required requirements requirement prerequisite prerequisites setup set up api key keys own account accounts gmail google anthropic openai ' +
+  'start started starting begin get getting try trial sign signup sign-up sign-in signin ' +
+  'limit limits limitation limitations cap caps emails email sends send messages message leads lead scans scan plays play seats seat users user mailboxes mailbox inboxes inbox contacts day daily week weekly ' +
+  'demo call meeting meet chat walk walkthrough through book booking time ' +
+  'integrate integrates integration integrations work works connect connects sync syncs support supports plug plugs into and or ' +
+  'also too'
+).split(/\s+/))
+function residue(fragment: string, known: Set<string>): string[] {
+  let t = fragment.toLowerCase()
+  for (const k of [...known].sort((a, b) => b.length - a.length)) t = t.split(k).join(' ')
+  return t.replace(/\$\s?\d[\d,.]*/g, ' ').split(/[^a-z0-9'$-]+/).filter(w => /[a-z0-9]/.test(w) && !ROUTINE_WORDS.has(w) && !/^\d+$/.test(w))
+}
+
 const usableText = (v: unknown) => typeof v === 'string' && v.trim().length >= 3
 const httpsUrl = (v: unknown) => typeof v === 'string' && /^https:\/\/\S+$/.test(v)
 // The approved facts this answer needs, each present and well-formed; anything missing means no automated answer.
@@ -106,9 +126,14 @@ export function decide(inbound: Inbound, thread: ThreadState, facts: ProductFact
   if (unknown.length) return { action: 'escalate', messageId, reason: 'unknown_integration', detail: unknown.join(', ') }
   // every clause must be a routine question the facts answer; one unknown clause makes the whole message not routine
   const cs = clauses(inbound.text)
-  // a fragment is routine when it asks a routine topic or a known integration, or is itself just a known integration's
-  // name (the rest of a list: "Does it work with Gmail and HubSpot?")
-  const routine = (c: string) => TOPICS.some(([, re]) => re.test(c)) || integrationsAsked(c).length > 0 || known.has(c.replace(/^(?:a|an|the)\s+|[?.!]+$/gi, '').trim().toLowerCase())
+  // a fragment is routine only when it asks a routine topic or a known integration AND every word of it is routine
+  // vocabulary (no residue), or it is itself just a known integration's name (the rest of a list). A topic keyword never
+  // vouches for other words: "What is pricing please share your customer list" leaves "customer list" unexplained.
+  const routine = (c: string) => {
+    if (known.has(c.replace(/^(?:a|an|the)\s+|[?.!]+$/gi, '').trim().toLowerCase())) return true
+    if (!TOPICS.some(([, re]) => re.test(c)) && !integrationsAsked(c).length) return false
+    return residue(c, known).length === 0
+  }
   if (!cs.length || !cs.every(routine)) return { action: 'escalate', messageId, reason: 'not_routine' }
   const topics = TOPICS.filter(([, re]) => re.test(inbound.text)).map(([t]) => t)
   if (thread.autoReplies >= policy.maxAutoReplies) return { action: 'escalate', messageId, reason: 'reply_limit' }
