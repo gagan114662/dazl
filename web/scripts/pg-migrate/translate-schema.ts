@@ -165,6 +165,20 @@ DROP TRIGGER IF EXISTS ${t.name} ON ${t.table};
 CREATE TRIGGER ${t.name} BEFORE ${ev} ON ${t.table} FOR EACH ROW EXECUTE FUNCTION dazl_guard_${t.name}();`)
 }
 
+// PG only: row triggers never see TRUNCATE, so a table whose rows may never be deleted outside its own guard also
+// refuses TRUNCATE with a statement trigger (SQLite has no TRUNCATE). Listed by name, so no existing table changes.
+const NO_TRUNCATE = ['audit_events']
+for (const table of NO_TRUNCATE) {
+  if (!triggers.some(t => t.table === table && t.event === 'DELETE')) throw new Error(`NO_TRUNCATE lists ${table}, which has no delete guard`)
+  pgTriggers.push(`
+CREATE OR REPLACE FUNCTION dazl_guard_${table}_no_truncate() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION '${triggers.find(t => t.table === table && t.event === 'DELETE')!.msg}';
+END $$;
+DROP TRIGGER IF EXISTS ${table}_no_truncate ON ${table};
+CREATE TRIGGER ${table}_no_truncate BEFORE TRUNCATE ON ${table} FOR EACH STATEMENT EXECUTE FUNCTION dazl_guard_${table}_no_truncate();`)
+}
+
 // Target-identity guard INSIDE the generated file: refuses any database that
 // is not a provisioned dazl_rehearse_* target with the ownership marker table.
 // The TS runner additionally checks the marker token; this DO block is the

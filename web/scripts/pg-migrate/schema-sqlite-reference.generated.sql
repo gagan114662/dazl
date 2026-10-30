@@ -782,6 +782,8 @@ CREATE TABLE work_queue (
 
 CREATE TABLE work_queue_meta (k TEXT PRIMARY KEY, v INTEGER NOT NULL);
 
+CREATE INDEX audit_events_at ON audit_events (at);
+
 CREATE INDEX audit_events_seq ON audit_events (seq);
 
 CREATE INDEX audit_events_tenant_at ON audit_events (tenant_id, at);

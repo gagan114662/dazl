@@ -43,7 +43,10 @@ export async function POST(req: NextRequest) {
     if (b.action === 'approve') approveSequence(db,user.tenantId,b.id,id => approve(db,user.tenantId,id,true))
     else if (b.action === 'edit' && typeof b.subject === 'string' && typeof b.body === 'string') editSequenceStep(db,user.tenantId,b.id,b.step,{ subject: b.subject, body: b.body })
     else if ((b.action === 'mark_sent' || b.action === 'retry') && Number.isInteger(b.step)) resolveSequenceUncertain(db,user.tenantId,b.id,b.step,b.action === 'mark_sent' ? 'sent' : 'retry')
-    else if (b.action === 'stop') db.prepare("UPDATE sequences SET status = 'stopped', stop_reason = 'user_stopped' WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved','active')").run(b.id,user.tenantId)
+    else if (b.action === 'stop') {
+      // stopping a sequence that is not running (or is not this workspace's) changes nothing, so it records nothing
+      if (db.prepare("UPDATE sequences SET status = 'stopped', stop_reason = 'user_stopped' WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved','active')").run(b.id,user.tenantId).changes === 0) return NextResponse.json({ ok: true })
+    }
     else return NextResponse.json({ error: 'Bad request' }, { status: 400 })
     // approving schedules automated sends; stop, mark sent and retry change what the tick will send (edits are content)
     if (b.action !== 'edit') await audit(user, req, { action: `sequence.${b.action}`, resource: 'sequence', id: b.id, summary: Number.isInteger(b.step) ? { step: b.step } : undefined })

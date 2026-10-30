@@ -33,9 +33,9 @@ const raw = new Database(':memory:')
 migrateAllSqlite(raw)
 setScanDb(raw)
 const route = async (p: string) => await import(`../../app/api/${p}/route.ts`)
-const [llmKey, enrichment, calcom, crm, gmailDisconnect, sender, exportRoute, quarantine, warm, checkout, monitor, auditRoute, competitors, monitors, replies] = await Promise.all(
+const [llmKey, enrichment, calcom, crm, gmailDisconnect, sender, exportRoute, quarantine, warm, checkout, monitor, auditRoute, competitors, monitors, replies, sequences] = await Promise.all(
   ['settings/llm-key', 'settings/enrichment', 'settings/calcom', 'crm', 'gmail/disconnect', 'outreach/settings', 'leads/export', 'leads/[lead]/quarantine', 'warm/connections', 'billing/checkout', 'monitors/[id]', 'workspace/audit',
-    'settings/competitors', 'monitors', 'outreach/replies'].map(route))
+    'settings/competitors', 'monitors', 'outreach/replies', 'outreach/sequences'].map(route))
 
 // Synthetic markers: none of these may ever appear in the audit table.
 const MARK = {
@@ -151,6 +151,9 @@ test("privileged requests leave attributable, redacted events; 'GET /api/workspa
   const made = await (await step('monitor created', t.O, () => monitors.POST(req('/api/monitors', 'POST', { query: 'dentists in Toronto', interval_hours: 168 })), 201)).json() as { id: string }
   await step('monitor paused', t.O, () => monitor.PATCH(req(`/api/monitors/${made.id}`, 'PATCH', { enabled: false }), { params: Promise.resolve({ id: made.id }) }))
   await step('reply reading revoked', t.A, () => replies.POST(req('/api/outreach/replies', 'POST', { action: 'revoke' })))
+  // stopping a sequence that does not exist changes nothing and records nothing
+  await step('sequence stop no-op', t.A, () => sequences.POST(req('/api/outreach/sequences', 'POST', { action: 'stop', id: 'zzz' })))
+  assert.equal((raw.prepare("SELECT count(*) AS n FROM audit_events WHERE action LIKE 'sequence.%'").get() as { n: number }).n, 0)
   const more = ((await (await read(t.A, '?limit=4')).json()) as { events: Ev[] }).events.reverse()
   assert.deepEqual(more.map(e => `${e.actor_id} ${e.action} ${e.resource_type}${e.resource_id ? ` ${e.resource_id}` : ''}`), [
     'D settings.changed competitors', `O monitor.created monitor ${made.id}`, `O monitor.disabled monitor ${made.id}`, 'A consent.revoked reply_reading',
@@ -181,6 +184,13 @@ test("privileged requests leave attributable, redacted events; 'GET /api/workspa
     .run('f'.repeat(24), '=HYPERLINK("http://x.example")', Math.floor(Date.now() / 1000) + 5)
   const csvAll = await (await read(t.A, '?format=csv&action=x.')).text()
   assert.ok(csvAll.includes(`,"'=HYPERLINK(""http://x.example"")",`), csvAll)
+
+  // the CSV is the whole trail, not one page: 1001 more events all come out, and nothing says truncated
+  const ins = raw.prepare("INSERT INTO audit_events (id, tenant_id, actor_id, actor_kind, action, resource_type, decision, summary, at, seq) VALUES (?, 'A', 'A', 'user', 'bulk.row', 't', 'allowed', '{}', ?, ?)")
+  raw.transaction(() => { for (let i = 0; i < 1001; i++) ins.run(randomBytes(12).toString('hex'), 1000 + i, 1) })()
+  const bulk = await read(t.A, '?format=csv&action=bulk.')
+  assert.equal((await bulk.text()).trim().split('\n').length, 1 + 1001)
+  assert.equal(bulk.headers.get('x-audit-truncated'), null)
 
   // a failed audit write is reported and never undoes or fails the change it describes
   const caught: ErrorRecord[] = []

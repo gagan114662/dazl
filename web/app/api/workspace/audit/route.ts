@@ -50,12 +50,13 @@ export async function GET(req: NextRequest) {
   }
   // the whole trail (every matching event), a page at a time
   const events: AuditRow[] = []
-  for (let page: AuditRow[] = [], next = after; events.length < CSV_MAX; next = { at: page[page.length - 1].at, seq: page[page.length - 1].seq, id: page[page.length - 1].id }) {
+  for (let page: AuditRow[] = [], next = after; events.length <= CSV_MAX; next = { at: page[page.length - 1].at, seq: page[page.length - 1].seq, id: page[page.length - 1].id }) {
     page = await searchAudit(db, user.tenantId, { action, actor, after: next, limit: 1000 })
     events.push(...page)
     if (page.length < 1000) break
   }
-  const truncated = events.length >= CSV_MAX
+  const truncated = events.length > CSV_MAX
+  if (truncated) events.length = CSV_MAX
   await audit(user, req, { action: 'export.audit', resource: 'audit', summary: { rows: events.length, truncated } })
   const body = [COLUMNS.join(','), ...events.map(e => COLUMNS.map(c => csvCell(c === 'at' ? new Date(e.at * 1000).toISOString() : e[c])).join(','))].join('\n') + '\n'
   return new NextResponse(body, { headers: { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': 'attachment; filename="dazl-audit.csv"', 'cache-control': 'no-store', ...(truncated ? { 'x-audit-truncated': '1' } : {}) } })
