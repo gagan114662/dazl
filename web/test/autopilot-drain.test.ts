@@ -2,6 +2,9 @@ import { seedOffers } from './helpers/seed-offer.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import Database from 'better-sqlite3'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
@@ -20,8 +23,8 @@ const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { sta
 const idToken = (email: string) => 'x.' + Buffer.from(JSON.stringify({ email, email_verified: true })).toString('base64url') + '.y'
 const tokenOk = (async (url: string) => (String(url).includes('token') ? json({ access_token: 'at' }) : json({}, 404))) as unknown as typeof fetch
 
-async function setup() {
-  const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); seedOffers(db)
+async function setup(file = ':memory:') {
+  const db = new Database(file); migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); seedOffers(db)
   const state = new URL(startOAuth(db, 'A', { env: genv, now: NOW })).searchParams.get('state')!
   await completeOAuth(db, 'A', 'c', state, { env: genv, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'rt', scope: 'https://www.googleapis.com/auth/gmail.send', id_token: idToken('me@acme.example') })) as unknown as typeof fetch })
   saveSettings(db, 'A', { sender_name: 'Pat', postal_address: '1 King St W, Toronto ON M5H 1A1' })
@@ -425,4 +428,76 @@ test('#448 two passes in flight when the cap is lowered: together they send at m
   assert.deepEqual(work(db).map(w => [w.reason, w.next_at]), [['daily_cap', NOW + 2 * DAY + 2]], 'the other is held until the window has room')
   assert.equal(draftsBack(db), 1, 'and unapproved again')
   await runAutopilot(db, 'A', 'Acme', at(d, NOW + 2 * DAY + 2)); assert.deepEqual([sent.length, work(db).length], [3, 0], 'sent once when the window moves on')
+})
+
+// The same class, the other awaits and boundaries. The cap is read from the store when the slot is reserved (after the
+// draft-polish await) and again at the commitment; a send whose bytes already left counts for the next one; the window
+// counts uncertain sends; a cap this send exactly reaches sends, one lowered to the count already there refuses it; the
+// per-company rule is rechecked at the commitment too; a cap lowered from another connection (another process) counts;
+// a cap hold is not a try; and manual sends are not autopilot volume.
+const todaySent = (db: Database.Database, id: string, action: string, at: number) => db.prepare('INSERT INTO autopilot_audit (id, tenant_id, action, detail, created_at) VALUES (?, ?, ?, ?, ?)').run(id, 'A', action, 'x.example', at)
+
+test('#448 the cap lowered during the draft-polish await, or during the first send: the next send is held at admission, not sent', async () => {
+  // Polish await (new draft): the slot is reserved after the polish, against the cap as it is then.
+  { const db = await setup(); ok(db); pastWarmup(db); migrateKeys(db); saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
+    const { sent, d } = sends(); lead(db, 'a@one.example'); todaySent(db, 't1', 'sent', NOW - 3600)
+    const providers = { anthropic: { complete: async () => { setCap(1)(db); return 'not a usable draft' } } }
+    const r = await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW), providers } as never)
+    assert.deepEqual([r.sent, sent.length, r.stopped, work(db).map(w => w.reason), reservations(db)], [0, 0, 'daily_cap', ['daily_cap'], 0], 'polish: held at admission') }
+  // The first draft's own send (its bytes already left when the cap changed): it counts, and the second is held.
+  { const db = await setup(); ok(db); pastWarmup(db); const sent: string[] = []
+    const d: Deps & { flags: Record<string, string> } = { ...sends().d, sendFn: (async (_t: string, raw: string) => { sent.push(raw); setCap(1)(db); return { id: 'g' } }) as never }
+    lead(db, 'a@one.example'); lead(db, 'b@two.example')
+    const r = await runAutopilot(db, 'A', 'Acme', at(d, NOW))
+    assert.deepEqual([r.sent, sent.length, r.stopped, work(db).map(w => w.reason)], [1, 1, 'daily_cap', ['daily_cap']], 'first send: counted; second held at admission')
+    assert.ok(recentAutopilotAudit(db, 'A').some(a => a.action === 'daily_cap' && a.detail === 'cap 1'), 'the hold names the cap as it is now, not at the start of the pass') }
+})
+
+test('#448 boundary: a cap this send exactly reaches sends; a cap lowered to the count already in the window (uncertain sends included) refuses it', async () => {
+  for (const [what, cap, want] of [['reaches', 3, 1], ['lowered to the count', 2, 0]] as const) {
+    const db = await setup(); ok(db); pastWarmup(db); const { sent, d } = sends(); lead(db, 'a@one.example')
+    todaySent(db, 't1', 'sent', NOW - 3600); todaySent(db, 't2', 'send_uncertain', NOW - 7200)
+    const r = await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW), fetchImpl: onToken(db, 1, setCap(cap)) })
+    assert.deepEqual([r.sent, sent.length, reservations(db)], [want, want, 0], what)
+    if (!want) assert.deepEqual(work(db).map(w => [w.reason, w.next_at]), [['daily_cap', NOW - 7200 + DAY + 1]], 'held until the oldest counted send leaves the window')
+  }
+})
+
+test('#448 the user emails the same company during the token refresh: the autopilot send is refused at the commitment; another company is not', async () => {
+  for (const [what, to, want] of [['same company', 'ceo@one.example', 0], ['another company', 'ceo@else.example', 1]] as const) {
+    const db = await setup(); ok(db); pastWarmup(db); const { sent, d } = sends(); lead(db, 'a@one.example')
+    const manual = (db: Database.Database) => db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, claimed_at) VALUES ('m1a2b3c4d5e6f7a8b9c0d1e2','A','xm',?,'s','bodybodybodybodybodybody','sent',?,?)").run(to, NOW, NOW)
+    const r = await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW), fetchImpl: onToken(db, 1, manual) })
+    assert.deepEqual([r.sent, sent.length, reservations(db)], [want, want, 0], what)
+    if (!want) {
+      assert.deepEqual([work(db).map(w => [w.reason, w.next_at]), msgStatus(db, 'a@one.example')], [[['domain_cap', NOW + 7 * DAY + 1]], 'draft'], 'held 7 days from that send, unapproved')
+      assert.ok(recentAutopilotAudit(db, 'A').some(a => a.action === 'send_failed' && a.detail === 'volume_domain_cap'), 'recorded why')
+    }
+  }
+})
+
+test('#448 another connection (another process) lowers the cap during the token refresh: refused at the commitment', async () => {
+  const file = path.join(mkdtempSync(path.join(tmpdir(), 'ap-')), 'ap.db')
+  const db = await setup(file); ok(db); pastWarmup(db); const { sent, d } = sends(); lead(db, 'a@one.example'); lead(db, 'b@two.example')
+  const other = new Database(file)
+  try {
+    const r = await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW), fetchImpl: onToken(db, 2, () => setCap(1)(other)) })
+    assert.deepEqual([r.sent, sent.length, getState(db, 'A').daily_cap, work(db).map(w => w.reason), msgStatus(db, 'b@two.example'), reservations(db)], [1, 1, 1, ['daily_cap'], 'draft', 0])
+  } finally { other.close(); db.close() }
+})
+
+test('#448 a cap hold at the commitment is not a try: a draft retried after a rate limit keeps its attempt count, and manual sends are not autopilot volume', async () => {
+  { const db = await setup(); ok(db); pastWarmup(db); const sent: string[] = []; let calls = 0
+    const d: Deps & { flags: Record<string, string> } = { ...sends().d, sendFn: (async (_t: string, raw: string) => { if (++calls === 1) throw new GmailSendError(429); sent.push(raw); return { id: 'g' } }) as never }
+    lead(db, 'a@one.example')
+    await runAutopilot(db, 'A', 'Acme', at(d, NOW))
+    assert.deepEqual(work(db).map(w => [w.reason, w.attempts]), [['gmail_rate_limited', 1]])
+    todaySent(db, 't1', 'sent', NOW + 3000)
+    const r = await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW + 3601), fetchImpl: onToken(db, 1, setCap(1)) })
+    assert.deepEqual([r.sent, sent.length, work(db).map(w => [w.reason, w.attempts, w.next_at])], [0, 0, [['daily_cap', 1, NOW + 3000 + DAY + 1]]], 'held, attempts unchanged') }
+  { const db = await setup(); ok(db); const { sent, d } = sends(); lead(db, 'm@manual.example')
+    const id = (db.prepare('SELECT id FROM leads').get() as { id: string }).id
+    const { createDraft } = await import('../lib/outreach/service.ts')
+    const mid = createDraft(db, 'A', id, 'Acme'); approve(db, 'A', mid, true)
+    assert.equal(await sendMessage(db, 'A', mid, { ...at(d, NOW), fetchImpl: onToken(db, 1, setCap(1)) }), 'sent'); assert.equal(sent.length, 1, 'a manual send is not refused by the autopilot cap') }
 })
