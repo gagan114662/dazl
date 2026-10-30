@@ -316,3 +316,40 @@ test('HOLD: a calibration bound to acceptance A cannot launch or touch a policy 
     assert.equal(launchGate(db, 'A', 'me@acme.example', NOW + 6).calibrated, false)
   }
 })
+
+test('HOLD: a policy accepted while autopilot awaits a model call holds the draft: no send under the stale policy, no warmup fallback', async () => {
+  const { db, job } = await launchedWithKey(5)
+  const otherJob = play(db)
+  lead(db, job, 'd@four.example')
+  let release!: () => void
+  const wait = new Promise<void>(r => { release = r })
+  const base = model('claude-sonnet-4-5', () => ({ input_tokens: 10, output_tokens: 10 }))
+  const slow: Provider = { ...base.providers.anthropic, completeDetailed: async (k, prompt, f, max) => { await wait; return base.providers.anthropic.completeDetailed!(k, prompt, f, max) } }
+  const g = gmail()
+  const run = runAutopilot(db, 'A', 'Acme', { ...g.d, providers: { anthropic: slow, openai: slow } } as never)
+  await new Promise(r => setImmediate(r))
+  // policy B: a different audience, accepted and not calibrated
+  assert.deepEqual(acceptLaunchPolicy(db, 'A', policy([otherJob]), NOW + 1), { ok: true })
+  release()
+  const r = await run
+  assert.deepEqual([r.sent, r.stopped, g.sent.length], [0, 'policy_changed', 0])
+  assert.ok(recentAutopilotAudit(db, 'A').some(a => a.action === 'held_policy_changed'))
+  assert.ok(!recentAutopilotAudit(db, 'A').some(a => a.action === 'held_warmup'), 'not silently moved to the warmup in this run either')
+})
+
+test('HOLD: a reported cost that cannot be recorded stops the launch before any further call or send', async () => {
+  // the store rejects the settlement write
+  const a = await launchedWithKey(0.05); lead(a.db, a.job, 'd@four.example'); lead(a.db, a.job, 'e@five.example')
+  a.db.exec("CREATE TRIGGER no_settle BEFORE UPDATE OF reported_usd ON tenant_spend_pools BEGIN SELECT RAISE(ABORT, 'synthetic store failure'); END")
+  const over = model('claude-sonnet-4-5', () => ({ input_tokens: 1000, output_tokens: 600, cache_creation_input_tokens: 40_000 }))
+  const ga = gmail()
+  const ra = await runAutopilot(a.db, 'A', 'Acme', { ...ga.d, providers: over.providers } as never)
+  assert.deepEqual([ra.stopped, over.calls.length, ga.sent.length], ['spend_check_unavailable', 1, 0])
+  assert.equal(getState(a.db, 'A').pause_reason, 'spend_check_unavailable')
+  // the launch's row is gone by the time the cost comes back (zero rows updated)
+  const b = await launchedWithKey(5); lead(b.db, b.job, 'd@four.example'); lead(b.db, b.job, 'e@five.example')
+  const vanish = model('claude-sonnet-4-5', () => { b.db.exec('DELETE FROM tenant_spend_pools'); return { input_tokens: 10, output_tokens: 10 } })
+  const gb = gmail()
+  const rb = await runAutopilot(b.db, 'A', 'Acme', { ...gb.d, providers: vanish.providers } as never)
+  assert.deepEqual([rb.stopped, vanish.calls.length, gb.sent.length], ['spend_check_unavailable', 1, 0])
+})

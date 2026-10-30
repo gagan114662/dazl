@@ -152,6 +152,13 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     } catch (e) {
       out.skipped++; audit(db, tenantId, 'skipped', e instanceof OutreachError ? e.code : 'error', l.id); continue
     }
+    // Drafting awaited a model: re-read the launch. A calibrated launch must still be the SAME acceptance it was when this
+    // lead started; any change (another policy accepted, launch cleared, mailbox changed) holds the draft and stops the
+    // run, never falling back to the warmup or to the stale policy.
+    if (gate.calibrated) {
+      const now2 = launchGate(db, tenantId, mailbox(), now)
+      if (!now2.calibrated || now2.acceptanceId !== gate.acceptanceId) { audit(db, tenantId, 'held_policy_changed', 'the launch policy changed while drafting', l.id, id); return { ...out, held: out.held + 1, stopped: 'policy_changed' } }
+    }
     const final = db.prepare('SELECT to_email, subject, body FROM outreach_messages WHERE id = ?').get(id) as { to_email: string; subject: string; body: string }
     const to = final.to_email
     // the accepted policy's claim authority on the final words, after drafting and polish, every time: anything the policy

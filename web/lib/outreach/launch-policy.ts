@@ -190,13 +190,13 @@ export function recordPreflight(db: Database.Database, tenantId: string, accepte
 // What autopilot reads before each send. Calibrated only while the accepted policy is the current version, still valid,
 // launched by a passing preflight, and the connected mailbox is the policy's sender; otherwise the hand-approval warmup
 // applies exactly as before.
-export type LaunchGate = { calibrated: false } | { calibrated: true; policy: LaunchPolicy; cap: number; launchedAt: number }
+export type LaunchGate = { calibrated: false } | { calibrated: true; policy: LaunchPolicy; cap: number; launchedAt: number; acceptanceId: string }
 export function launchGate(db: Database.Database, tenantId: string, connectedMailbox: string | null, nowS: number): LaunchGate {
   let s: StoredPolicy | null = null
   try { s = readLaunchPolicy(db, tenantId) } catch { return { calibrated: false } }
   if (!s || s.launchedAt === null || s.version !== LAUNCH_POLICY_VERSION || policyProblems(s.policy).length) return { calibrated: false }
   if (!connectedMailbox || connectedMailbox.trim().toLowerCase() !== s.policy.sender) return { calibrated: false }
-  return { calibrated: true, policy: s.policy, cap: calibratedDailyCap(s.policy, s.launchedAt, nowS), launchedAt: s.launchedAt }
+  return { calibrated: true, policy: s.policy, cap: calibratedDailyCap(s.policy, s.launchedAt, nowS), launchedAt: s.launchedAt, acceptanceId: s.acceptanceId }
 }
 
 // A send under a calibrated launch must be inside the policy: the lead's play is in the audience, the recipient is not
@@ -241,10 +241,13 @@ export function reserveLaunchSpend(db: Database.Database, tenantId: string, laun
   } catch { return 'unavailable' }
 }
 // Moves a reservation to what the provider reported: down when it cost less, UP past the cap when it cost more (money
-// already spent is recorded, and later reservations are then refused).
-export function settleLaunchSpend(db: Database.Database, tenantId: string, launchedAt: number, deltaUsd: number, reportedUsd: number, nowS: number): void {
-  db.prepare('UPDATE tenant_spend_pools SET reserved_usd = CASE WHEN reserved_usd + ? < 0 THEN 0 ELSE reserved_usd + ? END, reported_usd = reported_usd + ?, updated_at = ? WHERE tenant_id = ? AND period = ?')
-    .run(deltaUsd, deltaUsd, reportedUsd, nowS, tenantId, launchPeriod(launchedAt))
+// already spent is recorded, and later reservations are then refused). True only when exactly the launch's row was
+// updated; a store error, a missing row or a zero-row update is false, and the caller stops (fail closed).
+export function settleLaunchSpend(db: Database.Database, tenantId: string, launchedAt: number, deltaUsd: number, reportedUsd: number, nowS: number): boolean {
+  try {
+    return db.prepare('UPDATE tenant_spend_pools SET reserved_usd = CASE WHEN reserved_usd + ? < 0 THEN 0 ELSE reserved_usd + ? END, reported_usd = reported_usd + ?, updated_at = ? WHERE tenant_id = ? AND period = ?')
+      .run(deltaUsd, deltaUsd, reportedUsd, nowS, tenantId, launchPeriod(launchedAt)).changes === 1
+  } catch { return false }
 }
 
 // What a completion cost, from the usage the provider reported, cache tokens counted as input (cache writes at 1.25x, the
@@ -276,7 +279,9 @@ export function launchProviders(base: Record<string, Provider>, db: Database.Dat
       const ceiling = before(prompt, max)
       const d = await p.completeDetailed!(k, prompt, f, max)
       const actual = reportedCostUsd(d, model())
-      if (actual !== null) { try { settleLaunchSpend(db, tenantId, launchedAt, actual - ceiling, actual, nowS) } catch { /* the ceiling stays reserved */ } }
+      // the reported cost must be recorded before anything else happens: if it cannot be (the actual cost may be above
+      // the estimate), no further call or send is allowed
+      if (actual !== null && !settleLaunchSpend(db, tenantId, launchedAt, actual - ceiling, actual, nowS)) { onRefuse('spend_check_unavailable'); throw new SpendRefused('settle_failed') }
       return d
     }
     return out
