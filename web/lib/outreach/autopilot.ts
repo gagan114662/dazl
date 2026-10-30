@@ -121,11 +121,11 @@ const CAP_ACTIONS = "('sent','send_reserved','send_uncertain')"
 const autoSent24h = (db: Database.Database, tenantId: string, now: number) => (db.prepare(`SELECT count(*) AS n FROM autopilot_audit WHERE tenant_id = ? AND action IN ${CAP_ACTIONS} AND created_at >= ?`).get(tenantId, now - 86400) as { n: number }).n
 const oldestCounted = (db: Database.Database, tenantId: string, now: number) => (db.prepare(`SELECT min(created_at) AS t FROM autopilot_audit WHERE tenant_id = ? AND action IN ${CAP_ACTIONS} AND created_at >= ?`).get(tenantId, now - 86400) as { t: number | null }).t
 // The same count as one send sees it at its own commitment: every send that went out or may have (whenever it was
-// reserved), plus the slots reserved before its own (by created_at, then rowid). Slots reserved after it do not count
-// against it, they count it against themselves, so two sends in flight never refuse each other: the earlier reserved
-// goes, the later is refused when the cap, as it is now, has no room for it. Either way the window never exceeds the cap.
+// reserved), plus the slots reserved before its own (by created_at, then id: one fixed order). Slots reserved after it do not count
+// against it, they count it against themselves, so two sends in flight never refuse each other: the one ahead in that
+// order goes, the other is refused when the cap, as it is now, has no room for it. Either way the window never exceeds the cap.
 const countedAhead = (db: Database.Database, tenantId: string, now: number, own: string) => (db.prepare(`SELECT count(*) AS n FROM autopilot_audit a WHERE a.tenant_id = ? AND a.action IN ${CAP_ACTIONS} AND a.created_at >= ? AND a.id <> ?
-  AND (a.action <> 'send_reserved' OR (a.created_at, a.rowid) < (SELECT o.created_at, o.rowid FROM autopilot_audit o WHERE o.id = ?))`).get(tenantId, now - 86400, own, own) as { n: number }).n
+  AND (a.action <> 'send_reserved' OR (a.created_at, a.id) < (SELECT o.created_at, o.id FROM autopilot_audit o WHERE o.id = ?))`).get(tenantId, now - 86400, own, own) as { n: number }).n
 // The last time this company was emailed (sent, sending or uncertain) or had an autopilot send reserved, if within 7 days.
 // own: this send's own message and reservation, left out when the check runs at its own commitment.
 const domainLastSent = (db: Database.Database, tenantId: string, domain: string, now: number, own = { reservation: '', message: '' }): number | null => {
