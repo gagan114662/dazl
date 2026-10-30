@@ -19,7 +19,10 @@ export async function reserveRequest(db: Db, tenantId: string, connector: string
   return db.tx(function* (t: Tx): TxBody<boolean> {
     yield* t.run('INSERT INTO adv_budget_lock (tenant_id, connector, n) VALUES (?, ?, 1) ON CONFLICT (tenant_id, connector) DO UPDATE SET n = adv_budget_lock.n + 1', [tenantId, connector])
     const r = yield* t.get<{ n: number }>('SELECT COUNT(*) AS n FROM adv_requests WHERE tenant_id = ? AND connector = ? AND at > ?', [tenantId, connector, now - WINDOW_S])
-    if (Number(r?.n ?? 0) >= limit) return false
+    // Calls recorded before reservations existed (and any a consumer audited without reserving) still count: the larger of the two counts is the usage. A new call is both reserved and audited,
+    // so the two agree once it ends; the reservation leads while it is in flight.
+    const a = yield* t.get<{ n: number }>("SELECT COUNT(*) AS n FROM connector_audit WHERE tenant_id = ? AND connector = ? AND status IN ('ok','empty','worker_error','error') AND created_at > ?", [tenantId, connector, now - WINDOW_S])
+    if (Math.max(Number(r?.n ?? 0), Number(a?.n ?? 0)) >= limit) return false
     yield* t.run('INSERT INTO adv_requests (id, tenant_id, connector, at, consumer) VALUES (?, ?, ?, ?, ?)', [id, tenantId, connector, now, consumer])
     yield* t.run('DELETE FROM adv_requests WHERE tenant_id = ? AND connector = ? AND at <= ?', [tenantId, connector, now - 2 * WINDOW_S])
     return true
