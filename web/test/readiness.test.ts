@@ -106,7 +106,7 @@ test('the cap notice: follow-ups count, first touches alone are a lower bound, u
 test('the outreach settings GET reports the whole account budget, read-only', async () => {
   const { readFileSync } = await import('node:fs')
   const route = readFileSync(new URL('../app/api/outreach/settings/route.ts', import.meta.url), 'utf8')
-  assert.match(route, /account_sent_24h: accountSendCount\(db, user\.id, /)
+  assert.match(route, /account_sent_24h: accountSendCount\(db, user\.tenantId, /)
 })
 
 test('lead sources: capabilities, never "searched"; no usable key means a scan cannot start, whatever else is on', () => {
