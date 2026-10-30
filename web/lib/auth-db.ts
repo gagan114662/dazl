@@ -42,7 +42,7 @@ export function migrateAuth(d: Database.Database): void {
   try { d.exec('ALTER TABLE users ADD COLUMN buyer_profile TEXT') } catch { /* exists */ }
   // The workspace this session acts in (lib/workspaces.ts); NULL: the default one. PG: 0015_workspaces.sql.
   try { d.exec('ALTER TABLE sessions ADD COLUMN active_tenant_id TEXT') } catch { /* exists */ }
-  // Durable audit trail (lib/audit.ts). PG: 0018_audit_events.sql.
+  // Durable audit trail (lib/audit.ts). PG: 0019_audit_events.sql.
   d.exec(AUDIT_DDL)
   d.exec(WORKSPACE_DDL)
   d.transaction(() => { for (const s of BACKFILL_SQL) d.prepare(s).run() })()

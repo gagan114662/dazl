@@ -8,7 +8,7 @@
 import { randomBytes } from 'node:crypto'
 import type { Db, Tx, TxBody } from './db/client.ts'
 
-// SQLite: migrateAuth (lib/auth-db.ts); PG: 0018_audit_events.sql.
+// SQLite: migrateAuth (lib/auth-db.ts); PG: 0019_audit_events.sql.
 export const AUDIT_DDL = `
   CREATE TABLE IF NOT EXISTS audit_events (
     id TEXT PRIMARY KEY,

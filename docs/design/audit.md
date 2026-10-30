@@ -5,7 +5,7 @@ retention built on main. Time-bounded support access needs an owner decision; se
 
 ## Contract
 
-`audit_events`, one row per attributable action (`lib/audit.ts`; SQLite in `migrateAuth`, PG `0018_audit_events.sql`):
+`audit_events`, one row per attributable action (`lib/audit.ts`; SQLite in `migrateAuth`, PG `0019_audit_events.sql`):
 
 | field | meaning |
 |---|---|
