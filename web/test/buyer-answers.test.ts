@@ -209,3 +209,17 @@ test('HOLD: request meaning and scope, not just words: account-specific asks esc
     assert.ok(d.action === 'reply' && JSON.stringify(d.topics) === JSON.stringify(topics), `${text} -> ${JSON.stringify(d)}`)
   }
 })
+
+test('HOLD: a question must have a supported meaning and subject; questions about the seller escalate', () => {
+  for (const text of ['What is your Gmail account?', 'How many users are in your Gmail account?', 'How much do you pay per month?', 'How many leads do you have?',
+    'What is your API key?', 'How many customers do you have?', 'What is the price you pay for Gmail?', 'How much does your team cost?',
+    'What do you need from our CFO?', 'How many emails do you send a day?']) {
+    const d = ask(text)
+    assert.ok(d.action === 'escalate' && ['not_routine', 'sensitive'].includes(d.reason), `${text} -> ${JSON.stringify(d)}`)
+  }
+  for (const [text, topics] of [['What API key do I need?', ['prerequisites']], ['Please share your pricing.', ['pricing']], ['How much does it cost per month?', ['pricing']],
+    ['What do I need to set up?', ['prerequisites']], ['How many emails can I send a day?', ['limitations']], ['Is there a free trial?', ['how_to_start']]] as const) {
+    const d = ask(text)
+    assert.ok(d.action === 'reply' && JSON.stringify(d.topics) === JSON.stringify(topics), `${text} -> ${JSON.stringify(d)}`)
+  }
+})

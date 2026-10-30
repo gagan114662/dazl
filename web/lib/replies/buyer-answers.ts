@@ -52,11 +52,45 @@ const SENSITIVE = /\b(?:data (?:stored|storage|location|residency|retention|dele
 const ACCOUNT_SPECIFIC = /\b(?:your|ur|the team'?s|dazl'?s)\s+(?:own\s+)?(?:(?:api|ai|openai|anthropic|license|licence)\s+)?(?:keys?|account|accounts|login|logins|password|passwords|credentials?|tokens?|secrets?|billing (?:details|info|information|address)|invoices?|card|cards|bank (?:details|account)|access)\b|\b(?:access|log ?in|sign ?in) (?:to|into) (?:your|the) (?:account|dashboard|workspace|admin)\b/i
 // A request (share/send/give/show/tell/list/confirm/explain/describe) is routine only when what it asks for is one of the
 // approved facts: pricing, plans, setup requirements, limits, how to start, or the demo or sign-up link.
-const REQUEST_VERB = /^(?:(?:please|kindly)\s+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?)?(?:share|send|give|show|tell|list|confirm|explain|describe)\b\s*(?:(?:me|us)\s+)?(?:(?:over|about)\s+)?/i
+const REQUEST_VERB = /^(?:(?:and|or|also|plus|but|then)\s+)?(?:(?:please|kindly)\s+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?)?(?:share|send|give|show|tell|list|confirm|explain|describe|let (?:me|us) know)\b\s*(?:(?:me|us)\s+)?(?:(?:over|about)\s+)?/i
 const REQUEST_OBJECT = /^(?:(?:your|the|a|an|some|more)\s+)?(?:(?:details|info|information) (?:on|about) (?:your |the )?)?(?:pricing|prices?|costs?|(?:pricing |paid |subscription )?plans?|subscription(?: options)?|setup(?: steps| requirements)?|requirements|prerequisites|limits|limitations|demo(?: link)?|booking link|sign ?up link|(?:link|steps) to (?:sign up|get started|start)|how (?:to|i|we) (?:get started|start|begin|sign up|set (?:it )?up)|what (?:i|we) need(?: to set up| to get started)?)\b/i
+// What a question may mean to be answered automatically: the supported product questions, each matched against the
+// WHOLE fragment (after greetings and "please"), with the product or the buyer as its subject. A question about the seller
+// ("What is your Gmail account?", "How much do you pay per month?", "How many leads do you have?") matches none of them and
+// escalates, whatever words it shares with a supported one.
+const PRODUCT = String.raw`(?:it|this|dazl|the (?:product|tool|app|service)|your (?:product|tool|app|service))`
+const SUPPORTED_QUESTIONS: RegExp[] = [
+  // pricing
+  new RegExp(String.raw`^(?:what(?:'s| is| are)|how much (?:is|are))(?: the| your)? (?:price|prices|pricing|cost|costs|paid plans?|pricing plans?|plans?|subscription)(?: (?:per|a) month| monthly)?(?: for ${PRODUCT})?$`, 'i'),
+  new RegExp(String.raw`^how much(?: (?:is|does) ${PRODUCT}(?: cost)?)?(?: (?:per|a) month| monthly)?$`, 'i'),
+  new RegExp(String.raw`^(?:what|how much) does ${PRODUCT} cost(?: (?:per|a) month| monthly)?$`, 'i'),
+  /^(?:is there|do you have) a free (?:plan|tier|trial)$/i,
+  /^(?:pricing|prices|price)$/i,
+  // prerequisites
+  /^what do (?:i|we) need(?: to (?:set (?:it )?up|get started|start|use it))?$/i,
+  /^what (?:i|we) need(?: to (?:set (?:it )?up|get started|start))?$/i,
+  /^what (?:api key|ai key|key|keys|account|accounts|mailbox) do (?:i|we) need$/i,
+  /^do (?:i|we) need (?:my own |our own |an? |my |our )?(?:own )?(?:api key|ai key|key|gmail account|google account|gmail|account)$/i,
+  /^what are the (?:requirements|prerequisites|setup requirements|setup steps)$/i,
+  // how to start
+  /^how (?:do|can) (?:i|we) (?:get started|start|begin|sign up|try it)$/i,
+  // limitations
+  /^how many (?:emails|sends|messages|leads|scans|plays|seats|users|mailboxes|inboxes|contacts) can (?:i|we|it|dazl) (?:send|find|run|use|add|connect|have)(?: (?:a|per) (?:day|week|month))?$/i,
+  /^(?:what are|are there)(?: the| any)? (?:limits|limitations|caps)$/i,
+  /^is there a (?:cap|limit)(?: on (?:sends|emails|leads|scans))?(?: (?:a|per) (?:day|week|month))?$/i,
+  // booking
+  /^can (?:i|we) (?:book|get|schedule) a (?:demo|call|meeting)(?: about (?:pricing|it|setup))?$/i,
+  // integrations: the product works with a named tool
+  new RegExp(String.raw`^(?:does|do|can|will) (?:${PRODUCT}|you) (?:also )?(?:work|integrate|sync|connect|plug|support)\b.*$`, 'i'),
+]
+const questionInScope = (fragment: string): boolean => {
+  const f = fragment.trim().replace(/^(?:(?:hi|hey|hello|thanks|thank you|ok|okay|great|cheers|and|or|also|plus|but|then)\b[\s,!.-]*)+/i, '').replace(/^(?:please|kindly)\s+|\s+(?:please|thanks)$|[?.!\s]+$/gi, '').trim()
+  return SUPPORTED_QUESTIONS.some(re => re.test(f))
+}
 const requestInScope = (fragment: string): boolean => {
   const m = REQUEST_VERB.exec(fragment.trim())
-  return !m || REQUEST_OBJECT.test(fragment.trim().slice(m[0].length))
+  // a request must ask for an approved fact; anything else must be one of the supported questions
+  return m ? REQUEST_OBJECT.test(fragment.trim().slice(m[0].length)) : questionInScope(fragment)
 }
 
 const INTEGRATION_VERB = /\b(?:integrat\w*(?: with)?|work(?:s)? with|connect(?:s)? (?:to|with)|support(?:s)?|sync(?:s)? (?:to|with)|plug(?:s)? into)\s+/gi
