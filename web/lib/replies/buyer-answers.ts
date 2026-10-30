@@ -35,10 +35,10 @@ export type Decision =
   | { action: 'reply'; messageId: string; topics: Topic[]; body: string; factsVersion: string }
 
 const TOPICS: [Topic, RegExp][] = [
-  ['pricing', /\b(?:price|pricing|cost|costs|how much|per month|plan|plans|subscription|billing)\b|\$/i],
+  ['pricing', /\b(?:price|pricing|cost|costs|how much|per month|subscription|billing|(?:pricing|paid|free|pro|which|what) plans?)\b|\$/i],
   ['prerequisites', /\b(?:need to have|prerequisites?|requirements?|what do i need|api key|own key|setup|set up|gmail account)\b/i],
   ['how_to_start', /\b(?:how (?:do|can) (?:i|we) (?:start|begin|try|sign up)|get started|getting started|sign ?up|trial|try it)\b/i],
-  ['limitations', /\b(?:limits?|limitations?|is there a cap|how many)\b/i],
+  ['limitations', /\b(?:limits?|limitations?|is there a cap|how many (?:emails?|sends?|messages?|leads?|scans?|plays?|seats?|users?|mailboxes|inboxes|contacts))\b/i],
   ['booking', /\b(?:demo|call|meeting|meet|chat|walk ?through|book)\b/i],
 ]
 // Outside an automated answer's authority, whatever else the message asks.
@@ -64,8 +64,10 @@ function integrationsAsked(text: string): string[] {
   return [...new Set(out)]
 }
 
-// The message as clauses: sentences, and a sentence joining two questions ("What is pricing and where is data stored?").
-const CLAUSE_JOIN = /\s*(?:[;\n]|[.?!](?:\s|$)|\s(?:and|also|plus|but)\s+(?=(?:what|where|when|who|why|how|which|is|are|can|could|do|does|did|will|would|should|may|might|has|have)\b))\s*/i
+// The message as fragments: split at every sentence end, colon, semicolon, comma and conjunction or relative ("and",
+// "or", "also", "plus", "but", "then", "as well as", "that", "which"), so a routine keyword in one part never vouches
+// for the rest ("What is pricing and tell me where your team is based?" is two fragments; the second is not routine).
+const CLAUSE_JOIN = /\s*(?:[;:\n,]|[.?!](?:\s|$)|\s(?:and|or|also|plus|but|then|as well as|that|which)\s)\s*/i
 const PLEASANTRY = /^(?:hi|hey|hello|thanks|thank you|thx|cheers|great|ok|okay|sounds good|best|regards|sure)\b[\w\s,!-]{0,30}$/i
 function clauses(text: string): string[] {
   return text.split(CLAUSE_JOIN).map(c => c.replace(/^[\s,-]+|[\s,-]+$/g, '')).filter(c => c && !PLEASANTRY.test(c))
@@ -102,7 +104,9 @@ export function decide(inbound: Inbound, thread: ThreadState, facts: ProductFact
   if (unknown.length) return { action: 'escalate', messageId, reason: 'unknown_integration', detail: unknown.join(', ') }
   // every clause must be a routine question the facts answer; one unknown clause makes the whole message not routine
   const cs = clauses(inbound.text)
-  const routine = (c: string) => TOPICS.some(([, re]) => re.test(c)) || integrationsAsked(c).length > 0
+  // a fragment is routine when it asks a routine topic or a known integration, or is itself just a known integration's
+  // name (the rest of a list: "Does it work with Gmail and HubSpot?")
+  const routine = (c: string) => TOPICS.some(([, re]) => re.test(c)) || integrationsAsked(c).length > 0 || known.has(c.replace(/^(?:a|an|the)\s+|[?.!]+$/gi, '').trim().toLowerCase())
   if (!cs.length || !cs.every(routine)) return { action: 'escalate', messageId, reason: 'not_routine' }
   const topics = TOPICS.filter(([, re]) => re.test(inbound.text)).map(([t]) => t)
   if (thread.autoReplies >= policy.maxAutoReplies) return { action: 'escalate', messageId, reason: 'reply_limit' }
