@@ -30,7 +30,9 @@ test('each reason has its own state and wording; only real account usage reads a
   assert.deepEqual(row({ blocked: 'account_total_cap', remaining: 1 }), ['exhausted', "Your free trial's allowance is used up. You have used 2 of 3 free trial scan attempts."])
   assert.deepEqual(row({ blocked: 'ip_throttle', remaining: 3 }), ['throttled', 'Too many free trial scans from your network today. Try again tomorrow. You have used 0 of 3 free trial scan attempts.'])
   assert.deepEqual(row({ blocked: 'global_daily_cap', remaining: 2 }), ['throttled', "Today's free trial scans are fully booked. Try again tomorrow (it resets at midnight UTC). You have used 1 of 3 free trial scan attempts."])
-  assert.deepEqual(row({ blocked: 'google_required', remaining: 3 }), ['ineligible', 'Free trial scans need an account that signs in with Google. Sign in with Google to use them.'])
+  assert.deepEqual(row({ blocked: 'google_required', remaining: 3 }), ['ineligible', 'Free trial scans are for accounts created with Google sign-in; this one signs in with a password.'])
+  // a password account cannot add Google sign-in (the callback refuses an existing email): never send it there
+  assert.doesNotMatch(trialCopy(t({ blocked: 'google_required' })).text, /sign in with google/i)
   assert.deepEqual(row({ blocked: 'domain_used', remaining: 3 }), ['ineligible', "Your company's email domain has already had its free trial."])
   assert.deepEqual(row({ blocked: 'something_new' }), ['unavailable', "Free trial scans can't run right now."])
   for (const b of ['not_configured', 'ip_throttle', 'global_daily_cap', 'google_required', 'domain_used', 'something_new']) {
@@ -55,7 +57,7 @@ test('#410 scan start: each trial refusal reason has its own true sentence and a
     [{ error: 'trial_unavailable', reason: 'account_total_cap' }, /allowance is used up/, true],
     [{ error: 'trial_exhausted', reason: 'ip_throttle', used: 0 }, /network today\. Try again tomorrow/, false],
     [{ error: 'trial_unavailable', reason: 'global_daily_cap' }, /fully booked\. Try again tomorrow/, false],
-    [{ error: 'trial_unavailable', reason: 'google_required' }, /signs in with Google/, false],
+    [{ error: 'trial_unavailable', reason: 'google_required' }, /created with Google sign-in; this one signs in with a password\. Add your AI key/, false],
     [{ error: 'trial_unavailable', reason: 'domain_used' }, /domain has already had its free trial/, false],
     [{ error: 'trial_unavailable', reason: 'not_configured' }, /can't run right now/, false],
     [{ error: 'trial_exhausted' }, /can't run right now/, false],          // an older server without a reason
@@ -67,6 +69,7 @@ test('#410 scan start: each trial refusal reason has its own true sentence and a
     assert.equal(used.test(t), claimsUse, `${JSON.stringify(j)}: claims past use only for the account's own caps`)
     assert.match(t, /AI key in Settings/, 'every refusal names the step that works now')
     assert.doesNotMatch(t, /\$|budget|operator|sk-/i, 'nothing about dazl\'s keys or budgets')
+    assert.doesNotMatch(t, /sign in with google/i, 'no step a password account cannot take')
     // where the key step is: first-run opens the key field right under the message
     assert.match(scanRefusalCopy(j, 'below')!, /AI key below/); assert.doesNotMatch(scanRefusalCopy(j, 'below')!, /Settings/)
   }

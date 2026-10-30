@@ -35,7 +35,9 @@ export function trialCopy(t: TrialBlock): TrialCopy {
     case 'global_daily_cap':
       return { state: 'throttled', text: `Today's free trial scans are fully booked. Try again tomorrow (it resets at midnight UTC). ${usedText}`, next: NOW }
     case 'google_required':
-      return { state: 'ineligible', text: 'Free trial scans need an account that signs in with Google. Sign in with Google to use them.', next: NOW }
+      // An account without Google sign-in signs in with a password, and Google sign-in refuses an email that already has an
+      // account (google_email_exists): "sign in with Google" would be a dead end, so it is never offered here.
+      return { state: 'ineligible', text: 'Free trial scans are for accounts created with Google sign-in; this one signs in with a password.', next: SCAN }
     case 'domain_used':
       return { state: 'ineligible', text: "Your company's email domain has already had its free trial.", next: SCAN }
     default:
@@ -62,7 +64,7 @@ export function scanRefusalCopy(j: { error?: unknown; reason?: unknown }, keyAt 
     case 'global_daily_cap':
       return `Today's free trial scans are fully booked. Try again tomorrow (it resets at midnight UTC), or ${key} to scan now.`
     case 'google_required':
-      return `Free trial scans need an account that signs in with Google. Sign in with Google, or ${key} to scan now.`
+      return `Free trial scans are for accounts created with Google sign-in; this one signs in with a password. ${Key} to scan.`
     case 'domain_used':
       return `Your company's email domain has already had its free trial. ${Key} to scan.`
     default:
