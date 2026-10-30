@@ -134,6 +134,18 @@ const safeModifier = (w: string) => {
   const x = w.toLowerCase()
   return SAFE_MODIFIERS.has(x) || BUYER_SINGULAR.has(x) || /^[a-z0-9]+-(?:backed|funded|stage|owned|based|sized|led)$/.test(x) || /^(?:multi|single)-[a-z]+$/.test(x)
 }
+// the modifiers may also include a verified place used as an adjective ("London SaaS startups", "New York dental
+// practices"): a place phrase of any length from PLACES, never an unverified capitalised word
+function modifiersOk(mods: string[]): boolean {
+  let i = 0
+  while (i < mods.length) {
+    const p = placeLength(mods.slice(i))
+    if (p) { i += p; continue }
+    if (safeModifier(mods[i])) { i++; continue }
+    return false
+  }
+  return true
+}
 // One buyer group: at most three safe modifiers, a buyer noun, at most one -ing word ("dental practices", "SaaS startups
 // hiring"). Returns every length that parses, longest first ("startups hiring SDRs" may be "startups" + "hiring SDRs").
 function buyerGroup(words: string[], excl = false): number[] {
@@ -144,7 +156,7 @@ function buyerGroup(words: string[], excl = false): number[] {
     const ing = n >= 2 && /ing$/i.test(w[n - 1]) && isHead(w[n - 2])
     const head = ing ? w[n - 2] : w[n - 1]
     const mods = w.slice(0, ing ? n - 2 : n - 1)
-    if (isHead(head) && mods.length <= 3 && mods.every(safeModifier)) out.push(n)
+    if (isHead(head) && mods.length <= 4 && modifiersOk(mods)) out.push(n)
   }
   return out
 }
@@ -174,6 +186,14 @@ const PLACES: Set<string> = (() => {
     'new york city|nyc|los angeles|san francisco|bay area|silicon valley|chicago|boston|seattle|austin|denver|miami|atlanta|dallas|houston|' +
     'philadelphia|phoenix|san diego|portland|toronto|vancouver|montreal|london|manchester|leeds|birmingham|bristol|edinburgh|glasgow|' +
     'liverpool|dublin|paris|berlin|munich|amsterdam|madrid|barcelona|lisbon|stockholm|copenhagen|zurich|sydney|melbourne|auckland|' +
+    'brooklyn|manhattan|queens|the bronx|bronx|staten island|long island|jersey city|newark|westchester|stamford|white plains|' +
+    'san jose|columbus|charlotte|indianapolis|jacksonville|fort worth|nashville|detroit|oklahoma city|las vegas|memphis|louisville|' +
+    'baltimore|milwaukee|albuquerque|tucson|fresno|sacramento|kansas city|mesa|omaha|raleigh|durham|minneapolis|st paul|tampa|orlando|' +
+    'pittsburgh|cincinnati|cleveland|st louis|salt lake city|richmond|new orleans|buffalo|rochester|hartford|providence|boise|anchorage|' +
+    'honolulu|scottsdale|san antonio|el paso|arlington|plano|irvine|oakland|berkeley|palo alto|mountain view|santa monica|pasadena|' +
+    'sheffield|nottingham|leicester|cardiff|belfast|newcastle|brighton|oxford|cambridge|york|bath|coventry|southampton|reading|milton keynes|' +
+    'ottawa|calgary|edmonton|mississauga|oakville|burlington|hamilton|waterloo|kitchener|victoria|winnipeg|quebec city|halifax|markham|brampton|' +
+    'brisbane|perth|adelaide|canberra|wellington|christchurch|' +
     'singapore|dubai|bangalore|mumbai|delhi|tel aviv|' +
     'us|usa|uk|eu|uae|emea|apac|latam|north america|europe|asia|africa|south america|oceania|the midwest|the bay area').split('|')) out.add(p)
   return out
@@ -190,11 +210,15 @@ const ROLES = new Set(('coordinator receptionist manager assistant administrator
   'coo cmo vp officer specialist analyst consultant agent operator associate executive').split(' '))
 const ROLE_MODIFIERS = new Set('office sales marketing dental medical clinical senior junior first new full-time part-time account customer support operations finance front-desk'.split(' '))
 const roleNoun = (w: string) => { const x = w.toLowerCase(); return ROLES.has(x) || (x.endsWith('s') && ROLES.has(x.slice(0, -1))) }
-function roleLength(words: string[], possessive = true): number {
-  let k = (possessive ? /^(?:a|an|the|their|its|your|our)$/i : /^(?:a|an|the)$/i).test(words[0] ?? '') ? 1 : 0
+// wide (the targeting grammar): also "for a ... role", a count ("2 receptionists") and a possessive; the withdrawal
+// gate (narrow) keeps the pre-#349-live form.
+function roleLength(words: string[], wide = true): number {
+  let k = 0
+  if (wide && /^for$/i.test(words[0] ?? '')) k++
+  if ((wide ? /^(?:a|an|the|their|its|your|our)$/i : /^(?:a|an|the)$/i).test(words[k] ?? '') || (wide && isNumber(words[k] ?? ''))) k++
   const start = k
   while (k < words.length && k - start <= 3) {
-    if (roleNoun(words[k])) return k + 1
+    if (roleNoun(words[k])) return wide && /^(?:role|roles|position|positions|job|jobs|opening|openings|vacancy|vacancies)$/i.test(words[k + 1] ?? '') ? k + 2 : k + 1
     const x = words[k].toLowerCase()
     if (!(ROLE_MODIFIERS.has(x) || ROLES.has(x) || /^[a-z]+-[a-z]+$/.test(x))) return 0
     k++
@@ -205,9 +229,13 @@ function roleLength(words: string[], possessive = true): number {
 // that opened a new location or are hiring a receptionist in the last 90 days"). Each is a closed grammar of its own,
 // consumed whole; a word none of them knows leaves the sentence material. None of them admits a sell verb, a price,
 // a commercial term or a product name, so a request can never state a change of offer through one of them.
-const NUMBER = /^\d{1,7}(?:[-–—]\d{1,7}|\+)?$/
-const NUMBER_WORDS = new Set('one two three four five six seven eight nine ten eleven twelve twenty thirty fifty hundred'.split(' '))
+const NUMBER = /^\d{1,7}(?:[-–—]\d{1,7}|\+)?$|^\d{1,3}(?:st|nd|rd|th)$/i
+const NUMBER_WORDS = new Set(('one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen ' +
+  'twenty thirty forty fifty sixty seventy eighty ninety hundred several multiple').split(' '))
 const isNumber = (w: string) => NUMBER.test(w) || NUMBER_WORDS.has(w.toLowerCase())
+// an amount in an event ("raised $2M", "raised 2 million"): a currency figure, or a number followed by a scale word
+const MONEY = /^[$£€]?\d[\d,.]*[kmb]?$/i
+const MONEY_WORDS = new Set('million millions billion thousand k m usd gbp eur cad aud dollars pounds euros'.split(' '))
 // a size: "with 1–5 locations", "of 10-50 employees", "under 20 staff", "2+ locations", "between 5 and 50 people"
 const SIZE_PREP = /^(?:with|having|of|under|over|above|below|between|from|about|around|approximately)$/i
 const SIZE_NOUNS = new Set(('location locations office offices site sites branch branches store stores clinic clinics practice practices facility facilities ' +
@@ -274,7 +302,7 @@ function eventLengths(words: string[]): number[] {
   const out = [k]
   while (k < words.length) {
     const w = words[k].toLowerCase()
-    if (EVENT_WORDS.has(w) || isNumber(w)) { k++; out.push(k); continue }
+    if (EVENT_WORDS.has(w) || isNumber(w) || MONEY.test(w) || MONEY_WORDS.has(w)) { k++; out.push(k); continue }
     const role = roleLength(words.slice(k)); if (role) { k += role; out.push(k); continue }
     const buyer = buyerGroup(words.slice(k))[0]; if (buyer) { k += buyer; out.push(k); continue }
     break
@@ -361,7 +389,7 @@ function tailOk(words: string[], mode: Mode = PLAIN): boolean {
 // dental practices with leads."). The object is a list of report items, each ending in a report noun; a buyer or role
 // word may appear only as the modifier of a contact-type noun ("an owner or practice manager contact", "founder or
 // head of sales contacts"), never as the object itself ("dental practices a new website" is not a report item).
-const OUTPUT_IMPERATIVE = /^(?:(?:please|and|also|then|just)\s+)?(?:show|list|return|report|display|surface|cite|attach|output)(?:\s+(?:me|us))?\s+(.+)$/i
+const OUTPUT_IMPERATIVE = /^(?:(?:please|and|also|then|just)\s+)?(?:show|list|return|report|display|surface|cite|attach|output|include)(?:\s+(?:me|us))?\s+(.+)$/i
 const OUTPUT_FILLER = new Set('a an the each every all any its their your our per of for with plus and or as well too also only'.split(' '))
 const OUTPUT_ADJ = new Set(('dated verified direct primary named public recent relevant original exact full short brief one-line top best key main specific ' +
   'supporting matching confirmed cited linked clickable working valid current latest first second new decision-making').split(' '))
@@ -411,7 +439,8 @@ function isTargeting(x: string): boolean {
   // EXCLUDABLE nouns only after an excluding verb or a negated one ("Do not target directories.")
   // ... or a negated targeting verb ("Do not target directories."); never a negated include/find, which narrows the offer
   const mode: Mode = { excl: !!m && (/^(?:exclude|skip|avoid|ignore)$/i.test(m[2]) || (!!m[1] && /^(?:target|contact|reach|email|message)$/i.test(m[2]))), narrow: false }
-  const words = body.replace(/,/g, ' , ').trim().split(/\s+/).filter(Boolean)
+  // parentheses only group ("practices (1-5 locations)"); their content is parsed like any other words
+  const words = body.replace(/[()]/g, ' ').replace(/,/g, ' , ').trim().split(/\s+/).filter(Boolean)
   return buyerGroup(words, mode.excl).some(n => tailOk(words.slice(n), mode))
 }
 const AUDIENCE = /^(?:to|for)\s+(.*?)(?=\s*(?:,|\bbut\b|\bexcept\b|\bexcluding\b|\bwithout\b)|$)/i

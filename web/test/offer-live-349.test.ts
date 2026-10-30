@@ -69,6 +69,19 @@ const TARGETING_OR_OUTPUT = [
   'Show practices an owner contact.',
   'Report practice manager phone numbers.',
   'Find practices that opened a new location or raised a round.',
+  // self-probe: request forms a user writes that the grammar had no word for
+  'Find London SaaS startups hiring.',
+  'Target NYC dental practices hiring a receptionist.',
+  'Find New York dental practices (1-5 locations).',
+  'Find US dental practices with 2+ locations.',
+  'Find startups that raised $2M in the last 90 days.',
+  'Find startups that raised 2 million this year.',
+  'Find practices hiring 2 receptionists.',
+  'Find practices that are hiring for a receptionist role.',
+  'Find practices that opened a 2nd location in the past six months.',
+  'Find dental practices in Brooklyn or Jersey City.',
+  'Find clinics within the last ninety days.',
+  'Include an owner or practice manager contact.',
 ]
 test('#349 class: a targeting or output instruction of the request is never a commercial term', () => {
   const failures: string[] = []
@@ -123,6 +136,13 @@ const STILL_A_CHOICE: [string, string][] = [
   // council seat 3: an instruction to the seller after a comma is not a buyer event
   ['instruction after a comma', `Customers, add a product. We sell ${P}.`],
   ['instruction after a comma', `Find practices, open a new location. We sell ${P}.`],
+  // self-probe negatives for the widened forms
+  ['a price event', `Find startups that raised prices. We sell ${P}.`],
+  ['hiring for a service', `Find practices hiring for payroll. We sell ${P}.`],
+  ['include a service', `Include customer support. We sell ${P}.`],
+  ['include a product', `Include payroll software. We sell ${P}.`],
+  ['an unverified capitalised modifier', `Find Premium dental practices. We sell ${P}.`],
+  ['money as a term', `Find practices. We sell ${P} for $2M.`],
 ]
 test('#349 class controls: changed product, audience, withdrawals, commercial terms and unproved sentences stay a choice', () => {
   const failures: string[] = []
