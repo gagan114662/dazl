@@ -19,6 +19,7 @@ export interface PublishedEmailLead {
 // Inboxes whose purpose is not receiving sales outreach, however public they are.
 const NON_SALES = new Set(['press', 'media', 'support', 'help', 'privacy', 'security', 'legal', 'abuse', 'careers', 'jobs', 'talent', 'people', 'recruiting', 'hr', 'dpo'])
 
+import { isHiringInbox } from './hiring-inbox.ts'
 export type ContactPurpose = 'sales' | 'non-sales' | 'unknown'
 
 export type DomainBasisKind = 'cited_page' | 'own_domain' | 'linked' | 'link_text_only' | 'name_probe' | 'unrecorded'
@@ -78,7 +79,7 @@ export function classifyPurpose(email: string, context?: ContactContext | null):
   const local = (email.split('@')[0] ?? '').toLowerCase()
   const first = local.split(/[.+_\-]/).filter(Boolean)[0] ?? ''
   const restriction=contextRestriction(context)
-  if(NON_SALES.has(first)||restriction)return {purpose:'non-sales',hint:restriction??first}
+  if(NON_SALES.has(first)||isHiringInbox(email)||restriction)return {purpose:'non-sales',hint:restriction??first}
   const positive=context?.excerpt && /\b(sales (inquir|enquir)|business (inquir|enquir)|partnership (inquir|enquir))/.test(context.excerpt.toLowerCase())
   return {purpose:positive?'sales':'unknown',hint:positive?'business inquiry context':'purpose not established'}
 }

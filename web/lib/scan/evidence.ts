@@ -1,4 +1,5 @@
 import type { Page } from './fetch-page.ts'
+import { isHiringInbox } from '../outreach/hiring-inbox.ts'
 
 export interface Candidate {
   name: string
@@ -81,7 +82,8 @@ export function verifyEvidence(c: Candidate, page: Page, now = new Date()): Verd
     const raw = c.contact.trim()
     const digits = raw.replace(/\D/g, '')
     const onPage = raw.includes('@') ? text.includes(raw.toLowerCase()) : digits.length >= 7 && page.text.replace(/\D/g, '').includes(digits)
-    if (onPage) { contact = raw; confidence += 10 }
+    // A hiring inbox is not a route to a buyer: dropped here, the lead stays verified on its event (#461).
+    if (onPage && !isHiringInbox(raw)) { contact = raw; confidence += 10 }
   }
   confidence = Math.max(0, Math.min(100, confidence))
   if (confidence < MIN_CONFIDENCE) return { ok: false, reason: 'low_confidence' }
