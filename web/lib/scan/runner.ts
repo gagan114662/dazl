@@ -13,7 +13,7 @@ import { kickSharedScanQueue, sharedScanQueue } from '../queue/scan-claimer.ts'
 import { getDb, sqliteDb } from '../db/client.ts'
 import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
-import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, verifyEvidence, type Candidate } from './evidence.ts'
+import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, supportedEvidenceWindow, verifyEvidence, type Candidate } from './evidence.ts'
 import { fallbackIcp, inferIcp, normalizeIcp, type Icp } from './icp.ts'
 import { isMissingSchema, draftOffer } from './play-offer-text.ts'
 import { readTenantOffer } from '../outreach/play-memory.ts'
@@ -39,7 +39,7 @@ import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendG
 import { ownerLimits, ownerSetting, sharedPool } from '../llm/spend-pool.ts'
 import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
 import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './verify-provenance.ts'
-import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
+import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, OFFER_UNRESOLVED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
 import { getMemory, isExcluded, memoryPromptBlock, type Memory } from '../memory.ts'
 import { enrichJobSignals } from '../signals/index.ts'
 import { applySalesHiringGate, failClosedSalesHiring, persistHeldState, type QuoteEvidence, type HeldLead } from './sales-hiring-gate.ts'
@@ -160,13 +160,21 @@ export interface ReviewLead extends LeadDraft { review_reason: string }
 // was created with, else the tenant's selling context (Memory positioning, else the profile offer). A play whose offer
 // is contested gets no offer block (scoring never assumes one). A missing column or row means no block; any other read
 // failure throws, so scoring never runs on a guessed offer.
-export function offerBlockFor(db: Database.Database, userId: string, jobId?: string): string {
+function playDraftOffer(db: Database.Database, userId: string, jobId?: string): ReturnType<typeof draftOffer> | null {
   try {
     const tenant = readTenantOffer(db, userId)
     let play: { offer: string | null; seller: string | null; query: string | null } | undefined
     try { play = jobId ? db.prepare('SELECT offer, seller, query FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, userId) as typeof play : undefined } catch (e) { if (!isMissingSchema(e)) throw e /* else: a database from before per-play offers */ }
-    return sellerOfferBlock(draftOffer(play, tenant).offer)
-  } catch (e) { if (isMissingSchema(e)) return ''; throw e } // unreadable: scoring stops rather than guess the offer
+    return draftOffer(play, tenant)
+  } catch (e) { if (isMissingSchema(e)) return null; throw e } // unreadable: scoring stops rather than guess the offer
+}
+export function offerBlockFor(db: Database.Database, userId: string, jobId?: string): string {
+  return sellerOfferBlock(playDraftOffer(db, userId, jobId)?.offer ?? null)
+}
+// A play whose offer is contested (its request conflicts with the saved offer and no choice was made) is not scored at
+// all: grading it without an offer would rank buyers for nothing in particular. Its leads are held until the choice.
+export function playOfferUnresolved(db: Database.Database, userId: string, jobId: string): boolean {
+  return playDraftOffer(db, userId, jobId)?.refuse === 'offer_conflict'
 }
 // What buyer-fit scoring is told about the seller for one play: the tenant's Memory WITHOUT its positioning (a global
 // offer that may not be this play's), then this play's offer block, which is the only statement of what is sold.
@@ -539,7 +547,14 @@ async function tinyfishCompany(db: Database.Database, job: Job, domain: string, 
   const items = toEvidence(hits, f.ok ? f.pages : [])
   if (items.length === 0) return null
   const text = await complete.call(provider, key, buildSourcePrompt(`The company at https://${domain}`, { company_domain: domain }, items), fetchImpl, 3000)
-  return parseLeads(text, items.map(i => i.url)) ?? null
+  const leads = parseLeads(text, items.map(i => i.url))
+  if (!leads) return null
+  // Deterministic supported-signal extraction inside the paid envelope: attach a verbatim
+  // window only when it supports every material facet of the claim (entity/event/role/
+  // quantity; negation and boilerplate rejected). Otherwise the excerpt stays the model's
+  // and fails verification honestly. The verifier still re-fetches and re-checks.
+  for (const l of leads) { const ev = items.find(i => i.url === l.source_url); if (ev) { const win = supportedEvidenceWindow({ company: l.company, signal: l.signal, excerpt: l.excerpt }, { text: ev.quote, title: ev.title, url: ev.url }, domain); if (win) l.excerpt = win } }
+  return leads
 }
 
 // CSV import job: research one known company domain through the same
@@ -715,7 +730,15 @@ async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, ht
   }))).filter((p): p is { url: string; title: string; text: string } => !!p)
   const items = toEvidence(hits.filter(h => pages.some(p => p.url === h.url)), pages).map(i => ({ ...i, source: NEWS_SOURCE }))
   if (items.length === 0) return null
-  return parseLeads(await complete.call(provider, key, buildSourcePrompt(job.query!, icp, items), fetchImpl, 3000), items.map(i => i.url)) ?? null
+  const text = await complete.call(provider, key, buildSourcePrompt(job.query!, icp, items), fetchImpl, 3000)
+  const leads = parseLeads(text, items.map(i => i.url))
+  if (!leads) return null
+  // Deterministic supported-signal extraction inside the paid envelope: attach a verbatim
+  // window only when it supports every material facet of the claim (entity/event/role/
+  // quantity; negation and boilerplate rejected). Otherwise the excerpt stays the model's
+  // and fails verification honestly. The verifier still re-fetches and re-checks.
+  for (const l of leads) { const ev = items.find(i => i.url === l.source_url); if (ev) { const win = supportedEvidenceWindow({ company: l.company, signal: l.signal, excerpt: l.excerpt }, { text: ev.quote, title: ev.title, url: ev.url }); if (win) l.excerpt = win } }
+  return leads
 }
 
 export interface RunBudget { paid_fallback?: boolean; credit_enrichment?: boolean; judge?: boolean; max_usd?: number; first5?: boolean }   // first5: the fast first scan (lib/scan/first5.ts): free keyless sources only
@@ -1136,7 +1159,9 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // Quality stage: grade each verified lead for ICP fit, timing and actionability. One model call
     // per scan; a scoring failure never fails the scan - but it no longer passes the raw
     // candidate score through as if it were a grade. Ungraded leads are held at fit 0.
-    if (complete && outcome.leads.length > 0 && (deps.score !== false)) {
+    if (complete && outcome.leads.length > 0 && (deps.score !== false) && playOfferUnresolved(db, job.user_id, job.id)) {
+      holdUngraded(outcome.leads, OFFER_UNRESOLVED_WHY) // no model call: the play's offer must be chosen first
+    } else if (complete && outcome.leads.length > 0 && (deps.score !== false)) {
       const icpText = (icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`) + scoringSellerContext(db, job.user_id, job.id, memory ?? null)
       assertOwned(db, job)
       const grades = await scoreLeads(providers_[vendor], key, icpText, outcome.leads, deps.fetchImpl)
@@ -1197,7 +1222,10 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // Buyer-fit gate (after the crawl, which confirms each company's own site): a hiring lead keeps fit >= 4 only when
     // its own home page shows it fits, quoted verbatim. Fail closed; never fails the scan.
     if (!(complete && deps.score !== false)) trace.note('buyer_fit', 'skipped', deps.score === false ? 'scoring disabled for this run' : 'no model provider for this run')
-    if (complete && deps.score !== false) {
+    if (complete && deps.score !== false && playOfferUnresolved(db, job.user_id, job.id)) {
+      let capped = 0; try { capped = failClosedBuyerFit(db, job.id, 'offer_unresolved') } catch { /* the cap is best effort */ }
+      trace.note('buyer_fit', 'skipped', `this play's offer is unresolved - no model call, ${capped} hiring lead(s) capped below the qualified bar`)
+    } else if (complete && deps.score !== false) {
       try {
         const icpText = (icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`) + offerBlockFor(db, job.user_id, job.id)
         await applyBuyerFitGate(db, job.id, providers_[vendor], key, icpText, { fetchPage: deps.fetchPage, fetchImpl: deps.fetchImpl }); trace.note('buyer_fit', 'ok')

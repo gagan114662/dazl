@@ -24,6 +24,8 @@ import { WarmConnections, WarmPath } from './warm-path'
 import VerificationFixture from './verification-fixture'
 import { eventDateCopy } from '@/lib/scan/date-copy'
 import BudgetPanel from './budget-panel'
+import EstimateConfirm from './estimate-confirm'
+import type { RunEstimate } from '@/lib/scan/price-estimate'
 import { budgetFromForm, EMPTY_BUDGET_FORM, type BudgetForm } from '@/lib/scan/run-budget-form'
 import { evidenceOriginLabel, purgedNote } from '@/lib/scan/evidence-origin'
 import { playSuggestions, type PlaySuggestions } from '@/lib/play-suggestions'
@@ -35,7 +37,7 @@ import { Avatar, Pill, Stepper, type Tone } from '../ui/bits'
 import Caveat from '@/app/app/caveat'
 import SourceProgressList from './source-progress'
 import type { SourceProgress } from '@/lib/scan/progress'
-import { sameOffer, statedOffer } from '@/lib/scan/play-offer-text'
+import { effectiveOffer, sameOffer, statedOffer } from '@/lib/scan/play-offer-text'
 
 // Reject on the card is the existing reversible quarantine, with its own reason so the card can say "Rejected".
 // Reject asks for an optional reason (a preset or a few words); it is stored as "Rejected" or "Rejected: <reason>".
@@ -139,6 +141,7 @@ export default function LeadsClient() {
   const [leads, setLeads] = useState<Lead[]>([])
   const [error, setError] = useState('')
   const [quality, setQuality] = useState<Quality | null>(null)
+  const [cost, setCost] = useState<{ estimate: { total: { min: number; max: number } }; actual: { summary: string; model_usd: number | null; within: string } | null } | null>(null)
   const [jobError, setJobError] = useState('')
   const [enrichInterrupted, setEnrichInterrupted] = useState(false) // enrichment started but never ended (crash/restart): contacts and fit may be incomplete
   const [emptyReason, setEmptyReason] = useState<string | null>(null) // why a scan that read pages still extracted nothing (counts only)
@@ -378,25 +381,49 @@ export default function LeadsClient() {
   useEffect(() => { void fetch('/api/settings/profile').then(r => r.ok ? r.json() : null).then(p => setSavedOffer(typeof p?.sells === 'string' && p.sells.trim() ? p.sells.trim() : null)).catch(() => {}) }, [])
   const [offerText, setOfferText] = useState('')
   // A choice still to make: from the review step, or from the server refusing a direct run (409 offer_conflict).
-  const [offerConflict, setOfferConflict] = useState<{ stated: string; saved: string; direct: boolean } | null>(null)
+  const [offerConflict, setOfferConflict] = useState<{ stated: string | null; saved: string; withdrawn?: string; direct: boolean } | null>(null)
   function startOffer(q: string) {
     const stated = statedOffer(q)
+    // a request that withdraws an offer never falls back to the saved one: the user keeps it or writes this play's offer
+    const w = savedOffer ? effectiveOffer({ seller: null, query: q }, savedOffer).conflict : null
+    if (w?.withdrawn && savedOffer) {
+      setOfferText(w.stated ?? ''); setOfferConflict({ stated: w.stated, saved: savedOffer, withdrawn: w.withdrawn, direct: false }); return
+    }
     setOfferText(stated ?? savedOffer ?? '')
-    setOfferConflict(stated && savedOffer && !sameOffer(stated, savedOffer) ? { stated, saved: savedOffer, direct: false } : null)
+    setOfferConflict(stated && savedOffer && !sameOffer(q, savedOffer) ? { stated, saved: savedOffer, direct: false } : null)
   }
   // Extra sources this page asked the run for (unknown for a scan adopted after a reload: null).
   const [runExtras, setRunExtras] = useState<string[] | null>(null)
+  // The price estimate shown before a run starts; the run begins only from its Confirm button (or is blocked with what to change).
+  const [pendingEst, setPendingEst] = useState<{ est: RunEstimate; withIcp: Icp | null; offer?: string } | null>(null)
   async function run(withIcp: Icp | null, offer?: string) {
     if (budgetCheck.error) { setError(budgetCheck.error); return } // an enabled but invalid spend limit never starts a run
     setError(''); setStarting(true)
     const srcBody = buildSources({ github: useGithub, youtube: useYoutube, v2ex: useV2ex, jobboards: useJobboards, feedText, pageText, advPick })
     try {
-      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(offer && offer.trim().length >= 3 ? { offer: offer.trim() } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) }) })
+      const body = JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) })
+      const er = await fetch('/api/scan/estimate', { method: 'POST', headers: { 'content-type': 'application/json' }, body })
+      const ej = await er.json().catch(() => ({}))
+      // No estimate, no run: a paid scan is never started without showing what it will use.
+      if (!er.ok || !ej.estimate) { setError(ej.detail ? `The spend limit was not accepted: ${String(ej.detail).slice(0, 200)}` : 'Could not get a price estimate, so nothing was started. Try again.'); return }
+      setPendingEst({ est: ej.estimate as RunEstimate, withIcp, offer })
+    } catch {
+      setError('Could not reach the server. Check your connection and try again.')
+    } finally {
+      setStarting(false)
+    }
+  }
+  async function confirmRun(ack: string, withIcp: Icp | null, offer?: string) {
+    setError(''); setStarting(true)
+    const srcBody = buildSources({ github: useGithub, youtube: useYoutube, v2ex: useV2ex, jobboards: useJobboards, feedText, pageText, advPick })
+    try {
+      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ estimate_ack: ack, query, ...(withIcp ? { icp: withIcp } : {}), ...(offer && offer.trim().length >= 3 ? { offer: offer.trim() } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) }) })
       const j = await r.json().catch(() => ({}))
       // The request names a different offer than the business profile: nothing was queued; ask which one this play is for.
-      if (r.status === 409 && j.error === 'offer_conflict') { setOfferConflict({ stated: String(j.stated), saved: String(j.saved), direct: !withIcp || withIcp === reuseIcp }); return }
+      if ((r.status === 409 && j.error === 'estimate_changed') || (r.status === 402 && j.error === 'over_budget')) { setPendingEst({ est: j.estimate as RunEstimate, withIcp, offer }); return }
+      if (r.status === 409 && j.error === 'offer_conflict') { setPendingEst(null); setOfferConflict({ stated: typeof j.stated === 'string' ? j.stated : null, saved: String(j.saved), withdrawn: typeof j.withdrawn === 'string' ? j.withdrawn : undefined, direct: !withIcp || withIcp === reuseIcp }); return }
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : j.error === 'trial_exhausted' ? 'Your 3 free scans are used up. Add your own AI key in Settings to keep scanning.' : j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')); if (j.error === 'invalid_budget' && j.detail) setError(`The spend limit was not accepted: ${String(j.detail).slice(0, 200)}`); return }
-      setOfferConflict(null)
+      setOfferConflict(null); setPendingEst(null)
       setRunExtras(extraLabels(srcBody)); passiveJob.current = false; setJobId(j.job_id); setStatus('pending'); setEnrichInterrupted(false); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0
     } catch {
       // A rejected fetch (offline, aborted) used to fail silently - the click looked dead.
@@ -424,7 +451,7 @@ export default function LeadsClient() {
       statusFails.current = 0
       const s = await r.json()
       setStatus(s.status); setEnrichInterrupted(s.enrichment?.state === 'interrupted'); setEmptyReason(typeof s.empty_reason === 'string' ? s.empty_reason : null); setJobError(s.error ?? ''); setLeadsSoFar(s.lead_count ?? 0); setProgress(Array.isArray(s.progress) ? s.progress : null); setStartedAt(s.claimed_at ?? null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
-      setQuality(s.quality ?? null)
+      setQuality(s.quality ?? null); setCost(s.cost ?? null)
       if (s.icp) setIcp({ icp: s.icp, source: s.icp_source, query: typeof s.query === 'string' ? s.query : null })
       if (typeof s.query === 'string' && s.query && queryShownFor.current !== jobId) { queryShownFor.current = jobId; setQuery(s.query) }
     }
@@ -556,6 +583,7 @@ export default function LeadsClient() {
       </div>
       {/* Submitting the sentence runs the scan (the server works out the profile, as the run-without-review path always did)
           and lands on live progress; reviewing the profile first is optional. */}
+      {pendingEst && <EstimateConfirm est={pendingEst.est} busy={starting} onConfirm={() => void confirmRun(pendingEst.est.ack, pendingEst.withIcp, pendingEst.offer)} onCancel={() => setPendingEst(null)} />}
       <form onSubmit={e => { e.preventDefault(); void run(reuseIcp) }} className={`${jobId ? 'card p-5 sm:p-6 mb-4 order-last mt-6' : 'card px-5 py-8 sm:px-12 sm:py-12 mb-5'}`}>
         <div className={jobId ? '' : 'max-w-2xl mx-auto'}>
         <label htmlFor="play" className={`block font-bold tracking-tight mb-4 ${jobId ? 'text-lg' : 'text-2xl sm:text-4xl text-center'}`}>Who do you want to reach?</label>
@@ -704,7 +732,7 @@ export default function LeadsClient() {
           </div>
           {/* What this play sells: reviewed with the profile, stored with this play only. */}
           <div className="mb-3" data-testid="review-offer">
-            {offerConflict ? <OfferChooser c={offerConflict} onChoose={o => { setOfferText(o); setOfferConflict(null) }} />
+            {offerConflict ? <OfferChooser c={offerConflict} onChoose={o => { setOfferText(o); setOfferConflict(null) }} onWrite={() => { setOfferText(''); setOfferConflict(null) }} />
               : <>
                 <label className="block text-xs text-gray-500 mb-1" htmlFor="play-offer">What you sell for this play</label>
                 <input id="play-offer" className={`${input} w-full`} maxLength={150} value={offerText} onChange={e => setOfferText(e.target.value)} placeholder="e.g. CRM setup and outbound consulting" data-testid="review-offer-input" />
@@ -829,6 +857,11 @@ export default function LeadsClient() {
             </div>
           ))}
         </div>
+      )}
+      {cost && (status === 'done' || status === 'failed') && (
+        <p className="text-xs text-[var(--ink-2)] mb-3" data-testid="scan-cost" data-within={cost.actual?.within ?? 'unknown'}>
+          Estimated ${cost.estimate.total.min.toFixed(2)} - ${cost.estimate.total.max.toFixed(2)} at start. {cost.actual ? cost.actual.summary : 'Actual cost not recorded.'}
+        </p>
       )}
       {quality && status === 'done' && (
         <p className="text-xs text-[var(--ink-2)] mb-3 flex flex-wrap items-center gap-1.5" data-testid="scan-quality">
@@ -974,7 +1007,7 @@ export default function LeadsClient() {
                   {people.map(p => (
                     <div key={p.name + (p.title ?? '')} className="text-gray-400">
                       <span className="text-[#111]">{p.name}</span>{p.title ? ` - ${p.title}` : ''}{' '}
-                      <span className="text-gray-500">via {PEOPLE_SOURCE[p.connector] ?? p.connector}{p.tier === 'strong' ? `, title matches: ${p.matched.join(', ')}` : p.tier === 'weak' ? `, weak title match: ${p.matched.join(', ')}` : ', no title match'}</span>{' '}
+                      <span className="text-gray-500">via {PEOPLE_SOURCE[p.connector] ?? p.connector}{p.historical ? ', historical (past filing): not ranked, not a current contact' : p.tier === 'strong' ? `, title matches: ${p.matched.join(', ')}` : p.tier === 'weak' ? `, weak title match: ${p.matched.join(', ')}` : ', no title match'}</span>{' '}
                       {p.linkedin && <a className="underline text-[#111]" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow">profile</a>}
                       {!p.linkedin && p.source && <a className="underline text-[#111]" href={p.source} target="_blank" rel="noopener noreferrer nofollow">source</a>}
                     </div>
@@ -1088,7 +1121,7 @@ export default function LeadsClient() {
       {leads.some(l => l.review_reason) && (
         <>
           <h2 className="text-sm font-semibold mt-8 mb-2">Needs your review</h2>
-          <p className="text-gray-500 text-xs mb-3">dazl could not confirm these leads, so they will not be emailed. Open the source and check them yourself - if a lead checks out, confirm it and it moves into your list as confirmed by you, never as source-checked.</p>
+          <p className="text-gray-500 text-xs mb-3">dazl could not confirm these leads, so they will not be emailed. Open the source and check them yourself - if a lead checks out, confirm it and it moves into your list as confirmed by you, never as source-checked. Rows with only "Keep as research" have no verified, dated event or are someone else's customer: checking them does not make them ready.</p>
           <div className="card divide-y divide-white/5">
             {leads.filter(l => l.review_reason).map(l => (
               <div key={l.id} className="p-4 text-sm">
@@ -1150,13 +1183,19 @@ function DiscoveredVia({ l }: { l: { discovered_via?: string | null; discovered_
 
 // The request names a different offer than the business profile: the user picks which one this play is for before it
 // runs. Nothing is changed in the profile.
-function OfferChooser({ c, onChoose }: { c: { stated: string; saved: string }; onChoose: (offer: string) => void }) {
+// A request that only withdraws an offer ("We no longer sell X.") names nothing to use instead: the user keeps the saved
+// offer or writes this play's own (onWrite empties the offer field below; nothing is invented).
+function OfferChooser({ c, onChoose, onWrite }: { c: { stated: string | null; saved: string; withdrawn?: string }; onChoose: (offer: string) => void; onWrite?: () => void }) {
   return <div className="rounded-xl border border-[#e8b04a] bg-[#fff7e6] px-4 py-3 text-sm" role="alert" data-testid="offer-chooser">
     <p className="font-semibold">Which offer is this play for?</p>
-    <p className="mt-1 text-[var(--ink-2)]">Your request says you sell <strong>{c.stated}</strong>; your business profile says <strong>{c.saved}</strong>. dazl researches and drafts this play for the one you choose. Your profile is not changed.</p>
+    {c.stated
+      ? <p className="mt-1 text-[var(--ink-2)]">Your request says you sell <strong>{c.stated}</strong>; your business profile says <strong>{c.saved.replace(/\.$/, "")}</strong>. dazl researches and drafts this play for the one you choose. Your profile is not changed.</p>
+      : <p className="mt-1 text-[var(--ink-2)]" data-testid="offer-withdrawn">Your request says you do not offer <strong>{c.withdrawn}</strong>; your business profile says <strong>{c.saved.replace(/\.$/, "")}</strong>. Say what this play sells before it runs. Your profile is not changed.</p>}
     <div className="mt-2 flex flex-wrap gap-2">
-      <button type="button" className="btn-primary btn-sm" onClick={() => onChoose(c.stated)} data-testid="offer-use-stated">Use: {c.stated}</button>
+      {c.stated && <button type="button" className="btn-primary btn-sm" onClick={() => onChoose(c.stated!)} data-testid="offer-use-stated">Use: {c.stated}</button>}
       <button type="button" className="btn-ghost btn-sm" onClick={() => onChoose(c.saved)} data-testid="offer-use-saved">Use: {c.saved}</button>
+      {!c.stated && onWrite && <button type="button" className="btn-primary btn-sm" onClick={onWrite} data-testid="offer-write">Write what this play sells</button>}
     </div>
+    {!c.stated && !onWrite && <p className="mt-2 text-xs text-[var(--ink-2)]">Or use Review profile first to write what this play sells.</p>}
   </div>
 }

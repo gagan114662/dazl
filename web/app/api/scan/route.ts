@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import { after, NextRequest, NextResponse } from 'next/server'
 import { cleanText } from '@/lib/validate'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
@@ -13,9 +14,14 @@ import { kickRunner } from '@/lib/scan/runner'
 import { recordTrialScan, trialStatus } from '@/lib/scan/trial'
 import { getAuthDb, sellerProfile } from '@/lib/auth-db'
 import { describeRunBudget, normalizeScanBudget } from '@/lib/scan/run-budget'
-import { admitTrialScan, linkTrialReservation } from '@/lib/billing/trial-budget'
+import { connectorStatus } from '@/lib/connectors/store'
+import { estimateForBody } from '@/lib/scan/estimate-request'
+import { admitTrialScan, linkTrialReservation, releaseTrialReservation } from '@/lib/billing/trial-budget'
 import { denied } from '@/lib/workspace-access'
 import { cleanOffer, effectiveOffer } from '@/lib/scan/play-offer'
+import { readTenantOffer } from '@/lib/outreach/play-memory'
+import { captureError } from '@/lib/ops/errors'
+import { requestIdOf } from '@/lib/ops/request-log'
 
 export async function POST(req: NextRequest) {
   const user = await requireUser()
@@ -48,8 +54,12 @@ export async function POST(req: NextRequest) {
   const offer = offerSupplied ? cleanOffer(body.offer) : ''
   if (offerSupplied && offer.length < 3) return NextResponse.json({ error: 'Say in a few words what you sell for this play' }, { status: 400 })
   if (query.length >= 3 && !offer) {
-    const e = effectiveOffer({ seller, query }, null)
-    if (e.conflict) return NextResponse.json({ error: 'offer_conflict', stated: e.conflict.stated, saved: e.conflict.recorded }, { status: 409 })
+    // the same inputs drafting reads later (draftOffer: this play's seller snapshot, then the tenant's Memory positioning or
+    // profile offer), so a conflict surfaces here, at creation, for a Memory-only tenant too
+    let tenant: string | null
+    try { tenant = readTenantOffer(getScanDb(), user.tenantId) } catch (e) { captureError(e, { source: 'route', where: '/api/scan', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) }); return NextResponse.json({ error: 'offer_unreadable' }, { status: 503 }) }
+    const e = effectiveOffer({ seller, query }, tenant)
+    if (e.conflict) return NextResponse.json({ error: 'offer_conflict', stated: e.conflict.stated, saved: e.conflict.recorded, ...(e.conflict.withdrawn ? { withdrawn: e.conflict.withdrawn } : {}) }, { status: 409 })
   }
 
   // Optional per-run cost controls. Validated BEFORE anything is queued or counted: an explicitly supplied budget that is not
@@ -90,22 +100,50 @@ export async function POST(req: NextRequest) {
   if (!q.allowed) {
     return NextResponse.json({ error: 'quota_exceeded', plan: q.plan, used: q.used, limit: q.limit }, { status: 402 })
   }
+  // Refusals that run nothing (over budget, stale estimate) come BEFORE any trial reservation: a refused request must not consume a keyless trial attempt or budget.
+  // The price estimate and the hard cap come from one function. A run whose expected model cost is already above the limit left is
+  // refused with what to change (402 over_budget); a client that confirmed an estimate sends its ack, and a different current
+  // estimate (limit, mode or key changed since) is returned for a fresh confirmation (409 estimate_changed). No paid call happens here.
+  const estDb = await getDb()
+  const est = await estimateForBody(body, { db: estDb, tenantId: user.tenantId, hasOwnKey: funded === 'user', enrichmentVendors: (await connectorStatus(estDb, user.tenantId).catch(() => [])).filter(c => c.enabled).map(c => c.connector) })
+  if (est.ok) {
+    if (est.estimate.verdict.reason === 'budget_unknown') return NextResponse.json({ error: 'budget_unknown', message: est.estimate.verdict.message, estimate: est.estimate }, { status: 503, headers: { 'Retry-After': '30' } })
+    if (!est.estimate.verdict.ok) return NextResponse.json({ error: 'over_budget', message: est.estimate.verdict.message, change: est.estimate.verdict.change, estimate: est.estimate }, { status: 402 })
+    if (typeof body?.estimate_ack === 'string' && body.estimate_ack !== est.estimate.ack) return NextResponse.json({ error: 'estimate_changed', estimate: est.estimate }, { status: 409 })
+  }
   // A trial scan runs on dazl's own key: it must also fit dazl's daily trial budget and abuse limits
   // (lib/billing/trial-budget.ts). Checked last, so a refused request above never holds a reservation.
   let reservation: string | null = null
+  let job_id: string | null = null
   if (funded === 'trial') {
     const a = await admitTrialScan(await getDb(), { id: user.tenantId, email: user.email })
     if (!a.ok) return NextResponse.json({ error: 'trial_unavailable', reason: a.reason }, { status: 402 })
     reservation = a.reservation
   }
-  const sel = body?.sources ? normalizeSources(body.sources) : null
-  const job_id = query.length >= 3 ? createQueryJob(db, user.tenantId, { query, icp: icp ? JSON.stringify(icp) : null, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget: nb.value }) : createJob(db, user.tenantId, { business_name, industry, location }, nb.value)
-  if (funded === 'trial') {
-    db.prepare("UPDATE scan_jobs SET funded_by = 'trial' WHERE id = ?").run(job_id)
-    recordTrialScan(db, user.tenantId, job_id, ip)
+  // From here a reservation exists with no job: any throw before the job is linked releases it, so an error can never leave an attempt and budget consumed with no run.
+  try {
+    const sel = body?.sources ? normalizeSources(body.sources) : null
+    // The job id is fixed FIRST and the trial reservation is linked to it BEFORE the job exists; then the job, its estimate, its funding mark and the trial count are written in ONE
+    // transaction. So there is never a pending job that a background worker could claim without its estimate / funding / trial count, and a failure at any step rolls the job back entirely and
+    // releases the reservation: no partial job, no consumed attempt.
+    job_id = randomBytes(12).toString('hex')
     if (reservation) await linkTrialReservation(await getDb(), user.tenantId, reservation, job_id)
+    const jid = job_id
+    db.transaction(() => {
+      if (query.length >= 3) createQueryJob(db, user.tenantId, { id: jid, query, icp: icp ? JSON.stringify(icp) : null, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget: nb.value })
+      else createJob(db, user.tenantId, { id: jid, business_name, industry, location }, nb.value)
+      // Kept with the job so the finished scan can show actual against what was confirmed.
+      if (est.ok) db.prepare('UPDATE scan_jobs SET estimate = ? WHERE id = ?').run(JSON.stringify({ total: est.estimate.total, rows: est.estimate.rows, payer: est.estimate.payer, cap: est.estimate.cap, ack: est.estimate.ack }), jid)
+      if (funded === 'trial') {
+        db.prepare("UPDATE scan_jobs SET funded_by = 'trial' WHERE id = ?").run(jid)
+        recordTrialScan(db, user.tenantId, jid, ip)
+      }
+    })()
+    after(() => kickRunner(db))
+    // A supplied budget is answered with exactly which paid surfaces it allows or refuses and what the limit is NOT.
+    return NextResponse.json(nb.budget ? { job_id, budget: describeRunBudget(nb.budget) } : { job_id }, { status: 202 })
+  } catch (e) {
+    if (reservation) await releaseTrialReservation(await getDb(), user.tenantId, reservation, job_id ?? undefined).catch(() => { /* stays at its full reserve (never less than it could spend) */ })
+    throw e
   }
-  after(() => kickRunner(db))
-  // A supplied budget is answered with exactly which paid surfaces it allows or refuses and what the limit is NOT.
-  return NextResponse.json(nb.budget ? { job_id, budget: describeRunBudget(nb.budget) } : { job_id }, { status: 202 })
 }
