@@ -62,6 +62,7 @@ import { recordActionability } from './actionable.ts'
 import { resolveBounded } from './resolution.ts'
 import { fallbackTargets, mergeFallback, rescuedNotes, recordFallbacks, recordRecovery, type FallbackNote, type FallbackTarget } from './blocked-fallback.ts'
 import { parseWindowDays, splitByWindow, windowStatus } from './window.ts'
+import { applyQueryPlan } from './plan-stage.ts'
 import { applyBuyerFitGate, failClosedBuyerFit } from './buyer-fit.ts'
 
 export interface Job { spend_reserved_usd?: number | null; id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string; seller?: string | null; watch_id?: string | null; csv_domain?: string | null; run_budget?: string | null }
@@ -1132,6 +1133,15 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     } else if (icpForSources) {
       // No date window: an undated lead is still kept, so give it the date its own page declares as structured data (same rules; nothing is held or dropped by it).
       try { datesFinished = await finishUndatedLeads(outcome.leads, fetchP, 6, icpForSources.where ?? []) } catch { /* bonus only */ }
+    }
+    // The typed query plan (#380): the request's hard exclusions are enforced here (a lead the request said to exclude is dropped and counted as excluded_by_request, like memory exclusions), and the run report
+    // records what was looked for and each kept lead's per-condition state. It never widens or relaxes a gate, and a condition it cannot prove is reported unknown.
+    if (job.query && icpForSources) {
+      try {
+        const planned = applyQueryPlan(job.query, icpForSources.where, outcome.leads, outcome.review)
+        if (planned.excluded > 0) { outcome.dropped['excluded_by_request'] = (outcome.dropped['excluded_by_request'] ?? 0) + planned.excluded; markDropped(outcome.leads.filter(l => !planned.leads.includes(l)), 'excluded_by_request'); outcome.leads = planned.leads }
+        if (planned.report) ledger.report({ plan: planned.report })
+      } catch { /* the plan is a report and a guard on explicit exclusions; its failure never fails the scan */ }
     }
     // Quality stage: grade each verified lead for ICP fit, timing and actionability. One model call
     // per scan; a scoring failure never fails the scan - but it no longer passes the raw

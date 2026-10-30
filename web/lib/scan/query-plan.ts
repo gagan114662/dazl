@@ -23,7 +23,7 @@ const KIND: [FactKind, RegExp][] = [
 const EXCLUDE = /\b(?:excluding|exclude|except(?: for)?|skip|without|not including|other than|but not)\s+([^.;]+)/gi
 const SPLIT_AND = /\s+(?:and|&)\s+/i, SPLIT_OR = /\s+or\s+|\s*\/\s*/i
 const clean = (s: string) => s.replace(/\s+/g, ' ').replace(/^[\s,;:.-]+|[\s,;:.-]+$/g, '')
-const kindOf = (t: string): FactKind | null => KIND.find(([, re]) => re.test(t))?.[0] ?? null
+export const kindOf = (t: string): FactKind | null => KIND.find(([, re]) => re.test(t))?.[0] ?? null
 
 // The event part of a request: what follows the subject up to the exclusions / place. Clauses joined by AND are both required; by OR either; a clause may carry its
 // own "within N days / past N weeks / in the last month".
