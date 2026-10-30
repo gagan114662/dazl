@@ -9,7 +9,7 @@ import { migrateConnectors, saveCredential } from '../lib/connectors/store.ts'
 import { migrateEvents } from '../lib/events/store.ts'
 import type { Provider } from '../lib/llm/provider.ts'
 import { resetTinyfishState, limits } from '../lib/search/tinyfish.ts'
-import { resetSpendPools, PRICES_USD_PER_M, INPUT_MARGIN_TOKENS } from '../lib/llm/spend-guard.ts'
+import { PRICES_USD_PER_M, INPUT_MARGIN_TOKENS } from '../lib/llm/spend-guard.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import { migrateWatch, createWatch, runDueWatches } from '../lib/watch.ts'
 import { icpPrompt, MAX_QUERY } from '../lib/scan/icp.ts'
@@ -36,7 +36,7 @@ test('the numbers the disclosure states are the numbers the code enforces', () =
 
 test('the disclosure names every path and what bounds it, and still says it is not a whole-scan ceiling', () => {
   const all = BUDGET_EXCLUDED_PATHS.join('\n')
-  for (const re of [/Profile generation[^\n]*about \$0\.\d+ worst case/, /TinyFish search and fetch[^\n]*COUNT, not dollars[^\n]*8 searches and 16 fetched pages/, /People search[^\n]*at most 5/, /Autopilot[^\n]*does NOT start autopilot/, /Weekly watches take their own budget/, /CSV imports take the narrowing flags only/, /NOT BOUNDED AT ALL: retries below dazl/, /NOT BOUNDED ACROSS RESTARTS: the per-owner pool/])
+  for (const re of [/Profile generation[^\n]*about \$0\.\d+ worst case/, /TinyFish search and fetch[^\n]*COUNT, not dollars[^\n]*8 searches and 16 fetched pages/, /People search[^\n]*at most 5/, /Autopilot[^\n]*does NOT start autopilot/, /Weekly watches take their own budget/, /CSV imports take the narrowing flags only/, /NOT BOUNDED AT ALL: retries below dazl/, /Per-owner pools [^\n]*shared store: a restart, retry or second instance does not reset them/])
     assert.match(all, re)
   const d = describeRunBudget({ max_usd: 1 })
   assert.equal(d.scope, 'partial'); assert.match(d.ceiling, /not a whole-scan dollar ceiling/)
@@ -45,7 +45,7 @@ test('the disclosure names every path and what bounds it, and still says it is n
 
 // A successful stubbed scan, so the post-scan autopilot step is reached.
 async function runScan(budget: string | null) {
-  resetTinyfishState(); resetSpendPools()
+  resetTinyfishState()
   const recent = new Date(Date.now() - 20 * 86_400_000).toISOString().slice(0, 10)
   const QUOTE = 'Harbor Freight Supply of Columbus Ohio is hiring a payroll specialist to manage biweekly payroll'
   const lead = { company: 'Harbor Freight Supply', name: 'Pat Lee', contact: null, signal: 'Hiring a payroll specialist', score: 80, excerpt: QUOTE, source_url: 'https://jobs.example/hf', event_date: recent }
