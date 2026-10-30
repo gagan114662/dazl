@@ -528,10 +528,11 @@ export default function LeadsClient() {
       // A scan that is still queued/running is the one exception to "nothing autoselects": a reload or a
       // return from Home must show its progress and Stop control, not an enabled Find leads button.
       const active = jobs.find(x => !x.csv_domain && (x.status === 'pending' || x.status === 'running' || x.status === 'enriching'))
-      // A run named in the address bar (?job_id=, e.g. a play's "Open these leads") is what was asked for: it is never
-      // replaced by another scan still in the queue.
+      // A run named in the address bar (?job_id=, e.g. a play's "Open these leads") is what was asked for: neither
+      // automatic choice below (a scan in progress, or the newest run for ?latest=1) ever replaces it.
       const named = /^[a-f0-9]{24}$/.test(new URLSearchParams(window.location.search).get('job_id') ?? '')
-      if (active && !named) { passiveJob.current = new URLSearchParams(window.location.search).get('passive') === '1'; setJobId(active.id); setStatus(active.status) }
+      if (named) return
+      if (active) { passiveJob.current = new URLSearchParams(window.location.search).get('passive') === '1'; setJobId(active.id); setStatus(active.status) }
       // The sidebar's "Leads" link (?latest=1) is the user explicitly asking for their newest leads: open the newest own,
       // finished, non-test scan that saved any. No such scan => stay on Plays.
       else if (new URLSearchParams(window.location.search).get('latest') === '1') {
