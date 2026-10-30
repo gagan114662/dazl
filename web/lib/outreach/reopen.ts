@@ -3,6 +3,7 @@
 // and sends only through explicit user actions on the Follow-ups page. Autopilot never
 // touches reopens. One re-open per thread, ever (primary key). Suppression is checked
 // at draft time and again at send time.
+import { convertedContact } from './lifecycle.ts'
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
@@ -54,7 +55,7 @@ export function warmAgain(db: Database.Database, tenantId: string, now = Math.fl
   for (const r of rows) {
     if (r.last_class === 'opt_out' || r.last_class === 'negative') continue
     if (r.stage === 'booked_call') continue
-    if (isSuppressed(db, tenantId, r.to_email)) continue
+    if (isSuppressed(db, tenantId, r.to_email) || convertedContact(db, tenantId, r.to_email)) continue
     const excerpt = (db.prepare('SELECT excerpt FROM inbound_messages WHERE tenant_id = ? AND thread_id = ? ORDER BY received_at DESC LIMIT 1').get(tenantId, r.thread_id) as { excerpt: string } | undefined)?.excerpt ?? ''
     out.push({ thread_id: r.thread_id, company: r.company, name: r.name, to_email: r.to_email, last_reply_at: r.last_lead_reply_at, reply_excerpt: excerpt, reopen: null })
   }
@@ -162,6 +163,7 @@ export async function sendReopen(db: Database.Database, tenantId: string, thread
   if (!recipientAllowed(db,tenantId,r.to_email)) throw new OutreachError('personal_email')
   if (leadHeld(db,tenantId,r.lead_id)) throw new OutreachError('lead_ungraded')
   if (isSuppressed(db, tenantId, r.to_email)) throw new OutreachError('suppressed')
+  if (convertedContact(db, tenantId, r.to_email)) throw new OutreachError('converted_customer') // #417
   leadGates(db, tenantId, r)
   if (accountPaused(db, tenantId)) throw new OutreachError('paused') // a pause during the token await still holds this send
   // At-most-once: claim the draft atomically right before the send. No await sits between the last check and

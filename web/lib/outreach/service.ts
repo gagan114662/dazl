@@ -1,3 +1,4 @@
+import { convertedContact } from './lifecycle.ts'
 import {contactPurposeRestricted} from './contact-purpose-db.ts'
 import { evidenceStateOf, type EvidenceState } from './evidence-state.ts'
 import {currentnessHeld} from './currentness.ts'
@@ -513,6 +514,7 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
     if (set && set.status !== 'approved') release('approve_sequence_set')
   }
   if (tableExists(db,'autopilot_settings') && (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as {paused:number}|undefined)?.paused) release('paused')
+  if (convertedContact(db, tenantId, m.to_email)) release('converted_customer') // #417: a prospect who became a customer
   const master = d.master ?? getMasterKey()
   const unsubUrl = `${baseUrl(d)}/api/unsubscribe?t=${unsubToken(id, master)}`
   const raw = toBase64Url(buildMime({

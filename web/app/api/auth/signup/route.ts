@@ -6,6 +6,8 @@ import { cleanText, validateEmail, validatePassword } from '@/lib/validate'
 import { clientIp, rateLimit, UNAVAILABLE_RETRY_S } from '@/lib/rate-limit'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
+import { getDb } from '@/lib/db/client'
+import { recordLifecycle } from '@/lib/outreach/lifecycle'
 
 export async function POST(req: NextRequest) {
   const rl = (await rateLimit(`signup:${clientIp(req)}`, 5, 60 * 60 * 1000))
@@ -30,6 +32,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'We could not create an account with those details. Try signing in instead.' }, { status: 400 })
     }
 
+    // #417: a prospect of dazl's own acquisition outreach who signs up leaves it (never fails the sign-up)
+    try { await recordLifecycle(await getDb(), { kind: 'signup', email, eventId: `signup:${id}` }) } catch (e) { captureError(e, { source: 'route', where: '/api/auth/signup:lifecycle', method: 'POST', requestId: requestIdOf(req) }) }
     const token = await createSession(id)
     const cookieStore = await cookies()
     cookieStore.set('dazl_session', token, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: SESSION_TTL_S, path: '/' })

@@ -4,6 +4,8 @@ import { getDb } from '@/lib/db/client'
 import { exchangeCode, parseCookie, resolveUser, sameString, signInConfig, verifyIdToken } from '@/lib/auth-google'
 import { clearOauthCookie, OAUTH_COOKIE, redirectNoStore, setSessionCookie } from '@/lib/auth-google-response'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
+import { recordLifecycle } from '@/lib/outreach/lifecycle'
+import { captureError } from '@/lib/ops/errors'
 
 const back = (base: string, err: string) => {
   const res = redirectNoStore(new URL(`/sign-in?error=${err}`, base))
@@ -33,6 +35,8 @@ export async function GET(req: NextRequest) {
   const db = await getDb()
   const r = await resolveUser(db, id)
   if ('error' in r) return back(base, 'google_email_exists')
+  // #417: a new account from a prospect of dazl's own acquisition outreach leaves it (never fails the sign-in)
+  if (r.created) try { await recordLifecycle(db, { kind: 'signup', email: id.email, eventId: `signup:${r.user_id}` }) } catch (e) { captureError(e, { source: 'route', where: '/api/auth/callback/google:lifecycle' }) }
 
   const res = redirectNoStore(new URL('/app', base))
   setSessionCookie(res, base, await createSession(r.user_id), SESSION_TTL_S)

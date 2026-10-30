@@ -1,6 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import Caveat from '@/app/app/caveat'
+import { stopReasonWords } from '@/lib/outreach/lifecycle-words'
 
 type Step = { step: number; subject: string; body: string; status: string }
 type Sequence = { currentness_held?: boolean; id: string; message_id: string; lead_id: string; to_email: string; status: string; stop_reason: string | null; evidence_state?: 'machine' | 'human' | 'unverified'; steps: Step[] }
@@ -72,7 +73,7 @@ export default function SequencesClient() {
       const state=data.status[s.lead_id]
       const label=s.status==='active'?`Step ${state?.step??1} sent / awaiting step ${(state?.step??1)+1}`:s.status
       return <article key={s.id} className="card p-4 mt-4 text-sm">
-        <div className="font-medium">{s.to_email}{data?.test_addresses.map(a=>a.toLowerCase()).includes(s.to_email.toLowerCase()) ? <span className="ml-2 text-[10px] uppercase tracking-wide text-[#111] border border-[#999] px-1 py-0.5">test mode</span> : null}</div><div className="text-xs text-[#555] mt-1">{label}{s.stop_reason?` (${s.stop_reason==='evidence_withdrawn'?'lead confirmation withdrawn':s.stop_reason})`:''}{state?.next_due_at?` - due ${new Date(state.next_due_at*1000).toLocaleString()}`:''}</div>
+        <div className="font-medium">{s.to_email}{data?.test_addresses.map(a=>a.toLowerCase()).includes(s.to_email.toLowerCase()) ? <span className="ml-2 text-[10px] uppercase tracking-wide text-[#111] border border-[#999] px-1 py-0.5">test mode</span> : null}</div><div className="text-xs text-[#555] mt-1">{label}{s.stop_reason?` (${stopReasonWords(s.stop_reason)})`:''}{state?.next_due_at?` - due ${new Date(state.next_due_at*1000).toLocaleString()}`:''}</div>
         {s.currentness_held&&<p className="text-xs border-l-2 border-black pl-3 mt-2">Held: event timing and current need are unconfirmed. Unsent steps will not run. Sequence status and original words are preserved.</p>}
         {s.evidence_state==='human'&&['draft','approved'].includes(s.status)&&<p className="text-xs text-[#333] border-l-2 border-[#111] pl-3 mt-2">Lead confirmed by you - dazl did not verify the quote. Approving this set approves your own confirmation, not a dazl verification; withdrawing it stops unsent steps.</p>}
         {s.evidence_state==='unverified'&&['draft','approved'].includes(s.status)&&<p className="text-xs text-[#111] font-medium border-l-2 border-[#111] pl-3 mt-2">Lead confirmation withdrawn - this set cannot be approved or send further steps unless you re-confirm the lead or dazl verifies it.</p>}

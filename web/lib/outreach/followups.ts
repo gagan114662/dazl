@@ -1,3 +1,4 @@
+import { convertedContact } from './lifecycle.ts'
 import {contactPurposeRestricted} from './contact-purpose-db.ts'
 import {currentnessHeld} from './currentness.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend, tableExists } from './send-budget.ts'
@@ -68,6 +69,7 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
     if (t.last_followup_at && t.last_lead_reply_at > t.last_followup_at) { db.prepare("UPDATE followup_threads SET stopped = 'replied_again' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, t.thread_id); skip('replied again, left for you'); continue }
     if (now - t.last_activity_at < GAPS_DAYS[t.followups_sent] * 86400) continue
     if (isSuppressed(db, tenantId, t.to_email)) { db.prepare("UPDATE followup_threads SET stopped = 'suppressed' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, t.thread_id); skip('suppressed'); continue }
+    if (convertedContact(db, tenantId, t.to_email)) { db.prepare("UPDATE followup_threads SET stopped = 'converted' WHERE tenant_id = ? AND thread_id = ? AND stopped IS NULL").run(tenantId, t.thread_id); skip('converted_customer'); continue } // #417
     if (!hasConsent(db, tenantId, t.to_email, 'email', 'followup', now)) { skip('no valid consent'); continue }
     const sentToday = (db.prepare("SELECT count(*) AS n FROM autopilot_audit WHERE tenant_id = ? AND action IN ('sent','followup_sent') AND created_at >= ?").get(tenantId, now - 86400) as { n: number }).n
     if (accountSendCount(db,tenantId,now) >= Math.min(ACCOUNT_SEND_CAP,cur.daily_cap)) return stop('daily_cap')
@@ -120,6 +122,12 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
         db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId,t.thread_id,t.followups_sent)
         if (stAfter === 'required' || stAfter === 'quarantined') db.prepare("UPDATE followup_threads SET stopped = ? WHERE tenant_id = ? AND thread_id = ? AND stopped IS NULL").run(stAfter === 'quarantined' ? 'lead_quarantined' : 'domain_unconfirmed', tenantId, t.thread_id)
         skip(stAfter === 'required' ? 'domain_unconfirmed' : stAfter === 'quarantined' ? 'lead_quarantined' : 'review_unreadable'); continue
+      }
+      // #417: signed up or paid during the awaits above: the claim is removed and nothing is sent.
+      if (convertedContact(db, tenantId, t.to_email)) {
+        db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId,t.thread_id,t.followups_sent)
+        db.prepare("UPDATE followup_threads SET stopped = 'converted' WHERE tenant_id = ? AND thread_id = ? AND stopped IS NULL").run(tenantId, t.thread_id)
+        skip('converted_customer'); continue
       }
       const r = await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, t.thread_id)
       db.prepare("UPDATE followup_messages SET status = 'sent', gmail_id = ? WHERE tenant_id = ? AND thread_id = ? AND step = ?").run(r.id, tenantId, t.thread_id, t.followups_sent)
