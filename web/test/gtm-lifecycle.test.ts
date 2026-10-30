@@ -137,7 +137,7 @@ test('shared definitions through this file\'s events: day-30 retention needs a r
 
 test('shared window and cohort rules at their boundaries, through this file\'s events', () => {
   const S = 1000  // one second, the shared module's resolution
-  const at1 = (c: string, t: number) => ({ id: `${c}-${t}`, at: t, customer: c, kind: 'payment', status: 'paid' }) as LifecycleEvent
+  const at1 = (c: string, t: number) => ({ id: `${c}-${t}`, at: t, customer: c, kind: 'payment', status: 'paid', periods: [{ start: t, end: t + 30 * DAY, subscription: `sub_${c}` }] }) as LifecycleEvent
   const renewedAt = (c: string, t: number) => customerState(c, [signup(c, 0), pay(c, 0), at1(c, t)], at(100)).retention.day30.retained
   // The renewal window is [H - E, H + L] days after the first payment, both ends included.
   assert.equal(renewedAt('w1', at(H - E)), true)
@@ -199,4 +199,17 @@ test('day 30 through this file\'s events: sub_ended cancelled on day 20 does not
   assert.equal(mixed.retention.day30.retained, true); assert.equal(mixed.retention.coverage_at_cutoff, 'covered'); assert.equal(mixed.stage, 'retained')
   const matching = customerState('mm', es('mm', 'sub_good'), at(45))
   assert.equal(matching.retention.day30.retained, false, 'the renewed subscription itself was cancelled by day 30')
+})
+
+test('a new subscription in the window is not retention through this file\'s events; a continuing sibling still is', () => {
+  const now = at(100)
+  const svc = (c: string, d: number, sub: string) => ev(c, d, { id: `${c}-${sub}-${d}`, kind: 'payment', status: 'paid', periods: [{ start: at(d), end: at(d + 30), subscription: sub }] })
+  // original service paid on day 0, ended on day 20; a completely new subscription first paid on day 30
+  const fresh = customerState('fresh', [signup('fresh', 0), svc('fresh', 0, 'sub_orig'), ev('fresh', 20, { kind: 'cancel', subscription: 'sub_orig' }), svc('fresh', 30, 'sub_new')], now)
+  assert.deepEqual([fresh.retention.day30.retained, fresh.retention.day30.outcome], [false, 'new_service'])
+  assert.notEqual(fresh.stage, 'retained')
+  // two first-paid subscriptions: one ends on day 20, the other renews on day 30 and continues
+  const two = ev('sib', 0, { id: 'sib-first', kind: 'payment', status: 'paid', periods: [{ start: at(0), end: at(30), subscription: 'sub_a' }, { start: at(0), end: at(30), subscription: 'sub_b' }] })
+  const sib = customerState('sib', [signup('sib', 0), two, ev('sib', 20, { kind: 'cancel', subscription: 'sub_a' }), svc('sib', 30, 'sub_b')], now)
+  assert.deepEqual([sib.retention.day30.retained, sib.retention.day30.outcome], [true, 'renewed'])
 })
