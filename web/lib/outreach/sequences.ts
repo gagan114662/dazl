@@ -16,6 +16,7 @@ import { pickVendor } from '../scan/runner.ts'
 import { getMemory, memoryPromptBlock } from '../memory.ts'
 import { memoryForLead } from './play-memory.ts'
 import { norm } from './store.ts'
+import { autoSequenceStop } from './auto-sequence.ts'
 
 // Multi-step sequences: step 1 is the normal approved outreach email; steps 2 and 3 are
 // follow-ups at +3 days and +7 days measured from the step-1 send, for leads who never
@@ -73,7 +74,7 @@ export function migrateSequences(db: Database.Database): void {
   `)
 }
 
-const hash = (to: string, subject: string, body: string) => createHash('sha256').update(JSON.stringify([to, subject, body])).digest('hex')
+export const stepHash = (to: string, subject: string, body: string) => createHash('sha256').update(JSON.stringify([to, subject, body])).digest('hex')
 
 // ---------- test-mode allowlist (tenant-entered, server-enforced) ----------
 export function setTestAddresses(db: Database.Database, tenantId: string, raw: string[]): string[] {
@@ -229,7 +230,7 @@ export function approveSequence(db: Database.Database, tenantId: string, sequenc
   db.prepare("UPDATE outreach_messages SET subject = ?, body = ?, status = 'draft', approved_hash = NULL WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(first.subject, first.body, s.message_id, tenantId)
   approveStep1(s.message_id) // throws the same OutreachError codes as single-message approval
   for (const st of steps)
-    db.prepare("UPDATE sequence_steps SET approved_hash = ?, status = 'approved' WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(hash(s.to_email, st.subject, st.body), tenantId, sequenceId, st.step)
+    db.prepare("UPDATE sequence_steps SET approved_hash = ?, status = 'approved' WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(stepHash(s.to_email, st.subject, st.body), tenantId, sequenceId, st.step)
   db.prepare("UPDATE sequences SET status = 'approved' WHERE tenant_id = ? AND id = ?").run(tenantId, sequenceId)
   grantConsent(db, tenantId, s.to_email, { channel: 'email', scope: 'sequence', basis: 'user_approved_set', evidenceRef: `sequence:${sequenceId}`, now })
   db.prepare('INSERT OR IGNORE INTO autopilot_settings (tenant_id) VALUES (?)').run(tenantId)
@@ -343,8 +344,11 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
     const skip = (why: string) => { out.skipped++; auditAt(db, tenantId, 'sequence_skipped', why, s.lead_id, s.message_id, now) }
     if (isSuppressed(db, tenantId, s.to_email)) { db.prepare("UPDATE sequences SET status = 'stopped', stop_reason = 'suppressed' WHERE tenant_id = ? AND id = ?").run(tenantId, s.id); skip('suppressed'); continue }
     if (!db.prepare("SELECT 1 FROM consent_ledger WHERE tenant_id = ? AND contact = ? AND scope = 'sequence' AND evidence_ref = ? AND revoked_at IS NULL AND expires_at > ?").get(tenantId,norm(s.to_email),`sequence:${s.id}`,now)) { skip('no valid consent'); continue }
+    // #414: an automatically enrolled sequence sends only under the policy version and Gmail address it was enrolled with.
+    const auto = autoSequenceStop(db, tenantId, s.message_id, acct.email)
+    if (auto) { stopSequenceForThread(db, tenantId, s.lead_id, 'stopped', auto, now); skip(auto); continue }
     if (sentShared24h() >= dailyCap) return stop('daily_cap')
-    if (stepRow.approved_hash !== hash(s.to_email, stepRow.subject, stepRow.body)) {
+    if (stepRow.approved_hash !== stepHash(s.to_email, stepRow.subject, stepRow.body)) {
       // Words changed after approval: drop the whole set back to draft, never send stale approval.
       db.prepare("UPDATE sequence_steps SET approved_hash = NULL, status = 'draft' WHERE tenant_id = ? AND sequence_id = ? AND status IN ('approved')").run(tenantId, s.id)
       db.prepare("UPDATE sequences SET status = 'draft' WHERE tenant_id = ? AND id = ?").run(tenantId, s.id)
@@ -389,9 +393,15 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
         if (stAfter === 'required' || stAfter === 'quarantined') stopSequenceForThread(db,tenantId,s.lead_id,'stopped',stAfter === 'quarantined' ? 'lead_quarantined' : 'domain_unconfirmed',now)
         out.skipped++; continue
       }
+      // #414: the policy or the Gmail address may have changed during the token request.
+      const autoAfter = autoSequenceStop(db, tenantId, s.message_id, gmailStatus(db, tenantId)?.email)
+      if (autoAfter) {
+        db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step)
+        stopSequenceForThread(db, tenantId, s.lead_id, 'stopped', autoAfter, now); out.skipped++; continue
+      }
       const current = getSeq(db,tenantId,s.id)
       const currentStep = db.prepare('SELECT body,subject,approved_hash FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? AND step = ?').get(tenantId,s.id,stepRow.step) as {body:string;subject:string;approved_hash:string}
-      if (currentStep.body !== stepRow.body || currentStep.subject !== stepRow.subject || currentStep.approved_hash !== hash(s.to_email,currentStep.subject,currentStep.body)) {
+      if (currentStep.body !== stepRow.body || currentStep.subject !== stepRow.subject || currentStep.approved_hash !== stepHash(s.to_email,currentStep.subject,currentStep.body)) {
         db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step); return stop('changed_since_approval')
       }
       if ((d.flags ?? process.env).SEQUENCES_ENABLED !== '1' || (d.flags ?? process.env).AUTOPILOT_KILL === '1' || current?.status !== 'active' || getState(db,tenantId).paused || isSuppressed(db,tenantId,s.to_email) || !hasReadConsent(db,tenantId) || !gmailStatus(db,tenantId)?.read_granted) {

@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3'
 import { gmailStatus } from '../gmail/oauth.ts'
 import { createDraft, approve, getSettings, isSuppressed, OutreachError, sendMessage, suppress, type Deps } from './service.ts'
 import { polishDraft } from './draft-llm.ts'
+import { enrollAutoSequence } from './auto-sequence.ts'
 
 // Autopilot sends first-touch email to verified, business-published addresses through the user's own Gmail,
 // inside hard limits. It never sends follow-ups, never re-contacts, and never touches suppressed addresses.
@@ -118,7 +119,7 @@ const autoSent24h = (db: Database.Database, tenantId: string, now: number) => (d
 const domainSentRecently = (db: Database.Database, tenantId: string, domain: string, now: number) =>
   !!db.prepare("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND status IN ('sent','sending','uncertain') AND to_email LIKE ? AND claimed_at >= ?").get(tenantId, `%@${domain}`, now - 7 * 86400)
 
-export interface RunResult { sent: number; held: number; skipped: number; stopped?: string }
+export interface RunResult { sent: number; held: number; skipped: number; stopped?: string; enrolled?: number }
 
 // What autopilot was allowed to send for this draft: its exact words and recipient, the sender identity and offer they
 // carry, the Gmail account it goes out from, and the consent version. Recomputed before a held draft is sent; a different
@@ -194,7 +195,12 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
       // Only from the Gmail account the authority was taken with: the send path refuses at commitment if it changed.
       const r = await sendMessage(db, tenantId, id, { ...d, expectSender: gmailSender(db, tenantId) ?? '' })
       drop(id)
-      if (r === 'sent') { out.sent++; audit(db, tenantId, 'sent', undefined, leadId, id) }
+      if (r === 'sent') {
+        out.sent++; audit(db, tenantId, 'sent', undefined, leadId, id)
+        // #414: under the account's automatic follow-up policy, the first touch is enrolled once in its cold sequence.
+        // Enrollment sends nothing; a failure here never undoes or repeats the send.
+        try { if (enrollAutoSequence(db, tenantId, id, gmailSender(db, tenantId) ?? '', businessName, now)) out.enrolled = (out.enrolled ?? 0) + 1 } catch (e) { audit(db, tenantId, 'enroll_failed', e instanceof Error ? e.message.slice(0, 60) : 'error', leadId, id) }
+      }
       // An unknown outcome is never retried by autopilot: the message stays uncertain for the user.
       else { audit(db, tenantId, 'uncertain', 'send outcome unknown', leadId, id); pause(db, tenantId, 'uncertain_send'); out.stopped = 'uncertain_send'; return 'stop' }
     } catch (e) {

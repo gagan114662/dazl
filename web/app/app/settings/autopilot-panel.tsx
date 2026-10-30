@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react'
 
 interface St { enabled: boolean; paused: boolean; pause_reason: string | null; consent_current: boolean; daily_cap: number }
-interface Info { available: boolean; state: St; consent: { version: string; text: string[] }; warmup: number; max_daily: number; audit: { action: string; detail: string | null; created_at: number }[] }
+interface Info { available: boolean; state: St; consent: { version: string; text: string[] }; warmup: number; max_daily: number; auto_sequence?: { version: string; text: string[]; on: boolean }; audit: { action: string; detail: string | null; created_at: number }[] }
 const KEYS = ['business_published', 'relevant_to_role', 'responsible_sender']
 const LABELS = ['The addresses I target are published by the business for business use.', 'My emails are relevant to the recipient\'s role.', 'I am the sender and responsible for these emails.']
 
@@ -11,6 +11,7 @@ export default function AutopilotPanel() {
   const [ack, setAck] = useState<boolean[]>([false, false, false])
   const [cap, setCap] = useState(20)
   const [msg, setMsg] = useState('')
+  const [seqAck, setSeqAck] = useState(false)
   async function load() { const r = await fetch('/api/outreach/autopilot'); if (r.ok) setI(await r.json()) }
   useEffect(() => { void load() }, [])
   async function act(body: object) {
@@ -30,6 +31,25 @@ export default function AutopilotPanel() {
             {s.paused ? <button className="underline underline-offset-2" onClick={() => act({ action: 'resume' })}>Resume</button> : <button className="btn-primary" onClick={() => act({ action: 'pause' })}>Pause now</button>}
             <button className="underline underline-offset-2" onClick={() => act({ action: 'disable' })}>Turn off</button>
           </div>
+          {i.auto_sequence && (
+            // #414: cold no-reply follow-ups for autopilot's first emails, under their own versioned policy. Warm
+            // follow-ups (people who replied with interest) are set under Replies.
+            <div data-testid="auto-sequence" className="border-t border-[#eee] pt-3 space-y-2">
+              <div className="font-medium">Automatic follow-ups</div>
+              {i.auto_sequence.on ? (
+                <>
+                  <p className="text-[#555]">On. If nobody replies to a first email autopilot sent, dazl follows up in the same thread on day 3 and day 7, then stops. Any reply, opt-out or bounce stops it sooner.</p>
+                  <button className="underline underline-offset-2" onClick={() => act({ action: 'auto_sequence_off' })}>Turn off automatic follow-ups</button>
+                </>
+              ) : (
+                <>
+                  <ul className="list-disc pl-5 text-[#555]">{i.auto_sequence.text.map((t, k) => <li key={k}>{t}</li>)}</ul>
+                  <label className="flex gap-2 items-start"><input type="checkbox" checked={seqAck} onChange={e => setSeqAck(e.target.checked)} /><span>I have read this and want these follow-ups sent for me.</span></label>
+                  <button disabled={!seqAck} onClick={() => act({ action: 'auto_sequence_on', accept: true, version: i.auto_sequence!.version })} className="btn-primary disabled:opacity-40">Turn on automatic follow-ups</button>
+                </>
+              )}
+            </div>
+          )}
         </div>
       ) : (
         <div className="text-sm space-y-2">
