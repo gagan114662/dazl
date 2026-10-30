@@ -15,6 +15,13 @@
 
 **Rubric choice.** The rubric comes from the tenant's own offer (`rubricFor(users.sells)`), by the same rule for every tenant; there is no per-tenant exception. One rubric exists so far, `lead-generation@1`. A seller whose offer matches no rubric gets the requester screen only, and no demand claim.
 
-**Where it applies.** Social reply threads (`lib/replies/threads.ts`) are screened before any paid grading call. Only non-buyers and trigger-only posts are dropped there; a post the rubric does not recognise still goes to grading.
+**Where it applies.** Social reply threads (`lib/replies/threads.ts`):
+- **At refresh**, threads are screened before any paid grading call. Only non-buyers and trigger-only posts are dropped there; a post the rubric does not recognise still goes to grading.
+- **On every read** (`listThreads`, so `GET /api/replies` and the Social page), each thread carries its assessment (`demand`) for the tenant's current offer. It is recomputed rather than stored, so a rubric version or an offer change applies to threads already saved.
+  - Threads saved before the screen existed that it would drop are not presented as fits. A thread the tenant has already drafted on stays visible, with the screen's reason.
+  - The Social page shows the verdict, the categories, the three scores separately, the asker's authority and the reasons, plus "Not permission to contact".
+  - A stored thread has no author name, so its evidence score is at most 2 (`author not named`).
 
-**Builds on** `claude/trusting-bell-xyya6m-demand-rubric` (the requester screen), merged here and extended. Not yet applied to scan leads (`lib/scan/lead-qualify.ts`); that is the next step.
+**Not applied to scan leads.** Scan leads come from job boards and company pages, not authored posts. `lib/scan/lead-qualify.ts` grades company pages with its own literal-quote guard, and there is no requester to screen there.
+
+**Builds on** `claude/trusting-bell-xyya6m-demand-rubric` (the requester screen), merged here and extended.

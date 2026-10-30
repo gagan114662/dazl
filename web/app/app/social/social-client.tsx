@@ -9,6 +9,25 @@ type Thread = {
   id: string; platform: 'reddit' | 'x'; url: string; title: string; quote: string; query: string
   date: string | null; created_at: number; buyer_intent?: string | null
   draft: string | null; draft_status: 'draft' | 'edited' | 'copied' | 'posted' | null
+  demand?: Demand
+}
+// lib/qualify/demand.ts DemandAssessment, as the API returns it
+type Demand = {
+  rubric: string | null; categories: string[]; verdict: 'high_intent' | 'possible' | 'not_demand'; screen_out: boolean
+  requester: { role: string | null; authority: 'decision_maker' | 'practitioner' | 'unknown' }
+  scores: { evidence: number; fit: number; intent: number }; reasons: string[]
+}
+const CATEGORY: Record<string, string> = { vendor_request: 'asking for a lead source or tool', data_quality: 'list or data quality problem', workflow_bottleneck: 'outbound bottleneck', evaluation: 'evaluating or switching tools' }
+const VERDICT = { high_intent: 'High intent', possible: 'Possible demand', not_demand: 'No demand shown' } as const
+function DemandLine({ d }: { d: Demand }) {
+  // three separate scores, never one blended number; a demand verdict is not permission to contact anyone
+  return <p className="text-xs text-[var(--ink-3)] mt-2" data-testid="thread-demand">
+    {VERDICT[d.verdict]}{d.categories.length ? `: ${d.categories.map(c => CATEGORY[c] ?? c).join(', ')}` : ''}
+    {' · '}evidence {d.scores.evidence}/3 · fit {d.scores.fit}/3 · intent {d.scores.intent}/3
+    {d.requester.authority !== 'unknown' && ` · asker: ${d.requester.authority === 'decision_maker' ? 'decision maker' : 'practitioner'}`}
+    {d.reasons.length > 0 && ` · ${d.reasons.join('; ')}`}
+    {' · '}{d.rubric ? `rubric ${d.rubric}` : 'no rubric for your offer'}. Not permission to contact.
+  </p>
 }
 type State = { queries: string[]; threads: Thread[]; platforms: { reddit: boolean; x: boolean }; consent: boolean; has_key: boolean }
 
@@ -160,6 +179,7 @@ export default function SocialClient() {
           </div>
           <a className="font-semibold text-base hover:underline break-words" href={t.url} target="_blank" rel="noopener noreferrer">{t.title}</a>
           <p className="text-sm text-[var(--ink-2)] mt-1 break-words">{t.quote}</p>
+          {t.demand && <DemandLine d={t.demand} />}
           {t.draft !== null && (editing === t.id
             ? <div className="mt-3">
               <textarea className="field w-full text-sm" rows={5} aria-label="Your reply" value={edits[t.id] ?? t.draft} onChange={e => setEdits({ ...edits, [t.id]: e.target.value })} maxLength={4000} autoFocus />

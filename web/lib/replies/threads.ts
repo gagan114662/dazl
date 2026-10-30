@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto'
 import { audit, getEnabledCredential } from '../connectors/store.ts'
 import { hasConsent, httpWorker, type WorkerFetch } from '../advanced/index.ts'
 import { requesterRole } from './requester.ts'
-import { assessDemand, rubricFor } from '../qualify/demand.ts'
+import { assessDemand, rubricFor, type DemandAssessment } from '../qualify/demand.ts'
 import { advFlags, connectorId, maxCallsPerHour, platformAllowed, scopeFor } from '../advanced/config.ts'
 import { readKey, keyStatus } from '../llm/key-store.ts'
 import { getAuthDb, getSellerProfile } from '../auth-db.ts'
@@ -249,18 +249,28 @@ export interface ThreadRow {
   id: string; platform: ReplyPlatform; url: string; title: string; quote: string; query: string
   date: string | null; login_walled: number; created_at: number; buyer_intent?: string | null
   draft: string | null; draft_status: 'draft' | 'edited' | 'copied' | 'posted' | null; draft_updated_at: number | null
+  // the demand rubric's assessment for the seller's own offer (lib/qualify/demand.ts), recomputed on every read so a
+  // rubric or offer change applies to stored threads too: who is asking, which demand, evidence/fit/intent scored
+  // separately, and never permission to contact (contact_permitted is always false)
+  demand: DemandAssessment
 }
 
-export function listThreads(db: Database.Database, tenantId: string, limit = 50): ThreadRow[] {
+export function listThreads(db: Database.Database, tenantId: string, limit = 50, opts: { sells?: string } = {}): ThreadRow[] {
+  let sells = opts.sells
+  if (sells === undefined) { try { sells = getSellerProfile(getAuthDb(), tenantId).sells } catch { sells = '' } }
+  const rubric = rubricFor(sells)
   const rows = db.prepare(
     `SELECT t.id, t.platform, t.url, t.title, t.quote, t.query, t.date, t.login_walled, t.created_at, t.buyer_intent,
             d.draft, d.status AS draft_status, d.updated_at AS draft_updated_at
      FROM reply_threads t LEFT JOIN reply_drafts d ON d.thread_id = t.id AND d.tenant_id = t.tenant_id
-     WHERE t.tenant_id = ? ORDER BY t.created_at DESC LIMIT ?`).all(tenantId, limit) as ThreadRow[]
+     WHERE t.tenant_id = ? ORDER BY t.created_at DESC LIMIT ?`).all(tenantId, limit) as Omit<ThreadRow, 'demand'>[]
   // Re-qualify at read time: threads stored before the relevance gate existed must not
   // keep presenting as fits. A thread the tenant already engaged with (a draft exists)
   // stays visible - their work is not hidden.
-  return rows.filter(t => t.draft !== null || (t.buyer_intent !== 'no' && isRelevantToQuery(t.query, t.title, t.quote)))
+  // The same goes for the demand screen: a thread stored before it existed (a recruiter, a vendor promoting itself, a
+  // funding announcement with no demand) is not presented as a fit.
+  return rows.map(t => ({ ...t, demand: assessDemand({ title: t.title, quote: t.quote, source_url: t.url, date: t.date }, rubric) }))
+    .filter(t => t.draft !== null || (t.buyer_intent !== 'no' && !t.demand.screen_out && isRelevantToQuery(t.query, t.title, t.quote)))
 }
 
 export function getThread(db: Database.Database, tenantId: string, id: string): ThreadRow | undefined {
