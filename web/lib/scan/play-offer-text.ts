@@ -148,7 +148,7 @@ function modifiersOk(mods: string[]): boolean {
 }
 // One buyer group: at most three safe modifiers, a buyer noun, at most one -ing word ("dental practices", "SaaS startups
 // hiring"). Returns every length that parses, longest first ("startups hiring SDRs" may be "startups" + "hiring SDRs").
-function buyerGroup(words: string[], excl = false): number[] {
+function buyerGroup(words: string[], excl = false, wide = true): number[] {
   const out: number[] = []
   const isHead = (w: string) => BUYERS.has(w.toLowerCase()) || (excl && EXCLUDABLE.has(w.toLowerCase()))
   for (let n = Math.min(words.length, 5); n >= 1; n--) {
@@ -156,7 +156,7 @@ function buyerGroup(words: string[], excl = false): number[] {
     const ing = n >= 2 && /ing$/i.test(w[n - 1]) && isHead(w[n - 2])
     const head = ing ? w[n - 2] : w[n - 1]
     const mods = w.slice(0, ing ? n - 2 : n - 1)
-    if (isHead(head) && mods.length <= 4 && modifiersOk(mods)) out.push(n)
+    if (isHead(head) && mods.length <= 4 && (wide ? modifiersOk(mods) : mods.length <= 3 && mods.every(safeModifier))) out.push(n)
   }
   return out
 }
@@ -306,7 +306,7 @@ function eventLengths(words: string[]): number[] {
     const w = words[k].toLowerCase()
     if (EVENT_WORDS.has(w) || isNumber(w) || MONEY.test(w) || MONEY_WORDS.has(w)) { k++; out.push(k); continue }
     const role = roleLength(words.slice(k)); if (role) { k += role; out.push(k); continue }
-    const buyer = buyerGroup(words.slice(k))[0]; if (buyer) { k += buyer; out.push(k); continue }
+    const buyer = buyerGroup(words.slice(k))[0]; if (buyer) { k += buyer; out.push(k); continue } // wide: an event is never in the narrow tail
     break
   }
   return out.reverse()
@@ -334,7 +334,7 @@ function qualifierLengths(words: string[], mode: Mode): number[] {
   }
   // another buyer group after a list separator or of/for/at/with
   const sepLen = w0 === ',' ? (['and', 'or'].includes(w1) ? 2 : 1) : ['and', 'or', 'of', 'for', 'at', 'with'].includes(w0) ? 1 : 0
-  if (sepLen) for (const n of buyerGroup(words.slice(sepLen), mode.excl)) out.add(sepLen + n)
+  if (sepLen) for (const n of buyerGroup(words.slice(sepLen), mode.excl, !mode.narrow)) out.add(sepLen + n)
   // a size as a list item: "in New York City, 1-5 locations, hiring receptionists"
   if (!mode.narrow && w0 === ',') { const n = sizeLength(words.slice(1)); if (n) out.add(1 + n) }
   // who/that are -ing
@@ -388,10 +388,11 @@ function tailOk(words: string[], mode: Mode = PLAIN): boolean {
 // sources, contacts, names, links), who (a buyer or role), or how many. A price, discount, term or product word is not
 // among them, so "Show the dated evidence and our discount." stays material.
 // Only reporting verbs: never give/provide/offer, which hand the buyers something and so can state an offer ("Provide
-// dental practices with leads."). The object is a list of report items, each ending in a report noun; a buyer or role
+// dental practices with leads."), and never include, which states offer scope ("Include email and phone.", "Include 50
+// leads."). The object is a list of report items, each ending in a report noun; a buyer or role
 // word may appear only as the modifier of a contact-type noun ("an owner or practice manager contact", "founder or
 // head of sales contacts"), never as the object itself ("dental practices a new website" is not a report item).
-const OUTPUT_IMPERATIVE = /^(?:(?:please|and|also|then|just)\s+)?(?:show|list|return|report|display|surface|cite|attach|output|include)(?:\s+(?:me|us))?\s+(.+)$/i
+const OUTPUT_IMPERATIVE = /^(?:(?:please|and|also|then|just)\s+)?(?:show|list|return|report|display|surface|cite|attach|output)(?:\s+(?:me|us))?\s+(.+)$/i
 const OUTPUT_FILLER = new Set('a an the each every all any its their your our per of for with plus and or as well too also only'.split(' '))
 const OUTPUT_ADJ = new Set(('dated verified direct primary named public recent relevant original exact full short brief one-line top best key main specific ' +
   'supporting matching confirmed cited linked clickable working valid current latest first second new decision-making').split(' '))
@@ -535,7 +536,7 @@ function unrelatedTermExclusion(withdrawn: string, saved: string): boolean {
   if (k === 0 || !TERMS.has(fold(words[k - 1]))) return false
   const tail = words.slice(k)
   // the pre-live-fix tail only (places, buyer lists, hiring a role): the #349 qualifier grammars must not loosen this gate
-  const audience = !tail.length || (tail[0].toLowerCase() === 'to' ? buyerGroup(tail.slice(1)).some(n => tailOk(tail.slice(1 + n), NARROW)) : tailOk(tail, NARROW))
+  const audience = !tail.length || (tail[0].toLowerCase() === 'to' ? buyerGroup(tail.slice(1), false, false).some(n => tailOk(tail.slice(1 + n), NARROW)) : tailOk(tail, NARROW))
   if (!audience) return false
   const savedWords = new Set(saved.split(/[^\p{L}\p{N}]+/u).filter(w => w && !GENERIC.has(w.toLowerCase())).map(fold))
   return !words.slice(0, k).some(w => savedWords.has(fold(w)))

@@ -81,8 +81,6 @@ const TARGETING_OR_OUTPUT = [
   'Find practices that opened a 2nd location in the past six months.',
   'Find dental practices in Brooklyn or Jersey City.',
   'Find clinics within the last ninety days.',
-  'Include an owner or practice manager contact.',
-  'Include leads.', // a report request: what to show, not something handed to the buyers (give/provide stay material)
   // council seat 3: count ranges and hyphenated role modifiers
   'Find dental practices hiring one or two receptionists.',
   'Find dental practices hiring 2-3 receptionists.',
@@ -147,6 +145,13 @@ const STILL_A_CHOICE: [string, string][] = [
   ['hiring for a service', `Find practices hiring for payroll. We sell ${P}.`],
   ['include a service', `Include customer support. We sell ${P}.`],
   ['include a product', `Include payroll software. We sell ${P}.`],
+  // "include" states offer scope, so it is never a report verb, even with report nouns (council seat 1)
+  ['include states scope', `Include email and phone. We sell ${P}.`],
+  ['include states scope', `Include 50 leads. We sell ${P}.`],
+  ['include states scope', `Include a website and a domain. We sell ${P}.`],
+  ['include states scope', `Include listings. We sell ${P}.`],
+  ['include states scope', `Include leads. We sell ${P}.`],
+  ['include states scope (fail-closed)', `Include an owner or practice manager contact. We sell ${P}.`],
   ['an unverified capitalised modifier', `Find Premium dental practices. We sell ${P}.`],
   ['money as a term', `Find practices. We sell ${P} for $2M.`],
   // "provide"/"give" are never report verbs, even with report nouns only: an imperative "Provide X" can be the offer
@@ -275,7 +280,7 @@ test('#349 council: service, product and claim sentences stay material next to t
 test('#349 council: the withdrawal gate is not loosened by the qualifier grammars', () => {
   for (const q of ['We no longer offer free onboarding with 1-5 seats.', 'We no longer offer refunds in the last 90 days.', 'We do not offer phone support recently.',
     'We no longer offer support that launched a new product.', 'Find dental practices in NYC. We no longer offer refunds in the last 90 days.',
-    'We no longer offer refunds to practices hiring our account manager.'])
+    'We no longer offer refunds to practices hiring our account manager.', 'We no longer offer refunds to London practices.', 'We no longer offer support to New York practices.'])
     assert.equal(resolve(q).source, 'conflict', q)
   // and the unrelated term exclusions that resolved before still resolve
   for (const q of ['Find dental practices in NYC hiring. We do not offer free trials.', "Independent dental practices in New York City hiring a front-desk coordinator. We don't provide on-site training.", 'We do not offer refunds to restaurants.'])
