@@ -32,6 +32,8 @@ test('day-30 window: renewals from day 25 to day 35 count; outside it they do no
   assert.equal(at([0, 30], 34.99).day30.eligible, false, 'window still open: not judged'); assert.equal(at([0, 30], 34.99).day30.retained, null)
   assert.equal(at([0, 30], 35).day30.eligible, true)
   assert.equal(at([0, 30], 40, { endDay: 20 }).day30.retained, false, 'ended before day 30')
+  assert.equal(at([0, 30], 40, { endDay: 30 }).day30.retained, false, 'ended exactly at day 30: ended by day 30')
+  assert.equal(at([0, 30], 40, { endDay: 30.01 }).day30.retained, true, 'ended just after day 30')
   assert.equal(at([0, 30], 40, { refunded: [30] }).day30.retained, false, 'a refunded renewal is not a renewal')
   assert.equal(at([0, 30], 40, { refunded: [0] }).first_paid_at, T + 30 * D, 'a refunded first payment is not the first payment')
 })

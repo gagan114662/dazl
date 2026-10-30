@@ -67,7 +67,7 @@ export function retention(i: RetentionInput, o: RetentionRules = {}): RetentionR
   if (first === null) return { first_paid_at: null, day30: { eligible: false, retained: null, renewal_at: null }, coverage_at_cutoff: null }
   const eligible = i.cutoff >= first + r.headline + r.late
   const renewal = paid.find(t => t >= first + r.headline - r.early && t <= first + r.headline + r.late) ?? null
-  const endedBy30 = i.ended_at !== null && i.ended_at <= i.cutoff && i.ended_at < first + r.headline
+  const endedBy30 = i.ended_at !== null && i.ended_at <= i.cutoff && i.ended_at <= first + r.headline
   return {
     first_paid_at: first,
     day30: { eligible, retained: eligible ? renewal !== null && !endedBy30 : null, renewal_at: renewal },
