@@ -1,6 +1,7 @@
 import crypto from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type { Db, Tx, TxBody } from '../db/client.ts'
+import { contactForEmailTx, syncAccountGraph } from '../accounts/graph.ts'
 
 // Cal.com booking webhooks -> pipeline stage. A booking is matched to a lead by the attendee's
 // normalized email against lead.contact. Zero or several matches stay "unmatched" - a booking is
@@ -24,6 +25,8 @@ export function migrateCalcom(db: Database.Database): void {
       PRIMARY KEY (tenant_id, booking_uid)
     );
   `)
+  // The canonical contact the booking resolved to (lib/accounts/graph.ts, #364), when it resolved to one.
+  if (!(db.prepare('PRAGMA table_info(calcom_bookings)').all() as { name: string }[]).some(c => c.name === 'contact_id')) db.exec('ALTER TABLE calcom_bookings ADD COLUMN contact_id TEXT')
 }
 
 export async function getSecret(db: Db, tenantId: string): Promise<string | null> {
@@ -59,15 +62,28 @@ export function parseBooking(rawBody: string): { uid: string; email: string; nam
 export const normalizeEmail = (s: string) => s.trim().toLowerCase()
 
 // Returns 'duplicate' when this booking was already recorded, otherwise the match outcome. One transaction: the
-// booking, the lead's stage and the booking's lead link land together. A duplicate is skipped by the primary key
+// booking, the leads' stage and the booking's links land together. A duplicate is skipped by the primary key
 // (ON CONFLICT DO NOTHING): the table has no CHECK, and parseBooking always gives a uid and an email, so this skips
 // exactly what INSERT OR IGNORE skipped.
-export function recordBooking(db: Db, tenantId: string, b: { uid: string; email: string; name: string | null }): Promise<'duplicate' | 'matched' | 'unmatched'> {
+// Matching, in order:
+//   1. the canonical contact (lib/accounts/graph.ts): the email names one contact and every lead carrying it is linked
+//      to that contact -> the same person found by several plays; each of those leads is booked, the booking points at
+//      the contact and at its newest lead.
+//   2. otherwise exactly one lead with this contact email across the tenant's jobs -> book it.
+// Anything else (no lead, several leads not resolved to one contact, a lead held for review) stays unmatched.
+export async function recordBooking(db: Db, tenantId: string, b: { uid: string; email: string; name: string | null }): Promise<'duplicate' | 'matched' | 'unmatched'> {
   const email = normalizeEmail(b.email)
+  // Link the tenant's newest leads first; if that fails the booking still records, matched by rule 2 only.
+  await syncAccountGraph(db, tenantId).catch(() => {})
   return db.tx(function* (t: Tx): TxBody<'duplicate' | 'matched' | 'unmatched'> {
     const ins = yield* t.run('INSERT INTO calcom_bookings (tenant_id, booking_uid, attendee_email, attendee_name) VALUES (?, ?, ?, ?) ON CONFLICT (tenant_id, booking_uid) DO NOTHING', [tenantId, b.uid, email, b.name])
     if (ins.changes === 0) return 'duplicate'
-    // Exactly one lead with this contact email across the tenant's jobs -> book it. Anything else stays unmatched.
+    const c = yield* contactForEmailTx(t, tenantId, email)
+    if (c) {
+      for (const id of c.lead_ids) yield* t.run("UPDATE leads SET stage = 'booked_call' WHERE id = ?", [id])
+      yield* t.run('UPDATE calcom_bookings SET lead_id = ?, contact_id = ? WHERE tenant_id = ? AND booking_uid = ?', [c.lead_ids[c.lead_ids.length - 1], c.contact_id, tenantId, b.uid])
+      return 'matched'
+    }
     const rows = yield* t.all<{ id: string }>('SELECT l.id FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ? AND l.contact IS NOT NULL AND lower(l.contact) = ?', [tenantId, email])
     if (rows.length === 1) {
       yield* t.run("UPDATE leads SET stage = 'booked_call' WHERE id = ?", [rows[0].id])

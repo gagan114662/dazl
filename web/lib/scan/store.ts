@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { migrateSpendPools } from '../llm/spend-pool.ts'
+import { migrateAccountGraph } from '../accounts/graph.ts'
 import { migrateInsertionOrder } from '../db/insertion-order.ts'
 import type Database from 'better-sqlite3'
 import { primarySignalKind } from './score.ts'
@@ -27,6 +28,7 @@ export interface QueryInput { query: string; icp?: string | null; sources?: stri
 //  - a lead needs a signal (reason) and an http(s) source_url
 export function migrateScan(db: Database.Database): void {
   migrateSpendPools(db) // the owner day/month spend pools the scan runner reserves against (lib/llm/spend-pool.ts)
+  migrateAccountGraph(db) // the tenant's canonical accounts and contacts the leads link to (lib/accounts/graph.ts)
   db.exec(`
     CREATE TABLE IF NOT EXISTS scan_jobs (
       id            TEXT PRIMARY KEY,
