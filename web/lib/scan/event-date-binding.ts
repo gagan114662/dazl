@@ -2,8 +2,8 @@
 // event: a publication / update stamp ("Published ...", "Posted ...", "Updated ...") dates the page, another company's announcement or an unrelated conference on
 // the same day dates something else, and a page with no date at all supports none. The day counts only when it is stated, outside a stamp, in the very sentence that
 // carries the evidence quote, or in a sentence that names the same company and describes the same event (shares at least two content words with the quote).
-// Within a sentence it is the CLAUSE that counts: "Aurora opened an office, while UnrelatedCo launched a tool on 2026-10-15" dates UnrelatedCo's launch, not
-// Aurora's opening, so a day binds only in a clause that itself names this company (#460 review).
+// Within a sentence, nothing may stand between this company's mention and the day that starts another party's statement: "Aurora opened an office, while
+// UnrelatedCo launched a tool on 2026-10-15" (or "..., as the city held a festival on ...") dates someone else's event, not Aurora's opening (#460 review).
 // Anything else is undated: the default is "unknown", never a kept guess. Pure; no model, no network.
 import { datePositions, eventYears } from './date-in-text.ts'
 import { NOT_EVENT } from './page-timing.ts'
@@ -69,12 +69,16 @@ const CAL = /^(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july
 const fold = (t: string) => Array.from(t, ch => { const f = ch.normalize('NFKD').replace(/[\u0300-\u036f]/g, ''); return f.length === ch.length ? f : ch }).join('')
 // A connective between the mention and the day starts another statement, whatever case its subject is in: "; ", " while ",
 // " whereas ", " but ", " meanwhile ", " although ", " though ", ", which / who / whose" (not right after the company's own
-// name), and " after / before / following / until " or " and " when a subject (not a prepositional phrase) and a past-tense
-// verb follow before the next comma ("before UnrelatedCo launched", "and its former parent sold"), so "after months of planning, opened", "runs until
-// <day>", "in Toronto and Vancouver on <day>" and "and on <day> the ribbon was cut" still bind (#460 review). Matched on the
-// text from the gap onwards (the lookahead may read past the day); only a match that starts inside the gap counts.
-const PAST = String.raw`\b(?:[a-z]{2,}ed|held|sold|won|made|began|broke|took|ran|met|built|cut|set|hit|led|left|became|got|gave|bought|brought|chose|drew|fell|found|grew|kept|lost|paid|put|rose|said|sent|spent|struck|told|went|wrote)\b`
-const LATIN_BREAK = new RegExp(String.raw`;|\s+(?:while|whereas|but|meanwhile|although|though)\s+|,\s+(?:which|who|whose)\s+|,?\s+(?:and|after|before|following|until)\s+(?=(?!(?:on|in|at|by|for|to|from|with|of)\s)(?:[^\s,;.]+\s+){1,6}?${PAST})`, 'gi')
+// name), and " and / as / when / once / since / after / before / following / until " when another subject and a verb in
+// any tense follow before the next comma ("before the city held", "and the city will launch", "as UnrelatedCo launched",
+// "with UnrelatedCo launching"). The subject is 1-4 words that are not a preposition or a verb form, and not the company
+// itself ("it", "the firm"), so "after months of planning, opened", "runs until <day>", "in Toronto and Vancouver on <day>",
+// "and hired ten designers", "and on <day> the ribbon was cut" and "as the firm said on <day>" still bind (#460 review).
+// Matched on the text from the gap onwards (the lookahead may read past the day); only a match that starts inside the gap counts.
+const PAST = String.raw`(?:held|sold|won|made|began|broke|took|ran|met|built|cut|set|hit|led|left|became|got|gave|bought|brought|chose|drew|fell|found|grew|kept|lost|paid|put|rose|said|sent|spent|struck|told|went|wrote)`
+const VERB = String.raw`\b(?:${PAST}|[a-z]{2,}(?:ed|es|s)|(?:will|shall|would|is|are|was|were|has|have|had)\s+[a-z]+)\b`
+const SUBJ = String.raw`(?!(?:it|they|we|he|she|the\s+(?:firm|company|agency|business|group|team))\b)(?:(?:the|a|an|its|their|his|her|this|that)\s+)?(?:(?!(?:of|in|on|at|for|to|from|with|by|into|over|and|or)\b)(?![a-z]+(?:ed|ing|ly)\b)[A-Za-z0-9&'’.-]+\s+){1,4}?`
+const LATIN_BREAK = new RegExp(String.raw`;|\s+(?:while|whereas|but|meanwhile|although|though)\s+|,\s+(?:which|who|whose)\s+|,?\s+(?:and|as|so|when|once|since|after|before|following|until)\s+(?=${SUBJ}${VERB})|,?\s+with\s+(?=${SUBJ}[a-z]+ing\b)`, 'gi')
 function connectiveIn(tail: string, gap: number): boolean {
   const own = /^\s*,\s+(?:which|who|whose)\s/i.test(tail)   // "Aurora Agency, which opened ..." is still Aurora's
   for (const m of tail.matchAll(LATIN_BREAK)) {
@@ -87,10 +91,10 @@ function otherSubjectBetween(segment: string, co: string[], known: Set<string> =
   if (segment.includes(';')) return true
   segment = segment.replace(/^\s*\([^()]*\)/, ' ')   // an aside right after the name ("Aurora Agency (Toronto) opened ...") is about the company
   const toks = [...segment.matchAll(/[A-Za-z0-9][A-Za-z0-9&'’.-]*|,/g)].map(m => m[0])
-  let place = false
+  let place = false, attached = true   // attached: still in the capitalised run straight after the company's name
   for (let i = 0; i < toks.length; i++) {
     const w = toks[i], prev = (toks[i - 1] ?? '').toLowerCase(), next = toks[i + 1] ?? ''
-    if (w === ',') continue
+    if (w === ',') { attached = false; continue }
     const lw = w.toLowerCase().replace(/[.'’]+$/, '')
     if (/^[A-Z]/.test(w) && w.length > 1) {
       const capPrev = /^[A-Z]/.test(toks[i - 1] ?? '')
@@ -98,13 +102,16 @@ function otherSubjectBetween(segment: string, co: string[], known: Set<string> =
       // word is followed by a verb, which makes it a subject ("in Austin, UnrelatedCo launched ...")
       if (LEGAL.has(lw) && (i === 0 || co.includes(prev.replace(/[.'’]+$/, '')))) continue   // "Aurora Agency Inc. opened ..."
       // followed by a verb or a legal suffix, the word is a subject ("in Austin, UnrelatedCo launched", "in Ottawa, Zenith Corp opened")
-      const verbNext = (/^[a-z]+(?:ed|es|s)$/.test(next) && !PREP.has(next)) || LEGAL.has(next.toLowerCase().replace(/[.'’]+$/, ''))
+      const verbNext = (/^[a-z]+(?:ed|es|s|ing)$/.test(next) && !PREP.has(next)) || LEGAL.has(next.toLowerCase().replace(/[.'’]+$/, ''))
       if (PREP.has(prev)) place = !verbNext
       else if (place && (prev === 'and' || prev === ',' || capPrev)) place = !verbNext
       else place = false
-      if (!(place || co.includes(lw) || known.has(lw) || PLAIN_CAPS.has(lw) || CAL.test(w))) return true
+      // the quote's own capitals are the company's - unless one is followed by a verb away from the name ("as UnrelatedCo launched")
+      const quoted = known.has(lw) && (!verbNext || attached)
+      if (!(place || co.includes(lw) || quoted || PLAIN_CAPS.has(lw) || CAL.test(w))) return true
       continue
     }
+    attached = false
     if (lw !== 'and') place = false
   }
   return false
