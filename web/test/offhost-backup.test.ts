@@ -82,8 +82,90 @@ test('backup-check: fresh is ok; stale, modified, missing off-host copy and a fa
   const report = path.join(T, 'drill.json'); writeFileSync(report, JSON.stringify({ ok: false, started_at: new Date().toISOString(), steps: [{ step: 'key recovery', ok: false }] }))
   r = check(['--offhost-dir', path.join(T, 'nowhere'), '--drill-report', report])
   assert.equal(r.code, 1); const last = sent().at(-1)
-  assert.ok(last.problems.some((p: string) => /no off-host copy/.test(p)) && last.problems.some((p: string) => /drill FAILED \(key recovery\)/.test(p)), JSON.stringify(last))
+  assert.ok(last.problems.some((p: string) => /off-host destination .* unreadable: directory not found/.test(p)) && last.problems.some((p: string) => /drill FAILED \(key recovery\)/.test(p)), JSON.stringify(last))
   appendFileSync(fx.backup, 'x')
   r = check([]); assert.equal(r.code, 1); assert.match(r.out, /no longer matches its sidecar/)
   assert.ok(!JSON.stringify(sent()).includes(path.dirname(dir)), 'alerts name backups by file name only')
+})
+
+// The off-host check verifies the copy, not only its manifest (review hold on 1ab2cb3), at a directory or an rclone
+// destination, and the shipped service wires the same OFFHOST_DEST the backup copies to.
+const checkAt = (local: string, env: Record<string, string>, args: string[] = []) => {
+  const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', 'scripts/backup/backup-check.mts', '--dir', local, '--state-dir', path.join(T, `st-${Math.random().toString(36).slice(2)}`), ...args],
+    { cwd: web, encoding: 'utf8', env: { PATH: process.env.PATH!, HOME: process.env.HOME!, BACKUP_ALERT_CMD: 'true', ...env } as unknown as NodeJS.ProcessEnv })
+  return { code: r.status, json: JSON.parse(r.stdout.trim().split('\n')[0] || '{}'), out: r.stdout + r.stderr }
+}
+
+test('off-host check: a genuine encrypted copy passes; manifest only, truncated, replaced or hash-mismatched copies fail', { skip }, async () => {
+  const fx = await fixtureBackup(path.join(T, 'oh')), { pub } = keys(), local = path.dirname(fx.backup)
+  const dest = path.join(T, 'oh-dest'); mkdirSync(dest)
+  assert.equal(sh('offhost-copy.sh', [fx.backup], { OFFHOST_AGE_RECIPIENTS: pub, OFFHOST_DEST: dest }).code, 0)
+  const age = readdirSync(dest).find(f => f.endsWith('.age'))!, ct = path.join(dest, age)
+  let r = checkAt(local, { OFFHOST_DEST: dest })
+  assert.equal(r.code, 0, r.out); assert.equal(r.json.newest_offhost_verified, true); assert.deepEqual(r.json.problems, [])
+  const original = readFileSync(ct)
+  writeFileSync(ct, original.subarray(0, original.length - 10)); r = checkAt(local, { OFFHOST_DEST: dest })
+  assert.equal(r.code, 1); assert.match(r.json.problems.join(), /truncated or replaced/)
+  const flipped = Buffer.from(original); flipped[flipped.length - 1] ^= 0xff; writeFileSync(ct, flipped); r = checkAt(local, { OFFHOST_DEST: dest })
+  assert.equal(r.code, 1); assert.match(r.json.problems.join(), /does not match its manifest sha256/)
+  rmSync(ct); r = checkAt(local, { OFFHOST_DEST: dest })
+  assert.equal(r.code, 1); assert.match(r.json.problems.join(), /is missing \(only its manifest exists\)/)
+  writeFileSync(ct, original); assert.equal(checkAt(local, { OFFHOST_DEST: dest }).code, 0, 'restored: ok again')
+})
+
+test("off-host check: the review's reproduction (a manifest with a zero hash and no ciphertext) is not healthy", async () => {
+  const fx = await fixtureBackup(path.join(T, 'repro')), local = path.dirname(fx.backup)
+  const dest = path.join(T, 'repro-dest'); mkdirSync(dest)
+  writeFileSync(path.join(dest, 'x.db.age.json'), JSON.stringify({ tool: 'dazl-offhost-copy', copied_at: new Date().toISOString(), ciphertext: 'x.db.age', ciphertext_sha256: '0'.repeat(64), bytes: 100 }))
+  const r = checkAt(local, { OFFHOST_DEST: dest })
+  assert.equal(r.code, 1); assert.equal(r.json.ok, false); assert.match(r.json.problems.join(), /x\.db\.age is missing/)
+})
+
+test('off-host check over rclone (a stand-in rclone CLI): verifies the copy; a missing rclone or a failing remote is a problem', { skip }, async () => {
+  const fx = await fixtureBackup(path.join(T, 'rc')), { pub } = keys(), local = path.dirname(fx.backup)
+  const store = path.join(T, 'rc-remote'); mkdirSync(store)
+  assert.equal(sh('offhost-copy.sh', [fx.backup], { OFFHOST_AGE_RECIPIENTS: pub, OFFHOST_DEST: store }).code, 0)
+  // the rclone subcommands backup-check uses, on a local directory standing in for REMOTE:PATH
+  const bin = path.join(T, 'fake-rclone'); writeFileSync(bin, `#!/usr/bin/env bash
+set -e; root=${store}; sub=$1; shift; while [ "\${1:-}" = --files-only ]; do shift; done
+p=\${1#remote:bucket}; p=\${p#/}
+case "$sub" in lsf) ls -1 "$root" ;; cat) cat "$root/$p" ;; *) exit 9 ;; esac
+`); spawnSync('chmod', ['+x', bin])
+  let r = checkAt(local, { OFFHOST_DEST: 'rclone:remote:bucket', RCLONE_BIN: bin })
+  assert.equal(r.code, 0, r.out); assert.equal(r.json.newest_offhost_verified, true); assert.equal(r.json.offhost, 'remote:')
+  rmSync(path.join(store, readdirSync(store).find(f => f.endsWith('.age'))!))
+  r = checkAt(local, { OFFHOST_DEST: 'rclone:remote:bucket', RCLONE_BIN: bin }); assert.equal(r.code, 1); assert.match(r.json.problems.join(), /is missing/)
+  r = checkAt(local, { OFFHOST_DEST: 'rclone:remote:bucket', RCLONE_BIN: path.join(T, 'no-such-rclone') })
+  assert.equal(r.code, 1); assert.match(r.json.problems.join(), /unreadable: rclone not runnable/)
+  const failing = path.join(T, 'failing-rclone'); writeFileSync(failing, '#!/bin/sh\nexit 3\n'); spawnSync('chmod', ['+x', failing])
+  r = checkAt(local, { OFFHOST_DEST: 'rclone:remote:bucket', RCLONE_BIN: failing })
+  assert.equal(r.code, 1); assert.match(r.json.problems.join(), /unreadable: rclone lsf failed/)
+})
+
+test('required but not configured is a problem; not required and not configured is reported, not hidden', async () => {
+  const fx = await fixtureBackup(path.join(T, 'req')), local = path.dirname(fx.backup)
+  let r = checkAt(local, { OFFHOST_REQUIRED: '1' })
+  assert.equal(r.code, 1); assert.match(r.json.problems.join(), /required .* no destination is configured/)
+  r = checkAt(local, {}); assert.equal(r.code, 0); assert.equal(r.json.offhost, 'not configured')
+})
+
+test('the shipped dazl-backup-check.service, run as systemd would (its ExecStart with the env file): checks OFFHOST_DEST', async () => {
+  const fx = await fixtureBackup(path.join(T, 'svc')), local = path.dirname(fx.backup)
+  const dest = path.join(T, 'svc-dest'); mkdirSync(dest)
+  writeFileSync(path.join(dest, 'x.db.age.json'), JSON.stringify({ tool: 'dazl-offhost-copy', copied_at: new Date().toISOString(), ciphertext: 'x.db.age', ciphertext_sha256: '0'.repeat(64), bytes: 100 }))
+  const unit = readFileSync(path.join(ops, 'dazl-backup-check.service'), 'utf8')
+  const exec = /^ExecStart=(.*)$/m.exec(unit)![1]
+  assert.ok(!/--offhost/.test(exec), 'the destination comes from the env file, not a second setting')
+  // the env file: env.example's keys with this test's values (systemd EnvironmentFile), the drill report fresh and ok
+  const drill = path.join(T, 'svc-drill.json'); writeFileSync(drill, JSON.stringify({ ok: true, started_at: new Date().toISOString(), steps: [] }))
+  const keysIn = [...readFileSync(path.join(ops, 'env.example'), 'utf8').matchAll(/^([A-Z_]+)=/gm)].map(m => m[1])
+  for (const k of ['BACKUP_DIR', 'OFFHOST_DEST', 'OFFHOST_REQUIRED']) assert.ok(keysIn.includes(k), `env.example has ${k}`)
+  const env: Record<string, string> = { BACKUP_DIR: local, OFFHOST_DEST: dest, OFFHOST_REQUIRED: '1' }
+  // systemd expands ${VAR} in ExecStart from the environment; the unit's fixed drill path is pointed at the test's
+  const argv = exec.replace(/\$\{(\w+)\}/g, (_, k) => env[k] ?? '').replace('/var/lib/dazl-drill/latest.json', drill).split(/\s+/)
+  assert.equal(argv[0], '/usr/bin/env')
+  const run = (e: Record<string, string>) => spawnSync(argv[1], [...argv.slice(2), '--state-dir', path.join(T, `svc-st-${Math.random()}`)], { cwd: web, encoding: 'utf8', env: { PATH: process.env.PATH!, HOME: process.env.HOME!, BACKUP_ALERT_CMD: 'true', ...e } as unknown as NodeJS.ProcessEnv })
+  let r = run(env)
+  assert.equal(r.status, 1, r.stdout + r.stderr); assert.match(r.stdout, /x\.db\.age is missing/)
+  r = run({ ...env, OFFHOST_DEST: '' }); assert.equal(r.status, 1); assert.match(r.stdout, /required .* no destination is configured/)
 })

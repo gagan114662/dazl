@@ -1,4 +1,7 @@
 # Alerts when backups are stale, missing, modified, or the last recovery drill failed (scripts/backup/backup-check.mts).
+# The off-host copy is checked at the SAME destination dazl-backup.service copies to: backup-check reads OFFHOST_DEST
+# (and OFFHOST_REQUIRED) from the shared env file below, so there is one setting and the monitor cannot drift from it.
+# For rclone:REMOTE:PATH it uses the app user's rclone config, like offhost-copy.sh.
 # A TEMPLATE, installed with dazl-backup.service. OPS_ALERT_WEBHOOK_URL (https, e.g. a Slack incoming webhook) is the
 # alert destination; without it problems go to the journal only.
 [Unit]

@@ -122,7 +122,12 @@ The `.db.json` sidecar travels inside the manifest's `source_sha256`. Recreate i
 **Freshness alert.** `scripts/backup/backup-check.mts` runs every 15 minutes from `dazl-backup-check.timer`. It exits 1 and alerts in any of these cases:
 - there is no local backup;
 - the newest local backup is older than the limit, or no longer matches its sidecar;
-- the newest off-host copy is too old (`--offhost-dir`, a mounted view of the destination);
+- the off-host copy is not recoverable. It is checked at the **same `OFFHOST_DEST`** the backup copies to (a directory, or `rclone:REMOTE:PATH` through the app user's rclone config). It counts as a problem when:
+  - the destination cannot be read (rclone missing or failing);
+  - there is no copy manifest;
+  - the newest copy is too old;
+  - the newest manifest's **ciphertext is absent, has other bytes than declared, or does not hash to its declared sha256**. A manifest alone is not a backup.
+- `OFFHOST_REQUIRED=1` is set (once the owner has chosen a destination) and no destination is configured;
 - the last recovery drill report failed or is too old.
 
 Alerts go to `OPS_ALERT_WEBHOOK_URL` (https). The same problems alert at most once an hour. Alerts carry problems and ages, never data.
