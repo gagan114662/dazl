@@ -82,6 +82,7 @@ const TARGETING_OR_OUTPUT = [
   'Find dental practices in Brooklyn or Jersey City.',
   'Find clinics within the last ninety days.',
   'Include an owner or practice manager contact.',
+  'Include leads.', // a report request: what to show, not something handed to the buyers (give/provide stay material)
 ]
 test('#349 class: a targeting or output instruction of the request is never a commercial term', () => {
   const failures: string[] = []
