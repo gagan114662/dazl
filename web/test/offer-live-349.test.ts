@@ -143,6 +143,9 @@ const STILL_A_CHOICE: [string, string][] = [
   ['include a product', `Include payroll software. We sell ${P}.`],
   ['an unverified capitalised modifier', `Find Premium dental practices. We sell ${P}.`],
   ['money as a term', `Find practices. We sell ${P} for $2M.`],
+  // "provide"/"give" are never report verbs, even with report nouns only: an imperative "Provide X" can be the offer
+  ['give/provide is not a report verb', `Provide dated evidence and a summary. We sell ${P}.`],
+  ['give/provide is not a report verb', `Give us the dated evidence. We sell ${P}.`],
 ]
 test('#349 class controls: changed product, audience, withdrawals, commercial terms and unproved sentences stay a choice', () => {
   const failures: string[] = []
