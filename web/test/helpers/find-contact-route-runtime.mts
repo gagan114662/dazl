@@ -1,4 +1,5 @@
 import { test } from 'node:test'
+import { sqliteDb } from '../../lib/db/client.ts'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
@@ -39,12 +40,12 @@ ins.run(ID(4), job, 'Acme Roofing', null, 'x', 'https://jobboard.test/a', 'x', n
 db.prepare('UPDATE leads SET scan_job_id = ? WHERE id = ?').run(jobB, ID(4))
 ins.run(ID(5), job, 'Different Corp', null, 'x', 'https://jobboard.test/b', 'x', null, 'source_review_required', 50, null)    // homepage names someone else
 ins.run(ID(6), job, 'Blocked Co', null, 'x', 'https://jobboard.test/c', 'x', null, 'source_review_required', 50, null)       // robots disallow
-for (const n of [1, 3, 5, 6]) confirmLeadReview(db, 'A', ID(n))
+for (const n of [1, 3, 5, 6]) await confirmLeadReview(sqliteDb(db), 'A', ID(n))
 setScanDb(db)
 
 const post = (id: string, headers: Record<string, string> = { 'content-type': 'application/json' }) =>
   POST(new NextRequest(`http://localhost/api/leads/${id}/find-contact`, { method: 'POST', headers, body: '{}' }), { params: Promise.resolve({ lead: id }) })
-const enr = (id: string) => db.prepare('SELECT connector, kind, value, source_url FROM lead_enrichments WHERE lead_id = ?').all(id)
+const enr = (id: string) => db.prepare("SELECT connector, kind, value, source_url FROM lead_enrichments WHERE lead_id = ? AND kind <> 'domain_check'").all(id)
 
 test('route refusals: origin, id shape, other user, unconfirmed, person handle, switched off', async () => {
   assert.equal((await post(ID(1), { 'content-type': 'text/plain' })).status, 403)
@@ -69,7 +70,7 @@ test('click path: confirmed company row -> own-domain mailbox stored with its pa
     { connector: 'sitecrawl', kind: 'domain', value: 'acmeroofing.test|evidence_link_domain_label', source_url: 'https://jobboard.test/a' },
     { connector: 'sitecrawl', kind: 'email', value: 'hello@acmeroofing.test', source_url: 'https://acmeroofing.test/contact' },
   ])
-  const e = db.prepare('SELECT connector, kind, value, label, source_url FROM lead_enrichments WHERE lead_id = ?').all(ID(1)) as never[]
+  const e = db.prepare("SELECT connector, kind, value, label, source_url FROM lead_enrichments WHERE lead_id = ? AND kind <> 'domain_check'").all(ID(1)) as never[]
   const pcl = publishedContact({ contact: null, enrichments: e } as never)!
   assert.equal(pcl.email, 'hello@acmeroofing.test')
   assert.deepEqual({ basis: pcl.domainBasis, url: pcl.domainBasisSourceUrl }, { basis: 'linked', url: 'https://jobboard.test/a' })

@@ -1,4 +1,12 @@
 import type { NextConfig } from "next";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+
+// Version-skew protection: tag each build with its commit (written by `prebuild` into .build-commit) so a tab from
+// an older deploy hard-reloads instead of requesting chunks the new build no longer has.
+function buildCommit(): string | undefined {
+  try { return readFileSync(path.join(process.cwd(), ".build-commit"), "utf8").trim().slice(0, 40) || undefined } catch { return undefined }
+}
 
 const securityHeaders = [
   { key: 'Strict-Transport-Security', value: 'max-age=63072000; includeSubDomains; preload' },
@@ -15,10 +23,15 @@ const securityHeaders = [
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  deploymentId: process.env.NEXT_DEPLOYMENT_ID || buildCommit(),
+  // The same ID for the chunk-load recovery guard, which is scoped to the build (lib/chunk-recovery.ts).
+  env: { NEXT_PUBLIC_DAZL_BUILD: process.env.NEXT_DEPLOYMENT_ID || buildCommit() || '' },
   cacheComponents: true,
   partialPrefetching: true,
   async headers() {
-    return [{ source: '/:path*', headers: securityHeaders }]
+    // staging (DAZL_ENV=staging, lib/staging.ts) is never indexed
+    const staging = process.env.DAZL_ENV === 'staging' ? [{ key: 'X-Robots-Tag', value: 'noindex, nofollow' }] : []
+    return [{ source: '/:path*', headers: [...securityHeaders, ...staging] }]
   },
   turbopack: {
     rules: {

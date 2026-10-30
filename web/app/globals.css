@@ -56,3 +56,142 @@ body { font-size: 16px; line-height: 1.5; }
 .tab { font-size: .72rem; padding: .35rem .8rem; border-radius: 4px; color: #555; }
 .tab[data-on="true"] { background: #111; color: #fff; }
 .badge-review { border-style: dashed; color: #555; border-color: #555; }
+
+/* ---------------------------------------------------------------------------------------------------------------
+   dazl app visual language (scoped to the signed-in app shell, .app-ui; the marketing pages keep their own look).
+   Warm cream canvas, deep plum ink, soft off-white panels, thin bordered rows, rectangular plum / peach buttons.
+   --------------------------------------------------------------------------------------------------------------- */
+.app-ui {
+  --canvas: #faf6f1;
+  --panel: #fffdfa;
+  --row: #ffffff;
+  --ink: #2a0a24;
+  --ink-2: #5e4a5c;   /* secondary text, ~8:1 on white */
+  --ink-3: #7a6878;   /* tertiary text, ~5:1 on white */
+  --line: rgba(44, 0, 42, 0.08);
+  --line-2: rgba(44, 0, 42, 0.16);
+  --soft: #f8e5d4;    /* the peach secondary button */
+  --live: #1f8a5b;
+  --peach: #ffbd7a; --peach-bg: #fdeedf;
+  --pink: #e8456e; --pink-bg: #fde7ec;
+  --lav: #8a4dff; --lav-bg: #f1eaff;
+  --mint: #1f8a5b; --mint-bg: #e4f4ec;
+  --color-gray-300: #7a6878;
+  --color-gray-400: #6b5a69;
+  --color-gray-500: #5e4a5c;
+  background: var(--canvas);
+  color: var(--ink);
+  font-feature-settings: "ss01", "cv11";
+}
+.app-ui main { background: var(--canvas); }
+.app-ui h1, .app-ui h2 { letter-spacing: -0.025em; }
+.app-ui .card { background: #fff; border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 1px 2px rgba(42,10,36,.04), 0 12px 32px -22px rgba(42,10,36,.22); }
+.app-ui .row-box { background: var(--row); border: 1px solid var(--line); border-radius: 10px; }
+.app-ui .field { border-radius: 12px; border-color: var(--line-2); background: #fff; padding: .7rem .95rem; color: var(--ink); }
+.app-ui .field::placeholder { color: var(--ink-3); }
+.app-ui .field:focus { border-color: var(--ink); outline: 3px solid rgba(138,77,255,.18); outline-offset: 0; }
+.app-ui .btn-primary, .app-ui .btn-ghost, .app-ui .btn-accent {
+  font-family: inherit; text-transform: none; letter-spacing: 0; font-weight: 600; font-size: .9rem;
+  padding: .6rem 1.15rem; border-radius: 10px; line-height: 1.25; border: 0;
+}
+.app-ui .btn-primary, .app-ui .btn-accent { background: var(--ink); color: #fff; }
+.app-ui .btn-primary:hover, .app-ui .btn-accent:hover { background: #4a1347; }
+.app-ui .btn-ghost { background: var(--soft); color: var(--ink); }
+.app-ui .btn-ghost:hover { background: #f4d8bf; }
+.app-ui .btn-primary:focus-visible, .app-ui .btn-ghost:focus-visible { outline: 3px solid rgba(138,77,255,.4); outline-offset: 2px; }
+.app-ui .btn-lg { font-size: 1rem; padding: .8rem 1.5rem; border-radius: 12px; }
+.app-ui .btn-sm { font-size: .8rem; padding: .4rem .8rem; border-radius: 8px; }
+.app-ui .badge { border-radius: 999px; border-color: var(--line-2); color: var(--ink); }
+
+/* The ask: one pill input with a round send button inside it. */
+.ask { position: relative; background: #fff; border: 1px solid var(--line-2); border-radius: 24px; box-shadow: 0 10px 30px -18px rgba(44,0,42,.35); transition: border-color .15s, box-shadow .15s; }
+.ask:focus-within { border-color: var(--ink); box-shadow: 0 0 0 4px rgba(138,77,255,.12), 0 10px 30px -18px rgba(44,0,42,.35); }
+.ask textarea { display: block; width: 100%; background: transparent; border: 0; outline: 0; resize: none; padding: 1.05rem 4.25rem 1.05rem 1.25rem; font-size: 1.05rem; line-height: 1.5; color: var(--ink); }
+.ask textarea::placeholder { color: var(--ink-3); }
+.app-ui .ask .send { padding: 0; position: absolute; right: .7rem; bottom: .7rem; width: 2.6rem; height: 2.6rem; border-radius: 999px; background: var(--ink); color: #fff; display: inline-flex; align-items: center; justify-content: center; transition: background .15s, opacity .15s; }
+.app-ui .ask .send:hover { background: #4a1347; }
+.app-ui .ask .send:disabled { opacity: .35; cursor: not-allowed; }
+
+/* Key/value table rows (play cards: Who / Signal / Pace). */
+.kv { display: grid; grid-template-columns: 5.5rem 1fr; gap: .75rem; padding: .6rem 0; border-top: 1px solid var(--line); font-size: .82rem; align-items: center; }
+.kv > dt { color: var(--ink-3); }
+.kv > dd { min-width: 0; }
+.tag { display: inline-flex; align-items: center; font-size: .75rem; padding: .2rem .5rem; border-radius: 6px; background: #f3eeea; color: var(--ink); white-space: nowrap; }
+.live-dot { display: inline-flex; align-items: center; gap: .35rem; font-size: .75rem; font-weight: 500; color: var(--live); white-space: nowrap; }
+.live-dot::before { content: ""; width: .4rem; height: .4rem; border-radius: 999px; background: currentColor; }
+
+/* Pills: status and source chips. */
+.pill { display: inline-flex; align-items: center; gap: .35rem; font-size: .72rem; font-weight: 600; line-height: 1; padding: .3rem .55rem; border-radius: 6px; background: #f3eeea; color: var(--ink, #2c002a); white-space: nowrap; }
+.pill-mint { background: var(--mint-bg); color: #17694a; }
+.pill-peach { background: #f3eeea; color: var(--ink-3); }
+.pill-pink { background: var(--pink-bg); color: #a3173f; }
+.pill-lav { background: var(--lav-bg); color: #5b2ca8; }
+.pill-plain { background: #fff; border: 1px solid var(--line-2); font-weight: 500; }
+.chip { display: inline-flex; align-items: center; gap: .4rem; text-align: left; font-size: .85rem; padding: .5rem .85rem; border-radius: 10px; background: #fff; border: 1px solid var(--line); color: var(--ink); transition: border-color .15s, background .15s; }
+.chip:hover { border-color: var(--line-2); background: #fffaf5; }
+.chip[aria-pressed="true"] { background: var(--soft); border-color: transparent; }
+
+/* Tabs (segmented). */
+.seg { display: inline-flex; gap: .25rem; padding: .25rem; border-radius: 12px; background: #f1ebe5; }
+.seg button { font-size: .82rem; font-weight: 600; padding: .4rem .9rem; border-radius: 9px; color: var(--ink-2); }
+.seg button[aria-selected="true"] { background: #fff; color: var(--ink); box-shadow: 0 1px 2px rgba(44,0,42,.12); }
+
+/* (i) info tooltips: caveats live here. Opens on hover, keyboard focus or click. */
+.infotip { position: relative; display: inline-flex; vertical-align: middle; }
+.infotip > button { width: 1.1rem; height: 1.1rem; border-radius: 999px; border: 1px solid var(--line-2); color: var(--ink-2); font: 600 .65rem/1 ui-serif, Georgia, serif; font-style: italic; display: inline-flex; align-items: center; justify-content: center; background: #fff; }
+.infotip > button:hover, .infotip > button:focus-visible { border-color: var(--ink); color: var(--ink); outline: none; }
+.infotip > [role="tooltip"] { display: none; position: absolute; z-index: 40; left: 50%; top: calc(100% + .45rem); transform: translateX(-50%); width: min(22rem, 80vw); background: var(--ink); color: #fff; font-size: .78rem; font-weight: 400; font-style: normal; line-height: 1.45; text-align: left; padding: .7rem .85rem; border-radius: 12px; box-shadow: 0 12px 28px -8px rgba(44,0,42,.45); white-space: normal; letter-spacing: 0; text-transform: none; }
+.infotip > [role="tooltip"] a { color: #fff; text-decoration: underline; }
+.infotip[data-open="true"] > [role="tooltip"], .infotip:hover > [role="tooltip"], .infotip:focus-within > [role="tooltip"] { display: block; }
+
+/* Drawer-style disclosure ("Settings for this play"). */
+.drawer > summary { list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: .75rem; padding: 1rem 1.25rem; font-weight: 600; font-size: .9rem; }
+.drawer > summary::-webkit-details-marker { display: none; }
+.drawer > summary::after { content: ""; width: .5rem; height: .5rem; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg); transition: transform .15s; margin-right: .25rem; }
+.drawer[open] > summary::after { transform: rotate(-135deg); }
+
+/* Live progress rows (Read profile - Done; Search sources - Searching...). */
+.step-dot { width: 1.4rem; height: 1.4rem; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-size: .7rem; font-weight: 700; flex-shrink: 0; }
+@keyframes dazl-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+.step-live { animation: dazl-pulse 1.4s ease-in-out infinite; }
+
+/* Onboarding brain graph (app/app/onboarding/brain-graph.tsx): facts drifting across the screen. */
+.brain-graph { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.brain-node { position: absolute; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; gap: .1rem; max-width: 15rem; text-align: center; animation-name: brain-drift; animation-iteration-count: infinite; animation-timing-function: ease-in-out; animation-direction: alternate; opacity: 0; animation-fill-mode: both; }
+.brain-node { animation: brain-in .5s ease-out forwards, brain-drift 16s ease-in-out infinite alternate; }
+.brain-dot { width: .5rem; height: .5rem; border-radius: 999px; box-shadow: 0 0 0 5px rgba(255,255,255,.7); }
+.brain-label { font-size: .62rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.brain-text { font-size: .8rem; color: #2a0a24; line-height: 1.3; }
+.brain-ghost .brain-dot { animation: dazl-pulse 1.4s ease-in-out infinite; }
+.brain-faint { opacity: .28; filter: saturate(.8); }
+@keyframes brain-in { from { opacity: 0; scale: .85; } to { opacity: 1; scale: 1; } }
+@keyframes brain-drift { from { translate: -8px -6px; } to { translate: 8px 6px; } }
+@media (prefers-reduced-motion: reduce) { .brain-node { animation: brain-in .01s forwards; } }
+.app-ui .onb-card { background: #fff; border: 1px solid rgba(42,10,36,.09); border-radius: 12px; box-shadow: 0 1px 2px rgba(42,10,36,.04), 0 16px 40px -24px rgba(42,10,36,.25); }
+
+/* Marketing homepage: the app's canvas and tokens, 12px white cards, one dark accent. */
+.lp { overflow-x: clip; }
+.lp-h1 { font-size: clamp(2.6rem, 7vw, 4.5rem); font-weight: 700; line-height: 1.02; letter-spacing: -0.04em; color: var(--ink); }
+.lp-h2 { font-size: clamp(1.8rem, 4vw, 2.5rem); font-weight: 700; letter-spacing: -0.03em; }
+.lp-card { background: #fff; border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 1px 2px rgba(44,0,42,.04), 0 12px 32px -22px rgba(44,0,42,.22); }
+.lp-url { font-size: 1.05rem; padding: .7rem .95rem; border: 1px solid var(--line-2); border-radius: 10px; min-height: 2.9rem; display: flex; align-items: center; }
+.lp-caret { display: inline-block; width: 2px; height: 1.15em; margin-left: 2px; background: var(--ink); animation: lp-blink 1s steps(1) infinite; }
+@keyframes lp-blink { 50% { opacity: 0; } }
+.lp-tick { width: 1.15rem; height: 1.15rem; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-size: .7rem; font-weight: 700; flex-shrink: 0; transition: background .2s; }
+.lp-tick-todo { border: 1.5px solid var(--line-2); }
+.lp-tick-now { border: 2px solid var(--ink); border-right-color: transparent; animation: lp-spin .8s linear infinite; }
+.lp-tick-done { background: var(--mint-bg); color: #17694a; }
+@keyframes lp-spin { to { transform: rotate(360deg); } }
+.lp-lead { padding: .75rem; border: 1px solid var(--line); border-radius: 10px; }
+.lp-avatar { width: 2.25rem; height: 2.25rem; border-radius: 999px; background: var(--soft); display: inline-flex; align-items: center; justify-content: center; font-size: .75rem; font-weight: 700; flex-shrink: 0; }
+.lp-fade { opacity: .25; transform: translateY(4px); transition: opacity .45s, transform .45s; }
+.lp-fade.lp-in { opacity: 1; transform: none; }
+@media (prefers-reduced-motion: reduce) { .lp-fade, .lp-tick { transition: none; } .lp-caret, .lp-tick-now { animation: none; } }
+
+/* Home's setup checklist (app/app/ready-card.tsx): one step per row. */
+.rc-grid { display: grid; gap: .5rem; }
+.rc-item { display: flex; gap: .75rem; align-items: center; padding: .7rem .8rem; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+.rc-dot { width: 1.75rem; height: 1.75rem; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-size: .78rem; font-weight: 700; flex-shrink: 0; background: #f3eeea; color: var(--ink-3); }
+.rc-dot-done { background: var(--mint-bg); color: #17694a; }
+.rc-dot-next { background: var(--ink); color: #fff; }
+.lp-quote { font-size: .92rem; line-height: 1.45; color: var(--ink); border-left: 2px solid var(--mint); padding-left: .65rem; }

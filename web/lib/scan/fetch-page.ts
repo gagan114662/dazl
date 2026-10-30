@@ -2,7 +2,7 @@ import { lookup as dnsLookup } from 'node:dns'
 import https from 'node:https'
 import { isIP } from 'node:net'
 
-export interface Page { text: string; title: string; retrievedAt: number }
+export interface Page { text: string; title: string; retrievedAt: number; published?: string | null; structured?: string[] } // published: the page's OWN publication metadata (never modified/updated), YYYY-MM-DD
 
 // True only for addresses on the public internet. Everything private, loopback,
 // link-local, cloud-metadata, CGNAT, multicast or reserved is refused.
@@ -47,11 +47,13 @@ const TIMEOUT_MS = Number(process.env.SCAN_PAGE_TIMEOUT_MS || 10_000)
 // timeoutMs/lookup are injectable for tests only. The socket 'timeout' below is INACTIVITY-based, so a
 // slow-drip server that sends a byte every few seconds never trips it: the absolute timer is what bounds
 // the whole request (headers + body) and always settles the promise.
-export function once(url: URL, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup): Promise<{ status: number; location?: string; type: string; body: string }> {
+export function once(url: URL, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup, signal?: AbortSignal): Promise<{ status: number; location?: string; type: string; body: string }> {
+  if (signal?.aborted) return Promise.reject(new Error('aborted'))   // cancelled before it started: no connection is made
   return new Promise((resolveRaw, rejectRaw) => {
     let hard: NodeJS.Timeout | undefined
-    const resolve = (v: { status: number; location?: string; type: string; body: string }) => { clearTimeout(hard); resolveRaw(v) }
-    const reject = (e: unknown) => { clearTimeout(hard); rejectRaw(e) }
+    const onAbort = () => { req.destroy(new Error('aborted')); reject(new Error('aborted')) }   // a cancelled / timed-out caller destroys the socket: nothing keeps running behind it
+    const resolve = (v: { status: number; location?: string; type: string; body: string }) => { clearTimeout(hard); signal?.removeEventListener('abort', onAbort); resolveRaw(v) }
+    const reject = (e: unknown) => { clearTimeout(hard); signal?.removeEventListener('abort', onAbort); rejectRaw(e) }
     const req = https.request(
       url,
       { method: 'GET', lookup: lookup as never, timeout: timeoutMs, headers: { 'user-agent': 'dazl-evidence-check/1.0', accept: 'text/html,text/plain;q=0.9', 'accept-encoding': 'identity' } },
@@ -80,6 +82,8 @@ export function once(url: URL, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLoo
     req.on('timeout', () => req.destroy(new Error('timeout')))
     hard = setTimeout(() => { req.destroy(new Error('timeout')); reject(new Error('timeout')) }, timeoutMs)
     req.on('error', reject)
+    if (signal?.aborted) return onAbort()
+    signal?.addEventListener('abort', onAbort, { once: true })
     req.end()
   })
 }
@@ -96,7 +100,34 @@ function decode(s: string): string {
     })
 }
 
-export function htmlToText(html: string): { text: string; title: string } {
+// The page's own publication date from its markup: schema.org datePublished / datePosted (JSON-LD or microdata), article:published_time,
+// <time datetime> marked published/pubdate. Modified/updated stamps are update times, not event days, and are never read.
+export function publishedDate(html: string): string | null {
+  const head = html.slice(0, 400_000)
+  const cands: string[] = []
+  for (const m of head.matchAll(/"(?:datePublished|datePosted)"\s*:\s*"([^"]{8,40})"/gi)) cands.push(m[1])
+  for (const m of head.matchAll(/<meta\b[^>]*?(?:property|name|itemprop)\s*=\s*["'](?:article:published_time|og:published_time|datePublished|datePosted|pubdate|publish[-_]date|date)["'][^>]*?content\s*=\s*["']([^"']{8,40})["']/gi)) cands.push(m[1])
+  for (const m of head.matchAll(/<meta\b[^>]*?content\s*=\s*["']([^"']{8,40})["'][^>]*?(?:property|name|itemprop)\s*=\s*["'](?:article:published_time|og:published_time|datePublished|datePosted|pubdate|publish[-_]date)["']/gi)) cands.push(m[1])
+  for (const m of head.matchAll(/<time\b[^>]*?(?:pubdate|itemprop\s*=\s*["']datePublished["']|class\s*=\s*["'][^"']*publish[^"']*["'])[^>]*?datetime\s*=\s*["']([^"']{8,40})["']/gi)) cands.push(m[1])
+  for (const m of head.matchAll(/<time\b[^>]*?datetime\s*=\s*["']([^"']{8,40})["'][^>]*?(?:pubdate|itemprop\s*=\s*["']datePublished["']|class\s*=\s*["'][^"']*publish[^"']*["'])/gi)) cands.push(m[1])
+  // Exactly ONE distinct publication day across all of the page's markup. Two or more (a news list, several articles, an unrelated JSON-LD
+  // entity beside the page's own) mean none of them can be tied to this quote, so none is reported.
+  const days = new Set<string>()
+  for (const c of cands) {
+    const d = /^(\d{4})-(\d{2})-(\d{2})/.exec(c.trim()); if (!d) continue
+    const y = +d[1], mo = +d[2], da = +d[3]
+    const t = new Date(Date.UTC(y, mo - 1, da)); if (y >= 2000 && y <= 2100 && t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === da) days.add(t.toISOString().slice(0, 10))
+  }
+  return days.size === 1 ? [...days][0] : null
+}
+
+// The raw schema.org JSON-LD blocks of a page (capped), kept so a dated entity the page itself declares (an Event's startDate, a JobPosting's datePosted) can be read later by scan/structured-date.ts.
+export function ldJsonBlocks(html: string): string[] {
+  const out: string[] = []
+  for (const m of html.slice(0, 600_000).matchAll(/<script\b[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) { if (m[1].length <= 40_000) out.push(m[1]); if (out.length >= 8) break }
+  return out
+}
+export function htmlToText(html: string): { text: string; title: string; published: string | null; structured: string[] } {
   const title = decode(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? '')
   const text = decode(
     html
@@ -106,7 +137,7 @@ export function htmlToText(html: string): { text: string; title: string } {
   )
     .replace(/\s+/g, ' ')
     .trim()
-  return { text, title: title.replace(/\s+/g, ' ').trim().slice(0, 300) }
+  return { text, title: title.replace(/\s+/g, ' ').trim().slice(0, 300), published: publishedDate(html), structured: ldJsonBlocks(html) }
 }
 
 export type FetchFail = { fail: 'blocked' | 'js_required' | 'not_found' | 'error' | 'refused' }
@@ -153,14 +184,15 @@ export async function renderViaService(rawUrl: string, fetchImpl: typeof fetch =
 }
 
 // Fetches a public https page and says why when it cannot. Private addresses are never contacted.
-export async function fetchPageDetailed(rawUrl: string, render: (url: string) => Promise<string | null> = renderViaService): Promise<Page | FetchFail> {
+export async function fetchPageDetailed(rawUrl: string, render: (url: string) => Promise<string | null> = renderViaService, signal?: AbortSignal): Promise<Page | FetchFail> {
   try {
     let url = new URL(rawUrl)
     for (let i = 0; i <= MAX_REDIRECTS; i++) {
       if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')) return { fail: 'refused' }
       const host = url.hostname.replace(/^\[|\]$/g, '')
       if (isIP(host) && !isPublicIp(host)) return { fail: 'refused' }
-      const r = await once(url)
+      if (signal?.aborted) return { fail: 'error' }
+      const r = await once(url, TIMEOUT_MS, guardedLookup, signal)
       if (r.status >= 300 && r.status < 400) {
         if (!r.location) return { fail: 'error' }
         url = new URL(r.location, url)

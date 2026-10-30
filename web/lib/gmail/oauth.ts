@@ -1,7 +1,9 @@
 import { createHash, randomBytes } from 'node:crypto'
+import type { Db } from '../db/client.ts'
 import type Database from 'better-sqlite3'
 import { decryptSecret, encryptSecret } from '../secrets.ts'
 import { norm } from '../outreach/store.ts'
+import { isStaging, STUB_SENDER } from '../staging.ts'
 
 // Least privilege: send is the required grant. Reading replies is a separate, optional gmail.readonly grant (below).
 export const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send'
@@ -38,6 +40,7 @@ function creds(env: OAuthEnv) {
 // Authorization code flow with PKCE and a one-time state bound to the signed-in user.
 export function startOAuth(db: Database.Database, tenantId: string, deps: OAuthDeps = {}): string {
   const env: OAuthEnv = deps.env ?? (process.env as OAuthEnv)
+  if (isStaging(env as Record<string, string | undefined>)) return connectStub(db, tenantId, env, deps)
   const c = creds(env)
   const state = randomBytes(24).toString('base64url')
   const verifier = randomBytes(32).toString('base64url')
@@ -104,18 +107,36 @@ export async function completeOAuth(db: Database.Database, tenantId: string, cod
   return { email: who.email }
 }
 
+// Staging only (lib/staging.ts): connect a stub account straight away, with no Google round trip. The stored token is a
+// placeholder that is never sent anywhere: getAccessToken and gmailSend do not call Google in staging.
+function connectStub(db: Database.Database, tenantId: string, env: OAuthEnv, deps: OAuthDeps): string {
+  db.prepare(
+    `INSERT INTO gmail_accounts (tenant_id, email, refresh_ct, status, read_granted) VALUES (?, ?, ?, 'active', 1)
+     ON CONFLICT(tenant_id) DO UPDATE SET status = 'active', read_granted = 1`,
+  ).run(tenantId, STUB_SENDER(tenantId), encryptSecret('staging-stub', ctx(tenantId), deps.master))
+  return `${(env.PUBLIC_BASE_URL || 'https://staging.dazl.ai').replace(/\/$/, '')}/app/settings?gmail=connected`
+}
+
+const GMAIL_STATUS_SQL = 'SELECT email, status, read_granted FROM gmail_accounts WHERE tenant_id = ?'
+type GmailStatusRow = { email: string; status: string; read_granted: number }
+const gmailStatusOf = (r: GmailStatusRow | undefined) => r ? { email: r.email, status: r.status, read_granted: Number(r.read_granted) === 1 } : null
 export function gmailStatus(db: Database.Database, tenantId: string): { email: string; status: string; read_granted: boolean } | null {
-  const r = db.prepare('SELECT email, status, read_granted FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string; status: string; read_granted: number } | undefined
-  return r ? { email: r.email, status: r.status, read_granted: r.read_granted === 1 } : null
+  return gmailStatusOf(db.prepare(GMAIL_STATUS_SQL).get(tenantId) as GmailStatusRow | undefined)
+}
+// gmailStatus on the Db layer (SQLite or Postgres).
+export async function readGmailStatus(db: Db, tenantId: string): Promise<{ email: string; status: string; read_granted: boolean } | null> {
+  return gmailStatusOf(await db.get<GmailStatusRow>(GMAIL_STATUS_SQL, [tenantId]))
 }
 
 // Short-lived access token from the stored refresh token. A revoked or expired
 // grant flips the account to needs_reconnect so nothing keeps trying to send.
 export async function getAccessToken(db: Database.Database, tenantId: string, deps: OAuthDeps = {}): Promise<string> {
   const env: OAuthEnv = deps.env ?? (process.env as OAuthEnv)
-  const c = creds(env)
+  const staging = isStaging(env as Record<string, string | undefined>)
+  const c = staging ? null : creds(env)
   const acc = db.prepare('SELECT refresh_ct, status FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { refresh_ct: string; status: string } | undefined
   if (!acc || acc.status !== 'active') throw new GmailError('reconnect', 'not_connected')
+  if (staging || !c) return STAGING_TOKEN
   const refresh = decryptSecret(acc.refresh_ct, ctx(tenantId), deps.master)
   let res: Response
   try {
@@ -144,6 +165,7 @@ export async function getAccessToken(db: Database.Database, tenantId: string, de
 export async function disconnectGmail(db: Database.Database, tenantId: string, deps: OAuthDeps = {}): Promise<void> {
   const acc = db.prepare('SELECT refresh_ct FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { refresh_ct: string } | undefined
   if (!acc) return
+  if (isStaging((deps.env ?? process.env) as Record<string, string | undefined>)) { db.prepare('DELETE FROM gmail_accounts WHERE tenant_id = ?').run(tenantId); return }
   try {
     const token = decryptSecret(acc.refresh_ct, ctx(tenantId), deps.master)
     await (deps.fetchImpl ?? fetch)('https://oauth2.googleapis.com/revoke', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token }), signal: AbortSignal.timeout(10_000) })
@@ -153,7 +175,13 @@ export async function disconnectGmail(db: Database.Database, tenantId: string, d
   db.prepare('DELETE FROM gmail_accounts WHERE tenant_id = ?').run(tenantId)
 }
 
+// In staging (or with the stub token) nothing is sent: the message gets a stub id and its thread, as Gmail would return.
+const STAGING_TOKEN = 'staging-stub-token'
 export async function gmailSend(accessToken: string, raw: string, fetchImpl: typeof fetch = fetch, threadId?: string): Promise<{ id: string; threadId?: string }> {
+  if (accessToken === STAGING_TOKEN || isStaging()) {
+    const id = `stub${randomBytes(8).toString('hex')}`
+    return { id, threadId: threadId ?? id }
+  }
   const res = await fetchImpl('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
     method: 'POST',
     headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },

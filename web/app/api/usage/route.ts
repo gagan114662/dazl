@@ -1,20 +1,27 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { clientIp } from '@/lib/rate-limit'
-import { hasKey } from '@/lib/llm/key-store'
-import { getScanDb, requireUser } from '@/lib/scan/service'
-import { scanQuota } from '@/lib/plans'
-import { TRIAL_SCANS_PER_ACCOUNT, trialStatus } from '@/lib/scan/trial'
+import { readHasKey } from '@/lib/llm/key-store'
+import { requireUser } from '@/lib/scan/service'
+import { getDb } from '@/lib/db/client'
+import { readBillingStatus, readScanQuota } from '@/lib/plans'
+import { TRIAL_SCANS_PER_ACCOUNT, readTrialStatus } from '@/lib/scan/trial'
+import { trialRefusal } from '@/lib/billing/trial-budget'
 
 export async function GET(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  const db = getScanDb()
-  const q = scanQuota(db, user.id)
+  const db = await getDb()
+  const q = await readScanQuota(db, user.tenantId)
   // Trial state only matters to accounts without their own key; everyone else gets null.
-  const keyed = hasKey(db, user.id)
-  const t = keyed ? null : trialStatus(db, user.id, clientIp(req))
+  const keyed = await readHasKey(db, user.tenantId)
+  // The trial is the founder's own (see app/api/scan/route.ts): another member of the workspace has none.
+  const t = keyed || user.actorId !== user.tenantId ? null : await readTrialStatus(db, user.tenantId, clientIp(req))
+  // The free-scans counter: what is left of the account's trial scans, and, when one would not run now, why (the
+  // account or network caps of lib/scan/trial.ts, or dazl's trial budget and abuse limits, lib/billing/trial-budget.ts).
+  const blocked = !t ? null : !t.funded ? t.reason ?? null : await trialRefusal(db, { id: user.tenantId, email: user.email })
   return NextResponse.json({
     plan: q.plan, scans_used: q.used, scan_limit: q.limit, has_key: keyed,
-    trial: t ? { funded: t.funded, remaining: t.remaining, cap: TRIAL_SCANS_PER_ACCOUNT } : null,
+    billing_status: await readBillingStatus(db, user.tenantId), // e.g. past_due after a failed payment while Stripe retries (still Pro)
+    trial: t ? { funded: t.funded && blocked === null, remaining: t.remaining, cap: TRIAL_SCANS_PER_ACCOUNT, blocked } : null,
   })
 }

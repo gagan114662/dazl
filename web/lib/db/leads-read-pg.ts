@@ -49,7 +49,7 @@ export function pgLeadsRead(pg: PgQueryable): LeadsReadDb {
         [MAX_ATTEMPTS, cutoff],
       )
       const { rows } = await pg.query(
-        'SELECT id, status, error, query, icp, icp_inferred, created_at, claimed_at, attempts, finished_at, candidates, verified, needs_review, dropped, drop_reasons, industry, location FROM scan_jobs WHERE id = $1 AND user_id = $2',
+        'SELECT id, status, error, query, icp, icp_inferred, created_at, claimed_at, attempts, finished_at, candidates, verified, needs_review, dropped, drop_reasons, industry, location, enrich_started_at, enrich_finished_at FROM scan_jobs WHERE id = $1 AND user_id = $2',
         [id, userId],
       )
       const job = rows[0] as Record<string, unknown> | undefined
@@ -60,7 +60,7 @@ export function pgLeadsRead(pg: PgQueryable): LeadsReadDb {
         icp_inferred: num(job.icp_inferred),
         created_at: numReq(job.created_at), claimed_at: num(job.claimed_at), attempts: numReq(job.attempts), finished_at: num(job.finished_at),
         candidates: num(job.candidates), verified: num(job.verified),
-        needs_review: num(job.needs_review), dropped: num(job.dropped),
+        needs_review: num(job.needs_review), dropped: num(job.dropped), enrich_started_at: num(job.enrich_started_at), enrich_finished_at: num(job.enrich_finished_at),
         lead_count: numReq((c.rows[0] as { n: number | string }).n),
       } as never
     },
@@ -69,7 +69,7 @@ export function pgLeadsRead(pg: PgQueryable): LeadsReadDb {
       const { rows } = await pg.query(
         `SELECT l.id, l.scan_job_id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.created_at,
 l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
-l.human_confirmed_at, l.human_confirmed_from, l.source_kind,
+l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l.quarantine_reason, l.evidence_origin, l.own_fetch_failure, l.evidence_copy_sha256, l.evidence_copy_id, l.evidence_purged_at, l.timing_note, l.published_at,
            l.fit, l.intent, l.action, l.why, l.signals, l.icp_match, l.watch_new, l.seen_before, l.stage
          FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
          WHERE j.id = $1 AND j.user_id = $2 ${includeHidden ? '' : 'AND (l.fit IS NULL OR l.fit > 1)'}

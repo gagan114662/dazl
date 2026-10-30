@@ -7,19 +7,22 @@ import { defaultVendor, getKey } from '../llm/key-store.ts'
 import type { Vendor } from '../llm/vendors.ts'
 import { providers, type Provider, type DetailedCompletion } from '../llm/provider.ts'
 import { getMasterKey } from '../secrets.ts'
+import { draftOffer } from '../scan/play-offer-text.ts'
+import { playOfferRow } from './service.ts'
 import { getMemory, memoryPromptBlock, type Memory } from '../memory.ts'
+import { memoryForLead, readTenantOffer } from './play-memory.ts'
 
 export interface LlmDeps { fetchImpl?: typeof fetch; master?: Buffer; providers?: Record<string, Provider> }
 
 export interface PolishUsage { model: string | null; input_tokens?: number; output_tokens?: number }
 export type PolishResult =
   | { rewritten: true; vendor: Vendor; usage?: PolishUsage }
-  | { rewritten: false; reason: 'no_key' | 'no_profile' | 'unusable' | 'blocked_claim' | 'error'; usage?: PolishUsage }
+  | { rewritten: false; reason: 'no_key' | 'no_profile' | 'offer_conflict' | 'offer_unreadable' | 'unusable' | 'blocked_claim' | 'error'; usage?: PolishUsage }
 
 // Accounting only: vendor, requested + served model, bounded outcome code, token
 // counts, request id. Never secrets, never the prompt, never the output text,
 // never raw provider error text.
-type PolishOutcome = 'pending' | 'rewritten' | 'unusable' | 'blocked_claim' | 'error' | 'no_key' | 'no_profile' | 'superseded'
+type PolishOutcome = 'pending' | 'rewritten' | 'unusable' | 'blocked_claim' | 'error' | 'no_key' | 'no_profile' | 'offer_conflict' | 'offer_unreadable' | 'superseded'
 
 // A durable PENDING attempt is written before any provider call. If it cannot be
 // recorded, the paid call is refused - no invisible spend. Null means "do not call".
@@ -96,18 +99,20 @@ export function parseDraftOutput(text: string): { subject: string; body: string 
   return { subject, body }
 }
 
-const hasOffer = (m: Memory | null) => !!(m && typeof m.positioning === 'string' && m.positioning.trim())
-
 // Rewrites a still-unsent draft with the tenant's model and Memory. Explicit calls only.
-// Without a positioning in Memory the model would have to invent what the seller sells,
-// so it refuses with 'no_profile' and the caller can point the tenant at Settings.
+// It states the same offer as the template draft (draftOffer: the play's own offer, else the Memory positioning or the
+// onboarding profile offer). With no offer anywhere the model would have to invent what the seller sells, so it refuses
+// with 'no_profile'; a contested play refuses too. Every refusal comes before any paid call.
 export async function polishDraft(db: Database.Database, tenantId: string, messageId: string, businessName: string, deps: LlmDeps = {}): Promise<PolishResult> {
   const p = pickProvider(db, tenantId, deps)
   if (!p) { recordRefusal(db, tenantId, messageId, null, 'no_key'); return { rewritten: false, reason: 'no_key' } }
   const msg = db.prepare("SELECT m.id, m.lead_id, l.company, l.name, l.signal, l.source_url, l.evidence_excerpt FROM outreach_messages m JOIN leads l ON l.id = m.lead_id WHERE m.id = ? AND m.tenant_id = ? AND m.status = 'draft'").get(messageId, tenantId) as { lead_id: string } & LeadCtx & { id: string } | undefined
   if (!msg) { recordRefusal(db, tenantId, messageId, p.vendor, 'superseded'); return { rewritten: false, reason: 'error' } }
-  const memory = getMemory(db, tenantId)
-  if (!hasOffer(memory)) { recordRefusal(db, tenantId, messageId, p.vendor, 'no_profile'); return { rewritten: false, reason: 'no_profile' } }
+  let memory: Memory | null, r: ReturnType<typeof draftOffer>
+  try { memory = getMemory(db, tenantId); r = draftOffer(playOfferRow(db, tenantId, msg.lead_id), readTenantOffer(db, tenantId)) } catch { recordRefusal(db, tenantId, messageId, p.vendor, 'offer_unreadable'); return { rewritten: false, reason: 'offer_unreadable' } } // no paid call
+  if (r.refuse) { recordRefusal(db, tenantId, messageId, p.vendor, r.refuse); return { rewritten: false, reason: r.refuse } }
+  if (!r.offer) { recordRefusal(db, tenantId, messageId, p.vendor, 'no_profile'); return { rewritten: false, reason: 'no_profile' } }
+  memory = { ...(memory ?? { icp: '', positioning: '', tone: '', exclusions: [], objections: [], updated_at: 0 }), positioning: r.offer }
   const attemptId = beginAttempt(db, tenantId, messageId, p.vendor, p.provider.configuredModel?.() ?? null)
   if (attemptId === null) return { rewritten: false, reason: 'error' } // audit unavailable: refuse the paid call
   const finish = (outcome: PolishOutcome, d?: DetailedCompletion) => finishAttempt(db, attemptId, outcome, d)
@@ -155,11 +160,11 @@ Match the seller's tone when given. No invented facts or numbers. Reply with the
 }
 
 // LLM follow-up body on the tenant's key with Memory; null means "use the template".
-export async function llmFollowupText(db: Database.Database, tenantId: string, step: number, lead: LeadCtx, businessName: string, bookingUrl: string | null | undefined, deps: LlmDeps = {}): Promise<string | null> {
+export async function llmFollowupText(db: Database.Database, tenantId: string, step: number, lead: LeadCtx & { lead_id?: string }, businessName: string, bookingUrl: string | null | undefined, deps: LlmDeps = {}): Promise<string | null> {
   const p = pickProvider(db, tenantId, deps)
   if (!p) return null
   try {
-    const text = (await p.provider.complete!(p.key, followupPrompt(step, businessName, lead, bookingUrl, memoryPromptBlock(getMemory(db, tenantId))), deps.fetchImpl, 400)).trim().slice(0, 3000)
+    const text = (await p.provider.complete!(p.key, followupPrompt(step, businessName, lead, bookingUrl, memoryPromptBlock(lead.lead_id ? memoryForLead(db, tenantId, lead.lead_id) : getMemory(db, tenantId))), deps.fetchImpl, 400)).trim().slice(0, 3000)
     if (text.length < 20 || /^\s*Subject:/im.test(text)) return null
     if (bookingUrl && !text.includes(bookingUrl)) return null // a dropped booking link is a broken draft
     return text

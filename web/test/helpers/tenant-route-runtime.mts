@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
+import { sqliteDb } from '../../lib/db/client.ts'
 import { migrateScan, createJob } from '../../lib/scan/store.ts'
 import { migrateOutreach } from '../../lib/outreach/store.ts'
 import { migrateReopen, createReopenDraft } from '../../lib/outreach/reopen.ts'
@@ -45,7 +46,8 @@ const ctx = <T extends object>(p: T) => ({ params: Promise.resolve(p) })
 const hex = () => randomBytes(12).toString('hex')
 
 function snapshot(db: Database.Database): string {
-  const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[]).map(t => t.name)
+  // rate_limits and app_leases are global platform tables (no tenant data); rateLimit() writes there through getDb().
+  const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('rate_limits', 'app_leases') ORDER BY name").all() as { name: string }[]).map(t => t.name)
   return JSON.stringify(tables.map(t => [t, db.prepare(`SELECT * FROM "${t}" ORDER BY rowid`).all()]))
 }
 
@@ -68,7 +70,7 @@ async function build() {
   db.prepare("INSERT INTO followup_threads(tenant_id,thread_id,lead_id,to_email,root_message_id,last_activity_at,last_lead_reply_at,followups_sent) VALUES('A','tA',?,'info@a.invalid','r@x',?,?,2)").run(lead2, now - 86400 * 45, now - 86400 * 45)
   db.prepare("INSERT INTO inbound_messages(gmail_id,tenant_id,thread_id,lead_id,from_email,excerpt,classification,received_at) VALUES ('g','A','tA',?,'info@a.invalid','sounds interesting','positive',?)").run(lead2, now - 86400 * 45)
   createReopenDraft(db, 'A', 'tA', 'Acme')
-  const created = createMonitor(db, 'A', { query: 'synthetic query' })
+  const created = await createMonitor(sqliteDb(db), 'A', { query: 'synthetic query' })
   assert.ok('id' in created, 'fixture: monitor created')
   // Independent valid fixtures for the approve and reopen-edit positive controls (their own leads, drafts and thread).
   const { saveSettings } = await import('../../lib/outreach/service.ts')

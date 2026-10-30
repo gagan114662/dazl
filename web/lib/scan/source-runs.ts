@@ -2,6 +2,8 @@ import type Database from 'better-sqlite3'
 import { dedupKey } from './evidence.ts'
 import type { Candidate } from './evidence.ts'
 import { writeSourceStats, type SourceStats } from '../search/trace.ts'
+import { buildRunReport, writeRunReport, type ReportParts } from './run-report.ts'
+import { writeModelCalls, type ModelCall } from './model-usage.ts'
 
 // Discovery-stage provenance, not URL-domain classification. Counters are per
 // collector and may overlap: one candidate can be credited to several collectors.
@@ -37,11 +39,48 @@ export class SourceRunLedger {
   private runs = new Map<string, Run>()
   private credits = new Map<string, Set<string>>()
   private diag = new Map<string, SourceStats>()
+  private calls: ModelCall[] = []
+  private written = 0 // calls already persisted; the next flush starts here, so nothing is written twice
+  model(c: ModelCall): void { this.calls.push(c) }
+  private parts: ReportParts = {}
+  // Stage facts for the run report (scan/run-report.ts); merged, written once with the job.
+  report(p: ReportParts): void { this.parts = { ...this.parts, ...p } }
+  // Whole-attempt usage from the canonical call list (research calls count as requests with unknown tokens): never a TinyFish-stage snapshot.
+  private modelSummary(): NonNullable<ReportParts['model']> {
+    const known = this.calls.filter(c => c.input_tokens !== null && c.output_tokens !== null)
+    return { requests_recorded: this.calls.length, requests_with_reported_tokens: known.length, input_tokens: known.length ? known.reduce((a, c) => a + c.input_tokens!, 0) : null, output_tokens: known.length ? known.reduce((a, c) => a + c.output_tokens!, 0) : null, tokens_complete: this.calls.length > 0 && known.length === this.calls.length }
+  }
+  // Persists model calls recorded since the last flush. finish() flushes what the scan made up to that point; the
+  // post-finish steps (buyer-fit and any later model call) flush again, so their requests are not lost. Only the attempt
+  // that still OWNS the job writes (same job id, attempt number and tenant as the job row), and (job, attempt, seq) is
+  // unique, so a repeat flush cannot duplicate a row. Never throws.
+  flushModelCalls(db: Database.Database, jobId: string, attempt: number): void {
+    try {
+      const own = db.prepare('SELECT user_id FROM scan_jobs WHERE id = ? AND attempts = ?').get(jobId, attempt) as { user_id: string } | undefined
+      if (!own || this.written >= this.calls.length) return
+      writeModelCalls(db, own.user_id, jobId, attempt, this.calls.slice(this.written), process.env, this.written)
+      this.written = this.calls.length
+    } catch { /* usage recording never affects the scan */ }
+  }
+  // LIVE progress: each source's row is upserted as it starts / reports / observes candidates, so the status route can show a running scan's sources. The final write() at finish replaces
+  // these rows with the counted ones. Only the attempt that owns the running job writes; never throws; off when not attached.
+  private live?: { db: Database.Database; jobId: string; attempt: number }
+  attach(db: Database.Database, jobId: string, attempt: number): void { this.live = { db, jobId, attempt } }
+  private persist(collector: string): void {
+    const l = this.live; const run = this.runs.get(collector); if (!l || !run) return
+    try {
+      migrateSourceRuns(l.db)
+      if (!l.db.prepare("SELECT 1 FROM scan_jobs WHERE id = ? AND status = 'running' AND attempts = ?").get(l.jobId, l.attempt)) return
+      l.db.prepare('INSERT OR REPLACE INTO scan_source_runs (job_id,attempt,collector,status,evidence_count,candidate_count,verified_count,review_count,inserted_count) VALUES (?,?,?,?,?,?,NULL,NULL,0)')
+        .run(l.jobId, l.attempt, collector, run.status, run.evidence, run.observed || run.evidence === 0 ? run.candidates.size : null)
+    } catch { /* live progress never affects the scan */ }
+  }
   has(collector: string): boolean { return this.runs.has(collector) }
   stats(collector: string, s: SourceStats): void { this.diag.set(collector, s) }
   record(collector: string, status: string, evidence: number | null = null): void {
     const old = this.runs.get(collector)
     this.runs.set(collector, { status, evidence, candidates: old?.candidates ?? new Set(), observed: old?.observed ?? false })
+    this.persist(collector)
   }
   candidates(collector: string, rows: Candidate[]): void {
     if (!this.runs.has(collector)) this.record(collector, 'ok')
@@ -52,6 +91,7 @@ export class SourceRunLedger {
       if (!this.credits.has(key)) this.credits.set(key, new Set())
       this.credits.get(key)!.add(collector)
     }
+    this.persist(collector)
   }
   // A selected adapter's ID comes from the call boundary, not the cited host.
   evidenceCandidates(items: { source: string; url: string }[], rows: Candidate[]): void {
@@ -73,7 +113,10 @@ export class SourceRunLedger {
       const count = (keys: Set<string>) => [...run.candidates].filter(k => keys.has(k)).length
       ins.run(jobId, attempt, collector, run.status === 'started' ? 'error' : run.status, run.evidence, run.observed || run.evidence === 0 ? run.candidates.size : null, verified && (run.observed || run.evidence === 0) ? count(verifiedKeys) : null, review && (run.observed || run.evidence === 0) ? count(reviewKeys) : null, [...run.candidates].filter(k => insertedKeys.has(k)).length)
     }
-    for (const [collector, s] of this.diag) writeSourceStats(db, jobId, attempt, collector, s) // off unless DAZL_SOURCE_STATS=1; never throws
+    for (const [collector, s] of this.diag) writeSourceStats(db, jobId, attempt, collector, s) // on unless DAZL_SOURCE_STATS=0; never throws
+    this.flushModelCalls(db, jobId, attempt) // never throws; failed and retried attempts included
+    this.parts = { ...this.parts, model: this.modelSummary() }
+    writeRunReport(db, jobId, attempt, buildRunReport(this.parts, verified ? verified.map(r => ({ key: evidenceKey(r) })) : null, review ? review.map(r => ({ key: evidenceKey(r), review_reason: (r as { review_reason?: string }).review_reason })) : null, attempt)) // never throws
     const link = db.prepare('INSERT OR IGNORE INTO lead_sources (lead_id,collector,attempt) VALUES (?,?,?)')
     for (const l of stored) for (const collector of this.credits.get(evidenceKey(l)) ?? []) link.run(l.id, collector, attempt)
   }

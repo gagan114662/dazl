@@ -1,0 +1,19 @@
+{
+  "id": "evt_test_subscription_cancel_at_period_end",
+  "object": "event",
+  "api_version": "2024-06-20",
+  "created": 1793000100,
+  "livemode": false,
+  "type": "customer.subscription.updated",
+  "data": {
+    "object": {
+      "id": "{{SUBSCRIPTION}}",
+      "object": "subscription",
+      "customer": "{{CUSTOMER}}",
+      "status": "active",
+      "cancel_at_period_end": true,
+      "metadata": { "tenant_id": "{{TENANT}}" }
+    },
+    "previous_attributes": { "cancel_at_period_end": false }
+  }
+}

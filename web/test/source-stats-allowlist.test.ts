@@ -11,12 +11,15 @@ const mkdb = () => {
 const stats = () => { const t = new SearchTrace(); t.search({ query: 'q text', attempted: true, outcome: 'ok', hits: ['https://a.example/x'] }); return summarizeTrace(t) }
 const tables = (db: Database.Database) => (db.prepare("SELECT count(*) n FROM sqlite_master WHERE name='scan_source_stats'").get() as { n: number }).n
 
-test('the global flag alone writes nothing for anyone: an empty or missing allowlist means nobody', () => {
-  for (const env of [{ DAZL_SOURCE_STATS: '1' }, { DAZL_SOURCE_STATS: '1', DAZL_SOURCE_STATS_USERS: '' }, { DAZL_SOURCE_STATS: '1', DAZL_SOURCE_STATS_USERS: ' , ' }]) {
+test('default is ON for every owner; an empty or blank allowlist means no narrowing; DAZL_SOURCE_STATS=0 records nobody', () => {
+  for (const env of [{}, { DAZL_SOURCE_STATS: '1' }, { DAZL_SOURCE_STATS: '1', DAZL_SOURCE_STATS_USERS: '' }, { DAZL_SOURCE_STATS_USERS: ' , ' }]) {
     const db = mkdb()
-    assert.equal(writeSourceStats(db, 'jo', 1, 'search:tinyfish', stats(), env), false)
-    assert.equal(tables(db), 0)
+    assert.equal(writeSourceStats(db, 'jo', 1, 'search:tinyfish', stats(), env), true)
+    assert.equal(writeSourceStats(db, 'jx', 1, 'search:tinyfish', stats(), env), true)
   }
+  const off = mkdb()
+  assert.equal(writeSourceStats(off, 'jo', 1, 'search:tinyfish', stats(), { DAZL_SOURCE_STATS: '0', DAZL_SOURCE_STATS_USERS: 'owner-ohio' }), false)
+  assert.equal(tables(off), 0)
 })
 
 test('an allowlisted owner is recorded; another owner is denied with no table effect when only the allowlisted one is named', () => {
@@ -31,10 +34,10 @@ test('an allowlisted owner is recorded; another owner is denied with no table ef
   assert.equal((db.prepare('SELECT count(*) n FROM scan_source_stats').get() as { n: number }).n, 1)
 })
 
-test('the allowlist does nothing without the global flag, matches exact ids only (no substring) and a missing job writes nothing', () => {
+test('a set allowlist narrows to exact ids only (no substring); a missing job writes nothing; the kill switch beats the allowlist', () => {
   const db = mkdb()
-  assert.equal(writeSourceStats(db, 'jo', 1, 'search:tinyfish', stats(), { DAZL_SOURCE_STATS_USERS: 'owner-ohio' }), false)
-  assert.equal(writeSourceStats(db, 'jo', 1, 'search:tinyfish', stats(), { DAZL_SOURCE_STATS: '1', DAZL_SOURCE_STATS_USERS: 'owner-oh' }), false)
-  assert.equal(writeSourceStats(db, 'nojob', 1, 'search:tinyfish', stats(), { DAZL_SOURCE_STATS: '1', DAZL_SOURCE_STATS_USERS: 'owner-ohio' }), false)
+  assert.equal(writeSourceStats(db, 'jo', 1, 'search:tinyfish', stats(), { DAZL_SOURCE_STATS_USERS: 'owner-oh' }), false)
+  assert.equal(writeSourceStats(db, 'nojob', 1, 'search:tinyfish', stats(), { DAZL_SOURCE_STATS_USERS: 'owner-ohio' }), false)
   assert.equal(tables(db), 0)
+  assert.equal(writeSourceStats(db, 'jo', 1, 'search:tinyfish', stats(), { DAZL_SOURCE_STATS_USERS: 'owner-ohio' }), true)
 })

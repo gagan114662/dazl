@@ -73,10 +73,11 @@ test('status poll is passive only for explicit ?passive=1 (adoption resumes the 
 test('Home never asks for an AI key once one is saved; seller profile stays visible; banner and sign-up copy are mode-accurate', async () => {
   const fs = await import('node:fs')
   const rd = (p: string) => fs.readFileSync(new URL(p, import.meta.url), 'utf8')
-  const steps = rd('../app/app/home-steps.tsx')
-  assert.match(steps, /state === null \|\| state\.hasKey \? REST/)
-  assert.doesNotMatch(steps, /\[KEY_STEP, \.\.\.REST\]/)
-  assert.match(rd('../app/app/seller-card.tsx'), /What you sell:/)
+  // Home is the readiness checklist now: a saved key is done (no key fix offered) and the saved seller profile is shown.
+  const { readinessRows } = await import('../lib/readiness.ts')
+  const rows = readinessRows({ profile: { sells: 'Booking software', website: 'https://acme.example', business_name: 'Acme' }, usage: { has_key: true, trial: null }, outreach: { gmail: null, sender: null } })
+  assert.deepEqual(rows.find(x => x.id === 'key'), { id: 'key', label: 'AI key', state: 'done', detail: 'saved', fix: null })
+  assert.match(rows.find(x => x.id === 'site')!.detail, /Booking software/)
   assert.doesNotMatch(rd('../app/app/outreach/send-readiness.tsx'), /Every email still needs your approval/)
   assert.match(rd('../app/sign-up/page.tsx'), /with your own AI key/)
 })
@@ -93,13 +94,14 @@ test('profile save returns canonical stored values; business name round-trips; k
   const fs = await import('node:fs')
   const rd = (p: string) => fs.readFileSync(new URL(p, import.meta.url), 'utf8')
   const route = rd('../app/api/settings/profile/route.ts')
-  assert.match(route, /ok: true, \.\.\.getSellerProfile/)
+  assert.match(route, /ok: true, \.\.\.await readSellerProfile/) // canonical values by value: test/helpers/pg-port-routes-runtime.mts
   assert.match(route, /: cur\.sells/)
   assert.match(route, /: cur\.website/)
-  assert.match(rd('../app/app/seller-card.tsx'), /setSaved\(String\(j\.sells/)
-  const steps = rd('../app/app/home-steps.tsx')
-  assert.doesNotMatch(steps, /free scans are used up/)
-  assert.match(steps, /Could not check your AI key status/)
+  // Home re-reads the stored profile after a save (never shows unsaved text); a usage failure reads "could not check".
+  assert.match(rd('../app/app/readiness.tsx'), /setOpen\(null\); void load\(\)/)
+  const { readinessRows } = await import('../lib/readiness.ts')
+  const key = readinessRows({ profile: null, usage: null, outreach: null }).find(x => x.id === 'key')!
+  assert.deepEqual([key.state, key.detail, key.fix], ['unknown', 'could not check - your plan and key status did not load', null])
 })
 
 test('contact search note states eligibility and stored facts only, never completion or absence', async () => {

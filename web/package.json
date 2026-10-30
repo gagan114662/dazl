@@ -7,8 +7,21 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "SITECRAWL_ENABLED=0 node --experimental-strip-types --import ./test/helpers/net-fence.ts --test test/*.test.ts",
-    "prebuild": "git rev-parse HEAD > .build-commit 2>/dev/null || rm -f .build-commit"
+    "test:ui": "node test/ui/window-edit.ui.mjs",
+    "test": "SITECRAWL_ENABLED=0 NEWS_SEARCH_ENABLED=0 node --experimental-strip-types --import ./test/helpers/net-fence.ts --test test/*.test.ts",
+    "db:migrate": "node --experimental-strip-types --no-warnings scripts/db-migrate.mts",
+    "prebuild": "git rev-parse HEAD > .build-commit 2>/dev/null || rm -f .build-commit",
+    "test:smoke": "node test/smoke/app-pages.smoke.mjs",
+    "test:smoke:chunks": "node test/smoke/chunk-recovery.smoke.mjs",
+    "test:smoke:client-errors": "node test/smoke/client-errors.smoke.mjs",
+    "test:smoke:billing": "node --experimental-strip-types --no-warnings test/smoke/billing.smoke.mjs",
+    "preview:shots": "node test/smoke/preview.mjs",
+    "test:smoke:auth": "node test/smoke/app-auth.smoke.mjs",
+    "test:smoke:staging": "node --experimental-strip-types --no-warnings test/smoke/staging.smoke.mjs",
+    "test:smoke:tenants": "node --experimental-strip-types --no-warnings test/smoke/two-tenant.smoke.mjs",
+    "test:smoke:release": "node test/smoke/release-identity.smoke.mjs",
+    "staging:scenarios": "node --experimental-strip-types --no-warnings --import ./test/helpers/net-fence.ts scripts/staging-send-scenarios.mts",
+    "evals": "SITECRAWL_ENABLED=0 NEWS_SEARCH_ENABLED=0 node --experimental-strip-types --no-warnings --import ./test/helpers/net-fence.ts scripts/evals.mts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.84",

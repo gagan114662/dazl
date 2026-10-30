@@ -26,6 +26,7 @@ import type Database from 'better-sqlite3'
 import { SqliteQueue } from '../queue/sqlite.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
 import type { RunDeps, Job } from './runner.ts'
+import { failCrashedJob } from './crash.ts'
 
 export type ScanExecutor = (db: Database.Database, job: Job, deps: RunDeps) => Promise<'done' | 'failed' | 'retry'>
 
@@ -152,7 +153,9 @@ export async function kickQueueRunner(
     acquireSlot()
     const token = claim.token
     void executor(db, { ...jobRow, attempts: jobRow.attempts }, deps)
-      .catch((e) => { console.error('queue scan run crashed', jobRow.id, e); return 'retry' as const })
+      // A crash fails the domain row (fenced) and the queue item, not retry: an exception that escaped the executor's own
+      // failure handling is a bug or a broken store, and retrying it would crash again.
+      .catch((e) => { failCrashedJob(db, jobRow, e, 'queue-runner'); return 'failed' as const })
       .then((outcome) => {
         // Token fencing first: if this claim was reaped and re-claimed,
         // complete/fail below are rejected and the newer attempt owns the row.

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import type { Db } from '../db/client.ts'
 import type Database from 'better-sqlite3'
 
 // Free trial: a few scans per new account run on the server's shared operator key, so a new
@@ -38,22 +39,34 @@ export const ipHash = (ip: string): string =>
 export type TrialDeny = 'not_configured' | 'account_cap' | 'ip_throttle'
 export interface TrialState { funded: boolean; reason?: TrialDeny; used: number; remaining: number }
 
+// A trial scan keeps its slot once it could have cost dazl money: a failed scan that reserved any paid step is one of
+// the three, like a cancelled one (provider work may already have run on the operator key). Only a scan that failed
+// before any cost (no spend reserved) gives the slot back. Admission enforces the same count under its lock
+// (lib/billing/trial-budget.ts releasedBeforeCost); this one drives the free-scans counter and the first check.
+const TRIAL_USED_SQL = `SELECT count(*) AS n FROM trial_scans t JOIN scan_jobs j ON j.id = t.job_id
+     WHERE t.tenant_id = ? AND (j.status != 'failed' OR j.error = 'cancelled' OR COALESCE(j.spend_reserved_usd, 0) > 0)`
+const TRIAL_IP_SQL = 'SELECT count(*) AS n FROM trial_scans WHERE ip_hash = ? AND created_at >= ?'
+const dayStartS = (now: Date) => Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) / 1000)
+
+// The decision, given the two counts; ipUsed is only read when the account is under its cap.
+function trialDecision(used: number, ipUsed: () => number): TrialState {
+  if (used >= TRIAL_SCANS_PER_ACCOUNT) return { funded: false, reason: 'account_cap', used, remaining: 0 }
+  if (ipUsed() >= TRIAL_SCANS_PER_IP_PER_DAY) return { funded: false, reason: 'ip_throttle', used, remaining: TRIAL_SCANS_PER_ACCOUNT - used }
+  return { funded: true, used, remaining: TRIAL_SCANS_PER_ACCOUNT - used }
+}
+
 export function trialStatus(db: Database.Database, tenantId: string, ip: string, now = new Date()): TrialState {
   if (!operatorKey()) return { funded: false, reason: 'not_configured', used: 0, remaining: 0 }
-  // Genuinely failed scans refund the slot, same as the monthly quota: a scan that produced nothing
-  // does not burn one of the three. A user-cancelled scan (error='cancelled') keeps its slot: provider
-  // work may already have run and been billed to the operator key.
-  const used = (db.prepare(
-    `SELECT count(*) AS n FROM trial_scans t JOIN scan_jobs j ON j.id = t.job_id
-     WHERE t.tenant_id = ? AND (j.status != 'failed' OR j.error = 'cancelled')`,
-  ).get(tenantId) as { n: number }).n
-  if (used >= TRIAL_SCANS_PER_ACCOUNT) return { funded: false, reason: 'account_cap', used, remaining: 0 }
-  const dayStart = Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) / 1000)
-  const ipUsed = (db.prepare(
-    'SELECT count(*) AS n FROM trial_scans WHERE ip_hash = ? AND created_at >= ?',
-  ).get(ipHash(ip || 'unknown'), dayStart) as { n: number }).n
-  if (ipUsed >= TRIAL_SCANS_PER_IP_PER_DAY) return { funded: false, reason: 'ip_throttle', used, remaining: TRIAL_SCANS_PER_ACCOUNT - used }
-  return { funded: true, used, remaining: TRIAL_SCANS_PER_ACCOUNT - used }
+  const used = (db.prepare(TRIAL_USED_SQL).get(tenantId) as { n: number }).n
+  return trialDecision(used, () => (db.prepare(TRIAL_IP_SQL).get(ipHash(ip || 'unknown'), dayStartS(now)) as { n: number }).n)
+}
+
+// trialStatus on the Db layer (SQLite or Postgres): the same counts and the same decision.
+export async function readTrialStatus(db: Db, tenantId: string, ip: string, now = new Date()): Promise<TrialState> {
+  if (!operatorKey()) return { funded: false, reason: 'not_configured', used: 0, remaining: 0 }
+  const used = Number((await db.get<{ n: number }>(TRIAL_USED_SQL, [tenantId]))!.n)
+  const ipUsed = used >= TRIAL_SCANS_PER_ACCOUNT ? 0 : Number((await db.get<{ n: number }>(TRIAL_IP_SQL, [ipHash(ip || 'unknown'), dayStartS(now)]))!.n)
+  return trialDecision(used, () => ipUsed)
 }
 
 export function recordTrialScan(db: Database.Database, tenantId: string, jobId: string, ip: string): void {

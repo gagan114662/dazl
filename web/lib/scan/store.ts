@@ -1,7 +1,12 @@
 import { randomBytes } from 'node:crypto'
+import { migrateSpendPools } from '../llm/spend-pool.ts'
+import { migrateInsertionOrder } from '../db/insertion-order.ts'
 import type Database from 'better-sqlite3'
 import { primarySignalKind } from './score.ts'
 import { migrateSourceRuns } from './source-runs.ts'
+import { migrateEvidenceCopies } from './evidence-copies.ts'
+import { migrateRunReport } from './run-report.ts'
+import { ENRICH_STALE_S } from './enrichment.ts'
 
 export const STALE_RUNNING_S = Number(process.env.SCAN_STALE_RUNNING_S || 20 * 60)
 export const MAX_ATTEMPTS = 3
@@ -13,7 +18,7 @@ export interface ScanInput {
   location: string
 }
 // Free-text request. The legacy columns stay filled (placeholders) so older workers keep working.
-export interface QueryInput { query: string; icp?: string | null; sources?: string | null; seller?: string; watchId?: string }
+export interface QueryInput { query: string; icp?: string | null; sources?: string | null; seller?: string; offer?: string | null; watchId?: string; runBudget?: string | null }
 
 // Schema notes for the external worker (Hermes). Everything is enforced in
 // SQLite itself, so a writer that bypasses the web app cannot corrupt state:
@@ -21,6 +26,7 @@ export interface QueryInput { query: string; icp?: string | null; sources?: stri
 //  - lengths are capped by CHECK
 //  - a lead needs a signal (reason) and an http(s) source_url
 export function migrateScan(db: Database.Database): void {
+  migrateSpendPools(db) // the owner day/month spend pools the scan runner reserves against (lib/llm/spend-pool.ts)
   db.exec(`
     CREATE TABLE IF NOT EXISTS scan_jobs (
       id            TEXT PRIMARY KEY,
@@ -74,6 +80,9 @@ export function migrateScan(db: Database.Database): void {
   `)
   addColumns(db)
   migrateSourceRuns(db)
+  migrateEvidenceCopies(db)
+  migrateRunReport(db)
+  migrateInsertionOrder(db, ['scan_jobs', 'leads']) // insert_seq (lib/db/insertion-order.ts); after any table rebuild above
 }
 
 // Evidence columns. Nullable, so rows written by other workers (Hermes) stay valid:
@@ -82,6 +91,9 @@ function addColumns(db: Database.Database): void {
   const has = (t: string, c: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).some(r => r.name === c)
   const add = (t: string, c: string, def: string) => { if (!has(t, c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`) }
   add('scan_jobs', 'seller', 'TEXT')
+  // the offer reviewed for this play, and when (lib/scan/play-offer.ts); NULL: the play uses its recorded `seller`
+  add('scan_jobs', 'offer', 'TEXT CHECK (offer IS NULL OR length(offer) <= 150)')
+  add('scan_jobs', 'offer_set_at', 'INTEGER')
   add('leads', 'stage', 'TEXT')
   add('scan_jobs', 'watch_id', 'TEXT')
   add('leads', 'watch_new', 'INTEGER NOT NULL DEFAULT 0')
@@ -93,13 +105,23 @@ function addColumns(db: Database.Database): void {
   add('leads', 'confidence', 'INTEGER CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 100)')
   add('leads', 'dedup_key', 'TEXT')
   add('leads', 'review_reason', 'TEXT')
+  add('leads', 'evidence_origin', "TEXT CHECK (evidence_origin IS NULL OR evidence_origin IN ('tinyfish_copy'))") // verified against text TinyFish fetched, not dazl's own read (scan/held-text.ts)
+  add('leads', 'own_fetch_failure', 'TEXT') // dazl's own fetch failure for that page, kept beside the copy
+  add('leads', 'evidence_copy_sha256', 'TEXT') // hash of the exact copied text that was checked
+  add('leads', 'evidence_purged_at', 'INTEGER') // the copied text was deleted on the tenant's request (audited); the lead keeps its origin label
+  add('leads', 'timing_note', 'TEXT CHECK (timing_note IS NULL OR length(timing_note) <= 300)') // how a missing date was resolved from the page, or a season label with no date
+  add('leads', 'published_at', 'TEXT') // the page's publication day: a label, never the event date
+  add('leads', 'evidence_copy_id', 'TEXT') // lead_evidence_copies.id: the preserved original text (scan/evidence-copies.ts)
   add('leads', 'human_confirmed_at', 'INTEGER') // the user checked this needs-review lead against its source and chose to use it
   add('leads', 'human_confirmed_from', 'TEXT') // the review_reason it was confirmed out of - provenance, never overwritten
   add('leads', 'company_domain', 'TEXT CHECK (company_domain IS NULL OR length(company_domain) <= 253)')
+  add('leads', 'quarantined_at', 'INTEGER') // the user quarantined this lead: kept with its evidence, never drafted, sent or exported (scan/quarantine.ts)
+  add('leads', 'quarantine_reason', 'TEXT CHECK (quarantine_reason IS NULL OR length(quarantine_reason) <= 300)')
   add('scan_jobs', 'candidates', 'INTEGER')
   add('scan_jobs', 'needs_review', 'INTEGER')
   add('scan_jobs', 'dropped', 'INTEGER')
-  add('scan_jobs', 'run_budget', 'TEXT') // per-run budget controls (CSV company imports); null = current behavior
+  add('scan_jobs', 'run_budget', 'TEXT') // per-run budget controls (CSV company imports and POST /api/scan); null = current behavior
+  add('scan_jobs', 'spend_reserved_usd', 'REAL') // what this job has already RESERVED under max_usd, saved per call so a retry/restart continues from it
   add('scan_jobs', 'drop_reasons', 'TEXT')
   add('scan_jobs', 'verified', 'INTEGER')
   add('scan_jobs', 'query', 'TEXT CHECK (query IS NULL OR length(query) <= 600)')
@@ -122,6 +144,8 @@ function addColumns(db: Database.Database): void {
   // researches and the batch it belongs to. NULL on every manual/watch scan.
   add('scan_jobs', 'csv_domain', 'TEXT CHECK (csv_domain IS NULL OR length(csv_domain) <= 253)')
   add('scan_jobs', 'batch_id', 'TEXT')
+  add('scan_jobs', 'enrich_started_at', 'INTEGER') // lib/scan/enrichment.ts: the contact/people/fit stage that runs after the rows are written
+  add('scan_jobs', 'enrich_finished_at', 'INTEGER')
   widenWhyCap(db)
   backfillKindTags(db)
 }
@@ -184,10 +208,10 @@ function widenWhyCap(db: Database.Database): void {
   `)
 }
 
-export function createJob(db: Database.Database, userId: string, input: ScanInput): string {
+export function createJob(db: Database.Database, userId: string, input: ScanInput, runBudget: string | null = null): string {
   const id = randomBytes(12).toString('hex')
-  db.prepare('INSERT INTO scan_jobs (id, user_id, business_name, industry, location) VALUES (?, ?, ?, ?, ?)').run(
-    id, userId, input.business_name, input.industry, input.location,
+  db.prepare('INSERT INTO scan_jobs (id, user_id, business_name, industry, location, run_budget) VALUES (?, ?, ?, ?, ?, ?)').run(
+    id, userId, input.business_name, input.industry, input.location, runBudget,
   )
   return id
 }
@@ -195,8 +219,10 @@ export function createJob(db: Database.Database, userId: string, input: ScanInpu
 // icp is a JSON string the user already saw and accepted/edited; null means "infer it when the job runs".
 export function createQueryJob(db: Database.Database, userId: string, input: QueryInput): string {
   const id = randomBytes(12).toString('hex')
-  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, icp_inferred, sources, seller, watch_id) VALUES (?, ?, ?, '(from request)', '-', ?, ?, ?, ?, ?, ?)").run(
-    id, userId, input.query.slice(0, 150) || '-', input.query, input.icp ?? null, input.icp ? 0 : null, input.sources ?? null, (input.seller ?? '').trim().slice(0, 300) || null, input.watchId ?? null,
+  // run_budget is part of the INSERT, so a job is never visible to the runner without its budget.
+  const offer = (input.offer ?? '').replace(/\s+/g, ' ').trim().slice(0, 150) || null
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, icp_inferred, sources, seller, offer, offer_set_at, watch_id, run_budget) VALUES (?, ?, ?, '(from request)', '-', ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
+    id, userId, input.query.slice(0, 150) || '-', input.query, input.icp ?? null, input.icp ? 0 : null, input.sources ?? null, (input.seller ?? '').trim().slice(0, 300) || null, offer, offer ? Math.floor(Date.now() / 1000) : null, input.watchId ?? null, input.runBudget ?? null,
   )
   return id
 }
@@ -222,8 +248,8 @@ export function reapStaleJobs(db: Database.Database): void {
 export function getJob(db: Database.Database, userId: string, id: string) {
   reapStaleJobs(db)
   const job = db
-    .prepare('SELECT id, status, error, query, icp, icp_inferred, created_at, claimed_at, attempts, finished_at, candidates, verified, needs_review, dropped, drop_reasons, industry, location FROM scan_jobs WHERE id = ? AND user_id = ?')
-    .get(id, userId) as { id: string; status: string; error: string | null; query: string | null; icp: string | null; icp_inferred: number | null; created_at: number; claimed_at: number | null; attempts: number; finished_at: number | null; candidates: number | null; verified: number | null; needs_review: number | null; dropped: number | null; drop_reasons: string | null; industry: string | null; location: string | null } | undefined
+    .prepare('SELECT id, status, error, query, icp, icp_inferred, created_at, claimed_at, attempts, finished_at, candidates, verified, needs_review, dropped, drop_reasons, industry, location, enrich_started_at, enrich_finished_at FROM scan_jobs WHERE id = ? AND user_id = ?')
+    .get(id, userId) as { id: string; status: string; error: string | null; query: string | null; icp: string | null; icp_inferred: number | null; created_at: number; claimed_at: number | null; attempts: number; finished_at: number | null; candidates: number | null; verified: number | null; needs_review: number | null; dropped: number | null; drop_reasons: string | null; industry: string | null; location: string | null; enrich_started_at: number | null; enrich_finished_at: number | null } | undefined
   if (!job) return undefined
   const { n } = db.prepare('SELECT count(*) AS n FROM leads WHERE scan_job_id = ?').get(id) as { n: number }
   return { ...job, lead_count: n }
@@ -231,26 +257,37 @@ export function getJob(db: Database.Database, userId: string, id: string) {
 
 export function countActiveJobs(db: Database.Database, userId: string): number {
   // CSV import jobs do not count: a 50-domain batch must not lock the user out of manual scans.
+  // A done scan that is still enriching (contacts / people / fit) is active too: it is not finished, and a second scan must not start beside it.
   // A just-cancelled scan keeps its slot for CANCEL_HOLD_S: its in-flight provider phase cannot be interrupted
   // and may still be running, so freeing the slot at once would let a user stack paid work.
   const holdFrom = Math.floor(Date.now() / 1000) - CANCEL_HOLD_S
-  return (db.prepare("SELECT count(*) AS n FROM scan_jobs WHERE user_id = ? AND csv_domain IS NULL AND (status IN ('pending','running') OR (status = 'failed' AND error = 'cancelled' AND finished_at >= ?))").get(userId, holdFrom) as { n: number }).n
+  return (db.prepare(`SELECT count(*) AS n FROM scan_jobs WHERE user_id = ? AND csv_domain IS NULL AND (status IN ('pending','running') OR (status = 'done' AND enrich_started_at IS NOT NULL AND enrich_finished_at IS NULL AND enrich_started_at > CAST(strftime('%s','now') AS INTEGER) - ${ENRICH_STALE_S}) OR (status = 'failed' AND error = 'cancelled' AND finished_at >= ?))`).get(userId, holdFrom) as { n: number }).n
+}
+
+// A lead a REQUIRED gate failed on whose review write was rejected still reads verified in leads.review_reason. The gate leaves a marker beside it (lead_enrichments,
+// connector 'scan:gate', kind 'gate_failed'); every user-facing read of the lead row overlays it, so a held lead is never shown as verified. A store without the
+// enrichments table reads the row as stored.
+const HELD_MARK = "EXISTS (SELECT 1 FROM lead_enrichments h WHERE h.lead_id = l.id AND h.connector = 'scan:gate' AND h.kind = 'gate_failed')"
+export const HELD_REASON = 'sales_hiring_check_failed'
+const withHeld = (sql: string, plain: string, overlaid: string) => ({ held: sql.replace(plain, overlaid), plain: sql })
+const HELD_REVIEW = `CASE WHEN l.review_reason IS NULL AND ${HELD_MARK} THEN '${HELD_REASON}' ELSE l.review_reason END AS review_reason`
+const HELD_CONF = `CASE WHEN l.review_reason IS NULL AND ${HELD_MARK} THEN NULL ELSE l.confidence END AS confidence`
+function allWithHeldFallback(db: Database.Database, sql: { held: string; plain: string }, params: unknown[]) {
+  try { return db.prepare(sql.held).all(...params) } catch (e) { if (!/no such table/i.test(e instanceof Error ? e.message : '')) throw e; return db.prepare(sql.plain).all(...params) }
 }
 
 // Ranked: scored leads first by ICP fit, then intent, actionability and evidence confidence.
 // Low-fit scored leads (fit <= 1) are hidden unless includeHidden - they stay in the scan.
 export function listLeads(db: Database.Database, userId: string, jobId: string, limit = 200, includeHidden = false) {
-  return db
-    .prepare(
+  const plain =
       `SELECT l.id, l.scan_job_id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.created_at,
 l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
-l.human_confirmed_at, l.human_confirmed_from, l.source_kind,
+l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l.quarantine_reason, l.evidence_origin, l.own_fetch_failure, l.evidence_copy_sha256, l.evidence_copy_id, l.evidence_purged_at, l.timing_note, l.published_at,
          l.fit, l.intent, l.action, l.why, l.signals, l.icp_match, l.watch_new, l.seen_before, l.stage
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
        WHERE j.id = ? AND j.user_id = ? ${includeHidden ? '' : 'AND (l.fit IS NULL OR l.fit > 1)'}
-       ORDER BY (l.fit IS NULL), l.fit DESC, l.action DESC, (l.confidence IS NULL), l.confidence DESC, l.score DESC, l.created_at DESC LIMIT ?`,
-    )
-    .all(jobId, userId, Math.min(limit, 500))
+       ORDER BY (l.fit IS NULL), l.fit DESC, l.action DESC, (l.confidence IS NULL), l.confidence DESC, l.score DESC, l.created_at DESC LIMIT ?`
+  return allWithHeldFallback(db, withHeld(plain, 'l.confidence, l.review_reason,', `${HELD_CONF}, ${HELD_REVIEW},`), [jobId, userId, Math.min(limit, 500)])
 }
 
 export function countHiddenLeads(db: Database.Database, userId: string, jobId: string): number {
@@ -298,12 +335,14 @@ export interface JobSummary {
   needs_review: number | null
   dropped: number | null
   lead_count: number
+  enrich_started_at?: number | null
+  enrich_finished_at?: number | null
 }
 export function listJobs(db: Database.Database, userId: string, limit = 20): JobSummary[] {
   return db
     .prepare(
       `SELECT j.id, j.status, j.error, j.query, j.business_name, j.industry, j.location, j.csv_domain, j.created_at, j.finished_at,
-              j.candidates, j.verified, j.needs_review, j.dropped,
+              j.candidates, j.verified, j.needs_review, j.dropped, j.enrich_started_at, j.enrich_finished_at,
               (SELECT count(*) FROM leads l WHERE l.scan_job_id = j.id) AS lead_count
        FROM scan_jobs j
        WHERE j.user_id = ?
@@ -321,17 +360,15 @@ export function listJobs(db: Database.Database, userId: string, limit = 20): Job
 // The export defaults to real rows only; includeFixtures is the explicit opt-in for
 // verification workflows. Nothing is deleted - every row stays in the database.
 export function exportLeads(db: Database.Database, userId: string, jobId?: string, limit = 5000, includeFixtures = false) {
-  return db
-    .prepare(
-      `SELECT l.scan_job_id AS job_id, l.company, l.name, l.contact, l.signal, l.source_url,
+  const plain =
+      `SELECT l.id AS lead_id, l.scan_job_id AS job_id, l.company, l.name, l.contact, l.signal, l.why, l.source_url,
               l.fit, l.intent, l.action, l.score, l.confidence, l.event_date, l.date_status, l.review_reason,
-              l.human_confirmed_from, l.evidence_excerpt, l.created_at
+              l.human_confirmed_from, l.evidence_excerpt, l.evidence_origin, l.own_fetch_failure, l.evidence_purged_at, l.timing_note, l.published_at, l.created_at
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
-       WHERE j.user_id = ? ${jobId ? 'AND j.id = ?' : ''} AND (l.fit IS NULL OR l.fit > 1)
+       WHERE j.user_id = ? ${jobId ? 'AND j.id = ?' : ''} AND (l.fit IS NULL OR l.fit > 1) AND l.quarantined_at IS NULL
        ${includeFixtures ? '' : "AND (l.source_kind IS NULL OR l.source_kind != 'test')"}
-       ORDER BY l.created_at DESC LIMIT ?`,
-    )
-    .all(...(jobId ? [userId, jobId, limit] : [userId, limit]))
+       ORDER BY l.created_at DESC LIMIT ?`
+  return allWithHeldFallback(db, withHeld(plain.replace('l.score, l.confidence, l.event_date, l.date_status, l.review_reason,', 'l.score, l.confidence, l.event_date, l.date_status, l.review_reason,'), 'l.confidence, l.event_date, l.date_status, l.review_reason,', `${HELD_CONF}, l.event_date, l.date_status, ${HELD_REVIEW},`), jobId ? [userId, jobId, limit] : [userId, limit])
 }
 
 

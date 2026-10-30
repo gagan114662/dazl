@@ -1,5 +1,7 @@
 import {contactPurposeRestricted} from './contact-purpose-db.ts'
+import { evidenceStateOf, type EvidenceState } from './evidence-state.ts'
 import {currentnessHeld} from './currentness.ts'
+import {requiredGateHeld} from '../scan/held-state.ts'
 import { messageProvenance } from './provenance.ts'
 import { snapshotSignalContext } from './attribution.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend, tableExists } from './send-budget.ts'
@@ -11,7 +13,9 @@ import { GmailError, GmailSendError, getAccessToken, gmailSend, gmailStatus, typ
 import { norm } from './store.ts'
 import { domainReviewFor } from './domain-review.ts'
 import { pickCrawledEmail } from './published-email.ts'
-import { getMemory } from '../memory.ts'
+import { isQuarantined } from '../scan/quarantine.ts'
+import { isMissingSchema, draftOffer } from '../scan/play-offer-text.ts'
+import { readTenantOffer } from './play-memory.ts'
 
 export const DAILY_CAP = Math.min(ACCOUNT_SEND_CAP, Number(process.env.OUTREACH_DAILY_CAP || 20))
 export const SENDING_STALE_S = 10 * 60
@@ -53,12 +57,10 @@ export function leadHeld(db: Database.Database, tenantId: string, leadId: string
 // (or dazl's own verification) still stands: withdrawing the confirmation revokes the
 // eligibility that backed it, and an exact-word approval hash is not a substitute.
 // Machine-verified leads are unaffected. Tenant-scoped like every other lead read.
-export type EvidenceState = 'machine' | 'human' | 'unverified'
+export type { EvidenceState } from './evidence-state.ts'
 export function leadEvidenceState(db: Database.Database, tenantId: string, leadId: string): EvidenceState {
   const l = db.prepare('SELECT l.evidence_excerpt, l.confidence, l.human_confirmed_at FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as { evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null } | undefined
-  if (l && l.evidence_excerpt && l.confidence !== null) return 'machine'
-  if (l && l.human_confirmed_at !== null) return 'human'
-  return 'unverified'
+  return l ? evidenceStateOf(l) : 'unverified'
 }
 export function leadEvidenceEligible(db: Database.Database, tenantId: string, leadId: string): boolean {
   return leadEvidenceState(db, tenantId, leadId) !== 'unverified'
@@ -177,10 +179,13 @@ function readCrawledRows(db: Database.Database, tenantId: string, leadId: string
 }
 // True when the lead's address came from a crawl whose website still needs the user's identity review (never recorded, or withdrawn
 // after the draft was made). A draft made before this check existed, or whose confirmation was later withdrawn, cannot be approved or sent.
-export type DomainReviewStatus = 'ok' | 'required' | 'unreadable'
+export type DomainReviewStatus = 'ok' | 'required' | 'unreadable' | 'quarantined'
 export function domainReviewStatus(db: Database.Database, tenantId: string, leadId: string, recipient: string): DomainReviewStatus {
   const lead = db.prepare('SELECT l.id, l.contact FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as { id: string; contact: string | null } | undefined
   if (!lead) return 'ok'
+  // A quarantined lead (scan/quarantine.ts) is held at every send path that passes through this gate. An unreadable
+  // quarantine state (older schema, read error) is held too: never sent on an unknown.
+  try { if (isQuarantined(db, leadId)) return 'quarantined' } catch { return 'unreadable' }
   let rows: CrawledRows
   // If the crawl state cannot be read (table missing or a read error) where the address came from is unknowable: held, for every lead.
   // This is a retryable fault, not something the user can fix by confirming a website.
@@ -197,24 +202,29 @@ export function domainReviewStatus(db: Database.Database, tenantId: string, lead
 }
 export const domainReviewHeld = (db: Database.Database, tenantId: string, leadId: string, recipient: string): boolean => domainReviewStatus(db, tenantId, leadId, recipient) !== 'ok'
 // The error code for a held message: a missing review is something the user can act on, an unreadable state is a retry.
-export const domainHoldCode = (db: Database.Database, tenantId: string, leadId: string, recipient: string): 'domain_unconfirmed' | 'review_unreadable' =>
-  domainReviewStatus(db, tenantId, leadId, recipient) === 'unreadable' ? 'review_unreadable' : 'domain_unconfirmed'
+export const domainHoldCode = (db: Database.Database, tenantId: string, leadId: string, recipient: string): 'domain_unconfirmed' | 'review_unreadable' | 'lead_quarantined' => {
+  const s = domainReviewStatus(db, tenantId, leadId, recipient)
+  return s === 'quarantined' ? 'lead_quarantined' : s === 'unreadable' ? 'review_unreadable' : 'domain_unconfirmed'
+}
 
 export function createDraft(db: Database.Database, tenantId: string, leadId: string, businessName: string): string {
   return db.transaction(() => createDraftInner(db, tenantId, leadId, businessName)).immediate()
 }
 
-function createDraftInner(db: Database.Database, tenantId: string, leadId: string, businessName: string): string {
+// Every check createDraft makes before it writes, in the same order. Throws OutreachError on the first refusal.
+function draftChecks(db: Database.Database, tenantId: string, leadId: string) {
   const lead = db.prepare(
     `SELECT l.id, l.company, l.name, l.contact, l.signal, l.source_url, l.evidence_excerpt, l.confidence, l.fit, l.intent, l.human_confirmed_at
      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`,
   ).get(leadId, tenantId) as Lead | undefined
   if (!lead) throw new OutreachError('not_found')
+  if (isQuarantined(db, leadId)) throw new OutreachError('lead_quarantined')
+  if (requiredGateHeld(db,tenantId,leadId)) throw new OutreachError('sales_hiring_check_failed')   // confirming the lead or its domain never clears a failed required check
   if (currentnessHeld(db,tenantId,leadId)) throw new OutreachError('lead_currentness_unconfirmed')
   // Verified by dazl (quote confirmed on the cited page) OR confirmed by the user
   // themselves from the needs-review list. A human confirmation is the user's own
   // checked decision, labelled as such in the UI; it never rewrites the machine verdict.
-  if ((!lead.evidence_excerpt || lead.confidence === null) && lead.human_confirmed_at === null) throw new OutreachError('lead_not_verified')
+  if (evidenceStateOf(lead) === 'unverified') throw new OutreachError('lead_not_verified')
   // Held lead: ICP grading failed, so it sits at fit 0 with intent unset. That hold is not a
   // grade, and the lead must not be emailed until a rescan grades it successfully. A real
   // grade of 0 (intent set) and never-scored leads (fit unset) are not affected.
@@ -225,13 +235,22 @@ function createDraftInner(db: Database.Database, tenantId: string, leadId: strin
   // The page that actually shows the address: the cited page for a direct contact, the company's own
   // contact page (its stored source URL) for a sitecrawl address. Never the signal/news URL for a crawled address.
   let addressUrl = lead.source_url
-  if (!EMAIL_RE.test(norm(published))) {
-    try {
-      crawled = readCrawledRows(db, tenantId, lead.id)
-      const r = pickCrawledEmail(crawled)
-      if (r) { published = r.value; addressUrl = r.source_url ?? lead.source_url }
-    } catch { /* enrichment table not present */ }
-  }
+  // The crawled rows are read even when the contact is already an email: equality with the contact does not prove the
+  // cited page printed it, and domainReviewFor must see the crawl record of that address (approve/send already do via
+  // domainReviewStatus; draft used to skip it, found by the card-vs-gate consistency test).
+  const contactIsEmail = EMAIL_RE.test(norm(published))
+  try {
+    crawled = readCrawledRows(db, tenantId, lead.id)
+    const r = pickCrawledEmail(crawled)
+    if (r && !contactIsEmail) { published = r.value; addressUrl = r.source_url ?? lead.source_url }
+    // A contact that equals a crawled address is not proof the cited page printed it: cite the page the crawler actually
+    // saved for that address (the table keeps one record per address), never the signal/news URL. The recipient and the
+    // identity rules are unchanged. A contact the crawl never recorded keeps the cited page.
+    if (contactIsEmail) {
+      const same = crawled.find(x => x.connector === 'sitecrawl' && x.kind === 'email' && norm(x.value) === norm(published) && x.source_url)
+      if (same?.source_url) addressUrl = same.source_url
+    }
+  } catch { /* enrichment table not present */ }
   const to = norm(published)
   if (!EMAIL_RE.test(to)) throw new OutreachError('no_email_contact')
   // Published is not the same as sales-contactable: press, support, privacy,
@@ -244,20 +263,36 @@ function createDraftInner(db: Database.Database, tenantId: string, leadId: strin
   const test = testRecipientApproved(db, tenantId, to) ? 1 : 0
   if (!recipientAllowed(db,tenantId,to)) throw new OutreachError('personal_email')
   if (isSuppressed(db, tenantId, to)) throw new OutreachError('suppressed')
-  // Older local databases may not have Memory yet. No default positioning is
-  // fabricated, and another tenant's context is never used.
-  let positioning = ''
-  if (tableExists(db, 'tenant_memory')) positioning = getMemory(db, tenantId)?.positioning ?? ''
-  // First-login onboarding is already stored in this same auth/scan database.
-  // Users should not need to discover a second Memory form to explain their offer.
-  // Website alone is not an offer and is never expanded into guessed claims.
-  if (!positioning.trim() && tableExists(db, 'users')) {
-    const columns = db.prepare('PRAGMA table_info(users)').all() as { name: string }[]
-    if (columns.some(c => c.name === 'sells')) {
-      const profile = db.prepare('SELECT sells FROM users WHERE id = ?').get(tenantId) as { sells: string | null } | undefined
-      positioning = profile?.sells ?? ''
-    }
-  }
+  return { lead, to, addressUrl, test }
+}
+
+// Read-only: why createDraft would refuse this lead right now (its error code), or null if it would accept it. Runs the
+// very same checks (draftChecks); used by views that recommend a next step, so they never recommend a refused one.
+export function draftBlockReason(db: Database.Database, tenantId: string, leadId: string): string | null {
+  try { draftChecks(db, tenantId, leadId); return null } catch (e) { if (e instanceof OutreachError) return e.code; throw e }
+}
+
+// The play a lead came from, with what is needed to resolve its offer. null: no play of this tenant for the lead, or an
+// older database without the columns. Any other read failure throws: an unreadable play is never "no play", so the
+// caller never falls back to the tenant-wide offer.
+export function playOfferRow(db: Database.Database, tenantId: string, leadId: string): { offer: string | null; seller: string | null; query: string | null } | null {
+  try {
+    return (db.prepare('SELECT j.offer, j.seller, j.query FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as { offer: string | null; seller: string | null; query: string | null } | undefined) ?? null
+  } catch (e) { if (isMissingSchema(e)) return null; throw e }
+}
+
+function createDraftInner(db: Database.Database, tenantId: string, leadId: string, businessName: string): string {
+  const { lead, to, addressUrl, test } = draftChecks(db, tenantId, leadId)
+  // What this lead's play sells (lib/scan/play-offer-text.ts draftOffer): the offer reviewed for the play, else the one
+  // it was created with, else the tenant's own context: the Memory positioning or, after onboarding only, the profile
+  // offer (users.sells), so nobody needs a second hidden form to explain their offer. No default offer is fabricated,
+  // a website alone is not an offer, and another tenant's context is never used. A contested play (offer_conflict) gets
+  // no draft until the tenant chooses.
+  let play: ReturnType<typeof playOfferRow>, tenant: ReturnType<typeof readTenantOffer>
+  try { play = playOfferRow(db, tenantId, lead.id); tenant = readTenantOffer(db, tenantId) } catch { throw new OutreachError('offer_unreadable') } // nothing drafted
+  const r = draftOffer(play, tenant)
+  if (r.refuse) throw new OutreachError(r.refuse)
+  const positioning = r.offer ?? ''
   const t = draftTemplate(lead, businessName, positioning, addressUrl)
   const id = id24()
   try {
@@ -312,17 +347,34 @@ export function skip(db: Database.Database, tenantId: string, id: string): void 
   if (r.changes !== 1) throw new OutreachError(getMsg(db, tenantId, id) ? 'not_skippable' : 'not_found')
 }
 
-export function approve(db: Database.Database, tenantId: string, id: string, sequenceSet = false): void {
+// Every check approve makes before its write transaction, in the same order. Throws OutreachError on the first refusal.
+function approveChecks(db: Database.Database, tenantId: string, id: string, sequenceSet: boolean, skipAccount = false) {
   if (!sequenceSet && tableExists(db, 'sequences') && db.prepare("SELECT 1 FROM sequences WHERE tenant_id = ? AND message_id = ? AND status NOT IN ('stopped','done')").get(tenantId, id)) throw new OutreachError('approve_sequence_set')
   const m = getMsg(db, tenantId, id)
   if (!m) throw new OutreachError('not_found')
   if (m.status !== 'draft') throw new OutreachError('not_a_draft')
-  if (!getSettings(db, tenantId)) throw new OutreachError('sender_identity_missing')
-  if (gmailStatus(db, tenantId)?.status !== 'active') throw new OutreachError('gmail_not_connected')
+  if (!skipAccount && !getSettings(db, tenantId)) throw new OutreachError('sender_identity_missing')
+  if (!skipAccount && gmailStatus(db, tenantId)?.status !== 'active') throw new OutreachError('gmail_not_connected')
   if (isSuppressed(db, tenantId, m.to_email)) throw new OutreachError('suppressed')
   if (contactPurposeRestricted(db,tenantId,m.lead_id,m.to_email)) throw new OutreachError('not_sales_contact')
   if (!testFixtureSend(db,tenantId,m) && currentnessHeld(db,tenantId,m.lead_id)) throw new OutreachError('lead_currentness_unconfirmed')
   if (!testFixtureSend(db, tenantId, m) && !leadEvidenceEligible(db, tenantId, m.lead_id)) throw new OutreachError('lead_evidence_withdrawn')
+  return m
+}
+
+// Read-only: why approve would refuse this message right now (its error code), or null. The same approveChecks plus the
+// identity hold approve re-reads under its write lock. skipAccount leaves out only the account-wide checks (sender details,
+// Gmail) so a view can tell "fix your setup" apart from a hold on the lead itself; approve never skips them.
+export function approveBlockReason(db: Database.Database, tenantId: string, id: string, o: { skipAccount?: boolean } = {}): string | null {
+  try {
+    const m = approveChecks(db, tenantId, id, false, !!o.skipAccount)
+    if (!testFixtureSend(db, tenantId, m) && domainReviewHeld(db, tenantId, m.lead_id, m.to_email)) return domainHoldCode(db, tenantId, m.lead_id, m.to_email)
+    return null
+  } catch (e) { if (e instanceof OutreachError) return e.code; throw e }
+}
+
+export function approve(db: Database.Database, tenantId: string, id: string, sequenceSet = false): void {
+  const m = approveChecks(db, tenantId, id, sequenceSet)
   db.transaction(() => {
     // Read under the write lock, the same lock the identity review action takes, so a withdraw cannot slip in between this check and the update.
     if (!testFixtureSend(db, tenantId, m) && domainReviewHeld(db, tenantId, m.lead_id, m.to_email)) throw new OutreachError(domainHoldCode(db, tenantId, m.lead_id, m.to_email))
@@ -368,6 +420,13 @@ export async function sendMessage(db: Database.Database, tenantId: string, id: s
   const pre = getMsg(db, tenantId, id)
   if (!pre) throw new OutreachError('not_found')
   if (pre.status === 'sent') return 'sent' // idempotent retry
+  sendPreChecks(db, tenantId, pre)
+  return sendClaimed(db, tenantId, id, pre, d)
+}
+
+type StoredMsg = NonNullable<ReturnType<typeof getMsg>>
+// Every check sendMessage makes before it claims the message, in the same order. Throws OutreachError on the first refusal.
+function sendPreChecks(db: Database.Database, tenantId: string, pre: StoredMsg): void {
   if (contactPurposeRestricted(db,tenantId,pre.lead_id,pre.to_email)) throw new OutreachError('not_sales_contact')
   if (!recipientAllowed(db,tenantId,pre.to_email)) throw new OutreachError('personal_email')
   if (leadHeld(db, tenantId, pre.lead_id)) throw new OutreachError('lead_ungraded')
@@ -377,7 +436,26 @@ export async function sendMessage(db: Database.Database, tenantId: string, id: s
   if (anyUncertainSend(db, tenantId)) throw new OutreachError('already_uncertain')
   if (tableExists(db, 'autopilot_settings') && (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as { paused: number } | undefined)?.paused) throw new OutreachError('paused')
   if (pre.status !== 'approved') throw new OutreachError(pre.status === 'sending' || pre.status === 'uncertain' ? `already_${pre.status}` : 'not_approved')
+}
 
+// Read-only: why sendMessage would refuse this approved message right now (its error code), or null. The pre-claim checks
+// above plus the account checks it makes after claiming (exact words still approved, sender identity, Gmail connected,
+// the shared daily cap). Gmail itself can still fail at send time; this never claims or sends.
+export function sendBlockReason(db: Database.Database, tenantId: string, id: string, o: { skipAccount?: boolean; now?: number } = {}): string | null {
+  const now = o.now ?? Math.floor(Date.now() / 1000)
+  const m = getMsg(db, tenantId, id)
+  if (!m) return 'not_found'
+  try { sendPreChecks(db, tenantId, m) } catch (e) { if (e instanceof OutreachError) return e.code; throw e }
+  if (isSuppressed(db, tenantId, m.to_email)) return 'suppressed'
+  if (m.approved_hash !== hash(m.to_email, m.subject, m.body)) return 'changed_since_approval'
+  // skipAccount skips only the sender and Gmail checks; the shared daily cap is never skipped.
+  if (!o.skipAccount && !getSettings(db, tenantId)) return 'sender_identity_missing'
+  if (!o.skipAccount && !db.prepare('SELECT 1 FROM gmail_accounts WHERE tenant_id = ?').get(tenantId)) return 'gmail_not_connected'
+  if (accountSendCount(db, tenantId, now) + 1 > DAILY_CAP) return 'daily_cap'
+  return null
+}
+
+async function sendClaimed(db: Database.Database, tenantId: string, id: string, pre: StoredMsg, d: Deps): Promise<'sent' | 'uncertain'> {
   // The identity check and the claim are one write transaction (the same lock the review action takes), so a withdraw cannot land between them.
   const claim = db.transaction(() => {
     if (!testFixtureSend(db, tenantId, pre) && domainReviewHeld(db, tenantId, pre.lead_id, pre.to_email)) throw new OutreachError(domainHoldCode(db, tenantId, pre.lead_id, pre.to_email))

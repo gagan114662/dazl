@@ -64,9 +64,11 @@ test('crawlJob stores each contact with its source page and date; the site is re
   const reads: string[] = []
   const get: Get = async url => { const u = new URL(url); reads.push(u.hostname + u.pathname); const p = pages[u.pathname]; return p ? { status: 200, body: p.body, finalUrl: url } : { status: 404, body: '', finalUrl: url } }
   await crawlJob(db, 't1', 'j1', { get, gapMs: 0, env: {}, now: Date.parse('2026-10-20T12:00:00Z') })
-  const rows = db.prepare("SELECT lead_id, kind, value, source_url, source_date, connector FROM lead_enrichments WHERE kind <> 'domain' ORDER BY lead_id").all()
+  const rows = db.prepare("SELECT lead_id, kind, value, source_url, source_date, connector FROM lead_enrichments WHERE kind NOT IN ('domain', 'domain_check') ORDER BY lead_id").all()
   const em = (id: string) => ({ lead_id: id, kind: 'email', value: 'hello@stabyl.com', source_url: 'https://stabyl.com/contact-us', source_date: '2026-10-20', connector: 'sitecrawl' })
   assert.deepEqual(rows, [em('l1'), em('l2')], 'a second lead naming the same company on the same domain gets its own rows')
+  // Each accepted domain also records that its identity check passed (what the contact sweep and the score read), once per lead.
+  assert.deepEqual(db.prepare("SELECT lead_id, value FROM lead_enrichments WHERE kind = 'domain_check' ORDER BY lead_id").all(), [{ lead_id: 'l1', value: 'stabyl.com|identity_checked' }, { lead_id: 'l2', value: 'stabyl.com|identity_checked' }])
   assert.equal(reads.filter(r => r === 'stabyl.com/contact-us').length, 1, 'but the contact page is read once')
   const a = db.prepare("SELECT lookup, status, results FROM connector_audit ORDER BY rowid").all()
   // l3's evidence links nothing, so its name-derived probes were tried; the mock's shared home page
@@ -129,8 +131,9 @@ test('crawlJob probes name-derived domains when evidence links nothing, verifies
   db.prepare("INSERT INTO leads VALUES ('l1','j1','Acme Robotics','https://news.example/a',NULL,90,80,NULL),('l2','j1','Ghost Corp','https://news.example/b',NULL,90,70,NULL)").run()
   const get: Get = async url => {
     const u = new URL(url)
-    if (u.hostname === 'news.example') return { status: 200, body: html('a roundup with no company links'), finalUrl: url }
-    if (u.hostname === 'acmerobotics.com' && u.pathname === '/') return { status: 200, body: html('Acme Robotics home. Email: hello@acmerobotics.com'), finalUrl: url }
+    // The roundup and the probed homepage share a place (Pittsburgh): guessed domains must also pass the #197 location rule.
+    if (u.hostname === 'news.example') return { status: 200, body: html('a roundup with no company links. Startups hiring in Pittsburgh this month.'), finalUrl: url }
+    if (u.hostname === 'acmerobotics.com' && u.pathname === '/') return { status: 200, body: html('Acme Robotics home, Pittsburgh PA. Email: hello@acmerobotics.com'), finalUrl: url }
     if (u.hostname === 'ghost.com' && u.pathname === '/') return { status: 200, body: html('Totally Different Company landing page'), finalUrl: url }
     if (u.pathname === '/robots.txt') return { status: 200, body: '', finalUrl: url }
     return { status: 404, body: '', finalUrl: url }
@@ -181,10 +184,13 @@ test('domain provenance: each accepted domain records how it was chosen and the 
     if (u.hostname === 'acmerobotics.com') return { status: 200, body: html(u.pathname === '/' ? 'Acme Robotics home hello@acmerobotics.com' : 'job'), finalUrl: url }
     if (u.hostname === 'news.example' && u.pathname === '/b') return { status: 200, body: html('<a href="https://betaworks.io">x</a>'), finalUrl: url }
     if (u.hostname === 'news.example' && u.pathname === '/c') return { status: 200, body: html('<a href="https://somewhere.test/x">Gamma Labs profile</a>'), finalUrl: url }
+    if (u.hostname === 'news.example' && u.pathname === '/d') return { status: 200, body: html('no links. Stable opened a new office in Austin.'), finalUrl: url }
     if (u.hostname === 'news.example') return { status: 200, body: html('no links'), finalUrl: url }
     if (u.hostname === 'betaworks.io' && u.pathname === '/') return { status: 200, body: html('Beta Works home info@betaworks.io'), finalUrl: url }
-    // a different company that happens to say "stable": the homepage name check alone accepts it, so the basis must say name_probe
-    if (u.hostname === 'stable.com' && u.pathname === '/') return { status: 200, body: html('Our horses are stable and calm. sales@stable.com'), finalUrl: url }
+    // a guessed site that passes the name check AND names the lead's place (Austin, from the evidence; #197 location
+    // rule): it binds, but only as name_probe, never as a confirmed company site. Without a shared place it is refused
+    // (test/identity-geo.test.ts).
+    if (u.hostname === 'stable.com' && u.pathname === '/') return { status: 200, body: html('Stable, Austin TX. Our horses are stable and calm. sales@stable.com'), finalUrl: url }
     if (u.hostname === 'somewhere.test' && u.pathname === '/') return { status: 200, body: html('Gamma Labs is listed here. info@somewhere.test'), finalUrl: url }
     return { status: 404, body: '', finalUrl: url }
   }
@@ -264,4 +270,27 @@ test('a lead whose name the homepage does not show cannot reuse a crawl; a later
   const emails = (id: string) => db.prepare("SELECT value FROM lead_enrichments WHERE lead_id = ? AND kind = 'email'").all(id).length
   assert.deepEqual([emails('a'), emails('b')], [0, 1])
   assert.equal(hits.filter(h => h === 'acmeroofing.test/').length, 2, 'the first read stopped at the identity check, so exactly one more read for the lead whose name matches')
+})
+
+test('crawlJob also researches unfinished candidates (undated or quote-unconfirmed review) after verified leads; closed / counterparty / stale review leads are not crawled', async () => {
+  const db = new Database(':memory:'); migrateConnectors(db)
+  db.exec("CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT)")
+  db.prepare("INSERT INTO leads VALUES ('v1','j1','Verified Co','https://news.example/v',NULL,90,10,NULL),('u1','j1','Undated Co','https://news.example/u','outside_window_undated',NULL,99,NULL),('q1','j1','Quote Co','https://news.example/q','quote_unconfirmed',NULL,50,NULL),('c1','j1','Closed Co','https://news.example/c','job_closed',NULL,99,NULL),('s1','j1','Stale Co','https://news.example/s','outside_window',NULL,99,NULL)").run()
+  const link = (d: string, n: string) => html(`<a href="https://${d}.com">${n}</a>`)
+  const pages: Record<string, string> = { '/v': link('verified', 'Verified Co'), '/u': link('undated', 'Undated Co'), '/q': link('quote', 'Quote Co'), '/c': link('closed', 'Closed Co'), '/s': link('stale', 'Stale Co'), '/robots.txt': '' }
+  const homes: Record<string, string> = { 'verified.com': 'Verified Co', 'undated.com': 'Undated Co', 'quote.com': 'Quote Co', 'closed.com': 'Closed Co', 'stale.com': 'Stale Co' }
+  const reads: string[] = []
+  const get: Get = async url => {
+    const u = new URL(url); reads.push(u.hostname + u.pathname)
+    if (u.pathname === '/robots.txt') return { status: 200, body: '', finalUrl: url }
+    if (u.hostname === 'news.example') return pages[u.pathname] ? { status: 200, body: pages[u.pathname], finalUrl: url } : { status: 404, body: '', finalUrl: url }
+    if (u.pathname === '/') return { status: 200, body: html(`${homes[u.hostname]} home <a href="/locations">l</a>`), finalUrl: url }
+    if (u.pathname === '/locations') return { status: 200, body: html(`Email: hello@${u.hostname}`), finalUrl: url }
+    return { status: 404, body: '', finalUrl: url }
+  }
+  await crawlJob(db, 't1', 'j1', { get, gapMs: 0, env: {}, now: Date.parse('2026-10-20T12:00:00Z') })
+  const got = (db.prepare("SELECT lead_id, value FROM lead_enrichments WHERE kind = 'email' ORDER BY lead_id").all() as { lead_id: string; value: string }[])
+  assert.deepEqual(got.map(g => g.lead_id), ['q1', 'u1', 'v1'], JSON.stringify(got))
+  assert.ok(!reads.some(r => r.startsWith('closed.com') || r.startsWith('stale.com')), 'closed / outside-window review leads are never crawled')
+  assert.ok(reads.includes('undated.com/locations'), 'the /locations page is read')
 })

@@ -1,13 +1,15 @@
 'use client'
 import { useEffect, useState } from 'react'
+import SenderInline from '../sender-inline'
 
-interface S { gmail: { email: string; status: string; read_granted: boolean } | null; sender: { sender_name: string; postal_address: string } | null }
+interface S { gmail: { email: string; status: string; read_granted: boolean } | null; sender: { sender_name: string; postal_address: string; booking_url?: string | null } | null }
 
 // Plain status of what is needed before anything can be sent. Signing in with Google proves identity only;
 // Gmail is a separate, explicit grant made in Settings, so say so rather than leaving the user to find out at Send.
 export default function SendReadiness() {
   const [s, setS] = useState<S | null>(null)
-  useEffect(() => { fetch('/api/outreach/settings').then(r => r.ok ? r.json() : null).then(setS).catch(() => {}) }, [])
+  const load = () => fetch('/api/outreach/settings').then(r => r.ok ? r.json() : null).then(setS).catch(() => {})
+  useEffect(() => { void load() }, [])
   if (!s) return null
   const gmailOk = s.gmail?.status === 'active'
   const senderOk = !!s.sender?.sender_name && !!s.sender?.postal_address
@@ -18,9 +20,10 @@ export default function SendReadiness() {
       <ul className="list-disc pl-5 text-[#555] mb-2">
         {!s.gmail && <li>Gmail is not connected. Signing in with Google does not connect Gmail; it is a separate step you approve in Settings.</li>}
         {s.gmail && !gmailOk && <li>Gmail needs reconnecting.</li>}
-        {!senderOk && <li>Add your name and mailing address.</li>}
+        {!senderOk && <li>Add your name and mailing address below.</li>}
       </ul>
-      <a className="underline underline-offset-2" href="/app/settings">Open Settings</a>
+      {!senderOk && <div className="mb-3"><SenderInline initial={s.sender} onSaved={() => void load()} /></div>}
+      {!gmailOk && <a className="underline underline-offset-2" href="/app/settings#gmail">Connect Gmail in Settings</a>}
     </div>
   )
 }

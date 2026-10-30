@@ -2,17 +2,20 @@ import { after, NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
-import { getPlan } from '@/lib/plans'
+import { readPlan } from '@/lib/plans'
+import { getDb } from '@/lib/db/client'
 import { crawlJob } from '@/lib/connectors/sitecrawl'
 import { enrichJobSignals } from '@/lib/signals'
 import { commenterBatchStatus, enrichCommenters, importCommenters, MAX_PROFILES, parseImport } from '@/lib/scan/commenter-import'
+import { denied } from '@/lib/workspace-access'
 
 const MAX_UPLOAD = 100_000 // 100 rows is the cap; a bigger paste is a mistake, not a use case
 
 export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  const rl = rateLimit(`commenter-import:${user.id}`, 10, 24 * 60 * 60 * 1000)
+  const no = denied(user, 'operate'); if (no) return no
+  const rl = (await rateLimit(`commenter-import:${user.tenantId}`, 10, 24 * 60 * 60 * 1000))
   if (!rl.ok) return NextResponse.json({ error: 'Too many imports. Try again tomorrow.' }, { status: 429, headers: { 'Retry-After': String(rl.retryAfterS) } })
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   const body = await req.json().catch(() => null)
@@ -24,18 +27,18 @@ export async function POST(req: NextRequest) {
   if (text.length > MAX_UPLOAD) return NextResponse.json({ error: 'That file is too large' }, { status: 400 })
 
   const db = getScanDb()
-  if (getPlan(db, user.id) !== 'pro') return NextResponse.json({ error: 'pro_only' }, { status: 402 })
+  if ((await readPlan(await getDb(), user.tenantId)) !== 'pro') return NextResponse.json({ error: 'pro_only' }, { status: 402 })
 
   const parsed = parseImport(text)
   if (parsed.valid.length === 0) return NextResponse.json({ error: 'No valid profile URLs found', invalid: parsed.invalid }, { status: 400 })
-  const { batchId, jobId, imported } = importCommenters(db, user.id, parsed.valid, context)
+  const { batchId, jobId, imported } = importCommenters(db, user.tenantId, parsed.valid, context)
   // Company-level enrichment after the response: BYOK Apollo/PDL org + people (no emails),
   // contact-page crawl (evidence fetch skipped - profile URLs are never fetched), SEC/job-board signals.
   after(async () => {
-    await enrichCommenters(db, user.id, batchId).catch(() => {})
+    await enrichCommenters(db, user.tenantId, batchId).catch(() => {})
     const leadRows = db.prepare("SELECT id, company, source_url FROM leads WHERE scan_job_id = ? AND company <> ''").all(jobId) as { id: string; company: string; source_url: string }[]
-    if (leadRows.length > 0) await crawlJob(db, user.id, jobId, { leads: leadRows, skipEvidenceFetch: true }).catch(() => {})
-    await enrichJobSignals(db, user.id, jobId, {}).catch(() => {})
+    if (leadRows.length > 0) await crawlJob(db, user.tenantId, jobId, { leads: leadRows, skipEvidenceFetch: true }).catch(() => {})
+    await enrichJobSignals(db, user.tenantId, jobId, {}).catch(() => {})
   })
   return NextResponse.json({
     batch_id: batchId,
@@ -51,7 +54,7 @@ export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const db = getScanDb()
-  const rows = db.prepare('SELECT id FROM commenter_batches WHERE user_id = ? ORDER BY created_at DESC LIMIT 1').all(user.id) as { id: string }[]
+  const rows = db.prepare('SELECT id FROM commenter_batches WHERE user_id = ? ORDER BY created_at DESC LIMIT 1').all(user.tenantId) as { id: string }[]
   if (rows.length === 0) return NextResponse.json({ batch: null })
-  return NextResponse.json({ batch: commenterBatchStatus(db, user.id, rows[0].id) })
+  return NextResponse.json({ batch: commenterBatchStatus(db, user.tenantId, rows[0].id) })
 }

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { directQueries, rolePhrases } from '../lib/search/direct-queries.ts'
+import { directQueries, rolePhrases, roleRequestText } from '../lib/search/direct-queries.ts'
 
 test('a request that is not about hiring gets no ATS queries', () => {
   assert.deepEqual(directQueries('Find Ohio companies that just raised a seed round', ['seed round'], ['Ohio']), [])
@@ -43,9 +43,35 @@ test('non-English hiring requests get direct queries with the role phrase in the
 test('every requested place gets its own pair of direct queries, at most 3 places', () => {
   const q = directQueries('companies hiring a head of sales in Lisbon or Porto', [], ['Lisbon', 'Porto'])
   assert.equal(q.length, 4)
-  assert.ok(q.slice(0, 2).every(x => x.endsWith('"head of sales" Lisbon')) && q.slice(2).every(x => x.endsWith('"head of sales" Porto')))
+  assert.equal(q.filter(x => x.endsWith('"head of sales" Lisbon')).length, 2)
+  assert.equal(q.filter(x => x.endsWith('"head of sales" Porto')).length, 2)
   assert.equal(directQueries('hiring a payroll specialist', [], ['A1', 'B1', 'C1', 'D1']).length, 6)
 })
 test('a non-hiring request in another language still gets no direct queries', () => {
   assert.deepEqual(directQueries('Empresas em Lisboa que levantaram uma ronda de investimento', [], ['Lisboa']), [])
+})
+test('a truncated budget slice keeps one direct query per requested place (#215 review)', () => {
+  const q = directQueries('companies hiring a head of sales in Lisbon, Porto or Braga', [], ['Lisbon', 'Porto', 'Braga'])
+  assert.equal(q.length, 6)
+  const kept = q.slice(0, 4)
+  for (const place of ['Lisbon', 'Porto', 'Braga']) assert.ok(kept.some(x => x.endsWith(` ${place}`)), `${place} starved`)
+})
+test('"I need" / "I want" / "we need" at the start of an ordinary request keep the hiring constraint (#215 review)', () => {
+  for (const [req, role, place] of [
+    ['I need companies hiring a receptionist in London', 'receptionist', 'London'],
+    ['I want startups hiring a head of sales in Berlin', 'head of sales', 'Berlin'],
+    ['We need companies hiring a payroll specialist in Lisbon', 'payroll specialist', 'Lisbon'],
+    ['Preciso de empresas contratando um recepcionista em Lisboa', 'recepcionista', 'Lisboa'],
+    ['Necesito empresas contratando un recepcionista en Madrid', 'recepcionista', 'Madrid'],
+    ['Ich brauche Firmen, die einen Buchhalter einstellen, suchen in Berlin', 'buchhalter', 'Berlin'],
+  ] as const) {
+    assert.deepEqual(rolePhrases(req, [], [place]).slice(-1).length, 1, req)
+    const q = directQueries(req, [], [place])
+    assert.ok(q.length > 0, `${req} lost direct hiring search`)
+    assert.ok(q.every(x => x.toLowerCase().includes(`"${role}"`) || role === 'buchhalter'), `${req} -> ${q[0]}`)
+  }
+})
+test('requirement clauses without hiring words are still cut (#215 review)', () => {
+  assert.equal(rolePhrases('Companies hiring a receptionist in London. I need founder contacts and dated evidence', [], ['London']).join('|'), 'receptionist')
+  assert.equal(roleRequestText('hiring a receptionist, exclude agencies').includes('agencies'), false)
 })

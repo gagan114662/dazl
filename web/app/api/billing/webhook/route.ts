@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getScanDb } from '@/lib/scan/service'
+import { getDb } from '@/lib/db/client'
 import { applyStripeEvent, verifyStripeSignature, type StripeEvent } from '@/lib/billing/stripe'
+import { captureError } from '@/lib/ops/errors'
+import { requestIdOf } from '@/lib/ops/request-log'
 
 // Stripe calls this directly: no session. Authenticity comes only from the
 // signature over the raw body. With no STRIPE_WEBHOOK_SECRET the endpoint is off.
@@ -17,9 +19,13 @@ export async function POST(req: NextRequest) {
   }
   if (!event?.id || !event?.type) return NextResponse.json({ error: 'Bad payload' }, { status: 400 })
   try {
-    return NextResponse.json({ result: applyStripeEvent(getScanDb(), event) })
+    const result = await applyStripeEvent(await getDb(), event)
+    // 'held': a same-second tie Stripe could not settle yet; the restrictive plan is in place and the event is not
+    // marked processed, so answering 503 makes Stripe deliver it again
+    if (result === 'held') return NextResponse.json({ result }, { status: 503 })
+    return NextResponse.json({ result })
   } catch (e) {
-    console.error('webhook apply failed', event.id, e)
+    captureError(e, { source: 'route', where: '/api/billing/webhook', method: 'POST', ref: event.id, requestId: requestIdOf(req) })
     return NextResponse.json({ error: 'Could not process' }, { status: 500 }) // Stripe will retry
   }
 }

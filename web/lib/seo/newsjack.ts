@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
-import { getKey, keyStatus } from '../llm/key-store.ts'
+import type { Db } from '../db/client.ts'
+import { fetchKey, readKeyStatus } from '../llm/key-store.ts'
 import { providers, ProviderError } from '../llm/provider.ts'
 import { fetchPublicHtml, defaultLookup, type Lookup } from '../net/public-fetch.ts'
 import type { Vendor } from '../llm/vendors.ts'
@@ -7,6 +8,7 @@ import type { Vendor } from '../llm/vendors.ts'
 // Newsjacking drafts: paste a news URL, get a draft commentary on the tenant's OWN AI key.
 // Nothing is ever published by dazl. A draft must be approved in the UI, then the user copies it
 // to their own channel (Notion first, or anywhere else) - the app only ever hands back text.
+// Drafts and the tenant's own key are read and written through the Db layer (SQLite or Postgres).
 
 export function migrateNewsjacks(db: Database.Database): void {
   db.exec(`
@@ -58,12 +60,12 @@ Rules: no hype words, no invented statistics, state only what the excerpt suppor
 
 export type Newsjack = { id: string; url: string; title: string | null; draft: string; status: string; created_at: number }
 
-export async function createNewsjack(db: Database.Database, tenantId: string, rawUrl: string, deps: { fetchImpl?: typeof fetch; lookup?: Lookup; master?: Buffer; now?: number } = {}): Promise<Newsjack | { error: 'no_key' | 'invalid' | 'fetch' | 'upstream' }> {
+export async function createNewsjack(db: Db, tenantId: string, rawUrl: string, deps: { fetchImpl?: typeof fetch; lookup?: Lookup; master?: Buffer; now?: number } = {}): Promise<Newsjack | { error: 'no_key' | 'invalid' | 'fetch' | 'upstream' }> {
   const url = rawUrl.trim()
   if (!/^https:\/\/[^\s]{4,480}$/.test(url)) return { error: 'invalid' }
-  const vendor = (keyStatus(db, tenantId)[0]?.vendor ?? null) as Vendor | null
+  const vendor = ((await readKeyStatus(db, tenantId))[0]?.vendor ?? null) as Vendor | null
   if (!vendor) return { error: 'no_key' }
-  const key = getKey(db, tenantId, vendor, deps.master)
+  const key = await fetchKey(db, tenantId, vendor, deps.master)
   if (!key) return { error: 'no_key' }
   const f = deps.fetchImpl ?? fetch
   const article = await fetchArticle(url, deps.fetchImpl, deps.lookup ?? defaultLookup)
@@ -78,15 +80,15 @@ export async function createNewsjack(db: Database.Database, tenantId: string, ra
   if (draft.length < 100) return { error: 'upstream' }
   const now = deps.now ?? Math.floor(Date.now() / 1000)
   const id = `${now.toString(36)}${Math.random().toString(36).slice(2, 10)}`
-  db.prepare("INSERT INTO newsjacks (id, tenant_id, url, title, draft, status, created_at) VALUES (?, ?, ?, ?, ?, 'draft', ?)").run(id, tenantId, url, article.title || null, draft.slice(0, 6000), now)
+  await db.run("INSERT INTO newsjacks (id, tenant_id, url, title, draft, status, created_at) VALUES (?, ?, ?, ?, ?, 'draft', ?)", [id, tenantId, url, article.title || null, draft.slice(0, 6000), now])
   return { id, url, title: article.title || null, draft, status: 'draft', created_at: now }
 }
 
 // Approving only marks the draft ready to copy - it triggers no publishing, ever.
-export function approveNewsjack(db: Database.Database, tenantId: string, id: string): boolean {
-  return db.prepare("UPDATE newsjacks SET status = 'approved' WHERE id = ? AND tenant_id = ? AND status = 'draft'").run(id, tenantId).changes === 1
+export async function approveNewsjack(db: Db, tenantId: string, id: string): Promise<boolean> {
+  return (await db.run("UPDATE newsjacks SET status = 'approved' WHERE id = ? AND tenant_id = ? AND status = 'draft'", [id, tenantId])).changes === 1
 }
 
-export function recentNewsjacks(db: Database.Database, tenantId: string, limit = 10): Newsjack[] {
-  return db.prepare('SELECT id, url, title, draft, status, created_at FROM newsjacks WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?').all(tenantId, limit) as Newsjack[]
+export function recentNewsjacks(db: Db, tenantId: string, limit = 10): Promise<Newsjack[]> {
+  return db.all<Newsjack>('SELECT id, url, title, draft, status, created_at FROM newsjacks WHERE tenant_id = ? ORDER BY created_at DESC, id DESC LIMIT ?', [tenantId, limit])
 }

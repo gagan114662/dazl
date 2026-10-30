@@ -2,10 +2,13 @@ import { tableExists } from './send-budget.ts'
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getAccessToken, type OAuthDeps } from '../gmail/oauth.ts'
+import { isStaging } from '../staging.ts'
 import { auditAt, recordBounce } from './autopilot.ts'
 import { grantConsent, revokeAll } from './ledger.ts'
 import { norm } from './store.ts'
 import { suppress } from './service.ts'
+import { fullText, messageText, type GPart } from './reply-text.ts'
+export { newText, messageText, htmlToText } from './reply-text.ts'
 
 // Reading replies is its own consent and its own Gmail scope (gmail.readonly). dazl opens only threads it started,
 // by thread id. It never lists or searches the mailbox, stores only a 200-character excerpt of a reply, and
@@ -37,6 +40,10 @@ export function migrateReplies(db: Database.Database): void {
       tenant_id TEXT NOT NULL, thread_id TEXT NOT NULL, step INTEGER NOT NULL, status TEXT NOT NULL CHECK (status IN ('sending','sent','uncertain')),
       gmail_id TEXT, created_at INTEGER NOT NULL, PRIMARY KEY (tenant_id, thread_id, step)
     );
+    -- Inbox read state (lib/outreach/inbox.ts): the newest reply time the owner has seen in a thread; a thread is unread
+    -- while a reply is newer than this.
+    CREATE TABLE IF NOT EXISTS inbox_thread_reads (tenant_id TEXT NOT NULL, thread_id TEXT NOT NULL, read_upto INTEGER NOT NULL, PRIMARY KEY (tenant_id, thread_id));
+    CREATE INDEX IF NOT EXISTS inbound_messages_thread ON inbound_messages (tenant_id, thread_id, received_at);
   `)
   const columns = db.prepare('PRAGMA table_info(inbound_messages)').all() as { name: string }[]
   if (!columns.some(c => c.name === 'outreach_message_id')) db.exec('ALTER TABLE inbound_messages ADD COLUMN outreach_message_id TEXT')
@@ -52,47 +59,111 @@ export const hasReadConsent = (db: Database.Database, tenantId: string) =>
   (db.prepare('SELECT version FROM mail_read_consent WHERE tenant_id = ?').get(tenantId) as { version: string } | undefined)?.version === READ_CONSENT_VERSION
 
 // ---------- classification (rules only; conservative) ----------
-export type ReplyClass = 'opt_out' | 'negative' | 'positive' | 'auto' | 'other'
-const OPT_OUT = /\b(unsubscribe|remove me|stop (emailing|email|contacting|sending|messaging)|do not (contact|email)|don'?t (contact|email)|take me off|opt[- ]?out|cease)\b/i
-const NEGATIVE = /\b(not interested|no thanks|no thank you|not for us|not a fit|no longer interested|wrong person)\b/i
+// opt_out / negative: stop and suppress (future sends to the address too). positive: the only class that can grant
+// consent, English phrases only, and never when any opt-out, negative or ambiguous wording is present. uncertain: the
+// reply could not be read (malformed, empty, attachments only), uses wording that might be an opt-out ("stop",
+// "remove", "spam"...), or is in a script these rules do not read: it BLOCKS the thread for human review (no
+// automated follow-up, consent revoked) without suppressing anyone. other: read, nothing recognised, review only.
+export type ReplyClass = 'opt_out' | 'negative' | 'positive' | 'auto' | 'uncertain' | 'other'
+// A phrase is matched as whole words, in any language (letters on either side mean another word).
+const words = (alts: string[]) => new RegExp(`(?<![\\p{L}\\p{N}])(?:${alts.join('|')})(?![\\p{L}\\p{N}])`, 'iu')
+const OPT_OUT = words([
+  // English
+  'unsubscribe', 'remove me', 'stop (?:emailing|email|contacting|sending|messaging|reaching out)', 'do not (?:contact|email|reach out)', "don'?t (?:contact|email|reach out)", 'take me off', 'opt[- ]?out', 'cease',
+  'never (?:contact|email|message) (?:me|us)', 'leave me alone', "(?:do not|don'?t) send (?:me |us )?(?:any )?(?:more )?(?:e-?mails?|messages?)",
+  'no more (?:e-?mails?|messages?)', 'take (?:me|us) out of', 'remove (?:my|our) (?:address|e-?mail)',
+  // Spanish, French, German, Portuguese, Italian, Dutch
+  'dar(?:me)? de baja', 'darse de baja', 'no me (?:escriban?|contacte[ns]?|env[ií]e[ns]?)', 'el[ií]min(?:a|e|en)(?:me)? de (?:su|la|vuestra) lista', 'quitar(?:me)? de (?:su|la) lista',
+  'd[ée]sinscri(?:re|vez|vez-moi|ption)', 'd[ée]sabonn(?:er|ez|ement)', 'retirez[- ]moi', "ne m'(?:[ée]crivez|contactez|envoyez) plus", 'ne plus me (?:contacter|[ée]crire)',
+  'abmelden', 'austragen', 'tragen sie mich aus', 'keine (?:weiteren )?(?:e-?mails|nachrichten|kontaktaufnahme)', 'kontaktieren sie mich nicht',
+  'descadastr(?:ar|e|e-me)', 'cancelar (?:a )?inscri[cç][aã]o', 'remov(?:a|er)(?:-me)? da (?:sua )?lista', 'n[aã]o me (?:envie|contate|contacte|mande)',
+  'cancellami', 'disiscriv(?:i|ere|etemi)', 'rimuovetemi', 'non (?:mi )?(?:contattate|scrivete) pi[uù]',
+  'afmelden', 'uitschrijven', 'schrijf me uit', 'geen (?:e-?mails|berichten) meer',
+])
+const NEGATIVE = words([
+  'not interested', 'no thanks', 'no thank you', 'not for us', 'not a fit', 'no longer interested', 'wrong person',
+  // explicit rejections: a later positive word never turns them into interest
+  'hard pass', "(?:i'?ll|we'?ll|i will|we will|going to|gonna) pass", 'pass(?: on this| for now| on that)', 'zero interest', 'no interest',
+  'not for me', "(?:we'?re|i'?m) (?:all )?(?:good|set)(?:,? thanks)?", '(?:politely |respectfully )?decline', 'thanks,? but no',
+  'no (?:me |nos )?interesa', 'no estoy interesad[oa]', 'no estamos interesados', 'pas int[ée]ress[ée]e?s?', 'non merci',
+  'kein interesse', 'nicht interessiert', 'n[aã]o tenho interesse', 'n[aã]o estou interessad[oa]', 'non sono interessat[oa]', 'non siamo interessati',
+  'geen interesse', 'niet ge[ïi]nteresseerd',
+])
+// Might be an opt-out, might not: a person reads it.
+const AMBIGUOUS = words(['stop', 'stopp', 'remove', 'unsub\\p{L}*', 'spam', 'abuse', 'gdpr', 'dsgvo', 'rgpd', 'lgpd', 'baja', 'block(?:ed)?', 'blacklist', 'report(?:ed)? (?:you|this)', 'how did you get my'])
+// Any negation or hedge anywhere in a reply that also says something positive ("Not really interested", "Please
+// dont call me", "Maybe interested later", "Why would I be interested?"): the positive wording cannot be trusted, so a
+// person reads it.
+const NEGATION = words(['not', 'never', 'no', 'nope', 'no longer', 'rather not', "\\p{L}+n['\u2019]t", 'dont', 'cant', 'wont', 'isnt', 'arent', 'doesnt', 'didnt', 'wouldnt', 'shouldnt', 'couldnt', 'havent', 'hasnt', 'wasnt', 'werent', 'cannot', 'aint', 'nah', 'hardly', 'barely', 'neither', 'without',
+  'pass', 'zero', 'maybe', 'perhaps', 'possibly', 'might', 'doubt\\p{L}*', 'unlikely', 'later', 'someday', 'would have', 'if ever', 'why (?:would|should)',
+  'pas', 'jamais', 'kein\\p{L}*', 'nicht', 'nein', 'n[aã]o', 'non', 'nunca', 'mai', 'niet', 'geen', 'nooit'])
 const POSITIVE = /\b(interested|tell me more|send (me )?(more )?(info|information|details)|sounds good|let'?s (talk|chat|connect|schedule|set up)|call me|book (a|the) (call|time|meeting)|yes,? please|happy to (chat|talk|connect))\b/i
-// Order matters: any opt-out or negative wording wins over positive wording. Unsure means 'other', which never grants consent.
-export function classifyReply(text: string, h: { autoSubmitted?: string; precedence?: string; subject?: string } = {}): ReplyClass {
-  if ((h.autoSubmitted && h.autoSubmitted.toLowerCase() !== 'no') || /^(bulk|junk|auto_reply)$/i.test(h.precedence ?? '') || /^(automatic reply|auto[- ]?reply|out of office)/i.test(h.subject ?? '')) return 'auto'
+const AUTO_SUBJECT = /^(automatic reply|auto[- ]?reply|autoreply|out of (the )?office|abwesenheitsnotiz|automatische antwort|r[ée]ponse automatique|absence|respuesta autom[áa]tica|resposta autom[áa]tica|risposta automatica|automatisch antwoord)/i
+// Letters outside the Latin script (Cyrillic, Greek, CJK, Arabic, Hebrew...): these rules do not read them.
+const nonLatinShare = (t: string) => { const l = t.match(/\p{L}/gu) ?? []; return l.length ? l.filter(c => !/\p{Script=Latin}/u.test(c)).length / l.length : 0 }
+export interface ReplyHeaders { autoSubmitted?: string; precedence?: string; subject?: string; xAutoreply?: string; xAutorespond?: string }
+// Order matters: an unreadable body or any opt-out, negative or ambiguous wording wins over positive wording; unsure
+// never grants consent. Auto-reply markers (a subject, a list header) change only the two outcomes that would credit the
+// body as a person's answer: positive and other become auto (a template's "interested parties may call me" is no one's
+// interest), and a blank auto-ack is auto. Every body guard below (unreadable, opt-out, negative, ambiguous, script the
+// rules cannot read, positive next to a negation or hedge) applies with or without the markers, in one pass.
+export function classifyReply(text: string, h: ReplyHeaders = {}, status: 'ok' | 'empty' | 'malformed' = 'ok'): ReplyClass {
+  const auto = (h.autoSubmitted && h.autoSubmitted.toLowerCase() !== 'no') || /^(bulk|junk|auto_reply|list)$/i.test(h.precedence ?? '') || !!h.xAutoreply || !!h.xAutorespond || AUTO_SUBJECT.test(h.subject ?? '')
+  if (auto && status !== 'malformed' && !text.trim()) return 'auto'
+  const body = bodyClass(text, status)
+  return auto && (body === 'positive' || body === 'other') ? 'auto' : body
+}
+function bodyClass(text: string, status: 'ok' | 'empty' | 'malformed'): ReplyClass {
+  if (status !== 'ok' || !text.trim()) return 'uncertain'
   if (OPT_OUT.test(text)) return 'opt_out'
   if (NEGATIVE.test(text)) return 'negative'
-  if (POSITIVE.test(text)) return 'positive'
+  if (AMBIGUOUS.test(text)) return 'uncertain'
+  if (nonLatinShare(text) > 0.2) return 'uncertain'
+  if (POSITIVE.test(text)) return NEGATION.test(text) ? 'uncertain' : 'positive'
   return 'other'
 }
 
+// One message, all of its readable bodies. When the plain and HTML alternatives disagree, no body is trusted to grant
+// anything: an explicit opt-out in either is honoured (the recipient asked to stop), any other disagreement is held
+// for review (uncertain), and positive only stands when both bodies say it.
+export function classifyMessage(t: { text: string; status: 'ok' | 'empty' | 'malformed'; alt?: string | null; addrTail?: string }, h: ReplyHeaders = {}): ReplyClass {
+  const cls = classifyBodies(t, h)
+  // The text was cut at an address-style line we cannot place (lib/outreach/reply-text.ts): what follows is probably the
+  // quoted earlier message, but it may be the lead's own words. That boundary is uncertain, so the thread is held for
+  // review (uncertain: follow-ups stop, earlier consent revoked) whatever the tail says and whatever auto-reply markers
+  // the message has. The tail is never read as interest or as a fresh opt-out (no suppression); only an opt-out in the
+  // new text itself is honoured as one.
+  if (t.addrTail && cls !== 'opt_out') return 'uncertain'
+  return cls
+}
+function classifyBodies(t: { text: string; status: 'ok' | 'empty' | 'malformed'; alt?: string | null }, h: ReplyHeaders): ReplyClass {
+  const first = classifyReply(t.text, h, t.status)
+  if (t.alt === undefined) return first
+  const second = t.alt === null ? classifyReply('', h, 'malformed') : classifyReply(t.alt, h, 'ok')
+  if (first === second) return first
+  if (first === 'opt_out' || second === 'opt_out') return 'opt_out'
+  // under auto-reply markers both bodies were read the same way: whatever one of them says beyond "auto" stands
+  if (first === 'auto' || second === 'auto') return first === 'auto' ? second : first
+  return 'uncertain'
+}
+
 // ---------- Gmail reading (thread ids only) ----------
-interface GPart { mimeType?: string; body?: { data?: string }; parts?: GPart[]; headers?: { name: string; value: string }[] }
 interface GMsg { id: string; threadId: string; internalDate?: string; payload?: GPart }
 const header = (m: GMsg, n: string) => m.payload?.headers?.find(h => h.name.toLowerCase() === n)?.value
-function plainText(p?: GPart): string {
-  if (!p) return ''
-  if (p.mimeType === 'text/plain' && p.body?.data) return Buffer.from(p.body.data, 'base64url').toString('utf8')
-  for (const c of p.parts ?? []) { const t = plainText(c); if (t) return t }
-  return ''
-}
-// Only the new text: drop quoted lines and the "On ... wrote:" tail.
-export function newText(t: string): string {
-  const cut = t.split(/\r?\n(?:On .{0,120}wrote:|-{2,}\s*Original Message|From: )/)[0]
-  return cut.split(/\r?\n/).filter(l => !l.startsWith('>')).join(' ').replace(/\s+/g, ' ').trim()
-}
 const addr = (v?: string) => norm((v?.match(/<([^>]+)>/)?.[1] ?? v ?? '').trim())
 
 export interface SyncDeps extends OAuthDeps { fetchImpl?: typeof fetch }
-export interface SyncResult { threads: number; replies: number; optOuts: number; bounces: number; consents: number; error?: string }
+export interface SyncResult { threads: number; replies: number; optOuts: number; bounces: number; consents: number; reviews: number; error?: string }
 
 export async function syncReplies(db: Database.Database, tenantId: string, d: SyncDeps = {}): Promise<SyncResult> {
-  const out: SyncResult = { threads: 0, replies: 0, optOuts: 0, bounces: 0, consents: 0 }
+  const out: SyncResult = { threads: 0, replies: 0, optOuts: 0, bounces: 0, consents: 0, reviews: 0 }
   const now = d.now ?? Math.floor(Date.now() / 1000)
   const acct = db.prepare('SELECT email, read_granted, status FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string; read_granted: number; status: string } | undefined
   if (!hasReadConsent(db, tenantId) || !acct || acct.read_granted !== 1 || acct.status !== 'active') return { ...out, error: 'reading_not_enabled' }
   const f = d.fetchImpl ?? fetch
   let token: string
   try { token = await getAccessToken(db, tenantId, d) } catch { return { ...out, error: 'gmail_unavailable' } }
+  if (isStaging((d.env ?? process.env) as Record<string, string | undefined>)) return out // stubbed Gmail: no mailbox to read
   const get = async (path: string) => { const r = await f(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) }); if (!r.ok) throw new Error(`gmail_${r.status}`); return r.json() }
 
   const seqPriority = tableExists(db, 'sequences') ? " OR id IN (SELECT message_id FROM sequences WHERE tenant_id = ? AND status IN ('approved','active'))" : ''
@@ -111,15 +182,16 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
         db.prepare('UPDATE followup_threads SET last_activity_at = max(last_activity_at, ?) WHERE tenant_id = ? AND thread_id = ?').run(at, tenantId, thread)
         if (from === acct.email) continue // our own or the user's message
         if (db.prepare('SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND gmail_id = ?').get(tenantId, g.id)) continue
-        const text = newText(plainText(g.payload))
+        const body = messageText(g.payload)
+        const text = body.text
         const log = (cls: string) => db.prepare('INSERT OR IGNORE INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(g.id, tenantId, thread, m.lead_id, from, text.slice(0, 200), cls, at, m.id)
         // Delivery-failure notice: only a permanent (5.x.x) failure suppresses.
         if (/^(mailer-daemon|postmaster)@/.test(from)) {
-          const full = plainText(g.payload)
+          const full = fullText(g.payload)
           if (/\b5\.\d{1,3}\.\d{1,3}\b/.test(full)) { recordBounce(db, tenantId, m.to_email, now); db.prepare("UPDATE followup_threads SET stopped = 'bounce' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, thread); out.bounces++; log('bounce') } else log('soft_bounce')
           continue
         }
-        const cls = classifyReply(text, { autoSubmitted: header(g, 'auto-submitted'), precedence: header(g, 'precedence'), subject: header(g, 'subject') })
+        const cls = classifyMessage(body, { autoSubmitted: header(g, 'auto-submitted'), precedence: header(g, 'precedence'), subject: header(g, 'subject'), xAutoreply: header(g, 'x-autoreply'), xAutorespond: header(g, 'x-autorespond') })
         log(cls)
         if (cls === 'auto') continue
         out.replies++
@@ -133,6 +205,13 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
         } else if (cls === 'positive' && from.split('@')[1] === m.to_email.split('@')[1]) {
           grantConsent(db, tenantId, from, { channel: 'email', scope: 'followup', basis: 'reply_interest', evidenceRef: `gmail:${g.id}`, now })
           auditAt(db, tenantId, 'consent_granted', `${from} replied with interest`, m.lead_id, m.id, now); out.consents++
+        } else if (cls === 'uncertain') {
+          // Blocked for review: no automated follow-up on this thread and no consent stands for either address until a
+          // person has read it. Nobody is suppressed: an unclear message is not taken as an opt-out (or as interest).
+          for (const e of new Set([from, m.to_email])) revokeAll(db, tenantId, e, 'reply_uncertain', now)
+          // a thread already stopped for a stronger reason (opt-out, no, bounce) keeps that reason
+          db.prepare("UPDATE followup_threads SET stopped = 'review' WHERE tenant_id = ? AND thread_id = ? AND stopped IS NULL").run(tenantId, thread)
+          auditAt(db, tenantId, 'reply_blocked_for_review', body.status === 'ok' ? 'unclear wording' : `body ${body.status}`, m.lead_id, m.id, now); out.reviews++
         } else auditAt(db, tenantId, 'reply_for_review', cls, m.lead_id, m.id, now)
       }
     } catch (e) {
@@ -143,16 +222,7 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
   return out
 }
 
-// Inbox surface: one row per captured reply with lead and follow-up state joined in.
-export interface InboxRow { gmail_id: string; thread_id: string; lead_id: string | null; from_email: string; excerpt: string; classification: ReplyClass; received_at: number; company: string | null; lead_name: string | null; followups_sent: number | null; stopped: string | null }
-export const inboxRows = (db: Database.Database, tenantId: string, limit = 100): InboxRow[] =>
-  db.prepare(`SELECT m.gmail_id, m.thread_id, m.lead_id, m.from_email, m.excerpt, m.classification, m.received_at,
-                     l.company, l.name AS lead_name, t.followups_sent, t.stopped
-              FROM inbound_messages m
-              LEFT JOIN leads l ON l.id = m.lead_id
-              LEFT JOIN followup_threads t ON t.tenant_id = m.tenant_id AND t.thread_id = m.thread_id
-              WHERE m.tenant_id = ? ORDER BY m.received_at DESC LIMIT ?`).all(tenantId, limit) as InboxRow[]
-
+// The Inbox list itself (one row per thread, paginated and filtered on the server) is lib/outreach/inbox.ts.
 export const recentInbound = (db: Database.Database, tenantId: string, limit = 30) =>
   db.prepare('SELECT from_email, excerpt, classification, received_at FROM inbound_messages WHERE tenant_id = ? ORDER BY received_at DESC LIMIT ?').all(tenantId, limit) as { from_email: string; excerpt: string; classification: string; received_at: number }[]
 

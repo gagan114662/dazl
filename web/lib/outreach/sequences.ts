@@ -14,6 +14,7 @@ import { readKey } from '../llm/key-store.ts'
 import { providers } from '../llm/provider.ts'
 import { pickVendor } from '../scan/runner.ts'
 import { getMemory, memoryPromptBlock } from '../memory.ts'
+import { memoryForLead } from './play-memory.ts'
 import { norm } from './store.ts'
 
 // Multi-step sequences: step 1 is the normal approved outreach email; steps 2 and 3 are
@@ -111,7 +112,7 @@ ${step === 2
     : 'Write a brief close-out (40-80 words): one last note, no guilt, say you will not follow up again.'}
 Match the seller's tone when given. No invented facts or numbers. Reply with the email body only, no subject line. Close with just "Thanks,".`
 
-async function llmStepText(db: Database.Database, tenantId: string, step: 2 | 3, lead: { company: string; name: string; signal: string; source_url: string }, businessName: string, bookingUrl: string | null | undefined, d: Deps): Promise<string | null> {
+async function llmStepText(db: Database.Database, tenantId: string, step: 2 | 3, lead: { company: string; name: string; signal: string; source_url: string; lead_id?: string }, businessName: string, bookingUrl: string | null | undefined, d: Deps): Promise<string | null> {
   const vendor = pickVendor(db, tenantId)
   if (!vendor) return null
   const read = readKey(db, tenantId, vendor, d.master)
@@ -119,7 +120,7 @@ async function llmStepText(db: Database.Database, tenantId: string, step: 2 | 3,
   const provider = providers[vendor]
   if (!provider?.complete) return null
   try {
-    const text = (await provider.complete(read.key, seqPrompt(step, businessName, lead, bookingUrl, memoryPromptBlock(getMemory(db, tenantId))), d.fetchImpl, 400)).trim().slice(0, 3000)
+    const text = (await provider.complete(read.key, seqPrompt(step, businessName, lead, bookingUrl, memoryPromptBlock(lead.lead_id ? memoryForLead(db, tenantId, lead.lead_id) : getMemory(db, tenantId))), d.fetchImpl, 400)).trim().slice(0, 3000)
     if (text.length < 20 || /^\s*Subject:/im.test(text)) return null
     if (bookingUrl && !text.includes(bookingUrl)) return null
     return text
@@ -171,7 +172,7 @@ export async function draftSequenceSteps(db: Database.Database, tenantId: string
   const settings = getSettings(db, tenantId)
   for (const step of [2, 3] as const) {
     const before = db.prepare('SELECT body FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? AND step = ?').get(tenantId,sequenceId,step) as { body: string }
-    const body = (await llmStepText(db, tenantId, step, lead, businessName, settings?.booking_url, d)) ?? sequenceStepText(step, lead, businessName, settings?.booking_url)
+    const body = (await llmStepText(db, tenantId, step, { ...lead, lead_id: s.lead_id }, businessName, settings?.booking_url, d)) ?? sequenceStepText(step, lead, businessName, settings?.booking_url)
     db.prepare("UPDATE sequence_steps SET body = ? WHERE tenant_id = ? AND sequence_id = ? AND step = ? AND status = 'draft' AND body = ? AND EXISTS (SELECT 1 FROM sequences WHERE id = ? AND tenant_id = ? AND status = 'draft')").run(body, tenantId, sequenceId, step,before.body,sequenceId,tenantId)
   }
 }
@@ -329,7 +330,7 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
     if (contactPurposeRestricted(db,tenantId,s.lead_id,s.to_email)) { out.skipped++; continue }
     if (!testFixtureSend(db,tenantId,{to_email:s.to_email,test:s.msg_test}) && currentnessHeld(db,tenantId,s.lead_id)) { out.skipped++; continue }
     if (!testFixtureSend(db,tenantId,{ to_email: s.to_email, test: s.msg_test }) && !leadEvidenceEligible(db,tenantId,s.lead_id)) { stopSequenceForThread(db,tenantId,s.lead_id,'stopped','evidence_withdrawn',now); out.skipped++; continue }
-    if (!testFixtureSend(db,tenantId,{ to_email: s.to_email, test: s.msg_test })) { const st = domainReviewStatus(db,tenantId,s.lead_id,s.to_email); if (st !== 'ok') { if (st === 'required') stopSequenceForThread(db,tenantId,s.lead_id,'stopped','domain_unconfirmed',now); out.skipped++; continue } }
+    if (!testFixtureSend(db,tenantId,{ to_email: s.to_email, test: s.msg_test })) { const st = domainReviewStatus(db,tenantId,s.lead_id,s.to_email); if (st !== 'ok') { if (st === 'required' || st === 'quarantined') stopSequenceForThread(db,tenantId,s.lead_id,'stopped',st === 'quarantined' ? 'lead_quarantined' : 'domain_unconfirmed',now); out.skipped++; continue } }
     if (!s.thread_id) { out.skipped++; continue } // never send a bump without a readable original thread
     if (!s.step1_sent) continue // activation lags one tick
     if (db.prepare("SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND lead_id = ? AND classification NOT IN ('auto','soft_bounce')").get(tenantId,s.lead_id)) { stopSequenceForThread(db,tenantId,s.lead_id,'replied','existing_reply',now); continue }
@@ -385,7 +386,7 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
       const stAfter = testFixtureSend(db,tenantId,{ to_email: s.to_email, test: s.msg_test }) ? 'ok' : domainReviewStatus(db,tenantId,s.lead_id,s.to_email)
       if (stAfter !== 'ok') {
         db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step)
-        if (stAfter === 'required') stopSequenceForThread(db,tenantId,s.lead_id,'stopped','domain_unconfirmed',now)
+        if (stAfter === 'required' || stAfter === 'quarantined') stopSequenceForThread(db,tenantId,s.lead_id,'stopped',stAfter === 'quarantined' ? 'lead_quarantined' : 'domain_unconfirmed',now)
         out.skipped++; continue
       }
       const current = getSeq(db,tenantId,s.id)
@@ -441,7 +442,7 @@ export function sequenceAnalytics(db: Database.Database, tenantId: string, leadI
   const warm = n(`SELECT count(*) AS n FROM followup_messages fm JOIN followup_threads ft ON ft.tenant_id = fm.tenant_id AND ft.thread_id = fm.thread_id WHERE fm.tenant_id = ? AND fm.status = 'sent' ${scoped ? (leadIds!.length ? `AND ft.lead_id IN (${ph})` : 'AND 1=0') : ''}`,tenantId,...args)
   const sent = step1 + later + warm
   const cls = (list: string) => n(`SELECT count(DISTINCT thread_id) AS n FROM inbound_messages WHERE tenant_id = ? AND classification IN (${list}) ${inList}`, tenantId, ...args)
-  const replied = cls("'positive','negative','other','opt_out'")
+  const replied = cls("'positive','negative','other','opt_out','uncertain'")
   const bounced = cls("'bounce'")
   const optOutReplies = cls("'opt_out'")
   const scopedSupp = scoped ? (leadIds!.length ? `AND email IN (SELECT to_email FROM outreach_messages WHERE tenant_id = ? ${inList})` : 'AND 1=0') : ''

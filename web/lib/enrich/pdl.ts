@@ -7,6 +7,8 @@ const BASE = 'https://api.peopledatalabs.com'
 const TIMEOUT_MS = 15_000
 
 // 1 credit per profile returned. Names/titles only - emails/phones are never read.
+import { formatPlace } from '../scan/contact-agreement.ts'
+const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 120) : null)
 export async function pdlPeopleSearch(apiKey: string, orgName: string, fetchImpl: typeof fetch = fetch, max = 5): Promise<ApolloPerson[]> {
   const ctrl = new AbortController()
   const t = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
@@ -25,6 +27,11 @@ export async function pdlPeopleSearch(apiKey: string, orgName: string, fetchImpl
       name: (typeof p.full_name === 'string' ? p.full_name : '').slice(0, 120),
       title: typeof p.job_title === 'string' ? p.job_title.slice(0, 120) : null,
       linkedin: typeof p.linkedin_url === 'string' ? p.linkedin_url.slice(0, 200) : null,
+      // Where the person works and the company's site, so a same-name company elsewhere can be told apart (lib/scan/contact-agreement.ts).
+      // EMPLOYER location only. A person's own residence (location_*) says nothing about where the company is: never a fallback.
+      place: formatPlace(str(p.job_company_location_locality), str(p.job_company_location_region), str(p.job_company_location_country)),
+      address: str(p.job_company_location_street_address),
+      domain: str(p.job_company_website),
     })).filter(p => p.name)
   } finally { clearTimeout(t) }
 }

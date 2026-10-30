@@ -1,4 +1,5 @@
 import test from 'node:test'
+import { sqliteDb } from '../lib/db/client.ts'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateCompetitors, setCompetitors, listCompetitors, collectCompetitorComplaints, badgeComplaintLeads, complaintQuery, COMPLAINT_CONNECTOR } from '../lib/signals/competitor-reddit.ts'
@@ -14,22 +15,22 @@ function db() {
   return d
 }
 
-test('competitor list: max 5, cleaned, deduped, ordered', () => {
+test('competitor list: max 5, cleaned, deduped, ordered', async () => {
   const d = db()
-  const r = setCompetitors(d, 't1', [' Acme ', 'Acme', 'Globex', '', 'X  Corp'])
+  const r = await setCompetitors(sqliteDb(d), 't1', [' Acme ', 'Acme', 'Globex', '', 'X  Corp'])
   assert.equal(r.ok, true)
   assert.deepEqual(listCompetitors(d, 't1'), ['Acme', 'Globex', 'X Corp'])
-  assert.equal(setCompetitors(d, 't1', ['a1','a2','a3','a4','a5','a6']).ok, false)
-  assert.equal(setCompetitors(d, 't1', ['a']).ok, false)
+  assert.equal((await setCompetitors(sqliteDb(d), 't1', ['a1','a2','a3','a4','a5','a6'])).ok, false)
+  assert.equal((await setCompetitors(sqliteDb(d), 't1', ['a'])).ok, false)
 })
 
-test('complaint query shape', () => {
+test('complaint query shape', async () => {
   assert.equal(complaintQuery('Acme'), 'Acme (complaint OR alternative OR hate OR cancel)')
 })
 
 test('collect: no consent skips with audit, no worker call', async () => {
   const d = db()
-  setCompetitors(d, 't1', ['Acme'])
+  await setCompetitors(sqliteDb(d), 't1', ['Acme'])
   let calls = 0
   const out = await collectCompetitorComplaints(d, 't1', 'j1', { worker: async () => { calls++; return [] }, env: ENV_ON })
   assert.equal(out.length, 0)
@@ -40,7 +41,7 @@ test('collect: no consent skips with audit, no worker call', async () => {
 
 test('collect: fresh posts only, tagged with the competitor, per-competitor audit', async () => {
   const d = db()
-  setCompetitors(d, 't1', ['Acme'])
+  await setCompetitors(sqliteDb(d), 't1', ['Acme'])
   acceptConsent(d, 't1', 'advanced')
   const recent = new Date(Date.now() - 5 * 86400_000).toISOString().slice(0, 10)
   const old = new Date(Date.now() - 90 * 86400_000).toISOString().slice(0, 10)
@@ -57,7 +58,7 @@ test('collect: fresh posts only, tagged with the competitor, per-competitor audi
   assert.equal(row.results, 1)
 })
 
-test('badge: lead citing a complaint post gets the tag merged, never duplicated', () => {
+test('badge: lead citing a complaint post gets the tag merged, never duplicated', async () => {
   const d = db()
   d.prepare("INSERT INTO leads VALUES ('l1','j1','https://www.reddit.com/r/saas/a','[\"raised_funding\"]')").run()
   const n1 = badgeComplaintLeads(d, 'j1', [{ url: 'https://www.reddit.com/r/saas/a', complaint_of: 'Acme' }])

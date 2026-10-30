@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
+import { sqliteDb } from '../../lib/db/client.ts'
 import { migrateScan, createJob } from '../../lib/scan/store.ts'
 import { migrateOutreach } from '../../lib/outreach/store.ts'
 import { migrateReopen, createReopenDraft } from '../../lib/outreach/reopen.ts'
@@ -42,6 +43,7 @@ import { GET as keyGET } from '../../app/api/settings/llm-key/route.ts'
 import { GET as memoryGET } from '../../app/api/settings/memory/route.ts'
 import { GET as monitorsGET } from '../../app/api/monitors/route.ts'
 import { GET as conversionGET } from '../../app/api/outreach/conversion/route.ts'
+import { GET as campaignGET } from '../../app/api/campaigns/[id]/route.ts'
 
 // Local synthetic fixture: two tenants with unique per-tenant markers, the real GET handlers, session switched per call.
 // Keys are fixture literals only; no vault, no network (fetch throws).
@@ -61,13 +63,13 @@ async function build() {
   setScanDb(db)
   const master = randomBytes(32)
   const now = Math.floor(Date.now() / 1000)
-  const seed = (t: string, m: typeof MA | typeof MB, email: string, thread: string | null) => {
+  const seed = async (t: string, m: typeof MA | typeof MB, email: string, thread: string | null) => {
     const job = createJob(db, t, { business_name: m.biz, industry: 'test', location: 'test' })
     db.prepare("UPDATE scan_jobs SET status='running', query=? WHERE id=?").run(m.q, job)
     const lead = hex()
     db.prepare("INSERT INTO leads(id,scan_job_id,company,name,contact,signal,source_url,evidence_excerpt,confidence,human_confirmed_at,score) VALUES(?,?,?,'Pat',?,'Hiring','https://x.invalid/jobs',?,80,1,70)").run(lead, job, m.co, email, `${m.co} is hiring`)
     db.prepare("INSERT INTO outreach_messages(id,tenant_id,lead_id,to_email,subject,body,status) VALUES(?,?,?,?,?,?,'draft')").run(hex(), t, lead, email, m.subj, 'Fixture body text long enough for the guard, twenty chars plus.')
-    createMonitor(db, t, { query: m.mon })
+    await createMonitor(sqliteDb(db), t, { query: m.mon })
     saveMemory(db, t, { positioning: m.mem })
     saveKey(db, t, 'anthropic', m.key, master)
     if (thread) db.prepare("INSERT INTO followup_threads(tenant_id,thread_id,lead_id,to_email,root_message_id,last_activity_at,last_lead_reply_at,followups_sent) VALUES(?,?,?,?,'r@x',?,?,0)").run(t, thread, lead, email, now, now)
@@ -77,14 +79,15 @@ async function build() {
     if (thread) db.prepare("INSERT INTO followup_messages(tenant_id,thread_id,step,status,created_at) VALUES(?,?,0,'sent',?)").run(t, thread, now)
     return { job, lead }
   }
-  const a = seed('A', MA, MA.email, MA.thread)
-  const b = seed('B', MB, 'bmarker7h2m@b.invalid', MB.thread)
+  const a = await seed('A', MA, MA.email, MA.thread)
+  const b = await seed('B', MB, 'bmarker7h2m@b.invalid', MB.thread)
   return { db, a, b }
 }
 
-test('all 11 read routes: A and B each get their own content, never the other tenant\'s; A ids look nonexistent to B; GETs do not mutate; unauth is 401 for every route', async () => {
+test('all 12 read routes: A and B each get their own content, never the other tenant\'s; A ids look nonexistent to B; GETs do not mutate; unauth is 401 for every route', async () => {
   const { db, a, b } = await build()
-  const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[]).map(r => r.name)
+  // rate_limits and app_leases are global platform tables (no tenant data); rateLimit() writes there through getDb().
+  const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('rate_limits', 'app_leases') ORDER BY name").all() as { name: string }[]).map(r => r.name)
   const snap = () => JSON.stringify(tables.map(t => [t, db.prepare(`SELECT * FROM "${t}" ORDER BY rowid`).all()]))
   const before = snap()
   const text = async (r: Response) => r.text()
@@ -97,6 +100,8 @@ test('all 11 read routes: A and B each get their own content, never the other te
     { name: 'GET /api/scan/jobs', call: () => jobsGET(), own: { A: [MA.biz], B: [MB.biz] } },
     { name: 'GET /api/scan/latest', call: () => latestGET(), own: { A: [MA.q], B: [MB.q] } },
     { name: 'GET /api/scan/status', call: t => statusGET(get(`/api/scan/status?job_id=${j(t)}&passive=1`)), own: { A: [a.job], B: [b.job] }, id: h => statusGET(get(`/api/scan/status?job_id=${h}&passive=1`)) },
+    // The one-campaign page: owner-scoped, read-only (covered by the byte-unchanged snapshot below).
+    { name: 'GET /api/campaigns/[id]', call: t => campaignGET(get(`/api/campaigns/${j(t)}`), { params: Promise.resolve({ id: j(t) }) }), own: { A: [MA.q, MA.co, MA.subj], B: [MB.q, MB.co, MB.subj] }, id: h => campaignGET(get(`/api/campaigns/${h}`), { params: Promise.resolve({ id: h }) }) },
     { name: 'GET /api/outreach', call: () => outreachGET(), own: { A: [MA.subj], B: [MB.subj] } },
     { name: 'GET /api/outreach/inbox thread', call: t => inboxGET(get(`/api/outreach/inbox?thread_id=${t === 'A' ? MA.thread : MB.thread}`)), own: { A: [MA.thread], B: [MB.thread] } },
     { name: 'GET /api/outreach/followups', call: () => followupsGET(), own: { A: [MA.co, MA.thread], B: [MB.co, MB.thread] } },

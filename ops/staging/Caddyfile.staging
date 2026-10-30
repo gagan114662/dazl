@@ -1,0 +1,5 @@
+# Add to /etc/caddy/Caddyfile (after backing it up). Caddy gets the TLS certificate itself once DNS points here.
+staging.dazl.ai {
+	reverse_proxy 127.0.0.1:3200
+	header X-Robots-Tag "noindex, nofollow"
+}

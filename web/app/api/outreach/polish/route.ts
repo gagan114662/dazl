@@ -3,6 +3,7 @@ import { getScanDb, requireUser } from '@/lib/scan/service'
 import { polishDraft } from '@/lib/outreach/draft-llm'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
+import { denied } from '@/lib/workspace-access'
 
 // Explicit, per-draft AI rewrite. This is the ONLY user-facing path that runs the
 // polish: it bills the tenant's own provider key, so it needs its own click every
@@ -10,15 +11,18 @@ import { rateLimit } from '@/lib/rate-limit'
 export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
+  const no = denied(user, 'operate'); if (no) return no
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
-  if (!rateLimit(`polish:${user.id}`, 30, 60 * 60 * 1000).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!(await rateLimit(`polish:${user.tenantId}`, 30, 60 * 60 * 1000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   const body = await req.json().catch(() => null)
   if (typeof body?.message_id !== 'string' || !/^[a-f0-9]{24}$/.test(body.message_id)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
-  const r = await polishDraft(getScanDb(), user.id, body.message_id, user.business_name)
+  const r = await polishDraft(getScanDb(), user.tenantId, body.message_id, user.business_name)
   if (!r.rewritten) {
     const note = {
       no_key: 'No AI key on file - add one in Settings to use the rewrite.',
       no_profile: 'Add what you sell (positioning) in Settings first - without it the rewrite would have to invent an offer.',
+      offer_unreadable: 'What this play sells could not be read just now, so the draft was not rewritten. Try again in a moment.',
+      offer_conflict: 'This play\'s request names a different offer than the one it was created with. Choose what this play sells on its campaign page first.',
       unusable: 'The rewrite came back unusable - the original draft is unchanged.',
       blocked_claim: 'The rewrite asserted an unverified claim, so it was discarded - the original draft is unchanged.',
       error: 'The rewrite failed - the original draft is unchanged.',

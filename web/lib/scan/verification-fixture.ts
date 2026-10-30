@@ -25,7 +25,8 @@ const SIGNAL = 'Test-only fixture for verifying populated UI. Not a real company
 
 // Synthetic positive reply for the Inbox handoff check. Clearly test-only, from the
 // suppressed test inbox, and short enough for the 200-char excerpt CHECK.
-export const FIXTURE_REPLY = "Sounds good - let's talk. What times work for you? (test-only fixture reply, not a real person)"
+// labelled synthetic without a negation: a positive reply that contains one ("not") is held for review (replies.ts)
+export const FIXTURE_REPLY = "Sounds good - let's talk. What times work for you? (test-only fixture reply from a synthetic contact)"
 
 export const FIXTURE_CONTACTS = [
   { name: 'Ada Lovelace', title: 'Head of Sales Operations', linkedin: 'https://www.linkedin.com/in/dazl-test-ada' },

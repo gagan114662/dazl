@@ -1,16 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getScanDb, requireUser } from '@/lib/scan/service'
+import { requireUser } from '@/lib/scan/service'
+import { getDb } from '@/lib/db/client'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { addUserReportedPath, removeUserReportedPath, warmPathsForLead } from '@/lib/warm/connections'
+import { denied } from '@/lib/workspace-access'
+import type { Action } from '@/lib/workspaces'
 
 // Warm paths to one lead's contacts. Degrees are labelled honestly: first_degree comes
 // only from the user's own imported connections; user_reported entries are mutuals the
 // user saw and typed in themselves - dazl does not verify them.
 
-async function guard(req: NextRequest, leadId: string) {
+async function guard(req: NextRequest, leadId: string, action: Action) {
   const user = await requireUser()
   if (!user) return { res: NextResponse.json({ error: 'Not signed in' }, { status: 401 }) }
+  const no = denied(user, action)
+  if (no) return { res: no }
   if (req.method !== 'GET' && !sameOriginJson(req)) return { res: NextResponse.json({ error: 'Bad origin' }, { status: 403 }) }
   if (!/^[a-f0-9]{24}$/.test(leadId)) return { res: NextResponse.json({ error: 'Not found' }, { status: 404 }) }
   return { user }
@@ -18,28 +23,28 @@ async function guard(req: NextRequest, leadId: string) {
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ lead: string }> }) {
   const { lead } = await params
-  const g = await guard(req, lead)
+  const g = await guard(req, lead, 'read')
   if (g.res) return g.res
-  return NextResponse.json(warmPathsForLead(getScanDb(), g.user!.id, lead))
+  return NextResponse.json(await warmPathsForLead(await getDb(), g.user!.tenantId, lead))
 }
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ lead: string }> }) {
   const { lead } = await params
-  const g = await guard(req, lead)
+  const g = await guard(req, lead, 'operate')
   if (g.res) return g.res
-  if (!rateLimit(`warm-report:${g.user!.id}`, 20, 60_000).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!(await rateLimit(`warm-report:${g.user!.tenantId}`, 20, 60_000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   const body = await req.json().catch(() => null) as { contact_url?: string; mutual_name?: string; note?: string } | null
   if (!body || typeof body.contact_url !== 'string' || typeof body.mutual_name !== 'string') return NextResponse.json({ error: 'contact_url_and_mutual_name_required' }, { status: 400 })
-  const path = addUserReportedPath(getScanDb(), g.user!.id, lead, body.contact_url, body.mutual_name, body.note)
+  const path = await addUserReportedPath(await getDb(), g.user!.tenantId, lead, body.contact_url, body.mutual_name, body.note)
   if (!path) return NextResponse.json({ error: 'invalid_contact_url_or_name' }, { status: 422 })
   return NextResponse.json({ path, provenance: 'user_reported' })
 }
 
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ lead: string }> }) {
   const { lead } = await params
-  const g = await guard(req, lead)
+  const g = await guard(req, lead, 'operate')
   if (g.res) return g.res
   const body = await req.json().catch(() => null) as { id?: string } | null
   if (!body || typeof body.id !== 'string') return NextResponse.json({ error: 'id_required' }, { status: 400 })
-  return NextResponse.json({ deleted: removeUserReportedPath(getScanDb(), g.user!.id, body.id) })
+  return NextResponse.json({ deleted: await removeUserReportedPath(await getDb(), g.user!.tenantId, body.id) })
 }
