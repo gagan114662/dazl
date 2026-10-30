@@ -9,9 +9,7 @@ CREATE TABLE lifecycle_events (
     invoice TEXT,
     full_refund BIGINT,
     source TEXT CHECK (source IS NULL OR char_length(source) <= 40),
-    period_start BIGINT,
-    period_end BIGINT,
-    service_until BIGINT,
+    service_periods TEXT CHECK (service_periods IS NULL OR char_length(service_periods) <= 4000),
     PRIMARY KEY (kind, ref)
   );
 CREATE INDEX lifecycle_events_tenant ON lifecycle_events (tenant_id, kind);

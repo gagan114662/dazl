@@ -17,7 +17,7 @@
 // by sign-up. No private mailbox data, no third-party destination.
 import type Database from 'better-sqlite3'
 import type { Db, Tx, TxBody } from '../db/client.ts'
-import { retention, RETENTION, type Coverage } from './retention.ts'
+import { retention, RETENTION, type Coverage, type ServicePeriod } from './retention.ts'
 
 export function migrateLifecycle(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS lifecycle_events (
@@ -29,20 +29,18 @@ export function migrateLifecycle(db: Database.Database): void {
     invoice TEXT,
     full_refund INTEGER,
     source TEXT CHECK (source IS NULL OR length(source) <= 40),
-    period_start INTEGER,
-    period_end INTEGER,
-    service_until INTEGER,
+    service_periods TEXT CHECK (service_periods IS NULL OR length(service_periods) <= 4000),
     PRIMARY KEY (kind, ref)
   );
   CREATE INDEX IF NOT EXISTS lifecycle_events_tenant ON lifecycle_events (tenant_id, kind);`)
 }
 
 export type LifecycleKind = 'signup' | 'payment_succeeded' | 'payment_failed' | 'refund' | 'subscription_ended'
-// period_start / period_end: the service period a paid invoice bought (its subscription line); service_until: when an
-// ended subscription's paid service actually stopped (Stripe's ended_at), if the billing says
-export interface LifecycleEvent { kind: LifecycleKind; ref: string; tenant_id: string; occurred_at: number; amount_cents?: number | null; invoice?: string | null; full_refund?: boolean | null; source?: string | null; period_start?: number | null; period_end?: number | null; service_until?: number | null }
-const INSERT_SQL = 'INSERT INTO lifecycle_events (kind, ref, tenant_id, occurred_at, amount_cents, invoice, full_refund, source, period_start, period_end, service_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (kind, ref) DO NOTHING'
-const params = (e: LifecycleEvent) => [e.kind, e.ref.slice(0, 200), e.tenant_id, Math.floor(e.occurred_at), e.amount_cents ?? null, e.invoice ?? null, e.full_refund == null ? null : e.full_refund ? 1 : 0, e.source ?? null, e.period_start ?? null, e.period_end ?? null, e.service_until ?? null]
+// service_periods: the service intervals a paid invoice bought, one per subscription line, each with its subscription
+// and price (JSON); a one-off charge has none
+export interface LifecycleEvent { kind: LifecycleKind; ref: string; tenant_id: string; occurred_at: number; amount_cents?: number | null; invoice?: string | null; full_refund?: boolean | null; source?: string | null; service_periods?: ServicePeriod[] | null }
+const INSERT_SQL = 'INSERT INTO lifecycle_events (kind, ref, tenant_id, occurred_at, amount_cents, invoice, full_refund, source, service_periods) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (kind, ref) DO NOTHING'
+const params = (e: LifecycleEvent) => [e.kind, e.ref.slice(0, 200), e.tenant_id, Math.floor(e.occurred_at), e.amount_cents ?? null, e.invoice ?? null, e.full_refund == null ? null : e.full_refund ? 1 : 0, e.source ?? null, e.service_periods?.length ? JSON.stringify(e.service_periods.slice(0, 20)) : null]
 export function* recordEventTx(t: Tx, e: LifecycleEvent): TxBody<boolean> {
   return (yield* t.run(INSERT_SQL, params(e))).changes === 1
 }
@@ -101,14 +99,14 @@ const SCANS_SQL = `SELECT j.user_id AS tenant_id, j.id, j.created_at,
   CASE WHEN j.status = 'done' AND j.finished_at IS NOT NULL AND j.finished_at <= ? THEN 'done' ELSE 'not_done' END AS status,
   (SELECT count(*) FROM leads l WHERE l.scan_job_id = j.id AND l.created_at <= ? AND ${REAL_LEAD}) AS real_leads
   FROM scan_jobs j WHERE j.created_at <= ? ORDER BY j.created_at, j.id`
-const EVENTS_SQL = 'SELECT kind, ref, tenant_id, occurred_at, amount_cents, invoice, full_refund, source, period_start, period_end, service_until FROM lifecycle_events WHERE occurred_at <= ? ORDER BY occurred_at, kind, ref'
+const EVENTS_SQL = 'SELECT kind, ref, tenant_id, occurred_at, amount_cents, invoice, full_refund, source, service_periods FROM lifecycle_events WHERE occurred_at <= ? ORDER BY occurred_at, kind, ref'
 
 export interface FunnelOptions { now: number; excludeTenants?: string[]; retainDays?: number }
 export async function tenantFunnels(db: Db, opts: FunnelOptions): Promise<TenantFunnel[]> {
   const cut = Math.floor(opts.now)
   const users = await db.all<{ id: string; email: string; created_at: number | null }>(USERS_SQL, [cut])
   const scans = await db.all<{ tenant_id: string; id: string; created_at: number; status: string; real_leads: number }>(SCANS_SQL, [cut, cut, cut])
-  const events = await db.all<{ kind: LifecycleKind; ref: string; tenant_id: string; occurred_at: number; amount_cents: number | null; invoice: string | null; full_refund: number | null; source: string | null; period_start: number | null; period_end: number | null; service_until: number | null }>(EVENTS_SQL, [cut])
+  const events = await db.all<{ kind: LifecycleKind; ref: string; tenant_id: string; occurred_at: number; amount_cents: number | null; invoice: string | null; full_refund: number | null; source: string | null; service_periods: string | null }>(EVENTS_SQL, [cut])
   const exclude = new Set(opts.excludeTenants ?? [])
   return users.map(u => {
     const mine = scans.filter(s => s.tenant_id === u.id)
@@ -124,14 +122,16 @@ export async function tenantFunnels(db: Db, opts: FunnelOptions): Promise<Tenant
     const refundedInvoices = new Set(succeeded.filter(p => refunds.some(r => r.invoice === p.ref && (r.full_refund === 1 || Number(r.amount_cents) >= Number(p.amount_cents)))).map(p => p.ref))
     const paidOk = succeeded.filter(e => !refundedInvoices.has(e.ref))
     const first = paidOk[0] ?? null
-    // the latest end recorded after the first payment, with the billing's own service end when it gave one
-    const ended = first ? ev.filter(e => e.kind === 'subscription_ended' && Number(e.occurred_at) >= Number(first.occurred_at)).at(-1) ?? null : null
-    const num = (v: number | null) => v === null ? null : Number(v)
-    const ret = retention({ payments: paidOk.map(e => ({ at: Number(e.occurred_at), refunded: false, period_start: num(e.period_start), period_end: num(e.period_end) })),
-      ended_at: ended ? Number(ended.occurred_at) : null, service_until: ended ? num(ended.service_until) : null, cutoff: cut },
+    // every end recorded after the first payment, each for its own subscription (the event ref is the subscription id)
+    const endEvents = first ? ev.filter(e => e.kind === 'subscription_ended' && Number(e.occurred_at) >= Number(first.occurred_at)) : []
+    const ended = endEvents.at(-1) ?? null
+    const periods = (j: string | null): ServicePeriod[] => { try { const v = j ? JSON.parse(j) : []; return Array.isArray(v) ? v : [] } catch { return [] } }
+    const ret = retention({ payments: paidOk.map(e => ({ at: Number(e.occurred_at), refunded: false, periods: periods(e.service_periods) })),
+      ends: endEvents.map(e => ({ at: Number(e.occurred_at), subscription: e.ref })), cutoff: cut },
       opts.retainDays ? { headlineDays: opts.retainDays } : {})
     const retained = ret.day30.retained
-    const churnedAt = ended && retained !== true ? Number(ended.occurred_at) : null
+    // churned: paid, not retained, and no longer covered because its subscriptions ended (not merely one of them)
+    const churnedAt = ended && retained !== true && ret.coverage_at_cutoff === 'not_covered' ? Number(ended.occurred_at) : null
     const failed = ev.filter(e => e.kind === 'payment_failed').length
     const signup = ev.find(e => e.kind === 'signup')
     const excluded = exclude.has(u.id) || RESERVED.test(u.email)
