@@ -8,9 +8,9 @@
 //
 // 1. RETAINED AT DAY 30 (historical). Cohort: customers whose first paid payment is old enough that their day-30
 //    renewal window has closed by the cutoff (first payment + headline + renewal_late_days). Retained: a paid, not
-//    refunded renewal inside the window [first + headline - renewal_early_days, first + headline + renewal_late_days],
-//    and no subscription end before day 30. A renewal after the window (a lapse, then a rejoin) is not day-30
-//    retention. Numerator and denominator come from the same cohort, so the rate cannot exceed 100%.
+//    refunded renewal inside the window [first + headline - renewal_early_days, first + headline + renewal_late_days]
+//    for a subscription that had not ended by day 30 (ends are scoped: a sibling subscription ending does not count).
+//    A renewal after the window (a lapse, then a rejoin) is not day-30 retention. Numerator and denominator come from the same cohort, so the rate cannot exceed 100%.
 // 2. COVERAGE AT A DATE (current, e.g. the cutoff). Cohort: every customer who has paid by that date. It uses each
 //    payment's ACTUAL service periods, one interval per invoice line (a subscription line's period start and end),
 //    never an assumed length and never one span from the earliest start to the latest end: an invoice for two
@@ -95,13 +95,17 @@ export function retention(i: RetentionInput, o: RetentionRules = {}): RetentionR
   const first = paid[0] ?? null
   if (first === null) return { first_paid_at: null, day30: { eligible: false, retained: null, renewal_at: null }, coverage_at_cutoff: null }
   const eligible = i.cutoff >= first + r.headline + r.late
-  const renewal = paid.find(t => t >= first + r.headline - r.early && t <= first + r.headline + r.late) ?? null
-  // ended by day 30: an end, by the cutoff, of a subscription the first payment was for (or one naming none)
-  const firstSubs = (i.payments.find(p => !p.refunded && p.at === first)?.periods ?? []).map(iv => iv.subscription ?? null)
-  const endedBy30 = i.ends.some(e => e.at <= i.cutoff && e.at <= first + r.headline && (!e.subscription || !firstSubs.length || firstSubs.some(s => !s || s === e.subscription)))
+  // a renewal is retention only for the service it renews: a payment in the window whose subscription had not ended
+  // by day 30. Another subscription on the same customer ending (a sibling on the first invoice) does not undo it. A
+  // renewal that names no subscription is stopped by any end by day 30 (missing identity never invents retention).
+  const endsBy30 = i.ends.filter(e => e.at <= i.cutoff && e.at <= first + r.headline)
+  const subsOf = (p: RetentionInput['payments'][number]) => (p.periods ?? []).length ? (p.periods ?? []).map(iv => iv.subscription ?? null) : [null]
+  const continues = (sub: string | null) => !endsBy30.some(e => !e.subscription || !sub || e.subscription === sub)
+  const renewal = i.payments.filter(p => !p.refunded && p.at <= i.cutoff && p.at >= first + r.headline - r.early && p.at <= first + r.headline + r.late && subsOf(p).some(continues))
+    .map(p => p.at).sort((a, b) => a - b)[0] ?? null
   return {
     first_paid_at: first,
-    day30: { eligible, retained: eligible ? renewal !== null && !endedBy30 : null, renewal_at: renewal },
+    day30: { eligible, retained: eligible ? renewal !== null : null, renewal_at: renewal },
     coverage_at_cutoff: coverageAt(i, i.cutoff),
   }
 }

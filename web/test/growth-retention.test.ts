@@ -119,3 +119,25 @@ test('ends are scoped to their subscription: deleting another subscription leave
   ], ends: [{ at: day(10), subscription: endSub }], cutoff: day(40) }).day30.retained
   assert.equal(r('sub_other'), true, 'another subscription ending is not this one ending'); assert.equal(r('sub_MULTI'), false)
 })
+
+test('day 30 is scoped to the renewed service: a sibling ending on day 20 does not undo sub_good\'s renewal; ending the renewed one does', () => {
+  const firstInvoice = { at: day(0), refunded: false, periods: [{ start: day(0), end: day(30), subscription: 'sub_good' }, { start: day(0), end: day(30), subscription: 'sub_ended' }] }
+  const renewal = (sub: string | null) => ({ at: day(30), refunded: false, periods: [{ start: day(30), end: day(60), subscription: sub }] })
+  const d30 = (ends: { at: number; subscription?: string | null }[], renew: string | null = 'sub_good') =>
+    retention({ payments: [firstInvoice, renewal(renew)], ends, cutoff: day(40) })
+  // the review case: sub_ended ends on day 20, sub_good renews on day 30 and covers the report date
+  const mixed = d30([{ at: day(20), subscription: 'sub_ended' }])
+  assert.equal(mixed.day30.retained, true, 'the sibling ending does not undo the continuing service'); assert.equal(mixed.day30.renewal_at, day(30))
+  assert.equal(mixed.coverage_at_cutoff, 'covered')
+  // matching-service controls
+  assert.equal(d30([{ at: day(20), subscription: 'sub_good' }]).day30.retained, false, 'the renewed subscription itself ended by day 30')
+  assert.equal(d30([{ at: day(30), subscription: 'sub_good' }]).day30.retained, false, 'ended exactly at day 30')
+  assert.equal(d30([{ at: day(31), subscription: 'sub_good' }]).day30.retained, true, 'ended after day 30: day-30 retention holds')
+  assert.equal(d30([{ at: day(20), subscription: 'sub_ended' }, { at: day(25), subscription: 'sub_good' }]).day30.retained, false, 'both ended by day 30')
+  assert.equal(d30([{ at: day(20) }]).day30.retained, false, 'an end naming no subscription stops all of them')
+  // the only renewal is for the subscription that ended: not retained
+  assert.equal(d30([{ at: day(20), subscription: 'sub_ended' }], 'sub_ended').day30.retained, false)
+  // a renewal with no subscription identity is stopped by any end by day 30
+  assert.equal(d30([{ at: day(20), subscription: 'sub_ended' }], null).day30.retained, false)
+  assert.equal(d30([], null).day30.retained, true, 'with no end at all, an unidentified renewal still counts')
+})

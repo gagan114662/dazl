@@ -326,3 +326,16 @@ test('through the webhook: deleting another subscription on the same customer ke
   t = await cov()
   assert.equal(t.covered_at_cutoff, 'not_covered', 'both subscriptions deleted'); assert.equal(t.stage, 'churned')
 })
+
+test('through the webhook: a first invoice for two subscriptions, one deleted on day 20, the other renewed on day 30, is retained at day 30', async () => {
+  const { raw, db } = store()
+  const T1 = NOW - 40 * DAY
+  await tenant(db, raw, 'MX'); scan(raw, 'MX', T1 - DAY, 1); await subscribe(db, 'MX', T1)
+  const line = (sub: string, start: number, end: number) => ({ object: 'line_item', type: 'subscription', subscription: sub, period: { start, end }, price: { id: `price_${sub}` } })
+  const invoice = (id: string, at: number, lines: unknown[]) => applyStripeEvent(db, ev(`evt_${id}`, 'invoice.paid', at, { id, object: 'invoice', customer: 'cus_MX', amount_paid: 4900, lines: { object: 'list', data: lines } }))
+  await invoice('in_MX1', T1, [line('sub_good', T1, T1 + 30 * DAY), line('sub_ended', T1, T1 + 30 * DAY)])
+  await applyStripeEvent(db, ev('evt_del_ended', 'customer.subscription.deleted', T1 + 20 * DAY, { id: 'sub_ended', object: 'subscription', customer: 'cus_MX', status: 'canceled', ended_at: T1 + 20 * DAY }))
+  await invoice('in_MX2', T1 + 30 * DAY, [line('sub_good', T1 + 30 * DAY, T1 + 60 * DAY)])
+  const t = (await tenantFunnels(db, { now: NOW })).find(x => x.tenant_id === 'MX')!
+  assert.equal(t.retained, true); assert.equal(t.covered_at_cutoff, 'covered'); assert.equal(t.stage, 'retained')
+})

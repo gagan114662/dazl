@@ -189,3 +189,14 @@ test('a cancel ends its own subscription only: deleting sub_other keeps sub_MULT
   const both = customerState('m2', [...two('m2'), ev('m2', 5, { kind: 'cancel', subscription: 'sub_other' }), ev('m2', 6, { kind: 'cancel', subscription: 'sub_MULTI' })], at(10))
   assert.equal(both.retention.coverage_at_cutoff, 'not_covered'); assert.equal(both.stage, 'churned')
 })
+
+test('day 30 through this file\'s events: sub_ended cancelled on day 20 does not undo sub_good renewed on day 30; cancelling sub_good does', () => {
+  const es = (c: string, cancelSub: string) => [signup(c, 0), run(c, 1, 2),
+    ev(c, 2, { kind: 'payment', status: 'paid', periods: [{ start: at(2), end: at(32), subscription: 'sub_good' }, { start: at(2), end: at(32), subscription: 'sub_ended' }] }),
+    ev(c, 22, { kind: 'cancel', subscription: cancelSub }),
+    ev(c, 32, { kind: 'payment', status: 'paid', periods: [{ start: at(32), end: at(62), subscription: 'sub_good' }] })]
+  const mixed = customerState('mx', es('mx', 'sub_ended'), at(45))
+  assert.equal(mixed.retention.day30.retained, true); assert.equal(mixed.retention.coverage_at_cutoff, 'covered'); assert.equal(mixed.stage, 'retained')
+  const matching = customerState('mm', es('mm', 'sub_good'), at(45))
+  assert.equal(matching.retention.day30.retained, false, 'the renewed subscription itself was cancelled by day 30')
+})

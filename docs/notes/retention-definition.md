@@ -3,7 +3,7 @@
 Retention and coverage are defined in exactly one place: `web/lib/growth/retention.ts`. Both reports import it, and this branch keeps no copy.
 
 - **The acquisition funnel** (`web/lib/growth/lifecycle.ts`), on the ops branch `claude/epic-cannon-xrw9ut-acquisition-funnel`.
-- **The cohort lifecycle report** (`web/lib/gtm/lifecycle.ts`), on this branch, `claude/trusting-bell-xyya6m-lifecycle`. This branch is rebased onto the ops branch at `285bc078`.
+- **The cohort lifecycle report** (`web/lib/gtm/lifecycle.ts`), on this branch, `claude/trusting-bell-xyya6m-lifecycle`. This branch merges the ops branch, so `retention.ts` comes from ops' own history (`f139bd09`).
 
 All windows are named settings in `RETENTION`. They are carried-over defaults, not owner decisions:
 
@@ -12,7 +12,6 @@ All windows are named settings in `RETENTION`. They are carried-over defaults, n
 | `headline_days` | 30 |
 | `renewal_early_days` | 5 |
 | `renewal_late_days` | 5 |
-| `period_days` | 30 |
 
 ## The two metrics
 
@@ -21,15 +20,15 @@ Each metric has its own cohort and its own label, and both are reported by `coho
 | Metric | Cohort | Answer |
 |---|---|---|
 | **Retained at day 30** (historical): `retention` | Paying customers whose day-30 renewal window (days 25–35 after the first payment) has closed. | Retained when a paid, unrefunded renewal falls inside the window and the subscription had not ended by day 30. The numerator and denominator come from the same cohort, so the rate cannot exceed 100%. |
-| **Coverage at the cutoff** (current): `coverage` | Every customer who has paid by the cutoff. | One of three answers. **Covered:** a paid 30-day period includes the cutoff. **Not covered:** an end was recorded and no payment came after it. **Unknown:** the last period ran out and no end was recorded. Unknown is never reported as covered. |
+| **Coverage at the cutoff** (current): `coverage` | Every customer who has paid by the cutoff. | One of three answers. **Covered:** one of a paid, unrefunded invoice's actual service periods (one per subscription line, never merged into one span) includes the cutoff, and no recorded end of that subscription stopped it first. **Not covered:** every subscription the customer paid for has a recorded end on or before the cutoff, and nothing paid after it covers the cutoff. **Unknown:** neither, for example a gap between periods with no end recorded. Unknown is never reported as covered. |
 
 ## How this branch feeds the shared module
 
 `retentionOf` in `web/lib/gtm/lifecycle.ts` only maps this branch's events onto the module's input. Times are converted from ms to unix seconds.
 
-- **Payments:** every paid `payment` event becomes a payment.
+- **Payments:** every paid `payment` event becomes a payment, with the service periods billing reported for it (one per subscription line). A payment with no period is a one-off charge and is no coverage evidence.
 - **Refunds:** a `refunded` event marks the latest earlier unrefunded payment as refunded.
-- **Recorded end:** the latest `cancel` event.
+- **Recorded end:** each `cancel` ends its own subscription (deleting one subscription never stops another's paid service); one that names no subscription ends all of them. A cancellation scheduled for the period end is not an end yet.
 - **Cutoff:** the report's as-of time.
 
 Every row is cut at that same as-of time before de-duplication (`upTo`). Future-dated rows and late replays therefore never count.
