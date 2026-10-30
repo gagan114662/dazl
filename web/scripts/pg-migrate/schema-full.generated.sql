@@ -243,6 +243,9 @@ CREATE TABLE lifecycle_events (
     invoice TEXT,
     full_refund BIGINT,
     source TEXT CHECK (source IS NULL OR char_length(source) <= 40),
+    period_start BIGINT,
+    period_end BIGINT,
+    service_until BIGINT,
     PRIMARY KEY (kind, ref)
   );
 
