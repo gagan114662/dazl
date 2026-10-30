@@ -11,7 +11,7 @@ import { setScanDb, setUser } from './tenant-route-db.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { sqliteDb } from '../../lib/db/client.ts'
 import { admitTrialScan, settleTrialReservation } from '../../lib/billing/trial-budget.ts'
-import { trialStatus } from '../../lib/scan/trial.ts'
+import { recordTrialScan, trialStatus, TRIAL_SCANS_PER_IP_PER_DAY } from '../../lib/scan/trial.ts'
 import { POST } from '../../app/api/scan/route.ts'
 
 Object.assign(process.env, { DAZL_TRIAL_ANTHROPIC_KEY: 'sk-ant-trial-fixture', DAZL_TRIAL_SCAN_RESERVE_USD: '0.30', DAZL_TRIAL_ACCOUNT_TOTAL_USD: '1',
@@ -34,7 +34,7 @@ const end = async (db: Database.Database, job: string, status: 'failed' | 'done'
   db.prepare('UPDATE scan_jobs SET status = ?, error = ?, spend_reserved_usd = ?, finished_at = 1 WHERE id = ?').run(status, error, spent, job)
   await settleTrialReservation(sqliteDb(db), job, 1)
 }
-const start = async (ip: string) => { const r = await post(ip); const b = await r.json() as { job_id?: string; error?: string; reason?: string }; return { status: r.status, ...b } }
+const start = async (ip: string) => { const r = await post(ip); const b = await r.json() as { job_id?: string; error?: string; reason?: string; used?: number }; return { status: r.status, ...b } }
 
 test('three paid trial failures use the three attempts: the fourth request is refused, by the count and by admission', async () => {
   const { db, id } = account('pat@gmail.com')
@@ -71,4 +71,13 @@ test('a cancelled trial scan that reserved nothing still uses its attempt; a sca
   const f = await start('10.0.1.6')
   assert.equal(f.status, 402, JSON.stringify(f))
   assert.deepEqual(await admitTrialScan(sqliteDb(db), { id, email: 'sam@gmail.com' }), { ok: false, reason: 'attempts_cap' })
+})
+
+// #410: a throttled network is refused with its own reason, so the page can say "try again tomorrow" and never "used up".
+test('a network over its daily trial scans is refused trial_exhausted with reason ip_throttle; the account used none', async () => {
+  const { db } = account('fresh@gmail.com')
+  for (let i = 0; i < TRIAL_SCANS_PER_IP_PER_DAY; i++) recordTrialScan(db, `other${i}`.padEnd(32, '0'), `job${i}`, '10.7.7.7') // other accounts, same network
+  const r = await start('10.7.7.7')
+  assert.deepEqual([r.status, r.error, r.reason, r.used], [402, 'trial_exhausted', 'ip_throttle', 0])
+  assert.equal((db.prepare('SELECT count(*) AS n FROM scan_jobs').get() as { n: number }).n, 0, 'nothing queued')
 })

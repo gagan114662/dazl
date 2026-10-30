@@ -189,7 +189,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         router.push(`/app/leads?job_id=${encodeURIComponent(j.job_id)}`); return
       }
       // #410: a refused free trial says why (lib/trial-copy.ts); only the account's own caps read as used
-      if (j.error === 'no_api_key' || j.error === 'trial_exhausted' || j.error === 'trial_unavailable') { setNeedKey(true); return setError(scanRefusalCopy(j) ?? '') }
+      if (j.error === 'no_api_key' || j.error === 'trial_exhausted' || j.error === 'trial_unavailable') { setNeedKey(true); return setError(scanRefusalCopy(j, 'below') ?? '') }
       setError(knownErrorCopy(j.error) ?? (j.error === 'quota_exceeded' ? `You have used ${j.used} of ${j.limit} scans on your plan.` : j.error || 'Could not start the search.'))
     } catch { setError('Could not reach the server. Check your connection and try again.') } finally { setBusy(false) }
   }

@@ -67,6 +67,18 @@ test('#410 scan start: each trial refusal reason has its own true sentence and a
     assert.equal(used.test(t), claimsUse, `${JSON.stringify(j)}: claims past use only for the account's own caps`)
     assert.match(t, /AI key in Settings/, 'every refusal names the step that works now')
     assert.doesNotMatch(t, /\$|budget|operator|sk-/i, 'nothing about dazl\'s keys or budgets')
+    // where the key step is: first-run opens the key field right under the message
+    assert.match(scanRefusalCopy(j, 'below')!, /AI key below/); assert.doesNotMatch(scanRefusalCopy(j, 'below')!, /Settings/)
   }
   for (const e of ['no_api_key', 'quota_exceeded', 'scan_active', undefined]) assert.equal(scanRefusalCopy({ error: e }), null)
+})
+
+test('#410: a trial block from /api/usage maps to the refusal the scan start would give, before a run is offered', async () => {
+  const { scanRefusalCopy, trialBlockRefusal } = await import('../lib/trial-copy.ts')
+  assert.deepEqual(trialBlockRefusal('ip_throttle'), { error: 'trial_exhausted', reason: 'ip_throttle' })
+  assert.deepEqual(trialBlockRefusal('account_cap'), { error: 'trial_exhausted', reason: 'account_cap' })
+  assert.deepEqual(trialBlockRefusal('not_configured'), { error: 'trial_unavailable', reason: 'not_configured' })
+  assert.deepEqual(trialBlockRefusal('global_daily_cap'), { error: 'trial_unavailable', reason: 'global_daily_cap' })
+  for (const b of [null, undefined, '', 0]) assert.equal(trialBlockRefusal(b), null, 'not blocked: nothing to say')
+  assert.match(scanRefusalCopy(trialBlockRefusal('not_configured')!)!, /can't run right now/, 'unavailable, never "used"')
 })

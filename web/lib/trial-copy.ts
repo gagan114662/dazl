@@ -48,23 +48,31 @@ export function trialCopy(t: TrialBlock): TrialCopy {
 // ip_throttle, or trial_unavailable with the trial budget's reason). Only the account's own caps are described as used;
 // a throttle, a full day, an eligibility rule, an unavailable trial or an unknown reason claims nothing about past use.
 // Every sentence ends in the step that works now. null: not a trial refusal (the caller phrases other errors).
-export function scanRefusalCopy(j: { error?: unknown; reason?: unknown }): string | null {
+export function scanRefusalCopy(j: { error?: unknown; reason?: unknown }, keyAt = 'in Settings'): string | null {
   if (j.error !== 'trial_exhausted' && j.error !== 'trial_unavailable') return null
+  const key = `add your AI key ${keyAt}`, Key = `Add your AI key ${keyAt}`
   switch (typeof j.reason === 'string' ? j.reason : null) {
     case 'account_cap':
     case 'attempts_cap':
-      return 'You have used all your free trial scan attempts (failed attempts count too). Add your AI key in Settings to keep scanning.'
+      return `You have used all your free trial scan attempts (a failed scan that cost anything counts too). ${Key} to keep scanning.`
     case 'account_total_cap':
-      return "Your free trial's allowance is used up. Add your AI key in Settings to keep scanning."
+      return `Your free trial's allowance is used up. ${Key} to keep scanning.`
     case 'ip_throttle':
-      return 'Too many free trial scans from your network today. Try again tomorrow, or add your AI key in Settings to scan now.'
+      return `Too many free trial scans from your network today. Try again tomorrow, or ${key} to scan now.`
     case 'global_daily_cap':
-      return "Today's free trial scans are fully booked. Try again tomorrow (it resets at midnight UTC), or add your AI key in Settings to scan now."
+      return `Today's free trial scans are fully booked. Try again tomorrow (it resets at midnight UTC), or ${key} to scan now.`
     case 'google_required':
-      return 'Free trial scans need an account that signs in with Google. Sign in with Google, or add your AI key in Settings to scan now.'
+      return `Free trial scans need an account that signs in with Google. Sign in with Google, or ${key} to scan now.`
     case 'domain_used':
-      return "Your company's email domain has already had its free trial. Add your AI key in Settings to scan."
+      return `Your company's email domain has already had its free trial. ${Key} to scan.`
     default:
-      return "Free trial scans can't run right now. Add your AI key in Settings to scan."
+      return `Free trial scans can't run right now. ${Key} to scan.`
   }
+}
+
+// The scan-start refusal a trial block from GET /api/usage (trial.blocked) amounts to: the same sentence the start would
+// get, said before a run is offered rather than after it is confirmed.
+export function trialBlockRefusal(blocked: unknown): { error: string; reason: string } | null {
+  if (typeof blocked !== 'string' || !blocked) return null
+  return { error: blocked === 'account_cap' || blocked === 'ip_throttle' ? 'trial_exhausted' : 'trial_unavailable', reason: blocked }
 }

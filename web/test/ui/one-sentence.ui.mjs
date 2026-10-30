@@ -64,7 +64,7 @@ const ROWS = [row(LEADS[0], 'Priya Hartley, Managing partner', 'priya@hartleysha
 // A ready lead that is NOT one of the five the fast scan returned (it ranked sixth): the full rows hold it, the five cards do not.
 const OUTSIDE_ROW = row({ ...LEADS[0], id: '6'.repeat(24), company: 'Fenwick Payroll Partners', signal: 'Hiring a payroll manager for its Leeds office', source_url: 'https://www.fenwick.example/careers', event_date: '2026-10-19' }, 'Jo Fenwick, Managing partner', 'jo@fenwick.example')
 const b = await chromium.launch()
-async function run({ width, height, tag, how = 'cta', full = true, incomplete = false, outside = false, tz = 'UTC' }) {
+async function run({ width, height, tag, how = 'cta', full = true, incomplete = false, outside = false, tz = 'UTC', refuse = null }) {
   const st = { profile: { business_name: '', sells: '', website: '', buyer: null }, scanBodies: [], polls: 0 }
   const ctx = await b.newContext({ viewport: { width, height }, timezoneId: tz })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
@@ -78,7 +78,7 @@ async function run({ width, height, tag, how = 'cta', full = true, incomplete = 
     if (p === '/api/scan/icp-from-url') { await new Promise(r => setTimeout(r, 1200)); return json(READ) }
     if (p === '/api/settings/profile' && m === 'POST') { st.profile = { ...st.profile, ...JSON.parse(req.postData()) }; return json({ ok: true }) }
     if (p === '/api/settings/profile') return json(st.profile)
-    if (p === '/api/scan' && m === 'POST') { st.scanBodies.push(JSON.parse(req.postData())); return json({ job_id: J }) }
+    if (p === '/api/scan' && m === 'POST') { st.scanBodies.push(JSON.parse(req.postData())); return refuse ? json(refuse, 402) : json({ job_id: J }) }
     if (p === '/api/scan/status') { const s = STEPS(full)[Math.min(st.polls++, 3)]; return json({ job_id: J, ...s }) }
     if (p === '/api/scan/jobs') return json({ jobs: [] })
     if (p === '/api/usage') return json({ plan: 'free', scans_used: 0, scan_limit: 10, has_key: false, trial: { funded: true, remaining: 3 } })
@@ -112,6 +112,17 @@ async function run({ width, height, tag, how = 'cta', full = true, incomplete = 
   if (how === 'cta') await page.getByTestId('ready-cta').click()
   else if (how === 'chip') { query = (await chips.nth(1).innerText()).trim(); await chips.nth(1).click() }
   else { query = 'Accounting firms in Leeds hiring a payroll manager'; await type(box, query); await box.press('Enter') }
+  if (refuse) {
+    // #410: the free trial refused the first scan: its own reason, the key step right below it, nothing about used scans
+    const alert = page.getByRole('alert').filter({ hasText: /free trial/ }); await alert.waitFor({ timeout: 10000 })
+    const text = await alert.innerText()
+    assert.match(text, /Too many free trial scans from your network today\. Try again tomorrow, or add your AI key below to scan now\./)
+    assert.doesNotMatch(await page.locator('body').innerText(), /used up|used all|trial_exhausted|ip_throttle/, 'no claim of used scans, no raw code')
+    assert.ok(await page.getByText('Searches run on your own Anthropic or OpenAI key.').isVisible(), 'the key field it points to is there')
+    await alert.scrollIntoViewIfNeeded(); await shot('410-first-run-refused')
+    await ctx.close()
+    return { typed, firstCardSeconds: 0 }
+  }
   await page.getByTestId('first-progress').waitFor({ timeout: 10000 })
   assert.deepEqual(st.scanBodies, [{ query, icp: READ.icp, mode: 'first5' }], 'one scan: the sentence, the profile as read, the fast first scan')
   // 3. Live: which source is read now, candidates so far.
@@ -157,6 +168,7 @@ async function run({ width, height, tag, how = 'cta', full = true, incomplete = 
   return { typed, firstCardSeconds }
 }
 try {
+  for (const [w, h, tag] of [[1440, 900, 'desktop'], [390, 844, 'mobile']]) await run({ width: w, height: h, tag, refuse: { error: 'trial_exhausted', reason: 'ip_throttle', used: 0 } })
   const d = await run({ width: 1440, height: 900, tag: 'desktop', tz: 'America/Toronto' })
   const m = await run({ width: 390, height: 844, tag: 'mobile' })
   const c = await run({ width: 1440, height: 900, tag: 'held', how: 'chip' })

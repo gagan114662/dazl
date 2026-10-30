@@ -2,7 +2,7 @@
 import { CrmPush } from './crm-push'
 import { windowNotice } from '@/lib/scan/window-notice'
 import { KEY_UNREADABLE_COPY, knownErrorCopy } from '@/lib/error-copy'
-import { scanRefusalCopy } from '@/lib/trial-copy'
+import { scanRefusalCopy, trialBlockRefusal } from '@/lib/trial-copy'
 import { useEffect, useRef, useState } from 'react'
 import { buildSources } from '@/lib/sources/ui-sources'
 import { emptyLeadsMessage, scoreLabel, quoteNote } from '@/lib/scan/leads-view'
@@ -397,6 +397,13 @@ export default function LeadsClient() {
     setError(''); setStarting(true)
     const srcBody = buildSources({ github: useGithub, youtube: useYoutube, v2ex: useV2ex, jobboards: useJobboards, feedText, pageText, advPick })
     try {
+      // #410: without its own key the run would be the free trial's. When the trial is blocked right now (read fresh), say
+      // why before offering a run on it: no estimate that says "paid by the free trial" with Confirm.
+      if (keyState && !keyState.has_key) {
+        const u = await fetch('/api/usage').then(r => r.ok ? r.json() : null).catch(() => null)
+        const refusal = trialBlockRefusal(u?.has_key ? null : u?.trial?.blocked)
+        if (refusal) { setError(scanRefusalCopy(refusal) ?? ''); return }
+      }
       const body = JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) })
       const er = await fetch('/api/scan/estimate', { method: 'POST', headers: { 'content-type': 'application/json' }, body })
       const ej = await er.json().catch(() => ({}))

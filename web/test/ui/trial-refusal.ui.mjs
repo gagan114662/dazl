@@ -27,7 +27,7 @@ const EST = { estimate: { rows: [], total: { min: 0.05, max: 0.4 }, unpriced: []
   cap: { max_usd: null, reserved_usd: 0, remaining_usd: null, binding: null, month_cap_usd: null, month_reserved_usd: 0, unknown: false, capped_total: { min: 0.05, max: 0.4 } },
   verdict: { ok: true, reason: null, message: 'Runs on the free trial.', change: [], warning: null }, ack: 'ack-trial' } }
 
-async function open(scanReply, viewport = { width: 1280, height: 900 }) {
+async function open(scanReply, viewport = { width: 1280, height: 900 }, usage = null) {
   const calls = []; const posts = []
   const page = await browser.newPage({ viewport })
   await page.route('**/*', async route => {
@@ -36,6 +36,7 @@ async function open(scanReply, viewport = { width: 1280, height: 900 }) {
     if (u.pathname === '/bundle.js') return route.fulfill({ contentType: 'text/javascript', body: js })
     if (!u.pathname.startsWith('/api/')) return route.fulfill({ status: 204, body: '' })
     calls.push(`${m} ${u.pathname}`)
+    if (u.pathname === '/api/usage' && usage) return json(route, usage)
     if (u.pathname === '/api/scan/estimate' && m === 'POST') return json(route, EST)
     if (u.pathname === '/api/scan' && m === 'POST') { posts.push(JSON.parse(route.request().postData())); return scanReply(route) }
     if (u.pathname === '/api/scan/latest') return json(route, { query: 'Toronto dental practices hiring front desk staff', icp: ICP, icp_source: 'user' })
@@ -71,6 +72,20 @@ for (const [name, reply, re] of CASES) {
     if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `410-start-${name}-${vp}.png`), fullPage: false })
     await page.close()
   }
+}
+// A keyless account whose trial is already blocked (GET /api/usage trial.blocked) is told why before any run is offered:
+// no estimate that says the free trial pays, no Confirm, nothing started.
+for (const [vp, viewport] of [['desktop', { width: 1280, height: 900 }], ['mobile', { width: 390, height: 844 }]]) {
+  const usage = { plan: 'free', scans_used: 0, scan_limit: 10, has_key: false, trial: { funded: false, remaining: 3, cap: 3, blocked: 'ip_throttle' } }
+  const { page, calls, posts } = await open(route => json(route, { job_id: 'e'.repeat(24) }, 202), viewport, usage)
+  await page.getByRole('button', { name: 'Run scan with this profile' }).last().click()
+  const err = page.getByText(/Too many free trial scans from your network today/); await err.waitFor({ timeout: 5000 })
+  assert.equal(await page.getByTestId('estimate-confirm').count(), 0, `blocked ${vp}: no trial estimate offered`)
+  assert.equal(calls.filter(c => c === 'POST /api/scan/estimate').length, 0, 'no estimate asked for')
+  assert.equal(posts.length, 0, 'nothing started')
+  await err.scrollIntoViewIfNeeded()
+  if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `410-blocked-before-estimate-${vp}.png`), fullPage: false })
+  await page.close()
 }
 await browser.close()
 console.log('trial-refusal.ui: ok')
