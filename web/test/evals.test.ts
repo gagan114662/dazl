@@ -366,15 +366,25 @@ test('event_date_on_page: a date stated in the text passes in any common form; a
   assert.equal(at('Querix raised a seed round.', '2026-10-08'), 'unknown')          // the old-article-fresh-publication trap
   assert.equal(at('Querix raised a seed round on October 9, 2026.'), 'unknown')     // a different day
   assert.equal(at('Querix raised a seed round.', undefined, null), undefined)        // undated: event_date_in_window holds it
+  // a date form counts only as a whole token (review of #453)
+  assert.equal(at('The old event was not dated. Import reference 2026-10-080123.'), 'unknown')
+  assert.equal(at('Archive filename x2026-10-08x.'), 'unknown')
+  assert.equal(at('Ticket 12026-10-08 was filed.'), 'unknown')
+  assert.equal(at('On 18 October 2026 Querix raised a seed round.'), 'unknown')        // the 18th, not the 8th
+  assert.equal(at('On October 8, 20261 Querix raised a seed round.'), 'unknown')
+  assert.equal(at('The event opens on October 8, 2026.'), 'pass')
+  assert.equal(at('(2026-10-08) Querix raised a seed round.'), 'pass')
+  assert.equal(at('Posted 2026-10-08: Querix raised a seed round.'), 'pass')
 })
 
 test('contact_not_recruiting_inbox: hiring inboxes fail, buyer-facing inboxes pass, phones get no verdict', async () => {
   const ctx = await base()
   const q = ctx.result.leads.find(l => l.company === 'Querix')!
   const at = (contact: string) => { const c = clone(ctx); c.result.leads = [{ ...q, contact }]; return statuses(contactNotRecruitingInbox, c)['lead:Querix'] }
-  for (const bad of ['careers@querix.example', 'jobs@querix.example', 'Talent.Acquisition@querix.example', 'hr@querix.example', 'recruiting@querix.example', 'apply@querix.example', 'join-us@querix.example'])
+  for (const bad of ['careers@querix.example', 'jobs@querix.example', 'Talent.Acquisition@querix.example', 'hr@querix.example', 'recruiting@querix.example', 'apply@querix.example', 'join-us@querix.example',
+    'careers+toronto@querix.example', 'jobs+sales@querix.example', 'Careers+Sales.Team@querix.example', 'talent.acquisition+emea@querix.example'])
     assert.equal(at(bad), 'fail', bad)
-  for (const ok of ['hello@querix.example', 'sales@querix.example', 'jane.doe@querix.example', 'jobsworth@querix.example', 'hrishi@querix.example'])
+  for (const ok of ['hello@querix.example', 'sales@querix.example', 'jane.doe@querix.example', 'jobsworth@querix.example', 'hrishi@querix.example', 'hrishi+jobs@querix.example', 'sales+careers@querix.example'])
     assert.equal(at(ok), 'pass', ok)
   assert.equal(at('+44 20 7946 0000'), undefined)
 })

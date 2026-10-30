@@ -105,13 +105,15 @@ function dateForms(iso: string): string[] {
   if (!mo) return [iso]
   return [iso, `${mo} ${d}, ${y}`, `${mo.slice(0, 3)} ${d}, ${y}`, `${mo.slice(0, 3)}. ${d}, ${y}`, `${d} ${mo} ${y}`, `${d} ${mo.slice(0, 3)} ${y}`]
 }
+// A date form counts only as a whole token: "2026-10-080123", "x2026-10-08x" and "18 october 2026" do not state 2026-10-08.
+const statesToken = (text: string, form: string) => new RegExp(`(?<![\\p{L}\\p{N}])${form.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`, 'u').test(text)
 export const eventDateOnPage: Evaluator = {
-  id: 'event_date_on_page', version: 1, kind: 'deterministic', critical: true,
+  id: 'event_date_on_page', version: 2, kind: 'deterministic', critical: true,
   evaluate({ world, result }) {
     return verified(result).filter(l => l.event_date).map(l => {
       const own = world.pages[l.source_url]
       const text = squash(`${own && 'text' in own ? `${own.title} ${own.text}` : ''} ${world.tinyfish_pages[l.source_url]?.text ?? ''}`)
-      if (dateForms(l.event_date!).some(f => text.includes(f))) return v(this, subj(l), 'pass', `the page text states ${l.event_date}`, [l.source_url])
+      if (dateForms(l.event_date!).some(f => statesToken(text, f))) return v(this, subj(l), 'pass', `the page text states ${l.event_date}`, [l.source_url])
       const published = own && 'published' in own ? own.published : null
       return published === l.event_date
         ? v(this, subj(l), 'unknown', `${l.event_date} is only the page's publication date; the text never dates the event`, [l.source_url])
@@ -124,10 +126,11 @@ export const eventDateOnPage: Evaluator = {
 // buyer. A phone or no contact gets no verdict here.
 const RECRUITING_LOCAL = /^(?:jobs?|careers?|recruit(?:ing|ment|er|ers)?|talent(?:acquisition)?|hr|humanresources|hiring|apply|applications?|cv|cvs|resumes?|joinus|join|work(?:withus)?)$/
 export const contactNotRecruitingInbox: Evaluator = {
-  id: 'contact_not_recruiting_inbox', version: 1, kind: 'deterministic', critical: true,
+  id: 'contact_not_recruiting_inbox', version: 2, kind: 'deterministic', critical: true,
   evaluate({ result }) {
     return verified(result).filter(l => l.contact && l.contact.includes('@')).map(l => {
-      const local = l.contact!.trim().split('@')[0].toLowerCase().replace(/[._+-]/g, '')
+      // the mailbox stem before any +tag: careers+toronto@ is still the careers inbox
+      const local = l.contact!.trim().split('@')[0].split('+')[0].toLowerCase().replace(/[._-]/g, '')
       return RECRUITING_LOCAL.test(local)
         ? v(this, subj(l), 'fail', `contact ${l.contact} is a recruiting inbox, not a route to a buyer`, [l.source_url])
         : v(this, subj(l), 'pass', 'contact is not a recruiting inbox')
