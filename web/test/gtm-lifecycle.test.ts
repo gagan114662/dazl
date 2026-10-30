@@ -181,3 +181,11 @@ test('coverage through this file\'s events: actual service intervals; an end sto
   const gap = [signup('gp', 0), ev('gp', 0, { kind: 'payment', status: 'paid', periods: [{ start: at(0), end: at(10), subscription: 'sub_a' }, { start: at(50), end: at(60), subscription: 'sub_b' }] })]
   assert.deepEqual([cov(gap, 5), cov(gap, 30), cov(gap, 55)], ['covered', 'unknown', 'covered'])
 })
+
+test('a cancel ends its own subscription only: deleting sub_other keeps sub_MULTI covered and paying; deleting sub_MULTI too ends the customer', () => {
+  const two = (c: string) => [signup(c, 0), run(c, 1, 2), ev(c, 2, { kind: 'payment', status: 'paid', periods: [{ start: at(2), end: at(32), subscription: 'sub_MULTI' }, { start: at(2), end: at(32), subscription: 'sub_other' }] })]
+  const one = customerState('m1', [...two('m1'), ev('m1', 5, { kind: 'cancel', subscription: 'sub_other' })], at(10))
+  assert.equal(one.retention.coverage_at_cutoff, 'covered'); assert.equal(one.stage, 'paid', 'still a paying customer, not churned')
+  const both = customerState('m2', [...two('m2'), ev('m2', 5, { kind: 'cancel', subscription: 'sub_other' }), ev('m2', 6, { kind: 'cancel', subscription: 'sub_MULTI' })], at(10))
+  assert.equal(both.retention.coverage_at_cutoff, 'not_covered'); assert.equal(both.stage, 'churned')
+})
