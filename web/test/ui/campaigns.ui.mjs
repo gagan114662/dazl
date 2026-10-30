@@ -6,6 +6,7 @@
 //   2. each card shows discovery, qualification, contact, outreach, sequence and replies counts as stored;
 //   2b. qualification uses the server's evidence states: a legacy row (confidence, contact, no excerpt) is unverified
 //      and never offered as ready to draft;
+//   2c. #412: "with a contact" counts the address a draft would go to: a site-published email counts, a phone number does not;
 //   3. the next action follows the pipeline (review before drafts, drafts before sending) and links to the page where
 //      that step and its checks live;
 //   3b. a run that produced no leads says how it ended, in the same words as its page and the Leads history: Austin
@@ -53,9 +54,9 @@ try {
   await cards.first().waitFor({ timeout: 15000 })
   if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, 'campaigns.png'), fullPage: true })
   assert.equal(await page.locator('aside').getByRole('link', { name: 'Campaigns' }).getAttribute('href'), '/app/campaigns')
-  assert.equal(await cards.count(), 6)
+  assert.equal(await cards.count(), 7)
   assert.doesNotMatch(await page.locator('main').textContent(), /B-ONLY SEARCH/, "another tenant's search never shows")
-  const [dental, leeds, legacy, austin, nyc, ohio] = [cards.nth(0), cards.nth(1), cards.nth(2), cards.nth(3), cards.nth(4), cards.nth(5)]
+  const [dental, leeds, legacy, austin, nyc, ohio, halifax] = [cards.nth(0), cards.nth(1), cards.nth(2), cards.nth(3), cards.nth(4), cards.nth(5), cards.nth(6)]
   const text = async (card, s) => (await card.getByTestId(`stage-${s}`).textContent())
   assert.match(await austin.textContent(), /Orthodontists in Austin/)
   // 3b. Austin extracted nothing: it never reads "failed" (the London report), and its next step matches its page.
@@ -88,12 +89,17 @@ try {
   assert.equal(await text(legacy, 'qualification'), 'Qualification0 source-checked, 0 confirmed by you, 0 to review0 timing not confirmed, 1 unverified, 0 rejected')
   assert.equal(await text(legacy, 'contact'), 'Contact1 with a contact')
   assert.equal(await legacy.getByTestId('next-action').textContent(), 'Check 1 unverified lead against their sources', 'an honest research step, never "nothing waiting"')
+  // #412: the two leads with only a site-published email count; the phone-only lead does not.
+  assert.match(await halifax.textContent(), /Accountants in Halifax/)
+  assert.equal(await text(halifax, 'contact'), 'Contact2 with a contact')
+  if (process.env.SHOTS) await halifax.screenshot({ path: path.join(process.env.SHOTS, 'contact-recipient-card-desktop.png') })
   if (process.env.SHOTS) {
     await page.screenshot({ path: path.join(process.env.SHOTS, 'campaigns-desktop.png') })
     await page.setViewportSize({ width: 390, height: 844 }); await page.waitForTimeout(300)
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'no horizontal scroll at 390px')
     for (const c of await cards.all()) { const cb = await c.boundingBox(); for (const el of [c.getByTestId('next-action'), c.getByTestId('campaign-link')]) { const bb = await el.boundingBox(); assert.ok(bb.x >= cb.x && bb.x + bb.width <= cb.x + cb.width + 0.5, 'the title and next action stay inside the card at 390px') } }
     await page.screenshot({ path: path.join(process.env.SHOTS, 'campaigns-mobile.png') })
+    await halifax.screenshot({ path: path.join(process.env.SHOTS, 'contact-recipient-card-mobile.png') })
   }
   assert.deepEqual(writes, [], 'loading the page writes nothing')
   // #350: the scan recorded 1 found, 1 source-checked. Before any review the card says leads found, from the lead as it is.
@@ -132,7 +138,7 @@ try {
     if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `none-passed-page-${w > 500 ? 'desktop' : 'mobile'}.png`), fullPage: true })
   }
   assert.deepEqual(writes, [`POST /api/leads/${'8'.repeat(24)}/quarantine`], 'the only write is the one reject')
-  console.log('campaigns UI check passed: 6 own campaigns (run states: nothing extracted, technical failure, leads found, none passed after rejecting the last lead, after reload, card + page) (incl. a legacy unverified lead), stage counts and next actions from the real route')
+  console.log('campaigns UI check passed: 7 own campaigns (run states: nothing extracted, technical failure, leads found, none passed after rejecting the last lead, after reload, card + page) (incl. a legacy unverified lead and site-published emails, #412), stage counts and next actions from the real route')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }

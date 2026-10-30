@@ -39,6 +39,13 @@ job('A', 'f'.repeat(24), 'Plumbers in Leeds', null); end('f'.repeat(24), 'failed
 const DENT = '7'.repeat(24)
 job('A', DENT, 'Dental practices in a big city - opening a new location', 1); lead(DENT, '8'.repeat(24)); end(DENT)
 db.prepare('UPDATE scan_jobs SET verified = 1, needs_review = 0, dropped = 0 WHERE id = ?').run(DENT)
+// 7. #412 (synthetic): two leads whose only email is the one their company site published (site crawl), and one whose
+// only contact is a phone number. "With a contact" counts the address a draft would go to: 2, not the phone. Oldest, so
+// it is the last card.
+const CRAWL = '9'.repeat(24)
+db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, candidates, created_at) VALUES (?, 'A', 'x', '(from request)', '-', 'Accountants in Halifax - hiring a bookkeeper', 'running', 3, ?)").run(CRAWL, t - 100_000)
+lead(CRAWL, 'k1'); lead(CRAWL, 'k2'); lead(CRAWL, 'k3', { contact: '+1 902 555 0100' }); end(CRAWL)
+for (const [l, e] of [['k1', 'hello@one.example'], ['k2', 'office@two.example']]) db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', 'email', ?, NULL, ?, '2026-10-22', 1)").run(l, e, `https://${e.split('@')[1]}/contact`)
 // B's search must never appear for A.
 job('B', 'd'.repeat(24), 'B-ONLY SEARCH', 3); lead('d'.repeat(24), 'b1', { contact: 'x@b.example' }); end('d'.repeat(24)); msg('B', 'b1', 'draft')
 db.close()
