@@ -12,6 +12,7 @@
 //   6. no horizontal scroll at 390px on any of these screens.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import assert from 'node:assert/strict'
+import Database from 'better-sqlite3'
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 import { loadPlaywright, newContext, startServer } from '../smoke/harness.mjs'
@@ -59,6 +60,18 @@ try {
   const signup = await mate.evaluate(async () => (await fetch('/api/auth/signup', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'mate@example.test', password: 'a long password 42', name: 'Mate', business_name: 'Mate Co' }) })).status)
   assert.equal(signup, 200)
   await mate.goto(link, { waitUntil: 'networkidle' })
+  await mate.getByText('Confirm your email').waitFor()
+  // Signup is unverified. Obtain its own fixture mail token from this throwaway
+  // server's local outbox, then exercise the real verification endpoint before join.
+  const fixtureDb = new Database(srv.dbPath)
+  const mail = fixtureDb.prepare('SELECT body FROM system_mail_outbox WHERE to_email = ? ORDER BY rowid DESC').get('mate@example.test')
+  fixtureDb.close()
+  const verification = /\/verify#t=([a-f0-9]{64})/.exec(mail?.body ?? '')?.[1]
+  assert.ok(verification, 'signup fixture has its own verification link')
+  const verified = await mate.evaluate(async token => (await fetch('/api/auth/verify', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token})})).status, verification)
+  assert.equal(verified,200)
+  await mate.goto(`${base}/app/settings`, {waitUntil:'networkidle'})
+  await mate.goto(link, {waitUntil:'networkidle'})
   await mate.getByText('You are in.').waitFor()
   assert.equal(new URL(mate.url()).hash, '', 'the token is cleared from the address bar')
   await shot(mate, 'join-accepted')
