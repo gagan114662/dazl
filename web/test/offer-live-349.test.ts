@@ -1,0 +1,178 @@
+// #349 live dental control (Instinct, 2026-10-30 on production aad968d4): the ORIGINAL dental request, run while the saved
+// offer is the dental sentence, was shown as a conflict with itself (campaign GET offer:null source:conflict), and the
+// London request still has to be a genuine conflict. The records are reconstructed exactly as stored: both plays carry
+// seller = the saved dental sentence with no website suffix (website is ""), offer NULL, offer_set_at NULL; users.sells
+// is that sentence; no tenant_memory row. Nothing is shortened and no offer is forced, so the failing path is the one
+// under test. Synthetic ids and contacts; no network, no model, no send.
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { randomBytes } from 'node:crypto'
+import Database from 'better-sqlite3'
+import { effectiveOffer, sameOffer, statedOffer } from '../lib/scan/play-offer-text.ts'
+import { readPlayOffer, setPlayOffer } from '../lib/scan/play-offer.ts'
+import { createDraft, saveSettings } from '../lib/outreach/service.ts'
+import { polishDraft } from '../lib/outreach/draft-llm.ts'
+import { memoryForLead } from '../lib/outreach/play-memory.ts'
+import { offerBlockFor } from '../lib/scan/runner.ts'
+import { migrateScan } from '../lib/scan/store.ts'
+import { migrateOutreach } from '../lib/outreach/store.ts'
+import { migrateConnectors } from '../lib/connectors/store.ts'
+import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
+import { migratePlans } from '../lib/plans.ts'
+import { migrateMemory } from '../lib/memory.ts'
+import { bothEngines } from './helpers/engines.ts'
+import type { Provider } from '../lib/llm/provider.ts'
+
+export const SAVED = 'We sell appointment booking and reminder software to independent dental practices in New York City.'
+export const P = 'appointment booking and reminder software'
+export const CRM = 'CRM setup and outbound sales consulting'
+// the two original requests, verbatim (en dash in "1–5")
+export const DENTAL_REQUEST = 'Find independent dental practices in New York City with 1–5 locations that opened a new location or are hiring a receptionist in the last 90 days. We sell appointment booking and reminder software. Exclude large chains, vendors, directories, and practices outside NYC. Show the dated evidence and an owner or practice manager contact.'
+export const LONDON_REQUEST = 'Find B2B SaaS startups in London, UK that raised seed funding or are hiring their first sales representative in the last 90 days. We sell CRM setup and outbound sales consulting. Exclude agencies, directories and companies outside the UK. Show dated source evidence and founder or head of sales contacts.'
+const DENTAL_ID = 'd2e67ea235567418b0b932d8', LONDON_ID = 'c53bb81d0b6d00d2a2f31144'
+
+const resolve = (query: string, seller: string | null = SAVED, profile = SAVED) => effectiveOffer({ offer: null, seller, query }, profile)
+
+test('#349 live control: the original dental request is the saved dental offer, not a conflict; London is a conflict', () => {
+  assert.equal(statedOffer(DENTAL_REQUEST), P)
+  assert.deepEqual(resolve(DENTAL_REQUEST), { offer: SAVED, source: 'recorded', conflict: null })
+  // the same through the profile path (a play from before seller snapshots)
+  assert.deepEqual(resolve(DENTAL_REQUEST, null), { offer: SAVED, source: 'profile', conflict: null })
+  assert.deepEqual(resolve(LONDON_REQUEST), { offer: null, source: 'conflict', conflict: { stated: CRM, recorded: SAVED } })
+})
+
+// The failure class: ordinary targeting and output instructions of a request were material terms unless the grammar
+// consumed every word. Each sentence Instinct listed, alone with the offer sentence, is the saved offer.
+const TARGETING_OR_OUTPUT = [
+  'Find independent dental practices in New York City with 1–5 locations that opened a new location or are hiring a receptionist in the last 90 days.',
+  'Exclude large chains, vendors, directories, and practices outside NYC.',
+  'Show the dated evidence and an owner or practice manager contact.',
+  'Show dated source evidence.',
+  // the London request's own targeting and output sentences, with the dental offer: still the dental offer
+  'Find B2B SaaS startups in London, UK that raised seed funding or are hiring their first sales representative in the last 90 days.',
+  'Exclude agencies, directories and companies outside the UK.',
+  'Show dated source evidence and founder or head of sales contacts.',
+  // more of the same class: sizes, windows, events, places, exclusions, output columns
+  'Find dental practices with 10-50 employees.',
+  'Target clinics with 2+ locations in Texas.',
+  'Find practices that opened a second location in the past 6 months.',
+  'Find startups that raised a Series A this year.',
+  'Find agencies that launched a new product recently.',
+  'Find companies that are hiring an office manager or a receptionist.',
+  'Exclude franchises, job boards and recruiters.',
+  'Show the source link, the date and a named contact.',
+  'List the company, website, evidence and decision-maker contact.',
+  'Please show dated evidence for each lead.',
+]
+test('#349 class: a targeting or output instruction of the request is never a commercial term', () => {
+  const failures: string[] = []
+  for (const s of TARGETING_OR_OUTPUT) {
+    const q = `${s} We sell ${P}.`
+    if (!sameOffer(q, SAVED)) failures.push(`sameOffer: ${s}`)
+    const r = resolve(q)
+    if (r.source !== 'recorded' || r.offer !== SAVED) failures.push(`effectiveOffer: ${s} -> ${r.source}`)
+  }
+  assert.deepEqual(failures, [])
+})
+
+// Fail-closed controls: genuine changes in product, audience, withdrawals and commercial terms, and sentences the
+// grammar cannot prove to be targeting or output, stay a choice even next to the sentences above.
+const STILL_A_CHOICE: [string, string][] = [
+  ['changed product', `${TARGETING_OR_OUTPUT[0]} We sell ${CRM}.`],
+  ['changed audience', `${TARGETING_OR_OUTPUT[0]} We sell ${P} to veterinary practices.`],
+  ['withdrawal', `${TARGETING_OR_OUTPUT[0]} We sell ${P}. We no longer offer SMS reminders.`],
+  ['commercial term', `${TARGETING_OR_OUTPUT[0]} We sell ${P}. Email marketing costs extra.`],
+  ['commercial term in an output sentence', `Show the dated evidence and our discount. We sell ${P}.`],
+  ['service claim in a targeting sentence', `Find dental practices that opened a new location and bought payroll software from us. We sell ${P}.`],
+  ['event the grammar does not know', `Find dental practices that outsourced billing in the last 90 days. We sell ${P}.`],
+  ['unknown place', `Find dental practices in Premium Tiers with 1–5 locations. We sell ${P}.`],
+  ['predicate after the window', `Find dental practices in the last 90 days cost extra. We sell ${P}.`],
+  ['result claim', `Independent dental practices hiring a coordinator won customers. We sell ${P}.`],
+  ['extra service', `${TARGETING_OR_OUTPUT[2]} We sell ${P} and payroll software.`],
+]
+test('#349 class controls: changed product, audience, withdrawals, commercial terms and unproved sentences stay a choice', () => {
+  const failures: string[] = []
+  for (const [why, q] of STILL_A_CHOICE) {
+    const r = resolve(q)
+    if (r.source !== 'conflict') failures.push(`${why}: "${q}" -> ${r.source}`)
+    if (sameOffer(q, SAVED)) failures.push(`${why}: sameOffer true`)
+  }
+  assert.deepEqual(failures, [])
+})
+
+// The exact stored records, through the real DB-backed resolver on both engines: Home, campaign detail, the outreach
+// list and drafting all read readPlayOffer. Reads write nothing; the other tenant sees no play; the profile is never
+// rewritten; an explicit choice changes only that play.
+const T = 'a'.repeat(32), OTHER = 'b'.repeat(32)
+bothEngines('#349 live records: dental resolves to the saved offer, London is a choice, isolation and immutability', async ({ db }) => {
+  await db.run('INSERT INTO users (id, email, password_hash, salt, sells, website, buyer_profile) VALUES (?, ?, ?, ?, ?, ?, NULL)', [T, 'owner@seller.example', 'x', 'y', SAVED, ''])
+  await db.run('INSERT INTO users (id, email, password_hash, salt, sells, website) VALUES (?, ?, ?, ?, ?, ?)', [OTHER, 'other@seller.example', 'x', 'y', 'Bookkeeping for design agencies', ''])
+  for (const [id, query, icp, industry, location, name] of [
+    [DENTAL_ID, DENTAL_REQUEST, '{"summary":"independent dental practices in NYC"}', 'Dental', 'New York City', 'Dental Seller'],
+    [LONDON_ID, LONDON_REQUEST, '{"summary":"London B2B SaaS startups"}', 'SaaS', 'London, UK', 'Dental Seller'],
+  ] as const) {
+    await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, query, seller, icp, icp_inferred, offer, offer_set_at) VALUES (?, ?, ?, ?, ?, 'done', ?, ?, ?, 1, NULL, NULL)", [id, T, name, industry, location, query, SAVED, icp])
+  }
+  const snapshot = async () => JSON.stringify([
+    await db.all('SELECT id, offer, offer_set_at, seller, query FROM scan_jobs ORDER BY id'),
+    await db.all('SELECT id, sells, website FROM users ORDER BY id'),
+  ])
+  const before = await snapshot()
+  assert.deepEqual(await readPlayOffer(db, T, DENTAL_ID), { offer: SAVED, source: 'recorded', conflict: null })
+  assert.deepEqual(await readPlayOffer(db, T, LONDON_ID), { offer: null, source: 'conflict', conflict: { stated: CRM, recorded: SAVED } })
+  // another tenant: no such play
+  assert.equal(await readPlayOffer(db, OTHER, DENTAL_ID), null)
+  assert.equal(await readPlayOffer(db, OTHER, LONDON_ID), null)
+  assert.equal(await snapshot(), before, 'reads write nothing')
+  // the London choice changes that play only
+  assert.equal(await setPlayOffer(db, T, LONDON_ID, CRM, 1_800_000_000), true)
+  assert.deepEqual(await readPlayOffer(db, T, LONDON_ID), { offer: CRM, source: 'play', conflict: null })
+  assert.deepEqual(await readPlayOffer(db, T, DENTAL_ID), { offer: SAVED, source: 'recorded', conflict: null })
+  assert.deepEqual(await db.get('SELECT offer, offer_set_at FROM scan_jobs WHERE id = ?', [DENTAL_ID]), { offer: null, offer_set_at: null })
+  assert.deepEqual(await db.get('SELECT sells, website FROM users WHERE id = ?', [T]), { sells: SAVED, website: '' })
+  // the other tenant cannot choose for it
+  assert.equal(await setPlayOffer(db, OTHER, DENTAL_ID, CRM, 1_800_000_000), false)
+  assert.deepEqual(await db.get('SELECT offer FROM scan_jobs WHERE id = ?', [DENTAL_ID]), { offer: null })
+})
+
+// The drafting callers on the exact records (SQLite, as the outreach service is): the dental play drafts and rewrites
+// with the dental offer, follow-ups and scoring state it; the London play is refused everywhere until chosen.
+test('#349 live records: drafting, rewrite, follow-ups and scoring use the dental offer; London refuses until chosen', async () => {
+  const master = randomBytes(32)
+  const db = new Database(':memory:')
+  migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateKeys(db); migratePlans(db); migrateMemory(db)
+  db.exec('CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, sells TEXT, website TEXT)')
+  db.prepare('INSERT INTO users VALUES (?, ?, ?)').run(T, SAVED, '')
+  saveKey(db, T, 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
+  saveSettings(db, T, { sender_name: 'G', postal_address: '1 King St W, Toronto ON, Canada', booking_url: null })
+  const recent = new Date(Date.now() - 5 * 86_400_000).toISOString().slice(0, 10)
+  // each lead's quote satisfies its own request's evidence gates (the London request asks for seed funding plus a sales
+  // hire), so the only refusal left to reach is the offer one
+  const QUOTES = { [DENTAL_ID]: 'Synthetic Buyer opened a new location and is hiring a receptionist', [LONDON_ID]: 'Synthetic Buyer raised a seed round and is hiring its first sales representative' }
+  for (const [id, query] of [[DENTAL_ID, DENTAL_REQUEST], [LONDON_ID, LONDON_REQUEST]] as const) {
+    db.prepare("INSERT INTO scan_jobs(id,user_id,business_name,industry,location,status,query,seller,offer,offer_set_at) VALUES(?, ?,'Dental Seller','i','l','running',?,?,NULL,NULL)").run(id, T, query, SAVED)
+    db.prepare("INSERT INTO leads(id,scan_job_id,name,company,contact,signal,source_url,evidence_excerpt,confidence,human_confirmed_at,human_confirmed_from,event_date) VALUES(?,?,'Pat','Synthetic Buyer','sales@buyer.invalid',?,'https://buyer.invalid/news',?,70,1800000000,'test_review',?)").run(`lead-${id}`, id, QUOTES[id], QUOTES[id], recent)
+    db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(id)
+    // the London request needs the sales-hiring proof: a durable recorded pass, as the scan gate writes it
+    if (id === LONDON_ID) db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, source_url, source_date, retrieved_at) VALUES ('g-london', ?, ?, 'scan:gate', 'gate_passed', 'quote', 'https://buyer.invalid/news', ?, 1800000000)").run(`lead-${id}`, T, recent)
+  }
+  const prompts: string[] = []
+  const providers = { anthropic: { completeDetailed: async (_k: string, prompt: string) => { prompts.push(prompt); return { text: 'x', model: 'm' } } } } as unknown as Record<string, Provider>
+  const body = (id: string) => (db.prepare('SELECT body FROM outreach_messages WHERE id = ?').get(id) as { body: string }).body
+  try {
+    const d = createDraft(db, T, `lead-${DENTAL_ID}`, 'Acme')
+    assert.match(body(d), /appointment booking and reminder software/)
+    // the stub answers "x", which is unusable as a rewrite: what matters is that the rewrite ran (one provider call) with the dental offer and was not refused for the offer
+    const pol = await polishDraft(db, T, d, "Acme", { master, providers }) as { rewritten: boolean; reason?: string }
+    assert.ok(pol.rewritten || (pol.reason !== "offer_conflict" && pol.reason !== "no_profile"), JSON.stringify(pol))
+    assert.equal(prompts.length, 1); assert.match(prompts[0], /appointment booking and reminder software/); assert.doesNotMatch(prompts[0], /CRM/)
+    assert.match(memoryForLead(db, T, `lead-${DENTAL_ID}`)!.positioning, /appointment booking/)
+    assert.match(offerBlockFor(db, T, DENTAL_ID), /appointment booking/)
+    assert.throws(() => createDraft(db, T, `lead-${LONDON_ID}`, 'Acme'), /offer_conflict/)
+    assert.equal(memoryForLead(db, T, `lead-${LONDON_ID}`)?.positioning ?? '', '')
+    assert.equal(offerBlockFor(db, T, LONDON_ID), '')
+    assert.equal(prompts.length, 1, 'no provider call for the contested play')
+    assert.deepEqual(db.prepare('SELECT offer, offer_set_at FROM scan_jobs WHERE id = ?').get(DENTAL_ID), { offer: null, offer_set_at: null })
+    assert.deepEqual(db.prepare('SELECT sells FROM users WHERE id = ?').get(T), { sells: SAVED })
+  } finally { db.close() }
+})
