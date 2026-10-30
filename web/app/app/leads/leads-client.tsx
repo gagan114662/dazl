@@ -402,7 +402,7 @@ export default function LeadsClient() {
       if (keyState && !keyState.has_key) {
         const u = await fetch('/api/usage').then(r => r.ok ? r.json() : null).catch(() => null)
         const refusal = trialBlockRefusal(u?.has_key ? null : u?.trial?.blocked)
-        if (refusal) { setError(scanRefusalCopy(refusal) ?? ''); return }
+        if (refusal) { setPendingEst(null); setError(scanRefusalCopy(refusal) ?? ''); return } // an estimate still open from before closes too
       }
       const body = JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) })
       const er = await fetch('/api/scan/estimate', { method: 'POST', headers: { 'content-type': 'application/json' }, body })

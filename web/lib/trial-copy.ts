@@ -70,8 +70,8 @@ export function scanRefusalCopy(j: { error?: unknown; reason?: unknown }, keyAt 
   }
 }
 
-// The scan-start refusal a trial block from GET /api/usage (trial.blocked) amounts to: the same sentence the start would
-// get, said before a run is offered rather than after it is confirmed.
+// The trial's own refusal sentence for a block GET /api/usage reports (trial.blocked), said before a run is offered rather
+// than after it is confirmed. (For not_configured the start itself answers no_api_key; this says the trial can't run.)
 export function trialBlockRefusal(blocked: unknown): { error: string; reason: string } | null {
   if (typeof blocked !== 'string' || !blocked) return null
   return { error: blocked === 'account_cap' || blocked === 'ip_throttle' ? 'trial_exhausted' : 'trial_unavailable', reason: blocked }
