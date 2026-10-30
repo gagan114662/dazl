@@ -1,6 +1,6 @@
 // Scheduler overdue alert (issue #361; docs/SCHEDULER.md). Run every 5 minutes by ops/scheduler/dazl-scheduler-check.timer.
 // Reads the app's own /api/health/scheduler (counts only) and, when it is not ok (scheduler stale, crashed or never ran
-// with work waiting; tenants blocked, reply sync stale, due work overdue) or the app does not answer, alerts:
+// with work waiting; the latest run failed or lost its lease with no success since; tenants blocked, reply sync stale, due work overdue) or the app does not answer, alerts:
 // OPS_ALERT_WEBHOOK_URL (https; e.g. a Slack incoming webhook) or SCHEDULER_ALERT_CMD (tests; the JSON as its argument).
 // The same problems alert at most once per SCHEDULER_ALERT_EVERY_S (3600); a recovery after an alert is announced once.
 // Stamps live in --state-dir. The alert carries the endpoint's counts and states only: no tenant id or error text.
@@ -23,7 +23,7 @@ try {
   const r = await fetch(u, { cache: 'no-store', signal: AbortSignal.timeout(10_000) })
   const h = await r.json() as { ok: boolean; problems?: string[]; operational?: Record<string, unknown>; tenants?: Record<string, unknown> }
   problems = h.ok ? [] : (h.problems?.length ? h.problems : [`HTTP ${r.status}, not ok`])
-  facts = { scheduler: h.operational?.state, last_completed_age_s: h.operational?.last_completed_age_s, lease_generation: h.operational?.lease_generation, tenants: h.tenants }
+  facts = { scheduler: h.operational?.state, last_completed_age_s: h.operational?.last_completed_age_s, lease_generation: h.operational?.lease_generation, last_failure_status: (h.operational?.unresolved_failure as { status?: string } | null | undefined)?.status ?? null, tenants: h.tenants }
 } catch (e) { problems = [`scheduler health not answering (${e instanceof Error ? e.name : 'error'})`] }
 
 const body = { level: problems.length ? 'error' : 'info', type: 'scheduler_check', ok: problems.length === 0, host: os.hostname(), at: new Date().toISOString(), problems, ...facts }

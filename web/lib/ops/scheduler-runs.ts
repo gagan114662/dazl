@@ -7,6 +7,9 @@
 //   never_ran  no run recorded            running  a run in progress, younger than the lease TTL
 //   fresh      last completed run recent  stale    last completed run older than STALE_AFTER_S (cron off or failing)
 //   crashed    a run started more than CRASHED_AFTER_S ago and never finished (process died inside a tick)
+// Separately from that state: unresolved_failure, when the latest finished run failed or lost its lease and no run has
+// succeeded since. An earlier success that is still recent is evidence of freshness, not that the newer tick worked, so
+// this is a health problem (and an alert) until a newer run completes ok or partial.
 // Per tenant: reply sync stale (no success for REPLY_SYNC_STALE_S while it is being attempted), blocked
 // (BLOCKED_AFTER_FAILURES consecutive failures), and due work overdue (the oldest due sequence step more than
 // OVERDUE_ALERT_S past its due time). The operator view is counts only; a tenant sees only its own rows.
@@ -98,18 +101,21 @@ export interface Operational {
   running_since: number | null
   lease_generation: number | null
   last_error: string | null
+  unresolved_failure: { status: 'failed' | 'lease_lost'; finished_at: number } | null
 }
 const n = (v: unknown) => v === null || v === undefined ? null : Number(v)
 
 export async function operational(d: DbLike, now = nowS()): Promise<Operational> {
   const db = asDb(d)
-  const empty: Operational = { state: 'never_ran', last_started_at: null, last_completed_at: null, last_completed_status: null, last_completed_age_s: null, running_since: null, lease_generation: null, last_error: null }
+  const empty: Operational = { state: 'never_ran', last_started_at: null, last_completed_at: null, last_completed_status: null, last_completed_age_s: null, running_since: null, lease_generation: null, last_error: null, unresolved_failure: null }
   const last = await db.get<RunRow>('SELECT id, started_at, finished_at, status, lease_generation, error FROM scheduler_runs ORDER BY started_at DESC, id DESC LIMIT 1')
   if (!last) return empty
   const done = await db.get<RunRow>("SELECT id, started_at, finished_at, status, lease_generation, error FROM scheduler_runs WHERE finished_at IS NOT NULL AND status IN ('ok','partial') ORDER BY finished_at DESC LIMIT 1")
   const started = n(last.started_at)!, finished = n(done?.finished_at)
+  const latest = await db.get<RunRow>("SELECT id, started_at, finished_at, status, lease_generation, error FROM scheduler_runs WHERE finished_at IS NOT NULL ORDER BY finished_at DESC, started_at DESC, id DESC LIMIT 1")
   const out: Operational = {
-    ...empty, last_started_at: started, lease_generation: n(last.lease_generation),
+    ...empty,
+    unresolved_failure: latest && (latest.status === 'failed' || latest.status === 'lease_lost') ? { status: latest.status, finished_at: n(latest.finished_at)! } : null, last_started_at: started, lease_generation: n(last.lease_generation),
     last_completed_at: finished, last_completed_status: done?.status ?? null, last_completed_age_s: finished !== null ? now - finished : null,
     last_error: last.error ?? (last.status === 'failed' || last.status === 'lease_lost' ? last.status : null),
   }
@@ -186,6 +192,7 @@ export async function schedulerHealth(d: DbLike, now = nowS()): Promise<Schedule
   }
   const problems: string[] = []
   if (op.state === 'stale' || op.state === 'crashed') problems.push(`scheduler ${op.state}${op.last_completed_age_s != null ? `: last completed run ${op.last_completed_age_s}s ago` : ': no completed run'}`)
+  if (op.unresolved_failure) problems.push(`latest scheduler run ${op.unresolved_failure.status}: no successful run since`)
   if (op.state === 'never_ran' && ids.size) problems.push('scheduler never ran, but tenants have scheduled work')
   if (blocked) problems.push(`${blocked} tenant(s) blocked by repeated failures`)
   if (stale) problems.push(`${stale} tenant(s) with stale reply sync`)
@@ -202,7 +209,7 @@ export async function schedulerHealthResponse(d: DbLike, now = nowS()): Promise<
   try { h = await schedulerHealth(d, now) }
   catch (e) {
     if (!/no such table|does not exist/i.test(e instanceof Error ? e.message : '')) throw e
-    h = { ok: true, operational: { state: 'never_ran', last_started_at: null, last_completed_at: null, last_completed_status: null, last_completed_age_s: null, running_since: null, lease_generation: null, last_error_class: null }, tenants: { tracked: 0, blocked: 0, reply_sync_stale: 0, overdue: 0, oldest_overdue_s: null }, problems: [] }
+    h = { ok: true, operational: { state: 'never_ran', last_started_at: null, last_completed_at: null, last_completed_status: null, last_completed_age_s: null, running_since: null, lease_generation: null, last_error_class: null, unresolved_failure: null }, tenants: { tracked: 0, blocked: 0, reply_sync_stale: 0, overdue: 0, oldest_overdue_s: null }, problems: [] }
   }
   return Response.json(h, { status: h.ok ? 200 : 503, headers: { 'Cache-Control': 'no-store' } })
 }
