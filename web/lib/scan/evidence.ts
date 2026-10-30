@@ -38,6 +38,15 @@ export function dedupKey(c: { company: string; name: string }): string {
   return companyKey(c.company) || norm(c.name)
 }
 
+// #461: a hiring inbox is a route to the recruiting team, never to a buyer. The mailbox name before any "+tag" is compared
+// whole (dots, dashes and underscores aside), so careers+sales@ is still careers@ and a person such as hrishi@ is not hr@.
+const RECRUITING_MAILBOX = /^(?:careers?|jobs?|recruit\w*|hiring|talent\w*|hr|humanresources|apply|applications?|applicants?|joinus|jointheteam|workwithus|workforus|internships?|cv|resumes?)$/
+export function isRecruitingInbox(contact: string): boolean {
+  const at = contact.indexOf('@')
+  if (at <= 0) return false
+  return RECRUITING_MAILBOX.test(contact.slice(0, at).split('+')[0].toLowerCase().replace(/[._-]/g, ''))
+}
+
 function parseDay(s: string | null): Date | null {
   if (!s || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return null
   const d = new Date(`${s}T00:00:00Z`)
@@ -75,9 +84,10 @@ export function verifyEvidence(c: Candidate, page: Page, now = new Date()): Verd
     confidence -= 15
   }
 
-  // Contacts survive only if they literally appear on the page.
+  // Contacts survive only if they literally appear on the page, and never as a recruiting inbox (#461): the event can still
+  // stand on its evidence, but careers@ is not a sales contact and earns no confidence.
   let contact: string | null = null
-  if (c.contact) {
+  if (c.contact && !isRecruitingInbox(c.contact.trim())) {
     const raw = c.contact.trim()
     const digits = raw.replace(/\D/g, '')
     const onPage = raw.includes('@') ? text.includes(raw.toLowerCase()) : digits.length >= 7 && page.text.replace(/\D/g, '').includes(digits)
