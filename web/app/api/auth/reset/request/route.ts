@@ -1,3 +1,4 @@
+import { systemMailAvailable } from '@/lib/system-mail'
 import { NextRequest, NextResponse } from 'next/server'
 import { createHash } from 'crypto'
 import { getDb } from '@/lib/db/client'
@@ -14,6 +15,7 @@ const OK = () => NextResponse.json({ ok: true, message: 'If an account uses that
 // worked, so it reveals nothing about which emails have accounts.
 export async function POST(req: NextRequest) {
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
+  if (!systemMailAvailable()) return NextResponse.json({ error: 'Email delivery is not available. Try again later.' }, { status: 503 })
   const body = await req.json().catch(() => null)
   const email = validateEmail(body?.email)
   const ip = await rateLimit(`reset-ip:${clientIp(req)}`, 10, 60 * 60 * 1000)

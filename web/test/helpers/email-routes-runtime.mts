@@ -15,11 +15,13 @@ import { resolveUser } from '../../lib/auth-google.ts'
 import { getDb } from '../../lib/db/client.ts'
 
 globalThis.fetch = (async (u: unknown) => { throw new Error(`Unexpected network call ${String(u)}`) }) as typeof fetch
-delete process.env.SYSTEM_MAIL_SMTP_URL; delete process.env.SYSTEM_MAIL_FROM
+process.env.SYSTEM_MAIL_SMTP_URL = 'smtp://fixture.invalid'; process.env.SYSTEM_MAIL_FROM = 'fixture@example.test'
+const { setTransportForTests } = await import('../../lib/system-mail.ts')
 
 const raw = new Database(':memory:')
 migrateAllSqlite(raw)
 setScanDb(raw)
+setTransportForTests(async m => { raw.prepare('INSERT INTO system_mail_outbox (id,user_id,to_email,subject,body,created_at) VALUES (?,?,?,?,?,?)').run(crypto.randomUUID(), (raw.prepare('SELECT id FROM users WHERE email = ?').get(m.to) as { id: string } | undefined)?.id ?? 'fixture',m.to,m.subject,m.text,Math.floor(Date.now()/1000)) })
 const resetRequest = await import('../../app/api/auth/reset/request/route.ts')
 const reset = await import('../../app/api/auth/reset/route.ts')
 const verify = await import('../../app/api/auth/verify/route.ts')
@@ -39,6 +41,10 @@ test('forgot password reveals nothing; a reset link works once and signs out eve
   await createPasswordUser({ id: 'P', email: 'pat@example.test', name: 'P', business_name: 'P', password_hash: 'h'.repeat(128), salt: 's'.repeat(32) })
   const g = await resolveUser(await getDb(), { sub: 'g-1', email: 'gee@example.test', name: 'G' })
   assert.ok('user_id' in g)
+  const smtp = process.env.SYSTEM_MAIL_SMTP_URL; delete process.env.SYSTEM_MAIL_SMTP_URL
+  const unavailable = await resetRequest.POST(req('/api/auth/reset/request', { email: 'pat@example.test' }))
+  assert.equal(unavailable.status,503); assert.equal((raw.prepare('SELECT count(*) AS n FROM email_tokens').get() as { n: number }).n,0)
+  process.env.SYSTEM_MAIL_SMTP_URL = smtp
   const answers = [await text(await resetRequest.POST(req('/api/auth/reset/request', { email: 'pat@example.test' }))),
     await text(await resetRequest.POST(req('/api/auth/reset/request', { email: 'gee@example.test' }))),
     await text(await resetRequest.POST(req('/api/auth/reset/request', { email: 'nobody@example.test' }))),

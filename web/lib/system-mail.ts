@@ -31,6 +31,8 @@ async function smtp(url: string): Promise<Transport> {
   return async m => { await tx.sendMail(m) }
 }
 
+export const systemMailAvailable = (env: Record<string, string | undefined> = process.env): boolean => !!(env.SYSTEM_MAIL_SMTP_URL && env.SYSTEM_MAIL_FROM)
+
 export async function sendSystemMail(db: Db, m: SystemMail, env: Record<string, string | undefined> = process.env): Promise<'sent' | 'outbox'> {
   const url = env.SYSTEM_MAIL_SMTP_URL, from = env.SYSTEM_MAIL_FROM
   if (url && from) {

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { createPasswordUser } from '../lib/auth-db.ts'
+import { createPasswordUser, createSession } from '../lib/auth-db.ts'
 import { requestEmailChange, requestReset, resetPassword, verifyEmail, emailStatus } from '../lib/email-ownership.ts'
 import { bothEngines } from './helpers/engines.ts'
 bothEngines('password recovery invalidates an already-issued change-address token', async ({ db }) => {
@@ -48,3 +48,17 @@ bothEngines('concurrent recovery and old email change cannot both commit', async
   assert.equal((await emailStatus(db,id))!.email,recovered ? old : next)
  }
 },{pgMax:4})
+
+
+bothEngines('a change request admitted before recovery cannot issue through its revoked session afterwards', async ({ db }) => {
+ await createPasswordUser({id:'late',email:'late@example.test',name:'Owner',business_name:'Business',password_hash:'old',salt:'salt'},db)
+ const session = await createSession('late',db)
+ await requestReset(db,'late@example.test')
+ const recovery=await tokenFor(db,'late@example.test','Reset your dazl password')
+ assert.equal(await resetPassword(db,recovery,{password_hash:'replacement',salt:'salt'}),true)
+ await requestEmailChange(db,'late','attacker@example.test',Math.floor(Date.now()/1000),session)
+ assert.equal(await db.get("SELECT 1 AS x FROM email_tokens WHERE user_id='late' AND purpose='change' AND used_at IS NULL"),undefined)
+ const fresh=await createSession('late',db)
+ await requestEmailChange(db,'late','fresh@example.test',Math.floor(Date.now()/1000),fresh)
+ assert.ok(await db.get("SELECT 1 AS x FROM email_tokens WHERE user_id='late' AND purpose='change' AND used_at IS NULL"))
+})

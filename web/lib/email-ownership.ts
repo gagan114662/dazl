@@ -107,8 +107,12 @@ export async function verifyEmail(db: Db, token: unknown, now = nowS()): Promise
 // Change of email, from a signed-in, freshly authenticated session: a confirmation link goes to the NEW address and a
 // notice to the current one; nothing changes until the link is opened. The same outcome for the caller whether or not
 // the new address already belongs to an account (then nothing is sent to it), so this reveals no accounts.
-export async function requestEmailChange(db: Db, userId: string, newEmail: string, now = nowS()): Promise<void> {
+export async function requestEmailChange(db: Db, userId: string, newEmail: string, now = nowS(), sessionToken?: string): Promise<void> {
   const out = await db.tx(function* (t) {
+    yield* t.run('UPDATE users SET email = email WHERE id = ?', [userId])
+    if (sessionToken !== undefined) {
+      if (!isEmailToken(sessionToken) || !(yield* t.get('SELECT 1 AS x FROM sessions WHERE id = ? AND user_id = ? AND revoked_at IS NULL AND expires_at > ? AND authed_at >= ?', [sha256(sessionToken), userId, now, now - 3600]))) return null
+    }
     const u = yield* t.get<{ email: string }>('SELECT email FROM users WHERE id = ?', [userId])
     if (!u || u.email === newEmail) return null
     const taken = !!(yield* t.get('SELECT 1 AS x FROM users WHERE email = ?', [newEmail]))
