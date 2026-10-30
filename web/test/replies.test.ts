@@ -106,6 +106,9 @@ const flags = { AUTOPILOT_ENABLED: '1' }
 function sendSpy() { const sent: { raw: string; thread?: string }[] = []; return { sent, sendFn: (async (_t: string, raw: string, _f: unknown, thread?: string) => { sent.push({ raw, thread }); return { id: 'f1' } }) as never } }
 const base = (over: object = {}) => ({ flags, env: genv, master, now: NOW, baseUrl: 'https://app.test', fetchImpl: gmail({}), ...over })
 
+// A tick reads replies before it sends (app/api/internal/tick/route.ts); a send waits for its thread's fresh read (#355).
+const readAt = (db: Database.Database, now: number) => syncReplies(db, 'A', { env: genv, master, now, fetchImpl: gmail({}) })
+
 async function interested(db: Database.Database, to = 'p@one.example', repliedAt = NOW - 4 * DAY) {
   const s = sentLead(db, to)
   await syncReplies(db, 'A', { env: genv, master, now: NOW, fetchImpl: gmail({ [s.thread]: [msg('r' + s.mid, to, 'Interested, tell me more', repliedAt)] }) })
@@ -121,7 +124,9 @@ test('follow-ups: off by default, then only for opted-in repliers, after the qui
   const mime = Buffer.from(sent[0].raw, 'base64url').toString()
   assert.match(mime, /In-Reply-To: <dazl\./); assert.match(mime, /List-Unsubscribe:/); assert.match(mime, /Subject: Re: Quick question/)
   assert.equal((await runFollowups(db, 'A', 'Acme', base({ sendFn }))).sent, 0) // gap not reached for step 2
+  await readAt(db, NOW + 6 * DAY)
   assert.equal((await runFollowups(db, 'A', 'Acme', base({ sendFn, now: NOW + 6 * DAY }))).sent, 1)
+  await readAt(db, NOW + 30 * DAY)
   assert.equal((await runFollowups(db, 'A', 'Acme', base({ sendFn, now: NOW + 30 * DAY }))).sent, 0) // max 2
   assert.equal(sent.length, 2)
 })
@@ -133,6 +138,7 @@ test('follow-ups never go to people without consent, who opted out, whose consen
   revokeAll(db, 'A', 'out@three.example', 'opt_out', NOW)
   db.prepare("UPDATE consent_ledger SET expires_at = ? WHERE contact = 'old@four.example'").run(NOW - 1)
   db.prepare("UPDATE followup_threads SET followups_sent = 1, last_followup_at = ?, last_lead_reply_at = ? WHERE to_email = 'again@five.example'").run(NOW - 10 * DAY, NOW - 1 * DAY)
+  await readAt(db, NOW + 6 * DAY)
   const r = await runFollowups(db, 'A', 'Acme', base({ sendFn, now: NOW + 6 * DAY }))
   assert.equal(r.sent, 1); assert.ok(Buffer.from(sent[0].raw, 'base64url').toString().includes('To: ok@two.example'))
 })

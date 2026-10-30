@@ -2,7 +2,7 @@ import { runSequences } from '@/lib/outreach/sequences'
 import { after, NextRequest, NextResponse } from 'next/server'
 import { timingSafeEqual } from 'node:crypto'
 import { getScanDb } from '@/lib/scan/service'
-import { syncReplies } from '@/lib/outreach/replies'
+import { autopilotReplyTenants, syncReplies } from '@/lib/outreach/replies'
 import { runFollowups } from '@/lib/outreach/followups'
 import { runDueWatches } from '@/lib/watch'
 import { collectMonitorResults, runDueMonitors } from '@/lib/monitors'
@@ -45,7 +45,7 @@ async function tick(lease: Lease, requestId?: string) {
   const db = lease.fenceSqlite(raw)
   // A refused write means this tick lost the lease: stop, never carry on with the next tenant.
   const fenced = (e: unknown) => { if (e instanceof StaleLeaseWrite) throw e }
-  const tenants = db.prepare('SELECT s.tenant_id, u.business_name FROM autopilot_settings s JOIN users u ON u.id = s.tenant_id WHERE s.enabled = 1 AND s.paused = 0 AND s.followups_enabled = 1').all() as { tenant_id: string; business_name: string | null }[]
+  const tenants = autopilotReplyTenants(db)
   let done = 0
   for (const t of tenants) {
     await lease.keep()

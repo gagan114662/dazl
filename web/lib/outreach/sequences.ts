@@ -1,7 +1,7 @@
 import {contactPurposeRestricted} from './contact-purpose-db.ts'
 import {currentnessHeld} from './currentness.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend } from './send-budget.ts'
-import { hasReadConsent, syncReplies } from './replies.ts'
+import { hasReadConsent, REPLY_FRESH_S, replyCheckedSince, syncReplies, type SyncDeps } from './replies.ts'
 import { randomBytes, createHash } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
@@ -275,7 +275,7 @@ export function sequenceStatusByLead(db: Database.Database, tenantId: string, d:
 
 export interface SequenceResult { started: number; sent: number; skipped: number; stopped?: string }
 
-export async function runSequences(db: Database.Database, tenantId: string, businessName: string, d: Deps & { flags?: Record<string, string | undefined> } = {}): Promise<SequenceResult> {
+export async function runSequences(db: Database.Database, tenantId: string, businessName: string, d: Deps & Pick<SyncDeps, 'maxThreads' | 'maxMs' | 'clockMs'> & { flags?: Record<string, string | undefined> } = {}): Promise<SequenceResult> {
   const out: SequenceResult = { started: 0, sent: 0, skipped: 0 }
   const now = d.now ?? Math.floor(Date.now() / 1000)
   const stop = (w: string): SequenceResult => { out.stopped = w; return out }
@@ -324,6 +324,8 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
                              FROM sequences s JOIN outreach_messages m ON m.id = s.message_id
                              WHERE s.tenant_id = ? AND s.status = 'active'`).all(tenantId) as { id: string; lead_id: string; message_id: string; to_email: string; msg_subject: string; step1_sent: number | null; thread_id: string | null; msg_test: number }[]
   for (const s of active) {
+    // Its thread not read in this sync window (bounded sync, or a failed read): no step goes out until it is (#355).
+    if (!replyCheckedSince(db, tenantId, s.message_id, now - REPLY_FRESH_S)) { out.skipped++; continue }
     if (leadHeld(db,tenantId,s.lead_id) || !recipientAllowed(db,tenantId,s.to_email)) { stopSequenceForThread(db,tenantId,s.lead_id,'stopped',leadHeld(db,tenantId,s.lead_id) ? 'lead_ungraded' : 'personal_email',now); out.skipped++; continue }
     // Evidence re-checked at execution: a withdrawn confirmation stops the sequence
     // honestly before any unsent step goes out. Already-sent mail is never recalled.

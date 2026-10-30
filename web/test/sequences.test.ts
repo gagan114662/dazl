@@ -105,6 +105,17 @@ test('any human reply stops sequence; failed reply sync never sends',async()=>{
   assert.equal(broken.calls.length,0)
 })
 
+// #355: a sync that stops at its bound before reaching a sequence's thread is not a failure, and not a read either: the
+// step waits for the thread to be read, then goes out.
+test('a bounded reply sync that did not reach the thread sends no step until it is read',async()=>{
+  const db=await setup(),s=add(db),m=mock(); await start(db,s,m)
+  const r=await runSequences(db,'A','',{...m,now:NOW+3*DAY,maxThreads:0})
+  assert.deepEqual([r.sent,r.stopped],[0,undefined])
+  assert.equal(m.calls.length,1,'only step 1')
+  assert.equal((await runSequences(db,'A','',{...m,now:NOW+3*DAY})).sent,1)
+  assert.equal(m.calls.length,2)
+})
+
 test('suppression and unapproved mutations cannot send',async()=>{
   const db=await setup(),s=add(db),m=mock();await start(db,s,m)
   suppress(db,'A',s.email,'unsubscribe')

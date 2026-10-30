@@ -198,7 +198,12 @@ async function interestedReviewThread(db: Database.Database, email = 'lead@acme.
   db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, claimed_at, gmail_id, thread_id) VALUES (?, 'A', ?, ?, 'Quick question', 'bodybodybodybodybodybody', 'sent', ?, ?, ?, ?)").run(mid, lead, email, NOW - 4 * DAY, NOW - 4 * DAY, 'g-' + mid, thread)
   db.prepare("INSERT INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at, last_lead_reply_at, followups_sent, last_followup_at, stopped) VALUES ('A', ?, ?, ?, ?, ?, ?, 0, NULL, NULL)").run(thread, lead, email, 'root-' + mid, NOW - 4 * DAY, NOW - 4 * DAY)
   grantConsent(db, 'A', email, { channel: 'email', scope: 'followup', basis: 'reply_interest', evidenceRef: 'gmail:1', now: NOW - 4 * DAY })
+  readAll(db, NOW)
   return { lead, thread }
+}
+// Stands for the reply read a tick does before it sends (lib/outreach/replies.ts): every sent thread read, nothing new.
+function readAll(db: Database.Database, at: number) {
+  db.prepare("INSERT INTO reply_sync_checks (tenant_id, message_id, thread_id, checked_at) SELECT tenant_id, id, thread_id, ? FROM outreach_messages WHERE tenant_id = 'A' AND status = 'sent' ON CONFLICT (tenant_id, message_id) DO UPDATE SET checked_at = excluded.checked_at").run(at)
 }
 
 const followupFlags = { AUTOPILOT_ENABLED: '1', SEQUENCES_ENABLED: '1' }
@@ -214,6 +219,7 @@ test('withdraw stops a warm follow-up thread before send; re-confirm does not re
   assert.equal((db.prepare('SELECT stopped FROM followup_threads WHERE thread_id = ?').get(thread) as { stopped: string | null }).stopped, 'evidence_withdrawn')
   // Re-confirming restores lead eligibility, but the stopped thread stays stopped.
   assert.equal(await confirmLeadReview(sqliteDb(db), 'A', lead), true)
+  readAll(db, NOW + 10 * DAY)
   const r2 = await runFollowups(db, 'A', 'Acme', { ...m, flags: followupFlags, now: NOW + 10 * DAY })
   assert.equal(r2.sent, 0)
   assert.equal(m.calls.length, 0)
@@ -311,6 +317,7 @@ test('a withdrawn website confirmation stops a warm follow-up before the claim a
     assert.equal(stoppedOf(db, thread), 'domain_unconfirmed')
     assert.equal((db.prepare('SELECT count(*) AS n FROM followup_messages').get() as { n: number }).n, 0)
     setDomainReview(db, 'A', lead, 'confirm', bind)
+    readAll(db, NOW + 10 * DAY)
     await runFollowups(db, 'A', 'Acme', { ...m, flags: followupFlags, now: NOW + 10 * DAY })
     assert.equal(m.calls.length, 0, 're-confirming does not restart a stopped thread'); assert.equal(stoppedOf(db, thread), 'domain_unconfirmed') }
   // During the token await: claim row removed, nothing sent.

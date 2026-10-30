@@ -44,6 +44,9 @@ export function migrateReplies(db: Database.Database): void {
     -- while a reply is newer than this.
     CREATE TABLE IF NOT EXISTS inbox_thread_reads (tenant_id TEXT NOT NULL, thread_id TEXT NOT NULL, read_upto INTEGER NOT NULL, PRIMARY KEY (tenant_id, thread_id));
     CREATE INDEX IF NOT EXISTS inbound_messages_thread ON inbound_messages (tenant_id, thread_id, received_at);
+    -- Reply-read checkpoint (#355): when each sent message's thread was last read in full. A sync reads a bounded number
+    -- of threads, the ones that can still trigger a send first, then the least recently read; a send waits for a fresh read.
+    CREATE TABLE IF NOT EXISTS reply_sync_checks (tenant_id TEXT NOT NULL, message_id TEXT NOT NULL, thread_id TEXT, checked_at INTEGER NOT NULL, PRIMARY KEY (tenant_id, message_id));
   `)
   const columns = db.prepare('PRAGMA table_info(inbound_messages)').all() as { name: string }[]
   if (!columns.some(c => c.name === 'outreach_message_id')) db.exec('ALTER TABLE inbound_messages ADD COLUMN outreach_message_id TEXT')
@@ -152,23 +155,59 @@ interface GMsg { id: string; threadId: string; internalDate?: string; payload?: 
 const header = (m: GMsg, n: string) => m.payload?.headers?.find(h => h.name.toLowerCase() === n)?.value
 const addr = (v?: string) => norm((v?.match(/<([^>]+)>/)?.[1] ?? v ?? '').trim())
 
-export interface SyncDeps extends OAuthDeps { fetchImpl?: typeof fetch }
-export interface SyncResult { threads: number; replies: number; optOuts: number; bounces: number; consents: number; reviews: number; error?: string }
+// A sync reads at most `maxThreads` threads and stops starting new ones after `maxMs`, so a tenant with a long history or
+// a slow mailbox cannot hold the tick from the tenants after it. Threads that can still trigger a send (an approved or
+// active sequence, a follow-up thread with an interested reply) are read first; the rest rotate, least recently read
+// first, so every thread in the window is reread within ceil(threads / maxThreads) syncs instead of all of them each time.
+export const REPLY_SYNC_MAX_THREADS = 40
+export const REPLY_SYNC_MAX_MS = 60_000
+// A send waits until its thread was read this recently (one sync and the sends after it run in the same tick).
+export const REPLY_FRESH_S = 15 * 60
+export interface SyncDeps extends OAuthDeps { fetchImpl?: typeof fetch; maxThreads?: number; maxMs?: number; clockMs?: () => number }
+// partial: the sync stopped at its bound with threads left unread (not an error: the unread ones are read on later syncs,
+// and nothing is inferred about them; a send on one waits). remaining: how many were left.
+export interface SyncResult { threads: number; replies: number; optOuts: number; bounces: number; consents: number; reviews: number; partial: boolean; remaining: number; error?: string }
+
+// Was this sent message's thread read in full at or after `since`? A send on it is allowed only then.
+export const replyCheckedSince = (db: Database.Database, tenantId: string, messageId: string, since: number) =>
+  !!db.prepare('SELECT 1 FROM reply_sync_checks WHERE tenant_id = ? AND message_id = ? AND checked_at >= ?').get(tenantId, messageId, since)
+export const threadCheckedSince = (db: Database.Database, tenantId: string, threadId: string, since: number) =>
+  !!db.prepare('SELECT 1 FROM reply_sync_checks WHERE tenant_id = ? AND thread_id = ? AND checked_at >= ?').get(tenantId, threadId, since)
+
+// The tick's tenants (autopilot and follow-ups on), least recently served first: the one whose newest thread read is
+// oldest, a tenant never read before first of all. A tick cut short (its lease) leaves the tenants it did not reach at
+// the front of the next one; together with the per-tenant bound, no tenant's history can keep another from being read.
+export const autopilotReplyTenants = (db: Database.Database) =>
+  db.prepare(`SELECT s.tenant_id, u.business_name FROM autopilot_settings s JOIN users u ON u.id = s.tenant_id WHERE s.enabled = 1 AND s.paused = 0 AND s.followups_enabled = 1
+    ORDER BY COALESCE((SELECT MAX(c.checked_at) FROM reply_sync_checks c WHERE c.tenant_id = s.tenant_id), 0), s.tenant_id`).all() as { tenant_id: string; business_name: string | null }[]
 
 export async function syncReplies(db: Database.Database, tenantId: string, d: SyncDeps = {}): Promise<SyncResult> {
-  const out: SyncResult = { threads: 0, replies: 0, optOuts: 0, bounces: 0, consents: 0, reviews: 0 }
+  const out: SyncResult = { threads: 0, replies: 0, optOuts: 0, bounces: 0, consents: 0, reviews: 0, partial: false, remaining: 0 }
   const now = d.now ?? Math.floor(Date.now() / 1000)
   const acct = db.prepare('SELECT email, read_granted, status FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string; read_granted: number; status: string } | undefined
   if (!hasReadConsent(db, tenantId) || !acct || acct.read_granted !== 1 || acct.status !== 'active') return { ...out, error: 'reading_not_enabled' }
   const f = d.fetchImpl ?? fetch
   let token: string
   try { token = await getAccessToken(db, tenantId, d) } catch { return { ...out, error: 'gmail_unavailable' } }
-  if (isStaging((d.env ?? process.env) as Record<string, string | undefined>)) return out // stubbed Gmail: no mailbox to read
   const get = async (path: string) => { const r = await f(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) }); if (!r.ok) throw new Error(`gmail_${r.status}`); return r.json() }
 
-  const seqPriority = tableExists(db, 'sequences') ? " OR id IN (SELECT message_id FROM sequences WHERE tenant_id = ? AND status IN ('approved','active'))" : ''
-  const sent = db.prepare(`SELECT id, lead_id, to_email, gmail_id, thread_id, sent_at FROM outreach_messages WHERE tenant_id = ? AND status = 'sent' AND gmail_id IS NOT NULL AND (sent_at >= ? ${seqPriority}) ORDER BY sent_at DESC`).all(tenantId, now - 120 * 86400,...(seqPriority ? [tenantId] : [])) as { id: string; lead_id: string; to_email: string; gmail_id: string; thread_id: string | null; sent_at: number }[]
-  for (const m of sent) {
+  const hasSeq = tableExists(db, 'sequences')
+  const seqLive = "id IN (SELECT message_id FROM sequences WHERE tenant_id = ? AND status IN ('approved','active'))"
+  // Can this thread still trigger a send? Then it is read first: an approved or active sequence, or a follow-up thread
+  // with an interested reply that is not stopped.
+  const sendable = `(${hasSeq ? `m.${seqLive} OR ` : ''}EXISTS (SELECT 1 FROM followup_threads ft WHERE ft.tenant_id = m.tenant_id AND ft.thread_id = m.thread_id AND ft.stopped IS NULL AND ft.last_lead_reply_at IS NOT NULL))`
+  const sent = db.prepare(`SELECT m.id, m.lead_id, m.to_email, m.gmail_id, m.thread_id, m.sent_at FROM outreach_messages m
+    LEFT JOIN reply_sync_checks c ON c.tenant_id = m.tenant_id AND c.message_id = m.id
+    WHERE m.tenant_id = ? AND m.status = 'sent' AND m.gmail_id IS NOT NULL AND (m.sent_at >= ?${hasSeq ? ` OR m.${seqLive}` : ''})
+    ORDER BY CASE WHEN ${sendable} THEN 0 ELSE 1 END, COALESCE(c.checked_at, 0), m.sent_at DESC, m.id`)
+    .all(...(hasSeq ? [tenantId, now - 120 * 86400, tenantId, tenantId] : [tenantId, now - 120 * 86400])) as { id: string; lead_id: string; to_email: string; gmail_id: string; thread_id: string | null; sent_at: number }[]
+  const checked = (m: { id: string }, thread: string | null) => db.prepare('INSERT INTO reply_sync_checks (tenant_id, message_id, thread_id, checked_at) VALUES (?, ?, ?, ?) ON CONFLICT (tenant_id, message_id) DO UPDATE SET thread_id = excluded.thread_id, checked_at = excluded.checked_at').run(tenantId, m.id, thread, now)
+  // Stubbed Gmail on staging: the mailbox has no replies to read, and that is a complete read of every thread.
+  if (isStaging((d.env ?? process.env) as Record<string, string | undefined>)) { for (const m of sent) checked(m, m.thread_id); return out }
+  const maxThreads = d.maxThreads ?? REPLY_SYNC_MAX_THREADS, maxMs = d.maxMs ?? REPLY_SYNC_MAX_MS
+  const clockMs = d.clockMs ?? Date.now, started = clockMs()
+  for (const [i, m] of sent.entries()) {
+    if (i >= maxThreads || clockMs() - started >= maxMs) { out.partial = true; out.remaining = sent.length - i; break }
     try {
       let thread = m.thread_id
       if (!thread) { thread = ((await get(`messages/${m.gmail_id}?format=minimal`)) as GMsg).threadId; db.prepare('UPDATE outreach_messages SET thread_id = ? WHERE id = ?').run(thread, m.id) }
@@ -214,6 +253,8 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
           auditAt(db, tenantId, 'reply_blocked_for_review', body.status === 'ok' ? 'unclear wording' : `body ${body.status}`, m.lead_id, m.id, now); out.reviews++
         } else auditAt(db, tenantId, 'reply_for_review', cls, m.lead_id, m.id, now)
       }
+      // Only a thread read to the end counts as read; a failure above leaves its checkpoint where it was.
+      checked(m, thread)
     } catch (e) {
       out.error = 'reply_sync_failed' // fail closed: the scheduler must not treat a partial sync as fresh
       auditAt(db, tenantId, 'sync_error', e instanceof Error ? e.message : 'error', m.lead_id, m.id, now)

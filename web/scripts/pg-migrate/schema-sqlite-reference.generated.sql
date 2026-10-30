@@ -418,6 +418,8 @@ CREATE TABLE reply_queries (
       PRIMARY KEY (tenant_id, query)
     );
 
+CREATE TABLE reply_sync_checks (tenant_id TEXT NOT NULL, message_id TEXT NOT NULL, thread_id TEXT, checked_at INTEGER NOT NULL, PRIMARY KEY (tenant_id, message_id));
+
 CREATE TABLE reply_threads (
       id           TEXT PRIMARY KEY,
       tenant_id    TEXT NOT NULL,

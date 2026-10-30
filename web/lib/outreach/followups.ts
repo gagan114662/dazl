@@ -12,6 +12,7 @@ import { hasConsent } from './ledger.ts'
 import { composeBody, getSettings, isSuppressed, domainReviewStatus, leadEvidenceEligible, leadHeld, recipientAllowed, unsubToken, type Deps } from './service.ts'
 import { llmFollowupText } from './draft-llm.ts'
 import { getMasterKey } from '../secrets.ts'
+import { REPLY_FRESH_S, threadCheckedSince } from './replies.ts'
 
 // Follow-ups only for people who replied with interest (a ledger row) and only fill silence.
 // At most 2, 3 and 5 days after the last activity in the thread. A newer reply from them stops the
@@ -58,6 +59,9 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
     const cur = getState(db, tenantId)
     if (cur.paused || !cur.enabled || !autopilotAvailable(flags) || !followupsEnabled(db, tenantId)) return stop('paused')
     if (tableExists(db, 'sequences') && db.prepare("SELECT 1 FROM sequences WHERE tenant_id = ? AND lead_id = ?").get(tenantId,t.lead_id)) continue // sequence enrollment owns this thread; never layer warm automation on it
+    // Not read since the last sync window (a bounded sync reached its limit first, or the read failed): nothing is known
+    // about replies since, so this round sends nothing on it (lib/outreach/replies.ts, #355).
+    if (!threadCheckedSince(db, tenantId, t.thread_id, now - REPLY_FRESH_S)) { out.skipped++; continue }
     const skip = (why: string) => { out.skipped++; auditAt(db, tenantId, 'followup_skipped', why, t.lead_id, undefined, now) }
     if (leadHeld(db,tenantId,t.lead_id) || !recipientAllowed(db,tenantId,t.to_email)) { skip(leadHeld(db,tenantId,t.lead_id) ? 'lead_ungraded' : 'personal_email'); continue }
     // A withdrawn lead confirmation stops the thread for good before any warm follow-up
