@@ -21,7 +21,7 @@ export default function PlaysClient() {
   const [runs, setRuns] = useState<Record<string, PlayRun[] | null | 'failed'>>({})
   async function toggleRuns(p: SavedPlay) {
     const k = `${p.kind}-${p.id}`
-    if (k in runs) { setRuns(({ [k]: _, ...rest }) => rest); return }
+    if (k in runs) { setRuns(r => { const rest = { ...r }; delete rest[k]; return rest }); return }
     setRuns(r => ({ ...r, [k]: null }))
     const j = await fetch(`/api/plays/${p.kind}/${p.id}/runs`).then(r => r.ok ? r.json() : null).catch(() => null)
     setRuns(r => ({ ...r, [k]: Array.isArray(j?.runs) ? j.runs as PlayRun[] : 'failed' }))
