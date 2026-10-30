@@ -6,11 +6,11 @@
 // the same identity, otherwise 'unknown'. Nothing here is causal credit: a tagged URL alone never proves the outreach
 // caused the signup. Synthetic and staging rows are excluded before counting.
 //
-// Retention is not defined here. It comes from the shared definition in lib/growth/retention.ts (the same module the
-// acquisition funnel uses): day-30 retention (historical: a renewal inside days 25-35, no end by day 30, over customers
-// whose renewal window has closed) and coverage at the cutoff (current: a paid period includes it, else not covered or
-// unknown), each over its own named cohort. This file only maps its events onto that module's input.
-import { coverageCounts, retention, retentionRate, RETENTION, type RetentionResult } from '../growth/retention.ts'
+// Retention and coverage are not defined here. Both come from lib/growth/retention.ts, the one implementation the
+// acquisition funnel uses too: retained at day 30 (historical, renewal inside its window) and coverage at the cutoff
+// (current: covered, not covered or unknown), each over its own named cohort. This file only maps its events onto
+// that module's input.
+import { retention, retentionRate, coverageCounts, RETENTION, type RetentionResult } from '../growth/retention.ts'
 
 export type LifecycleEvent =
   | { id: string; at: number; customer: string; kind: 'touch'; channel: string; identity: string | null }   // outreach touch, matched identity if any
@@ -34,7 +34,7 @@ export const ABANDON_DAYS = 7         // signed up, no finished run within this 
 export interface CustomerState {
   customer: string; stage: Stage; attribution: Attribution
   signupAt: number | null; activatedAt: number | null; paidAt: number | null
-  retention: RetentionResult      // the shared definition's answer and its labelled evidence, as of the cutoff
+  retention: RetentionResult      // the shared module's day-30 answer and coverage at the cutoff
   usefulRuns: number; zeroResultRuns: number; costUsd: number
 }
 
@@ -46,8 +46,7 @@ export function upTo(events: LifecycleEvent[], asOf: number): LifecycleEvent[] {
 }
 
 // Map this file's events onto the shared retention input (unix seconds). A refund event refunds the latest paid payment
-// before it that is not already refunded; the subscription ends at the first cancel on or after the first payment that
-// was not refunded.
+// before it that is not already refunded; the recorded subscription end is the latest cancel.
 function retentionOf(ev: LifecycleEvent[], now: number): RetentionResult {
   const payments: { at: number; refunded: boolean }[] = []
   for (const e of ev) {
@@ -55,8 +54,7 @@ function retentionOf(ev: LifecycleEvent[], now: number): RetentionResult {
     if (e.status === 'paid') payments.push({ at: e.at, refunded: false })
     else if (e.status === 'refunded') { const p = payments.findLast(x => !x.refunded); if (p) p.refunded = true }
   }
-  const firstPaid = payments.find(p => !p.refunded)?.at ?? null
-  const ended = firstPaid === null ? null : ev.find(e => e.kind === 'cancel' && e.at >= firstPaid)?.at ?? null
+  const ended = ev.filter(e => e.kind === 'cancel').at(-1)?.at ?? null
   return retention({ payments: payments.map(p => ({ at: p.at / 1000, refunded: p.refunded })), ended_at: ended === null ? null : ended / 1000, cutoff: now / 1000 })
 }
 
@@ -111,11 +109,8 @@ export interface CohortReport {
   cohortStart: number; cohortEnd: number; mature: boolean
   customers: number; byStage: Partial<Record<Stage, number>>; byAttribution: Record<Attribution, number>
   activationRate: number | null; paidRate: number | null
-  retentionRate: number | null   // day-30 retention: retained / retentionEligible over the same cohort
-  retentionEligible: number      // its cohort: paying customers whose day-30 renewal window has closed
-  retained: number
-  retentionCohort: string; retentionLabel: string   // the shared definition's own cohort and label, shown with the rate
-  coverage: ReturnType<typeof coverageCounts>      // coverage at the cutoff, a separate metric over its own cohort (every paid customer)
+  retention: ReturnType<typeof retentionRate>   // day 30: retained / eligible over one cohort, with its cohort and label
+  coverage: ReturnType<typeof coverageCounts>   // at the cutoff: covered / not covered / unknown, its own cohort and label
   costUsd: number; costPerActivated: number | null; costPerRetainedPaying: number | null
   sourceCoverage: number | null  // share of signups whose attribution is known (direct or assisted)
   excluded: number               // synthetic or staging customers left out
@@ -140,7 +135,7 @@ export function cohortReport(events: LifecycleEvent[], meta: CustomerMeta[], sta
   return {
     cohortStart: start, cohortEnd: end, mature: now - end >= (RETENTION.headline_days + RETENTION.renewal_late_days) * DAY,
     customers: states.length, byStage, byAttribution,
-    activationRate: rate(activated, states.length), paidRate: rate(paidEver, states.length), retentionRate: ret.rate, retentionEligible: ret.eligible, retained: ret.retained, retentionCohort: ret.cohort, retentionLabel: ret.label, coverage,
+    activationRate: rate(activated, states.length), paidRate: rate(paidEver, states.length), retention: ret, coverage,
     costUsd, costPerActivated: activated ? costUsd / activated : null, costPerRetainedPaying: ret.retained ? costUsd / ret.retained : null,
     sourceCoverage: rate(byAttribution.direct + byAttribution.assisted, states.length),
     excluded: ids.filter(id => excludedIds.has(id)).length,
