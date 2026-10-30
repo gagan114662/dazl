@@ -37,7 +37,22 @@ test('cutoff: payments and ends after it do not exist yet', () => {
 })
 
 test('one labelled definition; other windows only by explicit option', () => {
-  assert.equal(RETENTION.headline_days, 30); assert.equal(RETENTION.grace_days, 5); assert.match(retentionRate([]).label, /Retained at 30 days/)
+  assert.equal(RETENTION.headline_days, 30); assert.equal(RETENTION.renewal_early_days, 5); assert.equal(RETENTION.maturity_extra_days, 5); assert.match(RETENTION.label, /defaults/); assert.match(retentionRate([]).label, /Retained at 30 days/)
   assert.equal(retentionRate([]).rate, null)
   assert.equal(retention({ payments: [{ at: C - 70 * D, refunded: false }, { at: C - 10 * D, refunded: false }], ended_at: null, cutoff: C }, { headlineDays: 60 }).retained, true)
+})
+
+test('the two 5-day rules are separate, explicit settings: each moves only its own boundary', () => {
+  const at = (first: number, more: number[], rules = {}) => retention({ payments: [first, ...more].map(d => ({ at: C - d * D, refunded: false })), ended_at: null, cutoff: C }, rules)
+  // maturity: 0 extra days -> eligible at exactly 30; the default needs 35
+  assert.equal(at(30, []).eligible, false); assert.equal(at(30, [], { maturityExtraDays: 0 }).eligible, true)
+  assert.equal(at(32, [], { maturityExtraDays: 2 }).eligible, true); assert.equal(at(31.99, [], { maturityExtraDays: 2 }).eligible, false)
+  // renewal: 0 early days -> the renewal must be 30+ days after the first; the default accepts 25+
+  assert.equal(at(40, [12]).renewal, true, '28 days later, default rule')
+  assert.equal(at(40, [12], { renewalEarlyDays: 0 }).renewal, false); assert.equal(at(40, [10], { renewalEarlyDays: 0 }).renewal, true)
+  // changing one rule leaves the other alone
+  assert.equal(at(40, [12], { maturityExtraDays: 0 }).renewal, true); assert.equal(at(33, [], { renewalEarlyDays: 0 }).eligible, false)
+  // current coverage is evidence beside the headline, never part of it
+  const endedLate = retention({ payments: [{ at: C - 50 * D, refunded: false }, { at: C - 20 * D, refunded: false }], ended_at: C - D, cutoff: C })
+  assert.equal(endedLate.retained, true); assert.equal(endedLate.covered_at_cutoff, false)
 })

@@ -69,7 +69,7 @@ export const DEFINITIONS = {
 } as const
 export const REPEAT_GAP_S = 24 * 3600
 // From the shared definition (lib/growth/retention.ts): when a paying customer becomes eligible for the headline.
-export const RETAIN_MATURE_S = (RETENTION.headline_days + RETENTION.grace_days) * 86400
+export const RETAIN_MATURE_S = (RETENTION.headline_days + RETENTION.maturity_extra_days) * 86400
 const RESERVED = /@([a-z0-9-]+\.)*(example\.(com|net|org)|[a-z0-9-]+\.(test|example|invalid|localhost))$/i
 
 export type Stage = 'excluded' | 'signed_up_only' | 'zero_result' | 'activated' | 'repeat' | 'payment_failed' | 'refunded' | 'paid' | 'retained' | 'churned'
