@@ -4,7 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { verifyLeads, type LeadDraft } from '../lib/scan/runner.ts'
-import { datedOnlyByPublication, textStatesDay } from '../lib/scan/page-timing.ts'
+import { datedOnlyByPublication, datedOnlyByPublicationStamp, textStatesDay } from '../lib/scan/page-timing.ts'
 import type { Page } from '../lib/scan/fetch-page.ts'
 
 const NOW = new Date('2026-10-20T12:00:00Z')
@@ -31,9 +31,26 @@ test('#460: a "Posted/Updated <day>" stamp in the text does not count as the tex
   }
 })
 
-test('#460 scope: a cued "Published <day>" line WITHOUT publication metadata is unchanged here (a separate, recorded decision)', async () => {
-  const p = page(`Published 2026-10-15. Aurora Agency opened a new office on King Street West in Toronto, ON.${filler}`)
-  assert.equal((await run(lead('2026-10-15'), p)).lead.event_date, '2026-10-15')
+test('#460 (visible text): a "Published/Posted/Updated <day>" line used as the event day, with no metadata, is held as undated research', async () => {
+  for (const stamp of ['Published 2026-10-15', 'Posted October 15, 2026', 'Updated Oct 15, 2026', 'Published 15 October 2026']) {
+    const p = page(`${stamp}. Aurora Agency opened a new office on King Street West in Toronto, ON.${filler}`)
+    const { lead: l } = await run(lead('2026-10-15'), p)
+    assert.ok(l, `${stamp}: still source-checked`)
+    assert.equal(l.event_date, null, stamp)           // before this change: '2026-10-15' (the visible publication line kept as the event day)
+    assert.equal(l.date_status, 'undated', stamp)
+    if (!/^Updated/.test(stamp)) assert.equal(l.published_at, '2026-10-15', `${stamp}: kept as a label`)   // update stamps are never publication cues
+  }
+})
+
+test('#460 (visible text): separate evidence that dates the event keeps working - the text states the day for the event, or a different day is stated for it', async () => {
+  // the day is stated outside a stamp as well
+  const both = page(`Published 2026-10-15. On October 15, 2026, Aurora Agency opened a new office on King Street West in Toronto, ON.${filler}`)
+  assert.equal((await run(lead('2026-10-15'), both)).lead.event_date, '2026-10-15')
+  // the event day differs from the stamp and is stated: untouched
+  const diff = page(`Published 2026-10-15. Aurora Agency opened a new office on King Street West in Toronto, ON on 2026-10-09.${filler}`)
+  assert.equal((await run(lead('2026-10-09'), diff)).lead.event_date, '2026-10-09')
+  // a stamp that does not carry the event day is irrelevant
+  assert.equal(datedOnlyByPublicationStamp('2026-10-09', 'Published 2026-10-15. It opened.'), false)
 })
 
 test('#460 controls: a day the text states for the event, or a date that is not the publication day, is kept unchanged', async () => {
@@ -50,6 +67,14 @@ test('#460 controls: a day the text states for the event, or a date that is not 
   const old = { ...lead('2026-10-15'), excerpt: 'Aurora Agency opened a new office on King Street West in Toronto, ON in 2019' }
   const r = await run(old, page(`Aurora Agency opened a new office on King Street West in Toronto, ON in 2019.${filler}`, '2026-10-15'))
   assert.equal(r.lead, undefined); assert.equal(r.review.review_reason, 'event_date_stale')
+})
+
+test('datedOnlyByPublicationStamp: only when the day is present and every occurrence is a stamp', () => {
+  assert.equal(datedOnlyByPublicationStamp('2026-10-15', 'Published 15 October 2026. It opened.'), true)
+  assert.equal(datedOnlyByPublicationStamp('2026-10-15', 'Posted 2026-10-15 and updated 2026-10-15. It opened.'), true)
+  assert.equal(datedOnlyByPublicationStamp('2026-10-15', 'Posted 2026-10-15. It opened on 2026-10-15.'), false)
+  assert.equal(datedOnlyByPublicationStamp('2026-10-15', 'It opened. No dates here.'), false, 'not in the text at all is a different question')
+  assert.equal(datedOnlyByPublicationStamp(null, 'Published 2026-10-15'), false)
 })
 
 test('textStatesDay / datedOnlyByPublication: whole dates only; publication and update stamps do not count', () => {

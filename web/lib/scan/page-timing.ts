@@ -74,3 +74,20 @@ export function datedOnlyByPublication(eventDate: string | null, pageText: strin
   if (!eventDate || !published || !/^\d{4}-\d{2}-\d{2}$/.test(published)) return false
   return published === eventDate && !textStatesDay(pageText, eventDate)
 }
+
+// #460 (visible text): the day appears in the page text, but ONLY as a publication / update stamp ("Posted ...", "Published ...", "Updated ..."). A publication
+// day is not the event day whether it came from metadata or from a visible line, so an event date supported by nothing else is unresolved. A day that is not in
+// the text at all is a different question (is the date supported by the page?) and is not decided here.
+export function datedOnlyByPublicationStamp(eventDate: string | null, pageText: string): boolean {
+  if (!eventDate || !/^\d{4}-\d{2}-\d{2}$/.test(eventDate)) return false
+  const text = pageText.replace(/\s+/g, ' ')
+  let seen = false
+  for (const m of text.matchAll(DATE_RE)) {
+    const date = m[1] ? iso(+m[1], +m[2], +m[3]) : m[4] ? iso(+m[6], MONTHS[m[4].toLowerCase().replace(/\./g, '')] ?? MONTHS[m[4].toLowerCase().slice(0, 3)], +m[5]) : iso(+m[9], MONTHS[m[8].toLowerCase().replace(/\./g, '')] ?? MONTHS[m[8].toLowerCase().slice(0, 3)], +m[7])
+    if (date !== eventDate) continue
+    const before = text.slice(Math.max(0, m.index! - 40), m.index!).slice(-30)
+    if (CUE.test(before) || NOT_EVENT.test(before)) { seen = true; continue }
+    return false          // the text states the day for something else: the event, as far as this rule can tell
+  }
+  return seen
+}
