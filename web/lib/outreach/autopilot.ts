@@ -131,13 +131,23 @@ export interface RunResult { sent: number; held: number; skipped: number; stoppe
 // What autopilot was allowed to send for this draft: its exact words and recipient, the sender identity and offer they
 // carry, the Gmail account it goes out from, and the consent version. Recomputed before a held draft is sent; a different
 // value hands it back to the user.
-export function draftAuthority(db: Database.Database, tenantId: string, messageId: string): string | null {
+function authorityInputs(db: Database.Database, tenantId: string, messageId: string) {
   const m = db.prepare(`SELECT m.to_email, m.subject, m.body, j.offer, j.seller FROM outreach_messages m
     JOIN leads l ON l.id = m.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = m.tenant_id
     WHERE m.id = ? AND m.tenant_id = ?`).get(messageId, tenantId) as { to_email: string; subject: string; body: string; offer: string | null; seller: string | null } | undefined
   if (!m) return null
   const s = getSettings(db, tenantId) as { sender_name?: string; postal_address?: string } | undefined
-  return createHash('sha256').update(JSON.stringify([CONSENT_VERSION, m.to_email, m.subject, m.body, m.offer, m.seller, s?.sender_name ?? null, s?.postal_address ?? null, gmailSender(db, tenantId)])).digest('hex')
+  return { ...m, sender_name: s?.sender_name ?? null, postal_address: s?.postal_address ?? null, gmail: gmailSender(db, tenantId) }
+}
+const sha = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex')
+export function draftAuthority(db: Database.Database, tenantId: string, messageId: string): string | null {
+  const a = authorityInputs(db, tenantId, messageId)
+  return a && sha([CONSENT_VERSION, a.to_email, a.subject, a.body, a.offer, a.seller, a.sender_name, a.postal_address, a.gmail])
+}
+// The same, without the words: what a new draft's polish (which rewrites only the words) must leave unchanged.
+function draftContext(db: Database.Database, tenantId: string, messageId: string): string | null {
+  const a = authorityInputs(db, tenantId, messageId)
+  return a && sha([CONSENT_VERSION, a.to_email, a.offer, a.seller, a.sender_name, a.postal_address, a.gmail])
 }
 // The address of the connected Gmail account (the one the send path sends from), or null when none is connected.
 function gmailSender(db: Database.Database, tenantId: string): string | null {
@@ -155,6 +165,9 @@ const WAIT_FOR_USER = new Set(['gmail_reconnect_needed', 'gmail_not_connected', 
 // current, or its reserved slot gone): known not sent, the slot is released, and the draft stays held and unapproved
 // until autopilot runs again under current authority.
 const AUTHORITY_ENDED = new Set(['autopilot_off', 'autopilot_unavailable', 'consent_required', 'reservation_lost'])
+// What autopilot was allowed to send changed while the send was in progress (draftAuthority no longer the stored value):
+// known not sent, the slot is released, and the draft goes back to the user unapproved.
+const AUTHORITY_CHANGED = 'authority_changed'
 
 // One pass for this tenant: first the held first touches that are due again (#411), then verified leads that have no
 // message yet. Safe to call repeatedly and from two places at once (the scheduler tick and a finishing scan): a work row
@@ -189,16 +202,21 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     const s2 = getState(db, tenantId)
     return !autopilotAvailable(env) ? 'autopilot_unavailable' : !s2.enabled ? 'autopilot_off' : s2.paused ? 'paused' : !s2.consent_current ? 'consent_required' : null
   }
+  // Changed since autopilot took its authority: the user's to approve.
+  const release = (id: string, leadId: string) => { backToUser(id); out.held++; audit(db, tenantId, 'released', 'changed since autopilot drafted it: yours to approve', leadId, id) }
   const keepHeld = (id: string, leadId: string, code: string, attempts: number) => {
     hold(id, leadId, code, now, attempts)
     db.prepare("UPDATE outreach_messages SET status = 'draft', approved_hash = NULL WHERE id = ? AND tenant_id = ? AND status = 'approved'").run(id, tenantId)
   }
 
   // The gates and the send, for a draft autopilot made (new, or held earlier). 'stop' ends the pass, with out.stopped set.
-  const deliver = async (id: string, leadId: string, attempts: number): Promise<'stop' | void> => {
+  // expected: the draft's authority fingerprint autopilot holds (the stored one for a held draft; the one taken after the
+  // polish for a new draft). Rechecked here and, through authorize, at the send commitment after the token refresh.
+  const deliver = async (id: string, leadId: string, attempts: number, expected: string): Promise<'stop' | void> => {
     // A draft polished (or a held one re-checked) across an await: autopilot may have been turned off meanwhile.
     const before = authority()
     if (before) { out.held++; if (before === 'paused') hold(id, leadId, before, now, attempts); else keepHeld(id, leadId, before, attempts); out.stopped = before; return 'stop' }
+    if (draftAuthority(db, tenantId, id) !== expected) { release(id, leadId); return }
     const msg = db.prepare('SELECT to_email, status FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(id, tenantId) as { to_email: string; status: string }
     const to = msg.to_email
     // Warm-up drafts are the user's to approve: never sent by autopilot later, whatever happens to the caps.
@@ -232,7 +250,7 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
       if (msg.status === 'draft') approve(db, tenantId, id)
       // Only from the Gmail account the authority was taken with: the send path refuses at commitment if it changed.
       // authorize: re-read by the send path as its last check, after the token refresh, immediately before Gmail.
-      const r = await sendMessage(db, tenantId, id, { ...d, expectSender: gmailSender(db, tenantId) ?? '', authorize: () => authority() ?? (db.prepare("SELECT 1 FROM autopilot_audit WHERE id = ? AND tenant_id = ? AND action = 'send_reserved'").get(admit.reservation, tenantId) ? null : 'reservation_lost') })
+      const r = await sendMessage(db, tenantId, id, { ...d, expectSender: gmailSender(db, tenantId) ?? '', authorize: () => authority() ?? (draftAuthority(db, tenantId, id) !== expected ? AUTHORITY_CHANGED : null) ?? (db.prepare("SELECT 1 FROM autopilot_audit WHERE id = ? AND tenant_id = ? AND action = 'send_reserved'").get(admit.reservation, tenantId) ? null : 'reservation_lost') })
       drop(id)
       // The reservation becomes the send's record ('sent', counted once) or stays counted as possibly sent.
       if (r === 'sent') {
@@ -271,10 +289,8 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     // Gmail disconnected: no sending account to check against yet. The work waits; reconnecting the same address resumes
     // it, another address releases it below.
     if (gmailSender(db, tenantId) === null) { db.prepare('UPDATE autopilot_work SET claimed_at = NULL WHERE message_id = ? AND tenant_id = ?').run(w.message_id, tenantId); out.held++; continue }
-    if (draftAuthority(db, tenantId, w.message_id) !== w.authority) {
-      backToUser(w.message_id); out.held++; audit(db, tenantId, 'released', 'changed since autopilot drafted it: yours to approve', w.lead_id, w.message_id); continue
-    }
-    if (await deliver(w.message_id, w.lead_id, w.attempts) === 'stop') return out
+    if (draftAuthority(db, tenantId, w.message_id) !== w.authority) { release(w.message_id, w.lead_id); continue }
+    if (await deliver(w.message_id, w.lead_id, w.attempts, w.authority) === 'stop') return out
   }
 
   // 2. Verified leads with no message yet.
@@ -289,13 +305,19 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     // re-read state each time so a pause or kill takes effect between sends
     if (!live()) return stop('paused')
     let id: string
+    let context: string | null
     try {
       id = createDraft(db, tenantId, l.id, businessName)
+      context = draftContext(db, tenantId, id)
       try { await polishDraft(db, tenantId, id, businessName, d) } catch { /* template stays */ }
     } catch (e) {
       out.skipped++; audit(db, tenantId, 'skipped', e instanceof OutreachError ? e.code : 'error', l.id); continue
     }
-    if (await deliver(id, l.id, 0) === 'stop') return out
+    // The polish may change only the words: the offer, seller, sender settings or Gmail address changing across it hands
+    // the draft to the user.
+    const expected = draftAuthority(db, tenantId, id)
+    if (!context || !expected || draftContext(db, tenantId, id) !== context) { release(id, l.id); continue }
+    if (await deliver(id, l.id, 0, expected) === 'stop') return out
   }
   return out
 }

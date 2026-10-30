@@ -329,3 +329,50 @@ test('#448 positive controls: a pause during the token refresh holds as before; 
     const mid = createDraft(db, 'A', id, 'Acme'); approve(db, 'A', mid, true)
     assert.equal(await sendMessage(db, 'A', mid, at(d, NOW)), 'sent'); assert.equal(sent.length, 1) }
 })
+
+// Instinct's hold on d32bc14: the stored draft-authority fingerprint (exact words and recipient, the play's offer and
+// seller, the sender name and postal address, the Gmail address, the consent version) is rechecked at the final send
+// commitment, after the token refresh, and after any polishing. A mismatch: nothing sent, the reserved slot released,
+// the draft unapproved and back with the user.
+const duringTokenRefresh = (db: Database.Database, change: (db: Database.Database) => void) =>
+  (async (url: string) => { if (String(url).includes('token')) change(db); return tokenOk(url as never) }) as unknown as typeof fetch
+const AFTER_TOKEN: [string, (db: Database.Database) => void][] = [
+  ['offer', db => db.prepare("UPDATE scan_jobs SET offer = 'A different offer' WHERE user_id = 'A'").run()],
+  ['seller', db => db.prepare("UPDATE scan_jobs SET seller = 'Someone Else Ltd' WHERE user_id = 'A'").run()],
+  ['sender name', db => saveSettings(db, 'A', { sender_name: 'Not Pat', postal_address: '1 King St W, Toronto ON M5H 1A1' })],
+  ['postal address', db => saveSettings(db, 'A', { sender_name: 'Pat', postal_address: '99 Other Rd, Ottawa ON K1A 0B1' })],
+]
+
+test('#448 the offer, seller, sender name or postal address changed during the token refresh: the held draft is not sent (Instinct negative)', async () => {
+  for (const [what, change] of AFTER_TOKEN) {
+    const { db, sent, d } = await heldAfterOneSend()
+    const r = await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW + DAY + 1), fetchImpl: duringTokenRefresh(db, change) })
+    assert.deepEqual([r.sent, sent.length], [0, 1], `${what}: nothing more sent`)
+    assert.equal(reservations(db), 0, `${what}: the reserved slot is released`)
+    assert.deepEqual([work(db).length, draftsBack(db), msgStatus(db, 'b@two.example')], [0, 1, 'draft'], `${what}: unapproved, back with the user`)
+    assert.ok(recentAutopilotAudit(db, 'A').some(a => a.action === 'send_failed' && a.detail === 'authority_changed'), `${what}: recorded why`)
+  }
+})
+
+test('#448 the offer or sender settings changed during the draft-polish await: the new draft is not sent (Instinct negative)', async () => {
+  for (const [what, change] of AFTER_TOKEN) {
+    const db = await setup(); ok(db); pastWarmup(db); migrateKeys(db); saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
+    const { sent, d } = sends(); lead(db, 'a@one.example')
+    const providers = { anthropic: { complete: async () => { change(db); return 'not a usable draft' } } }
+    const r = await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW), providers } as never)
+    assert.deepEqual([r.sent, sent.length, reservations(db)], [0, 0, 0], `${what}: nothing sent, no slot kept`)
+    assert.deepEqual([work(db).length, msgStatus(db, 'a@one.example')], [0, 'draft'], `${what}: the user's to approve`)
+  }
+})
+
+test('#448 positive control: settings saved unchanged during the token refresh or the polish: the draft sends once', async () => {
+  const same = (db: Database.Database) => { saveSettings(db, 'A', { sender_name: 'Pat', postal_address: '1 King St W, Toronto ON M5H 1A1' }); db.prepare("UPDATE scan_jobs SET offer = offer, seller = seller WHERE user_id = 'A'").run() }
+  { const { db, sent, d } = await heldAfterOneSend()
+    const r = await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW + DAY + 1), fetchImpl: duringTokenRefresh(db, same) })
+    assert.deepEqual([r.sent, sent.length, work(db).length, reservations(db)], [1, 2, 0, 0]) }
+  { const db = await setup(); ok(db); pastWarmup(db); migrateKeys(db); saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
+    const { sent, d } = sends(); lead(db, 'a@one.example')
+    const providers = { anthropic: { complete: async () => { same(db); return 'not a usable draft' } } }
+    const r = await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW), providers } as never)
+    assert.deepEqual([r.sent, sent.length], [1, 1]) }
+})
