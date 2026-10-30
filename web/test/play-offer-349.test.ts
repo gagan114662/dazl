@@ -303,7 +303,17 @@ test('#349 HOLD-4 every further service assertion is material, in any wording; u
     assert.equal((await readPlayOffer(sqliteDb(db), 'A', 'london'))!.source, 'conflict')
     assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme'), /offer_conflict/)
     assert.equal(offerBlockFor(db, 'A', 'london'), '')
+    // the AI rewrite refuses it too
+    const d = createDraft(db, 'A', 'lead-dental', 'Acme')
+    db.prepare("UPDATE outreach_messages SET lead_id = 'lead-london' WHERE id = ?").run(d)
+    const r = recording()
+    assert.equal((await polishDraft(db, 'A', d, 'Acme', { master, providers: r.providers }) as { reason?: string }).reason, 'offer_conflict')
+    assert.equal(r.prompts.length, 0, 'no model call')
   } finally { db.close() }
+  // Instinct's exact calls against the full saved sentence, both directions
+  for (const r of ['We sell CRM setup to founders. Selling payroll software to founders.', 'We sell CRM setup to founders. Outbound consulting is unavailable.']) {
+    assert.equal(sameOffer(r, 'We sell CRM setup to founders.'), false, r); assert.equal(sameOffer('We sell CRM setup to founders.', r), false, r)
+  }
   // genuine targeting instructions and an audience sentence equal to the saved audience are not terms
   for (const q of [`Find dental practices in NYC. We sell ${DENTAL_PRODUCT}. Exclude chains.`, `Independent dental practices in New York City. We sell ${DENTAL_PRODUCT}.`])
     assert.deepEqual(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: q }, ''), { offer: DENTAL_SELLER, source: 'recorded', conflict: null }, q)
