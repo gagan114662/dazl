@@ -122,7 +122,7 @@ for (const [w, h, tag] of [[1280, 900, 'desktop'], [390, 844, 'mobile']]) {
   const panel = page.getByTestId('estimate-confirm'); await panel.waitFor()
   assert.equal(await panel.getAttribute('data-verdict'), 'blocked'); assert.equal(await page.getByTestId('estimate-confirm-run').count(), 0, `${tag}: no Run button while blocked`)
   assert.match(await page.getByTestId('estimate-verdict').innerText(), /^Blocked:/); assert.match(await page.getByTestId('estimate-change').innerText(), /Raise the dollar limit to at least \$0\.05/)
-  assert.match(await page.getByTestId('estimate-cap').innerText(), /Your limit: \$0\.02.*\$0\.02 left/)
+  assert.match(await page.getByTestId('estimate-cap').innerText(), /Daily limit: \$0\.02.*\$0\.02 left \(daily limit binds\)/)
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), `${tag}: no horizontal page scroll`)
   assert.equal(posts.length, 0); await page.close()
 }

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { estimateRun, compareActual } from '../lib/scan/price-estimate.ts'
+import { estimateRun, compareActual, capLine } from '../lib/scan/price-estimate.ts'
 import { SpendGuard, SpendRefused, PRICES_USD_PER_M, INPUT_MARGIN_TOKENS } from '../lib/llm/spend-guard.ts'
 
 const row = (e: ReturnType<typeof estimateRun>, id: string) => e.rows.find(r => r.id === id)!
@@ -105,4 +105,21 @@ test('monthly pool: the room left is the tighter of day and month, unknown pool 
   assert.notEqual(estimateRun({ ...base, ownerMonthCapUsd: 3 }).ack, none.ack)
   const u = estimateRun({ ...base, poolUnknown: true })
   assert.equal(u.verdict.ok, false); assert.equal(u.verdict.reason, 'budget_unknown'); assert.equal(u.cap.unknown, true); assert.doesNotMatch(u.verdict.message, /Within your limit/); assert.notEqual(u.ack, none.ack)
+})
+
+test('NEGATIVE: an unreadable budget shows "Remaining: unknown", never $0.00 left', () => {
+  const e = estimateRun({ budget: { max_usd: 2 }, payer: 'you', poolUnknown: true })
+  assert.equal(e.cap.remaining_usd, null); assert.equal(e.cap.binding, null)
+  const line = capLine(e.cap, e.cap.capped_total)!
+  assert.match(line, /Remaining: unknown/); assert.doesNotMatch(line, /\$0\.00/); assert.doesNotMatch(line, /left/)
+  const m = estimateRun({ budget: null, payer: 'you', ownerMonthCapUsd: 3, poolUnknown: true })   // monthly-only cap, unreadable
+  assert.match(capLine(m.cap, m.cap.capped_total)!, /Monthly limit: \$3\.00; Remaining: unknown/); assert.doesNotMatch(capLine(m.cap, m.cap.capped_total)!, /\$0\.00/)
+})
+test('monthly constraint: daily and monthly limits are labelled with their own reserved amounts and the binding remaining amount names which one binds', () => {
+  const m = estimateRun({ budget: { max_usd: 2 }, payer: 'you', reservedUsd: 0.5, ownerMonthCapUsd: 3, reservedMonthUsd: 2.4 })
+  assert.equal(m.cap.binding, 'monthly'); assert.ok(Math.abs((m.cap.remaining_usd ?? 0) - 0.6) < 1e-9)
+  assert.match(capLine(m.cap, m.cap.capped_total)!, /^Daily limit: \$2\.00 \(\$0\.50 already reserved today\); Monthly limit: \$3\.00 \(\$2\.40 already reserved this month\); \$0\.60 left \(monthly limit binds\)\./)
+  const d = estimateRun({ budget: { max_usd: 2 }, payer: 'you', reservedUsd: 1.9, ownerMonthCapUsd: 30, reservedMonthUsd: 1 })
+  assert.equal(d.cap.binding, 'daily'); assert.match(capLine(d.cap, d.cap.capped_total)!, /\$0\.10 left \(daily limit binds\)/)
+  assert.equal(capLine(estimateRun({ budget: null, payer: 'you' }).cap, { min: 0, max: 0 }), null)
 })

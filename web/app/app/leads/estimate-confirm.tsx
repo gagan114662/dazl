@@ -1,5 +1,5 @@
 'use client'
-import type { RunEstimate } from '@/lib/scan/price-estimate'
+import { capLine, type RunEstimate } from '@/lib/scan/price-estimate'
 
 const usd = (n: number) => `$${n > 0 && n < 0.01 ? n.toFixed(4) : n.toFixed(2)}`
 const range = (r: { min: number; max: number }) => r.min === r.max ? usd(r.min) : `${usd(r.min)} - ${usd(r.max)}`
@@ -28,7 +28,7 @@ export default function EstimateConfirm({ est, busy, onConfirm, onCancel }: { es
           <tfoot><tr className="border-t border-[var(--line)] font-semibold"><td className="py-2" colSpan={3}>Projected total{est.unpriced.length ? ' (priced rows only)' : ''}</td><td className="py-2 text-right whitespace-nowrap" data-testid="estimate-total">{range(est.total)}</td></tr></tfoot>
         </table>
       </div>
-      {est.cap.max_usd !== null && <p className="mt-2 text-xs" data-testid="estimate-cap">Your limit: {usd(est.cap.max_usd)}{est.cap.reserved_usd > 0 ? `, ${usd(est.cap.reserved_usd)} already reserved` : ''}; {usd(est.cap.remaining_usd ?? 0)} left. Model requests expected: {range(est.cap.capped_total)}.</p>}
+      {capLine(est.cap, est.cap.capped_total) && <p className="mt-2 text-xs" data-testid="estimate-cap">{capLine(est.cap, est.cap.capped_total)}</p>}
       <p className={`mt-2 ${v.ok ? '' : 'text-red-700 font-medium'}`} role={v.ok ? 'status' : 'alert'} data-testid="estimate-verdict">{v.message}</p>
       {v.warning && <p className="mt-1 text-xs" data-testid="estimate-warning">{v.warning}</p>}
       {!v.ok && <ul className="list-disc ml-5 mt-1 text-xs" data-testid="estimate-change">{v.change.map(c => <li key={c}>{c}</li>)}</ul>}

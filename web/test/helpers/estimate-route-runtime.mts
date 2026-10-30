@@ -169,7 +169,7 @@ test('unknown pool state: a pool read failure is NOT zero reserved - the estimat
   const body = { query: Q, budget: { max_usd: 2, judge: false } }
   db.exec('ALTER TABLE tenant_spend_pools RENAME TO tenant_spend_pools_x')   // the shared-pool read now fails
   const e = await (await est(body)).json() as { estimate: { ack: string; verdict: { ok: boolean; reason: string; message: string }; cap: { unknown: boolean } } }
-  assert.equal(e.estimate.verdict.ok, false); assert.equal(e.estimate.verdict.reason, 'budget_unknown'); assert.equal(e.estimate.cap.unknown, true)
+  assert.equal(e.estimate.verdict.ok, false); assert.equal(e.estimate.verdict.reason, 'budget_unknown'); assert.equal(e.estimate.cap.unknown, true); assert.equal((e.estimate.cap as unknown as { remaining_usd: number | null }).remaining_usd, null, 'remaining is unknown, not 0')
   assert.doesNotMatch(e.estimate.verdict.message, /Within your limit/)
   const r = await scan(body); const j = await r.json() as { error: string }
   assert.equal(r.status, 503); assert.equal(j.error, 'budget_unknown'); assert.equal(jobs(db).length, 0)
