@@ -99,6 +99,8 @@ test('hold 1: a day in ANOTHER clause about another company does not date this e
     assert.equal(eventDateBound('2026-10-15', `2026-10-15: ${q}. ${filler}`, q, co).bound, true, co)
     assert.equal(eventDateBound('2026-10-15', `${q}; UnrelatedCo launched a tool on 2026-10-15.`, q, co).bound, false, `${co}: another clause`)
   }
+  // fail-closed by design: a day in a clause that does not name the company stays undated, even when it is about the same event
+  assert.equal(eventDateBound('2026-10-15', `${QUOTE}, and on 2026-10-15 the ribbon was cut.`, QUOTE, 'Aurora Agency').bound, false)
   const ok = (await run(lead('2026-10-15'), page(`${dated[0]}${filler}`))).lead
   assert.deepEqual([ok.event_date, ok.date_status], ['2026-10-15', 'unverified'])
 })
@@ -119,7 +121,7 @@ test('hold 2: the blocked-source fallback binds the date on the HELD copy before
 })
 
 test('hold 3: company background years ("founded in 2020") never make a fresh, explicitly dated event stale', async () => {
-  const quote = 'Aurora Agency, founded in 2020 and backed by investors since 2021, opened a new office on King Street West in Toronto, ON on 2026-10-15'
+  const quote = 'Aurora Agency, founded in 2020 and incorporated in 2021, opened a new office on King Street West in Toronto, ON on 2026-10-15'
   assert.equal(eventDateBound('2026-10-15', `${quote}.${filler}`, quote, 'Aurora Agency').bound, true)
   const r = await run(lead('2026-10-15', { excerpt: quote }), page(`${quote}.${filler}`))
   assert.ok(r.lead, JSON.stringify(r.review)); assert.equal(r.lead.event_date, '2026-10-15')
@@ -129,5 +131,10 @@ test('hold 3: company background years ("founded in 2020") never make a fresh, e
   const old = 'Aurora Agency opened a new office on King Street West in Toronto, ON in 2019'
   assert.match(eventDateBound('2026-10-15', `${old} on 2026-10-15.`, old, 'Aurora Agency').why, /names 2019/)
   assert.equal(resolveTiming(`${old}.`, old, null, 2026).olderYear, 2019)
-  assert.deepEqual(eventYears('founded in 2020, established 2019, incorporated in 2018, since 2015; opened in 2019 and moved 2024'), [2019, 2024])
+  assert.deepEqual(eventYears('founded in 2020, incorporated in 2018, in business since 2015, operating since 2014; opened in 2019 and moved 2024'), [2019, 2024])
+  // event verbs are not background: their year is the event's, and an old one is still stale
+  for (const ev of ['Aurora Agency and Beta formed a joint venture formed in 2019', 'Aurora Agency announced its Austin office established in 2019', 'Aurora Agency has had an office on King Street West since 2019']) {
+    assert.equal(resolveTiming(`Published 2026-10-15. ${ev}.`, ev, null, 2026).olderYear, 2019, ev)
+    assert.match(eventDateBound('2026-10-15', `${ev} on 2026-10-15.`, ev, 'Aurora Agency').why, /names 2019/, ev)
+  }
 })

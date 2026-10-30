@@ -263,6 +263,9 @@ export async function groundLeads(provider: Provider, apiKey: string, query: str
 }
 
 // (shown to the user, never emailed) instead of vanishing. Dedup by company keeps the best.
+// The verifier's date rejections (verifyEvidence): a held copy whose claimed day is one of these stays held.
+const DATE_REJECTS = new Set(['bad_date', 'stale', 'future_date'])
+
 export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetcher = fetchPageDetailed, now = new Date(), judge?: Judge, knownDomain: string | null = null, held?: { text: HeldText; attempt: string }, audit?: CandidateAudit[], geo: string[] = [], structuredDates?: ReadonlyMap<string, string>): Promise<VerifyOutcome> {
   const cache = new Map<string, Promise<Page | FetchFail | null>>()
   const get = (u: string) => { if (!cache.has(u)) cache.set(u, fetchPage(u).catch(() => null)); return cache.get(u)! }
@@ -326,11 +329,11 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
         // The same date binding as a fetched page (#460 review): the held copy must tie the claimed day to this company and event, or the candidate is undated.
         let cc = c
         const claimed = verifyEvidence(c, cp, now)          // a claimed day the date rules reject (stale, future, malformed) keeps the hold: unbinding it must not launder it
-        if (cc.event_date && !(!claimed.ok && ['bad_date', 'stale', 'future_date'].includes(claimed.reason)) && structuredDates?.get(canonUrl(cc.source_url)) !== cc.event_date) {
+        if (cc.event_date && !(!claimed.ok && DATE_REJECTS.has(claimed.reason)) && structuredDates?.get(canonUrl(cc.source_url)) !== cc.event_date) {
           const b = eventDateBound(cc.event_date, cp.text, cc.excerpt, cc.company)
           if (!b.bound) cc = { ...cc, event_date: null, timing_note: `the claimed event date ${cc.event_date} is not tied to this company and event by the held copy (${b.why}); treated as undated`.slice(0, 300) }
         }
-        const v2 = !closedJobEvidence(cc, cp) && !(!claimed.ok && ['bad_date', 'stale', 'future_date'].includes(claimed.reason)) ? verifyEvidence(cc, cp, now) : null
+        const v2 = !closedJobEvidence(cc, cp) && !(!claimed.ok && DATE_REJECTS.has(claimed.reason)) ? verifyEvidence(cc, cp, now) : null
         if (v2?.ok && !counterpartySignal(cc, cp, '') && ownPlaceAgreement(cp, geo, cc.company, cc.excerpt) !== 'mismatch') { passed.push({ c: cc, v: v2, copy: { failure: why, sha256: copy.page.sha256, page: copy.page } }); note(c, 'passed', null, COPY_ORIGIN); continue }
       }
       if (why) toReview(c, why)

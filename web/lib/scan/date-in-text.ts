@@ -44,9 +44,10 @@ export function datePositions(text: string): { day: string; index: number; end: 
 }
 
 // Years a passage gives for the EVENT it describes: years written as company background - "founded in 2020",
-// "established 2019", "incorporated in 2018", "since 2015" - say when the company began, not when this event happened,
-// and are left out (#460 review). Used by the stale-year checks (event-date-binding.ts, page-timing.ts).
-const BACKGROUND = /\b(?:founded|established|incorporated|formed|est\.?|since|in business since|operating since|dating back to)\s+(?:in\s+)?$/i
+// "incorporated in 2018", "in business since 2015" - say when the company began, not when this event happened, and are
+// left out (#460 review). Words that also describe events ("formed", "established", "since") are NOT background: "a joint
+// venture formed in 2019" or "an office established in 2019" is the event's own year and stays stale. Used by the stale-year checks (event-date-binding.ts, page-timing.ts).
+const BACKGROUND = /\b(?:founded|incorporated|in business since|operating since)\s+(?:in\s+)?$/i
 export function eventYears(text: string): number[] {
   const t = text.replace(/\s+/g, ' ')
   return [...t.matchAll(/\b(19[89]\d|20\d{2})\b/g)].filter(m => !BACKGROUND.test(t.slice(Math.max(0, m.index! - 40), m.index!))).map(m => +m[1])
