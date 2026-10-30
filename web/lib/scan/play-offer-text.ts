@@ -124,16 +124,17 @@ const safeModifier = (w: string) => {
   return SAFE_MODIFIERS.has(x) || BUYER_SINGULAR.has(x) || /^[a-z0-9]+-(?:backed|funded|stage|owned|based|sized|led)$/.test(x)
 }
 // One buyer group: at most three safe modifiers, a buyer noun, at most one -ing word ("dental practices", "SaaS startups
-// hiring"). Returns how many words it used, or 0.
-function buyerGroup(words: string[]): number {
+// hiring"). Returns every length that parses, longest first ("startups hiring SDRs" may be "startups" + "hiring SDRs").
+function buyerGroup(words: string[]): number[] {
+  const out: number[] = []
   for (let n = Math.min(words.length, 5); n >= 1; n--) {
     const w = words.slice(0, n)
     const ing = n >= 2 && /ing$/i.test(w[n - 1]) && BUYERS.has(w[n - 2].toLowerCase())
     const head = ing ? w[n - 2] : w[n - 1]
     const mods = w.slice(0, ing ? n - 2 : n - 1)
-    if (BUYERS.has(head.toLowerCase()) && mods.length <= 3 && mods.every(safeModifier)) return n
+    if (BUYERS.has(head.toLowerCase()) && mods.length <= 3 && mods.every(safeModifier)) out.push(n)
   }
-  return 0
+  return out
 }
 // What may follow the buyer group in a targeting instruction, each consumed whole; anything left over that is none of
 // these (a predicate such as "cost extra" after "in Canada") makes the sentence material:
@@ -170,6 +171,24 @@ function placeLength(words: string[]): number {
   for (let n = Math.min(words.length, 5); n >= 1; n--) if (PLACES.has(words.slice(0, n).join(' ').toLowerCase())) return n
   return 0
 }
+// A role being hired: an optional a/an/the, at most three role modifiers (a known one, a singular role noun as in "office
+// manager", or a hyphenated form like "front-desk"), and a known role noun. Returns the words it used, or 0.
+const ROLES = new Set(('coordinator receptionist manager assistant administrator admin engineer developer designer marketer recruiter ' +
+  'salesperson sdr bdr ae rep representative nurse hygienist dentist technician accountant bookkeeper director head lead cfo cto ' +
+  'coo cmo vp officer specialist analyst consultant agent operator associate executive').split(' '))
+const ROLE_MODIFIERS = new Set('office sales marketing dental medical clinical senior junior first new full-time part-time account customer support operations finance front-desk'.split(' '))
+const roleNoun = (w: string) => { const x = w.toLowerCase(); return ROLES.has(x) || (x.endsWith('s') && ROLES.has(x.slice(0, -1))) }
+function roleLength(words: string[]): number {
+  let k = /^(?:a|an|the)$/i.test(words[0] ?? '') ? 1 : 0
+  const start = k
+  while (k < words.length && k - start <= 3) {
+    if (roleNoun(words[k])) return k + 1
+    const x = words[k].toLowerCase()
+    if (!(ROLE_MODIFIERS.has(x) || ROLES.has(x) || /^[a-z]+-[a-z]+$/.test(x))) return 0
+    k++
+  }
+  return 0
+}
 function tailOk(words: string[]): boolean {
   if (!words.length) return true
   const [w0, w1] = [words[0].toLowerCase(), (words[1] ?? '').toLowerCase()]
@@ -191,19 +210,26 @@ function tailOk(words: string[]): boolean {
   // another buyer group
   const sepLen = w0 === ',' ? (['and', 'or'].includes(w1) ? 2 : 1) : ['and', 'or', 'of', 'for', 'at', 'with'].includes(w0) ? 1 : 0
   if (sepLen) {
-    const n = buyerGroup(words.slice(sepLen))
-    if (n && tailOk(words.slice(sepLen + n))) return true
+    if (buyerGroup(words.slice(sepLen)).some(n => tailOk(words.slice(sepLen + n)))) return true
   }
   // who/that are -ing
   if ((w0 === 'who' || w0 === 'that') && /^(?:is|are)$/.test(w1) && words.length === 3 && /ing$/i.test(words[2])) return true
+  // hiring a role: "hiring a front-desk coordinator", "who are hiring SDRs" (the role is provably a role: hiringLength)
+  const hireAt = w0 === 'hiring' ? 1 : (w0 === 'who' || w0 === 'that') && /^(?:is|are)$/.test(w1) && (words[2] ?? '').toLowerCase() === 'hiring' ? 3 : 0
+  if (hireAt) {
+    const n = roleLength(words.slice(hireAt))
+    if (n && tailOk(words.slice(hireAt + n))) return true
+  }
   return false
 }
+// A targeting instruction, or a plain description of the buyers with no verb ("Independent dental practices in New
+// York City hiring a front-desk coordinator."): the same whole-sentence grammar either way, so a description is
+// ignored only when every word of it is a buyer group, a verified place, a recognised hiring qualifier or a list of these.
 function isTargeting(x: string): boolean {
   const m = IMPERATIVE.exec(x)
-  if (!m) return false
-  const words = m[1].replace(LEADING, '').replace(/,/g, ' , ').trim().split(/\s+/).filter(Boolean)
-  const n = buyerGroup(words)
-  return n > 0 && tailOk(words.slice(n))
+  const body = m ? m[1].replace(LEADING, '') : x
+  const words = body.replace(/,/g, ' , ').trim().split(/\s+/).filter(Boolean)
+  return buyerGroup(words).some(n => tailOk(words.slice(n)))
 }
 const AUDIENCE = /^(?:to|for)\s+(.*?)(?=\s*(?:,|\bbut\b|\bexcept\b|\bexcluding\b|\bwithout\b)|$)/i
 type Statement = { offer: string; audience: string; rest: string; others: string[] }

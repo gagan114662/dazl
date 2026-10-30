@@ -317,8 +317,9 @@ test('#349 HOLD-4 every further service assertion is material, in any wording; u
   // genuine targeting instructions and an audience sentence equal to the saved audience are not terms
   for (const q of [`Find dental practices in NYC. We sell ${DENTAL_PRODUCT}. Exclude chains.`, `Independent dental practices in New York City. We sell ${DENTAL_PRODUCT}.`])
     assert.deepEqual(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: q }, ''), { offer: DENTAL_SELLER, source: 'recorded', conflict: null }, q)
-  // a descriptive sentence the parser cannot place is unparsed remainder: flagged, so the tenant chooses (fail closed)
-  assert.equal(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: `Independent dental practices hiring. We sell ${DENTAL_PRODUCT}.` }, '').source, 'conflict')
+  // a buyer description the grammar fully parses is targeting (HOLD-11); one it cannot place stays a conflict
+  assert.deepEqual(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: `Independent dental practices hiring. We sell ${DENTAL_PRODUCT}.` }, ''), { offer: DENTAL_SELLER, source: 'recorded', conflict: null })
+  assert.equal(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: `Independent dental practices hiring cost extra. We sell ${DENTAL_PRODUCT}.` }, '').source, 'conflict')
   // the original live case and the London control are unchanged
   assert.deepEqual(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: DENTAL_PRODUCT }, ''), { offer: DENTAL_SELLER, source: 'recorded', conflict: null })
   assert.equal(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: Q }, '').source, 'conflict')
@@ -503,4 +504,34 @@ test('#349 HOLD-10 places are verified, never inferred from capitalisation; an u
   }
   assert.deepEqual(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: DENTAL_PRODUCT }, ''), { offer: DENTAL_SELLER, source: 'recorded', conflict: null })
   assert.equal(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: Q }, '').source, 'conflict')
+})
+
+test('#349 HOLD-11 the shipped smoke case: a grounded description of the buyers is targeting, through every caller path', async () => {
+  const LIVE_Q = `Independent dental practices in New York City hiring a front-desk coordinator. We sell ${DENTAL_PRODUCT}.`
+  const saved = `${DENTAL_SELLER} - https://seller.example`
+  assert.deepEqual(effectiveOffer({ seller: saved, query: LIVE_Q }, ''), { offer: DENTAL_SELLER, source: 'recorded', conflict: null })
+  assert.deepEqual(effectiveOffer({ seller: null, query: LIVE_Q }, DENTAL_SELLER), { offer: DENTAL_SELLER, source: 'profile', conflict: null })
+  for (const t of ['Independent dental practices in New York City.', 'Dental practices in NYC hiring a receptionist.', 'Clinics in Leeds who are hiring office managers.',
+    'SaaS startups hiring SDRs.', 'Independent dental practices hiring a part-time hygienist.'])
+    assert.deepEqual(effectiveOffer({ seller: saved, query: `${t} We sell ${DENTAL_PRODUCT}.` }, ''), { offer: DENTAL_SELLER, source: 'recorded', conflict: null }, t)
+  // caller paths: resolver, template drafting and scoring use the saved dental offer for that exact request
+  const db = setup(DENTAL_SELLER)
+  try {
+    db.prepare('UPDATE scan_jobs SET query = ? WHERE id = ?').run(LIVE_Q, 'dental')
+    assert.deepEqual(await readPlayOffer(sqliteDb(db), 'A', 'dental'), { offer: DENTAL_SELLER, source: 'recorded', conflict: null })
+    assert.match(body(db, createDraft(db, 'A', 'lead-dental', 'Acme')), /appointment booking/)
+    assert.match(offerBlockFor(db, 'A', 'dental'), /appointment booking and reminder software/)
+    assert.equal((db.prepare("SELECT offer FROM scan_jobs WHERE id = 'dental'").get() as { offer: string | null }).offer, null, 'nothing chosen or written')
+  } finally { db.close() }
+  // still material: predicates after the description, unknown places, a role that is not a role, changed buyers, negations
+  for (const q of [
+    `Independent dental practices in New York City hiring a front-desk coordinator cost extra. We sell ${DENTAL_PRODUCT}.`,
+    `Independent dental practices in Premium Tiers. We sell ${DENTAL_PRODUCT}.`,
+    `Independent dental practices hiring a coordinator won customers. We sell ${DENTAL_PRODUCT}.`,
+    `Dental practices hiring premium support. We sell ${DENTAL_PRODUCT}.`,
+    `Email marketing agencies. We sell ${DENTAL_PRODUCT}.`,
+    `We sell ${DENTAL_PRODUCT} to veterinary practices.`,
+    `Independent dental practices in New York City. We sell ${DENTAL_PRODUCT}. Payroll is included.`,
+  ]) assert.equal(effectiveOffer({ seller: saved, query: q }, '').source, 'conflict', q)
+  assert.equal(effectiveOffer({ seller: saved, query: Q }, '').source, 'conflict', 'London')
 })
