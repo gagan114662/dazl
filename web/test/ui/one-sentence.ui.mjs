@@ -61,8 +61,10 @@ const STEPS = full => [
 const person = (n, url) => ({ connector: 'sitecrawl', kind: 'person', value: n, label: null, source_url: url, source_date: '2026-10-20', confidence: null })
 const row = (l, who, email) => ({ id: l.id, name: '', company: l.company, contact: email, signal: l.signal, source_url: l.source_url, score: 70, evidence_excerpt: l.signal, event_date: l.event_date, date_status: 'verified', published_at: null, confidence: 90, review_reason: null, company_domain: email ? email.split('@')[1] : null, human_confirmed_at: null, fit: 4, intent: 4, action: 3, why: l.signal, signals: null, icp_match: null, enrichments: who ? [person(who, l.source_url)] : [], events: [] })
 const ROWS = [row(LEADS[0], 'Priya Hartley, Managing partner', 'priya@hartleyshaw.example'), row(LEADS[1], 'Tom Reed, Practice manager', 'tom@northgatebk.example'), row(LEADS[2], null, null), row(LEADS[3], 'Helen Ashworth, Managing partner', 'helen@ashworthpartners.example'), row(LEADS[4], null, null)]
+// A ready lead that is NOT one of the five the fast scan returned (it ranked sixth): the full rows hold it, the five cards do not.
+const OUTSIDE_ROW = row({ ...LEADS[0], id: '6'.repeat(24), company: 'Fenwick Payroll Partners', signal: 'Hiring a payroll manager for its Leeds office', source_url: 'https://www.fenwick.example/careers', event_date: '2026-10-19' }, 'Jo Fenwick, Managing partner', 'jo@fenwick.example')
 const b = await chromium.launch()
-async function run({ width, height, tag, how = 'cta', full = true, incomplete = false, tz = 'UTC' }) {
+async function run({ width, height, tag, how = 'cta', full = true, incomplete = false, outside = false, tz = 'UTC' }) {
   const st = { profile: { business_name: '', sells: '', website: '', buyer: null }, scanBodies: [], polls: 0 }
   const ctx = await b.newContext({ viewport: { width, height }, timezoneId: tz })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
@@ -80,7 +82,7 @@ async function run({ width, height, tag, how = 'cta', full = true, incomplete = 
     if (p === '/api/scan/status') { const s = STEPS(full)[Math.min(st.polls++, 3)]; return json({ job_id: J, ...s }) }
     if (p === '/api/scan/jobs') return json({ jobs: [] })
     if (p === '/api/usage') return json({ plan: 'free', scans_used: 0, scan_limit: 10, has_key: false, trial: { funded: true, remaining: 3 } })
-    if (p === '/api/leads') return json({ leads: u.searchParams.get('job_id') === J ? (incomplete ? ROWS.map(r => ({ ...r, contact: null, enrichments: [], company_domain: null })) : ROWS).slice(0, full ? 5 : 2) : [], hidden_count: 0 })
+    if (p === '/api/leads') return json({ leads: u.searchParams.get('job_id') === J ? (outside ? [...ROWS.slice(0, 5).map(r => ({ ...r, contact: null, enrichments: [], company_domain: null })), OUTSIDE_ROW] : incomplete ? ROWS.map(r => ({ ...r, contact: null, enrichments: [], company_domain: null })) : ROWS).slice(0, full ? (outside ? 6 : 5) : 2) : [], hidden_count: 0 })
     return json({}, 404)
   })
   const page = await ctx.newPage()
@@ -128,14 +130,15 @@ async function run({ width, height, tag, how = 'cta', full = true, incomplete = 
   // 4. Settled.
   if (full) {
     // Settled: only leads that meet the ready bar (approve gate: evidence + a published email + ...) are ready to contact.
-    const heading = incomplete ? '5 found - research needed before outreach' : '3 ready to contact, 2 need research'
+    const heading = outside ? '1 ready to contact, 5 need research' : incomplete ? '5 found - research needed before outreach' : '3 ready to contact, 2 need research'
     await page.waitForFunction(h => document.querySelector('[data-testid=first-heading]')?.textContent === h, heading, { timeout: 10000 })
     assert.equal(await page.getByTestId('first-lead').count(), 5)
     const badges = await page.getByTestId('first-lead').evaluateAll(ls => ls.map(l => l.querySelector('.pill')?.textContent))
-    assert.deepEqual(badges, incomplete ? Array(5).fill('needs research') : ['ready to contact', 'ready to contact', 'needs research', 'ready to contact', 'needs research'])
+    assert.deepEqual(badges, incomplete || outside ? Array(5).fill('needs research') : ['ready to contact', 'ready to contact', 'needs research', 'ready to contact', 'needs research'])
     assert.equal(await page.getByTestId('lead-gap').first().textContent(), 'To contact: No published email address to draft to yet.')
     assert.equal(await page.getByTestId('ready-cta').textContent(), incomplete ? 'See what needs research' : 'Start reaching out')
-    assert.equal(await page.getByTestId('ready-subhead').textContent(), incomplete ? 'dazl found 5 leads; each needs a contact or more evidence before outreach.' : 'dazl found 3 leads ready to contact.')
+    assert.equal(await page.getByTestId('ready-subhead').textContent(), incomplete ? 'dazl found 5 leads; each needs a contact or more evidence before outreach.' : outside ? 'dazl found 1 lead ready to contact.' : 'dazl found 3 leads ready to contact.')
+    if (outside) assert.equal(await page.getByTestId('lead-gap').count(), 5, 'every card that is not ready says what is missing, even though the ready lead is not one of the five')
     assert.doesNotMatch(await page.getByTestId('onboarding-screen').innerText(), incomplete ? /Start reaching out|ready to contact/ : /5 leads ready|ready for your review/, 'never more ready than the ready bar allows')
     // Dates: the same calendar day as written, in this browser's time zone too (Toronto runs west of UTC).
     assert.match(await page.getByTestId('first-lead').first().innerText(), /21 Oct 2026/, `date in ${tz}`)
@@ -159,6 +162,9 @@ try {
   const c = await run({ width: 1440, height: 900, tag: 'held', how: 'chip' })
   const t = await run({ width: 1440, height: 900, tag: 'held', how: 'typed', full: false })
   await run({ width: 1440, height: 900, tag: 'research', incomplete: true, tz: 'America/Toronto' })
+  // A ready lead outside the five shown: counted (full rows), the cards still say needs research, the CTA reaches it.
+  await run({ width: 1440, height: 900, tag: 'outside' , outside: true })
+  await run({ width: 390, height: 844, tag: 'outside-mobile', outside: true })
   assert.deepEqual([d.typed, m.typed, c.typed], [1, 1, 1], 'the website is the only thing typed')
   assert.equal(t.typed, 2, 'a typed sentence is the second thing typed, only when the user chooses to')
   console.log(`MEASURE things typed before the first lead card: ${d.typed} (desktop), ${m.typed} (390px), ${c.typed} (suggestion click)`)
