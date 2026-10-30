@@ -237,3 +237,17 @@ test('sequence context restriction appearing during token await releases step wi
  assert.equal((await runSequences(db,'A','',{...m,fetchImpl,now:NOW+3*DAY})).sent,0)
  assert.equal(m.calls.length,1);assert.deepEqual(db.prepare('SELECT status,claimed_at FROM sequence_steps WHERE step=2').get(),{status:'approved',claimed_at:null})
 })
+
+test('sequence step: an unverifiable handoff is uncertain, pauses the account, is never marked sent and never retried',async()=>{
+  for(const bad of [undefined, null, {}, { id: '' }, { id: '   ' }, { id: 7 }, { id: ['x'] }, { threadId: 'th1' }]){
+    const db=await setup(),s=add(db),m=mock();await start(db,s,m)
+    let calls=0
+    const odd={...m,now:NOW+3*DAY,sendFn:(async()=>{calls++;return bad}) as never}
+    assert.equal((await runSequences(db,'A','',odd)).stopped,'uncertain_send',JSON.stringify(bad))
+    assert.equal(getState(db,'A').paused,true)
+    const st=db.prepare("SELECT status, gmail_id FROM sequence_steps WHERE step = 2").get() as {status:string;gmail_id:string|null}
+    assert.equal(st.status,'uncertain'); assert.ok(!st.gmail_id)
+    assert.equal((await runSequences(db,'A','',odd)).sent,0)
+    assert.equal(calls,1)
+  }
+})
