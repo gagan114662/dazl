@@ -1,4 +1,5 @@
-import type { Provider } from './provider.ts'
+import { randomBytes } from 'node:crypto'
+import type { CompletionUsage, DetailedCompletion, Provider } from './provider.ts'
 import type { SharedPool } from './spend-pool.ts'
 
 // A run-scoped spend guard. It RESERVES the worst case of every paid call before the call is made and refuses a call
@@ -17,6 +18,38 @@ export const INPUT_MARGIN_TOKENS = 1000
 export class SpendRefused extends Error {
   reason: string
   constructor(reason: string) { super(`spend_refused:${reason}`); this.reason = reason }
+}
+// After a paid call was made: its cost could not be recorded (the settle did not save). Never a SpendRefused: the call
+// happened and may be billed, so a caller must not treat it as "nothing was spent" (release a claim, retry for free).
+// Every guard of the call counts as refused, so no later call goes through it.
+export class SpendAccountingFailed extends Error {
+  constructor(cause: unknown) { super(`spend_accounting_failed:${cause instanceof Error ? cause.message.slice(0, 120) : 'unknown'}`) }
+}
+
+// A served model id with a release date (claude-sonnet-4-5-20250929) is priced as its listed alias; anything else must
+// match exactly. Unlisted: null.
+export function priceOf(model: string | null | undefined): { in: number; out: number } | null {
+  if (!model) return null
+  return PRICES_USD_PER_M[model] ?? PRICES_USD_PER_M[model.replace(/-\d{8}$/, '')] ?? null
+}
+// Cache pricing as multiples of the input price (https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching):
+// reads 0.1x; writes 1.25x for the 5-minute cache and 2x for the 1-hour cache. The usage dazl keeps does not say which,
+// so writes are priced at 2x, the higher of the two (an upper bound, by choice).
+export const CACHE_WRITE_FACTOR = 2
+export const CACHE_READ_FACTOR = 0.1
+export type CompletionCost = { usd: number } | { unknown: 'no_usage' | 'unpriced_model' | 'invalid_usage' }
+// What a completion cost from what the vendor reported: the SERVED model's price, input and output tokens, cache writes
+// and cache reads (Anthropic's input_tokens excludes both). No usage at all: 'no_usage'; a usage report with no priced
+// served model or without valid input/output counts: unknown.
+export function completionCost(servedModel: string | null | undefined, usage: CompletionUsage | undefined): CompletionCost {
+  if (!usage) return { unknown: 'no_usage' }
+  const price = priceOf(servedModel)
+  if (!price) return { unknown: 'unpriced_model' }
+  const ok = (v: number | undefined, required: boolean) => v === undefined ? !required : Number.isFinite(v) && v >= 0
+  if (!ok(usage.input_tokens, true) || !ok(usage.output_tokens, true) || !ok(usage.cache_creation_input_tokens, false) || !ok(usage.cache_read_input_tokens, false)) return { unknown: 'invalid_usage' }
+  const usd = (usage.input_tokens! * price.in + usage.output_tokens! * price.out
+    + (usage.cache_creation_input_tokens ?? 0) * price.in * CACHE_WRITE_FACTOR + (usage.cache_read_input_tokens ?? 0) * price.in * CACHE_READ_FACTOR) / 1e6
+  return { usd }
 }
 
 export class SpendGuard {
@@ -62,6 +95,8 @@ export class SpendGuard {
     this.reservedUsd = next
     if (next > this.limitUsd) this.refused = true
   }
+  // A call whose cost is unknown: the rest of the limit counts as spent.
+  exhaust(): void { if (this.reservedUsd < this.limitUsd) this.settle(this.limitUsd - this.reservedUsd); this.refused = true }
 }
 
 // The owner's workspace pool, held in the shared store (lib/llm/spend-pool.ts): every job, retry, restart and instance of
@@ -69,21 +104,27 @@ export class SpendGuard {
 // the limit itself is checked atomically in the store when the reservation is made.
 export class PooledGuard extends SpendGuard {
   readonly pool: SharedPool
-  constructor(pool: SharedPool) { super(Infinity); this.pool = pool }
+  // trackPending: each reservation also writes a pending-settlement marker in the store, removed by its settle (see
+  // SharedPool.reserve). A settle known to have failed marks it at once (SharedPool.markFailed); one that never ran
+  // (a crash) leaves it to go stale. Either way the owner's later reservations are refused.
+  readonly trackPending: boolean
+  constructor(pool: SharedPool, opts: { trackPending?: boolean } = {}) { super(Infinity); this.pool = pool; this.trackPending = opts.trackPending === true }
   override checkUsd(usd: number): void { if (this.refused || !(Number.isFinite(usd) && usd >= 0)) { this.refused = true; throw new SpendRefused(this.label) } }
   override reserveUsd(): void { throw new Error('a pooled guard reserves through reserveAll / reserveAllUsd') }
   // Returns the time the reservation was made at, from the pool's own clock; that time travels with the reservation
   // (Reservation below), so its settle or release lands in exactly the windows it was reserved in.
-  async reserveShared(usd: number): Promise<number> {
+  async reserveShared(usd: number, pendingId?: string): Promise<number> {
     const at = this.pool.now()
-    try { await this.pool.reserve(usd, at) } catch (e) { this.refused = true; throw e instanceof SpendRefused ? (e.reason === 'over_limit' ? new SpendRefused(this.label) : e) : new SpendRefused('reservation_not_saved') }
+    try { await this.pool.reserve(usd, at, pendingId) } catch (e) { this.refused = true; throw e instanceof SpendRefused ? (e.reason === 'over_limit' ? new SpendRefused(this.label) : e) : new SpendRefused('reservation_not_saved') }
     this.reservedUsd += usd; this.calls++
     return at
   }
+  // A call whose cost is unknown: its shortest window counts as spent, in the store (durable; SharedPool.exhaust).
+  async exhaustShared(at: number, pendingId?: string): Promise<void> { await this.pool.exhaust(at, pendingId); this.refused = true }
   // The local total moves only after the store settled (one transaction: all or nothing), so a failed settle leaves it
   // where it was and a retry moves it once.
-  async settleShared(deltaUsd: number, reportedUsd: number | null, at: number): Promise<void> {
-    await this.pool.settle(deltaUsd, reportedUsd, at)
+  async settleShared(deltaUsd: number, reportedUsd: number | null, at: number, pendingId?: string): Promise<void> {
+    await this.pool.settle(deltaUsd, reportedUsd, at, pendingId)
     this.reservedUsd = Math.max(0, this.reservedUsd + (Number.isFinite(deltaUsd) ? deltaUsd : 0))
   }
 }
@@ -97,6 +138,8 @@ export interface Reservation {
   usd: number
   guards: SpendGuard[]
   at: Map<PooledGuard, number>
+  // The pending-settlement marker each tracking pool wrote for this reservation (PooledGuard.trackPending).
+  pending: Map<PooledGuard, string>
   done: Set<SpendGuard>
   settlement: { deltaUsd: number; reportedUsd: number | null } | null
   settled: boolean
@@ -108,14 +151,18 @@ const pooled = (g: SpendGuard): g is PooledGuard => g instanceof PooledGuard
 // steps reserved, so no partial reservation is left anywhere.
 export async function reserveAllUsd(guards: SpendGuard[], usd: number): Promise<Reservation> {
   for (const g of guards) g.checkUsd(usd)
-  const r: Reservation = { usd, guards: [...guards], at: new Map(), done: new Set(), settlement: null, settled: false }
+  const r: Reservation = { usd, guards: [...guards], at: new Map(), pending: new Map(), done: new Set(), settlement: null, settled: false }
   try {
-    for (const p of guards.filter(pooled)) r.at.set(p, await p.reserveShared(usd))
+    for (const p of guards.filter(pooled)) {
+      const id = p.trackPending ? randomBytes(5).toString('hex') : undefined
+      r.at.set(p, await p.reserveShared(usd, id))
+      if (id) r.pending.set(p, id)
+    }
     for (const g of guards.filter(g => !pooled(g)).sort((a, b) => Number(!!b.persist) - Number(!!a.persist))) g.reserveUsd(usd)
   } catch (e) {
     // Release exactly what this reservation took, at the times it took it. Best effort: a failed release over-counts,
     // never under.
-    for (const [p, at] of r.at) await p.settleShared(-usd, null, at).catch(() => {})
+    for (const [p, at] of r.at) await p.settleShared(-usd, null, at, r.pending.get(p)).catch(() => {})
     throw e
   }
   return r
@@ -135,7 +182,7 @@ export async function settleAll(guards: SpendGuard[], deltaUsd: number, reported
   // Order of the reservation; each guard is marked done only after it moved, so an error leaves exactly the rest to retry.
   for (const g of r.guards) {
     if (r.done.has(g)) continue
-    if (pooled(g)) await g.settleShared(deltaUsd, reportedUsd, r.at.get(g)!)
+    if (pooled(g)) await g.settleShared(deltaUsd, reportedUsd, r.at.get(g)!, r.pending.get(g))
     else g.settle(deltaUsd)
     r.done.add(g)
   }
@@ -187,7 +234,13 @@ export const anthropicCountTokens: TokenCounter = async (apiKey, model, prompt, 
 // research: when given, a research call is allowed: it reserves `reserveUsd` (a worst case: search results come back as
 // billed input, so no prompt-based bound exists), then settles to the cost the vendor reported, or keeps the reserve when
 // it reported none. Without it, research is refused as before (a run with its own max_usd).
-export function guardProvider(p: Provider, gs: SpendGuard | SpendGuard[], count?: TokenCounter, research?: { reserveUsd: number }): Provider {
+// settle: when true, a completion is settled to what the vendor reported after the call (completionCost): the reservation
+// moves to the actual cost, an overrun past the limit is recorded and refuses every later reservation, no usage keeps the
+// full reservation and refuses later calls through these guards, and an unknown cost (unpriced served model, invalid
+// counts) counts the rest of the limit as spent (for a pool: its shortest window). complete() then goes through completeDetailed so its usage is seen too.
+// If that accounting cannot be saved (retried once), the call's result is withheld and SpendAccountingFailed is thrown.
+// Without it, completions keep their worst-case reservation (the scan runner today).
+export function guardProvider(p: Provider, gs: SpendGuard | SpendGuard[], count?: TokenCounter, research?: { reserveUsd: number }, settle = false): Provider {
   const g = Array.isArray(gs) ? gs : [gs]
   const inputTokens = async (k: string, prompt: string, f?: typeof fetch) => {
     if (!count) return Buffer.byteLength(prompt)
@@ -208,7 +261,37 @@ export function guardProvider(p: Provider, gs: SpendGuard | SpendGuard[], count?
       : async () => { throw new SpendRefused('research_unbounded') },
     ...(p.configuredModel ? { configuredModel: () => p.configuredModel!() } : {}),
   }
-  if (p.complete) out.complete = async (k, prompt, f, max = 10) => { await reserveAll(g, model(), await inputTokens(k, prompt, f), max); return p.complete!(k, prompt, f, max) }
-  if (p.completeDetailed) out.completeDetailed = async (k, prompt, f, max = 10) => { await reserveAll(g, model(), await inputTokens(k, prompt, f), max); return p.completeDetailed!(k, prompt, f, max) }
+  // A call that throws keeps its reservation (the vendor may have billed it); in settle mode its pending marker is
+  // cleared, and if even that cannot be saved the marker stays and refuses later reservations (fail closed).
+  const run = async <T>(k: string, prompt: string, f: typeof fetch | undefined, max: number, call: () => Promise<T>, detail: (r: T) => DetailedCompletion): Promise<T> => {
+    const held = await reserveAll(g, model(), await inputTokens(k, prompt, f), max)
+    if (!settle) return call()
+    let r: T
+    try { r = await call() } catch (e) { await settleAll(g, 0, null, held).catch(() => {}); throw e }
+    await settleCompletion(g, held, detail(r))
+    return r
+  }
+  if (p.complete) out.complete = (k, prompt, f, max = 10) => run(k, prompt, f, max, () => p.complete!(k, prompt, f, max), text => ({ text, model: null }))
+  if (p.completeDetailed) out.completeDetailed = (k, prompt, f, max = 10) => run(k, prompt, f, max, () => p.completeDetailed!(k, prompt, f, max), d => d)
+  // complete() is completeDetailed().text in the real providers: going through it keeps the usage to settle.
+  if (settle && out.completeDetailed) out.complete = async (k, prompt, f, max) => (await out.completeDetailed!(k, prompt, f, max)).text
   return out
+}
+
+async function settleCompletion(g: SpendGuard[], held: Reservation, d: DetailedCompletion): Promise<void> {
+  const cost = completionCost(d.model, d.usage)
+  const record = async () => {
+    if ('usd' in cost) { if (!held.settled) await settleAll(g, cost.usd - held.usd, cost.usd, held) }
+    else if (cost.unknown === 'no_usage') { if (!held.settled) await settleAll(g, 0, null, held) } // the reservation stands; only its marker goes
+    else for (const x of g) { if (x instanceof PooledGuard) await x.exhaustShared(held.at.get(x)!, held.pending.get(x)); else x.exhaust() }
+  }
+  try { await record() } catch {
+    try { await record() } catch (e) {
+      // Known failed: mark each pending marker failed so no new guard, path or instance reserves until it is cleared.
+      for (const x of g) { x.refused = true; const id = x instanceof PooledGuard ? held.pending.get(x) : undefined; if (id) await (x as PooledGuard).pool.markFailed(id) }
+      throw new SpendAccountingFailed(e)
+    }
+  }
+  // No usage: nothing says what the call really used, so no later call goes through these guards.
+  if ('unknown' in cost && cost.unknown === 'no_usage') for (const x of g) x.refused = true
 }

@@ -32,8 +32,8 @@ test('tenant reasons: reply sync stale; due work overdue; idle tenants raise not
   const db = store()
   await finishRun(db, await startRun(db, lease, NOW - 60), 'ok', undefined, NOW - 30)
   // A: reply sync succeeded long ago, attempted since without success (failing once, not yet blocked)
-  await recordProgress(db, 'r', 'A', 'reply_sync', { ok: true }, NOW - REPLY_SYNC_STALE_S - 600)
-  await recordProgress(db, 'r', 'A', 'reply_sync', { ok: false, error: new Error('gmail_unavailable') }, NOW - 60)
+  await recordProgress(db, 'r', 'A', 'reply_sync', { outcome: 'success' }, NOW - REPLY_SYNC_STALE_S - 600)
+  await recordProgress(db, 'r', 'A', 'reply_sync', { outcome: 'failure', error: new Error('gmail_unavailable') }, NOW - 60)
   const a = await tenantFreshness(db, 'A', NOW)
   assert.deepEqual(a.reasons, ['reply_sync_stale']); assert.equal(a.state, 'stale')
   // B: an active sequence whose step 2 was due a day ago
@@ -44,7 +44,7 @@ test('tenant reasons: reply sync stale; due work overdue; idle tenants raise not
   assert.equal((await tenantFreshness(db, 'B', NOW - 4 * DAY + 3 * DAY + OVERDUE_ALERT_S - 10)).reasons.length, 0, 'just due is not overdue')
   assert.equal((await tenantFreshness(db, 'C', NOW)).state, 'idle')
   const h = await schedulerHealth(db, NOW)
-  assert.deepEqual(h.tenants, { tracked: 2, blocked: 0, reply_sync_stale: 1, overdue: 1, oldest_overdue_s: DAY })
+  assert.deepEqual(h.tenants, { tracked: 2, blocked: 0, held: 0, reply_sync_stale: 1, overdue: 1, oldest_overdue_s: DAY })
   assert.equal(h.ok, false)
   for (const leak of ['"A"', '"B"', 'gmail_unavailable', 'x@co.example']) assert.ok(!JSON.stringify(h).includes(leak), leak)
   // the scheduler being stale shows on each tenant with work

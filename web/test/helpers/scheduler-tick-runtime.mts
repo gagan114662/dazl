@@ -8,20 +8,25 @@ import { setScanDb, setUser } from './tenant-route-db.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { startOAuth } from '../../lib/gmail/oauth.ts'
 import { acceptReadConsent } from '../../lib/outreach/replies.ts'
+import { CONSENT_VERSION } from '../../lib/outreach/autopilot.ts'
+import { saveSettings } from '../../lib/outreach/service.ts'
 import { schedulerHealth, schedulerHealthResponse, startRun, tenantFreshness, BLOCKED_AFTER_FAILURES, STALE_AFTER_S } from '../../lib/ops/scheduler-runs.ts'
 import { POST as tick } from '../../app/api/internal/tick/route.ts'
 import { GET as sequences } from '../../app/api/outreach/sequences/route.ts'
 
 process.env.DAZL_ENV = 'staging'
 process.env.DAZL_MASTER_KEY = (await import('node:crypto')).randomBytes(32).toString('base64')
+process.env.AUTOPILOT_ENABLED = '1' // the operator switch, in this process only: with it off every follow-up run is a refusal
 const db = new Database(':memory:')
 migrateAllSqlite(db)
 setScanDb(db)
 const A = 'tenant-a-stalled', B = 'tenant-b-healthy'
 for (const t of [A, B]) {
   db.prepare("INSERT INTO users (id, email, password_hash, salt, business_name) VALUES (?, ?, 'x', 'y', ?)").run(t, `${t}@example.test`, `${t} business`)
-  db.prepare('INSERT INTO autopilot_settings (tenant_id, enabled, paused) VALUES (?, 1, 0)').run(t)
-  try { db.prepare('UPDATE autopilot_settings SET followups_enabled = 1 WHERE tenant_id = ?').run(t) } catch { /* column added by migrateReplies */ }
+  // autopilot and follow-ups on, with a sender identity and the current consent, as enable() and setFollowups() leave
+  // them (enable() itself refuses a tenant whose mailbox is not connected, which is A's whole point)
+  saveSettings(db, t, { sender_name: 'Pat', postal_address: '1 King St W, Toronto ON M5H 1A1' })
+  db.prepare('INSERT INTO autopilot_settings (tenant_id, enabled, paused, consent_version, consent_at, followups_enabled) VALUES (?, 1, 0, ?, ?, 1)').run(t, CONSENT_VERSION, Math.floor(Date.now() / 1000))
 }
 // B can read replies (stub Gmail + read consent); A has no mailbox connected, so its reply sync fails every tick
 startOAuth(db, B, { env: { DAZL_ENV: 'staging', PUBLIC_BASE_URL: 'https://staging.example.test' } as never }); acceptReadConsent(db, B)

@@ -523,6 +523,8 @@ CREATE TABLE scheduler_progress (
       last_attempt_at      INTEGER NOT NULL,
       last_success_at      INTEGER,
       last_error           TEXT CHECK (last_error IS NULL OR length(last_error) <= 200),
+      last_outcome         TEXT NOT NULL DEFAULT 'success' CHECK (last_outcome IN ('success','hold','failure')),
+      last_hold            TEXT CHECK (last_hold IS NULL OR length(last_hold) <= 40),
       consecutive_failures INTEGER NOT NULL DEFAULT 0,
       last_run_id          TEXT,
       PRIMARY KEY (tenant_id, kind)
