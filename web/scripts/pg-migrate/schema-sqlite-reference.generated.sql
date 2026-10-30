@@ -142,6 +142,20 @@ CREATE TABLE csv_rows (
       job_id   TEXT REFERENCES scan_jobs(id) ON DELETE SET NULL
     );
 
+CREATE TABLE discovery_rounds (
+    job_id TEXT NOT NULL REFERENCES scan_jobs(id) ON DELETE CASCADE,
+    round INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    query_key TEXT NOT NULL,
+    query TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('ok','empty','failed')),
+    new_pages INTEGER NOT NULL DEFAULT 0,
+    actionable_after INTEGER NOT NULL DEFAULT 0,
+    why TEXT,
+    at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
+    PRIMARY KEY (job_id, round, source, query_key)
+  );
+
 CREATE TABLE email_candidates (
       tenant_id TEXT NOT NULL, lead_id TEXT NOT NULL, person TEXT NOT NULL CHECK (length(person) <= 120),
       address TEXT NOT NULL CHECK (length(address) <= 254), format TEXT NOT NULL,
