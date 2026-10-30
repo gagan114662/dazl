@@ -38,6 +38,8 @@ const base = () => process.env.PUBLIC_BASE_URL || 'https://dazl.ai'
 
 // A new token for (user, purpose); earlier unused tokens of that purpose stop working.
 function* issue(t: Tx, userId: string, purpose: Purpose, email: string, ttl: number, now: number): TxBody<string> {
+  // One account lock orders token issue, consumption and recovery on both engines.
+  yield* t.run('UPDATE users SET email = email WHERE id = ?', [userId])
   yield* t.run('UPDATE email_tokens SET used_at = ? WHERE user_id = ? AND purpose = ? AND used_at IS NULL', [now, userId, purpose])
   const token = randomBytes(32).toString('hex')
   yield* t.run('INSERT INTO email_tokens (id, user_id, purpose, email, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -47,6 +49,11 @@ function* issue(t: Tx, userId: string, purpose: Purpose, email: string, ttl: num
 
 // The token's row, used up, when it is valid for `purpose` now; undefined otherwise.
 function* consume(t: Tx, purposes: Purpose[], token: string, now: number): TxBody<{ user_id: string; email: string; purpose: Purpose } | undefined> {
+  const owner = yield* t.get<{ user_id: string }>('SELECT user_id FROM email_tokens WHERE token_hash = ?', [sha256(token)])
+  if (!owner) return undefined
+  // Lock account before token row, matching issue(). Re-read after the lock so a
+  // recovery that committed while this caller waited invalidates the capability.
+  yield* t.run('UPDATE users SET email = email WHERE id = ?', [owner.user_id])
   const row = yield* t.get<{ id: string; user_id: string; email: string; purpose: Purpose }>(
     `SELECT id, user_id, email, purpose FROM email_tokens WHERE token_hash = ? AND purpose IN (${purposes.map(() => '?').join(', ')}) AND used_at IS NULL AND expires_at > ?`, [sha256(token), ...purposes, now])
   if (!row) return undefined
@@ -132,7 +139,7 @@ export async function requestReset(db: Db, email: string, now = nowS()): Promise
 }
 
 // Opens a reset link: sets the new password (hash computed by the caller), proves the email, uses up every other
-// reset link, and revokes every session of the account. false: the link is not valid (expired, used, unknown).
+// account capability (including a pending address change), and revokes every session of the account. false: the link is not valid (expired, used, unknown).
 export async function resetPassword(db: Db, token: unknown, next: { password_hash: string; salt: string }, now = nowS()): Promise<boolean> {
   if (!isEmailToken(token)) return false
   return db.tx(function* (t) {
@@ -141,7 +148,7 @@ export async function resetPassword(db: Db, token: unknown, next: { password_has
     const r = yield* t.run('UPDATE users SET password_hash = ?, salt = ?, email_verified_at = coalesce(email_verified_at, ?) WHERE id = ? AND email = ?',
       [next.password_hash, next.salt, now, row.user_id, row.email])
     if (r.changes !== 1) return false
-    yield* t.run("UPDATE email_tokens SET used_at = ? WHERE user_id = ? AND purpose = 'reset' AND used_at IS NULL", [now, row.user_id])
+    yield* t.run("UPDATE email_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL", [now, row.user_id])
     yield* revokeAllSessionsTx(t, row.user_id, { by: row.user_id, reason: 'recovery', now })
     return true
   })
