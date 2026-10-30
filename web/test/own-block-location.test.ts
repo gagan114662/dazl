@@ -41,7 +41,9 @@ test('contact: a same-name practice in another city is refused; a matching domai
   const lead = { company_domain: 'dentblanche.com', where: ['New York City'] }
   const wrong = contactAgreement({ company_domain: null, where: ['New York City'] }, { place: 'Pico Rivera, CA' })
   assert.equal(wrong.ok, false); assert.match((wrong as { reason: string }).reason, /location mismatch Pico Rivera, CA vs New York, NY/)
-  assert.deepEqual(contactAgreement(lead, { domain: 'www.dentblanche.com', place: 'Pico Rivera, CA' }), { ok: true, via: 'domain' }, 'the agreeing domain is the identity')
+  assert.deepEqual(contactAgreement({ ...lead, domainEstablished: true }, { domain: 'www.dentblanche.com', place: 'Pico Rivera, CA' }), { ok: true, via: 'domain' }, 'an established agreeing domain is the identity')
+  assert.equal(contactAgreement(lead, { domain: 'www.dentblanche.com', place: 'Pico Rivera, CA' }).ok, false, 'a guessed domain does not excuse an explicit other-state place')
+  assert.deepEqual(contactAgreement(lead, { domain: 'www.dentblanche.com', place: 'New York, NY' }), { ok: true, via: 'domain' }, 'the agreeing domain and a consistent place')
   const other = contactAgreement(lead, { domain: 'dentblanche-ca.com', place: 'New York, NY' })
   assert.equal(other.ok, false); assert.match((other as { reason: string }).reason, /domain mismatch/)
   assert.deepEqual(contactAgreement({ company_domain: null, where: ['New York City'] }, { place: 'Brooklyn, NY' }), { ok: true, via: 'location' })

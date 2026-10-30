@@ -5,10 +5,11 @@ import type Database from 'better-sqlite3'
 import { placeAgreement, cityScoped, US_STATES } from './place-agreement.ts'
 import { countriesIn } from './countries.ts'
 import { addEnrichment } from '../connectors/store.ts'
+import { domainConfirmed } from '../signals/domain-basis.ts'
 import { WHY_MAX } from './score.ts'
 
 export interface Candidate { domain?: string | null; place?: string | null; address?: string | null; keyedOnLeadDomain?: boolean } // keyedOnLeadDomain: the lookup was made BY the lead's own domain       // place: "City, ST" (or free text) as the source reports it
-export interface LeadSide { company_domain?: string | null; where: string[]; evidence?: string | null } // evidence: the lead's OWN evidence text (its quote, its cited page): a street address in it is a basis
+export interface LeadSide { company_domain?: string | null; where: string[]; evidence?: string | null; domainEstablished?: boolean } // evidence: the lead's OWN evidence text (its quote, its cited page): a street address in it is a basis
 export type Agreement = { ok: true; via: 'domain' | 'location' | 'address' | 'no_geography' } | { ok: false; reason: string }
 
 const registrable = (d: string | null | undefined): string | null => {
@@ -105,6 +106,20 @@ function foreignMarker(stated: string): boolean {
 }
 export function contactAgreement(lead: LeadSide, c: Candidate): Agreement {
   const ld = registrable(lead.company_domain), cd = registrable(c.domain)
+  // A domain that merely AGREES (a guess from the company name, a legacy row) is self-consistency, not identity: an explicit conflict - the
+  // record's own street address or place in another city, state or country than the lead's evidence and scan geography - still refuses. Only a
+  // domain the cited page itself is hosted on, or one the user confirmed (domainEstablished), stands over a conflicting place.
+  if (ld && cd && ld === cd && !lead.domainEstablished) {
+    if (addressAgreement(c.address, lead.evidence) === 'conflict') return { ok: false, reason: `contact rejected: address mismatch ${(streetKeys(c.address)[0] ?? 'another address').slice(0, 60)} vs ${(streetKeys(lead.evidence)[0] ?? 'the lead\'s address').slice(0, 60)} (the domain matches, the address does not)` }
+    const wh = effectiveWhere(lead)
+    if (wh.length) for (const stated of [(c.place ?? '').trim(), addressGeography(c.address)]) {
+      if (!stated) continue
+      const cc = countryConflict(stated, wh)
+      if (cc) return { ok: false, reason: `contact rejected: location mismatch ${stated.slice(0, 60)} vs ${leadPlaceLabel(wh).slice(0, 60)} (country ${cc} is not the lead's; the domain matches, the place does not)` }
+      const v = placeAgreement(stated, wh)
+      if (v === 'mismatch' || (v !== 'agrees' && foreignMarker(stated))) return { ok: false, reason: `contact rejected: location mismatch ${stated.slice(0, 60)} vs ${leadPlaceLabel(wh).slice(0, 60)} (the domain matches, the place does not)` }
+    }
+  }
   if (ld && cd) return ld === cd ? { ok: true, via: 'domain' } : { ok: false, reason: `contact rejected: domain mismatch ${cd} vs ${ld}` }
   if (ld && !cd && c.keyedOnLeadDomain) return { ok: true, via: 'domain' }
   // A street address in the lead's own evidence is a basis: the same address agrees; a DIFFERENT one conflicts (unresolved, not attached) unless the domain already agreed.
@@ -180,6 +195,34 @@ export function recordContactRejection(db: Database.Database, tenantId: string, 
   const url = /^https?:\/\//.test(r.sourceUrl) ? r.sourceUrl : 'https://invalid.example/'
   addEnrichment(db, tenantId, leadId, { connector: r.connector, kind: REJECTED_KIND, value: r.reason.slice(0, 254), label: contactRejectionCode(r.reason), confidence: null, source_url: url.slice(0, 500), source_date: new Date().toISOString().slice(0, 10), retrieved_at: Math.floor(Date.now() / 1000) })
 }
+// Last line of defence, run once enrichment has written its contacts: a contact that came from the company's OWN site (sitecrawl) is kept only while its SOURCE is the lead's confirmed domain - the page
+// is on that domain and a published email is at that domain. A lead with no confirmed domain keeps no site contact. Anything else is removed and the refusal is recorded beside the lead (a refused
+// record, never counted as a contact), so a same-name company's contact can never ride along on a lead it does not belong to. Other connectors (Apollo, People Data Labs, profile search) are
+// already refused at write time on the organization's domain / place and are left as they are.
+export function enforceContactSource(db: Database.Database, tenantId: string, jobId: string): { removed: number } {
+  const rows = db.prepare(
+    `SELECT e.id, e.lead_id, e.kind, e.value, e.source_url, l.company_domain FROM lead_enrichments e JOIN leads l ON l.id = e.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id
+     WHERE l.scan_job_id = ? AND j.user_id = ? AND e.tenant_id = ? AND e.connector = 'sitecrawl' AND e.kind IN ('email', 'phone', 'person', 'contact')`,
+  ).all(jobId, tenantId, tenantId) as { id: string; lead_id: string; kind: string; value: string; source_url: string; company_domain: string | null }[]
+  const del = db.prepare('DELETE FROM lead_enrichments WHERE id = ? AND tenant_id = ?')
+  let removed = 0
+  for (const r of rows) {
+    // The lead's domain must be CONFIRMED (established, or its homepage passed the name + place check): a legacy name guess whose own
+    // contacts agree with it is not identity proof.
+    const ld = domainConfirmed(db, tenantId, r.lead_id, r.company_domain) ? registrable(r.company_domain) : null
+    let host: string | null = null; try { host = registrable(new URL(r.source_url).hostname) } catch { host = null }
+    const emailDomain = r.kind === 'email' && r.value.includes('@') ? registrable(r.value.split('@').pop()) : null
+    let why: string | null = null
+    if (!ld) why = `contact rejected: domain mismatch ${host ?? 'unknown source'} vs no confirmed company domain`
+    else if (!host || host !== ld) why = `contact rejected: domain mismatch ${host ?? 'unknown source'} vs ${ld}`
+    else if (r.kind === 'email' && emailDomain !== ld) why = `contact rejected: domain mismatch ${emailDomain ?? 'unknown'} vs ${ld}`
+    if (!why) continue
+    del.run(r.id, tenantId); removed++
+    recordContactRejection(db, tenantId, r.lead_id, { connector: 'sitecrawl', reason: why, sourceUrl: r.source_url })
+  }
+  return { removed }
+}
+
 // "Can the seller act on it" (the action grade, 0-5) assumed a reachable company. When every contact found for a lead was refused (wrong place /
 // wrong domain) and nothing else reaches it, reachability is unconfirmed: the grade is capped at 2 (it only ever goes DOWN) and the card says why.
 // The list is ranked by fit, then action, so the lead drops below leads that do have a contact. Idempotent.

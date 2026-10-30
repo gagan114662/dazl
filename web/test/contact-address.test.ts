@@ -48,7 +48,9 @@ test('contactAgreement: address agrees / conflicts; a matching domain beats an a
   const bad = contactAgreement({ where: W, evidence: EVIDENCE }, { address: '8500 Whittier Blvd', place: 'Pico Rivera, CA' })
   assert.equal(bad.ok, false); assert.match((bad as { reason: string }).reason, /^contact rejected: address mismatch 8500 whittier blvd vs 57 w 57th st/)
   assert.equal(contactAgreement({ where: W, evidence: EVIDENCE }, { address: '9 Main St', place: 'New York, NY' }).ok, false, 'same city, different street address: not the same practice')
-  assert.deepEqual(contactAgreement({ company_domain: 'smileavenue.com', where: W, evidence: EVIDENCE }, { domain: 'www.smileavenue.com', address: '8500 Whittier Blvd' }), { ok: true, via: 'domain' }, 'the lead’s own domain agrees')
+  // A domain that is ESTABLISHED (the cited page's own host, or user-confirmed) stands over a conflicting address; a guessed or legacy domain only agrees with itself and does not.
+  assert.deepEqual(contactAgreement({ company_domain: 'smileavenue.com', where: W, evidence: EVIDENCE, domainEstablished: true }, { domain: 'www.smileavenue.com', address: '8500 Whittier Blvd' }), { ok: true, via: 'domain' }, 'an established domain agrees')
+  assert.equal(contactAgreement({ company_domain: 'smileavenue.com', where: W, evidence: EVIDENCE }, { domain: 'www.smileavenue.com', address: '8500 Whittier Blvd' }).ok, false, 'a guessed domain does not beat an explicit address conflict')
   assert.deepEqual(contactAgreement({ where: W, evidence: 'no street in the quote' }, { address: '8500 Whittier Blvd', place: 'New York, NY' }), { ok: true, via: 'location' }, 'no address basis on the lead: the place decides, as before')
 })
 
@@ -92,7 +94,7 @@ test('CRAWLER: two same-name sites - the Pico Rivera, CA homepage (other street 
   const rows = (id: string) => db.prepare("SELECT kind, value, label FROM lead_enrichments WHERE lead_id = ? AND kind <> 'domain'").all(id) as { kind: string; value: string; label: string }[]
   assert.deepEqual(rows('wrong').map(r => [r.kind, r.label]), [['contact_rejected', 'contact_address_mismatch']], JSON.stringify(rows('wrong')))
   assert.match(rows('wrong')[0].value, /^contact rejected: address mismatch 8500 whittier blvd vs 57 w 57th st/)
-  assert.deepEqual(rows('right').map(r => [r.kind, r.value]), [['email', 'hello@smileavenuedental.com']], 'the practice at the lead’s own address attaches')
+  assert.deepEqual(rows('right').filter(r => r.kind !== 'domain_check').map(r => [r.kind, r.value]), [['email', 'hello@smileavenuedental.com']], 'the practice at the lead’s own address attaches')
   assert.equal((db.prepare("SELECT company_domain FROM leads WHERE id = 'wrong'").get() as { company_domain: string | null }).company_domain, null, 'the wrong site is never recorded as the lead’s domain')
   assert.equal((db.prepare("SELECT company_domain FROM leads WHERE id = 'right'").get() as { company_domain: string | null }).company_domain, 'smileavenuedental.com')
   assert.ok((db.prepare("SELECT status FROM connector_audit").all() as { status: string }[]).some(a => /address mismatch/.test(a.status)))
