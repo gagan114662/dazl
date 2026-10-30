@@ -2,7 +2,7 @@ import { runSequences } from '@/lib/outreach/sequences'
 import { after, NextRequest, NextResponse } from 'next/server'
 import { timingSafeEqual } from 'node:crypto'
 import { getScanDb } from '@/lib/scan/service'
-import { syncReplies } from '@/lib/outreach/replies'
+import { scheduledReplySync } from '@/lib/outreach/reply-schedule'
 import { runFollowups } from '@/lib/outreach/followups'
 import { runDueWatches } from '@/lib/watch'
 import { collectMonitorResults, runDueMonitors } from '@/lib/monitors'
@@ -14,8 +14,10 @@ import { dueTenants, runIndexChecks } from '@/lib/seo/indexing'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 
-// Called by a scheduler (cron or a systemd timer) with AUTOPILOT_TICK_SECRET. Reads replies and sends due
-// follow-ups for tenants who turned both on. Without the secret configured the route does not exist.
+// Called by a scheduler (cron or a systemd timer) with AUTOPILOT_TICK_SECRET. Reads replies, opt-outs and bounces for
+// every tenant with read consent and the read grant (whatever its sending settings, #413), then sends due follow-ups and
+// sequence steps for tenants who turned those on and whose read succeeded in this tick. Without the secret configured the
+// route does not exist.
 export async function POST(req: NextRequest) {
   const secret = process.env.AUTOPILOT_TICK_SECRET
   const got = req.headers.get('authorization') ?? ''
@@ -45,16 +47,22 @@ async function tick(lease: Lease, requestId?: string) {
   const db = lease.fenceSqlite(raw)
   // A refused write means this tick lost the lease: stop, never carry on with the next tenant.
   const fenced = (e: unknown) => { if (e instanceof StaleLeaseWrite) throw e }
+  // #413: replies, opt-outs and bounces are read for every read-authorized tenant, whatever its sending settings (first-touch
+  // only, paused, follow-ups off). Sending below uses only a sync that succeeded in this tick.
+  const synced = await scheduledReplySync(db, { keep: () => lease.keep(), onError: (tenantId, e) => { fenced(e); captureError(e, { source: 'worker', where: 'tick:replies', tenantId, requestId }) } })
   const tenants = db.prepare('SELECT s.tenant_id, u.business_name FROM autopilot_settings s JOIN users u ON u.id = s.tenant_id WHERE s.enabled = 1 AND s.paused = 0 AND s.followups_enabled = 1').all() as { tenant_id: string; business_name: string | null }[]
   let done = 0
   for (const t of tenants) {
     await lease.keep()
-    try { const sync = await syncReplies(db, t.tenant_id); if (sync.error) continue; await runFollowups(db, t.tenant_id, t.business_name ?? ''); done++ } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:replies', tenantId: t.tenant_id, requestId }) }
+    const sync = synced.get(t.tenant_id)
+    if (!sync || sync.error) continue   // no fresh read this tick: no follow-up relies on stale safety state
+    try { await runFollowups(db, t.tenant_id, t.business_name ?? ''); done++ } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:replies', tenantId: t.tenant_id, requestId }) }
   }
   let sequences = 0
   for (const t of db.prepare("SELECT DISTINCT tenant_id FROM sequences WHERE status IN ('approved','active')").all() as { tenant_id: string }[]) {
     await lease.keep()
-    try { const r = await runSequences(db,t.tenant_id,''); sequences += r.sent } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:sequences', tenantId: t.tenant_id, requestId }) }
+    const sync = synced.get(t.tenant_id)
+    try { const r = await runSequences(db, t.tenant_id, '', { presynced: sync ?? { error: 'reading_not_enabled' } }); sequences += r.sent } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:sequences', tenantId: t.tenant_id, requestId }) }
   }
   await lease.keep()
   // Watches and monitors are on the Db layer: each of their transactions takes the lease's fence first.
@@ -75,5 +83,5 @@ async function tick(lease: Lease, requestId?: string) {
     await lease.keep()
     try { const r = await runIndexChecks(shared, t); if (r && r.length > 0) indexChecked++ } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:index-checks', tenantId: t, requestId }) }
   }
-  return NextResponse.json({ ok: true, tenants: done, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, index_checks: indexChecked })
+  return NextResponse.json({ ok: true, tenants: done, replies_synced: [...synced.values()].filter(r => !r.error).length, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, index_checks: indexChecked })
 }

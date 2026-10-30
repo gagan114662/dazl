@@ -275,7 +275,8 @@ export function sequenceStatusByLead(db: Database.Database, tenantId: string, d:
 
 export interface SequenceResult { started: number; sent: number; skipped: number; stopped?: string }
 
-export async function runSequences(db: Database.Database, tenantId: string, businessName: string, d: Deps & { flags?: Record<string, string | undefined> } = {}): Promise<SequenceResult> {
+// presynced: this tick's own syncReplies result for the tenant (lib/outreach/reply-schedule.ts), so the mailbox is read once per tick; a failed one stops sending.
+export async function runSequences(db: Database.Database, tenantId: string, businessName: string, d: Deps & { flags?: Record<string, string | undefined>; presynced?: { error?: string } } = {}): Promise<SequenceResult> {
   const out: SequenceResult = { started: 0, sent: 0, skipped: 0 }
   const now = d.now ?? Math.floor(Date.now() / 1000)
   const stop = (w: string): SequenceResult => { out.stopped = w; return out }
@@ -286,7 +287,7 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
   if (st.paused) return stop('paused')
   if ((d.flags ?? process.env).SEQUENCES_ENABLED !== '1' || (d.flags ?? process.env).AUTOPILOT_KILL === '1') return stop('sequences_disabled')
   if (!hasReadConsent(db,tenantId)) return stop('reading_not_enabled')
-  const sync = await syncReplies(db,tenantId,d)
+  const sync = d.presynced ?? await syncReplies(db,tenantId,d)
   if (sync.error) return stop(sync.error)
   if (anyUncertainSend(db,tenantId)) { pause(db,tenantId,'uncertain_send'); return stop('uncertain_send') }
   // Global kill switch shared with follow-ups: any uncertain send anywhere halts the scheduler.

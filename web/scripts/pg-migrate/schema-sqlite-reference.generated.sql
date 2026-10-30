@@ -418,6 +418,15 @@ CREATE TABLE reply_queries (
       PRIMARY KEY (tenant_id, query)
     );
 
+CREATE TABLE reply_sync_state (
+      tenant_id TEXT PRIMARY KEY,
+      checked_at INTEGER NOT NULL,
+      ok INTEGER NOT NULL CHECK (ok IN (0, 1)),
+      error TEXT CHECK (error IS NULL OR length(error) <= 60),
+      bounce_coverage TEXT NOT NULL DEFAULT 'unknown' CHECK (bounce_coverage IN ('checked', 'unknown')),
+      last_ok_at INTEGER
+    );
+
 CREATE TABLE reply_threads (
       id           TEXT PRIMARY KEY,
       tenant_id    TEXT NOT NULL,
