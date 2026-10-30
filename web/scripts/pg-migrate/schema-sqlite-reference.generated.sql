@@ -30,13 +30,25 @@ CREATE TABLE autopilot_settings (
       daily_cap INTEGER NOT NULL DEFAULT 20 CHECK (daily_cap BETWEEN 1 AND 50)
     , followups_enabled INTEGER NOT NULL DEFAULT 0);
 
+CREATE TABLE calcom_booking_events (
+      tenant_id   TEXT NOT NULL,
+      booking_uid TEXT NOT NULL,
+      kind        TEXT NOT NULL,
+      event_key   TEXT NOT NULL,
+      event_at    INTEGER,
+      actor       TEXT,
+      detail      TEXT,
+      received_at INTEGER NOT NULL,
+      PRIMARY KEY (tenant_id, booking_uid, kind, event_key)
+    );
+
 CREATE TABLE calcom_bookings (
       tenant_id      TEXT NOT NULL,
       booking_uid    TEXT NOT NULL,
       attendee_email TEXT NOT NULL,
       attendee_name  TEXT,
       lead_id        TEXT,
-      created_at     INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
+      created_at     INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), status TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'cancelled', 'rescheduled')), start_at INTEGER, end_at INTEGER, event_at INTEGER, rescheduled_from TEXT, attendees TEXT, cancelled_at INTEGER, outcome TEXT CHECK (outcome IS NULL OR outcome IN ('held', 'no_show')), outcome_source TEXT CHECK (outcome_source IS NULL OR outcome_source IN ('calcom', 'manual')), outcome_by TEXT, outcome_at INTEGER,
       PRIMARY KEY (tenant_id, booking_uid)
     );
 

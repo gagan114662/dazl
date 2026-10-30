@@ -6,7 +6,8 @@ import type Database from 'better-sqlite3'
 // an explicit unknown bucket (NULL, NULL), never guessed from the lead's current tags.
 //   replied    = a sent message with at least one inbound reply that is not auto, bounce or soft_bounce
 //   interested = a sent message with at least one reply the rules classified 'positive' (rule-classified, not human-confirmed)
-//   booked     = a Cal.com booking matched to this message's lead (calcom_bookings.lead_id, matched by a unique contact email)
+//   booked     = an active (scheduled) Cal.com booking matched to this message's lead (calcom_bookings.lead_id, matched
+//                by a unique contact email); a cancelled or superseded booking is not counted (#367)
 //                and received by dazl at or after the message's sent_at (created_at is dazl's webhook receipt time, not the Cal.com booking
 //                or meeting time). Only BOOKING_CREATED is recorded: cancellations and reschedules are not tracked, so a cancelled booking
 //                still counts. It is a booking notice, not a held meeting, and not causal credit.
@@ -32,7 +33,7 @@ export function conversionBySignal(db: Database.Database, tenantId: string): Con
                        AND r.classification NOT IN ('auto','bounce','soft_bounce'))) AS replied,
            SUM(EXISTS (SELECT 1 FROM inbound_messages r WHERE r.tenant_id = m.tenant_id AND r.outreach_message_id = m.id
                        AND r.classification = 'positive')) AS interested,
-           ${hasBookings ? `SUM(EXISTS (SELECT 1 FROM calcom_bookings b WHERE b.tenant_id = m.tenant_id AND b.lead_id = m.lead_id AND EXISTS (SELECT 1 FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = m.lead_id AND j.user_id = m.tenant_id) AND m.sent_at IS NOT NULL AND b.created_at >= m.sent_at))` : '0'} AS booked
+           ${hasBookings ? `SUM(EXISTS (SELECT 1 FROM calcom_bookings b WHERE b.tenant_id = m.tenant_id AND b.lead_id = m.lead_id AND b.status = 'scheduled' AND EXISTS (SELECT 1 FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = m.lead_id AND j.user_id = m.tenant_id) AND m.sent_at IS NOT NULL AND b.created_at >= m.sent_at))` : '0'} AS booked
     FROM outreach_messages m
     LEFT JOIN outreach_signal_context c ON c.message_id = m.id AND c.tenant_id = m.tenant_id
     WHERE m.tenant_id = ? AND m.status = 'sent' AND m.test = 0

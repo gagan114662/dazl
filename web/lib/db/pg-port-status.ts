@@ -45,6 +45,7 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/advanced/index.ts': 0,
   'lib/auth-db.ts': 0,
   'lib/billing/plans-sqlite.ts': 0,
+  'lib/calcom/index.ts': 0,
   'lib/connectors/sitecrawl.ts': 0,
   'lib/connectors/store.ts': 0,
   'lib/crm/index.ts': 0,

@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getDb } from '@/lib/db/client'
-import { getSecret, verifySignature, parseBooking, recordBooking } from '@/lib/calcom'
+import { getSecret, verifySignature, parseBookingEvent, recordBookingEvent } from '@/lib/calcom'
 import { rateLimit } from '@/lib/rate-limit'
 
 // Cal.com webhook receiver. No session: the per-user secret in the URL (?u=<tenant id>) plus the
-// X-Cal-Signature-256 HMAC over the raw body authenticate the call. Only BOOKING_CREATED is
-// recorded; retries are idempotent on the booking uid.
+// X-Cal-Signature-256 HMAC over the raw body authenticate the call. Booking created / rescheduled / cancelled,
+// meeting ended and no-show updates are recorded (lib/calcom, #367); a retried or replayed event is applied once.
 export async function POST(req: NextRequest) {
   const tenantId = req.nextUrl.searchParams.get('u') ?? ''
   if (!/^[A-Za-z0-9_-]{6,80}$/.test(tenantId)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
@@ -18,8 +18,8 @@ export async function POST(req: NextRequest) {
   if (!verifySignature(secret, raw, req.headers.get('x-cal-signature-256'))) {
     return NextResponse.json({ error: 'Bad signature' }, { status: 401 })
   }
-  const booking = parseBooking(raw)
-  if (!booking) return NextResponse.json({ ok: true, ignored: true }) // other trigger events are fine, just not ours
-  const outcome = await recordBooking(db, tenantId, booking)
+  const event = parseBookingEvent(raw)
+  if (!event) return NextResponse.json({ ok: true, ignored: true }) // other trigger events are fine, just not ours
+  const outcome = await recordBookingEvent(db, tenantId, event)
   return NextResponse.json({ ok: true, outcome })
 }
