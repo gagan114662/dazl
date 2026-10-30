@@ -67,8 +67,10 @@ function integrationsAsked(text: string): string[] {
 // The message as fragments: split at every sentence end, colon, semicolon, comma and conjunction or relative ("and",
 // "or", "also", "plus", "but", "then", "as well as", "that", "which"), so a routine keyword in one part never vouches
 // for the rest ("What is pricing and tell me where your team is based?" is two fragments; the second is not routine).
-const CLAUSE_JOIN = /\s*(?:[;:\n,]|[.?!](?:\s|$)|\s(?:and|or|also|plus|but|then|as well as|that|which)\s)\s*/i
-const PLEASANTRY = /^(?:hi|hey|hello|thanks|thank you|thx|cheers|great|ok|okay|sounds good|best|regards|sure)\b[\w\s,!-]{0,30}$/i
+// It also splits before a request verb in the middle of a sentence ("Pricing please let me know where your team is
+// based"), so an imperative request is always its own fragment.
+const CLAUSE_JOIN = /\s*(?:[;:\n,]|[.?!](?:\s|$)|\s(?:and|or|also|plus|but|then|as well as|that|which)\s|\s(?=(?:tell (?:me|us)|let (?:me|us) know|share (?:your|the|with|me|us|our)|send (?:me|us|over)|show (?:me|us)|give (?:me|us)|(?:can|could|would|will) you|please|kindly|(?:explain|describe) (?:your|the|how|what|who|where|why|whether)|list (?:your|the|all)|confirm (?:that|you|your|the))\b))\s*/i
+const PLEASANTRY = /^(?:hi|hey|hello|thanks|thank you|thx|cheers|great|ok|okay|sounds good|best|regards|sure)\b[\w\s,!-]{0,30}$|^(?:please|kindly|(?:can|could|would|will) you(?: please)?)[?!.]*$/i
 function clauses(text: string): string[] {
   return text.split(CLAUSE_JOIN).map(c => c.replace(/^[\s,-]+|[\s,-]+$/g, '')).filter(c => c && !PLEASANTRY.test(c))
 }

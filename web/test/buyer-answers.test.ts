@@ -162,3 +162,19 @@ test('HOLD: every fragment of the message is resolved, imperative requests and c
   assert.equal(ask('What is pricing?', thread({ takenOver: true })).action, 'pause')
   assert.equal(ask('What is pricing?', thread({ handledMessageIds: ['m1'] })).action, 'ignore')
 })
+
+test('HOLD: imperative requests are their own fragments, with or without a joining word', () => {
+  for (const text of ['What is pricing and tell me where your team is based?', 'Pricing please let me know where your team is based.',
+    'How much does it cost can you share your office location?', 'What is the price kindly send me your data retention policy.',
+    'Tell me the price and let me know who your investors are.', 'What does it cost, please confirm you will sign our MSA.',
+    'Give me pricing show me your customer list.', 'How do I get started could you explain how you store our leads?']) {
+    const d = ask(text)
+    assert.ok(d.action === 'escalate' && ['not_routine', 'sensitive', 'authority'].includes(d.reason), `${text} -> ${JSON.stringify(d)}`)
+  }
+  // fully grounded requests, polite or imperative, still answer
+  for (const [text, topics] of [['Can you tell me the price?', ['pricing']], ['Please share your pricing.', ['pricing']], ['Could you tell me how to get started?', ['how_to_start']],
+    ['Tell me the price and let me know what I need to set up.', ['pricing', 'prerequisites']], ['What does it cost, please?', ['pricing']]] as const) {
+    const d = ask(text)
+    assert.ok(d.action === 'reply' && JSON.stringify(d.topics) === JSON.stringify(topics), `${text} -> ${JSON.stringify(d)}`)
+  }
+})
