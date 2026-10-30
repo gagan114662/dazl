@@ -214,3 +214,22 @@ export function calibratedStop(db: Database.Database, tenantId: string, gate: Ex
     return null
   } catch { return 'stop_check_unavailable' }
 }
+
+// The launch's spend cap, enforced before any model work: each model call reserves POLISH_RESERVE_USD (a ceiling for one
+// draft rewrite, max 600 output tokens) against the cap, in the shared tenant_spend_pools table under the launch's own
+// period ('l:<launchedAt>'), with the same conditional update the owner pools use, so concurrent runs cannot pass the
+// cap together. The reservation is never released: spend whose actual size is unknown counts at its ceiling. A store
+// that cannot record the reservation refuses the call (fail closed).
+export const POLISH_RESERVE_USD = 0.1
+export function reserveLaunchSpend(db: Database.Database, tenantId: string, launchedAt: number, capUsd: number, usd: number, nowS: number): 'ok' | 'over_cap' | 'unavailable' {
+  if (!(Number.isFinite(capUsd) && capUsd > 0 && Number.isFinite(usd) && usd > 0)) return 'unavailable'
+  const period = `l:${launchedAt}`.slice(0, 12)
+  try {
+    return db.transaction(() => {
+      db.prepare('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, 0, 0, 0, ?) ON CONFLICT (tenant_id, period) DO NOTHING').run(tenantId, period, nowS)
+      const r = db.prepare('UPDATE tenant_spend_pools SET reserved_usd = reserved_usd + ?, calls = calls + 1, updated_at = ? WHERE tenant_id = ? AND period = ? AND reserved_usd + ? <= ?')
+        .run(usd, nowS, tenantId, period, usd, capUsd + 1e-9)
+      return r.changes === 1 ? 'ok' as const : 'over_cap' as const
+    }).immediate()
+  } catch { return 'unavailable' }
+}

@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3'
 import { gmailStatus } from '../gmail/oauth.ts'
 import { createDraft, approve, getSettings, isSuppressed, OutreachError, sendMessage, suppress, type Deps } from './service.ts'
 import { polishDraft } from './draft-llm.ts'
-import { calibratedStop, launchGate, migrateLaunchPolicy, outsidePolicy } from './launch-policy.ts'
+import { calibratedStop, claimIssuesFor, launchGate, migrateLaunchPolicy, outsidePolicy, POLISH_RESERVE_USD, reserveLaunchSpend } from './launch-policy.ts'
 
 // Autopilot sends first-touch email to verified, business-published addresses through the user's own Gmail,
 // inside hard limits. It never sends follow-ups, never re-contacts, and never touches suppressed addresses.
@@ -120,11 +120,11 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
   if (uncertain) { pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send') }
 
   const leads = db.prepare(
-    `SELECT l.id, l.contact, j.id AS play FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
+    `SELECT l.id, l.contact, l.source_url, j.id AS play FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
      WHERE j.user_id = ? AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND l.contact IS NOT NULL AND l.quarantined_at IS NULL
        AND NOT EXISTS (SELECT 1 FROM outreach_messages m WHERE m.tenant_id = ? AND m.lead_id = l.id)
      ORDER BY l.score DESC LIMIT 25`,
-  ).all(tenantId, MIN_CONFIDENCE, tenantId) as { id: string; contact: string; play: string }[]
+  ).all(tenantId, MIN_CONFIDENCE, tenantId) as { id: string; contact: string; source_url: string | null; play: string }[]
   // A calibrated launch (#405): an accepted, current policy launched by a passing preflight, from the policy's own
   // mailbox. It replaces only the hand-approval warmup; it narrows every send to the policy and adds its stops and
   // rollout cap. Without one, everything below is exactly as before.
@@ -139,6 +139,9 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
       if (halt) { pause(db, tenantId, halt); return stop(halt) }
       const outside = outsidePolicy(gate.policy, l.play, l.contact)
       if (outside) { out.skipped++; audit(db, tenantId, 'skipped', outside, l.id); continue }
+      // the launch's spend cap, reserved before any model work on this lead
+      const spend = reserveLaunchSpend(db, tenantId, gate.launchedAt, gate.policy.spendCapUsd, POLISH_RESERVE_USD, now)
+      if (spend !== 'ok') { const why = spend === 'over_cap' ? 'launch_spend_cap' : 'spend_check_unavailable'; pause(db, tenantId, why); return stop(why) }
     }
     let id: string
     try {
@@ -147,7 +150,11 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     } catch (e) {
       out.skipped++; audit(db, tenantId, 'skipped', e instanceof OutreachError ? e.code : 'error', l.id); continue
     }
-    const to = (db.prepare('SELECT to_email FROM outreach_messages WHERE id = ?').get(id) as { to_email: string }).to_email
+    const final = db.prepare('SELECT to_email, subject, body FROM outreach_messages WHERE id = ?').get(id) as { to_email: string; subject: string; body: string }
+    const to = final.to_email
+    // the accepted policy's claim authority on the final words, after drafting and polish, every time: anything the policy
+    // does not allow (a price, an unlisted link) stays a draft for the tenant instead of being sent
+    if (gate.calibrated && claimIssuesFor(gate.policy, `${final.subject}\n${final.body}`, l.source_url ? [l.source_url] : []).length) { out.held++; audit(db, tenantId, 'held_claims', 'outside the launch policy', l.id, id); continue }
     if (!gate.calibrated && sentTotal(db, tenantId) < WARMUP_SENDS(env)) { out.held++; audit(db, tenantId, 'held_warmup', 'needs your approval', l.id, id); continue }
     const cap = gate.calibrated ? Math.min(st.daily_cap, gate.cap) : st.daily_cap
     if (autoSent24h(db, tenantId, now) >= cap) { audit(db, tenantId, 'daily_cap', `cap ${cap}`, l.id, id); return { ...out, held: out.held + 1, stopped: 'daily_cap' } }

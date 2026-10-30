@@ -7,10 +7,10 @@ import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateReplies } from '../lib/outreach/replies.ts'
-import { completeOAuth, startOAuth } from '../lib/gmail/oauth.ts'
+import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
 import { saveSettings, type Deps } from '../lib/outreach/service.ts'
 import { ATTESTATIONS, auditAt, CONSENT_VERSION, enable, getState, migrateAutopilot, recentAutopilotAudit, runAutopilot } from '../lib/outreach/autopilot.ts'
-import { acceptLaunchPolicy, launchGate, readLaunchPolicy, LAUNCH_POLICY_VERSION, ROLLOUT_DAILY_CAP, ROLLOUT_DAYS } from '../lib/outreach/launch-policy.ts'
+import { acceptLaunchPolicy, launchGate, readLaunchPolicy, reserveLaunchSpend, LAUNCH_POLICY_VERSION, POLISH_RESERVE_USD, ROLLOUT_DAILY_CAP, ROLLOUT_DAYS } from '../lib/outreach/launch-policy.ts'
 import { runCalibration } from '../lib/outreach/calibration.ts'
 
 // #405 wiring: a calibrated launch replaces the hand-approval warmup only after an accepted policy passes the machine
@@ -21,11 +21,11 @@ const NOW = 1_800_000_000
 const ON = { AUTOPILOT_ENABLED: '1' } // default warmup of 10
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status })
 const idToken = (email: string) => 'x.' + Buffer.from(JSON.stringify({ email, email_verified: true })).toString('base64url') + '.y'
-const tokenOk = (async (url: string) => (String(url).includes('token') ? json({ access_token: 'at' }) : json({}, 404))) as unknown as typeof fetch
 
-async function connect(db: Database.Database, email: string) {
+async function connect(db: Database.Database, email: string, read = true) {
   const state = new URL(startOAuth(db, 'A', { env: genv, now: NOW })).searchParams.get('state')!
-  await completeOAuth(db, 'A', 'c', state, { env: genv, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'rt', scope: 'https://www.googleapis.com/auth/gmail.send', id_token: idToken(email) })) as unknown as typeof fetch })
+  const scope = ['https://www.googleapis.com/auth/gmail.send', ...(read ? [GMAIL_READ_SCOPE] : [])].join(' ')
+  await completeOAuth(db, 'A', 'c', state, { env: genv, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'rt', scope, id_token: idToken(email) })) as unknown as typeof fetch })
 }
 async function setup() {
   const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateReplies(db); seedOffers(db)
@@ -50,9 +50,20 @@ const policy = (playIds: string[], over: Record<string, unknown> = {}) => ({
   dailyCap: 20, spendCapUsd: 25, claims: { mayStatePrice: true, benchmarkUrls: [] }, stops: { pauseOnAnyReply: true, maxBounceRate: 0.05 },
   testInbox: 'me@acme.example', ...over,
 })
-const gmail = (fail = false) => {
+// A recorded Gmail: sends are captured; the mailbox can be searched by Message-ID. delivered=false: Gmail accepts the
+// send but the message never shows up in the INBOX (no receipt).
+const gmail = (fail = false, delivered = true) => {
   const sent: string[] = []
-  const d: Deps & { flags: Record<string, string> } = { flags: ON, env: genv, master, now: NOW, baseUrl: 'https://app.test', fetchImpl: tokenOk,
+  const ids = () => sent.map(r => /^Message-ID: <(.*)>$/m.exec(Buffer.from(r, 'base64url').toString())?.[1])
+  const fetchImpl = (async (url: string) => {
+    const u = String(url)
+    if (u.includes('oauth2') || u.includes('token')) return json({ access_token: 'at' })
+    const q = /[?&]q=([^&]*)/.exec(u)
+    if (q) { const want = decodeURIComponent(q[1]).replace(/^rfc822msgid:/, ''); return json({ messages: delivered && ids().includes(want) ? [{ id: 'inbox1' }] : [] }) }
+    if (u.endsWith('/inbox1?format=minimal')) return json({ id: 'inbox1', labelIds: ['INBOX', 'SENT'] })
+    return json({}, 404)
+  }) as unknown as typeof fetch
+  const d: Deps & { flags: Record<string, string> } = { flags: ON, env: genv, master, now: NOW, baseUrl: 'https://app.test', fetchImpl,
     sendFn: (async (_t: string, raw: string) => { if (fail) throw new Error('gmail down'); sent.push(raw); return { id: 'g' + sent.length } }) as never }
   const to = () => sent.map(r => /^To: (.*)$/m.exec(Buffer.from(r, 'base64url').toString())?.[1])
   return { sent, d, to }
@@ -169,4 +180,59 @@ test('the policy\'s stops pause the launch: any reply, a bounce rate over the li
   const g3 = gmail()
   assert.equal((await runAutopilot(db3, 'A', 'Acme', { ...g3.d, now: NOW + 2 })).stopped, 'stop_check_unavailable')
   assert.equal(g3.sent.length, 0)
+})
+
+test('HOLD: provider acceptance is not receipt: the integration message must be found in the INBOX, with read access', async () => {
+  const db = await setup(); const job = play(db); for (const c of ['a@one.example', 'b@two.example', 'c@three.example']) lead(db, job, c)
+  acceptLaunchPolicy(db, 'A', policy([job]), NOW)
+  // Gmail returns an id, but the message never reaches the inbox
+  const lost = gmail(false, false)
+  const r = await runCalibration(db, 'A', 'Acme', lost.d)
+  assert.equal(lost.sent.length, 1); assert.ok(r.failures.includes('test_inbox_failed')); assert.equal(readLaunchPolicy(db, 'A')!.launchedAt, null)
+  // send-only grant: receipt cannot be read, so it is not assumed
+  await connect(db, 'me@acme.example', false)
+  assert.ok((await runCalibration(db, 'A', 'Acme', gmail().d)).failures.includes('test_inbox_failed'))
+  assert.equal(launchGate(db, 'A', 'me@acme.example', NOW).calibrated, false)
+})
+
+test('HOLD: the current policy\'s claim authority applies to every final outgoing draft, including changes since calibration', async () => {
+  const db = await setup(); const job = play(db); for (const c of ['a@one.example', 'b@two.example', 'c@three.example']) lead(db, job, c)
+  acceptLaunchPolicy(db, 'A', policy([job]), NOW)
+  assert.equal((await runCalibration(db, 'A', 'Acme', gmail().d)).ok, true)
+  // Instinct's repro: the stored policy now prohibits price, the offer now states one, a new eligible lead arrives
+  const stored = readLaunchPolicy(db, 'A')!.policy
+  db.prepare('UPDATE autopilot_launch_policy SET policy = ?').run(JSON.stringify({ ...stored, claims: { mayStatePrice: false, benchmarkUrls: [] } }))
+  db.prepare('UPDATE scan_jobs SET offer = ? WHERE id = ?').run('CRM setup at $999 per month', job)
+  lead(db, job, 'd@four.example')
+  const g = gmail()
+  const r = await runAutopilot(db, 'A', 'Acme', g.d)
+  assert.equal(g.sent.length, 0, 'nothing priced goes out'); assert.equal(r.sent, 0)
+  const body = (db.prepare("SELECT body FROM outreach_messages ORDER BY created_at DESC, rowid DESC LIMIT 1").get() as { body: string }).body
+  assert.match(body, /\$999/, 'the draft carries the new price')
+  assert.ok(recentAutopilotAudit(db, 'A').some(a => a.action === 'held_claims'))
+  // with price authority the same draft content would be allowed
+  db.prepare('UPDATE autopilot_launch_policy SET policy = ?').run(JSON.stringify(stored))
+  lead(db, job, 'e@five.example')
+  assert.equal((await runAutopilot(db, 'A', 'Acme', gmail().d)).sent, 1)
+})
+
+test('HOLD: the launch spend cap is reserved in the shared store before any model work, and fails closed', async () => {
+  const db = await setup(); const job = play(db); for (let i = 0; i < 8; i++) lead(db, job, `p${i}@co${i}.example`)
+  acceptLaunchPolicy(db, 'A', policy([job], { spendCapUsd: 0.25 }), NOW)
+  await runCalibration(db, 'A', 'Acme', gmail().d)
+  const g = gmail()
+  const r = await runAutopilot(db, 'A', 'Acme', g.d)
+  assert.equal(r.stopped, 'launch_spend_cap'); assert.equal(g.sent.length, 2, 'two reservations of the ceiling fit under 0.25; the third does not')
+  assert.equal(getState(db, 'A').pause_reason, 'launch_spend_cap')
+  const launchedAt = readLaunchPolicy(db, 'A')!.launchedAt!
+  // reservations are atomic against the cap: none fits once the cap is reached, whoever asks
+  assert.equal(reserveLaunchSpend(db, 'A', launchedAt, 0.25, POLISH_RESERVE_USD, NOW), 'over_cap')
+  // a store that cannot record the reservation refuses the work
+  const db2 = await setup(); const job2 = play(db2); for (let i = 0; i < 4; i++) lead(db2, job2, `p${i}@co${i}.example`)
+  acceptLaunchPolicy(db2, 'A', policy([job2]), NOW)
+  await runCalibration(db2, 'A', 'Acme', gmail().d)
+  lead(db2, job2, 'new@co9.example')
+  db2.exec('DROP TABLE tenant_spend_pools')
+  const g2 = gmail()
+  assert.equal((await runAutopilot(db2, 'A', 'Acme', g2.d)).stopped, 'spend_check_unavailable'); assert.equal(g2.sent.length, 0)
 })
