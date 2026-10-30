@@ -88,7 +88,7 @@ export default function TeamPanel() {
           {link && <p className="text-[#555]">Send this one-time link to them (it works for 7 days, only for that email, and is shown only now): <code className="break-all select-all">{link}</code></p>}
           {invites.length > 0 && (
             <ul className="divide-y divide-[var(--line)]">
-              {invites.map(i => <li key={i.id} className="flex justify-between py-2"><span className="truncate">{i.email} ({i.role}, pending)</span><button className="underline underline-offset-2" onClick={async () => { if (await send('/api/workspace/invitations', 'DELETE', { id: i.id })) load() }}>Revoke</button></li>)}
+              {invites.map(i => <li key={i.id} className="flex justify-between py-2"><span className="truncate">{i.email} ({i.role}, pending)</span>{(owner || i.role !== 'owner') && <button className="underline underline-offset-2" onClick={async () => { if (await send('/api/workspace/invitations', 'DELETE', { id: i.id })) load() }}>Revoke</button>}</li>)}
             </ul>
           )}
         </div>

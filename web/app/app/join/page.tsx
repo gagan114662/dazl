@@ -15,7 +15,7 @@ export default function Join() {
     history.replaceState(null, '', window.location.pathname)
     if (!token) { queueMicrotask(() => setState('no_token')); return }
     void fetch('/api/workspace/invitations/accept', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token }) })
-      .then(async r => { const j = await r.json().catch(() => ({})); setState(r.ok ? 'done' : j.error || 'error') })
+      .then(async r => { const j = await r.json().catch(() => ({})); setState(r.ok ? (j.switched === false ? 'joined' : 'done') : j.error || 'error') })
       .catch(() => setState('error'))
   }, [])
   return (
@@ -23,7 +23,8 @@ export default function Join() {
       <h1 className="text-2xl font-semibold tracking-tight mb-3">Join a workspace</h1>
       {state === 'working' && <p className="text-[#555]">Accepting the invitation...</p>}
       {state === 'done' && <p className="text-[#555]">You are in. <a className="underline underline-offset-4" href="/app">Open the workspace</a>.</p>}
-      {state !== 'working' && state !== 'done' && <p className="text-[#555]">{COPY[state] ?? 'Something went wrong. Try the link again.'}</p>}
+      {state === 'joined' && <p className="text-[#555]">You are in, but this session still shows your own workspace. <a className="underline underline-offset-4" href="/app/settings#team">Pick the workspace in Settings</a>.</p>}
+      {state !== 'working' && state !== 'done' && state !== 'joined' && <p className="text-[#555]">{COPY[state] ?? 'Something went wrong. Try the link again.'}</p>}
     </div>
   )
 }

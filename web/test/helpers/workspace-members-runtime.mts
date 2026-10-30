@@ -65,7 +65,7 @@ test('invite, join and switch through the routes; nothing of workspace A is reac
 
   // C, the invited account, joins: now acting in A as an operator; the link is used up
   const joined = await call(tc, () => accept.POST(req('/api/workspace/invitations/accept', 'POST', { token })))
-  assert.deepEqual(joined, { status: 200, body: { ok: true, tenant_id: 'A', role: 'operator' } })
+  assert.deepEqual(joined, { status: 200, body: { ok: true, tenant_id: 'A', role: 'operator', switched: true } })
   const ws = await call(tc, () => workspace.GET())
   assert.deepEqual(ws.body.current, { tenant_id: 'A', role: 'operator' })
   assert.deepEqual((ws.body.workspaces as { tenant_id: string }[]).map(w => w.tenant_id), ['C', 'A'])
@@ -111,5 +111,15 @@ test('invite, join and switch through the routes; nothing of workspace A is reac
   await fails('leave, write fails: the session still points at A', td, () => leaveRoute.POST(req('/api/workspace/leave', 'POST')))
   assert.equal(pointer(), 'A')
   assert.equal((raw.prepare("SELECT role FROM memberships WHERE tenant_id = 'A' AND member_id = 'D'").get() as { role: string }).role, 'operator')
+  // the accept commits, then the session switch fails: the answer says so (switched: false), the membership stands
+  const te = await createSession('E')
+  const invE2 = await call(ta, () => invitations.POST(req('/api/workspace/invitations', 'POST', { email: 'e@example.test', role: 'viewer' })))
+  raw.exec("CREATE TRIGGER dazl_test_refuse BEFORE UPDATE OF active_tenant_id ON sessions WHEN NEW.active_tenant_id = 'A' BEGIN SELECT RAISE(ABORT, 'store refused'); END")
+  try {
+    const r = await call(te, () => accept.POST(req('/api/workspace/invitations/accept', 'POST', { token: String(invE2.body.link).split('#t=')[1] })))
+    assert.deepEqual(r, { status: 200, body: { ok: true, tenant_id: 'A', role: 'viewer', switched: false } })
+  } finally { allow() }
+  assert.equal((raw.prepare("SELECT role FROM memberships WHERE tenant_id = 'A' AND member_id = 'E'").get() as { role: string }).role, 'viewer')
+  assert.deepEqual((await call(te, () => workspace.GET())).body.current, { tenant_id: 'E', role: 'owner' })
   console.log('WORKSPACE MEMBERS ok')
 })

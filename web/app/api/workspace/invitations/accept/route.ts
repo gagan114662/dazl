@@ -20,9 +20,10 @@ export async function POST(req: NextRequest) {
     const db = await getDb()
     const m = await acceptInvitation(db, user, body?.token)
     const token = (await cookies()).get('dazl_session')?.value
-    // the invitation is already used up and the membership added: a failed switch (the session ended meanwhile) must not
-    // report the accept as failed, so the next sign-in simply offers the workspace
-    if (token) await switchWorkspace(db, hashToken(token), user.actorId, m.tenantId).catch(() => {})
-    return NextResponse.json({ ok: true, tenant_id: m.tenantId, role: m.role })
+    // the invitation is already used up and the membership added, so a failed switch does not fail the accept; it says
+    // so (switched: false), and the join page tells the member to pick the workspace in Settings
+    let switched = false
+    if (token) switched = await switchWorkspace(db, hashToken(token), user.actorId, m.tenantId).then(() => true, () => false)
+    return NextResponse.json({ ok: true, tenant_id: m.tenantId, role: m.role, switched })
   } catch (e) { return memberFail(e) }
 }

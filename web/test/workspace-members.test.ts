@@ -191,6 +191,8 @@ bothEngines('a link carries its inviter\'s authority: once the inviter is remove
   const byOwner = await createInvitation(db, act('A', 'E', 'owner'), 'y@example.test', 'owner')
   await removeMember(db, OWNER_A, 'D')
   await changeRole(db, OWNER_A, 'E', 'admin')
+  // a dead link is dead to everyone: a wrong account gets the same 410, not a 403 that would tell it the link is live
+  await assert.rejects(acceptInvitation(db, me('Y'), byAdmin.token), code('invalid_invite'), 'wrong account, dead link')
   await assert.rejects(acceptInvitation(db, me('X'), byAdmin.token), code('invalid_invite'), 'inviter removed')
   await assert.rejects(acceptInvitation(db, me('Y'), byOwner.token), code('invalid_invite'), 'inviter demoted below owner')
   assert.equal(await roleIn(db, 'A', 'X'), null)
@@ -272,3 +274,27 @@ bothEngines('invitation variants: email case and lookalikes, tampered tokens, an
   assert.equal((await listInvitations(db, 'A', now)).length, 50)
   await assert.rejects(createInvitation(db, OWNER_A, 'p51@example.test', 'viewer', now), code('too_many_invites'))
 })
+
+bothEngines('losing authority (demoted or removed) while changing a role, inviting and revoking at once: each action lands only if it ran first', async ({ db }) => {
+  for (const loss of ['demote', 'remove'] as const) for (let i = 0; i < 5; i++) {
+    for (const t of ['memberships', 'invitations', 'organizations', 'users']) await db.run(`DELETE FROM ${t}`)
+    await users(db, 'A', 'D', 'O')
+    await add(db, 'A', 'D', 'admin'); await add(db, 'A', 'O', 'operator')
+    const pending = await createInvitation(db, OWNER_A, `p${i}@example.test`, 'viewer')
+    const D = act('A', 'D', 'admin')
+    const [lost, role, inv, rev] = await Promise.allSettled([
+      loss === 'demote' ? changeRole(db, OWNER_A, 'D', 'viewer') : removeMember(db, OWNER_A, 'D'),
+      changeRole(db, D, 'O', 'viewer'),
+      createInvitation(db, D, `r${i}@example.test`, 'operator'),
+      revokeInvitation(db, D, pending.id),
+    ])
+    assert.equal(lost.status, 'fulfilled', `${loss} ${i}`)
+    assert.equal(await roleIn(db, 'A', 'D'), loss === 'demote' ? 'viewer' : null)
+    // each of D's actions changed something only if it ran before the loss; a refusal left its row exactly as it was
+    assert.equal(await roleIn(db, 'A', 'O'), role.status === 'fulfilled' ? 'viewer' : 'operator')
+    assert.equal(Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM invitations WHERE tenant_id = 'A' AND email LIKE 'r%'"))!.n), inv.status === 'fulfilled' ? 1 : 0)
+    const p = await db.get<{ revoked_at: number | null }>('SELECT revoked_at FROM invitations WHERE id = ?', [pending.id])
+    assert.equal(p?.revoked_at === null, rev.status === 'rejected')
+    for (const r of [role, inv, rev]) if (r.status === 'rejected') assert.ok(code('forbidden')(r.reason), `${loss} ${i}: ${String(r.reason)}`)
+  }
+}, { pgMax: 6 })

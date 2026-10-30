@@ -184,12 +184,14 @@ export async function acceptInvitation(db: Db, actor: { actorId: string; email: 
     const inv = yield* t.get<{ id: string; tenant_id: string; email: string; role: string; invited_by: string }>(
       'SELECT id, tenant_id, email, role, invited_by FROM invitations WHERE token_hash = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?', [sha256(token), now])
     if (!inv || !isRole(inv.role)) throw new MemberError('invalid_invite')
-    if (inv.email !== actor.email.trim().toLowerCase()) throw new MemberError('wrong_account')
     // the same lock every member and invitation change takes first, so a revoke and this accept are serialized; the
     // guarded update below then sees the outcome of whichever ran first
     yield* lockWorkspace(t, inv.tenant_id)
+    // a dead link (its inviter no longer has the authority) is dead to everyone: checked before the email, so a wrong
+    // account cannot tell it from a live one
     const inviter = yield* roleOf(t, inv.tenant_id, inv.invited_by)
     if (!inviter || !mayManage(inviter, null, inv.role)) throw new MemberError('invalid_invite')
+    if (inv.email !== actor.email.trim().toLowerCase()) throw new MemberError('wrong_account')
     const used = yield* t.run('UPDATE invitations SET accepted_at = ?, accepted_by = ? WHERE id = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?', [now, actor.actorId, inv.id, now])
     if (used.changes !== 1) throw new MemberError('invalid_invite')
     yield* t.run('INSERT INTO memberships (tenant_id, member_id, role, created_at, added_by) VALUES (?, ?, ?, ?, ?) ON CONFLICT (tenant_id, member_id) DO NOTHING',
