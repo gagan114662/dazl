@@ -27,7 +27,8 @@ import { migrateSourceRuns } from '../lib/scan/source-runs.ts'
 import { migrateMemory } from '../lib/memory.ts'
 import { companyKey } from '../lib/scan/evidence.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
-import { scoreSearch, scoreLead, scoreboardMarkdown, type ScoredLeadInput, type SearchScore } from '../lib/scan/scoreboard.ts'
+import { scoreJob, scoreboardMarkdown, SCOREBOARD_RUBRIC, type SearchScore } from '../lib/scan/scoreboard.ts'
+import { scoreboardInputs } from '../lib/scan/actionable.ts'
 
 const key = process.env.SCOREBOARD_ANTHROPIC_KEY?.trim()
 if (!key) { console.error('SCOREBOARD_ANTHROPIC_KEY is required'); process.exit(2) }
@@ -68,19 +69,17 @@ for (const s of searches) {
   const j = db.prepare('SELECT status, error FROM scan_jobs WHERE id = ?').get(id) as { status: string; error: string | null }
   error = error ?? j.error
   const complete = !error?.startsWith('crashed') && !INCOMPLETE.has(j.error ?? '') && j.status !== 'pending' && j.status !== 'running'
-  const raw = db.prepare('SELECT id, name, company, contact, review_reason, event_date, fit, signal, source_url FROM leads WHERE scan_job_id = ?').all(id) as (ScoredLeadInput & { id: string; company: string; signal: string; source_url: string })[]
-  const contactsOf = db.prepare("SELECT value FROM lead_enrichments WHERE lead_id = ? AND kind = 'contact'")
-  const leads = raw.map(l => ({ ...l, contacts: (contactsOf.all(l.id) as { value: string }[]).map(r => r.value) }))
-  const score = scoreSearch(leads)
-  for (const l of leads) if (scoreLead(l).qualified) qualifiedCompanies.add(companyKey(l.company))
+  const jobRow = db.prepare('SELECT id, user_id, query, icp FROM scan_jobs WHERE id = ?').get(id) as { id: string; user_id: string; query: string | null; icp: string | null }
+  const { score, leads } = scoreJob(scoreboardInputs(db, jobRow), jobRow)   // qualified = the product's own actionable gates (#378)
+  for (const l of leads) if (l.qualified) qualifiedCompanies.add(companyKey(l.company))
   const status = complete ? j.status : 'INCOMPLETE'
-  rows.push({ id: s.id, search: s.id, status, error, complete, seconds: Math.round((Date.now() - t0) / 1000), score, leads: leads.map(({ id: _id, ...l }) => l) })
+  rows.push({ id: s.id, search: s.id, status, error, complete, seconds: Math.round((Date.now() - t0) / 1000), score, leads: leads.map(({ lead_id: _id, ...l }) => l) })
   console.error(`${s.id}: ${status} ${error ?? ''} qualified=${score.qualified} leads=${score.leads} (${rows[rows.length - 1].seconds}s)`)
 }
 
 const md = scoreboardMarkdown(rows, { commit, date, model, rubric, uniqueQualified: qualifiedCompanies.size, budgetUsd: totalUsd })
 const out = path.join(root, 'scoreboard', 'results')
 mkdirSync(out, { recursive: true })
-writeFileSync(path.join(out, `${date}-${commit}.json`), JSON.stringify({ commit, date, model, rubric, budgetUsdTotal: totalUsd, uniqueQualifiedCompanies: qualifiedCompanies.size, rows }, null, 2))
+writeFileSync(path.join(out, `${date}-${commit}.json`), JSON.stringify({ commit, date, model, rubric, qualification: SCOREBOARD_RUBRIC, budgetUsdTotal: totalUsd, uniqueQualifiedCompanies: qualifiedCompanies.size, rows }, null, 2))
 writeFileSync(path.join(out, `${date}-${commit}.md`), md)
 console.log(md)

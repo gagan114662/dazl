@@ -55,6 +55,12 @@ export function classifyLeads(db: Database.Database, job: { id: string; user_id:
   })
 }
 
+// What the scoreboard scores (lib/scan/scoreboard.ts, #378): the same classification, plus each lead's date and fit.
+export function scoreboardInputs(db: Database.Database, job: { id: string; user_id: string; query?: string | null; icp?: string | null }, held: HeldIds = new Map()): { classified: LeadYield[]; leads: { id: string; company: string; event_date: string | null; fit: number | null }[] } {
+  const leads = db.prepare("SELECT id, company, event_date, fit FROM leads WHERE scan_job_id = ? AND company <> ''").all(job.id) as { id: string; company: string; event_date: string | null; fit: number | null }[]
+  return { classified: classifyLeads(db, job, held), leads }
+}
+
 // Writes one enrichment row per verified lead (replacing an earlier call's) and returns the summary for the run report.
 export function recordActionability(db: Database.Database, job: { id: string; user_id: string; query?: string | null; icp?: string | null }, held: HeldIds = new Map()): YieldSummary {
   const rows = classifyLeads(db, job, held)

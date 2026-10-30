@@ -290,6 +290,17 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
 
   const passed: { c: LeadDraft; v: Extract<ReturnType<typeof verifyEvidence>, { ok: true }>; copy?: { failure: string; sha256: string; page: HeldPage } }[] = []
   for (const { c: c0, page } of fetched) {
+    // A claimed date the quote itself contradicts (#378): the model dated the event recently, but the quoted passage names a
+    // year two or more years back ("raised a seed round in 2023"). The claim is stale whatever date it was given.
+    if (page && !isFail(page) && c0.event_date) {
+      const old = resolveTiming(page.text, c0.excerpt, null, now.getFullYear()).olderYear
+      if (old !== null && Number(c0.event_date.slice(0, 4)) > old) {
+        const k = dedupKey(c0); const why = 'event_date_stale'
+        if (!review.has(k)) review.set(k, { ...c0, contact: null, review_reason: why, timing_note: `the quote names ${old}; the claimed date ${c0.event_date} is not the event's`.slice(0, 300) })
+        else drop('duplicate')
+        note(c0, 'review', why); continue
+      }
+    }
     // A candidate with no date gets one read from the text we already fetched (or a season label). Same rules apply to it afterwards.
     let c = c0
     if (page && !isFail(page) && !c0.event_date) {
