@@ -94,24 +94,35 @@ export function offerOfSeller(seller: string | null | undefined): string | null 
 // a different audience ("to veterinary practices"), or any withdrawn service or exclusion on one side only, is a
 // difference. Exact text throughout, ignoring only case and spacing: no substring or word-set matching, no reordering.
 const exact = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase()
-// A targeting instruction of a request: an imperative whose object is the buyers to find or skip ("Find dental practices
-// in NYC.", "Email founders who are hiring.", "Search for agencies that are growing.", "Do not target agencies.", "Skip
-// chains."). Recognised conservatively, never by the first word alone: after the verb (and "for"/"to"/"only"/...), the
-// words up to the first comma, preposition, conjunction or who/that/which clause must name a plural group (optionally
-// with one -ing word: "startups hiring"). The same first words also start service names, and a statement about such a
-// service ("Email marketing costs extra.", "Contact enrichment requires a paid add-on.", "Search advertising is
-// discontinued.") has no such object, so it stays a term. Anything not recognised is material.
+// A targeting instruction of a request: an imperative naming the buyers to find or skip ("Find dental practices in
+// NYC.", "Email founders who are hiring.", "Search for agencies that are growing.", "Do not target agencies.", "Skip
+// chains."). Only a sentence that is DEMONSTRABLY one is ignored; everything else, including any statement about a
+// service whose name starts with the same word ("Email marketing supports agencies.", "Contact enrichment costs
+// credits."), is material, so an unknown wording is a conflict (fail closed) and never a silent match.
+// Demonstrably: a targeting verb, then (after "for"/"to"/"out"/"only"/...) an object that is, up to the first comma,
+// preposition, conjunction or who/that/which clause, at most three plain modifiers, a known buyer noun, and at most one
+// -ing word ("startups hiring"). A modifier that could be a verb or function word (ends in -s or -ed, an auxiliary, a
+// preposition) is not plain, so a declarative sentence can never pass as an object. The buyer list only decides what
+// may be ignored: a buyer it does not know makes the sentence a term, never the other way round.
 const IMPERATIVE = /^(?:(?:please|and|also|but)\s+)?(?:(?:do not|don['’]t|never)\s+)?(?:find|search|look|target|contact|reach|email|message|include|exclude|skip|avoid|ignore)\s+(.+)$/i
 const LEADING = /^(?:(?:for|to|out|at|up|only|all|any|the|more|new|every|other)\s+)+/i
-const OBJECT_END = /\s*(?:[,;:()]|\s(?:in|at|from|near|across|within|with|on|around|based|who|that|which|whose|where|when|if|by|of|outside|inside|except|excluding|but|and|or|nor)\b)/i
-const BUYER_GROUP = /^(?:[\p{L}\p{N}&'’.-]+\s+){0,5}[\p{L}\p{N}'’-]*s(?:\s+[\p{L}-]+ing)?$/iu
+const OBJECT_END = /\s*(?:[,;:()]|\s(?:in|at|from|near|across|within|with|on|around|based|who|that|which|whose|where|when|if|by|of|for|to|outside|inside|except|excluding|but|and|or|nor)\b)/i
+const BUYERS = new Set(('founders owners ceos ctos cfos cmos coos executives leaders managers directors heads teams companies businesses startups ' +
+  'firms agencies consultancies consultants clinics practices dentists doctors physicians practitioners hospitals schools universities ' +
+  'retailers stores shops restaurants brands organizations organisations nonprofits charities people prospects buyers customers vendors ' +
+  'resellers chains contractors plumbers electricians landlords investors recruiters developers engineers marketers freelancers ' +
+  'coaches therapists lawyers accountants manufacturers distributors wholesalers merchants sellers operators providers labs').split(' '))
+const NOT_PLAIN = /^(?:can|could|will|would|may|might|must|shall|should|do|does|did|has|had|have|is|are|was|were|be|been|being|cannot|won['’]t|isn['’]t|aren['’]t|not|no|than|then|so|very|also|just)$/i
+const plainModifier = (w: string) => !NOT_PLAIN.test(w) && (!/s$/i.test(w) || /^(?:saas|sales|business|b2b|us|uk)$/i.test(w)) && (!/ed$/i.test(w) || w.includes('-'))
 function isTargeting(x: string): boolean {
   const m = IMPERATIVE.exec(x)
   if (!m) return false
   const rest = m[1].replace(LEADING, '')
   const end = OBJECT_END.exec(rest)
-  const object = (end ? rest.slice(0, end.index) : rest).trim()
-  return BUYER_GROUP.test(object)
+  const words = (end ? rest.slice(0, end.index) : rest).trim().split(/\s+/).filter(Boolean)
+  if (words.length && /ing$/i.test(words[words.length - 1]) && words.length >= 2 && BUYERS.has(words[words.length - 2].toLowerCase())) words.pop()
+  const head = words.pop()
+  return !!head && BUYERS.has(head.toLowerCase()) && words.length <= 3 && words.every(plainModifier)
 }
 const AUDIENCE = /^(?:to|for)\s+(.*?)(?=\s*(?:,|\bbut\b|\bexcept\b|\bexcluding\b|\bwithout\b)|$)/i
 type Statement = { offer: string; audience: string; rest: string; others: string[] }
