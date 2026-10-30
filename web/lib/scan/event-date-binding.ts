@@ -132,7 +132,7 @@ function otherSubjectBetween(segment: string, co: string[], known: Set<string> =
 function subordinateMention(prefix: string): boolean {
   if (prefix.lastIndexOf('(') > prefix.lastIndexOf(')')) return true
   if (/,\s*(?:which|who|whose)\b/i.test(prefix)) return true
-  if (/\b(?:hired|engaged|retained|selected|appointed|acquired|bought|partner)\s*$/i.test(prefix)) return true
+  if (/\b(?:hired|engaged|retained|selected|appointed|acquired|bought|owns|owned|partner)\s*$/i.test(prefix)) return true
   return /\b(?:with|of|for|by|from|to|alongside|beside|near|including|than|unlike|versus|vs)\s*$/i.test(prefix)
 }
 
@@ -172,7 +172,7 @@ export function eventDateBound(eventDate: string | null, pageText: string, quote
       if (!ms.length) { unbound = true; continue }
       const dist = (m: Span) => Math.min(Math.abs(m.start - h.index), Math.abs(m.end - h.index))
       const near = ms.reduce((a, m) => dist(m) < dist(a) ? m : a)
-      if (subordinateMention(text.slice(s.start, near.start)) || /^[’']s\b/.test(text.slice(near.end))) { unbound = true; continue }
+      if (subordinateMention(text.slice(s.start, near.start)) || /^[’']s\b/.test(text.slice(near.end)) || /^\s+(?:advises|supports|serves|represents|assists|manages)\s+(?:opened|launched|announced|hired|raised)\b/i.test(text.slice(near.end))) { unbound = true; continue }
       const between = h.index >= near.end ? text.slice(near.end, h.index) : text.slice(h.end, near.start)
       // in another sentence, the quote's own capitalised words (its places and the office it names) are not someone else
       const tail = h.index >= near.end ? text.slice(near.end, s.end) : text.slice(h.end, s.end)

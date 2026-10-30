@@ -243,6 +243,8 @@ test('takeover: a name inside another subject\'s modifier does not own that subj
  const wrong = [
   'UnrelatedCo, which partners with Aurora Agency, opened a new office on King Street West in Toronto, ON on 2026-10-15',
   'UnrelatedCo, whose partner Aurora Agency is growing, opened a new office in Toronto on 2026-10-15',
+  'UnrelatedCo owns Aurora Agency and opened a new office in Toronto on 2026-10-15',
+  'A partner firm Aurora Agency advises opened a new office in Toronto on 2026-10-15',
   'UnrelatedCo hired Aurora Agency and opened a new office in Toronto on 2026-10-15',
   'UnrelatedCo, a partner of Aurora Agency, opened a new office on King Street West in Toronto, ON on 2026-10-15',
   'UnrelatedCo (Aurora Agency partner) opened a new office on King Street West in Toronto, ON on 2026-10-15',
