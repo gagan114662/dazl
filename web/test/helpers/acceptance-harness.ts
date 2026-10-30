@@ -33,6 +33,7 @@ export interface Fixture {
   extraction: Cand[]                       // SYNTHETIC extraction reply (real parseLeads runs on it)
   extractionFn?: (prompt: string) => Cand[]   // SYNTHETIC extraction reply that depends on the prompt it was given (replaces `extraction` when set)
   onVerify?: (db: Database.Database, jobId: string) => void   // called once, while the verifier is fetching (the scan is still running)
+  beforeRun?: (db: Database.Database) => void   // called once with the job created, before the scan starts (state an earlier play left)
 
   reviewedIcp?: object                     // a profile the USER reviewed: stored with the job exactly as POST /api/scan stores it (normalizeIcp, icp_inferred = 0); no inference is run
   deps?: Record<string, unknown>           // extra runJob deps (e.g. memory exclusions)
@@ -48,6 +49,7 @@ export async function runFixture(f: Fixture) {
   const icp = f.reviewedIcp ? normalizeIcp(f.reviewedIcp)! : (await inferIcp(icpProvider, KEY, f.request)).icp
   createQueryJob(db, 'A', { query: f.request, icp: JSON.stringify(icp), ...(f.runBudget ? { runBudget: f.runBudget } : {}) })
   const job = claimKeyedJob(db)!
+  f.beforeRun?.(db)
   const calls = { afters: [] as (string | null)[], searches: [] as string[], tfFetchBatches: [] as string[][], ownFetch: [] as string[], prompts: [] as string[] }
   const fetchImpl = (async (u: string, init?: RequestInit) => {
     if (u.startsWith('https://api.search.tinyfish.ai')) {

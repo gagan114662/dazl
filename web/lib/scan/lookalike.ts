@@ -34,8 +34,11 @@ interface CohortRow { id: string; signal: string; industry: string | null; locat
 // The reference cohort: the tenant's own past leads graded fit 4+ or with an
 // 'interested' classified reply, minus test rows, opted-out contacts, and the leads
 // being scored right now.
+// A lead the tenant rejected (#385, active feedback) never trains the cohort either, whatever its fit grade.
 export function referenceCohort(db: Database.Database, tenantId: string, excludeLeadIds: string[]): CohortRow[] {
   const exclude = new Set(excludeLeadIds)
+  let rejected = new Set<string>()
+  try { rejected = new Set((db.prepare("SELECT lead_id FROM lead_feedback WHERE tenant_id = ? AND verdict = 'reject' AND reset_at IS NULL AND lead_id IS NOT NULL").all(tenantId) as { lead_id: string }[]).map(r => r.lead_id)) } catch { /* no feedback table: nothing was rejected */ }
   const rows = db.prepare(
     `SELECT DISTINCT l.id, l.signal, j.industry, j.location
      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
@@ -47,7 +50,7 @@ export function referenceCohort(db: Database.Database, tenantId: string, exclude
        AND (l.fit >= 4 OR l.id IN (SELECT lead_id FROM inbound_messages WHERE tenant_id = ? AND classification = 'positive' AND lead_id IS NOT NULL))
      LIMIT 200`
   ).all(tenantId, tenantId) as CohortRow[]
-  return rows.filter(r => !exclude.has(r.id))
+  return rows.filter(r => !exclude.has(r.id) && !rejected.has(r.id))
 }
 
 export function lookalikeSignals(db: Database.Database, tenantId: string, leads: { id: string; signal: string; industry?: string | null; location?: string | null }[]): Map<string, LookalikeSignal> {

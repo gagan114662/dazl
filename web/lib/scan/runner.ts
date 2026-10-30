@@ -49,6 +49,7 @@ import { regradeFromKeptContacts, enforceContactSource } from './contact-agreeme
 import { primarySignalKind } from './score.ts'
 import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } from '../signals/competitor-reddit.ts'
 import { finishUndatedLeads } from './structured-date.ts'
+import { activeRejections, applyRejections, NO_REJECTIONS, type Rejections } from './feedback.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
 import { sourceCap } from './source-quality.ts'
 import { SourceRunLedger } from './source-runs.ts'
@@ -264,6 +265,11 @@ export async function groundLeads(provider: Provider, apiKey: string, query: str
 }
 
 // (shown to the user, never emailed) instead of vanishing. Dedup by company keeps the best.
+// The tenant's active rejections (#385), read from the scan's own store. A store without the table (an old schema) has none.
+async function loadRejections(db: Database.Database, tenantId: string): Promise<Rejections> {
+  try { return await activeRejections(sqliteDb(db), tenantId) } catch { return NO_REJECTIONS }
+}
+
 export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetcher = fetchPageDetailed, now = new Date(), judge?: Judge, knownDomain: string | null = null, held?: { text: HeldText; attempt: string }, audit?: CandidateAudit[], geo: string[] = []): Promise<VerifyOutcome> {
   const cache = new Map<string, Promise<Page | FetchFail | null>>()
   const get = (u: string) => { if (!cache.has(u)) cache.set(u, fetchPage(u).catch(() => null)); return cache.get(u)! }
@@ -586,7 +592,7 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
     if (leads.length === 0) { finish(db, job, 'failed', 'no_candidates', null, 0, ledger); return 'failed' }
     const judge = deps.judge === undefined ? makeJudge(provider, key, deps.fetchImpl) : deps.judge ?? undefined
     assertOwned(db, job)
-    const outcome = await verifyLeads(leads, fetchP, deps.now, judge, job.csv_domain ?? null)
+    const outcome = await verifyLeads(applyRejections(leads, await loadRejections(db, job.user_id)).kept, fetchP, deps.now, judge, job.csv_domain ?? null)
     try { applyEvidenceQualityGate(outcome.leads) } catch { /* gate only, never fails the job */ }
     const owned = finish(db, job, 'done', null, outcome, leads.length, ledger)
     // Same stale-attempt gate as the main path: no side effects for a job
@@ -901,6 +907,14 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     }
     const verifierFetch = new Map<string, FetchOutcome>() // verify_provenance (diagnostic only)
     const audit: CandidateAudit[] = [] // run report: the fate of every candidate the verifier saw (instrumentation only)
+    // #385: what the tenant already rejected is not brought back. Every list goes through this before the verifier; a drop
+    // is recorded with the feedback id, so the run report says why the company is absent.
+    const rejections = await loadRejections(db, job.user_id)
+    const forget = <T extends LeadDraft>(list: T[]): T[] => {
+      const r = applyRejections(list, rejections)
+      for (const d of r.dropped) audit.push({ key: `${dedupKey({ company: d.company, name: '' })}|${d.url}`, company: d.company, url: d.url, outcome: 'dropped', reason: `previously_rejected:${d.reason}:${d.feedback_id}` })
+      return r.kept
+    }
     const markDropped = (rows: { company: string; name: string; source_url: string }[], reason: string) => { for (const r of rows) { const k = `${dedupKey(r)}|${r.source_url}`; const e = audit.find(a => a.key === k && a.outcome !== 'dropped'); if (e) { e.outcome = 'dropped'; e.reason = reason } } } // a later gate removed a row the verifier had passed
     { const st = { ...summarizeTrace(diag.trace), ...diag.info }
       ledger.report({ queries: st.queries, query_source: st.query_source ?? null, search: { attempted: st.searches_attempted, ok: st.searches_ok, hits_raw: st.hits_raw, hits_unique_urls: st.hits_unique_urls, hits_complete: st.hits_complete }, urls: diag.urls, evidence: { items: st.evidence_items ?? null, with_page_text: st.evidence_with_page_text ?? null, snippet_only: st.evidence_snippet_only ?? null }, extracted_candidates: st.extracted_candidates ?? null, extraction: st.extraction ?? null, audit, ownFetch: verifierFetch }) }
@@ -1036,7 +1050,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     let datesFinished: Awaited<ReturnType<typeof finishUndatedLeads>> = []
     let fallbackNotes: FallbackNote[] = []
     let recoveryTargets: FallbackTarget[] = []; let recoveryRan: { searched: boolean; why?: string } = { searched: false, why: 'not needed' }
-    let outcome = partial.outcome = await verifyLeads(leads, fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [])
+    let outcome = partial.outcome = await verifyLeads(forget(leads), fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [])
     const verifiedUrls = leads.map(l => l.source_url) // verify_provenance
     // A candidate whose OWN page blocks us is held with nothing readable. Look for the same company on other press (free news search): its pages go through the same extraction and verifier, and a
     // verified candidate for that company replaces the held row. Bounded (3 companies, one search+extraction), no extra model call for a run that disabled the paid fallback.
@@ -1057,7 +1071,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         if (found && found.length > 0) {
           ledger.candidates('fallback:news', found)
           verifiedUrls.push(...found.map(l => l.source_url))
-          const o2 = await verifyLeads(found, fetchP, deps.now, judge, null, undefined, audit, icpForSources!.where ?? [])
+          const o2 = await verifyLeads(forget(found), fetchP, deps.now, judge, null, undefined, audit, icpForSources!.where ?? [])
           fallbackNotes = mergeFallback(outcome, o2, blocked)
         }
       } catch (e) {
@@ -1092,7 +1106,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         if (fresh.length > 0) {
           assertOwned(db, job)
           verifiedUrls.push(...fresh.map(l => l.source_url))
-          const o2 = await verifyLeads(fresh, fetchP, deps.now, judge, null, undefined, audit, icpForSources?.where ?? [])
+          const o2 = await verifyLeads(forget(fresh), fetchP, deps.now, judge, null, undefined, audit, icpForSources?.where ?? [])
           const seenKeys = new Set(outcome.leads.map(dedupKey))
           for (const l of o2.leads) { const k = dedupKey(l); if (!seenKeys.has(k)) { seenKeys.add(k); outcome.leads.push(l) } }
           const seenReview = new Set(outcome.review.map(dedupKey))

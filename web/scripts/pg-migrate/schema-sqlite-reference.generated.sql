@@ -230,6 +230,25 @@ CREATE TABLE lead_evidence_copies (
   UNIQUE (tenant_id, job_id, attempt, canonical_url)
 );
 
+CREATE TABLE lead_feedback (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      verdict TEXT NOT NULL CHECK (verdict IN ('accept', 'reject')),
+      level TEXT NOT NULL CHECK (level IN ('account', 'person', 'event')),
+      reason TEXT,
+      company_key TEXT NOT NULL,
+      domain TEXT,
+      person_key TEXT,
+      event_date TEXT,
+      source_host TEXT,
+      lead_id TEXT,
+      job_id TEXT,
+      note TEXT CHECK (note IS NULL OR length(note) <= 300),
+      created_at INTEGER NOT NULL,
+      reset_at INTEGER,
+      reset_reason TEXT
+    );
+
 CREATE TABLE lead_qualifications (
     tenant_id TEXT NOT NULL, lead_id TEXT NOT NULL, prompt_sha256 TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('running','done','failed')),
@@ -796,6 +815,8 @@ CREATE INDEX inbound_messages_thread ON inbound_messages (tenant_id, thread_id, 
 CREATE INDEX lead_enrichments_insert_seq_idx ON lead_enrichments (insert_seq);
 
 CREATE INDEX lead_enrichments_lead ON lead_enrichments (lead_id);
+
+CREATE INDEX lead_feedback_tenant ON lead_feedback (tenant_id, reset_at);
 
 CREATE UNIQUE INDEX lead_qualifications_one_per_lead ON lead_qualifications (tenant_id, lead_id);
 
