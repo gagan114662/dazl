@@ -156,10 +156,27 @@ Each step's time is recorded in the report to measure the RTO.
 
 ## Postgres cutover (when authorized; docs/PLATFORM.md)
 
-- The same targets apply. The backup becomes `pg_dump -Fc` (or a managed provider's point-in-time recovery).
-- The drill's content step becomes `pg_restore` into a throwaway database plus row-count and content comparison.
-- Steps 2 to 4 are unchanged once the app reads Postgres: decrypt every registered column, the send-safety counts, and the app started on the restored database.
-- This needs a Postgres variant of `restoreDrill`, which is not built. Do it before the cutover, not after.
+The same RPO, RTO and retention targets apply. The Postgres backup and drill are built and tested against a synthetic database (`web/scripts/backup/pg-lib.ts`). Nothing schedules them: SQLite stays the production path until the cutover.
+
+**Backup.** `DATABASE_URL=postgres://… node --experimental-strip-types scripts/backup/pg-backup.mts --dest DIR`
+- Writes a `pg_dump -Fc` archive `dazl-pg-<UTC time>.dump` (mode 600) and a sidecar `<dump>.json`.
+- The sidecar holds the dump's sha256 and size, the server version, and a **content fingerprint**: per table in `public`, the row count and the md5 of every row's text, ordered.
+- The fingerprint and the dump come from **one snapshot** (`pg_export_snapshot()` and `pg_dump --snapshot`), so writes during the backup cannot make them disagree.
+- Credentials reach `pg_dump` through `PG*` environment variables, never the command line.
+- Encrypted off-host copies are made the same way as for SQLite (`ops/backup/offhost-copy.sh`, the dump and its sidecar), once the timer is switched over at the cutover.
+
+**Drill.** `node --experimental-strip-types scripts/backup/pg-recovery-drill.mts --backup FILE.dump --key-file KEY --admin-url postgres://…/postgres [--report OUT.json]`
+
+It runs three steps:
+1. **content.** Checks the sidecar sha256 and size (a modified or truncated dump fails before anything is restored). Then it `pg_restore`s into a scratch database it creates (`dazl_drill_<random>`, never an existing one) and compares every table's fingerprint with the sidecar. Missing, extra and differing tables are named. A dump without a sidecar fails: its content cannot be verified.
+2. **key recovery.** Every registered ciphertext (`lib/secrets-rewrap.ts`) decrypts under the recovered key. Only counts are reported.
+3. **send safety.** The same counts to reconcile before sending is re-enabled: claims still sending, uncertain sends, unexpired leases, tenants with autopilot on.
+
+The report carries `rpo_at_drill_s` (the dump's age) and `measured_rto_ms`. The scratch database is dropped at the end (`--keep-scratch` keeps it).
+
+**Not built yet: app readability on Postgres.** The app does not read Postgres yet, so the SQLite drill's step 4 (start the release on the restored copy with sending disabled, sign in, read scans, leads and key status) has no Postgres form. The report says `not checked` instead of passing it. Add it with the app's Postgres read path, before the cutover.
+
+`--admin-url` needs a role that may `CREATE DATABASE`. The drill creates and drops only its own randomly named database. Use the replacement host's own server or a local one, never the production server.
 
 ## What Instinct or the owner must provision
 
@@ -173,6 +190,7 @@ Each step's time is recorded in the report to measure the RTO.
 | An `age` key pair for the off-host copies; the private key stored offline, separately from the master key | owner | free (`apt install age`) |
 | An alert destination for stale or failed backups (`OPS_ALERT_WEBHOOK_URL`, for example a free Slack incoming webhook) | owner | free |
 | A first isolated drill on the host, then a replacement-host drill, each report attached to #360 | Instinct | free on the existing host; a temporary replacement instance costs its hourly price for the hours it runs |
+| At the Postgres cutover: `pg-backup.mts` on the new schedule, and a `pg-recovery-drill.mts` report attached to #360. `pg_dump`/`pg_restore` must be the server's major version or newer | Instinct | free |
 
 **Off-host options.** List prices change, so check before choosing. None is set up.
 - **Free:**
