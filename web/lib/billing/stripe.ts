@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3'
 import { writePlan } from '../plans.ts'
 import type { Db, Tx, TxBody } from '../db/client.ts'
 import { recordEventTx } from '../growth/lifecycle.ts'
+import type { ServicePeriod } from '../growth/retention.ts'
 
 // Stripe-Signature check: HMAC-SHA256 over `${t}.${rawBody}`, 5-minute replay window.
 // Ported from the repo worker's billing.ts, using node:crypto.
@@ -51,6 +52,10 @@ interface StripeObject {
   amount_paid?: number                  // invoice
   invoice?: string | null               // charge: the invoice it paid
   amount_refunded?: number; refunded?: boolean   // charge
+  // invoice lines (docs.stripe.com/api/invoice-line-item/object): each line's service period (unix seconds) and the
+  // subscription and price it is for; older API versions name the price under price.id, newer ones under pricing
+  lines?: { data?: { type?: string; subscription?: string | null; period?: { start?: number; end?: number }; price?: { id?: string } | null;
+    pricing?: { price_details?: { price?: string } } | null; parent?: { subscription_item_details?: { subscription?: string } | null } | null }[] }
 }
 export interface StripeEvent {
   id: string
@@ -213,13 +218,28 @@ export async function applyStripeEvent(db: Db, event: StripeEvent, deps: StripeD
   return result
 }
 
+// The service intervals an invoice bought: one per subscription line, kept separate with that line's subscription and
+// price, never merged into one span (two periods with a gap stay two). A line for no subscription (a one-off invoice
+// item) or without a real period is not service; an invoice with none is never coverage evidence.
+function servicePeriods(o: StripeObject): ServicePeriod[] {
+  const out: ServicePeriod[] = []
+  for (const l of o.lines?.data ?? []) {
+    const subscription = l.subscription ?? l.parent?.subscription_item_details?.subscription ?? null
+    if (!(l.type === 'subscription' || subscription)) continue
+    const start = l.period?.start, end = l.period?.end
+    if (typeof start !== 'number' || typeof end !== 'number' || end <= start) continue
+    out.push({ start, end, subscription, price: l.price?.id ?? l.pricing?.price_details?.price ?? null })
+  }
+  return out
+}
+
 // Payments as they happened, for the acquisition funnel (issue #404). Idempotent on (kind, ref): invoice.paid and
 // invoice.payment_succeeded for one invoice are one payment, and a redelivered event is already stopped above.
 function* recordLifecycle(t: Tx, tenantId: string, event: StripeEvent, created: number | null): TxBody<void> {
   const o = event.data?.object ?? {}
   const at = created ?? Math.floor(Date.now() / 1000)
   if ((event.type === 'invoice.paid' || event.type === 'invoice.payment_succeeded') && o.id && typeof o.amount_paid === 'number' && o.amount_paid > 0)
-    yield* recordEventTx(t, { kind: 'payment_succeeded', ref: o.id, tenant_id: tenantId, occurred_at: at, amount_cents: o.amount_paid })
+    yield* recordEventTx(t, { kind: 'payment_succeeded', ref: o.id, tenant_id: tenantId, occurred_at: at, amount_cents: o.amount_paid, service_periods: servicePeriods(o) })
   else if (event.type === 'invoice.payment_failed' && o.id) yield* recordEventTx(t, { kind: 'payment_failed', ref: o.id, tenant_id: tenantId, occurred_at: at })
   // one row per charge and refunded total: a later, larger refund of the same charge is a new row (history kept); the
   // same total delivered again (a retry, or another refund event type) is not

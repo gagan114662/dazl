@@ -18,8 +18,13 @@ export type LifecycleEvent =
   | { id: string; at: number; customer: string; kind: 'signup'; viaTaggedLink: boolean; consented: boolean; identity: string | null }
   | { id: string; at: number; customer: string; kind: 'setup'; step: 'key' | 'mailbox' | 'offer' }
   | { id: string; at: number; customer: string; kind: 'run'; status: 'done' | 'failed'; usableLeads: number }
-  | { id: string; at: number; customer: string; kind: 'payment'; status: 'paid' | 'failed' | 'refunded' }
-  | { id: string; at: number; customer: string; kind: 'cancel' }
+  // a paid payment carries the service period it bought, from the billing (absent: a one-off charge, no coverage evidence)
+  // periods: the service intervals a paid payment bought, one per subscription line, kept separate (no merged span);
+  // absent: a one-off charge, no coverage evidence
+  | { id: string; at: number; customer: string; kind: 'payment'; status: 'paid' | 'failed' | 'refunded'; periods?: { start: number; end: number; subscription?: string }[] }
+  // when a subscription's service actually stopped (deleted); subscription: which one (absent: the billing did not
+  // say, so it stops all of them). A cancellation scheduled for the period end is not one yet.
+  | { id: string; at: number; customer: string; kind: 'cancel'; subscription?: string }
   | { id: string; at: number; customer: string; kind: 'cost'; usd: number; what: 'research' | 'enrichment' | 'evaluation' | 'model' | 'send' }
 
 export interface CustomerMeta { customer: string; synthetic: boolean; staging: boolean }
@@ -48,14 +53,17 @@ export function upTo(events: LifecycleEvent[], asOf: number): LifecycleEvent[] {
 // Map this file's events onto the shared retention input (unix seconds). A refund event refunds the latest paid payment
 // before it that is not already refunded; the recorded subscription end is the latest cancel.
 function retentionOf(ev: LifecycleEvent[], now: number): RetentionResult {
-  const payments: { at: number; refunded: boolean }[] = []
+  const payments: { at: number; refunded: boolean; periods: { start: number; end: number; subscription?: string }[] }[] = []
   for (const e of ev) {
     if (e.kind !== 'payment') continue
-    if (e.status === 'paid') payments.push({ at: e.at, refunded: false })
+    if (e.status === 'paid') payments.push({ at: e.at, refunded: false, periods: e.periods ?? [] })
     else if (e.status === 'refunded') { const p = payments.findLast(x => !x.refunded); if (p) p.refunded = true }
   }
-  const ended = ev.filter(e => e.kind === 'cancel').at(-1)?.at ?? null
-  return retention({ payments: payments.map(p => ({ at: p.at / 1000, refunded: p.refunded })), ended_at: ended === null ? null : ended / 1000, cutoff: now / 1000 })
+  const ends = ev.filter((e): e is Extract<LifecycleEvent, { kind: 'cancel' }> => e.kind === 'cancel')
+  return retention({
+    payments: payments.map(p => ({ at: p.at / 1000, refunded: p.refunded, periods: p.periods.map(iv => ({ start: iv.start / 1000, end: iv.end / 1000, subscription: iv.subscription ?? null })) })),
+    ends: ends.map(e => ({ at: e.at / 1000, subscription: e.subscription ?? null })), cutoff: now / 1000,
+  })
 }
 
 function dedupe(events: LifecycleEvent[]): LifecycleEvent[] {
@@ -85,10 +93,14 @@ export function customerState(customer: string, events: LifecycleEvent[], now: n
       if (e.status === 'paid') { paying = true; paymentFailed = false; refunded = false; s.paidAt ??= e.at }
       else if (e.status === 'failed') { paymentFailed = true }
       else { refunded = true; paying = false }
-    } else if (e.kind === 'cancel') { cancelled = true; paying = false }
+    } else if (e.kind === 'cancel') { cancelled = true }
   }
   s.usefulRuns = usefulDays.size
   s.retention = retentionOf(ev, now)
+  // a cancel ends one subscription: the customer has left only when no subscription still covers them (every paid
+  // subscription ended), never because some other subscription on the same customer was deleted
+  if (cancelled && s.retention.coverage_at_cutoff === 'not_covered') paying = false
+  else cancelled = false
   if (s.signupAt === null) { s.stage = qualified ? 'qualified' : 'prospect'; return s }
   // Money states first: what the customer did last with billing decides, then value delivered.
   if (refunded) s.stage = 'refunded'
