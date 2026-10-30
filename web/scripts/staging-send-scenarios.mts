@@ -59,16 +59,18 @@ export function recordedBody(mime: string): string | null {
 const SENDER = { sender_name: 'Scenario Sender', postal_address: '100 Demo Street, Columbus, OH 43004 (staging test address)' }
 
 export class AllowlistError extends Error {}
-// The only transport: refuses anything not on the allowlist, records the rest, returns a fake provider id.
+// The only transport: refuses anything not on the allowlist, records the rest, returns a fake provider id. Ids are unique
+// per tenant across every transport made for it (a scenario makes one per send), as Gmail's are: two messages never share
+// a provider id or a thread unless the send named that thread.
+const sentCount = new Map<string, number>()
 export function recordingTransport(log: string, tenant: string, onAttempt?: () => Promise<void>) {
-  let n = 0
   return async (_token: string, raw: string, _f?: unknown, threadId?: string) => {
     const mime = decode(raw)
     const to = (header(mime, 'To') ?? '').replace(/^.*</, '').replace(/>.*$/, '').trim().toLowerCase()
     if (!ALLOWLIST.has(to)) throw new AllowlistError(`recipient ${to || '(none)'} is not on the scenario allowlist; nothing recorded`)
     appendFileSync(log, JSON.stringify({ at: new Date().toISOString(), tenant, to, subject: header(mime, 'Subject'), sha256: createHash('sha256').update(mime).digest('hex'), pid: process.pid }) + '\n')
     if (onAttempt) await onAttempt()
-    n++
+    const n = (sentCount.get(tenant) ?? 0) + 1; sentCount.set(tenant, n)
     return { id: `rec-${tenant}-${n}`, threadId: threadId ?? `thread-${tenant}-${n}` }
   }
 }
