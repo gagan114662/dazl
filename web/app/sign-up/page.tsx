@@ -19,6 +19,9 @@ export default function SignUp() {
         password: fd.get('password'),
         name: fd.get('name'),
         business_name: fd.get('business_name'),
+        // first-party source tag from the sign-up link (?utm_source= or ?ref=), for dazl's own funnel (#404); not stored
+        // anywhere else, and nothing is sent to a third party
+        source: new URLSearchParams(window.location.search).get('utm_source') ?? new URLSearchParams(window.location.search).get('ref'),
       })
     })
     const data = await res.json()

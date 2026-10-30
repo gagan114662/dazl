@@ -5,6 +5,7 @@ import { getDb } from './db/client.ts'
 import type { Db } from './db/client.ts'
 import { BACKFILL_SQL, WORKSPACE_DDL, createPersonalWorkspace, resolveMembership } from './workspaces.ts'
 import type { Role } from './workspaces.ts'
+import { normaliseSource, recordEventTx } from './growth/lifecycle.ts'
 
 let db: Database.Database | null = null
 
@@ -68,13 +69,16 @@ export async function findPasswordUser(email: string, d?: Db): Promise<{ id: str
 
 // 'exists' when the email is taken; the route must not reveal which. The account and its personal workspace are made
 // together.
-export async function createPasswordUser(u: { id: string; email: string; name: string; business_name: string; password_hash: string; salt: string }, d?: Db): Promise<'created' | 'exists'> {
+// source: the first-party tag the sign-up link carried (lib/growth/lifecycle.ts normaliseSource); none = unknown.
+export async function createPasswordUser(u: { id: string; email: string; name: string; business_name: string; password_hash: string; salt: string; source?: string | null }, d?: Db): Promise<'created' | 'exists'> {
   return (d ?? await getDb()).tx(function* (t) {
     const r = yield* t.run(
       'INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (email) DO NOTHING',
       [u.id, u.email, u.name, u.business_name, u.password_hash, u.salt])
     if (r.changes !== 1) return 'exists' as const
     yield* createPersonalWorkspace(t, u.id, u.business_name)
+    const source = normaliseSource(u.source)
+    if (source) yield* recordEventTx(t, { kind: 'signup', ref: u.id, tenant_id: u.id, occurred_at: Math.floor(Date.now() / 1000), source })
     return 'created' as const
   })
 }

@@ -3,6 +3,7 @@ import { randomBytes, scryptSync } from 'crypto'
 import { cookies } from 'next/headers'
 import { createPasswordUser, createSession, SESSION_TTL_S } from '@/lib/auth-db'
 import { cleanText, validateEmail, validatePassword } from '@/lib/validate'
+import { normaliseSource } from '@/lib/growth/lifecycle'
 import { clientIp, rateLimit, UNAVAILABLE_RETRY_S } from '@/lib/rate-limit'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
@@ -24,7 +25,7 @@ export async function POST(req: NextRequest) {
     const hash = scryptSync(body.password, salt, 64).toString('hex')
     const id = randomBytes(16).toString('hex')
 
-    const made = await createPasswordUser({ id, email, name: cleanText(body.name, 100), business_name: cleanText(body.business_name, 150), password_hash: hash, salt })
+    const made = await createPasswordUser({ id, email, name: cleanText(body.name, 100), business_name: cleanText(body.business_name, 150), password_hash: hash, salt, source: normaliseSource(body.source) })
     if (made === 'exists') {
       // Same response shape as other failures: do not reveal which emails exist.
       return NextResponse.json({ error: 'We could not create an account with those details. Try signing in instead.' }, { status: 400 })

@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { writePlan } from '../plans.ts'
 import type { Db, Tx, TxBody } from '../db/client.ts'
+import { recordEventTx } from '../growth/lifecycle.ts'
 
 // Stripe-Signature check: HMAC-SHA256 over `${t}.${rawBody}`, 5-minute replay window.
 // Ported from the repo worker's billing.ts, using node:crypto.
@@ -47,6 +48,9 @@ interface StripeObject {
   metadata?: { tenant_id?: string }
   // invoices: the subscription id moved under parent.subscription_details in API version 2025-03-31
   parent?: { subscription_details?: { subscription?: string } }
+  amount_paid?: number                  // invoice
+  invoice?: string | null               // charge: the invoice it paid
+  amount_refunded?: number; refunded?: boolean   // charge
 }
 export interface StripeEvent {
   id: string
@@ -167,6 +171,8 @@ export async function applyStripeEvent(db: Db, event: StripeEvent, deps: StripeD
     // this check) is refused for both.
     if (o.customer && t.kind === 'pg') yield* t.get("SELECT pg_advisory_xact_lock(hashtextextended('stripe_customer:' || ?, 0)) AS x", [o.customer])
     if (o.customer && (yield* t.get('SELECT 1 AS x FROM tenant_plans WHERE stripe_customer_id = ? AND tenant_id <> ?', [o.customer, tenantId]))) { ignoredWhy = 'customer_conflict'; return 'ignored' }
+    // the funnel's payment record (lib/growth/lifecycle.ts): what happened, whatever it does to the plan
+    yield* recordLifecycle(t, tenantId, event, created)
     if (event.type === 'invoice.payment_failed') return yield* paymentFailed(t, tenantId, o.subscription ?? o.parent?.subscription_details?.subscription, created)
     if (!eventFx) return 'ignored'
     yield* t.run('INSERT INTO tenant_plans (tenant_id) VALUES (?) ON CONFLICT (tenant_id) DO NOTHING', [tenantId])
@@ -205,6 +211,20 @@ export async function applyStripeEvent(db: Db, event: StripeEvent, deps: StripeD
   // between customers in Stripe shows up instead of vanishing.
   if (ignoredWhy) (deps.log ?? logLine)(ignoredLine(event, new Date(), ignoredWhy))
   return result
+}
+
+// Payments as they happened, for the acquisition funnel (issue #404). Idempotent on (kind, ref): invoice.paid and
+// invoice.payment_succeeded for one invoice are one payment, and a redelivered event is already stopped above.
+function* recordLifecycle(t: Tx, tenantId: string, event: StripeEvent, created: number | null): TxBody<void> {
+  const o = event.data?.object ?? {}
+  const at = created ?? Math.floor(Date.now() / 1000)
+  if ((event.type === 'invoice.paid' || event.type === 'invoice.payment_succeeded') && o.id && typeof o.amount_paid === 'number' && o.amount_paid > 0)
+    yield* recordEventTx(t, { kind: 'payment_succeeded', ref: o.id, tenant_id: tenantId, occurred_at: at, amount_cents: o.amount_paid })
+  else if (event.type === 'invoice.payment_failed' && o.id) yield* recordEventTx(t, { kind: 'payment_failed', ref: o.id, tenant_id: tenantId, occurred_at: at })
+  // one row per charge and refunded total: a later, larger refund of the same charge is a new row (history kept); the
+  // same total delivered again (a retry, or another refund event type) is not
+  else if (event.type === 'charge.refunded' && o.id) yield* recordEventTx(t, { kind: 'refund', ref: `${o.id}:${o.amount_refunded ?? 'unknown'}`, tenant_id: tenantId, occurred_at: at, amount_cents: o.amount_refunded ?? null, invoice: o.invoice ?? null, full_refund: o.refunded === true })
+  else if (event.type === 'customer.subscription.deleted' && o.id) yield* recordEventTx(t, { kind: 'subscription_ended', ref: o.id, tenant_id: tenantId, occurred_at: at })
 }
 
 // unknown_tenant: the event names no tenant this store knows. customer_conflict: it names a tenant, but its Stripe customer

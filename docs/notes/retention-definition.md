@@ -1,47 +1,49 @@
-# Retention definition for #404: one shared rule
+# Retention for #404: one implementation, two metrics
 
-Both #404 branches now use the same retention definition. It lives in `web/lib/growth/retention.ts`, added on the ops branch `claude/epic-cannon-xrw9ut-acquisition-funnel` in `235c3284`.
+Retention and coverage are defined in exactly one place: `web/lib/growth/retention.ts`. Both reports import it, and this branch keeps no copy.
 
-This branch (`claude/trusting-bell-xyya6m-lifecycle`) carries byte-identical copies of two files from that branch:
+- **The acquisition funnel** (`web/lib/growth/lifecycle.ts`), on the ops branch `claude/epic-cannon-xrw9ut-acquisition-funnel`.
+- **The cohort lifecycle report** (`web/lib/gtm/lifecycle.ts`), on this branch, `claude/trusting-bell-xyya6m-lifecycle`. This branch is rebased onto the ops branch at `285bc078`.
 
-- `web/lib/growth/retention.ts` (blob `e354d5d7`);
-- its test file, `web/test/growth-retention.test.ts`.
+All windows are named settings in `RETENTION`. They are carried-over defaults, not owner decisions:
 
-Because the copies are identical, merging the two branches produces no conflict and still leaves exactly one definition. Neither branch defines retention anywhere else. This branch's earlier 60-day rule, its own coverage window and its 'lapsed' stage are gone.
+| Setting | Default |
+|---|---|
+| `headline_days` | 30 |
+| `renewal_early_days` | 5 |
+| `renewal_late_days` | 5 |
+| `period_days` | 30 |
 
-## The rules, stated explicitly
+## The two metrics
 
-All three windows come from `RETENTION` in `retention.ts`: `headline_days` = 30 and `grace_days` = 5. Instinct confirmed that the 5-day grace is the existing default, not a requirement Instinct chose. Other windows are only available by passing an explicit option.
+Each metric has its own cohort and its own label, and both are reported by `cohortReport`.
 
-| Rule | Definition | Tested at its boundary |
+| Metric | Cohort | Answer |
 |---|---|---|
-| **Eligible** (counts toward the rate) | The first paid, not refunded payment is at least headline + grace (35) days before the cutoff. | Eligible at exactly 35 days, not one second before. |
-| **Renewal evidence** | A paid, not refunded payment at least headline − grace (25) days after the first one, on or before the cutoff. | Counts at exactly 25 days, not one second before. A refunded renewal is no evidence. |
-| **Coverage evidence** | The subscription had not ended by first payment + headline (30) days. | Ending exactly at day 30 means not covered; one second later, covered. |
-| **Retained** (the headline) | Eligible, with both renewal and coverage evidence. `null` while not eligible. | |
-| **Rate** | `retentionRate`: numerator and denominator are the same eligible set, so the rate cannot exceed 100%. It is shown with `RETENTION.label`. | Renewed-but-young customers are in neither count. |
-| **Covered at cutoff** | Whether the subscription is still running at the cutoff. Reported beside the headline (`coveredAtCutoff`), never mixed into it. | |
+| **Retained at day 30** (historical): `retention` | Paying customers whose day-30 renewal window (days 25–35 after the first payment) has closed. | Retained when a paid, unrefunded renewal falls inside the window and the subscription had not ended by day 30. The numerator and denominator come from the same cohort, so the rate cannot exceed 100%. |
+| **Coverage at the cutoff** (current): `coverage` | Every customer who has paid by the cutoff. | One of three answers. **Covered:** a paid 30-day period includes the cutoff. **Not covered:** an end was recorded and no payment came after it. **Unknown:** the last period ran out and no end was recorded. Unknown is never reported as covered. |
 
-## How this branch feeds the shared definition
+## How this branch feeds the shared module
 
 `retentionOf` in `web/lib/gtm/lifecycle.ts` only maps this branch's events onto the module's input. Times are converted from ms to unix seconds.
 
-- **Payments:** every `payment` event with status `paid`.
-- **Refunds:** a `refunded` event marks the latest earlier paid payment that is not already refunded.
-- **End of subscription:** the first `cancel` on or after the first unrefunded payment.
+- **Payments:** every paid `payment` event becomes a payment.
+- **Refunds:** a `refunded` event marks the latest earlier unrefunded payment as refunded.
+- **Recorded end:** the latest `cancel` event.
 - **Cutoff:** the report's as-of time.
 
-Every row is cut at the same as-of time before de-duplication (`upTo`). Future-dated rows and late replays of an existing id therefore never count, and a customer seen only after as-of is not counted, not even as excluded.
+Every row is cut at that same as-of time before de-duplication (`upTo`). Future-dated rows and late replays therefore never count.
 
-The per-customer stage reads the shared result:
+The per-customer stage reads the day-30 answer: `retained`, `not_retained`, or `paid` while the customer is not yet in the cohort. Money states (refunded, churned, payment_failed) take precedence over all three.
 
-- `retained` when it says retained;
-- `not_retained` when the customer is eligible but not retained;
-- `paid` while not yet eligible.
+Tests in `web/test/gtm-lifecycle.test.ts` check the shared boundaries through this branch's events:
 
-Money states (refunded, churned, payment_failed) take precedence over these.
+- the renewal window, both ends included, and one second outside each end;
+- cohort entry when the window closes;
+- an end exactly at day 30 counting as ended;
+- the rate never exceeding 100%.
 
 ## Webhooks and event recording
 
-- **The ops branch records Stripe events.** In `web/lib/billing/stripe.ts`, the existing Stripe webhook handler writes payment succeeded, payment failed, refund and subscription ended into a new `lifecycle_events` table (migration 0018). This recording is not activated yet.
-- **This branch adds no webhook, Stripe hook or table.** It is a pure function over events the caller passes in.
+- **The ops branch records Stripe events.** In `web/lib/billing/stripe.ts`, the existing Stripe webhook handler writes payment succeeded, payment failed, refund and subscription ended into the `lifecycle_events` table (migration 0018). This recording is not activated yet.
+- **This branch's own lifecycle code adds no webhook, Stripe hook or table.** It is a pure function over events the caller passes in.
