@@ -81,6 +81,7 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/scan/blocked-fallback.ts': 0,
   'lib/scan/buyer-fit.ts': 2,
   'lib/scan/commenter-import.ts': 2,
+  'lib/scan/completion.ts': 0,
   'lib/scan/contact-agreement.ts': 0,
   'lib/scan/crash.ts': 1,
   'lib/scan/csv-import.ts': 2,

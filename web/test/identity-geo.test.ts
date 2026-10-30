@@ -32,7 +32,7 @@ async function run(homeBySite: Record<string, Record<string, string>>, icpWhere:
   await crawlJob(db, 'A', job, { get, gapMs: 0, env: {}, now: Date.parse('2026-10-26T12:00:00Z') })
   return {
     domain: (db.prepare('SELECT company_domain FROM leads WHERE id = ?').get('L1') as { company_domain: string | null }).company_domain,
-    enr: db.prepare("SELECT kind, value, label FROM lead_enrichments WHERE kind NOT IN ('domain', 'contact_rejected') ORDER BY kind, value").all() as { kind: string; value: string; label: string }[],
+    enr: db.prepare("SELECT kind, value, label FROM lead_enrichments WHERE kind NOT IN ('domain', 'domain_check', 'contact_rejected') ORDER BY kind, value").all() as { kind: string; value: string; label: string }[],
     audit: (db.prepare("SELECT lookup, status FROM connector_audit WHERE connector = 'sitecrawl'").all() as { lookup: string; status: string }[]),
   }
 }
