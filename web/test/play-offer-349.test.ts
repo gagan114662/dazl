@@ -324,3 +324,31 @@ test('#349 HOLD-4 every further service assertion is material, in any wording; u
   assert.equal(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: Q }, '').source, 'conflict')
   assert.equal(sameOffer('We sell CRM setup to founders. Outbound consulting is unavailable.', 'we sell crm setup to founders. outbound consulting is unavailable'), true)
 })
+
+test('#349 HOLD-5 a service named like an instruction ("Email marketing", "Contact enrichment", "Search advertising") is a term, not targeting', async () => {
+  const P = 'We sell CRM setup to founders.'
+  for (const extra of ['Email marketing is unavailable.', 'Contact enrichment is no longer offered.', 'Search advertising is discontinued.',
+    'Email outreach discontinued.', 'Contact data is not offered.', 'Search ads are paused.']) {
+    const restricted = `${P} ${extra}`
+    assert.equal(sameOffer(restricted, P), false, restricted); assert.equal(sameOffer(P, restricted), false, restricted)
+    assert.equal(effectiveOffer({ seller: `${P} - https://seller.example`, query: restricted }, '').source, 'conflict', restricted)
+    assert.equal(effectiveOffer({ seller: `${restricted} - https://seller.example`, query: P }, '').source, 'conflict', `saved: ${restricted}`)
+    assert.equal(effectiveOffer({ seller: null, query: restricted }, 'CRM setup').source, 'conflict', `profile: ${restricted}`)
+  }
+  // through the database caller paths
+  const db = setup('CRM setup')
+  try {
+    db.prepare('UPDATE scan_jobs SET query = ?, seller = ? WHERE id = ?').run(`${P} Email marketing is unavailable.`, 'We sell CRM setup to founders. - https://seller.example', 'london')
+    assert.equal((await readPlayOffer(sqliteDb(db), 'A', 'london'))!.source, 'conflict')
+    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme'), /offer_conflict/)
+    assert.equal(offerBlockFor(db, 'A', 'london'), '')
+  } finally { db.close() }
+  // imperatives with the same first words stay targeting instructions
+  for (const q of [`Email founders who are hiring. ${P}`, `Contact clinics in Leeds. ${P}`, `Search for agencies that are growing. ${P}`, `${P} Do not email agencies.`]) {
+    assert.equal(sameOffer(q, P), true, q)
+    assert.deepEqual(effectiveOffer({ seller: `${P} - https://seller.example`, query: q }, ''), { offer: P, source: 'recorded', conflict: null }, q)
+  }
+  // the original live case and the London control
+  assert.deepEqual(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: DENTAL_PRODUCT }, ''), { offer: DENTAL_SELLER, source: 'recorded', conflict: null })
+  assert.equal(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: Q }, '').source, 'conflict')
+})

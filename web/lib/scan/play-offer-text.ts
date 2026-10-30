@@ -95,6 +95,13 @@ export function offerOfSeller(seller: string | null | undefined): string | null 
 // difference. Exact text throughout, ignoring only case and spacing: no substring or word-set matching, no reordering.
 const exact = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase()
 const TARGETING = /^(?:(?:please|and|also|but)\s+)?(?:(?:do not|don['\u2019]t|never)\s+)?(?:find|search|look|target|targeting|contact|reach|email|message|include|exclude|excluding|skip|avoid|ignore)\b/i
+// The same first words also start service names ("Email marketing", "Contact enrichment", "Search advertising"): a
+// sentence that asserts a service's status is never a targeting instruction. It asserts one when it says a service is
+// unavailable, discontinued, no longer or not offered, or when its leading noun phrase is the subject of is/are/was/were
+// (before any "who"/"that"/"which" clause, so "Email founders who are hiring." stays an instruction).
+const SERVICE_STATUS = /\b(?:unavailable|discontinued|deprecated|retired|no longer|not (?:offered|available|included|provided|sold|supported)|(?:is|are|was|were|isn['’]t|aren['’]t)\s+(?:offered|available|included|provided|sold|supported|paused|stopped|ended|cancell?ed))\b/i
+const SUBJECT_COPULA = /^(?:(?:please|and|also|but)\s+)?[\p{L}\p{N}&'’-]+(?:\s+(?!(?:who|that|which|whose|where|when|if)\b)[\p{L}\p{N}&'’-]+){0,5}?\s+(?:is|are|was|were|isn['’]t|aren['’]t|has been|have been)\b/iu
+const isTargeting = (x: string) => TARGETING.test(x) && !SERVICE_STATUS.test(x) && !SUBJECT_COPULA.test(x)
 const AUDIENCE = /^(?:to|for)\s+(.*?)(?=\s*(?:,|\bbut\b|\bexcept\b|\bexcluding\b|\bwithout\b)|$)/i
 type Statement = { offer: string; audience: string; rest: string; others: string[] }
 function statement(text: string): Statement {
@@ -106,7 +113,7 @@ function statement(text: string): Statement {
   const rest = exact((a ? tail.slice(a[0].length) : tail).replace(/^[\s,;:]+/, ''))
   // every other sentence is part of the offer statement unless it is a targeting instruction: a service assertion in
   // any wording ("Selling payroll software to founders.", "Outbound consulting is unavailable.") is never dropped
-  const others = f.sentences.filter((x, i) => i !== f.sentence && !TARGETING.test(x.trim())).map(exact)
+  const others = f.sentences.filter((x, i) => i !== f.sentence && !isTargeting(x.trim())).map(exact)
   return { offer: exact(f.offer), audience, rest, others }
 }
 // A side whose offer sentence names no audience may name it in a sentence of its own ("Independent dental practices
