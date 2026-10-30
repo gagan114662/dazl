@@ -13,6 +13,7 @@ export const ROUTE_TEMPLATES: readonly string[] = [
   '/api/campaigns/[id]',
   '/api/client-errors',
   '/api/crm',
+  '/api/deals',
   '/api/gmail/callback',
   '/api/gmail/connect',
   '/api/gmail/disconnect',
