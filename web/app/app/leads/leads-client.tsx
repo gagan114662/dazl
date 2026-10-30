@@ -1,4 +1,5 @@
 'use client'
+import { needsContact } from '@/lib/scan/needs-contact'
 import { CrmPush } from './crm-push'
 import { windowNotice } from '@/lib/scan/window-notice'
 import { KEY_UNREADABLE_COPY, knownErrorCopy } from '@/lib/error-copy'
@@ -913,7 +914,9 @@ export default function LeadsClient() {
                   <Avatar name={c.company} size={40} />
                   <div className="min-w-0 break-words">
                     <div className="font-semibold text-base leading-tight">{l.company_domain ? <a className="hover:underline" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{c.company}</a> : c.company}{!!l.watch_new && <span className="ml-2"><Pill tone="mint">new</Pill></span>}{l.quarantined_at && <span className="ml-2"><Pill tone="pink">Rejected</Pill></span>}{!l.quarantined_at && (draftedLeads?.has(l.id) || approved[l.id]) && <span className="ml-2"><Pill tone="mint">Approved</Pill></span>}</div>
-                    <div className="text-[var(--ink-2)] text-xs mt-0.5">{c.contact ?? 'No contact found yet'}</div>
+                    {(() => { const nc = c.contact ? null : needsContact(l); return nc
+                      ? <div className="text-xs mt-0.5" data-needs-contact><span className="font-medium text-amber-800">{nc.label}</span>{nc.reasons.map((r, i) => <span key={i} className="block text-[var(--ink-2)]">{r}</span>)}</div>
+                      : <div className="text-[var(--ink-2)] text-xs mt-0.5">{c.contact ?? 'No contact found yet'}</div> })()}
                     {/* A plain confirmation (one sentence, nothing in doubt) is a small mark with its basis behind the (i); any
                         doubt - unconfirmed, role not verified, no current buyer - stays on screen in full. */}
                     {c.contactStatus && (c.contactStatus.confirmed && /^Confirmed: [^.]+\.$/.test(c.contactStatus.text)
