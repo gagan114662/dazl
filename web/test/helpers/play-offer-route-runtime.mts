@@ -114,6 +114,39 @@ test('a qualified or same-word commercial-term withdrawal is refused at creation
   assert.deepEqual(await scan(A, { query: `We no longer sell ${DENTAL}, we now sell ${CRM}.` }), { status: 409, error: 'offer_conflict', stated: CRM, saved: DENTAL, withdrawn: DENTAL })
 })
 
+// #349 live dental control (Instinct, 2026-10-30, production aad968d4): the exact stored records. The tenant's profile is
+// the dental sentence with no website; both plays carry that sentence as their seller (no website suffix), offer NULL.
+// The ORIGINAL dental request, verbatim, must run with nothing to choose and read back the saved offer on its campaign
+// page; the ORIGINAL London request is refused at creation and, as a stored play, is a conflict on its campaign page.
+test('the original dental request is the saved dental offer through the real handlers; the original London request is a conflict', async () => {
+  const L = 'f'.repeat(32)
+  const SAVED = 'We sell appointment booking and reminder software to independent dental practices in New York City.'
+  const DENTAL_REQUEST = 'Find independent dental practices in New York City with 1–5 locations that opened a new location or are hiring a receptionist in the last 90 days. We sell appointment booking and reminder software. Exclude large chains, vendors, directories, and practices outside NYC. Show the dated evidence and an owner or practice manager contact.'
+  const LONDON_REQUEST = 'Find B2B SaaS startups in London, UK that raised seed funding or are hiring their first sales representative in the last 90 days. We sell CRM setup and outbound sales consulting. Exclude agencies, directories and companies outside the UK. Show dated source evidence and founder or head of sales contacts.'
+  db.prepare("INSERT INTO users (id, email, name, business_name, password_hash, salt, sells, website, buyer_profile) VALUES (?, ?, 'n', 'Dental Seller', 'x', 'y', ?, '', NULL)").run(L, 'ffff@example.test', SAVED)
+  saveKey(db, L, 'anthropic', 'sk-ant-api03-FIXTUREFIXTUREFIXTUREFIXTURE', Buffer.from(process.env.DAZL_MASTER_KEY!, 'base64'))
+  setSellerLine(L, SAVED)
+  const jobs0 = (db.prepare('SELECT count(*) AS n FROM scan_jobs').get() as { n: number }).n
+  // London: refused before anything is queued, the saved offer named
+  assert.deepEqual(await scan(L, { query: LONDON_REQUEST }), { status: 409, error: 'offer_conflict', stated: 'CRM setup and outbound sales consulting', saved: SAVED })
+  assert.equal((db.prepare('SELECT count(*) AS n FROM scan_jobs').get() as { n: number }).n, jobs0, 'nothing queued')
+  // dental: runs with nothing to choose; the play records the saved sentence as its seller and no reviewed offer
+  const dental = await scan(L, { query: DENTAL_REQUEST })
+  assert.equal(dental.status, 202, JSON.stringify(dental))
+  assert.deepEqual(row(dental.job_id as string), { offer: null, set_at: 0, seller: SAVED })
+  finish(dental.job_id as string)
+  assert.deepEqual((await campaign(L, dental.job_id as string)).offer, { offer: SAVED, source: 'recorded', conflict: null })
+  // the stored London play, exactly as live: seller = the saved sentence, offer NULL
+  const london = 'c53bb81d0b6d00d2a2f31144'
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, seller, icp, icp_inferred) VALUES (?, ?, 'Dental Seller', 'SaaS', 'London, UK', ?, ?, '{\"summary\":\"London B2B SaaS startups\"}', 1)").run(london, L, LONDON_REQUEST, SAVED)
+  assert.deepEqual((await campaign(L, london)).offer, { offer: null, source: 'conflict', conflict: { stated: 'CRM setup and outbound sales consulting', recorded: SAVED } })
+  // another tenant: 404, and nothing changes; the profile is never rewritten by any of this
+  assert.equal((await campaign(A, london)).status, 404)
+  assert.equal((await setOffer(A, london, 'Bookkeeping for agencies')).status, 404)
+  assert.deepEqual(row(london), { offer: null, set_at: 0, seller: SAVED })
+  assert.deepEqual(db.prepare('SELECT sells, website FROM users WHERE id = ?').get(L), { sells: SAVED, website: '' })
+})
+
 // #349 a Memory-only tenant (positioning saved, no profile offer): admission reads the same offer drafting reads, so a
 // conflict surfaces at creation, not first at draft time; the same product still runs with nothing to choose.
 test('a Memory-only tenant gets the offer conflict at play creation; its same-product play runs', async () => {
