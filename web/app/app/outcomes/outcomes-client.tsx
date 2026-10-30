@@ -3,7 +3,7 @@ import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { currentPlay, type JourneyJob, type PreviewLead } from '@/lib/journey'
-import { outcomes, type OutcomeMsg, type OutcomeReply } from '@/lib/outcomes'
+import { outcomes, type OutcomeMsg, type RepliesPage } from '@/lib/outcomes'
 import { isJobId } from '@/lib/outreach/scan-drafts'
 import { scanOutcome } from '@/lib/scan/scan-outcome'
 import { Avatar, Pill } from '../ui/bits'
@@ -19,7 +19,7 @@ export default function OutcomesClient() {
   const [jobs, setJobs] = useState<JourneyJob[] | null | 'failed'>(null)
   const [leads, setLeads] = useState<PreviewLead[] | null | 'failed'>(null)
   const [messages, setMessages] = useState<OutcomeMsg[] | null | 'failed'>(null)
-  const [replies, setReplies] = useState<OutcomeReply[] | null | 'failed'>(null)
+  const [replies, setReplies] = useState<RepliesPage | null | 'failed'>(null)
   const get = (u: string) => fetch(u).then(r => r.ok ? r.json() : null).catch(() => null)
   useEffect(() => { void get('/api/scan/jobs').then(j => setJobs(Array.isArray(j?.jobs) ? j.jobs : 'failed')) }, [])
   const list = Array.isArray(jobs) ? jobs : []
@@ -29,7 +29,9 @@ export default function OutcomesClient() {
     if (!id) return
     void get(`/api/leads?job_id=${id}`).then(j => setLeads(Array.isArray(j?.leads) ? j.leads : 'failed'))
     void get(`/api/campaigns/${id}`).then(c => setMessages(Array.isArray(c?.messages) ? c.messages : 'failed'))
-    void get('/api/outreach/inbox').then(i => setReplies(Array.isArray(i?.rows) ? i.rows : 'failed'))
+    // This play's conversations that need the owner, filtered and counted on the server (not the newest replies account-wide).
+    void get(`/api/outreach/inbox?job_id=${id}&status=needs_owner&limit=100`).then(i => setReplies(Array.isArray(i?.threads) && typeof i?.counts?.needs_owner === 'number'
+      ? { threads: i.threads, complete: i.next_cursor === null, needsOwner: i.counts.needs_owner } : 'failed'))
   }, [id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const shell = (body: React.ReactNode) => <div className="p-4 sm:p-8 max-w-5xl mx-auto">
@@ -42,9 +44,9 @@ export default function OutcomesClient() {
   if (!play) return shell(<div className="card p-6 mt-5 text-sm" data-testid="outcomes-empty">{isJobId(asked) ? 'This play was not found.' : 'No plays yet.'} <Link className="btn-primary btn-sm ml-2" href="/app/leads">Find leads</Link></div>)
 
   const o = outcomes({ jobId: play.id, scanFailed: play.status === 'failed' ? scanOutcome({ ...play, empty_reason: play.empty_reason ?? null }).label : null,
-    leads: Array.isArray(leads) ? leads : null, messages: Array.isArray(messages) ? messages : null, replies: Array.isArray(replies) ? replies : null })
+    leads: Array.isArray(leads) ? leads : null, messages: Array.isArray(messages) ? messages : null, replies: replies && replies !== 'failed' ? replies : null })
   const loading = leads === null || messages === null || replies === null
-  const n = (v: unknown[] | null | undefined, partial = false) => v ? `${v.length}${partial ? '+' : ''}` : loading ? '...' : '?'
+  const n = (v: unknown[] | null | undefined, total?: number) => v ? `${total ?? v.length}` : loading ? '...' : '?'
   const leadsHref = `/app/leads?job_id=${play.id}`, outreachHref = `/app/outreach?job_id=${play.id}`
 
   return shell(<>
@@ -52,13 +54,13 @@ export default function OutcomesClient() {
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5" data-testid="outcomes-tiles">
       <Tile label="Qualified opportunities" value={n(o.split?.opportunities)} href={leadsHref} testid="tile-opportunities" />
       <Tile label="Drafts to review" value={n(o.drafts)} href={outreachHref} testid="tile-drafts" />
-      <Tile label="Conversations need you" value={n(o.conversations?.rows, o.conversations ? !o.conversations.complete : false)} href="/app/inbox" testid="tile-conversations" />
+      <Tile label="Conversations need you" value={n(o.conversations?.rows, o.conversations?.total)} href={`/app/inbox?status=needs_owner&job_id=${play.id}`} testid="tile-conversations" />
       <Tile label="Exceptions" value={n(o.exceptions)} href={leadsHref} testid="tile-exceptions" />
     </div>
 
     <Section title="Conversations that need you" testid="outcomes-conversations" empty="No replies need you." state={o.conversations ? o.conversations.rows.length : null} loading={loading}
-      tip={o.conversations && !o.conversations.complete ? 'Only the newest 100 replies on your account were checked, so there may be more.' : 'Interested replies, and replies a person wrote that dazl could not sort. A no, an opt-out or an auto-reply is not listed.'}>
-      {o.conversations?.rows.map(r => <Row key={r.gmail_id} name={r.company || r.from_email} sub={r.excerpt} right={<Pill tone={r.classification === 'positive' ? 'mint' : 'lav'}>{r.classification === 'positive' ? 'Interested' : 'Needs a read'}</Pill>} href="/app/inbox" />)}
+      tip={o.conversations && !o.conversations.complete ? `Showing the newest ${o.conversations.rows.length} of ${o.conversations.total}. Open Inbox to see them all.` : 'Interested replies, and replies a person wrote that dazl could not sort. A no, an opt-out or an auto-reply is not listed.'}>
+      {o.conversations?.rows.map(r => <Row key={r.gmail_id} name={r.company || r.from_email} sub={r.excerpt} right={<Pill tone={r.classification === 'positive' ? 'mint' : 'lav'}>{r.classification === 'positive' ? 'Interested' : 'Needs a read'}</Pill>} href={`/app/inbox?status=needs_owner&job_id=${play.id}`} />)}
     </Section>
 
     {/* Approved-but-unsent emails are listed here too (with zero drafts as well): they wait only for their send. */}

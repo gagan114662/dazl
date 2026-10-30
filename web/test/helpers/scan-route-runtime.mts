@@ -46,7 +46,7 @@ test('valid budget: persisted with the job in the same insert, and answered with
   assert.equal(j.budget.bounded, true); assert.equal(j.budget.max_usd, 0.5); assert.match(j.budget.ceiling, /PARTIAL budget, not a whole-scan dollar ceiling/); assert.match(j.budget.ceiling, /Not a bill and not a vendor-enforced ceiling/)
   const st = Object.fromEntries(j.budget.surfaces.map(s => [s.surface, s.status]))
   assert.deepEqual(st, { profile_generation: 'not_covered', search_query_writing: 'allowed', extraction: 'allowed', scoring: 'allowed', grounding: 'refused', buyer_fit: 'allowed', judge: 'off', fallback_research: 'refused', credit_enrichment: 'off', search_and_fetch: 'not_covered', autopilot: 'off' })
-  assert.ok(j.budget.limits.some(l => /budget stop, not zero results/.test(l)) && j.budget.limits.some(l => /resets when the process restarts/.test(l)))
+  assert.ok(j.budget.limits.some(l => /budget stop, not zero results/.test(l)) && j.budget.limits.some(l => /per-owner day and month pools are saved in the shared store and survive restarts/.test(l)))
 })
 
 test('invalid budgets are rejected BEFORE anything is queued: 400 invalid_budget, no job row', async () => {
