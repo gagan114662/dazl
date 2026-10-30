@@ -29,9 +29,9 @@ test('failed / empty queries are never billed again, here or from an earlier run
   assert.equal(all.action, 'search'); if (all.action !== 'search') return
   const failedKeys = new Set(all.queries.map(queryKey))
   const again = nextRound({ query: Q, icp: ICP, funnel: F(), history: [], spent: spent({ searches: 0 }), failedKeys })
-  assert.ok(again.action === 'stop' ? again.reason === 'no_new_queries' : again.queries.every(q => !failedKeys.has(queryKey(q))))
+  assert.ok(again.action === 'stop' ? again.reason === 'no_new_queries' : again.action === 'search' && again.queries.every(q => !failedKeys.has(queryKey(q))))
   const viaHistory = nextRound({ query: Q, icp: ICP, funnel: F(), history: all.queries.map((q, i) => ({ round: 1, source: all.source, query: q, outcome: 'failed' as const, new_pages: 0, actionable_after: 0 })), spent: spent({ searches: 0 }) })
-  assert.ok(viaHistory.action === 'stop' ? viaHistory.reason === 'no_new_queries' : viaHistory.queries.every(q => !failedKeys.has(queryKey(q))))
+  assert.ok(viaHistory.action === 'stop' ? viaHistory.reason === 'no_new_queries' : viaHistory.action === 'search' && viaHistory.queries.every(q => !failedKeys.has(queryKey(q))))
 })
 
 test('stop reasons are honest: target met; time / budget / rounds are LIMITS, not market exhaustion; coverage exhaustion needs several quiet sources', () => {
