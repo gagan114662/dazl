@@ -9,8 +9,8 @@
 const MONTHS: Record<string, number> = { january: 1, jan: 1, february: 2, feb: 2, march: 3, mar: 3, april: 4, apr: 4, may: 5, june: 6, jun: 6, july: 7, jul: 7, august: 8, aug: 8, september: 9, sept: 9, sep: 9, october: 10, oct: 10, november: 11, nov: 11, december: 12, dec: 12 }
 const MON = 'jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?'
 const DATE_RE = new RegExp(`\\b(\\d{4})-(\\d{2})-(\\d{2})\\b|\\b(${MON})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(\\d{4})\\b|\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MON})\\.?,?\\s+(\\d{4})\\b`, 'gi')
-const CUE = /(?:posted|published|announced|date)\b[^.\n]{0,25}$/i
-const NOT_EVENT = /(?:updated?|modified|revised|reviewed|copyright|©|expires?|valid (?:until|through)|last)\b[^.\n]{0,20}$/i
+export const CUE = /(?:posted|published|announced|date)\b[^.\n]{0,25}$/i
+export const NOT_EVENT = /(?:updated?|modified|revised|reviewed|copyright|©|expires?|valid (?:until|through)|last)\b[^.\n]{0,20}$/i
 const SEASON = /\b(?:this |early |late |mid-?)?(spring|summer|fall|autumn|winter)(?:\s+(?:of\s+)?(\d{4}))?\b/i
 const SOON = /\b(?:coming soon|opening soon|opens soon|launching soon|later this year|next year)\b/i
 
@@ -48,46 +48,4 @@ export function resolveTiming(pageText: string, quote: string, published: string
   const season = s ? `timing: ${s[1].toLowerCase().replace('autumn', 'fall')}${s[2] ? ` ${s[2]}` : ''}, unconfirmed (no dated source yet)` : SOON.test(near) ? 'timing: "soon", unconfirmed (no dated source yet)' : null
   const pubNote = pub ? `page published ${pub} (from ${how}); a publication date only - the event date is unknown and this does not place the event in the window` : null
   return { published: pub, olderYear, note: [pubNote, season].filter(Boolean).join('; ') || null }
-}
-
-// Whether the page TEXT states `day` (ISO, "October 8, 2026", "Oct 8, 2026", "8 October 2026") as something other than a
-// publication or update stamp. A day that appears only after "Posted / Published / Updated ..." is the page's own date,
-// not the event's.
-export function textStatesDay(pageText: string, day: string): boolean {
-  const text = pageText.replace(/\s+/g, ' ')
-  for (const m of text.matchAll(DATE_RE)) {
-    const date = m[1] ? iso(+m[1], +m[2], +m[3]) : m[4] ? iso(+m[6], MONTHS[m[4].toLowerCase().replace(/\./g, '')] ?? MONTHS[m[4].toLowerCase().slice(0, 3)], +m[5]) : iso(+m[9], MONTHS[m[8].toLowerCase().replace(/\./g, '')] ?? MONTHS[m[8].toLowerCase().slice(0, 3)], +m[7])
-    if (date !== day) continue
-    const before = text.slice(Math.max(0, m.index! - 40), m.index!).slice(-30)
-    if (CUE.test(before) || NOT_EVENT.test(before)) continue
-    return true
-  }
-  return false
-}
-
-// #460: an event date that is only the page's own publication metadata. The extraction can copy the page's publication date
-// into the event date; when the text itself never states that day (other than as a publication/update stamp), the event's
-// own date is unresolved (a 2019 opening on a page republished this month is still undated), so the candidate is treated as
-// undated and the window gate decides. Scope: the fetcher's `published` metadata only. A cued "Published <day>" line in the
-// text with that day as the event date is not changed here (a separate decision: many fixtures date leads that way).
-export function datedOnlyByPublication(eventDate: string | null, pageText: string, published: string | null | undefined): boolean {
-  if (!eventDate || !published || !/^\d{4}-\d{2}-\d{2}$/.test(published)) return false
-  return published === eventDate && !textStatesDay(pageText, eventDate)
-}
-
-// #460 (visible text): the day appears in the page text, but ONLY as a publication / update stamp ("Posted ...", "Published ...", "Updated ..."). A publication
-// day is not the event day whether it came from metadata or from a visible line, so an event date supported by nothing else is unresolved. A day that is not in
-// the text at all is a different question (is the date supported by the page?) and is not decided here.
-export function datedOnlyByPublicationStamp(eventDate: string | null, pageText: string): boolean {
-  if (!eventDate || !/^\d{4}-\d{2}-\d{2}$/.test(eventDate)) return false
-  const text = pageText.replace(/\s+/g, ' ')
-  let seen = false
-  for (const m of text.matchAll(DATE_RE)) {
-    const date = m[1] ? iso(+m[1], +m[2], +m[3]) : m[4] ? iso(+m[6], MONTHS[m[4].toLowerCase().replace(/\./g, '')] ?? MONTHS[m[4].toLowerCase().slice(0, 3)], +m[5]) : iso(+m[9], MONTHS[m[8].toLowerCase().replace(/\./g, '')] ?? MONTHS[m[8].toLowerCase().slice(0, 3)], +m[7])
-    if (date !== eventDate) continue
-    const before = text.slice(Math.max(0, m.index! - 40), m.index!).slice(-30)
-    if (CUE.test(before) || NOT_EVENT.test(before)) { seen = true; continue }
-    return false          // the text states the day for something else: the event, as far as this rule can tell
-  }
-  return seen
 }
