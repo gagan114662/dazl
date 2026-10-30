@@ -86,6 +86,9 @@ db.close()
 // scan in progress and the plays B creates are left to the (fenced) runner, so their scan_jobs rows are compared by
 // id/query/offer only.
 const FIXED = new Set([...Object.values(HOME), ...Object.values(DRAFTING)])
+// A scan's work item carries the scan's id as its own id (lib/queue/scan-claimer.ts, lib/scan/queue-runner.ts enqueue
+// { id: job.id }, no dedupe key), so that is the column a refusal enqueuing work for a fixture play would write.
+const workFor = (d, ids) => d.prepare(`SELECT * FROM work_queue WHERE id IN (${ids.map(() => '?').join(',')}) ORDER BY id`).all(...ids)
 const read = () => { const d = new Database(DB, { readonly: true }); try {
   const tables = d.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map(t => t.name)
   const jobs = d.prepare('SELECT * FROM scan_jobs ORDER BY created_at, rowid').all()
@@ -96,12 +99,17 @@ const read = () => { const d = new Database(DB, { readonly: true }); try {
     drafts: d.prepare('SELECT * FROM outreach_messages ORDER BY created_at, rowid').all(),
     counts: Object.fromEntries(tables.filter(t => !['rate_limits', 'app_leases', 'scan_jobs', 'work_queue', 'scan_source_stats', 'outreach_llm_usage'].includes(t)).map(t => [t, d.prepare(`SELECT count(*) AS n FROM "${t}"`).get().n])),
     // the runner's own tables, for the fixture plays only (the plays B creates and the scan in progress are the runner's)
-    fixtureWork: d.prepare(`SELECT * FROM work_queue WHERE dedupe_key IN (${[...FIXED].map(() => '?').join(',')}) ORDER BY id`).all(...FIXED),
+    fixtureWork: workFor(d, [...FIXED]),
     fixtureStats: d.prepare(`SELECT count(*) AS n FROM scan_source_stats WHERE job_id IN (${[...FIXED].map(() => '?').join(',')})`).get(...FIXED).n,
     refusals: d.prepare("SELECT message_id, purpose, outcome FROM outreach_llm_usage ORDER BY rowid").all(),
   } } finally { d.close() } }
 const offerOf = id => read().jobs.find(j => j.id === id).offer
 const sameExcept = (a, b, what) => { for (const k of Object.keys(a)) assert.deepEqual(a[k], b[k], `${what}: ${k} unchanged`) }
+// The query can match: a work item written the way a scan enqueue writes it is found, then removed again.
+{ const d = new Database(DB); const now = Math.floor(Date.now() / 1000)
+  d.prepare("INSERT INTO work_queue (id, tenant_id, kind, status, attempts, max_attempts, not_before, created_at) VALUES (?, 'u1', 'scan', 'pending', 0, 3, ?, ?)").run(HOME[1280], now, now)
+  assert.equal(workFor(d, [...FIXED]).length, 1, 'fixture: the work-item check finds a scan work item for a fixture play')
+  d.prepare('DELETE FROM work_queue WHERE id = ?').run(HOME[1280]); d.close() }
 const s0 = read()
 
 const port = 3300 + Math.floor(Math.random() * 500); const base = `http://127.0.0.1:${port}`
