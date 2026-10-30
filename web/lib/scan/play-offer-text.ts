@@ -101,9 +101,9 @@ const exact = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase()
 // credits."), is material, so an unknown wording is a conflict (fail closed) and never a silent match.
 // Demonstrably: a targeting verb, then (after "for"/"to"/"out"/"only"/...) an object that is, up to the first comma,
 // preposition, conjunction or who/that/which clause, at most three plain modifiers, a known buyer noun, and at most one
-// -ing word ("startups hiring"). A modifier that could be a verb or function word (ends in -s or -ed, an auxiliary, a
-// preposition) is not plain, so a declarative sentence can never pass as an object. The buyer list only decides what
-// may be ignored: a buyer it does not know makes the sentence a term, never the other way round.
+// -ing word ("startups hiring"). Each modifier must be provably descriptive (safeModifier), so a declarative sentence
+// ("Email marketing won customers.") can never pass as an object. Both lists only decide what may be ignored: a buyer or modifier they
+// do not know makes the sentence a term, never the other way round.
 const IMPERATIVE = /^(?:(?:please|and|also|but)\s+)?(?:(?:do not|don['’]t|never)\s+)?(?:find|search|look|target|contact|reach|email|message|include|exclude|skip|avoid|ignore)\s+(.+)$/i
 const LEADING = /^(?:(?:for|to|out|at|up|only|all|any|the|more|new|every|other)\s+)+/i
 const OBJECT_END = /\s*(?:[,;:()]|\s(?:in|at|from|near|across|within|with|on|around|based|who|that|which|whose|where|when|if|by|of|for|to|outside|inside|except|excluding|but|and|or|nor)\b)/i
@@ -112,8 +112,18 @@ const BUYERS = new Set(('founders owners ceos ctos cfos cmos coos executives lea
   'retailers stores shops restaurants brands organizations organisations nonprofits charities people prospects buyers customers vendors ' +
   'resellers chains contractors plumbers electricians landlords investors recruiters developers engineers marketers freelancers ' +
   'coaches therapists lawyers accountants manufacturers distributors wholesalers merchants sellers operators providers labs').split(' '))
-const NOT_PLAIN = /^(?:can|could|will|would|may|might|must|shall|should|do|does|did|has|had|have|is|are|was|were|be|been|being|cannot|won['’]t|isn['’]t|aren['’]t|not|no|than|then|so|very|also|just)$/i
-const plainModifier = (w: string) => !NOT_PLAIN.test(w) && (!/s$/i.test(w) || /^(?:saas|sales|business|b2b|us|uk)$/i.test(w)) && (!/ed$/i.test(w) || w.includes('-'))
+// A modifier before the buyer noun is safe only when it is provably descriptive: a known describing word, the singular
+// of a buyer noun ("restaurant owners", "clinic managers"), or a hyphenated -backed/-funded/-stage/-owned/-based/-sized/
+// -led form ("VC-backed startups"). Any other word (a verb in any tense, a service name, an unknown word) means the
+// sentence is not provably targeting, so it is material.
+const SAFE_MODIFIERS = new Set(('independent dental medical veterinary local small large midsize mid-size early growing regional national ' +
+  'family private b2b b2c saas smb enterprise seed series fast-growing high-growth').split(' '))
+const singular = (w: string) => w.endsWith('ies') ? `${w.slice(0, -3)}y` : w.endsWith('sses') || w.endsWith('shes') || w.endsWith('ches') ? w.slice(0, -2) : w.replace(/s$/, '')
+const BUYER_SINGULAR = new Set([...BUYERS].map(singular))
+const safeModifier = (w: string) => {
+  const x = w.toLowerCase()
+  return SAFE_MODIFIERS.has(x) || BUYER_SINGULAR.has(x) || /^[a-z0-9]+-(?:backed|funded|stage|owned|based|sized|led)$/.test(x)
+}
 function isTargeting(x: string): boolean {
   const m = IMPERATIVE.exec(x)
   if (!m) return false
@@ -122,7 +132,7 @@ function isTargeting(x: string): boolean {
   const words = (end ? rest.slice(0, end.index) : rest).trim().split(/\s+/).filter(Boolean)
   if (words.length && /ing$/i.test(words[words.length - 1]) && words.length >= 2 && BUYERS.has(words[words.length - 2].toLowerCase())) words.pop()
   const head = words.pop()
-  return !!head && BUYERS.has(head.toLowerCase()) && words.length <= 3 && words.every(plainModifier)
+  return !!head && BUYERS.has(head.toLowerCase()) && words.length <= 3 && words.every(safeModifier)
 }
 const AUDIENCE = /^(?:to|for)\s+(.*?)(?=\s*(?:,|\bbut\b|\bexcept\b|\bexcluding\b|\bwithout\b)|$)/i
 type Statement = { offer: string; audience: string; rest: string; others: string[] }
