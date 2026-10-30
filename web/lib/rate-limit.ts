@@ -23,6 +23,8 @@ export type Degraded = 'closed' | 'local'
 export const DEGRADED: Record<string, Degraded> = {
   // auth
   'signin-ip': 'closed', 'signin-acct': 'closed', signup: 'closed', google: 'closed', 'google-cb': 'closed',
+  // account data (#359): the full export is a heavy read; a deletion request checks a password
+  export: 'closed', deletion: 'closed',
   // scans, trial admission and paid or shared providers
   scan: 'closed', icp: 'closed', icpurl: 'closed', qualify: 'closed', 'qualify-preview': 'closed', 'hiring-feed': 'closed',
   'hiring-feed-retry': 'closed', 'page-signals': 'closed', 'source-review': 'closed', 'find-contact': 'closed',
