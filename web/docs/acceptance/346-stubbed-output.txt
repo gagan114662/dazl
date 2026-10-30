@@ -1,0 +1,14 @@
+== 1. Same-name practice in another state (the live-QA Pico Rivera case) ==
+Apollo record: Smile Avenue Dental Group, Pico Rivera CA, lead has no domain -> NOT attached (contact stays empty); reason: contact rejected: location mismatch Pico Rivera, CA vs New York, NY
+Apollo record: Smile Avenue Dental, New York NY, lead has no domain (control) -> ATTACHED ["Sophia Rozov - Practice Manager"]
+Apollo record on a DIFFERENT domain than the lead's (same city) -> NOT attached (contact stays empty); reason: contact rejected: domain mismatch smileavenue-dental.io vs smileavenuedental.com
+
+== 2. A domain that only agrees with itself is not identity (guessed/legacy domain) vs an established one ==
+guessed domain, record states Pico Rivera CA -> {"ok":false,"reason":"contact rejected: address mismatch 8000 whittier blvd vs 57 w 57th st (the domain matches, the address does not)"}
+ESTABLISHED domain (cited page host / user-confirmed), same record -> {"ok":true,"via":"domain"}
+guessed domain, record states New York NY -> {"ok":true,"via":"domain"}
+
+== 3. Completion counts only confirmed domains and real calendar days ==
+event date 2026-02-31 (not a real day) -> date=false domain=false
+event date 2026-10-12, populated but unvalidated domain 'wrong-namesake.example' -> date=true domain=false
+event date 2026-10-12, domain with a recorded homepage check -> date=true domain=true
