@@ -75,6 +75,7 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/outreach/test-fixture.ts': 0,
   'lib/people/email-pattern.ts': 2,
   'lib/people/people-search.ts': 0,
+  'lib/people/sec-officers.ts': 0,
   'lib/queue/sqlite.ts': 0,
   'lib/replies/threads.ts': 4,
   'lib/scan/actionable.ts': 0,
