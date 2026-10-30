@@ -376,3 +376,53 @@ test('#448 positive control: settings saved unchanged during the token refresh o
     const r = await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW), providers } as never)
     assert.deepEqual([r.sent, sent.length], [1, 1]) }
 })
+
+// Instinct's hold on 6ffe640: volume authority. The daily cap is re-read from the store at the send commitment, after the
+// token refresh, with this send's own slot left out; so is the per-company rule. A cap lowered while the request was in
+// flight refuses the admitted send: nothing sent, the slot released, the draft unapproved and held until the window has
+// room. An unchanged or raised cap sends exactly once. Two passes in flight together cannot exceed the lowered cap.
+const onToken = (db: Database.Database, nth: number, change: (db: Database.Database) => void) => {
+  let n = 0
+  return (async (url: string) => { if (String(url).includes('token') && ++n === nth) change(db); return tokenOk(url as never) }) as unknown as typeof fetch
+}
+const setCap = (cap: number) => (db: Database.Database) => enable(db, 'A', { version: CONSENT_VERSION, attestations: [...ATTESTATIONS], daily_cap: cap })
+
+test('#448 the daily cap lowered during the token refresh: the admitted send is refused at the send commitment (Instinct negative)', async () => {
+  const db = await setup(); ok(db); pastWarmup(db); const { sent, d } = sends()
+  lead(db, 'a@one.example'); lead(db, 'b@two.example')
+  const r = await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW), fetchImpl: onToken(db, 2, setCap(1)) })
+  assert.deepEqual([r.sent, sent.length, getState(db, 'A').daily_cap, r.stopped], [1, 1, 1, 'daily_cap'], 'the second send is refused at the boundary')
+  assert.deepEqual(counted(db).map(c => c.action), ['sent'], 'the refused slot is released; the first send counts once')
+  assert.deepEqual(work(db).map(w => [w.reason, w.next_at, w.attempts]), [['daily_cap', NOW + DAY + 1, 0]], 'held until the window has room')
+  assert.equal(msgStatus(db, 'b@two.example'), 'draft', 'unapproved again, nothing to send by accident')
+  assert.ok(recentAutopilotAudit(db, 'A').some(a => a.action === 'send_failed' && a.detail === 'volume_daily_cap'), 'recorded why')
+  await runAutopilot(db, 'A', 'Acme', at(d, NOW + DAY + 1)); assert.deepEqual([sent.length, work(db).length], [2, 0], 'sent once when the window moves on')
+})
+
+test('#448 positive controls: the cap saved unchanged or raised during the token refresh: both drafts send, each once', async () => {
+  for (const [what, cap] of [['unchanged', 3], ['raised', 5]] as const) {
+    const db = await setup(); ok(db); pastWarmup(db); const { sent, d } = sends()
+    lead(db, 'a@one.example'); lead(db, 'b@two.example')
+    const r = await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW), fetchImpl: onToken(db, 2, setCap(cap)) })
+    assert.deepEqual([r.sent, sent.length, work(db).length, reservations(db)], [2, 2, 0, 0], `${what}: both sent, nothing held, no slot left`)
+    assert.deepEqual(counted(db).map(c => c.action), ['sent', 'sent'], `${what}: each counted once`)
+  }
+})
+
+test('#448 two passes in flight when the cap is lowered: together they send at most the new cap, nothing twice', async () => {
+  const db = await setup(); cap1(db); pastWarmup(db); const { sent, d } = slowSends()
+  lead(db, 'a@one.example'); lead(db, 'b@two.example')
+  await runAutopilot(db, 'A', 'Acme', at(d, NOW)); assert.equal(sent.length, 1)
+  lead(db, 'c@three.example'); await runAutopilot(db, 'A', 'Acme', at(d, NOW))
+  assert.equal(work(db).length, 2, 'two held drafts, both due tomorrow')
+  // The cap is 3 when both passes reserve their send, and 1 (lowered during the second pass's token refresh, so both are
+  // past admission) by the time either reaches Gmail.
+  setCap(3)(db)
+  const later = { ...at(d, NOW + DAY + 1), fetchImpl: onToken(db, 2, setCap(1)) }
+  const [x, y] = await Promise.all([runAutopilot(db, 'A', 'Acme', later), runAutopilot(db, 'A', 'Acme', later)])
+  assert.deepEqual([x.sent + y.sent, sent.length], [1, 2], 'cap 1: one send between the two passes, not two')
+  assert.deepEqual(counted(db).map(c => c.action), ['sent', 'sent'], 'each send counted once; the refused slot released')
+  assert.deepEqual(work(db).map(w => [w.reason, w.next_at]), [['daily_cap', NOW + 2 * DAY + 2]], 'the other is held until the window has room')
+  assert.equal(draftsBack(db), 1, 'and unapproved again')
+  await runAutopilot(db, 'A', 'Acme', at(d, NOW + 2 * DAY + 2)); assert.deepEqual([sent.length, work(db).length], [3, 0], 'sent once when the window moves on')
+})
