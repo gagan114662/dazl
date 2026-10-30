@@ -72,7 +72,7 @@ test(`#349 every exact negative from the review rounds (${NEGATIVES.length}) is 
     try {
       const where = `[saved ${JSON.stringify(saved)}] ${q}`
       const o = await readPlayOffer(sqliteDb(db), 'A', 'play')
-      if (o?.source !== 'conflict' && o?.source !== 'withdrawn' && o?.offer !== null) failures.push(`${where}: resolver gave ${JSON.stringify(o)}`)
+      if (o?.source !== 'conflict' || o.offer !== null) failures.push(`${where}: resolver gave ${JSON.stringify(o)}`)
       const before = drafts(db)
       try { createDraft(db, 'A', 'lead-play', 'Acme'); failures.push(`${where}: createDraft drafted`) } catch (e) { if (!/offer_conflict|offer_withdrawn|no_profile/.test(String(e))) failures.push(`${where}: createDraft threw ${e}`) }
       if (drafts(db) !== before) failures.push(`${where}: a draft was inserted`)
