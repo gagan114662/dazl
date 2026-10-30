@@ -122,14 +122,16 @@ export async function tenantFunnels(db: Db, opts: FunnelOptions): Promise<Tenant
     const refundedInvoices = new Set(succeeded.filter(p => refunds.some(r => r.invoice === p.ref && (r.full_refund === 1 || Number(r.amount_cents) >= Number(p.amount_cents)))).map(p => p.ref))
     const paidOk = succeeded.filter(e => !refundedInvoices.has(e.ref))
     const first = paidOk[0] ?? null
-    // the latest end recorded after the first payment: when the service actually stopped
-    const ended = first ? ev.filter(e => e.kind === 'subscription_ended' && Number(e.occurred_at) >= Number(first.occurred_at)).at(-1) ?? null : null
+    // every end recorded after the first payment, each for its own subscription (the event ref is the subscription id)
+    const endEvents = first ? ev.filter(e => e.kind === 'subscription_ended' && Number(e.occurred_at) >= Number(first.occurred_at)) : []
+    const ended = endEvents.at(-1) ?? null
     const periods = (j: string | null): ServicePeriod[] => { try { const v = j ? JSON.parse(j) : []; return Array.isArray(v) ? v : [] } catch { return [] } }
     const ret = retention({ payments: paidOk.map(e => ({ at: Number(e.occurred_at), refunded: false, periods: periods(e.service_periods) })),
-      ended_at: ended ? Number(ended.occurred_at) : null, cutoff: cut },
+      ends: endEvents.map(e => ({ at: Number(e.occurred_at), subscription: e.ref })), cutoff: cut },
       opts.retainDays ? { headlineDays: opts.retainDays } : {})
     const retained = ret.day30.retained
-    const churnedAt = ended && retained !== true ? Number(ended.occurred_at) : null
+    // churned: paid, not retained, and no longer covered because its subscriptions ended (not merely one of them)
+    const churnedAt = ended && retained !== true && ret.coverage_at_cutoff === 'not_covered' ? Number(ended.occurred_at) : null
     const failed = ev.filter(e => e.kind === 'payment_failed').length
     const signup = ev.find(e => e.kind === 'signup')
     const excluded = exclude.has(u.id) || RESERVED.test(u.email)
