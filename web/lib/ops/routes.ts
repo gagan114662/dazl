@@ -62,6 +62,7 @@ export const ROUTE_TEMPLATES: readonly string[] = [
   '/api/scan/commenters/[batch]',
   '/api/scan/csv',
   '/api/scan/csv/[batch]',
+  '/api/scan/estimate',
   '/api/scan/icp',
   '/api/scan/icp-from-url',
   '/api/scan/jobs',
