@@ -6,6 +6,7 @@ import { DAILY_CAP, getSettings, OutreachError, saveSettings, sentLast24h } from
 import { sameOriginJson } from '@/lib/same-origin'
 import { accountSendCount } from '@/lib/outreach/send-budget'
 import { audit } from '@/lib/audit-route'
+import { denied } from '@/lib/workspace-access'
 
 // account_sent_24h is the whole rolling budget the daily cap is checked against (first touches, follow-ups, sequence steps,
 // re-opens); sent_24h is first touches only. Read-only.
@@ -13,17 +14,18 @@ export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const db = getScanDb()
-  return NextResponse.json({ gmail: gmailStatus(db, user.id), sender: getSettings(db, user.id) ?? null, daily_cap: DAILY_CAP, sent_24h: sentLast24h(db, user.id), account_sent_24h: accountSendCount(db, user.id, Math.floor(Date.now() / 1000)), read_notice: READ_CONSENT_TEXT })
+  return NextResponse.json({ gmail: gmailStatus(db, user.tenantId), sender: getSettings(db, user.tenantId) ?? null, daily_cap: DAILY_CAP, sent_24h: sentLast24h(db, user.tenantId), account_sent_24h: accountSendCount(db, user.tenantId, Math.floor(Date.now() / 1000)), read_notice: READ_CONSENT_TEXT })
 }
 
 export async function PUT(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
+  const no = denied(user, 'configure'); if (no) return no
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   const body = await req.json().catch(() => null)
   if (typeof body?.sender_name !== 'string' || typeof body?.postal_address !== 'string') return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   try {
-    saveSettings(getScanDb(), user.id, { sender_name: body.sender_name, postal_address: body.postal_address, booking_url: body.booking_url })
+    saveSettings(getScanDb(), user.tenantId, { sender_name: body.sender_name, postal_address: body.postal_address, booking_url: body.booking_url })
     // which settings, never the sender name, address or link themselves
     await audit(user, req, { action: 'settings.changed', resource: 'sender', summary: { booking_link: typeof body.booking_url === 'string' && body.booking_url.trim() !== '' } })
     return NextResponse.json({ ok: true })

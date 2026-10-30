@@ -8,6 +8,7 @@ import { eventDateCopy } from '@/lib/scan/date-copy'
 import { exportEvidenceOrigin } from '@/lib/scan/evidence-origin'
 import { bestPeople } from '@/lib/people/best-person'
 import { audit } from '@/lib/audit-route'
+import { denied } from '@/lib/workspace-access'
 
 const COLUMNS = [
   { key: 'company', label: 'Company' },
@@ -44,15 +45,16 @@ const COLUMNS = [
 export async function GET(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
+  const no = denied(user, 'export'); if (no) return no
   const jobId = req.nextUrl.searchParams.get('job_id') ?? ''
   const db = await getDb()
   if (jobId && !/^[a-f0-9]{24}$/.test(jobId)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   // Default export is real leads only; ?include_fixtures=1 is the explicit opt-in
   // that keeps the verification fixture rows in the file.
   const includeFixtures = req.nextUrl.searchParams.get('include_fixtures') === '1'
-  const rows = await exportLeads(db, user.id, jobId || undefined, 5000, includeFixtures)
-  const via = await readGdeltAttribution(db, user.id, rows.map(r => String(r.lead_id)))
-  const people = await bestPeople(db, user.id, rows as { lead_id: string; job_id: string }[])
+  const rows = await exportLeads(db, user.tenantId, jobId || undefined, 5000, includeFixtures)
+  const via = await readGdeltAttribution(db, user.tenantId, rows.map(r => String(r.lead_id)))
+  const people = await bestPeople(db, user.tenantId, rows as { lead_id: string; job_id: string }[])
   const csv = toCsv(rows.map(r => ({ ...r, ...people.get(r.lead_id as string), discovered_via: via.get(String(r.lead_id))?.text ?? '', discovered_via_link: via.get(String(r.lead_id))?.link ?? '', evidence_origin_label: exportEvidenceOrigin(r as Parameters<typeof exportEvidenceOrigin>[0]), date_context: eventDateCopy(typeof r.event_date === 'string' ? r.event_date : null, typeof r.date_status === 'string' ? r.date_status : null), created_at: typeof r.created_at === 'number' ? new Date(r.created_at * 1000).toISOString() : r.created_at })), COLUMNS)
   await audit(user, req, { action: 'export.leads', resource: jobId ? 'scan_job' : 'leads', id: jobId || null, summary: { rows: rows.length, fixtures: includeFixtures } })
   return new NextResponse(csv, {

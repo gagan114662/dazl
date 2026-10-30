@@ -1,7 +1,7 @@
 // The audit trail (#371) through the real route handlers and the real session lookup (audit-session-loader.mjs), one
-// SQLite fixture store: each privileged request leaves one attributable event in the workspace it acted in (on main,
-// the caller's own; members acting in another workspace's data arrive with #424) (who, what,
-// which resource, the request's correlation id), no secret value or user-typed text reaches the trail, the trail is
+// SQLite fixture store: each privileged request leaves one attributable event in the workspace it acted in, under the
+// account that acted (an admin or operator acting in another owner's workspace is recorded there, under their own id;
+// who, what, which resource, the request's correlation id), no secret value or user-typed text reaches the trail, the trail is
 // readable by owners and admins only ('GET /api/workspace/audit'), a refused read is itself a denied event, and another
 // workspace's owner sees none of it. Every outbound call is answered by a stub here (Stripe test mode, a model-key
 // check) or fails the run.
@@ -74,19 +74,21 @@ test("privileged requests leave attributable, redacted events; 'GET /api/workspa
   }
   await step('llm key saved', t.A, () => llmKey.PUT(req('/api/settings/llm-key', 'PUT', { vendor: 'anthropic', api_key: MARK.modelKey })))
   await step('llm key removed', t.A, () => llmKey.DELETE(req('/api/settings/llm-key?vendor=anthropic', 'DELETE')))
-  await step('enrichment saved', t.A, () => enrichment.POST(req('/api/settings/enrichment', 'POST', { connector: 'enrich:apollo', key: MARK.enrichKey })))
-  await step('enrichment removed', t.A, () => enrichment.POST(req('/api/settings/enrichment', 'POST', { connector: 'enrich:apollo', disconnect: true })))
+  await step('enrichment saved', t.D, () => enrichment.POST(req('/api/settings/enrichment', 'POST', { connector: 'enrich:apollo', key: MARK.enrichKey })))
+  await step('enrichment removed', t.D, () => enrichment.POST(req('/api/settings/enrichment', 'POST', { connector: 'enrich:apollo', disconnect: true })))
   const rotated = await (await step('calcom rotated', t.A, () => calcom.POST(req('/api/settings/calcom', 'POST', { action: 'rotate' })))).json() as { secret: string }
   await step('crm saved', t.A, () => crm.POST(req('/api/crm', 'POST', { action: 'save', provider: 'hubspot', key: MARK.crmKey })))
   await step('crm removed', t.A, () => crm.POST(req('/api/crm', 'POST', { action: 'disconnect' })))
   await step('gmail removed', t.A, () => gmailDisconnect.POST(req('/api/gmail/disconnect', 'POST')))
   await step('sender saved', t.A, () => sender.PUT(req('/api/outreach/settings', 'PUT', { sender_name: MARK.sender, postal_address: MARK.address, booking_url: '' })))
   await step('leads exported', t.A, () => exportRoute.GET(req(`/api/leads/export?job_id=${job}`, 'GET')))
-  await step('lead quarantined', t.A, () => quarantine.POST(req(`/api/leads/${lead}/quarantine`, 'POST', { reason: MARK.reason }), { params: Promise.resolve({ lead }) }))
-  await step('lead released', t.A, () => quarantine.DELETE(req(`/api/leads/${lead}/quarantine`, 'DELETE'), { params: Promise.resolve({ lead }) }))
+  await step('lead quarantined', t.O, () => quarantine.POST(req(`/api/leads/${lead}/quarantine`, 'POST', { reason: MARK.reason }), { params: Promise.resolve({ lead }) }))
+  await step('lead released', t.O, () => quarantine.DELETE(req(`/api/leads/${lead}/quarantine`, 'DELETE'), { params: Promise.resolve({ lead }) }))
   await step('connections imported', t.A, () => warm.POST(req('/api/warm/connections', 'POST', { csv: 'First Name,Last Name,URL,Connected On\nAda,Lovelace,https://linkedin.com/in/adalovelace,15 Mar 2024\n' })))
   await step('connections deleted', t.A, () => warm.DELETE(req('/api/warm/connections', 'DELETE')))
   await step('checkout started', t.A, () => checkout.POST(req('/api/billing/checkout', 'POST')))
+  // a viewer is refused by role (403) and nothing is deleted or recorded
+  await step('viewer delete refused', t.V, () => warm.DELETE(req('/api/warm/connections', 'DELETE')), 403)
   await step('monitor deleted', t.A, () => monitor.DELETE(req(`/api/monitors/${mon}`, 'DELETE'), { params: Promise.resolve({ id: mon }) }))
   assert.deepEqual(fetched.map(u => new URL(u).host), ['api.anthropic.com', 'api.stripe.com'], 'only the stubbed model-key check and Stripe test-mode checkout')
 
@@ -101,10 +103,10 @@ test("privileged requests leave attributable, redacted events; 'GET /api/workspa
   const events = ((await r.json()) as { events: Ev[] }).events.reverse()
   assert.deepEqual(events.map(e => `${e.decision} ${e.actor_id} ${e.action} ${e.resource_type}${e.resource_id ? ` ${e.resource_id}` : ''}`), [
     'allowed A credential.saved llm_key anthropic', 'allowed A credential.removed llm_key anthropic',
-    'allowed A credential.saved enrichment enrich:apollo', 'allowed A credential.removed enrichment enrich:apollo',
+    'allowed D credential.saved enrichment enrich:apollo', 'allowed D credential.removed enrichment enrich:apollo',
     'allowed A credential.rotated calcom', 'allowed A credential.saved crm hubspot', 'allowed A credential.removed crm',
     'allowed A credential.removed gmail', 'allowed A settings.changed sender', `allowed A export.leads scan_job ${job}`,
-    `allowed A pipeline.quarantined lead ${lead}`, `allowed A pipeline.released lead ${lead}`,
+    `allowed O pipeline.quarantined lead ${lead}`, `allowed O pipeline.released lead ${lead}`,
     'allowed A data.deleted warm_connections', 'allowed A billing.checkout_started plan', `allowed A data.deleted monitor ${mon}`,
     'denied O audit.read audit', 'denied V audit.read audit',
   ])
@@ -118,13 +120,15 @@ test("privileged requests leave attributable, redacted events; 'GET /api/workspa
   assert.deepEqual(byAction('data.deleted').summary, { rows: 1 })
   assert.deepEqual(byAction('audit.read', 'V').summary, { role: 'viewer' })
   assert.ok(events.every(e => e.actor_kind === 'user'))
+  // every event is in workspace A, whoever acted
+  assert.deepEqual([...new Set((raw.prepare("SELECT tenant_id FROM audit_events WHERE action != 'export.audit'").all() as { tenant_id: string }[]).map(x => x.tenant_id))], ['A'])
 
   // nothing secret or user-typed in the trail
   const table = JSON.stringify(raw.prepare('SELECT * FROM audit_events').all())
   for (const [k, v] of Object.entries({ ...MARK, calcomSecret: rotated.secret })) assert.ok(!table.includes(v), `${k} is not in the trail`)
 
   // filters, then the CSV download, which is itself recorded
-  assert.deepEqual(((await (await read(t.A, '?action=credential.&actor=A')).json()) as { events: Ev[] }).events.map(e => e.action), ['credential.removed', 'credential.removed', 'credential.saved', 'credential.rotated', 'credential.removed', 'credential.saved', 'credential.removed', 'credential.saved'])
+  assert.deepEqual(((await (await read(t.A, '?action=credential.&actor=A')).json()) as { events: Ev[] }).events.map(e => e.action), ['credential.removed', 'credential.removed', 'credential.saved', 'credential.rotated', 'credential.removed', 'credential.saved'])
   assert.equal((await read(t.A, '?action=DROP%20TABLE')).status, 400)
   const csv = await read(t.A, '?format=csv')
   assert.equal(csv.headers.get('content-type'), 'text/csv; charset=utf-8')

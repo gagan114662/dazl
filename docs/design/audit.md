@@ -41,9 +41,8 @@ retention built on main. Time-bounded support access needs an owner decision; se
   event changes nothing and records nothing.
 - **Route actions** are written after the change succeeded (`lib/audit-route.ts`). A failed audit write does not undo
   the change; it is reported through `captureError`, so a gap is an alert rather than silent.
-- The event's workspace is the one the route acted in. On main every route acts in the caller's own workspace
-  (`user.id`); when routes move to `user.tenantId` (#424), `SessionUser` loses `id` and every `audit()` call moves with
-  its route.
+- The event's workspace is the one the route acted in (`user.tenantId`, #424), its actor the account acting
+  (`user.actorId`): an operator's send in someone else's workspace is recorded there, under the operator's id.
 
 ## Covered
 
@@ -59,8 +58,9 @@ retention built on main. Time-bounded support access needs an owner decision; se
 | deletion | warm connections deleted (rows); monitor deleted |
 | policy | refused audit reads |
 
-Not covered yet: refusals of other routes by role need the role checks of #424 (`denied()` records them there); actions
-taken by the scheduled tick (sequences, follow-ups) have no human actor and are already in the outreach ledger.
+Not covered yet: role refusals of routes other than the audit read (`denied()`, #424) answer 403 without an event;
+recording them needs `denied()` to write, which is a follow-up. Actions taken by the scheduled tick (sequences,
+follow-ups) have no human actor and are already in the outreach ledger.
 
 ## Support access: needs an owner decision
 
