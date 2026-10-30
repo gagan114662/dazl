@@ -11,7 +11,8 @@ import { migrateReplies, acceptReadConsent } from '../lib/outreach/replies.ts'
 import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
 import { saveSettings, approve, sendMessage, createDraft } from '../lib/outreach/service.ts'
 import { migrateSequences, createSequence, approveSequence, runSequences, sequenceStatusByLead } from '../lib/outreach/sequences.ts'
-import { convertedContact, recordLifecycle as record } from '../lib/outreach/lifecycle.ts'
+import { applyPendingLifecycle, forgetLifecycleUser, lifecycleHold, reconcileLifecycle, recordLifecycleEvent } from '../lib/outreach/lifecycle.ts'
+import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { stopReasonWords } from '../lib/outreach/lifecycle-words.ts'
 
@@ -21,6 +22,7 @@ const env = { GOOGLE_CLIENT_ID: 'client', GOOGLE_CLIENT_SECRET: 'secret', PUBLIC
 const json = (v: unknown, status = 200) => new Response(JSON.stringify(v),{ status })
 async function setup() {
   const db = new Database(':memory:')
+  migrateAllSqlite(db)
   migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db); migrateSequences(db)
   const state = new URL(startOAuth(db,'A',{ env,now: NOW,withRead: true })).searchParams.get('state')!
   await completeOAuth(db,'A','c',state,{ env,master,now: NOW,fetchImpl: (async () => json({ refresh_token: 'test-token', scope: `https://www.googleapis.com/auth/gmail.send ${GMAIL_READ_SCOPE}`, id_token: 'x.'+Buffer.from(JSON.stringify({email:'me@acme.example',email_verified:true})).toString('base64url')+'.y' })) as typeof fetch })
@@ -57,66 +59,117 @@ async function start(db: Database.Database,s: ReturnType<typeof add>,m: ReturnTy
 }
 
 
-// #417: a prospect of dazl's own acquisition outreach (DAZL_ACQUISITION_TENANTS) who signs up or pays leaves it:
-// whatever is still queued for that exact address stops at once and stays stopped. Stub Gmail, synthetic data.
+// #417: a prospect of dazl's own acquisition outreach (DAZL_ACQUISITION_TENANTS) who signs up or pays leaves it, with
+// durable, private state and honest labels. Stub Gmail, synthetic accounts; off unless the workspace is named.
 const ACQ = { DAZL_ACQUISITION_TENANTS: 'A' }
 process.env.DAZL_ACQUISITION_TENANTS = 'A' // the send paths read the process configuration
-const recordLifecycle = (db: Database.Database, e: Parameters<typeof record>[1], env: Record<string, string | undefined>) => record(sqliteDb(db), e, env)
+const D = (db: Database.Database) => sqliteDb(db)
 const seqRow = (db: Database.Database, lead: string) => db.prepare('SELECT status, stop_reason FROM sequences WHERE lead_id = ?').get(lead) as { status: string; stop_reason: string | null }
+const holdRow = (db: Database.Database) => db.prepare('SELECT status FROM acquisition_holds').all()
+const user = (db: Database.Database, id: string, email: string) => db.prepare("INSERT INTO users (id, email, password_hash, salt) VALUES (?, ?, 'x', 'y')").run(id, email)
+const signup = async (db: Database.Database, id: string, email: string) => { user(db, id, email); await recordLifecycleEvent(D(db), { key: `signup:${id}`, kind: 'signup_unverified', userId: id, email }, ACQ); return applyPendingLifecycle(D(db), ACQ, NOW + DAY) }
 
-test('#417 signup while step 2 is queued: the sales step is cancelled, retries and restarts cannot bring it back', async () => {
+test('#417 an unverified sign-up is a hold, never a customer; Google verification, then payment, promote it; weaker evidence never relabels', async () => {
   const db = await setup(), s = add(db, 'owner@prospect.example'), m = mock(); await start(db, s, m)
-  assert.equal(m.calls.length, 1)
-  const [r] = await recordLifecycle(db, { kind: 'signup', email: 'Owner@Prospect.example', eventId: 'signup:u1', at: NOW + DAY }, ACQ)
-  assert.deepEqual([r.matched, r.duplicate, r.stopped.sequences], [true, false, 1])
-  assert.deepEqual(seqRow(db, s.lead), { status: 'stopped', stop_reason: 'converted_signup' })
-  for (const at of [NOW + 3 * DAY, NOW + 3 * DAY, NOW + 7 * DAY]) await runSequences(db, 'A', '', { ...m, now: at })
-  assert.equal(m.calls.length, 1, 'no further sales email')
-  assert.equal(seqRow(db, s.lead).status, 'stopped', 'a restart does not reactivate it')
-  // The same event again (a retry) is a no-op.
-  assert.equal((await recordLifecycle(db, { kind: 'signup', email: 'owner@prospect.example', eventId: 'signup:u1' }, ACQ))[0].duplicate, true)
+  await signup(db, 'u1', 'Owner@Prospect.example')
+  assert.deepEqual(holdRow(db), [{ status: 'unverified_signup_hold' }])
+  assert.deepEqual(seqRow(db, s.lead), { status: 'stopped', stop_reason: 'unverified_signup_hold' })
+  assert.equal(stopReasonWords('unverified_signup_hold'), 'on hold: someone signed up for dazl with this address (not verified yet)')
+  for (const at of [NOW + 3 * DAY, NOW + 7 * DAY]) await runSequences(db, 'A', '', { ...m, now: at })
+  assert.equal(m.calls.length, 1, 'held: no further sales email')
+  // Google verification promotes it; the stopped sequence's reason follows.
+  await recordLifecycleEvent(D(db), { key: 'verified:u1', kind: 'signup_verified', userId: 'u1', email: 'owner@prospect.example' }, ACQ); await applyPendingLifecycle(D(db), ACQ)
+  assert.deepEqual([holdRow(db), seqRow(db, s.lead).stop_reason], [[{ status: 'signed_up' }], 'converted_signup'])
+  // A paid checkout promotes it again; a later unverified or unpaid event never relabels it down.
+  await recordLifecycleEvent(D(db), { key: 'stripe:evt_paid', kind: 'paid', userId: 'u1', email: 'owner@prospect.example' }, ACQ)
+  await recordLifecycleEvent(D(db), { key: 'stripe:evt_late', kind: 'checkout_unpaid', userId: 'u1', email: 'owner@prospect.example' }, ACQ)
+  await applyPendingLifecycle(D(db), ACQ)
+  assert.deepEqual([holdRow(db), seqRow(db, s.lead).stop_reason], [[{ status: 'paid' }], 'converted_paid'])
+  // The audit line this workspace sees names the status, never an address.
+  assert.ok((db.prepare("SELECT detail FROM autopilot_audit WHERE action = 'acquisition_hold'").all() as { detail: string }[]).every(r => !r.detail.includes('@')))
 })
 
-test('#417 the conversion lands during a step\'s token refresh: that step is not sent', async () => {
+test('#417 a checkout that took no payment (trial or unpaid) is not a paying customer', async () => {
   const db = await setup(), s = add(db, 'owner@prospect.example'), m = mock(); await start(db, s, m)
-  const fetchImpl = (async (u: unknown) => { if (String(u).includes('oauth2')) await recordLifecycle(db, { kind: 'paid', email: 'owner@prospect.example', eventId: 'stripe:evt_1' }, ACQ); return m.fetchImpl(u as never) }) as typeof fetch
-  await runSequences(db, 'A', '', { ...m, fetchImpl, now: NOW + 3 * DAY })
-  assert.equal(m.calls.length, 1)
-  assert.equal(seqRow(db, s.lead).status, 'stopped')
+  user(db, 'u2', 'owner@prospect.example')
+  await recordLifecycleEvent(D(db), { key: 'stripe:evt_trial', kind: 'checkout_unpaid', userId: 'u2', email: 'owner@prospect.example' }, ACQ); await applyPendingLifecycle(D(db), ACQ)
+  assert.deepEqual([holdRow(db), seqRow(db, s.lead).stop_reason], [[{ status: 'checkout_unpaid' }], 'checkout_unpaid'])
+  assert.doesNotMatch(stopReasonWords('checkout_unpaid'), /paying|customer/)
 })
 
-test('#417 queued first touches and approved drafts stop; a later cold play to the customer is refused', async () => {
+test('#417 durable: a recorded event holds sends at once; a failed apply stays pending and is applied later; a hook that never ran is reconciled; retries never skip it', async () => {
+  // Recorded, not applied yet (the apply step failed or has not run): the send path already refuses (fail closed).
+  { const db = await setup(), s = add(db, 'owner@prospect.example'), m = mock(); await start(db, s, m)
+    user(db, 'u3', 'owner@prospect.example')
+    await recordLifecycleEvent(D(db), { key: 'signup:u3', kind: 'signup_unverified', userId: 'u3', email: 'owner@prospect.example' }, ACQ)
+    assert.equal(lifecycleHold(db, 'A', 'owner@prospect.example', ACQ), 'unverified_signup_hold')
+    await runSequences(db, 'A', '', { ...m, now: NOW + 3 * DAY })
+    assert.equal(m.calls.length, 1)
+    // An apply that throws leaves the event pending; the next pass applies it.
+    const broken = { ...D(db), tx: async () => { throw new Error('store unavailable') } } as ReturnType<typeof D>
+    await assert.rejects(applyPendingLifecycle(broken, ACQ), /store unavailable/)
+    assert.equal((db.prepare('SELECT count(*) AS n FROM lifecycle_events WHERE applied_at IS NULL').get() as { n: number }).n, 1, 'still pending, not marked processed')
+    const r = await reconcileLifecycle(D(db), ACQ, NOW + 4 * DAY)
+    assert.equal(r.applied >= 1, true); assert.equal(seqRow(db, s.lead).status, 'stopped')
+    // The same event key again (a retried hook): no duplicate row, nothing re-applied.
+    assert.equal(await recordLifecycleEvent(D(db), { key: 'signup:u3', kind: 'signup_unverified', userId: 'u3', email: 'owner@prospect.example' }, ACQ), false) }
+  // The account was created but the hook never ran (a crash after the commit): the scheduler's reconciliation records and applies it.
+  { const db = await setup(), s = add(db, 'owner@prospect.example'), m = mock(); await start(db, s, m)
+    user(db, 'u4', 'owner@prospect.example')
+    const r = await reconcileLifecycle(D(db), ACQ, NOW + DAY)
+    assert.ok(r.recorded >= 1)
+    assert.deepEqual(seqRow(db, s.lead), { status: 'stopped', stop_reason: 'unverified_signup_hold' }) }
+})
+
+test('#417 privacy: an unmatched sign-up leaves nothing any workspace can read, yet a later cold play to it is refused', async () => {
   const db = await setup()
+  await signup(db, 'u5', 'new@customer.example')
+  assert.deepEqual(holdRow(db), [], 'no hold row: this workspace never emailed the address')
+  assert.equal((db.prepare("SELECT count(*) AS n FROM autopilot_audit WHERE action LIKE 'acquisition%' OR action LIKE 'lifecycle%'").get() as { n: number }).n, 0)
+  assert.ok((db.prepare('SELECT * FROM lifecycle_events').all() as Record<string, unknown>[]).every(r => !JSON.stringify(r).includes('@')), 'the private history keeps a hash, never the address')
+  assert.equal(lifecycleHold(db, 'A', 'NEW@customer.example', ACQ), 'unverified_signup_hold', 'the private lookup still protects a future campaign')
+  // An approved email to that address is refused by the send path.
   const job = createJob(db, 'A', { business_name: 'Acme', industry: 'x', location: 'y' })
   db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
-  db.prepare("INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,human_confirmed_at,human_confirmed_from) VALUES ('L1',?,'Prospect','owner@prospect.example','Hiring','https://p.example/jobs','Prospect is hiring',90,?, 'test_review')").run(job, NOW)
-  db.prepare("INSERT INTO outreach_messages (id,tenant_id,lead_id,to_email,subject,body,status,approved_hash) VALUES ('M1','A','L1','owner@prospect.example','Hi','This is a draft message for review.','approved','h')").run()
-  db.prepare("CREATE TABLE IF NOT EXISTS autopilot_work (message_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, lead_id TEXT NOT NULL, reason TEXT NOT NULL, next_at INTEGER, authority TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, claimed_at INTEGER, created_at INTEGER NOT NULL)").run()
-  db.prepare("INSERT INTO autopilot_work (message_id, tenant_id, lead_id, reason, next_at, authority, created_at) VALUES ('M1','A','L1','daily_cap',?, 'x', ?)").run(NOW + DAY, NOW)
-  const [r] = await recordLifecycle(db, { kind: 'signup', email: 'owner@prospect.example', eventId: 'signup:u2' }, ACQ)
-  assert.deepEqual(r.stopped, { held: 1, drafts: 1, sequences: 0, followups: 0 })
-  assert.deepEqual(db.prepare("SELECT status, approved_hash FROM outreach_messages WHERE id = 'M1'").get(), { status: 'draft', approved_hash: null })
-  // Approved again (by hand or by a later play): the send path refuses it.
+  db.prepare("INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,human_confirmed_at,human_confirmed_from) VALUES ('L1',?,'New Co','new@customer.example','Hiring','https://n.example/jobs','New Co is hiring',90,?, 'test_review')").run(job, NOW)
+  db.prepare("INSERT INTO outreach_messages (id,tenant_id,lead_id,to_email,subject,body) VALUES ('M1','A','L1','new@customer.example','Hi','This is a draft message for review.')").run()
   const m = mock(); approve(db, 'A', 'M1', true)
-  await assert.rejects(sendMessage(db, 'A', 'M1', m), /converted_customer/)
+  await assert.rejects(sendMessage(db, 'A', 'M1', m), /acquisition_hold/)
   assert.equal(m.calls.length, 0)
-  // A customer who signs up before ever being emailed is excluded too.
-  await recordLifecycle(db, { kind: 'signup', email: 'new@customer.example', eventId: 'signup:u3' }, ACQ)
-  assert.equal(convertedContact(db, 'A', 'NEW@customer.example', ACQ), true)
 })
 
-test('#417 no guessing: a same-domain or same-name signup, or one in a non-acquisition workspace, changes nothing', async () => {
+test('#417 off by default; enabling later reconciles the sign-ups missed while off; a deleted account forgets its history', async () => {
   const db = await setup(), s = add(db, 'owner@prospect.example'), m = mock(); await start(db, s, m)
-  for (const email of ['other@prospect.example', 'owner@prospect.example.evil', 'owner@prospect-example.com']) await recordLifecycle(db, { kind: 'signup', email, eventId: `signup:${email}` }, ACQ)
-  // Without the operator naming this workspace as dazl's acquisition sender, nothing is recorded or stopped.
-  assert.deepEqual(await recordLifecycle(db, { kind: 'signup', email: 'owner@prospect.example', eventId: 'signup:x' }, {}), [])
-  assert.equal(convertedContact(db, 'A', 'owner@prospect.example', {}), false)
-  assert.deepEqual(seqRow(db, s.lead), { status: 'approved', stop_reason: null }, 'not stopped')
+  user(db, 'u6', 'owner@prospect.example')
+  assert.equal(await recordLifecycleEvent(D(db), { key: 'signup:u6', kind: 'signup_unverified', userId: 'u6', email: 'owner@prospect.example' }, {}), false)
+  assert.deepEqual(await reconcileLifecycle(D(db), {}), { recorded: 0, applied: 0, stopped: { held: 0, drafts: 0, sequences: 0, followups: 0 } })
+  assert.equal((db.prepare('SELECT count(*) AS n FROM lifecycle_events').get() as { n: number }).n, 0, 'off: nothing recorded')
+  assert.equal(lifecycleHold(db, 'A', 'owner@prospect.example', {}), null)
+  const r = await reconcileLifecycle(D(db), ACQ, NOW + DAY)
+  assert.equal(r.recorded, 1); assert.equal(seqRow(db, s.lead).stop_reason, 'unverified_signup_hold')
+  assert.equal(await forgetLifecycleUser(D(db), 'u6'), 1)
+  assert.equal((db.prepare('SELECT count(*) AS n FROM lifecycle_events').get() as { n: number }).n, 0)
+  assert.deepEqual(holdRow(db), [{ status: 'unverified_signup_hold' }], 'the stop stays, as an opt-out does')
+})
+
+test('#417 the sign-up lands during a step\'s token refresh: that step is not sent', async () => {
+  const db = await setup(), s = add(db, 'owner@prospect.example'), m = mock(); await start(db, s, m)
+  user(db, 'u7', 'owner@prospect.example')
+  const fetchImpl = (async (u: unknown) => { if (String(u).includes('oauth2')) await recordLifecycleEvent(D(db), { key: 'stripe:evt_1', kind: 'paid', userId: 'u7', email: 'owner@prospect.example' }, ACQ); return m.fetchImpl(u as never) }) as typeof fetch
+  await runSequences(db, 'A', '', { ...m, fetchImpl, now: NOW + 3 * DAY })
+  assert.equal(m.calls.length, 1)
+})
+
+test('#417 no guessing: a same-domain or look-alike sign-up changes nothing', async () => {
+  const db = await setup(), s = add(db, 'owner@prospect.example'), m = mock(); await start(db, s, m)
+  let n = 0
+  for (const email of ['other@prospect.example', 'owner@prospect.example.evil', 'owner@prospect-example.com']) await signup(db, `x${n++}`, email)
+  assert.deepEqual(holdRow(db), [])
   await runSequences(db, 'A', '', { ...m, now: NOW + 3 * DAY })
   assert.equal(m.calls.length, 2, 'the sequence carries on as approved')
   assert.equal(sequenceStatusByLead(db, 'A').get(s.lead)?.status, 'active')
 })
 
-test('#417 the terminal conversion reason reads in words', () => {
-  assert.deepEqual(['converted_signup', 'converted_paid', 'converted', 'evidence_withdrawn', 'reply'].map(stopReasonWords), ['signed up for dazl', 'became a paying customer', 'became a customer', 'lead confirmation withdrawn', 'reply'])
+test('#417 stop reasons read in words', () => {
+  assert.deepEqual(['converted_signup', 'converted_paid', 'checkout_unpaid', 'evidence_withdrawn', 'reply'].map(stopReasonWords), ['signed up for dazl (verified)', 'became a paying dazl customer', 'started a dazl checkout (no payment yet)', 'lead confirmation withdrawn', 'reply'])
 })

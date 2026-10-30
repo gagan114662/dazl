@@ -8,6 +8,7 @@ import { runDueWatches } from '@/lib/watch'
 import { collectMonitorResults, runDueMonitors } from '@/lib/monitors'
 import { kickRunner } from '@/lib/scan/runner'
 import { getDb, type Tx } from '@/lib/db/client'
+import { reconcileLifecycle } from '@/lib/outreach/lifecycle'
 import { LeaseLost, StaleLeaseWrite, tryLease } from '@/lib/shared/lease'
 import type { Lease } from '@/lib/shared/lease'
 import { dueTenants, runIndexChecks } from '@/lib/seo/indexing'
@@ -45,6 +46,9 @@ async function tick(lease: Lease, requestId?: string) {
   const db = lease.fenceSqlite(raw)
   // A refused write means this tick lost the lease: stop, never carry on with the next tenant.
   const fenced = (e: unknown) => { if (e instanceof StaleLeaseWrite) throw e }
+  // #417: sign-ups and payments of dazl's own acquisition prospects (off unless DAZL_ACQUISITION_TENANTS is set): record
+  // any the hooks missed and apply every pending one, before anything below can send.
+  try { await reconcileLifecycle(await getDb()) } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:lifecycle', requestId }) }
   const tenants = db.prepare('SELECT s.tenant_id, u.business_name FROM autopilot_settings s JOIN users u ON u.id = s.tenant_id WHERE s.enabled = 1 AND s.paused = 0 AND s.followups_enabled = 1').all() as { tenant_id: string; business_name: string | null }[]
   let done = 0
   for (const t of tenants) {

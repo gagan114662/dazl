@@ -4,7 +4,7 @@ import { getDb } from '@/lib/db/client'
 import { exchangeCode, parseCookie, resolveUser, sameString, signInConfig, verifyIdToken } from '@/lib/auth-google'
 import { clearOauthCookie, OAUTH_COOKIE, redirectNoStore, setSessionCookie } from '@/lib/auth-google-response'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
-import { recordLifecycle } from '@/lib/outreach/lifecycle'
+import { applyPendingLifecycle, recordLifecycleEvent } from '@/lib/outreach/lifecycle'
 import { captureError } from '@/lib/ops/errors'
 
 const back = (base: string, err: string) => {
@@ -35,8 +35,13 @@ export async function GET(req: NextRequest) {
   const db = await getDb()
   const r = await resolveUser(db, id)
   if ('error' in r) return back(base, 'google_email_exists')
-  // #417: a new account from a prospect of dazl's own acquisition outreach leaves it (never fails the sign-in)
-  if (r.created) try { await recordLifecycle(db, { kind: 'signup', email: id.email, eventId: `signup:${r.user_id}` }) } catch (e) { captureError(e, { source: 'route', where: '/api/auth/callback/google:lifecycle' }) }
+  // #417: a Google-verified account (off unless configured). Never fails the sign-in; anything missed here is recorded
+  // and applied by the scheduler's reconciliation.
+  try {
+    if (r.created) await recordLifecycleEvent(db, { key: `signup:${r.user_id}`, kind: 'signup_unverified', userId: r.user_id, email: id.email })
+    await recordLifecycleEvent(db, { key: `verified:${r.user_id}`, kind: 'signup_verified', userId: r.user_id, email: id.email })
+    await applyPendingLifecycle(db)
+  } catch (e) { captureError(e, { source: 'route', where: '/api/auth/callback/google:lifecycle' }) }
 
   const res = redirectNoStore(new URL('/app', base))
   setSessionCookie(res, base, await createSession(r.user_id), SESSION_TTL_S)

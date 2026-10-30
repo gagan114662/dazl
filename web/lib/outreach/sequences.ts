@@ -1,4 +1,4 @@
-import { convertedContact } from './lifecycle.ts'
+import { lifecycleHold, STOP_REASON } from './lifecycle.ts'
 import {contactPurposeRestricted} from './contact-purpose-db.ts'
 import {currentnessHeld} from './currentness.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend } from './send-budget.ts'
@@ -343,8 +343,8 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
     if (now - s.step1_sent < gaps[stepRow.step - 1]) continue
     const skip = (why: string) => { out.skipped++; auditAt(db, tenantId, 'sequence_skipped', why, s.lead_id, s.message_id, now) }
     if (isSuppressed(db, tenantId, s.to_email)) { db.prepare("UPDATE sequences SET status = 'stopped', stop_reason = 'suppressed' WHERE tenant_id = ? AND id = ?").run(tenantId, s.id); skip('suppressed'); continue }
-    // #417: the prospect signed up or paid: the acquisition sequence ends there.
-    if (convertedContact(db, tenantId, s.to_email)) { db.prepare("UPDATE sequences SET status = 'stopped', stop_reason = 'converted' WHERE tenant_id = ? AND id = ?").run(tenantId, s.id); skip('converted_customer'); continue }
+    // #417: the prospect signed up or paid (acquisition workspaces): the sequence ends there, with what is known.
+    { const held = lifecycleHold(db, tenantId, s.to_email); if (held) { db.prepare("UPDATE sequences SET status = 'stopped', stop_reason = ? WHERE tenant_id = ? AND id = ?").run(STOP_REASON[held], tenantId, s.id); skip('acquisition_hold'); continue } }
     if (!db.prepare("SELECT 1 FROM consent_ledger WHERE tenant_id = ? AND contact = ? AND scope = 'sequence' AND evidence_ref = ? AND revoked_at IS NULL AND expires_at > ?").get(tenantId,norm(s.to_email),`sequence:${s.id}`,now)) { skip('no valid consent'); continue }
     if (sentShared24h() >= dailyCap) return stop('daily_cap')
     if (stepRow.approved_hash !== hash(s.to_email, stepRow.subject, stepRow.body)) {
@@ -397,7 +397,7 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
       if (currentStep.body !== stepRow.body || currentStep.subject !== stepRow.subject || currentStep.approved_hash !== hash(s.to_email,currentStep.subject,currentStep.body)) {
         db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step); return stop('changed_since_approval')
       }
-      if ((d.flags ?? process.env).SEQUENCES_ENABLED !== '1' || (d.flags ?? process.env).AUTOPILOT_KILL === '1' || current?.status !== 'active' || getState(db,tenantId).paused || isSuppressed(db,tenantId,s.to_email) || convertedContact(db,tenantId,s.to_email) || !hasReadConsent(db,tenantId) || !gmailStatus(db,tenantId)?.read_granted) {
+      if ((d.flags ?? process.env).SEQUENCES_ENABLED !== '1' || (d.flags ?? process.env).AUTOPILOT_KILL === '1' || current?.status !== 'active' || getState(db,tenantId).paused || isSuppressed(db,tenantId,s.to_email) || !!lifecycleHold(db,tenantId,s.to_email) || !hasReadConsent(db,tenantId) || !gmailStatus(db,tenantId)?.read_granted) {
         db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step); continue
       }
       const raw = toBase64Url(buildMime({
