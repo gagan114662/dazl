@@ -320,7 +320,7 @@ CREATE TABLE outreach_messages (
       sent_at        BIGINT,
       gmail_id       TEXT,
       error          TEXT CHECK (error IS NULL OR char_length(error) <= 200),
-      created_at     BIGINT NOT NULL DEFAULT (CAST(floor(extract(epoch from now())) AS BIGINT)), thread_id TEXT, test BIGINT NOT NULL DEFAULT 0, insert_seq BIGINT DEFAULT nextval('outreach_messages_insert_seq_seq'),
+      created_at     BIGINT NOT NULL DEFAULT (CAST(floor(extract(epoch from now())) AS BIGINT)), thread_id TEXT, test BIGINT NOT NULL DEFAULT 0, approved_sender TEXT, insert_seq BIGINT DEFAULT nextval('outreach_messages_insert_seq_seq'),
       UNIQUE (tenant_id, lead_id)
     );
 
@@ -535,7 +535,7 @@ CREATE TABLE sequence_steps (
       gmail_id      TEXT,
       claimed_at    BIGINT,
       sent_at       BIGINT,
-      created_at    BIGINT NOT NULL DEFAULT (CAST(floor(extract(epoch from now())) AS BIGINT)),
+      created_at    BIGINT NOT NULL DEFAULT (CAST(floor(extract(epoch from now())) AS BIGINT)), approved_sender TEXT,
       PRIMARY KEY (tenant_id, sequence_id, step)
     );
 

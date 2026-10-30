@@ -100,6 +100,10 @@ export async function completeOAuth(db: Database.Database, tenantId: string, cod
   const who = t.id_token ? idTokenEmail(t.id_token) : null
   if (!who || !who.verified) throw new GmailError('google', 'email_not_verified')
 
+  // Another Gmail address replaces this tenant's sender (#370): every approval still waiting was for the old one, so it
+  // goes back to draft before the new account can send anything. The same address reconnecting keeps them.
+  const before = (db.prepare('SELECT email FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string } | undefined)?.email
+  if (before && before.toLowerCase() !== who.email.toLowerCase()) revokeApprovalsForSender(db, tenantId)
   db.prepare(
     `INSERT INTO gmail_accounts (tenant_id, email, refresh_ct, status, read_granted) VALUES (?, ?, ?, 'active', ?)
      ON CONFLICT(tenant_id) DO UPDATE SET email = excluded.email, refresh_ct = excluded.refresh_ct, status = 'active', read_granted = excluded.read_granted, connected_at = CAST(strftime('%s','now') AS INTEGER)`,
@@ -162,9 +166,26 @@ export async function getAccessToken(db: Database.Database, tenantId: string, de
   return j.access_token
 }
 
+// Approvals given for the sender being replaced or removed. Revoke: back to draft (a person approves again for the new
+// sender). Bind: approvals recorded before the binding existed are tied to the departing address, so a different
+// account connected later cannot inherit them. Tables an older database does not have hold nothing.
+function hasTable(db: Database.Database, name: string): boolean { return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) }
+function revokeApprovalsForSender(db: Database.Database, tenantId: string): void {
+  db.prepare("UPDATE outreach_messages SET status = 'draft', approved_hash = NULL, approved_sender = NULL, error = 'sender_changed' WHERE tenant_id = ? AND status = 'approved'").run(tenantId)
+  if (hasTable(db, 'sequence_steps')) {
+    db.prepare("UPDATE sequence_steps SET status = 'draft', approved_hash = NULL, approved_sender = NULL WHERE tenant_id = ? AND status = 'approved'").run(tenantId)
+    db.prepare("UPDATE sequences SET status = 'draft' WHERE tenant_id = ? AND status = 'approved'").run(tenantId)
+  }
+}
+function bindApprovalsToSender(db: Database.Database, tenantId: string, email: string): void {
+  db.prepare("UPDATE outreach_messages SET approved_sender = lower(?) WHERE tenant_id = ? AND status = 'approved' AND approved_sender IS NULL").run(email, tenantId)
+  if (hasTable(db, 'sequence_steps')) db.prepare("UPDATE sequence_steps SET approved_sender = lower(?) WHERE tenant_id = ? AND status = 'approved' AND approved_sender IS NULL").run(email, tenantId)
+}
+
 export async function disconnectGmail(db: Database.Database, tenantId: string, deps: OAuthDeps = {}): Promise<void> {
-  const acc = db.prepare('SELECT refresh_ct FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { refresh_ct: string } | undefined
+  const acc = db.prepare('SELECT refresh_ct, email FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { refresh_ct: string; email: string } | undefined
   if (!acc) return
+  bindApprovalsToSender(db, tenantId, acc.email)
   if (isStaging((deps.env ?? process.env) as Record<string, string | undefined>)) { db.prepare('DELETE FROM gmail_accounts WHERE tenant_id = ?').run(tenantId); return }
   try {
     const token = decryptSecret(acc.refresh_ct, ctx(tenantId), deps.master)

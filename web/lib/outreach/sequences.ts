@@ -71,6 +71,8 @@ export function migrateSequences(db: Database.Database): void {
     BEGIN SELECT RAISE(ABORT, 'sent sequence step is final'); END;
     CREATE INDEX IF NOT EXISTS sequences_tenant ON sequences (tenant_id, status);
   `)
+  // the Gmail address the set was approved for (#370)
+  try { db.exec('ALTER TABLE sequence_steps ADD COLUMN approved_sender TEXT') } catch { /* exists */ }
 }
 
 const hash = (to: string, subject: string, body: string) => createHash('sha256').update(JSON.stringify([to, subject, body])).digest('hex')
@@ -229,7 +231,7 @@ export function approveSequence(db: Database.Database, tenantId: string, sequenc
   db.prepare("UPDATE outreach_messages SET subject = ?, body = ?, status = 'draft', approved_hash = NULL WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(first.subject, first.body, s.message_id, tenantId)
   approveStep1(s.message_id) // throws the same OutreachError codes as single-message approval
   for (const st of steps)
-    db.prepare("UPDATE sequence_steps SET approved_hash = ?, status = 'approved' WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(hash(s.to_email, st.subject, st.body), tenantId, sequenceId, st.step)
+    db.prepare("UPDATE sequence_steps SET approved_hash = ?, status = 'approved', approved_sender = (SELECT lower(email) FROM gmail_accounts WHERE tenant_id = ?) WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(hash(s.to_email, st.subject, st.body), tenantId, tenantId, sequenceId, st.step)
   db.prepare("UPDATE sequences SET status = 'approved' WHERE tenant_id = ? AND id = ?").run(tenantId, sequenceId)
   grantConsent(db, tenantId, s.to_email, { channel: 'email', scope: 'sequence', basis: 'user_approved_set', evidenceRef: `sequence:${sequenceId}`, now })
   db.prepare('INSERT OR IGNORE INTO autopilot_settings (tenant_id) VALUES (?)').run(tenantId)
@@ -334,7 +336,7 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
     if (!s.thread_id) { out.skipped++; continue } // never send a bump without a readable original thread
     if (!s.step1_sent) continue // activation lags one tick
     if (db.prepare("SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND lead_id = ? AND classification NOT IN ('auto','soft_bounce')").get(tenantId,s.lead_id)) { stopSequenceForThread(db,tenantId,s.lead_id,'replied','existing_reply',now); continue }
-    const stepRow = db.prepare("SELECT step, subject, body, approved_hash, status FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? AND status <> 'sent' ORDER BY step LIMIT 1").get(tenantId, s.id) as { step: number; subject: string; body: string; approved_hash: string | null; status: string } | undefined
+    const stepRow = db.prepare("SELECT step, subject, body, approved_hash, approved_sender, status FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? AND status <> 'sent' ORDER BY step LIMIT 1").get(tenantId, s.id) as { step: number; subject: string; body: string; approved_hash: string | null; approved_sender: string | null; status: string } | undefined
     if (!stepRow) { if (db.prepare("SELECT 1 FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? AND status <> 'sent'").get(tenantId,s.id)) continue; db.prepare("UPDATE sequences SET status = 'done' WHERE tenant_id = ? AND id = ?").run(tenantId, s.id); continue }
     if (stepRow.status !== 'approved') continue // never jump past an in-flight or uncertain step
     // Server-side test-mode enforcement: the allowlist decides timing, never a stored flag.
@@ -344,6 +346,13 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
     if (isSuppressed(db, tenantId, s.to_email)) { db.prepare("UPDATE sequences SET status = 'stopped', stop_reason = 'suppressed' WHERE tenant_id = ? AND id = ?").run(tenantId, s.id); skip('suppressed'); continue }
     if (!db.prepare("SELECT 1 FROM consent_ledger WHERE tenant_id = ? AND contact = ? AND scope = 'sequence' AND evidence_ref = ? AND revoked_at IS NULL AND expires_at > ?").get(tenantId,norm(s.to_email),`sequence:${s.id}`,now)) { skip('no valid consent'); continue }
     if (sentShared24h() >= dailyCap) return stop('daily_cap')
+    if (stepRow.approved_sender && stepRow.approved_sender !== acct.email.toLowerCase()) {
+      // Approved for another Gmail address (#370): the set goes back to draft, never sent from a sender nobody approved.
+      db.prepare("UPDATE sequence_steps SET approved_hash = NULL, approved_sender = NULL, status = 'draft' WHERE tenant_id = ? AND sequence_id = ? AND status IN ('approved')").run(tenantId, s.id)
+      db.prepare("UPDATE sequences SET status = 'draft' WHERE tenant_id = ? AND id = ?").run(tenantId, s.id)
+      skip('sender_changed')
+      continue
+    }
     if (stepRow.approved_hash !== hash(s.to_email, stepRow.subject, stepRow.body)) {
       // Words changed after approval: drop the whole set back to draft, never send stale approval.
       db.prepare("UPDATE sequence_steps SET approved_hash = NULL, status = 'draft' WHERE tenant_id = ? AND sequence_id = ? AND status IN ('approved')").run(tenantId, s.id)

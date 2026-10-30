@@ -50,7 +50,7 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/crm/index.ts': 0,
   'lib/enrich/index.ts': 0,
   'lib/events/store.ts': 1,
-  'lib/gmail/oauth.ts': 1,
+  'lib/gmail/oauth.ts': 2,
   'lib/llm/key-store.ts': 1,
   'lib/memory.ts': 0,
   'lib/ops/health-route.ts': 0,

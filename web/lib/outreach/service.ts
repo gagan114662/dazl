@@ -94,6 +94,15 @@ export function isSuppressed(db: Database.Database, tenantId: string, email: str
   return !!db.prepare('SELECT 1 FROM suppressions WHERE tenant_id = ? AND email = ?').get(tenantId, norm(email))
 }
 
+// An approval is for the Gmail address that was connected when it was given (#370). Another address connected now: it
+// does not carry over. An approval recorded before this binding existed (approved_sender NULL) is bound when its sender
+// disconnects (lib/gmail/oauth.ts), and revoked when another account replaces it.
+export function senderChanged(db: Database.Database, tenantId: string, m: { approved_sender?: string | null }): boolean {
+  if (!m.approved_sender) return false
+  const now = (db.prepare('SELECT email FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string } | undefined)?.email
+  return !!now && now.toLowerCase() !== m.approved_sender.toLowerCase()
+}
+
 export function suppress(db: Database.Database, tenantId: string, email: string, reason: 'unsubscribe' | 'manual' | 'bounce'): void {
   db.transaction(() => {
     db.prepare('INSERT OR IGNORE INTO suppressions (tenant_id, email, reason) VALUES (?, ?, ?)').run(tenantId, norm(email), reason)
@@ -307,7 +316,7 @@ function createDraftInner(db: Database.Database, tenantId: string, leadId: strin
   return id
 }
 
-interface Msg { id: string; tenant_id: string; lead_id: string; to_email: string; subject: string; body: string; status: string; approved_hash: string | null; attempts: number; claimed_at: number | null; sent_at: number | null; error: string | null; created_at: number; test: number }
+interface Msg { id: string; tenant_id: string; lead_id: string; to_email: string; subject: string; body: string; status: string; approved_hash: string | null; approved_sender?: string | null; attempts: number; claimed_at: number | null; sent_at: number | null; error: string | null; created_at: number; test: number }
 const getMsg = (db: Database.Database, tenantId: string, id: string) =>
   db.prepare('SELECT * FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(id, tenantId) as Msg | undefined
 
@@ -379,7 +388,8 @@ export function approve(db: Database.Database, tenantId: string, id: string, seq
     // Read under the write lock, the same lock the identity review action takes, so a withdraw cannot slip in between this check and the update.
     if (!testFixtureSend(db, tenantId, m) && domainReviewHeld(db, tenantId, m.lead_id, m.to_email)) throw new OutreachError(domainHoldCode(db, tenantId, m.lead_id, m.to_email))
     snapshotSignalContext(db, tenantId, id)
-    db.prepare("UPDATE outreach_messages SET status = 'approved', approved_hash = ? WHERE id = ? AND tenant_id = ? AND status = 'draft'").run(hash(m.to_email, m.subject, m.body), id, tenantId)
+    // the approval is for these words, this recipient and the Gmail address connected now (#370)
+    db.prepare("UPDATE outreach_messages SET status = 'approved', approved_hash = ?, approved_sender = (SELECT lower(email) FROM gmail_accounts WHERE tenant_id = ?) WHERE id = ? AND tenant_id = ? AND status = 'draft'").run(hash(m.to_email, m.subject, m.body), tenantId, id, tenantId)
   }).immediate()
 }
 
@@ -448,6 +458,7 @@ export function sendBlockReason(db: Database.Database, tenantId: string, id: str
   try { sendPreChecks(db, tenantId, m) } catch (e) { if (e instanceof OutreachError) return e.code; throw e }
   if (isSuppressed(db, tenantId, m.to_email)) return 'suppressed'
   if (m.approved_hash !== hash(m.to_email, m.subject, m.body)) return 'changed_since_approval'
+  if (senderChanged(db, tenantId, m)) return 'sender_changed'
   // skipAccount skips only the sender and Gmail checks; the shared daily cap is never skipped.
   if (!o.skipAccount && !getSettings(db, tenantId)) return 'sender_identity_missing'
   if (!o.skipAccount && !db.prepare('SELECT 1 FROM gmail_accounts WHERE tenant_id = ?').get(tenantId)) return 'gmail_not_connected'
@@ -488,6 +499,11 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   if (!settings) release('sender_identity_missing')
   const acct = db.prepare('SELECT email FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string } | undefined
   if (!acct) release('gmail_not_connected')
+  // approved for another Gmail address (#370): back to draft, so a person approves it for the sender it would use
+  if (senderChanged(db, tenantId, m)) {
+    db.prepare("UPDATE outreach_messages SET status = 'draft', approved_hash = NULL, approved_sender = NULL, claimed_at = NULL, error = 'sender_changed' WHERE id = ? AND status = 'sending'").run(id)
+    throw new OutreachError('sender_changed')
+  }
   if (accountSendCount(db, tenantId, nowS(d)) > DAILY_CAP) release('daily_cap') // this claim counts itself
 
   let token: string

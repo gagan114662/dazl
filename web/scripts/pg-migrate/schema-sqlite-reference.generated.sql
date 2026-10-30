@@ -359,7 +359,7 @@ CREATE TABLE outreach_messages (
       sent_at        INTEGER,
       gmail_id       TEXT,
       error          TEXT CHECK (error IS NULL OR length(error) <= 200),
-      created_at     INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), thread_id TEXT, test INTEGER NOT NULL DEFAULT 0, insert_seq INTEGER,
+      created_at     INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), thread_id TEXT, test INTEGER NOT NULL DEFAULT 0, approved_sender TEXT, insert_seq INTEGER,
       UNIQUE (tenant_id, lead_id)
     );
 
@@ -574,7 +574,7 @@ CREATE TABLE sequence_steps (
       gmail_id      TEXT,
       claimed_at    INTEGER,
       sent_at       INTEGER,
-      created_at    INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
+      created_at    INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), approved_sender TEXT,
       PRIMARY KEY (tenant_id, sequence_id, step)
     );
 

@@ -20,6 +20,7 @@ const ERR: Record<string, string> = {
   daily_cap: 'Daily sending limit reached. Try again tomorrow.',
   gmail_rate_limited: 'Gmail is rate limiting you. Try again later.',
   changed_since_approval: 'The message changed after approval. Approve it again.',
+  sender_changed: 'This was approved for a different Gmail address than the one connected now. It is back to a draft: approve it again to send it from this address.',
   lead_currentness_unconfirmed: 'Event timing is unconfirmed. This draft is preserved for inspection but cannot be approved or sent.',
   review_unreadable: 'The website check could not be read just now. Nothing was sent and nothing was changed. Try again in a minute.',
   domain_unconfirmed: 'The website behind this draft is not confirmed as the right company. Confirm it on the Leads page ("This website is the right company"). That check is not need or consent. If the lead shows no check there, skip this draft and create a new one from the lead.',

@@ -79,6 +79,8 @@ export function migrateOutreach(db: Database.Database): void {
   addCol('outreach_messages', 'thread_id', 'TEXT')
   addCol('outreach_messages', 'test', 'INTEGER NOT NULL DEFAULT 0') // 1 = addressed to a tenant-allowlisted test inbox
   addCol('outreach_settings', 'booking_url', 'TEXT')
+  // the Gmail address an approval was given for (#370): another sender never sends it (lib/outreach/service.ts)
+  addCol('outreach_messages', 'approved_sender', 'TEXT')
   // Idempotent upgrades for usage tables created before these columns existed.
   // Column presence is checked against the live schema; a genuinely failing
   // ALTER throws here at startup instead of being hidden by a broad catch.
