@@ -6,6 +6,7 @@
 //   olderYear  - the QUOTE itself names a past year ("opened in 2019"): the event is older than the window whatever the page date says.
 //   note       - a human label: the publication day, or a season / "soon" with no date ("timing: fall, unconfirmed").
 // Update stamps (updated, modified, last reviewed, copyright, expiry) are never cues.
+import { eventYears } from './date-in-text.ts'
 const MONTHS: Record<string, number> = { january: 1, jan: 1, february: 2, feb: 2, march: 3, mar: 3, april: 4, apr: 4, may: 5, june: 6, jun: 6, july: 7, jul: 7, august: 8, aug: 8, september: 9, sept: 9, sep: 9, october: 10, oct: 10, november: 11, nov: 11, december: 12, dec: 12 }
 const MON = 'jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?'
 const DATE_RE = new RegExp(`\\b(\\d{4})-(\\d{2})-(\\d{2})\\b|\\b(${MON})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(\\d{4})\\b|\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MON})\\.?,?\\s+(\\d{4})\\b`, 'gi')
@@ -22,7 +23,7 @@ export interface PageTiming { published: string | null; olderYear: number | null
 // `published` is the page's own metadata when the fetcher found exactly one publication date in the markup (fetch-page.ts publishedDate).
 export function resolveTiming(pageText: string, quote: string, published: string | null | undefined, nowYear: number): PageTiming {
   // 1. The quote names an old year: the claim itself is old. (Years before last year only; last year alone is left to the window gate.)
-  const years = [...quote.matchAll(/\b(19[89]\d|20\d{2})\b/g)].map(m => +m[1]).filter(y => y <= nowYear - 2)
+  const years = eventYears(quote).filter(y => y <= nowYear - 2)   // company background ("founded in 2020") is not the event's year
   const olderYear = years.length ? Math.min(...years) : null
   // 2. Publication day of the page.
   let pub: string | null = published && /^\d{4}-\d{2}-\d{2}$/.test(published) ? published : null

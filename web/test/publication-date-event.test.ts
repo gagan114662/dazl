@@ -78,3 +78,51 @@ test('eventDateBound: day found, sentence-bound to company + event; stamps, othe
   assert.equal(b(`2026-10-15. ${QUOTE}.`).bound, false, 'a bare date line before the quote is not a statement about it')
   assert.equal(eventDateBound(null, 'x', QUOTE, 'Aurora Agency').bound, false)
 })
+
+// ---- #460 review holds (Instinct, 7463ef2) ----
+import { HeldText } from '../lib/scan/held-text.ts'
+import { eventYears } from '../lib/scan/date-in-text.ts'
+import { resolveTiming } from '../lib/scan/page-timing.ts'
+
+test('hold 1: a day in ANOTHER clause about another company does not date this event; a genuinely dated Aurora clause still does', async () => {
+  const mixed = 'Aurora Agency opened a new office on King Street West in Toronto, ON, while UnrelatedCo launched a tool on 2026-10-15.'
+  // the helper, with the whole sentence as the quote (the case reviewed) and with Aurora's clause as the quote
+  for (const quote of [mixed.replace(/\.$/, ''), QUOTE]) assert.equal(eventDateBound('2026-10-15', `${mixed}${filler}`, quote, 'Aurora Agency').bound, false, quote)
+  for (const join of ['; ', ', and ', ' but ', ' whereas ']) assert.equal(eventDateBound('2026-10-15', `${QUOTE}${join}UnrelatedCo launched a tool on 2026-10-15.`, QUOTE, 'Aurora Agency').bound, false, join)
+  // the real verifier
+  undated((await run(lead('2026-10-15', { excerpt: mixed.replace(/\.$/, '') }), page(`${mixed}${filler}`))).lead)
+  // genuinely dated Aurora events still bind, in the same clause, before or after
+  const dated = [`${QUOTE} on 2026-10-15, while UnrelatedCo launched a tool.`, `On October 15, 2026, ${QUOTE}, while UnrelatedCo launched a tool.`, `${QUOTE} on 15 October 2026.`]
+  for (const t of dated) assert.equal(eventDateBound('2026-10-15', `${t}${filler}`, QUOTE, 'Aurora Agency').bound, true, t)
+  const ok = (await run(lead('2026-10-15'), page(`${dated[0]}${filler}`))).lead
+  assert.deepEqual([ok.event_date, ok.date_status], ['2026-10-15', 'unverified'])
+})
+
+test('hold 2: the blocked-source fallback binds the date on the HELD copy before promotion', async () => {
+  const url = 'https://news.example/aurora'
+  const blocked = async () => ({ fail: 'blocked' as const })
+  const heldBody = (body: string) => ({ text: HeldText.seal('job1:1', [url], [{ url, title: 'Aurora Agency', text: body }]), attempt: 'job1:1' })
+  // the held copy names no date: the model's Oct 15 does not survive promotion
+  const noDate = await verifyLeads([lead('2026-10-15')], blocked, NOW, undefined, null, heldBody(`${QUOTE}.${filler}`))
+  assert.equal(noDate.leads.length, 1); assert.equal(noDate.leads[0].evidence_origin, 'tinyfish_copy')
+  undated(noDate.leads[0]); assert.match(noDate.leads[0].timing_note ?? '', /not tied to this company and event by the held copy/)
+  // another clause's day on the held copy does not either
+  undated((await verifyLeads([lead('2026-10-15')], blocked, NOW, undefined, null, heldBody(`${QUOTE}, while UnrelatedCo launched a tool on 2026-10-15.${filler}`))).leads[0])
+  // control: the held copy dates Aurora's opening itself
+  const dated = await verifyLeads([lead('2026-10-15')], blocked, NOW, undefined, null, heldBody(`${QUOTE} on 2026-10-15.${filler}`))
+  assert.deepEqual([dated.leads[0].event_date, dated.leads[0].evidence_origin], ['2026-10-15', 'tinyfish_copy'])
+})
+
+test('hold 3: company background years ("founded in 2020") never make a fresh, explicitly dated event stale', async () => {
+  const quote = 'Aurora Agency, founded in 2020 and backed by investors since 2021, opened a new office on King Street West in Toronto, ON on 2026-10-15'
+  assert.equal(eventDateBound('2026-10-15', `${quote}.${filler}`, quote, 'Aurora Agency').bound, true)
+  const r = await run(lead('2026-10-15', { excerpt: quote }), page(`${quote}.${filler}`))
+  assert.ok(r.lead, JSON.stringify(r.review)); assert.equal(r.lead.event_date, '2026-10-15')
+  // undated path too: a background year is not "the quote names an old year"
+  assert.equal(resolveTiming(`${quote}.`, quote.replace(' on 2026-10-15', ''), null, 2026).olderYear, null)
+  // controls: the EVENT's own old year is still stale, in both checks
+  const old = 'Aurora Agency opened a new office on King Street West in Toronto, ON in 2019'
+  assert.match(eventDateBound('2026-10-15', `${old} on 2026-10-15.`, old, 'Aurora Agency').why, /names 2019/)
+  assert.equal(resolveTiming(`${old}.`, old, null, 2026).olderYear, 2019)
+  assert.deepEqual(eventYears('founded in 2020, established 2019, incorporated in 2018, since 2015; opened in 2019 and moved 2024'), [2019, 2024])
+})

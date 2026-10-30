@@ -323,8 +323,15 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
       const copy = why && held ? held.text.copyFor(held.attempt, c.source_url, why) : null
       if (copy?.ok) {
         const cp: Page = { text: copy.page.text, title: copy.page.title, retrievedAt: copy.page.heldAt }
-        const v2 = !closedJobEvidence(c, cp) ? verifyEvidence(c, cp, now) : null
-        if (v2?.ok && !counterpartySignal(c, cp, '') && ownPlaceAgreement(cp, geo, c.company, c.excerpt) !== 'mismatch') { passed.push({ c, v: v2, copy: { failure: why, sha256: copy.page.sha256, page: copy.page } }); note(c, 'passed', null, COPY_ORIGIN); continue }
+        // The same date binding as a fetched page (#460 review): the held copy must tie the claimed day to this company and event, or the candidate is undated.
+        let cc = c
+        const claimed = verifyEvidence(c, cp, now)          // a claimed day the date rules reject (stale, future, malformed) keeps the hold: unbinding it must not launder it
+        if (cc.event_date && !(!claimed.ok && ['bad_date', 'stale', 'future_date'].includes(claimed.reason)) && structuredDates?.get(canonUrl(cc.source_url)) !== cc.event_date) {
+          const b = eventDateBound(cc.event_date, cp.text, cc.excerpt, cc.company)
+          if (!b.bound) cc = { ...cc, event_date: null, timing_note: `the claimed event date ${cc.event_date} is not tied to this company and event by the held copy (${b.why}); treated as undated`.slice(0, 300) }
+        }
+        const v2 = !closedJobEvidence(cc, cp) && !(!claimed.ok && ['bad_date', 'stale', 'future_date'].includes(claimed.reason)) ? verifyEvidence(cc, cp, now) : null
+        if (v2?.ok && !counterpartySignal(cc, cp, '') && ownPlaceAgreement(cp, geo, cc.company, cc.excerpt) !== 'mismatch') { passed.push({ c: cc, v: v2, copy: { failure: why, sha256: copy.page.sha256, page: copy.page } }); note(c, 'passed', null, COPY_ORIGIN); continue }
       }
       if (why) toReview(c, why)
       else { const r = page.fail === 'not_found' ? 'page_not_found' : page.fail === 'refused' ? 'url_refused' : 'page_unreachable'; drop(r); note(c, 'dropped', r) }
