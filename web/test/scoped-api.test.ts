@@ -10,7 +10,7 @@ bothEngines('tokens are tenant-scoped, hashed, never grant sending, and revocati
   const t = await issueToken(db, 't1', { name: 'chatgpt', scopes: ['discover:run', 'leads:read', 'runs:read'] }, NOW)
   const p = await authenticate(db, t.token, NOW); assert.equal(p!.tenantId, 't1'); assert.ok(p!.scopes.has('leads:read') && !p!.scopes.has('plays:write'))
   const stored = await db.get<{ token_hash: string }>('SELECT token_hash FROM api_tokens WHERE id = ?', [t.id]); assert.ok(!t.token.includes(stored!.token_hash) && !stored!.token_hash.includes(t.token.split('_')[2]))
-  assert.equal(await authenticate(db, t.token.slice(0, -2) + 'xx', NOW), null); assert.equal(await authenticate(db, null, NOW), null)
+  assert.equal(await authenticate(db, t.token + 'x', NOW), null); assert.equal(await authenticate(db, null, NOW), null)
   for (const bad of [['send'], ['email:send'], ['discover:run', 'sequences:send'], [], ['admin']]) await assert.rejects(issueToken(db, 't1', { name: 'x', scopes: bad }, NOW), ScopeError)
   assert.ok(!SCOPES.some(s => /send/i.test(s)) && !TOOLS.some(x => /send/i.test(x.name)), 'no scope and no tool can send')
   assert.equal(await revokeToken(db, 't2', t.id, NOW), false, 'another tenant cannot revoke it'); assert.ok(await authenticate(db, t.token, NOW + 1))
