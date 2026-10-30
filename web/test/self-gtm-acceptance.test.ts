@@ -102,14 +102,15 @@ test('dazl -> dazl end to end: every step passes and hands the next one only wha
   assert.ok(r.answers.every(a => a.issues.length === 0))
 
   // lifecycle: activation by delivered value, direct attribution only with a consented tagged link, the synthetic
-  // tenant excluded, retention from the shared definition
+  // tenant excluded, day-30 retention and coverage from the shared helper, each over its own cohort
   const l = r.lifecycle
   assert.equal(l.customers, 3)
   assert.equal(l.excluded, 1)
   assert.deepEqual(l.byStage, { retained: 1, zero_result: 1, abandoned_setup: 1 })
   assert.deepEqual(l.byAttribution, { direct: 1, assisted: 0, unknown: 2 })
   assert.equal(l.activationRate, 1 / 3)
-  assert.deepEqual([l.retentionEligible, l.retained, l.retentionRate, l.retentionLabel], [1, 1, 1, RETENTION.label])
+  assert.deepEqual([l.retention.eligible, l.retention.retained, l.retention.rate, l.retention.label], [1, 1, 1, RETENTION.labels.day30])
+  assert.deepEqual([l.coverage.covered, l.coverage.not_covered, l.coverage.unknown, l.coverage.cohort_size, l.coverage.label], [1, 0, 0, 1, RETENTION.labels.coverage])
 })
 
 test('the path holds at the step that fails, and later steps get nothing to work with', () => {
