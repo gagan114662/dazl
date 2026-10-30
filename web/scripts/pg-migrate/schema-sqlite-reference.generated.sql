@@ -142,6 +142,35 @@ CREATE TABLE csv_rows (
       job_id   TEXT REFERENCES scan_jobs(id) ON DELETE SET NULL
     );
 
+CREATE TABLE deal_stage_events (
+      tenant_id  TEXT NOT NULL,
+      deal_id    TEXT NOT NULL,
+      seq        INTEGER NOT NULL,
+      kind       TEXT NOT NULL CHECK (kind IN ('created', 'moved', 'owner', 'reopened')),
+      from_stage TEXT,
+      to_stage   TEXT,
+      owner_id   TEXT,
+      actor      TEXT NOT NULL,
+      detail     TEXT,
+      at         INTEGER NOT NULL,
+      PRIMARY KEY (tenant_id, deal_id, seq)
+    );
+
+CREATE TABLE deals (
+      id            TEXT PRIMARY KEY,
+      tenant_id     TEXT NOT NULL,
+      lead_id       TEXT NOT NULL,
+      owner_id      TEXT NOT NULL,
+      stage         TEXT NOT NULL CHECK (stage IN ('qualified', 'meeting', 'proposal', 'negotiation', 'won', 'lost')),
+      amount_minor  INTEGER CHECK (amount_minor IS NULL OR amount_minor >= 0),
+      currency      TEXT CHECK (currency IS NULL OR length(currency) = 3),
+      close_date    TEXT,
+      close_reason  TEXT CHECK (close_reason IS NULL OR length(close_reason) <= 300),
+      version       INTEGER NOT NULL DEFAULT 1,
+      created_at    INTEGER NOT NULL,
+      updated_at    INTEGER NOT NULL
+    );
+
 CREATE TABLE email_candidates (
       tenant_id TEXT NOT NULL, lead_id TEXT NOT NULL, person TEXT NOT NULL CHECK (length(person) <= 120),
       address TEXT NOT NULL CHECK (length(address) <= 254), format TEXT NOT NULL,
@@ -777,6 +806,10 @@ CREATE INDEX consent_ledger_lookup ON consent_ledger (tenant_id, contact, channe
 CREATE INDEX csv_batches_user ON csv_batches (user_id, created_at);
 
 CREATE INDEX csv_rows_batch ON csv_rows (batch_id);
+
+CREATE UNIQUE INDEX deals_one_open_per_lead ON deals (tenant_id, lead_id) WHERE stage NOT IN ('won', 'lost');
+
+CREATE INDEX deals_tenant ON deals (tenant_id, stage);
 
 CREATE UNIQUE INDEX hiring_feed_crawl_company ON hiring_feed_crawl(tenant_id, company_key);
 

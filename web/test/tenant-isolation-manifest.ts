@@ -33,6 +33,8 @@ export const ROUTES: RouteEntry[] = [
   { path: 'client-errors', method: 'POST', auth: 'public', note: 'browser error reports: same origin, 8 KB, rate limited per IP; writes only a scrubbed error record; tenant from the session cookie, never the body' },
   { path: 'crm', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' } },
   { path: 'crm', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' } },
+  { path: 'deals', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/deals-route-runtime.mts' } },
+  { path: 'deals', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/deals-route-runtime.mts' } },
   { path: 'gmail/callback', method: 'GET', auth: 'session', crossTenant: 'session-scope' },
   { path: 'gmail/connect', method: 'GET', auth: 'session', crossTenant: 'session-scope' },
   { path: 'gmail/disconnect', method: 'POST', auth: 'session', crossTenant: 'session-scope' },

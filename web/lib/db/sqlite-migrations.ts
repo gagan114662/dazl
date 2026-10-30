@@ -16,6 +16,7 @@ import { migrateLedger } from '../outreach/ledger.ts'
 import { migrateReopen } from '../outreach/reopen.ts'
 import { migrateAutopilot } from '../outreach/autopilot.ts'
 import { migrateCalcom } from '../calcom/index.ts'
+import { migrateDeals } from '../pipeline/deals.ts'
 import { migrateIndexing } from '../seo/indexing.ts'
 import { migrateBriefs } from '../seo/brief.ts'
 import { migrateSeo } from '../seo/audit.ts'
@@ -49,7 +50,7 @@ export function migrateAllSqlite(db: Database.Database): void {
   const migrates = [
     migrateScan, migrateSourceRuns, migrateCsv, migrateCommenterImport, migrateTrial,
     migrateOutreach, migrateSequences, migrateReplies, migrateLedger, migrateReopen,
-    migrateAutopilot, migrateCalcom, migrateIndexing, migrateBriefs, migrateSeo,
+    migrateAutopilot, migrateCalcom, migrateDeals, migrateIndexing, migrateBriefs, migrateSeo,
     migrateNewsjacks, migrateMonitors, migratePlans, migrateMemory, migrateKeys,
     migrateWatch, migrateWarm, migrateConnectors, migrateBilling, migrateOauth,
     migrateTinyfish, migrateThreadReplies, migrateEvents, migrateAdvanced, migrateCompetitors,

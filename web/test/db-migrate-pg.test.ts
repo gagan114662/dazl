@@ -30,7 +30,7 @@ test('fresh database: the migrations create every app table; a second run applie
   const first = await runPgMigrations(db.pool)
   assert.deepEqual(first.applied, loadMigrations().map(m => m.version))
   const tables = (await db.all<{ t: string }>("SELECT table_name AS t FROM information_schema.tables WHERE table_schema = current_schema() AND table_name <> 'dazl_schema_migrations' ORDER BY 1")).map(r => r.t)
-  assert.equal(SQLITE_TABLES.length, 82) // 76 + trial_reservations, trial_budget_lock (0012), crm_push_claims (0014) + organizations, memberships (0015), inbox_thread_reads (0016)
+  assert.equal(SQLITE_TABLES.length, 84) // 76 + trial_reservations, trial_budget_lock (0012), crm_push_claims (0014) + organizations, memberships (0015), inbox_thread_reads (0016), deals, deal_stage_events (0017)
   assert.deepEqual(tables, SQLITE_TABLES)
   const second = await runPgMigrations(db.pool)
   assert.deepEqual(second.applied, [])

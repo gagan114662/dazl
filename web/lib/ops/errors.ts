@@ -142,6 +142,8 @@ const BUILTIN_ERRORS = new Set(['Error', 'TypeError', 'RangeError', 'ReferenceEr
 export const APP_ERROR_CLASSES: ReadonlySet<string> = new Set(['CopyRefused', 'CopyVerifyError', 'EnrichError', 'FixtureError', 'GmailError', 'GmailSendError', 'InboxQueryError', 'JobFeedError',
   'LeaseLost', 'MemoryError', 'OutreachError', 'ProviderError', 'RaceLost', 'ScanStopped', 'ScanTimedOut', 'SequenceError', 'SourceReviewError', 'SpendRefused',
   'StaleLeaseWrite', 'StatementFailedInTx', 'Timeout',
+  // lib/pipeline/deals.ts (#366): a refused deal change
+  'DealError',
   // lib/evals (docs/design/agent-evals.md): a malformed World or case file. Offline eval tooling only.
   'WorldError', 'CaseError',
   // lib/ops/client-errors.ts (#312): the wrapper for a browser report. Its runtime name is always replaced by an
