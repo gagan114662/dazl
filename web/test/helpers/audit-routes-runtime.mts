@@ -33,9 +33,9 @@ const raw = new Database(':memory:')
 migrateAllSqlite(raw)
 setScanDb(raw)
 const route = async (p: string) => await import(`../../app/api/${p}/route.ts`)
-const [llmKey, enrichment, calcom, crm, gmailDisconnect, sender, exportRoute, quarantine, warm, checkout, monitor, auditRoute, competitors, monitors, replies, sequences] = await Promise.all(
+const [llmKey, enrichment, calcom, crm, gmailDisconnect, sender, exportRoute, quarantine, warm, checkout, monitor, auditRoute, competitors, monitors, replies, sequences, profile, memory] = await Promise.all(
   ['settings/llm-key', 'settings/enrichment', 'settings/calcom', 'crm', 'gmail/disconnect', 'outreach/settings', 'leads/export', 'leads/[lead]/quarantine', 'warm/connections', 'billing/checkout', 'monitors/[id]', 'workspace/audit',
-    'settings/competitors', 'monitors', 'outreach/replies', 'outreach/sequences'].map(route))
+    'settings/competitors', 'monitors', 'outreach/replies', 'outreach/sequences', 'settings/profile', 'settings/memory'].map(route))
 
 // Synthetic markers: none of these may ever appear in the audit table.
 const MARK = {
@@ -160,6 +160,13 @@ test("privileged requests leave attributable, redacted events; 'GET /api/workspa
   ])
   assert.deepEqual(more[0].summary, { count: 1 })
   assert.ok(!JSON.stringify(raw.prepare('SELECT * FROM audit_events').all()).includes('dentists'), "the monitor's query (user text) is not recorded")
+  // configuration changes say which parts changed, never their text
+  await step('profile saved', t.D, () => profile.POST(req('/api/settings/profile', 'POST', { sells: 'MARKER sells text', business_name: 'MARKER business name' })))
+  await step('memory saved', t.D, () => memory.PUT(req('/api/settings/memory', 'PUT', { icp: 'MARKER icp text for memory', positioning: 'MARKER positioning' })))
+  const cfg = ((await (await read(t.A, '?action=settings.&limit=2')).json()) as { events: Ev[] }).events.reverse()
+  assert.deepEqual(cfg.map(e => [e.actor_id, e.resource_type, e.summary]), [['D', 'profile', { buyer: false, business_name: true }], ['D', 'memory', {}]])
+  const trail = JSON.stringify(raw.prepare('SELECT * FROM audit_events').all())
+  for (const text of ['MARKER sells', 'MARKER business', 'MARKER icp', 'MARKER positioning', 'Rival Co']) assert.ok(!trail.includes(text), `${text} is not in the trail`)
 
   // a CRM push whose result cannot be recorded (the claim write fails) is still in the trail, as unknown
   await step('crm saved again', t.A, () => crm.POST(req('/api/crm', 'POST', { action: 'save', provider: 'hubspot', key: MARK.crmKey })))
