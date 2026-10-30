@@ -222,8 +222,9 @@ Retention: each capture deletes its own tenant's rows older than the retention, 
 takes effect at the next purge. The tick still needs its external scheduler; activating that is not part of this change.
 
 A stored trace is a recorded, redacted trace: `worldFromTrace` turns it into a private World that replays offline
-(`test/trace-capture.test.ts` proves a capture replays to the same verdict with no world miss). Not recorded yet: the CSV
-company path (`runCompanyJob`), adapter sources (`sourceHttp`) and the news search when a caller does not pass them, and
+(`test/trace-capture.test.ts` proves a capture replays to the same verdict with no world miss). The CSV company path
+(`runCompanyJob`), the adapter sources a job selected (`source.get` spans) and the news search (`news.get` spans; a World
+built from such a trace sets `news: true`, so its replay searches news too) are recorded as well. Not recorded yet:
 anything a module fetches without `fetchImpl`. A person named only in page text survives redaction (see "Redaction").
 
 ## The first case, and what it found

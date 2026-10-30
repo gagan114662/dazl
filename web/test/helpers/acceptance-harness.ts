@@ -38,6 +38,7 @@ export interface Fixture {
   deps?: Record<string, unknown>           // extra runJob deps (e.g. memory exclusions)
   runBudget?: string                       // the job's stored run_budget JSON (as POST /api/scan stores it)
   searchStatus?: number                    // the search API answers every query with this HTTP status (a source/infrastructure failure)
+  sources?: object                         // the job's stored source selection (adapters / feeds), as POST /api/scan stores it
 }
 export async function runFixture(f: Fixture) {
   resetTinyfishState()
@@ -46,7 +47,7 @@ export async function runFixture(f: Fixture) {
   db.exec('CREATE TABLE IF NOT EXISTS users (id TEXT, business_name TEXT)'); db.prepare('INSERT INTO users VALUES (?, ?)').run('A', 'Acme')
   const icpProvider = { complete: async () => JSON.stringify(f.modelIcp) } as unknown as Provider
   const icp = f.reviewedIcp ? normalizeIcp(f.reviewedIcp)! : (await inferIcp(icpProvider, KEY, f.request)).icp
-  createQueryJob(db, 'A', { query: f.request, icp: JSON.stringify(icp), ...(f.runBudget ? { runBudget: f.runBudget } : {}) })
+  createQueryJob(db, 'A', { query: f.request, icp: JSON.stringify(icp), ...(f.runBudget ? { runBudget: f.runBudget } : {}), ...(f.sources ? { sources: JSON.stringify(f.sources) } : {}) })
   const job = claimKeyedJob(db)!
   const calls = { afters: [] as (string | null)[], searches: [] as string[], tfFetchBatches: [] as string[][], ownFetch: [] as string[], prompts: [] as string[] }
   const fetchImpl = (async (u: string, init?: RequestInit) => {

@@ -148,6 +148,8 @@ export async function replayCase(c: Case, worldIn: World, opts: { agentLabel?: s
     if (!job || job.user_id !== CASE_TENANT) throw new Error(`case ${c.id}: replay could not claim its job`)
     const outcome = await runJob(db, job, {
       providers, master, fetchImpl, fetchPage: rec.pageFetcher(s.fetchPage), sourceHttp: rec.safeGet(s.sourceHttp, 'source.get'),
+      // A World recorded from a run that searched news replays with news on, answered from the World (never the network).
+      ...(w.news ? { newsHttp: rec.safeGet(s.sourceHttp, 'news.get') } : {}),
       score: c.input.score ?? false, ground: c.input.ground ?? false, judge: null,
       autopilot: (async () => { autopilotCalls++ }) as never,
     })

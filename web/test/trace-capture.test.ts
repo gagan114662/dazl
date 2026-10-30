@@ -2,10 +2,16 @@
 // redacted, size-capped and stored tenant-scoped in the app's own store, and purged after the configured retention.
 // Every page, company, address and key here is SYNTHETIC.
 import { test } from 'node:test'
+import { randomBytes } from 'node:crypto'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
 import { bothEngines } from './helpers/engines.ts'
 import Database from 'better-sqlite3'
+import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
+import { migrateScan } from '../lib/scan/store.ts'
+import { migratePlans } from '../lib/plans.ts'
+import { createBatch, migrateCsv, queuePendingRows } from '../lib/scan/csv-import.ts'
+import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import { getDb, sqliteDb, type Db } from '../lib/db/client.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { beginScanTrace, capTrace, getTrace, listTraces, purgeExpiredTraces, traceCaptureConfig, DEFAULT_RETENTION_DAYS, MAX_STRING_CHARS } from '../lib/evals/capture.ts'
@@ -108,6 +114,63 @@ test('bounded: a stalled response body or a hung store never keeps runJob from r
   try { const t1 = Date.now(); assert.equal(await hung.finish('done'), null); assert.ok(Date.now() - t1 < 1_000) } finally { console.error = orig }
   assert.match(errs.join('\n'), /"error":"timeout"/)
   await db.close()
+})
+
+// The paths #463 left unrecorded: the CSV company job and the news search (adapter sources share the news.get/source.get
+// SafeGet recording and are covered by the runner hook; no fixture selects adapters).
+test('ON: a CSV company job is recorded too - its model call and the verifier page fetch', async () => {
+  const master = randomBytes(32); process.env.DAZL_MASTER_KEY = master.toString('base64')
+  const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migrateCsv(db)
+  saveKey(db, 'csv-tenant', 'anthropic', 'sk-ant-api03-CSVCSVCSVCSVCSVCSVCSVCSVCSVCSVCS', master)
+  queuePendingRows(db, 'csv-tenant', createBatch(db, 'csv-tenant', ['acme.example']))
+  const job = claimKeyedJob(db)!
+  const recent = daysAgo(30), QUOTE = 'Acme announced it is hiring three account executives for the Toronto market'
+  const lead = { name: '', company: 'Acme', contact: null, signal: 'Hiring AEs', source_url: 'https://news.example/acme', score: 80, excerpt: QUOTE, event_date: recent }
+  const providers = { anthropic: { research: async () => ({ text: JSON.stringify([lead]), citedUrls: ['https://news.example/acme'] }) }, openai: { research: async () => ({ text: '', citedUrls: [] }) } } as never
+  const r = await withEnv({ DAZL_TRACE_CAPTURE: '1' }, () => runJob(db, job, { providers, master, fetchPage: async () => ({ text: `News ${recent.slice(0, 4)}. ${QUOTE}. More text.`, title: 'Acme news', retrievedAt: 1_700_000_000 }) }))
+  assert.equal(r, 'done')
+  const { db: store, rows } = await storedFor('csv-tenant')
+  assert.equal(rows.length, 1); assert.equal(rows[0].job_id, job.id)
+  const t = (await getTrace(store, 'csv-tenant', rows[0].id))!
+  assert.deepEqual(t.spans.slice(0, 2).map(s => `${s.kind}:${s.name}`), ['model:anthropic.research', 'page:verifier.fetch'])
+  // after them, the post-scan enrichment's own fetches are recorded as well; under the test fence they fail, never egress
+  for (const s of t.spans.slice(2)) { assert.equal(`${s.kind}:${s.name}`, 'http:http'); assert.match(s.error ?? '', /net fence/) }
+  assert.ok(!JSON.stringify(t).includes('CSVCSVCSV'))
+})
+
+test('ON: a run that searched news records it, and its World replays with news on and no world miss', async () => {
+  const d = daysAgo(10); const page = { title: 'Querix raises seed', text: PAGE_TEXT(d) }
+  const gdelt = JSON.stringify({ articles: [{ url: URL_, title: 'Querix raises seed', seendate: `${d.replace(/-/g, '')}T100000Z` }] })
+  const f: Fixture = { ...fixture(), deps: { newsHttp: async () => ({ status: 200, body: gdelt }) } }
+  const before = new Set((await storedFor('A')).rows.map(r => r.id))
+  await withEnv({ DAZL_TRACE_CAPTURE: '1' }, () => runFixture({ ...f, own: { [URL_]: page }, tfPages: { [URL_]: page } }))
+  const { db, rows } = await storedFor('A')
+  const t = (await getTrace(db, 'A', rows.find(r => !before.has(r.id))!.id))!
+  const news = t.spans.filter(s => s.kind === 'source_http' && s.name === 'news.get')
+  assert.ok(news.length >= 1, t.spans.map(s => s.name).join(','))
+  assert.match(String((news[0].input as { url: string }).url), /^https:\/\/api\.gdeltproject\.org\//)
+  const world = validateWorld(worldFromTrace(t, 'captured-news'))
+  assert.equal(world.news, true)
+  const kase: Case = { v: 1, kind: 'dazl.case', id: 'captured-news', title: 'n', path: 'scan.discovery', world: '-', provenance: { from_trace: t.id, synthetic: false, why: 'test' },
+    input: { request: t.input.request, icp: t.input.icp }, expect: { leads: [{ company: 'Querix', outcome: 'verified' }] } }
+  const replay = await replayCase(kase, world)
+  assert.deepEqual(replay.misses, [])
+  assert.ok(replay.trace.spans.some(s => s.name === 'news.get'), 'the replay searched news too, from the World')
+  assert.equal(replay.leads.find(l => l.company === 'Querix')?.review_reason, null)
+})
+
+test('ON: adapter sources the job selected are recorded through the same SafeGet (RSS feed)', async () => {
+  const feed = 'https://feeds.example/startups.xml'
+  const seen: string[] = []
+  const sourceHttp = async (url: string) => { seen.push(url); return { status: 200, body: '<?xml version="1.0"?><rss><channel><title>t</title></channel></rss>' } }
+  const before = new Set((await storedFor('A')).rows.map(r => r.id))
+  await withEnv({ DAZL_TRACE_CAPTURE: '1' }, () => runFixture({ ...fixture(), sources: { adapters: ['rss'], feeds: [feed] }, deps: { sourceHttp } }))
+  assert.ok(seen.includes(feed), `the adapter ran: ${seen.join(',')}`)
+  const { db, rows } = await storedFor('A')
+  const t = (await getTrace(db, 'A', rows.find(r => !before.has(r.id))!.id))!
+  const src = t.spans.filter(s => s.kind === 'source_http' && s.name === 'source.get')
+  assert.ok(src.some(s => (s.input as { url: string }).url === feed), t.spans.map(s => s.name).join(','))
+  assert.equal((src.find(s => (s.input as { url: string }).url === feed)!.output as { status: number }).status, 200)
 })
 
 const synth = (over: Partial<Trace> = {}): Trace => ({ v: TRACE_VERSION, kind: 'dazl.trace', id: 't', path: 'scan.discovery', synthetic: false, redacted: false, started_at: '2026-10-20T00:00:00Z',

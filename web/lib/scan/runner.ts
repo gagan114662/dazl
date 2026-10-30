@@ -564,7 +564,7 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
       }
       if (leads && leads.length === 0) leads = null
     }
-    const fetchP = cachedFetcher(deps.fetchPage ?? fetchPageDetailed)
+    const fetchP = cachedFetcher(deps.trace ? deps.trace.pageFetcher(deps.fetchPage ?? fetchPageDetailed) : deps.fetchPage ?? fetchPageDetailed)
     if (!leads) {
       // Per-run budget control: a run that disabled the paid fallback stops here
       // honestly instead of spending on research/ground/judge calls. The distinct
@@ -771,6 +771,10 @@ export interface RunDeps {
   trace?: import('../evals/trace.ts').TraceRecorder
   first5?: boolean; autopilot?: typeof runAutopilot; sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; salesHiringGate?: typeof applySalesHiringGate; jobBudgetMs?: number; clock?: () => number }
 
+// The news search's HTTP. While a trace is recorded (lib/evals/capture.ts) its calls go through the recorder; whether news
+// runs at all is still decided by newsOn alone (passing deps.newsHttp is what turns it on, so capture never does).
+const newsGet = (deps: RunDeps): SafeGet => deps.trace ? deps.trace.safeGet(deps.newsHttp ?? safeGet, 'news.get') : deps.newsHttp ?? safeGet
+
 // A free-trial scan's charge for each TinyFish call on dazl's key (lib/billing/trial-budget.ts), set while that scan runs.
 const trialCharges = new WeakMap<Job, (kind: 'search' | 'fetch', units: number) => void>()
 
@@ -899,7 +903,7 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
       try {
         ledger.record('search:tinyfish', 'started')
         assertOwned(db, job)
-        leads = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl, diag, newsOn ? deps.newsHttp ?? safeGet : undefined)
+        leads = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl, diag, newsOn ? newsGet(deps) : undefined)
         if (leads?.length) partial.candidates = leads
         ledger.record('search:tinyfish', leads === null ? 'unavailable' : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:tinyfish', leads)
@@ -927,7 +931,7 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
         ledger.record('search:news', 'started')
         assertOwned(db, job)
         const note = { searched: false, hits: 0, attempted: 0, failed: 0, malformed: 0 }
-        leads = await newsLeads(job, icpForSources, providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl, note)
+        leads = await newsLeads(job, icpForSources, providers_[vendor], key, newsGet(deps), fetchP, deps.fetchImpl, note)
         if (leads?.length) partial.candidates = leads
         // 'empty' only when the news search ran and returned zero hits; hits with no usable page evidence, or no query to run, stay 'unavailable' (unknown, never a zero).
         ledger.record('search:news', newsStatus(leads, note), note.searched ? note.hits : null)
@@ -974,7 +978,7 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
     if (sel && icpForSources && complete) {
       try {
         assertOwned(db, job)
-        const collected = await collectEvidenceReport(sel, job.query!, deps.sourceHttp, undefined, sel.adapters.includes('jobboards') ? [...diag.hitUrls, ...leads.map(l => l.source_url)] : [], async url => { try { const r = await fetchP(url); return r && 'text' in r && typeof r.text === 'string' ? r.text : null } catch { return null } }, sel.adapters.includes('jobboards') ? [...new Map(leads.filter(l => l.company).map(l => [l.company.toLowerCase(), { name: l.company }])).values()] : [])
+        const collected = await collectEvidenceReport(sel, job.query!, deps.trace ? deps.trace.safeGet(deps.sourceHttp ?? safeGet, 'source.get') : deps.sourceHttp, undefined, sel.adapters.includes('jobboards') ? [...diag.hitUrls, ...leads.map(l => l.source_url)] : [], async url => { try { const r = await fetchP(url); return r && 'text' in r && typeof r.text === 'string' ? r.text : null } catch { return null } }, sel.adapters.includes('jobboards') ? [...new Map(leads.filter(l => l.company).map(l => [l.company.toLowerCase(), { name: l.company }])).values()] : [])
         const items = collected.items
         const leadsBefore = leads.length
         for (const run of collected.runs) ledger.record(run.collector, run.status, run.evidence)
@@ -993,7 +997,7 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
           const note = { searched: false, hits: 0, attempted: 0, failed: 0, malformed: 0 }
           ledger.record('corroborate:news', 'started')
           let found: LeadDraft[] | null = null
-          try { found = await newsLeads(job, icpForSources, providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl, note, withGeography(targets.map(t => t.query), icpForSources.where)) }
+          try { found = await newsLeads(job, icpForSources, providers_[vendor], key, newsGet(deps), fetchP, deps.fetchImpl, note, withGeography(targets.map(t => t.query), icpForSources.where)) }
           catch (e) { if (e instanceof ScanStopped || e instanceof ScanTimedOut || e instanceof SpendRefused) throw e; if (e instanceof ProviderError && e.kind === 'auth') throw e }
           ledger.record('corroborate:news', newsStatus(found, note), note.searched ? note.hits : null)
           if (found?.length) { ledger.candidates('corroborate:news', found); for (const l of found) leads.push(l) }
@@ -1067,7 +1071,7 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
       ledger.record('fallback:news', 'started')
       try {
         assertOwned(db, job)
-        const found = await newsLeads(job, icpForSources!, providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl, note, blocked.map(b => b.query))
+        const found = await newsLeads(job, icpForSources!, providers_[vendor], key, newsGet(deps), fetchP, deps.fetchImpl, note, blocked.map(b => b.query))
         ledger.record('fallback:news', newsStatus(found, note), note.searched ? note.hits : null)
         if (found && found.length > 0) {
           ledger.candidates('fallback:news', found)

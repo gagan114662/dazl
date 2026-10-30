@@ -29,6 +29,7 @@ export interface World {
   http: Record<string, HttpResult | null>    // every other HTTP call (source adapters via SafeGet, enrichment via fetch), by exact URL; null = the call failed
   http_default?: HttpResult                  // synthetic worlds only: the answer to any URL not listed ("the outside world has nothing")
   model: Record<string, WorldReply[]>        // by replayStage(prompt); consumed in order, a call past the end is a world miss
+  news?: boolean                             // the recorded run searched news (lib/search/news.ts): the replay turns it on too
 }
 
 export class WorldError extends Error {}
@@ -82,6 +83,7 @@ export function worldFromTrace(t: Trace, id = `world-${t.id}`): World {
       w.pages[url] = s.error ? { threw: s.error } : !o ? { unreachable: true } : 'fail' in o ? { fail: o.fail as FetchFail['fail'] } : { title: String(o.title ?? ''), text: String(o.text ?? ''), ...(o.published ? { published: String(o.published) } : {}), ...(Array.isArray(o.structured) ? { structured: o.structured as string[] } : {}) }
     } else if (s.kind === 'source_http') {
       w.http[String(inp.url)] = (s.output as HttpResult | null) ?? null
+      if (s.name === 'news.get') w.news = true
     } else if (s.kind === 'model') {
       const stage = String(inp.stage)
       const o = (s.output ?? {}) as { text?: string; model?: string | null; usage?: WorldReply['usage']; citedUrls?: string[] }
