@@ -1,6 +1,7 @@
 'use client'
 import { useState } from 'react'
 import type { PlayOffer } from '@/lib/scan/play-offer-text'
+import { inSentence } from '@/lib/offer-sentence'
 
 // What THIS play sells (#349; lib/scan/play-offer.ts), shown wherever the play is: Home, its campaign page and its
 // drafts. A play whose request names a different offer than the one it was created with shows both and waits for the
@@ -12,9 +13,6 @@ const SOURCE: Record<string, string> = {
   request: 'from this play\'s request',
 }
 
-// An offer quoted inside a sentence drops its own closing punctuation ("...New York City." would end "City.."); the
-// buttons keep the exact text, since that text is what gets stored.
-export const inSentence = (t: string) => t.replace(/[.!?]+\s*$/, '')
 
 export function PlayOfferCard({ jobId, offer, onChange, compact }: { jobId: string; offer: PlayOffer | null | undefined; onChange?: (o: PlayOffer) => void; compact?: boolean }) {
   const [editing, setEditing] = useState(false)
@@ -43,11 +41,13 @@ export function PlayOfferCard({ jobId, offer, onChange, compact }: { jobId: stri
     const c = offer.conflict
     return <div className="rounded-xl border border-[#e8b04a] bg-[#fff7e6] px-4 py-3 text-sm" role="alert" data-testid="play-offer-conflict">
       <p className="font-semibold">Which offer is this play for?</p>
-      <p className="mt-1 text-[var(--ink-2)]">This play&apos;s request says you sell <strong>{inSentence(c.stated)}</strong>, but it started with <strong>{inSentence(c.recorded)}</strong>. dazl will not draft for it until you choose. Only this play changes.</p>
+      {c.stated
+        ? <p className="mt-1 text-[var(--ink-2)]">This play&apos;s request says you sell <strong>{inSentence(c.stated)}</strong>, but it started with <strong>{inSentence(c.recorded)}</strong>. dazl will not draft for it until you choose. Only this play changes.</p>
+        : <p className="mt-1 text-[var(--ink-2)]" data-testid="play-offer-withdrawn">This play&apos;s request says you do not offer <strong>{inSentence(c.withdrawn ?? '')}</strong>, but it started with <strong>{inSentence(c.recorded)}</strong>. dazl will not draft for it until you say what it sells. Only this play changes.</p>}
       <div className="mt-2 flex flex-wrap gap-2">
-        <button className="btn-primary btn-sm" disabled={busy} onClick={() => void choose(c.stated)} data-testid="play-offer-use-stated">Use: {c.stated}</button>
+        {c.stated && <button className="btn-primary btn-sm" disabled={busy} onClick={() => void choose(c.stated!)} data-testid="play-offer-use-stated">Use: {c.stated}</button>}
         <button className="btn-ghost btn-sm" disabled={busy} onClick={() => void choose(c.recorded)} data-testid="play-offer-use-recorded">Keep: {c.recorded}</button>
-        {!editing && <button className="btn-ghost btn-sm" onClick={() => { setText(''); setEditing(true) }}>Something else</button>}
+        {!editing && <button className={c.stated ? 'btn-ghost btn-sm' : 'btn-primary btn-sm'} onClick={() => { setText(''); setEditing(true) }} data-testid="play-offer-write">{c.stated ? 'Something else' : 'Write what this play sells'}</button>}
       </div>
       {editing && editor}
       {msg && <p className="mt-1 text-xs" role="status">{msg}</p>}

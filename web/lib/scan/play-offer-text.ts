@@ -24,7 +24,8 @@ export function isMissingSchema(e: unknown): boolean {
 export type OfferSource = 'play' | 'recorded' | 'profile' | 'request'
 export type PlayOffer =
   | { offer: string; source: OfferSource; conflict: null }
-  | { offer: null; source: 'conflict'; conflict: { stated: string; recorded: string } }
+  // stated: the offer the request names instead (null when it only withdraws one); withdrawn: what it says is no longer sold
+  | { offer: null; source: 'conflict'; conflict: { stated: string | null; recorded: string; withdrawn?: string } }
   | { offer: null; source: 'none'; conflict: null }
 
 export const cleanOffer = (s: unknown): string => typeof s === 'string' ? s.replace(/\s+/g, ' ').trim().slice(0, MAX_OFFER) : ''
@@ -259,12 +260,47 @@ export function sameOffer(a: string, b: string): boolean {
   return !x.audience || !y.audience || x.audience === y.audience
 }
 
+// What a request says the seller no longer or does not sell ("We do not sell X.", "We no longer offer X.", "We are not
+// selling X."), when it names an offer (not a target such as "to agencies"). Such a request contradicts any saved offer
+// it might otherwise fall back to, so the play cannot silently use one: it waits for an explicit choice.
+// Anywhere in the request (after "Note:", "As of May", ...): a seller subject, then a negated sell verb or a stop verb. The
+// capture ends at a sentence end or a comma that starts a new clause ("..., we now sell CRM setup").
+const WITHDRAWN = new RegExp(String.raw`\b(?:i|we|our (?:company|business|team|firm|agency|studio|shop)|the company|we['’]re|we['’]ve)\s+(?:(?:do not|dont|don['’]t|does not|doesnt|doesn['’]t|no longer|are not|are no longer|aren['’]t|is not|is no longer|isn['’]t|am not|will not|won['’]t|cannot|can['’]t)\s+(?:(?:currently|now|really|actually)\s+)?(?:sell|sells|selling|offer|offers|offering|provide|provides|providing)|used to (?:sell|offer|provide)|(?:have |has )?(?:stopped|ceased|quit)\s+(?:selling|offering|providing)|(?:have |has )?discontinued)\s+((?:(?!,\s*(?:we|i|but|and|now|instead)\b)[^.!?;]){2,150})`, 'i')
+// The text a request says is not (or no longer) sold.
+export function withdrawnOffer(query: string | null | undefined): string | null {
+  const m = WITHDRAWN.exec((query ?? '').replace(/\s+/g, ' '))
+  if (!m) return null
+  const o = cleanOffer(m[1].replace(/^(?:our|my|a|an|the)\s+/i, '').replace(/\s+(?:any ?more|anymore)$/i, ''))
+  return o.length >= 2 && !NOT_AN_OFFER.test(o) ? o : null
+}
+// A withdrawal contradicts the saved offer unless it only names a commercial term (refunds, free trials, on-site
+// training, ...): it fails closed, since a withdrawal may name the saved product in other words ("scheduling tools" for
+// appointment booking software). One that names only terms is left to the ordinary comparison.
+const TERMS = new Set(['refund', 'refunds', 'discount', 'discounts', 'free', 'trial', 'trials', 'guarantee', 'guarantees', 'warranty', 'warranties',
+  'support', 'training', 'onboarding', 'on', 'site', 'onsite', 'contract', 'contracts', 'long', 'term', 'payment', 'payments', 'plan', 'plans', 'credit',
+  'invoicing', 'terms', 'returns', 'exchanges', 'shipping', 'delivery', 'international', 'weekend', 'phone', 'live', 'chat', '24', '7', 'custom', 'pricing'])
+const GENERIC = new Set(['we', 'sell', 'sells', 'selling', 'and', 'the', 'for', 'to', 'in', 'of', 'with', 'our', 'your', 'a', 'an', 'at', 'or', 'any'])
+const contentWords = (t: string) => t.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(w => w && !GENERIC.has(w))
+// the product words only: an audience clause ("... to restaurants") is a buyer, not what is sold
+const productPart = (t: string) => t.split(/\s+(?:to|for|in|at|across|within|with)\s+/i)[0]
+function withdrawsSaved(withdrawn: string, saved: string): boolean {
+  if (sameOffer(withdrawn, saved)) return true
+  const words = contentWords(productPart(withdrawn))
+  // a term is only exempt when the saved product is not made of it ("We no longer sell training" for a training offer)
+  const stem = (w: string) => w.length > 3 ? w.replace(/s$/, '') : w
+  const savedWords = new Set(contentWords(productPart(saved)).map(stem))
+  return words.length === 0 || words.some(w => savedWords.has(stem(w))) || !words.every(w => TERMS.has(w))
+}
+
 export function effectiveOffer(play: { offer?: string | null; seller?: string | null; query?: string | null }, profileSells: string | null | undefined): PlayOffer {
   const reviewed = cleanOffer(play.offer)
   if (reviewed) return { offer: reviewed, source: 'play', conflict: null }
   const recorded = offerOfSeller(play.seller)
   const base = recorded ?? (cleanOffer(profileSells) || null)
   const stated = statedOffer(play.query)
+  // a request that withdraws an offer never resolves to a saved one by default: explicit choice only
+  const withdrawn = withdrawnOffer(play.query)
+  if (withdrawn && base && withdrawsSaved(withdrawn, base)) return { offer: null, source: 'conflict', conflict: { stated: stated && !sameOffer(stated, withdrawn) ? stated : null, recorded: base, withdrawn } }
   // the request's whole offer statement is compared (its buyers and seller negations too), not only the offer words
   if (stated && base && !sameOffer(play.query ?? '', base)) return { offer: null, source: 'conflict', conflict: { stated, recorded: base } }
   if (base) return { offer: base, source: recorded ? 'recorded' : 'profile', conflict: null }

@@ -42,6 +42,36 @@ const MATRIX: Row[] = [
   ['unknown place', `Email providers in Canada Cost Extra. We sell ${P}.`, 'choice'],
   ['unparsed', `Independent dental practices hiring a coordinator won customers. We sell ${P}.`, 'choice'],
   ['unparsed', `Email marketing agencies. We sell ${P}.`, 'choice'],
+  // a request that withdraws the saved offer never resolves to it, with or without a replacement
+  ['withdrawn', `We do not sell ${P}.`, 'choice'],
+  ['withdrawn', `We no longer sell ${P}.`, 'choice'],
+  ['withdrawn', `Find London SaaS startups. We don't sell ${P} anymore.`, 'choice'],
+  ['withdrawn', `We have stopped selling ${P}. We sell CRM setup and outbound consulting.`, 'choice'],
+  // reworded withdrawals (council review): any position, other subjects, adverbs, no apostrophe, past and stop verbs
+  ['withdrawn', `Note: we no longer sell ${P}.`, 'choice'],
+  ['withdrawn', `As of May we don't sell ${P}`, 'choice'],
+  ['withdrawn', `Our company no longer sells ${P}.`, 'choice'],
+  ['withdrawn', `Our team no longer sells ${P}.`, 'choice'],
+  ['withdrawn', `We are no longer selling ${P}.`, 'choice'],
+  ['withdrawn', `We dont sell ${P}.`, 'choice'],
+  ['withdrawn', `We don't currently sell ${P}.`, 'choice'],
+  ['withdrawn', `We used to sell ${P}.`, 'choice'],
+  ['withdrawn', `We discontinued ${P}.`, 'choice'],
+  ['withdrawn', `We have discontinued ${P}.`, 'choice'],
+  ['withdrawn', `We do not sell ${P} anymore, we now sell CRM setup and outbound consulting.`, 'choice'],
+  ['withdrawn', `Find London SaaS startups: we no longer sell ${P}.`, 'choice'],
+  ['withdrawn', `Find London SaaS startups - we no longer sell ${P}.`, 'choice'],
+  ['withdrawn', `Find London SaaS startups and we no longer sell ${P}.`, 'choice'],
+  ['withdrawn', `Hello we no longer sell ${P} to dental practices.`, 'choice'],
+  ['withdrawn', `Find London SaaS startups. We're no longer selling ${P}.`, 'choice'],
+  ['withdrawn', `Find London SaaS startups. We've stopped selling ${P}.`, 'choice'],
+  // a "do not offer" about something the saved offer does not sell is not a withdrawal of it
+  ['withdrawn', 'We no longer sell scheduling tools.', 'choice'],
+  ['withdrawn', 'We no longer sell it.', 'choice'],
+  ['withdrawn', 'We no longer sell that product.', 'choice'],
+  ['withdrawn', 'We stopped selling our dental product.', 'choice'],
+  ['unrelated exclusion', 'Find dental practices in NYC hiring. We do not offer free trials.', 'equivalent'],
+  ['unrelated exclusion', 'Independent dental practices in New York City hiring a front-desk coordinator. We don\'t provide on-site training.', 'equivalent'],
 ]
 
 test('#349 decision matrix: equivalents stay equivalent; changed product/buyer, qualifications and unknown places ask for a choice', () => {
@@ -64,4 +94,11 @@ test('#349 decision matrix: equivalents stay equivalent; changed product/buyer, 
   // a choice already made for the play always wins, whatever its request says
   assert.deepEqual(effectiveOffer({ offer: 'CRM setup and outbound consulting', seller: `${SAVED} - https://seller.example`, query: 'We sell CRM setup and outbound consulting.' }, ''),
     { offer: 'CRM setup and outbound consulting', source: 'play', conflict: null })
+})
+
+test('#349 decision matrix: a term-only withdrawal still asks when the saved product is that term', () => {
+  for (const [saved, q] of [['Sales training for B2B startups.', 'We no longer offer training.'], ['Customer support outsourcing for SaaS companies.', 'We no longer offer support.'],
+    ['Live chat software for online shops.', 'We no longer sell live chat.'], ['Employee onboarding software for agencies.', 'We do not offer onboarding.'],
+    ['Payment processing for restaurants.', 'We no longer provide payments.'], ['Custom pricing consulting for SaaS.', 'We no longer offer custom pricing.']])
+    assert.equal(effectiveOffer({ seller: `${saved} - https://seller.example`, query: q }, '').source, 'conflict', `${saved} / ${q}`)
 })

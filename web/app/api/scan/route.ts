@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
   if (offerSupplied && offer.length < 3) return NextResponse.json({ error: 'Say in a few words what you sell for this play' }, { status: 400 })
   if (query.length >= 3 && !offer) {
     const e = effectiveOffer({ seller, query }, null)
-    if (e.conflict) return NextResponse.json({ error: 'offer_conflict', stated: e.conflict.stated, saved: e.conflict.recorded }, { status: 409 })
+    if (e.conflict) return NextResponse.json({ error: 'offer_conflict', stated: e.conflict.stated, saved: e.conflict.recorded, ...(e.conflict.withdrawn ? { withdrawn: e.conflict.withdrawn } : {}) }, { status: 409 })
   }
 
   // Optional per-run cost controls. Validated BEFORE anything is queued or counted: an explicitly supplied budget that is not

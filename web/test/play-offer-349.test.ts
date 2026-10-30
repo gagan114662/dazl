@@ -7,7 +7,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
-import { statedOffer, effectiveOffer, sameOffer } from '../lib/scan/play-offer-text.ts'
+import { statedOffer, effectiveOffer, sameOffer, withdrawnOffer, draftOffer } from '../lib/scan/play-offer-text.ts'
 import { readPlayOffer, setPlayOffer } from '../lib/scan/play-offer.ts'
 import { createDraft, saveSettings } from '../lib/outreach/service.ts'
 import { polishDraft } from '../lib/outreach/draft-llm.ts'
@@ -534,4 +534,66 @@ test('#349 HOLD-11 the shipped smoke case: a grounded description of the buyers 
     `Independent dental practices in New York City. We sell ${DENTAL_PRODUCT}. Payroll is included.`,
   ]) assert.equal(effectiveOffer({ seller: saved, query: q }, '').source, 'conflict', q)
   assert.equal(effectiveOffer({ seller: saved, query: Q }, '').source, 'conflict', 'London')
+})
+
+test('#349 HOLD-12 a request that withdraws the saved offer stays unresolved: no offer invented, drafting and rewrite refuse, scoring states no offer, until chosen', async () => {
+  const saved = `${DENTAL_SELLER} - https://seller.example`
+  for (const q of [`We do not sell ${DENTAL_PRODUCT}.`, `We no longer sell ${DENTAL_PRODUCT}.`, `We don't sell ${DENTAL_PRODUCT} anymore.`, `Find London SaaS startups. We have stopped selling ${DENTAL_PRODUCT}.`]) {
+    const r = effectiveOffer({ seller: saved, query: q }, '')
+    assert.equal(r.source, 'conflict', q); assert.equal(r.offer, null, q)
+    assert.equal(r.conflict!.stated, null, `nothing invented: ${q}`)
+    assert.equal(r.conflict!.recorded, DENTAL_SELLER, q)
+    assert.match(r.conflict!.withdrawn!, /appointment booking and reminder software/, q)
+    assert.equal(effectiveOffer({ seller: null, query: q }, DENTAL_SELLER).source, 'conflict', `profile: ${q}`)
+    assert.equal(draftOffer({ seller: saved, query: q }, '').offer, null, `draftOffer refuses: ${q}`)
+  }
+  // a withdrawal plus a different replacement offers that replacement, never the saved one
+  const both = effectiveOffer({ seller: saved, query: `We no longer sell ${DENTAL_PRODUCT}. We sell CRM setup and outbound consulting.` }, '')
+  assert.equal(both.source, 'conflict'); assert.match(both.conflict!.stated!, /CRM setup and outbound consulting/); assert.match(both.conflict!.withdrawn!, /appointment booking/)
+  // not withdrawals: exclusions of other services, targeting negations and the genuine same-product positive
+  for (const q of [`We sell ${DENTAL_PRODUCT}.`, `Independent dental practices in New York City hiring a front-desk coordinator. We sell ${DENTAL_PRODUCT}.`])
+    assert.deepEqual(effectiveOffer({ seller: saved, query: q }, ''), { offer: DENTAL_SELLER, source: 'recorded', conflict: null }, q)
+  for (const q of ['Find dental practices in NYC.', 'We sell CRM setup.', 'Do not email chains.', 'We do not sell to chains.', 'Find clinics that do not offer online booking.']) assert.equal(withdrawnOffer(q), null, q)
+  // a "do not offer" about something else is left to the ordinary comparison (it resolved before withdrawals were read)
+  for (const q of ['Find dental practices in NYC hiring. We do not offer free trials.', "We don't offer refunds."])
+    assert.deepEqual(effectiveOffer({ seller: saved, query: q }, ''), { offer: DENTAL_SELLER, source: 'recorded', conflict: null }, q)
+  // the overlap is read on the product words only: an exclusion that shares just the audience is not a withdrawal
+  for (const q of ["We don't offer refunds to restaurants.", "We can't offer discounts for payroll software."])
+    assert.equal(effectiveOffer({ seller: 'Payroll software to restaurants - https://s.example', query: q }, '').source, 'recorded', q)
+  assert.equal(effectiveOffer({ seller: 'Payroll software to restaurants - https://s.example', query: 'We do not sell payroll software to chains.' }, '').source, 'conflict', 'same product, buyer excluded: a choice')
+  // fails closed for a withdrawal that names the saved product in other words; terms only (refunds, trials) do not withdraw it
+  const syn = effectiveOffer({ seller: saved, query: 'We no longer sell scheduling tools.' }, '')
+  assert.deepEqual([syn.source, syn.conflict!.withdrawn, syn.conflict!.stated], ['conflict', 'scheduling tools', null])
+  // a term-only withdrawal still conflicts when the saved product is made of those words
+  const tr = effectiveOffer({ seller: 'Sales training courses for SaaS teams - https://s.example', query: 'We no longer sell training.' }, '')
+  assert.deepEqual([tr.source, tr.conflict!.withdrawn], ['conflict', 'training'])
+  // a comma-joined replacement is not swallowed into the withdrawn text. statedOffer does not read an offer after a comma
+  // clause, so stated is null: the chooser offers keep-saved or write-this-play's-offer, never the withdrawn text
+  const comma = effectiveOffer({ seller: saved, query: `We do not sell ${DENTAL_PRODUCT} anymore, we now sell CRM setup and outbound consulting.` }, '')
+  assert.deepEqual([comma.source, comma.conflict!.withdrawn, comma.conflict!.stated], ['conflict', DENTAL_PRODUCT, null])
+  // with no saved offer anywhere a withdrawal states none: nothing to draft with (no_profile), nothing invented
+  const none = draftOffer({ seller: null, query: `We no longer sell ${DENTAL_PRODUCT}.` }, '')
+  assert.equal(none.offer, null)
+  // the changed-buyer, material and unknown-place negatives are unchanged
+  for (const q of [`We sell ${DENTAL_PRODUCT} to veterinary practices.`, `We sell ${DENTAL_PRODUCT}. Payroll is included.`, `Independent dental practices in Premium Tiers. We sell ${DENTAL_PRODUCT}.`])
+    assert.equal(effectiveOffer({ seller: saved, query: q }, '').source, 'conflict', q)
+  // caller paths: template, follow-up-free rewrite and scoring refuse; an explicit choice then drafts with exactly that offer
+  const db = setup(DENTAL_SELLER)
+  try {
+    db.prepare('UPDATE scan_jobs SET query = ? WHERE id = ?').run(`We no longer sell ${DENTAL_PRODUCT}.`, 'london')
+    assert.equal((await readPlayOffer(sqliteDb(db), 'A', 'london'))!.source, 'conflict')
+    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme'), /offer_conflict/)
+    assert.equal(offerBlockFor(db, 'A', 'london'), '', 'scoring gets no offer block for the unresolved play')
+    const d = createDraft(db, 'A', 'lead-dental', 'Acme')
+    const before = body(db, d)
+    db.prepare("UPDATE outreach_messages SET lead_id = 'lead-london' WHERE id = ?").run(d)
+    const r = recording()
+    assert.equal((await polishDraft(db, 'A', d, 'Acme', { master, providers: r.providers }) as { reason?: string }).reason, 'offer_conflict')
+    assert.equal(r.prompts.length, 0, 'no model call'); assert.equal(body(db, d), before, 'draft unchanged')
+    assert.equal(await setPlayOffer(sqliteDb(db), 'A', 'london', 'CRM setup and outbound consulting'), true)
+    assert.deepEqual(await readPlayOffer(sqliteDb(db), 'A', 'london'), { offer: 'CRM setup and outbound consulting', source: 'play', conflict: null })
+    db.prepare("DELETE FROM outreach_messages WHERE lead_id = 'lead-london'").run()
+    assert.match(body(db, createDraft(db, 'A', 'lead-london', 'Acme')), /CRM setup and outbound consulting/)
+    assert.equal((db.prepare("SELECT sells FROM users WHERE id = 'A'").get() as { sells: string }).sells, DENTAL_SELLER, 'profile unchanged')
+  } finally { db.close() }
 })
