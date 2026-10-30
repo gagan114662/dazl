@@ -1,6 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { customerState, cohortReport, DAY, RETENTION_MATURE_DAYS, type LifecycleEvent } from '../lib/gtm/lifecycle.ts'
+import { customerState, cohortReport, DAY, type LifecycleEvent } from '../lib/gtm/lifecycle.ts'
+import { RETENTION } from '../lib/growth/retention.ts'
+
+const H = RETENTION.headline_days, G = RETENTION.grace_days
 
 // Synthetic customers and identities only.
 const T0 = Date.UTC(2026, 6, 1)
@@ -32,7 +35,7 @@ test('attribution: unrelated signup stays unknown; touch without consented tagge
   assert.equal(customerState('l', [signup('l', 1), touch('l', 2)], at(5)).attribution, 'unknown')
 })
 
-test('distinct outcomes: abandoned setup, zero results, activation, repeat, failed payment, refund, churn, lapse, retention', () => {
+test('distinct outcomes: abandoned setup, zero results, activation, repeat, failed payment, refund, churn, not retained, retention', () => {
   const now = at(200)
   const cases: [string, LifecycleEvent[], string][] = [
     ['ab', [signup('ab', 1), ev('ab', 1, { kind: 'setup', step: 'key' }), ev('ab', 2, { kind: 'run', status: 'failed', usableLeads: 0 })], 'abandoned_setup'],
@@ -55,31 +58,6 @@ test('distinct outcomes: abandoned setup, zero results, activation, repeat, fail
   assert.equal(customerState('k', [signup('k', 1), ev('k', 1, { kind: 'setup', step: 'key' })], now).activatedAt, null)
 })
 
-test('retention needs a later payment, not elapsed time: one early payment is never retained', () => {
-  const now = at(200)
-  // Paid once on day 3, nothing since: lapsed on day 200, not retained.
-  const once = customerState('once', [signup('once', 1), run('once', 2, 2), pay('once', 3)], now)
-  assert.equal(once.stage, 'lapsed')
-  assert.equal(once.renewedAt, null)
-  // Still inside the first paid month: paid, not yet retained.
-  assert.equal(customerState('once', [signup('once', 1), run('once', 2, 2), pay('once', 3)], at(30)).stage, 'paid')
-  // Renewed, but every renewal is less than RETAINED_DAYS after the first payment: paid, not retained.
-  assert.equal(customerState('short', [signup('short', 140), ...monthly('short', 150, 180)], now).stage, 'paid')
-  // Renewed past RETAINED_DAYS, then stopped paying with no cancel: lapsed, not retained.
-  assert.equal(customerState('stopped', [signup('stopped', 1), ...monthly('stopped', 3, 63)], now).stage, 'lapsed')
-  // A failed payment after the renewal is payment_failed, not retained.
-  assert.equal(customerState('pf2', [signup('pf2', 1), ...monthly('pf2', 3, 183), pay('pf2', 195, 'failed')], now).stage, 'payment_failed')
-  // In the report, the single early payer counts against retention once mature.
-  const r = cohortReport([signup('once', 1), run('once', 2, 2), pay('once', 3), signup('r', 2), run('r', 3, 1), ...monthly('r', 4, 184)], [], at(0), at(30), now)
-  assert.equal(r.retentionMature, 2)
-  assert.equal(r.retentionRate, 1 / 2)
-  assert.deepEqual(r.byStage, { lapsed: 1, retained: 1 })
-  // Too young for the renewal to be due: left out of the rate rather than counted as lost.
-  const young = cohortReport([signup('y', 1), pay('y', 3)], [], at(0), at(30), at(40))
-  assert.equal(young.retentionMature, 0)
-  assert.equal(young.retentionRate, null)
-})
-
 test('report: rates, cost per activated and per retained paying customer, coverage, maturity; synthetic/staging excluded', () => {
   const es = [
     touch('a', 0), signup('a', 1, { viaTaggedLink: true, consented: true }), run('a', 2, 3), ...monthly('a', 3, 183), ev('a', 0, { kind: 'cost', usd: 6, what: 'research' }),
@@ -100,38 +78,9 @@ test('report: rates, cost per activated and per retained paying customer, covera
   assert.equal(r.sourceCoverage, 1 / 3)
   assert.equal(r.mature, true)
   assert.deepEqual(r.byStage, { retained: 1, activated: 1, abandoned_setup: 1 })
+  assert.equal(r.retentionLabel, RETENTION.label)
   assert.equal(cohortReport(es, meta, at(0), at(30), at(60)).mature, false)
   assert.equal(cohortReport([], [], at(0), at(30), at(60)).activationRate, null)
-})
-
-test('retention rate: numerator and denominator are the same eligible set, so retained-but-immature customers cannot push it over 100%', () => {
-  const M = RETENTION_MATURE_DAYS
-  // Two customers renewed and still paying, but their first payment is one day short of maturity; one mature customer paid once.
-  const es = [
-    signup('im1', 0), pay('im1', 1), pay('im1', 31), pay('im1', 61),
-    signup('im2', 0), pay('im2', 1), pay('im2', 31), pay('im2', 61),
-    signup('m', 0), pay('m', 0),
-  ]
-  assert.equal(customerState('im1', es, at(M)).stage, 'retained')
-  const r = cohortReport(es, [], at(0), at(30), at(M))
-  assert.equal(r.retentionMature, 1)
-  assert.equal(r.retentionRate, 0)
-  assert.equal(r.costPerRetainedPaying, null)
-})
-
-test('maturity boundary: one tick before RETENTION_MATURE_DAYS the customer is in neither side; at the boundary in both', () => {
-  const M = RETENTION_MATURE_DAYS
-  const es = [signup('b', 0), pay('b', 0), pay('b', 30), pay('b', 60)]
-  const before = cohortReport(es, [], at(0), at(30), at(M) - 1)
-  assert.equal(before.retentionMature, 0)
-  assert.equal(before.retentionRate, null)
-  const onTime = cohortReport(es, [], at(0), at(30), at(M))
-  assert.equal(onTime.retentionMature, 1)
-  assert.equal(onTime.retentionRate, 1)
-  // At the boundary, a mature customer without a later payment counts against retention.
-  const once = cohortReport([signup('o', 0), pay('o', 0)], [], at(0), at(30), at(M))
-  assert.equal(once.retentionMature, 1)
-  assert.equal(once.retentionRate, 0)
 })
 
 test('one as-of cutoff for every row: future-dated signups, runs, payments and replays never count', () => {
@@ -157,4 +106,56 @@ test('one as-of cutoff for every row: future-dated signups, runs, payments and r
   for (const order of [[orig, late], [late, orig]]) assert.equal(customerState('r', [signup('r', 1), ...order], now).paidAt, at(5))
   // Moving as-of past the rows brings them in.
   assert.equal(customerState('a', es, at(160)).paidAt, at(150))
+})
+
+test('shared definition: the 30-day headline is renewal plus coverage evidence, and each is reported on its own', () => {
+  const now = at(200)
+  // Paid once on day 3, nothing since: eligible, no renewal, not retained (an old payment is never retention by itself).
+  const once = customerState('once', [signup('once', 1), run('once', 2, 2), pay('once', 3)], now)
+  assert.deepEqual([once.stage, once.retention.eligible, once.retention.renewal, once.retention.retained], ['not_retained', true, false, false])
+  // Inside the first month: not eligible yet, so neither retained nor not retained.
+  const young = customerState('once', [signup('once', 1), run('once', 2, 2), pay('once', 3)], at(30))
+  assert.deepEqual([young.stage, young.retention.eligible, young.retention.retained], ['paid', false, null])
+  // Renewed, then cancelled after the headline mark: retained at 30 days, but not covered at the cutoff.
+  const left = customerState('left', [signup('left', 1), pay('left', 3), pay('left', 33), ev('left', 50, { kind: 'cancel' })], now)
+  assert.deepEqual([left.stage, left.retention.retained, left.retention.covered_at_headline, left.retention.covered_at_cutoff], ['churned', true, true, false])
+  // Renewed, but the subscription ended by the headline mark: no coverage evidence, not retained.
+  const early = customerState('early', [signup('early', 1), pay('early', 3), pay('early', 30), ev('early', 32, { kind: 'cancel' })], now)
+  assert.deepEqual([early.retention.renewal, early.retention.covered_at_headline, early.retention.retained], [true, false, false])
+  // A refunded renewal is no renewal evidence.
+  const rf = customerState('rf2', [signup('rf2', 1), pay('rf2', 3), pay('rf2', 33), pay('rf2', 34, 'refunded')], now)
+  assert.deepEqual([rf.retention.renewal, rf.retention.retained], [false, false])
+  // The report uses the shared rate and label; current coverage sits beside the headline, not inside it.
+  const r = cohortReport([signup('once', 1), pay('once', 3), signup('left', 1), pay('left', 3), pay('left', 33), ev('left', 50, { kind: 'cancel' }), signup('r', 2), ...monthly('r', 4, 184)], [], at(0), at(30), now)
+  assert.deepEqual([r.retentionEligible, r.retained, r.retentionRate, r.coveredAtCutoff], [3, 2, 2 / 3, 2])
+  assert.equal(r.retentionLabel, RETENTION.label)
+})
+
+test('shared grace and maturity rules, at their boundaries', () => {
+  const S = 1000  // one second, the shared module's resolution
+  // Renewal counts from headline - grace days after the first payment; one second earlier it does not.
+  assert.equal(customerState('g1', [signup('g1', 0), pay('g1', 0), ev('g1', H - G, { kind: 'payment', status: 'paid' })], at(100)).retention.renewal, true)
+  assert.equal(customerState('g2', [signup('g2', 0), pay('g2', 0), { id: 'g2-early', at: at(H - G) - S, customer: 'g2', kind: 'payment', status: 'paid' } as LifecycleEvent], at(100)).retention.renewal, false)
+  // Eligible from headline + grace days after the first payment, in both numerator and denominator; one second earlier, in neither.
+  const es = [signup('b', 0), pay('b', 0), pay('b', H)]
+  const before = cohortReport(es, [], at(0), at(30), at(H + G) - S)
+  assert.deepEqual([before.retentionEligible, before.retained, before.retentionRate], [0, 0, null])
+  const onTime = cohortReport(es, [], at(0), at(30), at(H + G))
+  assert.deepEqual([onTime.retentionEligible, onTime.retained, onTime.retentionRate], [1, 1, 1])
+  // Coverage at the headline: a subscription ending exactly at first payment + headline days is not covered; one second later it is.
+  const endAt = (c: string, t: number) => [signup(c, 0), pay(c, 0), pay(c, H), { id: `${c}-end`, at: t, customer: c, kind: 'cancel' } as LifecycleEvent]
+  assert.equal(customerState('e1', endAt('e1', at(H)), at(100)).retention.covered_at_headline, false)
+  assert.equal(customerState('e2', endAt('e2', at(H) + S), at(100)).retention.covered_at_headline, true)
+})
+
+test('retention rate: numerator and denominator are the same eligible set, so renewed-but-young customers cannot push it over 100%', () => {
+  const es = [
+    signup('im1', 0), pay('im1', 1), pay('im1', 31),
+    signup('im2', 0), pay('im2', 1), pay('im2', 31),
+    signup('m', 0), pay('m', 0),
+  ]
+  const im1 = customerState('im1', es, at(H + G))
+  assert.deepEqual([im1.stage, im1.retention.renewal, im1.retention.eligible], ['paid', true, false])
+  const r = cohortReport(es, [], at(0), at(30), at(H + G))
+  assert.deepEqual([r.retentionEligible, r.retained, r.retentionRate, r.costPerRetainedPaying], [1, 0, 0, null])
 })

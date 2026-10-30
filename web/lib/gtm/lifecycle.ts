@@ -5,6 +5,11 @@
 // itself came through a dazl outreach link the person consented to, 'assisted' when an earlier outreach touch matched
 // the same identity, otherwise 'unknown'. Nothing here is causal credit: a tagged URL alone never proves the outreach
 // caused the signup. Synthetic and staging rows are excluded before counting.
+//
+// Retention is not defined here. It comes from the shared definition in lib/growth/retention.ts (the same module the
+// acquisition funnel uses): retained at 30 days with a 5-day grace, on renewal and coverage evidence, and a rate whose
+// numerator and denominator are the same eligible set. This file only maps its events onto that module's input.
+import { retention, retentionRate, RETENTION, type RetentionResult } from '../growth/retention.ts'
 
 export type LifecycleEvent =
   | { id: string; at: number; customer: string; kind: 'touch'; channel: string; identity: string | null }   // outreach touch, matched identity if any
@@ -18,25 +23,17 @@ export type LifecycleEvent =
 
 export interface CustomerMeta { customer: string; synthetic: boolean; staging: boolean }
 
-export type Stage = 'prospect' | 'qualified' | 'signed_up' | 'abandoned_setup' | 'zero_result' | 'activated' | 'repeat' | 'paid' | 'payment_failed' | 'refunded' | 'churned' | 'lapsed' | 'retained'
+export type Stage = 'prospect' | 'qualified' | 'signed_up' | 'abandoned_setup' | 'zero_result' | 'activated' | 'repeat' | 'paid' | 'payment_failed' | 'refunded' | 'churned' | 'not_retained' | 'retained'
 export type Attribution = 'direct' | 'assisted' | 'unknown'
 
 export const DAY = 86400_000
 export const REPEAT_GAP_DAYS = 1      // a second useful run on a later day, not a retry minutes later
-// Retention is shown by payments, never by time alone: one early payment is not retention however long ago it was.
-// A customer is retained when a successful payment landed at least RETAINED_DAYS after their first one AND their
-// latest successful payment still covers today (one monthly period plus grace). Paying once and then going quiet,
-// with no cancel event, is 'lapsed'. See docs/notes/retention-definition.md for how this compares with the ops
-// funnel's 25/35-day definition.
-export const RETAINED_DAYS = 60       // a successful payment at least this long after the first one
-export const PAYMENT_GRACE_DAYS = 5   // a renewal may land this late without the customer counting as lapsed
-export const PAID_COVER_DAYS = 30 + PAYMENT_GRACE_DAYS                  // one monthly period plus grace
-export const RETENTION_MATURE_DAYS = RETAINED_DAYS + PAYMENT_GRACE_DAYS  // first payment old enough for that renewal to be due
 export const ABANDON_DAYS = 7         // signed up, no finished run within this window
 
 export interface CustomerState {
   customer: string; stage: Stage; attribution: Attribution
-  signupAt: number | null; activatedAt: number | null; paidAt: number | null; lastPaidAt: number | null; renewedAt: number | null
+  signupAt: number | null; activatedAt: number | null; paidAt: number | null
+  retention: RetentionResult      // the shared definition's answer and its labelled evidence, as of the cutoff
   usefulRuns: number; zeroResultRuns: number; costUsd: number
 }
 
@@ -47,6 +44,21 @@ export function upTo(events: LifecycleEvent[], asOf: number): LifecycleEvent[] {
   return events.filter(e => Number.isFinite(e.at) && e.at <= asOf)
 }
 
+// Map this file's events onto the shared retention input (unix seconds). A refund event refunds the latest paid payment
+// before it that is not already refunded; the subscription ends at the first cancel on or after the first payment that
+// was not refunded.
+function retentionOf(ev: LifecycleEvent[], now: number): RetentionResult {
+  const payments: { at: number; refunded: boolean }[] = []
+  for (const e of ev) {
+    if (e.kind !== 'payment') continue
+    if (e.status === 'paid') payments.push({ at: e.at, refunded: false })
+    else if (e.status === 'refunded') { const p = payments.findLast(x => !x.refunded); if (p) p.refunded = true }
+  }
+  const firstPaid = payments.find(p => !p.refunded)?.at ?? null
+  const ended = firstPaid === null ? null : ev.find(e => e.kind === 'cancel' && e.at >= firstPaid)?.at ?? null
+  return retention({ payments: payments.map(p => ({ at: p.at / 1000, refunded: p.refunded })), ended_at: ended === null ? null : ended / 1000, cutoff: now / 1000 })
+}
+
 function dedupe(events: LifecycleEvent[]): LifecycleEvent[] {
   const seen = new Set<string>()
   return events.filter(e => (seen.has(e.id) ? false : (seen.add(e.id), true))).sort((a, b) => a.at - b.at || a.id.localeCompare(b.id))
@@ -54,7 +66,7 @@ function dedupe(events: LifecycleEvent[]): LifecycleEvent[] {
 
 export function customerState(customer: string, events: LifecycleEvent[], now: number): CustomerState {
   const ev = dedupe(upTo(events, now).filter(e => e.customer === customer))
-  const s: CustomerState = { customer, stage: 'prospect', attribution: 'unknown', signupAt: null, activatedAt: null, paidAt: null, lastPaidAt: null, renewedAt: null, usefulRuns: 0, zeroResultRuns: 0, costUsd: 0 }
+  const s: CustomerState = { customer, stage: 'prospect', attribution: 'unknown', signupAt: null, activatedAt: null, paidAt: null, retention: retentionOf([], 0), usefulRuns: 0, zeroResultRuns: 0, costUsd: 0 }
   let qualified = false, ranAny = false, paying = false, refunded = false, cancelled = false, paymentFailed = false
   const usefulDays = new Set<number>()
   for (const e of ev) {
@@ -71,22 +83,20 @@ export function customerState(customer: string, events: LifecycleEvent[], now: n
         usefulDays.add(Math.floor(e.at / (REPEAT_GAP_DAYS * DAY)))
       } else if (e.status === 'done') s.zeroResultRuns++
     } else if (e.kind === 'payment') {
-      if (e.status === 'paid') {
-        paying = true; paymentFailed = false; refunded = false; s.paidAt ??= e.at; s.lastPaidAt = e.at
-        if (s.renewedAt === null && e.at - s.paidAt >= RETAINED_DAYS * DAY) s.renewedAt = e.at
-      }
+      if (e.status === 'paid') { paying = true; paymentFailed = false; refunded = false; s.paidAt ??= e.at }
       else if (e.status === 'failed') { paymentFailed = true }
       else { refunded = true; paying = false }
     } else if (e.kind === 'cancel') { cancelled = true; paying = false }
   }
   s.usefulRuns = usefulDays.size
+  s.retention = retentionOf(ev, now)
   if (s.signupAt === null) { s.stage = qualified ? 'qualified' : 'prospect'; return s }
   // Money states first: what the customer did last with billing decides, then value delivered.
   if (refunded) s.stage = 'refunded'
   else if (cancelled && s.paidAt !== null) s.stage = 'churned'
   else if (paymentFailed) s.stage = 'payment_failed'
-  else if (paying && s.lastPaidAt !== null && now - s.lastPaidAt > PAID_COVER_DAYS * DAY) s.stage = 'lapsed'
-  else if (paying && s.renewedAt !== null) s.stage = 'retained'
+  else if (paying && s.retention.retained === true) s.stage = 'retained'
+  else if (paying && s.retention.retained === false) s.stage = 'not_retained'
   else if (paying) s.stage = 'paid'
   else if (s.usefulRuns >= 2) s.stage = 'repeat'
   else if (s.activatedAt !== null) s.stage = 'activated'
@@ -100,8 +110,11 @@ export interface CohortReport {
   cohortStart: number; cohortEnd: number; mature: boolean
   customers: number; byStage: Partial<Record<Stage, number>>; byAttribution: Record<Attribution, number>
   activationRate: number | null; paidRate: number | null
-  retentionRate: number | null   // retained / retentionMature, both over the same eligible set
-  retentionMature: number        // paying customers whose first payment is old enough for the renewal to be due
+  retentionRate: number | null   // the shared headline: retained / retentionEligible over the same eligible set
+  retentionEligible: number      // paying customers whose first payment is old enough (headline + grace)
+  retained: number
+  retentionLabel: string         // the shared definition's own label, shown with the rate
+  coveredAtCutoff: number        // eligible customers still covered at the cutoff: reported beside the headline, not in it
   costUsd: number; costPerActivated: number | null; costPerRetainedPaying: number | null
   sourceCoverage: number | null  // share of signups whose attribution is known (direct or assisted)
   excluded: number               // synthetic or staging customers left out
@@ -110,8 +123,7 @@ export interface CohortReport {
 const rate = (a: number, b: number) => (b === 0 ? null : a / b)
 
 // One signup cohort: customers who signed up in [start, end). Immature until the retention window has passed for the
-// whole cohort, so a young cohort's retention is never read as final. Within any cohort, only customers whose first
-// payment is at least RETENTION_MATURE_DAYS old count toward the retention rate.
+// whole cohort, so a young cohort's retention is never read as final. The rate itself is the shared retentionRate.
 export function cohortReport(events: LifecycleEvent[], meta: CustomerMeta[], start: number, end: number, now: number): CohortReport {
   const excludedIds = new Set(meta.filter(m => m.synthetic || m.staging).map(m => m.customer))
   const ids = [...new Set(upTo(events, now).map(e => e.customer))]
@@ -121,17 +133,14 @@ export function cohortReport(events: LifecycleEvent[], meta: CustomerMeta[], sta
   for (const s of states) { byStage[s.stage] = (byStage[s.stage] ?? 0) + 1; byAttribution[s.attribution]++ }
   const activated = states.filter(s => s.activatedAt !== null).length
   const paidEver = states.filter(s => s.paidAt !== null).length
-  // Retention uses one eligible set for both sides of the rate: paying customers whose first payment is old enough for
-  // the renewal to be due. A retained customer who is not yet mature is in neither, so the rate can never exceed 100%.
-  const eligible = states.filter(s => s.paidAt !== null && now - s.paidAt >= RETENTION_MATURE_DAYS * DAY)
-  const retentionMature = eligible.length
-  const retained = eligible.filter(s => s.stage === 'retained').length
+  const ret = retentionRate(states.map(s => s.retention))
+  const coveredAtCutoff = states.filter(s => s.retention.eligible && s.retention.covered_at_cutoff === true).length
   const costUsd = Math.round(states.reduce((t, s) => t + s.costUsd, 0) * 100) / 100
   return {
-    cohortStart: start, cohortEnd: end, mature: now - end >= RETENTION_MATURE_DAYS * DAY,
+    cohortStart: start, cohortEnd: end, mature: now - end >= (RETENTION.headline_days + RETENTION.grace_days) * DAY,
     customers: states.length, byStage, byAttribution,
-    activationRate: rate(activated, states.length), paidRate: rate(paidEver, states.length), retentionRate: rate(retained, retentionMature), retentionMature,
-    costUsd, costPerActivated: activated ? costUsd / activated : null, costPerRetainedPaying: retained ? costUsd / retained : null,
+    activationRate: rate(activated, states.length), paidRate: rate(paidEver, states.length), retentionRate: ret.rate, retentionEligible: ret.eligible, retained: ret.retained, retentionLabel: ret.label, coveredAtCutoff,
+    costUsd, costPerActivated: activated ? costUsd / activated : null, costPerRetainedPaying: ret.retained ? costUsd / ret.retained : null,
     sourceCoverage: rate(byAttribution.direct + byAttribution.assisted, states.length),
     excluded: ids.filter(id => excludedIds.has(id)).length,
   }
