@@ -1,0 +1,32 @@
+# The local load harness (load/, issue #355/#153): proves it still runs against this checkout's code. A small, fixed
+# configuration on the CI runner, every outbound call fenced and every provider mocked. It checks that the harness
+# works and that its thresholds hold at this size; it is NOT load acceptance (that runs on the isolated load host).
+name: load-harness
+on:
+  pull_request:
+    paths: ["load/**", ".github/workflows/load-harness.yml"]
+  push:
+    branches: [main]
+    paths: ["load/**"]
+jobs:
+  harness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - name: Scan-runner bench (mocked provider and fetch, throwaway database)
+        run: node --experimental-strip-types --no-warnings load/runner-bench.ts
+        env: { LOAD_TENANTS: '5', LOAD_JOBS_PER_TENANT: '2', LOAD_READERS: '2', LOAD_BASELINE_S: '1' }
+      - name: Production build for the app scenario
+        run: npm run build
+        working-directory: web
+      - name: Multi-tenant app scenario (exit 1 names a failed threshold)
+        run: node --experimental-strip-types --no-warnings load/app-load.ts
+        env: { LOAD_TENANTS: '20', LOAD_VUS: '10', LOAD_DURATION_S: '15' }

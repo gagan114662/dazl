@@ -4,6 +4,11 @@ Load preparation for the multi-tenant scale goal. Everything here runs against a
 throwaway local database and mocked providers. Nothing in this directory touches
 production, real API keys, real tenant data, or the network.
 
+**This is a local load harness, not load acceptance.** A pass here means the harness ran against this checkout's code
+and its thresholds held at the size it ran, on that machine. Load acceptance is the run on the isolated load-test
+host, at production-like size; nothing here substitutes for it. CI (.github/workflows/load-harness.yml) runs a small
+fixed configuration only to keep the harness working.
+
 ## Files
 
 - `runner-bench.ts` - in-process benchmark of the real scan-runner code path
