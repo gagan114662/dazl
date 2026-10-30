@@ -29,14 +29,19 @@ export async function POST(req: NextRequest) {
       acceptReadConsent(db, user.tenantId)
       await audit(user, req, { action: 'consent.accepted', resource: 'reply_reading', summary: { version: READ_CONSENT_VERSION } })
       return NextResponse.json({ ok: true })
-    case 'revoke':
+    case 'revoke': {
+      // revoking consent that was never given changes nothing, so it records nothing
+      const had = hasReadConsent(db, user.tenantId)
       revokeReadConsent(db, user.tenantId)
-      await audit(user, req, { action: 'consent.revoked', resource: 'reply_reading' })
+      if (had) await audit(user, req, { action: 'consent.revoked', resource: 'reply_reading' })
       return NextResponse.json({ ok: true })
-    case 'followups_off':
+    }
+    case 'followups_off': {
+      const was = followupsEnabled(db, user.tenantId)
       setFollowups(db, user.tenantId, false)
-      await audit(user, req, { action: 'followups.disabled', resource: 'followups' })
+      if (was) await audit(user, req, { action: 'followups.disabled', resource: 'followups' })
       return NextResponse.json({ ok: true })
+    }
     case 'followups_on': {
       const acc = db.prepare('SELECT read_granted FROM gmail_accounts WHERE tenant_id = ?').get(user.tenantId) as { read_granted: number } | undefined
       if (!hasReadConsent(db, user.tenantId) || acc?.read_granted !== 1) return NextResponse.json({ error: 'Turn on reply reading first' }, { status: 400 })

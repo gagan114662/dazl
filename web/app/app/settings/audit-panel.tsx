@@ -7,7 +7,8 @@ import { useEffect, useState } from 'react'
 type Ev = { id: string; at: number; actor_id: string; actor_kind: string; action: string; resource_type: string; resource_id: string | null; decision: string }
 
 const FILTERS = [['', 'Everything'], ['credential.', 'Credentials'], ['billing.', 'Billing'], ['crm.', 'CRM'], ['export.', 'Exports'],
-  ['pipeline.', 'Pipeline'], ['outreach.', 'Sending'], ['sequence.', 'Sequences'], ['autopilot.', 'Autopilot'], ['followups.', 'Follow-ups'], ['monitor.', 'Monitors'],
+  ['pipeline.', 'Pipeline'], ['outreach.', 'Sending'], ['sequence.', 'Sequences'], ['autopilot.', 'Autopilot'], ['followups.', 'Follow-ups'], ['monitor.', 'Monitors'], ['settings.', 'Settings'], ['consent.', 'Consent'],
+  ['connector.', 'Channels'],
   ['data.', 'Deletions']] as const
 const LABEL: Record<string, string> = {
   'credential.saved': 'Saved a credential', 'credential.removed': 'Removed a credential', 'credential.rotated': 'Rotated a signing secret',

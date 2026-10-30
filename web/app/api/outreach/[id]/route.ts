@@ -52,9 +52,11 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     else if (action === 'send') {
       const no = denied(g.user, 'send'); if (no) return no
       if (!(await rateLimit(`send:${g.user.tenantId}`, 60, 60 * 60 * 1000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+      // a message that was already sent is answered 'sent' again without sending: that repeat records nothing
+      const already = (db.prepare('SELECT status FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(id, g.user.tenantId) as { status: string } | undefined)?.status === 'sent'
       const result = await sendMessage(db, g.user.tenantId, id)
       // the outcome only; the recipient, subject and body stay in the outreach store
-      await audit(g.user, req, { action: 'outreach.send', resource: 'message', id, summary: { outcome: result } })
+      if (!already) await audit(g.user, req, { action: 'outreach.send', resource: 'message', id, summary: { outcome: result } })
       return NextResponse.json({ result })
     } else return NextResponse.json({ error: 'Bad request' }, { status: 400 })
     await audit(g.user, req, { action: `outreach.${action}`, resource: 'message', id })

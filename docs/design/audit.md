@@ -65,9 +65,22 @@ retention built on main. Time-bounded support access needs an owner decision; se
 | deletion | warm connections deleted (rows) |
 | policy | refused audit reads |
 
-Not covered yet: role refusals of routes other than the audit read (`denied()`, #424) answer 403 without an event;
-recording them needs `denied()` to write, which is a follow-up. Actions taken by the scheduled tick (sequences,
-follow-ups) have no human actor and are already in the outreach ledger.
+Every row above is tested through its real route (`test/audit-routes.test.ts`, `test/audit-coverage.test.ts`): each
+test names the exact events one request adds, and fails if that route's audit call is removed. A request that
+changes nothing (a repeat send, a disconnect with nothing connected, a toggle to the current state, a revoke with
+nothing on record, a no-op stop) records nothing.
+
+## Open decisions (not built in this PR)
+
+- **A failed audit write does not refuse the change.** It is reported through `captureError` (tested). Making
+  sensitive actions fail closed (write the event in the change's own transaction and refuse when it fails) is an
+  owner decision; it is a behaviour change for every audited route.
+- **Refusals other than the audit read leave no event.** Role refusals (`denied()`, 403) and policy refusals of a
+  send or approve (suppressed address, held lead, uncertain-send gate) answer as before, without a `denied` event.
+- **Member, role and invitation actions** (#437, not on main) are not recorded yet. Whichever of #437 and this PR
+  lands second wires them.
+- **Time-bounded support access** is not built (below), so this PR is part of #371, not its close.
+- The CSV's 100,000-event bound has no test of its own.
 
 ## Support access: needs an owner decision
 

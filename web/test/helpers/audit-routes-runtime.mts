@@ -16,12 +16,16 @@ import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { createPasswordUser, createSession, hashToken } from '../../lib/auth-db.ts'
 import { setErrorSinks } from '../../lib/ops/errors.ts'
 import type { ErrorRecord } from '../../lib/ops/errors.ts'
+import { encryptSecret } from '../../lib/secrets.ts'
+import { acceptReadConsent } from '../../lib/outreach/replies.ts'
 
 const fetched: string[] = []
 globalThis.fetch = (async (u: unknown) => {
   const url = String(u)
   fetched.push(url)
   if (url.startsWith('https://api.anthropic.com/v1/models')) return new Response(JSON.stringify({ data: [{ id: 'claude-test' }] }), { status: 200 })
+  // disconnectGmail's best-effort revoke of the stored grant at Google
+  if (url === 'https://oauth2.googleapis.com/revoke') return new Response('{}', { status: 200 })
   if (url === 'https://api.stripe.com/v1/checkout/sessions') return new Response(JSON.stringify({ id: 'cs_test_1', url: 'https://checkout.stripe.com/c/pay/cs_test_1' }), { status: 200 })
   throw new Error(`Unexpected network call ${url}`)
 }) as typeof fetch
@@ -40,7 +44,7 @@ const [llmKey, enrichment, calcom, crm, gmailDisconnect, sender, exportRoute, qu
 // Synthetic markers: none of these may ever appear in the audit table.
 const MARK = {
   modelKey: `sk-ant-api03-${'M'.repeat(40)}`, enrichKey: `enrich-${'E'.repeat(30)}`, crmKey: `pat-na1-${'C'.repeat(30)}`,
-  address: '1 Marker Street, Secretville', sender: 'Marker Sender Name', reason: 'MARKER typed quarantine reason',
+  address: '1 Marker Street, Secretville', gmailRefresh: `1//marker-refresh-${'G'.repeat(30)}`, sender: 'Marker Sender Name', reason: 'MARKER typed quarantine reason',
 }
 const lastId: { v: string } = { v: '' }
 const req = (path: string, method: string, body?: unknown) => {
@@ -82,7 +86,13 @@ test("privileged requests leave attributable, redacted events; 'GET /api/workspa
   const rotated = await (await step('calcom rotated', t.A, () => calcom.POST(req('/api/settings/calcom', 'POST', { action: 'rotate' })))).json() as { secret: string }
   await step('crm saved', t.A, () => crm.POST(req('/api/crm', 'POST', { action: 'save', provider: 'hubspot', key: MARK.crmKey })))
   await step('crm removed', t.A, () => crm.POST(req('/api/crm', 'POST', { action: 'disconnect' })))
+  // disconnecting a CRM, or Gmail, when none is connected changes nothing and records nothing (no event below)
+  await step('crm removed, none connected', t.A, () => crm.POST(req('/api/crm', 'POST', { action: 'disconnect' })))
+  await step('gmail removed, none connected', t.A, () => gmailDisconnect.POST(req('/api/gmail/disconnect', 'POST')))
+  // a connected account: its grant is revoked at Google (stubbed) and the disconnect is recorded
+  raw.prepare("INSERT INTO gmail_accounts (tenant_id, email, refresh_ct, status) VALUES ('A', 'a@a-mail.example', ?, 'active')").run(encryptSecret(MARK.gmailRefresh, 'gmail-refresh:A'))
   await step('gmail removed', t.A, () => gmailDisconnect.POST(req('/api/gmail/disconnect', 'POST')))
+  assert.equal(raw.prepare("SELECT 1 FROM gmail_accounts WHERE tenant_id = 'A'").get(), undefined)
   await step('sender saved', t.A, () => sender.PUT(req('/api/outreach/settings', 'PUT', { sender_name: MARK.sender, postal_address: MARK.address, booking_url: '' })))
   await step('leads exported', t.A, () => exportRoute.GET(req(`/api/leads/export?job_id=${job}`, 'GET')))
   await step('lead quarantined', t.O, () => quarantine.POST(req(`/api/leads/${lead}/quarantine`, 'POST', { reason: MARK.reason }), { params: Promise.resolve({ lead }) }))
@@ -93,7 +103,8 @@ test("privileged requests leave attributable, redacted events; 'GET /api/workspa
   // a viewer is refused by role (403) and nothing is deleted or recorded
   await step('viewer delete refused', t.V, () => warm.DELETE(req('/api/warm/connections', 'DELETE')), 403)
   await step('monitor deleted', t.A, () => monitor.DELETE(req(`/api/monitors/${mon}`, 'DELETE'), { params: Promise.resolve({ id: mon }) }))
-  assert.deepEqual(fetched.map(u => new URL(u).host), ['api.anthropic.com', 'api.stripe.com'], 'only the stubbed model-key check and Stripe test-mode checkout')
+  assert.deepEqual(fetched.map(u => new URL(u).host), ['api.anthropic.com', 'oauth2.googleapis.com', 'api.stripe.com'], "only the stubbed model-key check, Google's grant revoke and Stripe test-mode checkout")
+  assert.ok(fetched.includes('https://oauth2.googleapis.com/revoke'))
 
   // owners and admins read the trail; operators and viewers are refused, and each refusal is a denied event
   for (const who of ['O', 'V']) {
@@ -150,6 +161,8 @@ test("privileged requests leave attributable, redacted events; 'GET /api/workspa
   await step('competitors set', t.D, () => competitors.PUT(req('/api/settings/competitors', 'PUT', { competitors: ['Rival Co'] })))
   const made = await (await step('monitor created', t.O, () => monitors.POST(req('/api/monitors', 'POST', { query: 'dentists in Toronto', interval_hours: 168 })), 201)).json() as { id: string }
   await step('monitor paused', t.O, () => monitor.PATCH(req(`/api/monitors/${made.id}`, 'PATCH', { enabled: false }), { params: Promise.resolve({ id: made.id }) }))
+  // revoking records only consent that was given (audit-coverage-runtime.mts has the no-op case): give it first
+  acceptReadConsent(raw, 'A')
   await step('reply reading revoked', t.A, () => replies.POST(req('/api/outreach/replies', 'POST', { action: 'revoke' })))
   // stopping a sequence that does not exist changes nothing and records nothing
   await step('sequence stop no-op', t.A, () => sequences.POST(req('/api/outreach/sequences', 'POST', { action: 'stop', id: 'zzz' })))

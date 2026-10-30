@@ -47,13 +47,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true })
   }
   if (body.action === 'revoke') {
+    // revoking a notice that was never accepted changes nothing, so it records nothing
+    const had = !!(await readConsent(db, user.tenantId, scopeFor(p)))
     await removeConsent(db, user.tenantId, scopeFor(p)); await setEnabled(db, user.tenantId, connectorId(p), false)
-    await audit(user, req, { action: 'consent.revoked', resource: 'social', id: p, summary: { platform: p } })
+    if (had) await audit(user, req, { action: 'consent.revoked', resource: 'social', id: p, summary: { platform: p } })
     return NextResponse.json({ ok: true })
   }
   if (body.action === 'toggle' && typeof body.enabled === 'boolean') {
+    // a toggle to the state the channel is already in changes nothing, so it records nothing
+    const was = (await db.get<{ enabled: number }>('SELECT enabled FROM tenant_connectors WHERE tenant_id = ? AND connector = ?', [user.tenantId, connectorId(p)]))?.enabled === 1
     const ok = await setEnabled(db, user.tenantId, connectorId(p), body.enabled)
-    if (ok) await audit(user, req, { action: body.enabled ? 'connector.enabled' : 'connector.disabled', resource: 'social', id: p, summary: { platform: p } })
+    if (ok && was !== body.enabled) await audit(user, req, { action: body.enabled ? 'connector.enabled' : 'connector.disabled', resource: 'social', id: p, summary: { platform: p } })
     return NextResponse.json({ ok })
   }
   if (body.action === 'save') {

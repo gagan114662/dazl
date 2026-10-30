@@ -34,8 +34,8 @@ export async function POST(req: NextRequest) {
     else if (body?.action === 'enable') enable(db, user.tenantId, { version: String(body.version ?? ''), attestations: Array.isArray(body.attestations) ? body.attestations.map(String) : [], daily_cap: Number(body.daily_cap) || undefined })
     else if (body?.action === 'resume') resume(db, user.tenantId)
     else return NextResponse.json({ error: 'Bad request' }, { status: 400 })
-    // budget and send automation: the action, and the daily cap when one is set
-    await audit(user, req, { action: `autopilot.${body.action}`, resource: 'autopilot', summary: body.action === 'enable' ? { daily_cap: Number(body.daily_cap) || null } : {} })
+    // budget and send automation: the action, and on enable the daily cap as applied (clamped and defaulted), not as asked
+    await audit(user, req, { action: `autopilot.${body.action}`, resource: 'autopilot', summary: body.action === 'enable' ? { daily_cap: getState(db, user.tenantId).daily_cap } : {} })
     return NextResponse.json({ ok: true, state: getState(db, user.tenantId) })
   } catch (e) {
     if (e instanceof OutreachError) return NextResponse.json({ error: ERR[e.code] ?? 'Could not do that', code: e.code }, { status: 400 })

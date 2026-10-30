@@ -48,8 +48,7 @@ export async function POST(req: NextRequest) {
     }
     case 'disconnect': {
       const cannot = denied(user, 'configure'); if (cannot) return cannot
-      disconnectCrm(db, user.tenantId)
-      await audit(user, req, { action: 'credential.removed', resource: 'crm' })
+      if (disconnectCrm(db, user.tenantId)) await audit(user, req, { action: 'credential.removed', resource: 'crm' })
       return NextResponse.json({ ok: true })
     }
     case 'push':
