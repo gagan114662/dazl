@@ -54,6 +54,14 @@ Each step is one transaction and moves the tombstone (`tenant_tombstones`) to th
 - `tombstoneLedgerEntry` is one JSON line per deletion (tenant id, time, who, policy; no data). It is kept **off the database**, next to the backup manifests (`docs/RECOVERY.md`).
 - `reapplyTombstones` runs every ledgered deletion on a restored store. Run it **before the restored store serves traffic**: add it to the recovery plan's step 5, after the drill and before sending is re-enabled.
 
+**Backups (part 3, `lib/tenant/ledger.ts`, `scripts/tenant-tombstones.mts`).**
+- **The ledger file** sits beside the backups (for example `/var/backups/dazl/tombstones.jsonl`) and is copied off-host with them. It's mode 600, append-only, with one line per completed deletion, appended once per tenant and fsynced. It holds no tenant data.
+- **Carrying out a deletion:** `tenant-requests.mts execute --confirm` refuses to run without `--ledger FILE`, so no deletion is carried out without its off-database record.
+- **`check`** exits 1 if a completed deletion in the live store is missing from the ledger. **`export`** rebuilds the ledger from the live store.
+- **After a restore:** `reapply --db RESTORED.db --ledger FILE` lists the ledgered deletions the restored copy is missing, and `--confirm` re-applies them. Run it before the copy serves traffic.
+- **`exposure --backups DIR [--expire-days N]`** lists each backup that may still hold an erased tenant, meaning it was taken before the deletion. With the owner's expiry (decision 6), it marks those past it as overdue and exits 1. It never deletes a backup; pruning stays the owner's call. Without an expiry, exposure is reported and nothing is judged overdue.
+- **How long to keep the ledger:** at least as long as the oldest backup, because a backup restored without its ledger lines brings deleted tenants back.
+
 **Outside the database (operator steps, not automated):**
 - revoking the Gmail grant at Google;
 - deleting or retaining the customer at Stripe;
