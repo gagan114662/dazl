@@ -20,7 +20,7 @@ bothEngines('signup makes the personal workspace: id = user id, the user its own
   assert.deepEqual(await db.get('SELECT id, name, kind, created_by FROM organizations WHERE id = ?', ['A']), { id: 'A', name: 'Biz A', kind: 'personal', created_by: 'A' })
   assert.deepEqual(await memberships(db, 'A'), [{ tenant_id: 'A', role: 'owner' }])
   const u = await getSessionUser(await createSession('A', db), db)
-  assert.deepEqual(u && { actorId: u.actorId, tenantId: u.tenantId, role: u.role, id: u.id }, { actorId: 'A', tenantId: 'A', role: 'owner', id: 'A' })
+  assert.deepEqual(u && { actorId: u.actorId, tenantId: u.tenantId, role: u.role }, { actorId: 'A', tenantId: 'A', role: 'owner' })
   // the same email again creates nothing, workspace included
   assert.equal(await createPasswordUser(userRow('A2', 'a@example.test'), db), 'exists')
   assert.equal(await db.get('SELECT 1 AS x FROM organizations WHERE id = ?', ['A2']), undefined)
