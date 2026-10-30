@@ -112,11 +112,11 @@ test('funnel: exact counts per tenant and per source from real events; every dis
   const r = funnelReport(tenants, NOW)
   assert.equal(r.excluded_tenants, 1)
   assert.deepEqual(r.source_coverage, { tagged: 5, unknown: 3 })
-  assert.deepEqual(r.total, { source: 'all', signed_up: 8, activated: 6, repeat: 1, paid: 3, retained: 1, retention_mature: 2, churned: 1, zero_result: 1, signed_up_only: 1, payment_failed: 1, refunded: 1 })
+  assert.deepEqual(r.total, { source: 'all', signed_up: 8, activated: 6, repeat: 1, paid: 3, retained: 1, retention_mature: 2, covered_at_cutoff: 2, churned: 1, zero_result: 1, signed_up_only: 1, payment_failed: 1, refunded: 1 })
   assert.deepEqual(r.by_source, [
-    { source: 'newsletter', signed_up: 3, activated: 2, repeat: 1, paid: 2, retained: 1, retention_mature: 1, churned: 0, zero_result: 0, signed_up_only: 1, payment_failed: 0, refunded: 0 },
-    { source: 'unknown', signed_up: 3, activated: 2, repeat: 0, paid: 1, retained: 0, retention_mature: 1, churned: 1, zero_result: 1, signed_up_only: 0, payment_failed: 0, refunded: 0 },
-    { source: 'linkedin-post', signed_up: 2, activated: 2, repeat: 0, paid: 0, retained: 0, retention_mature: 0, churned: 0, zero_result: 0, signed_up_only: 0, payment_failed: 1, refunded: 1 },
+    { source: 'newsletter', signed_up: 3, activated: 2, repeat: 1, paid: 2, retained: 1, retention_mature: 1, covered_at_cutoff: 2, churned: 0, zero_result: 0, signed_up_only: 1, payment_failed: 0, refunded: 0 },
+    { source: 'unknown', signed_up: 3, activated: 2, repeat: 0, paid: 1, retained: 0, retention_mature: 1, covered_at_cutoff: 0, churned: 1, zero_result: 1, signed_up_only: 0, payment_failed: 0, refunded: 0 },
+    { source: 'linkedin-post', signed_up: 2, activated: 2, repeat: 0, paid: 0, retained: 0, retention_mature: 0, covered_at_cutoff: 0, churned: 0, zero_result: 0, signed_up_only: 0, payment_failed: 1, refunded: 1 },
   ])
   assert.ok(Object.keys(DEFINITIONS).includes('activated') && /not causal|not proof/.test(r.note + DEFINITIONS.source))
 })
@@ -223,5 +223,48 @@ test('retention window: one rule, N days; 30 (one monthly renewal) and 60 (two) 
   assert.equal(r30.A, true); assert.equal(r60.A, false)
   // F paid 60 days ago and never again: mature for both windows, retained in neither
   assert.equal(r30.F, false); assert.equal(r60.F, null, 'at 60 days F is not mature yet (needs 65)')
-  assert.match(DEFINITIONS.retained, /evidence of a renewal/)
+  assert.match(DEFINITIONS.retained, /Retained at 30 days.*shared definition/)
+})
+
+// Instinct review of #404 @4a6db2c: the report is as of its cutoff, for every kind of row
+test('as of the cutoff: users, scans, leads and events after it do not count, including replayed or future-dated rows', async () => {
+  const { raw, db } = store()
+  const CUT = NOW - 30 * DAY
+  // signed up, scanned and paid before the cutoff
+  await tenant(db, raw, 'B4', { source: 'newsletter', at: T0 }); scan(raw, 'B4', T0 + DAY, 1); await subscribe(db, 'B4', T0 + 2 * DAY); await paid(db, 'B4', 'in_B4', T0 + 2 * DAY)
+  // signed up before, but its invoice was paid after the cutoff
+  await tenant(db, raw, 'PA', { at: T0 }); scan(raw, 'PA', T0 + DAY, 1); await subscribe(db, 'PA', CUT + DAY); await paid(db, 'PA', 'in_PA', CUT + DAY)
+  // its only finished scan started before the cutoff but finished after it; another started after it
+  await tenant(db, raw, 'SA', { at: T0 })
+  const job = scan(raw, 'SA', CUT - 60, 1); raw.prepare('UPDATE scan_jobs SET finished_at = ? WHERE id = ?').run(CUT + 3600, job)
+  scan(raw, 'SA', CUT + DAY, 2)
+  // a lead saved after the cutoff on a scan that finished before it
+  await tenant(db, raw, 'LA', { at: T0 }); const j2 = scan(raw, 'LA', T0 + DAY, 1); raw.prepare('UPDATE leads SET created_at = ? WHERE scan_job_id = ?').run(CUT + DAY, j2)
+  // an account created after the cutoff
+  await tenant(db, raw, 'UA', { at: CUT + DAY })
+  // B4 refunded after the cutoff (a replayed refund event): still paid as of the cutoff
+  await applyStripeEvent(db, ev('evt_late_ref', 'charge.refunded', CUT + 5 * DAY, { id: 'ch_B4', customer: 'cus_B4', invoice: 'in_B4', amount_refunded: 4900, refunded: true }))
+  const at = Object.fromEntries((await tenantFunnels(db, { now: CUT })).map(t => [t.tenant_id, t]))
+  assert.equal(at.UA, undefined, 'an account created after the cutoff does not exist yet')
+  assert.equal(at.PA.paid_at, null, 'an invoice paid after the cutoff does not count'); assert.equal(at.PA.stage, 'activated')
+  assert.equal(at.SA.activated_at, null, 'a scan that finished after the cutoff had not delivered by then')
+  assert.equal(at.LA.activated_at, null, 'a lead saved after the cutoff did not exist yet')
+  assert.equal(at.B4.paid_at, T0 + 2 * DAY, 'a refund after the cutoff has not happened yet'); assert.equal(at.B4.stage, 'paid')
+  const r = funnelReport(await tenantFunnels(db, { now: CUT }), CUT)
+  assert.equal(r.total.signed_up, 4); assert.equal(r.total.paid, 1); assert.equal(r.total.activated, 2)
+  // the same store, a later cutoff: everything is there
+  const later = Object.fromEntries((await tenantFunnels(db, { now: NOW })).map(t => [t.tenant_id, t]))
+  assert.equal(later.PA.paid_at, CUT + DAY); assert.equal(later.SA.activated_at, CUT - 60); assert.equal(later.B4.paid_at, null, 'refunded by now'); assert.ok(later.UA)
+})
+
+test('retention in the funnel is the shared definition: same eligible cohort in numerator and denominator', async () => {
+  const { raw, db } = store()
+  // three paying tenants renewed 26 days after paying; only one is old enough to be eligible
+  for (const [t, firstAgo] of [['E1', 40], ['Y1', 30], ['Y2', 27]] as const) {
+    await tenant(db, raw, t); scan(raw, t, NOW - 60 * DAY, 1); await subscribe(db, t, NOW - firstAgo * DAY)
+    await paid(db, t, `in_${t}a`, NOW - firstAgo * DAY); await paid(db, t, `in_${t}b`, NOW - (firstAgo - 26) * DAY)
+  }
+  const r = funnelReport(await tenantFunnels(db, { now: NOW }), NOW)
+  assert.equal(r.total.retention_mature, 1); assert.equal(r.total.retained, 1, 'never more retained than eligible')
+  assert.ok(r.total.retained <= r.total.retention_mature)
 })
