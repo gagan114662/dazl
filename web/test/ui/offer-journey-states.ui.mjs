@@ -19,6 +19,10 @@
 //      still in progress does not take the page over from the play the link names (?job_id=), and that scan's own link
 //      still shows its progress and Stop control; Leads with no run named still opens a scan in progress.
 //   D. Choosing on the Outreach page unblocks that play only; Approve then makes a draft stating the chosen offer.
+//   E. Failures injected at every await before a side effect (the offer read, saving the choice, drafting, the rewrite:
+//      gateway errors, no network, a 200 without an offer): the page never shows a choice, draft or rewrite that did not
+//      happen, the read failure is said, and nothing is written. A policy change between loading the page and drafting:
+//      the draft states the offer stored at that moment.
 // "Writes nothing" compares full rows of the tenant's tables, the row count of every table, and the runner's work items for
 // the fixture plays; the only rows a refusal
 // adds are its own audit rows (outreach_llm_usage, outcome offer_conflict), which are checked as such.
@@ -45,6 +49,7 @@ const SEO = 'SEO audits', PAYROLL = 'payroll software', CRM = 'CRM setup and out
 const WIDTHS = [1280, 390]
 const HOME = { 1280: 'e'.repeat(24), 390: '7'.repeat(24) }, DRAFTING = { 1280: 'c'.repeat(24), 390: '8'.repeat(24) }
 const QUEUED = '9'.repeat(24)
+const FAILP = { 1280: '5'.repeat(24), 390: '6'.repeat(24) }, CHOSENP = { 1280: '3'.repeat(24), 390: '4'.repeat(24) }
 const MASTER = randomBytes(32)
 const tmp = mkdtempSync(path.join(tmpdir(), 'dazl-offerstates-')); const DB = path.join(tmp, 'app.db'); const db = new Database(DB)
 migrateAllSqlite(db)
@@ -74,6 +79,16 @@ for (const [i, w] of WIDTHS.entries()) {
   db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status) VALUES (?, 'u1', ?, ?, 'Hello', 'A synthetic draft body written before the offer was chosen.', 'draft')").run(`${'f'.repeat(20)}${w === 1280 ? '1280' : '0390'}`, l1, `pat@brightpath${w}.example`)
   draftLeads[w] = l2
 }
+// E's plays: a contested one (with a draft written before any choice) and one whose offer is already chosen.
+const failLeads = {}, chosenLeads = {}
+for (const w of WIDTHS) {
+  const [f1, f2] = play(FAILP[w], `Find Bristol clinics hiring. We sell ${SEO}.`, t0 - 20000, [['aaaa', 'ash', `Fernhill${w} Clinic`], ['bbbb', 'bo', `Kestrel${w} Clinic`]])
+  db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status) VALUES (?, 'u1', ?, ?, 'Hello', 'A synthetic draft body written before the offer was chosen.', 'draft')").run(`${'f'.repeat(20)}${w === 1280 ? '5280' : '6390'}`, f1, `ash@fernhill${w}.example`)
+  failLeads[w] = { withDraft: f1, without: f2 }
+  const [c1] = play(CHOSENP[w], `Find Bath agencies hiring. We sell ${SEO}.`, t0 - 21000, [['aaaa', 'cy', `Larkspur${w} Agency`]])
+  db.prepare('UPDATE scan_jobs SET offer = ? WHERE id = ?').run(SEO, CHOSENP[w])
+  chosenLeads[w] = c1
+}
 // The 1280 Home play is the newest at the start; the 390 one is made the newest just before its pass.
 play(HOME[390], `Find Leeds restaurants hiring. We sell ${PAYROLL}.`, t0 - 8000, [['aaaa', 'kim', 'Larder Kitchen']])
 play(HOME[1280], `Find Leeds restaurants hiring. We sell ${PAYROLL}.`, t0 - 3600, [['aaaa', 'lee', 'Copperpot Bistro']])
@@ -85,7 +100,7 @@ db.close()
 // The state every page is checked against: full rows of the tenant's tables, and the row count of every table. The
 // scan in progress and the plays B creates are left to the (fenced) runner, so their scan_jobs rows are compared by
 // id/query/offer only.
-const FIXED = new Set([...Object.values(HOME), ...Object.values(DRAFTING)])
+const FIXED = new Set([...Object.values(HOME), ...Object.values(DRAFTING), ...Object.values(FAILP), ...Object.values(CHOSENP)])
 // A scan's work item carries the scan's id as its own id (lib/queue/scan-claimer.ts, lib/scan/queue-runner.ts enqueue
 // { id: job.id }, no dedupe key), so that is the column a refusal enqueuing work for a fixture play would write.
 const workFor = (d, ids) => d.prepare(`SELECT * FROM work_queue WHERE id IN (${ids.map(() => '?').join(',')}) ORDER BY id`).all(...ids)
@@ -263,6 +278,79 @@ try {
       const drafted = read().drafts.find(m => m.lead_id === draftLeads[w])
       assert.match(drafted.body, /SEO audits/, `D${tag}: the draft states the chosen offer`); assert.doesNotMatch(drafted.body, /appointment booking/)
       await noScroll(page, `leads drafted${tag}`); await shot(page, `states-D-drafted${tag}`)
+      await ctx.close() }
+  }
+
+  // E. Failures injected at every await before a side effect, through the real pages: the page never shows a choice,
+  //    a draft or a rewrite that did not happen, and the database is unchanged. Then a policy change between loading
+  //    the page and drafting: the draft states what is stored now, not what the page showed.
+  const fail = (page, url, method, how) => page.route(url, r => r.request().method() !== method ? r.fallback() : how === 'abort' ? r.abort() : how === '5xx' ? r.fulfill({ status: 502, contentType: 'text/html', body: '<html>Bad gateway</html>' }) : r.fulfill({ status: 200, contentType: 'application/json', body: '{}' }))
+  for (const w of WIDTHS) {
+    const tag = `-${w}`, P = FAILP[w]
+    // E1. the offer read fails: Outreach and Home say it could not be loaded; no choice and no offer is shown as known
+    for (const how of ['5xx', 'abort']) {
+      const { ctx, page } = await context(w); const before = read()
+      await fail(page, '**/api/campaigns/*', 'GET', how)
+      await page.goto(base + `/app/outreach?job_id=${P}`, { waitUntil: 'networkidle' })
+      const card = page.getByTestId('outreach-play-offer'); await card.getByTestId('play-offer-unreadable').waitFor({ timeout: 15000 })
+      assert.equal(await card.getByTestId('play-offer-text').count() + await card.getByTestId('play-offer-conflict').count(), 0, `E1${tag} ${how}: nothing shown as known`)
+      if (how === '5xx') { await card.scrollIntoViewIfNeeded(); await noScroll(page, `E1${tag}`); await shot(page, `states-E1-offer-unreadable${tag}`) }
+      await page.goto(base + '/app', { waitUntil: 'networkidle' })
+      const home = page.getByTestId('journey-play-offer')
+      if (await home.count()) assert.equal(await home.getByTestId('play-offer-unreadable').count(), 1, `E1${tag} ${how}: Home says it could not be loaded`)
+      sameExcept(before, read(), `E1${tag} ${how}`)
+      await ctx.close()
+    }
+    // E2. saving the choice fails (gateway error, no network, a 200 that carries no offer): still asks, nothing stored
+    for (const how of ['5xx', 'abort', 'malformed']) {
+      const { ctx, page } = await context(w); const before = read()
+      await page.goto(base + `/app/outreach?job_id=${P}`, { waitUntil: 'networkidle' })
+      const card = page.getByTestId('outreach-play-offer'); await card.getByTestId('play-offer-conflict').waitFor({ timeout: 15000 })
+      await fail(page, `**/api/campaigns/${P}`, 'POST', how)
+      await card.getByTestId('play-offer-use-stated').click()
+      await card.getByText(/Could not save/).waitFor({ timeout: 15000 })
+      assert.equal(await card.getByTestId('play-offer-conflict').count(), 1, `E2${tag} ${how}: still asks`)
+      assert.equal(await card.getByTestId('play-offer-text').count(), 0, `E2${tag} ${how}: no offer shown as chosen`)
+      sameExcept(before, read(), `E2${tag} ${how}`)
+      if (how === '5xx') { await card.scrollIntoViewIfNeeded(); await shot(page, `states-E2-choice-not-saved${tag}`) }
+      await ctx.close()
+    }
+    // E3. drafting fails (gateway error, no network): Leads says so, never "Draft created", and no draft exists
+    for (const how of ['5xx', 'abort']) {
+      const { ctx, page } = await context(w); const before = read()
+      await page.goto(base + `/app/leads?job_id=${P}`, { waitUntil: 'networkidle' })
+      const btn = page.getByRole('button', { name: 'Approve', exact: true }).first(); await btn.waitFor({ timeout: 15000 })
+      await fail(page, '**/api/outreach', 'POST', how)
+      await btn.scrollIntoViewIfNeeded(); await btn.click()
+      await page.getByText('Could not create the draft').first().waitFor({ timeout: 15000 })
+      assert.equal(await page.getByText(/Draft created/).count(), 0, `E3${tag} ${how}: no draft claimed`)
+      sameExcept(before, read(), `E3${tag} ${how}`)
+      if (how === '5xx') await shot(page, `states-E3-draft-failed${tag}`)
+      await ctx.close()
+    }
+    // E4. the rewrite fails (gateway error, no network): Outreach says the draft is unchanged, and it is
+    for (const how of ['5xx', 'abort']) {
+      const { ctx, page } = await context(w); const before = read()
+      await page.goto(base + `/app/outreach?job_id=${P}`, { waitUntil: 'networkidle' })
+      const rewrite = page.getByRole('button', { name: 'Rewrite with AI (uses your key)' }).first(); await rewrite.waitFor({ timeout: 15000 })
+      await fail(page, '**/api/outreach/polish', 'POST', how)
+      await rewrite.scrollIntoViewIfNeeded(); await rewrite.click()
+      const note = page.getByRole('status').filter({ hasText: /The rewrite did not work - the original draft is unchanged/ }); await note.waitFor({ timeout: 15000 })
+      assert.equal(await page.getByText(/^Rewritten with your/).count(), 0, `E4${tag} ${how}: no rewrite claimed`)
+      sameExcept(before, read(), `E4${tag} ${how}`)
+      if (how === 'abort') { await note.scrollIntoViewIfNeeded(); await shot(page, `states-E4-rewrite-failed${tag}`) }
+      await ctx.close()
+    }
+    // E5. policy change between loading the page and drafting: another tab changes this play's offer; the draft states
+    //     what is stored at the moment of drafting, never the offer the page was loaded with
+    { const { ctx, page } = await context(w)
+      await page.goto(base + `/app/leads?job_id=${CHOSENP[w]}`, { waitUntil: 'networkidle' })
+      const btn = page.getByRole('button', { name: 'Approve', exact: true }).first(); await btn.waitFor({ timeout: 15000 })
+      { const d = new Database(DB); d.prepare('UPDATE scan_jobs SET offer = ? WHERE id = ?').run('Brand audits', CHOSENP[w]); d.close() }
+      await btn.scrollIntoViewIfNeeded(); await btn.click()
+      await waitFor(() => read().drafts.some(m => m.lead_id === chosenLeads[w]), `E5${tag}: draft created`)
+      const drafted = read().drafts.find(m => m.lead_id === chosenLeads[w])
+      assert.match(drafted.body, /Brand audits/, `E5${tag}: the draft states the offer stored now`); assert.doesNotMatch(drafted.body, /SEO audits/, `E5${tag}: not the offer the page was loaded with`)
       await ctx.close() }
   }
 

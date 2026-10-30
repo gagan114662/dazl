@@ -14,7 +14,9 @@ const SOURCE: Record<string, string> = {
 }
 
 
-export function PlayOfferCard({ jobId, offer, onChange, compact }: { jobId: string; offer: PlayOffer | null | undefined; onChange?: (o: PlayOffer) => void; compact?: boolean }) {
+// offer: undefined while loading (nothing shown), null when the play has no offer to show, 'unreadable' when the read
+// failed: then the card says so rather than vanishing, so a play waiting for a choice is never shown as if it had none.
+export function PlayOfferCard({ jobId, offer, onChange, compact }: { jobId: string; offer: PlayOffer | null | undefined | 'unreadable'; onChange?: (o: PlayOffer) => void; compact?: boolean }) {
   const [editing, setEditing] = useState(false)
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
@@ -37,6 +39,7 @@ export function PlayOfferCard({ jobId, offer, onChange, compact }: { jobId: stri
     </div>
   </form>
   if (offer === null) return null
+  if (offer === 'unreadable') return <p className="rounded-xl border border-[#e8b04a] bg-[#fff7e6] px-4 py-3 text-sm" role="alert" data-testid="play-offer-unreadable">What this play sells could not be loaded just now. Reload the page to see it before drafting.</p>
   if (offer.conflict) {
     const c = offer.conflict
     return <div className="rounded-xl border border-[#e8b04a] bg-[#fff7e6] px-4 py-3 text-sm" role="alert" data-testid="play-offer-conflict">

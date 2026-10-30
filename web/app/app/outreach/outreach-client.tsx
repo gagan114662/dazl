@@ -45,7 +45,7 @@ export default function OutreachClient() {
   // the scan's leads load, or after that load fails). null until the URL has been read.
   const [mode, setMode] = useState<'all' | 'scan' | null>(null)
   // What the filtered play sells (its campaign record): the offer its drafts use (lib/scan/play-offer.ts).
-  const [playOffer, setPlayOffer] = useState<PlayOffer | null | undefined>(undefined)
+  const [playOffer, setPlayOffer] = useState<PlayOffer | null | undefined | 'unreadable'>(undefined)
   async function load() {
     const jobId = new URLSearchParams(window.location.search).get('job_id')
     setMode(isJobId(jobId) ? 'scan' : 'all')
@@ -55,7 +55,8 @@ export default function OutreachClient() {
       setScan({ id: jobId, leadIds: lj?.leads ? lj.leads.map((l: { id: string }) => l.id) : null })
       const cr = await fetch(`/api/campaigns/${jobId}`).catch(() => null)
       const cj = cr?.ok ? await cr.json().catch(() => null) : null
-      setPlayOffer(cj && 'offer' in cj ? cj.offer ?? null : null)
+      // a failed read is not "no offer": the card says it could not be loaded
+      setPlayOffer(cj && 'offer' in cj ? cj.offer ?? null : 'unreadable')
     }
     try { const r = await fetch('/api/outreach'); if (r.ok) { setMsgs((await r.json()).messages); setLoadFailed(false) } else setLoadFailed(true) } catch { setLoadFailed(true) } finally { setLoaded(true) }
     try { const seq=await fetch('/api/outreach/sequences'); if(seq.ok) setSequenceMessages((await seq.json()).sequences.map((s:{message_id:string})=>s.message_id)) } catch { /* sequence markers are optional; the email list above still stands */ }
@@ -69,8 +70,10 @@ export default function OutreachClient() {
 
   async function polish(id: string) {
     setNote('')
-    const r = await fetch('/api/outreach/polish', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message_id: id }) })
-    const j = await r.json()
+    // a network failure or a body that is not JSON (a proxy error page) is a failed rewrite, said as such
+    const r = await fetch('/api/outreach/polish', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message_id: id }) }).catch(() => null)
+    const j = r ? await r.json().catch(() => ({})) : {}
+    if (!r) { setNote('The rewrite did not work - the original draft is unchanged. Check your connection and try again.'); void load(); return }
     if (r.ok && j.rewritten) setNote(`Rewritten with your ${j.vendor === 'openai' ? 'OpenAI' : 'Anthropic'} key${j.usage?.model ? ` (${j.usage.model}${j.usage.input_tokens != null ? `, ${j.usage.input_tokens} in / ${j.usage.output_tokens} out tokens` : ''})` : ''}. Review the new text below before anything is approved.`)
     else setNote(j.note || j.error || 'The rewrite did not work - the original draft is unchanged.')
     void load()

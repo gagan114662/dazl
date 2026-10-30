@@ -35,7 +35,7 @@ export default function Journey() {
   const [sent, setSent] = useState<number | null>(null)
   const [morePills, setMorePills] = useState(false)
   // What the current play sells (its campaign record, lib/scan/play-offer.ts); undefined until read, null if unreadable.
-  const [playOfferOf, setPlayOfferOf] = useState<{ id: string; offer: PlayOffer | null } | null>(null)
+  const [playOfferOf, setPlayOfferOf] = useState<{ id: string; offer: PlayOffer | null | 'unreadable' } | null>(null)
 
   const get = (u: string) => fetch(u).then(r => r.ok ? r.json() : null).catch(() => null)
   // Missing buyer lists read as empty (never invented), so a partial profile still renders.
@@ -73,7 +73,8 @@ export default function Journey() {
   }
   useEffect(() => {
     if (!playId) return
-    void get(`/api/campaigns/${playId}`).then(c => setPlayOfferOf({ id: playId, offer: c && 'offer' in c ? c.offer ?? null : null }))
+    // a failed read is not "no offer": the card says it could not be loaded
+    void get(`/api/campaigns/${playId}`).then(c => setPlayOfferOf({ id: playId, offer: c && 'offer' in c ? c.offer ?? null : 'unreadable' }))
   }, [playId]) // eslint-disable-line react-hooks/exhaustive-deps
   // the offer read for the play shown now (an earlier play's read never shows under a newer play)
   const playOffer = playOfferOf && playOfferOf.id === playId ? playOfferOf.offer : undefined
