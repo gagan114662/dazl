@@ -82,35 +82,44 @@ export function offerOfSeller(seller: string | null | undefined): string | null 
 //             not sell hardware.", "We sell to dental practices.") is taken whole, as written
 //   audience  who it is sold to: "to/for ..." after the offer, up to the first ",", "but", "except", "excluding" or
 //             "without"
-//   terms     everything else the seller says about the offer: the rest of that sentence (", but not outbound
-//             consulting"), any other sentence where the seller says what they sell ("We also offer payroll."), and any
-//             other sentence with a negation or exclusion that is not a targeting instruction ("Do not offer outbound
-//             consulting.", "No outbound consulting.", "We never do outbound consulting."). Targeting instructions of a
-//             request ("Find London SaaS startups hiring.", "Exclude agencies.", "Do not target ...") are not terms.
+//   terms     everything else the text says: the rest of that sentence (", but not outbound consulting") and every other
+//             sentence except a targeting instruction of a request ("Find London SaaS startups hiring.", "Exclude
+//             agencies.", "Do not target ..."). Any further service assertion, in any wording ("We also offer payroll.",
+//             "Selling payroll software to founders.", "Outbound consulting is unavailable.", "No outbound consulting."),
+//             is a term, so text the parser does not understand is a difference, never silently dropped. A sentence
+//             of its own counts as the audience only when it is exactly the other side's audience.
 // Two statements are the same offer when the offers match, the terms match, and the audiences match or one side names
 // none: "appointment booking and reminder software" and the saved "We sell appointment booking and reminder software to
 // independent dental practices in New York City." are one offer (#349 live case). Only a missing audience is allowed:
 // a different audience ("to veterinary practices"), or any withdrawn service or exclusion on one side only, is a
 // difference. Exact text throughout, ignoring only case and spacing: no substring or word-set matching, no reordering.
 const exact = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase()
-const SELLER_SENTENCE = /\b(?:i|we|i'm|we're|i've|we've|our (?:company|team|business|firm))\b.*\b(?:sells?|selling|sold|offers?|offering|provides?|providing)\b/i
-const NEGATION = /\b(?:not|no|never|none|nor|neither|without|except|excluding|exclude[sd]?|no longer|cannot)\b|n['\u2019]t\b/i
 const TARGETING = /^(?:(?:please|and|also|but)\s+)?(?:(?:do not|don['\u2019]t|never)\s+)?(?:find|search|look|target|targeting|contact|reach|email|message|include|exclude|excluding|skip|avoid|ignore)\b/i
 const AUDIENCE = /^(?:to|for)\s+(.*?)(?=\s*(?:,|\bbut\b|\bexcept\b|\bexcluding\b|\bwithout\b)|$)/i
-type Statement = { offer: string; audience: string; terms: string }
+type Statement = { offer: string; audience: string; rest: string; others: string[] }
 function statement(text: string): Statement {
   const f = findOffer(text)
-  if (!f) return { offer: exact(text), audience: '', terms: '' }
+  if (!f) return { offer: exact(text), audience: '', rest: '', others: [] }
   const tail = f.tail.trim()
   const a = AUDIENCE.exec(tail)
   const audience = a ? exact(a[1]) : ''
   const rest = exact((a ? tail.slice(a[0].length) : tail).replace(/^[\s,;:]+/, ''))
-  const others = f.sentences.filter((x, i) => i !== f.sentence && (SELLER_SENTENCE.test(x) || (NEGATION.test(x) && !TARGETING.test(x.trim())))).map(exact)
-  return { offer: exact(f.offer), audience, terms: [rest, ...others].filter(Boolean).join(' | ') }
+  // every other sentence is part of the offer statement unless it is a targeting instruction: a service assertion in
+  // any wording ("Selling payroll software to founders.", "Outbound consulting is unavailable.") is never dropped
+  const others = f.sentences.filter((x, i) => i !== f.sentence && !TARGETING.test(x.trim())).map(exact)
+  return { offer: exact(f.offer), audience, rest, others }
 }
+// A side whose offer sentence names no audience may name it in a sentence of its own ("Independent dental practices
+// in New York City. We sell ..."): that sentence is its audience only when it is exactly the other side's audience.
+function withAudienceOf(x: Statement, y: Statement): Statement {
+  if (x.audience || !y.audience || !x.others.includes(y.audience)) return x
+  return { ...x, audience: y.audience, others: x.others.filter(o => o !== y.audience) }
+}
+const terms = (x: Statement) => [x.rest, ...x.others].filter(Boolean).join(' | ')
 export function sameOffer(a: string, b: string): boolean {
-  const x = statement(a), y = statement(b)
-  if (!x.offer || x.offer !== y.offer || x.terms !== y.terms) return false
+  const x0 = statement(a), y0 = statement(b)
+  const x = withAudienceOf(x0, y0), y = withAudienceOf(y0, x0)
+  if (!x.offer || x.offer !== y.offer || terms(x) !== terms(y)) return false
   return !x.audience || !y.audience || x.audience === y.audience
 }
 

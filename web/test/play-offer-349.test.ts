@@ -278,9 +278,39 @@ test('#349 LIVE-3 service exclusions of every form are material; a product-only 
   }
   // the same terms on both sides agree; targeting instructions of a request are not terms
   assert.ok(sameOffer('We sell CRM setup to founders. No outbound consulting.', 'we sell CRM setup to founders. no outbound consulting'))
-  for (const q of [`Find dental practices in NYC. We sell ${DENTAL_PRODUCT}. Exclude chains.`, `Find dental clinics. Do not target agencies. We sell ${DENTAL_PRODUCT}.`, `Independent dental practices hiring. Skip chains. We sell ${DENTAL_PRODUCT}.`])
+  for (const q of [`Find dental practices in NYC. We sell ${DENTAL_PRODUCT}. Exclude chains.`, `Find dental clinics. Do not target agencies. We sell ${DENTAL_PRODUCT}.`, `Target independent dental practices hiring. Skip chains. We sell ${DENTAL_PRODUCT}.`])
     assert.deepEqual(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: q }, ''), { offer: DENTAL_SELLER, source: 'recorded', conflict: null }, q)
   // the original live case and the London control
   assert.deepEqual(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: DENTAL_PRODUCT }, ''), { offer: DENTAL_SELLER, source: 'recorded', conflict: null })
   assert.equal(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: Q }, '').source, 'conflict')
+})
+
+test('#349 HOLD-4 every further service assertion is material, in any wording; unparsed remainder is a conflict, targeting is not', async () => {
+  const P = 'CRM setup'
+  // Instinct's two cases: an extra offer without a "we", and a withdrawn service without a negation word
+  for (const restricted of ['We sell CRM setup to founders. Selling payroll software to founders.', 'We sell CRM setup to founders. Outbound consulting is unavailable.',
+    'We sell CRM setup. Payroll is included too.', 'We sell CRM setup. Outbound consulting discontinued.']) {
+    assert.equal(sameOffer(restricted, P), false, restricted); assert.equal(sameOffer(P, restricted), false, restricted)
+    // through the caller path: the request states the extra service, the saved offer is CRM setup alone, and the reverse
+    assert.equal(effectiveOffer({ seller: `${P} - https://seller.example`, query: restricted }, '').source, 'conflict', restricted)
+    assert.equal(effectiveOffer({ seller: `${restricted} - https://seller.example`, query: 'We sell CRM setup to founders.' }, '').source, 'conflict', `saved: ${restricted}`)
+    assert.equal(effectiveOffer({ seller: null, query: restricted }, P).source, 'conflict', `profile: ${restricted}`)
+  }
+  // the database caller paths (resolver, template, scoring) refuse the play whose request adds a service
+  const db = setup('CRM setup')
+  try {
+    db.prepare('UPDATE scan_jobs SET query = ?, seller = ? WHERE id = ?').run('We sell CRM setup to founders. Outbound consulting is unavailable.', 'CRM setup - https://seller.example', 'london')
+    assert.equal((await readPlayOffer(sqliteDb(db), 'A', 'london'))!.source, 'conflict')
+    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme'), /offer_conflict/)
+    assert.equal(offerBlockFor(db, 'A', 'london'), '')
+  } finally { db.close() }
+  // genuine targeting instructions and an audience sentence equal to the saved audience are not terms
+  for (const q of [`Find dental practices in NYC. We sell ${DENTAL_PRODUCT}. Exclude chains.`, `Independent dental practices in New York City. We sell ${DENTAL_PRODUCT}.`])
+    assert.deepEqual(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: q }, ''), { offer: DENTAL_SELLER, source: 'recorded', conflict: null }, q)
+  // a descriptive sentence the parser cannot place is unparsed remainder: flagged, so the tenant chooses (fail closed)
+  assert.equal(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: `Independent dental practices hiring. We sell ${DENTAL_PRODUCT}.` }, '').source, 'conflict')
+  // the original live case and the London control are unchanged
+  assert.deepEqual(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: DENTAL_PRODUCT }, ''), { offer: DENTAL_SELLER, source: 'recorded', conflict: null })
+  assert.equal(effectiveOffer({ seller: `${DENTAL_SELLER} - https://seller.example`, query: Q }, '').source, 'conflict')
+  assert.equal(sameOffer('We sell CRM setup to founders. Outbound consulting is unavailable.', 'we sell crm setup to founders. outbound consulting is unavailable'), true)
 })
