@@ -63,6 +63,8 @@ const TARGETING_OR_OUTPUT = [
   'Show the source link, the date and a named contact.',
   'List the company, website, evidence and decision-maker contact.',
   'Please show dated evidence for each lead.',
+  // council: a size as a list item
+  'Find independent dental practices in New York City, 1-5 locations, hiring receptionists.',
 ]
 test('#349 class: a targeting or output instruction of the request is never a commercial term', () => {
   const failures: string[] = []

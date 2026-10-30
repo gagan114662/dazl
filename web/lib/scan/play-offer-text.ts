@@ -300,6 +300,8 @@ function qualifierLengths(words: string[], mode: Mode): number[] {
   // another buyer group after a list separator or of/for/at/with
   const sepLen = w0 === ',' ? (['and', 'or'].includes(w1) ? 2 : 1) : ['and', 'or', 'of', 'for', 'at', 'with'].includes(w0) ? 1 : 0
   if (sepLen) for (const n of buyerGroup(words.slice(sepLen), mode.excl)) out.add(sepLen + n)
+  // a size as a list item: "in New York City, 1-5 locations, hiring receptionists"
+  if (!mode.narrow && w0 === ',') { const n = sizeLength(words.slice(1)); if (n) out.add(1 + n) }
   // who/that are -ing
   if ((w0 === 'who' || w0 === 'that') && /^(?:is|are)$/.test(w1) && /ing$/i.test(words[2] ?? '') && !EVENT_VERBS.has((words[2] ?? '').toLowerCase())) out.add(3)
   // hiring a role: "hiring a front-desk coordinator", "who are hiring SDRs", "or are hiring their first sales representative"
