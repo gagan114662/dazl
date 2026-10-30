@@ -52,6 +52,7 @@ import { finishUndatedLeads } from './structured-date.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
 import { sourceCap } from './source-quality.ts'
 import { SourceRunLedger } from './source-runs.ts'
+import { collectLinkedInPeople } from '../signals/linkedin-people.ts'
 import { newsEnabled, newsSearch, NEWS_PER_SCAN, NEWS_SOURCE } from '../search/news.ts'
 import { safeGet } from '../sources/http.ts'
 import type { SafeGet } from '../sources/types.ts'
@@ -779,6 +780,7 @@ function budgetDeps(deps: RunDeps, budget: RunBudget | null): RunDeps {
 
 export interface RunDeps {
   // newsHttp: the free news search's own HTTP (lib/search/news.ts), separate from the per-scan sources' sourceHttp.
+  linkedinTransport?: import('../signals/linkedin-people.ts').LinkedInTransport   // an authorised LinkedIn transport (#192); none by default, so nothing is requested
   first5?: boolean; autopilot?: typeof runAutopilot; sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; salesHiringGate?: typeof applySalesHiringGate; jobBudgetMs?: number; clock?: () => number }
 
 // A free-trial scan's charge for each TinyFish call on dazl's key (lib/billing/trial-budget.ts), set while that scan runs.
@@ -1041,6 +1043,25 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e // a rejected key still fails the scan
         // any other complaint-search failure only means no extra candidates
+      }
+    }
+    // LinkedIn people (owner decision 2026-10-26): competitor engagers and buyer-role matches through the tenant's own
+    // session. Same gates as every LinkedIn call; candidates are login-walled, so they land in the review lane.
+    if (job.query && icpForSources && complete) {
+      try {
+        assertOwned(db, job)
+        const li = await collectLinkedInPeople(sqliteDb(db), job.user_id, job.id, icpForSources, { transport: deps.linkedinTransport })
+        if (li.length > 0) {
+          ledger.record('adv:linkedin-people', 'ok', li.length)
+          assertOwned(db, job)
+          const text = await complete.call(providers_[vendor], key, buildSourcePrompt(job.query!, icpForSources, li), deps.fetchImpl, 3000)
+          const extra = parseLeads(text, li.map(i => i.url)) ?? []
+          ledger.evidenceCandidates(li, extra)
+          walledLeads.push(...extra)
+        }
+      } catch (e) {
+        if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
+        if (e instanceof ProviderError && e.kind === 'auth') throw e
       }
     }
     // Nothing to verify at all: fail honestly. Failed scans do not count toward the monthly quota,

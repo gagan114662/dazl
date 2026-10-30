@@ -3,6 +3,13 @@
 Decisions made by the owner (gagan). Agents read this before changing the behaviour it covers.
 Newest first. A decision changes only when the owner says so.
 
+## 2026-10-26: LinkedIn person-level signals are built but INACTIVE (#192)
+
+No owner approval to read LinkedIn through a member's session is recorded here, and none is assumed. The code for LinkedIn person-level signals (`web/lib/signals/linkedin-people.ts`) does not log in to
+LinkedIn, hold or use any member session or cookie, or call unofficial endpoints. It is a gated consumer of an injected, authorised transport and is off by default. Whether an official or licensed source
+can supply this data is **not verified**; the source, allowed fields and licensing feasibility are in `docs/linkedin-people-source.md`. Activating it (setting `ADVANCED_LINKEDIN_PEOPLE=1` with a transport)
+needs a licensed source and the owner's explicit approval. Automated LinkedIn actions (connection requests, messages, posting) are not decided and are not built.
+
 ## 2026-10-26: guessed email addresses (US only, verified only)
 
 Contacts may include a pattern-guessed business address (for example first.last@company.com) only when all of these hold:
