@@ -28,7 +28,7 @@ const providers = (): Record<'anthropic' | 'openai', Provider> => ({
   openai: { research: async () => ({ text: '', citedUrls: [] }) },
 })
 const run = async (flag: boolean, transport?: LinkedInTransport) => {
-  const db = await setup(); const saved = { ...process.env }; if (flag) process.env.ADVANCED_LINKEDIN_PEOPLE = '1'; else delete process.env.ADVANCED_LINKEDIN_PEOPLE
+  const db = await setup(); const saved = { ...process.env }; if (flag) Object.assign(process.env, { ADVANCED_CONNECTORS: '1', ADVANCED_LINKEDIN: '1', ADVANCED_LINKEDIN_PEOPLE: '1' }); else delete process.env.ADVANCED_LINKEDIN_PEOPLE
   try {
     const id = createQueryJob(db, 'A', { query: 'Ohio employers that need payroll help', icp: JSON.stringify(ICP) } as never)
     await runJob(db, claimKeyedJob(db, id)!, { providers: providers(), master, fetchPage: async () => null, linkedinTransport: transport, score: false, judge: null })

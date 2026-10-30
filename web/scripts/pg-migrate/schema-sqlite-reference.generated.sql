@@ -1,3 +1,7 @@
+CREATE TABLE adv_budget_lock (tenant_id TEXT NOT NULL, connector TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (tenant_id, connector));
+
+CREATE TABLE adv_requests (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, connector TEXT NOT NULL, at INTEGER NOT NULL, consumer TEXT NOT NULL);
+
 CREATE TABLE advanced_consent (
     tenant_id TEXT NOT NULL, scope TEXT NOT NULL, version TEXT NOT NULL,
     accepted_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
@@ -764,6 +768,8 @@ CREATE TABLE work_queue (
       );
 
 CREATE TABLE work_queue_meta (k TEXT PRIMARY KEY, v INTEGER NOT NULL);
+
+CREATE INDEX adv_requests_window ON adv_requests (tenant_id, connector, at);
 
 CREATE INDEX autopilot_audit_tenant ON autopilot_audit (tenant_id, created_at);
 
