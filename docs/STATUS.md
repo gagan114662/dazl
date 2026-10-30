@@ -17,6 +17,14 @@ Updated by the builder on every branch. Newest first.
   tenant daily 200 (Instinct reviewed and merged 2026-10-26). Not yet deployed.
 - #184 process docs + scoreboard (Instinct reviewed and merged 2026-10-26).
 
+## In review (SEC officers)
+
+- b/sec-officers: executive officers/directors named in the SEC Form D filing already matched to a lead are stored as `person`
+  enrichments (connector `signals:sec-form-d`, source = the filing, labelled "as of filing, not verified as current") and flow into
+  the existing right-people ranking / Best Person CSV column. Free, US-only by nature of Form D, no email derived, no address kept.
+  Competitive: founder/CEO names for funded companies whose site lists nobody (Gojiberry-style founder contact, no paid API).
+  Left for follow-up: GitHub org members (Next #1b). Fixtures only; no live EDGAR call.
+
 ## In review (owner goal: better than Gojiberry/Pancake at finding leads for any business, any geography)
 
 - #186 b/buyer-fit-gate: a job posting alone is not a qualified lead (home-page fit evidence, multilingual hiring).
@@ -101,8 +109,7 @@ Updated by the builder on every branch. Newest first.
 
 ## Next (in order, for the scheduled builder; nothing business- or place-specific)
 
-1. Decision-maker sources beyond the company site: officers named in SEC Form D filings (US), GitHub org members for
-   software companies. Stored as person enrichments with the source URL; ranked by the scan ICP roles (rank.ts).
+1. Decision-maker sources beyond the company site: GitHub org members for software companies (SEC Form D officers: in review, b/sec-officers). Stored as person enrichments with the source URL; ranked by the scan ICP roles (rank.ts).
 2. New intent signal: people opening issues on or starring competitor GitHub repos when the tenant lists
    competitors; public GitHub API only.
 3. Self-hosted SearXNG as a third free search backend (env flag, off by default), same shape as lib/search/news.ts.
