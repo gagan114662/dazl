@@ -42,6 +42,7 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'app/api/scan/route.ts': 0,
   'app/api/scan/status/route.ts': 0,
   'app/api/unsubscribe/route.ts': 0,
+  'lib/accounts/cooldown.ts': 0,
   'lib/advanced/index.ts': 0,
   'lib/auth-db.ts': 0,
   'lib/billing/plans-sqlite.ts': 0,
