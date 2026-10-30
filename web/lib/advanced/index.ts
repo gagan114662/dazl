@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3'
 import { asDb, type Db, type DbLike } from '../db/client.ts'
 import { readEnabledCredential, writeAudit } from '../connectors/store.ts'
 import type { Evidence } from '../sources/types.ts'
-import { advFlags, CONSENT_VERSION, connectorId, maxCallsPerHour, platformAllowed, scopeFor, type AdvPlatform, type ConsentScope } from './config.ts'
+import { advFlags, CONSENT_VERSION, connectorId, maxCallsPerHour, platformAllowed, platformSupported, scopeFor, type AdvPlatform, type ConsentScope } from './config.ts'
 import { tfSearch, tinyfishEnabled } from '../search/tinyfish.ts'
 
 export function migrateAdvanced(db: Database.Database): void {
@@ -40,7 +40,20 @@ export async function readConsent(db: Db, tenantId: string, scope: ConsentScope)
 }
 
 export interface WorkerItem { url: string; title: string; quote: string; date: string | null; login_walled: boolean }
-export type WorkerFetch = (req: { platform: AdvPlatform; query: string; session: string }) => Promise<WorkerItem[] | null>
+// A worker answer: the items of a search that ran (possibly none), or why it did not run (#436). null: the worker itself
+// could not be reached or answered something unreadable.
+export type WorkerFailureCode = 'unsupported' | 'auth' | 'throttled' | 'schema' | 'upstream' | 'timeout' | 'error'
+export type WorkerFailure = { failure: WorkerFailureCode }
+export type WorkerFetch = (req: { platform: AdvPlatform; query: string; session: string }) => Promise<WorkerItem[] | WorkerFailure | null>
+const FAILURES = new Set<string>(['unsupported', 'auth', 'throttled', 'schema', 'upstream', 'timeout', 'error'])
+// The connector audit status for an answer that is not a list of items. A genuine empty search is 'empty' (callers);
+// these are distinct so a search that never happened is never shown as one that found nothing.
+export function workerAuditStatus(r: WorkerFailure | null): string {
+  if (!r) return 'worker_error'
+  return r.failure === 'unsupported' ? 'unsupported' : r.failure === 'auth' ? 'auth_failed' : r.failure === 'throttled' ? 'throttled' : r.failure === 'schema' ? 'schema_error' : 'worker_error'
+}
+// Statuses that mean the platform was actually called (they count toward the hourly limit).
+export const CALLED_STATUSES = ['ok', 'empty', 'worker_error', 'auth_failed', 'throttled', 'schema_error'] as const
 
 // Worker protocol: POST {platform, query, session} with a bearer token, reply {items:[{url,title,quote,date,login_walled}]}.
 // The request carries one tenant's own session and nothing else: no tenant id, no DB access, no other keys.
@@ -54,10 +67,13 @@ export function httpWorker(env: Record<string, string | undefined> = process.env
         redirect: 'error',
         signal: AbortSignal.timeout(45_000),
       })
+      if (res.status === 501) return { failure: 'unsupported' }
       if (!res.ok) return null
       const text = await res.text()
       if (text.length > 1_000_000) return null
-      return parseWorkerItems(JSON.parse(text))
+      const json = JSON.parse(text) as { outcome?: unknown }
+      if (typeof json?.outcome === 'string') return FAILURES.has(json.outcome) ? { failure: json.outcome as WorkerFailureCode } : null
+      return parseWorkerItems(json)
     } catch { return null }
   }
 }
@@ -77,7 +93,7 @@ export function parseWorkerItems(raw: unknown): WorkerItem[] {
 }
 
 async function callsLastHour(db: Db, tenantId: string, platform: AdvPlatform, now: number): Promise<number> {
-  return Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM connector_audit WHERE tenant_id = ? AND connector = ? AND status IN ('ok','empty','worker_error') AND created_at >= ?", [tenantId, connectorId(platform), now - 3600]))!.n)
+  return Number((await db.get<{ n: number }>(`SELECT count(*) AS n FROM connector_audit WHERE tenant_id = ? AND connector = ? AND status IN (${CALLED_STATUSES.map(s => `'${s}'`).join(',')}) AND created_at >= ?`, [tenantId, connectorId(platform), now - 3600]))!.n)
 }
 
 // X search AND-matches every token, so a full natural-language scan sentence returns
@@ -109,6 +125,8 @@ export async function collectAdvanced(store: DbLike, tenantId: string, jobId: st
     const q = p === 'x' && deps.xQuery ? deps.xQuery : query
     const skip = (status: string) => writeAudit(db, { tenantId, connector: id, jobId, lookup: q, status, results: 0 })
     if (!platformAllowed(p, flags)) { await skip('disabled'); continue }
+    // a platform the worker cannot read is not searched and no session is sent: recorded as unsupported, not empty
+    if (!platformSupported(p)) { await skip('unsupported'); continue }
     if (!(await readConsent(db, tenantId, scopeFor(p)))) { await skip('no_consent'); continue }
     if (await callsLastHour(db, tenantId, p, deps.now ?? Math.floor(Date.now() / 1000)) >= maxCallsPerHour(p, env)) { await skip('rate_limited'); continue }
     // X path 1: operator-key web search of the public index (TinyFish free tier, capped
@@ -136,7 +154,7 @@ export async function collectAdvanced(store: DbLike, tenantId: string, jobId: st
     // neither answers no_session, which audits as worker_error here.
     const session = (await readEnabledCredential(db, tenantId, id, deps.master)) || ''
     const items = await worker({ platform: p, query: q.slice(0, 300), session })
-    if (items === null) { await skip('worker_error'); continue }
+    if (!Array.isArray(items)) { await skip(workerAuditStatus(items)); continue }
     await writeAudit(db, { tenantId, connector: id, jobId, lookup: q, status: items.length ? 'ok' : 'empty', results: items.length })
     for (const it of items) out.push({ source: id, url: it.url, title: it.title, quote: it.quote, date: it.date, login_walled: it.login_walled })
   }

@@ -3,7 +3,7 @@
 //  worker   - session is stored and gated, but fetching needs an operator-run worker that is not in this repo
 //  soon     - nothing is built; the UI shows it but offers no connect flow
 export type Tier = 0 | 1 | 2
-export type ChannelStatus = 'live' | 'worker' | 'soon'
+export type ChannelStatus = 'live' | 'worker' | 'soon' | 'unsupported'
 export interface Channel { id: string; name: string; tier: Tier; status: ChannelStatus; note: string; platform?: 'x' | 'reddit' | 'instagram' | 'facebook' | 'linkedin' | 'xiaohongshu' | 'bilibili' }
 
 export const CHANNELS: Channel[] = [
@@ -16,9 +16,9 @@ export const CHANNELS: Channel[] = [
   { id: 'x', name: 'Twitter / X', tier: 1, status: 'worker', platform: 'x', note: 'Found through web search of the public index when the operator sets a TinyFish key - no session needed and no account at risk; results go to needs review. Otherwise needs a worker session. X disallows automated access in robots.txt and its terms.' },
   { id: 'reddit', name: 'Reddit', tier: 1, status: 'worker', platform: 'reddit', note: 'Needs a worker. Reddit limits automated access under its terms.' },
   { id: 'instagram', name: 'Instagram', tier: 1, status: 'worker', platform: 'instagram', note: 'Needs a worker. Instagram disallows automated access in robots.txt and its terms.' },
-  { id: 'facebook', name: 'Facebook', tier: 1, status: 'worker', platform: 'facebook', note: 'Needs a worker. Facebook disallows automated access in robots.txt and its terms. The worker does not fetch Facebook yet.' },
+  { id: 'facebook', name: 'Facebook', tier: 1, status: 'unsupported', platform: 'facebook', note: 'Not available: the session worker cannot read Facebook (it has no cookie-only search and needs a browser worker). No session is collected and scans never search it.' },
   { id: 'bilibili', name: 'Bilibili', tier: 1, status: 'worker', platform: 'bilibili', note: 'Needs a worker.' },
-  { id: 'xiaohongshu', name: 'XiaoHongShu', tier: 1, status: 'worker', platform: 'xiaohongshu', note: 'Needs a worker.' },
+  { id: 'xiaohongshu', name: 'XiaoHongShu', tier: 1, status: 'unsupported', platform: 'xiaohongshu', note: 'Not available: XiaoHongShu signs every request and the session worker does not implement that. No session is collected and scans never search it.' },
   { id: 'linkedin', name: 'LinkedIn', tier: 2, status: 'worker', platform: 'linkedin', note: 'Needs a worker and a separate operator switch. Highest ban risk. Public pages through Jina Reader are not built yet.' },
 ]
 export const TIER_LABEL: Record<Tier, string> = { 0: 'Tier 0 · no setup', 1: 'Tier 1 · your session', 2: 'Tier 2 · login required' }

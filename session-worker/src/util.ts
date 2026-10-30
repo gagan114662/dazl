@@ -10,9 +10,23 @@ export const latinUsable = (s: string) => { const t = latinRun(s); return t.leng
 export interface FetchOptions { cookie?: string; headers?: Record<string, string>; timeoutMs?: number }
 
 // Plain GET JSON with the tenant's session cookie. 15s cap, 1MB body cap, no redirects off-site.
-export async function getJson(url: string, opts: FetchOptions = {}): Promise<unknown | null> {
+// Why a fetch returned nothing, so the app can tell a genuine empty search from one that never happened (#436):
+//   unsupported  this worker cannot read the platform at all (no request is made)
+//   auth         the session is missing what the platform needs, or the platform refused it (401/403)
+//   throttled    the platform rate limited the request (429)
+//   schema       the platform answered with something that is not the expected shape (or not JSON)
+//   upstream     the platform failed or could not be reached
+export type FailureCode = 'unsupported' | 'auth' | 'throttled' | 'schema' | 'upstream'
+export class WorkerFailure extends Error {
+  readonly code: FailureCode
+  constructor(code: FailureCode) { super(code); this.code = code }
+}
+
+// GET a JSON document. Throws WorkerFailure for every way it can fail; returns the parsed JSON otherwise.
+export async function getJson(url: string, opts: FetchOptions = {}): Promise<unknown> {
+  let res: Response
   try {
-    const res = await fetch(url, {
+    res = await fetch(url, {
       headers: {
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
         accept: 'application/json',
@@ -22,12 +36,17 @@ export async function getJson(url: string, opts: FetchOptions = {}): Promise<unk
       redirect: 'error',
       signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000),
     })
-    if (!res.ok) return null
-    const text = await res.text()
-    if (text.length > 1_000_000) return null
-    return JSON.parse(text)
-  } catch { return null }
+  } catch { throw new WorkerFailure('upstream') }
+  if (res.status === 401 || res.status === 403) throw new WorkerFailure('auth')
+  if (res.status === 429) throw new WorkerFailure('throttled')
+  if (!res.ok) throw new WorkerFailure('upstream')
+  let text: string
+  try { text = await res.text() } catch { throw new WorkerFailure('upstream') }
+  if (text.length > 1_000_000) throw new WorkerFailure('schema')
+  try { return JSON.parse(text) } catch { throw new WorkerFailure('schema') }
 }
+// The expected container is present in a parsed answer; otherwise it is not the shape we read.
+export function expectShape(ok: boolean): void { if (!ok) throw new WorkerFailure('schema') }
 
 export const item = (url: string, title: string, quote: string, date: string | null, login_walled = true): WorkerItem | null => {
   const q = latinRun(quote).slice(0, 300)

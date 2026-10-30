@@ -369,7 +369,7 @@ export default function LeadsClient() {
   useEffect(() => { void fetch('/api/usage').then(r => r.ok ? r.json() : null).then(j => { if (j?.plan === 'free' || j?.plan === 'pro') setPlan(j.plan); if (j) setKeyState({ has_key: j.has_key, trial: j.trial }) }).catch(() => {}) }, [])
   useEffect(() => { void fetch('/api/scan/sources').then(r => r.ok ? r.json() : null).then(j => { if (j) setServerSrc(j) }).catch(() => {}) }, [])
   const [advPick, setAdvPick] = useState<string[]>([])
-  useEffect(() => { void fetch('/api/settings/advanced').then(r => r.ok ? r.json() : null).then(j => { if (j && Array.isArray(j.platforms)) setAdvanced(j); if (j?.available) setAdvReady(j.platforms.filter((p: { allowed?: boolean; consent: boolean; connected: boolean; enabled: boolean; operator_index?: boolean }) => p.allowed !== false && p.consent && ((p.connected && p.enabled) || p.operator_index)).map((p: { platform: string }) => p.platform)) }).catch(() => {}) }, [])
+  useEffect(() => { void fetch('/api/settings/advanced').then(r => r.ok ? r.json() : null).then(j => { if (j && Array.isArray(j.platforms)) setAdvanced(j); if (j?.available) setAdvReady(j.platforms.filter((p: { allowed?: boolean; supported?: boolean; consent: boolean; connected: boolean; enabled: boolean; operator_index?: boolean }) => p.allowed !== false && p.supported !== false && p.consent && ((p.connected && p.enabled) || p.operator_index)).map((p: { platform: string }) => p.platform)) }).catch(() => {}) }, [])
 
   // What THIS play sells (#349; lib/scan/play-offer.ts). It starts from the request when the request names an offer, else
   // from the business profile; when the two differ the user chooses before the scan runs. Stored with the play only:

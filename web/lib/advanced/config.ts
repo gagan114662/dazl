@@ -19,6 +19,10 @@ export function advFlags(env: Record<string, string | undefined> = process.env):
   return { enabled, linkedin: enabled && env.ADVANCED_LINKEDIN === '1' }
 }
 export const platformAllowed = (p: AdvPlatform, f: AdvFlags) => (p === 'linkedin' ? f.linkedin : f.enabled)
+// What the session worker can read at all (session-worker/src/fetchers.ts UNSUPPORTED, #436). An unsupported platform
+// is never searched, never collects a session and never shows as a search that found nothing: it is "not available".
+export const UNSUPPORTED_PLATFORMS: ReadonlySet<AdvPlatform> = new Set(['facebook', 'xiaohongshu'])
+export const platformSupported = (p: AdvPlatform) => !UNSUPPORTED_PLATFORMS.has(p)
 export const scopeFor = (p: AdvPlatform): ConsentScope => (p === 'linkedin' ? 'linkedin' : 'advanced')
 export const connectorId = (p: AdvPlatform) => `adv:${p}`
 

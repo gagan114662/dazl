@@ -3,9 +3,9 @@ import { useEffect, useState } from 'react'
 import { CHANNELS, TIER_LABEL, type Channel } from '@/lib/channels'
 import Caveat from '@/app/app/caveat'
 
-interface P { platform: string; allowed: boolean; consent: boolean; connected: boolean; enabled: boolean; last4: string | null; high_risk: boolean }
+interface P { platform: string; allowed: boolean; supported?: boolean; consent: boolean; connected: boolean; enabled: boolean; last4: string | null; high_risk: boolean }
 const NAMES: Record<string, string> = { linkedin: 'LinkedIn', x: 'X', reddit: 'Reddit', xiaohongshu: 'XiaoHongShu', bilibili: 'Bilibili' }
-const BADGE = { live: 'Working', worker: 'Needs worker', soon: 'Coming soon' } as const
+const BADGE = { live: 'Working', worker: 'Needs worker', soon: 'Coming soon', unsupported: 'Not available' } as const
 
 export default function AdvancedPanel() {
   const [st, setSt] = useState<{ available: boolean; version: string; platforms: P[] } | null>(null)
@@ -23,7 +23,10 @@ export default function AdvancedPanel() {
   function Row(c: Channel, p: P) {
     return (
       <>
-        {!p.allowed ? (
+        {p.supported === false ? (
+          // nothing to accept or connect: the worker cannot read this platform, so no session is collected (#436)
+          <p className="text-[#555]" data-testid={`adv-unsupported-${p.platform}`}>Not available yet. dazl cannot search {c.name}, so there is nothing to connect and scans never include it.{p.connected ? <> A session saved earlier is not used. <button className="underline underline-offset-2" onClick={async () => { await fetch(`/api/settings/advanced?platform=${p.platform}`, { method: 'DELETE' }); void load() }}>Remove it</button></> : null}</p>
+        ) : !p.allowed ? (
           <p className="text-[#555]">Off on this server. The operator turns it on with ADVANCED_CONNECTORS.</p>
         ) : !p.consent ? (
           <div className="flex flex-col gap-2">
