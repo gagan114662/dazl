@@ -146,6 +146,11 @@ const STILL_A_CHOICE: [string, string][] = [
   // "provide"/"give" are never report verbs, even with report nouns only: an imperative "Provide X" can be the offer
   ['give/provide is not a report verb', `Provide dated evidence and a summary. We sell ${P}.`],
   ['give/provide is not a report verb', `Give us the dated evidence. We sell ${P}.`],
+  // council seat 1: seats, members, units and desks are pricing units, not a buyer's size
+  ['a seat count is a commercial term', `Dental practices, 10 seats. We sell ${P}.`],
+  ['a seat count is a commercial term', `Dental practices with 10 seats. We sell ${P}.`],
+  ['a seat count is a commercial term', `Practices, up to 20 seats. We sell ${P}.`],
+  ['a unit count is a commercial term', `Find dental practices with 5 units. We sell ${P}.`],
 ]
 test('#349 class controls: changed product, audience, withdrawals, commercial terms and unproved sentences stay a choice', () => {
   const failures: string[] = []

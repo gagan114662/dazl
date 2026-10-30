@@ -238,9 +238,10 @@ const MONEY = /^[$£€]?\d[\d,.]*[kmb]?$/i
 const MONEY_WORDS = new Set('million millions billion thousand k m usd gbp eur cad aud dollars pounds euros'.split(' '))
 // a size: "with 1–5 locations", "of 10-50 employees", "under 20 staff", "2+ locations", "between 5 and 50 people"
 const SIZE_PREP = /^(?:with|having|of|under|over|above|below|between|from|about|around|approximately)$/i
+// never seats, members, units, desks or licences: those are pricing units, so "with 10 seats" is a commercial term
 const SIZE_NOUNS = new Set(('location locations office offices site sites branch branches store stores clinic clinics practice practices facility facilities ' +
-  'employee employees staff people person persons seat seats member members fte ftes headcount chair chairs bed beds room rooms unit units ' +
-  'truck trucks vehicle vehicles property properties door doors desk desks').split(' '))
+  'employee employees staff people person persons fte ftes headcount chair chairs bed beds room rooms ' +
+  'truck trucks vehicle vehicles property properties door doors').split(' '))
 function sizeLength(words: string[]): number {
   let k = 0
   if (SIZE_PREP.test(words[0] ?? '')) k++
