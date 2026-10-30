@@ -1,77 +1,80 @@
-import { sqliteDb } from '../lib/db/client.ts'
+// #192 reworked: LinkedIn people signals through an INJECTED transport only. Invented profiles; no network, no session, no LinkedIn call. Both engines for the Db-layer behaviour.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { randomBytes } from 'node:crypto'
-import Database from 'better-sqlite3'
-import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
-import { migrateScan, createQueryJob, listLeads } from '../lib/scan/store.ts'
-import { migrateConnectors, saveCredential } from '../lib/connectors/store.ts'
-import { migrateAdvanced, acceptConsent } from '../lib/advanced/index.ts'
-import { migrateCompetitors, setCompetitors } from '../lib/signals/competitor-reddit.ts'
-import { collectLinkedInPeople, linkedinQueries } from '../lib/signals/linkedin-people.ts'
-import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
-import type { Provider } from '../lib/llm/provider.ts'
+import { bothEngines } from './helpers/engines.ts'
+import { collectLinkedInPeople, linkedinQueries, MAX_ITEMS, MAX_REQUESTS_PER_HOUR, MAX_REQUESTS_PER_RUN, COOLDOWN_S, type LinkedInTransport, type TransportRequest, type TransportResult } from '../lib/signals/linkedin-people.ts'
+import { writeConsent } from '../lib/advanced/index.ts'
+import { setCompetitors } from '../lib/signals/competitor-reddit.ts'
+import { writeAudit } from '../lib/connectors/store.ts'
+import type { Db } from '../lib/db/client.ts'
 
-// LinkedIn person-level signals through the tenant's own session (owner decision 2026-10-26). Worker stubbed.
-const master = randomBytes(32)
-const ICP = { summary: 'Ohio employers that need payroll help', who: ['HR manager'], industries: ['logistics'], sizes: [], where: ['Ohio'], signals: [], exclude: [] }
-const ENV = { ADVANCED_CONNECTORS: '1', ADVANCED_LINKEDIN: '1', ADVANCED_WORKER_URL: 'http://w', ADVANCED_WORKER_TOKEN: 't' }
-const person = (id: string, quote: string) => ({ url: `https://www.linkedin.com/in/${id}/`, title: id, quote, date: '2026-10-20', login_walled: true })
+const ICP = { who: ['HR manager'], where: ['Ohio'], industries: ['SaaS'] }
+const ENV = { ADVANCED_CONNECTORS: '1', ADVANCED_LINKEDIN: '1', ADVANCED_LINKEDIN_PEOPLE: '1' }
+const NOW = Math.floor(Date.now() / 1000)   // audit rows are stamped by the database clock
+const person = (id: string) => ({ url: `https://www.linkedin.com/in/${id}/`, title: id, quote: `${id} comments on a competitor post`, date: '2026-10-20' })
+const ok = (...ids: string[]): TransportResult => ({ status: 'ok', items: ids.map(person) })
+function recorder(answers: TransportResult[]) { const seen: TransportRequest[] = []; const t: LinkedInTransport = { fetch: async r => { seen.push(r); return answers[Math.min(seen.length - 1, answers.length - 1)] } }; return { t, seen } }
+async function ready(db: Db, tenant = 'A') { await writeConsent(db, tenant, 'linkedin'); await setCompetitors(db, tenant, ['Rippling', 'Gusto']) }
+const audits = async (db: Db, tenant = 'A') => (await db.all<{ connector: string; status: string; lookup: string }>('SELECT connector, status, lookup FROM connector_audit WHERE tenant_id = ? ORDER BY insert_seq', [tenant])).map(a => `${a.connector.replace('adv:', '')}:${a.status}`)
 
-async function setup(consent = true, session = true) {
-  const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migrateConnectors(db); migrateAdvanced(db); migrateCompetitors(db)
-  saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
-  if (consent) acceptConsent(db, 'A', 'linkedin')
-  if (session) saveCredential(db, 'A', 'adv:linkedin', 'li_at=abc; JSESSIONID="ajax:1"', master)
-  await setCompetitors(sqliteDb(db), 'A', ['Rippling', 'Gusto'])
-  return db
-}
-
-test('queries: one people search first, then competitor engagers, within the hourly budget', () => {
-  assert.deepEqual(linkedinQueries(ICP, ['Rippling', 'Gusto'], 3), ['people:HR manager Ohio', 'engagers:Rippling', 'engagers:Gusto'])
-  assert.deepEqual(linkedinQueries(ICP, ['Rippling', 'Gusto'], 1), ['people:HR manager Ohio'])
-  assert.deepEqual(linkedinQueries({ ...ICP, who: [] }, ['Rippling'], 3), ['engagers:Rippling'])
+test('queries: one people search first, then competitor engagers, within the budget', () => {
+  assert.deepEqual(linkedinQueries(ICP, ['Rippling', 'Gusto'], 3), [{ kind: 'people', query: 'HR manager Ohio' }, { kind: 'engagers', query: 'Rippling' }, { kind: 'engagers', query: 'Gusto' }])
+  assert.deepEqual(linkedinQueries(ICP, ['Rippling'], 1), [{ kind: 'people', query: 'HR manager Ohio' }])
+  assert.deepEqual(linkedinQueries({ ...ICP, who: [] }, ['Rippling'], 3), [{ kind: 'engagers', query: 'Rippling' }])
+  assert.deepEqual(linkedinQueries(ICP, ['Rippling'], 0), [])
 })
 
-test('gates: flag, consent and the tenant session are all required; nothing reaches the worker otherwise', async () => {
-  let calls = 0
-  const worker = async () => { calls++; return [] }
-  assert.deepEqual(await collectLinkedInPeople(await setup(), 'A', 'j', ICP, { worker, master, env: { ...ENV, ADVANCED_LINKEDIN: '0' } }), [])
-  assert.deepEqual(await collectLinkedInPeople(await setup(false), 'A', 'j', ICP, { worker, master, env: ENV }), [])
-  assert.deepEqual(await collectLinkedInPeople(await setup(true, false), 'A', 'j', ICP, { worker, master, env: ENV }), [])
-  assert.equal(calls, 0)
+bothEngines('OFF by default: the flag, the people flag, the tenant\'s consent and a transport are ALL required; otherwise nothing is requested', async ({ db }) => {
+  await ready(db); const { t, seen } = recorder([ok('alice-a')])
+  assert.deepEqual(await collectLinkedInPeople(db, 'A', 'j', ICP, { transport: t, env: {} }), [])
+  assert.deepEqual(await collectLinkedInPeople(db, 'A', 'j', ICP, { transport: t, env: { ADVANCED_CONNECTORS: '1', ADVANCED_LINKEDIN: '1' } }), [], 'the platform flags alone do not enable the people reader')
+  assert.deepEqual(await collectLinkedInPeople(db, 'A', 'j', ICP, { transport: t, env: { ...ENV, ADVANCED_KILL: '1' } }), [], 'the advanced kill switch still applies')
+  assert.deepEqual(await collectLinkedInPeople(db, 'A', 'j', ICP, { transport: t, env: ENV, now: NOW }).then(r => r.length > 0), true, 'control: everything on')
+  const n = seen.length
+  assert.deepEqual(await collectLinkedInPeople(db, 'B', 'j', ICP, { transport: t, env: ENV }), [], 'a tenant without consent'); assert.equal(seen.length, n)
+  assert.deepEqual(await collectLinkedInPeople(db, 'A', 'j2', ICP, { env: ENV, now: NOW + 7200 }), [], 'no transport = unavailable'); assert.equal(seen.length, n)
+  const a = await audits(db); assert.ok(a.includes('linkedin-people:disabled') && a.includes('linkedin-people:unavailable'), JSON.stringify(a)); assert.deepEqual(await audits(db, 'B'), ['linkedin-people:no_consent'])
 })
 
-test('the hourly LinkedIn budget is shared and enforced across scans', async () => {
-  const db = await setup(); const sent: string[] = []
-  const worker = async (r: { query: string }) => { sent.push(r.query); return [] }
-  await collectLinkedInPeople(db, 'A', 'j1', ICP, { worker, master, env: ENV })
-  await collectLinkedInPeople(db, 'A', 'j2', ICP, { worker, master, env: ENV })
-  assert.deepEqual(sent, ['people:HR manager Ohio', 'engagers:Rippling', 'engagers:Gusto']) // 3/hour, second scan gets none
+bothEngines('no session is read or needed, and nothing outside a public profile URL is accepted; items and text are bounded; requests carry the tenant', async ({ db }) => {
+  await ready(db)
+  const many = Array.from({ length: 60 }, (_, i) => person(`p${i}`)); const junk = [{ url: 'https://evil.example/in/x', title: 't', quote: 'q', date: null }, { url: 'https://www.linkedin.com/feed/', title: 't', quote: 'q', date: null }, { url: 'javascript:alert(1)', title: 't', quote: 'q', date: null }, { ...person('long'), quote: 'x'.repeat(2000), title: 'y'.repeat(500) }]
+  const { t, seen } = recorder([{ status: 'ok', items: [...junk, ...many] }])
+  const r = await collectLinkedInPeople(db, 'A', 'j', ICP, { transport: t, env: ENV, now: NOW })
+  assert.ok(r.length <= MAX_REQUESTS_PER_RUN * MAX_ITEMS); assert.ok(r.every(i => /^https:\/\/www\.linkedin\.com\/in\//.test(i.url) && i.login_walled))
+  assert.ok(r.every(i => (i.quote?.length ?? 0) <= 300 && (i.title?.length ?? 0) <= 120)); assert.ok(seen.every(q => q.tenantId === 'A' && q.maxItems === MAX_ITEMS && q.signal instanceof AbortSignal))
+  assert.equal(await db.get('SELECT 1 AS x FROM tenant_connectors WHERE connector = ?', ['adv:linkedin']), undefined, 'no member session is stored or required')
 })
 
-test('a scan turns LinkedIn people into review-lane leads (login_required), never verified', async () => {
-  const db = await setup()
-  const saved = { ...process.env }; Object.assign(process.env, ENV)
-  try {
-    const id = createQueryJob(db, 'A', { query: 'Ohio employers that need payroll help', icp: JSON.stringify(ICP) } as never)
-    const worker = async (r: { query: string }) => r.query.startsWith('engagers:Rippling')
-      ? [person('jane-doe-1', 'Jane Doe, HR Manager at Acme Logistics. Commented on a LinkedIn post about Rippling: https://www.linkedin.com/feed/update/urn:li:activity:7000000000000000001/')]
-      : []
-    const prov: Record<'anthropic' | 'openai', Provider> = {
-      anthropic: {
-        research: async () => ({ text: '[]', citedUrls: [] }),
-        complete: async (_k, p) => p.includes('jane-doe-1')
-          ? JSON.stringify([{ name: 'Jane Doe', company: 'Acme Logistics', contact: null, signal: 'Commented on a LinkedIn post about Rippling', source_url: 'https://www.linkedin.com/in/jane-doe-1/', excerpt: 'Jane Doe, HR Manager at Acme Logistics. Commented on a LinkedIn post about Rippling', event_date: '2026-10-20', score: 80 }])
-          : '[]',
-      },
-      openai: { research: async () => ({ text: '', citedUrls: [] }) },
-    }
-    await runJob(db, claimKeyedJob(db, id)!, { providers: prov, master, fetchPage: async () => null, advancedWorker: worker, score: false, judge: null })
-    const leads = listLeads(db, 'A', id, 200, true) as { name: string; company: string; review_reason: string | null; source_url: string }[]
-    const jane = leads.find(l => l.name === 'Jane Doe')
-    assert.ok(jane, JSON.stringify(leads))
-    assert.equal(jane!.review_reason, 'login_required'); assert.equal(jane!.company, 'Acme Logistics')
-    assert.equal(jane!.source_url, 'https://www.linkedin.com/in/jane-doe-1/')
-  } finally { for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]; Object.assign(process.env, saved) }
+bothEngines('per-request budgets: at most MAX_REQUESTS_PER_RUN per scan and MAX_REQUESTS_PER_HOUR per tenant per hour', async ({ db }) => {
+  await ready(db); const { t, seen } = recorder([ok('alice-a')])
+  await collectLinkedInPeople(db, 'A', 'j1', ICP, { transport: t, env: ENV, now: NOW }); assert.equal(seen.length, MAX_REQUESTS_PER_RUN)
+  await collectLinkedInPeople(db, 'A', 'j2', ICP, { transport: t, env: ENV, now: NOW }); assert.equal(seen.length, MAX_REQUESTS_PER_HOUR, 'only the remaining hourly request is made')
+  await collectLinkedInPeople(db, 'A', 'j3', ICP, { transport: t, env: ENV, now: NOW }); assert.equal(seen.length, MAX_REQUESTS_PER_HOUR); assert.ok((await audits(db)).includes('linkedin-people:rate_limited'))
+})
+
+bothEngines('NEGATIVE: throttling, a challenge or an unauthorised answer STOPS the run at once (no retry, no second request) and starts a cooldown for that tenant only', async ({ db }) => {
+  for (const status of ['throttled', 'challenge', 'unauthorized'] as const) {
+    const tenant = `T-${status}`, other = `O-${status}`; await ready(db, tenant); await ready(db, other)
+    const { t, seen } = recorder([{ status }, ok('never-asked')])
+    assert.deepEqual(await collectLinkedInPeople(db, tenant, 'j', ICP, { transport: t, env: ENV, now: NOW }), []); assert.equal(seen.length, 1, `${status}: one request, then stop`)
+    assert.ok((await audits(db, tenant)).includes(`linkedin:stopped_${status}`))
+    assert.deepEqual(await collectLinkedInPeople(db, tenant, 'j2', ICP, { transport: t, env: ENV, now: NOW + COOLDOWN_S - 10 }), []); assert.equal(seen.length, 1, 'still cooling down: nothing requested')
+    assert.ok((await audits(db, tenant)).includes('linkedin-people:cooldown'))
+    const o = recorder([ok('bob-b')]); assert.ok((await collectLinkedInPeople(db, other, 'j', ICP, { transport: o.t, env: ENV, now: NOW })).length > 0, 'another tenant is unaffected'); assert.ok(o.seen.length > 0)
+    const after = recorder([ok('carol-c')]); assert.ok((await collectLinkedInPeople(db, tenant, 'j3', ICP, { transport: after.t, env: ENV, now: NOW + COOLDOWN_S + 5 })).length > 0, 'cooldown ends')
+  }
+})
+
+bothEngines('a transport error or a throw is an error (audited, not retried); the next query still runs and a thrown error never escapes', async ({ db }) => {
+  await ready(db)
+  const seen: string[] = []; const t: LinkedInTransport = { fetch: async r => { seen.push(r.kind); if (r.kind === 'people') throw new Error('boom'); return ok('xavier-x') } }
+  const r = await collectLinkedInPeople(db, 'A', 'j', ICP, { transport: t, env: ENV, now: NOW })
+  assert.deepEqual(seen, ['people', 'engagers']); assert.equal(r.length, 1); assert.ok((await audits(db)).includes('linkedin:error'))
+})
+
+bothEngines('another tenant\'s earlier requests never count against this tenant\'s hourly budget', async ({ db }) => {
+  await ready(db, 'A'); await ready(db, 'B')
+  for (let i = 0; i < 5; i++) await writeAudit(db, { tenantId: 'B', connector: 'adv:linkedin', jobId: 'j', lookup: 'x', status: 'ok', results: 1 })
+  const { t, seen } = recorder([ok('alice-a')]); await collectLinkedInPeople(db, 'A', 'j', ICP, { transport: t, env: ENV, now: Math.floor(Date.now() / 1000) }); assert.equal(seen.length, MAX_REQUESTS_PER_RUN)
 })

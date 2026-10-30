@@ -765,6 +765,7 @@ function budgetDeps(deps: RunDeps, budget: RunBudget | null): RunDeps {
 
 export interface RunDeps {
   // newsHttp: the free news search's own HTTP (lib/search/news.ts), separate from the per-scan sources' sourceHttp.
+  linkedinTransport?: import('../signals/linkedin-people.ts').LinkedInTransport   // an authorised LinkedIn transport (#192); none by default, so nothing is requested
   first5?: boolean; autopilot?: typeof runAutopilot; sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; salesHiringGate?: typeof applySalesHiringGate; jobBudgetMs?: number; clock?: () => number }
 
 // A free-trial scan's charge for each TinyFish call on dazl's key (lib/billing/trial-budget.ts), set while that scan runs.
@@ -1034,7 +1035,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     if (job.query && icpForSources && complete) {
       try {
         assertOwned(db, job)
-        const li = await collectLinkedInPeople(db, job.user_id, job.id, icpForSources, { master: deps.master, worker: deps.advancedWorker })
+        const li = await collectLinkedInPeople(sqliteDb(db), job.user_id, job.id, icpForSources, { transport: deps.linkedinTransport })
         if (li.length > 0) {
           ledger.record('adv:linkedin-people', 'ok', li.length)
           assertOwned(db, job)

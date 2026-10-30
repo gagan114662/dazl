@@ -13,6 +13,13 @@ LinkedIn's terms forbid automation and the account can be restricted); the per-t
 results are labelled as LinkedIn-sourced and stay in the review lane because dazl cannot re-read a LinkedIn page.
 Not decided yet (ask the owner first): automated LinkedIn actions (connection requests, messages, posting).
 
+Implementation approach (#192 rework, reviewer's brief): the code does NOT log in to LinkedIn, use or store a member session, or call unofficial endpoints. The person-level reader
+(`web/lib/signals/linkedin-people.ts`) consumes an injected, authorised transport and is OFF by default (`ADVANCED_LINKEDIN_PEOPLE=1`, the tenant's LinkedIn consent, and a transport
+must all be present; with no transport it reports "unavailable", not "no people"). Official sources come first: LinkedIn's official APIs and the member's own data export are the only
+acceptable feeds for it; whether an official API exposes people search or post-engagement lists for this use must be checked against LinkedIn's current developer terms before any
+transport is written, and is NOT verified here. The earlier session-worker people/engagers fetchers were removed. Per-request and per-hour budgets, per-tenant cooldown after a
+throttle/challenge/unauthorised answer, tenant-separated budgets, review-lane-only leads (login_required, never emailed automatically).
+
 ## 2026-10-26: guessed email addresses (US only, verified only)
 
 Contacts may include a pattern-guessed business address (for example first.last@company.com) only when all of these hold:
