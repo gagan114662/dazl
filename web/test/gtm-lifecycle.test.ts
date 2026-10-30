@@ -14,7 +14,7 @@ const signup = (c: string, d: number, over: Record<string, unknown> = {}) => ev(
 const touch = (c: string, d: number) => ev(c, d, { kind: 'touch', channel: 'email', identity: `${c}@co.test` })
 const run = (c: string, d: number, usableLeads: number) => ev(c, d, { kind: 'run', status: 'done', usableLeads })
 // a paid payment bills a 30-day service period from its date, as a monthly invoice line would (a one-off has none)
-const pay = (c: string, d: number, status = 'paid', days: number | null = 30) => ev(c, d, { kind: 'payment', status, ...(status === 'paid' && days !== null ? { periodStart: at(d), periodEnd: at(d + days) } : {}) })
+const pay = (c: string, d: number, status = 'paid', days: number | null = 30) => ev(c, d, { kind: 'payment', status, ...(status === 'paid' && days !== null ? { periods: [{ start: at(d), end: at(d + days), subscription: `sub_${c}` }] } : {}) })
 // a successful monthly payment from day `from` up to and including day `to`
 const monthly = (c: string, from: number, to: number) => Array.from({ length: Math.floor((to - from) / 30) + 1 }, (_, i) => pay(c, from + i * 30))
 
@@ -168,12 +168,16 @@ test('retention rate: numerator and denominator are the same cohort, so renewed-
   assert.deepEqual([r.retention.eligible, r.retention.retained, r.retention.rate, r.costPerRetainedPaying], [1, 0, 0, null])
 })
 
-test('coverage through this file\'s events: actual service periods; an early cancel stops it unless billing shows prepaid service', () => {
+test('coverage through this file\'s events: actual service intervals; an end stops service; a gap is not covered', () => {
   const cov = (es: LifecycleEvent[], d: number) => customerState(es[0].customer, es, at(d)).retention.coverage_at_cutoff
   assert.equal(cov([signup('an', 0), pay('an', 0, 'paid', 365)], 200), 'covered', 'annual')
   assert.equal(cov([signup('on', 0), pay('on', 0, 'paid', null)], 5), 'unknown', 'one-off, no period')
   assert.equal(cov([signup('pr', 0), pay('pr', 10, 'paid', 8)], 20), 'unknown', 'prorated period ran out')
   assert.equal(cov([signup('ic', 0), pay('ic', 0), ev('ic', 5, { kind: 'cancel' })], 10), 'not_covered', 'cancelled on day 5')
-  assert.equal(cov([signup('pp', 0), pay('pp', 0), ev('pp', 5, { kind: 'cancel', serviceUntil: at(30) })], 10), 'covered', 'cancelled, paid to day 30')
-  assert.equal(cov([signup('pp2', 0), pay('pp2', 0), ev('pp2', 5, { kind: 'cancel', serviceUntil: at(30) })], 31), 'not_covered')
+  // cancellation at the period end (docs.stripe.com/billing/subscriptions/cancel): not an end until the period ends
+  assert.equal(cov([signup('pp', 0), pay('pp', 0)], 10), 'covered', 'scheduled to cancel, still inside the paid period')
+  assert.equal(cov([signup('pp2', 0), pay('pp2', 0), ev('pp2', 30, { kind: 'cancel' })], 31), 'not_covered', 'deleted when the period ended')
+  // one payment for two periods with a gap: covered inside each, not in the gap
+  const gap = [signup('gp', 0), ev('gp', 0, { kind: 'payment', status: 'paid', periods: [{ start: at(0), end: at(10), subscription: 'sub_a' }, { start: at(50), end: at(60), subscription: 'sub_b' }] })]
+  assert.deepEqual([cov(gap, 5), cov(gap, 30), cov(gap, 55)], ['covered', 'unknown', 'covered'])
 })
