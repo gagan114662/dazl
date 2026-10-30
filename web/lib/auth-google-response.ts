@@ -17,3 +17,7 @@ export const setOauthCookie = (res: NextResponse, base: string, value: string) =
 // cleared with the attributes it was set with, so the browser drops that same cookie
 export const clearOauthCookie = (res: NextResponse, base: string) => res.cookies.set(OAUTH_COOKIE, '', cookieOpts(base, 0, '/api/auth'))
 export const setSessionCookie = (res: NextResponse, base: string, value: string, maxAge: number) => res.cookies.set('dazl_session', value, cookieOpts(base, maxAge, '/'))
+// #416: where to go after Google sign-in (an /app path, checked again when read), kept beside the state cookie
+export const NEXT_COOKIE = 'dazl_oauth_next'
+export const setNextCookie = (res: NextResponse, base: string, value: string) => res.cookies.set(NEXT_COOKIE, value, cookieOpts(base, 600, '/api/auth'))
+export const clearNextCookie = (res: NextResponse, base: string) => res.cookies.set(NEXT_COOKIE, '', cookieOpts(base, 0, '/api/auth'))

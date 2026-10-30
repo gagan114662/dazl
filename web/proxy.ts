@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { logRequest, newRequestId, requestLogLine } from '@/lib/ops/request-log'
 import { getSessionUser } from '@/lib/auth-db'
+import { withReturnTo } from '@/lib/return-to'
 
 // Runs before /app pages and /api routes (Node runtime). Gives each request an id (lib/ops/request-log.ts), logs it
 // as one JSON line, and keeps /app behind a signed-in session. The session is looked up here, before any HTML is sent:
@@ -14,7 +15,8 @@ export async function proxy(req: NextRequest) {
   if (!pathname.startsWith('/api/health') && pathname !== '/api/ready') logRequest(requestLogLine(id, req.method, pathname))
 
   if (pathname.startsWith('/app') && !(await signedIn(req.cookies.get('dazl_session')?.value))) {
-    const r = NextResponse.redirect(new URL('/sign-in', req.url))
+    // #416: the page asked for comes back after sign-in (an /app path only; anything else is dropped)
+    const r = NextResponse.redirect(new URL(withReturnTo('/sign-in', pathname + req.nextUrl.search), req.url))
     r.headers.set('x-request-id', id)
     return r
   }

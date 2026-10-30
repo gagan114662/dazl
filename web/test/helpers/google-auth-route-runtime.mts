@@ -111,3 +111,32 @@ test('staging callback: a full sign-in sets the session, clears the one-time coo
   assert.ok(!calls.some(c => c.url.includes('gmail')))
   console.log('GOOGLE_AUTH_ROUTES_OK')
 })
+
+test('#416 where the user was going survives the Google round trip; a failure keeps it; an unsafe destination is dropped', async () => {
+  setEnv(STAGING)
+  const begin = async (next: string) => {
+    const s = await start.GET(req(`https://staging.dazl.ai/api/auth/google?next=${encodeURIComponent(next)}`))
+    const all = s.headers.getSetCookie().join('\n')
+    const oauth = /dazl_oauth=([^;]+)/.exec(all)![1]
+    nonce = oauth.split('.')[1]
+    return { all, oauth, state: oauth.split('.')[0], next: /dazl_oauth_next=([^;]*)/.exec(all)?.[1] ?? '' }
+  }
+  const a = await begin('/app/plays?id=7')
+  assert.equal(decodeURIComponent(a.next), '/app/plays?id=7')
+  for (const attr of [/dazl_oauth_next=[^;]+;.*Path=\/api\/auth/, /dazl_oauth_next=[^;]+;.*HttpOnly/, /dazl_oauth_next=[^;]+;.*Max-Age=600/]) assert.match(a.all, attr)
+  const jar = `dazl_oauth=${a.oauth}; dazl_oauth_next=${a.next}`
+  const fail = await callback.GET(req(`https://staging.dazl.ai/api/auth/callback/google?code=c&state=${'x'.repeat(32)}`, jar))
+  assert.equal(fail.headers.get('location'), 'https://staging.dazl.ai/sign-in?error=google_failed&next=%2Fapp%2Fplays%3Fid%3D7', 'failure: back to sign-in, destination kept')
+  assert.match(fail.headers.getSetCookie().join('\n'), /dazl_oauth_next=;.*Max-Age=0/)
+  const ok = await callback.GET(req(`https://staging.dazl.ai/api/auth/callback/google?code=the-code&state=${a.state}`, jar))
+  assert.equal(ok.headers.get('location'), 'https://staging.dazl.ai/app/plays?id=7', 'signed in: lands where it was going')
+  assert.match(ok.headers.getSetCookie().join('\n'), /dazl_oauth_next=;.*Max-Age=0/)
+  // Open-redirect attempts never become a destination, at the start or as a forged cookie at the callback.
+  for (const bad of ['//evil.example/app', 'https://evil.example/app', '/\\evil.example', '/apple', '/app/../admin', '/%2e%2e/admin']) {
+    const b2 = await begin(bad)
+    assert.equal(b2.next, '', bad)
+  }
+  const c = await begin('/app')
+  const forged = await callback.GET(req(`https://staging.dazl.ai/api/auth/callback/google?code=the-code&state=${c.state}`, `dazl_oauth=${c.oauth}; dazl_oauth_next=${encodeURIComponent('https://evil.example/x')}`))
+  assert.equal(forged.headers.get('location'), 'https://staging.dazl.ai/app')
+})
