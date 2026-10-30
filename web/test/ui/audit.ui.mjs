@@ -1,7 +1,7 @@
 // Settings > Audit trail on the production build, against the REAL API (nothing stubbed; #371): the owner changes
 // sender settings, imports and deletes LinkedIn connections, and sees each change in the trail, newest first; the
-// Deletions filter narrows it; Download CSV is offered; a viewer of the same workspace gets no Audit trail card, and
-// that refused read is in the owner's trail. NOT part of `npm test`. Run:  cd web && npm run build && node test/ui/audit.ui.mjs
+// Deletions filter narrows it; Download CSV is offered; a viewer of the same workspace gets no Audit trail card (and
+// its page never asks for one), and a read it does ask for is refused and in the owner's trail. NOT part of `npm test`. Run:  cd web && npm run build && node test/ui/audit.ui.mjs
 // (SHOTS=<dir> saves desktop and 390px screenshots). Throwaway database, server under test/helpers/net-fence.ts (no
 // outbound call), synthetic data only.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
@@ -47,7 +47,8 @@ try {
   })
   assert.deepEqual(statuses, [200, 200, 200])
 
-  // a viewer of the owner's workspace: no Audit trail card; the refused read lands in the owner's trail
+  // a viewer of the owner's workspace: no Audit trail card and no request for it; a read it does ask for is refused,
+  // and that refusal lands in the owner's trail
   const Database = require('better-sqlite3')
   const db = new Database(dbPath)
   const viewerToken = randomBytes(32).toString('hex')
@@ -57,9 +58,13 @@ try {
   db.close()
   const viewerCtx = await newContext(browser, { base, token: viewerToken })
   const viewer = await viewerCtx.newPage()
+  const viewerAsked = []
+  viewer.on('request', r => { if (new URL(r.url()).pathname === '/api/workspace/audit') viewerAsked.push(r.url()) })
   await viewer.goto(`${base}/app/settings`, { waitUntil: 'networkidle' })
   await viewer.locator('h1', { hasText: 'Settings' }).waitFor()
   assert.equal(await card(viewer).count(), 0, 'a viewer gets no Audit trail card')
+  assert.deepEqual(viewerAsked, [], 'opening Settings never asks for the trail on a viewer\'s behalf')
+  assert.equal(await viewer.evaluate(async () => (await fetch('/api/workspace/audit')).status), 403)
 
   await owner.reload({ waitUntil: 'networkidle' })
   await card(owner).locator('h2', { hasText: 'Audit trail' }).waitFor()
@@ -72,7 +77,7 @@ try {
   await owner.waitForTimeout(400)
   assert.deepEqual(await rows(), ['Deleted data'])
   const href = await card(owner).getByText('Download CSV').getAttribute('href')
-  assert.equal(href, '/api/workspace/audit?format=csv&limit=1000&action=data.')
+  assert.equal(href, '/api/workspace/audit?format=csv&action=data.')
   const csv = await owner.evaluate(async h => (await fetch(h)).text(), href)
   assert.match(csv.split('\n')[0], /^at,actor_id,actor_kind,action,resource_type,resource_id,decision,summary,correlation_id$/)
   assert.equal(csv.trim().split('\n').length, 2)

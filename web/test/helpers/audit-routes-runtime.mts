@@ -14,6 +14,8 @@ import { withJar } from './pg-session-headers.ts'
 import { setScanDb } from './tenant-route-db.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { createPasswordUser, createSession, hashToken } from '../../lib/auth-db.ts'
+import { setErrorSinks } from '../../lib/ops/errors.ts'
+import type { ErrorRecord } from '../../lib/ops/errors.ts'
 
 const fetched: string[] = []
 globalThis.fetch = (async (u: unknown) => {
@@ -31,8 +33,9 @@ const raw = new Database(':memory:')
 migrateAllSqlite(raw)
 setScanDb(raw)
 const route = async (p: string) => await import(`../../app/api/${p}/route.ts`)
-const [llmKey, enrichment, calcom, crm, gmailDisconnect, sender, exportRoute, quarantine, warm, checkout, monitor, auditRoute] = await Promise.all(
-  ['settings/llm-key', 'settings/enrichment', 'settings/calcom', 'crm', 'gmail/disconnect', 'outreach/settings', 'leads/export', 'leads/[lead]/quarantine', 'warm/connections', 'billing/checkout', 'monitors/[id]', 'workspace/audit'].map(route))
+const [llmKey, enrichment, calcom, crm, gmailDisconnect, sender, exportRoute, quarantine, warm, checkout, monitor, auditRoute, competitors, monitors, replies] = await Promise.all(
+  ['settings/llm-key', 'settings/enrichment', 'settings/calcom', 'crm', 'gmail/disconnect', 'outreach/settings', 'leads/export', 'leads/[lead]/quarantine', 'warm/connections', 'billing/checkout', 'monitors/[id]', 'workspace/audit',
+    'settings/competitors', 'monitors', 'outreach/replies'].map(route))
 
 // Synthetic markers: none of these may ever appear in the audit table.
 const MARK = {
@@ -143,5 +146,50 @@ test("privileged requests leave attributable, redacted events; 'GET /api/workspa
     assert.equal(b.status, 200)
     assert.deepEqual(((await b.json()) as { events: Ev[] }).events, [], `B ${q}`)
   }
+  // more administrative actions, by members acting in A
+  await step('competitors set', t.D, () => competitors.PUT(req('/api/settings/competitors', 'PUT', { competitors: ['Rival Co'] })))
+  const made = await (await step('monitor created', t.O, () => monitors.POST(req('/api/monitors', 'POST', { query: 'dentists in Toronto', interval_hours: 168 })), 201)).json() as { id: string }
+  await step('monitor paused', t.O, () => monitor.PATCH(req(`/api/monitors/${made.id}`, 'PATCH', { enabled: false }), { params: Promise.resolve({ id: made.id }) }))
+  await step('reply reading revoked', t.A, () => replies.POST(req('/api/outreach/replies', 'POST', { action: 'revoke' })))
+  const more = ((await (await read(t.A, '?limit=4')).json()) as { events: Ev[] }).events.reverse()
+  assert.deepEqual(more.map(e => `${e.actor_id} ${e.action} ${e.resource_type}${e.resource_id ? ` ${e.resource_id}` : ''}`), [
+    'D settings.changed competitors', `O monitor.created monitor ${made.id}`, `O monitor.disabled monitor ${made.id}`, 'A consent.revoked reply_reading',
+  ])
+  assert.deepEqual(more[0].summary, { count: 1 })
+  assert.ok(!JSON.stringify(raw.prepare('SELECT * FROM audit_events').all()).includes('dentists'), "the monitor's query (user text) is not recorded")
+
+  // a CRM push whose result cannot be recorded (the claim write fails) is still in the trail, as unknown
+  await step('crm saved again', t.A, () => crm.POST(req('/api/crm', 'POST', { action: 'save', provider: 'hubspot', key: MARK.crmKey })))
+  raw.exec("CREATE TRIGGER dazl_test_refuse_claim BEFORE UPDATE ON crm_push_claims BEGIN SELECT RAISE(ABORT, 'refused'); END")
+  const restoreSinks = setErrorSinks([])
+  try {
+    const pushed = await step('crm push unrecorded', t.O, () => crm.POST(req('/api/crm', 'POST', { action: 'push', lead_id: lead })), 502)
+    assert.equal(((await pushed.json()) as { outcome: string }).outcome, 'unknown')
+  } finally { raw.exec('DROP TRIGGER dazl_test_refuse_claim'); restoreSinks() }
+  const unrecorded = ((await (await read(t.A, '?action=crm.pushed&limit=1')).json()) as { events: Ev[] }).events[0]
+  assert.deepEqual([unrecorded.actor_id, unrecorded.resource_id, unrecorded.summary], ['O', lead, { provider: 'hubspot', outcome: 'unknown', result_recorded: false }])
+
+  // pages: ?cursor= continues exactly after the previous page; a malformed cursor is refused
+  const p1 = (await (await read(t.A, '?limit=2')).json()) as { events: Ev[]; next: string }
+  const p2 = (await (await read(t.A, `?limit=2&cursor=${p1.next}`)).json()) as { events: Ev[]; next: string }
+  const top4 = ((await (await read(t.A, '?limit=4')).json()) as { events: (Ev & { id: string })[] }).events
+  assert.deepEqual([...p1.events, ...p2.events].map(e => (e as Ev & { id: string }).id), top4.map(e => e.id))
+  assert.equal((await read(t.A, '?cursor=nope')).status, 400)
+
+  // the CSV keeps a cell a spreadsheet would run as a formula as text, and quotes what needs quoting
+  raw.prepare("INSERT INTO audit_events (id, tenant_id, actor_id, actor_kind, action, resource_type, resource_id, decision, summary, at, seq) VALUES (?, 'A', 'A', 'user', 'x.formula', 't', ?, 'allowed', '{}', ?, 999999)")
+    .run('f'.repeat(24), '=HYPERLINK("http://x.example")', Math.floor(Date.now() / 1000) + 5)
+  const csvAll = await (await read(t.A, '?format=csv&action=x.')).text()
+  assert.ok(csvAll.includes(`,"'=HYPERLINK(""http://x.example"")",`), csvAll)
+
+  // a failed audit write is reported and never undoes or fails the change it describes
+  const caught: ErrorRecord[] = []
+  const restore = setErrorSinks([r => { caught.push(r) }])
+  raw.exec("CREATE TRIGGER dazl_test_refuse_audit BEFORE INSERT ON audit_events BEGIN SELECT RAISE(ABORT, 'refused'); END")
+  try {
+    await step('competitors set, audit refused', t.A, () => competitors.PUT(req('/api/settings/competitors', 'PUT', { competitors: ['Other Rival'] })))
+  } finally { raw.exec('DROP TRIGGER dazl_test_refuse_audit'); restore() }
+  assert.deepEqual(((await ((await as(t.A, () => competitors.GET())) as Response).json()) as { competitors: string[] }).competitors, ['Other Rival'])
+  assert.deepEqual(caught.map(r => r.where), ['audit:settings.changed'])
   console.log('AUDIT ROUTES ok')
 })

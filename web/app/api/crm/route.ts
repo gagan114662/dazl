@@ -89,7 +89,11 @@ export async function POST(req: NextRequest) {
         if (!dest) return true
         try { return finishClaim(db, user.tenantId, dest, lead.id, attemptId, status, id) } catch (e) { captureError(e, { source: 'route', where: '/api/crm', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) }); return false }
       }
-      const unknownReply = () => NextResponse.json({ error: 'The result of this push could not be recorded. Check your CRM for this contact first, then record what you found.', outcome: 'unknown' }, { status: 502 })
+      // the push reached the CRM (or may have), so the trail says so even when its result could not be recorded
+      const unknownReply = async () => {
+        await audit(user, req, { action: 'crm.pushed', resource: 'lead', id: lead.id, summary: { provider: cfg.provider, outcome: 'unknown', result_recorded: false } })
+        return NextResponse.json({ error: 'The result of this push could not be recorded. Check your CRM for this contact first, then record what you found.', outcome: 'unknown' }, { status: 502 })
+      }
       let r: Awaited<ReturnType<typeof pushLead>>
       try {
         r = await pushLead(cfg, lead)

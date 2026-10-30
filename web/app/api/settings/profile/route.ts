@@ -6,6 +6,7 @@ import type { Db } from '@/lib/db/client'
 import { normalizeIcp } from '@/lib/scan/icp'
 import { rateLimit } from '@/lib/rate-limit'
 import { denied } from '@/lib/workspace-access'
+import { audit } from '@/lib/audit-route'
 
 // The stored buyer profile, re-normalized on the way out (null when none is saved or it no longer validates).
 async function buyer(db: Db, userId: string) {
@@ -48,6 +49,8 @@ export async function POST(req: NextRequest) {
   if (buyerJson !== undefined) await writeBuyerProfile(db, user.tenantId, buyerJson)
   // Optional: the name used in drafts. Only changed when the caller sends it; blank clears it (drafts then refuse).
   if (typeof body?.business_name === 'string') await writeBusinessName(db, user.tenantId, body.business_name)
+  // which parts changed, never their text
+  await audit(user, req, { action: 'settings.changed', resource: 'profile', summary: { buyer: buyerJson !== undefined, business_name: typeof body?.business_name === 'string' } })
   // Return the canonical stored values so the page never shows text the server did not keep.
   return NextResponse.json({ ok: true, ...await readSellerProfile(db, user.tenantId), business_name: await readBusinessName(db, user.tenantId), buyer: await buyer(db, user.tenantId) })
 }

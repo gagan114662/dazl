@@ -26,6 +26,7 @@ export const AUDIT_DDL = `
   );
   CREATE INDEX IF NOT EXISTS audit_events_tenant_at ON audit_events (tenant_id, at);
   CREATE INDEX IF NOT EXISTS audit_events_seq ON audit_events (seq);
+  CREATE INDEX IF NOT EXISTS audit_events_at ON audit_events (at);
   CREATE TABLE IF NOT EXISTS audit_purge_gate (id INTEGER PRIMARY KEY CHECK (id = 1));
   CREATE TRIGGER IF NOT EXISTS audit_events_no_update BEFORE UPDATE ON audit_events BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END;
   CREATE TRIGGER IF NOT EXISTS audit_events_no_delete BEFORE DELETE ON audit_events
@@ -50,13 +51,18 @@ export type AuditCtx = { correlationId?: string | null }
 
 const DROP_KEY = /secret|token|key|password|passwd|hash|salt|cookie|authorization|credential|body|text|content|html|message|reply|snippet/i
 const SECRETISH = /^[A-Za-z0-9+/=_-]{32,}$/
-// Short scalars only; anything that could be a secret or message content is dropped, not truncated.
+const SUMMARY_MAX = 2000 // the column's CHECK
+// Short scalars only; anything that could be a secret or message content is dropped, not truncated. Fields past what
+// the column holds are dropped too, so a large summary never makes the event itself fail to write.
 export function redact(summary: Record<string, unknown> | undefined): Record<string, string | number | boolean | null> {
   const out: Record<string, string | number | boolean | null> = {}
   for (const [k, v] of Object.entries(summary ?? {}).slice(0, 20)) {
     if (DROP_KEY.test(k) || !/^[a-z][a-z0-9_]{0,39}$/i.test(k)) continue
-    if (v === null || typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v))) out[k] = v
-    else if (typeof v === 'string' && v.length <= 120 && !SECRETISH.test(v) && !/^(sk|pk|rk)[-_]/i.test(v)) out[k] = v
+    let keep: string | number | boolean | null | undefined
+    if (v === null || typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v))) keep = v
+    else if (typeof v === 'string' && v.length <= 120 && !SECRETISH.test(v) && !/^(sk|pk|rk)[-_]/i.test(v)) keep = v
+    if (keep === undefined || JSON.stringify({ ...out, [k]: keep }).length > SUMMARY_MAX) continue
+    out[k] = keep
   }
   return out
 }
@@ -78,20 +84,32 @@ export async function record(db: Db, e: AuditEvent, now = nowS()): Promise<void>
   await db.run(INSERT, row(e, now))
 }
 
-export type AuditRow = { id: string; actor_id: string; actor_kind: string; action: string; resource_type: string; resource_id: string | null; decision: string; summary: Record<string, unknown>; correlation_id: string | null; at: number }
+export type AuditRow = { id: string; actor_id: string; actor_kind: string; action: string; resource_type: string; resource_id: string | null; decision: string; summary: Record<string, unknown>; correlation_id: string | null; at: number; seq: number }
+
+// A page boundary is the last row's (at, seq, id), the same order the query sorts by, so the next page starts exactly
+// after it: events written in the same second as the boundary are neither skipped nor repeated.
+export type AuditCursor = { at: number; seq: number; id: string }
+export const cursorOf = (r: AuditRow): string => `${r.at}.${r.seq}.${r.id}`
+export function parseCursor(s: string | null | undefined): AuditCursor | null {
+  const m = /^(\d{1,12})\.(\d{1,15})\.([a-f0-9]{24})$/.exec(s ?? '')
+  return m ? { at: Number(m[1]), seq: Number(m[2]), id: m[3] } : null
+}
 
 // One workspace's events, newest first. The tenant always comes from the caller's session, never from the query.
-export async function searchAudit(db: Db, tenantId: string, q: { action?: string; actor?: string; before?: number; limit?: number } = {}): Promise<AuditRow[]> {
+export async function searchAudit(db: Db, tenantId: string, q: { action?: string; actor?: string; after?: AuditCursor | null; limit?: number } = {}): Promise<AuditRow[]> {
   const where = ['tenant_id = ?'], params: (string | number)[] = [tenantId]
   // action is a prefix ("credential." matches credential.saved and credential.removed), matched literally
   if (q.action) { where.push("action LIKE ? ESCAPE '\\'"); params.push(`${q.action.replace(/[%_\\]/g, c => `\\${c}`)}%`) }
   if (q.actor) { where.push('actor_id = ?'); params.push(q.actor) }
-  if (q.before) { where.push('at < ?'); params.push(q.before) }
+  if (q.after) {
+    where.push('(at < ? OR (at = ? AND (seq < ? OR (seq = ? AND id < ?))))')
+    params.push(q.after.at, q.after.at, q.after.seq, q.after.seq, q.after.id)
+  }
   const limit = Math.max(1, Math.min(q.limit ?? 100, 1000))
   const rows = await db.all<Omit<AuditRow, 'summary'> & { summary: string }>(
-    `SELECT id, actor_id, actor_kind, action, resource_type, resource_id, decision, summary, correlation_id, at FROM audit_events
+    `SELECT id, actor_id, actor_kind, action, resource_type, resource_id, decision, summary, correlation_id, at, seq FROM audit_events
      WHERE ${where.join(' AND ')} ORDER BY at DESC, seq DESC, id DESC LIMIT ${limit}`, params)
-  return rows.map(r => ({ ...r, at: Number(r.at), summary: (() => { try { return JSON.parse(r.summary) as Record<string, unknown> } catch { return {} } })() }))
+  return rows.map(r => ({ ...r, at: Number(r.at), seq: Number(r.seq), summary: (() => { try { return JSON.parse(r.summary) as Record<string, unknown> } catch { return {} } })() }))
 }
 
 // Events older than `retainS` (default 400 days), at most `limit` per call, inside the only transaction the delete

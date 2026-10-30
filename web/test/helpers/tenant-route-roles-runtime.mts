@@ -50,7 +50,8 @@ test('a member whose role does not allow a route is refused with 403 and changes
       if (res.status !== 403) failures.push(`${role} ${r.method} /api/${r.path}: got ${res.status}, needs ${r.role}`)
       else assert.deepEqual(await res.json(), { error: 'forbidden', needs: r.role })
       if (snapshot(db) !== before) failures.push(`${role} ${r.method} /api/${r.path}: data changed`)
-      if (r.path === 'workspace/audit') deniedEvents.push(`A M audit.read denied ${role}`)
+      // the same member's repeated refusals within a minute are recorded once (route.ts, audit-denied rate limit)
+      if (r.path === 'workspace/audit' && deniedEvents.length === 0) deniedEvents.push(`A M audit.read denied ${role}`)
       refused++
     }
   }

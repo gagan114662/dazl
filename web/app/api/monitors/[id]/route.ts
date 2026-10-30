@@ -16,6 +16,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   const body = await req.json().catch(() => null)
   if (typeof body?.enabled !== 'boolean') return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   if (!(await setMonitorEnabled(await getDb(), user.tenantId, id, body.enabled))) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  await audit(user, req, { action: body.enabled ? 'monitor.enabled' : 'monitor.disabled', resource: 'monitor', id })
   return NextResponse.json({ ok: true })
 }
 
