@@ -11,8 +11,7 @@ import { getDb, type Tx } from '@/lib/db/client'
 import { LeaseLost, StaleLeaseWrite, tryLease } from '@/lib/shared/lease'
 import type { Lease } from '@/lib/shared/lease'
 import { dueTenants, runIndexChecks } from '@/lib/seo/indexing'
-import { reapSessions } from '@/lib/sessions'
-import { reapOutbox } from '@/lib/system-mail'
+import { reapAccountHistory } from '@/lib/account-retention'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 import { classifySync, classifyWork, finishRun, migrateSchedulerRuns, recordProgress, startRun, type Outcome } from '@/lib/ops/scheduler-runs'
@@ -103,7 +102,7 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   // Expired and long-revoked sessions, at most 500 per tick (lib/sessions.ts); working sessions never match.
   await lease.keep()
   let sessionsReaped = 0
-  try { sessionsReaped = await reapSessions(shared, { fence }); await reapOutbox(shared, { fence }) } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:sessions', requestId }) }
+  try { sessionsReaped = (await reapAccountHistory(shared, { fence })).sessions } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:sessions', requestId }) }
   await finishRun(raw, runId, failures ? 'partial' : 'ok')
   return NextResponse.json({ ok: true, run: runId, tenants: done, tenant_failures: failures, tenant_holds: holds, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, sessions_reaped: sessionsReaped, index_checks: indexChecked })
 

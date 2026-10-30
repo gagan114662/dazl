@@ -49,3 +49,20 @@ bothEngines('change email: a link to the new address and a notice to the old; it
   assert.equal(await verifyEmail(db, raced), false)
   assert.equal((await emailStatus(db, 'B'))!.email, 'b@example.test')
 })
+
+bothEngines('Google linking cannot commit through a session revoked by password recovery', async ({db})=>{
+ const {createSession}=await import('../lib/auth-db.ts')
+ const {requestReset,resetPassword}=await import('../lib/email-ownership.ts')
+ await createPasswordUser(user('late-link'),db);await verified(db,'late-link')
+ const session=await createSession('late-link',db)
+ await requestReset(db,'late-link@example.test')
+ const reset=/\/reset#t=([a-f0-9]{64})/.exec((await mails(db,'late-link@example.test'))[0].body)![1]
+ assert.equal(await resetPassword(db,reset,{password_hash:'replacement',salt:'new'}),true)
+ assert.equal(await linkGoogle(db,'late-link',G('late-link@example.test'),session),'signed_out')
+ assert.equal(Number((await db.get<{n:number}>('SELECT count(*) AS n FROM oauth_identities'))!.n),0)
+ const fresh=await createSession('late-link',db)
+ await db.run('UPDATE sessions SET authed_at=1 WHERE user_id=?',['late-link'])
+ assert.equal(await linkGoogle(db,'late-link',G('late-link@example.test'),fresh),'reauth_required')
+ await db.run('UPDATE sessions SET authed_at=? WHERE user_id=?',[Math.floor(Date.now()/1000),'late-link'])
+ assert.equal(await linkGoogle(db,'late-link',G('late-link@example.test'),fresh),'linked')
+})

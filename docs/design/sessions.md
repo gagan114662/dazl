@@ -27,7 +27,7 @@ or expired row on the very next request, on every instance, because the check re
 
 ## Cleanup
 
-`reapSessions` runs on each scheduled tick, fenced by the tick's lease. It deletes at most 500 rows that expired or
+`reapSessions` is OFF by default. It runs on a scheduled tick only when `ACCOUNT_RETENTION_ENABLED=1` is explicitly configured after an approved retention policy, fenced by the tick's lease. It deletes at most 500 rows that expired or
 were revoked more than 30 days ago. A working session (not revoked, not expired) never matches, and a backlog drains
 over several ticks.
 

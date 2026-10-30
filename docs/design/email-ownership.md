@@ -43,9 +43,8 @@ Google accounts count as verified: new ones at sign-up, existing ones by the bac
 ## Delivery
 
 `lib/system-mail.ts` sends dazl's own mail over SMTP when `SYSTEM_MAIL_SMTP_URL` and `SYSTEM_MAIL_FROM` are both
-set (nodemailer). Otherwise nothing leaves the host: the message goes to `system_mail_outbox`, which is reaped after
-24 hours by the tick. Production and staging have no SMTP today, so links sit in the outbox until the owner picks a
-provider. Tests read the outbox and never send.
+set (nodemailer). Otherwise nothing leaves the host: the message goes to `system_mail_outbox`, which is eligible for deletion after
+24 hours only when `ACCOUNT_RETENTION_ENABLED=1` is explicitly configured after an approved policy (OFF by default). Without configured SMTP, public reset/resend/change requests return503 before issuing links, never claim delivery. Signup remains usable but unverified; its fixture/local outbox is not external mail delivery. Tests read the outbox and never send.
 
 ## Change email (increment 2)
 

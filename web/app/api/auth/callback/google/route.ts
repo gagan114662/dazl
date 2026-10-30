@@ -38,7 +38,7 @@ export async function GET(req: NextRequest) {
     // linkGoogle checks the verified, matching email. The session is kept; no new one is made.
     const me = await getSessionUser(req.cookies.get('dazl_session')?.value, db)
     const fresh = !!me && Math.floor(Date.now() / 1000) - me.authedAt <= FRESH_AUTH_S
-    const result = !me ? 'signed_out' : !fresh ? 'reauth_required' : await linkGoogle(db, me.actorId, id)
+    const result = !me ? 'signed_out' : !fresh ? 'reauth_required' : await linkGoogle(db, me.actorId, id, req.cookies.get('dazl_session')!.value)
     const res = redirectNoStore(new URL(`/app/settings?google=${result}#account`, base))
     clearOauthCookie(res, base)
     clearReturnCookie(res, base)
