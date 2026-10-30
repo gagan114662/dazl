@@ -5,17 +5,19 @@
 // primaryIssuer must also agree with the expected entity (missing or contradicting issuer -> nothing stored), and its stated city/state must agree with the lead's place: two different
 // companies can share a name, so a name match alone never attaches anyone.
 //
-// Stored as 'person' enrichments ("First Last, Role") with the filing URL as source and labelled with the filing date:
+// Stored (when the filer is confirmed to be the lead's company) as 'person' enrichments ("First Last, Role") with the filing URL as source and labelled with the filing date:
 // the list is as of the filing, not verified as current staff. No addresses are kept (the filing carries a business
 // street address per person; dazl stores name and role only), no email is derived here, and nothing is emailed from it.
 // Only sec.gov filing URLs are fetched. Kill switch: SEC_OFFICERS=0.
 import type Database from 'better-sqlite3'
 import { addEnrichment } from '../connectors/store.ts'
 import { classifyEntityMatch } from '../signals/entity-match.ts'
-import { contactAgreement, formatPlace } from '../scan/contact-agreement.ts'
+import { addressAgreement, contactAgreement, formatPlace } from '../scan/contact-agreement.ts'
 
 export const CONNECTOR = 'signals:sec-form-d'
 export const MAX_OFFICERS = 4
+export const CANDIDATE_KIND = 'sec_officer_candidate'     // quarantined people: never shown or counted as a person/contact
+export const CONFIRMED_KIND = 'sec_filing_confirmed'       // an identity review confirmed that this filer (CIK) is this lead's company
 const TIMEOUT = 8000
 const EDGAR_UA = process.env.SEC_USER_AGENT || 'dazl/1.0 (contact: support@dazl.ai)'
 // Executive Officer first: it is the buyer-like role. Promoters are often outside investors/entities, so they rank last.
@@ -79,7 +81,7 @@ function leadContext(db: Database.Database, tenantId: string, leadId: string): {
   } catch { return null }
 }
 
-// Fetch the filing and store its people on the lead. Never throws; returns how many were stored.
+// Fetch the filing and attach its people to the lead ONLY on a confirmed identity binding (see below); otherwise quarantine them. Never throws; returns how many were ATTACHED.
 export async function storeFilingOfficers(db: Database.Database, tenantId: string, leadId: string, filing: { url: string; date: string; entity: string }, deps: { fetchImpl?: typeof fetch; now?: number; env?: Record<string, string | undefined> } = {}): Promise<number> {
   try {
     if ((deps.env ?? process.env).SEC_OFFICERS === '0' || !isFilingUrl(filing.url)) return 0
@@ -90,19 +92,47 @@ export async function storeFilingOfficers(db: Database.Database, tenantId: strin
     // company's executives. Still a name heuristic (token-identical after suffix stripping), so labels stay "as of filing".
     const issuer = filingIssuer(xml)
     if (!issuer || classifyEntityMatch(filing.entity, issuer) !== 'heuristic') return 0
-    // A name match is not identity: two different companies can share a name. The filing's own registry data (the issuer's stated city/state) must AGREE with the lead's place (the scan's
-    // geography or the lead's own evidence), or the lead's confirmed domain must agree; no geography to compare, no stated address, or a conflict -> nothing is stored.
+    // A name match - even with the same city - is not identity: two different companies can share a name and a city. People are ATTACHED only on a confirmed binding:
+    //   (1) the issuer's stated STREET address is the lead's own known street address (a registry fact against the lead's evidence), or
+    //   (2) a recorded identity review confirmed this filer's CIK for this lead (confirmFilingIdentity).
+    // A known street address that DIFFERS is a known different entity: nothing is stored. A same-city name match with no binding is QUARANTINED - kept as unattached candidates
+    // (kind sec_officer_candidate, never counted as contacts or people) for identity review. No stated address / no geography to compare / a conflicting place: nothing.
     const ctx = leadContext(db, tenantId, leadId)
     if (!ctx) return 0
     const at = filingIssuerPlace(xml)
     const agree = contactAgreement({ company_domain: ctx.company_domain, where: ctx.where, evidence: ctx.evidence }, { place: at.place, address: at.address })
     if (!agree.ok || (agree.via !== 'location' && agree.via !== 'address' && agree.via !== 'domain')) return 0
+    if (addressAgreement(at.address, ctx.evidence) === 'conflict') return 0
+    const bound = addressAgreement(at.address, ctx.evidence) === 'agrees' || filingConfirmed(db, tenantId, leadId, filing.url)
     const now = Math.floor((deps.now ?? Date.now()) / 1000)
     let n = 0
     for (const p of parseRelatedPersons(xml)) {
-      addEnrichment(db, tenantId, leadId, { connector: CONNECTOR, kind: 'person', value: `${p.name}, ${p.role}`.slice(0, 120), label: `named in SEC Form D filed ${filing.date} (as of filing, not verified as current)`.slice(0, 200), confidence: null, source_url: filing.url, source_date: filing.date, retrieved_at: now })
-      n++
+      if (bound) { addEnrichment(db, tenantId, leadId, { connector: CONNECTOR, kind: 'person', value: `${p.name}, ${p.role}`.slice(0, 120), label: `named in SEC Form D filed ${filing.date} (as of filing, not verified as current)`.slice(0, 200), confidence: 60, source_url: filing.url, source_date: filing.date, retrieved_at: now }); n++ }
+      else addEnrichment(db, tenantId, leadId, { connector: CONNECTOR, kind: CANDIDATE_KIND, value: `${p.name}, ${p.role}`.slice(0, 120), label: `quarantined: same name, not confirmed as this company - needs identity review (SEC Form D filed ${filing.date})`.slice(0, 200), confidence: null, source_url: filing.url, source_date: filing.date, retrieved_at: now })
     }
     return n
   } catch { return 0 }
+}
+
+const cikOf = (url: string) => /\/edgar\/data\/(\d+)\//.exec(url)?.[1] ?? null
+function filingConfirmed(db: Database.Database, tenantId: string, leadId: string, url: string): boolean {
+  const cik = cikOf(url); if (!cik) return false
+  try { return !!db.prepare("SELECT 1 FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND kind = ? AND value = ?").get(tenantId, leadId, CONFIRMED_KIND, cik) } catch { return false }
+}
+// The identity-review action: the reviewer confirmed that the filer with this CIK IS this lead's company. Records the confirmation (tenant- and lead-scoped) and promotes this filer's
+// quarantined candidates to people. Returns how many were promoted. Without this nothing quarantined ever becomes a person.
+export function confirmFilingIdentity(db: Database.Database, tenantId: string, leadId: string, cik: string, now = Math.floor(Date.now() / 1000)): number {
+  if (!/^\d{1,10}$/.test(cik)) return 0
+  const owned = db.prepare('SELECT 1 FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId)
+  if (!owned) return 0
+  addEnrichment(db, tenantId, leadId, { connector: 'user', kind: CONFIRMED_KIND, value: cik, label: 'identity review: this SEC filer is this company', confidence: null, source_url: `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${cik}`, source_date: new Date(now * 1000).toISOString().slice(0, 10), retrieved_at: now })
+  const rows = db.prepare("SELECT value, source_url, source_date FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = ? AND kind = ?").all(tenantId, leadId, CONNECTOR, CANDIDATE_KIND) as { value: string; source_url: string; source_date: string }[]
+  let n = 0
+  for (const r of rows) {
+    if (cikOf(r.source_url) !== cik) continue
+    addEnrichment(db, tenantId, leadId, { connector: CONNECTOR, kind: 'person', value: r.value, label: `named in SEC Form D filed ${r.source_date} (as of filing, not verified as current; identity confirmed by review)`.slice(0, 200), confidence: 60, source_url: r.source_url, source_date: r.source_date, retrieved_at: now })
+    db.prepare("DELETE FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = ? AND kind = ? AND value = ? AND source_url = ?").run(tenantId, leadId, CONNECTOR, CANDIDATE_KIND, r.value, r.source_url)
+    n++
+  }
+  return n
 }
