@@ -257,6 +257,18 @@ CREATE TABLE leads (
       CHECK (name <> '' OR company <> '')
     );
 
+CREATE TABLE lifecycle_events (
+    kind TEXT NOT NULL CHECK (kind IN ('signup','payment_succeeded','payment_failed','refund','subscription_ended')),
+    ref TEXT NOT NULL CHECK (length(ref) BETWEEN 1 AND 200),
+    tenant_id TEXT NOT NULL,
+    occurred_at INTEGER NOT NULL,
+    amount_cents INTEGER,
+    invoice TEXT,
+    full_refund INTEGER,
+    source TEXT CHECK (source IS NULL OR length(source) <= 40),
+    PRIMARY KEY (kind, ref)
+  );
+
 CREATE TABLE mail_read_consent (tenant_id TEXT PRIMARY KEY, version TEXT NOT NULL, accepted_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)));
 
 CREATE TABLE memberships (
@@ -804,6 +816,8 @@ CREATE UNIQUE INDEX leads_dedup ON leads (scan_job_id, dedup_key) WHERE dedup_ke
 CREATE INDEX leads_insert_seq_idx ON leads (insert_seq);
 
 CREATE INDEX leads_job ON leads (scan_job_id);
+
+CREATE INDEX lifecycle_events_tenant ON lifecycle_events (tenant_id, kind);
 
 CREATE INDEX memberships_member ON memberships (member_id);
 
