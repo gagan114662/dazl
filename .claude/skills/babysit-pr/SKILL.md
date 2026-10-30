@@ -126,7 +126,8 @@ narrows code.
 
 ## Base branch and merging
 
-Keep an eye on changes to `main` and rebase when needed. `pr-wait` reports when
+Keep an eye on changes to `main` and merge it into the branch when needed (a merge commit; never rebase,
+rewrite history or force-push, since Instinct reviews exact head SHAs). `pr-wait` reports when
 new base commits touch this PR's files, and when the PR becomes BEHIND or DIRTY.
 `watch_pull_request` reports conflicts only, so check for BEHIND yourself
 before you call the PR ready.

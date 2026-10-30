@@ -1,8 +1,8 @@
 ---
 name: modernize
 description: >-
-  For getting old prs up to date. Use when asked to rebase a pr or
-  "modernize".
+  For getting old prs up to date. Use when asked to update, rebase or
+  "modernize" a pr (in dazl that always means a merge of the base branch, never a rebase).
 ---
 
 > Vendored from [t3dotgg/tstack](https://github.com/t3dotgg/tstack) (MIT, see `../LICENSE-tstack`) and adapted for
@@ -10,8 +10,8 @@ description: >-
 
 # Modernize
 
-Modernize the idea, not just the branch. A clean rebase does not prove that the
-PR still belongs in the product.
+Modernize the idea, not just the branch. A clean merge of the base does not prove that
+the PR still belongs in the product.
 
 ## Guardrails
 
@@ -19,13 +19,10 @@ PR still belongs in the product.
   branch, and any other branch related to your work before starting.
 - Treat existing worktree changes as user-owned. Use a disposable worktree when
   the active worktree is dirty or is being used for other work.
-- Modernizing authorizes rebasing and updating the PR branch. It does not
-  authorize merging, closing, changing the base branch, or expanding scope.
-- Never use an unqualified force push. Update a rebased branch with
-  `--force-with-lease` against the head SHA observed before the rebase.
-- In dazl, Instinct reviews exact head SHAs: never rebase or force-push a branch someone has reviewed or is
-  reviewing. Bring the base in with a merge commit instead, and use the rebase steps below only for a branch nobody
-  has reviewed yet.
+- Modernizing authorizes merging the base branch into the PR branch and pushing it. It does not
+  authorize merging the PR, closing it, changing the base branch, or expanding scope.
+- In dazl, Instinct reviews exact head SHAs: never rebase, amend, squash or force-push (with or without a lease).
+  Bring the base in with a merge commit and push normally, so every earlier head stays in the branch's history.
 - Do not post a PR comment unless the user asked for one. Use the
   `leaving-pr-comments` skill for every comment posted on the user's behalf.
 
@@ -64,33 +61,34 @@ Do not describe a PR as current merely because Git reports no conflicts.
 Use one of these recommendations:
 
 - **MODERNIZE**: the goal is still useful and the implementation remains the
-  right shape. Rebase, resolve conflicts, test, and update the branch.
-- **REWORK**: the goal is still useful, but a mechanical rebase would preserve
+  right shape. Merge the base in, resolve conflicts, test, and push the branch.
+- **REWORK**: the goal is still useful, but a mechanical update would preserve
   the wrong implementation. Explain the smallest credible rewrite and stop
   before pushing unless the user also asked for that rework.
 - **CLOSE**: the PR is superseded, obsolete, directionally wrong, or no longer
-  worth its cost. Cite concrete evidence and stop. Do not spend time rebasing an
+  worth its cost. Cite concrete evidence and stop. Do not spend time updating an
   obsolete branch, and do not close it without explicit permission.
 
 Be willing to recommend `CLOSE`. Age alone is not evidence, and sunk effort is
 not a reason to keep a PR alive.
 
-## Rebase without losing intent
+## Merge the base without losing intent
 
 For a `MODERNIZE` disposition:
 
 1. Create a safe local branch or disposable worktree at the recorded PR head.
-2. Rebase its commits onto the freshly fetched base branch.
+2. Merge the freshly fetched base branch into it (`git merge --no-ff origin/<base>`).
 3. Resolve each conflict according to the PR's current intent and the base
    branch's newer invariants. If a conflict reveals a product or architecture
    disagreement, stop and reconsider the disposition instead of guessing.
-4. Compare the pre-rebase and post-rebase commit series with `git range-diff`
+4. Compare the PR's diff against the base before and after the merge
+   (`git diff <old-merge-base> <old-head>` versus `git diff origin/<base>...HEAD`)
    and inspect the final diff. Confirm that no intentional behavior disappeared
    and no already-landed behavior was reintroduced.
 5. Run the repository's focused checks for the touched area. Distinguish real
    failures from pre-existing or infrastructure failures.
-6. Push with `--force-with-lease` tied to the previously observed remote head.
-   If the lease fails, fetch and reassess rather than overwriting new work.
+6. Push normally (a fast-forward). If the push is rejected because the remote
+   moved, fetch, merge the new remote head, and reassess; never overwrite it.
 
 Do not merge the PR.
 
@@ -100,7 +98,7 @@ Lead with `MODERNIZE`, `REWORK`, or `CLOSE` and the reason. Then summarize:
 
 - meaningful changes on the base branch;
 - conceptual conflicts or confirmation that none were found;
-- the rebase and push result, if performed;
+- the merge and push result, if performed;
 - checks run and their results;
 - the remaining decision or work, with a link to the PR.
 

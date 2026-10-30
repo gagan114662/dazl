@@ -23,7 +23,7 @@ PR without authorization.
 
 Preserve Git authorship and existing co-author trailers. Credit the original
 contributors in the PR description and link the original PR when there is one.
-If the work will be squashed, preserve human author/co-author credit in the
+If Instinct squash-merges the PR, preserve human author/co-author credit in the
 merge commit too, using verified identities rather than guessed emails. Model
 attribution is not a substitute for contributor credit.
 

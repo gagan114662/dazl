@@ -60,8 +60,8 @@ You may commit and push to this task's own branch. Never merge, enable auto-merg
 ### Updating from main
 
 Instinct reviews exact head SHAs, so never rewrite a branch someone has reviewed: bring `main` in with a merge
-commit, resolve conflicts, prove again, and push normally. Rebasing and `--force-with-lease` are only for your own
-branch before anyone has seen it.
+commit, resolve conflicts, prove again, and push normally (fast-forward). Never rebase, amend, squash or
+force-push a pushed branch, reviewed or not.
 
 ## Ready for Instinct
 

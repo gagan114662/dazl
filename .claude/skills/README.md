@@ -40,8 +40,9 @@ Codex-only `agents/openai.yaml` interface files were not vendored.
   production data or configuration.
 - **No model names in commits, PRs or PR comments** (a dazl rule). `file-pr`, `leaving-pr-comments`, `council` and
   `sol-loop` name the harness or the reviewer seat instead of a model.
-- **No history rewrites under review.** Instinct reviews exact head SHAs, so a reviewed branch takes `main` by a merge
-  commit, never a rebase and force-push.
+- **No history rewrites.** Instinct reviews exact head SHAs, so a pushed branch takes `main` by a merge
+  commit, never a rebase, amend, squash or force-push. Every skill says the same (`babysit-pr`, `full-stop`,
+  `modernize`, and `pr-wait`'s DIRTY/BEHIND hints).
 - **`babysit-pr` without `gh`.** In Claude Code cloud sessions `gh` is installed but not authenticated. `pr-wait`
   now checks `gh auth status` first and exits 2 with a pointer; the skill documents the fallback
   (`subscribe_pr_activity` for wake-ups, the GitHub MCP tools for checks, logs and comments, `git fetch` and the PR's
