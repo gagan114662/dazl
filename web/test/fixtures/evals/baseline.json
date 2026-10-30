@@ -7,11 +7,9 @@
   "scan-toronto-office-traps": {
    "status": "fail",
    "non_pass": [
-    "contact_not_recruiting_inbox|lead:Lakeshore Creative|fail",
-    "event_date_on_page|lead:Northern Lights Agency|unknown",
-    "expected_outcomes|expect:Northern Lights Agency|fail"
+    "contact_not_recruiting_inbox|lead:Lakeshore Creative|fail"
    ],
-   "why": "Agent gaps found by this case (#395): (1) a lead whose event date is only the page's publication metadata (the text never dates the opening) is verified - the extraction copies the publication date into event_date and the verifier accepts it; (2) a recruiting inbox (careers@) is kept as a verified lead's contact."
+   "why": "Agent gap found by this case (#395, #461): a recruiting inbox (careers@) is kept as a verified lead's contact. Fixed: #460 (a lead dated only by the page's publication day is now held as undated)."
   }
  }
 }

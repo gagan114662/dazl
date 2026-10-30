@@ -49,3 +49,28 @@ export function resolveTiming(pageText: string, quote: string, published: string
   const pubNote = pub ? `page published ${pub} (from ${how}); a publication date only - the event date is unknown and this does not place the event in the window` : null
   return { published: pub, olderYear, note: [pubNote, season].filter(Boolean).join('; ') || null }
 }
+
+// Whether the page TEXT states `day` (ISO, "October 8, 2026", "Oct 8, 2026", "8 October 2026") as something other than a
+// publication or update stamp. A day that appears only after "Posted / Published / Updated ..." is the page's own date,
+// not the event's.
+export function textStatesDay(pageText: string, day: string): boolean {
+  const text = pageText.replace(/\s+/g, ' ')
+  for (const m of text.matchAll(DATE_RE)) {
+    const date = m[1] ? iso(+m[1], +m[2], +m[3]) : m[4] ? iso(+m[6], MONTHS[m[4].toLowerCase().replace(/\./g, '')] ?? MONTHS[m[4].toLowerCase().slice(0, 3)], +m[5]) : iso(+m[9], MONTHS[m[8].toLowerCase().replace(/\./g, '')] ?? MONTHS[m[8].toLowerCase().slice(0, 3)], +m[7])
+    if (date !== day) continue
+    const before = text.slice(Math.max(0, m.index! - 40), m.index!).slice(-30)
+    if (CUE.test(before) || NOT_EVENT.test(before)) continue
+    return true
+  }
+  return false
+}
+
+// #460: an event date that is only the page's own publication metadata. The extraction can copy the page's publication date
+// into the event date; when the text itself never states that day (other than as a publication/update stamp), the event's
+// own date is unresolved (a 2019 opening on a page republished this month is still undated), so the candidate is treated as
+// undated and the window gate decides. Scope: the fetcher's `published` metadata only. A cued "Published <day>" line in the
+// text with that day as the event date is not changed here (a separate decision: many fixtures date leads that way).
+export function datedOnlyByPublication(eventDate: string | null, pageText: string, published: string | null | undefined): boolean {
+  if (!eventDate || !published || !/^\d{4}-\d{2}-\d{2}$/.test(published)) return false
+  return published === eventDate && !textStatesDay(pageText, eventDate)
+}

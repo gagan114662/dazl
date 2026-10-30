@@ -25,7 +25,7 @@ import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '..
 import { directQueries, hasHiringSignal } from '../search/direct-queries.ts'
 import { placeIn, atsKindOf } from '../sources/jobboards.ts'
 import { corroborationTargets } from './corroborate.ts'
-import { resolveTiming } from './page-timing.ts'
+import { datedOnlyByPublication, resolveTiming } from './page-timing.ts'
 import { ownPlaceAgreement } from './own-block.ts'
 import { HeldText, COPY_ORIGIN, type HeldPage } from './held-text.ts'
 import { markHeldInProcess } from './held-state.ts'
@@ -287,7 +287,11 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
   const fetched = await Promise.all(candidates.map(async c => ({ c, page: await get(c.source_url) })))
 
   const passed: { c: LeadDraft; v: Extract<ReturnType<typeof verifyEvidence>, { ok: true }>; copy?: { failure: string; sha256: string; page: HeldPage } }[] = []
-  for (const { c: c0, page } of fetched) {
+  for (const { c: cIn, page } of fetched) {
+    // #460: a date that is only the page's publication metadata is not the event's date. It is dropped here, so the candidate goes
+    // the undated way below (the publication day kept as a label) and the window gate judges it as undated.
+    const pubOnly = page && !isFail(page) && datedOnlyByPublication(cIn.event_date, page.text, (page as { published?: string | null }).published)
+    const c0 = pubOnly ? { ...cIn, event_date: null } : cIn
     // A candidate with no date gets one read from the text we already fetched (or a season label). Same rules apply to it afterwards.
     let c = c0
     if (page && !isFail(page) && !c0.event_date) {
