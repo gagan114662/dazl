@@ -14,6 +14,13 @@
 // toward cost per validated company; one attempted task with an unknown cost makes the total unknown. The
 // complete-task-only figure is reported separately and labelled as such.
 //
+// Input integrity: the scorecard trusts nothing about its input. Every recorded attempt is accounted for exactly once
+// (one record per task: its cost and its failure state), and the frozen task set, the recorded attempts and their
+// results must agree. Any inconsistency (a duplicate or unknown task id, a cost or results recorded without an
+// outcome, results on a task that did not run, a bad cost, a verdict outside the contract, a set/run version
+// mismatch, ...) makes the WHOLE report invalid_input: nothing is scored, no cost is summed, no threshold is
+// evaluated. inputProblems() lists every problem with its code, task id and reason.
+//
 // Who judged matters: a run records its evaluator. Verdicts derived from the pipeline's own fields
 // (fromScoreboardResult) are a self-report; no release threshold can be met by a self-report, by synthetic data, or by
 // a historical aggregate (counts with no per-result verdicts). Thresholds are proposals for the owner: this module
@@ -77,7 +84,7 @@ export function scoreTask(task: Task, run: TaskRun | undefined): TaskScore {
 }
 
 export interface Scorecard {
-  format: 'dazl-benchmark-scorecard'; version: 1
+  format: 'dazl-benchmark-scorecard'; version: 1; status: 'scored'
   system: string; system_version: string | null; origin: Origin; task_set_version: string; commit: string | null; config: Record<string, unknown>
   evaluator: BenchmarkRun['evaluator']; started_at: string; source: string | null
   evaluable: boolean; not_evaluable_reason: string | null
@@ -99,10 +106,73 @@ export interface Scorecard {
   aggregates: { task_id: string; status: TaskStatus; aggregate: Record<string, number> }[]
 }
 
-export function scorecard(set: TaskSet, run: BenchmarkRun): Scorecard {
-  if (run.task_set_version !== set.version) throw new Error(`run is for task set v${run.task_set_version}, not v${set.version}`)
-  const byId = new Map(run.tasks.map(t => [t.task_id, t]))
-  for (const t of run.tasks) if (!set.tasks.some(s => s.id === t.task_id)) throw new Error(`run has a task not in the set: ${t.task_id}`)
+// ---------- input integrity ----------
+export interface InputProblem { code: string; task_id: string | null; detail: string }
+export interface InvalidScorecard { format: 'dazl-benchmark-scorecard'; version: 1; status: 'invalid_input'; system: string | null; task_set_version: string | null; problems: InputProblem[] }
+const STATUSES: TaskStatus[] = ['complete', 'incomplete', 'failed', 'unsupported', 'not_run']
+const VERDICTS: Verdict[] = ['pass', 'fail', 'unknown', 'contradicted']
+const KINDS: Task['kind'][] = ['standard', 'negative', 'ambiguous', 'cold_start']
+const ORIGINS: Origin[] = ['live', 'recorded', 'synthetic', 'historical-aggregate']
+const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x)
+const isId = (x: unknown): x is string => typeof x === 'string' && x.trim().length > 0
+const nonNeg = (x: unknown) => x === null || x === undefined || (typeof x === 'number' && Number.isFinite(x) && x >= 0)
+const show = (x: unknown) => x === undefined ? 'missing' : JSON.stringify(x)
+// Every problem with the frozen set and the run, as plain parsed JSON (the declared types are not trusted). Empty = scorable.
+export function inputProblems(set: TaskSet, run: BenchmarkRun): InputProblem[] {
+  const out: InputProblem[] = []
+  const bad = (code: string, task_id: string | null, detail: string) => { out.push({ code, task_id, detail }) }
+  const s = set as unknown, r = run as unknown
+  if (!isObj(s) || !isId(s.version)) { bad('set_invalid', null, 'the frozen task set has no version'); return out }
+  if (!Array.isArray(s.tasks) || s.tasks.length === 0) { bad('set_invalid', null, `frozen task set v${s.version} has no tasks`); return out }
+  const setIds = new Map<string, number>()
+  s.tasks.forEach((t: unknown, i: number) => {
+    if (!isObj(t) || !isId(t.id)) return bad('set_task_invalid', null, `frozen task set entry ${i} has no id`)
+    setIds.set(t.id, (setIds.get(t.id) ?? 0) + 1)
+    if (!KINDS.includes(t.kind as Task['kind'])) bad('set_task_invalid', t.id, `kind ${show(t.kind)} is not one of ${KINDS.join(', ')}`)
+  })
+  for (const [id, n] of setIds) if (n > 1) bad('set_duplicate_task', id, `frozen task set v${s.version} lists task ${id} ${n} times`)
+  if (!isObj(r)) { bad('run_invalid', null, 'the run is not an object'); return out }
+  if (r.format !== 'dazl-benchmark-run' || r.version !== 1) bad('run_format_invalid', null, `format ${show(r.format)} version ${show(r.version)}: expected dazl-benchmark-run version 1`)
+  if (r.task_set_version !== s.version) bad('task_set_version_mismatch', null, `the run is for task set v${String(r.task_set_version)}, the frozen set is v${s.version}`)
+  if (!ORIGINS.includes(r.origin as Origin)) bad('run_origin_invalid', null, `origin ${show(r.origin)} is not one of ${ORIGINS.join(', ')}`)
+  if (!isObj(r.evaluator) || !isId(r.evaluator.name) || typeof r.evaluator.independent !== 'boolean') bad('run_evaluator_invalid', null, 'the run has no evaluator with a name and independent: true | false')
+  if (!Array.isArray(r.tasks)) { bad('run_tasks_invalid', null, 'run.tasks is not a list'); return out }
+  const seen = new Map<string, Record<string, unknown>[]>()
+  r.tasks.forEach((t: unknown, i: number) => {
+    if (!isObj(t) || !isId(t.task_id)) return bad('task_id_invalid', null, `run.tasks[${i}] has no task_id`)
+    const id = t.task_id
+    seen.set(id, [...(seen.get(id) ?? []), t])
+    if (!setIds.has(id)) bad('unknown_task', id, `run.tasks[${i}] records task ${id}, which is not in frozen task set v${s.version}`)
+    const n = Array.isArray(t.results) ? t.results.length : 0
+    if (!STATUSES.includes(t.status as TaskStatus)) {
+      const has = [typeof t.cost_usd === 'number' ? `cost_usd ${t.cost_usd}` : null, n ? `${n} result(s)` : null].filter(Boolean)
+      bad('status_invalid', id, `status ${show(t.status)} is not one of ${STATUSES.join(', ')}${has.length ? `; ${has.join(' and ')} recorded without an outcome` : ''}`)
+    }
+    if (!nonNeg(t.cost_usd)) bad('cost_invalid', id, `cost_usd ${show(t.cost_usd)} is not a non-negative number or null (unknown)`)
+    if (!nonNeg(t.seconds)) bad('seconds_invalid', id, `seconds ${show(t.seconds)} is not a non-negative number or null`)
+    if (t.aggregate !== undefined && (!isObj(t.aggregate) || Object.values(t.aggregate).some(v => typeof v !== 'number' || !Number.isFinite(v)))) bad('aggregate_invalid', id, 'aggregate must map names to finite numbers')
+    if (!Array.isArray(t.results)) return bad('results_invalid', id, `results ${show(t.results)} is not a list`)
+    if (n && (t.status === 'not_run' || t.status === 'unsupported')) bad('results_without_attempt', id, `${n} result(s) recorded for a task with status ${t.status}: a task that did not run has no results`)
+    const ranks = new Map<number, number>()
+    t.results.forEach((x: unknown, j: number) => {
+      if (!isObj(x)) return bad('result_invalid', id, `results[${j}] is not an object`)
+      if (typeof x.rank === 'number' && Number.isInteger(x.rank) && x.rank >= 1) ranks.set(x.rank, (ranks.get(x.rank) ?? 0) + 1)
+      else bad('rank_invalid', id, `results[${j}] rank ${show(x.rank)} is not a positive integer`)
+      if (!isId(x.entity_key)) bad('entity_invalid', id, `results[${j}] has no entity_key`)
+      if (!isObj(x.verdicts)) bad('verdict_invalid', id, `results[${j}] has no verdicts`)
+      else for (const f of FIELDS) if (!VERDICTS.includes(x.verdicts[f] as Verdict)) bad('verdict_invalid', id, `results[${j}] ${f} verdict ${show(x.verdicts[f])} is not one of ${VERDICTS.join(', ')}`)
+    })
+    for (const [rank, k] of ranks) if (k > 1) bad('rank_duplicate', id, `rank ${rank} appears ${k} times`)
+  })
+  for (const [id, ts] of seen) if (ts.length > 1) bad('duplicate_task', id, `${ts.length} attempts recorded for task ${id} (${ts.map(t => `${String(t.status)} cost_usd ${t.cost_usd ?? 'unknown'}, ${Array.isArray(t.results) ? t.results.length : 0} result(s)`).join('; ')}): one record per task; a repeated attempt is never selected, merged or dropped`)
+  return out
+}
+export const problemSummary = (ps: InputProblem[]) => ps.map(p => `${p.code}${p.task_id ? ` ${p.task_id}` : ''}`).join(', ')
+
+export function scorecard(set: TaskSet, run: BenchmarkRun): Scorecard | InvalidScorecard {
+  const problems = inputProblems(set, run)
+  if (problems.length) return { format: 'dazl-benchmark-scorecard', version: 1, status: 'invalid_input', system: isObj(run) && isId(run.system) ? run.system : null, task_set_version: isObj(set) && isId(set.version) ? set.version : null, problems }
+  const byId = new Map(run.tasks.map(t => [t.task_id, t]))   // one record per task: inputProblems rejected duplicates
   const tasks = set.tasks.map(t => scoreTask(t, byId.get(t.id)))
   const done = tasks.filter(t => t.status === 'complete')
   const top10 = set.tasks.flatMap(t => (byId.get(t.id)?.status === 'complete' ? [...byId.get(t.id)!.results].sort((a, b) => a.rank - b.rank).slice(0, 10) : []))
@@ -125,7 +195,7 @@ export function scorecard(set: TaskSet, run: BenchmarkRun): Scorecard {
   if (run.origin === 'historical-aggregate') reasons.push('historical aggregate: counts only, no per-result verdicts')
   if (!run.evaluator.independent) reasons.push(`evaluator "${run.evaluator.name}" is not independent of the system that produced the results`)
   return {
-    format: 'dazl-benchmark-scorecard', version: 1,
+    format: 'dazl-benchmark-scorecard', version: 1, status: 'scored',
     system: run.system, system_version: run.system_version, origin: run.origin, task_set_version: set.version, commit: run.commit, config: run.config,
     evaluator: run.evaluator, started_at: run.started_at, source: run.source ?? null,
     evaluable: reasons.length === 0, not_evaluable_reason: reasons.length ? reasons.join('; ') : null,
@@ -153,9 +223,14 @@ export function scorecard(set: TaskSet, run: BenchmarkRun): Scorecard {
 export const NEGATIVE_METRICS: (keyof Scorecard['totals'])[] = ['false_alerts']
 export interface Threshold { id: string; metric: keyof Scorecard['totals']; op: '>=' | '<=' | '=='; value: number; min_complete_tasks: number; sample?: 'negative'; why: string }
 export interface ThresholdSet { status: 'proposed'; version: string; thresholds: Threshold[] }
-export type ThresholdResult = { id: string; result: 'meets' | 'misses' | 'insufficient_sample' | 'not_evaluable'; observed: number | null; detail: string }
-export function evaluateThresholds(card: Scorecard, set: ThresholdSet): { status: string; results: ThresholdResult[] } {
+export type ThresholdResult = { id: string; result: 'meets' | 'misses' | 'insufficient_sample' | 'not_evaluable' | 'invalid_input'; observed: number | null; detail: string }
+export function evaluateThresholds(card: Scorecard | InvalidScorecard, set: ThresholdSet): { status: string; results: ThresholdResult[] } {
+  if (card.status === 'invalid_input') {
+    const detail = `invalid_input: ${problemSummary(card.problems)}`
+    return { status: `invalid_input: nothing was evaluated (${card.problems.length} input problem(s): ${problemSummary(card.problems)})`, results: set.thresholds.map(t => ({ id: t.id, result: 'invalid_input', observed: null, detail })) }
+  }
   const results = set.thresholds.map((t): ThresholdResult => {
+    if (!(t.metric in card.totals)) return { id: t.id, result: 'invalid_input', observed: null, detail: `metric ${show(t.metric)} is not on the scorecard` }
     const observed = card.totals[t.metric] as number | null
     if (!card.evaluable) return { id: t.id, result: 'not_evaluable', observed, detail: card.not_evaluable_reason! }
     if (card.totals.complete < t.min_complete_tasks) return { id: t.id, result: 'insufficient_sample', observed, detail: `${card.totals.complete} complete task(s), at least ${t.min_complete_tasks} needed` }
@@ -197,19 +272,27 @@ export function selfReportVerdicts(l: SbLead, asOf: Date): Record<Field, Verdict
 }
 export function fromScoreboardResult(sb: SbResult, set: TaskSet, source: string): BenchmarkRun {
   const asOf = new Date(`${sb.date}T23:59:59Z`)
-  const ids = new Set(set.tasks.map(t => t.id))
+  // every row is kept, including one not in the set or a duplicate: the scorecard reports those as invalid_input
   return {
     format: 'dazl-benchmark-run', version: 1, system: 'dazl', system_version: sb.commit, origin: 'recorded', task_set_version: set.version, commit: sb.commit,
     config: { model: sb.model ?? null, rubric: sb.rubric ?? null, budget_usd_total: sb.budgetUsdTotal ?? null, harness: 'web/scripts/scoreboard.mts' },
     evaluator: { name: 'pipeline-self-report', version: '1', independent: false }, started_at: asOf.toISOString(), source,
-    tasks: sb.rows.filter(r => ids.has(r.id)).map(r => ({
+    tasks: sb.rows.map(r => ({
       task_id: r.id, status: r.complete ? 'complete' : 'incomplete', reason: r.error, seconds: r.seconds, cost_usd: null,
       results: r.leads.map((l, i) => ({ rank: i + 1, entity_key: l.company, verdicts: selfReportVerdicts(l, asOf), evidence: l.source_url ? [l.source_url] : [] })),
     })),
   }
 }
 
-export function scorecardMarkdown(card: Scorecard, thresholds?: ReturnType<typeof evaluateThresholds>): string {
+export function scorecardMarkdown(card: Scorecard | InvalidScorecard, thresholds?: ReturnType<typeof evaluateThresholds>): string {
+  if (card.status === 'invalid_input') return [
+    `# Benchmark scorecard: ${card.system ?? 'unknown system'}, task set v${card.task_set_version ?? '?'}`,
+    '',
+    `**invalid_input**: nothing was scored. Every recorded attempt must be accounted for exactly once, and the frozen task set, the recorded attempts and their results must agree. ${card.problems.length} problem(s):`,
+    '',
+    ...card.problems.map(p => `- ${p.code}${p.task_id ? ` (task ${p.task_id})` : ''}: ${p.detail}`),
+    ...(thresholds ? ['', `**${thresholds.status}**`] : []),
+  ].join('\n') + '\n'
   const t = card.totals, pct = (x: number | null) => x === null ? 'n/a' : `${Math.round(x * 100)}%`
   const lines = [
     `# Benchmark scorecard: ${card.system}${card.system_version ? ` ${card.system_version}` : ''}, task set v${card.task_set_version}`,

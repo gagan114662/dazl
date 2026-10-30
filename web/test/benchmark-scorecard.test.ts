@@ -244,7 +244,7 @@ test('integrity matrix: every inconsistency between the frozen set, the attempts
   const ten = std.slice(0, 10).map(t => attempt(t.id, 'complete', 1, [row(1, t.id)]))
   const t = sc(set, run({}, [...ten, attempt(std[10].id, 'incomplete', 100)])).totals
   assert.deepEqual([t.cost_usd, t.cost_per_validated_usd, t.cost_complete_only_usd, t.complete, t.incomplete], [110, 11, 10, 10, 1])
-  assert.equal(sc(set, run({}, [...ten, attempt(std[10].id, 'not_run', null), attempt(std[11].id, 'unsupported', 3)])).totals.cost_usd, 13, 'an explicit not_run / unsupported record without results is fine')
+  assert.equal(sc(set, run({}, [...ten, attempt(std[10].id, 'not_run', null), attempt(set.tasks.find(x => x.kind === 'cold_start')!.id, 'unsupported', 3)])).totals.cost_usd, 13, 'an explicit not_run / unsupported record without results is fine')
   // a threshold whose metric is not on the card is invalid input for that threshold only
   const card = sc(set, run({}, ten))
   const typo = evaluateThresholds(card, { ...thresholds, thresholds: [{ id: 'typo', metric: 'precision_at_ten' as never, op: '>=', value: 0.9, min_complete_tasks: 10, why: '' }, thresholds.thresholds[0]] })

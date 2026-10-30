@@ -41,12 +41,23 @@ A run is one system on one task set. Each returned result has a verdict on **ide
 - **Negative tasks must run.** A false-alerts result exists only when every negative task in the set completed; a negative task that was not run, failed or stopped is insufficient sample, never "0 false alerts".
 - **Breakdowns** by region and sector, false alerts on negative tasks, unique validated companies across tasks, and median time.
 - **Recorded with every run:** system and version, commit, configuration (model, rubric, sources, budget) and the evaluator.
+- **Input integrity: every recorded attempt is accounted for exactly once, or nothing is scored.** A run has one record per task (its status, cost and results). The scorecard trusts nothing about its input: the frozen task set, the recorded attempts and their results must agree, or the whole report is `invalid_input`, listing every problem with its code, task id and reason. No totals, no lower cost, no threshold result (every threshold reads `invalid_input`, never `meets` or `misses`), no card file, exit code 2. Nothing is selected, merged or dropped on the way: a repeated attempt is not "the last one wins", an unknown task is not skipped. Rejected, among others:
+  - a task id recorded twice (for example a failed $100 attempt and a complete $1 attempt on the same task), or a frozen task listed twice in the set;
+  - an attempt for a task that is not in the frozen set, or a run whose `task_set_version` is not the set's;
+  - a cost or results recorded without an outcome (no or unknown `status`), or results on a task whose status is `not_run` or `unsupported`;
+  - a negative, non-numeric or non-finite cost or time (unknown is `null`, never a string or a negative number);
+  - a result with a verdict outside pass / fail / unknown / contradicted, a missing field verdict, no entity, or a duplicate or non-positive rank;
+  - a file that is truncated or not JSON, a run that is not `dazl-benchmark-run` version 1, no frozen task set for the run's version, an aggregate that is not numeric.
+
+  The same boundary applies to `from-scoreboard` (a scoreboard row outside the set, or recorded twice, converts to nothing) and to `compare` (a file that is not a scored card is rejected). A threshold that names a metric the card does not have is `invalid_input` for that threshold.
 
 A run can be evaluated against release thresholds only when **all** of these hold:
 - its origin is live or recorded (not synthetic, not a historical aggregate);
 - its evaluator is **independent** of the system that produced the results.
 
 `from-scoreboard` converts a recorded `scripts/scoreboard.mts` result into a run whose verdicts come from the pipeline's own fields. That is a **self-report**: it is shown, but it can never meet a threshold.
+
+**Exit codes:** 0 ok; 1 a regression (`compare`); 2 usage or `invalid_input`.
 
 **`compare`** exits 1 when a metric got worse between two scorecards of the same task set: lower precision@10, more validated or unique companies lost, more false alerts or contradictions, a higher unknown rate, or a task that stopped completing. That is the release regression gate once real runs exist.
 
@@ -85,7 +96,7 @@ All are proposals, built from #393's suggestions. Set the final values and sampl
 | unique-yield | ≥ 20 distinct validated companies (placeholder; the real target comes from competitors on the same tasks) | 10 complete tasks |
 | cost-per-validated | ≤ $2 per validated company, all attempts' cost included (unknown cost cannot meet it) | 10 complete tasks |
 
-The report always reads *"thresholds are proposed: owner approval required; nothing is accepted by this report"*. A threshold result is `meets`, `misses`, `insufficient_sample` or `not_evaluable`.
+The report always reads *"thresholds are proposed: owner approval required; nothing is accepted by this report"*. A threshold result is `meets`, `misses`, `insufficient_sample`, `not_evaluable` or `invalid_input` (the run failed the integrity check above; nothing was evaluated).
 
 ## What it takes to produce real numbers (not done; each needs authority)
 
