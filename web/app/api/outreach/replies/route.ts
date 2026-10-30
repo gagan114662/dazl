@@ -30,10 +30,9 @@ export async function POST(req: NextRequest) {
       await audit(user, req, { action: 'consent.accepted', resource: 'reply_reading', summary: { version: READ_CONSENT_VERSION } })
       return NextResponse.json({ ok: true })
     case 'revoke': {
-      // revoking consent that was never given changes nothing, so it records nothing
-      const had = hasReadConsent(db, user.tenantId)
-      revokeReadConsent(db, user.tenantId)
-      if (had) await audit(user, req, { action: 'consent.revoked', resource: 'reply_reading' })
+      // revoking consent that is not on record (any version) changes nothing, so it records nothing; follow-ups being on
+      // without consent cannot happen (followups_on requires it)
+      if (revokeReadConsent(db, user.tenantId)) await audit(user, req, { action: 'consent.revoked', resource: 'reply_reading' })
       return NextResponse.json({ ok: true })
     }
     case 'followups_off': {

@@ -220,6 +220,19 @@ test('every audited route in the Covered table records its event, with the redac
   assert.deepEqual(await gone.json(), { ok: false })
   await step('social consent revoked', t.D, adv({ platform: 'x', action: 'revoke' }), [['D', 'consent.revoked', 'social', 'x', { platform: 'x' }]])
   await step('social consent revoked again, none on record', t.D, adv({ platform: 'x', action: 'revoke' }), [])
+  // two platforms share one notice: revoking the first removes the notice and turns its channel off (two events);
+  // revoking the second only turns its channel off, and that change is recorded too
+  await step('social consent accepted again', t.D, adv({ platform: 'x', action: 'consent', accept: true, version: SOCIAL_CONSENT }), [['D', 'consent.accepted', 'social', 'x', { platform: 'x', version: SOCIAL_CONSENT }]])
+  await step('x session saved', t.D, adv({ platform: 'x', action: 'save', session: MARK.social }), [['D', 'credential.saved', 'social', 'x', { platform: 'x' }]])
+  await step('reddit session saved', t.D, adv({ platform: 'reddit', action: 'save', session: MARK.social }), [['D', 'credential.saved', 'social', 'reddit', { platform: 'reddit' }]])
+  await step('x revoked: notice and channel', t.D, adv({ platform: 'x', action: 'revoke' }), [['D', 'consent.revoked', 'social', 'x', { platform: 'x' }], ['D', 'connector.disabled', 'social', 'x', { platform: 'x' }]])
+  await step('reddit revoked: notice already gone, channel turned off', t.D, adv({ platform: 'reddit', action: 'revoke' }), [['D', 'connector.disabled', 'social', 'reddit', { platform: 'reddit' }]])
+  await step('reddit revoked again: nothing left to change', t.D, adv({ platform: 'reddit', action: 'revoke' }), [])
+  // a consent at an older wording is still a row: revoking it is recorded
+  raw.prepare("INSERT OR REPLACE INTO advanced_consent (tenant_id, scope, version, accepted_at) VALUES ('A', 'advanced', 'v0-old', 1)").run()
+  await step('stale notice revoked', t.D, adv({ platform: 'x', action: 'revoke' }), [['D', 'consent.revoked', 'social', 'x', { platform: 'x' }]])
+  raw.prepare("INSERT OR REPLACE INTO mail_read_consent (tenant_id, version, accepted_at) VALUES ('A', 'v0-old', 1)").run()
+  await step('stale reply-reading consent revoked', t.A, () => replies.POST(post('/api/outreach/replies', { action: 'revoke' })), [['A', 'consent.revoked', 'reply_reading', null, {}]])
 
   // ---- CRM: a definite failure (HubSpot 4xx), a success (its record id), an unknown result resolved, disconnect once
   const cr = (body: Record<string, unknown>) => () => crm.POST(post('/api/crm', body))

@@ -47,10 +47,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true })
   }
   if (body.action === 'revoke') {
-    // revoking a notice that was never accepted changes nothing, so it records nothing
-    const had = !!(await readConsent(db, user.tenantId, scopeFor(p)))
-    await removeConsent(db, user.tenantId, scopeFor(p)); await setEnabled(db, user.tenantId, connectorId(p), false)
-    if (had) await audit(user, req, { action: 'consent.revoked', resource: 'social', id: p, summary: { platform: p } })
+    // each change revoke makes is recorded on its own: the notice removed (any version; several platforms share one),
+    // and this platform's channel turned off if it was on. A revoke that changes neither records nothing.
+    const on = (await db.get<{ enabled: number }>('SELECT enabled FROM tenant_connectors WHERE tenant_id = ? AND connector = ?', [user.tenantId, connectorId(p)]))?.enabled === 1
+    const removed = await removeConsent(db, user.tenantId, scopeFor(p))
+    await setEnabled(db, user.tenantId, connectorId(p), false)
+    if (removed) await audit(user, req, { action: 'consent.revoked', resource: 'social', id: p, summary: { platform: p } })
+    if (on) await audit(user, req, { action: 'connector.disabled', resource: 'social', id: p, summary: { platform: p } })
     return NextResponse.json({ ok: true })
   }
   if (body.action === 'toggle' && typeof body.enabled === 'boolean') {
