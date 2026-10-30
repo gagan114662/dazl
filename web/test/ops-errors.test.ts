@@ -76,7 +76,9 @@ test('every emitted field is scrubbed or shape-checked: PII in a name, cause nam
   hook(toRecord(e, hostile[0]))
   return new Promise<void>(res => setImmediate(() => {
     assert.equal(posted.length, 1)
-    for (const leak of leaks) assert.ok(!posted[0].includes(leak), `${leak} leaked to the alert hook`)
+    // ts (the clock) and fingerprint (a hex hash) are not input-derived; a planted digit run can occur in them by chance.
+    const body = posted[0].replace(/\\*"(?:ts|fingerprint)\\*":\\*"[^"\\]*\\*"/g, '')
+    for (const leak of leaks) assert.ok(!body.includes(leak), `${leak} leaked to the alert hook`)
     res()
   }))
 })
