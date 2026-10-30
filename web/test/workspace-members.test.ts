@@ -226,3 +226,26 @@ bothEngines('no account is left without a workspace; leaving points the account\
   assert.equal((await db.get<{ a: string | null }>('SELECT active_tenant_id AS a FROM sessions WHERE id = ?', [hashToken(t)]))?.a, null)
   assert.equal((await getSessionUser(t, db))?.tenantId, 'B', 'the next request acts in B, not refused')
 })
+
+bothEngines('two workspaces dropping the same account at once: one wins, the account keeps a workspace', async ({ db }) => {
+  await users(db, 'X', 'Y')
+  for (let round = 0; round < 5; round++) {
+    const m = `M${round}`
+    await users(db, m)
+    await db.run('DELETE FROM memberships WHERE member_id = ?', [m])
+    await add(db, 'X', m, 'viewer'); await add(db, 'Y', m, 'viewer')
+    const r = await Promise.allSettled([removeMember(db, act('X', 'X', 'owner'), m), leave(db, act('Y', m, 'viewer'))])
+    assert.deepEqual(r.map(x => x.status).sort(), ['fulfilled', 'rejected'], `round ${round}`)
+    assert.ok(r.some(x => x.status === 'rejected' && code('only_workspace')(x.reason)))
+    assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM memberships WHERE member_id = ?', [m]))?.n), 1)
+  }
+}, { pgMax: 4 })
+
+bothEngines('an expired invitation does not stand in the way of a new one', async ({ db }) => {
+  await users(db, 'A', 'D')
+  await add(db, 'A', 'D', 'admin')
+  const now = Math.floor(Date.now() / 1000)
+  await createInvitation(db, OWNER_A, 'y@example.test', 'owner', now - INVITE_TTL_S - 1)
+  await createInvitation(db, act('A', 'D', 'admin'), 'y@example.test', 'viewer', now)
+  assert.deepEqual((await listInvitations(db, 'A', now)).map(i => i.role), ['viewer'])
+})

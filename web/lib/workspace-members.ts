@@ -66,8 +66,11 @@ function* roleOf(t: Tx, tenantId: string, memberId: string): TxBody<Role | null>
 }
 
 // A member is never left with no workspace at all: getSessionUser would then find nothing on every request, and the
-// account could not sign in to anything (its personal workspace is not recreated once it exists).
+// account could not sign in to anything (its personal workspace is not recreated once it exists). The count spans every
+// workspace, so the account's own row is locked first (after this workspace's lock; one workspace per transaction, so
+// the order cannot cycle): two removals or leaves in two workspaces at once then count one after the other.
 function* lastWorkspace(t: Tx, memberId: string): TxBody<boolean> {
+  yield* t.run('UPDATE users SET id = id WHERE id = ?', [memberId])
   return Number((yield* t.get<{ n: number }>('SELECT count(*) AS n FROM memberships WHERE member_id = ?', [memberId]))?.n ?? 0) <= 1
 }
 
@@ -142,7 +145,7 @@ export async function createInvitation(db: Db, by: Acting, email: string, role: 
     if (!mayManage(me, null, role)) throw new MemberError('forbidden')
     if (yield* t.get('SELECT 1 AS x FROM memberships m JOIN users u ON u.id = m.member_id WHERE m.tenant_id = ? AND lower(u.email) = ?', [by.tenantId, email])) throw new MemberError('already_member')
     // replacing a pending invitation revokes it, so it takes what revoking it would (an owner invitation: 'owners')
-    for (const p of yield* t.all<{ role: string }>('SELECT role FROM invitations WHERE tenant_id = ? AND email = ? AND accepted_at IS NULL AND revoked_at IS NULL', [by.tenantId, email]))
+    for (const p of yield* t.all<{ role: string }>('SELECT role FROM invitations WHERE tenant_id = ? AND email = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?', [by.tenantId, email, now]))
       if (!isRole(p.role) || !mayManage(me, null, p.role)) throw new MemberError('forbidden')
     yield* t.run('UPDATE invitations SET revoked_at = ? WHERE tenant_id = ? AND email = ? AND accepted_at IS NULL AND revoked_at IS NULL', [now, by.tenantId, email])
     const pending = Number((yield* t.get<{ n: number }>('SELECT count(*) AS n FROM invitations WHERE tenant_id = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?', [by.tenantId, now]))?.n ?? 0)
