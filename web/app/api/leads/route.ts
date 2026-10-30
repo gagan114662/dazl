@@ -14,25 +14,25 @@ export async function GET(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const jobId = req.nextUrl.searchParams.get('job_id') ?? ''
   const db = sqliteLeadsRead(getScanDb())
-  const job = /^[a-f0-9]{24}$/.test(jobId) ? await db.getJob(user.id, jobId) : undefined
+  const job = /^[a-f0-9]{24}$/.test(jobId) ? await db.getJob(user.tenantId, jobId) : undefined
   if (!job) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   const includeHidden = req.nextUrl.searchParams.get('all') === '1'
-  const leads = await db.listLeads(user.id, job.id, 200, includeHidden) as { id: string; company: string; company_domain: string | null; event_date: string | null; score: number; fit: number | null; intent: number | null; action: number | null; signal: string }[]
-  const sequences = await db.sequenceStatusByLead(user.id)
-  const enr = await db.enrichmentsForLeads(user.id, leads.map(l => l.id))
-  const evts = await db.eventsForLeads(user.id, leads)
-  const pri = await db.leadPriorities(user.id, leads)
-  const look = await db.lookalikeSignals(user.id, leads.map(l => ({ id: l.id, signal: l.signal, industry: job.industry, location: job.location })))
+  const leads = await db.listLeads(user.tenantId, job.id, 200, includeHidden) as { id: string; company: string; company_domain: string | null; event_date: string | null; score: number; fit: number | null; intent: number | null; action: number | null; signal: string }[]
+  const sequences = await db.sequenceStatusByLead(user.tenantId)
+  const enr = await db.enrichmentsForLeads(user.tenantId, leads.map(l => l.id))
+  const evts = await db.eventsForLeads(user.tenantId, leads)
+  const pri = await db.leadPriorities(user.tenantId, leads)
+  const look = await db.lookalikeSignals(user.tenantId, leads.map(l => ({ id: l.id, signal: l.signal, industry: job.industry, location: job.location })))
   // Read-time only: preserve stored grade/rationale for inspection, but never
   // rank legacy unsupported timing as a live need. No history is rewritten.
   const safeLeads = leads.map(l => ({...l, stored_intent:l.intent, intent:0,
     stored_why:(l as typeof l & {why?:string|null}).why ?? null,
     why:savedGradeWhy(l as typeof l & {why?:string|null}),
-    currentness_held:currentnessHeld(getScanDb(),user.id,l.id), window_held:leadWindowHeld(getScanDb(),user.id,l.id)}))
+    currentness_held:currentnessHeld(getScanDb(),user.tenantId,l.id), window_held:leadWindowHeld(getScanDb(),user.tenantId,l.id)}))
   for (const p of Object.values(pri)) if (p) p.intent=0
   const ranked = rankLeads(safeLeads, pri)
-  const via = gdeltAttribution(getScanDb(), user.id, ranked.map(l => l.id))
-  return NextResponse.json({ job_id: job.id, status: job.status, hidden_count: includeHidden ? 0 : await db.countHiddenLeads(user.id, job.id), leads: ranked.map(l => ({ ...l, discovered_via: via.get(l.id)?.text ?? null, discovered_via_link: via.get(l.id)?.link ?? null, contact_context:leadContactContext(getScanDb(),user.id,l.id), source_check: sourceCheckForLead(getScanDb(), user.id, l.id), sequence: sequences.get(l.id) ?? null, enrichments: (enr[l.id] ?? []).map(e => ({ ...e, entity_status:
+  const via = gdeltAttribution(getScanDb(), user.tenantId, ranked.map(l => l.id))
+  return NextResponse.json({ job_id: job.id, status: job.status, hidden_count: includeHidden ? 0 : await db.countHiddenLeads(user.tenantId, job.id), leads: ranked.map(l => ({ ...l, discovered_via: via.get(l.id)?.text ?? null, discovered_via_link: via.get(l.id)?.link ?? null, contact_context:leadContactContext(getScanDb(),user.tenantId,l.id), source_check: sourceCheckForLead(getScanDb(), user.tenantId, l.id), sequence: sequences.get(l.id) ?? null, enrichments: (enr[l.id] ?? []).map(e => ({ ...e, entity_status:
           e.connector === 'signals:sec-edgar'
             ? (() => { const base = classifyEntityMatch(l.company, e.label ?? '')
                 return base === 'heuristic' && l.event_date && e.source_date && !withinEventWindow(e.source_date, l.event_date) ? 'unconfirmed' : base })()

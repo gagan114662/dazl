@@ -10,5 +10,5 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const db = await getDb()
   // totals: complete counts over all of the tenant's own searches (the jobs list is the newest 20 only).
-  return NextResponse.json({ jobs: await historyJobs(db, user.id), totals: await historyTotals(db, user.id) })
+  return NextResponse.json({ jobs: await historyJobs(db, user.tenantId), totals: await historyTotals(db, user.tenantId) })
 }

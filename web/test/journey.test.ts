@@ -54,7 +54,7 @@ test('a lead list that did not load is unknown, never a zero', () => {
 })
 
 test('all held: zero opportunities, the held leads are counted separately', () => {
-  const j = journey({ profile, jobs: [job()], leads: [lead({ review_reason: 'x' }), lead({ id: 'l2', window_held: true })], drafts: null })
+  const j = journey({ profile, jobs: [job()], leads: [lead({ review_reason: 'quote_unconfirmed' }), lead({ id: 'l2', review_reason: 'blocked_by_site' })], drafts: null })
   assert.equal(j.stage, 'all_held'); assert.equal(j.split?.opportunities.length, 0)
   assert.equal(j.line, '0 opportunities. 2 leads need review.')
 })
