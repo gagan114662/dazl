@@ -68,6 +68,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'monitors/[id]', method: 'PATCH', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' } },
   { path: 'monitors/[id]', method: 'DELETE', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' } },
   { path: 'monitors', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' } },
+  { path: 'plays/[kind]/[id]/runs', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' } },
   { path: 'monitors', method: 'POST', auth: 'session', crossTenant: 'session-scope' },
   { path: 'outreach/[id]', method: 'PATCH', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' } },
   { path: 'outreach/[id]', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' } },

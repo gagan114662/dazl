@@ -33,6 +33,7 @@ import { PATCH as outreachPATCH, POST as outreachPOST } from '../../app/api/outr
 import { POST as reopenPOST } from '../../app/api/outreach/reopen/route.ts'
 import { POST as confirmPOST, DELETE as confirmDELETE } from '../../app/api/leads/[lead]/confirm/route.ts'
 import { PATCH as monitorPATCH, DELETE as monitorDELETE } from '../../app/api/monitors/[id]/route.ts'
+import { GET as playRunsGET } from '../../app/api/plays/[kind]/[id]/runs/route.ts'
 import { POST as cancelPOST } from '../../app/api/scan/cancel/route.ts'
 
 // Local synthetic fixture: two tenants, the real route handlers, session identity switched per call.
@@ -107,6 +108,7 @@ test('tenant B cannot read or change tenant A rows through the real route handle
   await hit('DELETE /api/leads/[lead]/confirm', () => confirmDELETE(req(`/api/leads/${lead}/confirm`, 'DELETE'), ctx({ lead })), 404, undefined)
   await hit('PATCH /api/monitors/[id]', () => monitorPATCH(req(`/api/monitors/${mon}`, 'PATCH', { enabled: false }), ctx({ id: mon })), 404, undefined)
   await hit('DELETE /api/monitors/[id]', () => monitorDELETE(req(`/api/monitors/${mon}`, 'DELETE'), ctx({ id: mon })), 404, undefined)
+  await hit('GET /api/plays/[kind]/[id]/runs', () => playRunsGET(req(`/api/plays/monitor/${mon}/runs`, 'GET'), ctx({ kind: 'monitor', id: mon })), 404, undefined) // #351
   await hit('POST /api/scan/cancel', () => cancelPOST(req('/api/scan/cancel', 'POST', { job_id: pending })), 404, undefined)
   assert.equal(snapshot(db), before)
   // Positive controls for the two negative-only actions run on their own valid fixtures before the final checks below.
@@ -130,6 +132,8 @@ test('tenant B cannot read or change tenant A rows through the real route handle
   assert.equal((await reopenPOST(req('/api/outreach/reopen', 'POST', { action: 'skip', thread_id: 'tA' }))).status, 200)
   assert.equal(reopenStatus(), 'skipped')
   assert.equal((await confirmDELETE(req(`/api/leads/${lead}/confirm`, 'DELETE'), ctx({ lead }))).status, 200)
+  const runsA = await playRunsGET(req(`/api/plays/monitor/${mon}/runs`, 'GET'), ctx({ kind: 'monitor', id: mon }))
+  assert.equal(runsA.status, 200); assert.deepEqual(await runsA.json(), { runs: [] }) // #351: A reads its own play's runs
   assert.equal((await monitorPATCH(req(`/api/monitors/${mon}`, 'PATCH', { enabled: false }), ctx({ id: mon }))).status, 200)
   assert.equal((db.prepare('SELECT enabled FROM monitors WHERE id=?').get(mon) as { enabled: number }).enabled, 0)
   assert.equal((await monitorDELETE(req(`/api/monitors/${mon}`, 'DELETE'), ctx({ id: mon }))).status, 200)
