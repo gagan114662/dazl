@@ -80,9 +80,11 @@ export class PooledGuard extends SpendGuard {
     this.reservedUsd += usd; this.calls++
     return at
   }
+  // The local total moves only after the store settled (one transaction: all or nothing), so a failed settle leaves it
+  // where it was and a retry moves it once.
   async settleShared(deltaUsd: number, reportedUsd: number | null, at: number): Promise<void> {
-    this.reservedUsd = Math.max(0, this.reservedUsd + (Number.isFinite(deltaUsd) ? deltaUsd : 0))
     await this.pool.settle(deltaUsd, reportedUsd, at)
+    this.reservedUsd = Math.max(0, this.reservedUsd + (Number.isFinite(deltaUsd) ? deltaUsd : 0))
   }
 }
 

@@ -200,3 +200,36 @@ bothEngines('a store failure partway through a settle is recoverable: a retry se
   assert.deepEqual(await valuesOf(db, 'synthetic-A'), { 'd:2026-10-29': [0.1, 0.1] }, 'pool A settled once')
   assert.deepEqual(await valuesOf(db, 'synthetic-B'), { 'd:2026-10-29': [0.1, 0.1] }, 'pool B settled on the retry')
 })
+
+// Instinct #426 review of 755cef5: a failed store settle must leave the pooled guard's local total where it was, so a
+// same-amount retry moves it once. Every guard's local total and the store rows are checked after the failure and after
+// the retry, with another reservation still outstanding, for a release (negative delta) and an overrun (positive delta),
+// and for a failing store and a failing job persist.
+bothEngines('a failed settle moves no local total; the retry moves each guard once and another outstanding reservation keeps its share', async ({ db }) => {
+  const near = (got: number, want: number, what: string) => assert.ok(Math.abs(got - want) < 1e-9, `${what}: ${got} != ${want}`)
+  for (const [i, [delta, fail]] of ([[-0.5, 'store'], [0.1, 'store'], [-0.5, 'persist'], [0.1, 'persist']] as [number, 'store' | 'persist'][]).entries()) {
+    const owner = `synthetic-retry-${i}`, what = `delta ${delta}, ${fail} fails`
+    const real = sharedPool(db, owner, { day: 5 }, () => T0)
+    let storeFails = false, persistFails = false
+    const flaky = { ...real, settle: async (d: number, rep: number | null, at: number) => { if (storeFails) { storeFails = false; throw new Error('store unavailable') } return real.settle(d, rep, at) } }
+    const job = new SpendGuard(5), pool = new PooledGuard(flaky)
+    let saved = 0
+    job.persist = (usd: number) => { if (persistFails) { persistFails = false; throw new Error('persist failed') } saved = usd }
+    const a = await reserveAllUsd([job, pool], 0.6)
+    await reserveAllUsd([job, pool], 0.4) // B stays outstanding throughout
+    near(job.reservedUsd, 1, `${what}: job before`); near(pool.reservedUsd, 1, `${what}: pooled before`); near((await reserved(db, owner))['d:2026-10-29'], 1, `${what}: store before`)
+    if (fail === 'store') storeFails = true; else persistFails = true
+    await assert.rejects(settleAll([job, pool], delta, 0.1, a), fail === 'store' ? /store unavailable/ : /persist failed/)
+    assert.equal(a.settled, false, what)
+    // The job guard settles first (reservation order): it moved only if its own persist succeeded. The pooled guard and
+    // the store did not move.
+    near(job.reservedUsd, fail === 'store' ? 1 + delta : 1, `${what}: job after failure`)
+    near(saved, fail === 'store' ? 1 + delta : 1, `${what}: job saved after failure`)
+    near(pool.reservedUsd, 1, `${what}: pooled local after failure`)
+    near((await reserved(db, owner))['d:2026-10-29'], 1, `${what}: store after failure`)
+    await settleAll([job, pool], delta, 0.1, a)
+    assert.equal(a.settled, true, what)
+    // A settled to 0.6 + delta, B's 0.4 still outstanding, on every guard and in the store.
+    for (const [got, label] of [[job.reservedUsd, 'job'], [saved, 'job saved'], [pool.reservedUsd, 'pooled local'], [(await reserved(db, owner))['d:2026-10-29'], 'store']] as [number, string][]) near(got, 1 + delta, `${what}: ${label} after retry`)
+  }
+})
