@@ -51,6 +51,7 @@ export const ROUTE_TEMPLATES: readonly string[] = [
   '/api/outreach/sequences',
   '/api/outreach/settings',
   '/api/outreach/usage',
+  '/api/plays/[kind]/[id]/runs',
   '/api/ready',
   '/api/replies',
   '/api/replies/[id]',
