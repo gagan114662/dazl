@@ -268,6 +268,42 @@ CREATE TABLE memberships (
     PRIMARY KEY (tenant_id, member_id)
   );
 
+CREATE TABLE monitor_alerts (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      monitor_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      event_key TEXT NOT NULL,
+      entity_key TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('new_company','new_signal','newly_actionable','now_reachable')),
+      company TEXT,
+      latency_s INTEGER,
+      at INTEGER NOT NULL
+    );
+
+CREATE TABLE monitor_cursors (
+      monitor_id TEXT NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
+      source TEXT NOT NULL,
+      last_event_at INTEGER,
+      last_checked_at INTEGER NOT NULL,
+      PRIMARY KEY (monitor_id, source)
+    );
+
+CREATE TABLE monitor_events (
+      user_id TEXT NOT NULL,
+      event_key TEXT NOT NULL,
+      entity_key TEXT NOT NULL,
+      monitor_id TEXT NOT NULL,
+      first_seen_at INTEGER NOT NULL,
+      occurred_at INTEGER,
+      last_checked_at INTEGER NOT NULL,
+      first_actionable_at INTEGER,
+      reachable INTEGER NOT NULL DEFAULT 0,
+      alerted_kind TEXT,
+      alerted_at INTEGER,
+      PRIMARY KEY (user_id, event_key)
+    );
+
 CREATE TABLE monitor_runs (
       id         TEXT PRIMARY KEY,
       monitor_id TEXT NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
@@ -806,6 +842,10 @@ CREATE INDEX leads_insert_seq_idx ON leads (insert_seq);
 CREATE INDEX leads_job ON leads (scan_job_id);
 
 CREATE INDEX memberships_member ON memberships (member_id);
+
+CREATE INDEX monitor_alerts_run ON monitor_alerts (run_id);
+
+CREATE INDEX monitor_events_entity ON monitor_events (user_id, entity_key);
 
 CREATE INDEX monitor_runs_monitor ON monitor_runs (monitor_id, ran_at);
 

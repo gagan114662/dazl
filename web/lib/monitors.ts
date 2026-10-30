@@ -10,6 +10,7 @@ import type { Db, Tx, TxBody } from './db/client.ts'
 import { readPlan, readScanQuota } from './plans.ts'
 import { countActiveJobs, queryJobStep } from './scan/store-db.ts'
 import type { Fence } from './watch.ts'
+import { foldRunEvents, migrateMonitorEvents, type RunLead } from './monitor-events.ts'
 
 export const MONITOR_LIMITS: Record<string, { maxMonitors: number; minIntervalHours: number }> = {
   free: { maxMonitors: 2, minIntervalHours: 168 }, // weekly: 2 x ~4 runs/mo fits in the 50-scan quota
@@ -48,6 +49,7 @@ export function migrateMonitors(db: Database.Database): void {
       PRIMARY KEY (monitor_id, dedup_key)
     );
   `)
+  migrateMonitorEvents(db)
 }
 
 const nowS = () => Math.floor(Date.now() / 1000)
@@ -130,6 +132,13 @@ export async function collectMonitorResults(db: Db, o: { fence?: Fence } = {}): 
       let n = 0
       for (const { dedup_key } of keys) if ((yield* t.run('INSERT INTO monitor_seen (monitor_id, dedup_key) VALUES (?, ?) ON CONFLICT (monitor_id, dedup_key) DO NOTHING', [r.monitor_id, dedup_key])).changes === 1) n++
       yield* t.run('UPDATE monitor_runs SET new_count = ? WHERE id = ?', [n, r.id])
+      // Event-level detection (#387): new company / new signal / newly actionable / now reachable, per tenant, verified-only. new_count above is unchanged (company novelty);
+      // the alerts live in monitor_alerts and are what a notification should count.
+      const owner = yield* t.get<{ user_id: string }>('SELECT user_id FROM monitors WHERE id = ?', [r.monitor_id])
+      if (owner) {
+        const leads = yield* t.all<RunLead>('SELECT company, company_domain, contact, source_url, event_date, signal, review_reason, confidence, quarantined_at, date_status FROM leads WHERE scan_job_id = ?', [r.job_id])
+        yield* foldRunEvents(t, { userId: owner.user_id, monitorId: r.monitor_id, runId: r.id, leads, now: nowS() })
+      }
       // Monitor jobs reuse the query pipeline; stamp the producing channel now that the run is recorded.
       yield* t.run("UPDATE leads SET source_kind = 'monitor' WHERE scan_job_id = ?", [r.job_id])
       return n
