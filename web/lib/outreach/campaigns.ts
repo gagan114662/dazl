@@ -14,7 +14,9 @@ export interface Campaign {
   // The same evidence states as the draft/send gates (evidence-state.ts): machine = quote found on the cited page,
   // human = confirmed by you, unverified = neither (and not in the review list). held = timing not confirmed yet.
   qualification: { sourceChecked: number; confirmedByYou: number; needsReview: number; unverified: number; held: number; rejected: number }
-  contact: { withContact: number }
+  // withContact: any live lead with a stored contact. readyWithContact: of those, the qualified ones (source-checked
+  // or confirmed by you) whose timing is not held. draftable: leads every draft gate accepts right now, not yet drafted.
+  contact: { withContact: number; readyWithContact: number; draftable: number }
   // Stored counts, then what the real gates say about them right now (approveBlockReason / sendBlockReason):
   // ready = the gate accepts it; setup = refused only for sender details or Gmail; held = refused for anything else.
   outreach: { drafts: number; approved: number; sent: number; draftsReady: number; draftsSetup: number; draftsHeld: number; approvedReady: number; approvedSetup: number; approvedHeld: number }
@@ -32,8 +34,8 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     // Leads of THIS job of THIS tenant only (scan_jobs.user_id is the tenant).
     const L = `FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE l.scan_job_id = ?`
     const live = 'AND l.quarantined_at IS NULL'
-    type Row = { id: string; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; quarantined_at: number | null }
-    const rows = db.prepare(`SELECT l.id, l.evidence_excerpt, l.confidence, l.human_confirmed_at, l.review_reason, l.quarantined_at ${L}`).all(tenantId, j.id) as Row[]
+    type Row = { id: string; contact: string | null; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; quarantined_at: number | null }
+    const rows = db.prepare(`SELECT l.id, l.contact, l.evidence_excerpt, l.confidence, l.human_confirmed_at, l.review_reason, l.quarantined_at ${L}`).all(tenantId, j.id) as Row[]
     const leads = rows.length
     const liveRows = rows.filter(r => r.quarantined_at === null)
     const rejected = leads - liveRows.length
@@ -47,11 +49,14 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     }
     // The real gates, not a re-derivation: currentnessHeld is what holds drafting until timing is confirmed, and
     // draftBlockReason runs every createDraft check without writing. A stored contact alone never counts as ready.
-    const held = liveRows.filter(r => evidenceStateOf(r) !== 'unverified' && currentnessHeld(db, tenantId, r.id)).length
+    const heldIds = new Set(liveRows.filter(r => evidenceStateOf(r) !== 'unverified' && currentnessHeld(db, tenantId, r.id)).map(r => r.id))
+    const held = heldIds.size
+    const readyWithContact = liveRows.filter(r => evidenceStateOf(r) !== 'unverified' && !heldIds.has(r.id) && (r.contact ?? '').trim() !== '').length
     const withContact = n(`SELECT count(*) AS n ${L} ${live} AND coalesce(trim(l.contact), '') <> ''`, tenantId, j.id)
-    const msg = (status: string) => n(`SELECT count(*) AS n FROM outreach_messages m JOIN leads l ON l.id = m.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE m.tenant_id = ? AND l.scan_job_id = ? AND m.status = ?`, tenantId, tenantId, j.id, status)
+    const msg = (status: string) => n(`SELECT count(*) AS n FROM outreach_messages m JOIN leads l ON l.id = m.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE m.tenant_id = ? AND l.scan_job_id = ? AND m.status = ? AND coalesce(m.test, 0) = 0`, tenantId, tenantId, j.id, status)
+    // Test sends (outreach_messages.test) are fixtures, never real work: excluded from every count here.
     const drafts = msg('draft'), approved = msg('approved'), sent = msg('sent')
-    const ids = (status: string) => (db.prepare(`SELECT m.id FROM outreach_messages m JOIN leads l ON l.id = m.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE m.tenant_id = ? AND l.scan_job_id = ? AND m.status = ?`).all(tenantId, tenantId, j.id, status) as { id: string }[]).map(r => r.id)
+    const ids = (status: string) => (db.prepare(`SELECT m.id FROM outreach_messages m JOIN leads l ON l.id = m.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE m.tenant_id = ? AND l.scan_job_id = ? AND m.status = ? AND coalesce(m.test, 0) = 0`).all(tenantId, tenantId, j.id, status) as { id: string }[]).map(r => r.id)
     // "setup" only when the account checks are the sole refusal: the same gate with them skipped must accept it.
     const sort = (list: string[], reason: (id: string, skipAccount: boolean) => string | null) => {
       const out = { ready: 0, setup: 0, held: 0 }
@@ -75,7 +80,7 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
       id: j.id, query: j.query, status: j.status, error: j.error, created_at: j.created_at,
       discovery: { candidates: j.candidates, leads },
       qualification: { sourceChecked, confirmedByYou, needsReview, unverified, held, rejected },
-      contact: { withContact },
+      contact: { withContact, readyWithContact, draftable: undrafted },
       outreach: { drafts, approved, sent, draftsReady: d.ready, draftsSetup: d.setup, draftsHeld: d.held, approvedReady: a.ready, approvedSetup: a.setup, approvedHeld: a.held },
       sequence: { active: seq("'approved','active'"), stopped: seq("'replied','done','stopped'") },
       reply: { replied: an.replied, interested, bounced: an.bounced, optOuts: an.optOuts },
@@ -102,6 +107,8 @@ export function nextAction(c: Omit<Campaign, 'next'>, undrafted: number): Campai
   const setup = c.outreach.draftsSetup + c.outreach.approvedSetup
   if (setup > 0) return { label: `Add your sender details and connect Gmail to continue ${plural(setup, 'email', 'emails')}`, href: '/app' }
   if (c.reply.interested > 0) return { label: `Answer ${plural(c.reply.interested, 'interested reply', 'interested replies')}`, href: '/app/inbox' }
+  // Every lead this search found has been rejected: none passed, whatever the scan recorded when it finished.
+  if (c.discovery.leads > 0 && c.qualification.rejected >= c.discovery.leads) return { label: 'None passed: every lead was rejected. Try a broader search', href: '/app/leads' }
   if (undrafted > 0) return { label: `Approve ${plural(undrafted, 'lead', 'leads')} to draft emails`, href: leadsHref }
   if (c.qualification.held > 0) return { label: `Review the source of ${plural(c.qualification.held, 'lead', 'leads')} to confirm timing`, href: leadsHref }
   const heldEmails = c.outreach.draftsHeld + c.outreach.approvedHeld

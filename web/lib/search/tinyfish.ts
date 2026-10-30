@@ -75,7 +75,9 @@ async function block(db: DbLike, untilS: number): Promise<void> {
 }
 
 export type Fail = 'disabled' | 'cap' | 'rate' | 'auth' | 'quota' | 'unavailable'
-export interface TfDeps { env?: Env; fetchImpl?: typeof fetch; now?: number; trace?: SearchTrace }
+// charge: called once the caps admit a paid call and before it is made (kind, number of units: 1 search, or the URLs of
+// one fetch). It throws to stop the call: a free-trial scan counts every paid step against its budget this way.
+export interface TfDeps { env?: Env; fetchImpl?: typeof fetch; now?: number; trace?: SearchTrace; charge?: (kind: 'search' | 'fetch', units: number) => void | Promise<void> }
 // date = the date the SOURCE states for the event/post. A discovery index's own timestamp is NOT that: it goes in
 // `observed` (context only) and `date` stays null. via marks which index surfaced the hit (attribution).
 export interface SearchHit { url: string; title: string; snippet: string; date: string | null; observed?: string | null; via?: 'gdelt' }
@@ -105,6 +107,7 @@ export async function tfSearch(db: DbLike, tenant: string, query: string, opts: 
     return 'go'
   })
   if (gate !== 'go') { d.trace?.search({ query, attempted: false, outcome: gate, hits: null }); return { ok: false, reason: gate } }
+  await d.charge?.('search', 1)
   const q = new URLSearchParams({ query: query.slice(0, QUERY_CAP), ...(opts.afterDate ? { after_date: opts.afterDate } : {}), ...(opts.location ? { location: opts.location } : {}), ...(opts.language ? { language: opts.language } : {}) })
   const r = await call(db, `${SEARCH_URL}?${q}`, { method: 'GET' }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
   if (!r.ok) { d.trace?.search({ query, attempted: true, outcome: r.reason, hits: null }); return r }
@@ -137,6 +140,7 @@ export async function tfFetch(db: DbLike, tenant: string, urls: string[], spent:
   const batch = gate.batch
   if (gate.out === 'cap') { d.trace?.fetch({ requested: urls.length, attempted: false, outcome: 'cap', pages: null }); return { ok: false, reason: 'cap' } }
   if (gate.out === 'rate') { d.trace?.fetch({ requested: batch.length, attempted: false, outcome: 'rate', pages: null }); return { ok: false, reason: 'rate' } }
+  await d.charge?.('fetch', batch.length)
   const r = await call(db, FETCH_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ urls: batch, format: 'markdown' }) }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
   if (!r.ok) { d.trace?.fetch({ requested: batch.length, attempted: true, outcome: r.reason, pages: null }); return r }
   const arr = (r.json as { results?: unknown })?.results

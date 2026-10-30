@@ -1,4 +1,6 @@
 'use client'
+import { PlayOfferCard } from './play-offer'
+import type { PlayOffer } from '@/lib/scan/play-offer-text'
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { editedBuyer, journey, showList, type JourneyInput, type JourneyJob, type PreviewLead } from '@/lib/journey'
@@ -32,6 +34,8 @@ export default function Journey() {
   const [watches, setWatches] = useState<PlayWatch[] | null | 'loading'>('loading')
   const [sent, setSent] = useState<number | null>(null)
   const [morePills, setMorePills] = useState(false)
+  // What the current play sells (its campaign record, lib/scan/play-offer.ts); undefined until read, null if unreadable.
+  const [playOfferOf, setPlayOfferOf] = useState<{ id: string; offer: PlayOffer | null } | null>(null)
 
   const get = (u: string) => fetch(u).then(r => r.ok ? r.json() : null).catch(() => null)
   // Missing buyer lists read as empty (never invented), so a partial profile still renders.
@@ -67,6 +71,12 @@ export default function Journey() {
     setStopNote(r?.ok ? (j?.note ?? 'Stop requested.') : 'Could not cancel: ' + (j?.error ?? 'try again'))
     if (r?.ok) void get('/api/scan/jobs').then(x => { if (Array.isArray(x?.jobs)) setJobs(x.jobs) })
   }
+  useEffect(() => {
+    if (!playId) return
+    void get(`/api/campaigns/${playId}`).then(c => setPlayOfferOf({ id: playId, offer: c && 'offer' in c ? c.offer ?? null : null }))
+  }, [playId]) // eslint-disable-line react-hooks/exhaustive-deps
+  // the offer read for the play shown now (an earlier play's read never shows under a newer play)
+  const playOffer = playOfferOf && playOfferOf.id === playId ? playOfferOf.offer : undefined
   useEffect(() => {
     if (!playId || !playDone) return
     // The play's own leads, and its own campaign record for drafts (never the account-wide Outreach list).
@@ -184,7 +194,7 @@ export default function Journey() {
         {editing ? <ProfileForm profile={p} onDone={saved => { setEditing(false); if (saved) void loadProfile() }} />
           : <>
             <dl className="grid sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
-              <Fact k="You sell" v={p.sells} />
+              <Fact k={j.play ? 'Your business profile sells (new plays start from this)' : 'You sell'} v={p.sells} />
               <Fact k="Website" v={p.website} />
               <Fact k="Who buys" v={buyer?.summary} />
               <Fact k="Buyer roles" v={buyer ? showList(buyer.who) : ''} />
@@ -197,6 +207,7 @@ export default function Journey() {
               <span className="font-semibold">Complete your profile</span><span className="text-[var(--ink-2)]"> - add {missing.slice(0, 3).join(', ')}{missing.length > 3 ? ` and ${missing.length - 3} more` : ''}</span>
             </button>}
           </>}
+        {j.play && playOffer !== undefined && <div className="mt-4 pt-4 border-t border-[var(--line)]" data-testid="journey-play-offer"><PlayOfferCard jobId={j.play.id} offer={playOffer} onChange={o => setPlayOfferOf({ id: j.play!.id, offer: o })} /></div>}
         {icp && <div className="mt-4 pt-4 border-t border-[var(--line)] text-sm" data-testid="journey-constraints">
           <p className="text-xs font-semibold uppercase tracking-wide text-[var(--ink-3)] mb-2">This play searched with<InfoTip>The reviewed profile this play ran with, exactly as saved. It is not changed when you edit the business profile above.</InfoTip></p>
           <div className="flex flex-wrap gap-2">

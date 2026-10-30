@@ -96,7 +96,7 @@ async function run(width, height, tag, leads = LEADS, fail = false) {
   assert.equal(await page.getByTestId('ready-plan').locator('li').count(), 4)
   assert.equal(await page.getByTestId('first-play').count(), 3)
   // The inferred criteria are shown before the click, item for item ("London, UK" is one place).
-  assert.equal(await page.getByTestId('first-heading').textContent(), 'Pick your first play')
+  assert.equal(await page.getByTestId('first-heading').textContent(), 'Who do you want to find?')
   for (const [k, v] of [['who', READ.icp.who], ['industry', READ.icp.industries], ['where', READ.icp.where], ['size', READ.icp.sizes], ['signals', READ.icp.signals], ['skip', READ.icp.exclude]]) assert.deepEqual(await page.getByTestId(`criteria-${k}`).locator('.pill').allTextContents(), v, `${k} shown exactly as inferred`)
   await page.waitForTimeout(600)
   await fits('ready screen')
@@ -108,7 +108,7 @@ async function run(width, height, tag, leads = LEADS, fail = false) {
   await page.getByTestId('first-progress').waitFor()
   assert.equal(await page.getByTestId('first-heading').textContent(), 'Finding your first leads')
   if (leads === LEADS) await page.getByTestId('first-lead').first().waitFor({ timeout: 20000 })
-  assert.deepEqual(st.scanBodies, [{ query: firstPlay.trim(), icp: READ.icp }], 'exactly one scan: the first play and the inferred profile, every list item as read')
+  assert.deepEqual(st.scanBodies, [{ query: firstPlay.trim(), icp: READ.icp, mode: 'first5' }], 'exactly one scan: the first play (the prefilled sentence) and the inferred profile, every list item as read, as the fast first scan')
   if (leads !== LEADS) {
     // Nothing ready (only held, none at all, or the play failed): heading and button say what is there, never "Start
     // reaching out" (Instinct #332).
@@ -117,19 +117,19 @@ async function run(width, height, tag, leads = LEADS, fail = false) {
     assert.equal(await page.getByTestId('ready-cta').textContent(), cta)
     assert.equal(await page.getByTestId('ready-cta').getAttribute('href'), `/app/leads?job_id=${J}`)
     assert.equal(await page.getByTestId('first-lead').count(), 0)
-    if (!fail && leads.length) assert.match(await page.getByTestId('first-customers').innerText(), /0 ready, 1 held for your review/)
+    if (!fail && leads.length) assert.match(await page.getByTestId('first-customers').innerText(), /0 ready to contact, 1 held for your review/)
     assert.doesNotMatch(await page.getByTestId('onboarding-screen').innerText(), /Start reaching out|Watch it live/)
     await ctx.close(); return
   }
   const rows = await page.getByTestId('first-lead').allInnerTexts()
   assert.equal(rows.length, 5)
-  assert.match(rows[0], /Maya Chen\nFounder & CEO · Northwind Labs\nfit 5\/5/)
+  assert.match(rows[0], /Maya Chen\nFounder & CEO · Northwind Labs\nready to contact$/)
   assert.match(rows[1], /Omar Haddad\nCo-founder · Kitebase/, 'a hyphenated title is kept whole')
   assert.ok(!rows.some(r => /Gramercy|Pat Lee/.test(r)), 'a held lead is not a ready customer')
-  assert.equal(await page.getByTestId('ready-subhead').textContent(), 'dazl found 5 leads ready for your review.')
-  assert.equal(await page.getByTestId('first-heading').textContent(), '5 leads ready for your review')
+  assert.equal(await page.getByTestId('ready-subhead').textContent(), 'dazl found 5 leads ready to contact.')
+  assert.equal(await page.getByTestId('first-heading').textContent(), '5 ready to contact')
   assert.equal(await page.getByTestId('ready-cta').textContent(), 'Start reaching out')
-  assert.equal(await page.getByTestId('ready-cta').getAttribute('href'), `/app/leads?job_id=${J}`)
+  assert.equal(await page.getByTestId('ready-cta').evaluate(e => e.tagName), 'BUTTON', 'with leads ready, reaching out opens the review step in place (test/ui/first-review.ui.mjs)')
   await page.waitForTimeout(400)
   await fits('ready screen with leads')
   await shot('4-customers')

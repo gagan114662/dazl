@@ -1,0 +1,29 @@
+{
+ "v": 1,
+ "kind": "dazl.case",
+ "id": "scan-london-seed-traps",
+ "title": "London seed-round scan: one real lead among stale, wrong-city, fabricated and future-dated traps",
+ "path": "scan.discovery",
+ "world": "../worlds/scan-london-seed-traps.world.json",
+ "provenance": {
+  "from_trace": "synthetic-scan-london-seed-traps",
+  "synthetic": true,
+  "why": "SYNTHETIC. Seeds the #395 traps (old article, wrong city, fabricated quote, future event) next to one genuine lead, so each scan verifier has a positive and a negative to get right."
+ },
+ "input": {
+  "request": "Find London UK B2B SaaS startups that announced seed funding within the past 90 days.",
+  "icp": { "summary": "London B2B SaaS startups that raised seed funding in the past 90 days", "who": ["Founder", "Head of Sales"], "industries": ["B2B SaaS"], "sizes": [], "where": ["London, UK"], "signals": ["raised a seed round"], "exclude": [], "country": "GB", "language": "en", "window_days": 90 }
+ },
+ "expect": {
+  "exhaustive": true,
+  "entities": { "Querix": { "domains": ["querix.example"] } },
+  "leads": [
+   { "company": "Querix", "outcome": "verified", "why": "dated 10 days before as_of, London, quote and contact on the page" },
+   { "company": "Northwind Analytics", "outcome": "held", "review_reason": "event_date_stale", "why": "the quote names 2019: an old event on an undated page" },
+   { "company": "Lumen Ledger", "outcome": "held", "review_reason": "location_mismatch", "why": "the page is about Paris, the request is London" },
+   { "company": "Brightpath AI", "outcome": "absent", "why": "fabricated: neither the quote nor the company is on the cited page" },
+   { "company": "Seine Systems", "outcome": "held", "review_reason": "location_mismatch", "why": "lower-case 'based in paris, france' binds the company to Paris; the London market-news line is incidental" },
+   { "company": "Orbit Labs", "outcome": "held", "review_reason": "event_date_future_date", "why": "the event is after as_of" }
+  ]
+ }
+}

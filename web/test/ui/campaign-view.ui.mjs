@@ -72,7 +72,8 @@ try {
   await page.getByTestId('lead-status').first().waitFor()
   await page.getByTestId('campaign-email').first().waitFor()
   assert.equal(await page.getByTestId('campaign-play').textContent(), 'Dental practice owners in Ohio - opened a new location')
-  assert.match(await page.getByTestId('campaign-status').textContent(), /^Scan: 9 found: 4 source-checked, 1 needs your review, 2 dropped/)
+  // The scan's state as its leads stand now (#350), never the scan-time counts (9 found, 4 source-checked when it finished).
+  assert.match(await page.getByTestId('campaign-status').textContent(), /^Scan: 7 leads found: 5 source-checked, 0 confirmed by you, 0 need your review, 1 unverified, 1 rejected - started /)
   assert.ok(!calls.some(p => p === '/api/scan/status' || p === '/api/outreach' || p === '/api/leads'), `only the campaign read is used: ${calls.join(', ')}`)
   const rows = await page.getByTestId('campaign-lead').evaluateAll(els => els.map(e => [e.children[0].textContent, e.children[1].textContent]))
   assert.deepEqual(rows, [
@@ -87,6 +88,7 @@ try {
   assert.ok(!emails.some(t => t.includes('elsewhere')), "another scan's draft is not listed")
   assert.equal(await page.locator('main').last().getByRole('link', { name: 'Outreach', exact: true }).getAttribute('href'), `/app/outreach?job_id=${JOB}`)
   await shot('campaign')
+  if (process.env.SHOTS) { const vp = page.viewportSize(); await page.setViewportSize({ width: 390, height: 844 }); await page.waitForTimeout(300); await shot('campaign-mobile'); await page.setViewportSize(vp) }
   // The campaign cannot be read: no lead or email is claimed.
   detailFail = true
   await page.reload({ waitUntil: 'networkidle' })

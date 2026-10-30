@@ -3,7 +3,7 @@ import { scryptSync, timingSafeEqual } from 'crypto'
 import { cookies } from 'next/headers'
 import { createSession, findPasswordUser, SESSION_TTL_S } from '@/lib/auth-db'
 import { validateEmail } from '@/lib/validate'
-import { clientIp, rateLimit } from '@/lib/rate-limit'
+import { clientIp, rateLimit, UNAVAILABLE_RETRY_S } from '@/lib/rate-limit'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 
@@ -17,6 +17,8 @@ export async function POST(req: NextRequest) {
     const password = typeof body?.password === 'string' ? body.password : ''
     const ip = (await rateLimit(`signin-ip:${clientIp(req)}`, 20, 15 * 60 * 1000))
     const acct = (await rateLimit(`signin-acct:${email ?? 'invalid'}`, 8, 15 * 60 * 1000))
+    // the shared limit could not be checked: refused, never a fresh per-process allowance (lib/rate-limit.ts)
+    if (ip.unavailable || acct.unavailable) return NextResponse.json({ error: 'Sign-in is briefly unavailable. Try again in a moment.', code: 'limits_unavailable' }, { status: 503, headers: { 'Retry-After': String(UNAVAILABLE_RETRY_S) } })
     if (!ip.ok || !acct.ok) {
       const retry = Math.max(ip.retryAfterS, acct.retryAfterS)
       return NextResponse.json({ error: 'Too many attempts. Try again later.' }, { status: 429, headers: { 'Retry-After': String(retry) } })

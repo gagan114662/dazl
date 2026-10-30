@@ -12,25 +12,7 @@ import { readPlan } from '../lib/plans.ts'
 import { rateLimit } from '../lib/rate-limit.ts'
 import { bothEngines } from './helpers/engines.ts'
 
-const TENANT_COLUMNS = ['tenant_id', 'user_id']
-// Tables without a tenant column of their own: scoped through a parent row, or global by design.
-const NOT_DIRECT: Record<string, { via: [string, string] } | { global: string }> = {
-  users: { global: 'the tenant itself: users.id is the tenant id' },
-  leads: { via: ['scan_job_id', 'scan_jobs'] },
-  lead_sources: { via: ['lead_id', 'leads'] },
-  scan_source_runs: { via: ['job_id', 'scan_jobs'] },
-  scan_source_stats: { via: ['job_id', 'scan_jobs'] },
-  scan_run_report: { via: ['job_id', 'scan_jobs'] },
-  commenter_rows: { via: ['batch_id', 'commenter_batches'] },
-  csv_rows: { via: ['batch_id', 'csv_batches'] },
-  monitor_runs: { via: ['monitor_id', 'monitors'] },
-  monitor_seen: { via: ['monitor_id', 'monitors'] },
-  watch_seen: { via: ['watch_id', 'watches'] },
-  stripe_events: { global: 'Stripe event ids for dedupe; the tenant comes from the event payload' },
-  work_queue_meta: { global: 'queue counters (claim-token sequence), no tenant data' },
-  rate_limits: { global: 'counters keyed by caller (tenant id, account or IP inside the key); holds no tenant data and no route reads it back' },
-  app_leases: { global: 'named locks for platform jobs (the scheduled tick); no tenant data' },
-}
+import { NOT_DIRECT, TENANT_COLUMNS } from './helpers/tenant-tables.ts'
 
 async function columns(db: Db): Promise<Map<string, string[]>> {
   const rows = db.kind === 'pg'
@@ -69,11 +51,11 @@ bothEngines("sessions and sign-in: each token resolves only to its own tenant; o
   assert.equal(await createPasswordUser({ ...userRow('B2', 'a@example.test') }, db), 'exists')
   assert.deepEqual(await findPasswordUser('a@example.test', db), { id: 'A', password_hash: 'hash-A', salt: 'salt-A' })
   const ta = await createSession('A', db), tb = await createSession('B', db)
-  assert.equal((await getSessionUser(ta, db))?.id, 'A')
-  assert.equal((await getSessionUser(tb, db))?.id, 'B')
+  assert.equal((await getSessionUser(ta, db))?.tenantId, 'A')
+  assert.equal((await getSessionUser(tb, db))?.tenantId, 'B')
   await deleteSession(ta, db)
   assert.equal(await getSessionUser(ta, db), null)
-  assert.equal((await getSessionUser(tb, db))?.id, 'B')
+  assert.equal((await getSessionUser(tb, db))?.tenantId, 'B')
 })
 
 bothEngines("Google sign-in: B's Google identity carrying A's email never reaches A's account", async ({ db }) => {

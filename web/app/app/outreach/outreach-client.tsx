@@ -1,5 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
+import type { PlayOffer } from '@/lib/scan/play-offer-text'
+import { PlayOfferCard } from '../play-offer'
 import Provenance from './provenance'
 import type { OutreachProvenance } from '@/lib/outreach/provenance'
 import SequencesClient from './sequences-client'
@@ -42,6 +44,8 @@ export default function OutreachClient() {
   // Sequences and campaign analytics cover the whole workspace, so a one-scan view never renders them (not even before
   // the scan's leads load, or after that load fails). null until the URL has been read.
   const [mode, setMode] = useState<'all' | 'scan' | null>(null)
+  // What the filtered play sells (its campaign record): the offer its drafts use (lib/scan/play-offer.ts).
+  const [playOffer, setPlayOffer] = useState<PlayOffer | null | undefined>(undefined)
   async function load() {
     const jobId = new URLSearchParams(window.location.search).get('job_id')
     setMode(isJobId(jobId) ? 'scan' : 'all')
@@ -49,6 +53,9 @@ export default function OutreachClient() {
       const lr = await fetch(`/api/leads?job_id=${jobId}&all=1`).catch(() => null)
       const lj = lr?.ok ? await lr.json().catch(() => null) : null
       setScan({ id: jobId, leadIds: lj?.leads ? lj.leads.map((l: { id: string }) => l.id) : null })
+      const cr = await fetch(`/api/campaigns/${jobId}`).catch(() => null)
+      const cj = cr?.ok ? await cr.json().catch(() => null) : null
+      setPlayOffer(cj && 'offer' in cj ? cj.offer ?? null : null)
     }
     try { const r = await fetch('/api/outreach'); if (r.ok) { setMsgs((await r.json()).messages); setLoadFailed(false) } else setLoadFailed(true) } catch { setLoadFailed(true) } finally { setLoaded(true) }
     try { const seq=await fetch('/api/outreach/sequences'); if(seq.ok) setSequenceMessages((await seq.json()).sequences.map((s:{message_id:string})=>s.message_id)) } catch { /* sequence markers are optional; the email list above still stands */ }
@@ -97,6 +104,7 @@ export default function OutreachClient() {
         ? <>Could not load that scan&apos;s emails. Reload to retry, or </>
         : <>Showing the {shown.length} email{shown.length === 1 ? '' : 's'} from one scan. </>}
         <a className="underline" href="/app/outreach">{scan.leadIds === null ? 'show all emails' : 'Show all emails'}</a>{scan.leadIds === null ? '.' : ''} <a className="underline" href={`/app/leads?job_id=${scan.id}`}>Back to its leads</a></p>}
+      {scan && playOffer !== undefined && <div className="mb-4" data-testid="outreach-play-offer"><PlayOfferCard jobId={scan.id} offer={playOffer} onChange={setPlayOffer} /></div>}
       {loaded && !loadFailed && msgs.length === 0 && <p className="text-[#666] text-sm">No emails yet. Open Leads and choose Draft email on a lead with a published address.</p>}
       <div className="flex flex-col gap-3">
         {shown.map(m => {

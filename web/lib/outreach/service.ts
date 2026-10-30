@@ -13,8 +13,9 @@ import { GmailError, GmailSendError, getAccessToken, gmailSend, gmailStatus, typ
 import { norm } from './store.ts'
 import { domainReviewFor } from './domain-review.ts'
 import { pickCrawledEmail } from './published-email.ts'
-import { getMemory } from '../memory.ts'
 import { isQuarantined } from '../scan/quarantine.ts'
+import { isMissingSchema, draftOffer } from '../scan/play-offer-text.ts'
+import { readTenantOffer } from './play-memory.ts'
 
 export const DAILY_CAP = Math.min(ACCOUNT_SEND_CAP, Number(process.env.OUTREACH_DAILY_CAP || 20))
 export const SENDING_STALE_S = 10 * 60
@@ -271,22 +272,27 @@ export function draftBlockReason(db: Database.Database, tenantId: string, leadId
   try { draftChecks(db, tenantId, leadId); return null } catch (e) { if (e instanceof OutreachError) return e.code; throw e }
 }
 
+// The play a lead came from, with what is needed to resolve its offer. null: no play of this tenant for the lead, or an
+// older database without the columns. Any other read failure throws: an unreadable play is never "no play", so the
+// caller never falls back to the tenant-wide offer.
+export function playOfferRow(db: Database.Database, tenantId: string, leadId: string): { offer: string | null; seller: string | null; query: string | null } | null {
+  try {
+    return (db.prepare('SELECT j.offer, j.seller, j.query FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as { offer: string | null; seller: string | null; query: string | null } | undefined) ?? null
+  } catch (e) { if (isMissingSchema(e)) return null; throw e }
+}
+
 function createDraftInner(db: Database.Database, tenantId: string, leadId: string, businessName: string): string {
   const { lead, to, addressUrl, test } = draftChecks(db, tenantId, leadId)
-  // Older local databases may not have Memory yet. No default positioning is
-  // fabricated, and another tenant's context is never used.
-  let positioning = ''
-  if (tableExists(db, 'tenant_memory')) positioning = getMemory(db, tenantId)?.positioning ?? ''
-  // First-login onboarding is already stored in this same auth/scan database.
-  // Users should not need to discover a second Memory form to explain their offer.
-  // Website alone is not an offer and is never expanded into guessed claims.
-  if (!positioning.trim() && tableExists(db, 'users')) {
-    const columns = db.prepare('PRAGMA table_info(users)').all() as { name: string }[]
-    if (columns.some(c => c.name === 'sells')) {
-      const profile = db.prepare('SELECT sells FROM users WHERE id = ?').get(tenantId) as { sells: string | null } | undefined
-      positioning = profile?.sells ?? ''
-    }
-  }
+  // What this lead's play sells (lib/scan/play-offer-text.ts draftOffer): the offer reviewed for the play, else the one
+  // it was created with, else the tenant's own context: the Memory positioning or, after onboarding only, the profile
+  // offer (users.sells), so nobody needs a second hidden form to explain their offer. No default offer is fabricated,
+  // a website alone is not an offer, and another tenant's context is never used. A contested play (offer_conflict) gets
+  // no draft until the tenant chooses.
+  let play: ReturnType<typeof playOfferRow>, tenant: ReturnType<typeof readTenantOffer>
+  try { play = playOfferRow(db, tenantId, lead.id); tenant = readTenantOffer(db, tenantId) } catch { throw new OutreachError('offer_unreadable') } // nothing drafted
+  const r = draftOffer(play, tenant)
+  if (r.refuse) throw new OutreachError(r.refuse)
+  const positioning = r.offer ?? ''
   const t = draftTemplate(lead, businessName, positioning, addressUrl)
   const id = id24()
   try {

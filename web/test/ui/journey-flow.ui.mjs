@@ -71,7 +71,12 @@ async function open(s, url = '/app', width = 1400, height = 1000) {
     if (p === '/api/scan/latest') return json({ query: s.job.query, icp: { ...BUYER, window_days: 90 }, icp_source: 'user' })
     if (p === '/api/leads') return u.searchParams.get('job_id') === P ? json({ leads: LEADS, hidden_count: 0 }) : json({ error: 'nope' }, 500)
     if (p === `/api/campaigns/${P}`) return s.campaignFails ? json({ error: 'boom' }, 500) : json({ job: s.job, leads: LEADS, messages: [...(s.msgs ?? MSGS), { id: 'x', lead_id: '8'.repeat(24), to_email: 'z@other.example', subject: 'Other play', status: 'draft', created_at: now, sent_at: null }] })
-    if (p === '/api/outreach/inbox') return json({ available: true, consent_accepted: true, read_granted: true, account: 'me@x.example', rows: s.replies ?? REPLIES, booking_url: null })
+    // Outcomes asks the server for this play's conversations that need the owner (lib/outreach/inbox.ts); anything else is a bug.
+    if (p === '/api/outreach/inbox') {
+      if (u.searchParams.get('job_id') !== P || u.searchParams.get('status') !== 'needs_owner') return json({ error: 'unfiltered inbox read' }, 500)
+      const threads = s.replies ?? REPLIES
+      return json({ available: true, consent_accepted: true, read_granted: true, account: 'me@x.example', threads, next_cursor: null, counts: { threads: threads.length, needs_owner: threads.length, unread: 0, unread_needs_owner: 0 }, booking_url: null })
+    }
     if (p === '/api/usage') return json({ plan: 'free', scans_used: 1, scan_limit: 10, has_key: true, trial: null })
     if (p === '/api/settings/llm-key') return json({ keys: [{ vendor: 'anthropic', last4: 'Ab12', validated_at: 1 }], rejection: null })
     if (p === '/api/settings/advanced') return json({ available: true, version: '1', platforms: [] })
@@ -106,13 +111,13 @@ try {
     await page.reload({ waitUntil: 'networkidle' })
     await page.getByTestId('journey-understanding').waitFor()
     const t = await page.getByTestId('journey-understanding').textContent()
-    assert.match(t, /WhereLondon, UK/); assert.match(t, /SkipAgencies, recruiters/); assert.match(t, /You sellSales hiring software for seed-stage startups/)
+    assert.match(t, /WhereLondon, UK/); assert.match(t, /SkipAgencies, recruiters/); assert.match(t, /Your business profile sells \(new plays start from this\)Sales hiring software for seed-stage startups/)
     assert.deepEqual(s.profile.buyer, BUYER)
     await ctx.close()
   }
   // 2a. Running -> result, no reload.
   {
-    const s = { profile: { sells: 'x', website: 'https://acme.example', buyer: BUYER }, job: job({ status: 'running' }), finishAfter: 2 }
+    const s = { profile: { sells: 'x', website: 'https://acme.example', buyer: BUYER }, job: job({ status: 'running' }), finishAfter: 3 } // Home's ready card reads the jobs list once more on load (not a poll)
     const { ctx, page, writes, docs } = await open(s)
     await page.getByTestId('journey').waitFor({ timeout: 15000 })
     assert.equal(await stage(page), 'running'); await page.getByTestId('scan-stepper').waitFor()

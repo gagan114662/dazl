@@ -7,6 +7,7 @@ import { setScanDb, setUser } from './tenant-route-db.ts'
 import { migrateScan } from '../../lib/scan/store.ts'
 import { migrateKeys, saveKey } from '../../lib/llm/key-store.ts'
 import { migratePlans } from '../../lib/plans.ts'
+import { migratePlatform } from '../../lib/db/platform-tables.ts'
 import { POST } from '../../app/api/scan/route.ts'
 import { POST as WATCH_POST } from '../../app/api/watch/route.ts'
 import { migrateWatch } from '../../lib/watch.ts'
@@ -16,11 +17,12 @@ process.env.DAZL_MASTER_KEY = randomBytes(32).toString('base64')
 globalThis.fetch = (async (u: unknown) => { throw new Error(`network fenced: ${String(u)}`) }) as typeof fetch
 let n = 0
 function setup() {
-  const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db)
+  // the shared rate_limits table: without it the scan limit fails closed (lib/rate-limit.ts) and every POST is a 503
+  const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migratePlatform(db)
   setScanDb(db)
   return db
 }
-// The route rate-limits per user (10 scans per hour, in process), so every request comes from a fresh user with a key.
+// The route rate-limits per user (10 scans per hour, shared table), so every request comes from a fresh user with a key.
 function as(db: Database.Database) {
   const id = `U${++n}`; saveKey(db, id, 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'); setUser({ id, business_name: 'Acme' })
 }
@@ -44,7 +46,7 @@ test('valid budget: persisted with the job in the same insert, and answered with
   assert.equal(j.budget.bounded, true); assert.equal(j.budget.max_usd, 0.5); assert.match(j.budget.ceiling, /PARTIAL budget, not a whole-scan dollar ceiling/); assert.match(j.budget.ceiling, /Not a bill and not a vendor-enforced ceiling/)
   const st = Object.fromEntries(j.budget.surfaces.map(s => [s.surface, s.status]))
   assert.deepEqual(st, { profile_generation: 'not_covered', search_query_writing: 'allowed', extraction: 'allowed', scoring: 'allowed', grounding: 'refused', buyer_fit: 'allowed', judge: 'off', fallback_research: 'refused', credit_enrichment: 'off', search_and_fetch: 'not_covered', autopilot: 'off' })
-  assert.ok(j.budget.limits.some(l => /budget stop, not zero results/.test(l)) && j.budget.limits.some(l => /resets when the process restarts/.test(l)))
+  assert.ok(j.budget.limits.some(l => /budget stop, not zero results/.test(l)) && j.budget.limits.some(l => /per-owner day and month pools are saved in the shared store and survive restarts/.test(l)))
 })
 
 test('invalid budgets are rejected BEFORE anything is queued: 400 invalid_budget, no job row', async () => {
