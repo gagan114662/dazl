@@ -263,12 +263,27 @@ export function sameOffer(a: string, b: string): boolean {
 // What a request says the seller no longer or does not sell ("We do not sell X.", "We no longer offer X.", "We are not
 // selling X."), when it names an offer (not a target such as "to agencies"). Such a request contradicts any saved offer
 // it might otherwise fall back to, so the play cannot silently use one: it waits for an explicit choice.
-const WITHDRAWN = new RegExp(String.raw`(?:^|[.!?;,]\s*|(?:and|but)\s+)(?:i|we)\s+(?:do not|don['’]t|no longer|are not|aren['’]t|am not|have stopped|stopped|will not|won['’]t|cannot|can['’]t)\s+(?:sell|selling|offer|offering|provide|providing)\s+([^.!?;]{3,150})`, 'i')
+// Anywhere in the request (after "Note:", "As of May", ...): a seller subject, then a negated sell verb or a stop verb. The
+// capture ends at a sentence end or a comma that starts a new clause ("..., we now sell CRM setup").
+const WITHDRAWN = new RegExp(String.raw`\b(?:i|we|our (?:company|business|team|firm|agency|studio|shop)|the company|we['’]re|we['’]ve)\s+(?:(?:do not|dont|don['’]t|does not|doesnt|doesn['’]t|no longer|are not|are no longer|aren['’]t|is not|is no longer|isn['’]t|am not|will not|won['’]t|cannot|can['’]t)\s+(?:(?:currently|now|really|actually)\s+)?(?:sell|sells|selling|offer|offers|offering|provide|provides|providing)|used to (?:sell|offer|provide)|(?:have |has )?(?:stopped|ceased|quit)\s+(?:selling|offering|providing)|(?:have |has )?discontinued)\s+((?:(?!,\s*(?:we|i|but|and|now|instead)\b)[^.!?;]){2,150})`, 'i')
+// The text a request says is not (or no longer) sold.
 export function withdrawnOffer(query: string | null | undefined): string | null {
   const m = WITHDRAWN.exec((query ?? '').replace(/\s+/g, ' '))
   if (!m) return null
   const o = cleanOffer(m[1].replace(/^(?:our|my|a|an|the)\s+/i, '').replace(/\s+(?:any ?more|anymore)$/i, ''))
-  return o.length >= 3 && !NOT_AN_OFFER.test(o) ? o : null
+  return o.length >= 2 && !NOT_AN_OFFER.test(o) ? o : null
+}
+// A withdrawal contradicts the saved offer only when it names what that offer sells (a shared content word, or the same
+// offer): "We no longer sell reminder software" does; "We do not offer free trials" is about something else and is left
+// to the ordinary comparison.
+const GENERIC = new Set(['we', 'sell', 'sells', 'selling', 'and', 'the', 'for', 'to', 'in', 'of', 'with', 'our', 'your', 'a', 'an', 'at', 'on', 'or', 'new', 'york', 'city'])
+const contentWords = (t: string) => new Set(t.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(w => w.length >= 2 && !GENERIC.has(w)))
+// the product words only: an audience clause ("... to restaurants") is a buyer, not what is sold
+const productPart = (t: string) => t.replace(/^\s*we\s+(?:sell|offer|provide)\s+/i, '').split(/\s+(?:to|for|in|at|across|within|with)\s+/i)[0]
+function withdrawsSaved(withdrawn: string, saved: string): boolean {
+  if (sameOffer(withdrawn, saved)) return true
+  const s = contentWords(productPart(saved))
+  return [...contentWords(productPart(withdrawn))].some(w => s.has(w))
 }
 
 export function effectiveOffer(play: { offer?: string | null; seller?: string | null; query?: string | null }, profileSells: string | null | undefined): PlayOffer {
@@ -279,7 +294,7 @@ export function effectiveOffer(play: { offer?: string | null; seller?: string | 
   const stated = statedOffer(play.query)
   // a request that withdraws an offer never resolves to a saved one by default: explicit choice only
   const withdrawn = withdrawnOffer(play.query)
-  if (withdrawn && base) return { offer: null, source: 'conflict', conflict: { stated: stated && !sameOffer(stated, withdrawn) ? stated : null, recorded: base, withdrawn } }
+  if (withdrawn && base && withdrawsSaved(withdrawn, base)) return { offer: null, source: 'conflict', conflict: { stated: stated && !sameOffer(stated, withdrawn) ? stated : null, recorded: base, withdrawn } }
   // the request's whole offer statement is compared (its buyers and seller negations too), not only the offer words
   if (stated && base && !sameOffer(play.query ?? '', base)) return { offer: null, source: 'conflict', conflict: { stated, recorded: base } }
   if (base) return { offer: base, source: recorded ? 'recorded' : 'profile', conflict: null }

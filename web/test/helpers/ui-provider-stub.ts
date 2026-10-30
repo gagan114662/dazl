@@ -25,8 +25,10 @@ const fenced = globalThis.fetch
 globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
   const url = new URL(input instanceof Request ? input.url : String(input))
   if (!PROVIDERS.has(url.hostname)) return fenced(input, init)
-  const body = typeof init?.body === 'string' ? JSON.parse(init.body) as { messages?: { content?: unknown }[]; input?: unknown; tools?: unknown[] } : {}
+  const raw = typeof init?.body === 'string' ? init.body : input instanceof Request ? await input.clone().text() : ''
+  const body = (raw ? JSON.parse(raw) : {}) as { messages?: { content?: unknown }[]; input?: unknown; tools?: unknown[] }
   const prompt = typeof body.input === 'string' ? body.input : body.messages?.map(m => typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).join('\n') ?? ''
+  if (!prompt && !url.pathname.endsWith('/count_tokens')) throw new Error('ui-provider-stub: provider request with no readable prompt')
   appendFileSync(log, JSON.stringify({ host: url.hostname, path: url.pathname, research: !!body.tools?.length, prompt }) + '\n')
   if (url.pathname.endsWith('/count_tokens')) return Response.json({ input_tokens: 500 })
   // the claim check reads only the synthetic page the smoke serves for RESEARCH_URL, which states the claim

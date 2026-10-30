@@ -47,6 +47,27 @@ const MATRIX: Row[] = [
   ['withdrawn', `We no longer sell ${P}.`, 'choice'],
   ['withdrawn', `Find London SaaS startups. We don't sell ${P} anymore.`, 'choice'],
   ['withdrawn', `We have stopped selling ${P}. We sell CRM setup and outbound consulting.`, 'choice'],
+  // reworded withdrawals (council review): any position, other subjects, adverbs, no apostrophe, past and stop verbs
+  ['withdrawn', `Note: we no longer sell ${P}.`, 'choice'],
+  ['withdrawn', `As of May we don't sell ${P}`, 'choice'],
+  ['withdrawn', `Our company no longer sells ${P}.`, 'choice'],
+  ['withdrawn', `Our team no longer sells ${P}.`, 'choice'],
+  ['withdrawn', `We are no longer selling ${P}.`, 'choice'],
+  ['withdrawn', `We dont sell ${P}.`, 'choice'],
+  ['withdrawn', `We don't currently sell ${P}.`, 'choice'],
+  ['withdrawn', `We used to sell ${P}.`, 'choice'],
+  ['withdrawn', `We discontinued ${P}.`, 'choice'],
+  ['withdrawn', `We have discontinued ${P}.`, 'choice'],
+  ['withdrawn', `We do not sell ${P} anymore, we now sell CRM setup and outbound consulting.`, 'choice'],
+  ['withdrawn', `Find London SaaS startups: we no longer sell ${P}.`, 'choice'],
+  ['withdrawn', `Find London SaaS startups - we no longer sell ${P}.`, 'choice'],
+  ['withdrawn', `Find London SaaS startups and we no longer sell ${P}.`, 'choice'],
+  ['withdrawn', `Hello we no longer sell ${P} to dental practices.`, 'choice'],
+  ['withdrawn', `Find London SaaS startups. We're no longer selling ${P}.`, 'choice'],
+  ['withdrawn', `Find London SaaS startups. We've stopped selling ${P}.`, 'choice'],
+  // a "do not offer" about something the saved offer does not sell is not a withdrawal of it
+  ['unrelated exclusion', 'Find dental practices in NYC hiring. We do not offer free trials.', 'equivalent'],
+  ['unrelated exclusion', 'Independent dental practices in New York City hiring a front-desk coordinator. We don\'t provide on-site training.', 'equivalent'],
 ]
 
 test('#349 decision matrix: equivalents stay equivalent; changed product/buyer, qualifications and unknown places ask for a choice', () => {

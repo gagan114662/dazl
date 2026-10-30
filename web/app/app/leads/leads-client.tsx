@@ -37,7 +37,7 @@ import { Avatar, Pill, Stepper, type Tone } from '../ui/bits'
 import Caveat from '@/app/app/caveat'
 import SourceProgressList from './source-progress'
 import type { SourceProgress } from '@/lib/scan/progress'
-import { sameOffer, statedOffer, withdrawnOffer } from '@/lib/scan/play-offer-text'
+import { effectiveOffer, sameOffer, statedOffer } from '@/lib/scan/play-offer-text'
 
 // Reject on the card is the existing reversible quarantine, with its own reason so the card can say "Rejected".
 // Reject asks for an optional reason (a preset or a few words); it is stored as "Rejected" or "Rejected: <reason>".
@@ -385,10 +385,9 @@ export default function LeadsClient() {
   function startOffer(q: string) {
     const stated = statedOffer(q)
     // a request that withdraws an offer never falls back to the saved one: the user keeps it or writes this play's offer
-    const withdrawn = withdrawnOffer(q)
-    if (withdrawn && savedOffer) {
-      const replacement = stated && !sameOffer(stated, withdrawn) ? stated : null
-      setOfferText(replacement ?? ''); setOfferConflict({ stated: replacement, saved: savedOffer, withdrawn, direct: false }); return
+    const w = savedOffer ? effectiveOffer({ seller: null, query: q }, savedOffer).conflict : null
+    if (w?.withdrawn && savedOffer) {
+      setOfferText(w.stated ?? ''); setOfferConflict({ stated: w.stated, saved: savedOffer, withdrawn: w.withdrawn, direct: false }); return
     }
     setOfferText(stated ?? savedOffer ?? '')
     setOfferConflict(stated && savedOffer && !sameOffer(q, savedOffer) ? { stated, saved: savedOffer, direct: false } : null)
@@ -1191,7 +1190,7 @@ function OfferChooser({ c, onChoose, onWrite }: { c: { stated: string | null; sa
     <p className="font-semibold">Which offer is this play for?</p>
     {c.stated
       ? <p className="mt-1 text-[var(--ink-2)]">Your request says you sell <strong>{c.stated}</strong>; your business profile says <strong>{c.saved.replace(/\.$/, "")}</strong>. dazl researches and drafts this play for the one you choose. Your profile is not changed.</p>
-      : <p className="mt-1 text-[var(--ink-2)]" data-testid="offer-withdrawn">Your request says you do not sell <strong>{c.withdrawn}</strong>; your business profile says <strong>{c.saved.replace(/\.$/, "")}</strong>. Say what this play sells before it runs. Your profile is not changed.</p>}
+      : <p className="mt-1 text-[var(--ink-2)]" data-testid="offer-withdrawn">Your request says you do not offer <strong>{c.withdrawn}</strong>; your business profile says <strong>{c.saved.replace(/\.$/, "")}</strong>. Say what this play sells before it runs. Your profile is not changed.</p>}
     <div className="mt-2 flex flex-wrap gap-2">
       {c.stated && <button type="button" className="btn-primary btn-sm" onClick={() => onChoose(c.stated!)} data-testid="offer-use-stated">Use: {c.stated}</button>}
       <button type="button" className="btn-ghost btn-sm" onClick={() => onChoose(c.saved)} data-testid="offer-use-saved">Use: {c.saved}</button>

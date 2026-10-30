@@ -283,7 +283,7 @@ try {
     await p.getByPlaceholder('Find people who...').fill(Q8)
     await p.getByRole('button', { name: 'Review profile first' }).click()
     const ch = p.getByTestId('offer-chooser'); await ch.waitFor({ timeout: 15000 })
-    assert.match(await ch.getByTestId('offer-withdrawn').innerText(), /do not sell payroll software/)
+    assert.match(await ch.getByTestId('offer-withdrawn').innerText(), /do not offer payroll software/)
     assert.equal(await ch.getByTestId('offer-use-stated').count(), 0, 'no offer is invented for a withdrawal')
     const run8 = p.getByRole('button', { name: 'Run scan with this profile' }).first()
     assert.ok(await run8.isDisabled(), 'Run is disabled until resolved')
