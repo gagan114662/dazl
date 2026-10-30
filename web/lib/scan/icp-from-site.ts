@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import { ownerGuarded, spendRefused } from '../llm/owner-guard.ts'
 import { readKey } from '../llm/key-store.ts'
 import { providers, type Provider } from '../llm/provider.ts'
 import { fetchPublicHtml, type Lookup, type PublicFetchError } from '../net/public-fetch.ts'
@@ -10,7 +11,7 @@ import { pickVendor } from './runner.ts'
 // returned for review and is never auto-saved - it only persists if the user then runs
 // a scan with it. Trial scans never pay for this: no tenant key, no call.
 
-export type IcpFromSiteError = PublicFetchError | 'js_only' | 'no_api_key' | 'key_unreadable' | 'key_rejected'
+export type IcpFromSiteError = PublicFetchError | 'js_only' | 'no_api_key' | 'key_unreadable' | 'key_rejected' | 'spend_limit'
 
 const ENTITIES: [RegExp, string][] = [[/&amp;/g, '&'], [/&lt;/g, '<'], [/&gt;/g, '>'], [/&quot;/g, '"'], [/&#0?39;|&apos;/g, "'"], [/&nbsp;/g, ' ']]
 const unescape = (s: string) => ENTITIES.reduce((t, [re, v]) => t.replace(re, v), s)
@@ -58,7 +59,9 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
   const read = readKey(db, tenantId, vendor, deps.master)
   if (read.unreadable) return { error: 'key_unreadable' }
   if (!read.key) return { error: 'no_api_key' }
-  const provider = (deps.providers ?? providers)[vendor]
+  const raw = (deps.providers ?? providers)[vendor]
+  // The owner's spend pool (lib/llm/owner-guard.ts) on the profile read too.
+  const provider = raw && ownerGuarded(db, tenantId, raw)
   if (!provider?.complete) return { error: 'key_rejected' }
 
   const page = await fetchPublicHtml(rawUrl, deps)
@@ -75,7 +78,8 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
     icp = normalizeIcp(parsed)
     // Optional: what the seller offers, for the editable onboarding profile. Never required, never saved here.
     if (typeof parsed?.sells === 'string') sells = parsed.sells.replace(/\s+/g, ' ').trim().slice(0, 150)
-  } catch {
+  } catch (e) {
+    if (spendRefused(e)) return { error: 'spend_limit' } // the owner's spend limit: no call was made
     return { error: 'key_rejected' }
   }
   if (!icp) return { error: 'key_rejected' }

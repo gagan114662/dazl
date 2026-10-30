@@ -4,6 +4,7 @@ import type { Db, TxBody } from './db/client.ts'
 import { createPersonalWorkspace } from './workspaces.ts'
 import { VERIFIED_BACKFILL_SQL } from './email-ownership.ts'
 
+
 // Sign in with Google: authorization code + PKCE + state + nonce, identity only
 // (openid email profile). The ID token is checked here before anyone is signed in.
 

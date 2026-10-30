@@ -38,6 +38,7 @@ test("an account lists and revokes only its own sessions; revoked sessions fail 
   assert.match(r.stdout, /SESSION ROUTES ok[\s\S]*REAUTH ok/)
 })
 
+
 test('no read returns a secret, a ciphertext or a capability URL to any role; the Cal.com signing secret only to admins and owners (real sessions)', () => {
   const env = { ...process.env }
   delete env.NODE_TEST_CONTEXT
@@ -59,3 +60,4 @@ test('forgot password reveals nothing; reset works once and signs out everywhere
   assert.equal(r.status, 0, r.stdout + r.stderr)
   assert.match(r.stdout, /EMAIL ROUTES ok/)
 })
+

@@ -9,6 +9,7 @@ import { rateLimit } from '@/lib/rate-limit'
 import { sameOriginJson } from '@/lib/same-origin'
 import { denied, stale } from '@/lib/workspace-access'
 
+
 // Status never includes a credential. When the operator has not enabled the tier, it reports available: false.
 export async function GET() {
   const user = await requireUser()
@@ -34,6 +35,7 @@ export async function POST(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const no = denied(user, 'configure'); if (no) return no
   const old = stale(user); if (old) return old
+
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   const body = await req.json().catch(() => null)
   const f = advFlags()
@@ -65,6 +67,7 @@ export async function DELETE(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const no = denied(user, 'configure'); if (no) return no
   const old = stale(user); if (old) return old
+
   const p = req.nextUrl.searchParams.get('platform')
   if (!isAdvPlatform(p)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   return NextResponse.json({ ok: await removeCredential(await getDb(), user.tenantId, connectorId(p)) })

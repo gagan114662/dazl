@@ -6,7 +6,7 @@ import type { Db, Tx, TxBody } from './db/client.ts'
 import { can, isRole } from './workspaces.ts'
 import type { Role } from './workspaces.ts'
 
-// SQLite: migrateAuth (lib/auth-db.ts); PG: 0015_invitations.sql. Only the token's SHA-256 is stored; the token itself
+// SQLite: migrateAuth (lib/auth-db.ts); PG: 0020_invitations.sql. Only the token's SHA-256 is stored; the token itself
 // is shown once, to the inviter, inside the link they share.
 export const INVITATIONS_DDL = `
   CREATE TABLE IF NOT EXISTS invitations (

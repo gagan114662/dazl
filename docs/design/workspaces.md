@@ -1,6 +1,7 @@
 # Workspaces, memberships and roles (#353)
 
 Status: increments 1 (model, resolution), 2 (route layer) and 3 (invitations, members, switching) built. Related: #358 (sessions/offboarding), #357 (email ownership),
+
 #371 (audit trail), product direction #204.
 
 ## Problem
@@ -69,7 +70,8 @@ removed or demoted, nor leave, in one transaction that counts owners (so two con
 
 - SQLite (production today): `migrateAuth()` creates the tables, adds `sessions.active_tenant_id` and runs
   `BACKFILL_SQL` in one transaction on startup. Idempotent; it keys on "no `organizations` row".
-- Postgres: `0014_workspaces.sql`, same DDL and the same backfill statements (a test holds them equal).
+- Postgres: `0015_workspaces.sql`, same DDL and the same backfill statements (a test holds them equal).
+
 - New accounts: password signup and Google sign-up create the account and its workspace in one transaction.
 - Rollback: the old code ignores the new tables and column; nothing it reads changed.
 
@@ -98,6 +100,7 @@ removed or demoted, nor leave, in one transaction that counts owners (so two con
    `active_tenant_id` only for a workspace the account belongs to, and only on its own session.
    Known limit until #357: password-account emails are unverified, so the token is the real proof; after #357,
    accepting will also require a verified email.
+
 
 Then #358 (session inventory, revoke-all, revoke on removal/recovery), #357 (email verification, reset), #371
 (actor audit trail, which records `actorId` and `tenantId` separately from the start).

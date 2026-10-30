@@ -66,6 +66,7 @@ test('every session handler that does more than read checks its role first, for 
     else if (named[0] !== r.role) failures.push(`${r.method} /api/${r.path}: first role check is ${named[0] ?? 'missing'}, manifest says ${r.role}`)
     if (r.fresh && !/\bstale\(user\)/.test(body)) failures.push(`${r.method} /api/${r.path}: listed as fresh but never calls stale(user)`)
     if (!r.fresh && /\bstale\(/.test(body)) failures.push(`${r.method} /api/${r.path}: calls stale() but the manifest does not list it as fresh`)
+
     if (/guard\(|load\(/.test(body) && !/denied\(user, action\)/.test(src) && named.length && !body.includes('denied(')) failures.push(`${r.method} /api/${r.path}: helper does not call denied`)
   }
   assert.deepEqual(failures, [])
@@ -79,9 +80,10 @@ const FRESH = SESSION.filter(r => r.fresh).length
 
 // The route runtimes load route modules through a resolver hook, so each runs in its own process.
 for (const [name, file, expect] of [
-  ['every session route refuses an unauthenticated caller and changes nothing', 'tenant-route-unauth-runtime.mts', /UNAUTH 124/],
+  ['every session route refuses an unauthenticated caller and changes nothing', 'tenant-route-unauth-runtime.mts', /UNAUTH 126/],
   ['a member whose role does not allow a route is refused with 403 and changes nothing; viewers still read', 'tenant-route-roles-runtime.mts',
     new RegExp(`ROLES ${REFUSED} ${VIEWER_READS} STALE ${FRESH}\\b`)],
+
   ["tenant B cannot read or change tenant A's rows through the id-taking lead, batch and reply routes", 'tenant-route-ids-runtime.mts', /COHORT 17/],
   ["tenant B cannot read or change tenant A's rows through the list, body-id and query-id routes, or any session-scope route", 'tenant-route-pending-runtime.mts',
     // 13 targeted handlers, then the sweep over every session-scope handler (the cohort counts both)

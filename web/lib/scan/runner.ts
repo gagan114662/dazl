@@ -13,7 +13,7 @@ import { kickSharedScanQueue, sharedScanQueue } from '../queue/scan-claimer.ts'
 import { getDb, sqliteDb } from '../db/client.ts'
 import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
-import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, verifyEvidence, type Candidate } from './evidence.ts'
+import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, supportedEvidenceWindow, verifyEvidence, type Candidate } from './evidence.ts'
 import { fallbackIcp, inferIcp, normalizeIcp, type Icp } from './icp.ts'
 import { isMissingSchema, draftOffer } from './play-offer-text.ts'
 import { readTenantOffer } from '../outreach/play-memory.ts'
@@ -35,15 +35,17 @@ import { isJobPage, needsEventBeyondHiring } from '../search/page-class.ts'
 import { extractionNote } from './extraction-note.ts'
 import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { crawlJob, defaultGet, sitecrawlEnabled } from '../connectors/sitecrawl.ts'
-import { anthropicCountTokens, guardProvider, ownerPool, reserveAllUsd, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
+import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
+import { ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
 import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
 import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './verify-provenance.ts'
-import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
+import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, OFFER_UNRESOLVED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
 import { getMemory, isExcluded, memoryPromptBlock, type Memory } from '../memory.ts'
 import { enrichJobSignals } from '../signals/index.ts'
 import { applySalesHiringGate, failClosedSalesHiring, persistHeldState, type QuoteEvidence, type HeldLead } from './sales-hiring-gate.ts'
 import { beginEnrichment, endEnrichment } from './enrichment.ts'
-import { regradeFromKeptContacts } from './contact-agreement.ts'
+import { snapshotLeads, completeLeads } from './completion.ts'
+import { regradeFromKeptContacts, enforceContactSource } from './contact-agreement.ts'
 import { primarySignalKind } from './score.ts'
 import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } from '../signals/competitor-reddit.ts'
 import { finishUndatedLeads } from './structured-date.ts'
@@ -158,13 +160,21 @@ export interface ReviewLead extends LeadDraft { review_reason: string }
 // was created with, else the tenant's selling context (Memory positioning, else the profile offer). A play whose offer
 // is contested gets no offer block (scoring never assumes one). A missing column or row means no block; any other read
 // failure throws, so scoring never runs on a guessed offer.
-export function offerBlockFor(db: Database.Database, userId: string, jobId?: string): string {
+function playDraftOffer(db: Database.Database, userId: string, jobId?: string): ReturnType<typeof draftOffer> | null {
   try {
     const tenant = readTenantOffer(db, userId)
     let play: { offer: string | null; seller: string | null; query: string | null } | undefined
     try { play = jobId ? db.prepare('SELECT offer, seller, query FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, userId) as typeof play : undefined } catch (e) { if (!isMissingSchema(e)) throw e /* else: a database from before per-play offers */ }
-    return sellerOfferBlock(draftOffer(play, tenant).offer)
-  } catch (e) { if (isMissingSchema(e)) return ''; throw e } // unreadable: scoring stops rather than guess the offer
+    return draftOffer(play, tenant)
+  } catch (e) { if (isMissingSchema(e)) return null; throw e } // unreadable: scoring stops rather than guess the offer
+}
+export function offerBlockFor(db: Database.Database, userId: string, jobId?: string): string {
+  return sellerOfferBlock(playDraftOffer(db, userId, jobId)?.offer ?? null)
+}
+// A play whose offer is contested (its request conflicts with the saved offer and no choice was made) is not scored at
+// all: grading it without an offer would rank buyers for nothing in particular. Its leads are held until the choice.
+export function playOfferUnresolved(db: Database.Database, userId: string, jobId: string): boolean {
+  return playDraftOffer(db, userId, jobId)?.refuse === 'offer_conflict'
 }
 // What buyer-fit scoring is told about the seller for one play: the tenant's Memory WITHOUT its positioning (a global
 // offer that may not be this play's), then this play's offer block, which is the only statement of what is sold.
@@ -537,7 +547,14 @@ async function tinyfishCompany(db: Database.Database, job: Job, domain: string, 
   const items = toEvidence(hits, f.ok ? f.pages : [])
   if (items.length === 0) return null
   const text = await complete.call(provider, key, buildSourcePrompt(`The company at https://${domain}`, { company_domain: domain }, items), fetchImpl, 3000)
-  return parseLeads(text, items.map(i => i.url)) ?? null
+  const leads = parseLeads(text, items.map(i => i.url))
+  if (!leads) return null
+  // Deterministic supported-signal extraction inside the paid envelope: attach a verbatim
+  // window only when it supports every material facet of the claim (entity/event/role/
+  // quantity; negation and boilerplate rejected). Otherwise the excerpt stays the model's
+  // and fails verification honestly. The verifier still re-fetches and re-checks.
+  for (const l of leads) { const ev = items.find(i => i.url === l.source_url); if (ev) { const win = supportedEvidenceWindow({ company: l.company, signal: l.signal, excerpt: l.excerpt }, { text: ev.quote, title: ev.title, url: ev.url }, domain); if (win) l.excerpt = win } }
+  return leads
 }
 
 // CSV import job: research one known company domain through the same
@@ -713,7 +730,15 @@ async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, ht
   }))).filter((p): p is { url: string; title: string; text: string } => !!p)
   const items = toEvidence(hits.filter(h => pages.some(p => p.url === h.url)), pages).map(i => ({ ...i, source: NEWS_SOURCE }))
   if (items.length === 0) return null
-  return parseLeads(await complete.call(provider, key, buildSourcePrompt(job.query!, icp, items), fetchImpl, 3000), items.map(i => i.url)) ?? null
+  const text = await complete.call(provider, key, buildSourcePrompt(job.query!, icp, items), fetchImpl, 3000)
+  const leads = parseLeads(text, items.map(i => i.url))
+  if (!leads) return null
+  // Deterministic supported-signal extraction inside the paid envelope: attach a verbatim
+  // window only when it supports every material facet of the claim (entity/event/role/
+  // quantity; negation and boilerplate rejected). Otherwise the excerpt stays the model's
+  // and fails verification honestly. The verifier still re-fetches and re-checks.
+  for (const l of leads) { const ev = items.find(i => i.url === l.source_url); if (ev) { const win = supportedEvidenceWindow({ company: l.company, signal: l.signal, excerpt: l.excerpt }, { text: ev.quote, title: ev.title, url: ev.url }); if (win) l.excerpt = win } }
+  return leads
 }
 
 export interface RunBudget { paid_fallback?: boolean; credit_enrichment?: boolean; judge?: boolean; max_usd?: number; first5?: boolean }   // first5: the fast first scan (lib/scan/first5.ts): free keyless sources only
@@ -730,15 +755,11 @@ export interface RunBudget { paid_fallback?: boolean; credit_enrichment?: boolea
 // terminally as budget_stopped (the fallback that would re-pend is gated), so a
 // restricted job makes at most 1 paid call per attempt and only a post-extraction
 // crash/retry can produce further attempts - never a research call.
-// Operator setting DAZL_RUN_MAX_USD_USERS="<owner id>:<usd>,..." bounds every query job of the named owners (exact id match,
-// no schema). A malformed entry is ignored for that entry. The tighter of this and the job's own max_usd applies.
+// Operator settings DAZL_RUN_MAX_USD_USERS (per UTC day) and DAZL_OWNER_MONTH_MAX_USD_USERS (per UTC month), each
+// "<owner id>:<usd>,...", bound every query job of the named owners together, in the shared store
+// (lib/llm/spend-pool.ts). Exact id match; a malformed entry is ignored for that entry. Every limit applies.
 export function ownerMaxUsd(userId: string, env: Record<string, string | undefined> = process.env): number | null {
-  for (const part of (env.DAZL_RUN_MAX_USD_USERS ?? '').split(',')) {
-    const i = part.lastIndexOf(':'); if (i < 0) continue
-    if (part.slice(0, i).trim() !== userId) continue
-    const n = Number(part.slice(i + 1).trim()); return Number.isFinite(n) && n > 0 ? n : null
-  }
-  return null
+  return ownerSetting('DAZL_RUN_MAX_USD_USERS', userId, env)
 }
 export function parseRunBudget(raw: string | null | undefined): RunBudget | null {
   if (!raw) return null
@@ -769,7 +790,7 @@ export interface RunDeps {
   first5?: boolean; autopilot?: typeof runAutopilot; sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; salesHiringGate?: typeof applySalesHiringGate; jobBudgetMs?: number; clock?: () => number }
 
 // A free-trial scan's charge for each TinyFish call on dazl's key (lib/billing/trial-budget.ts), set while that scan runs.
-const trialCharges = new WeakMap<Job, (kind: 'search' | 'fetch', units: number) => void>()
+const trialCharges = new WeakMap<Job, (kind: 'search' | 'fetch', units: number) => Promise<void>>()
 
 // A free-trial scan whose budget refused a paid step (lib/billing/trial-budget.ts): it stops with what it has. Nothing
 // it found counts as checked, because a required check may not have run: every candidate and every lead it had verified
@@ -817,13 +838,14 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
   }
   try {
     const jobMax = job.csv_domain ? null : parseRunBudget(job.run_budget)?.max_usd ?? null
-    const ownerMax = job.csv_domain ? null : ownerMaxUsd(job.user_id)
+    const owner = job.csv_domain ? null : ownerLimits(job.user_id)
     // A free-trial scan runs on dazl's keys: every paid step counts against its reserve (lib/billing/trial-budget.ts). Its
     // own budget, if it set one, can only lower that limit. Without the trial's caps and prices it does not run.
     const trial = job.funded_by === 'trial' ? trialCaps() : null
     if (job.funded_by === 'trial' && !trial) { finish(db, job, 'failed', 'trial_unavailable', null, null, ledger); return 'failed' }
     // The job's guard starts from what this job already reserved (saved per call), so a retry, a re-claimed attempt or a
-    // restart cannot spend the limit again. The owner pool is in memory only and starts empty after a restart.
+    // restart cannot spend the limit again. The owner's day/month pool is in the shared store, so neither can a second job,
+    // a restart or another instance.
     const guardMax = trial ? Math.min(trial.reserveUsd, jobMax ?? Infinity) : jobMax
     const jobGuard = guardMax !== null ? new SpendGuard(guardMax, job.spend_reserved_usd ?? 0) : null
     if (jobGuard && trial) { jobGuard.label = TRIAL_BUDGET_REASON; trialGuard = jobGuard }
@@ -832,7 +854,9 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       const r = db.prepare("UPDATE scan_jobs SET spend_reserved_usd = ? WHERE id = ? AND user_id = ? AND attempts = ? AND status = 'running'").run(usd, job.id, job.user_id, job.attempts)
       if (r.changes !== 1) throw new SpendRefused('ownership_lost')
     }
-    const spendGuards = [...(jobGuard ? [jobGuard] : []), ...(ownerMax !== null ? [ownerPool(job.user_id, ownerMax)] : [])]
+    // The owner pool admits one unsettled ownerGuarded call at a time (lib/llm/spend-pool.ts): a scan waits for one in
+    // flight up to its deadline rather than stopping, and stops (budget_stopped) on one that never settled.
+    const spendGuards = [...(jobGuard ? [jobGuard] : []), ...(owner ? [new PooledGuard(sharedPool(db, job.user_id, owner, undefined, PENDING_STALE_S * 1000))] : [])]
     const spendLimit = spendGuards.length ? 1 : null
     // Every model request of this run is counted at the provider boundary (model-usage.ts), inside the spend guard so a
     // refused request is not recorded as sent. Behaviour is unchanged: same calls, same text, same errors.
@@ -842,12 +866,12 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // not the token counter's estimate, and the model's own web search, whose cost has no bound, is refused. Its web
     // research is TinyFish, charged per call below. A run with its own max_usd refuses research too (run-budget.ts).
     const providers_ = spendLimit === null ? baseProviders : { ...baseProviders, [vendor]: guardProvider(baseProviders[vendor], spendGuards, vendor === 'anthropic' && !trial ? anthropicCountTokens : undefined) }
-    if (jobMax !== null || ownerMax !== null || trial) deps = { ...deps, creditEnrichment: false } // a budgeted run adds no other paid enrichment
+    if (jobMax !== null || owner || trial) deps = { ...deps, creditEnrichment: false } // a budgeted run adds no other paid enrichment
     // A trial scan makes no paid call outside its guard: no fallback to the model's web search (a trial with nothing
     // from TinyFish or the free news search ends as stopped, not empty), and no people search, advanced sources or
     // autopilot (TinyFish or other paid calls the trial charge does not see).
     if (trial) deps = { ...deps, paidFallback: false }
-    if (trial) trialCharges.set(job, (kind, units) => reserveAllUsd(spendGuards, units * (kind === 'search' ? trial.tinyfishSearchUsd : trial.tinyfishFetchUsd)))
+    if (trial) trialCharges.set(job, async (kind, units) => { await reserveAllUsd(spendGuards, units * (kind === 'search' ? trial.tinyfishSearchUsd : trial.tinyfishFetchUsd)) })
     // Narrowing flags of a query job's own budget (paid_fallback / credit_enrichment / judge = false). They only ever switch a paid
     // surface off; before this the query path honoured max_usd but ignored the flags.
     if (!job.csv_domain) deps = budgetDeps(deps, parseRunBudget(job.run_budget))
@@ -1130,11 +1154,16 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       const { inside, outside, outsideReasons } = splitByWindow(outcome.leads, icpForSources.window_days, deps.now ?? new Date())
       outcome.leads = inside
       outside.forEach((l, i) => outcome.review.push({ ...l, contact: null, review_reason: outsideReasons[i] }))
+    } else if (icpForSources) {
+      // No date window: an undated lead is still kept, so give it the date its own page declares as structured data (same rules; nothing is held or dropped by it).
+      try { datesFinished = await finishUndatedLeads(outcome.leads, fetchP, 6, icpForSources.where ?? []) } catch { /* bonus only */ }
     }
     // Quality stage: grade each verified lead for ICP fit, timing and actionability. One model call
     // per scan; a scoring failure never fails the scan - but it no longer passes the raw
     // candidate score through as if it were a grade. Ungraded leads are held at fit 0.
-    if (complete && outcome.leads.length > 0 && (deps.score !== false)) {
+    if (complete && outcome.leads.length > 0 && (deps.score !== false) && playOfferUnresolved(db, job.user_id, job.id)) {
+      holdUngraded(outcome.leads, OFFER_UNRESOLVED_WHY) // no model call: the play's offer must be chosen first
+    } else if (complete && outcome.leads.length > 0 && (deps.score !== false)) {
       const icpText = (icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`) + scoringSellerContext(db, job.user_id, job.id, memory ?? null)
       assertOwned(db, job)
       const grades = await scoreLeads(providers_[vendor], key, icpText, outcome.leads, deps.fetchImpl)
@@ -1173,6 +1202,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // Everything below may make more model calls (buyer-fit): they are flushed to the usage record however this block ends.
     // The rows exist, but contacts, people and the fit gate are still being added: clients see 'enriching' until the end mark.
     beginEnrichment(db, job.id, job.attempts)
+    const completionBefore = snapshotLeads(db, job.user_id, job.id)   // what each kept lead has BEFORE the enrichment pass
     try {
     if (complaints.length > 0) { try { badgeComplaintLeads(db, job.id, complaints) } catch { /* badge only */ } }
     // Watch run: flag the leads this watch has never surfaced, remember the rest.
@@ -1182,6 +1212,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     const trace = new EnrichmentTrace()
     if (icpForSources?.window_days) trace.note('date_resolution', datesFinished.length ? 'ok' : 'attempted_no_result', datesFinished.length ? null : 'no undated candidate declared its own event date as structured data (schema.org Event / JobPosting)', datesFinished.length ? { resolved: datesFinished.length } : undefined)
     await runPostFinishBounded(db, job, deps, trace)
+    try { const c = enforceContactSource(db, job.user_id, job.id); if (c.removed > 0) trace.note('contact_source', 'ok', `${c.removed} site contact(s) removed: their source was not the lead's confirmed domain`) } catch (e) { console.error('contact source check failed', e instanceof Error ? e.message : 'error') }
     // People search (person-first): the right people at each lead's company from public profile SEARCH RESULTS, for
     // companies whose own site lists nobody. Never throws; never an address; kill switch PEOPLE_SEARCH_ENABLED=0.
     if (deps.first5) trace.note('people_search', 'skipped', 'first5: free search sources only; people search is a paid TinyFish search')
@@ -1193,7 +1224,10 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // Buyer-fit gate (after the crawl, which confirms each company's own site): a hiring lead keeps fit >= 4 only when
     // its own home page shows it fits, quoted verbatim. Fail closed; never fails the scan.
     if (!(complete && deps.score !== false)) trace.note('buyer_fit', 'skipped', deps.score === false ? 'scoring disabled for this run' : 'no model provider for this run')
-    if (complete && deps.score !== false) {
+    if (complete && deps.score !== false && playOfferUnresolved(db, job.user_id, job.id)) {
+      let capped = 0; try { capped = failClosedBuyerFit(db, job.id, 'offer_unresolved') } catch { /* the cap is best effort */ }
+      trace.note('buyer_fit', 'skipped', `this play's offer is unresolved - no model call, ${capped} hiring lead(s) capped below the qualified bar`)
+    } else if (complete && deps.score !== false) {
       try {
         const icpText = (icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`) + offerBlockFor(db, job.user_id, job.id)
         await applyBuyerFitGate(db, job.id, providers_[vendor], key, icpText, { fetchPage: deps.fetchPage, fetchImpl: deps.fetchImpl }); trace.note('buyer_fit', 'ok')
@@ -1232,7 +1266,9 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       const resCtrl = new AbortController()
       const poll = setInterval(() => { if (!postFinishAlive(db, job)) resCtrl.abort() }, 500)   // post-finish rule: the row is still THIS attempt's and still done / running (assertOwned needs status 'running' and would cancel every normal lookup)
       try { resolution = await resolveBounded(db, job, { fetchPage: (u, signal) => (deps.fetchPage ? (deps.fetchPage as (u: string, s?: AbortSignal) => ReturnType<typeof fetchPageDetailed>)(u, signal) : fetchPageDetailed(u, async () => null, signal)), where: icpForSources?.where ?? [], signal: resCtrl.signal }) } catch (e) { console.error('resolution failed', e instanceof Error ? e.message : 'error') } finally { clearInterval(poll) }
-      mergeIntoRunReport(db, job.id, job.attempts, { enrichment: trace.stages, yield: y, ...(resolution ? { resolution } : {}), held_lead_ids: [...heldByGate.keys(), ...extra.map(h => h.id)] })
+      // Completion: what the pass filled and what is still missing per kept lead, and the score recomputed from the evidence it actually has.
+      const completion = completeLeads(db, job, completionBefore, { windowed: !!icpForSources?.window_days, resolution, datesFilled: datesFinished.map(d => d.company) })
+      mergeIntoRunReport(db, job.id, job.attempts, { enrichment: trace.stages, yield: y, completion, ...(resolution ? { resolution } : {}), held_lead_ids: [...heldByGate.keys(), ...extra.map(h => h.id)] })
     } catch (e) { console.error('actionable yield failed', e instanceof Error ? e.message : 'error') }
     // Contacts, people, fit and the sales-hiring check are final: the stage ends before autopilot, whose drafting/sending is separate work, not enrichment.
     endEnrichment(db, job.id, job.attempts)

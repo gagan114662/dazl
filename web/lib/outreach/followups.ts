@@ -6,7 +6,7 @@ import type { Db, Param } from '../db/client.ts'
 import { isMissingSchema } from '../scan/play-offer-text.ts'
 import { norm } from './store.ts'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
-import { getAccessToken, gmailSend, gmailStatus, readGmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
+import { confirmedSendResult, getAccessToken, gmailSend, gmailStatus, readGmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { auditAt, autopilotAvailable, CONSENT_VERSION, DEFAULT_DAILY, getState, pause } from './autopilot.ts'
 import { hasConsent } from './ledger.ts'
 import { composeBody, getSettings, isSuppressed, domainReviewStatus, leadEvidenceEligible, leadHeld, recipientAllowed, unsubToken, type Deps } from './service.ts'
@@ -121,7 +121,7 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
         if (stAfter === 'required' || stAfter === 'quarantined') db.prepare("UPDATE followup_threads SET stopped = ? WHERE tenant_id = ? AND thread_id = ? AND stopped IS NULL").run(stAfter === 'quarantined' ? 'lead_quarantined' : 'domain_unconfirmed', tenantId, t.thread_id)
         skip(stAfter === 'required' ? 'domain_unconfirmed' : stAfter === 'quarantined' ? 'lead_quarantined' : 'review_unreadable'); continue
       }
-      const r = await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, t.thread_id)
+      const r = confirmedSendResult(await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, t.thread_id))
       db.prepare("UPDATE followup_messages SET status = 'sent', gmail_id = ? WHERE tenant_id = ? AND thread_id = ? AND step = ?").run(r.id, tenantId, t.thread_id, t.followups_sent)
       db.prepare('UPDATE followup_threads SET followups_sent = followups_sent + 1, last_followup_at = ?, last_activity_at = ? WHERE tenant_id = ? AND thread_id = ?').run(now, now, tenantId, t.thread_id)
       auditAt(db, tenantId, 'followup_sent', `step ${t.followups_sent + 1}`, t.lead_id, orig.id, now); out.sent++
@@ -241,13 +241,5 @@ export async function followupOverview(db: Db, tenantId: string, opts: { flags?:
   return { enabled, account: acct?.status === 'active' ? acct.email : null, hold, threads, sent }
 }
 
-// What the follow-ups page should ask for when automatic follow-ups are not running.
-// 'none'    - everything is on, nothing to ask.
-// 'switch'  - Gmail is connected; only the follow-ups switch is off. Asking the user
-//             to "Connect Gmail" here contradicts the "Gmail connected as ..." line.
-// 'connect' - Gmail is not connected; the switch is moot until it is.
-export type FollowupAsk = 'none' | 'switch' | 'connect'
-export function followupAsk(o: Pick<FollowupOverview, 'enabled' | 'account'>): FollowupAsk {
-  if (o.enabled) return 'none'
-  return o.account ? 'switch' : 'connect'
-}
+// What the follow-ups page should ask for (lib/outreach/followup-ask.ts, client-safe).
+export { followupAsk, type FollowupAsk } from './followup-ask.ts'

@@ -10,7 +10,7 @@ import type { Db, Tx, TxBody } from './db/client.ts'
 import { revokeAllSessionsTx } from './sessions.ts'
 import { sendSystemMail } from './system-mail.ts'
 
-// SQLite: migrateAuth (lib/auth-db.ts); PG: 0018_email_ownership.sql.
+// SQLite: migrateAuth (lib/auth-db.ts); PG: 0023_email_ownership.sql.
 export const EMAIL_TOKENS_DDL = `
   CREATE TABLE IF NOT EXISTS email_tokens (
     id TEXT PRIMARY KEY,

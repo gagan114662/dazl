@@ -6,6 +6,7 @@ import type { Action, Role } from './workspaces.ts'
 import { MemberError, MEMBER_ERROR_STATUS } from './workspace-members.ts'
 import { FRESH_AUTH_S } from './sessions.ts'
 
+
 // 403 when the member's role in this workspace does not allow `action`; null when it does. The same body for every
 // refusal, so it says nothing about the resource the caller named.
 export function denied(user: { role: Role }, action: Action): NextResponse | null {
@@ -24,3 +25,4 @@ export function memberFail(e: unknown): NextResponse {
   if (e instanceof MemberError) return NextResponse.json({ error: e.code }, { status: MEMBER_ERROR_STATUS[e.code] })
   throw e
 }
+

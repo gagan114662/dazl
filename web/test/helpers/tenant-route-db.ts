@@ -11,6 +11,7 @@ export function setScanDb(value: Database.Database) { db = value; setDb(sqliteDb
 // account until it is invited into another workspace.
 export function setUser(u: { id: string; business_name: string; role?: Role; actorId?: string; email?: string; authedAt?: number } | null) {
   user = u && { tenantId: u.id, actorId: u.actorId ?? u.id, role: u.role ?? 'owner', business_name: u.business_name, email: u.email ?? `${u.id}@example.test`, authedAt: u.authedAt ?? Math.floor(Date.now() / 1000) }
+
 }
 export function getScanDb(): Database.Database { if (!db) throw new Error('test database unset'); return db }
 export async function requireUser() { return user }

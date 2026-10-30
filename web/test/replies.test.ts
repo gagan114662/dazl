@@ -9,8 +9,9 @@ import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.
 import { saveSettings, getSettings, isSuppressed, cleanBookingUrl } from '../lib/outreach/service.ts'
 import { ATTESTATIONS, CONSENT_VERSION, enable, getState, migrateAutopilot, recentAutopilotAudit } from '../lib/outreach/autopilot.ts'
 import { grantConsent, hasConsent, migrateLedger, revokeAll } from '../lib/outreach/ledger.ts'
-import { acceptReadConsent, classifyReply, inboxRows, migrateReplies, newText, syncReplies, threadMessages } from '../lib/outreach/replies.ts'
+import { acceptReadConsent, classifyReply, migrateReplies, newText, syncReplies, threadMessages } from '../lib/outreach/replies.ts'
 import { followupText, runFollowups, setFollowups } from '../lib/outreach/followups.ts'
+import { inboxPage } from '../lib/outreach/inbox.ts'
 
 const master = randomBytes(32)
 const genv = { GOOGLE_CLIENT_ID: 'cid.apps.googleusercontent.com', GOOGLE_CLIENT_SECRET: 'cs', PUBLIC_BASE_URL: 'https://app.test' }
@@ -155,7 +156,7 @@ test('an uncertain follow-up send pauses autopilot', async () => {
   assert.match(followupText(0, { company: 'C', name: 'Pat Q', signal: 's', source_url: 'https://x.example' }, 'Acme'), /^Hi Pat,/)
 })
 
-test('inboxRows: joins lead company and follow-up state, newest first, tenant-scoped', () => {
+test('inboxPage: one row per thread, its deciding reply joined to lead company and follow-up state, tenant-scoped', async () => {
   const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db)
   const jobId = createJob(db, 'A', { business_name: 'B', industry: 'I', location: 'L' })
   db.prepare("UPDATE scan_jobs SET status='running' WHERE id = ?").run(jobId)
@@ -167,13 +168,15 @@ test('inboxRows: joins lead company and follow-up state, newest first, tenant-sc
   db.prepare(ins).run('g2', 'not interested, thanks', 'negative', NOW - 50)
   db.prepare("INSERT INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at, followups_sent, stopped) VALUES ('A', 't1', 'lead1', 'ada@acme.example', 'root', ?, 1, NULL)").run(NOW - 90)
   db.prepare("INSERT INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at) VALUES ('g3', 'B', 't9', NULL, 'x@y.example', 'hi', 'other', ?)").run(NOW)
-  const rows = inboxRows(db, 'A')
-  assert.equal(rows.length, 2) // tenant B's row is invisible
-  assert.equal(rows[0].gmail_id, 'g2') // newest first
-  assert.equal(rows[1].company, 'Acme Co')
-  assert.equal(rows[1].lead_name, 'Ada')
-  assert.equal(rows[1].followups_sent, 1)
-  assert.equal(rows[1].stopped, null)
+  const { threads: rows } = await inboxPage(db, 'A')
+  assert.equal(rows.length, 1) // one thread; tenant B's row is invisible
+  assert.equal(rows[0].gmail_id, 'g2') // the newest reply decides: the later "no" closes the earlier "yes"
+  assert.equal(rows[0].replies, 2)
+  assert.equal(rows[0].company, 'Acme Co')
+  assert.equal(rows[0].lead_name, 'Ada')
+  assert.equal(rows[0].followups_sent, 1)
+  assert.equal(rows[0].stopped, null)
+  assert.equal(rows[0].needs_owner, false)
 })
 
 test('threadMessages: original outreach and replies interleave oldest-first; another tenant sees nothing', async () => {
@@ -232,4 +235,18 @@ test('reply capture stores the actual root outreach message link, not a guessed 
   await syncReplies(db,'A',{env:genv,master,now:NOW,fetchImpl:gmail({[s.thread]:[msg('linked-reply','p@one.example','Who is this?',NOW-1)]})})
   const row = db.prepare('SELECT outreach_message_id,lead_id,classification FROM inbound_messages WHERE gmail_id=?').get('linked-reply') as any
   assert.deepEqual(row,{outreach_message_id:s.mid,lead_id:s.lead,classification:'other'})
+})
+
+test('warm follow-up: an unverifiable handoff is uncertain, pauses autopilot, stores no provider id and is never retried', async () => {
+  for (const bad of [undefined, null, {}, { id: '' }, { id: '   ' }, { id: 7 }, { id: ['x'] }, { threadId: 'th1' }]) {
+    const db = await setup(); await interested(db); setFollowups(db, 'A', true)
+    let calls = 0
+    const sendFn = (async () => { calls++; return bad }) as never
+    const r = await runFollowups(db, 'A', 'Acme', base({ sendFn }))
+    assert.equal(r.stopped, 'uncertain_send', JSON.stringify(bad)); assert.equal(getState(db, 'A').paused, true)
+    const f = db.prepare('SELECT status, gmail_id FROM followup_messages').get() as { status: string; gmail_id: string | null }
+    assert.equal(f.status, 'uncertain'); assert.ok(!f.gmail_id)
+    assert.equal((await runFollowups(db, 'A', 'Acme', base({ sendFn }))).sent, 0)
+    assert.equal(calls, 1)
+  }
 })

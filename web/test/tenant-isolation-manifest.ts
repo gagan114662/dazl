@@ -18,11 +18,13 @@
 // branch (crm POST: configure to save keys). test/tenant-isolation-manifest.test.ts holds every handler to this.
 // fresh (session routes that change secrets, billing or members): the handler also calls stale(user), so a session
 // that last signed in more than an hour ago must re-authenticate first (docs/design/sessions.md).
+
 import type { Action } from '../lib/workspaces.ts'
 export type CrossTenant = { covered: string } | 'session-scope' | 'pending'
 export type RouteEntry =
   | { path: string; method: string; auth: 'public'; note: string }
   | { path: string; method: string; auth: 'session'; crossTenant: CrossTenant; role: Action; fresh?: true }
+
 
 export const ROUTES: RouteEntry[] = [
   { path: 'auth/callback/google', method: 'GET', auth: 'public', note: 'Google OAuth callback: one-time state + PKCE cookie, ID token verified' },
@@ -43,6 +45,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'auth/verify', method: 'POST', auth: 'public', note: 'email verification: one-use hashed expiring token from the emailed link, valid only for the email it was sent to; rate limited per IP' },
   { path: 'billing/checkout', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'billing', fresh: true },
   { path: 'billing/portal', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'billing', fresh: true },
+
   { path: 'billing/webhook', method: 'POST', auth: 'public', note: 'Stripe signature over the raw body' },
   { path: 'campaigns', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'campaigns/[id]', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
@@ -53,9 +56,11 @@ export const ROUTES: RouteEntry[] = [
   { path: 'gmail/callback', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
   { path: 'gmail/connect', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
   { path: 'gmail/disconnect', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
+
   { path: 'health', method: 'GET', auth: 'public', note: 'no tenant data' },
   { path: 'health/live', method: 'GET', auth: 'public', note: 'liveness: no tenant data, touches no store' },
   { path: 'health/ready', method: 'GET', auth: 'public', note: 'readiness: check names and timings only, no tenant data' },
+  { path: 'health/scheduler', method: 'GET', auth: 'public', note: 'scheduler freshness: run state and tenant counts only, no tenant id, name or error text' },
   { path: 'ready', method: 'GET', auth: 'public', note: 'readiness (same as health/ready): check names and timings only, no tenant data' },
   { path: 'hooks/calcom', method: 'POST', auth: 'public', note: 'per-tenant HMAC signature' },
   { path: 'internal/tick', method: 'POST', auth: 'public', note: 'shared secret, timing-safe compare' },
@@ -93,6 +98,8 @@ export const ROUTES: RouteEntry[] = [
   { path: 'outreach/conversion', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
   { path: 'outreach/followups', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
   { path: 'outreach/inbox', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
+  { path: 'outreach/inbox', method: 'POST', auth: 'session', crossTenant: { covered: 'inbox-route.test.ts' }, role: 'operate' },
+
   { path: 'outreach/polish', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'operate' },
   { path: 'outreach/reopen', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'read' },
   { path: 'outreach/reopen', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' }, role: 'operate' },
@@ -121,6 +128,8 @@ export const ROUTES: RouteEntry[] = [
   { path: 'scan/icp', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
   { path: 'scan/jobs', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
   { path: 'scan/latest', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
+  { path: 'scan/estimate', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
+
   { path: 'scan', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
   { path: 'scan/sources', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'scan/status', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
@@ -137,6 +146,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'settings/advanced', method: 'DELETE', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
   { path: 'settings/calcom', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'settings/calcom', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
+
   { path: 'settings/competitors', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'settings/competitors', method: 'PUT', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
   { path: 'settings/connectors', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
@@ -145,6 +155,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'settings/llm-key', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
   { path: 'settings/llm-key', method: 'PUT', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
   { path: 'settings/llm-key', method: 'DELETE', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
+
   { path: 'settings/memory', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
   { path: 'settings/memory', method: 'PUT', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
   { path: 'settings/profile', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
@@ -167,4 +178,5 @@ export const ROUTES: RouteEntry[] = [
   { path: 'workspace/members', method: 'PATCH', auth: 'session', crossTenant: { covered: 'helpers/workspace-members-runtime.mts' }, role: 'members', fresh: true },
   { path: 'workspace/members', method: 'DELETE', auth: 'session', crossTenant: { covered: 'helpers/workspace-members-runtime.mts' }, role: 'members', fresh: true },
   { path: 'workspace/switch', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/workspace-members-runtime.mts' }, role: 'read' },
+
 ]

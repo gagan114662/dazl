@@ -113,6 +113,18 @@ CREATE TABLE consent_ledger (
       revoke_reason TEXT CHECK (revoke_reason IS NULL OR length(revoke_reason) <= 60)
     );
 
+CREATE TABLE crm_push_claims (
+      tenant_id   TEXT NOT NULL,
+      destination TEXT NOT NULL,
+      lead_id     TEXT NOT NULL,
+      status      TEXT NOT NULL CHECK (status IN ('pending', 'ok', 'failed', 'uncertain', 'resolved_created', 'resolved_not_created')),
+      external_id TEXT,
+      attempt_id  TEXT NOT NULL,
+      claimed_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL,
+      PRIMARY KEY (tenant_id, destination, lead_id)
+    );
+
 CREATE TABLE csv_batches (
       id         TEXT PRIMARY KEY,
       user_id    TEXT NOT NULL,
@@ -193,6 +205,8 @@ CREATE TABLE inbound_messages (
       excerpt TEXT NOT NULL CHECK (length(excerpt) <= 200), classification TEXT NOT NULL, received_at INTEGER NOT NULL, outreach_message_id TEXT,
       PRIMARY KEY (tenant_id, gmail_id)
     );
+
+CREATE TABLE inbox_thread_reads (tenant_id TEXT NOT NULL, thread_id TEXT NOT NULL, read_upto INTEGER NOT NULL, PRIMARY KEY (tenant_id, thread_id));
 
 CREATE TABLE invitations (
     id TEXT PRIMARY KEY,
@@ -456,7 +470,7 @@ CREATE TABLE scan_jobs (
       created_at    INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
       claimed_at    INTEGER,
       finished_at   INTEGER
-    , funded_by TEXT NOT NULL DEFAULT 'user', seller TEXT, offer TEXT CHECK (offer IS NULL OR length(offer) <= 150), offer_set_at INTEGER, watch_id TEXT, candidates INTEGER, needs_review INTEGER, dropped INTEGER, run_budget TEXT, spend_reserved_usd REAL, drop_reasons TEXT, verified INTEGER, query TEXT CHECK (query IS NULL OR length(query) <= 600), icp TEXT CHECK (icp IS NULL OR length(icp) <= 4000), icp_inferred INTEGER, sources TEXT CHECK (sources IS NULL OR length(sources) <= 2000), csv_domain TEXT CHECK (csv_domain IS NULL OR length(csv_domain) <= 253), batch_id TEXT, enrich_started_at INTEGER, enrich_finished_at INTEGER, insert_seq INTEGER);
+    , funded_by TEXT NOT NULL DEFAULT 'user', seller TEXT, offer TEXT CHECK (offer IS NULL OR length(offer) <= 150), offer_set_at INTEGER, watch_id TEXT, candidates INTEGER, needs_review INTEGER, dropped INTEGER, run_budget TEXT, estimate TEXT, spend_reserved_usd REAL, drop_reasons TEXT, verified INTEGER, query TEXT CHECK (query IS NULL OR length(query) <= 600), icp TEXT CHECK (icp IS NULL OR length(icp) <= 4000), icp_inferred INTEGER, sources TEXT CHECK (sources IS NULL OR length(sources) <= 2000), csv_domain TEXT CHECK (csv_domain IS NULL OR length(csv_domain) <= 253), batch_id TEXT, enrich_started_at INTEGER, enrich_finished_at INTEGER, insert_seq INTEGER);
 
 CREATE TABLE scan_model_calls (
     tenant_id TEXT NOT NULL,
@@ -527,6 +541,31 @@ CREATE TABLE scan_source_stats (
     evidence_snippet_only INTEGER,
     PRIMARY KEY (job_id, attempt, collector)
   );
+
+CREATE TABLE scheduler_progress (
+      tenant_id            TEXT NOT NULL,
+      kind                 TEXT NOT NULL CHECK (kind IN ('reply_sync','followups','sequences')),
+      last_attempt_at      INTEGER NOT NULL,
+      last_success_at      INTEGER,
+      last_error           TEXT CHECK (last_error IS NULL OR length(last_error) <= 200),
+      last_outcome         TEXT NOT NULL DEFAULT 'success' CHECK (last_outcome IN ('success','hold','failure')),
+      last_hold            TEXT CHECK (last_hold IS NULL OR length(last_hold) <= 40),
+      consecutive_failures INTEGER NOT NULL DEFAULT 0,
+      last_run_id          TEXT,
+      PRIMARY KEY (tenant_id, kind)
+    );
+
+CREATE TABLE scheduler_runs (
+      id                TEXT PRIMARY KEY,
+      started_at        INTEGER NOT NULL,
+      finished_at       INTEGER,
+      status            TEXT NOT NULL CHECK (status IN ('running','ok','partial','failed','lease_lost')),
+      lease_owner       TEXT NOT NULL,
+      lease_generation  INTEGER NOT NULL,
+      tenants_attempted INTEGER NOT NULL DEFAULT 0,
+      tenants_failed    INTEGER NOT NULL DEFAULT 0,
+      error             TEXT CHECK (error IS NULL OR length(error) <= 200)
+    );
 
 CREATE TABLE seo_audits (
     id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, domain TEXT NOT NULL,
@@ -696,6 +735,13 @@ CREATE TABLE tenant_plans (
       stripe_subscription_id TEXT
     , stripe_event_at INTEGER, stripe_reconcile_at INTEGER, subscription_status TEXT);
 
+CREATE TABLE tenant_spend_pools (
+    tenant_id TEXT NOT NULL, period TEXT NOT NULL CHECK (length(period) <= 12),
+    reserved_usd REAL NOT NULL DEFAULT 0 CHECK (reserved_usd >= 0), reported_usd REAL NOT NULL DEFAULT 0 CHECK (reported_usd >= 0),
+    calls INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL,
+    PRIMARY KEY (tenant_id, period)
+  );
+
 CREATE TABLE tinyfish_usage (day TEXT NOT NULL, tenant_id TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('search','fetch')), n INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (day, tenant_id, kind));
 
 CREATE TABLE trial_budget_lock (id INTEGER PRIMARY KEY CHECK (id = 1), n INTEGER NOT NULL DEFAULT 0);
@@ -806,6 +852,8 @@ CREATE INDEX hiring_feed_crawl_job ON hiring_feed_crawl(tenant_id, job_id);
 
 CREATE INDEX idx_evidence_copies_tenant ON lead_evidence_copies(tenant_id, expires_at);
 
+CREATE INDEX inbound_messages_thread ON inbound_messages (tenant_id, thread_id, received_at);
+
 CREATE INDEX invitations_tenant ON invitations (tenant_id, created_at);
 
 CREATE INDEX lead_enrichments_insert_seq_idx ON lead_enrichments (insert_seq);
@@ -843,6 +891,8 @@ CREATE INDEX scan_jobs_status ON scan_jobs (status, created_at);
 CREATE INDEX scan_jobs_user ON scan_jobs (user_id, created_at);
 
 CREATE UNIQUE INDEX scan_model_calls_job ON scan_model_calls(job_id, attempt, seq);
+
+CREATE INDEX scheduler_runs_started ON scheduler_runs (started_at);
 
 CREATE INDEX seo_briefs_tenant ON seo_briefs (tenant_id, created_at);
 

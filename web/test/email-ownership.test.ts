@@ -115,6 +115,6 @@ bothEngines('system mail: SMTP when configured (stubbed here), the outbox otherw
 test('the PG migration backfills Google accounts with exactly the SQL the SQLite startup runs', async () => {
   const { readFileSync } = await import('node:fs')
   const norm = (s: string) => s.replace(/\s+/g, ' ').trim()
-  const mig = norm(readFileSync(new URL('../lib/db/migrations/pg/0018_email_ownership.sql', import.meta.url), 'utf8'))
+  const mig = norm(readFileSync(new URL('../lib/db/migrations/pg/0023_email_ownership.sql', import.meta.url), 'utf8'))
   assert.ok(mig.includes(norm(VERIFIED_BACKFILL_SQL) + ';'))
 })

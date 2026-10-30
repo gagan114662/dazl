@@ -1,6 +1,7 @@
 import { after, NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
-import { getJob, MAX_ATTEMPTS } from '@/lib/scan/store'
+import { getJob, jobCost, MAX_ATTEMPTS } from '@/lib/scan/store'
+import { compareActual, type RunEstimate } from '@/lib/scan/price-estimate'
 import { kickRunner } from '@/lib/scan/runner'
 import { sourceRuns } from '@/lib/scan/source-runs'
 import { sourceStats } from '@/lib/search/trace'
@@ -47,5 +48,16 @@ export async function GET(req: NextRequest) {
   const resolution = (run_report as { resolution?: { candidates: number; resolved: number; unresolved: number; by_reason: Record<string, number> } }[] | null)?.findLast(r => r.resolution)?.resolution ?? null
   // The fast first scan: verified leads so far, live per-source progress, "finding more" and the distinct stop reason; never an empty state. Only for a job started with mode=first5.
   const first5 = isFirst5(getScanDb(), user.tenantId, job.id) ? first5Of({ status: effectiveStatus(job), leads: verifiedLeads(getScanDb(), user.tenantId, job.id), progress, outcome }) : undefined
-  return NextResponse.json({ ...(first5 ? { first5 } : {}), progress, outcome, resolution, job_id: job.id, status: effectiveStatus(job), enrichment: { state: enrichState(job), started_at: job.enrich_started_at ?? null, finished_at: job.enrich_finished_at ?? null }, created_at: job.created_at, claimed_at: job.claimed_at, attempts: job.attempts, max_attempts: MAX_ATTEMPTS, lead_count: job.lead_count, quality: job.candidates === null ? null : { candidates: job.candidates, passed: job.verified, needs_review: job.needs_review, dropped: job.dropped, drop_reasons: job.drop_reasons ? JSON.parse(job.drop_reasons) : {} }, error: job.error === 'key_rejected' && (job as { funded_by?: string }).funded_by === 'trial' ? 'trial_key_invalid' : job.error, source_runs, source_stats, model_usage, run_report, empty_reason, not_recorded: notRecorded, query: job.query, icp: job.icp ? JSON.parse(job.icp) : null, icp_source: job.icp_inferred === 1 ? 'inferred' : job.icp_inferred === 2 ? 'request_only' : job.icp_inferred === 0 ? 'user' : null })
+  // Cost: what the user confirmed at the start, and only once the scan has ended, what was actually recorded beside it (reported tokens at the listed price; searches attempted). Absent for scans started before estimates existed.
+  const saved = jobCost(getScanDb(), user.tenantId, job.id)
+  let cost: unknown = null
+  try {
+    const est = saved.estimate ? JSON.parse(saved.estimate) as Pick<RunEstimate, 'total' | 'rows' | 'payer' | 'cap'> : null
+    if (est) {
+      const ended = job.status === 'done' || job.status === 'failed'
+      cost = { estimate: { total: est.total, payer: est.payer, cap: est.cap, rows: est.rows }, actual: ended ? compareActual(est, { inputTokens: model_usage.input_tokens, outputTokens: model_usage.output_tokens, tokensComplete: model_usage.tokens_complete, model: model_usage.served_models?.[0] ?? model_usage.requested_models?.[0] ?? null, searches: source_stats && source_stats.length ? source_stats.reduce((a, r) => a + (Number((r as { searches_attempted?: unknown }).searches_attempted) || 0), 0) : null, reservedUsd: saved.reserved_usd }) : null }
+    }
+  } catch { cost = null }
+  return NextResponse.json({ ...(first5 ? { first5 } : {}), cost, progress, outcome, resolution, job_id: job.id, status: effectiveStatus(job), enrichment: { state: enrichState(job), started_at: job.enrich_started_at ?? null, finished_at: job.enrich_finished_at ?? null }, created_at: job.created_at, claimed_at: job.claimed_at, attempts: job.attempts, max_attempts: MAX_ATTEMPTS, lead_count: job.lead_count, quality: job.candidates === null ? null : { candidates: job.candidates, passed: job.verified, needs_review: job.needs_review, dropped: job.dropped, drop_reasons: job.drop_reasons ? JSON.parse(job.drop_reasons) : {} }, error: job.error === 'key_rejected' && (job as { funded_by?: string }).funded_by === 'trial' ? 'trial_key_invalid' : job.error, source_runs, source_stats, model_usage, run_report, empty_reason, not_recorded: notRecorded, query: job.query, icp: job.icp ? JSON.parse(job.icp) : null, icp_source: job.icp_inferred === 1 ? 'inferred' : job.icp_inferred === 2 ? 'request_only' : job.icp_inferred === 0 ? 'user' : null })
+
 }

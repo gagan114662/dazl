@@ -30,23 +30,26 @@ test('pushLead hubspot: standard properties only; 409 means already exists; erro
   let seen: { url: string; body: { properties: Record<string, unknown> } } | null = null
   const f = async (url: RequestInfo | URL, init?: RequestInit) => { seen = { url: String(url), body: JSON.parse(String(init?.body)) }; return ok({ id: '1' }) }
   const msg = await pushLead({ provider: 'hubspot', key: 'k' }, LEAD, f as never)
-  assert.equal(msg, 'Contact created in HubSpot')
+  assert.deepEqual(msg, { message: 'Contact created in HubSpot', externalId: '1' })
   assert.equal(seen!.url, 'https://api.hubapi.com/crm/v3/objects/contacts')
   assert.deepEqual(seen!.body.properties, { email: 'ada@acme.example', firstname: 'Ada', lastname: 'Lovelace', company: 'Acme Co', hs_lead_status: 'NEW' })
-  const conflict = await pushLead({ provider: 'hubspot', key: 'k' }, LEAD, (async () => new Response('{}', { status: 409 })) as never)
-  assert.equal(conflict, 'Already in HubSpot (matching contact exists)')
+  // a 409 counts as this lead only when the contact HubSpot names has the lead's email (test/crm-contract.test.ts)
+  const conflict = await pushLead({ provider: 'hubspot', key: 'k' }, LEAD, (async (u: RequestInfo | URL) => String(u).endsWith('/contacts')
+    ? new Response(JSON.stringify({ message: 'Contact already exists. Existing ID: 42' }), { status: 409 })
+    : ok({ id: '42', properties: { email: 'ADA@acme.example' } })) as never)
+  assert.deepEqual(conflict, { message: 'Already in HubSpot (matching contact exists)', externalId: '42' })
   await assert.rejects(() => pushLead({ provider: 'hubspot', key: 'k' }, LEAD, (async () => new Response('{}', { status: 401 })) as never))
 })
 
 test('pushLead pipedrive + webhook payloads', async () => {
   let url = ''; let body: Record<string, unknown> = {}
-  const f = async (u: RequestInfo | URL, init?: RequestInit) => { url = String(u); body = JSON.parse(String(init?.body)); return ok({ success: true }) }
+  const f = async (u: RequestInfo | URL, init?: RequestInit) => { url = String(u); body = JSON.parse(String(init?.body)); return ok({ success: true, data: { id: 7 } }) }
   const msg = await pushLead({ provider: 'pipedrive', key: 'tok123' }, LEAD, f as never)
-  assert.equal(msg, 'Person created in Pipedrive')
+  assert.deepEqual(msg, { message: 'Person created in Pipedrive', externalId: '7' })
   assert.ok(url.startsWith('https://api.pipedrive.com/v1/persons?api_token=tok123'))
   assert.deepEqual(body, { name: 'Ada Lovelace', email: 'ada@acme.example', org_name: 'Acme Co' })
   const wmsg = await pushLead({ provider: 'webhook', url: 'https://hooks.example/dazl' }, LEAD, f as never, { lookup: pubLookup })
-  assert.equal(wmsg, 'Lead sent to your webhook')
+  assert.deepEqual(wmsg, { message: 'Lead sent to your webhook', externalId: null })
   assert.equal(url, 'https://hooks.example/dazl')
   assert.equal((body as unknown as { event: string }).event, 'lead.pushed')
   assert.equal((body as unknown as { lead: { company: string } }).lead.company, 'Acme Co')

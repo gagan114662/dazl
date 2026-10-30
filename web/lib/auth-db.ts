@@ -10,6 +10,7 @@ import { EMAIL_TOKENS_DDL } from './email-ownership.ts'
 import { OUTBOX_DDL } from './system-mail.ts'
 import { SEEN_EVERY_S, SESSION_COLUMNS, SESSION_INDEXES, newPublicId } from './sessions.ts'
 
+
 let db: Database.Database | null = null
 
 export function getAuthDb(): Database.Database {
@@ -43,9 +44,9 @@ export function migrateAuth(d: Database.Database): void {
   try { d.exec('ALTER TABLE users ADD COLUMN sells TEXT') } catch { /* exists */ }
   try { d.exec('ALTER TABLE users ADD COLUMN website TEXT') } catch { /* exists */ }
   try { d.exec('ALTER TABLE users ADD COLUMN buyer_profile TEXT') } catch { /* exists */ }
-  // The workspace this session acts in (lib/workspaces.ts); NULL: the default one. PG: 0014_workspaces.sql.
+  // The workspace this session acts in (lib/workspaces.ts); NULL: the default one. PG: 0015_workspaces.sql.
   try { d.exec('ALTER TABLE sessions ADD COLUMN active_tenant_id TEXT') } catch { /* exists */ }
-  // Session inventory and revocation (lib/sessions.ts). PG: 0016_session_inventory.sql.
+  // Session inventory and revocation (lib/sessions.ts). PG: 0021_session_inventory.sql.
   for (const c of SESSION_COLUMNS) { try { d.exec(c) } catch { /* exists */ } }
   const unnamed = d.prepare('SELECT id FROM sessions WHERE public_id IS NULL').all() as { id: string }[]
   const name = d.prepare('UPDATE sessions SET public_id = ? WHERE id = ?')
@@ -58,6 +59,7 @@ export function migrateAuth(d: Database.Database): void {
   d.exec(OUTBOX_DDL)
   d.exec(WORKSPACE_DDL)
   d.exec(INVITATIONS_DDL)
+
   d.transaction(() => { for (const s of BACKFILL_SQL) d.prepare(s).run() })()
 }
 
@@ -169,6 +171,7 @@ export async function writeSellerProfile(db: Db, userId: string, sells: string, 
 // session's workspace: not signed in (null). authedAt: when this session last proved who it is (lib/sessions.ts
 // FRESH_AUTH_S; checked by stale() in lib/workspace-access.ts).
 export type SessionUser = { email: string; business_name: string; actorId: string; tenantId: string; role: Role; authedAt: number }
+
 export async function getSessionUser(token: string | undefined, d?: Db): Promise<SessionUser | null> {
   if (!token || !/^[a-f0-9]{64}$/.test(token)) return null
   const db = d ?? await getDb()
@@ -180,6 +183,7 @@ export async function getSessionUser(token: string | undefined, d?: Db): Promise
     [id, now])
   if (!row) return null
   if (row.last_seen_at === null || now - Number(row.last_seen_at) >= SEEN_EVERY_S) await db.run('UPDATE sessions SET last_seen_at = ? WHERE id = ?', [now, id])
+
   const m = await resolveMembership(db, row, row.active_tenant_id)
   if (!m) {
     // The chosen workspace is gone for this member: this request fails, the next one uses their default workspace.
@@ -188,6 +192,7 @@ export async function getSessionUser(token: string | undefined, d?: Db): Promise
   }
   const business_name = m.tenantId === row.id ? row.business_name : await readBusinessName(db, m.tenantId)
   return { email: row.email, business_name, actorId: row.id, tenantId: m.tenantId, role: m.role, authedAt: Number(row.authed_at ?? 0) }
+
 }
 
 // Whether the cookie is a live session (signed in, not expired, not revoked): authentication only, for the page gates (proxy.ts,

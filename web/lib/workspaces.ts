@@ -29,7 +29,8 @@ export function can(role: Role | null | undefined, action: Action): boolean {
 const nowS = () => Math.floor(Date.now() / 1000)
 
 // Tables only. SQLite: migrateAuth (lib/auth-db.ts) runs this and BACKFILL_SQL at startup and adds
-// sessions.active_tenant_id; PG: 0014_workspaces.sql.
+// sessions.active_tenant_id; PG: 0015_workspaces.sql.
+
 // memberships.member_id, not user_id: tenant-scoped tables key on tenant_id, and the member is an actor, not a tenant.
 export const WORKSPACE_DDL = `
   CREATE TABLE IF NOT EXISTS organizations (

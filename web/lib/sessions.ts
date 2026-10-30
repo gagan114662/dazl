@@ -12,7 +12,7 @@ export const SESSION_COLUMNS = [
   'ALTER TABLE sessions ADD COLUMN revoked_at INTEGER',
   'ALTER TABLE sessions ADD COLUMN revoked_by TEXT',
   'ALTER TABLE sessions ADD COLUMN revoke_reason TEXT',
-  // when this session last proved who it is (sign-in, or re-authentication); PG: 0017_session_fresh_auth.sql
+  // when this session last proved who it is (sign-in, or re-authentication); PG: 0022_session_fresh_auth.sql
   'ALTER TABLE sessions ADD COLUMN authed_at INTEGER',
 ]
 // A session older than this since its last sign-in must re-authenticate before changing secrets, billing or members.

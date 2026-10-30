@@ -5,7 +5,7 @@
 import { randomBytes } from 'node:crypto'
 import type { Db, Tx, TxBody } from './db/client.ts'
 
-// SQLite: migrateAuth (lib/auth-db.ts); PG: 0018_email_ownership.sql.
+// SQLite: migrateAuth (lib/auth-db.ts); PG: 0023_email_ownership.sql.
 export const OUTBOX_DDL = `
   CREATE TABLE IF NOT EXISTS system_mail_outbox (
     id TEXT PRIMARY KEY,

@@ -26,6 +26,7 @@ const call = async (r: { path: string; method: string }) => {
   const mod = await import(`../../app/api/${r.path}/route.ts`) as Record<string, (req: NextRequest, ctx: unknown) => Promise<Response>>
   const url = `http://localhost/api/${r.path.replace(/\[[a-z]+\]/g, id)}?id=${id}&job_id=${id}&lead_id=${id}`
   const body = r.method === 'GET' || r.method === 'DELETE' ? undefined : JSON.stringify({ id, job_id: id, lead_id: id, action: r.path === 'crm' ? 'save' : 'send' })
+
   const req = new NextRequest(url, { method: r.method, headers: { 'content-type': 'application/json', host: 'localhost', origin: 'http://localhost' }, body })
   return mod[r.method](req, { params: Promise.resolve({ id, lead: id, batch: id }) })
 }
@@ -78,4 +79,5 @@ test('a member whose role does not allow a route is refused with 403 and changes
   assert.deepEqual(failures, [])
   assert.equal(fetchCalls.length, 0, 'no network call')
   console.log('ROLES', refused, reads, 'STALE', stale)
+
 })
