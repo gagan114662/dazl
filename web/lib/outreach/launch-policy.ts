@@ -4,8 +4,12 @@
 // passing, replaces the hand-approval warmup; the warmup stays the default and nothing here changes existing consent.
 // Every other autopilot guard (reply, opt-out and bounce stops, uncertain-send pause, daily and per-domain caps,
 // suppression) still applies on top, and the first days of a calibrated launch run under a stricter rollout cap.
+import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { MAX_DAILY } from './autopilot.ts'
+import type { Provider } from '../llm/provider.ts'
+import { callCostUsd, PRICES_USD_PER_M, SpendRefused } from '../llm/spend-guard.ts'
+import type { DetailedCompletion } from '../llm/provider.ts'
 
 export const LAUNCH_POLICY_VERSION = '2026-10-30'
 export const ROLLOUT_DAYS = 7           // strict caps for the first week of a calibrated launch
@@ -61,7 +65,7 @@ export interface PreflightInput {
 }
 
 export type PreflightFailure = PolicyProblem | 'policy_not_accepted' | 'mailbox_mismatch' | 'test_inbox_failed' | 'too_few_samples'
-  | 'sample_evidence' | 'sample_date' | 'sample_contact' | 'sample_claims' | 'sample_excluded' | 'sample_invalid' | 'stop_not_enforced'
+  | 'sample_evidence' | 'sample_date' | 'sample_contact' | 'sample_claims' | 'sample_excluded' | 'sample_invalid' | 'stop_not_enforced' | 'policy_changed'
 
 export const REQUIRED_STOPS = ['reply', 'optOut', 'bounce', 'uncertainPause', 'domainCap'] as const
 const validSample = (s: SampleDraft) => !!s && typeof s === 'object' && typeof s.leadId === 'string' && s.leadId.trim() !== ''
@@ -111,10 +115,12 @@ export function calibratedDailyCap(policy: LaunchPolicy, launchedAtS: number, no
 
 // ---------- stored acceptance, calibration run, and the gate autopilot reads (#405) ----------
 // One row per tenant: the policy they accepted, at which version and when, and when a calibration preflight passed for
-// it. A new acceptance clears the launch, so changed authority always needs a new passing preflight.
+// it. A new acceptance clears the launch, so changed authority always needs a new passing preflight. acceptance_id
+// identifies one acceptance: a calibration started for it can only record its result against that same acceptance.
 export function migrateLaunchPolicy(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS autopilot_launch_policy (
     tenant_id TEXT PRIMARY KEY,
+    acceptance_id TEXT NOT NULL CHECK (length(acceptance_id) = 16),
     version TEXT NOT NULL CHECK (length(version) <= 20),
     policy TEXT NOT NULL CHECK (length(policy) <= 8000),
     accepted_at INTEGER NOT NULL,
@@ -143,16 +149,16 @@ export function acceptLaunchPolicy(db: Database.Database, tenantId: string, inpu
   const policy = parsePolicy(input)
   const problems = policyProblems(policy)
   if (problems.length) return { ok: false, problems }
-  db.prepare(`INSERT INTO autopilot_launch_policy (tenant_id, version, policy, accepted_at, launched_at, preflight) VALUES (?, ?, ?, ?, NULL, NULL)
-    ON CONFLICT (tenant_id) DO UPDATE SET version = excluded.version, policy = excluded.policy, accepted_at = excluded.accepted_at, launched_at = NULL, preflight = NULL`)
-    .run(tenantId, policy.version, JSON.stringify(policy), nowS)
+  db.prepare(`INSERT INTO autopilot_launch_policy (tenant_id, acceptance_id, version, policy, accepted_at, launched_at, preflight) VALUES (?, ?, ?, ?, ?, NULL, NULL)
+    ON CONFLICT (tenant_id) DO UPDATE SET acceptance_id = excluded.acceptance_id, version = excluded.version, policy = excluded.policy, accepted_at = excluded.accepted_at, launched_at = NULL, preflight = NULL`)
+    .run(tenantId, randomBytes(8).toString('hex'), policy.version, JSON.stringify(policy), nowS)
   return { ok: true }
 }
 
-export interface StoredPolicy { policy: LaunchPolicy; version: string; acceptedAt: number; launchedAt: number | null }
+export interface StoredPolicy { acceptanceId: string; policy: LaunchPolicy; version: string; acceptedAt: number; launchedAt: number | null }
 export function readLaunchPolicy(db: Database.Database, tenantId: string): StoredPolicy | null {
-  const r = db.prepare('SELECT version, policy, accepted_at, launched_at FROM autopilot_launch_policy WHERE tenant_id = ?').get(tenantId) as { version: string; policy: string; accepted_at: number; launched_at: number | null } | undefined
-  return r ? { policy: parsePolicy(JSON.parse(r.policy)), version: r.version, acceptedAt: r.accepted_at, launchedAt: r.launched_at } : null
+  const r = db.prepare('SELECT acceptance_id, version, policy, accepted_at, launched_at FROM autopilot_launch_policy WHERE tenant_id = ?').get(tenantId) as { acceptance_id: string; version: string; policy: string; accepted_at: number; launched_at: number | null } | undefined
+  return r ? { acceptanceId: r.acceptance_id, policy: parsePolicy(JSON.parse(r.policy)), version: r.version, acceptedAt: r.accepted_at, launchedAt: r.launched_at } : null
 }
 
 // What the copy may claim under the policy: no price unless allowed; links only to https benchmarks it lists, the
@@ -170,16 +176,15 @@ export function claimIssuesFor(policy: LaunchPolicy, body: string, evidenceUrls:
   return out
 }
 
-// Runs the preflight against the stored, accepted policy and records the result; only a passing run launches. The caller
-// supplies what the server observed (the connected mailbox, whether the owned test inbox got the integration message,
-// the sample drafts and the stops the autopilot enforces).
-export function recordPreflight(db: Database.Database, tenantId: string, observed: Omit<PreflightInput, 'policy' | 'acceptedVersion'>, nowS: number): PreflightResult {
-  const s = readLaunchPolicy(db, tenantId)
-  if (!s) return { ok: false, failures: ['policy_not_accepted'], heldLeads: [] }
-  const r = preflight({ ...observed, policy: s.policy, acceptedVersion: s.version })
-  db.prepare('UPDATE autopilot_launch_policy SET preflight = ?, launched_at = CASE WHEN ? THEN COALESCE(launched_at, ?) ELSE NULL END WHERE tenant_id = ?')
-    .run(JSON.stringify({ at: nowS, ...r }).slice(0, 4000), r.ok ? 1 : 0, nowS, tenantId)
-  return r
+// Runs the preflight against the acceptance the calibration was started for (`accepted`, read when it started) and
+// records the result only if that same acceptance is still the current one (compare-and-set on acceptance_id). Only a
+// passing run launches. A stale run (the tenant accepted another policy meanwhile) neither launches nor touches the newer
+// acceptance's state: it returns policy_changed. The caller supplies what the server observed for THAT policy.
+export function recordPreflight(db: Database.Database, tenantId: string, accepted: StoredPolicy, observed: Omit<PreflightInput, 'policy' | 'acceptedVersion'>, nowS: number): PreflightResult {
+  const r = preflight({ ...observed, policy: accepted.policy, acceptedVersion: accepted.version })
+  const w = db.prepare('UPDATE autopilot_launch_policy SET preflight = ?, launched_at = CASE WHEN ? THEN COALESCE(launched_at, ?) ELSE NULL END WHERE tenant_id = ? AND acceptance_id = ?')
+    .run(JSON.stringify({ at: nowS, ...r }).slice(0, 4000), r.ok ? 1 : 0, nowS, tenantId, accepted.acceptanceId)
+  return w.changes === 1 ? r : { ok: false, failures: ['policy_changed'], heldLeads: [] }
 }
 
 // What autopilot reads before each send. Calibrated only while the accepted policy is the current version, still valid,
@@ -215,15 +220,17 @@ export function calibratedStop(db: Database.Database, tenantId: string, gate: Ex
   } catch { return 'stop_check_unavailable' }
 }
 
-// The launch's spend cap, enforced before any model work: each model call reserves POLISH_RESERVE_USD (a ceiling for one
-// draft rewrite, max 600 output tokens) against the cap, in the shared tenant_spend_pools table under the launch's own
-// period ('l:<launchedAt>'), with the same conditional update the owner pools use, so concurrent runs cannot pass the
-// cap together. The reservation is never released: spend whose actual size is unknown counts at its ceiling. A store
-// that cannot record the reservation refuses the call (fail closed).
-export const POLISH_RESERVE_USD = 0.1
+// The launch's spend cap, enforced on every model call a calibrated launch makes. Before the call it reserves that call's
+// worst case with the repo's own bound (callCostUsd: input bounded by the prompt's byte length plus a margin, output by
+// the call's max_tokens, only models with a listed price; an unpriced model refuses). After the call it settles to the
+// cost the provider reported, overrun above the estimate included; when no cost was reported the worst case stays
+// reserved. Reservations live in the shared tenant_spend_pools table under the launch's own period ('l:<launchedAt>'),
+// raised only WHERE they still fit under the cap, so concurrent runs cannot pass it together. A store that cannot record
+// a reservation refuses the call (fail closed).
+const launchPeriod = (launchedAt: number) => `l:${launchedAt}`.slice(0, 12)
 export function reserveLaunchSpend(db: Database.Database, tenantId: string, launchedAt: number, capUsd: number, usd: number, nowS: number): 'ok' | 'over_cap' | 'unavailable' {
-  if (!(Number.isFinite(capUsd) && capUsd > 0 && Number.isFinite(usd) && usd > 0)) return 'unavailable'
-  const period = `l:${launchedAt}`.slice(0, 12)
+  if (!(Number.isFinite(capUsd) && capUsd > 0 && Number.isFinite(usd) && usd >= 0)) return 'unavailable'
+  const period = launchPeriod(launchedAt)
   try {
     return db.transaction(() => {
       db.prepare('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, 0, 0, 0, ?) ON CONFLICT (tenant_id, period) DO NOTHING').run(tenantId, period, nowS)
@@ -232,4 +239,47 @@ export function reserveLaunchSpend(db: Database.Database, tenantId: string, laun
       return r.changes === 1 ? 'ok' as const : 'over_cap' as const
     }).immediate()
   } catch { return 'unavailable' }
+}
+// Moves a reservation to what the provider reported: down when it cost less, UP past the cap when it cost more (money
+// already spent is recorded, and later reservations are then refused).
+export function settleLaunchSpend(db: Database.Database, tenantId: string, launchedAt: number, deltaUsd: number, reportedUsd: number, nowS: number): void {
+  db.prepare('UPDATE tenant_spend_pools SET reserved_usd = CASE WHEN reserved_usd + ? < 0 THEN 0 ELSE reserved_usd + ? END, reported_usd = reported_usd + ?, updated_at = ? WHERE tenant_id = ? AND period = ?')
+    .run(deltaUsd, deltaUsd, reportedUsd, nowS, tenantId, launchPeriod(launchedAt))
+}
+
+// What a completion cost, from the usage the provider reported, cache tokens counted as input (cache writes at 1.25x, the
+// listed premium); null when it reported none or the model has no listed price (then the ceiling stays reserved).
+export function reportedCostUsd(d: DetailedCompletion, configured: string | undefined): number | null {
+  const p = PRICES_USD_PER_M[d.model ?? configured ?? '']
+  const u = d.usage
+  if (!p || !u || typeof u.input_tokens !== 'number' || typeof u.output_tokens !== 'number') return null
+  const input = u.input_tokens + (u.cache_read_input_tokens ?? 0) + 1.25 * (u.cache_creation_input_tokens ?? 0)
+  return (input * p.in + u.output_tokens * p.out) / 1e6
+}
+
+export type SpendStop = 'launch_spend_cap' | 'spend_check_unavailable' | 'model_unpriced'
+// The providers a calibrated launch hands to drafting: every completion reserves its ceiling first and settles after.
+// onRefuse records why a call was refused, so the run stops instead of carrying on.
+export function launchProviders(base: Record<string, Provider>, db: Database.Database, tenantId: string, launchedAt: number, capUsd: number, nowS: number, onRefuse: (why: SpendStop) => void): Record<string, Provider> {
+  const wrap = (p: Provider): Provider => {
+    const model = () => { try { return p.configuredModel?.() } catch { return undefined } }
+    const before = (prompt: string, max: number): number => {
+      let ceiling: number
+      try { ceiling = callCostUsd(model(), Buffer.byteLength(prompt), max) } catch { onRefuse('model_unpriced'); throw new SpendRefused('model_unpriced') }
+      const r = reserveLaunchSpend(db, tenantId, launchedAt, capUsd, ceiling, nowS)
+      if (r !== 'ok') { const why = r === 'over_cap' ? 'launch_spend_cap' : 'spend_check_unavailable'; onRefuse(why); throw new SpendRefused(why) }
+      return ceiling
+    }
+    const out: Provider = { research: async () => { throw new SpendRefused('research_unbounded') }, ...(p.configuredModel ? { configuredModel: () => p.configuredModel!() } : {}) }
+    if (p.complete) out.complete = async (k, prompt, f, max = 10) => { before(prompt, max); return p.complete!(k, prompt, f, max) } // no usage reported: the ceiling stays reserved
+    if (p.completeDetailed) out.completeDetailed = async (k, prompt, f, max = 10) => {
+      const ceiling = before(prompt, max)
+      const d = await p.completeDetailed!(k, prompt, f, max)
+      const actual = reportedCostUsd(d, model())
+      if (actual !== null) { try { settleLaunchSpend(db, tenantId, launchedAt, actual - ceiling, actual, nowS) } catch { /* the ceiling stays reserved */ } }
+      return d
+    }
+    return out
+  }
+  return Object.fromEntries(Object.entries(base).map(([k, p]) => [k, wrap(p)]))
 }

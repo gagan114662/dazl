@@ -22,6 +22,7 @@ CREATE TABLE autopilot_audit (
 
 CREATE TABLE autopilot_launch_policy (
     tenant_id TEXT PRIMARY KEY,
+    acceptance_id TEXT NOT NULL CHECK (length(acceptance_id) = 16),
     version TEXT NOT NULL CHECK (length(version) <= 20),
     policy TEXT NOT NULL CHECK (length(policy) <= 8000),
     accepted_at INTEGER NOT NULL,

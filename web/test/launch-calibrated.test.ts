@@ -10,7 +10,10 @@ import { migrateReplies } from '../lib/outreach/replies.ts'
 import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
 import { saveSettings, type Deps } from '../lib/outreach/service.ts'
 import { ATTESTATIONS, auditAt, CONSENT_VERSION, enable, getState, migrateAutopilot, recentAutopilotAudit, runAutopilot } from '../lib/outreach/autopilot.ts'
-import { acceptLaunchPolicy, launchGate, readLaunchPolicy, reserveLaunchSpend, LAUNCH_POLICY_VERSION, POLISH_RESERVE_USD, ROLLOUT_DAILY_CAP, ROLLOUT_DAYS } from '../lib/outreach/launch-policy.ts'
+import { acceptLaunchPolicy, launchGate, parsePolicy, readLaunchPolicy, reserveLaunchSpend, LAUNCH_POLICY_VERSION, ROLLOUT_DAILY_CAP, ROLLOUT_DAYS } from '../lib/outreach/launch-policy.ts'
+import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
+import { callCostUsd } from '../lib/llm/spend-guard.ts'
+import type { Provider, DetailedCompletion } from '../lib/llm/provider.ts'
 import { runCalibration } from '../lib/outreach/calibration.ts'
 
 // #405 wiring: a calibrated launch replaces the hand-approval warmup only after an accepted policy passes the machine
@@ -216,23 +219,100 @@ test('HOLD: the current policy\'s claim authority applies to every final outgoin
   assert.equal((await runAutopilot(db, 'A', 'Acme', gmail().d)).sent, 1)
 })
 
-test('HOLD: the launch spend cap is reserved in the shared store before any model work, and fails closed', async () => {
-  const db = await setup(); const job = play(db); for (let i = 0; i < 8; i++) lead(db, job, `p${i}@co${i}.example`)
-  acceptLaunchPolicy(db, 'A', policy([job], { spendCapUsd: 0.25 }), NOW)
-  await runCalibration(db, 'A', 'Acme', gmail().d)
+// A recorded model: every completion is captured with the max_tokens it was allowed; usage is what the test says the
+// provider reported (undefined: none). The rewrite is not usable, so the template stays: only spend is under test.
+const model = (id: string, usage: (prompt: string) => DetailedCompletion['usage']) => {
+  const calls: { prompt: string; max: number }[] = []
+  const p: Provider = {
+    research: async () => { throw new Error('no research') },
+    configuredModel: () => id,
+    completeDetailed: async (_k, prompt, _f, max = 10) => { calls.push({ prompt, max }); return { text: 'not a draft', model: id, usage: usage(prompt) } },
+  }
+  return { calls, providers: { anthropic: p, openai: p } }
+}
+const pool = (db: Database.Database) => db.prepare("SELECT reserved_usd, reported_usd, calls FROM tenant_spend_pools WHERE period LIKE 'l:%'").get() as { reserved_usd: number; reported_usd: number; calls: number } | undefined
+async function launchedWithKey(cap: number) {
+  const db = await setup(); migrateKeys(db); saveKey(db, 'A', 'anthropic', 'sk-ant-synthetic-0000', master)
+  const job = play(db); for (const c of ['a@one.example', 'b@two.example', 'c@three.example']) lead(db, job, c)
+  acceptLaunchPolicy(db, 'A', policy([job], { spendCapUsd: cap }), NOW)
+  assert.equal((await runCalibration(db, 'A', 'Acme', gmail().d)).ok, true)
+  return { db, job }
+}
+
+test('HOLD: every model call reserves its real worst case before it runs, then settles to what the provider reported', async () => {
+  // reported cost below the ceiling: the reservation moves down to it
+  const { db, job } = await launchedWithKey(5)
+  lead(db, job, 'd@four.example')
+  const m = model('claude-sonnet-4-5', () => ({ input_tokens: 900, output_tokens: 120 }))
+  const r = await runAutopilot(db, 'A', 'Acme', { ...gmail().d, providers: m.providers } as never)
+  assert.equal(r.sent, 1); assert.equal(m.calls.length, 1)
+  const ceiling = callCostUsd('claude-sonnet-4-5', Buffer.byteLength(m.calls[0].prompt), m.calls[0].max)
+  const actual = (900 * 3 + 120 * 15) / 1e6
+  assert.ok(ceiling > actual)
+  assert.ok(Math.abs(pool(db)!.reserved_usd - actual) < 1e-9 && Math.abs(pool(db)!.reported_usd - actual) < 1e-9)
+
+  // no cost reported: the worst case stays reserved
+  const b = await launchedWithKey(5); lead(b.db, b.job, 'd@four.example')
+  const silent = model('claude-sonnet-4-5', () => undefined)
+  await runAutopilot(b.db, 'A', 'Acme', { ...gmail().d, providers: silent.providers } as never)
+  assert.ok(Math.abs(pool(b.db)!.reserved_usd - callCostUsd('claude-sonnet-4-5', Buffer.byteLength(silent.calls[0].prompt), silent.calls[0].max)) < 1e-9)
+
+  // the provider reports MORE than the estimate (cache writes): the overrun is recorded past the cap, and the next call is refused
+  const c = await launchedWithKey(0.05); lead(c.db, c.job, 'd@four.example'); lead(c.db, c.job, 'e@five.example')
+  const over = model('claude-sonnet-4-5', () => ({ input_tokens: 1000, output_tokens: 600, cache_creation_input_tokens: 40_000 }))
+  const rc = await runAutopilot(c.db, 'A', 'Acme', { ...gmail().d, providers: over.providers } as never)
+  assert.ok(pool(c.db)!.reserved_usd > 0.05, 'actual spend above the estimate is counted, even past the cap')
+  assert.equal(rc.stopped, 'launch_spend_cap'); assert.equal(over.calls.length, 1, 'no further model call once the cap is used up')
+})
+
+test('HOLD: the cap, an unpriced model and an unreadable store all refuse the model call and stop the launch', async () => {
+  // a cap smaller than one call's worst case: the call never happens
+  const a = await launchedWithKey(0.001); lead(a.db, a.job, 'd@four.example')
+  const m = model('claude-sonnet-4-5', () => ({ input_tokens: 10, output_tokens: 10 }))
   const g = gmail()
-  const r = await runAutopilot(db, 'A', 'Acme', g.d)
-  assert.equal(r.stopped, 'launch_spend_cap'); assert.equal(g.sent.length, 2, 'two reservations of the ceiling fit under 0.25; the third does not')
-  assert.equal(getState(db, 'A').pause_reason, 'launch_spend_cap')
-  const launchedAt = readLaunchPolicy(db, 'A')!.launchedAt!
-  // reservations are atomic against the cap: none fits once the cap is reached, whoever asks
-  assert.equal(reserveLaunchSpend(db, 'A', launchedAt, 0.25, POLISH_RESERVE_USD, NOW), 'over_cap')
-  // a store that cannot record the reservation refuses the work
-  const db2 = await setup(); const job2 = play(db2); for (let i = 0; i < 4; i++) lead(db2, job2, `p${i}@co${i}.example`)
-  acceptLaunchPolicy(db2, 'A', policy([job2]), NOW)
-  await runCalibration(db2, 'A', 'Acme', gmail().d)
-  lead(db2, job2, 'new@co9.example')
-  db2.exec('DROP TABLE tenant_spend_pools')
-  const g2 = gmail()
-  assert.equal((await runAutopilot(db2, 'A', 'Acme', g2.d)).stopped, 'spend_check_unavailable'); assert.equal(g2.sent.length, 0)
+  const r = await runAutopilot(a.db, 'A', 'Acme', { ...g.d, providers: m.providers } as never)
+  assert.deepEqual([r.stopped, m.calls.length, g.sent.length], ['launch_spend_cap', 0, 0])
+  assert.equal(getState(a.db, 'A').pause_reason, 'launch_spend_cap')
+  // a model with no listed price cannot be bounded: refused
+  const b = await launchedWithKey(5); lead(b.db, b.job, 'd@four.example')
+  const unpriced = model('some-new-model', () => ({ input_tokens: 10, output_tokens: 10 }))
+  const rb = await runAutopilot(b.db, 'A', 'Acme', { ...gmail().d, providers: unpriced.providers } as never)
+  assert.deepEqual([rb.stopped, unpriced.calls.length], ['model_unpriced', 0])
+  // the shared store cannot record the reservation: refused
+  const c = await launchedWithKey(5); lead(c.db, c.job, 'd@four.example')
+  c.db.exec('DROP TABLE tenant_spend_pools')
+  const mc = model('claude-sonnet-4-5', () => ({ input_tokens: 10, output_tokens: 10 }))
+  const gc = gmail()
+  const rc = await runAutopilot(c.db, 'A', 'Acme', { ...gc.d, providers: mc.providers } as never)
+  assert.deepEqual([rc.stopped, mc.calls.length, gc.sent.length], ['spend_check_unavailable', 0, 0])
+  // reservations are conditional on still fitting: once the cap is used, none fits for anyone
+  const launchedAt = readLaunchPolicy(a.db, 'A')!.launchedAt!
+  assert.equal(reserveLaunchSpend(a.db, 'A', launchedAt, 0.001, 0.002, NOW), 'over_cap')
+  assert.equal(reserveLaunchSpend(a.db, 'A', launchedAt, 0.001, 0.001, NOW), 'ok')
+  assert.equal(reserveLaunchSpend(a.db, 'A', launchedAt, 0.001, 0.0001, NOW), 'over_cap')
+})
+
+test('HOLD: a calibration bound to acceptance A cannot launch or touch a policy B accepted while it ran', async () => {
+  for (const change of [{ audience: 'other' }, { sender: 'new@acme.example', testInbox: 'new@acme.example' }, { claims: { mayStatePrice: false, benchmarkUrls: [] } }] as const) {
+    const db = await setup(); const job = play(db); for (const c of ['a@one.example', 'b@two.example', 'c@three.example']) lead(db, job, c)
+    const otherJob = play(db)
+    acceptLaunchPolicy(db, 'A', policy([job]), NOW)
+    // hold the integration send open, and accept policy B while calibration for A is waiting on Gmail
+    let release!: () => void
+    const gate = new Promise<void>(r => { release = r })
+    const g = gmail()
+    const slow = { ...g.d, sendFn: (async (t: string, raw: string) => { await gate; return (g.d.sendFn as (t: string, r: string) => Promise<{ id: string }>)(t, raw) }) as never }
+    const run = runCalibration(db, 'A', 'Acme', slow)
+    await new Promise(r => setImmediate(r))
+    const b = 'audience' in change ? policy([otherJob]) : policy([job], change as Record<string, unknown>)
+    assert.deepEqual(acceptLaunchPolicy(db, 'A', b, NOW + 5), { ok: true })
+    release()
+    const r = await run
+    assert.deepEqual(r, { ok: false, failures: ['policy_changed'], heldLeads: [] }, JSON.stringify(change))
+    const after = readLaunchPolicy(db, 'A')!
+    assert.equal(after.launchedAt, null, 'B was never calibrated, so it is not launched')
+    assert.equal((db.prepare('SELECT preflight FROM autopilot_launch_policy').get() as { preflight: string | null }).preflight, null, "A's result is not written onto B")
+    assert.deepEqual(after.policy, parsePolicy(b), 'B stays exactly as accepted')
+    assert.equal(launchGate(db, 'A', 'me@acme.example', NOW + 6).calibrated, false)
+  }
 })

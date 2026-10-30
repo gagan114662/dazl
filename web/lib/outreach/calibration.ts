@@ -90,5 +90,5 @@ export async function runCalibration(db: Database.Database, tenantId: string, bu
     } catch { testInboxDelivered = false }
   }
 
-  return recordPreflight(db, tenantId, { connectedMailbox: connected, testInboxDelivered, samples, stopsEnforced: { ...AUTOPILOT_STOPS } }, now)
+  return recordPreflight(db, tenantId, stored, { connectedMailbox: connected, testInboxDelivered, samples, stopsEnforced: { ...AUTOPILOT_STOPS } }, now)
 }

@@ -2,8 +2,9 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { gmailStatus } from '../gmail/oauth.ts'
 import { createDraft, approve, getSettings, isSuppressed, OutreachError, sendMessage, suppress, type Deps } from './service.ts'
-import { polishDraft } from './draft-llm.ts'
-import { calibratedStop, claimIssuesFor, launchGate, migrateLaunchPolicy, outsidePolicy, POLISH_RESERVE_USD, reserveLaunchSpend } from './launch-policy.ts'
+import { polishDraft, type LlmDeps } from './draft-llm.ts'
+import { calibratedStop, claimIssuesFor, launchGate, launchProviders, migrateLaunchPolicy, outsidePolicy, type SpendStop } from './launch-policy.ts'
+import { providers as defaultProviders } from '../llm/provider.ts'
 
 // Autopilot sends first-touch email to verified, business-published addresses through the user's own Gmail,
 // inside hard limits. It never sends follow-ups, never re-contacts, and never touches suppressed addresses.
@@ -139,14 +140,15 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
       if (halt) { pause(db, tenantId, halt); return stop(halt) }
       const outside = outsidePolicy(gate.policy, l.play, l.contact)
       if (outside) { out.skipped++; audit(db, tenantId, 'skipped', outside, l.id); continue }
-      // the launch's spend cap, reserved before any model work on this lead
-      const spend = reserveLaunchSpend(db, tenantId, gate.launchedAt, gate.policy.spendCapUsd, POLISH_RESERVE_USD, now)
-      if (spend !== 'ok') { const why = spend === 'over_cap' ? 'launch_spend_cap' : 'spend_check_unavailable'; pause(db, tenantId, why); return stop(why) }
     }
     let id: string
     try {
       id = createDraft(db, tenantId, l.id, businessName)
-      try { await polishDraft(db, tenantId, id, businessName, d) } catch { /* template stays */ }
+      // under a calibrated launch every model call reserves its worst case against the launch's spend cap first
+      let refused: SpendStop | null = null
+      const pd = gate.calibrated ? { ...d, providers: launchProviders((d as LlmDeps).providers ?? defaultProviders, db, tenantId, gate.launchedAt, gate.policy.spendCapUsd, now, why => { refused = why }) } : d
+      try { await polishDraft(db, tenantId, id, businessName, pd) } catch { /* template stays */ }
+      if (refused) { audit(db, tenantId, 'held_spend', refused, l.id, id); pause(db, tenantId, refused); return { ...out, held: out.held + 1, stopped: refused } }
     } catch (e) {
       out.skipped++; audit(db, tenantId, 'skipped', e instanceof OutreachError ? e.code : 'error', l.id); continue
     }
