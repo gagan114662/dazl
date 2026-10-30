@@ -57,7 +57,7 @@ test('discounts, guarantees, contracts and security reviews escalate; unknown qu
     assert.equal(d.action === 'escalate' && d.reason, 'authority', t)
   }
   const d = ask('Who are your investors and where is the team based')
-  assert.equal(d.action === 'escalate' && d.reason, 'not_routine')
+  assert.ok(d.action === 'escalate' && ['seller_scope', 'not_routine'].includes(d.reason), JSON.stringify(d))
 })
 
 test('untrusted inbound text cannot change authority or leak into the reply', () => {
@@ -113,7 +113,7 @@ test('HOLD: a known topic beside an unknown, private, custom or legal question e
     ['How much is it? Do you sign a DPA?', 'authority'],
     ['What does it cost, and can you build a custom integration for us?', 'sensitive'],
     ['How do I get started and is it HIPAA compliant?', 'sensitive'],
-    ['How much per month and who are your biggest customers?', 'not_routine'],
+    ['How much per month and who are your biggest customers?', 'seller_scope'],
     ['What are the limits? Also can I resell it to my clients?', 'sensitive'],
     ['Pricing please. What happens to our leads if we cancel?', 'not_routine'],
   ] as const) {
@@ -152,7 +152,7 @@ test('HOLD: every fragment of the message is resolved, imperative requests and c
     'Pricing please; also tell me your revenue.', 'What does it cost? Then explain your roadmap.', 'How much is it as well as your headcount?',
     'Give me the price but describe your hiring plans.', 'How many customers do you have?', 'Does it work with Gmail and tell me your office address?']) {
     const d = ask(text)
-    assert.ok(d.action === 'escalate' && ['not_routine', 'sensitive', 'unknown_integration'].includes(d.reason), `${text} -> ${JSON.stringify(d)}`)
+    assert.ok(d.action === 'escalate' && ['not_routine', 'sensitive', 'seller_scope', 'unknown_integration'].includes(d.reason), `${text} -> ${JSON.stringify(d)}`)
   }
   // genuine multi-topic and list questions still answer
   for (const [text, topics] of [['What does it cost and how do I get started?', ['pricing', 'how_to_start']], ['Tell me the price, and what do I need to set up?', ['pricing', 'prerequisites']],
@@ -172,7 +172,7 @@ test('HOLD: imperative requests are their own fragments, with or without a joini
     'Tell me the price and let me know who your investors are.', 'What does it cost, please confirm you will sign our MSA.',
     'Give me pricing show me your customer list.', 'How do I get started could you explain how you store our leads?']) {
     const d = ask(text)
-    assert.ok(d.action === 'escalate' && ['not_routine', 'sensitive', 'authority'].includes(d.reason), `${text} -> ${JSON.stringify(d)}`)
+    assert.ok(d.action === 'escalate' && ['not_routine', 'sensitive', 'seller_scope', 'authority'].includes(d.reason), `${text} -> ${JSON.stringify(d)}`)
   }
   // fully grounded requests, polite or imperative, still answer
   for (const [text, topics] of [['Can you tell me the price?', ['pricing']], ['Please share your pricing.', ['pricing']], ['Could you tell me how to get started?', ['how_to_start']],
@@ -186,7 +186,7 @@ test('HOLD: every word of every fragment must be routine; a topic keyword never 
   for (const text of ['What is pricing please share your customer list', 'How much does it cost share your customer list', 'Pricing and your customer list',
     'What is the price for enterprise customers in Germany', 'How do I get started with my reseller account', 'What do I need to set up for HIPAA', 'Book a demo with your CEO']) {
     const d = ask(text)
-    assert.ok(d.action === 'escalate' && ['not_routine', 'sensitive', 'unknown_integration'].includes(d.reason), `${text} -> ${JSON.stringify(d)}`)
+    assert.ok(d.action === 'escalate' && ['not_routine', 'sensitive', 'seller_scope', 'unknown_integration'].includes(d.reason), `${text} -> ${JSON.stringify(d)}`)
   }
   for (const [text, topics] of [['What is the price per month?', ['pricing']], ['How much does it cost per month and how do I get started?', ['pricing', 'how_to_start']],
     ['Can you share your pricing please?', ['pricing']], ['How many emails can it send a day?', ['limitations']], ['Does it work with Gmail and HubSpot?', []]] as const) {
@@ -200,7 +200,7 @@ test('HOLD: request meaning and scope, not just words: account-specific asks esc
     'How much is it? Also give me access to your account.', 'Can you share your billing details?', 'Tell me your password', 'Give me your token',
     'What is the price per month, and send me your invoices', 'Please share your account']) {
     const d = ask(text)
-    assert.ok(d.action === 'escalate' && ['sensitive', 'not_routine'].includes(d.reason), `${text} -> ${JSON.stringify(d)}`)
+    assert.ok(d.action === 'escalate' && ['seller_scope', 'sensitive', 'not_routine'].includes(d.reason), `${text} -> ${JSON.stringify(d)}`)
   }
   // the buyer's own setup questions, and requests for approved facts, still answer
   for (const [text, topics] of [['What API key do I need?', ['prerequisites']], ['Do I need my own API key?', ['prerequisites']], ['Please share your pricing.', ['pricing']],
@@ -215,11 +215,89 @@ test('HOLD: a question must have a supported meaning and subject; questions abou
     'What is your API key?', 'How many customers do you have?', 'What is the price you pay for Gmail?', 'How much does your team cost?',
     'What do you need from our CFO?', 'How many emails do you send a day?']) {
     const d = ask(text)
-    assert.ok(d.action === 'escalate' && ['not_routine', 'sensitive'].includes(d.reason), `${text} -> ${JSON.stringify(d)}`)
+    assert.ok(d.action === 'escalate' && ['seller_scope', 'not_routine', 'sensitive'].includes(d.reason), `${text} -> ${JSON.stringify(d)}`)
   }
   for (const [text, topics] of [['What API key do I need?', ['prerequisites']], ['Please share your pricing.', ['pricing']], ['How much does it cost per month?', ['pricing']],
     ['What do I need to set up?', ['prerequisites']], ['How many emails can I send a day?', ['limitations']], ['Is there a free trial?', ['how_to_start']]] as const) {
     const d = ask(text)
     assert.ok(d.action === 'reply' && JSON.stringify(d.topics) === JSON.stringify(topics), `${text} -> ${JSON.stringify(d)}`)
   }
+})
+
+// The decision as a class, not example by example. A fragment is routine only when it is WHOLLY one supported product
+// question or request form, its subject is the product or the buyer (never the seller's own account, business, people
+// or finances), and every noun phrase in it is an approved-fact noun phrase. Everything else escalates.
+const ESCALATE_CORPUS: string[] = [
+  // the reviewer's d91d159a negatives: a request whose object has a seller-scope trailing qualification
+  'Tell me the price you pay per month', 'Explain pricing for your Gmail',
+  // the seller-scope family: a seller possessive and a noun that is not a product attribute
+  'What is your Gmail account?', 'Please share your API key', 'Can you tell me about your team?', 'What is your revenue?',
+  'Tell me your costs per month', 'Can you share your Gmail?', 'Send me your data', 'Tell me the pricing your team pays',
+  'Explain pricing and your margins', 'Describe your pricing for our competitors',
+  // the seller as the agent of something other than offering the product (a comparison with the seller's situation)
+  'How much do you pay per month?', 'How many leads do you have?', 'How many customers do you have?', 'What API key do you use?',
+  'How much do you spend on Gmail per month?', 'Do you use your own product?', 'What pricing do you pay for Anthropic?',
+  // account-specific requests
+  'Send me your login please', 'Give me access to your dashboard', 'Share your billing details', 'What is your password?',
+  // sensitive, legal, authority
+  'Where is our data stored?', 'Can you sign our NDA?', 'Are you GDPR compliant?', 'Do you offer a discount for annual?',
+  'How do I get started with my reseller account', 'What does it cost and can we get a dedicated account manager?',
+  // several questions where one is not routine
+  'What is pricing and tell me where your team is based?', 'How much is it? Also who are your investors?',
+  'Pricing please share your customer list', 'Tell me the price per month for your agency clients',
+  // hypotheticals and conditions no approved fact answers
+  'If we had 50 reps, what would you charge?', 'What would it cost if we only used it for 3 months?',
+  'Suppose we cancel after a month, do we get a refund?', 'What happens to our leads if we cancel?',
+  // a routine noun with a qualification outside the facts
+  'Why is your pricing so high?', 'What is the price for enterprise customers in Germany', 'Can you do a custom plan for us?',
+  // an integration asked in a form without an integration verb is still checked against the facts' list
+  'Is there a Salesforce integration?', 'Do you have a native Outlook connector?',
+]
+const REPLY_CORPUS: [string, string[]][] = [
+  ['How much does it cost per month?', ['pricing']], ['What is your pricing?', ['pricing']], ['Pricing?', ['pricing']],
+  ['Is there a free plan?', ['pricing']], ['Could you send me your pricing plans?', ['pricing']], ["I'd like to know the price", ['pricing']],
+  ["What's the monthly cost?", ['pricing']], ['How much do you charge per month?', ['pricing']], ['Please share your pricing.', ['pricing']], ['What are your fees?', ['pricing']],
+  ['What do I need to set up?', ['prerequisites']], ['Do I need my own API key?', ['prerequisites']], ['What are the prerequisites?', ['prerequisites']],
+  ['What API key do I need?', ['prerequisites']],
+  ['How do I get started?', ['how_to_start']], ['Where do I sign up?', ['how_to_start']], ['Is there a free trial?', ['how_to_start']],
+  ['Can you send me the link to sign up?', ['how_to_start']], ['Do you have a free trial?', ['how_to_start']],
+  ['How many emails can I send a day?', ['limitations']], ['What are the limits?', ['limitations']], ['Is there a cap on sends per day?', ['limitations']],
+  ['Can we book a demo?', ['booking']], ["I'd like to schedule a call", ['booking']],
+  ['Does it work with HubSpot?', []], ['Do you integrate with Gmail and Pipedrive?', []], ['Is there a HubSpot integration?', []],
+  ['Hi there, quick question: how much is it per month and how do I get started?', ['pricing', 'how_to_start']],
+  ['Thanks! What do I need to set up, and can I book a demo?', ['prerequisites', 'booking']],
+  ['Tell me the price and let me know what I need to set up.', ['pricing', 'prerequisites']],
+]
+
+test('HOLD: corpus: a fragment is routine only as a whole supported form about the product or the buyer', () => {
+  const failures: string[] = []
+  for (const text of ESCALATE_CORPUS) {
+    const d = ask(text)
+    if (d.action !== 'escalate') failures.push(`${text} -> ${JSON.stringify(d)}`)
+  }
+  for (const [text, topics] of REPLY_CORPUS) {
+    const d = ask(text)
+    if (!(d.action === 'reply' && JSON.stringify(d.topics) === JSON.stringify(topics))) failures.push(`${text} -> ${JSON.stringify(d)}`)
+  }
+  assert.deepEqual(failures, [], `${failures.length} corpus sentences decided wrongly:\n${failures.join('\n')}`)
+  assert.ok(ESCALATE_CORPUS.length >= 30 && REPLY_CORPUS.length >= 20)
+})
+
+test('HOLD: seller scope is an explicit decision with the offending phrase, decided by structure (possessive + noun class, seller + verb class)', () => {
+  for (const [text, detail] of [
+    ['Tell me the price you pay per month', 'you pay'], ['How much do you pay per month?', 'you pay'], ['What API key do you use?', 'you use'],
+    ['Explain pricing for your Gmail', 'your Gmail'], ['Please share your API key', 'your API key'], ['What is your Gmail account?', 'your Gmail account'],
+    ['How many leads do you have?', 'you have'],
+  ] as const) {
+    const d = ask(text)
+    if (text === 'How many leads do you have?') { assert.ok(d.action === 'escalate' && d.reason === 'not_routine', `${text} -> ${JSON.stringify(d)}`); continue }
+    assert.ok(d.action === 'escalate' && d.reason === 'seller_scope' && d.detail === detail, `${text} -> ${JSON.stringify(d)}`)
+  }
+  // the seller may own the product and its attributes; "you" may offer, charge, support or answer
+  for (const text of ['What is your pricing?', 'What are your fees per month?', 'Do you have a free plan?', 'How much do you charge per month?', 'Do you support HubSpot?', 'Can you tell me the price?', 'Does your product work with Gmail?']) {
+    assert.equal(ask(text).action, 'reply', text)
+  }
+  // an integration asked without an integration verb is still held to the facts' list
+  const d = ask('Is there a Salesforce integration?')
+  assert.ok(d.action === 'escalate' && d.reason === 'unknown_integration' && d.detail === 'Salesforce', JSON.stringify(d))
 })
