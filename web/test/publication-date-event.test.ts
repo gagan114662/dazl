@@ -218,8 +218,13 @@ test('council r3: a connective starts another statement whatever case its subjec
   // the whole sentence as the quote does not make the other company's name the company's own
   for (const t of ['Aurora Agency opened a new office in Berlin as UnrelatedCo launched a tool on 2026-10-15', 'Aurora Agency opened a new office in Berlin when UnrelatedCo launched a tool on 2026-10-15',
     'Aurora Agency opened a new office in Berlin, with UnrelatedCo launching a tool on 2026-10-15', 'Aurora Agency opened a new office in Berlin, UnrelatedCo launched a tool on 2026-10-15',
-    'Aurora Agency opened a new office in Berlin: UnrelatedCo launched a tool on 2026-10-15', 'Aurora Agency opened a new office in Berlin and Zenith Corp launches a tool on 2026-10-15']) assert.equal(b(`${t}.`, t), false, t)
+    'Aurora Agency opened a new office in Berlin: UnrelatedCo launched a tool on 2026-10-15', 'Aurora Agency opened a new office in Berlin and Zenith Corp launches a tool on 2026-10-15',
+    "Aurora Agency opened a new office in Berlin after UnrelatedCo's launch on 2026-10-15", 'Aurora Agency opened a new office in Berlin alongside UnrelatedCo, launching a tool on 2026-10-15']) assert.equal(b(`${t}.`, t), false, t)
   for (const t of [`${Q}, and a local bakery opens on 2026-10-15.`, `${Q}, as its rival launched a tool on 2026-10-15.`, `${Q}, when its rival launched a tool on 2026-10-15.`, `${Q}, so the city held a festival on 2026-10-15.`]) assert.equal(b(t), false, t)
+  assert.equal(b(`${Q} as part of its expansion on 2026-10-15.`), true)
+  assert.equal(b(`${Q} as planned on 2026-10-15.`), true)
+  for (const t of [`${Q}, Zenith held a gala on 2026-10-15.`, `${Q}, UnrelatedCo's new tool launched on 2026-10-15.`, `${Q}, UnrelatedCo CEO Jane Doe said on 2026-10-15.`, `${Q}, and the mayor spoke on 2026-10-15.`]) assert.equal(b(t), false, t)
+  assert.equal(b('Aurora Agency opened a new office in Austin, Texas on 2026-10-15.', 'Aurora Agency opened a new office in Austin, Texas'), true)
   const own = 'Aurora Agency signed a lease and officially opened its Toronto office on 2026-10-15'
   assert.equal(b(`${own}.`, own), true)   // the company's own compound predicate
   for (const t of [`${Q} on 2026-10-15 after months of planning.`, `${Q} on 2026-10-15, and hired ten designers.`, `${Q} after it signed a lease on 2026-10-15.`]) assert.equal(b(t), true, t)

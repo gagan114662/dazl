@@ -64,6 +64,7 @@ function clauses(text: string, s: Span, protectedSpans: Span[], name = ''): Span
 // Labs opened ...") and an aside naming a non-place ("Aurora - the firm Gartner ranked - opened ...") read undated.
 const PREP = new Set(['in', 'at', 'on', 'along', 'onto', 'across', 'near', 'from', 'to', 'throughout', 'around', 'into', 'outside', 'inside'])
 const PLAIN_CAPS = new Set('the a an it its this that these those today yesterday on in at by for with and but while after before as so also then mr ms mrs dr st prnewswire businesswire globenewswire'.split(' '))
+const COUNTERPART = new Set('after before following alongside beside besides with as when while than unlike like versus vs against'.split(' '))
 const LEGAL = new Set('inc ltd llc corp co plc gmbh'.split(' '))
 const CAL = /^(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\.?$/i
 const fold = (t: string) => Array.from(t, ch => { const f = ch.normalize('NFKD').replace(/[\u0300-\u036f]/g, ''); return f.length === ch.length ? f : ch }).join('')
@@ -75,9 +76,10 @@ const fold = (t: string) => Array.from(t, ch => { const f = ch.normalize('NFKD')
 // itself ("it", "the firm"), so "after months of planning, opened", "runs until <day>", "in Toronto and Vancouver on <day>",
 // "and hired ten designers", "and on <day> the ribbon was cut" and "as the firm said on <day>" still bind (#460 review).
 // Matched on the text from the gap onwards (the lookahead may read past the day); only a match that starts inside the gap counts.
-const PAST = String.raw`(?:held|sold|won|made|began|broke|took|ran|met|built|cut|set|hit|led|left|became|got|gave|bought|brought|chose|drew|fell|found|grew|kept|lost|paid|put|rose|said|sent|spent|struck|told|went|wrote)`
-const VERB = String.raw`\b(?:${PAST}|[a-z]{2,}(?:ed|es|s)|(?:will|shall|would|is|are|was|were|has|have|had)\s+[a-z]+)\b`
+const PAST = String.raw`(?:held|spoke|sold|won|made|began|broke|took|ran|met|built|cut|set|hit|led|left|became|got|gave|bought|brought|chose|drew|fell|found|grew|kept|lost|paid|put|rose|said|sent|spent|struck|told|went|wrote)`
+const VERB = String.raw`\b(?:${PAST}|(?!(?:its|this|his|hers|theirs|ours|yes|less|plus|thus|was|is|has|does)\b)[a-z]{2,}(?:ed|es|s)|(?:will|shall|would|is|are|was|were|has|have|had)\s+[a-z]+)\b`
 const SUBJ = String.raw`(?!(?:it|they|we|he|she|the\s+(?:firm|company|agency|business|group|team))\b)(?:(?:the|a|an|its|their|his|her|this|that)\s+)?(?:(?!(?:of|in|on|at|for|to|from|with|by|into|over|and|or)\b)(?![a-z]+(?:ed|ing|ly)\b)[A-Za-z0-9&'’.-]+\s+){1,4}?`
+const VERB_WORD = new RegExp(String.raw`^(?:${PAST}|spoke|(?!(?:its|this|his|hers|theirs|ours|yes|less|plus|thus|as|us|is|was|has|does)$)[a-z]{2,}(?:ed|es|s|ing))$`)
 const LATIN_BREAK = new RegExp(String.raw`;|\s+(?:while|whereas|but|meanwhile|although|though)\s+|,\s+(?:which|who|whose)\s+|,?\s+(?:and|as|so|when|once|since|after|before|following|until)\s+(?=${SUBJ}${VERB})|,?\s+with\s+(?=${SUBJ}[a-z]+ing\b)`, 'gi')
 function connectiveIn(tail: string, gap: number): boolean {
   const own = /^\s*,\s+(?:which|who|whose)\s/i.test(tail)   // "Aurora Agency, which opened ..." is still Aurora's
@@ -102,12 +104,17 @@ function otherSubjectBetween(segment: string, co: string[], known: Set<string> =
       // word is followed by a verb, which makes it a subject ("in Austin, UnrelatedCo launched ...")
       if (LEGAL.has(lw) && (i === 0 || co.includes(prev.replace(/[.'’]+$/, '')))) continue   // "Aurora Agency Inc. opened ..."
       // followed by a verb or a legal suffix, the word is a subject ("in Austin, UnrelatedCo launched", "in Ottawa, Zenith Corp opened")
-      const verbNext = (/^[a-z]+(?:ed|es|s|ing)$/.test(next) && !PREP.has(next)) || LEGAL.has(next.toLowerCase().replace(/[.'’]+$/, ''))
+      const verbNext = (VERB_WORD.test(next) && !PREP.has(next)) || LEGAL.has(next.toLowerCase().replace(/[.'’]+$/, ''))
+      // a capital joined by a comma is a place only when a place's neighbour follows ("Toronto, ON on", "Austin, Texas and"):
+      // "in Toronto, Zenith held a gala" and "in Toronto, UnrelatedCo's tool launched" name someone else
+      const placeNext = !next || next === ',' || next === 'and' || PREP.has(next) || /^[A-Z0-9]/.test(next)
       if (PREP.has(prev)) place = !verbNext
-      else if (place && (prev === 'and' || prev === ',' || capPrev)) place = !verbNext
+      else if (place && prev === ',') place = !verbNext && placeNext
+      else if (place && (prev === 'and' || capPrev)) place = !verbNext
       else place = false
       // the quote's own capitals are the company's - unless one is followed by a verb away from the name ("as UnrelatedCo launched")
-      const quoted = known.has(lw) && (!verbNext || attached)
+      // or one introduced as a counterpart ("after UnrelatedCo's launch", "alongside UnrelatedCo, launching ...")
+      const quoted = known.has(lw) && (!verbNext || attached) && !COUNTERPART.has(prev)
       if (!(place || co.includes(lw) || quoted || PLAIN_CAPS.has(lw) || CAL.test(w))) return true
       continue
     }
