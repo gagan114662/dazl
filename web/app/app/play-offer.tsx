@@ -12,6 +12,10 @@ const SOURCE: Record<string, string> = {
   request: 'from this play\'s request',
 }
 
+// An offer quoted inside a sentence drops its own closing punctuation ("...New York City." would end "City.."); the
+// buttons keep the exact text, since that text is what gets stored.
+const inSentence = (t: string) => t.replace(/[.!?]+\s*$/, '')
+
 export function PlayOfferCard({ jobId, offer, onChange, compact }: { jobId: string; offer: PlayOffer | null | undefined; onChange?: (o: PlayOffer) => void; compact?: boolean }) {
   const [editing, setEditing] = useState(false)
   const [text, setText] = useState('')
@@ -39,7 +43,7 @@ export function PlayOfferCard({ jobId, offer, onChange, compact }: { jobId: stri
     const c = offer.conflict
     return <div className="rounded-xl border border-[#e8b04a] bg-[#fff7e6] px-4 py-3 text-sm" role="alert" data-testid="play-offer-conflict">
       <p className="font-semibold">Which offer is this play for?</p>
-      <p className="mt-1 text-[var(--ink-2)]">This play&apos;s request says you sell <strong>{c.stated}</strong>, but it started with <strong>{c.recorded}</strong>. dazl will not draft for it until you choose. Only this play changes.</p>
+      <p className="mt-1 text-[var(--ink-2)]">This play&apos;s request says you sell <strong>{inSentence(c.stated)}</strong>, but it started with <strong>{inSentence(c.recorded)}</strong>. dazl will not draft for it until you choose. Only this play changes.</p>
       <div className="mt-2 flex flex-wrap gap-2">
         <button className="btn-primary btn-sm" disabled={busy} onClick={() => void choose(c.stated)} data-testid="play-offer-use-stated">Use: {c.stated}</button>
         <button className="btn-ghost btn-sm" disabled={busy} onClick={() => void choose(c.recorded)} data-testid="play-offer-use-recorded">Keep: {c.recorded}</button>

@@ -522,7 +522,10 @@ export default function LeadsClient() {
       // A scan that is still queued/running is the one exception to "nothing autoselects": a reload or a
       // return from Home must show its progress and Stop control, not an enabled Find leads button.
       const active = jobs.find(x => !x.csv_domain && (x.status === 'pending' || x.status === 'running' || x.status === 'enriching'))
-      if (active) { passiveJob.current = new URLSearchParams(window.location.search).get('passive') === '1'; setJobId(active.id); setStatus(active.status) }
+      // A run named in the address bar (?job_id=, e.g. a play's "Open these leads") is what was asked for: it is never
+      // replaced by another scan still in the queue.
+      const named = /^[a-f0-9]{24}$/.test(new URLSearchParams(window.location.search).get('job_id') ?? '')
+      if (active && !named) { passiveJob.current = new URLSearchParams(window.location.search).get('passive') === '1'; setJobId(active.id); setStatus(active.status) }
       // The sidebar's "Leads" link (?latest=1) is the user explicitly asking for their newest leads: open the newest own,
       // finished, non-test scan that saved any. No such scan => stay on Plays.
       else if (new URLSearchParams(window.location.search).get('latest') === '1') {
@@ -1176,12 +1179,15 @@ function DiscoveredVia({ l }: { l: { discovered_via?: string | null; discovered_
   return <span className="text-xs text-[#555] ml-2" data-testid="discovered-via">{l.discovered_via} (<a className="underline" href={l.discovered_via_link} target="_blank" rel="noopener noreferrer">gdeltproject.org</a>)</span>
 }
 
+// An offer quoted inside a sentence drops its own closing punctuation ("...New York City." would end "City.."); the
+// buttons keep the exact text, since that text is what gets stored.
+const inSentence = (t: string) => t.replace(/[.!?]+\s*$/, '')
 // The request names a different offer than the business profile: the user picks which one this play is for before it
 // runs. Nothing is changed in the profile.
 function OfferChooser({ c, onChoose }: { c: { stated: string; saved: string }; onChoose: (offer: string) => void }) {
   return <div className="rounded-xl border border-[#e8b04a] bg-[#fff7e6] px-4 py-3 text-sm" role="alert" data-testid="offer-chooser">
     <p className="font-semibold">Which offer is this play for?</p>
-    <p className="mt-1 text-[var(--ink-2)]">Your request says you sell <strong>{c.stated}</strong>; your business profile says <strong>{c.saved}</strong>. dazl researches and drafts this play for the one you choose. Your profile is not changed.</p>
+    <p className="mt-1 text-[var(--ink-2)]">Your request says you sell <strong>{inSentence(c.stated)}</strong>; your business profile says <strong>{inSentence(c.saved)}</strong>. dazl researches and drafts this play for the one you choose. Your profile is not changed.</p>
     <div className="mt-2 flex flex-wrap gap-2">
       <button type="button" className="btn-primary btn-sm" onClick={() => onChoose(c.stated)} data-testid="offer-use-stated">Use: {c.stated}</button>
       <button type="button" className="btn-ghost btn-sm" onClick={() => onChoose(c.saved)} data-testid="offer-use-saved">Use: {c.saved}</button>
