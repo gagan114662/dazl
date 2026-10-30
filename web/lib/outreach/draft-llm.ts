@@ -7,10 +7,10 @@ import { defaultVendor, getKey } from '../llm/key-store.ts'
 import type { Vendor } from '../llm/vendors.ts'
 import { providers, type Provider, type DetailedCompletion } from '../llm/provider.ts'
 import { getMasterKey } from '../secrets.ts'
-import { effectiveOffer } from '../scan/play-offer-text.ts'
+import { draftOffer } from '../scan/play-offer-text.ts'
 import { playOfferRow } from './service.ts'
 import { getMemory, memoryPromptBlock, type Memory } from '../memory.ts'
-import { memoryForLead } from './play-memory.ts'
+import { memoryForLead, readTenantOffer } from './play-memory.ts'
 
 export interface LlmDeps { fetchImpl?: typeof fetch; master?: Buffer; providers?: Record<string, Provider> }
 
@@ -99,27 +99,20 @@ export function parseDraftOutput(text: string): { subject: string; body: string 
   return { subject, body }
 }
 
-const hasOffer = (m: Memory | null) => !!(m && typeof m.positioning === 'string' && m.positioning.trim())
-
 // Rewrites a still-unsent draft with the tenant's model and Memory. Explicit calls only.
-// Without a positioning in Memory the model would have to invent what the seller sells,
-// so it refuses with 'no_profile' and the caller can point the tenant at Settings.
+// It states the same offer as the template draft (draftOffer: the play's own offer, else the Memory positioning or the
+// onboarding profile offer). With no offer anywhere the model would have to invent what the seller sells, so it refuses
+// with 'no_profile'; a contested play refuses too. Every refusal comes before any paid call.
 export async function polishDraft(db: Database.Database, tenantId: string, messageId: string, businessName: string, deps: LlmDeps = {}): Promise<PolishResult> {
   const p = pickProvider(db, tenantId, deps)
   if (!p) { recordRefusal(db, tenantId, messageId, null, 'no_key'); return { rewritten: false, reason: 'no_key' } }
   const msg = db.prepare("SELECT m.id, m.lead_id, l.company, l.name, l.signal, l.source_url, l.evidence_excerpt FROM outreach_messages m JOIN leads l ON l.id = m.lead_id WHERE m.id = ? AND m.tenant_id = ? AND m.status = 'draft'").get(messageId, tenantId) as { lead_id: string } & LeadCtx & { id: string } | undefined
   if (!msg) { recordRefusal(db, tenantId, messageId, p.vendor, 'superseded'); return { rewritten: false, reason: 'error' } }
-  let memory = getMemory(db, tenantId)
-  if (!hasOffer(memory)) { recordRefusal(db, tenantId, messageId, p.vendor, 'no_profile'); return { rewritten: false, reason: 'no_profile' } }
-  // The rewrite says what THIS lead's play sells (lib/scan/play-offer.ts), as the template draft did; a play whose
-  // offer is contested is refused before any paid call.
-  let play: ReturnType<typeof playOfferRow>
-  try { play = playOfferRow(db, tenantId, msg.lead_id) } catch { recordRefusal(db, tenantId, messageId, p.vendor, 'offer_unreadable'); return { rewritten: false, reason: 'offer_unreadable' } } // no paid call
-  if (play && memory) {
-    const e = effectiveOffer(play, memory.positioning)
-    if (e.conflict) { recordRefusal(db, tenantId, messageId, p.vendor, 'offer_conflict'); return { rewritten: false, reason: 'offer_conflict' } }
-    if (e.offer) memory = { ...memory, positioning: e.offer }
-  }
+  let memory: Memory | null, r: ReturnType<typeof draftOffer>
+  try { memory = getMemory(db, tenantId); r = draftOffer(playOfferRow(db, tenantId, msg.lead_id), readTenantOffer(db, tenantId)) } catch { recordRefusal(db, tenantId, messageId, p.vendor, 'offer_unreadable'); return { rewritten: false, reason: 'offer_unreadable' } } // no paid call
+  if (r.refuse) { recordRefusal(db, tenantId, messageId, p.vendor, r.refuse); return { rewritten: false, reason: r.refuse } }
+  if (!r.offer) { recordRefusal(db, tenantId, messageId, p.vendor, 'no_profile'); return { rewritten: false, reason: 'no_profile' } }
+  memory = { ...(memory ?? { icp: '', positioning: '', tone: '', exclusions: [], objections: [], updated_at: 0 }), positioning: r.offer }
   const attemptId = beginAttempt(db, tenantId, messageId, p.vendor, p.provider.configuredModel?.() ?? null)
   if (attemptId === null) return { rewritten: false, reason: 'error' } // audit unavailable: refuse the paid call
   const finish = (outcome: PolishOutcome, d?: DetailedCompletion) => finishAttempt(db, attemptId, outcome, d)

@@ -51,11 +51,11 @@ bothEngines("sessions and sign-in: each token resolves only to its own tenant; o
   assert.equal(await createPasswordUser({ ...userRow('B2', 'a@example.test') }, db), 'exists')
   assert.deepEqual(await findPasswordUser('a@example.test', db), { id: 'A', password_hash: 'hash-A', salt: 'salt-A' })
   const ta = await createSession('A', db), tb = await createSession('B', db)
-  assert.equal((await getSessionUser(ta, db))?.id, 'A')
-  assert.equal((await getSessionUser(tb, db))?.id, 'B')
+  assert.equal((await getSessionUser(ta, db))?.tenantId, 'A')
+  assert.equal((await getSessionUser(tb, db))?.tenantId, 'B')
   await deleteSession(ta, db)
   assert.equal(await getSessionUser(ta, db), null)
-  assert.equal((await getSessionUser(tb, db))?.id, 'B')
+  assert.equal((await getSessionUser(tb, db))?.tenantId, 'B')
 })
 
 bothEngines("Google sign-in: B's Google identity carrying A's email never reaches A's account", async ({ db }) => {
