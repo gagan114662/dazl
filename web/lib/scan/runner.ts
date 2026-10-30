@@ -299,7 +299,10 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     // event happened: the candidate goes the undated way below (a publication day stays a label) and the window gate holds it.
     let undatedWhy: string | null = null
     let c0 = cIn
-    if (page && !isFail(page) && cIn.event_date && structuredDates?.get(canonUrl(cIn.source_url)) !== cIn.event_date) {
+    // A claimed day the verifier's date rules reject (stale, future, malformed) is left as it is: verifyEvidence below sends it to review,
+    // exactly as before. Unbinding it first would launder it into a verified undated lead.
+    const claimedRejected = (() => { if (!page || isFail(page) || !cIn.event_date) return false; const v = verifyEvidence(cIn, page, now); return !v.ok && DATE_REJECTS.has(v.reason) })()
+    if (page && !isFail(page) && cIn.event_date && !claimedRejected && structuredDates?.get(canonUrl(cIn.source_url)) !== cIn.event_date) {
       const b = eventDateBound(cIn.event_date, page.text, cIn.excerpt, cIn.company)
       if (!b.bound) { undatedWhy = `the claimed event date ${cIn.event_date} is not tied to this company and event by the fetched page (${b.why}); treated as undated`; c0 = { ...cIn, event_date: null } }
     }
@@ -333,7 +336,9 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
           const b = eventDateBound(cc.event_date, cp.text, cc.excerpt, cc.company)
           if (!b.bound) cc = { ...cc, event_date: null, timing_note: `the claimed event date ${cc.event_date} is not tied to this company and event by the held copy (${b.why}); treated as undated`.slice(0, 300) }
         }
-        const v2 = !closedJobEvidence(cc, cp) && !(!claimed.ok && DATE_REJECTS.has(claimed.reason)) ? verifyEvidence(cc, cp, now) : null
+        // ...and the quote naming an old year keeps it held too, as on a fetched page (resolveTiming): an undated copy is not a fresh one
+        const oldYear = resolveTiming(cp.text, cc.excerpt, null, now.getFullYear()).olderYear
+        const v2 = !closedJobEvidence(cc, cp) && !(!claimed.ok && DATE_REJECTS.has(claimed.reason)) && oldYear === null ? verifyEvidence(cc, cp, now) : null
         if (v2?.ok && !counterpartySignal(cc, cp, '') && ownPlaceAgreement(cp, geo, cc.company, cc.excerpt) !== 'mismatch') { passed.push({ c: cc, v: v2, copy: { failure: why, sha256: copy.page.sha256, page: copy.page } }); note(c, 'passed', null, COPY_ORIGIN); continue }
       }
       if (why) toReview(c, why)

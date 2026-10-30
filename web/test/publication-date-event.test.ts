@@ -88,7 +88,7 @@ test('hold 1: a day in ANOTHER clause about another company does not date this e
   const mixed = 'Aurora Agency opened a new office on King Street West in Toronto, ON, while UnrelatedCo launched a tool on 2026-10-15.'
   // the helper, with the whole sentence as the quote (the case reviewed) and with Aurora's clause as the quote
   for (const quote of [mixed.replace(/\.$/, ''), QUOTE]) assert.equal(eventDateBound('2026-10-15', `${mixed}${filler}`, quote, 'Aurora Agency').bound, false, quote)
-  for (const join of ['; ', ', and ', ' but ', ' whereas ']) assert.equal(eventDateBound('2026-10-15', `${QUOTE}${join}UnrelatedCo launched a tool on 2026-10-15.`, QUOTE, 'Aurora Agency').bound, false, join)
+  for (const join of ['; ', ', and ', ' but ', ' whereas ', ', after ', ' before ', ' following ', ' until ']) assert.equal(eventDateBound('2026-10-15', `${QUOTE}${join}UnrelatedCo launched a tool on 2026-10-15.`, QUOTE, 'Aurora Agency').bound, false, join)
   // the real verifier
   undated((await run(lead('2026-10-15', { excerpt: mixed.replace(/\.$/, '') }), page(`${mixed}${filler}`))).lead)
   // genuinely dated Aurora events still bind, in the same clause, before or after
@@ -99,6 +99,11 @@ test('hold 1: a day in ANOTHER clause about another company does not date this e
     assert.equal(eventDateBound('2026-10-15', `2026-10-15: ${q}. ${filler}`, q, co).bound, true, co)
     assert.equal(eventDateBound('2026-10-15', `${q}; UnrelatedCo launched a tool on 2026-10-15.`, q, co).bound, false, `${co}: another clause`)
   }
+  // a Latin name binds by its words, never as a substring of another name or word ("Nova" is not "Novartis")
+  assert.equal(eventDateBound('2026-10-15', 'Nova opened a new office in Berlin; Novartis launched a tool on October 15, 2026.', 'Nova opened a new office in Berlin', 'Nova').bound, false)
+  assert.equal(eventDateBound('2026-10-15', 'Nova opened a new office in Berlin on October 15, 2026.', 'Nova opened a new office in Berlin', 'Nova').bound, true)
+  // ", as the firm said on <day>" is the company's own statement: still bound
+  assert.equal(eventDateBound('2026-10-15', `${QUOTE}, as Aurora Agency said on October 15, 2026.`, QUOTE, 'Aurora Agency').bound, true)
   // fail-closed by design: a day in a clause that does not name the company stays undated, even when it is about the same event
   assert.equal(eventDateBound('2026-10-15', `${QUOTE}, and on 2026-10-15 the ribbon was cut.`, QUOTE, 'Aurora Agency').bound, false)
   const ok = (await run(lead('2026-10-15'), page(`${dated[0]}${filler}`))).lead
@@ -115,6 +120,11 @@ test('hold 2: the blocked-source fallback binds the date on the HELD copy before
   undated(noDate.leads[0]); assert.match(noDate.leads[0].timing_note ?? '', /not tied to this company and event by the held copy/)
   // another clause's day on the held copy does not either
   undated((await verifyLeads([lead('2026-10-15')], blocked, NOW, undefined, null, heldBody(`${QUOTE}, while UnrelatedCo launched a tool on 2026-10-15.${filler}`))).leads[0])
+  // a claimed day the date rules reject stays held (never laundered to undated), and so does a quote naming an old year
+  for (const [ev, ex] of [['2020-01-05', QUOTE], ['2026-10-15', `${QUOTE} in 2019`]] as const) {
+    const r = await verifyLeads([lead(ev, { excerpt: ex })], blocked, NOW, undefined, null, heldBody(`${ex}.${filler}`))
+    assert.equal(r.leads.length, 0, `${ev} / ${ex}`); assert.equal(r.review[0]?.review_reason, 'blocked_by_site')
+  }
   // control: the held copy dates Aurora's opening itself
   const dated = await verifyLeads([lead('2026-10-15')], blocked, NOW, undefined, null, heldBody(`${QUOTE} on 2026-10-15.${filler}`))
   assert.deepEqual([dated.leads[0].event_date, dated.leads[0].evidence_origin], ['2026-10-15', 'tinyfish_copy'])
@@ -136,5 +146,40 @@ test('hold 3: company background years ("founded in 2020") never make a fresh, e
   for (const ev of ['Aurora Agency and Beta formed a joint venture formed in 2019', 'Aurora Agency announced its Austin office established in 2019', 'Aurora Agency has had an office on King Street West since 2019']) {
     assert.equal(resolveTiming(`Published 2026-10-15. ${ev}.`, ev, null, 2026).olderYear, 2019, ev)
     assert.match(eventDateBound('2026-10-15', `${ev} on 2026-10-15.`, ev, 'Aurora Agency').why, /names 2019/, ev)
+  }
+})
+
+// ---- council round 1 (findings on bc1f7bfe) ----
+test('council: a claimed day the date rules reject is never laundered to undated on a FETCHED page either', async () => {
+  for (const [d, why] of [['2019-10-15', 'event_date_stale'], ['2027-06-01', 'event_date_future_date'], ['2026-02-30', 'event_date_bad_date']] as const) {
+    const r = await run(lead(d), page(`${QUOTE}.${filler}`))
+    assert.equal(r.lead, undefined, d); assert.equal(r.review?.review_reason, why, d)
+  }
+})
+
+test('council: other-clause days stay unbound for more joins and scripts; genuine dated clauses still bind', () => {
+  const b = (text: string, quote = QUOTE, co = 'Aurora Agency') => eventDateBound('2026-10-15', text, quote, co).bound
+  for (const t of [`${QUOTE} and UnrelatedCo launched a tool on October 15, 2026.`, `${QUOTE} - UnrelatedCo launched a tool on October 15, 2026.`, `${QUOTE} (UnrelatedCo launched a tool on October 15, 2026).`, `${QUOTE}, months after UnrelatedCo launched a tool on October 15, 2026.`]) assert.equal(b(t), false, t)
+  // Japanese / Hindi: the native clause and sentence marks split too
+  assert.equal(b('オーロラ株式会社は東京で新しいオフィスを開設し、別会社は2026-10-15に製品を発表しました。', 'オーロラ株式会社は東京で新しいオフィスを開設し', 'オーロラ株式会社'), false)
+  assert.equal(b('शर्मा कोचिंग सेंटर ने नई शाखा खोली। दूसरी कंपनी ने 2026-10-15 को उत्पाद लॉन्च किया।', 'शर्मा कोचिंग सेंटर ने नई शाखा खोली', 'शर्मा कोचिंग सेंटर'), false)
+  // the company's own name is never split, a parenthesis after the name does not cut the clause, and "announced on <day>" is not a stamp
+  assert.equal(b('Smith and Sons opened a new office on King Street West on October 15, 2026.', 'Smith and Sons opened a new office on King Street West', 'Smith and Sons'), true)
+  assert.equal(b('Better But Cheaper opened a new store in Toronto on October 15, 2026.', 'Better But Cheaper opened a new store in Toronto', 'Better But Cheaper'), true)
+  assert.equal(b(`Aurora Agency (Toronto) opened a new office on King Street West on October 15, 2026.`, 'Aurora Agency (Toronto) opened a new office on King Street West'), true)
+  assert.equal(b(`Aurora Agency announced on October 15, 2026 that it opened a new office on King Street West in Toronto, ON.`, 'Aurora Agency announced on October 15, 2026 that it opened a new office on King Street West in Toronto, ON'), true)
+  // another sentence about a DIFFERENT event of the same company does not date this one
+  assert.equal(b(`${QUOTE}. Aurora Agency closed its office on King Street West in Toronto on October 15, 2026.`), false)
+  assert.equal(b(`${QUOTE}. Aurora Agency opened the King Street West office in Toronto on October 15, 2026.`), true)
+  // a cut quote's ellipsis does not hide it
+  assert.equal(b(`${QUOTE} on October 15, 2026.`, `...${QUOTE}`), true)
+})
+
+test('council: a held copy with a future or malformed claimed day stays held too', async () => {
+  const url = 'https://news.example/aurora'
+  const blocked = async () => ({ fail: 'blocked' as const })
+  for (const d of ['2027-06-01', '2026-02-30']) {
+    const r = await verifyLeads([lead(d)], blocked, NOW, undefined, null, { text: HeldText.seal('job1:1', [url], [{ url, title: 'Aurora Agency', text: `${QUOTE}.${filler}` }]), attempt: 'job1:1' })
+    assert.equal(r.leads.length, 0, d); assert.equal(r.review[0]?.review_reason, 'blocked_by_site', d)
   }
 })
