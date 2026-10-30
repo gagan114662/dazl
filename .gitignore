@@ -4,7 +4,10 @@ worker/.dev.vars
 *.xcuserstate
 build/
 releases/
-.claude/
+# Claude Code: local state stays ignored; the shared skills and reviewer agents are committed (.claude/skills/README.md)
+.claude/*
+!.claude/skills/
+!.claude/agents/
 coding-plans/
 
 # BEGIN swamp managed section - DO NOT EDIT

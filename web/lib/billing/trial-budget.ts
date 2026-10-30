@@ -171,3 +171,15 @@ export async function settleTrialReservation(db: DbLike, jobId: string, attempt:
 export async function linkTrialReservation(db: Db, tenantId: string, reservation: string, jobId: string): Promise<void> {
   await db.run('UPDATE trial_reservations SET job_id = ? WHERE id = ? AND tenant_id = ? AND job_id IS NULL', [jobId, reservation, tenantId])
 }
+
+// An admission that ends with no scan (anything after the reservation threw before the job existed) is released: the attempt and the reserved budget are given back. Only a reservation
+// of this tenant that was never linked to a job, or that was pre-linked to `neverCreatedJobId` - the id of a job whose creation was rolled back (the caller confirms it does not exist).
+// A reservation linked to a real scan is never touched here.
+export async function releaseTrialReservation(db: Db, tenantId: string, reservation: string, neverCreatedJobId?: string): Promise<boolean> {
+  if (neverCreatedJobId) {
+    const exists = await db.get('SELECT 1 AS x FROM scan_jobs WHERE id = ?', [neverCreatedJobId])
+    if (exists) return false
+    return (await db.run('DELETE FROM trial_reservations WHERE id = ? AND tenant_id = ? AND (job_id IS NULL OR job_id = ?)', [reservation, tenantId, neverCreatedJobId])).changes > 0
+  }
+  return (await db.run('DELETE FROM trial_reservations WHERE id = ? AND tenant_id = ? AND job_id IS NULL', [reservation, tenantId])).changes > 0
+}

@@ -6,7 +6,7 @@
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
-import { getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
+import { confirmedSendResult, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { getMasterKey } from '../secrets.ts'
 import { contactPurposeRestricted } from './contact-purpose-db.ts'
 import { currentnessHeld } from './currentness.ts'
@@ -184,7 +184,7 @@ export async function sendReopen(db: Database.Database, tenantId: string, thread
   const opKey = `${tenantId}|${threadId}`
   inFlight.add(opKey)
   let res: { id: string }
-  try { res = await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, threadId) } catch { throw new OutreachError('send_uncertain') } finally { inFlight.delete(opKey) }
+  try { res = confirmedSendResult(await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, threadId)) } catch { throw new OutreachError('send_uncertain') } finally { inFlight.delete(opKey) }
   // Operation identity is the claim time: only the claim this call made may be completed by it. A newer claim, a
   // resolve or a skip is never overwritten. If the user reset the row to a draft meanwhile (no newer claim exists),
   // the mail did go out, so the draft is closed as sent rather than left to be sent again.
