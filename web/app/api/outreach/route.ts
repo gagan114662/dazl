@@ -6,6 +6,8 @@ import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
+import { syncAccountGraph } from '@/lib/accounts/graph'
+import { sqliteDb } from '@/lib/db/client'
 
 const MSG: Record<string, [number, string]> = {
   domain_unconfirmed: [409, 'Check that this website is the right company on Leads ("This website is the right company") before drafting. That check is not need, consent or a send approval.'],
@@ -40,6 +42,10 @@ export async function POST(req: NextRequest) {
   if (!(await rateLimit(`draft:${user.id}`, 60, 60 * 60 * 1000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   const body = await req.json().catch(() => null)
   if (typeof body?.lead_id !== 'string' || !/^[a-f0-9]{24}$/.test(body.lead_id)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
+  // Link the tenant's newest leads to their canonical accounts first, so the cross-play account cooldown sees this lead
+  // (lib/accounts/cooldown.ts, #364). On the same store as the draft. If linking fails the draft is still checked by
+  // every other rule, the same-address cooldown included; only the account rule cannot see an unlinked lead.
+  await syncAccountGraph(sqliteDb(getScanDb()), user.id).catch(e => captureError(e, { source: 'route', where: 'outreach:link-accounts', tenantId: user.id, requestId: requestIdOf(req) }))
   try {
     const id = createDraft(getScanDb(), user.id, body.lead_id, user.business_name)
     // Drafts are template-only here: an LLM rewrite bills the tenant's provider key,
