@@ -147,6 +147,9 @@ export const APP_ERROR_CLASSES: ReadonlySet<string> = new Set(['CopyRefused', 'C
   // lib/ops/client-errors.ts (#312): the wrapper for a browser report. Its runtime name is always replaced by an
   // allowlisted built-in type before capture, so this class name itself is never what is sent.
   'ClientReport',
+  // lib/accounts/graph.ts (#364): a merge/split/assign refused (unknown, inactive, same account), and a concurrent link
+  // of the same identity key (retried; only escapes after three attempts)
+  'IdentityError', 'AliasRace',
   // lib/crm/index.ts (#365): a CRM push that failed (nothing created) or has an unknown outcome
   'CrmPushError'])
 export const outboundType = (name: string): string => BUILTIN_ERRORS.has(name) || APP_ERROR_CLASSES.has(name) ? name : 'Error'
