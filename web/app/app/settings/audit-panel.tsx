@@ -50,7 +50,7 @@ export default function AuditPanel() {
           {events.map(e => (
             <li key={e.id} className="py-2 flex flex-col gap-0.5">
               <span className={e.decision === 'denied' ? 'text-[#a00]' : ''}>{label(e.action)}{e.decision === 'denied' ? ' (refused)' : ''}</span>
-              <span className="text-xs text-[#555] break-all">
+              <span className="text-xs text-[#555] break-words">
                 {when(e.at)} · {e.actor_kind === 'service' ? `${e.actor_id} (automatic)` : e.actor_id} · {e.resource_type}{e.resource_id ? ` ${e.resource_id}` : ''}
               </span>
             </li>
