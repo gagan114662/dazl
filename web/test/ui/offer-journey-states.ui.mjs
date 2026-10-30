@@ -355,6 +355,9 @@ try {
   }
 
   assert.deepEqual(read().users, s0.users, 'the saved profile never changed')
+  // nothing in the journey sends: every message it made is still a draft, never claimed, sent or given a Gmail id
+  { const sent = read().drafts.filter(m => m.status !== 'draft' || m.sent_at != null || m.claimed_at != null || m.gmail_id != null || m.approved_hash != null)
+    assert.deepEqual(sent, [], 'no message left the draft state') }
   console.log('offer journey states passed at 1280 and at 390: Home asks which offer its contested play is for and stores the choice on that play only; the review asks for a choice and Run waits, then the chosen offer is stored on the new play only; a contested play refuses Approve and the AI rewrite on screen and writes nothing but the refusal audit row; a scan in progress does not take over a named play, and its own link still shows its progress; choosing on Outreach unblocks that play and its next draft states the chosen offer; every page agreed with the database')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
