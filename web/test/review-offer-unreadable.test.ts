@@ -86,7 +86,7 @@ test('only an older schema (no offer column, no Memory table) reads as "no offer
       CREATE TABLE scan_jobs(id TEXT PRIMARY KEY, user_id TEXT, query TEXT); INSERT INTO scan_jobs VALUES('old', 'A', 'NYC dental practices');
       CREATE TABLE leads(id TEXT PRIMARY KEY, scan_job_id TEXT); INSERT INTO leads VALUES('lead-old', 'old')`)
     assert.equal(playOfferRow(old, 'A', 'lead-old'), null)
-    assert.equal(memoryForLead(old, 'A', 'lead-old'), null)
+    assert.equal(memoryForLead(old, 'A', 'lead-old')?.positioning, DENTAL, 'follow-ups state the onboarding offer, as the template does (#349)')
     assert.match(offerBlockFor(old, 'A', 'old'), new RegExp(DENTAL), 'the profile offer, as before per-play offers')
   } finally { old.close() }
   for (const m of ['no such column: j.offer', 'no such table: tenant_memory', 'column "offer" does not exist', 'relation "tenant_memory" does not exist', 'column j.offer does not exist']) assert.ok(isMissingSchema(new Error(m)), m)

@@ -16,13 +16,15 @@ import { describeRunBudget, normalizeScanBudget } from '@/lib/scan/run-budget'
 import { connectorStatus } from '@/lib/connectors/store'
 import { estimateForBody } from '@/lib/scan/estimate-request'
 import { admitTrialScan, linkTrialReservation } from '@/lib/billing/trial-budget'
+import { denied } from '@/lib/workspace-access'
 import { cleanOffer, effectiveOffer } from '@/lib/scan/play-offer'
 
 export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
+  const no = denied(user, 'operate'); if (no) return no
 
-  const rl = (await rateLimit(`scan:${user.id}`, 10, 60 * 60 * 1000))
+  const rl = (await rateLimit(`scan:${user.tenantId}`, 10, 60 * 60 * 1000))
   // the shared limit could not be checked: no scan and no trial admission (lib/rate-limit.ts fails closed)
   if (rl.unavailable) return NextResponse.json({ error: 'Scans are briefly unavailable. Try again in a moment.', code: 'limits_unavailable' }, { status: 503, headers: { 'Retry-After': String(rl.retryAfterS) } })
   if (!rl.ok) return NextResponse.json({ error: 'Too many scans. Try again later.' }, { status: 429, headers: { 'Retry-After': String(rl.retryAfterS) } })
@@ -43,7 +45,7 @@ export async function POST(req: NextRequest) {
   // What the tenant sells for THIS play (lib/scan/play-offer.ts): the offer reviewed with the profile, stored with the
   // play. Without one, the play records the business profile's offer; a request that states a different offer is
   // refused until the caller chooses which one this play is for, before anything is queued or counted.
-  const seller = sellerProfile(getAuthDb(), user.id)
+  const seller = sellerProfile(getAuthDb(), user.tenantId)
   const offerSupplied = body?.offer !== undefined && body?.offer !== null
   const offer = offerSupplied ? cleanOffer(body.offer) : ''
   if (offerSupplied && offer.length < 3) return NextResponse.json({ error: 'Say in a few words what you sell for this play' }, { status: 400 })
@@ -67,8 +69,11 @@ export async function POST(req: NextRequest) {
   // per day. With no trial configured, queuing a keyless job would hang forever and burn a scan.
   let funded: 'user' | 'trial' = 'user'
   const ip = clientIp(req)
-  if (!hasKey(db, user.id)) {
-    const t = trialStatus(db, user.id, ip)
+  if (!hasKey(db, user.tenantId)) {
+    // The free trial belongs to the account that founded this workspace (its Google sign-in and email are what the
+    // trial's abuse limits check), so only that account, acting in its own workspace, can draw on it.
+    if (user.actorId !== user.tenantId) return NextResponse.json({ error: 'no_api_key' }, { status: 400 })
+    const t = trialStatus(db, user.tenantId, ip)
     if (!t.funded) {
       if (t.reason === 'account_cap' || t.reason === 'ip_throttle') {
         return NextResponse.json({ error: 'trial_exhausted', used: t.used }, { status: 402 })
@@ -79,11 +84,11 @@ export async function POST(req: NextRequest) {
   }
   // One scan at a time per account: a scan that is running, queued OR still enriching (contacts, people, fit) is active. The Find leads button is
   // disabled for the same reason, but this is the guard: a second paid scan must not start beside an unfinished one.
-  if (countActiveJobs(db, user.id) >= 1) {
+  if (countActiveJobs(db, user.tenantId) >= 1) {
     return NextResponse.json({ error: 'scan_active', message: 'A scan is still running or finishing. Wait for it to end before starting another.' }, { status: 409 })
   }
   // the plan from the shared store (the Stripe webhook writes it there); the count from where this route writes scans
-  const q = planQuota(await readPlan(await getDb(), user.id), scansThisMonth(db, user.id))
+  const q = planQuota(await readPlan(await getDb(), user.tenantId), scansThisMonth(db, user.tenantId))
   if (!q.allowed) {
     return NextResponse.json({ error: 'quota_exceeded', plan: q.plan, used: q.used, limit: q.limit }, { status: 402 })
   }
@@ -91,26 +96,27 @@ export async function POST(req: NextRequest) {
   // (lib/billing/trial-budget.ts). Checked last, so a refused request above never holds a reservation.
   let reservation: string | null = null
   if (funded === 'trial') {
-    const a = await admitTrialScan(await getDb(), { id: user.id, email: user.email })
+    const a = await admitTrialScan(await getDb(), { id: user.tenantId, email: user.email })
     if (!a.ok) return NextResponse.json({ error: 'trial_unavailable', reason: a.reason }, { status: 402 })
     reservation = a.reservation
   }
   // The price estimate and the hard cap come from one function. A run whose expected model cost is already above the limit left is
   // refused with what to change (402 over_budget); a client that confirmed an estimate sends its ack, and a different current
   // estimate (limit, mode or key changed since) is returned for a fresh confirmation (409 estimate_changed). No paid call happens here.
-  const est = estimateForBody(body, { userId: user.id, hasOwnKey: funded === 'user', enrichmentVendors: (await connectorStatus(await getDb(), user.id).catch(() => [])).filter(c => c.enabled).map(c => c.connector) })
+  const estDb = await getDb()
+  const est = await estimateForBody(body, { db: estDb, tenantId: user.tenantId, hasOwnKey: funded === 'user', enrichmentVendors: (await connectorStatus(estDb, user.tenantId).catch(() => [])).filter(c => c.enabled).map(c => c.connector) })
   if (est.ok) {
     if (!est.estimate.verdict.ok) return NextResponse.json({ error: 'over_budget', message: est.estimate.verdict.message, change: est.estimate.verdict.change, estimate: est.estimate }, { status: 402 })
     if (typeof body?.estimate_ack === 'string' && body.estimate_ack !== est.estimate.ack) return NextResponse.json({ error: 'estimate_changed', estimate: est.estimate }, { status: 409 })
   }
   const sel = body?.sources ? normalizeSources(body.sources) : null
-  const job_id = query.length >= 3 ? createQueryJob(db, user.id, { query, icp: icp ? JSON.stringify(icp) : null, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget: nb.value }) : createJob(db, user.id, { business_name, industry, location }, nb.value)
+  const job_id = query.length >= 3 ? createQueryJob(db, user.tenantId, { query, icp: icp ? JSON.stringify(icp) : null, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget: nb.value }) : createJob(db, user.tenantId, { business_name, industry, location }, nb.value)
   // Kept with the job so the finished scan can show actual against what was confirmed.
   if (est.ok) db.prepare('UPDATE scan_jobs SET estimate = ? WHERE id = ?').run(JSON.stringify({ total: est.estimate.total, rows: est.estimate.rows, payer: est.estimate.payer, cap: est.estimate.cap, ack: est.estimate.ack }), job_id)
   if (funded === 'trial') {
     db.prepare("UPDATE scan_jobs SET funded_by = 'trial' WHERE id = ?").run(job_id)
-    recordTrialScan(db, user.id, job_id, ip)
-    if (reservation) await linkTrialReservation(await getDb(), user.id, reservation, job_id)
+    recordTrialScan(db, user.tenantId, job_id, ip)
+    if (reservation) await linkTrialReservation(await getDb(), user.tenantId, reservation, job_id)
   }
   after(() => kickRunner(db))
   // A supplied budget is answered with exactly which paid surfaces it allows or refuses and what the limit is NOT.

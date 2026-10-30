@@ -442,7 +442,7 @@ export function sequenceAnalytics(db: Database.Database, tenantId: string, leadI
   const warm = n(`SELECT count(*) AS n FROM followup_messages fm JOIN followup_threads ft ON ft.tenant_id = fm.tenant_id AND ft.thread_id = fm.thread_id WHERE fm.tenant_id = ? AND fm.status = 'sent' ${scoped ? (leadIds!.length ? `AND ft.lead_id IN (${ph})` : 'AND 1=0') : ''}`,tenantId,...args)
   const sent = step1 + later + warm
   const cls = (list: string) => n(`SELECT count(DISTINCT thread_id) AS n FROM inbound_messages WHERE tenant_id = ? AND classification IN (${list}) ${inList}`, tenantId, ...args)
-  const replied = cls("'positive','negative','other','opt_out'")
+  const replied = cls("'positive','negative','other','opt_out','uncertain'")
   const bounced = cls("'bounce'")
   const optOutReplies = cls("'opt_out'")
   const scopedSupp = scoped ? (leadIds!.length ? `AND email IN (SELECT to_email FROM outreach_messages WHERE tenant_id = ? ${inList})` : 'AND 1=0') : ''

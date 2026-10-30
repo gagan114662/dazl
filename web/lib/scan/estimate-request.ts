@@ -6,11 +6,16 @@ import { MAX_QUERY, normalizeIcp } from './icp.ts'
 import { normalizeScanBudget } from './run-budget.ts'
 import { estimateRun, type RunEstimate } from './price-estimate.ts'
 import { ownerMaxUsd } from './runner.ts'
-import { poolReservedUsd } from '../llm/spend-guard.ts'
+import { periodOf, poolRows } from '../llm/spend-pool.ts'
+import type { Db } from '../db/client.ts'
 import { salesHiringRequired } from './sales-hiring-required.ts'
 
 export type EstimateResult = { ok: true; estimate: RunEstimate } | { ok: false; status: number; error: string; detail?: string }
-export function estimateForBody(body: unknown, ctx: { userId: string; hasOwnKey: boolean; enrichmentVendors: string[] }): EstimateResult {
+// What the owner's shared spend pool has already reserved today (tenant_spend_pools, the same store the guard reserves in), so the estimate agrees with the guard.
+async function reservedToday(db: Db, tenantId: string, now = Math.floor(Date.now() / 1000)): Promise<number> {
+  try { return Number((await poolRows(db, tenantId)).find(r => r.period === periodOf('day', now))?.reserved_usd ?? 0) } catch { return 0 }
+}
+export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: string; hasOwnKey: boolean; enrichmentVendors: string[] }): Promise<EstimateResult> {
   const b = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>
   const first5 = b.mode === 'first5'
   if (b.mode !== undefined && b.mode !== 'first5') return { ok: false, status: 400, error: 'unknown_mode' }
@@ -23,7 +28,7 @@ export function estimateForBody(body: unknown, ctx: { userId: string; hasOwnKey:
   const estimate = estimateRun({
     budget: nb.budget, payer: ctx.hasOwnKey ? 'you' : 'trial', enrichmentVendors: ctx.enrichmentVendors,
     hiringRequest: salesHiringRequired(query, icp ? JSON.stringify(icp) : null),
-    reservedUsd: poolReservedUsd(ctx.userId), ownerCapUsd: ownerMaxUsd(ctx.userId),
+    reservedUsd: await reservedToday(ctx.db, ctx.tenantId), ownerCapUsd: ownerMaxUsd(ctx.tenantId),
   })
   return { ok: true, estimate }
 }
