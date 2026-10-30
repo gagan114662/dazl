@@ -418,6 +418,9 @@ export default function LeadsClient() {
       // The request names a different offer than the business profile: nothing was queued; ask which one this play is for.
       if ((r.status === 409 && j.error === 'estimate_changed') || (r.status === 402 && j.error === 'over_budget')) { setPendingEst({ est: j.estimate as RunEstimate, withIcp, offer }); return }
       if (r.status === 409 && j.error === 'offer_conflict') { setPendingEst(null); setOfferConflict({ stated: String(j.stated), saved: String(j.saved), direct: !withIcp || withIcp === reuseIcp }); return }
+      // #410: the free trial refused this start: the estimate it showed ("runs on the free trial") no longer holds, so it
+      // closes and the reason is what remains
+      if (!r.ok && scanRefusalCopy(j)) setPendingEst(null)
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : scanRefusalCopy(j) ?? (j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan'))); if (j.error === 'invalid_budget' && j.detail) setError(`The spend limit was not accepted: ${String(j.detail).slice(0, 200)}`); return }
       setOfferConflict(null); setPendingEst(null)
       setRunExtras(extraLabels(srcBody)); passiveJob.current = false; setJobId(j.job_id); setStatus('pending'); setEnrichInterrupted(false); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0

@@ -21,6 +21,11 @@ const css = await import('node:fs').then(fs => { try { const d = path.join(root,
 const json = (route, body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
 const ICP = { summary: 'Toronto dental practices', who: ['Practice owner'], industries: [], sizes: [], where: ['Toronto'], signals: [], exclude: [] }
 const browser = await chromium.launch()
+// The price estimate a keyless account sees before a run (synthetic, the shape /api/scan/estimate answers with): the run
+// is paid by the free trial; confirming it sends POST /api/scan, which is where the trial refuses.
+const EST = { estimate: { rows: [], total: { min: 0.05, max: 0.4 }, unpriced: [], assumptions: ['This is an estimate, not a quote or a bill.'], payer: 'trial',
+  cap: { max_usd: null, reserved_usd: 0, remaining_usd: null, binding: null, month_cap_usd: null, month_reserved_usd: 0, unknown: false, capped_total: { min: 0.05, max: 0.4 } },
+  verdict: { ok: true, reason: null, message: 'Runs on the free trial.', change: [], warning: null }, ack: 'ack-trial' } }
 
 async function open(scanReply, viewport = { width: 1280, height: 900 }) {
   const calls = []; const posts = []
@@ -31,6 +36,7 @@ async function open(scanReply, viewport = { width: 1280, height: 900 }) {
     if (u.pathname === '/bundle.js') return route.fulfill({ contentType: 'text/javascript', body: js })
     if (!u.pathname.startsWith('/api/')) return route.fulfill({ status: 204, body: '' })
     calls.push(`${m} ${u.pathname}`)
+    if (u.pathname === '/api/scan/estimate' && m === 'POST') return json(route, EST)
     if (u.pathname === '/api/scan' && m === 'POST') { posts.push(JSON.parse(route.request().postData())); return scanReply(route) }
     if (u.pathname === '/api/scan/latest') return json(route, { query: 'Toronto dental practices hiring front desk staff', icp: ICP, icp_source: 'user' })
     if (u.pathname === '/api/scan/jobs') return json(route, { jobs: [] })
@@ -40,8 +46,7 @@ async function open(scanReply, viewport = { width: 1280, height: 900 }) {
   await page.getByText(/Profile used:/).click() // the restored profile is inside a closed <details>
   await page.getByText('Edit and run again').click()
   await page.getByTestId('budget-panel').waitFor()
-  // what the play sells (needed before a scan can start); synthetic
-  const offer = page.getByTestId('review-offer-input').first(); if (await offer.count()) await offer.fill('Online booking for dental practices')
+  await page.locator('#play-offer').fill('Online booking for dental practices') // a run needs the offer text; synthetic
   return { page, calls, posts }
 }
 
@@ -55,11 +60,14 @@ for (const [name, reply, re] of CASES) {
   for (const [vp, viewport] of name === 'throttle' || name === 'unavailable' ? [['desktop', { width: 1280, height: 900 }], ['mobile', { width: 390, height: 844 }]] : [['desktop', { width: 1280, height: 900 }]]) {
     const { page, posts } = await open(route => json(route, reply, 402), viewport)
     await page.getByRole('button', { name: 'Run scan with this profile' }).last().click()
+    await page.getByTestId('estimate-confirm-run').click() // the estimate is confirmed; the start is refused
     const err = page.getByText(re); await err.waitFor({ timeout: 5000 })
     assert.equal(posts.length, 1)
     const text = await page.locator('body').innerText()
     if (name !== 'exhausted') assert.doesNotMatch(text, /used up|used all/, `${name}: nothing claims the account used its trial`)
     assert.doesNotMatch(text, /trial_exhausted|trial_unavailable|ip_throttle|not_configured|global_daily_cap/, `${name}: no raw code on the page`)
+    assert.equal(await page.getByTestId('estimate-confirm').count(), 0, `${name}: the trial estimate closes; nothing offers to run it again`)
+    await err.scrollIntoViewIfNeeded()
     if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `410-start-${name}-${vp}.png`), fullPage: false })
     await page.close()
   }
