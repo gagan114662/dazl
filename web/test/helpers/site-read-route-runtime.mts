@@ -61,7 +61,8 @@ test('the site read trial is the workspace founder\'s own account, acting itself
   setUser({ id: NOGOOGLE, business_name: 'NoG', email: 'nog@fresh.example' })
   assert.deepEqual(await post(), { trial: 'google_required', operatorKey: false }, 'founder without Google sign-in')
   // 6. Same-domain control for the session email: a founder whose session claims another address is judged by its own
-  //    users row (corp.example, used), never by the session's.
+  //    users row (corp.example, used), never by the session's. getSessionUser reads both from one users row, so the
+  //    store cannot produce this session today; the case pins that admission never reads the session's email.
   await account(SAME, 'd@corp.example')
   setUser({ id: SAME, business_name: 'Corp D', email: 'd-alias@gmail.com' })
   assert.deepEqual(await post(), { trial: 'domain_used', operatorKey: false }, 'founder: the stored address decides')

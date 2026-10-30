@@ -90,6 +90,8 @@ test('scan trial principal: founder only, its stored address decides; members an
   const jobs = () => (db.prepare('SELECT count(*) AS n FROM scan_jobs').get() as { n: number }).n
   const cases: [string, Parameters<typeof setUser>[0], number, string, string | undefined][] = [
     ['same-domain founder', { id: OWNER, business_name: 'Acme', email: 'a@corp.example' }, 402, 'trial_unavailable', 'domain_used'],
+    // getSessionUser reads id and email from one users row, so this session cannot occur today; it pins that admission
+    // never reads the session's email
     ['founder whose session claims another address', { id: OWNER, business_name: 'Acme', email: 'a-alias@gmail.com' }, 402, 'trial_unavailable', 'domain_used'],
     ['invited member with a free address', { id: OWNER, actorId: INVITED, role: 'operator', business_name: 'Acme', email: 'invited@gmail.com' }, 400, 'no_api_key', undefined],
     ['member in an eligible workspace', { id: FREE, actorId: INVITED, role: 'operator', business_name: 'Solo', email: 'invited@gmail.com' }, 400, 'no_api_key', undefined],
