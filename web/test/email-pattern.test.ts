@@ -56,13 +56,13 @@ test('flag on: pattern and unverified candidates go to their own tables; lead_en
   const cands = db.prepare('SELECT address, status FROM email_candidates ORDER BY address').all() as { address: string; status: string }[]
   assert.deepEqual(cands.map(c => c.address), ['ben.ortiz@acmelogistics.com', 'cara.diaz@acmelogistics.com', 'dana.lee@acmelogistics.com'])
   assert.ok(cands.every(c => c.status === 'unverified'))
-  const enr = db.prepare("SELECT value FROM lead_enrichments WHERE kind <> 'domain'").all() as { value: string }[]
+  const enr = db.prepare("SELECT value FROM lead_enrichments WHERE kind NOT IN ('domain', 'domain_check')").all() as { value: string }[]
   assert.ok(enr.every(e => !e.value.includes('cara.diaz') && !e.value.includes('dana.lee@') && !e.value.includes('ben.ortiz@')), JSON.stringify(enr))
 })
 
 test('flag off (default): no tables, no candidates, crawl output unchanged', async () => {
   const db = await crawlFixture({})
   assert.equal((db.prepare("SELECT count(*) n FROM sqlite_master WHERE name IN ('email_patterns','email_candidates')").get() as { n: number }).n, 0)
-  const enr = db.prepare("SELECT kind, value FROM lead_enrichments WHERE kind <> 'domain' ORDER BY kind, value").all()
+  const enr = db.prepare("SELECT kind, value FROM lead_enrichments WHERE kind NOT IN ('domain', 'domain_check') ORDER BY kind, value").all()
   assert.deepEqual(enr, [{ kind: 'email', value: 'hello@acmelogistics.com' }, { kind: 'person', value: 'Ben Ortiz, CFO' }, { kind: 'person', value: 'Cara Diaz, COO' }, { kind: 'person', value: 'Dana Lee, CEO' }])
 })
