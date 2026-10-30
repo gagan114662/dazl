@@ -105,7 +105,8 @@ export class SpendGuard {
 export class PooledGuard extends SpendGuard {
   readonly pool: SharedPool
   // trackPending: each reservation also writes a pending-settlement marker in the store, removed by its settle (see
-  // SharedPool.reserve). A call whose accounting never lands leaves it, and the owner's later reservations are refused.
+  // SharedPool.reserve). A settle known to have failed marks it at once (SharedPool.markFailed); one that never ran
+  // (a crash) leaves it to go stale. Either way the owner's later reservations are refused.
   readonly trackPending: boolean
   constructor(pool: SharedPool, opts: { trackPending?: boolean } = {}) { super(Infinity); this.pool = pool; this.trackPending = opts.trackPending === true }
   override checkUsd(usd: number): void { if (this.refused || !(Number.isFinite(usd) && usd >= 0)) { this.refused = true; throw new SpendRefused(this.label) } }
@@ -285,7 +286,11 @@ async function settleCompletion(g: SpendGuard[], held: Reservation, d: DetailedC
     else for (const x of g) { if (x instanceof PooledGuard) await x.exhaustShared(held.at.get(x)!, held.pending.get(x)); else x.exhaust() }
   }
   try { await record() } catch {
-    try { await record() } catch (e) { for (const x of g) x.refused = true; throw new SpendAccountingFailed(e) }
+    try { await record() } catch (e) {
+      // Known failed: mark each pending marker failed so no new guard, path or instance reserves until it is cleared.
+      for (const x of g) { x.refused = true; const id = x instanceof PooledGuard ? held.pending.get(x) : undefined; if (id) await (x as PooledGuard).pool.markFailed(id) }
+      throw new SpendAccountingFailed(e)
+    }
   }
   // No usage: nothing says what the call really used, so no later call goes through these guards.
   if ('unknown' in cost && cost.unknown === 'no_usage') for (const x of g) x.refused = true

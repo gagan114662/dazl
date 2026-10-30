@@ -11,7 +11,8 @@
 // the served model's price with cache writes and reads, so an overrun past the limit is recorded and refuses every later
 // call; no usage keeps the worst-case reservation; an unknown cost (unpriced served model, invalid counts) counts the rest
 // of the day (or, with only a month limit, the month) as spent. When that accounting cannot be saved, SpendAccountingFailed is thrown: the call happened, so a
-// caller must not treat it as a refusal (spendRefused is false for it).
+// caller must not treat it as a refusal (spendRefused is false for it), and every later reservation of the owner, from any
+// caller or instance, is refused until an operator clears the pending marker.
 import type { DbLike } from '../db/client.ts'
 import type { Provider } from './provider.ts'
 import { guardProvider, PooledGuard, SpendAccountingFailed, SpendRefused } from './spend-guard.ts'

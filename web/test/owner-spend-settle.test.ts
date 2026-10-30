@@ -9,14 +9,14 @@ import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { bothEngines } from './helpers/engines.ts'
 import { saveKey } from '../lib/llm/key-store.ts'
-import { sharedPool, poolRows, PENDING_STALE_S } from '../lib/llm/spend-pool.ts'
+import { sharedPool, poolRows } from '../lib/llm/spend-pool.ts'
 import { ownerGuarded } from '../lib/llm/owner-guard.ts'
 import { completionCost, SpendAccountingFailed } from '../lib/llm/spend-guard.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
-import { sqliteDb, type Db } from '../lib/db/client.ts'
+import { pgDb, sqliteDb, type Db } from '../lib/db/client.ts'
 import { saveSettings, createDraft } from '../lib/outreach/service.ts'
 import { saveMemory } from '../lib/memory.ts'
-import { polishDraft } from '../lib/outreach/draft-llm.ts'
+import { polishDraft, llmFollowupText } from '../lib/outreach/draft-llm.ts'
 import { createQueryJob } from '../lib/scan/store.ts'
 import { runQualification, storedQualifications } from '../lib/scan/qualify-run.ts'
 import { DEFAULT_LIMITS } from '../lib/scan/lead-qualify.ts'
@@ -91,7 +91,7 @@ test('polish: no usage keeps the full reservation; an unpriced served model spen
   })
 })
 
-test('polish: the settle cannot be saved -> the result is withheld, the pending marker stays and stops the owner once stale', async () => {
+test('polish: the settle cannot be saved -> the result is withheld; the very next polish, and another paid path, are refused at once', async () => {
   const db = outreachDb()
   calls = 0
   const draftId = draftOf(db)
@@ -102,13 +102,32 @@ test('polish: the settle cannot be saved -> the result is withheld, the pending 
     db.exec('ALTER TABLE tsp_down RENAME TO tenant_spend_pools')
     assert.deepEqual(r, { rewritten: false, reason: 'error' })
     assert.deepEqual(db.prepare('SELECT subject, body FROM outreach_messages WHERE id = ?').get(draftId), before, 'the unaccounted result is not used')
-    const markers = (await poolRows(sqliteDb(db), 'A')).filter(x => x.period.startsWith('p:'))
-    assert.equal(markers.length, 1, 'the pending marker is durable')
-    // Fresh: calls in flight may still reserve. Stale: every reservation of the owner is refused, before any call.
-    db.prepare("UPDATE tenant_spend_pools SET updated_at = updated_at - ? WHERE period LIKE 'p:%'").run(PENDING_STALE_S + 1)
+    // Immediately, with a fresh guard (a new request), the marker not aged: refused before any call.
     assert.deepEqual(await polish(db, answering(POLISHED, MODEL, OVERRUN)), { rewritten: false, reason: 'spend_limit' })
-    assert.equal(calls, 1)
+    const markers = (await poolRows(sqliteDb(db), 'A')).filter(x => x.period.startsWith('p:'))
+    assert.deepEqual(markers.map(m => [m.updated_at, m.reserved_usd > 0]), [[0, true]], 'the marker is kept, marked failed, its reservation intact')
+    // Another paid path of the same owner (follow-up text through ownerGuarded) is refused too.
+    assert.equal(await llmFollowupText(db, 'A', 0, { company: 'Acme', name: 'Pat', signal: 'hiring AEs', source_url: 'https://n.example/a' }, 'Acme', null, { fetchImpl: answering('Hi Pat, a quick nudge about the AE hiring. Worth a call?', MODEL, OVERRUN), master }), null)
+    assert.equal(calls, 1, 'one model call in all')
   })
+})
+
+bothEngines('another instance is refused at once after a known accounting failure: written immediately, or as soon as the store answers', async ({ db, kind, url, schema }) => {
+  const other = kind === 'pg' ? pgDb({ connectionString: url!, searchPath: schema }) : db
+  try {
+    const env = { DAZL_RUN_MAX_USD_USERS: 'T:5', DAZL_OWNER_MONTH_MAX_USD_USERS: 'T:50' }
+    const stub = (during: () => Promise<void>): Provider => ({ research: async () => ({ text: '', citedUrls: [] }), configuredModel: () => MODEL, completeDetailed: async () => { calls++; await during(); return { text: 'ok', model: MODEL, usage: OVERRUN } } })
+    calls = 0
+    // (1) The settle fails but the store answers (the day row was removed under it): the failure is written at once.
+    await assert.rejects(ownerGuarded(db, 'T', stub(async () => { await db.run("DELETE FROM tenant_spend_pools WHERE tenant_id = 'T' AND period LIKE 'd:%'") }), env).completeDetailed!(KEY, 'hi', undefined, 100), SpendAccountingFailed)
+    await assert.rejects(ownerGuarded(other, 'T', stub(async () => {}), env).completeDetailed!(KEY, 'hi', undefined, 100), /spend_refused:accounting_unsettled/)
+    // (2) The store is down for the failure mark too (owner U): kept in this process, written when the store answers.
+    await assert.rejects(ownerGuarded(db, 'U', stub(async () => { await db.run('ALTER TABLE tenant_spend_pools RENAME TO tsp_down') }), { DAZL_RUN_MAX_USD_USERS: 'U:5' }).completeDetailed!(KEY, 'hi', undefined, 100), SpendAccountingFailed)
+    await db.run('ALTER TABLE tsp_down RENAME TO tenant_spend_pools')
+    assert.equal(await sharedPool(db, 'U', { day: 5 }).flushFailed(), true, 'the retry (every 5 s in the background) writes it')
+    await assert.rejects(ownerGuarded(other, 'U', stub(async () => {}), { DAZL_RUN_MAX_USD_USERS: 'U:5' }).completeDetailed!(KEY, 'hi', undefined, 100), /spend_refused:accounting_unsettled/)
+    assert.equal(calls, 2, 'no call after either failure')
+  } finally { if (other !== db) await other.close() }
 })
 
 // Lead qualification (lib/scan/qualify-run.ts) with the owner's pool on.
@@ -200,5 +219,4 @@ bothEngines('pool: a settle retry with the same pending id moves once; a settle 
   await assert.rejects(g.completeDetailed!(KEY, 'hi', undefined, 100), /provider_500/)
   const u = await poolRows(db, 'U')
   assert.deepEqual([u.length, u[0].period.slice(0, 2), u[0].reserved_usd > 0], [1, 'd:', true])
-  void SpendAccountingFailed
 })
