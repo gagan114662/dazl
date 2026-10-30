@@ -11,7 +11,7 @@ import { migrateReplies, acceptReadConsent } from '../lib/outreach/replies.ts'
 import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
 import { saveSettings, approve, sendMessage, createDraft } from '../lib/outreach/service.ts'
 import { migrateSequences, createSequence, approveSequence, runSequences, sequenceStatusByLead } from '../lib/outreach/sequences.ts'
-import { applyPendingLifecycle, forgetLifecycleUser, lifecycleHold, reconcileLifecycle, recordLifecycleEvent } from '../lib/outreach/lifecycle.ts'
+import { applyPendingLifecycle, forgetLifecycleUser, lifecycleHold, reconcileLifecycle, recordEmailChange, recordLifecycleEvent, signupKey, stripeEvidence, verifiedKey } from '../lib/outreach/lifecycle.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { stopReasonWords } from '../lib/outreach/lifecycle-words.ts'
@@ -67,7 +67,7 @@ const D = (db: Database.Database) => sqliteDb(db)
 const seqRow = (db: Database.Database, lead: string) => db.prepare('SELECT status, stop_reason FROM sequences WHERE lead_id = ?').get(lead) as { status: string; stop_reason: string | null }
 const holdRow = (db: Database.Database) => db.prepare('SELECT status FROM acquisition_holds').all()
 const user = (db: Database.Database, id: string, email: string) => db.prepare("INSERT INTO users (id, email, password_hash, salt) VALUES (?, ?, 'x', 'y')").run(id, email)
-const signup = async (db: Database.Database, id: string, email: string) => { user(db, id, email); await recordLifecycleEvent(D(db), { key: `signup:${id}`, kind: 'signup_unverified', userId: id, email }, ACQ); return applyPendingLifecycle(D(db), ACQ, NOW + DAY) }
+const signup = async (db: Database.Database, id: string, email: string) => { user(db, id, email); await recordLifecycleEvent(D(db), { key: signupKey(id, email), kind: 'signup_unverified', userId: id, email }, ACQ); return applyPendingLifecycle(D(db), ACQ, NOW + DAY) }
 
 test('#417 an unverified sign-up is a hold, never a customer; Google verification, then payment, promote it; weaker evidence never relabels', async () => {
   const db = await setup(), s = add(db, 'owner@prospect.example'), m = mock(); await start(db, s, m)
@@ -78,7 +78,7 @@ test('#417 an unverified sign-up is a hold, never a customer; Google verificatio
   for (const at of [NOW + 3 * DAY, NOW + 7 * DAY]) await runSequences(db, 'A', '', { ...m, now: at })
   assert.equal(m.calls.length, 1, 'held: no further sales email')
   // Google verification promotes it; the stopped sequence's reason follows.
-  await recordLifecycleEvent(D(db), { key: 'verified:u1', kind: 'signup_verified', userId: 'u1', email: 'owner@prospect.example' }, ACQ); await applyPendingLifecycle(D(db), ACQ)
+  await recordLifecycleEvent(D(db), { key: verifiedKey('u1', 'owner@prospect.example'), kind: 'signup_verified', userId: 'u1', email: 'owner@prospect.example' }, ACQ); await applyPendingLifecycle(D(db), ACQ)
   assert.deepEqual([holdRow(db), seqRow(db, s.lead).stop_reason], [[{ status: 'signed_up' }], 'converted_signup'])
   // A paid checkout promotes it again; a later unverified or unpaid event never relabels it down.
   await recordLifecycleEvent(D(db), { key: 'stripe:evt_paid', kind: 'paid', userId: 'u1', email: 'owner@prospect.example' }, ACQ)
@@ -101,18 +101,18 @@ test('#417 durable: a recorded event holds sends at once; a failed apply stays p
   // Recorded, not applied yet (the apply step failed or has not run): the send path already refuses (fail closed).
   { const db = await setup(), s = add(db, 'owner@prospect.example'), m = mock(); await start(db, s, m)
     user(db, 'u3', 'owner@prospect.example')
-    await recordLifecycleEvent(D(db), { key: 'signup:u3', kind: 'signup_unverified', userId: 'u3', email: 'owner@prospect.example' }, ACQ)
+    await recordLifecycleEvent(D(db), { key: signupKey('u3', 'owner@prospect.example'), kind: 'signup_unverified', userId: 'u3', email: 'owner@prospect.example' }, ACQ)
     assert.equal(lifecycleHold(db, 'A', 'owner@prospect.example', ACQ), 'unverified_signup_hold')
     await runSequences(db, 'A', '', { ...m, now: NOW + 3 * DAY })
     assert.equal(m.calls.length, 1)
     // An apply that throws leaves the event pending; the next pass applies it.
     const broken = { ...D(db), tx: async () => { throw new Error('store unavailable') } } as ReturnType<typeof D>
     await assert.rejects(applyPendingLifecycle(broken, ACQ), /store unavailable/)
-    assert.equal((db.prepare('SELECT count(*) AS n FROM lifecycle_events WHERE applied_at IS NULL').get() as { n: number }).n, 1, 'still pending, not marked processed')
+    assert.equal((db.prepare('SELECT count(*) AS n FROM acquisition_lifecycle_events WHERE applied_at IS NULL').get() as { n: number }).n, 1, 'still pending, not marked processed')
     const r = await reconcileLifecycle(D(db), ACQ, NOW + 4 * DAY)
     assert.equal(r.applied >= 1, true); assert.equal(seqRow(db, s.lead).status, 'stopped')
     // The same event key again (a retried hook): no duplicate row, nothing re-applied.
-    assert.equal(await recordLifecycleEvent(D(db), { key: 'signup:u3', kind: 'signup_unverified', userId: 'u3', email: 'owner@prospect.example' }, ACQ), false) }
+    assert.equal(await recordLifecycleEvent(D(db), { key: signupKey('u3', 'owner@prospect.example'), kind: 'signup_unverified', userId: 'u3', email: 'owner@prospect.example' }, ACQ), false) }
   // The account was created but the hook never ran (a crash after the commit): the scheduler's reconciliation records and applies it.
   { const db = await setup(), s = add(db, 'owner@prospect.example'), m = mock(); await start(db, s, m)
     user(db, 'u4', 'owner@prospect.example')
@@ -126,7 +126,7 @@ test('#417 privacy: an unmatched sign-up leaves nothing any workspace can read, 
   await signup(db, 'u5', 'new@customer.example')
   assert.deepEqual(holdRow(db), [], 'no hold row: this workspace never emailed the address')
   assert.equal((db.prepare("SELECT count(*) AS n FROM autopilot_audit WHERE action LIKE 'acquisition%' OR action LIKE 'lifecycle%'").get() as { n: number }).n, 0)
-  assert.ok((db.prepare('SELECT * FROM lifecycle_events').all() as Record<string, unknown>[]).every(r => !JSON.stringify(r).includes('@')), 'the private history keeps a hash, never the address')
+  assert.ok((db.prepare('SELECT * FROM acquisition_lifecycle_events').all() as Record<string, unknown>[]).every(r => !JSON.stringify(r).includes('@')), 'the private history keeps a hash, never the address')
   assert.equal(lifecycleHold(db, 'A', 'NEW@customer.example', ACQ), 'unverified_signup_hold', 'the private lookup still protects a future campaign')
   // An approved email to that address is refused by the send path.
   const job = createJob(db, 'A', { business_name: 'Acme', industry: 'x', location: 'y' })
@@ -141,14 +141,14 @@ test('#417 privacy: an unmatched sign-up leaves nothing any workspace can read, 
 test('#417 off by default; enabling later reconciles the sign-ups missed while off; a deleted account forgets its history', async () => {
   const db = await setup(), s = add(db, 'owner@prospect.example'), m = mock(); await start(db, s, m)
   user(db, 'u6', 'owner@prospect.example')
-  assert.equal(await recordLifecycleEvent(D(db), { key: 'signup:u6', kind: 'signup_unverified', userId: 'u6', email: 'owner@prospect.example' }, {}), false)
+  assert.equal(await recordLifecycleEvent(D(db), { key: signupKey('u6', 'owner@prospect.example'), kind: 'signup_unverified', userId: 'u6', email: 'owner@prospect.example' }, {}), false)
   assert.deepEqual(await reconcileLifecycle(D(db), {}), { recorded: 0, applied: 0, stopped: { held: 0, drafts: 0, sequences: 0, followups: 0 } })
-  assert.equal((db.prepare('SELECT count(*) AS n FROM lifecycle_events').get() as { n: number }).n, 0, 'off: nothing recorded')
+  assert.equal((db.prepare('SELECT count(*) AS n FROM acquisition_lifecycle_events').get() as { n: number }).n, 0, 'off: nothing recorded')
   assert.equal(lifecycleHold(db, 'A', 'owner@prospect.example', {}), null)
   const r = await reconcileLifecycle(D(db), ACQ, NOW + DAY)
   assert.equal(r.recorded, 1); assert.equal(seqRow(db, s.lead).stop_reason, 'unverified_signup_hold')
   assert.equal(await forgetLifecycleUser(D(db), 'u6'), 1)
-  assert.equal((db.prepare('SELECT count(*) AS n FROM lifecycle_events').get() as { n: number }).n, 0)
+  assert.equal((db.prepare('SELECT count(*) AS n FROM acquisition_lifecycle_events').get() as { n: number }).n, 0)
   assert.deepEqual(holdRow(db), [{ status: 'unverified_signup_hold' }], 'the stop stays, as an opt-out does')
 })
 
@@ -172,4 +172,71 @@ test('#417 no guessing: a same-domain or look-alike sign-up changes nothing', as
 
 test('#417 stop reasons read in words', () => {
   assert.deepEqual(['converted_signup', 'converted_paid', 'checkout_unpaid', 'evidence_withdrawn', 'reply'].map(stopReasonWords), ['signed up for dazl (verified)', 'became a paying dazl customer', 'started a dazl checkout (no payment yet)', 'lead confirmation withdrawn', 'reply'])
+})
+
+// Instinct's second review of 3d4a2f6.
+test('#417 payment needs evidence of money taken: a subscription status is never "paid", by reconciliation or otherwise', async () => {
+  const db = await setup(), s = add(db, 'owner@prospect.example'), m = mock(); await start(db, s, m)
+  user(db, 'u8', 'owner@prospect.example')
+  db.prepare("INSERT INTO tenant_plans (tenant_id, plan, subscription_status) VALUES ('u8', 'pro', 'active')").run()
+  await reconcileLifecycle(D(db), ACQ, NOW + DAY)
+  assert.deepEqual(holdRow(db), [{ status: 'checkout_unpaid' }], 'an active subscription is entitlement, not payment')
+  assert.equal(seqRow(db, s.lead).stop_reason, 'checkout_unpaid')
+  await reconcileLifecycle(D(db), ACQ, NOW + 2 * DAY)
+  assert.deepEqual(holdRow(db), [{ status: 'checkout_unpaid' }], 'the next tick does not promote it either')
+  // What Stripe events count as payment.
+  const ev = (type: string, object: Record<string, unknown>) => stripeEvidence({ type, data: { object } })
+  assert.equal(ev('checkout.session.completed', { payment_status: 'paid', amount_total: 4900 }), 'paid')
+  assert.equal(ev('checkout.session.completed', { payment_status: 'no_payment_required', amount_total: 0 }), 'checkout_unpaid', 'a trial')
+  assert.equal(ev('checkout.session.completed', { payment_status: 'unpaid', amount_total: 4900 }), 'checkout_unpaid')
+  assert.equal(ev('checkout.session.completed', { payment_status: 'paid', amount_total: 0 }), 'checkout_unpaid', 'a 100% discount took no money')
+  assert.equal(ev('invoice.paid', { paid: true, amount_paid: 4900 }), 'paid')
+  assert.equal(ev('invoice.paid', { paid: true, amount_paid: 0 }), null, 'a zero invoice (trial) is not payment')
+  assert.equal(ev('customer.subscription.updated', { status: 'active' }), null, 'a status change is not payment')
+})
+
+test('#417 proof is bound to the address it was captured with; an email change never carries it to the new address', async () => {
+  const db = await setup(), s = add(db, 'owner@prospect.example'), m = mock(); await start(db, s, m)
+  const other = add(db, 'new@elsewhere.example')
+  // Payment captured for the account's address at that moment, then the account changes its email before it is applied.
+  user(db, 'u9', 'old@account.example')
+  await recordLifecycleEvent(D(db), { key: 'stripe:evt_9', kind: 'paid', userId: 'u9', email: 'old@account.example' }, ACQ)
+  db.prepare("UPDATE users SET email = 'new@elsewhere.example' WHERE id = 'u9'").run()
+  await applyPendingLifecycle(D(db), ACQ)
+  assert.deepEqual(holdRow(db), [], 'the payment stayed with old@account.example, which this workspace never emailed')
+  assert.equal(lifecycleHold(db, 'A', 'new@elsewhere.example', ACQ), null, 'nothing transferred to the new address')
+  assert.equal(lifecycleHold(db, 'A', 'old@account.example', ACQ), 'paid')
+  // The explicit email-change path: an unverified new address is only a sign-up hold; a verified one a verified sign-up.
+  await recordEmailChange(D(db), { userId: 'u9', newEmail: 'new@elsewhere.example', verified: false }, ACQ); await applyPendingLifecycle(D(db), ACQ)
+  assert.deepEqual([holdRow(db), seqRow(db, other.lead).stop_reason], [[{ status: 'unverified_signup_hold' }], 'unverified_signup_hold'])
+  await recordEmailChange(D(db), { userId: 'u9', newEmail: 'new@elsewhere.example', verified: true }, ACQ); await applyPendingLifecycle(D(db), ACQ)
+  assert.deepEqual(holdRow(db), [{ status: 'signed_up' }], 'verified, never paid: the payment belongs to the old address')
+  assert.equal(seqRow(db, s.lead).status, 'approved', 'owner@prospect.example is untouched')
+})
+
+test('#417 the namespaced tables live beside #404\'s own lifecycle_events (both migrations in one database)', async () => {
+  const db = new Database(':memory:')
+  migrateAllSqlite(db)
+  // #404 (claude/epic-cannon-xrw9ut-acquisition-funnel, lib/growth/lifecycle.ts migrateLifecycle), verbatim.
+  db.exec(`CREATE TABLE IF NOT EXISTS lifecycle_events (
+    kind TEXT NOT NULL CHECK (kind IN ('signup','payment_succeeded','payment_failed','refund','subscription_ended')),
+    ref TEXT NOT NULL CHECK (length(ref) BETWEEN 1 AND 200),
+    tenant_id TEXT NOT NULL,
+    occurred_at INTEGER NOT NULL,
+    amount_cents INTEGER,
+    invoice TEXT,
+    full_refund INTEGER,
+    source TEXT CHECK (source IS NULL OR length(source) <= 40),
+    PRIMARY KEY (kind, ref)
+  );
+  CREATE INDEX IF NOT EXISTS lifecycle_events_tenant ON lifecycle_events (tenant_id, kind);`)
+  migrateAllSqlite(db) // and again after it: idempotent either way round
+  const cols = (t: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map(c => c.name)
+  assert.deepEqual(cols('lifecycle_events'), ['kind', 'ref', 'tenant_id', 'occurred_at', 'amount_cents', 'invoice', 'full_refund', 'source'])
+  assert.deepEqual(cols('acquisition_lifecycle_events'), ['event_key', 'kind', 'user_id', 'email_hash', 'received_at', 'applied_at'])
+  db.prepare("INSERT INTO lifecycle_events (kind, ref, tenant_id, occurred_at) VALUES ('signup', 'u1', 'u1', 1)").run()
+  db.prepare("INSERT INTO users (id, email, password_hash, salt) VALUES ('u1', 'a@b.example', 'x', 'y')").run()
+  assert.equal(await recordLifecycleEvent(sqliteDb(db), { key: signupKey('u1', 'a@b.example'), kind: 'signup_unverified', userId: 'u1', email: 'a@b.example' }, ACQ), true)
+  const idx = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE '%lifecycle%' AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name").all() as { name: string }[]).map(r => r.name)
+  assert.deepEqual(idx, ['acquisition_lifecycle_events_hash', 'acquisition_lifecycle_events_pending', 'lifecycle_events_tenant'])
 })

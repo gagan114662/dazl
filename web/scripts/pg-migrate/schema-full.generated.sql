@@ -13,7 +13,7 @@ BEGIN
   END IF;
 END $guard$;
 
-DROP TABLE IF EXISTS acquisition_holds, advanced_consent, app_leases, autopilot_audit, autopilot_settings, calcom_bookings, calcom_hooks, company_events, connector_audit, consent_ledger, crm_push_claims, csv_batches, email_candidates, email_patterns, evidence_purge_audit, evidence_purge_gate, followup_messages, followup_threads, gmail_accounts, hiring_feed_crawl, inbound_messages, inbox_thread_reads, lead_enrichments, lead_evidence_copies, lead_qualifications, lifecycle_events, mail_read_consent, memberships, monitors, newsjacks, oauth_identities, oauth_states, organizations, outreach_llm_usage, outreach_messages, outreach_settings, outreach_signal_context, rate_limits, reopen_messages, reply_drafts, reply_queries, reply_threads, scan_jobs, scan_model_calls, scan_run_report, scan_source_runs, scan_source_stats, seo_audits, seo_briefs, seo_index_configs, seo_index_keywords, seo_index_results, seo_index_runs, sequence_settings, sequence_steps, sequences, sessions, source_reviews, stripe_ended_subscriptions, stripe_events, suppressions, tenant_competitors, tenant_connections, tenant_connectors, tenant_llm_keys, tenant_memory, tenant_plans, tenant_spend_pools, tinyfish_usage, trial_budget_lock, trial_reservations, trial_scans, users, warm_user_paths, watches, work_queue, work_queue_meta, commenter_batches, csv_rows, leads, monitor_runs, monitor_seen, watch_seen, commenter_rows, lead_sources CASCADE;
+DROP TABLE IF EXISTS acquisition_holds, acquisition_lifecycle_events, advanced_consent, app_leases, autopilot_audit, autopilot_settings, calcom_bookings, calcom_hooks, company_events, connector_audit, consent_ledger, crm_push_claims, csv_batches, email_candidates, email_patterns, evidence_purge_audit, evidence_purge_gate, followup_messages, followup_threads, gmail_accounts, hiring_feed_crawl, inbound_messages, inbox_thread_reads, lead_enrichments, lead_evidence_copies, lead_qualifications, mail_read_consent, memberships, monitors, newsjacks, oauth_identities, oauth_states, organizations, outreach_llm_usage, outreach_messages, outreach_settings, outreach_signal_context, rate_limits, reopen_messages, reply_drafts, reply_queries, reply_threads, scan_jobs, scan_model_calls, scan_run_report, scan_source_runs, scan_source_stats, seo_audits, seo_briefs, seo_index_configs, seo_index_keywords, seo_index_results, seo_index_runs, sequence_settings, sequence_steps, sequences, sessions, source_reviews, stripe_ended_subscriptions, stripe_events, suppressions, tenant_competitors, tenant_connections, tenant_connectors, tenant_llm_keys, tenant_memory, tenant_plans, tenant_spend_pools, tinyfish_usage, trial_budget_lock, trial_reservations, trial_scans, users, warm_user_paths, watches, work_queue, work_queue_meta, commenter_batches, csv_rows, leads, monitor_runs, monitor_seen, watch_seen, commenter_rows, lead_sources CASCADE;
 
 CREATE SEQUENCE IF NOT EXISTS connector_audit_insert_seq_seq;
 
@@ -34,6 +34,15 @@ CREATE TABLE acquisition_holds (
       event_key  TEXT NOT NULL,
       updated_at BIGINT NOT NULL,
       PRIMARY KEY (tenant_id, email_hash)
+    );
+
+CREATE TABLE acquisition_lifecycle_events (
+      event_key   TEXT PRIMARY KEY CHECK (char_length(event_key) <= 200),
+      kind        TEXT NOT NULL CHECK (kind IN ('signup_unverified','signup_verified','checkout_unpaid','paid')),
+      user_id     TEXT NOT NULL,
+      email_hash  TEXT NOT NULL CHECK (char_length(email_hash) = 64),
+      received_at BIGINT NOT NULL,
+      applied_at  BIGINT
     );
 
 CREATE TABLE advanced_consent (
@@ -242,15 +251,6 @@ CREATE TABLE lead_qualifications (
     vendor TEXT, model TEXT, served_model TEXT, result TEXT, usage TEXT, error TEXT, evidence TEXT,
     created_at BIGINT NOT NULL DEFAULT (CAST(floor(extract(epoch from now())) AS BIGINT)),
     UNIQUE (tenant_id, lead_id, prompt_sha256));
-
-CREATE TABLE lifecycle_events (
-      event_key   TEXT PRIMARY KEY CHECK (char_length(event_key) <= 200),
-      kind        TEXT NOT NULL CHECK (kind IN ('signup_unverified','signup_verified','checkout_unpaid','paid')),
-      user_id     TEXT NOT NULL,
-      email_hash  TEXT NOT NULL CHECK (char_length(email_hash) = 64),
-      received_at BIGINT NOT NULL,
-      applied_at  BIGINT
-    );
 
 CREATE TABLE mail_read_consent (tenant_id TEXT PRIMARY KEY, version TEXT NOT NULL, accepted_at BIGINT NOT NULL DEFAULT (CAST(floor(extract(epoch from now())) AS BIGINT)));
 
@@ -824,6 +824,10 @@ ALTER SEQUENCE scan_jobs_insert_seq_seq OWNED BY scan_jobs.insert_seq;
 
 ALTER SEQUENCE warm_user_paths_insert_seq_seq OWNED BY warm_user_paths.insert_seq;
 
+CREATE INDEX acquisition_lifecycle_events_hash ON acquisition_lifecycle_events (email_hash);
+
+CREATE INDEX acquisition_lifecycle_events_pending ON acquisition_lifecycle_events (applied_at);
+
 CREATE INDEX autopilot_audit_tenant ON autopilot_audit (tenant_id, created_at);
 
 CREATE INDEX commenter_batches_user ON commenter_batches (user_id, created_at);
@@ -863,10 +867,6 @@ CREATE UNIQUE INDEX leads_dedup ON leads (scan_job_id, dedup_key) WHERE dedup_ke
 CREATE INDEX leads_insert_seq_idx ON leads (insert_seq);
 
 CREATE INDEX leads_job ON leads (scan_job_id);
-
-CREATE INDEX lifecycle_events_hash ON lifecycle_events (email_hash);
-
-CREATE INDEX lifecycle_events_pending ON lifecycle_events (applied_at);
 
 CREATE INDEX memberships_member ON memberships (member_id);
 
