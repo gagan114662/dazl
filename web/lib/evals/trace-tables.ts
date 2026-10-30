@@ -1,4 +1,4 @@
-// SQLite DDL for captured production scan traces (lib/evals/capture.ts). PG: lib/db/migrations/pg/0017_scan_traces.sql.
+// SQLite DDL for captured production scan traces (lib/evals/capture.ts). PG: lib/db/migrations/pg/0018_scan_traces.sql.
 // One row per captured run attempt: the trace JSON is redacted before it is written, and rows are deleted once older than
 // the configured retention (DAZL_TRACE_RETENTION_DAYS).
 import type Database from 'better-sqlite3'

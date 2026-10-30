@@ -8,10 +8,10 @@ import { bothEngines } from './helpers/engines.ts'
 import Database from 'better-sqlite3'
 import { getDb, sqliteDb, type Db } from '../lib/db/client.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
-import { beginScanTrace, capTrace, getTrace, listTraces, purgeExpiredTraces, traceCaptureConfig, DEFAULT_RETENTION_DAYS, MAX_STRING_CHARS } from '../lib/evals/capture.ts'
+import { beginScanTrace, capTrace, getTrace, listTraces, purgeExpiredTraces, traceCaptureConfig, DEFAULT_RETENTION_DAYS, MAX_STRING_CHARS, MAX_TRACE_BYTES } from '../lib/evals/capture.ts'
 import { redactTrace } from '../lib/evals/redact.ts'
 import { TraceRecorder, TRACE_VERSION, type Trace } from '../lib/evals/trace.ts'
-import { worldFromTrace, validateWorld } from '../lib/evals/world.ts'
+import { worldFromTrace, validateWorld, WorldError } from '../lib/evals/world.ts'
 import { replayCase } from './helpers/eval-replay.ts'
 import type { Case } from '../lib/evals/case.ts'
 
@@ -131,6 +131,78 @@ test('size caps: long strings are cut and counted; a trace still too large keeps
   const huge = capTrace(synth({ spans: many }))
   assert.equal(huge.capture?.spans_metadata_only, true)
   assert.deepEqual(huge.spans[3], { ...many[3], input: { url: 'https://p.example/3', stage: null }, output: null })
+})
+
+// All marker values below are invented: none is a credential or a real address.
+const MARK_TOKEN = 'SYNTHETIC_PRIVATE_TOKEN', MARK_MAIL = 'alice@example.test'
+const memDb = () => { const raw = new Database(':memory:'); migrateAllSqlite(raw); return sqliteDb(raw) }
+
+test('redaction covers every persisted string: a recorded call\'s error text, through the real recorder and capture store', async () => {
+  const db = memDb()
+  const inner = (async () => { throw new Error(`token=${MARK_TOKEN} recipient=${MARK_MAIL}`) }) as unknown as typeof fetch
+  const c = beginScanTrace({ id: 'j-err', user_id: 'A', attempts: 1, query: `find ${MARK_MAIL}` }, { fetchImpl: inner }, { env: { DAZL_TRACE_CAPTURE: '1' }, db: async () => db })!
+  await assert.rejects(c.deps.fetchImpl!('https://api.example/x'), /recipient/) // the run still sees the original error
+  assert.match(c.recorder.spans[0].error!, new RegExp(MARK_TOKEN))           // and the in-memory span holds it, unredacted
+  const id = (await c.finish('failed'))!
+  const row = (await db.get<{ trace: string }>('SELECT trace FROM scan_traces WHERE id = ?', [id]))!
+  for (const m of [MARK_TOKEN, MARK_MAIL, 'alice']) assert.ok(!row.trace.includes(m), `stored trace holds ${m}`)
+  const t = JSON.parse(row.trace) as Trace
+  assert.match(t.spans[0].error!, /^token=\[secret\] recipient=p[0-9a-f]{10}@example\.test$/)
+  assert.equal(t.redacted, true); assert.equal(t.spans[0].id, 's0'); assert.equal(t.spans[0].kind, 'http')
+  // every other free-text field too, not only input/output
+  const r = redactTrace(synth({ agent: { commit: null, label: `run for ${MARK_MAIL}` }, capture: { truncated_strings: 0 }, spans: [{ id: 's0', seq: 0, kind: 'page', name: `fetch ${MARK_MAIL}`, start_ms: 0, duration_ms: 1, input: {}, output: null, error: `secret=${MARK_TOKEN}` }] }))
+  const j = JSON.stringify(r)
+  for (const m of [MARK_TOKEN, MARK_MAIL]) assert.ok(!j.includes(m), m)
+  await db.close()
+})
+
+test('a store failure logs its class only, never its message (which can quote the refused row)', async () => {
+  const err = Object.assign(new Error(`insert refused: ${MARK_MAIL} token=${MARK_TOKEN}`), { code: 'SQLITE_CONSTRAINT' })
+  const c = beginScanTrace({ id: 'j-log', user_id: 'A', attempts: 1 }, {}, { env: { DAZL_TRACE_CAPTURE: '1' }, db: () => Promise.reject(err) })!
+  const errs: string[] = []; const orig = console.error; console.error = (m: string) => { errs.push(m) }
+  try { assert.equal(await c.finish('done'), null) } finally { console.error = orig }
+  assert.deepEqual(errs.map(e => JSON.parse(e)), [{ trace_capture: 'failed', job: 'j-log', error: 'Error:SQLITE_CONSTRAINT' }])
+})
+
+const lead = (i: number, big: string) => ({ company: big, name: `n${i}`, contact: null, source_url: `https://p.example/${i}`, excerpt: big, event_date: null, review_reason: null, confidence: null })
+const bytes = (t: Trace) => Buffer.byteLength(JSON.stringify(t))
+
+test('the byte cap bounds the WHOLE trace: lead output, many short spans, multibyte text; drops are recorded and refuse replay', () => {
+  // 100 leads with 49,000-char company and excerpt, no spans (was 9.8 MB under a 2 MB cap)
+  const leads = capTrace(synth({ output: { status: 'done', leads: Array.from({ length: 100 }, (_, i) => lead(i, 'c'.repeat(49_000))) } }))
+  assert.ok(bytes(leads) <= MAX_TRACE_BYTES, String(bytes(leads)))
+  assert.deepEqual([leads.output?.leads.length, leads.capture?.leads_omitted, leads.capture?.complete], [0, 100, false])
+  // many short spans: metadata alone is over, so spans go too (count kept)
+  const short = Array.from({ length: 40_000 }, (_, i) => ({ id: `s${i}`, seq: i, kind: 'http' as const, name: 'http', start_ms: 0, duration_ms: 1, input: { url: `https://p.example/${i}/${'p'.repeat(40)}` }, output: { status: 200 } }))
+  const many = capTrace(synth({ spans: short }))
+  assert.ok(bytes(many) <= MAX_TRACE_BYTES, String(bytes(many)))
+  assert.deepEqual([many.spans.length, many.capture?.spans_omitted, many.capture?.complete], [0, 40_000, false])
+  // multibyte: 4-byte emoji and 2-byte letters count as bytes, not characters; a cut never splits a surrogate pair
+  const emoji = '😀'.repeat(30_000), accents = 'é'.repeat(60_000)
+  for (const max of [MAX_TRACE_BYTES, 300_000, 20_000]) {
+    const u = capTrace(synth({ input: { request: 'x' + emoji, as_of: '2026-10-20T00:00:00Z' }, spans: [{ id: 's0', seq: 0, kind: 'page', name: 'verifier.fetch', start_ms: 0, duration_ms: 1, input: { url: 'https://p.example/u' }, output: { text: accents, [emoji]: 1 } }], output: { status: 'done', leads: [lead(0, emoji)] } }), max)
+    assert.ok(bytes(u) <= max, `${bytes(u)} > ${max}`)
+    assert.ok(!/\\ud[89a-f][0-9a-f]{2}/i.test(JSON.stringify(u)), 'lone surrogate') // JSON.stringify escapes an unpaired one as \\udXXX
+    assert.equal(u.capture?.complete, false); assert.equal(u.capture?.max_bytes, max)
+  }
+  // a bound too small for even the header stores nothing rather than overflow
+  assert.throws(() => capTrace(synth(), 50), /over the byte bound/)
+  // a trace that fit untouched says it is complete; any drop makes worldFromTrace refuse it
+  const whole = capTrace(redactTrace(synth()))
+  assert.equal(whole.capture?.complete, true); assert.doesNotThrow(() => worldFromTrace(whole))
+  for (const cut of [leads, many]) assert.throws(() => worldFromTrace({ ...cut, redacted: true }), (e: unknown) => e instanceof WorldError && /incomplete capture/.test((e as Error).message))
+})
+
+test('the exact bytes the capture store inserts never exceed MAX_TRACE_BYTES', async () => {
+  const db = memDb()
+  const c = beginScanTrace({ id: 'j-big', user_id: 'A', attempts: 1, query: 'q' }, {}, { env: { DAZL_TRACE_CAPTURE: '1' }, db: async () => db })!
+  for (let i = 0; i < 60; i++) c.recorder.spans.push({ id: `s${i}`, seq: i, kind: 'page', name: 'verifier.fetch', start_ms: 0, duration_ms: 1, input: { url: `https://p.example/${i}` }, output: { text: '😀é'.repeat(24_000) } })
+  const id = (await c.finish('done'))!
+  const row = (await db.get<{ trace: string; bytes: number }>('SELECT trace, bytes FROM scan_traces WHERE id = ?', [id]))!
+  assert.equal(Buffer.byteLength(row.trace), row.bytes)
+  assert.ok(row.bytes <= MAX_TRACE_BYTES, String(row.bytes))
+  assert.equal((JSON.parse(row.trace) as Trace).capture?.complete, false)
+  await db.close()
 })
 
 test('recorder: the caller gets the response before its body is read; bodies are capped; a model provider API records no body', async () => {
