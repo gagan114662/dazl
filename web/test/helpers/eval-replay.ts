@@ -151,7 +151,7 @@ export async function replayCase(c: Case, worldIn: World, opts: { agentLabel?: s
       autopilot: (async () => { autopilotCalls++ }) as never,
     })
     const jobRow = db.prepare('SELECT status, error, candidates, verified, needs_review, drop_reasons FROM scan_jobs WHERE id = ?').get(job.id) as ReplayResult['job']
-    const leads = (db.prepare(`SELECT j.user_id AS tenant, l.name, l.company, l.contact, l.source_url, l.evidence_excerpt AS excerpt, l.event_date, l.review_reason, l.confidence, l.company_domain, l.date_status
+    const leads = (db.prepare(`SELECT j.user_id AS tenant, l.name, l.company, l.contact, l.source_url, l.evidence_excerpt AS excerpt, l.event_date, l.review_reason, l.confidence, l.company_domain, l.date_status, l.fit
       FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.id = ? ORDER BY l.company`).all(job.id)) as ReplayLead[]
     const trace: Trace = {
       v: TRACE_VERSION, kind: 'dazl.trace', id: `replay-${c.id}`, path: 'scan.discovery', synthetic: w.origin === 'synthetic', redacted: w.redacted,

@@ -197,21 +197,24 @@ test('event_date_in_window: impossible, future, out-of-window and missing dates 
   assert.equal(at('2026-02-30'), 'fail')
   assert.equal(at('2026-13-01'), 'fail')
   assert.equal(at('10/10/2026'), 'fail')
-  assert.equal(at('2026-11-30'), 'fail')
+  assert.equal(at('2026-11-30'), 'contradicted')
   // calendar days against the as_of DAY, whatever its time: today passes, tomorrow fails, the window edge is inclusive
   const atAsOf = (asOf: string, date: string) => { const c = clone(ctx); c.world.as_of = asOf; c.result.leads = [{ ...q, event_date: date }]; return statuses(eventDateInWindow, c)['lead:Querix'] }
   for (const asOf of ['2026-10-29T00:00:00Z', '2026-10-29T20:00:00Z', '2026-10-29T23:59:59.999Z']) {
     assert.equal(atAsOf(asOf, '2026-10-29'), 'pass', `today at ${asOf}`)
-    assert.equal(atAsOf(asOf, '2026-10-30'), 'fail', `tomorrow at ${asOf}`)
+    assert.equal(atAsOf(asOf, '2026-10-30'), 'contradicted', `tomorrow at ${asOf}`)
     assert.equal(atAsOf(asOf, '2026-07-31'), 'pass', `exactly 90 days before at ${asOf}`)
-    assert.equal(atAsOf(asOf, '2026-07-30'), 'fail', `91 days before at ${asOf}`)
+    assert.equal(atAsOf(asOf, '2026-07-30'), 'contradicted', `91 days before at ${asOf}`)
     assert.equal(atAsOf(asOf, '2026-02-29'), 'fail', `impossible date at ${asOf}`)
   }
   // Instinct's direct fixture: an empty profile and expectations, a lead dated the day after as_of
   const direct = eventDateInWindow.evaluate({ kase: { ...clone(ctx.kase), input: { ...ctx.kase.input, icp: {} }, expect: {} as never }, world: { ...clone(ctx.world), as_of: '2026-10-29T00:00:00Z' },
     result: { ...clone(ctx.result), leads: [{ ...q, company: 'Synthetic Buyer', event_date: '2026-10-30', source_url: 'https://fixture.invalid/source', review_reason: null }] } })
-  assert.deepEqual(direct.map(x => x.status), ['fail'])
-  assert.equal(at('2026-01-02'), 'fail')   // 291 days before as_of, window 90
+  assert.deepEqual(direct.map(x => x.status), ['unknown'])   // empty icp and expect: no window to judge against, never a default (#394)
+  const directWithWindow = eventDateInWindow.evaluate({ kase: { ...clone(ctx.kase), input: { ...ctx.kase.input, icp: { window_days: 90 } }, expect: {} as never }, world: { ...clone(ctx.world), as_of: '2026-10-29T00:00:00Z' },
+    result: { ...clone(ctx.result), leads: [{ ...q, company: 'Synthetic Buyer', event_date: '2026-10-30', source_url: 'https://fixture.invalid/source', review_reason: null }] } })
+  assert.deepEqual(directWithWindow.map(x => x.status), ['contradicted'])
+  assert.equal(at('2026-01-02'), 'contradicted')   // 291 days before as_of, window 90
   assert.equal(at(null), 'unknown')
   // held leads are not judged here (they are not claimed as verified)
   const c = clone(ctx); c.result.leads = [{ ...q, event_date: '2026-02-30', review_reason: 'quote_unconfirmed' }]
@@ -248,8 +251,8 @@ test('contact_domain_matches_company: a contact at another domain fails; phone-o
   const at = (contact: string, c0 = ctx) => { const c = clone(c0); c.result.leads = [{ ...q, contact }]; return statuses(contactDomainMatchesCompany, c)['lead:Querix'] }
   assert.equal(at('hello@querix.example'), 'pass')
   assert.equal(at('sales@eu.querix.example'), 'pass')         // subdomain of the company's domain
-  assert.equal(at('querix.founder@gmail.com'), 'fail')
-  assert.equal(at('hello@querix-example.com'), 'fail')        // lookalike domain
+  assert.equal(at('querix.founder@gmail.com'), 'contradicted')
+  assert.equal(at('hello@querix-example.com'), 'contradicted')        // lookalike domain
   assert.equal(at('+44 20 7946 0000'), 'unknown')
   const noTruth = clone(ctx); delete noTruth.kase.expect.entities
   assert.equal(at('hello@querix.example', noTruth), 'unknown')

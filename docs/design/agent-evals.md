@@ -103,11 +103,11 @@ World, copy its input, write the expected outcomes (for a failed production task
 
 ```ts
 Evaluator { id, version, kind: 'deterministic'|'judge', critical, evaluate(ctx: { kase, world, result }): Verdict[] }
-Verdict   { evaluator, version, subject: 'run' | 'lead:<company>' | 'expect:<company>', status: 'pass'|'fail'|'unknown', rationale, evidence? }
+Verdict   { evaluator, version, subject: 'run' | 'lead:<company>' | 'expect:<company>', status: 'pass'|'fail'|'unknown'|'contradicted', rationale, evidence? }
 ```
 
-Rules (#394): unknown is never pass. A case passes only when every verdict passes; any fail makes it fail, otherwise any
-unknown makes it unknown. `validated_rate` counts unknowns in the denominator and `unknown_rate` is reported separately.
+Rules (#394): unknown is never pass. A case passes only when every verdict passes; any fail or contradiction makes it fail,
+otherwise any unknown makes it unknown. `validated_rate` counts unknowns in the denominator and `unknown_rate` is reported separately.
 Evaluators read the case, the World and the result; they cannot change the input or the targeting.
 
 Scan evaluators (all deterministic, contract `dazl.evals/1`):
@@ -115,11 +115,11 @@ Scan evaluators (all deterministic, contract `dazl.evals/1`):
 | id | subject | fails when | unknown when |
 | --- | --- | --- | --- |
 | `world_closed` | run | the replay asked for anything the World could not answer | - |
-| `event_date_in_window` | each verified lead | date not a real calendar day, after as_of, or outside the window | no date |
+| `event_date_in_window` | each verified lead | date not a real calendar day; **contradicted** when after the as_of day or outside the window | no date, or the brief states no window (never inferred) |
 | `event_date_on_page` | each verified lead with a date | - | the date is not stated in the page text (only its publication metadata, or nowhere) (#395) |
 | `evidence_in_world` | each verified lead | quote not on the World's copy of the cited page, page not in the World, no quote | - |
 | `place_on_page` | each verified lead | - | the cited page never names a requested city (no gazetteer: "another city" and "no place" are both unknown) |
-| `contact_domain_matches_company` | each verified lead with a contact | email domain is not one of the company's (case ground truth) | phone-only contact, or no ground truth |
+| `contact_domain_matches_company` | each verified lead with a contact | **contradicted**: email domain is not one of the company's (case ground truth) | phone-only contact, or no ground truth |
 | `contact_not_recruiting_inbox` | each verified lead with an email contact | the contact is a hiring inbox (careers@, jobs@, hr@, talent@ ...) (#395) | - |
 | `no_tenant_leak` | run | a canary value from the second tenant appears in any outgoing span input or lead, a lead belongs to it, or its rows changed | - |
 | `expected_outcomes` | each expectation | outcome or hold reason differs; exhaustive case verifies an unnamed company | - |
@@ -129,6 +129,39 @@ These evaluators deliberately do not reuse the scan's own checks (`place_on_page
 
 LLM judges come only where no deterministic check exists (buyer need, semantic claim support), with their own model
 configuration and budget, and only after their agreement with labelled synthetic fixtures is measured (#396). None exist yet.
+
+### 4b. The lead-evaluation contract (`lib/evals/contract.ts`, #394)
+
+Every verified lead in a scored case gets one versioned record (`dazl.lead-eval/1`). It holds:
+
+- the lead (company and cited URL), the World's `as_of`, and the version of every evaluator that ran;
+- one verdict per **field**, each with rationale, evidence pointers and the evaluators behind it. Fields are `evidence`,
+  `event_date`, `place`, `fit`, `contact`, `consent` and `outcome`. Verdicts are `pass`, `fail`, `unknown` or
+  `contradicted`, where contradicted means the evidence states something incompatible (an event after as_of or outside
+  the window, a contact at another company's domain) and fail means the claim is unsupported or invalid;
+- the **tiers** it validates. They are cumulative, and the names are shared with the product's yield report
+  (`lib/scan/actionable.ts`, #378):
+
+| tier | needs, on top of the tier below |
+| --- | --- |
+| `source_checked` | `evidence` and `event_date` pass |
+| `plausible_buyer` | `place` (or the brief names no place) and `fit` >= `FIT_MIN` pass |
+| `actionable_opportunity` | `contact` (company domain, not a hiring inbox) and `consent` pass |
+| `outcome_qualified` | an observed `outcome` (#399) |
+
+A tier passes only when all its fields pass and the tier below passes. It fails when any field fails or is contradicted,
+and is unknown otherwise. A tenant leak fails every tier; a world miss validates nothing.
+
+Case scores add `tiers.by_tier`: pass, fail and unknown counts per tier over the claimed (verified) leads, with
+`validated_rate` (unknowns in the denominator) and `unknown_rate` reported separately. The CLI prints them per case.
+A scan replay has no consent or outcome record and does not grade fit, so its leads stop at `source_checked`. That is
+reported as unknown, not hidden or defaulted.
+
+Two further guarantees:
+- **Missing constraints are never inferred.** `checkBrief` reports a missing or invalid `window_days`, a malformed
+  `where`, and missing `signals`. An evaluator that needs a missing constraint returns unknown, never a default.
+- **Evaluators cannot change the targeting.** `scoreCase` gives them a deep-frozen copy of the case, World and result,
+  so a write throws and the caller's case is untouched.
 
 ### 5. Replay harness (`test/helpers/eval-replay.ts`, result shape `lib/evals/result.ts`)
 

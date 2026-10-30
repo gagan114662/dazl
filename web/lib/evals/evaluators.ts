@@ -9,9 +9,15 @@ import { getDomain } from 'tldts'
 import type { Case } from './case.ts'
 import type { World } from './world.ts'
 import { CANARY, CANARY_TENANT, CASE_TENANT, type ReplayLead, type ReplayResult } from './result.ts'
+import { leadContract, type BriefCheck, type LeadEvaluation, type TierSummary } from './contract.ts'
+
+const deepFreeze = <T>(o: T): T => { if (o && typeof o === 'object' && !Object.isFrozen(o)) { Object.freeze(o); for (const x of Object.values(o)) deepFreeze(x) } return o }
 
 export const EVAL_CONTRACT = 'dazl.evals/1'
-export type VerdictStatus = 'pass' | 'fail' | 'unknown'
+// pass / fail / unknown / contradicted (#394). `contradicted`: the evidence states something incompatible with the claim
+// (an event after as_of or outside the window, a contact at another company's domain); `fail`: the claim is unsupported or
+// invalid (no quote on the page, an impossible date). Both are not-validated; unknown is never pass.
+export type VerdictStatus = 'pass' | 'fail' | 'unknown' | 'contradicted'
 export interface Verdict { evaluator: string; version: number; subject: string; status: VerdictStatus; rationale: string; evidence?: string[] }
 export interface EvalContext { kase: Case; world: World; result: ReplayResult }
 export interface Evaluator { id: string; version: number; kind: 'deterministic' | 'judge'; critical: boolean; evaluate(ctx: EvalContext): Verdict[] }
@@ -35,23 +41,25 @@ export const worldClosed: Evaluator = {
 // A verified lead's event date is a real calendar day, not in the future, and inside the request's window at as_of.
 // Whole UTC calendar days, the convention of event dates and of the replay's as_of: the as_of day itself passes, the next
 // day is the future (fails) at any as_of time of day, and the window is inclusive (window_days days before as_of passes).
-// v2: v1 allowed one day of slack (age >= -1), so tomorrow passed.
+// v2: v1 allowed one day of slack (age >= -1), so tomorrow passed. v3: a date after the as_of day or outside the window
+// is `contradicted`; a brief with no window is `unknown` (the window is never inferred, #394).
 export const eventDateInWindow: Evaluator = {
-  id: 'event_date_in_window', version: 2, kind: 'deterministic', critical: true,
+  id: 'event_date_in_window', version: 3, kind: 'deterministic', critical: true,
   evaluate({ kase, world, result }) {
     const at = new Date(Date.parse(world.as_of))
     const asOfDay = Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate())
     const icpWindow = (kase.input.icp as { window_days?: unknown }).window_days
-    const days = kase.expect.window_days ?? (typeof icpWindow === 'number' ? icpWindow : 90)
+    const days = kase.expect.window_days ?? (typeof icpWindow === 'number' && Number.isInteger(icpWindow) && icpWindow > 0 ? icpWindow : null)
     return verified(result).map(l => {
       const d = l.event_date
+      if (days === null) return v(this, subj(l), 'unknown', 'the brief states no window; it is never inferred')
       if (!d) return v(this, subj(l), 'unknown', 'verified lead has no event date')
       const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d)
       const t = m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) : NaN
       if (!m || new Date(t).getUTCDate() !== +m[3] || new Date(t).getUTCMonth() !== +m[2] - 1) return v(this, subj(l), 'fail', `event date ${d} is not a real calendar date`, [l.source_url])
       const age = Math.round((asOfDay - t) / 86_400_000) // both are UTC midnights: a whole number of days
-      if (age < 0) return v(this, subj(l), 'fail', `event date ${d} is after the as_of day ${new Date(asOfDay).toISOString().slice(0, 10)}`, [l.source_url])
-      if (age > days) return v(this, subj(l), 'fail', `event date ${d} is ${age} days before as_of, outside the ${days}-day window`, [l.source_url])
+      if (age < 0) return v(this, subj(l), 'contradicted', `event date ${d} is after the as_of day ${new Date(asOfDay).toISOString().slice(0, 10)}`, [l.source_url])
+      if (age > days) return v(this, subj(l), 'contradicted', `event date ${d} is ${age} days before as_of, outside the ${days}-day window`, [l.source_url])
       return v(this, subj(l), 'pass', `event date ${d} is ${age} days before as_of`, [l.source_url])
     })
   },
@@ -141,7 +149,7 @@ export const contactNotRecruitingInbox: Evaluator = {
 // A verified lead's email contact is at a domain that belongs to the company (case ground truth). No ground truth for the
 // company, or a phone-only contact, is unknown, not pass. A lead with no contact gets no verdict here (nothing to check).
 export const contactDomainMatchesCompany: Evaluator = {
-  id: 'contact_domain_matches_company', version: 1, kind: 'deterministic', critical: true,
+  id: 'contact_domain_matches_company', version: 2, kind: 'deterministic', critical: true, // v2: another company's domain is contradicted
   evaluate({ kase, result }) {
     const truth = new Map(Object.entries(kase.expect.entities ?? {}).map(([k, e]) => [k.toLowerCase(), e.domains.map(d => getDomain(d) ?? d.toLowerCase())]))
     return verified(result).filter(l => l.contact).map(l => {
@@ -152,7 +160,7 @@ export const contactDomainMatchesCompany: Evaluator = {
       const got = getDomain(email[1]) ?? email[1].toLowerCase()
       return domains.includes(got)
         ? v(this, subj(l), 'pass', `contact domain ${got} belongs to the company`)
-        : v(this, subj(l), 'fail', `contact domain ${got} is not one of the company's domains (${domains.join(', ')})`, [l.source_url])
+        : v(this, subj(l), 'contradicted', `contact domain ${got} is not one of the company's domains (${domains.join(', ')})`, [l.source_url])
     })
   },
 }
@@ -199,25 +207,32 @@ export const expectedOutcomes: Evaluator = {
 export const SCAN_EVALUATORS: Evaluator[] = [worldClosed, eventDateInWindow, eventDateOnPage, evidenceInWorld, placeOnPage, contactDomainMatchesCompany, contactNotRecruitingInbox, noTenantLeak, expectedOutcomes]
 
 export interface CaseScore {
-  contract: typeof EVAL_CONTRACT; case: string; status: VerdictStatus
-  evaluators: Record<string, { version: number; pass: number; fail: number; unknown: number }>
+  contract: typeof EVAL_CONTRACT; case: string; status: 'pass' | 'fail' | 'unknown'
+  evaluators: Record<string, { version: number; pass: number; fail: number; unknown: number; contradicted: number }>
   verdicts: Verdict[]
+  leads: LeadEvaluation[]           // the #394 contract record per verified lead (./contract.ts)
+  tiers: TierSummary
+  brief: BriefCheck
   validated_rate: number | null     // pass / all verdicts; unknowns are in the denominator (not validated)
   unknown_rate: number | null
 }
 
-// A case passes only when every verdict passes. Any fail makes it fail; otherwise any unknown makes it unknown.
-export function scoreCase(ctx: EvalContext, evaluators: Evaluator[] = SCAN_EVALUATORS): CaseScore {
+// A case passes only when every verdict passes. Any fail or contradiction makes it fail; otherwise any unknown makes it
+// unknown. Evaluators get a deep-frozen copy of the case, World and result: they read the targeting, they can never change
+// it to improve a score (#394).
+export function scoreCase(ctx0: EvalContext, evaluators: Evaluator[] = SCAN_EVALUATORS): CaseScore {
+  const ctx = deepFreeze(structuredClone(ctx0))
   const verdicts = evaluators.flatMap(e => e.evaluate(ctx))
   const per: CaseScore['evaluators'] = {}
-  for (const e of evaluators) per[e.id] = { version: e.version, pass: 0, fail: 0, unknown: 0 }
+  for (const e of evaluators) per[e.id] = { version: e.version, pass: 0, fail: 0, unknown: 0, contradicted: 0 }
   for (const x of verdicts) per[x.evaluator][x.status]++
   const n = verdicts.length
   const count = (s: VerdictStatus) => verdicts.filter(x => x.status === s).length
   return {
     contract: EVAL_CONTRACT, case: ctx.kase.id,
-    status: count('fail') ? 'fail' : count('unknown') ? 'unknown' : 'pass',
+    status: count('fail') || count('contradicted') ? 'fail' : count('unknown') ? 'unknown' : 'pass',
     evaluators: per, verdicts,
+    ...leadContract(ctx, verdicts, evaluators),
     validated_rate: n ? count('pass') / n : null,
     unknown_rate: n ? count('unknown') / n : null,
   }

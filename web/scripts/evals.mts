@@ -19,6 +19,9 @@ const g = gate(rows, loadBaseline(`${dir}baseline.json`))
 console.log(`eval suite ${commit ?? '(no commit)'}: ${rows.length} case(s), SYNTHETIC worlds only (not live performance)\n`)
 console.log('case | status | validated | unknown | model calls | http | pages | cost | misses')
 for (const r of rows) console.log(`${r.case} | ${r.score.status} | ${r.score.validated_rate?.toFixed(2) ?? '-'} | ${r.score.unknown_rate?.toFixed(2) ?? '-'} | ${r.totals.model_calls} | ${r.totals.http_calls} | ${r.totals.page_fetches} | ${r.totals.cost_usd === null ? 'unknown' : `$${r.totals.cost_usd.toFixed(4)}${r.totals.cost_complete ? '' : '+'}`} | ${r.result.misses.length}`)
+// #394 lead tiers per case: validated / claimed, unknowns in the denominator (lib/evals/contract.ts).
+const pct = (x: number | null) => x === null ? '-' : `${Math.round(x * 100)}%`
+for (const r of rows) console.log(`  ${r.case}: ${r.score.tiers.claimed} claimed | ${Object.entries(r.score.tiers.by_tier).map(([t, b]) => `${t} ${b.pass}/${r.score.tiers.claimed} (unknown ${pct(b.unknown_rate)})`).join(' | ')}${r.score.brief.ok ? '' : ` | brief: ${r.score.brief.problems.join('; ')}`}`)
 for (const r of rows) for (const v of r.score.verdicts.filter(v => v.status !== 'pass')) console.log(`  ${r.case}: ${v.status.toUpperCase()} ${v.evaluator} ${v.subject} - ${v.rationale}`)
 for (const d of g.diffs) {
   if (d.regressions.length) console.log(`\nREGRESSION ${d.case}:\n  ${d.regressions.join('\n  ')}`)
