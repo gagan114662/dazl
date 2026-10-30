@@ -29,6 +29,8 @@ export const DEGRADED: Record<string, Degraded> = {
   'settings:enrichment': 'closed', polish: 'closed', seo: 'closed', 'seo-brief': 'closed', newsjack: 'closed',
   'seo-idx': 'closed', 'commenter-import': 'closed', 'csv-import': 'closed', 'csv-resume': 'closed', crm: 'closed',
   checkout: 'closed', llmkey: 'closed', sync: 'closed', 'replies-refresh': 'closed', adv: 'closed', watch: 'closed',
+  // external discovery API reads (#392): a key's reads, refused while the shared count cannot be checked
+  'api-read': 'closed',
   // low risk: the app's own data, or must keep working
   'client-errors': 'local', unsub: 'local', 'confirm-lead': 'local', 'quarantine-lead': 'local', 'domain-review': 'local',
   'warm-report': 'local', 'warm-import': 'local', replies: 'local', profile: 'local', calcom: 'local', 'calcom-cfg': 'local',

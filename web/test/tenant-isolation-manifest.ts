@@ -143,6 +143,8 @@ export const ROUTES: RouteEntry[] = [
   { path: 'warm/connections', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'warm/connections', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
   { path: 'warm/connections', method: 'DELETE', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
+  { path: 'v1/discovery', method: 'POST', auth: 'public', note: 'external discovery API (#392): scoped API key (lib/api/keys.ts), discovery:start; the workspace comes from the key row only; Idempotency-Key; app scan admission' },
+  { path: 'v1/discovery/[id]', method: 'GET', auth: 'public', note: "external discovery API (#392): scoped API key, discovery:read; reads only the key's workspace's job (test/discovery-api.test.ts)" },
   { path: 'watch', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'read' },
   { path: 'watch', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'operate' },
 ]

@@ -4,6 +4,27 @@ CREATE TABLE advanced_consent (
     PRIMARY KEY (tenant_id, scope)
   );
 
+CREATE TABLE api_idempotency (
+    tenant_id TEXT NOT NULL,
+    idem_key TEXT NOT NULL CHECK (length(idem_key) <= 128),
+    request_hash TEXT NOT NULL CHECK (length(request_hash) = 64),
+    job_id TEXT,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (tenant_id, idem_key)
+  );
+
+CREATE TABLE api_keys (
+    id TEXT PRIMARY KEY CHECK (length(id) = 16),
+    tenant_id TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    name TEXT NOT NULL CHECK (length(name) <= 80),
+    key_hash TEXT NOT NULL UNIQUE CHECK (length(key_hash) = 64),
+    scopes TEXT NOT NULL CHECK (length(scopes) <= 200),
+    created_at INTEGER NOT NULL,
+    revoked_at INTEGER,
+    last_used_at INTEGER
+  );
+
 CREATE TABLE app_leases (
       name TEXT PRIMARY KEY,
       owner TEXT NOT NULL,
@@ -764,6 +785,8 @@ CREATE TABLE work_queue (
       );
 
 CREATE TABLE work_queue_meta (k TEXT PRIMARY KEY, v INTEGER NOT NULL);
+
+CREATE INDEX api_keys_tenant ON api_keys (tenant_id);
 
 CREATE INDEX autopilot_audit_tenant ON autopilot_audit (tenant_id, created_at);
 
