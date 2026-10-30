@@ -66,6 +66,10 @@ const MATRIX: Row[] = [
   ['withdrawn', `Find London SaaS startups. We're no longer selling ${P}.`, 'choice'],
   ['withdrawn', `Find London SaaS startups. We've stopped selling ${P}.`, 'choice'],
   // a "do not offer" about something the saved offer does not sell is not a withdrawal of it
+  ['withdrawn', 'We no longer sell scheduling tools.', 'choice'],
+  ['withdrawn', 'We no longer sell it.', 'choice'],
+  ['withdrawn', 'We no longer sell that product.', 'choice'],
+  ['withdrawn', 'We stopped selling our dental product.', 'choice'],
   ['unrelated exclusion', 'Find dental practices in NYC hiring. We do not offer free trials.', 'equivalent'],
   ['unrelated exclusion', 'Independent dental practices in New York City hiring a front-desk coordinator. We don\'t provide on-site training.', 'equivalent'],
 ]

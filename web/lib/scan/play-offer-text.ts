@@ -273,17 +273,20 @@ export function withdrawnOffer(query: string | null | undefined): string | null 
   const o = cleanOffer(m[1].replace(/^(?:our|my|a|an|the)\s+/i, '').replace(/\s+(?:any ?more|anymore)$/i, ''))
   return o.length >= 2 && !NOT_AN_OFFER.test(o) ? o : null
 }
-// A withdrawal contradicts the saved offer only when it names what that offer sells (a shared content word, or the same
-// offer): "We no longer sell reminder software" does; "We do not offer free trials" is about something else and is left
-// to the ordinary comparison.
-const GENERIC = new Set(['we', 'sell', 'sells', 'selling', 'and', 'the', 'for', 'to', 'in', 'of', 'with', 'our', 'your', 'a', 'an', 'at', 'on', 'or', 'new', 'york', 'city'])
-const contentWords = (t: string) => new Set(t.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(w => w.length >= 2 && !GENERIC.has(w)))
+// A withdrawal contradicts the saved offer unless it only names a commercial term (refunds, free trials, on-site
+// training, ...): it fails closed, since a withdrawal may name the saved product in other words ("scheduling tools" for
+// appointment booking software). One that names only terms is left to the ordinary comparison.
+const TERMS = new Set(['refund', 'refunds', 'discount', 'discounts', 'free', 'trial', 'trials', 'guarantee', 'guarantees', 'warranty', 'warranties',
+  'support', 'training', 'onboarding', 'on', 'site', 'onsite', 'contract', 'contracts', 'long', 'term', 'payment', 'payments', 'plan', 'plans', 'credit',
+  'invoicing', 'terms', 'returns', 'exchanges', 'shipping', 'delivery', 'international', 'weekend', 'phone', 'live', 'chat', '24', '7', 'custom', 'pricing'])
+const GENERIC = new Set(['we', 'sell', 'sells', 'selling', 'and', 'the', 'for', 'to', 'in', 'of', 'with', 'our', 'your', 'a', 'an', 'at', 'or', 'any'])
+const contentWords = (t: string) => t.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(w => w && !GENERIC.has(w))
 // the product words only: an audience clause ("... to restaurants") is a buyer, not what is sold
-const productPart = (t: string) => t.replace(/^\s*we\s+(?:sell|offer|provide)\s+/i, '').split(/\s+(?:to|for|in|at|across|within|with)\s+/i)[0]
+const productPart = (t: string) => t.split(/\s+(?:to|for|in|at|across|within|with)\s+/i)[0]
 function withdrawsSaved(withdrawn: string, saved: string): boolean {
   if (sameOffer(withdrawn, saved)) return true
-  const s = contentWords(productPart(saved))
-  return [...contentWords(productPart(withdrawn))].some(w => s.has(w))
+  const words = contentWords(productPart(withdrawn))
+  return words.length === 0 || !words.every(w => TERMS.has(w))
 }
 
 export function effectiveOffer(play: { offer?: string | null; seller?: string | null; query?: string | null }, profileSells: string | null | undefined): PlayOffer {
