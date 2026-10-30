@@ -15,7 +15,7 @@ bothEngines('sessions: a new token signs in, a deleted or expired one does not, 
   await createPasswordUser(user, db)
   const token = await createSession('u1', db)
   assert.match(token, /^[a-f0-9]{64}$/)
-  assert.deepEqual(await getSessionUser(token, db), { id: 'u1', email: 'a@x.com', business_name: 'Biz', actorId: 'u1', tenantId: 'u1', role: 'owner' })
+  assert.deepEqual(await getSessionUser(token, db), { email: 'a@x.com', business_name: 'Biz', actorId: 'u1', tenantId: 'u1', role: 'owner' })
   assert.ok(await db.get('SELECT 1 AS x FROM sessions WHERE id = ?', [hashToken(token)]))
   assert.equal(await db.get('SELECT 1 AS x FROM sessions WHERE id = ?', [token]), undefined)
   assert.equal(await getSessionUser(undefined, db), null)

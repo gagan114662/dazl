@@ -13,7 +13,7 @@ import { kickSharedScanQueue, sharedScanQueue } from '../queue/scan-claimer.ts'
 import { getDb, sqliteDb } from '../db/client.ts'
 import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
-import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, verifyEvidence, type Candidate } from './evidence.ts'
+import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, supportedEvidenceWindow, verifyEvidence, type Candidate } from './evidence.ts'
 import { fallbackIcp, inferIcp, normalizeIcp, type Icp } from './icp.ts'
 import { isMissingSchema, draftOffer } from './play-offer-text.ts'
 import { readTenantOffer } from '../outreach/play-memory.ts'
@@ -45,7 +45,8 @@ import { getMemory, isExcluded, memoryPromptBlock, type Memory } from '../memory
 import { enrichJobSignals } from '../signals/index.ts'
 import { applySalesHiringGate, failClosedSalesHiring, persistHeldState, type QuoteEvidence, type HeldLead } from './sales-hiring-gate.ts'
 import { beginEnrichment, endEnrichment } from './enrichment.ts'
-import { regradeFromKeptContacts } from './contact-agreement.ts'
+import { snapshotLeads, completeLeads } from './completion.ts'
+import { regradeFromKeptContacts, enforceContactSource } from './contact-agreement.ts'
 import { primarySignalKind } from './score.ts'
 import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } from '../signals/competitor-reddit.ts'
 import { finishUndatedLeads } from './structured-date.ts'
@@ -539,7 +540,14 @@ async function tinyfishCompany(db: Database.Database, job: Job, domain: string, 
   const items = toEvidence(hits, f.ok ? f.pages : [])
   if (items.length === 0) return null
   const text = await complete.call(provider, key, buildSourcePrompt(`The company at https://${domain}`, { company_domain: domain }, items), fetchImpl, 3000)
-  return parseLeads(text, items.map(i => i.url)) ?? null
+  const leads = parseLeads(text, items.map(i => i.url))
+  if (!leads) return null
+  // Deterministic supported-signal extraction inside the paid envelope: attach a verbatim
+  // window only when it supports every material facet of the claim (entity/event/role/
+  // quantity; negation and boilerplate rejected). Otherwise the excerpt stays the model's
+  // and fails verification honestly. The verifier still re-fetches and re-checks.
+  for (const l of leads) { const ev = items.find(i => i.url === l.source_url); if (ev) { const win = supportedEvidenceWindow({ company: l.company, signal: l.signal, excerpt: l.excerpt }, { text: ev.quote, title: ev.title, url: ev.url }, domain); if (win) l.excerpt = win } }
+  return leads
 }
 
 // CSV import job: research one known company domain through the same
@@ -715,7 +723,15 @@ async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, ht
   }))).filter((p): p is { url: string; title: string; text: string } => !!p)
   const items = toEvidence(hits.filter(h => pages.some(p => p.url === h.url)), pages).map(i => ({ ...i, source: NEWS_SOURCE }))
   if (items.length === 0) return null
-  return parseLeads(await complete.call(provider, key, buildSourcePrompt(job.query!, icp, items), fetchImpl, 3000), items.map(i => i.url)) ?? null
+  const text = await complete.call(provider, key, buildSourcePrompt(job.query!, icp, items), fetchImpl, 3000)
+  const leads = parseLeads(text, items.map(i => i.url))
+  if (!leads) return null
+  // Deterministic supported-signal extraction inside the paid envelope: attach a verbatim
+  // window only when it supports every material facet of the claim (entity/event/role/
+  // quantity; negation and boilerplate rejected). Otherwise the excerpt stays the model's
+  // and fails verification honestly. The verifier still re-fetches and re-checks.
+  for (const l of leads) { const ev = items.find(i => i.url === l.source_url); if (ev) { const win = supportedEvidenceWindow({ company: l.company, signal: l.signal, excerpt: l.excerpt }, { text: ev.quote, title: ev.title, url: ev.url }); if (win) l.excerpt = win } }
+  return leads
 }
 
 export interface RunBudget { paid_fallback?: boolean; credit_enrichment?: boolean; judge?: boolean; max_usd?: number; first5?: boolean }   // first5: the fast first scan (lib/scan/first5.ts): free keyless sources only
@@ -1142,6 +1158,9 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
       const { inside, outside, outsideReasons } = splitByWindow(outcome.leads, icpForSources.window_days, deps.now ?? new Date())
       outcome.leads = inside
       outside.forEach((l, i) => outcome.review.push({ ...l, contact: null, review_reason: outsideReasons[i] }))
+    } else if (icpForSources) {
+      // No date window: an undated lead is still kept, so give it the date its own page declares as structured data (same rules; nothing is held or dropped by it).
+      try { datesFinished = await finishUndatedLeads(outcome.leads, fetchP, 6, icpForSources.where ?? []) } catch { /* bonus only */ }
     }
     // Quality stage: grade each verified lead for ICP fit, timing and actionability. One model call
     // per scan; a scoring failure never fails the scan - but it no longer passes the raw
@@ -1185,6 +1204,7 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
     // Everything below may make more model calls (buyer-fit): they are flushed to the usage record however this block ends.
     // The rows exist, but contacts, people and the fit gate are still being added: clients see 'enriching' until the end mark.
     beginEnrichment(db, job.id, job.attempts)
+    const completionBefore = snapshotLeads(db, job.user_id, job.id)   // what each kept lead has BEFORE the enrichment pass
     try {
     if (complaints.length > 0) { try { badgeComplaintLeads(db, job.id, complaints) } catch { /* badge only */ } }
     // Watch run: flag the leads this watch has never surfaced, remember the rest.
@@ -1194,6 +1214,7 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
     const trace = new EnrichmentTrace()
     if (icpForSources?.window_days) trace.note('date_resolution', datesFinished.length ? 'ok' : 'attempted_no_result', datesFinished.length ? null : 'no undated candidate declared its own event date as structured data (schema.org Event / JobPosting)', datesFinished.length ? { resolved: datesFinished.length } : undefined)
     await runPostFinishBounded(db, job, deps, trace)
+    try { const c = enforceContactSource(db, job.user_id, job.id); if (c.removed > 0) trace.note('contact_source', 'ok', `${c.removed} site contact(s) removed: their source was not the lead's confirmed domain`) } catch (e) { console.error('contact source check failed', e instanceof Error ? e.message : 'error') }
     // People search (person-first): the right people at each lead's company from public profile SEARCH RESULTS, for
     // companies whose own site lists nobody. Never throws; never an address; kill switch PEOPLE_SEARCH_ENABLED=0.
     if (deps.first5) trace.note('people_search', 'skipped', 'first5: free search sources only; people search is a paid TinyFish search')
@@ -1244,7 +1265,9 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
       const resCtrl = new AbortController()
       const poll = setInterval(() => { if (!postFinishAlive(db, job)) resCtrl.abort() }, 500)   // post-finish rule: the row is still THIS attempt's and still done / running (assertOwned needs status 'running' and would cancel every normal lookup)
       try { resolution = await resolveBounded(db, job, { fetchPage: (u, signal) => (deps.fetchPage ? (deps.fetchPage as (u: string, s?: AbortSignal) => ReturnType<typeof fetchPageDetailed>)(u, signal) : fetchPageDetailed(u, async () => null, signal)), where: icpForSources?.where ?? [], signal: resCtrl.signal }) } catch (e) { console.error('resolution failed', e instanceof Error ? e.message : 'error') } finally { clearInterval(poll) }
-      mergeIntoRunReport(db, job.id, job.attempts, { enrichment: trace.stages, yield: y, ...(resolution ? { resolution } : {}), held_lead_ids: [...heldByGate.keys(), ...extra.map(h => h.id)] })
+      // Completion: what the pass filled and what is still missing per kept lead, and the score recomputed from the evidence it actually has.
+      const completion = completeLeads(db, job, completionBefore, { windowed: !!icpForSources?.window_days, resolution, datesFilled: datesFinished.map(d => d.company) })
+      mergeIntoRunReport(db, job.id, job.attempts, { enrichment: trace.stages, yield: y, completion, ...(resolution ? { resolution } : {}), held_lead_ids: [...heldByGate.keys(), ...extra.map(h => h.id)] })
     } catch (e) { console.error('actionable yield failed', e instanceof Error ? e.message : 'error') }
     // Contacts, people, fit and the sales-hiring check are final: the stage ends before autopilot, whose drafting/sending is separate work, not enrichment.
     endEnrichment(db, job.id, job.attempts)
