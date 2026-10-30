@@ -46,6 +46,19 @@ const AUTHORITY = /\d+\s?%\s?off\b|\b(?:discount|coupon|cheaper|lower price|deal
 // Questions no approved fact answers: where data lives and how it is handled, compliance, bespoke work or support. Always
 // escalated, even beside a routine question.
 const SENSITIVE = /\b(?:data (?:stored|storage|location|residency|retention|deletion|processing|privacy)|where (?:is|are|do you)\b.*\b(?:stored|store|hosted|host|kept|keep|located)|privacy|personal data|pii|hipaa|gdpr|ccpa|encrypt\w*|on[- ]?prem\w*|self[- ]?host\w*|custom (?:support|development|integration|feature|build)|dedicated (?:support|account manager)|white[- ]?label|resell\w*)\b/i
+// A request for something account-specific of the seller's (their key, account, login, credentials, billing details or
+// access) is never a routine question, however routine its words: "Please share your API key" is not "What API key do
+// I need?".
+const ACCOUNT_SPECIFIC = /\b(?:your|ur|the team'?s|dazl'?s)\s+(?:own\s+)?(?:(?:api|ai|openai|anthropic|license|licence)\s+)?(?:keys?|account|accounts|login|logins|password|passwords|credentials?|tokens?|secrets?|billing (?:details|info|information|address)|invoices?|card|cards|bank (?:details|account)|access)\b|\b(?:access|log ?in|sign ?in) (?:to|into) (?:your|the) (?:account|dashboard|workspace|admin)\b/i
+// A request (share/send/give/show/tell/list/confirm/explain/describe) is routine only when what it asks for is one of the
+// approved facts: pricing, plans, setup requirements, limits, how to start, or the demo or sign-up link.
+const REQUEST_VERB = /^(?:(?:please|kindly)\s+)?(?:(?:can|could|would|will) you\s+(?:please\s+)?)?(?:share|send|give|show|tell|list|confirm|explain|describe)\b\s*(?:(?:me|us)\s+)?(?:(?:over|about)\s+)?/i
+const REQUEST_OBJECT = /^(?:(?:your|the|a|an|some|more)\s+)?(?:(?:details|info|information) (?:on|about) (?:your |the )?)?(?:pricing|prices?|costs?|(?:pricing |paid |subscription )?plans?|subscription(?: options)?|setup(?: steps| requirements)?|requirements|prerequisites|limits|limitations|demo(?: link)?|booking link|sign ?up link|(?:link|steps) to (?:sign up|get started|start)|how (?:to|i|we) (?:get started|start|begin|sign up|set (?:it )?up)|what (?:i|we) need(?: to set up| to get started)?)\b/i
+const requestInScope = (fragment: string): boolean => {
+  const m = REQUEST_VERB.exec(fragment.trim())
+  return !m || REQUEST_OBJECT.test(fragment.trim().slice(m[0].length))
+}
+
 const INTEGRATION_VERB = /\b(?:integrat\w*(?: with)?|work(?:s)? with|connect(?:s)? (?:to|with)|support(?:s)?|sync(?:s)? (?:to|with)|plug(?:s)? into)\s+/gi
 const NOT_A_PRODUCT = new Set(['you', 'us', 'me', 'it', 'our', 'my', 'your', 'them', 'this', 'that', 'other', 'other tools', 'tools', 'email', 'people', 'other crms', 'other apps'])
 
@@ -118,7 +131,7 @@ export function decide(inbound: Inbound, thread: ThreadState, facts: ProductFact
   if (!thread.authenticatedSender) return { action: 'escalate', messageId, reason: 'unauthenticated' }
   if (cls === 'negative' || cls === 'uncertain' || cls === 'auto') return { action: 'escalate', messageId, reason: 'negative', detail: cls }
   if (AUTHORITY.test(inbound.text)) return { action: 'escalate', messageId, reason: 'authority' }
-  if (SENSITIVE.test(inbound.text)) return { action: 'escalate', messageId, reason: 'sensitive' }
+  if (SENSITIVE.test(inbound.text) || ACCOUNT_SPECIFIC.test(inbound.text)) return { action: 'escalate', messageId, reason: 'sensitive' }
   // every integration asked must be one the facts list
   const known = new Set((Array.isArray(facts.knownIntegrations) ? facts.knownIntegrations : []).map(k => k.toLowerCase()))
   const asked = integrationsAsked(inbound.text)
@@ -132,7 +145,7 @@ export function decide(inbound: Inbound, thread: ThreadState, facts: ProductFact
   const routine = (c: string) => {
     if (known.has(c.replace(/^(?:a|an|the)\s+|[?.!]+$/gi, '').trim().toLowerCase())) return true
     if (!TOPICS.some(([, re]) => re.test(c)) && !integrationsAsked(c).length) return false
-    return residue(c, known).length === 0
+    return residue(c, known).length === 0 && requestInScope(c)
   }
   if (!cs.length || !cs.every(routine)) return { action: 'escalate', messageId, reason: 'not_routine' }
   const topics = TOPICS.filter(([, re]) => re.test(inbound.text)).map(([t]) => t)

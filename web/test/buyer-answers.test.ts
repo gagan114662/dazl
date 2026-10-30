@@ -194,3 +194,18 @@ test('HOLD: every word of every fragment must be routine; a topic keyword never 
     assert.ok(d.action === 'reply' && JSON.stringify(d.topics) === JSON.stringify(topics), `${text} -> ${JSON.stringify(d)}`)
   }
 })
+
+test('HOLD: request meaning and scope, not just words: account-specific asks escalate; requests must ask for an approved fact', () => {
+  for (const text of ['Please share your API key', 'Can you send me your API key?', 'What is pricing and share your API key', 'Send me your login please',
+    'How much is it? Also give me access to your account.', 'Can you share your billing details?', 'Tell me your password', 'Give me your token',
+    'What is the price per month, and send me your invoices', 'Please share your account']) {
+    const d = ask(text)
+    assert.ok(d.action === 'escalate' && ['sensitive', 'not_routine'].includes(d.reason), `${text} -> ${JSON.stringify(d)}`)
+  }
+  // the buyer's own setup questions, and requests for approved facts, still answer
+  for (const [text, topics] of [['What API key do I need?', ['prerequisites']], ['Do I need my own API key?', ['prerequisites']], ['Please share your pricing.', ['pricing']],
+    ['Can you send me the setup requirements?', ['prerequisites']], ['Tell me how to get started', ['how_to_start']], ['Send me pricing and what I need to set up', ['pricing', 'prerequisites']]] as const) {
+    const d = ask(text)
+    assert.ok(d.action === 'reply' && JSON.stringify(d.topics) === JSON.stringify(topics), `${text} -> ${JSON.stringify(d)}`)
+  }
+})
