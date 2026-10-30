@@ -167,7 +167,7 @@ test('TinyFish: the trial charge runs before each paid search and fetch; a refus
   let requests = 0
   const fetchImpl = (async () => { requests++; return new Response(JSON.stringify({ results: [] }), { status: 200 }) }) as typeof fetch
   const guard = new SpendGuard(0.025); guard.label = 'trial_budget'
-  const charge = (kind: 'search' | 'fetch', units: number) => reserveAllUsd([guard], units * (kind === 'search' ? 0.01 : 0.002))
+  const charge = async (kind: 'search' | 'fetch', units: number) => { await reserveAllUsd([guard], units * (kind === 'search' ? 0.01 : 0.002)) }
   const spent = { searches: 0 }
   assert.equal((await tfSearch(db, 't', 'q1', {}, spent, { env, fetchImpl, charge })).ok, true)
   assert.equal((await tfSearch(db, 't', 'q2', {}, spent, { env, fetchImpl, charge })).ok, true)
