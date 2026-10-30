@@ -8,7 +8,7 @@ import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateReplies } from '../lib/outreach/replies.ts'
 import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
-import { saveSettings, suppress, type Deps } from '../lib/outreach/service.ts'
+import { approve, createDraft, OutreachError, saveSettings, sendMessage, suppress, type Deps } from '../lib/outreach/service.ts'
 import { ATTESTATIONS, auditAt, CONSENT_VERSION, disable, enable, getState, migrateAutopilot, pause, recentAutopilotAudit, runAutopilot } from '../lib/outreach/autopilot.ts'
 import { acceptLaunchPolicy, launchGate, parsePolicy, readLaunchPolicy, reserveLaunchSpend, LAUNCH_POLICY_VERSION, ROLLOUT_DAILY_CAP, ROLLOUT_DAYS } from '../lib/outreach/launch-policy.ts'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
@@ -425,6 +425,9 @@ const boundaryCases: Record<string, Case> = {
   sender_identity_removed: { change: db => db.prepare("DELETE FROM outreach_settings WHERE tenant_id = 'A'").run(), stopped: null, pause: null, msg: ['approved', 'sender_identity_missing'] },
   mailbox_disconnected: { change: db => db.prepare("DELETE FROM gmail_accounts WHERE tenant_id = 'A'").run(), stopped: 'gmail_not_connected', pause: 'gmail_not_connected', msg: ['approved', 'gmail_not_connected'] },
   uncertain_elsewhere: { change: db => db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, claimed_at) VALUES ('u1a2b3c4d5e6f7a8b9c0d1e2', 'A', 'xu', 'u@other.example', 's', 'bodybodybodybodybodybody', 'uncertain', ?)").run(NOW), stopped: 'uncertain_send', pause: 'uncertain_send', msg: ['draft', 'already_uncertain'] },
+  // the launch itself: the same policy accepted again (a new acceptance, launch cleared) or the mailbox changed
+  policy_reaccepted: { change: db => { assert.deepEqual(acceptLaunchPolicy(db, 'A', policy([(db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id]), NOW + 1), { ok: true }) }, stopped: 'policy_changed', pause: null, msg: ['draft', 'launch_policy_changed'] },
+  mailbox_changed: { change: db => db.prepare("UPDATE gmail_accounts SET email = 'other@acme.example' WHERE tenant_id = 'A'").run(), stopped: 'policy_changed', pause: null, msg: ['draft', 'launch_policy_changed'] },
   // the recipient opts out: the service's own suppression check, unchanged
   recipient_opted_out: { change: db => suppress(db, 'A', 'd@four.example', 'unsubscribe'), stopped: null, pause: null, msg: ['skipped', 'suppressed'] },
 }
@@ -438,6 +441,17 @@ test('HOLD: every stop is re-read after the token refresh, right before Gmail: n
     want[name] = { sent: 0, run: [0, c.stopped], msg: c.msg, pause: c.pause, warmup: false }
   }
   assert.deepEqual(got, want)
+})
+
+test('HOLD: a hand send is refused at the same boundary when autopilot is paused during its token refresh', async () => {
+  const { db } = await launched()
+  const leadId = (db.prepare("SELECT id FROM leads WHERE contact = 'd@four.example'").get() as { id: string }).id
+  const id = createDraft(db, 'A', leadId, 'Acme'); approve(db, 'A', id)
+  const g = gmail()
+  const fetchImpl = (async (url: string, init?: RequestInit) => { if (String(url).includes('token')) pause(db, 'A'); return (g.d.fetchImpl as typeof fetch)(url, init) }) as typeof fetch
+  await assert.rejects(sendMessage(db, 'A', id, { ...g.d, fetchImpl, now: NOW + 2 }), (e: unknown) => e instanceof OutreachError && e.code === 'paused')
+  assert.equal(g.sent.length, 0)
+  assert.deepEqual(db.prepare('SELECT status, error FROM outreach_messages WHERE id = ?').get(id), { status: 'approved', error: 'paused' }, 'a hand approval stays the tenant\'s, released with the reason')
 })
 
 test('HOLD: unchanged state at the same boundary sends exactly once; two competing passes never send a lead twice', async () => {
