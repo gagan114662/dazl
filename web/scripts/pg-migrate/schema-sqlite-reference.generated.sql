@@ -230,6 +230,24 @@ CREATE TABLE lead_evidence_copies (
   UNIQUE (tenant_id, job_id, attempt, canonical_url)
 );
 
+CREATE TABLE lead_feedback (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    entity_kind TEXT NOT NULL CHECK (entity_kind IN ('account','person','event')),
+    entity_key TEXT NOT NULL,
+    account_key TEXT NOT NULL,
+    polarity TEXT NOT NULL CHECK (polarity IN ('reject','accept')),
+    reason TEXT,
+    origin TEXT NOT NULL DEFAULT 'explicit' CHECK (origin IN ('explicit','passive_optout','reply_positive')),
+    source TEXT,
+    query_key TEXT,
+    event_key TEXT,
+    note TEXT,
+    version INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    reverted_at INTEGER
+  );
+
 CREATE TABLE lead_qualifications (
     tenant_id TEXT NOT NULL, lead_id TEXT NOT NULL, prompt_sha256 TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('running','done','failed')),
@@ -790,6 +808,8 @@ CREATE UNIQUE INDEX hiring_feed_crawl_company ON hiring_feed_crawl(tenant_id, co
 CREATE INDEX hiring_feed_crawl_job ON hiring_feed_crawl(tenant_id, job_id);
 
 CREATE INDEX idx_evidence_copies_tenant ON lead_evidence_copies(tenant_id, expires_at);
+
+CREATE INDEX idx_lead_feedback_tenant ON lead_feedback (tenant_id, entity_kind, entity_key);
 
 CREATE INDEX inbound_messages_thread ON inbound_messages (tenant_id, thread_id, received_at);
 

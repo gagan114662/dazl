@@ -40,6 +40,7 @@ import { ownerLimits, ownerSetting, sharedPool } from '../llm/spend-pool.ts'
 import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
 import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './verify-provenance.ts'
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
+import { activeFeedbackSync, filterRejected } from './feedback.ts'
 import { getMemory, isExcluded, memoryPromptBlock, type Memory } from '../memory.ts'
 import { enrichJobSignals } from '../signals/index.ts'
 import { applySalesHiringGate, failClosedSalesHiring, persistHeldState, type QuoteEvidence, type HeldLead } from './sales-hiring-gate.ts'
@@ -1118,6 +1119,15 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       outcome.dropped['excluded'] += outcome.review.length - keptReview.length
       markDropped(outcome.review.filter(l => !keptReview.includes(l)), 'excluded')
       outcome.review = keptReview
+    }
+    // Learned feedback (#385): an account/person the user rejected with a reason is not reintroduced (a timing rejection lifts only on a different, newly surfaced event). Separate from the hard exclusions above.
+    {
+      const fb = activeFeedbackSync(db, job.user_id)
+      if (fb.length > 0) {
+        const a = filterRejected(fb, outcome.leads, l => ({ event: { date: l.event_date, source_url: l.source_url } })), b = filterRejected(fb, outcome.review, l => ({ event: { date: l.event_date, source_url: l.source_url } }))
+        const n = outcome.leads.length - a.kept.length + outcome.review.length - b.kept.length
+        if (n > 0) { outcome.dropped['rejected_feedback'] = (outcome.dropped['rejected_feedback'] ?? 0) + n; markDropped([...a.held, ...b.held].map(h => h.lead), 'rejected_feedback'); outcome.leads = a.kept; outcome.review = b.kept }
+      }
     }
     // The user's recency window (#198): with an explicit window only a valid, in-window event date is a scored lead.
     // Stale, undated, invalid and future dates go to the review lane with their own reason (same rule as the outreach
