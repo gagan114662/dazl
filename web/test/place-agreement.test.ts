@@ -223,3 +223,23 @@ test('verifier (runner path): lower-case, upper-case and incidental-London Paris
   const ok = await run(SC, 'Synthetic Co is based in London and raised a seed round this month', 'It also has a sales office in Paris, France.')
   assert.equal(ok.leads.length, 1)
 })
+
+// Review of #446 (950352bf): a mention of the requested region elsewhere on the page must not cancel the company's own address
+// in a same-name city in another region; only the requested-region mention bound to the company does.
+test('control: a company bound to a same-name city elsewhere stays a mismatch despite an unrelated requested-region mention', () => {
+  const P = ['Paris, France']
+  assert.equal(placeAgreement('Synthetic Co is based in Paris, Texas. Market news: Paris, France startups raised funds.', P, SC), 'mismatch')
+  assert.equal(placeAgreement('synthetic co is based in paris, texas. market news: paris, france startups raised funds.', P, SC), 'mismatch')
+  assert.equal(placeAgreement('Synthetic Co is based in Paris, Texas. Our office is in Paris, France.', P, SC), 'agrees')   // requested region bound to the company too
+  assert.equal(placeAgreement('Synthetic Co is based in Paris, France. Unrelated: Paris, Texas hosts a rodeo.', P, SC), 'agrees')
+  assert.equal(placeAgreement('Synthetic Co is based in London, Ontario. Market news: London, UK startups raised funds.', ['London, UK'], SC), 'mismatch')
+})
+test('verifier (runner path): Paris, Texas company with Paris, France market news is held; with a bound Paris, France office it verifies', async () => {
+  const ago = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10)
+  const run = (quote: string, rest: string) => verifyLeads([{ name: '', company: SC, contact: null, signal: 'raised a seed round', source_url: 'https://news.example/p', score: 70, excerpt: quote, event_date: ago(5) }],
+    async () => ({ text: `${ago(5)}. ${quote}. ${rest} ${'More about the company and its customers. '.repeat(15)}`, title: 'Seed round', retrievedAt: Math.floor(Date.now() / 1000) }), new Date(), undefined, null, undefined, undefined, ['Paris, France'])
+  const held = await run('Synthetic Co is based in Paris, Texas and raised a seed round this month', 'Market news: Paris, France startups raised funds.')
+  assert.equal(held.leads.length, 0); assert.equal(held.review[0]?.review_reason, 'location_mismatch')
+  const ok = await run('Synthetic Co is based in Paris, Texas and raised a seed round this month', 'Our office is in Paris, France.')
+  assert.equal(ok.leads.length, 1)
+})

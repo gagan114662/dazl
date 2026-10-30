@@ -273,8 +273,10 @@ const inRegion = (r: Region, scope: Region) => r.country === scope.country && (!
 const METRO_NAMES = new Set(METROS.flat())
 interface PlaceHit { kind: 'other' | 'same_name'; place: string; at: number }
 // Every place the text names that is clearly not the requested one, in text order. `same_name`: the requested city's name in
-// another region; dropped when the text also places that city in the requested region.
-function placesElsewhere(text: string, ask: Ask): PlaceHit[] {
+// another region. For an UNBOUND reading (otherPlace) a same_name hit is dropped when the text also places that city in the
+// requested region; boundElsewhere passes keepSameName, because a mention elsewhere on the page ("Market news: Paris, France
+// startups ...") must not cancel the company's own address in the wrong region ("Synthetic Co is based in Paris, Texas").
+function placesElsewhere(text: string, ask: Ask, keepSameName = false): PlaceHit[] {
   if (ask.cities.size === 0 && ask.regions.length === 0) return []
   const differs = (city: string, r: Region | null): PlaceHit['kind'] | null => {
     if (ask.cities.size) {
@@ -318,7 +320,7 @@ function placesElsewhere(text: string, ask: Ask): PlaceHit[] {
     const kind = differs(city, WORLD_CITIES[city])
     if (kind) hits.push({ kind, place: m[1], at: m.index })
   }
-  return hits.filter(h => h.kind !== 'same_name' || sameNameHere.size === 0).sort((a, b) => a.at - b.at)
+  return hits.filter(h => keepSameName || h.kind !== 'same_name' || sameNameHere.size === 0).sort((a, b) => a.at - b.at)
 }
 // The first place clearly not the requested one ('other' before 'same_name'), or null.
 export function otherPlace(text: string, where: string[]): { kind: 'other' | 'same_name'; place: string } | null {
@@ -339,11 +341,15 @@ function sentenceStart(text: string, at: number): number {
 const boundAt = (text: string, at: number, company?: string) => bindsToCompany(text.slice(sentenceStart(text, at), at).replace(/[,:;]/g, ' '), company)
 function boundElsewhere(text: string, where: string[], company?: string): string | null {
   const ask = askOf(where)
-  const bound = placesElsewhere(text, ask).find(h => boundAt(text, h.at, company))
+  const hits = placesElsewhere(text, ask, true)
+  const bound = hits.find(h => boundAt(text, h.at, company))
   if (!bound) return null
+  // The requested city counts as bound only where it is NOT itself named in another region: "based in Paris, Texas" binds the
+  // company to Texas, never to the requested Paris, France.
+  const elsewhereAt = new Set(hits.filter(h => h.kind === 'same_name').map(h => h.at))
   const names = [...ask.cities.keys()].filter(c => c.length >= 3)
   const ours = names.length ? new RegExp(`(?<![\\p{L}])(?:${names.map(c => esc(c).replace(/ /g, '\\s+')).join('|')})(?![\\p{L}])`, 'giu') : null
-  if (ours) for (const m of text.matchAll(ours)) if (boundAt(text, m.index, company)) return null
+  if (ours) for (const m of text.matchAll(ours)) if (!elsewhereAt.has(m.index) && boundAt(text, m.index, company)) return null
   if (where.some(w => /\blondon\b/i.test(w)) && ownAddress(text, LONDON_STREET, company)) return null
   if (where.some(w => NYC_ASK.test(w)) && ownAddress(text, NYC_STREET, company)) return null
   return bound.place
