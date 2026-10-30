@@ -3,8 +3,8 @@
 // is unknown, and validated-rate denominators count unknowns as not validated (#394). Evaluators read the case, the
 // World and the replay result only; they cannot change the input, the World or the targeting.
 //
-// LLM judges come later and only where no deterministic check exists; each will be validated against labelled
-// fixtures (#396) before its verdicts count.
+// LLM judges (./judge.ts, #396) come only where no deterministic check exists; a judge's verdict counts only with a passing
+// calibration against labelled adversarial fixtures for its exact fingerprint (judgeGate).
 import { getDomain } from 'tldts'
 import type { Case } from './case.ts'
 import type { World } from './world.ts'

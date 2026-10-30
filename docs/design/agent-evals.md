@@ -128,7 +128,62 @@ These evaluators deliberately do not reuse the scan's own checks (`place_on_page
 `placeAgreement`): the pipeline must not be its own sole judge (#395).
 
 LLM judges come only where no deterministic check exists (buyer need, semantic claim support), with their own model
-configuration and budget, and only after their agreement with labelled synthetic fixtures is measured (#396). None exist yet.
+configuration and budget, and only after their agreement with labelled synthetic fixtures is measured (#396, section 4c).
+
+### 4c. Judges and their calibration (`lib/evals/judge.ts`, #396)
+
+A judge answers one question: do these sources support this claim about this company? Its answer counts only under rules
+that keep agreement between models from passing for ground truth:
+
+- **Fail closed.** These are all `unknown`, and unknown is never pass:
+  - a timeout or a thrown error;
+  - an unparseable reply;
+  - a reply with any field beyond `{answer, quote, source}`;
+  - a `supported` whose quote is not verbatim (case and whitespace aside) in the source it names.
+- **Unanimity, not votes.** A panel is `supported` or `not_supported` only when every judge says so. One abstention or one
+  dissent is unknown, so 2-of-3 is not a pass.
+- **Sources are data.**
+  - Page text goes in blocks fenced with a per-call nonce. The nonce is stripped from page text, so a page cannot close its
+    own block.
+  - The prompt declares the blocks inert.
+  - The judge is a text-in/text-out function with no tools, and `judge.ts` imports no network, store or send code.
+  - An injected `send_email` field makes the whole reply unknown.
+  - An instruction that the judge obeys within the three fields is caught by calibration, below.
+- **Calibrated or silent.** A judge's identity is a fingerprint over its id, version, model, prompt version and a hash of the
+  prompt template itself. Its verdicts count only when the lock (`test/fixtures/evals/judges/judges.lock.json`) holds a
+  passing calibration for that exact fingerprint on the current corpus hash. Any change to the model, prompt or corpus means
+  recalibrating; until then the judge yields `unknown`, never `pass`. The committed lock is empty: no judge counts yet.
+
+**The corpus** (`test/fixtures/evals/judges/corpus.synthetic.json`, origin `synthetic`) is labelled and every company,
+page and address in it is invented. It has seven conditions: plain, multilingual (French, German, Spanish), negation,
+contradicting sources, copied/syndicated press with look-alike names, date traps, and injected instructions. Each split has
+a positive and a negative for each condition. Critical negatives cover each of wrong identity, wrong contact, wrong date
+and an obeyed injection.
+
+`checkCorpus` refuses:
+- a corpus whose splits share an id, or the same claim and sources (a leak);
+- a positive without a gold quote on the page;
+- a condition missing from either split.
+
+**Calibration** (`calibrate`) runs on the `calibration` split only. The `holdout` split is the scored benchmark: it is
+reported with the same measures but is never used to choose thresholds. Reports carry:
+- false-positive, false-negative and abstention rates, overall and per condition;
+- the critical false positives;
+- every item's answer.
+
+A critical false positive blocks the judge whatever its rates. Thresholds default to 5% false positives, 20% false negatives
+and 20% abstention, with at most 25% false positives and 50% abstention in any one condition.
+
+**Drift** (`drift`) compares two calibrations of the same corpus split, for example a re-run or a new model against the
+locked one. It names each condition whose rate rose by more than 0.1, and every item whose answer flipped. Synthetic and
+live-web reports are never compared or pooled.
+
+**Not built yet:**
+- a provider adapter and a calibration command that call a real model, which needs a key and budget, so it is the owner's
+  call;
+- wiring a calibrated judge into `scoreCase` as an evaluator.
+
+Until both exist, every claim a judge would settle stays with the deterministic evaluators or is `unknown`.
 
 ### 4b. The lead-evaluation contract (`lib/evals/contract.ts`, #394)
 
