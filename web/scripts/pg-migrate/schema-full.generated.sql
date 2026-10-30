@@ -423,7 +423,7 @@ CREATE TABLE scan_jobs (
       created_at    BIGINT NOT NULL DEFAULT (CAST(floor(extract(epoch from now())) AS BIGINT)),
       claimed_at    BIGINT,
       finished_at   BIGINT
-    , funded_by TEXT NOT NULL DEFAULT 'user', seller TEXT, offer TEXT CHECK (offer IS NULL OR char_length(offer) <= 150), offer_set_at BIGINT, watch_id TEXT, candidates BIGINT, needs_review BIGINT, dropped BIGINT, run_budget TEXT, spend_reserved_usd DOUBLE PRECISION, drop_reasons TEXT, verified BIGINT, query TEXT CHECK (query IS NULL OR char_length(query) <= 600), icp TEXT CHECK (icp IS NULL OR char_length(icp) <= 4000), icp_inferred BIGINT, sources TEXT CHECK (sources IS NULL OR char_length(sources) <= 2000), csv_domain TEXT CHECK (csv_domain IS NULL OR char_length(csv_domain) <= 253), batch_id TEXT, enrich_started_at BIGINT, enrich_finished_at BIGINT, insert_seq BIGINT DEFAULT nextval('scan_jobs_insert_seq_seq'));
+    , funded_by TEXT NOT NULL DEFAULT 'user', seller TEXT, offer TEXT CHECK (offer IS NULL OR char_length(offer) <= 150), offer_set_at BIGINT, watch_id TEXT, candidates BIGINT, needs_review BIGINT, dropped BIGINT, run_budget TEXT, estimate TEXT, spend_reserved_usd DOUBLE PRECISION, drop_reasons TEXT, verified BIGINT, query TEXT CHECK (query IS NULL OR char_length(query) <= 600), icp TEXT CHECK (icp IS NULL OR char_length(icp) <= 4000), icp_inferred BIGINT, sources TEXT CHECK (sources IS NULL OR char_length(sources) <= 2000), csv_domain TEXT CHECK (csv_domain IS NULL OR char_length(csv_domain) <= 253), batch_id TEXT, enrich_started_at BIGINT, enrich_finished_at BIGINT, insert_seq BIGINT DEFAULT nextval('scan_jobs_insert_seq_seq'));
 
 CREATE TABLE scan_model_calls (
     tenant_id TEXT NOT NULL,
