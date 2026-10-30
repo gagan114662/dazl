@@ -47,6 +47,9 @@ test('verifier: the quote naming a past year goes to review as event_date_stale 
 test('verifier: a season-only page stays undated with the researched-timing label; a model-supplied date is never overwritten', async () => {
   const s = await verifyLeads([cand()], page(`${Q} this fall.`))
   assert.equal(s.leads[0].event_date, null); assert.equal(s.leads[0].date_status, 'undated'); assert.match(s.leads[0].timing_note!, /timing: fall, unconfirmed/)
-  const given = await verifyLeads([cand({ event_date: dayStr(5) })], page(`Posted ${dayStr(40)}. ${Q}.`))
+  // A model-supplied date is kept (never overwritten by the publication label) when the fetched page states it; one the page never states is undated.
+  const given = await verifyLeads([cand({ event_date: dayStr(5) })], page(`Posted ${dayStr(40)}. Opened ${dayStr(5)}. ${Q}.`))
   assert.equal(given.leads[0].event_date, dayStr(5)); assert.equal(given.leads[0].timing_note ?? null, null)
+  const unstated = await verifyLeads([cand({ event_date: dayStr(5) })], page(`Posted ${dayStr(40)}. ${Q}.`))
+  assert.equal(unstated.leads[0].event_date, null); assert.match(unstated.leads[0].timing_note!, /not stated in the page text/)
 })

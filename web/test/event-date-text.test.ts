@@ -1,7 +1,7 @@
 // #460: an event date the page TEXT never states must not make a lead verified-recent. Synthetic pages (invented companies); no network.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { datesStatedIn, dateStatedInText, hasStructuredPostingDate } from '../lib/scan/date-in-text.ts'
+import { datesStatedIn, dateStatedInText } from '../lib/scan/date-in-text.ts'
 import { verifyLeads } from '../lib/scan/runner.ts'
 import { splitByWindow } from '../lib/scan/window.ts'
 
@@ -28,14 +28,20 @@ test('#460 case: the page only dates itself in metadata (published 2026-10-15), 
   assert.equal(split.inside.length, 0); assert.equal(split.outside.length, 1)
 })
 
-test('STRICT mode (DAZL_EVENT_DATE_STRICT=1): a date the extraction supplied that appears nowhere on the page is also undated; the default leaves it as today', async () => {
-  const lead = () => verifyLeads([cand({ event_date: '2026-10-12' })], page('Northern Lights Agency opened a new office on Queen Street West in Toronto, ON, its third in the city. Welcome to our directory.'), NOW)
-  assert.equal((await lead()).leads[0].event_date, '2026-10-12', 'default: unchanged (the day is not the page publication metadata)')
-  process.env.DAZL_EVENT_DATE_STRICT = '1'
-  try {
-  const r = await lead()
+test('a date the extraction or a search result supplied that the fetched page never states is undated - no flag needed (strict by default)', async () => {
+  const r = await verifyLeads([cand({ event_date: '2026-10-12' })], page('Northern Lights Agency opened a new office on Queen Street West in Toronto, ON, its third in the city. Welcome to our directory.'), NOW)
   assert.equal(r.leads[0].event_date, null); assert.equal(r.leads[0].date_status, 'undated'); assert.match(r.leads[0].timing_note!, /not stated in the page text/)
-  } finally { delete process.env.DAZL_EVENT_DATE_STRICT }
+  assert.equal(process.env.DAZL_EVENT_DATE_STRICT, undefined, 'no environment switch is involved')
+})
+
+test('only FETCHED page evidence can state the date: a day written only in the model\'s own excerpt does not count', async () => {
+  const modelQuote = 'On 2026-10-08, Northern Lights Agency opened a new office on Queen Street West in Toronto, ON, its third in the city'
+  const r = await verifyLeads([cand({ excerpt: modelQuote, event_date: '2026-10-08' })], page('Northern Lights Agency opened a new office on Queen Street West in Toronto, ON, its third in the city. Archive profile.'), NOW)
+  // The excerpt (with the date) is not on the fetched page, so it is not verified; and the date is not carried to the review row either.
+  assert.equal(r.leads.length, 0); assert.equal(r.review.length, 1); assert.equal(r.review[0].event_date, null)
+  // The same day written on the FETCHED page does count.
+  const ok = await verifyLeads([cand({ excerpt: modelQuote, event_date: '2026-10-08' })], page(`${modelQuote}. Archive profile.`), NOW)
+  assert.equal(ok.leads[0].event_date, '2026-10-08')
 })
 
 test('control: a date stated in the text still verifies exactly as before - ISO, "October 8, 2026" and "8 October 2026"', async () => {
@@ -51,12 +57,13 @@ test('a stated date that differs from the claimed one does not vouch for it (the
   assert.equal(r.leads[0].event_date, null); assert.equal(r.leads[0].date_status, 'undated')
 })
 
-test('a public job-board posting keeps its structured publish date (Greenhouse / Lever / Ashby); other hosts do not', async () => {
-  assert.equal(hasStructuredPostingDate('https://boards.greenhouse.io/acme/jobs/1'), true)
-  assert.equal(hasStructuredPostingDate('https://jobs.lever.co/acme/abc'), true)
-  assert.equal(hasStructuredPostingDate('https://jobs.ashbyhq.com/acme/abc'), true)
-  assert.equal(hasStructuredPostingDate('https://acme.com/careers'), false); assert.equal(hasStructuredPostingDate('https://boards.greenhouse.io.evil.example/x'), false)
+test('an ATS URL alone proves no structured date; only the job-board source\'s own date for THAT posting URL counts', async () => {
   const q = 'Northern Lights Agency is hiring an Account Executive in Toronto, ON for its sales team'
-  const r = await verifyLeads([cand({ source_url: 'https://jobs.lever.co/northernlights/abc', excerpt: q, event_date: '2026-10-15' })], page(`${q}. Apply now.`), NOW)
-  assert.equal(r.leads[0].event_date, '2026-10-15')
+  const url = 'https://jobs.lever.co/northernlights/abc'
+  const run = (structured?: Map<string, string>, date = '2026-10-15', u = url) => verifyLeads([cand({ source_url: u, excerpt: q, event_date: date })], page(`${q}. Apply now.`), NOW, undefined, null, undefined, undefined, [], structured)
+  assert.equal((await run()).leads[0].event_date, null, 'a Lever URL with no collected structured date: the claimed day is unsupported')
+  assert.equal((await run(new Map([[url, '2026-10-15']]))).leads[0].event_date, '2026-10-15', 'the board source recorded this posting\'s publish date')
+  assert.equal((await run(new Map([[url, '2026-09-01']]))).leads[0].event_date, null, 'a different recorded day does not vouch for the claimed one')
+  assert.equal((await run(new Map([['https://jobs.lever.co/northernlights/other', '2026-10-15']]))).leads[0].event_date, null, 'a date recorded for another posting does not count')
+  assert.equal((await run(new Map([['https://acme.com/careers', '2026-10-15']]), '2026-10-15', 'https://acme.com/careers')).leads[0].event_date, '2026-10-15', 'any source URL works when the board source recorded it; it is the record that matters, not the host')
 })
