@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import type { PlayOffer } from '@/lib/scan/play-offer-text'
 import { inSentence } from '@/lib/offer-sentence'
+import { offerFromReply } from '@/lib/play-offer-reply'
 
 // What THIS play sells (#349; lib/scan/play-offer.ts), shown wherever the play is: Home, its campaign page and its
 // drafts. A play whose request names a different offer than the one it was created with shows both and waits for the
@@ -27,9 +28,11 @@ export function PlayOfferCard({ jobId, offer, onChange, compact }: { jobId: stri
     const r = await fetch(`/api/campaigns/${jobId}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ offer: value }) }).catch(() => null)
     const j = await r?.json().catch(() => ({}))
     setBusy(false)
-    if (!r?.ok || !j?.offer) return setMsg(j?.error || 'Could not save')
+    // only a well-formed saved offer counts as saved; anything else keeps the choice open
+    const saved = r?.ok ? offerFromReply(j) : 'unreadable'
+    if (!saved || saved === 'unreadable') return setMsg(j?.error || 'Could not save')
     setEditing(false)
-    onChange?.(j.offer as PlayOffer)
+    onChange?.(saved)
   }
   const editor = <form className="mt-2 flex flex-col sm:flex-row gap-2" onSubmit={e => { e.preventDefault(); void choose(text) }}>
     <input className="field flex-1" aria-label="What this play sells" maxLength={150} value={text} onChange={e => setText(e.target.value)} placeholder="e.g. CRM setup and outbound consulting" data-testid="play-offer-input" />
@@ -45,8 +48,8 @@ export function PlayOfferCard({ jobId, offer, onChange, compact }: { jobId: stri
     return <div className="rounded-xl border border-[#e8b04a] bg-[#fff7e6] px-4 py-3 text-sm" role="alert" data-testid="play-offer-conflict">
       <p className="font-semibold">Which offer is this play for?</p>
       {c.stated
-        ? <p className="mt-1 text-[var(--ink-2)]">This play&apos;s request says you sell <strong>{inSentence(c.stated)}</strong>, but it started with <strong>{inSentence(c.recorded)}</strong>. dazl will not draft for it until you choose. Only this play changes.</p>
-        : <p className="mt-1 text-[var(--ink-2)]" data-testid="play-offer-withdrawn">This play&apos;s request says you do not offer <strong>{inSentence(c.withdrawn ?? '')}</strong>, but it started with <strong>{inSentence(c.recorded)}</strong>. dazl will not draft for it until you say what it sells. Only this play changes.</p>}
+        ? <p className="mt-1 text-[var(--ink-2)]">This play&apos;s request says you sell <strong>{inSentence(c.stated, ',')}</strong>, but it started with <strong>{inSentence(c.recorded)}</strong>. dazl will not draft for it until you choose. Only this play changes.</p>
+        : <p className="mt-1 text-[var(--ink-2)]" data-testid="play-offer-withdrawn">This play&apos;s request says you do not offer <strong>{inSentence(c.withdrawn ?? '', ',')}</strong>, but it started with <strong>{inSentence(c.recorded)}</strong>. dazl will not draft for it until you say what it sells. Only this play changes.</p>}
       <div className="mt-2 flex flex-wrap gap-2">
         {c.stated && <button className="btn-primary btn-sm" disabled={busy} onClick={() => void choose(c.stated!)} data-testid="play-offer-use-stated">Use: {c.stated}</button>}
         <button className="btn-ghost btn-sm" disabled={busy} onClick={() => void choose(c.recorded)} data-testid="play-offer-use-recorded">Keep: {c.recorded}</button>

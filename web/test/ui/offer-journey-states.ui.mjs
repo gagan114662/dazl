@@ -284,11 +284,15 @@ try {
   // E. Failures injected at every await before a side effect, through the real pages: the page never shows a choice,
   //    a draft or a rewrite that did not happen, and the database is unchanged. Then a policy change between loading
   //    the page and drafting: the draft states what is stored now, not what the page showed.
-  const fail = (page, url, method, how) => page.route(url, r => r.request().method() !== method ? r.fallback() : how === 'abort' ? r.abort() : how === '5xx' ? r.fulfill({ status: 502, contentType: 'text/html', body: '<html>Bad gateway</html>' }) : r.fulfill({ status: 200, contentType: 'application/json', body: '{}' }))
+  // 'malformed': a 200 that is not the reply (an empty object); 'bad-offer': the real reply with its offer emptied
+  const fail = (page, url, method, how) => page.route(url, async r => r.request().method() !== method ? r.fallback() : how === 'abort' ? r.abort() : how === '5xx' ? r.fulfill({ status: 502, contentType: 'text/html', body: '<html>Bad gateway</html>' })
+    : how === 'bad-offer' ? r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ...(await (await r.fetch()).json()), offer: {} }) })
+    : r.fulfill({ status: 200, contentType: 'application/json', body: '{}' }))
   for (const w of WIDTHS) {
     const tag = `-${w}`, P = FAILP[w]
-    // E1. the offer read fails: Outreach and Home say it could not be loaded; no choice and no offer is shown as known
-    for (const how of ['5xx', 'abort']) {
+    // E1. the offer read fails or makes no sense: Outreach, Home and the campaign page say it could not be loaded; no
+    //     choice and no offer is shown as known
+    for (const how of ['5xx', 'abort', 'malformed', 'bad-offer']) {
       const { ctx, page } = await context(w); const before = read()
       await fail(page, '**/api/campaigns/*', 'GET', how)
       await page.goto(base + `/app/outreach?job_id=${P}`, { waitUntil: 'networkidle' })
@@ -297,7 +301,13 @@ try {
       if (how === '5xx') { await card.scrollIntoViewIfNeeded(); await noScroll(page, `E1${tag}`); await shot(page, `states-E1-offer-unreadable${tag}`) }
       await page.goto(base + '/app', { waitUntil: 'networkidle' })
       const home = page.getByTestId('journey-play-offer')
-      if (await home.count()) assert.equal(await home.getByTestId('play-offer-unreadable').count(), 1, `E1${tag} ${how}: Home says it could not be loaded`)
+      await home.getByTestId('play-offer-unreadable').waitFor({ timeout: 15000 })
+      assert.equal(await home.getByTestId('play-offer-text').count() + await home.getByTestId('play-offer-conflict').count(), 0, `E1${tag} ${how}: Home shows nothing as known`)
+      if (how === 'bad-offer') { // the campaign page renders only from a whole reply; its offer card says it could not be loaded
+        await page.goto(base + `/app/campaigns/${P}`, { waitUntil: 'networkidle' })
+        const camp = page.getByTestId('campaign-offer'); await camp.getByTestId('play-offer-unreadable').waitFor({ timeout: 15000 })
+        assert.equal(await camp.getByTestId('play-offer-text').count() + await camp.getByTestId('play-offer-conflict').count(), 0, `E1${tag}: the campaign page shows nothing as known`)
+      }
       sameExcept(before, read(), `E1${tag} ${how}`)
       await ctx.close()
     }

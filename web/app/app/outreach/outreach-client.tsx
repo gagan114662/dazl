@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react'
 import type { PlayOffer } from '@/lib/scan/play-offer-text'
 import { PlayOfferCard } from '../play-offer'
+import { offerFromReply } from '@/lib/play-offer-reply'
 import Provenance from './provenance'
 import type { OutreachProvenance } from '@/lib/outreach/provenance'
 import SequencesClient from './sequences-client'
@@ -56,7 +57,7 @@ export default function OutreachClient() {
       const cr = await fetch(`/api/campaigns/${jobId}`).catch(() => null)
       const cj = cr?.ok ? await cr.json().catch(() => null) : null
       // a failed read is not "no offer": the card says it could not be loaded
-      setPlayOffer(cj && 'offer' in cj ? cj.offer ?? null : 'unreadable')
+      setPlayOffer(offerFromReply(cj))
     }
     try { const r = await fetch('/api/outreach'); if (r.ok) { setMsgs((await r.json()).messages); setLoadFailed(false) } else setLoadFailed(true) } catch { setLoadFailed(true) } finally { setLoaded(true) }
     try { const seq=await fetch('/api/outreach/sequences'); if(seq.ok) setSequenceMessages((await seq.json()).sequences.map((s:{message_id:string})=>s.message_id)) } catch { /* sequence markers are optional; the email list above still stands */ }

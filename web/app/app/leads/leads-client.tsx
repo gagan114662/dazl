@@ -1194,8 +1194,8 @@ function OfferChooser({ c, onChoose, onWrite }: { c: { stated: string | null; sa
   return <div className="rounded-xl border border-[#e8b04a] bg-[#fff7e6] px-4 py-3 text-sm" role="alert" data-testid="offer-chooser">
     <p className="font-semibold">Which offer is this play for?</p>
     {c.stated
-      ? <p className="mt-1 text-[var(--ink-2)]">Your request says you sell <strong>{inSentence(c.stated)}</strong>; your business profile says <strong>{inSentence(c.saved)}</strong>. dazl researches and drafts this play for the one you choose. Your profile is not changed.</p>
-      : <p className="mt-1 text-[var(--ink-2)]" data-testid="offer-withdrawn">Your request says you do not offer <strong>{inSentence(c.withdrawn ?? '')}</strong>; your business profile says <strong>{inSentence(c.saved)}</strong>. Say what this play sells before it runs. Your profile is not changed.</p>}
+      ? <p className="mt-1 text-[var(--ink-2)]">Your request says you sell <strong>{inSentence(c.stated, ';')}</strong>; your business profile says <strong>{inSentence(c.saved)}</strong>. dazl researches and drafts this play for the one you choose. Your profile is not changed.</p>
+      : <p className="mt-1 text-[var(--ink-2)]" data-testid="offer-withdrawn">Your request says you do not offer <strong>{inSentence(c.withdrawn ?? '', ';')}</strong>; your business profile says <strong>{inSentence(c.saved)}</strong>. Say what this play sells before it runs. Your profile is not changed.</p>}
     <div className="mt-2 flex flex-wrap gap-2">
       {c.stated && <button type="button" className="btn-primary btn-sm" onClick={() => onChoose(c.stated!)} data-testid="offer-use-stated">Use: {c.stated}</button>}
       <button type="button" className="btn-ghost btn-sm" onClick={() => onChoose(c.saved)} data-testid="offer-use-saved">Use: {c.saved}</button>

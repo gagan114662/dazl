@@ -77,6 +77,7 @@ for (const [name, jobs, n, extra = ''] of VARIANTS) {
     for (const j of jobs.filter(x => x.id !== NAMED)) assert.ok(!polled.has(j.id), `${name}: the other run (${j.status}) was not opened`)
     assert.equal(await page.getByRole('button', { name: 'Stop this scan' }).count(), 0, `${name}: no Stop control for a scan that is not shown`)
     if (n.status === 'done' && !n.missing) await page.getByText('Named Run Ltd').first().waitFor({ timeout: 5000 })
+    if (n.missing) await page.getByText('That scan was not found in this account.').waitFor({ timeout: 5000 })
   } catch (e) { failures.push(e.message.split('\n')[0]) }
   await page.close()
 }

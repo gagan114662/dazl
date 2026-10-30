@@ -1,5 +1,6 @@
 'use client'
 import { PlayOfferCard } from './play-offer'
+import { offerFromReply } from '@/lib/play-offer-reply'
 import type { PlayOffer } from '@/lib/scan/play-offer-text'
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
@@ -34,7 +35,7 @@ export default function Journey() {
   const [watches, setWatches] = useState<PlayWatch[] | null | 'loading'>('loading')
   const [sent, setSent] = useState<number | null>(null)
   const [morePills, setMorePills] = useState(false)
-  // What the current play sells (its campaign record, lib/scan/play-offer.ts); undefined until read, null if unreadable.
+  // What the current play sells (its campaign record, lib/scan/play-offer.ts); undefined until read, null if it has none, 'unreadable' if the read failed or made no sense.
   const [playOfferOf, setPlayOfferOf] = useState<{ id: string; offer: PlayOffer | null | 'unreadable' } | null>(null)
 
   const get = (u: string) => fetch(u).then(r => r.ok ? r.json() : null).catch(() => null)
@@ -74,7 +75,7 @@ export default function Journey() {
   useEffect(() => {
     if (!playId) return
     // a failed read is not "no offer": the card says it could not be loaded
-    void get(`/api/campaigns/${playId}`).then(c => setPlayOfferOf({ id: playId, offer: c && 'offer' in c ? c.offer ?? null : 'unreadable' }))
+    void get(`/api/campaigns/${playId}`).then(c => setPlayOfferOf({ id: playId, offer: offerFromReply(c) }))
   }, [playId]) // eslint-disable-line react-hooks/exhaustive-deps
   // the offer read for the play shown now (an earlier play's read never shows under a newer play)
   const playOffer = playOfferOf && playOfferOf.id === playId ? playOfferOf.offer : undefined

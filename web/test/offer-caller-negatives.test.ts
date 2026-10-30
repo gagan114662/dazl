@@ -1,8 +1,9 @@
-// #349 (Instinct controls C25-C41 on #456): every exact negative from the review rounds goes through every real caller,
-// not only through the comparator: the resolver (Home and the campaign page), template drafting (createDraft, nothing
+// #349 (Instinct controls C25-C41 on #456): the exact negatives of review rounds HOLD-4 to HOLD-10 and LIVE-2/LIVE-3 go
+// through every real caller, not only through the comparator: the resolver (Home and the campaign page), template drafting (createDraft, nothing
 // inserted), research scoring (offerBlockFor) and the AI rewrite (polishDraft, no model call). Each runs against both
 // saved forms Instinct used ("CRM setup" alone and the full sentence). The targeting positives go through the same
-// callers and keep the recorded offer. In-memory SQLite, a recording fake provider; no network.
+// callers and keep the recorded offer. The later withdrawal rounds (HOLD-12, the 15:21 HOLD) are resolver work on
+// #456, not covered here. In-memory SQLite, a recording fake provider; no network.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
@@ -65,7 +66,7 @@ const recording = () => {
 }
 const drafts = (db: Database.Database) => (db.prepare('SELECT count(*) AS n FROM outreach_messages').get() as { n: number }).n
 
-test(`#349 every exact negative from the review rounds (${NEGATIVES.length}) is refused by every caller, against both saved forms`, async () => {
+test(`#349 the exact negatives of HOLD-4..HOLD-10 and LIVE-2/3 (${NEGATIVES.length}) are refused by every caller, against both saved forms`, async () => {
   const failures: string[] = []
   for (const saved of SAVED) for (const q of NEGATIVES) {
     const db = setup(saved, q)
@@ -74,7 +75,7 @@ test(`#349 every exact negative from the review rounds (${NEGATIVES.length}) is 
       const o = await readPlayOffer(sqliteDb(db), 'A', 'play')
       if (o?.source !== 'conflict' || o.offer !== null) failures.push(`${where}: resolver gave ${JSON.stringify(o)}`)
       const before = drafts(db)
-      try { createDraft(db, 'A', 'lead-play', 'Acme'); failures.push(`${where}: createDraft drafted`) } catch (e) { if (!/offer_conflict|offer_withdrawn|no_profile/.test(String(e))) failures.push(`${where}: createDraft threw ${e}`) }
+      try { createDraft(db, 'A', 'lead-play', 'Acme'); failures.push(`${where}: createDraft drafted`) } catch (e) { if (!/\boffer_conflict\b/.test(String(e))) failures.push(`${where}: createDraft threw ${e}`) }
       if (drafts(db) !== before) failures.push(`${where}: a draft was inserted`)
       if (offerBlockFor(db, 'A', 'play') !== '') failures.push(`${where}: research context stated an offer`)
       // the rewrite: a draft for the other (uncontested) play, moved onto this play's lead
@@ -83,6 +84,7 @@ test(`#349 every exact negative from the review rounds (${NEGATIVES.length}) is 
       const bodyBefore = (db.prepare('SELECT body FROM outreach_messages WHERE id = ?').get(d) as { body: string }).body
       const r = recording()
       const p = await polishDraft(db, 'A', d, 'Acme', { master, providers: r.providers }) as { rewritten?: boolean; reason?: string }
+      if (p.reason !== 'offer_conflict') failures.push(`${where}: the rewrite was refused for ${p.reason ?? 'nothing'}, not the conflict`)
       if (p.rewritten || r.prompts.length) failures.push(`${where}: the rewrite ran (${r.prompts.length} model call(s))`)
       if ((db.prepare('SELECT body FROM outreach_messages WHERE id = ?').get(d) as { body: string }).body !== bodyBefore) failures.push(`${where}: the draft changed`)
     } finally { db.close() }

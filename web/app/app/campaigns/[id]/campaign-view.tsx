@@ -9,6 +9,7 @@ import { currentQual, currentRun, runStatus } from '@/lib/run-status'
 import type { CampaignDetail } from '@/lib/outreach/campaign-detail'
 import type { PlayOffer } from '@/lib/scan/play-offer-text'
 import { PlayOfferCard } from '../../play-offer'
+import { offerFromReply } from '@/lib/play-offer-reply'
 
 // One campaign (= one scan): its play, every lead with where it stands, and its drafts and sends. Read-only: reviewing,
 // approving, drafting and sending stay on Leads and Outreach with their checks; this page only reports and links.
@@ -37,7 +38,7 @@ export default function CampaignView({ id }: { id: string }) {
       <h1 className="text-2xl font-bold tracking-tight mb-1" data-testid="campaign-play">{job && typeof job === 'object' ? job.query || 'Untitled search' : job === 'failed' ? 'Campaign' : 'Loading...'}</h1>
       {job === 'failed' && <p className="text-sm mb-2" role="alert">Could not load this campaign&apos;s search. Refresh to retry.</p>}
       {/* What this play sells (lib/scan/play-offer.ts): the same offer Home and its drafts use; a contested one is chosen here. */}
-      {data && typeof data === 'object' && <div className="my-3" data-testid="campaign-offer"><PlayOfferCard jobId={id} offer={data.offer ?? null} onChange={o => setData(d => d && typeof d === 'object' ? { ...d, offer: o } : d)} /></div>}
+      {data && typeof data === 'object' && <div className="my-3" data-testid="campaign-offer"><PlayOfferCard jobId={id} offer={offerFromReply(data)} onChange={o => setData(d => d && typeof d === 'object' ? { ...d, offer: o } : d)} /></div>}
       {job && typeof job === 'object' && (() => {
         // The same recorded outcome and next step as the Leads history (lib/scan/scan-outcome.ts), restated from the
         // leads as they stand now (the Campaigns card does the same), so a run whose leads were all rejected says none passed.
