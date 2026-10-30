@@ -21,6 +21,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   const r = await generateBrief(await getDb(), user.tenantId, typeof body?.topic === 'string' ? body.topic : '')
   if ('error' in r) {
+    if (r.error === 'spend_limit') return NextResponse.json({ error: 'Your workspace AI spend limit for today or this month is reached, so nothing was generated and nothing was charged.', code: 'spend_limit' }, { status: 429 })
     if (r.error === 'no_key') return NextResponse.json({ error: 'Briefs use your own AI key. Add one in Settings first.' }, { status: 400 })
     if (r.error === 'invalid') return NextResponse.json({ error: 'Give the topic a few words.' }, { status: 400 })
     return NextResponse.json({ error: 'The model did not answer. Try again.' }, { status: 502 })
