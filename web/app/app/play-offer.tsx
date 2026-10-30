@@ -40,8 +40,8 @@ export function PlayOfferCard({ jobId, offer, onChange, compact }: { jobId: stri
     return <div className="rounded-xl border border-[#e8b04a] bg-[#fff7e6] px-4 py-3 text-sm" role="alert" data-testid="play-offer-conflict">
       <p className="font-semibold">Which offer is this play for?</p>
       {c.stated
-        ? <p className="mt-1 text-[var(--ink-2)]">This play&apos;s request says you sell <strong>{c.stated}</strong>, but it started with <strong>{c.recorded}</strong>. dazl will not draft for it until you choose. Only this play changes.</p>
-        : <p className="mt-1 text-[var(--ink-2)]" data-testid="play-offer-withdrawn">This play&apos;s request says you do not sell <strong>{c.withdrawn}</strong>, but it started with <strong>{c.recorded}</strong>. dazl will not draft for it until you say what it sells. Only this play changes.</p>}
+        ? <p className="mt-1 text-[var(--ink-2)]">This play&apos;s request says you sell <strong>{c.stated}</strong>, but it started with <strong>{c.recorded.replace(/\.$/, "")}</strong>. dazl will not draft for it until you choose. Only this play changes.</p>
+        : <p className="mt-1 text-[var(--ink-2)]" data-testid="play-offer-withdrawn">This play&apos;s request says you do not sell <strong>{c.withdrawn}</strong>, but it started with <strong>{c.recorded.replace(/\.$/, "")}</strong>. dazl will not draft for it until you say what it sells. Only this play changes.</p>}
       <div className="mt-2 flex flex-wrap gap-2">
         {c.stated && <button className="btn-primary btn-sm" disabled={busy} onClick={() => void choose(c.stated!)} data-testid="play-offer-use-stated">Use: {c.stated}</button>}
         <button className="btn-ghost btn-sm" disabled={busy} onClick={() => void choose(c.recorded)} data-testid="play-offer-use-recorded">Keep: {c.recorded}</button>
