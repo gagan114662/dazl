@@ -82,6 +82,8 @@ export const ROUTE_TEMPLATES: readonly string[] = [
   '/api/stripe',
   '/api/unsubscribe',
   '/api/usage',
+  '/api/v1/discovery',
+  '/api/v1/discovery/[id]',
   '/api/warm/connections',
   '/api/watch',
   '/app',
