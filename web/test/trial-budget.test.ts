@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict'
 import { pgDb } from '../lib/db/client.ts'
 import type { Db } from '../lib/db/client.ts'
-import { admitTrialScan, linkTrialReservation, settleTrialReservation, trialCaps, utcDay } from '../lib/billing/trial-budget.ts'
+import { admitTrialScan, linkTrialReservation, releaseTrialReservation, settleTrialReservation, trialCaps, utcDay } from '../lib/billing/trial-budget.ts'
 import { bothEngines } from './helpers/engines.ts'
 
 const NOW = 1_800_000_000
@@ -263,4 +263,14 @@ bothEngines('trial attempts: concurrent admissions on separate Postgres pools ne
     assert.equal(rs.filter(r => r.ok).length, 1, JSON.stringify(rs))
     assert.ok(rs.filter(r => !r.ok).every(r => !r.ok && r.reason === 'attempts_cap'))
   } finally { await Promise.all(pools.map(p => p.close())) }
+})
+
+bothEngines('releasing an unlinked reservation gives the attempt and budget back; a linked reservation, or another tenant\'s, is never released', async ({ db }) => {
+  const a = await user(db, 'c'.repeat(32), 'c@gmail.com'), b = await user(db, 'd'.repeat(32), 'd@gmail.com')
+  const r1 = reservation(await admit(db, a)); assert.equal(await releaseTrialReservation(db, b.id, r1), false, 'another tenant cannot release it')
+  assert.equal(await releaseTrialReservation(db, a.id, r1), true); assert.equal(await releaseTrialReservation(db, a.id, r1), false, 'only once')
+  for (let i = 0; i < 3; i++) { const r = reservation(await admit(db, a)); await scan(db, a.id, r, { status: 'done', spent: 0.02 }) }   // three linked attempts fill the cap
+  const linked = (await db.get<{ id: string }>('SELECT id FROM trial_reservations WHERE tenant_id = ? LIMIT 1', [a.id]))!.id
+  assert.equal(await releaseTrialReservation(db, a.id, linked), false, 'a reservation linked to a scan is never released')
+  assert.equal((await admit(db, a)).ok, false, 'the cap counts the three real scans, not the released attempt')
 })

@@ -89,3 +89,50 @@ test('after the run: the status shows the confirmed estimate beside the actual f
   db.prepare('UPDATE scan_jobs SET estimate = NULL WHERE id = ?').run(job_id)
   assert.equal((await get()).cost, null)
 })
+
+// ---- keyless trial accounts: a request refused with no run must not consume a trial attempt or budget ----
+import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
+const TRIAL_ENV = { DAZL_TRIAL_ANTHROPIC_KEY: 'sk-ant-trial-fixture', DAZL_TRIAL_SCAN_RESERVE_USD: '0.30', DAZL_TRIAL_ACCOUNT_TOTAL_USD: '1', DAZL_TRIAL_GLOBAL_DAILY_USD: '10', TINYFISH_API_KEY: 'tf-fixture', DAZL_TRIAL_TINYFISH_SEARCH_USD: '0.004', DAZL_TRIAL_TINYFISH_FETCH_USD: '0.002' }
+async function keyless(fn: (db: Database.Database, id: string) => Promise<void>) {
+  const old = Object.fromEntries(Object.keys(TRIAL_ENV).map(k => [k, process.env[k]])); Object.assign(process.env, TRIAL_ENV)
+  try {
+    const db = new Database(':memory:'); migrateAllSqlite(db); setScanDb(db)
+    const id = `K${++n}`
+    db.prepare("INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, 'n', 'b', 'x', 'y')").run(id, `${id}@gmail.com`)
+    db.prepare("INSERT INTO oauth_identities (provider, subject, user_id) VALUES ('google', ?, ?)").run(`sub-${id}`, id)
+    setUser({ id, business_name: 'Acme', email: `${id}@gmail.com` })     // no API key: the shared trial funds this account
+    await fn(db, id)
+  } finally { for (const [k, v] of Object.entries(old)) { if (v === undefined) delete process.env[k]; else process.env[k] = v } }
+}
+const reservations = (db: Database.Database) => db.prepare('SELECT id, job_id FROM trial_reservations').all() as { id: string; job_id: string | null }[]
+
+test('keyless: a stale estimate_ack returns 409 with NO job and NO reservation; repeated refusals never consume the 3 trial attempts; the retry with the right ack runs and links its one reservation', async () => {
+  await keyless(async db => {
+    const body = { query: Q, budget: { max_usd: 2, judge: false } }
+    const e = await (await est(body)).json() as { estimate: { ack: string } }
+    for (let i = 0; i < 5; i++) {
+      const r = await scan({ ...body, estimate_ack: 'stale-ack' }); assert.equal(r.status, 409); assert.equal((await r.json() as { error: string }).error, 'estimate_changed')
+      assert.equal(jobs(db).length, 0); assert.equal(reservations(db).length, 0, `refusal ${i + 1} reserved nothing`)
+    }
+    const ok = await scan({ ...body, estimate_ack: e.estimate.ack }); assert.equal(ok.status, 202)
+    const rs = reservations(db); assert.equal(rs.length, 1); assert.equal(rs[0].job_id, jobs(db)[0].id)
+  })
+})
+
+test('keyless: an over-budget request returns 402 over_budget with no job and no reservation; a corrected retry runs', async () => {
+  await keyless(async db => {
+    const bad = await scan({ query: Q, budget: { max_usd: 0.02 } }); assert.equal(bad.status, 402); assert.equal((await bad.json() as { error: string }).error, 'over_budget')
+    assert.equal(jobs(db).length, 0); assert.equal(reservations(db).length, 0)
+    assert.equal((await scan({ query: Q, budget: { max_usd: 1, judge: false } })).status, 202); assert.equal(reservations(db).length, 1)
+  })
+})
+
+test('keyless: if creating the job fails AFTER the reservation, the reservation is released (the attempt and budget are given back); the retry then runs', async () => {
+  await keyless(async db => {
+    db.exec("CREATE TRIGGER boom BEFORE INSERT ON scan_jobs BEGIN SELECT RAISE(ABORT, 'boom'); END")
+    await assert.rejects(scan({ query: Q, budget: { max_usd: 1, judge: false } }))
+    assert.equal(reservations(db).length, 0, 'the unlinked reservation was unwound'); assert.equal(jobs(db).length, 0)
+    db.exec('DROP TRIGGER boom')
+    assert.equal((await scan({ query: Q, budget: { max_usd: 1, judge: false } })).status, 202); assert.equal(reservations(db).length, 1)
+  })
+})
