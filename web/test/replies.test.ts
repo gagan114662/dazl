@@ -239,3 +239,17 @@ test('reply capture stores the actual root outreach message link, not a guessed 
   const row = db.prepare('SELECT outreach_message_id,lead_id,classification FROM inbound_messages WHERE gmail_id=?').get('linked-reply') as any
   assert.deepEqual(row,{outreach_message_id:s.mid,lead_id:s.lead,classification:'other'})
 })
+
+test('warm follow-up: an unverifiable handoff is uncertain, pauses autopilot, stores no provider id and is never retried', async () => {
+  for (const bad of [undefined, null, {}, { id: '' }, { id: '   ' }, { id: 7 }, { id: ['x'] }, { threadId: 'th1' }]) {
+    const db = await setup(); await interested(db); setFollowups(db, 'A', true)
+    let calls = 0
+    const sendFn = (async () => { calls++; return bad }) as never
+    const r = await runFollowups(db, 'A', 'Acme', base({ sendFn }))
+    assert.equal(r.stopped, 'uncertain_send', JSON.stringify(bad)); assert.equal(getState(db, 'A').paused, true)
+    const f = db.prepare('SELECT status, gmail_id FROM followup_messages').get() as { status: string; gmail_id: string | null }
+    assert.equal(f.status, 'uncertain'); assert.ok(!f.gmail_id)
+    assert.equal((await runFollowups(db, 'A', 'Acme', base({ sendFn }))).sent, 0)
+    assert.equal(calls, 1)
+  }
+})
