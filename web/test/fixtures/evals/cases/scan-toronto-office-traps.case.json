@@ -1,0 +1,29 @@
+{
+ "v": 1,
+ "kind": "dazl.case",
+ "id": "scan-toronto-office-traps",
+ "title": "Toronto new-office scan: an old event dated only by a fresh publication date, and a recruiting inbox as the contact",
+ "path": "scan.discovery",
+ "world": "../worlds/scan-toronto-office-traps.world.json",
+ "provenance": {
+  "from_trace": "synthetic-scan-toronto-office-traps",
+  "synthetic": true,
+  "why": "SYNTHETIC. Two #395 traps: an old article with a fresh publication date (the opening is never dated in the text) and a generic recruiting inbox offered as the sales contact, beside one genuine lead."
+ },
+ "input": {
+  "request": "Find marketing agencies in Toronto, Canada that opened a new office within the past 90 days.",
+  "icp": { "summary": "Toronto marketing agencies that opened a new office in the past 90 days", "who": ["Founder", "Managing Director"], "industries": ["marketing agency"], "sizes": [], "where": ["Toronto, Canada"], "signals": ["opened a new office"], "exclude": [], "country": "CA", "language": "en", "window_days": 90 }
+ },
+ "expect": {
+  "exhaustive": true,
+  "entities": {
+   "Maple Leaf Marketing": { "domains": ["mapleleaf.example"] },
+   "Lakeshore Creative": { "domains": ["lakeshore.example"] }
+  },
+  "leads": [
+   { "company": "Maple Leaf Marketing", "outcome": "verified", "why": "dated in the text 12 days before as_of, Toronto, quote and a sales contact on the page" },
+   { "company": "Northern Lights Agency", "outcome": "held", "why": "the text never dates the opening; the only date is the page's publication metadata, so the event is not shown to be recent" },
+   { "company": "Lakeshore Creative", "outcome": "verified", "why": "a real, dated opening; the event stands even though its only contact is a recruiting inbox (judged by contact_not_recruiting_inbox, not here)" }
+  ]
+ }
+}

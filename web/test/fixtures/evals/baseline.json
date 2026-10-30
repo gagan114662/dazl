@@ -1,8 +1,17 @@
 {
  "contract": "dazl.evals/1",
  "note": "The suite's registry. Every case is listed, passing ones with non_pass []. The gate fails when a listed case does not run, a case runs that is not listed, two cases share an id, fewer than min_cases run, or a case's non-pass verdicts differ from its list in EITHER direction (a new failure is a regression; a fixed one must be removed here in the PR that fixes it). Lowering min_cases or removing an entry needs a reason in the PR.",
- "min_cases": 1,
+ "min_cases": 2,
  "cases": {
-  "scan-london-seed-traps": { "status": "pass", "non_pass": [] }
+  "scan-london-seed-traps": { "status": "pass", "non_pass": [] },
+  "scan-toronto-office-traps": {
+   "status": "fail",
+   "non_pass": [
+    "contact_not_recruiting_inbox|lead:Lakeshore Creative|fail",
+    "event_date_on_page|lead:Northern Lights Agency|unknown",
+    "expected_outcomes|expect:Northern Lights Agency|fail"
+   ],
+   "why": "Agent gaps found by this case (#395): (1) a lead whose event date is only the page's publication metadata (the text never dates the opening) is verified - the extraction copies the publication date into event_date and the verifier accepts it; (2) a recruiting inbox (careers@) is kept as a verified lead's contact."
+  }
  }
 }
