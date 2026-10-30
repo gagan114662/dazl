@@ -133,3 +133,33 @@ test('a crawled address whose website the user has not checked is never drafted 
   assert.equal(r.sent, 0); assert.equal(sent.length, 0)
   assert.equal(status(db).filter(m => m.to_email === 'info@guess.example').length, 0, 'autopilot only drafts for lead.contact; the crawled-address path is also closed inside createDraft')
 })
+
+// Instinct's #364 review of 2e831b2: autopilot calls the send service directly, so the identity and cross-play account
+// check must hold there, not only on the HTTP route. Jane at Acme was emailed 10 days ago (past the 7-day domain cap,
+// inside the 30-day account window); Bob at the same company, found by another play and never linked, must not be
+// emailed; Kim at another company (the positive control) is. Stub sender only.
+test('autopilot: someone at a company another play emailed is not sent to; a different company is', async () => {
+  const db = await setup(); ok(db); const { sent, d } = sends()
+  const at = (company: string, contact: string, domain: string) => {
+    const job = createJob(db, 'A', { business_name: 'Acme', industry: 'x', location: 'y' })
+    db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
+    const id = randomBytes(12).toString('hex')
+    db.prepare('INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence, score, company_domain, human_confirmed_at, human_confirmed_from) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, job, company, contact, 'Hiring roofers', 'https://n.example/a', `${company} is hiring roofers`, 90, 80, domain, NOW, 'test_review')
+    return id
+  }
+  const emailed = (leadId: string, to: string, when: number) => db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, claimed_at, created_at) VALUES (?, 'A', ?, ?, 'Quick question', 'A synthetic body that is long enough.', 'sent', ?, ?, ?)").run(randomBytes(12).toString('hex'), leadId, to, when, when, when)
+  // Past the warm-up (2 approved sends), and Jane's send.
+  emailed(at('Warm One', 'w1@warm-one.example', 'warm-one.example'), 'w1@warm-one.example', NOW - 20 * 86400)
+  emailed(at('Warm Two', 'w2@warm-two.example', 'warm-two.example'), 'w2@warm-two.example', NOW - 20 * 86400)
+  emailed(at('Acme Roofing', 'jane@acme-roofing.example', 'acme-roofing.example'), 'jane@acme-roofing.example', NOW - 10 * 86400)
+  const bob = at('Acme Roofing Ltd', 'bob@acme-roofing.example', 'acme-roofing.example')
+  at('Birch Works', 'kim@birch-works.example', 'birch-works.example')
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM tenant_lead_links').get() && (db.prepare('SELECT COUNT(*) AS n FROM tenant_lead_links').get() as { n: number }).n, 0, 'nothing linked: only the send boundary can catch Bob')
+  const r = await runAutopilot(db, 'A', 'Acme', d)
+  const to = sent.map(raw => /^To: (.*)$/m.exec(Buffer.from(raw, 'base64url').toString())?.[1]?.trim())
+  assert.deepEqual(to, ['kim@birch-works.example'], 'Kim only; Bob never reaches the sender')
+  assert.equal(r.sent, 1)
+  assert.equal((db.prepare("SELECT status FROM outreach_messages WHERE lead_id = ?").get(bob) as { status: string }).status, 'approved', 'kept, not sent')
+  assert.ok(recentAutopilotAudit(db, 'A').some(a => a.action === 'send_failed' && a.detail === 'account_contacted_recently' && a.lead_id === bob))
+})

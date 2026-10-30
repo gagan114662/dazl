@@ -137,7 +137,8 @@ test('20-account budget counts first touch, warm follow-ups and sequence claims 
   assert.equal(accountSendCount(db,'A',NOW+3*DAY),19)
   await runSequences(db,'A','',{...m,now:NOW+3*DAY})
   assert.equal(accountSendCount(db,'A',NOW+3*DAY),20)
-  const s2=add(db,'second@acme.example');approval(db,s2)
+  // Another company (#364: someone else at Acme would be held by the cross-play account cooldown first).
+  const s2=add(db,'second@other-co.example');approval(db,s2)
   await assert.rejects(sendMessage(db,'A',s2.mid,{...m,now:NOW+3*DAY}),/daily_cap/)
 })
 

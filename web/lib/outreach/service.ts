@@ -1,4 +1,5 @@
-import { crossPlayHold } from '../accounts/cooldown.ts'
+import { crossPlayHold, firstTouchHold, graphStore } from '../accounts/cooldown.ts'
+import { sqliteDb } from '../db/client.ts'
 import {contactPurposeRestricted} from './contact-purpose-db.ts'
 import { evidenceStateOf, type EvidenceState } from './evidence-state.ts'
 import {currentnessHeld} from './currentness.ts'
@@ -425,7 +426,19 @@ export async function sendMessage(db: Database.Database, tenantId: string, id: s
   if (!pre) throw new OutreachError('not_found')
   if (pre.status === 'sent') return 'sent' // idempotent retry
   sendPreChecks(db, tenantId, pre)
+  { const held = await identityHold(db, tenantId, pre, d); if (held) throw new OutreachError(held) }
   return sendClaimed(db, tenantId, id, pre, d)
+}
+
+// The identity and cross-play account policy at the shared send boundary (#364), so every entry passes it: the send
+// route, autopilot and any direct call. The lead's identity is resolved first (and every lead emailed inside the
+// account window), on the graph's store (Postgres when the app runs on it); a lead held for identity review, or whose
+// identity cannot be decided (the store failed), is held: it fails closed before any send. Checked before the claim and
+// again after the token refresh, immediately before the hand-off. The allowlisted test-fixture send is exempt.
+async function identityHold(db: Database.Database, tenantId: string, m: { lead_id: string; to_email: string; test: number }, d: Deps): Promise<string | null> {
+  if (testFixtureSend(db, tenantId, m)) return null
+  const env = (d.env ?? process.env) as Record<string, string | undefined>
+  try { return await firstTouchHold(await graphStore(db, env), sqliteDb(db), tenantId, m.lead_id, { now: nowS(d), env }) } catch { return 'identity_unresolved' }
 }
 
 type StoredMsg = NonNullable<ReturnType<typeof getMsg>>
@@ -512,6 +525,7 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   if (!testFixtureSend(db,tenantId,m) && domainReviewHeld(db,tenantId,m.lead_id,m.to_email)) release(domainHoldCode(db,tenantId,m.lead_id,m.to_email))
   if (isSuppressed(db,tenantId,m.to_email)) release('suppressed')
   { const cool = crossPlayHold(db, tenantId, m.lead_id, m.to_email, { now: nowS(d) }); if (cool) release(cool) }
+  { const held = await identityHold(db, tenantId, m, d); if (held) release(held) }
   const final = getMsg(db,tenantId,id)!
   if (final.approved_hash !== hash(final.to_email,final.subject,final.body) || final.body !== m.body || final.subject !== m.subject || final.to_email !== m.to_email) release('changed_since_approval')
   if (tableExists(db,'sequences')) {

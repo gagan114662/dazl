@@ -26,7 +26,11 @@ const AT = 'COALESCE(sent_at, claimed_at, created_at)'
 export type CooldownHold = 'recipient_contacted_recently' | 'account_contacted_recently'
 export type IdentityHold = 'identity_review_required' | 'identity_unresolved'
 
-export function crossPlayHold(db: Database.Database, tenantId: string, leadId: string, toEmail: string, o: { now?: number; env?: Record<string, string | undefined> } = {}): CooldownHold | null {
+export function crossPlayHold(db: Database.Database, tenantId: string, leadId: string, toEmail: string, o: { now?: number; env?: Record<string, string | undefined> } = {}): CooldownHold | 'identity_unresolved' | null {
+  // An unreadable store cannot prove there is no cooldown: it holds, like an unresolved identity.
+  try { return crossPlayHoldOf(db, tenantId, leadId, toEmail, o) } catch { return 'identity_unresolved' }
+}
+function crossPlayHoldOf(db: Database.Database, tenantId: string, leadId: string, toEmail: string, o: { now?: number; env?: Record<string, string | undefined> }): CooldownHold | null {
   const now = o.now ?? Math.floor(Date.now() / 1000)
   const cd = cooldownDays(o.env)
   const email = toEmail.trim().toLowerCase()

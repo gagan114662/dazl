@@ -96,7 +96,10 @@ function draft(db: Database.Database, tenantId: string, to: string, words = 'A s
   const job = createJob(db, tenantId, { business_name: 'Scenario Co', industry: 'dental', location: 'Ohio' })
   db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
   const lead = randomBytes(12).toString('hex'), mid = randomBytes(12).toString('hex')
-  db.prepare('INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(lead, job, 'Scenario Dental (staging)', to, 'Opening a second location', 'https://scenario-dental.example.test/news', 'Scenario Dental is opening a second location. (synthetic)', 90)
+  // Each recipient is its own synthetic company with its own website: the scenarios are about one recipient each, and
+  // two recipients at one company would (rightly) meet the cross-play account cooldown (lib/accounts/cooldown.ts).
+  const who = to.split('@')[0].replace(/[^a-z0-9-]/gi, '-').toLowerCase()
+  db.prepare('INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence, company_domain) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(lead, job, `Scenario Dental ${who} (staging)`, to, 'Opening a second location', 'https://scenario-dental.example.test/news', 'Scenario Dental is opening a second location. (synthetic)', 90, `${who}.scenario-dental.example.test`)
   db.prepare("UPDATE leads SET human_confirmed_at = ?, human_confirmed_from = 'staging_scenario' WHERE id = ?").run(NOW, lead)
   db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body) VALUES (?, ?, ?, ?, 'A quick question', ?)").run(mid, tenantId, lead, to, words)
   return { lead, mid }
