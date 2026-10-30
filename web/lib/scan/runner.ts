@@ -909,9 +909,10 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     const audit: CandidateAudit[] = [] // run report: the fate of every candidate the verifier saw (instrumentation only)
     // #385: what the tenant already rejected is not brought back. Every list goes through this before the verifier; a drop
     // is recorded with the feedback id, so the run report says why the company is absent.
-    const rejections = await loadRejections(db, job.user_id)
-    const forget = <T extends LeadDraft>(list: T[]): T[] => {
-      const r = applyRejections(list, rejections)
+    // Read once, at the first verification (not at the start: no new checkpoint ahead of the provider calls).
+    let rejections: Promise<Rejections> | null = null
+    const forget = async <T extends LeadDraft>(list: T[]): Promise<T[]> => {
+      const r = applyRejections(list, await (rejections ??= loadRejections(db, job.user_id)))
       for (const d of r.dropped) audit.push({ key: `${dedupKey({ company: d.company, name: '' })}|${d.url}`, company: d.company, url: d.url, outcome: 'dropped', reason: `previously_rejected:${d.reason}:${d.feedback_id}` })
       return r.kept
     }
@@ -1050,7 +1051,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     let datesFinished: Awaited<ReturnType<typeof finishUndatedLeads>> = []
     let fallbackNotes: FallbackNote[] = []
     let recoveryTargets: FallbackTarget[] = []; let recoveryRan: { searched: boolean; why?: string } = { searched: false, why: 'not needed' }
-    let outcome = partial.outcome = await verifyLeads(forget(leads), fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [])
+    let outcome = partial.outcome = await verifyLeads(await forget(leads), fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [])
     const verifiedUrls = leads.map(l => l.source_url) // verify_provenance
     // A candidate whose OWN page blocks us is held with nothing readable. Look for the same company on other press (free news search): its pages go through the same extraction and verifier, and a
     // verified candidate for that company replaces the held row. Bounded (3 companies, one search+extraction), no extra model call for a run that disabled the paid fallback.
@@ -1071,7 +1072,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         if (found && found.length > 0) {
           ledger.candidates('fallback:news', found)
           verifiedUrls.push(...found.map(l => l.source_url))
-          const o2 = await verifyLeads(forget(found), fetchP, deps.now, judge, null, undefined, audit, icpForSources!.where ?? [])
+          const o2 = await verifyLeads(await forget(found), fetchP, deps.now, judge, null, undefined, audit, icpForSources!.where ?? [])
           fallbackNotes = mergeFallback(outcome, o2, blocked)
         }
       } catch (e) {
@@ -1106,7 +1107,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         if (fresh.length > 0) {
           assertOwned(db, job)
           verifiedUrls.push(...fresh.map(l => l.source_url))
-          const o2 = await verifyLeads(forget(fresh), fetchP, deps.now, judge, null, undefined, audit, icpForSources?.where ?? [])
+          const o2 = await verifyLeads(await forget(fresh), fetchP, deps.now, judge, null, undefined, audit, icpForSources?.where ?? [])
           const seenKeys = new Set(outcome.leads.map(dedupKey))
           for (const l of o2.leads) { const k = dedupKey(l); if (!seenKeys.has(k)) { seenKeys.add(k); outcome.leads.push(l) } }
           const seenReview = new Set(outcome.review.map(dedupKey))
