@@ -236,7 +236,7 @@ export const anthropicCountTokens: TokenCounter = async (apiKey, model, prompt, 
 // it reported none. Without it, research is refused as before (a run with its own max_usd).
 // settle: when true, a completion is settled to what the vendor reported after the call (completionCost): the reservation
 // moves to the actual cost, an overrun past the limit is recorded and refuses every later reservation, no usage keeps the
-// full reservation and refuses later calls through these guards, and an unknown cost (unpriced served model, invalid
+// full reservation (the bound the call was admitted under), and an unknown cost (unpriced served model, invalid
 // counts) counts the rest of the limit as spent (for a pool: its shortest window). complete() then goes through completeDetailed so its usage is seen too.
 // If that accounting cannot be saved (retried once), the call's result is withheld and SpendAccountingFailed is thrown.
 // Without it, completions keep their worst-case reservation (the scan runner today).
@@ -292,6 +292,4 @@ async function settleCompletion(g: SpendGuard[], held: Reservation, d: DetailedC
       throw new SpendAccountingFailed(e)
     }
   }
-  // No usage: nothing says what the call really used, so no later call goes through these guards.
-  if ('unknown' in cost && cost.unknown === 'no_usage') for (const x of g) x.refused = true
 }
