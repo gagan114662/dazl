@@ -25,4 +25,3 @@ export function memberFail(e: unknown): NextResponse {
   if (e instanceof MemberError) return NextResponse.json({ error: e.code }, { status: MEMBER_ERROR_STATUS[e.code] })
   throw e
 }
-
