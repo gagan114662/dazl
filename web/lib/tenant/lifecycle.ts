@@ -28,7 +28,7 @@
 // explicit decision on opt-outs (suppressions). The owner's decisions are listed in docs/TENANT-LIFECYCLE.md.
 import { asDb, type DbLike, type Param, type Tx, type TxBody } from '../db/client.ts'
 import { classify, type Scope } from './scope.ts'
-import { tableColumns, UNGUARDED } from '../db/tenant-guard.ts'
+import { foreignKeys, tableColumns, UNGUARDED } from '../db/tenant-guard.ts'
 
 export type DeletionState = 'requested' | 'revoked' | 'cancelled' | 'erased' | 'completed'
 const ORDER: DeletionState[] = ['requested', 'revoked', 'cancelled', 'erased', 'completed']
@@ -105,6 +105,27 @@ async function refuseSharedWorkspace(db: ReturnType<typeof asDb>, tenant: string
   if (await db.get('SELECT 1 FROM memberships WHERE member_id = ? AND tenant_id <> ?', [tenant, tenant])) throw new Error('the founder belongs to another workspace: deletion refused (docs/TENANT-LIFECYCLE.md, decision 9)')
 }
 
+// What a retention policy cannot keep, because deleting something else removes or rewrites the retained rows: a
+// parent-scoped table whose parent is not retained (the parent's deletion takes its rows), or a foreign key whose ON
+// DELETE action (CASCADE, SET NULL, SET DEFAULT) fires from a table that is deleted. Credential tables, users and
+// organizations are always deleted, so nothing can depend on them and be kept. Empty = the policy is satisfiable as
+// written; deletion refuses otherwise, before any tombstone or delete (never a silent widening of the retention).
+export function retentionProblems(scope: Map<string, Scope>, fks: { table: string; column: string; ref: string; onDelete: string }[], retain: Set<string>): string[] {
+  const out: string[] = []
+  const alwaysDeleted = (t: string) => CREDENTIAL_TABLES.includes(t) || t === 'users' || t === 'organizations'
+  for (const t of [...retain].sort()) {
+    const s = scope.get(t)
+    const deps: { on: string; how: string }[] = []
+    if (s?.how === 'via') deps.push({ on: s.parent, how: `it is scoped through ${s.parent}` })
+    for (const f of fks.filter(f => f.table === t && f.ref !== t && ['CASCADE', 'SET NULL', 'SET DEFAULT'].includes(f.onDelete))) deps.push({ on: f.ref, how: `${t}.${f.column} references ${f.ref} ON DELETE ${f.onDelete}` })
+    for (const d of deps) {
+      if (alwaysDeleted(d.on)) out.push(`${t} cannot be retained: ${d.how}, and ${d.on} is always deleted`)
+      else if (!retain.has(d.on) && (scope.has(d.on))) out.push(`${t} cannot be retained without ${d.on}: ${d.how}, so deleting ${d.on} would remove or change its rows (retain ${d.on} too, or do not retain ${t})`)
+    }
+  }
+  return [...new Set(out)]
+}
+
 function validPolicy(p: DeletionPolicy | undefined, scope: Map<string, Scope>): DeletionPolicy {
   if (!p || (p.suppressions !== 'retain' && p.suppressions !== 'erase')) throw new Error('deletion policy must decide suppressions: retain or erase')
   for (const t of p.retainTables ?? []) {
@@ -124,6 +145,9 @@ export async function deleteTenant(d: DbLike, tenant: string, o: { policy?: Dele
   if (!t) {
     await refuseSharedWorkspace(db, tenant)
     const policy = validPolicy(o.policy, scope)
+    const keep = new Set([...(policy.retainTables ?? []), ...(policy.suppressions === 'retain' ? ['suppressions'] : []), ...Object.keys(ALWAYS_RETAINED)].filter(x => scope.has(x)))
+    const unsatisfiable = retentionProblems(scope, await foreignKeys(db), keep)
+    if (unsatisfiable.length) throw new Error(`retention policy cannot be honoured: ${unsatisfiable.join('; ')}`)
     if (!o.requestedBy) throw new Error('requestedBy is required (who asked, for the audit record)')
     await db.run("INSERT INTO tenant_tombstones (deleted_tenant, requested_at, requested_by, state, policy) VALUES (?, ?, ?, 'requested', ?) ON CONFLICT (deleted_tenant) DO NOTHING",
       [tenant, now, o.requestedBy.slice(0, 200), JSON.stringify(policy)])

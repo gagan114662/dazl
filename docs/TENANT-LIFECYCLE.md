@@ -35,6 +35,12 @@ Each step is one transaction and moves the tombstone (`tenant_tombstones`) to th
 - A failed step rolls back as a whole and leaves the state at the last completed step. Calling `deleteTenant` again resumes from there with the stored policy.
 - Re-running a completed deletion changes nothing.
 - `until` stops after a given state, for staged deletion.
+- **Retention closure.** A retained table must be able to survive the deletion. Before writing the tombstone or deleting anything, deletion refuses a policy that cannot be honoured as written, and changes nothing. Refused:
+  - a parent-scoped table kept without its parent (`lead_sources` without `leads`, `leads` without `scan_jobs`): deleting the parent removes its rows;
+  - a table with a foreign key whose `ON DELETE` (`CASCADE`, `SET NULL`, `SET DEFAULT`) fires from a deleted table (`commenter_batches.job_id` → `scan_jobs ON DELETE SET NULL`): it would rewrite the retained rows;
+  - anything that depends on a credential table, `users` or `organizations`, which are always deleted.
+
+  The retention is never silently widened. Keeping a parent while its children go is allowed. Retained rows are left byte-identical.
 - The tombstone holds the tenant id, who asked, when, the policy and what was retained. It holds no tenant content.
 
 **Recreation guard.** A `BEFORE INSERT` trigger on every tenant-scoped table (SQLite at startup; Postgres migration `0017`) refuses a row for a tombstoned tenant, or under one of its deleted parent rows. A scan still running when the deletion starts, a late scheduler tick or a stale request therefore cannot bring erased data back. A late `UPDATE` matches no rows. Retained tables are guarded too: nothing new is added for a deleted tenant.

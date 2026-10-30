@@ -13,7 +13,7 @@ import path from 'node:path'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { createQueryJob, finishJob } from '../lib/scan/store-db.ts'
-import { deleteTenant, exportTenant, reapplyTombstones, tenantScope, tombstone, tombstoneLedgerEntry, EXPORT_EXCLUDED } from '../lib/tenant/lifecycle.ts'
+import { deleteTenant, exportTenant, reapplyTombstones, retentionProblems, tenantScope, tombstone, tombstoneLedgerEntry, EXPORT_EXCLUDED } from '../lib/tenant/lifecycle.ts'
 import { marker, seedTenantSqlite, snapshotSqlite, tenantTablesSqlite } from './helpers/tenant-seed-sqlite.ts'
 
 const A = 'tenant-aaaa', B = 'tenant-bbbb', NOW = 1_900_000_000
@@ -169,4 +169,48 @@ test('shared workspaces are refused, never guessed: a team workspace, other memb
     assert.equal(await tombstone(sqliteDb(db), A), undefined, `${name}: no tombstone`)
     assert.deepEqual(snapshotSqlite(db, A), before, `${name}: nothing changed`)
   }
+})
+
+// Retention cannot be silently broken by a cascade (review hold on 9cccf1d): a retained table whose parent, or a table
+// it references with ON DELETE CASCADE / SET NULL, would be deleted is refused before anything happens; a satisfiable
+// retention keeps every retained row byte-identical.
+test('retention closure: dependent-table retention without its parent is refused with no effects', async () => {
+  for (const [retainTables, why] of [
+    [['lead_sources'], /lead_sources cannot be retained without leads/],                       // the review's reproduction
+    [['leads'], /leads cannot be retained without scan_jobs/],                                  // middle of the chain
+    [['commenter_batches'], /commenter_batches\.job_id references scan_jobs ON DELETE SET NULL/], // would rewrite retained rows
+  ] as [string[], RegExp][]) {
+    const db = fixture(), before = snapshotSqlite(db, A)
+    await assert.rejects(deleteTenant(sqliteDb(db), A, { policy: { suppressions: 'erase', retainTables }, requestedBy: 'test' }), why, retainTables.join())
+    assert.equal(await tombstone(sqliteDb(db), A), undefined, 'no tombstone')
+    assert.deepEqual(snapshotSqlite(db, A), before, 'nothing deleted')
+    // the refusal leaves nothing behind: a satisfiable deletion afterwards completes
+    assert.equal((await deleteTenant(sqliteDb(db), A, { policy: { suppressions: 'erase' }, requestedBy: 'test' })).state, 'completed')
+  }
+})
+
+test('retention closure: a retained parent keeps its rows while its unretained children go; retained descendants are kept intact', async () => {
+  const cases: { retain: string[]; kept: string[]; gone: string[] }[] = [
+    { retain: ['scan_jobs'], kept: ['scan_jobs'], gone: ['leads', 'lead_sources', 'scan_source_runs', 'commenter_batches'] },
+    { retain: ['scan_jobs', 'leads', 'lead_sources'], kept: ['scan_jobs', 'leads', 'lead_sources'], gone: ['scan_source_runs', 'scan_run_report'] },
+    { retain: ['scan_jobs', 'commenter_batches'], kept: ['scan_jobs', 'commenter_batches'], gone: ['commenter_rows', 'leads'] },
+  ]
+  for (const c of cases) {
+    const db = fixture(), before = snapshotSqlite(db, A), bBefore = snapshotSqlite(db, B)
+    const t = await deleteTenant(sqliteDb(db), A, { policy: { suppressions: 'erase', retainTables: c.retain }, requestedBy: 'test' })
+    assert.equal(t.state, 'completed', c.retain.join())
+    const after = snapshotSqlite(db, A)
+    for (const k of c.kept) { assert.notEqual(before[k], '[]', `${k} had rows`); assert.equal(after[k], before[k], `${k} retained byte-identical (${c.retain.join()})`) }
+    for (const g of c.gone) assert.equal(after[g], '[]', `${g} deleted (${c.retain.join()})`)
+    const retained = JSON.parse(t.retained!)
+    for (const k of c.kept) assert.equal(retained[k], JSON.parse(before[k]).length, `${k} count recorded`)
+    assert.deepEqual(snapshotSqlite(db, B), bBefore)
+  }
+})
+
+test('retention closure: nothing that depends on a credential table, users or organizations can be retained', () => {
+  const scope = new Map([['token_log', { table: 'token_log', how: 'direct' as const, col: 'tenant_id' }], ['gmail_accounts', { table: 'gmail_accounts', how: 'direct' as const, col: 'tenant_id' }]])
+  const fks = [{ table: 'token_log', column: 'account', ref: 'gmail_accounts', onDelete: 'CASCADE' }]
+  assert.match(retentionProblems(scope, fks, new Set(['token_log'])).join(), /token_log cannot be retained: .* gmail_accounts is always deleted/)
+  assert.deepEqual(retentionProblems(scope, [{ ...fks[0], onDelete: 'NO ACTION' }], new Set(['token_log'])), [], 'a reference that does nothing on delete is no dependency')
 })

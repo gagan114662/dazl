@@ -17,6 +17,20 @@ export async function tableColumns(db: Db): Promise<Map<string, string[]>> {
   return cols
 }
 
+// Every foreign key on a live store, either engine: the referencing table and column, the referenced table, and what a
+// delete of the referenced row does (CASCADE, SET NULL, ...), upper-cased.
+export async function foreignKeys(db: Db): Promise<{ table: string; column: string; ref: string; onDelete: string }[]> {
+  const rows = db.kind === 'pg'
+    ? await db.all<{ t: string; c: string; r: string; d: string }>(`SELECT tc.table_name AS t, kcu.column_name AS c, ccu.table_name AS r, rc.delete_rule AS d
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = tc.constraint_name AND kcu.table_schema = tc.table_schema
+        JOIN information_schema.referential_constraints rc ON rc.constraint_name = tc.constraint_name AND rc.constraint_schema = tc.table_schema
+        JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+        WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = current_schema()`)
+    : await db.all<{ t: string; c: string; r: string; d: string }>(`SELECT m.name AS t, f."from" AS c, f."table" AS r, f.on_delete AS d FROM sqlite_master m JOIN pragma_foreign_key_list(m.name) f WHERE m.type = 'table'`)
+  return rows.map(r => ({ table: r.t, column: r.c, ref: r.r, onDelete: String(r.d).toUpperCase() }))
+}
+
 function scopeOfSqlite(db: Database.Database): Scope[] {
   const rows = db.prepare("SELECT m.name AS t, p.name AS c FROM sqlite_master m JOIN pragma_table_info(m.name) p WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%'").all() as { t: string; c: string }[]
   const cols = new Map<string, string[]>(); for (const r of rows) cols.set(r.t, [...(cols.get(r.t) ?? []), r.c])
