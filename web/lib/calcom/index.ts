@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type { Db, Tx, TxBody } from '../db/client.ts'
-import { contactForEmailTx, syncAccountGraph } from '../accounts/graph.ts'
+import { contactForEmailTx, resolveLead } from '../accounts/graph.ts'
 
 // Cal.com booking webhooks -> pipeline stage. A booking is matched to a lead by the attendee's
 // normalized email against lead.contact. Zero or several matches stay "unmatched" - a booking is
@@ -65,32 +65,28 @@ export const normalizeEmail = (s: string) => s.trim().toLowerCase()
 // booking, the leads' stage and the booking's links land together. A duplicate is skipped by the primary key
 // (ON CONFLICT DO NOTHING): the table has no CHECK, and parseBooking always gives a uid and an email, so this skips
 // exactly what INSERT OR IGNORE skipped.
-// Matching, in order:
-//   1. the canonical contact (lib/accounts/graph.ts): the email names one contact and every lead carrying it is linked
-//      to that contact -> the same person found by several plays; each of those leads is booked, the booking points at
-//      the contact and at its newest lead.
-//   2. otherwise exactly one lead with this contact email across the tenant's jobs -> book it.
-// Anything else (no lead, several leads not resolved to one contact, a lead held for review) stays unmatched.
+// Matching: the canonical contact only (lib/accounts/graph.ts). Every lead of the tenant carrying the attendee's email is
+// resolved first (whatever backlog a bounded sync left); the booking matches when the email names one contact and every
+// one of those leads is linked to it (the same person found by several plays: each lead is booked, the booking points at
+// the contact and its newest lead). A lead held for identity review, a lead linked without that contact, several
+// candidate contacts, or an identity that could not be resolved leaves the booking unmatched: never guessed, and a
+// single lead with that email is not enough on its own any more (it may be quarantined against another company).
 export async function recordBooking(db: Db, tenantId: string, b: { uid: string; email: string; name: string | null }): Promise<'duplicate' | 'matched' | 'unmatched'> {
   const email = normalizeEmail(b.email)
-  // Link the tenant's newest leads first; if that fails the booking still records, matched by rule 2 only.
-  await syncAccountGraph(db, tenantId).catch(() => {})
+  let resolved = true
+  try {
+    const leads = await db.all<{ id: string }>('SELECT l.id FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ? AND l.contact IS NOT NULL AND lower(trim(l.contact)) = ? ORDER BY l.id LIMIT 51', [tenantId, email])
+    if (leads.length > 50) resolved = false
+    else for (const l of leads) await resolveLead(db, tenantId, l.id)
+  } catch { resolved = false }
   return db.tx(function* (t: Tx): TxBody<'duplicate' | 'matched' | 'unmatched'> {
     const ins = yield* t.run('INSERT INTO calcom_bookings (tenant_id, booking_uid, attendee_email, attendee_name) VALUES (?, ?, ?, ?) ON CONFLICT (tenant_id, booking_uid) DO NOTHING', [tenantId, b.uid, email, b.name])
     if (ins.changes === 0) return 'duplicate'
-    const c = yield* contactForEmailTx(t, tenantId, email)
-    if (c) {
-      for (const id of c.lead_ids) yield* t.run("UPDATE leads SET stage = 'booked_call' WHERE id = ?", [id])
-      yield* t.run('UPDATE calcom_bookings SET lead_id = ?, contact_id = ? WHERE tenant_id = ? AND booking_uid = ?', [c.lead_ids[c.lead_ids.length - 1], c.contact_id, tenantId, b.uid])
-      return 'matched'
-    }
-    const rows = yield* t.all<{ id: string }>('SELECT l.id FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ? AND l.contact IS NOT NULL AND lower(l.contact) = ?', [tenantId, email])
-    if (rows.length === 1) {
-      yield* t.run("UPDATE leads SET stage = 'booked_call' WHERE id = ?", [rows[0].id])
-      yield* t.run('UPDATE calcom_bookings SET lead_id = ? WHERE tenant_id = ? AND booking_uid = ?', [rows[0].id, tenantId, b.uid])
-      return 'matched'
-    }
-    return 'unmatched'
+    const c = resolved ? yield* contactForEmailTx(t, tenantId, email) : null
+    if (!c) return 'unmatched'
+    for (const id of c.lead_ids) yield* t.run("UPDATE leads SET stage = 'booked_call' WHERE id = ?", [id])
+    yield* t.run('UPDATE calcom_bookings SET lead_id = ?, contact_id = ? WHERE tenant_id = ? AND booking_uid = ?', [c.lead_ids[c.lead_ids.length - 1], c.contact_id, tenantId, b.uid])
+    return 'matched'
   })
 }
 

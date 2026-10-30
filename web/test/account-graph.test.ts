@@ -67,7 +67,7 @@ bothEngines('an email domain stands in for a website only when the name agrees; 
   const a = await lead(db, p1, 'Pine Co', { contact: 'ana@pine.example' })
   const b = await lead(db, p2, 'Pine', { contact: 'ben@pine.example' })
   const c = await lead(db, p2, 'Cedar Group', { contact: 'cal@pine.example' })
-  // The same person's email on a lead whose website says another company: never moved onto it.
+  // The same person's email on a lead whose website says another company: never that company's contact.
   const d = await lead(db, p2, 'Other Works', { domain: 'other-works.example', contact: 'ana@pine.example' })
   await syncAccountGraph(db, 'T', { now: NOW })
   const [ka, kb, kc, kd] = await Promise.all([a, b, c, d].map(l => link(db, 'T', l)))
@@ -75,8 +75,9 @@ bothEngines('an email domain stands in for a website only when the name agrees; 
   assert.deepEqual([ka.basis, kb.basis, kb.account_id], ['email_domain', 'email_domain', ka.account_id])
   assert.notEqual(ka.contact_id, kb.contact_id, 'two people at one company')
   assert.deepEqual([kc.status, kc.reason], ['quarantined', 'email domain matches an account with another name'])
-  assert.deepEqual([kd.status, kd.reason], ['quarantined', 'contact email belongs to another account'])
-  assert.equal(await count(db, "SELECT COUNT(*) AS n FROM tenant_accounts WHERE tenant_id = 'T' AND domain = 'other-works.example'", []), 1, 'its own account exists; only the link waits')
+  assert.deepEqual([kd.status, kd.contact_id, kd.reason], ['linked', null, 'contact email is at another company domain'], 'its own account, no contact')
+  assert.equal(kd.account_id, (await db.get<{ id: string }>("SELECT id FROM tenant_accounts WHERE tenant_id = 'T' AND domain = 'other-works.example'"))?.id)
+  assert.notEqual(kd.account_id, ka.account_id)
   // The quarantined email makes the person ambiguous: a booking for it does not resolve to the contact.
   assert.equal(await contactForEmail(db, 'T', 'ana@pine.example'), null)
   assert.ok(await contactForEmail(db, 'T', 'ben@pine.example'))
@@ -100,6 +101,48 @@ bothEngines('booking: the same person found by two plays books both leads throug
   assert.equal((await listBookings(db, 'T') as { lead_id: string | null }[]).filter(r => r.lead_id === null).length, 1)
   // Another tenant's booking for the same address never touches this tenant.
   assert.equal(await recordBooking(db, 'U', { uid: 'bk3', email: 'jane@acme-roofing.example', name: null }), 'unmatched')
+})
+
+bothEngines('within one sync a verified website founds the account before an older email-domain-only sighting can', async ({ db }) => {
+  const p1 = await play(db, 'T'), p2 = await play(db, 'T')
+  // Seen first, with only an email at the company's domain and a name that is not the company's.
+  const weak = await lead(db, p1, 'Jane Consulting', { contact: 'jane@acme-roofing.example' })
+  const site = await lead(db, p2, 'Acme Roofing', { domain: 'acme-roofing.example', contact: 'bob@acme-roofing.example' })
+  await syncAccountGraph(db, 'T', { now: NOW })
+  const [kw, ks] = [await link(db, 'T', weak), await link(db, 'T', site)]
+  assert.deepEqual([ks.status, ks.basis], ['linked', 'company_domain'])
+  assert.equal((await db.get<{ name: string }>("SELECT name FROM tenant_accounts WHERE tenant_id = 'T' AND id = ?", [ks.account_id]))?.name, 'Acme Roofing', 'named by the website sighting')
+  assert.deepEqual([kw.status, kw.reason], ['quarantined', 'email domain matches an account with another name'])
+})
+
+// Instinct's #364 review of d77d409e: the single-email fallback booked a lead held for identity review.
+bothEngines('booking: a lead quarantined against another company is never booked by its email; a unique resolved identity is', async ({ db }) => {
+  const p1 = await play(db, 'T'), p2 = await play(db, 'T')
+  const original = await lead(db, p1, 'OriginalCo', { domain: 'shared.example', contact: 'ann@shared.example' })
+  await syncAccountGraph(db, 'T', { now: NOW })
+  const bob = await lead(db, p2, 'UnrelatedCo', { contact: 'Bob@shared.example' })
+  assert.equal(await recordBooking(db, 'T', { uid: 'bk-bob', email: 'bob@shared.example', name: 'Bob' }), 'unmatched')
+  assert.equal((await link(db, 'T', bob)).status, 'quarantined', 'resolved by the booking itself, and held')
+  assert.equal((await db.get<{ stage: string | null }>('SELECT stage FROM leads WHERE id = ?', [bob]))?.stage, null)
+  assert.equal((await db.get<{ lead_id: string | null }>("SELECT lead_id FROM calcom_bookings WHERE tenant_id = 'T' AND booking_uid = 'bk-bob'"))?.lead_id, null)
+  // Positive control: OriginalCo's own contact, one resolved identity.
+  assert.equal(await recordBooking(db, 'T', { uid: 'bk-ann', email: 'ann@shared.example', name: 'Ann' }), 'matched')
+  assert.equal((await db.get<{ stage: string | null }>('SELECT stage FROM leads WHERE id = ?', [original]))?.stage, 'booked_call')
+})
+
+bothEngines('booking: a backlog bigger than a sync batch does not hide the attendee; a store failure leaves it unmatched', async ({ db }) => {
+  const p = await play(db, 'T')
+  for (let i = 0; i < 501; i++) await lead(db, p, `Filler ${i}`, { domain: `filler-${i}.example`, contact: `buyer@filler-${i}.example` })
+  const target = await lead(db, p, 'Cedar Works', { domain: 'cedar-works.example', contact: 'sam@cedar-works.example' })
+  assert.equal(await recordBooking(db, 'T', { uid: 'bk-sam', email: 'sam@cedar-works.example', name: null }), 'matched')
+  assert.equal((await link(db, 'T', target)).status, 'linked')
+  const other = await lead(db, p, 'Birch Works', { domain: 'birch-works.example', contact: 'lee@birch-works.example' })
+  await db.run('ALTER TABLE tenant_identity_aliases RENAME TO tenant_identity_aliases_unavailable')
+  try {
+    // Recorded, but not matched: the identity could not be resolved, so no lead is guessed.
+    assert.equal(await recordBooking(db, 'T', { uid: 'bk-lee', email: 'lee@birch-works.example', name: null }), 'unmatched')
+  } finally { await db.run('ALTER TABLE tenant_identity_aliases_unavailable RENAME TO tenant_identity_aliases') }
+  assert.equal((await db.get<{ stage: string | null }>('SELECT stage FROM leads WHERE id = ?', [other]))?.stage, null)
 })
 
 bothEngines('merge, split and assign: each by a person, recorded with what moved; later sightings follow the merged account', async ({ db }) => {

@@ -18,7 +18,7 @@
 // On the Db layer (both engines). Tenant scope: every statement is keyed by the tenant id, and a lead is only read
 // through the tenant's own scan_jobs.
 import { randomBytes } from 'node:crypto'
-import { asDb, type DbLike, type Tx, type TxBody } from '../db/client.ts'
+import { asDb, type Db, type DbLike, type Tx, type TxBody } from '../db/client.ts'
 
 export type LinkStatus = 'linked' | 'quarantined'
 export type LinkBasis = 'company_domain' | 'email_domain' | 'name_only' | 'manual'
@@ -45,6 +45,7 @@ export const normName = (n: string | null | undefined): string | null => {
 }
 const emailDomain = (email: string | null) => { const d = email?.split('@')[1] ?? null; return d && !CONSUMER.has(d) ? normDomain(d) : null }
 const newId = () => randomBytes(12).toString('hex')
+const sameSite = (a: string, b: string) => a === b || a.endsWith(`.${b}`) || b.endsWith(`.${a}`)
 
 export function migrateAccountGraph(db: { exec(sql: string): unknown }): void {
   db.exec(`
@@ -153,6 +154,12 @@ function* resolveOne(t: Tx, tenantId: string, l: LeadRow, at: number): TxBody<Le
   if (name) yield* addAlias(t, tenantId, 'name', name, account, at)
 
   let contact: string | null = null
+  // An address at another company's domain is not this account's contact (the lead still belongs to its account; it
+  // just has no canonical contact, so nothing resolves a booking or a cooldown through it).
+  const acctDomain = (yield* t.get<{ domain: string | null }>('SELECT domain FROM tenant_accounts WHERE tenant_id = ? AND id = ?', [tenantId, account]))?.domain ?? null
+  if (email && mailDomain && acctDomain && !sameSite(mailDomain, acctDomain)) {
+    return yield* write({ account_id: account, contact_id: null, status: 'linked', basis, reason: 'contact email is at another company domain' })
+  }
   if (email) {
     const owner = yield* aliasOwner(t, tenantId, 'email', email)
     if (owner) {
@@ -171,21 +178,33 @@ function* resolveOne(t: Tx, tenantId: string, l: LeadRow, at: number): TxBody<Le
 
 const LEAD_SQL = `SELECT l.id, l.scan_job_id AS job_id, l.company, l.name, l.contact, l.company_domain FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id`
 
-// Links every lead of the tenant not yet linked, oldest first (the first sighting founds the account), at most `limit`
-// per call. Each lead is its own transaction; a race with another sync on the same new domain or email is retried.
+// Links every lead of the tenant not yet linked, at most `limit` per call: leads with a verified website first (the strong
+// key founds an account before an email domain or a bare name can), then oldest first. Each lead is its own transaction; a race with another sync on the same new domain or email is retried.
 export async function syncAccountGraph(d: DbLike, tenantId: string, opts: { limit?: number; now?: number } = {}): Promise<{ linked: number; quarantined: number; remaining: boolean }> {
   const db = asDb(d)
   const at = opts.now ?? Math.floor(Date.now() / 1000), limit = opts.limit ?? 500
-  const leads = await db.all<LeadRow>(`${LEAD_SQL} WHERE j.user_id = ? AND NOT EXISTS (SELECT 1 FROM tenant_lead_links k WHERE k.tenant_id = ? AND k.lead_id = l.id) ORDER BY l.created_at, l.id LIMIT ?`, [tenantId, tenantId, limit + 1])
+  const leads = await db.all<LeadRow>(`${LEAD_SQL} WHERE j.user_id = ? AND NOT EXISTS (SELECT 1 FROM tenant_lead_links k WHERE k.tenant_id = ? AND k.lead_id = l.id) ORDER BY CASE WHEN l.company_domain IS NULL THEN 1 ELSE 0 END, l.created_at, l.id LIMIT ?`, [tenantId, tenantId, limit + 1])
   const out = { linked: 0, quarantined: 0, remaining: leads.length > limit }
   for (const l of leads.slice(0, limit)) {
-    let link: LeadLink | undefined
-    for (let attempt = 0; attempt < 3 && !link; attempt++) {
-      try { link = await db.tx(function* (t: Tx) { return yield* resolveOne(t, tenantId, l, at) }) } catch (e) { if (!(e instanceof AliasRace) || attempt === 2) throw e }
-    }
-    if (link!.status === 'linked') out.linked++; else out.quarantined++
+    const link = await resolveRow(db, tenantId, l, at)
+    if (link.status === 'linked') out.linked++; else out.quarantined++
   }
   return out
+}
+
+async function resolveRow(db: Db, tenantId: string, l: LeadRow, at: number): Promise<LeadLink> {
+  for (let attempt = 0; ; attempt++) {
+    try { return await db.tx(function* (t: Tx) { return yield* resolveOne(t, tenantId, l, at) }) } catch (e) { if (!(e instanceof AliasRace) || attempt === 2) throw e }
+  }
+}
+
+// One lead, whatever else is waiting: its existing link, or the link decided now. null when the lead is not this
+// tenant's. A caller that needs the lead's identity (a first touch, a booking) resolves it here rather than hoping a
+// bounded sync reached it.
+export async function resolveLead(d: DbLike, tenantId: string, leadId: string, opts: { now?: number } = {}): Promise<LeadLink | null> {
+  const db = asDb(d)
+  const l = await db.get<LeadRow>(`${LEAD_SQL} WHERE l.id = ? AND j.user_id = ?`, [leadId, tenantId])
+  return l ? resolveRow(db, tenantId, l, opts.now ?? Math.floor(Date.now() / 1000)) : null
 }
 
 export async function leadLink(d: DbLike, tenantId: string, leadId: string): Promise<LeadLink | null> {
