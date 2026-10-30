@@ -12,7 +12,11 @@
 // and writing the SQLite file, splitting the data between two stores, so the instance is not ready while any remain.
 // queue (#355): the shared queue's alerts (lib/queue/alerts.ts: a lane waiting too long, dead letters, expired claims),
 // as kinds and counts only. They inform, they do not make the instance unready: a backlog is not a reason to take an
-// instance out of rotation, and the alert reaches the error reporter when the set changes.
+// instance out of rotation, and the alert reaches the error reporter when the set changes. The statistics they are
+// read from (DbQueue.stats, a GROUP BY over work_queue) are not part of the mandatory queue check: they are read only
+// after the queue answered, under their own smaller budget (statsTimeoutMs), and when they throw, hang or run over it
+// the body says alerts null with the reason while the instance stays ready. Only the queue's reachability SELECT can
+// fail readiness.
 import type { Db } from '../db/client.ts'
 import { captureError } from './errors.ts'
 import { DbQueue } from '../queue/db.ts'
@@ -24,8 +28,10 @@ export interface Readiness {
   ok: boolean
   // applied: the highest PG migration recorded in the store (null on SQLite, or when it could not be read)
   store: { engine: Db['kind'] | 'unknown'; migrations: { shipped: number; applied: number | null }; raw_sqlite_modules: number }
-  // null when the queue could not be read (checks.queue says why)
-  queue: { alerts: QueueAlert[] } | null
+  // The alerts when the queue answered and its statistics were read within their own budget; alerts null with the
+  // reason when the queue answered but the statistics could not be read (informational: the instance stays ready);
+  // null when the queue itself did not answer (checks.queue says why) or was not tried because the store failed.
+  queue: { alerts: QueueAlert[] } | { alerts: null; reason: 'error' | 'timeout' } | null
   checks: {
     store: CheckResult & { engine: Db['kind'] | 'unknown' }
     schema: CheckResult | { ok: true; skipped: 'sqlite' }
@@ -46,6 +52,8 @@ export interface ReadinessDeps {
   // the process environment to check against REQUIRED_ENV; the route passes process.env, unit callers may leave it out
   env?: () => Record<string, string | undefined>
   timeoutMs?: number
+  // budget for the optional queue statistics (the alerts), separate from the checks': min(timeoutMs, 500 ms) by default
+  statsTimeoutMs?: number
   clock?: () => number
 }
 
@@ -106,7 +114,7 @@ export async function timed(name: string, f: () => Promise<'ok' | 'behind'>, tim
 }
 
 export async function readiness(d: ReadinessDeps): Promise<Readiness> {
-  const timeoutMs = d.timeoutMs ?? 2000, clock = d.clock ?? Date.now
+  const timeoutMs = d.timeoutMs ?? 2000, statsMs = d.statsTimeoutMs ?? Math.min(timeoutMs, 500), clock = d.clock ?? Date.now
   let db: Db | undefined
   const store = await timed('store', async () => { db = await d.db(); await db.get('SELECT 1 AS x'); return 'ok' }, timeoutMs, clock)
   const engine = db?.kind ?? 'unknown'
@@ -119,16 +127,22 @@ export async function readiness(d: ReadinessDeps): Promise<Readiness> {
       applied = Number(row?.v ?? 0)
       return applied >= shipped ? 'ok' : 'behind'
     }, timeoutMs, clock)
-  // the shared scan queue: its table answers in the configured store (reachability only; no tenant row is returned)
-  let alerts: QueueAlert[] | null = null
+  // the shared scan queue, mandatory: its table answers in the configured store (reachability only; no tenant row is
+  // returned)
   const queue: CheckResult = !store.ok ? { ok: false, ms: 0, reason: store.reason === 'timeout' ? 'timeout' : 'error' }
-    : await timed('queue', async () => {
-      await db!.get('SELECT 1 AS x FROM work_queue LIMIT 1')
-      // The alerts are extra: when they cannot be read the queue still answered, and the body says null.
-      try { alerts = queueAlerts(await new DbQueue(db!).stats()) } catch { alerts = null }
-      return 'ok'
-    }, timeoutMs, clock)
-  if (alerts) reportQueueAlerts(alerts)
+    : await timed('queue', async () => { await db!.get('SELECT 1 AS x FROM work_queue LIMIT 1'); return 'ok' }, timeoutMs, clock)
+  // Its alert statistics, informational: read only once the queue answered, under their own budget, outside the
+  // mandatory check. A read that throws, hangs or runs over budget leaves the instance ready and the body says so
+  // (alerts null with the reason); the cause goes to the reporter. The timer wins against a hanging read and the read
+  // is left behind (timed() races it, nothing awaits it afterwards), so it cannot hold the probe or the response.
+  let alerts: QueueAlert[] | null = null
+  const stats = !queue.ok ? null
+    : await timed('queue:stats', async () => { alerts = queueAlerts(await new DbQueue(db!).stats()); return 'ok' }, statsMs, clock)
+  // alerts read over budget (synchronous work the timer could not preempt) count as not read, like any other check
+  const read = stats?.ok ? alerts : null
+  if (read) reportQueueAlerts(read)
+  const queueBody: Readiness['queue'] = stats === null ? null
+    : read ? { alerts: read } : { alerts: null, reason: !stats.ok && stats.reason === 'timeout' ? 'timeout' : 'error' }
   const sqlite = await timed('sqlite', async () => { d.sqlite().prepare('SELECT 1').get(); return 'ok' }, timeoutMs, clock)
   const raw = d.rawSqliteModules?.() ?? 0
   const split = engine === 'sqlite' ? { ok: true as const, skipped: 'sqlite' as const } : { ok: raw === 0, raw_sqlite_modules: raw }
@@ -136,7 +150,7 @@ export async function readiness(d: ReadinessDeps): Promise<Readiness> {
   return {
     ok: store.ok && schema.ok && queue.ok && sqlite.ok && split.ok && env.ok,
     store: { engine, migrations: { shipped, applied }, raw_sqlite_modules: raw },
-    queue: alerts ? { alerts } : null,
+    queue: queueBody,
     checks: { store: { ...store, engine }, schema, queue, sqlite, split, env },
   }
 }

@@ -154,7 +154,10 @@ The SQL backend is a documented later step, not part of this slice:
 - **Alerts** (`lib/queue/alerts.ts` over `DbQueue.stats()`): a kind whose oldest due item waited past its limit
   (15 min reply checks, 5 min suppression, 30 min follow-ups and sequences, 60 min otherwise), more than 20 dead
   letters, or an expired claim nobody reaped. `/api/ready` reports them as `queue.alerts` (kinds and counts only)
-  without becoming unready; the error reporter gets one record when the set changes.
+  without becoming unready; the error reporter gets one record when the set changes. The statistics are read outside
+  the mandatory queue check (the reachability `SELECT`), under their own budget (500 ms by default): when the read
+  throws, hangs or runs over it the body says `queue: {alerts: null, reason: 'error' | 'timeout'}` and the instance
+  stays ready. Only the queue's reachability failing or timing out fails readiness.
 - Proof: `test/queue-fair.test.ts` on both engines, including a load simulation (one tenant with 300 slow scans,
   four tenants with reply checks every minute and a scan every fifth): with lanes and round-robin every reply check
   is served in its minute and every quiet scan within four rounds; with one shared pool, 32 of 160 reply checks

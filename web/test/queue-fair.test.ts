@@ -195,6 +195,6 @@ bothEngines('readiness reports the queue alerts (kinds and counts only) and stay
   await q.enqueue({ tenantId: 'tenant-secret-id', kind: 'reply-check', now: old })
   const r = await readiness({ db: async () => db, sqlite: () => ({ prepare: () => ({ get: () => 1 }) }), migrations: () => [] })
   assert.equal(r.checks.queue.ok, true)
-  assert.deepEqual(r.queue?.alerts.map(a => [a.kind, a.alert]), [['reply-check', 'queue_age']])
+  assert.deepEqual(r.queue?.alerts?.map(a => [a.kind, a.alert]), [['reply-check', 'queue_age']])
   assert.ok(!JSON.stringify(r).includes('tenant-secret-id'))
 })
