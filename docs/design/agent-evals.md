@@ -58,9 +58,7 @@ Never recorded: the provider's API key argument, request headers (TinyFish's key
 ARE recorded, so a trace of a real run is PII until redacted. `totals(trace)` gives model calls, HTTP calls, page fetches,
 errors, cost (with `cost_complete` when every call was priced) and wall time.
 
-**Live trace capture is OFF.** Nothing in this increment records a production run: the recorder is exercised only by
-replays. Wiring it into the live runner needs a storage decision (tenant-scoped table, retention, redaction at write) and
-is a separate, reviewed increment.
+Production capture is built and **OFF by default**; see "Production capture" below.
 
 ### 2. World (`lib/evals/world.ts`)
 
@@ -192,6 +190,42 @@ punctuation the verifier normalises away.
 **Recorded Worlds are private and unpublished**: tenant-scoped, never committed to this repository, never shared across
 tenants. None has been captured or stored yet; every World in `web/test/fixtures/evals/` is synthetic.
 
+## Production capture (`lib/evals/capture.ts`)
+
+**Storage and retention are Gagan's decision.** What follows are the defaults until he says otherwise.
+
+Capture is switched on and tuned by configuration, never code:
+
+| setting | default | meaning |
+| --- | --- | --- |
+| `DAZL_TRACE_CAPTURE` | unset (OFF) | only `1` turns capture on |
+| `DAZL_TRACE_RETENTION_DAYS` | `14` | whole days, 1-365. An invalid value never captures (nothing is kept with a retention nobody chose); the purge then uses 14 |
+
+When on, `runJob` records the attempt with the same `TraceRecorder` the replay harness uses, through seams the run already
+resolves: model providers and the verifier's page fetch via `deps.trace`, TinyFish search/fetch and every other
+`fetchImpl` call. Off, `runJob` is exactly the untraced run: no wrapper, no `trace`, nothing stored. A seam whose
+presence changes behaviour is never added (`newsHttp` turns news search on; `fetchPage` changes the resolution call).
+
+On finish the trace is redacted (`redactTrace`: secrets, emails, phones, profile slugs, extracted names), size-capped
+(50,000 characters per string, 2 MB per trace, beyond which only span metadata is kept; the `capture` field says what was
+cut), and written to `scan_traces` in the app's own store: tenant-scoped, one row per attempt, PG
+`0017_scan_traces.sql`. There is no third-party trace store. Reads (`listTraces`, `getTrace`) always take the tenant; another
+tenant's trace id answers like an unknown one. Recording or storing never reaches the run: a failure is logged as
+`{"trace_capture":"failed"}` without content, and the scan's outcome stands. Response bodies are read from a clone in the
+background (capped), so no caller waits on capture; a model provider's own API records no request or response body.
+Storing happens after the run's own work and is bounded: body reads get 5 s (then what was read is kept, marked
+`truncated`, and the stream is cancelled) and the whole finish 15 s, so a stalled stream or store can never keep `runJob`,
+or the runner slot it holds, from returning.
+
+Retention: each capture deletes its own tenant's rows older than the retention, and the scheduled tick
+(`/api/internal/tick`, `purgeExpiredTraces`) deletes everyone's, whether capture is on or off. Shortening the retention
+takes effect at the next purge. The tick still needs its external scheduler; activating that is not part of this change.
+
+A stored trace is a recorded, redacted trace: `worldFromTrace` turns it into a private World that replays offline
+(`test/trace-capture.test.ts` proves a capture replays to the same verdict with no world miss). Not recorded yet: the CSV
+company path (`runCompanyJob`), adapter sources (`sourceHttp`) and the news search when a caller does not pass them, and
+anything a module fetches without `fetchImpl`. A person named only in page text survives redaction (see "Redaction").
+
 ## The first case, and what it found
 
 `scan-london-seed-traps` (SYNTHETIC; every company, page and address invented): a London seed-round request whose World
@@ -213,8 +247,9 @@ same PR, so the case now passes outright.
 
 ## Next increments (one PR each)
 
-1. Production trace capture for scan/discovery: opt-in, tenant-scoped storage, redaction at write; a classifier for traces
-   that need attention (zero-yield scans, leads later rejected, verifier/judge disagreement) that queues them as case candidates.
+1. ~~Production trace capture for scan/discovery~~ (built, OFF by default: "Production capture" above). Next: a classifier
+   for stored traces that need attention (zero-yield scans, leads later rejected, verifier/judge disagreement) that queues
+   them as case candidates.
 2. Enrichment / contact finding: World entries for enrichment responses; verifiers for decision-maker title, former employee,
    generic recruiting inbox, contact-route provenance (#395).
 3. Drafting and autopilot: inbox snapshot in the World; verifiers for no send without consent, opt-out and suppression respected,

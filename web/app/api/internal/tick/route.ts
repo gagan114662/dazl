@@ -13,6 +13,7 @@ import type { Lease } from '@/lib/shared/lease'
 import { dueTenants, runIndexChecks } from '@/lib/seo/indexing'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
+import { purgeExpiredTraces } from '@/lib/evals/capture'
 
 // Called by a scheduler (cron or a systemd timer) with AUTOPILOT_TICK_SECRET. Reads replies and sends due
 // follow-ups for tenants who turned both on. Without the secret configured the route does not exist.
@@ -75,5 +76,10 @@ async function tick(lease: Lease, requestId?: string) {
     await lease.keep()
     try { const r = await runIndexChecks(shared, t); if (r && r.length > 0) indexChecked++ } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:index-checks', tenantId: t, requestId }) }
   }
-  return NextResponse.json({ ok: true, tenants: done, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, index_checks: indexChecked })
+  // Captured scan traces (lib/evals/capture.ts): every tenant's rows older than DAZL_TRACE_RETENTION_DAYS are deleted,
+  // whether capture is on or off. Idempotent and best-effort: a failure here never stops the tick.
+  let tracesPurged = 0
+  await lease.keep()
+  try { tracesPurged = await purgeExpiredTraces(shared) } catch (e) { captureError(e, { source: 'worker', where: 'tick:trace-purge', requestId }) }
+  return NextResponse.json({ ok: true, tenants: done, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, index_checks: indexChecked, traces_purged: tracesPurged })
 }
