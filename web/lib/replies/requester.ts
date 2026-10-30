@@ -50,8 +50,10 @@ export function requesterRole(title: string, quote: string): RequesterRole | nul
   // a student or job seeker is never a buyer of B2B demand, whatever words they use about leads
   if (JOB_SEEKER.test(text)) return 'job_seeker'
   const demand = BUSINESS_DEMAND.test(text)
-  if (CONSUMER.test(text) && !demand) return 'consumer'
-  if (RECRUITER.test(text) && !demand) return 'recruiter'
+  // personal needs ("a plumber near me... any leads?"): a consumer unless they say they ask for a business
+  if (CONSUMER.test(text) && !/\b(?:my|our) (?:company|startup|agency|business|firm|clients?|customers?)\b/i.test(text)) return 'consumer'
+  // a job ad describes the role in sales words ("build pipeline"); only an actual ask for customers keeps it eligible
+  if (RECRUITER.test(text) && !(WANTS_CUSTOMERS.test(text) && ASKS.test(text))) return 'recruiter'
   // someone selling their own thing; a vendor that also asks how to get clients is still asking (an agency can buy)
   if (VENDOR_PROMO.test(text) && !(WANTS_CUSTOMERS.test(text) && ASKS.test(text))) return 'vendor_promo'
   if (ANNOUNCEMENT.test(text) && !ASKS.test(text)) return 'announcement'

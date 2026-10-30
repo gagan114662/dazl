@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto'
 import { audit, getEnabledCredential } from '../connectors/store.ts'
 import { hasConsent, httpWorker, type WorkerFetch } from '../advanced/index.ts'
 import { requesterRole } from './requester.ts'
+import { assessDemand, rubricFor } from '../qualify/demand.ts'
 import { advFlags, connectorId, maxCallsPerHour, platformAllowed, scopeFor } from '../advanced/config.ts'
 import { readKey, keyStatus } from '../llm/key-store.ts'
 import { getAuthDb, getSellerProfile } from '../auth-db.ts'
@@ -185,6 +186,8 @@ export async function refreshReplies(db: Database.Database, tenantId: string, de
     sells = profile.sells
     website = profile.website
   } catch { /* keyword gate already applied; refresh continues */ }
+  // the demand rubric for this seller's own offer (lib/qualify/demand.ts); none: the requester screen alone applies
+  const rubric = rubricFor(sells)
   let gradesLeft = MAX_INTENT_GRADES_PER_REFRESH
   for (const p of REPLY_PLATFORMS) {
     if (!platformAllowed(p, flags)) { out.platforms[p] = 'disabled'; continue }
@@ -200,7 +203,9 @@ export async function refreshReplies(db: Database.Database, tenantId: string, de
       const fresh = items.filter(i => i.date && new Date(i.date).getTime() >= cutoff && looksLikeQuestion(i.title))
       // relevant to the search, and written by someone who could be a buyer (lib/replies/requester.ts, #401): a job
       // seeker, a recruiter, a vendor promoting itself, a consumer or an announcement is filtered here, before grading
-      let qualified = fresh.filter(i => isRelevantToQuery(q, i.title, i.quote) && requesterRole(i.title, i.quote) === null)
+      // with a rubric, a thread that shows only a contextual trigger (funding, hiring, growth) and no demand is filtered too
+      let qualified = fresh.filter(i => isRelevantToQuery(q, i.title, i.quote) && requesterRole(i.title, i.quote) === null
+        && (!rubric || !assessDemand({ title: i.title, quote: i.quote, source_url: i.url, date: i.date }, rubric).screen_out))
       out.filtered += fresh.length - qualified.length
       const graded: ({ title: string; quote: string } & typeof qualified[number] & { buyer_intent: string | null })[] = []
       for (const it of qualified) {
