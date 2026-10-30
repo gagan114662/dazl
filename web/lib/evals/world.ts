@@ -60,7 +60,7 @@ const parse = (s: unknown): unknown => { try { return typeof s === 'string' ? JS
 // Freezes what a trace's spans saw into a World. Spans that errored are kept as errors (a page fetch that threw replays
 // as a throw), so the replay meets the same failures the run met. A real (non-synthetic) trace must be redacted first.
 const incompleteWhy = (c: NonNullable<Trace['capture']>): string => [
-  c.truncated_strings ? `${c.truncated_strings} strings truncated` : '', c.spans_metadata_only ? 'span contents dropped' : '',
+  c.truncated_strings ? `${c.truncated_strings} strings truncated` : '', c.bodies_truncated ? `${c.bodies_truncated} response bodies cut while recording` : '', c.spans_metadata_only ? 'span contents dropped' : '',
   c.spans_omitted ? `${c.spans_omitted} spans dropped` : '', c.leads_omitted ? `${c.leads_omitted} leads dropped` : '', c.input_omitted ? 'input dropped' : '',
 ].filter(Boolean).join(', ') || 'content dropped'
 
@@ -70,6 +70,10 @@ export function worldFromTrace(t: Trace, id = `world-${t.id}`): World {
   // A capture cut to fit the store (lib/evals/capture.ts capTrace) no longer holds what the run saw: replaying it would
   // look complete and not be.
   if (t.capture && t.capture.complete === false) throw new WorldError(`world: refusing an incomplete capture (${incompleteWhy(t.capture)})`)
+  // A body the recorder itself cut (its cap, a failed read, the settle bound), whatever `capture` says: a partial answer
+  // replayed as the whole source would not be the run that was recorded.
+  const cut = t.spans.filter(s => (s.output as { truncated?: unknown } | null)?.truncated === true)
+  if (cut.length) throw new WorldError(`world: refusing a trace with ${cut.length} response bodies cut while recording (${cut.slice(0, 3).map(s => s.id).join(', ')})`)
   const w: World = { v: WORLD_VERSION, kind: 'dazl.world', id, origin: t.synthetic ? 'synthetic' : 'recorded', redacted: t.redacted, as_of: t.input.as_of, from_trace: t.id, search: { by_query: {} }, tinyfish_pages: {}, pages: {}, http: {}, model: {}, ...(t.synthetic_defaults?.http ? { http_default: t.synthetic_defaults.http } : {}) }
   for (const s of t.spans) {
     const inp = s.input as Record<string, unknown>
