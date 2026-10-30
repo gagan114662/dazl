@@ -9,14 +9,14 @@ const TIMEOUT_MS = 15_000
 // 1 credit per profile returned. Names/titles only - emails/phones are never read.
 import { formatPlace } from '../scan/contact-agreement.ts'
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 120) : null)
-export async function pdlPeopleSearch(apiKey: string, orgName: string, fetchImpl: typeof fetch = fetch, max = 5): Promise<ApolloPerson[]> {
+export async function pdlPeopleSearch(apiKey: string, orgName: string, fetchImpl: typeof fetch = fetch, max = 5, role?: { titles: string[] }): Promise<ApolloPerson[]> {
   const ctrl = new AbortController()
   const t = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
   try {
     const r = await fetchImpl(`${BASE}/v5/person/search`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'X-Api-Key': apiKey },
-      body: JSON.stringify({ size: max, query: { bool: { must: [{ term: { job_company_name: orgName.toLowerCase() } }] } } }),
+      body: JSON.stringify({ size: max, query: { bool: { must: [{ term: { job_company_name: orgName.toLowerCase() } }, ...(role?.titles.length ? [{ bool: { should: role.titles.map(t => ({ match: { job_title: t.toLowerCase() } })), minimum_should_match: 1 } }] : [])] } } }),
       signal: ctrl.signal,
     })
     if (r.status === 429) throw new EnrichError('rate_limited', 'PDL rate limit reached')

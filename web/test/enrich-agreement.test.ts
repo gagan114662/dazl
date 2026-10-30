@@ -166,7 +166,7 @@ test('Apollo: a returned person whose ORGANIZATION contradicts the requested com
   ]
   const s = lead('smileavenuedental.com'); saveCredential(s.db, 'u1', 'enrich:apollo', 'test-apollo-key-1234', master)
   await enrichLeadContacts(s.db, 'u1', s.jobId, [s.lead], { fetchImpl: apollo({ name: 'Smile Avenue Dental', estimated_num_employees: 12, website_url: 'https://smileavenuedental.com' }, people), master })
-  assert.deepEqual(rows(s.db).filter(r => r.startsWith('contact:')).sort(), ['contact:No Org - Dentist', 'contact:Sophia Rozov - Practice Manager'])
+  assert.deepEqual(rows(s.db).filter(r => r.startsWith('contact:')).sort(), ['contact:Sophia Rozov - Practice Manager'])   // #383: 'No Org - Dentist' is no longer attached - a Dentist is not the reviewed 'Practice manager' buyer role
   const a = audits(s.db)
   assert.ok(a.some(x => /^contact rejected: organization mismatch Acme Robotics vs Smile Avenue Dental$|^contact rejected: organization mismatch acmerobotics\.com vs smileavenuedental\.com$/.test(x)), JSON.stringify(a))
   assert.ok(a.some(x => /organization mismatch smileavenue-dental\.io vs smileavenuedental\.com/.test(x)), JSON.stringify(a))
