@@ -6,6 +6,7 @@ import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
+import { denied } from '@/lib/workspace-access'
 import { syncAccountGraph } from '@/lib/accounts/graph'
 import { firstTouchHold, graphStore } from '@/lib/accounts/cooldown'
 import { sqliteDb } from '@/lib/db/client'
@@ -35,14 +36,15 @@ const MSG: Record<string, [number, string]> = {
 export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  return NextResponse.json({ messages: listMessages(getScanDb(), user.id) })
+  return NextResponse.json({ messages: listMessages(getScanDb(), user.tenantId) })
 }
 
 export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
+  const no = denied(user, 'operate'); if (no) return no
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
-  if (!(await rateLimit(`draft:${user.id}`, 60, 60 * 60 * 1000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!(await rateLimit(`draft:${user.tenantId}`, 60, 60 * 60 * 1000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   const body = await req.json().catch(() => null)
   if (typeof body?.lead_id !== 'string' || !/^[a-f0-9]{24}$/.test(body.lead_id)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   // The lead's own identity first, then the cross-play account rule (lib/accounts/cooldown.ts, #364), on the graph's
@@ -50,13 +52,13 @@ export async function POST(req: NextRequest) {
   // held here: an unresolved identity is never read as "no account".
   const raw = getScanDb()
   const graph = await graphStore(raw)
-  const held = await firstTouchHold(graph, sqliteDb(raw), user.id, body.lead_id)
+  const held = await firstTouchHold(graph, sqliteDb(raw), user.tenantId, body.lead_id)
   if (held) { const [s, m] = MSG[held]; return NextResponse.json({ error: m, code: held }, { status: s }) }
   // Then link the rest of the tenant's new leads (bounded; for bookings and later drafts). Best effort: this draft no
   // longer depends on it.
-  await syncAccountGraph(graph, user.id).catch(e => captureError(e, { source: 'route', where: 'outreach:link-accounts', tenantId: user.id, requestId: requestIdOf(req) }))
+  await syncAccountGraph(graph, user.tenantId).catch(e => captureError(e, { source: 'route', where: 'outreach:link-accounts', tenantId: user.tenantId, requestId: requestIdOf(req) }))
   try {
-    const id = createDraft(raw, user.id, body.lead_id, user.business_name)
+    const id = createDraft(raw, user.tenantId, body.lead_id, user.business_name)
     // Drafts are template-only here: an LLM rewrite bills the tenant's provider key,
     // so it happens only via an explicit click on POST /api/outreach/polish.
     return NextResponse.json({ id }, { status: 201 })
@@ -64,7 +66,7 @@ export async function POST(req: NextRequest) {
     if (e instanceof OutreachError) { const [s, m] = MSG[e.code] ?? [400, 'Could not create the draft']; return NextResponse.json({ error: m, code: e.code }, { status: s }) }
     // Not a known business refusal (for example SQLITE_BUSY under a second writer). Fixed body, so the client always gets JSON.
     const f = draftFailure(e)
-    captureError(e, { source: 'route', where: '/api/outreach', method: 'POST', tenantId: user.id, requestId: requestIdOf(req) })
+    captureError(e, { source: 'route', where: '/api/outreach', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) })
     return NextResponse.json(f.body, { status: f.status })
   }
 }
