@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { customerState, cohortReport, DAY, type LifecycleEvent } from '../lib/gtm/lifecycle.ts'
 import { RETENTION } from '../lib/growth/retention.ts'
 
-const H = RETENTION.headline_days, G = RETENTION.grace_days
+const H = RETENTION.headline_days, G = RETENTION.renewal_early_days, L = RETENTION.renewal_late_days
 
 // Synthetic customers and identities only.
 const T0 = Date.UTC(2026, 6, 1)
@@ -78,7 +78,7 @@ test('report: rates, cost per activated and per retained paying customer, covera
   assert.equal(r.sourceCoverage, 1 / 3)
   assert.equal(r.mature, true)
   assert.deepEqual(r.byStage, { retained: 1, activated: 1, abandoned_setup: 1 })
-  assert.equal(r.retentionLabel, RETENTION.label)
+  assert.equal(r.retentionLabel, RETENTION.labels.day30)
   assert.equal(cohortReport(es, meta, at(0), at(30), at(60)).mature, false)
   assert.equal(cohortReport([], [], at(0), at(30), at(60)).activationRate, null)
 })
@@ -108,44 +108,49 @@ test('one as-of cutoff for every row: future-dated signups, runs, payments and r
   assert.equal(customerState('a', es, at(160)).paidAt, at(150))
 })
 
-test('shared definition: the 30-day headline is renewal plus coverage evidence, and each is reported on its own', () => {
+test('shared definition: day-30 retention and coverage at the cutoff are separate metrics, each on its own evidence and cohort', () => {
   const now = at(200)
   // Paid once on day 3, nothing since: eligible, no renewal, not retained (an old payment is never retention by itself).
   const once = customerState('once', [signup('once', 1), run('once', 2, 2), pay('once', 3)], now)
-  assert.deepEqual([once.stage, once.retention.eligible, once.retention.renewal, once.retention.retained], ['not_retained', true, false, false])
+  assert.deepEqual([once.stage, once.retention.day30.eligible, once.retention.day30.renewal_at, once.retention.day30.retained, once.retention.coverage_at_cutoff], ['not_retained', true, null, false, 'unknown'])
   // Inside the first month: not eligible yet, so neither retained nor not retained.
   const young = customerState('once', [signup('once', 1), run('once', 2, 2), pay('once', 3)], at(30))
-  assert.deepEqual([young.stage, young.retention.eligible, young.retention.retained], ['paid', false, null])
-  // Renewed, then cancelled after the headline mark: retained at 30 days, but not covered at the cutoff.
+  assert.deepEqual([young.stage, young.retention.day30.eligible, young.retention.day30.retained, young.retention.coverage_at_cutoff], ['paid', false, null, 'covered'])
+  // Renewed, then cancelled after the headline mark: retained at day 30, and not covered at the cutoff (a recorded end).
   const left = customerState('left', [signup('left', 1), pay('left', 3), pay('left', 33), ev('left', 50, { kind: 'cancel' })], now)
-  assert.deepEqual([left.stage, left.retention.retained, left.retention.covered_at_headline, left.retention.covered_at_cutoff], ['churned', true, true, false])
-  // Renewed, but the subscription ended by the headline mark: no coverage evidence, not retained.
+  assert.deepEqual([left.stage, left.retention.day30.retained, left.retention.coverage_at_cutoff], ['churned', true, 'not_covered'])
+  // Renewed, but the subscription ended by the headline mark: not retained.
   const early = customerState('early', [signup('early', 1), pay('early', 3), pay('early', 30), ev('early', 32, { kind: 'cancel' })], now)
-  assert.deepEqual([early.retention.renewal, early.retention.covered_at_headline, early.retention.retained], [true, false, false])
+  assert.deepEqual([early.retention.day30.renewal_at !== null, early.retention.day30.retained], [true, false])
   // A refunded renewal is no renewal evidence.
   const rf = customerState('rf2', [signup('rf2', 1), pay('rf2', 3), pay('rf2', 33), pay('rf2', 34, 'refunded')], now)
-  assert.deepEqual([rf.retention.renewal, rf.retention.retained], [false, false])
-  // The report uses the shared rate and label; current coverage sits beside the headline, not inside it.
+  assert.deepEqual([rf.retention.day30.renewal_at, rf.retention.day30.retained], [null, false])
+  // The report uses the shared rate, cohort and label; current coverage is its own metric over every paid customer.
   const r = cohortReport([signup('once', 1), pay('once', 3), signup('left', 1), pay('left', 3), pay('left', 33), ev('left', 50, { kind: 'cancel' }), signup('r', 2), ...monthly('r', 4, 184)], [], at(0), at(30), now)
-  assert.deepEqual([r.retentionEligible, r.retained, r.retentionRate, r.coveredAtCutoff], [3, 2, 2 / 3, 2])
-  assert.equal(r.retentionLabel, RETENTION.label)
+  assert.deepEqual([r.retentionEligible, r.retained, r.retentionRate], [3, 2, 2 / 3])
+  assert.deepEqual([r.coverage.covered, r.coverage.not_covered, r.coverage.unknown, r.coverage.cohort_size], [1, 1, 1, 3], 'r is paid through day 214; left ended; once lapsed with no end recorded')
+  assert.match(r.retentionCohort, /renewal window has closed/); assert.match(r.coverage.cohort, /every customer who has paid/)
+  assert.equal(r.retentionLabel, RETENTION.labels.day30)
 })
 
-test('shared grace and maturity rules, at their boundaries', () => {
+test('shared renewal-window and maturity rules, at their boundaries', () => {
   const S = 1000  // one second, the shared module's resolution
-  // Renewal counts from headline - grace days after the first payment; one second earlier it does not.
-  assert.equal(customerState('g1', [signup('g1', 0), pay('g1', 0), ev('g1', H - G, { kind: 'payment', status: 'paid' })], at(100)).retention.renewal, true)
-  assert.equal(customerState('g2', [signup('g2', 0), pay('g2', 0), { id: 'g2-early', at: at(H - G) - S, customer: 'g2', kind: 'payment', status: 'paid' } as LifecycleEvent], at(100)).retention.renewal, false)
-  // Eligible from headline + grace days after the first payment, in both numerator and denominator; one second earlier, in neither.
+  // Renewal counts from headline - early days after the first payment; one second earlier it does not.
+  assert.notEqual(customerState('g1', [signup('g1', 0), pay('g1', 0), ev('g1', H - G, { kind: 'payment', status: 'paid' })], at(100)).retention.day30.renewal_at, null)
+  assert.equal(customerState('g2', [signup('g2', 0), pay('g2', 0), { id: 'g2-early', at: at(H - G) - S, customer: 'g2', kind: 'payment', status: 'paid' } as LifecycleEvent], at(100)).retention.day30.renewal_at, null)
+  // Eligible once the renewal window closes (headline + late days), in both numerator and denominator; one second earlier, in neither.
   const es = [signup('b', 0), pay('b', 0), pay('b', H)]
-  const before = cohortReport(es, [], at(0), at(30), at(H + G) - S)
+  const before = cohortReport(es, [], at(0), at(30), at(H + L) - S)
   assert.deepEqual([before.retentionEligible, before.retained, before.retentionRate], [0, 0, null])
-  const onTime = cohortReport(es, [], at(0), at(30), at(H + G))
+  const onTime = cohortReport(es, [], at(0), at(30), at(H + L))
   assert.deepEqual([onTime.retentionEligible, onTime.retained, onTime.retentionRate], [1, 1, 1])
-  // Coverage at the headline: a subscription ending exactly at first payment + headline days is not covered; one second later it is.
+  // Ended by day 30: a subscription ending exactly at first payment + headline days is not retained; one second later it is.
   const endAt = (c: string, t: number) => [signup(c, 0), pay(c, 0), pay(c, H), { id: `${c}-end`, at: t, customer: c, kind: 'cancel' } as LifecycleEvent]
-  assert.equal(customerState('e1', endAt('e1', at(H)), at(100)).retention.covered_at_headline, false)
-  assert.equal(customerState('e2', endAt('e2', at(H) + S), at(100)).retention.covered_at_headline, true)
+  assert.equal(customerState('e1', endAt('e1', at(H)), at(100)).retention.day30.retained, false)
+  assert.equal(customerState('e2', endAt('e2', at(H) + S), at(100)).retention.day30.retained, true)
+  // the renewal window's upper bound: one second after headline + late days is not day-30 retention
+  assert.equal(customerState('u1', [signup('u1', 0), pay('u1', 0), ev('u1', H + L, { kind: 'payment', status: 'paid' })], at(100)).retention.day30.retained, true)
+  assert.equal(customerState('u2', [signup('u2', 0), pay('u2', 0), { id: 'u2-late', at: at(H + L) + S, customer: 'u2', kind: 'payment', status: 'paid' } as LifecycleEvent], at(100)).retention.day30.retained, false)
 })
 
 test('retention rate: numerator and denominator are the same eligible set, so renewed-but-young customers cannot push it over 100%', () => {
@@ -154,8 +159,8 @@ test('retention rate: numerator and denominator are the same eligible set, so re
     signup('im2', 0), pay('im2', 1), pay('im2', 31),
     signup('m', 0), pay('m', 0),
   ]
-  const im1 = customerState('im1', es, at(H + G))
-  assert.deepEqual([im1.stage, im1.retention.renewal, im1.retention.eligible], ['paid', true, false])
-  const r = cohortReport(es, [], at(0), at(30), at(H + G))
+  const im1 = customerState('im1', es, at(H + L))
+  assert.deepEqual([im1.stage, im1.retention.day30.renewal_at !== null, im1.retention.day30.eligible], ['paid', true, false])
+  const r = cohortReport(es, [], at(0), at(30), at(H + L))
   assert.deepEqual([r.retentionEligible, r.retained, r.retentionRate, r.costPerRetainedPaying], [1, 0, 0, null])
 })

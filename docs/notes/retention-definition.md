@@ -1,47 +1,21 @@
-# Retention definition for #404: one shared rule
+# Retention definition for #404: one shared implementation
 
-Both #404 branches now use the same retention definition. It lives in `web/lib/growth/retention.ts`, added on the ops branch `claude/epic-cannon-xrw9ut-acquisition-funnel` in `235c3284`.
+Both #404 branches import one file, `web/lib/growth/retention.ts`, and its test file `web/test/growth-retention.test.ts`. They are byte-identical on `claude/epic-cannon-xrw9ut-acquisition-funnel` and on this branch, so merging the two leaves exactly one definition. Neither branch defines retention or coverage anywhere else.
 
-This branch (`claude/trusting-bell-xyya6m-lifecycle`) carries byte-identical copies of two files from that branch:
+There are two separate metrics, each with its own cohort and its own positive evidence. "No cancellation was recorded" is never evidence of anything.
 
-- `web/lib/growth/retention.ts` (blob `e354d5d7`);
-- its test file, `web/test/growth-retention.test.ts`.
-
-Because the copies are identical, merging the two branches produces no conflict and still leaves exactly one definition. Neither branch defines retention anywhere else. This branch's earlier 60-day rule, its own coverage window and its 'lapsed' stage are gone.
-
-## The rules, stated explicitly
-
-All three windows come from `RETENTION` in `retention.ts`: `headline_days` = 30 and `grace_days` = 5. Instinct confirmed that the 5-day grace is the existing default, not a requirement Instinct chose. Other windows are only available by passing an explicit option.
-
-| Rule | Definition | Tested at its boundary |
+| Metric | Cohort | Definition |
 |---|---|---|
-| **Eligible** (counts toward the rate) | The first paid, not refunded payment is at least headline + grace (35) days before the cutoff. | Eligible at exactly 35 days, not one second before. |
-| **Renewal evidence** | A paid, not refunded payment at least headline − grace (25) days after the first one, on or before the cutoff. | Counts at exactly 25 days, not one second before. A refunded renewal is no evidence. |
-| **Coverage evidence** | The subscription had not ended by first payment + headline (30) days. | Ending exactly at day 30 means not covered; one second later, covered. |
-| **Retained** (the headline) | Eligible, with both renewal and coverage evidence. `null` while not eligible. | |
-| **Rate** | `retentionRate`: numerator and denominator are the same eligible set, so the rate cannot exceed 100%. It is shown with `RETENTION.label`. | Renewed-but-young customers are in neither count. |
-| **Covered at cutoff** | Whether the subscription is still running at the cutoff. Reported beside the headline (`coveredAtCutoff`), never mixed into it. | |
+| **Retained at day 30** (historical) | Paying customers whose day-30 renewal window has closed by the cutoff: their first paid payment is at least 30 + 5 days old. | A paid, not refunded renewal inside days 25 to 35 after the first payment, and the subscription not ended by day 30 (ending exactly at day 30 counts as ended). A renewal after day 35, such as a lapse and then a rejoin, is not day-30 retention. |
+| **Coverage at the cutoff** (current) | Every customer who has paid by the cutoff. | **covered:** a paid 30-day billing period includes the cutoff. **not covered:** an end was recorded and nothing was paid since. **unknown:** the last paid period ran out and no end was recorded. |
 
-## How this branch feeds the shared definition
+The settings live in `RETENTION`: `headline_days` 30, `renewal_early_days` 5, `renewal_late_days` 5, `period_days` 30. The 5-day values and the 30-day period are carried-over defaults, not owner decisions. Other values are only available by passing an explicit option.
 
-`retentionOf` in `web/lib/gtm/lifecycle.ts` only maps this branch's events onto the module's input. Times are converted from ms to unix seconds.
-
-- **Payments:** every `payment` event with status `paid`.
-- **Refunds:** a `refunded` event marks the latest earlier paid payment that is not already refunded.
-- **End of subscription:** the first `cancel` on or after the first unrefunded payment.
-- **Cutoff:** the report's as-of time.
-
-Every row is cut at the same as-of time before de-duplication (`upTo`). Future-dated rows and late replays of an existing id therefore never count, and a customer seen only after as-of is not counted, not even as excluded.
-
-The per-customer stage reads the shared result:
-
-- `retained` when it says retained;
-- `not_retained` when the customer is eligible but not retained;
-- `paid` while not yet eligible.
-
-Money states (refunded, churned, payment_failed) take precedence over these.
-
-## Webhooks and event recording
-
-- **The ops branch records Stripe events.** In `web/lib/billing/stripe.ts`, the existing Stripe webhook handler writes payment succeeded, payment failed, refund and subscription ended into a new `lifecycle_events` table (migration 0018). This recording is not activated yet.
-- **This branch adds no webhook, Stripe hook or table.** It is a pure function over events the caller passes in.
+The tests cover:
+- one payment with no end, 200 days on: coverage unknown, not retained;
+- a renewal at day 100: not retained;
+- a rejoin: not retained, covered during the new period, not covered between the end and the rejoin;
+- the window bounds, each to the second;
+- the end-by-day-30 bound;
+- each setting on its own;
+- both cohorts named.
