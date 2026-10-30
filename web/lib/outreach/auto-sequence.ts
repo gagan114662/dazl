@@ -28,8 +28,9 @@ export const AUTO_SEQUENCE_TEXT = [
 ]
 
 type Policy = { on: boolean; version: string | null; since: number | null }
+// The latest switch wins; on and off in the same second count as off.
 export function autoSequencePolicy(db: Database.Database, tenantId: string): Policy {
-  const r = db.prepare("SELECT action, detail, created_at FROM autopilot_audit WHERE tenant_id = ? AND action IN ('auto_sequence_on','auto_sequence_off') ORDER BY created_at DESC, rowid DESC LIMIT 1").get(tenantId) as { action: string; detail: string | null; created_at: number } | undefined
+  const r = db.prepare("SELECT action, detail, created_at FROM autopilot_audit WHERE tenant_id = ? AND action IN ('auto_sequence_on','auto_sequence_off') ORDER BY created_at DESC, CASE WHEN action = 'auto_sequence_off' THEN 0 ELSE 1 END LIMIT 1").get(tenantId) as { action: string; detail: string | null; created_at: number } | undefined
   if (!r || r.action !== 'auto_sequence_on') return { on: false, version: null, since: null }
   return { on: r.detail === AUTO_SEQUENCE_VERSION, version: r.detail, since: r.created_at }
 }
@@ -62,7 +63,7 @@ export function enrollAutoSequence(db: Database.Database, tenantId: string, mess
   if (steps.length !== MAX_STEPS) return null
   const id = randomBytes(12).toString('hex')
   return db.transaction(() => {
-    if (db.prepare("INSERT OR IGNORE INTO sequences (id, tenant_id, lead_id, message_id, to_email, status) VALUES (?, ?, ?, ?, ?, 'approved')").run(id, tenantId, m.lead_id, m.id, m.to_email).changes !== 1) return null
+    if (db.prepare("INSERT INTO sequences (id, tenant_id, lead_id, message_id, to_email, status) VALUES (?, ?, ?, ?, ?, 'approved') ON CONFLICT (tenant_id, lead_id) DO NOTHING").run(id, tenantId, m.lead_id, m.id, m.to_email).changes !== 1) return null
     const ins = db.prepare("INSERT INTO sequence_steps (tenant_id, sequence_id, step, subject, body, approved_hash, status) VALUES (?, ?, ?, ?, ?, ?, 'approved')")
     for (const st of steps) ins.run(tenantId, id, st.step, st.subject, st.body, stepHash(m.to_email, st.subject, st.body))
     grantConsent(db, tenantId, m.to_email, { channel: 'email', scope: 'sequence', basis: 'auto_sequence_policy', evidenceRef: `sequence:${id}`, now })
@@ -75,7 +76,7 @@ export function enrollAutoSequence(db: Database.Database, tenantId: string, mess
 // the policy version it was enrolled with and from the address its first touch used. Returns why it must stop, or null
 // (also null for a sequence the user approved by hand, which this policy never governs).
 export function autoSequenceStop(db: Database.Database, tenantId: string, messageId: string, sender: string | null | undefined): string | null {
-  const r = db.prepare("SELECT detail FROM autopilot_audit WHERE tenant_id = ? AND message_id = ? AND action = 'sequence_enrolled' ORDER BY created_at DESC, rowid DESC LIMIT 1").get(tenantId, messageId) as { detail: string | null } | undefined
+  const r = db.prepare("SELECT detail FROM autopilot_audit WHERE tenant_id = ? AND message_id = ? AND action = 'sequence_enrolled' LIMIT 1").get(tenantId, messageId) as { detail: string | null } | undefined
   if (!r) return null
   let e: { v?: string; from?: string } = {}
   try { e = JSON.parse(r.detail ?? '{}') } catch { return 'policy_changed' }
