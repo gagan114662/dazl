@@ -42,7 +42,7 @@ const RANK: Record<HoldStatus, number> = { unverified_signup_hold: 1, checkout_u
 // What a stopped sequence or follow-up thread says (lib/outreach/lifecycle-words.ts).
 export const STOP_REASON: Record<HoldStatus, string> = { unverified_signup_hold: 'unverified_signup_hold', checkout_unpaid: 'checkout_unpaid', signed_up: 'converted_signup', paid: 'converted_paid' }
 
-export function migrateLifecycle(db: Database.Database): void {
+export function migrateAcquisitionLifecycle(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS acquisition_lifecycle_events (
       event_key   TEXT PRIMARY KEY CHECK (length(event_key) <= 200),
