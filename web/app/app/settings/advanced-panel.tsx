@@ -24,8 +24,9 @@ export default function AdvancedPanel() {
     return (
       <>
         {p.supported === false ? (
-          // nothing to accept or connect: the worker cannot read this platform, so no session is collected (#436)
-          <p className="text-[#555]" data-testid={`adv-unsupported-${p.platform}`}>Not available yet. dazl cannot search {c.name}, so there is nothing to connect and scans never include it.{p.connected ? <> A session saved earlier is not used. <button className="underline underline-offset-2" onClick={async () => { await fetch(`/api/settings/advanced?platform=${p.platform}`, { method: 'DELETE' }); void load() }}>Remove it</button></> : null}</p>
+          // nothing to accept or connect: the worker cannot read this platform (the channel note says so), so no session
+          // is collected (#436). A session saved before this can only be removed.
+          p.connected ? <p className="text-[#555]">A session saved earlier is not used. <button className="underline underline-offset-2" onClick={async () => { await fetch(`/api/settings/advanced?platform=${p.platform}`, { method: 'DELETE' }); void load() }}>Remove it</button></p> : null
         ) : !p.allowed ? (
           <p className="text-[#555]">Off on this server. The operator turns it on with ADVANCED_CONNECTORS.</p>
         ) : !p.consent ? (
@@ -63,7 +64,7 @@ export default function AdvancedPanel() {
           {CHANNELS.filter(c => c.tier === t).map(c => {
             const p = c.platform ? st.platforms.find(x => x.platform === c.platform) : undefined
             return (
-              <div key={c.id} className="border-t border-[#ddd] pt-3 mt-3 text-sm">
+              <div key={c.id} className="border-t border-[#ddd] pt-3 mt-3 text-sm" data-testid={`channel-${c.id}`}>
                 <div className="flex items-center justify-between gap-3 mb-1">
                   <span className="font-medium">{c.name}</span>
                   <span className="badge">{BADGE[c.status]}</span>
