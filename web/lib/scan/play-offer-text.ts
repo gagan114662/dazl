@@ -207,7 +207,7 @@ function placeLength(words: string[]): number {
 // manager", or a hyphenated form like "front-desk"), and a known role noun. Returns the words it used, or 0.
 const ROLES = new Set(('coordinator receptionist manager assistant administrator admin engineer developer designer marketer recruiter ' +
   'salesperson sdr bdr ae rep representative nurse hygienist dentist technician accountant bookkeeper director head lead cfo cto ' +
-  'coo cmo vp officer specialist analyst consultant agent operator associate executive').split(' '))
+  'coo cmo vp officer specialist analyst consultant agent operator associate executive role position hire').split(' '))
 const ROLE_MODIFIERS = new Set('office sales marketing dental medical clinical senior junior first new full-time part-time account customer support operations finance front-desk'.split(' '))
 const roleNoun = (w: string) => { const x = w.toLowerCase(); return ROLES.has(x) || (x.endsWith('s') && ROLES.has(x.slice(0, -1))) }
 // wide (the targeting grammar): also "for a ... role", a count ("2 receptionists") and a possessive; the withdrawal
@@ -215,7 +215,8 @@ const roleNoun = (w: string) => { const x = w.toLowerCase(); return ROLES.has(x)
 function roleLength(words: string[], wide = true): number {
   let k = 0
   if (wide && /^for$/i.test(words[0] ?? '')) k++
-  if ((wide ? /^(?:a|an|the|their|its|your|our)$/i : /^(?:a|an|the)$/i).test(words[k] ?? '') || (wide && isNumber(words[k] ?? ''))) k++
+  if ((wide ? /^(?:a|an|the|their|its|your|our)$/i : /^(?:a|an|the)$/i).test(words[k] ?? '')) k++
+  else if (wide && isNumber(words[k] ?? '')) { k++; if (/^(?:or|to|-|–)$/i.test(words[k] ?? '') && isNumber(words[k + 1] ?? '')) k += 2 } // "one or two receptionists"
   const start = k
   while (k < words.length && k - start <= 3) {
     if (roleNoun(words[k])) return wide && /^(?:role|roles|position|positions|job|jobs|opening|openings|vacancy|vacancies)$/i.test(words[k + 1] ?? '') ? k + 2 : k + 1
@@ -420,6 +421,9 @@ function isOutputInstruction(x: string): boolean {
     // a report noun is read as one first: "company" and "lead" are columns of the report, not people handed something
     const isWho = (w: string) => !REPORT_NOUNS.has(w) && (BUYERS.has(w) || BUYER_SINGULAR.has(w) || roleNoun(w) || ROLE_MODIFIERS.has(w))
     return item.every((w, i) => {
+      // a commercial term (support, training, trial, pricing, ...) is never part of a report item, unless the word is
+      // itself a report noun ("phone numbers"): "customer support contacts" is a service, not who to show
+      if (TERMS.has(fold(w)) && !REPORT_NOUNS.has(w) && !PERSON_NOUNS.has(w)) return false
       if (isWho(w)) person = true
       if (!person) return OUTPUT_FILLER.has(w) || OUTPUT_ADJ.has(w) || REPORT_NOUNS.has(w) || NUMBER.test(w)
       // "owner or practice manager contact": a joiner inside the person joins person words; "a receptionist and a

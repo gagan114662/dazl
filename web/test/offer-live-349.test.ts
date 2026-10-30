@@ -83,6 +83,11 @@ const TARGETING_OR_OUTPUT = [
   'Find clinics within the last ninety days.',
   'Include an owner or practice manager contact.',
   'Include leads.', // a report request: what to show, not something handed to the buyers (give/provide stay material)
+  // council seat 3: count ranges and hyphenated role modifiers
+  'Find dental practices hiring one or two receptionists.',
+  'Find dental practices hiring 2-3 receptionists.',
+  'Find dental practices hiring for a sales-automation role.',
+  'Find startups hiring their first sales hire.',
 ]
 test('#349 class: a targeting or output instruction of the request is never a commercial term', () => {
   const failures: string[] = []
@@ -152,6 +157,10 @@ const STILL_A_CHOICE: [string, string][] = [
   ['a seat count is a commercial term', `Dental practices with 10 seats. We sell ${P}.`],
   ['a seat count is a commercial term', `Practices, up to 20 seats. We sell ${P}.`],
   ['a unit count is a commercial term', `Find dental practices with 5 units. We sell ${P}.`],
+  // council seat 3: a commercial term inside a report item is a service, not who to show
+  ['a service in a report item', `Include customer support contacts. We sell ${P}.`],
+  ['a service in a report item', `Show training contacts. We sell ${P}.`],
+  ['a service in a report item', `Show the onboarding contact. We sell ${P}.`],
 ]
 test('#349 class controls: changed product, audience, withdrawals, commercial terms and unproved sentences stay a choice', () => {
   const failures: string[] = []
