@@ -72,13 +72,16 @@ export function recordingTransport(log: string, tenant: string, onAttempt?: () =
     return { id: `rec-${tenant}-${n}`, threadId: threadId ?? `thread-${tenant}-${n}` }
   }
 }
-// Gmail as the app sees it: a token endpoint and the threads dazl started. Anything else is refused.
+// Gmail as the app sees it: a token endpoint, the threads dazl started and (#415) the search for delivery-failure
+// notices from mail systems, which finds none outside those threads here. Anything else is refused.
 function gmailStub(threads: Record<string, unknown[]> = {}) {
   return (async (url: unknown) => {
     const u = String(url)
     if (u.startsWith('https://oauth2.googleapis.com/')) return json({ access_token: 'scenario-access-token', expires_in: 3600 })
     const m = /gmail\.googleapis\.com\/gmail\/v1\/users\/me\/threads\/([^?]+)/.exec(u)
     if (m) return json({ messages: threads[decodeURIComponent(m[1])] ?? [] })
+    const q = /gmail\.googleapis\.com\/gmail\/v1\/users\/me\/messages\?q=([^&]+)/.exec(u)
+    if (q && decodeURIComponent(q[1]).startsWith('from:(mailer-daemon OR postmaster) ')) return json({ messages: [] })
     throw new Error(`scenario gmail stub: refused ${u}`)
   }) as unknown as typeof fetch
 }

@@ -267,7 +267,7 @@ async function readDeliveryNotices(db: Database.Database, tenantId: string, send
           const at = Math.floor(Number(g.internalDate ?? 0) / 1000) || now
           const permanent = permanentFailure(r)
           const counted = !!db.prepare("SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND outreach_message_id = ? AND classification = 'bounce'").get(tenantId, m.id)
-          db.prepare('INSERT OR IGNORE INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+          db.prepare('INSERT INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (tenant_id, gmail_id) DO NOTHING')
             .run(g.id, tenantId, m.thread_id ?? g.threadId, m.lead_id, addr(header(g, 'from')), `Delivery ${r.action} for ${r.recipient} (${r.status})`.slice(0, 200), permanent ? 'bounce' : 'soft_bounce', at, m.id)
           if (permanent && !counted) {
             recordBounce(db, tenantId, m.to_email, now)
