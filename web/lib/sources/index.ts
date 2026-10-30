@@ -1,3 +1,4 @@
+import { keywords } from '../text/script.ts'
 import { jobBoardsAdapter } from './jobboards.ts'
 import type { AdapterInput, Evidence, SourceAdapter } from './types.ts'
 import { githubAdapter } from './github.ts'
@@ -31,7 +32,7 @@ export function normalizeSources(raw: unknown): SourceSelection | null {
 
 const STOP = new Set(['looking', 'find', 'companies', 'company', 'people', 'who', 'that', 'with', 'from', 'have', 'just', 'recently', 'their', 'they', 'in', 'for', 'and', 'the'])
 export function keywordsFor(query: string): string[] {
-  return [...new Set(query.toLowerCase().split(/[^a-z0-9+#.-]+/).filter(w => w.length >= 4 && !STOP.has(w)))].slice(0, 6)
+  return keywords(query).filter(w => !STOP.has(w))   // script-aware (Arabic, Devanagari, Japanese, ...); Latin behaviour is unchanged
 }
 
 // Runs the chosen adapters in parallel with an overall time limit. A failed or slow source gives no evidence and never drops the others.

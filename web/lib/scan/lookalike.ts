@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import { tokenize } from '../text/script.ts'
 
 // Lookalike signals: does a lead resemble the tenant's OWN past leads that graded
 // fit 4+ or drew an 'interested' reply? The reference cohort is those past leads -
@@ -24,9 +25,8 @@ export interface LookalikeSignal {
 const STOP = new Set(('this,that,with,from,have,has,been,were,they,their,them,will,would,could,should,about,into,over,after,before,more,most,other,these,those,when,where,which,while,who,whom,why,how,what,all,any,each,few,than,too,very,just,also,not,but,and,for,are,was,its,our,out,can,now,new,use,used,using,hiring,hired,hire,role,roles,team,company,companies,job,jobs,post,posts,posting,postings,page,pages').split(','))
 
 export function tokens(text: string): Set<string> {
-  const out = new Set<string>()
-  for (const w of text.toLowerCase().split(/[^a-z0-9]+/)) if (w.length >= 4 && !STOP.has(w)) out.add(w)
-  return out
+  // script-aware (#391): Arabic / Devanagari / CJK signals tokenize into real words, not nothing
+  return new Set(tokenize(text).filter(w => [...w].length >= (/^[\x00-\x7f]+$/.test(w) ? 4 : 2) && !STOP.has(w)))
 }
 
 interface CohortRow { id: string; signal: string; industry: string | null; location: string | null }

@@ -4,6 +4,7 @@
 //   hiring   - public job-board APIs: Greenhouse, Lever, Ashby (keyless, read-only)
 // Results land in lead_enrichments (source URL + source date required) and never
 // change the lead itself. Every failure is silent: signals are a bonus, not the bar.
+import { nameTokens as mlNameTokens } from '../text/script.ts'
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { addEnrichment, audit } from '../connectors/store.ts'
@@ -19,7 +20,7 @@ const EDGAR_UA = process.env.SEC_USER_AGENT || 'dazl/1.0 (contact: support@dazl.
 const SUFFIXES = new Set(['inc', 'llc', 'ltd', 'corp', 'corporation', 'company', 'co', 'gmbh', 'sarl', 'sas', 'plc', 'lp', 'llp', 'group', 'technologies', 'technology', 'labs', 'ai', 'io'])
 
 export function nameTokens(name: string): string[] {
-  return name.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(t => t.length > 1 && !SUFFIXES.has(t))
+  return mlNameTokens(name).filter(t => !SUFFIXES.has(t))
 }
 
 export interface FundingSignal { date: string; entity: string; url: string }
