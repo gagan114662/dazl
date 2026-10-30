@@ -286,7 +286,10 @@ const productPart = (t: string) => t.split(/\s+(?:to|for|in|at|across|within|wit
 function withdrawsSaved(withdrawn: string, saved: string): boolean {
   if (sameOffer(withdrawn, saved)) return true
   const words = contentWords(productPart(withdrawn))
-  return words.length === 0 || !words.every(w => TERMS.has(w))
+  // a term is only exempt when the saved product is not made of it ("We no longer sell training" for a training offer)
+  const stem = (w: string) => w.length > 3 ? w.replace(/s$/, '') : w
+  const savedWords = new Set(contentWords(productPart(saved)).map(stem))
+  return words.length === 0 || words.some(w => savedWords.has(stem(w))) || !words.every(w => TERMS.has(w))
 }
 
 export function effectiveOffer(play: { offer?: string | null; seller?: string | null; query?: string | null }, profileSells: string | null | undefined): PlayOffer {

@@ -95,3 +95,10 @@ test('#349 decision matrix: equivalents stay equivalent; changed product/buyer, 
   assert.deepEqual(effectiveOffer({ offer: 'CRM setup and outbound consulting', seller: `${SAVED} - https://seller.example`, query: 'We sell CRM setup and outbound consulting.' }, ''),
     { offer: 'CRM setup and outbound consulting', source: 'play', conflict: null })
 })
+
+test('#349 decision matrix: a term-only withdrawal still asks when the saved product is that term', () => {
+  for (const [saved, q] of [['Sales training for B2B startups.', 'We no longer offer training.'], ['Customer support outsourcing for SaaS companies.', 'We no longer offer support.'],
+    ['Live chat software for online shops.', 'We no longer sell live chat.'], ['Employee onboarding software for agencies.', 'We do not offer onboarding.'],
+    ['Payment processing for restaurants.', 'We no longer provide payments.'], ['Custom pricing consulting for SaaS.', 'We no longer offer custom pricing.']])
+    assert.equal(effectiveOffer({ seller: `${saved} - https://seller.example`, query: q }, '').source, 'conflict', `${saved} / ${q}`)
+})

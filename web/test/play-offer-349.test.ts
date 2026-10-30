@@ -564,6 +564,9 @@ test('#349 HOLD-12 a request that withdraws the saved offer stays unresolved: no
   // fails closed for a withdrawal that names the saved product in other words; terms only (refunds, trials) do not withdraw it
   const syn = effectiveOffer({ seller: saved, query: 'We no longer sell scheduling tools.' }, '')
   assert.deepEqual([syn.source, syn.conflict!.withdrawn, syn.conflict!.stated], ['conflict', 'scheduling tools', null])
+  // a term-only withdrawal still conflicts when the saved product is made of those words
+  const tr = effectiveOffer({ seller: 'Sales training courses for SaaS teams - https://s.example', query: 'We no longer sell training.' }, '')
+  assert.deepEqual([tr.source, tr.conflict!.withdrawn], ['conflict', 'training'])
   // a comma-joined replacement is not swallowed into the withdrawn text. statedOffer does not read an offer after a comma
   // clause, so stated is null: the chooser offers keep-saved or write-this-play's-offer, never the withdrawn text
   const comma = effectiveOffer({ seller: saved, query: `We do not sell ${DENTAL_PRODUCT} anymore, we now sell CRM setup and outbound consulting.` }, '')
