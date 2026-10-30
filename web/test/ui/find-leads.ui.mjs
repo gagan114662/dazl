@@ -8,8 +8,8 @@
 //   2. inside it: the built-in public sources, the website fill, Review a source, Companies posting roles;
 //      connected social sources only when consented+connected+enabled (others are absent, not offered);
 //   3. a free account does not see the Pro-only imports, only one line saying where they are; a Pro account does;
-//   4. a source ticked under More sources still reaches the scan: Find leads sends exactly one
-//      POST /api/scan carrying it.
+//   4. a source ticked under More sources still reaches the scan: Find leads asks for the price estimate with it, nothing
+//      starts until that is confirmed, and confirming sends exactly one POST /api/scan carrying it.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -35,7 +35,7 @@ for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } ca
 
 const b = await chromium.launch()
 async function open(plan) {
-  const writes = []; const scanBodies = []
+  const writes = []; const scanBodies = []; const estimateBodies = []
   const ctx = await b.newContext({ viewport: { width: 1280, height: 1000 } })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
   await ctx.route('**/*', async route => {
@@ -52,6 +52,8 @@ async function open(plan) {
       { platform: 'reddit', consent: false, connected: true, enabled: true },
     ] })
     if (p === '/api/scan/jobs') return json({ jobs: [] })
+    // the price estimate shown before every run (synthetic numbers); the run starts only from its confirm button
+    if (p === '/api/scan/estimate' && m === 'POST') { estimateBodies.push(JSON.parse(req.postData())); return json({ estimate: { rows: [], total: { min: 0.05, max: 0.4 }, unpriced: [], assumptions: ['This is an estimate, not a quote or a bill.'], payer: 'you', cap: { max_usd: null, reserved_usd: 0, remaining_usd: null, binding: null, month_cap_usd: null, month_reserved_usd: 0, unknown: false, capped_total: { min: 0.05, max: 0.4 } }, verdict: { ok: true, reason: null, message: 'Within your limit.', change: [], warning: null }, ack: 'ack-find' } }) }
     if (p === '/api/scan' && m === 'POST') { scanBodies.push(JSON.parse(req.postData())); return json({ job_id: 'b'.repeat(24) }, 202) }
     if (p === '/api/scan/status') return json({ status: 'pending', lead_count: 0, attempts: 0, max_attempts: 3 })
     return json({}, 404)
@@ -59,13 +61,13 @@ async function open(plan) {
   const page = await ctx.newPage()
   await page.goto(`${base}/app/leads`, { waitUntil: 'networkidle' })
   await page.getByTestId('play-settings').locator('summary').first().click() // sources live in the closed "Settings for this play" drawer
-  return { ctx, page, writes, scanBodies }
+  return { ctx, page, writes, scanBodies, estimateBodies }
 }
 const shot = async (page, name) => { if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`) }) }
 try {
   if (process.env.BEFORE_ONLY) { const { page } = await open('free'); await page.waitForTimeout(800); await shot(page, 'leads'); console.log('before shot'); process.exit(0) }
   // Free account.
-  const { ctx, page, writes, scanBodies } = await open('free')
+  const { ctx, page, writes, scanBodies, estimateBodies } = await open('free')
   const more = page.getByTestId('more-sources')
   await more.waitFor()
   await shot(page, 'leads')
@@ -87,8 +89,13 @@ try {
   await more.getByText('Also search public GitHub repositories').click()
   assert.deepEqual(writes, [], 'nothing written before a run')
   await page.getByRole('button', { name: 'Find leads' }).click()
+  await page.getByTestId('estimate-confirm').waitFor({ timeout: 15000 })
+  assert.equal(scanBodies.length, 0, 'nothing starts before the estimate is confirmed')
+  assert.deepEqual(estimateBodies.at(-1)?.sources?.adapters, ['github'], 'the estimate covers the ticked source')
+  await page.getByTestId('estimate-confirm-run').click()
   await page.waitForTimeout(800)
   assert.equal(scanBodies.length, 1)
+  assert.equal(scanBodies[0].estimate_ack, 'ack-find', 'the run carries the estimate that was confirmed')
   assert.deepEqual(scanBodies[0].sources?.adapters, ['github'])
   assert.equal(scanBodies[0].query, 'Dental practice owners in Ohio opening a new location')
   await ctx.close()

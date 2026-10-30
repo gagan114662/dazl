@@ -3,7 +3,8 @@
 // Run:  cd web && npm run build && node test/ui/fresh-scan-url.ui.mjs   (SHOTS=<dir> saves screenshots)
 // Real production build, throwaway database, server under test/helpers/net-fence.ts, and EVERY /api/* CALL ANSWERED
 // FROM A STUB in the browser: the scan is not run, nothing is drafted or exported. It proves:
-//   1. from /app/leads?job_id=<old> (also with &passive=1), Find leads sends one POST /api/scan and, once the new job
+//   1. from /app/leads?job_id=<old> (also with &passive=1), Find leads asks for the price estimate and, once it is
+//      confirmed, sends one POST /api/scan; once the new job
 //      exists, the URL is /app/leads?job_id=<new> (passive dropped) while the page shows the new result;
 //   2. a refresh, and the same URL opened in a new tab, show the new result, never the old one;
 //   3. the Campaign page link and the Download CSV link name the new job.
@@ -45,6 +46,8 @@ await ctx.route('**/*', async route => {
   if (!p.startsWith('/api/')) return route.continue()
   const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
   if (m !== 'GET') writes.push(`${m} ${p}`)
+  // the price estimate shown before every run (synthetic numbers); the scan starts only from its confirm button
+  if (p === '/api/scan/estimate' && m === 'POST') return json({ estimate: { rows: [], total: { min: 0.05, max: 0.4 }, unpriced: [], assumptions: ['This is an estimate, not a quote or a bill.'], payer: 'you', cap: { max_usd: null, reserved_usd: 0, remaining_usd: null, binding: null, month_cap_usd: null, month_reserved_usd: 0, unknown: false, capped_total: { min: 0.05, max: 0.4 } }, verdict: { ok: true, reason: null, message: 'Within your limit.', change: [], warning: null }, ack: 'ack-fresh' } })
   if (p === '/api/scan' && m === 'POST') { created = Date.now(); return json({ job_id: NEW }, 202) }
   if (p === '/api/scan/status') {
     const id = u.searchParams.get('job_id')
@@ -78,9 +81,10 @@ try {
     assert.equal(await page.getByTestId('campaign-page-link').getAttribute('href'), `/app/campaigns/${OLD}`)
     await shot(page, start.includes('passive') ? 'old-passive' : 'old')
     await page.getByRole('button', { name: 'Find leads' }).click()
+    await page.getByTestId('estimate-confirm-run').click({ timeout: 15000 }) // the price estimate is confirmed; then the scan starts
     await page.waitForURL(u => u.searchParams.get('job_id') === NEW, { timeout: 15000 })
     await showsNew(page, `${start}: after Find leads`)
-    assert.deepEqual(writes, ['POST /api/scan'], 'one scan request, nothing else written')
+    assert.deepEqual(writes, ['POST /api/scan/estimate', 'POST /api/scan'], 'one estimate, then one scan request; nothing else written')
     await shot(page, start.includes('passive') ? 'new-passive' : 'new')
     await page.reload({ waitUntil: 'networkidle' })
     await showsNew(page, `${start}: after refresh`)
