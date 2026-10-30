@@ -114,9 +114,16 @@ export function recordBounce(db: Database.Database, tenantId: string, email: str
 }
 
 const sentTotal = (db: Database.Database, tenantId: string) => (db.prepare("SELECT count(*) AS n FROM outreach_messages WHERE tenant_id = ? AND status = 'sent'").get(tenantId) as { n: number }).n
-const autoSent24h = (db: Database.Database, tenantId: string, now: number) => (db.prepare("SELECT count(*) AS n FROM autopilot_audit WHERE tenant_id = ? AND action = 'sent' AND created_at >= ?").get(tenantId, now - 86400) as { n: number }).n
-const domainSentRecently = (db: Database.Database, tenantId: string, domain: string, now: number) =>
-  !!db.prepare("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND status IN ('sent','sending','uncertain') AND to_email LIKE ? AND claimed_at >= ?").get(tenantId, `%@${domain}`, now - 7 * 86400)
+// What counts against autopilot's caps: sends, sends in flight (reserved before the send path is entered) and sends whose
+// outcome is unknown. A reservation is released only when the send path refused before anything left (known not sent).
+const CAP_ACTIONS = "('sent','send_reserved','send_uncertain')"
+const autoSent24h = (db: Database.Database, tenantId: string, now: number) => (db.prepare(`SELECT count(*) AS n FROM autopilot_audit WHERE tenant_id = ? AND action IN ${CAP_ACTIONS} AND created_at >= ?`).get(tenantId, now - 86400) as { n: number }).n
+// The last time this company was emailed (sent, sending or uncertain) or had an autopilot send reserved, if within 7 days.
+const domainLastSent = (db: Database.Database, tenantId: string, domain: string, now: number): number | null => {
+  const m = (db.prepare("SELECT max(claimed_at) AS t FROM outreach_messages WHERE tenant_id = ? AND status IN ('sent','sending','uncertain') AND to_email LIKE ? AND claimed_at >= ?").get(tenantId, `%@${domain}`, now - 7 * 86400) as { t: number | null }).t
+  const r = (db.prepare(`SELECT max(created_at) AS t FROM autopilot_audit WHERE tenant_id = ? AND action IN ${CAP_ACTIONS} AND detail = ? AND created_at >= ?`).get(tenantId, domain, now - 7 * 86400) as { t: number | null }).t
+  return m === null && r === null ? null : Math.max(m ?? 0, r ?? 0)
+}
 
 export interface RunResult { sent: number; held: number; skipped: number; stopped?: string }
 
@@ -178,27 +185,45 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     const to = msg.to_email
     // Warm-up drafts are the user's to approve: never sent by autopilot later, whatever happens to the caps.
     if (sentTotal(db, tenantId) < WARMUP_SENDS(env)) { out.held++; hold(id, leadId, 'warmup', null); audit(db, tenantId, 'held_warmup', 'needs your approval', leadId, id); return }
-    if (autoSent24h(db, tenantId, now) >= st.daily_cap) {
-      // Due again when the oldest autopilot send of the last 24 hours drops out of the window (inclusive at its edge).
-      const oldest = (db.prepare("SELECT min(created_at) AS t FROM autopilot_audit WHERE tenant_id = ? AND action = 'sent' AND created_at >= ?").get(tenantId, now - 86400) as { t: number | null }).t ?? now
-      out.held++; hold(id, leadId, 'daily_cap', oldest + 86400 + 1, attempts); audit(db, tenantId, 'daily_cap', `cap ${st.daily_cap}`, leadId, id); out.stopped = 'daily_cap'; return 'stop'
-    }
-    const domain = to.split('@')[1]
-    if (domainSentRecently(db, tenantId, domain, now)) {
-      const last = (db.prepare("SELECT max(claimed_at) AS t FROM outreach_messages WHERE tenant_id = ? AND status IN ('sent','sending','uncertain') AND to_email LIKE ?").get(tenantId, `%@${domain}`) as { t: number | null }).t ?? now
-      out.held++; hold(id, leadId, 'domain_cap', last + 7 * 86400 + 1, attempts); audit(db, tenantId, 'held_domain_cap', 'one email per company per 7 days', leadId, id); return
-    }
     if (isSuppressed(db, tenantId, to)) { out.skipped++; drop(id); audit(db, tenantId, 'skipped', 'suppressed', leadId, id); return }
+    const domain = to.split('@')[1]
+    // The daily cap and the one-email-per-company-per-7-days rule are checked and this send reserved in one write
+    // transaction (BEGIN IMMEDIATE), before any await: two passes at once (a tick and a finishing scan, or two processes)
+    // cannot both read room for one more send.
+    const admit = db.transaction((): { held: 'daily_cap' | 'domain_cap'; at: number } | { reservation: string } => {
+      if (autoSent24h(db, tenantId, now) >= st.daily_cap) {
+        // Due again when the oldest counted send of the last 24 hours drops out of the window (inclusive at its edge).
+        const oldest = (db.prepare(`SELECT min(created_at) AS t FROM autopilot_audit WHERE tenant_id = ? AND action IN ${CAP_ACTIONS} AND created_at >= ?`).get(tenantId, now - 86400) as { t: number | null }).t ?? now
+        return { held: 'daily_cap', at: oldest + 86400 + 1 }
+      }
+      const last = domainLastSent(db, tenantId, domain, now)
+      if (last !== null) return { held: 'domain_cap', at: last + 7 * 86400 + 1 }
+      const reservation = randomBytes(12).toString('hex')
+      db.prepare("INSERT INTO autopilot_audit (id, tenant_id, lead_id, message_id, action, detail, created_at) VALUES (?, ?, ?, ?, 'send_reserved', ?, ?)").run(reservation, tenantId, leadId, id, domain, now)
+      return { reservation }
+    }).immediate()
+    if ('held' in admit) {
+      out.held++; hold(id, leadId, admit.held, admit.at, attempts)
+      if (admit.held === 'domain_cap') { audit(db, tenantId, 'held_domain_cap', 'one email per company per 7 days', leadId, id); return }
+      audit(db, tenantId, 'daily_cap', `cap ${st.daily_cap}`, leadId, id); out.stopped = 'daily_cap'; return 'stop'
+    }
+    const settle = (action: 'sent' | 'send_uncertain' | null) => action
+      ? db.prepare('UPDATE autopilot_audit SET action = ? WHERE id = ? AND tenant_id = ?').run(action, admit.reservation, tenantId)
+      : db.prepare("DELETE FROM autopilot_audit WHERE id = ? AND tenant_id = ? AND action = 'send_reserved'").run(admit.reservation, tenantId)
     try {
       if (msg.status === 'draft') approve(db, tenantId, id)
       // Only from the Gmail account the authority was taken with: the send path refuses at commitment if it changed.
       const r = await sendMessage(db, tenantId, id, { ...d, expectSender: gmailSender(db, tenantId) ?? '' })
       drop(id)
-      if (r === 'sent') { out.sent++; audit(db, tenantId, 'sent', undefined, leadId, id) }
+      // The reservation becomes the send's record ('sent', counted once) or stays counted as possibly sent.
+      if (r === 'sent') { out.sent++; settle('sent') }
       // An unknown outcome is never retried by autopilot: the message stays uncertain for the user.
-      else { audit(db, tenantId, 'uncertain', 'send outcome unknown', leadId, id); pause(db, tenantId, 'uncertain_send'); out.stopped = 'uncertain_send'; return 'stop' }
+      else { settle('send_uncertain'); audit(db, tenantId, 'uncertain', 'send outcome unknown', leadId, id); pause(db, tenantId, 'uncertain_send'); out.stopped = 'uncertain_send'; return 'stop' }
     } catch (e) {
       const code = e instanceof OutreachError ? e.code : 'error'
+      // The send path's refusals (OutreachError) come before anything is sent, so the reservation is released; anything
+      // else may have happened after the bytes left, so it keeps counting.
+      settle(e instanceof OutreachError ? null : 'send_uncertain')
       audit(db, tenantId, 'send_failed', code, leadId, id)
       if (WAIT_FOR_USER.has(code)) { hold(id, leadId, code, now, attempts); if (code !== 'paused') pause(db, tenantId, code); out.held++; out.stopped = code; return 'stop' }
       if (TRANSIENT.has(code) && attempts + 1 < RETRY_MAX) { hold(id, leadId, code, now + 3600 * 2 ** attempts, attempts + 1); out.held++; return }

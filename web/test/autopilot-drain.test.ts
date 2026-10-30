@@ -164,6 +164,60 @@ test('#411 two passes at once (a tick and a finishing scan): one claim, one send
   await runAutopilot(db, 'A', 'Acme', at(slow, row.next_at + 601)); assert.equal(sent.length, 3, 'stale claim: picked up once')
 })
 
+// Instinct's hold on 522feaa: two passes at once on DIFFERENT held drafts share one tenant's caps. The daily cap and the
+// per-company 7-day rule are checked and the send reserved in one write transaction before any await, so the second pass
+// sees the first's reservation. A known-not-sent refusal releases it; an unknown outcome keeps counting.
+const slowSends = () => { const sent: string[] = []; const d: Deps & { flags: Record<string, string> } = { ...sends().d, sendFn: (async (_t: string, raw: string) => { await new Promise(r => setTimeout(r, 20)); sent.push(raw); return { id: 'g' + sent.length } }) as never }; return { sent, d } }
+const counted = (db: Database.Database) => db.prepare("SELECT action, detail FROM autopilot_audit WHERE action IN ('sent','send_reserved','send_uncertain') ORDER BY created_at, rowid").all() as { action: string; detail: string }[]
+
+test('#448 daily cap across two simultaneous passes on different held drafts: one send in the window (Instinct negative)', async () => {
+  const db = await setup(); cap1(db); pastWarmup(db); const { sent, d } = slowSends()
+  lead(db, 'a@one.example'); lead(db, 'b@two.example')
+  await runAutopilot(db, 'A', 'Acme', at(d, NOW)); assert.equal(sent.length, 1)
+  lead(db, 'c@three.example'); await runAutopilot(db, 'A', 'Acme', at(d, NOW))
+  assert.deepEqual(work(db).map(w => [w.reason, w.next_at]), [['daily_cap', NOW + DAY + 1], ['daily_cap', NOW + DAY + 1]], 'two held drafts, same due time')
+  const later = at(d, NOW + DAY + 1)
+  const [x, y] = await Promise.all([runAutopilot(db, 'A', 'Acme', later), runAutopilot(db, 'A', 'Acme', later)])
+  assert.deepEqual([x.sent + y.sent, sent.length], [1, 2], 'cap 1: one new send, not two')
+  assert.equal(work(db).length, 1, 'the other stays held')
+  assert.deepEqual(counted(db).map(c => c.action), ['sent', 'sent'], 'each send counted once; no reservation left behind')
+  await runAutopilot(db, 'A', 'Acme', at(d, NOW + 2 * DAY + 2)); assert.equal(sent.length, 3, 'sent when the window moves on')
+})
+
+test('#448 per-company 7-day rule across two simultaneous passes on different drafts to the same company: one send', async () => {
+  const db = await setup(); ok(db); pastWarmup(db); const { sent, d } = slowSends()
+  // Two held drafts to people at the same company, both due now (e.g. held earlier by the daily cap).
+  lead(db, 'ann@same.example'); lead(db, 'bob@same.example')
+  const first = await Promise.all([runAutopilot(db, 'A', 'Acme', at(d, NOW)), runAutopilot(db, 'A', 'Acme', at(d, NOW))])
+  assert.equal(first[0].sent + first[1].sent, 1); assert.equal(sent.length, 1, 'new leads: one per company')
+  assert.deepEqual(work(db).map(w => [w.reason, w.next_at]), [['domain_cap', NOW + 7 * DAY + 1]])
+  // Two held drafts for another company, due at the same moment, drained by two passes at once.
+  lead(db, 'cat@other.example'); lead(db, 'dan@other.example')
+  db.prepare("INSERT INTO autopilot_audit (id, tenant_id, action, detail, created_at) VALUES ('old', 'A', 'sent', 'other.example', ?)").run(NOW - 3 * DAY)
+  await runAutopilot(db, 'A', 'Acme', at(d, NOW)) // both held for other.example until NOW + 4 days + 1
+  assert.equal(sent.length, 1)
+  const due = at(d, NOW + 4 * DAY + 1)
+  const [x, y] = await Promise.all([runAutopilot(db, 'A', 'Acme', due), runAutopilot(db, 'A', 'Acme', due)])
+  assert.equal(x.sent + y.sent, 1, 'one email to other.example, not two')
+  assert.equal(sent.filter(r => /^To: .*@other\.example/m.test(Buffer.from(r, 'base64url').toString('utf8'))).length, 1)
+})
+
+test('#448 reservations: a known-not-sent refusal releases the cap; an unknown outcome keeps counting', async () => {
+  // Rate limited (refused before sending): released, so another lead can use the cap at once.
+  { const db = await setup(); cap1(db); pastWarmup(db); const sent: string[] = []; let calls = 0
+    const d: Deps & { flags: Record<string, string> } = { ...sends().d, sendFn: (async (_t: string, raw: string) => { if (++calls === 1) throw new GmailSendError(429); sent.push(raw); return { id: 'g' } }) as never }
+    lead(db, 'a@one.example'); lead(db, 'b@two.example')
+    const r = await runAutopilot(db, 'A', 'Acme', at(d, NOW))
+    assert.deepEqual([r.sent, sent.length], [1, 1], 'the refused send did not use up the daily cap')
+    assert.deepEqual(counted(db).map(c => c.action), ['sent']) }
+  // Network error mid-send (outcome unknown): it keeps counting, so the cap stays used.
+  { const db = await setup(); ok(db); pastWarmup(db)
+    const d: Deps & { flags: Record<string, string> } = { ...sends().d, sendFn: (async () => { throw new Error('network') }) as never }
+    lead(db, 'a@one.example')
+    await runAutopilot(db, 'A', 'Acme', at(d, NOW))
+    assert.deepEqual(counted(db).map(c => [c.action, c.detail]), [['send_uncertain', 'one.example']]) }
+})
+
 // Instinct's hold on a73a6a3: the Gmail account a held draft would go out from is part of its authority. A reconnect to
 // another address hands it back to the user; a disconnect waits; the same address (reconnected, or a token refresh)
 // sends; a change between autopilot's check and the send itself is refused at send commitment.
