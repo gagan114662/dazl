@@ -210,7 +210,9 @@ On finish the trace is redacted (`redactTrace`, over every string of the trace i
 secrets, emails, phones, profile slugs, extracted names), size-capped, and written. The cap is a hard bound on the exact
 UTF-8 JSON bytes stored (2 MB): strings are cut to 50,000 characters, then span contents, then output leads, then input
 and spans are dropped until it fits, and the insert refuses anything over it. `capture` records each drop with
-`complete: false`, and `worldFromTrace` refuses an incomplete capture. It is written to `scan_traces` in the app's own store: tenant-scoped, one row per attempt, PG
+`complete: false`, and `worldFromTrace` refuses an incomplete capture. A response body the recorder itself cut (its
+body cap, a failed read, or the settle bound) counts as a drop (`bodies_truncated`), and `worldFromTrace` also refuses any
+span marked `truncated`, whatever `capture` says. It is written to `scan_traces` in the app's own store: tenant-scoped, one row per attempt, PG
 `0018_scan_traces.sql`. There is no third-party trace store. Reads (`listTraces`, `getTrace`) always take the tenant; another
 tenant's trace id answers like an unknown one. Recording or storing never reaches the run: a failure is logged as
 `{"trace_capture":"failed"}` with the error's class and code only (never its message, which can quote the row), and the scan's outcome stands. Response bodies are read from a clone in the

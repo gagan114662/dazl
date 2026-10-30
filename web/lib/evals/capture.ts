@@ -138,10 +138,12 @@ export function capTrace(t: Trace, maxBytes = MAX_TRACE_BYTES): Trace {
   const prior = t.capture ?? {}
   const mark = (x: Trace, more: NonNullable<Trace['capture']>): Trace => {
     const truncated = (prior.truncated_strings ?? 0) + cut
-    const c = { ...prior, ...more, ...(truncated ? { truncated_strings: truncated } : {}) }
-    const dropped = !!(c.truncated_strings || c.spans_metadata_only || c.spans_omitted || c.leads_omitted || c.input_omitted || prior.complete === false)
+    const c = { ...prior, ...more, ...(truncated ? { truncated_strings: truncated } : {}), ...(bodies ? { bodies_truncated: bodies } : {}) }
+    const dropped = !!(c.truncated_strings || c.bodies_truncated || c.spans_metadata_only || c.spans_omitted || c.leads_omitted || c.input_omitted || prior.complete === false)
     return { ...x, capture: { ...c, complete: !dropped, max_bytes: maxBytes } }
   }
+  // Bodies the recorder cut before this point (its cap, a failed read, the settle bound) are drops too.
+  const bodies = t.spans.filter(s => (s.output as { truncated?: unknown } | null)?.truncated === true).length
   const s1 = mark(base, {})
   if (fits(s1)) return s1
   const meta = base.spans.map(s => ({ ...s, input: { url: typeof (s.input as { url?: unknown }).url === 'string' ? cutStr(String((s.input as { url: string }).url)).slice(0, 2_000) : null, stage: (s.input as { stage?: unknown }).stage ?? null }, output: null, ...(s.error ? { error: s.error.slice(0, 300) } : {}) }))

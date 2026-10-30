@@ -164,6 +164,36 @@ test('a store failure logs its class only, never its message (which can quote th
   assert.deepEqual(errs.map(e => JSON.parse(e)), [{ trace_capture: 'failed', job: 'j-log', error: 'Error:SQLITE_CONSTRAINT' }])
 })
 
+// Bodies the RECORDER cut (before capTrace ever runs) make the stored capture incomplete too, through the real
+// beginScanTrace -> store -> getTrace path; worldFromTrace refuses the stored result. A small complete answer is the control.
+test('a body cut while recording (cap, failed read, settle timeout) marks the stored capture incomplete and refuses replay', async () => {
+  const db = memDb()
+  const stored = async (job: string, body: () => BodyInit, settleMs = 2_000) => {
+    const c = beginScanTrace({ id: job, user_id: 'A', attempts: 1, query: 'q' }, { fetchImpl: (async () => new Response(body())) as typeof fetch }, { env: { DAZL_TRACE_CAPTURE: '1' }, db: async () => db, settleMs, finishMs: 5_000 })!
+    const res = await c.deps.fetchImpl!('https://synthetic.example/x')
+    void res.body?.cancel().catch(() => {})                          // the caller is done with its copy
+    return (await getTrace(db, 'A', (await c.finish('done'))!))!
+  }
+  const paths = {
+    over_cap: await stored('j-cap', () => 'y'.repeat(200_010)),                                                          // the recorder's 200k body cap
+    read_failed: await stored('j-err', () => new ReadableStream({ start(ctl) { ctl.enqueue(new TextEncoder().encode('par')); ctl.error(new Error('reset')) } })),
+    settle_timeout: await stored('j-stall', () => new ReadableStream({ start(ctl) { ctl.enqueue(new TextEncoder().encode('partial')) } }), 10), // never closes
+  }
+  for (const [path, t] of Object.entries(paths)) {
+    assert.equal((t.spans[0].output as { truncated?: boolean }).truncated, true, path)
+    assert.deepEqual([t.capture?.complete, t.capture?.bodies_truncated], [false, 1], path)
+    assert.throws(() => worldFromTrace(t), (e: unknown) => e instanceof WorldError && /response bodies cut while recording/.test((e as Error).message), path)
+    // even with the capture marker stripped, the span's own marker refuses it
+    assert.throws(() => worldFromTrace({ ...t, capture: undefined }), /response bodies cut while recording \(s0\)/, path)
+  }
+  assert.equal((paths.settle_timeout.spans[0].output as { body: string }).body, 'partial')
+  // control: a small answer read to its end is complete and replays
+  const whole = await stored('j-ok', () => 'a complete small answer')
+  assert.deepEqual([(whole.spans[0].output as { body: string }).body, (whole.spans[0].output as { truncated?: boolean }).truncated, whole.capture?.complete, whole.capture?.bodies_truncated], ['a complete small answer', undefined, true, undefined])
+  assert.deepEqual(validateWorld(worldFromTrace(whole)).http['https://synthetic.example/x'], { status: 200, body: 'a complete small answer' })
+  await db.close()
+})
+
 const lead = (i: number, big: string) => ({ company: big, name: `n${i}`, contact: null, source_url: `https://p.example/${i}`, excerpt: big, event_date: null, review_reason: null, confidence: null })
 const bytes = (t: Trace) => Buffer.byteLength(JSON.stringify(t))
 

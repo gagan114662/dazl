@@ -35,7 +35,7 @@ export interface Trace {
   synthetic_defaults?: { http?: { status: number; body: string } }
   // A captured production trace (lib/evals/capture.ts) that had to be cut to fit the store says so here.
   // `complete: false` whenever anything was dropped; worldFromTrace refuses such a trace.
-  capture?: { complete?: boolean; max_bytes?: number; truncated_strings?: number; spans_metadata_only?: boolean; spans_omitted?: number; leads_omitted?: number; input_omitted?: boolean }
+  capture?: { complete?: boolean; max_bytes?: number; truncated_strings?: number; bodies_truncated?: number; spans_metadata_only?: boolean; spans_omitted?: number; leads_omitted?: number; input_omitted?: boolean }
 }
 export interface TraceLead { company: string; name: string; contact: string | null; source_url: string; excerpt: string | null; event_date: string | null; review_reason: string | null; confidence: number | null }
 
@@ -107,7 +107,7 @@ export class TraceRecorder {
       const body = !provider && typeof init?.body === 'string' ? init.body : null
       return this.span('http', name, { method, url, body }, () => inner(input as never, init), res => {
         const out: { status: number; body: string | null; truncated?: boolean } = { status: res.status, body: null }
-        if (!provider) this.pending.push(readCapped(res.clone(), bodyCap(name, url), this.readers).then(r => { out.body = r.text; if (r.truncated) out.truncated = true }, () => { /* unreadable: body stays null */ }))
+        if (!provider) this.pending.push(readCapped(res.clone(), bodyCap(name, url), this.readers).then(r => { out.body = r.text; if (r.truncated) out.truncated = true }, () => { out.truncated = true /* unreadable: body stays null, and the span says it is incomplete */ }))
         return out
       })
     }) as typeof fetch
