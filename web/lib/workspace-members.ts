@@ -31,13 +31,13 @@ const nowS = () => Math.floor(Date.now() / 1000)
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex')
 export const isInviteToken = (t: unknown): t is string => typeof t === 'string' && /^[a-f0-9]{64}$/.test(t)
 
-type MemberErrorCode = 'forbidden' | 'not_found' | 'last_owner' | 'already_member' | 'too_many_invites' | 'invalid_invite' | 'wrong_account'
+type MemberErrorCode = 'forbidden' | 'not_found' | 'last_owner' | 'only_workspace' | 'already_member' | 'too_many_invites' | 'invalid_invite' | 'wrong_account'
 export class MemberError extends Error {
   readonly code: MemberErrorCode
   constructor(code: MemberErrorCode) { super(code); this.code = code }
 }
 export const MEMBER_ERROR_STATUS: Record<MemberError['code'], number> = {
-  forbidden: 403, not_found: 404, last_owner: 409, already_member: 409, too_many_invites: 429, invalid_invite: 410, wrong_account: 403,
+  forbidden: 403, not_found: 404, last_owner: 409, only_workspace: 409, already_member: 409, too_many_invites: 429, invalid_invite: 410, wrong_account: 403,
 }
 
 // The acting member: who, in which workspace, as what (from getSessionUser, never from the request).
@@ -63,6 +63,12 @@ function* actingRole(t: Tx, by: Acting): TxBody<Role> {
 function* roleOf(t: Tx, tenantId: string, memberId: string): TxBody<Role | null> {
   const r = (yield* t.get<{ role: string }>('SELECT role FROM memberships WHERE tenant_id = ? AND member_id = ?', [tenantId, memberId]))?.role
   return isRole(r) ? r : null
+}
+
+// A member is never left with no workspace at all: getSessionUser would then find nothing on every request, and the
+// account could not sign in to anything (its personal workspace is not recreated once it exists).
+function* lastWorkspace(t: Tx, memberId: string): TxBody<boolean> {
+  return Number((yield* t.get<{ n: number }>('SELECT count(*) AS n FROM memberships WHERE member_id = ?', [memberId]))?.n ?? 0) <= 1
 }
 
 function* owners(t: Tx, tenantId: string): TxBody<number> {
@@ -106,6 +112,7 @@ export async function removeMember(db: Db, by: Acting, memberId: string): Promis
     if (!current) throw new MemberError('not_found')
     if (!mayManage(me, current, null)) throw new MemberError('forbidden')
     if (current === 'owner' && (yield* owners(t, by.tenantId)) <= 1) throw new MemberError('last_owner')
+    if (yield* lastWorkspace(t, memberId)) throw new MemberError('only_workspace')
     yield* t.run('DELETE FROM memberships WHERE tenant_id = ? AND member_id = ?', [by.tenantId, memberId])
   })
 }
@@ -116,7 +123,12 @@ export async function leave(db: Db, by: Acting): Promise<void> {
     const current = yield* roleOf(t, by.tenantId, by.actorId)
     if (!current) throw new MemberError('not_found')
     if (current === 'owner' && (yield* owners(t, by.tenantId)) <= 1) throw new MemberError('last_owner')
+    if (yield* lastWorkspace(t, by.actorId)) throw new MemberError('only_workspace')
     yield* t.run('DELETE FROM memberships WHERE tenant_id = ? AND member_id = ?', [by.tenantId, by.actorId])
+    // the account's own sessions stop pointing at the workspace it left, so its next request acts in another one. A
+    // removed member's sessions are not touched: their next request is refused once (getSessionUser), so a request meant
+    // for the old workspace never lands in a different one.
+    yield* t.run('UPDATE sessions SET active_tenant_id = NULL WHERE user_id = ? AND active_tenant_id = ?', [by.actorId, by.tenantId])
   })
 }
 
@@ -126,8 +138,12 @@ export async function createInvitation(db: Db, by: Acting, email: string, role: 
   if (!mayManage(by.role, null, role)) throw new MemberError('forbidden') // fast refusal; re-checked under the lock
   const token = randomBytes(32).toString('hex'), id = randomBytes(12).toString('hex')
   await db.tx(function* (t) {
-    if (!mayManage(yield* actingRole(t, by), null, role)) throw new MemberError('forbidden')
+    const me = yield* actingRole(t, by)
+    if (!mayManage(me, null, role)) throw new MemberError('forbidden')
     if (yield* t.get('SELECT 1 AS x FROM memberships m JOIN users u ON u.id = m.member_id WHERE m.tenant_id = ? AND lower(u.email) = ?', [by.tenantId, email])) throw new MemberError('already_member')
+    // replacing a pending invitation revokes it, so it takes what revoking it would (an owner invitation: 'owners')
+    for (const p of yield* t.all<{ role: string }>('SELECT role FROM invitations WHERE tenant_id = ? AND email = ? AND accepted_at IS NULL AND revoked_at IS NULL', [by.tenantId, email]))
+      if (!isRole(p.role) || !mayManage(me, null, p.role)) throw new MemberError('forbidden')
     yield* t.run('UPDATE invitations SET revoked_at = ? WHERE tenant_id = ? AND email = ? AND accepted_at IS NULL AND revoked_at IS NULL', [now, by.tenantId, email])
     const pending = Number((yield* t.get<{ n: number }>('SELECT count(*) AS n FROM invitations WHERE tenant_id = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?', [by.tenantId, now]))?.n ?? 0)
     if (pending >= MAX_PENDING_INVITES) throw new MemberError('too_many_invites')
@@ -156,8 +172,9 @@ export async function revokeInvitation(db: Db, by: Acting, id: string, now = now
 
 // Accepting: the signed-in account must hold the link (the token) and be the account it was sent to (its email). The
 // token is used up in the same transaction that adds the membership, so a replay, an expired or a revoked link adds
-// nothing. Unknown, used, revoked and expired links all answer the same 'invalid_invite'. An account already in the
-// workspace keeps its role.
+// nothing. Unknown, used, revoked and expired links all answer the same 'invalid_invite', and so does a link whose
+// inviter can no longer grant its role (removed, or demoted below it): a link carries its inviter's authority, so it
+// ends with it. An account already in the workspace keeps its role.
 export async function acceptInvitation(db: Db, actor: { actorId: string; email: string }, token: string, now = nowS()): Promise<{ tenantId: string; role: Role }> {
   if (!isInviteToken(token)) throw new MemberError('invalid_invite')
   return db.tx(function* (t) {
@@ -168,6 +185,8 @@ export async function acceptInvitation(db: Db, actor: { actorId: string; email: 
     // the same lock every member and invitation change takes first, so a revoke and this accept are serialized; the
     // guarded update below then sees the outcome of whichever ran first
     yield* lockWorkspace(t, inv.tenant_id)
+    const inviter = yield* roleOf(t, inv.tenant_id, inv.invited_by)
+    if (!inviter || !mayManage(inviter, null, inv.role)) throw new MemberError('invalid_invite')
     const used = yield* t.run('UPDATE invitations SET accepted_at = ?, accepted_by = ? WHERE id = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?', [now, actor.actorId, inv.id, now])
     if (used.changes !== 1) throw new MemberError('invalid_invite')
     yield* t.run('INSERT INTO memberships (tenant_id, member_id, role, created_at, added_by) VALUES (?, ?, ?, ?, ?) ON CONFLICT (tenant_id, member_id) DO NOTHING',

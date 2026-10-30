@@ -88,6 +88,9 @@ bothEngines('roles and removal: admins never touch owners, the last owner cannot
   await removeMember(db, act('A', 'D', 'owner'), 'O')
   assert.equal(await roleIn(db, 'A', 'O'), null)
   assert.equal(await roleIn(db, 'B2', 'O'), 'viewer', 'only this workspace')
+  // A's own workspace is its only one, so it may not leave it; with another membership it may
+  await assert.rejects(leave(db, act('A', 'A', 'admin')), code('only_workspace'))
+  await add(db, 'B2', 'A', 'viewer')
   await leave(db, act('A', 'A', 'admin'))
   assert.deepEqual((await listMembers(db, 'A')).map(m => [m.member_id, m.role]), [['D', 'owner']])
 })
@@ -180,3 +183,46 @@ bothEngines('revoking and accepting the same link at once: exactly one wins', as
     }
   }
 }, { pgMax: 4 })
+
+bothEngines('a link carries its inviter\'s authority: once the inviter is removed or demoted below its role, it adds nothing', async ({ db }) => {
+  await users(db, 'A', 'D', 'E', 'X', 'Y')
+  await add(db, 'A', 'D', 'admin'); await add(db, 'A', 'E', 'owner')
+  const byAdmin = await createInvitation(db, act('A', 'D', 'admin'), 'x@example.test', 'admin')
+  const byOwner = await createInvitation(db, act('A', 'E', 'owner'), 'y@example.test', 'owner')
+  await removeMember(db, OWNER_A, 'D')
+  await changeRole(db, OWNER_A, 'E', 'admin')
+  await assert.rejects(acceptInvitation(db, me('X'), byAdmin.token), code('invalid_invite'), 'inviter removed')
+  await assert.rejects(acceptInvitation(db, me('Y'), byOwner.token), code('invalid_invite'), 'inviter demoted below owner')
+  assert.equal(await roleIn(db, 'A', 'X'), null)
+  assert.equal(await roleIn(db, 'A', 'Y'), null)
+  // a demoted inviter who can still grant the role: the link works
+  const stillOk = await createInvitation(db, act('A', 'E', 'admin'), 'x@example.test', 'operator')
+  assert.deepEqual(await acceptInvitation(db, me('X'), stillOk.token), { tenantId: 'A', role: 'operator' })
+})
+
+bothEngines('replacing a pending invitation takes what revoking it would: an admin cannot replace an owner invitation', async ({ db }) => {
+  await users(db, 'A', 'D', 'Y')
+  await add(db, 'A', 'D', 'admin')
+  const owner = await createInvitation(db, OWNER_A, 'y@example.test', 'owner')
+  await assert.rejects(createInvitation(db, act('A', 'D', 'admin'), 'y@example.test', 'viewer'), code('forbidden'))
+  assert.deepEqual((await listInvitations(db, 'A')).map(i => [i.email, i.role]), [['y@example.test', 'owner']])
+  assert.deepEqual(await acceptInvitation(db, me('Y'), owner.token), { tenantId: 'A', role: 'owner' })
+})
+
+bothEngines('no account is left without a workspace; leaving points the account\'s sessions elsewhere', async ({ db }) => {
+  await users(db, 'A', 'B')
+  await add(db, 'A', 'B', 'owner')
+  // B's only other workspace is its own; with that gone, A is its only one
+  await db.run("DELETE FROM memberships WHERE tenant_id = 'B' AND member_id = 'B'")
+  await assert.rejects(removeMember(db, OWNER_A, 'B'), code('only_workspace'))
+  await assert.rejects(leave(db, act('A', 'B', 'owner')), code('only_workspace'))
+  assert.equal(await roleIn(db, 'A', 'B'), 'owner')
+  // with its own workspace back, B may leave A, and its sessions stop pointing at A
+  await add(db, 'B', 'B', 'owner')
+  const t = await createSession('B', db)
+  await switchWorkspace(db, hashToken(t), 'B', 'A')
+  assert.equal((await getSessionUser(t, db))?.tenantId, 'A')
+  await leave(db, act('A', 'B', 'owner'))
+  assert.equal((await db.get<{ a: string | null }>('SELECT active_tenant_id AS a FROM sessions WHERE id = ?', [hashToken(t)]))?.a, null)
+  assert.equal((await getSessionUser(t, db))?.tenantId, 'B', 'the next request acts in B, not refused')
+})

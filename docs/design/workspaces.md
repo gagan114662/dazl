@@ -63,7 +63,10 @@ One table, `ACTIONS` in `lib/workspaces.ts`; routes call `can(role, action)`, ne
 | owners    | owner       | grant/remove owner, delete the workspace |
 
 Member-management rules (increment 3): admins cannot touch owners; only owners grant owner; the last owner cannot be
-removed or demoted, nor leave, in one transaction that counts owners (so two concurrent demotions cannot both pass).
+removed or demoted, nor leave, in one transaction that counts owners (so two concurrent demotions cannot both pass). No
+account is removed from, or leaves, its only workspace (it would have nothing to sign in to). A link carries its
+inviter's authority: once the inviter is removed, or demoted below the invited role, it adds nothing; and replacing a
+pending invitation takes what revoking it would.
 
 ## Migration path
 
@@ -93,7 +96,8 @@ removed or demoted, nor leave, in one transaction that counts owners (so two con
    inviting the same email again revokes the earlier link. Accepting needs the signed-in account whose email it was
    sent to, and uses the token up in the same transaction that adds the membership (an unknown, used, revoked or
    expired link all answer 410). dazl sends no email yet: the inviter gets the link once, with the token in the
-   `#fragment` so it never reaches a server log. Every member change locks the workspace row first, so two owners
+   `#fragment` so it never reaches a server log. A link opened while signed out survives sign-in and sign-up (kept in the
+   tab's `sessionStorage`, not a cookie) and is accepted after them; Google sign-in does not carry it yet. Every member change locks the workspace row first, so two owners
    demoting each other at once cannot both pass the last-owner check (tested on Postgres). Switching writes
    `active_tenant_id` only for a workspace the account belongs to, and only on its own session.
    Known limit until #357: password-account emails are unverified, so the token is the real proof; after #357,

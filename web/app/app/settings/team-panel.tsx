@@ -8,7 +8,7 @@ interface Invite { id: string; email: string; role: Role; expires_at: number }
 
 const ROLES: Role[] = ['viewer', 'operator', 'admin', 'owner']
 const ROLE_HELP: Record<Role, string> = { viewer: 'reads and exports', operator: 'also runs scans and sends', admin: 'also keys, connectors and members', owner: 'also billing and owners' }
-const ERRORS: Record<string, string> = { last_owner: 'A workspace needs at least one owner.', forbidden: 'Your role cannot do that.', already_member: 'Already a member.', too_many_invites: 'Too many pending invitations.', not_found: 'Not found.' }
+const ERRORS: Record<string, string> = { last_owner: 'A workspace needs at least one owner.', only_workspace: 'That is their only workspace, so it cannot be left or removed.', forbidden: 'Your role cannot do that.', already_member: 'Already a member.', too_many_invites: 'Too many pending invitations.', not_found: 'Not found.' }
 const rank = (r: Role) => ROLES.indexOf(r)
 
 type WorkspaceInfo = { current: { tenant_id: string; role: Role }; you: { id: string }; workspaces: Workspace[] }
