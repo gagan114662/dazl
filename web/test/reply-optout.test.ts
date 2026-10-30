@@ -3,6 +3,7 @@
 // conservative localized opt-out and "not interested" wording, and uncertain replies blocked for review. Quoted history
 // never counts, an opt-out stops the thread and suppresses the address for the future, and nothing ambiguous ever
 // grants consent. Two tenants: one tenant's replies never touch the other's suppressions, consent or threads.
+import { DSN_QUERY } from '../lib/outreach/dsn.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
@@ -178,11 +179,14 @@ test('sync, two tenants: HTML unsubscribe suppresses and stops only A\'s thread;
   assert.equal(cls(db, 'A', 'a2-r'), 'positive'); assert.equal(hasConsent(db, 'A', 'kim@other.example', 'email', 'followup', NOW), true)
   assert.equal(hasConsent(db, 'B', 'kim@other.example', 'email', 'followup', NOW), false)
   assert.equal(cls(db, 'B', 'b2-r'), 'auto'); assert.equal(stopped(db, 'B', b2.thread), null)
-  // each tenant's sync opened only its own threads, by id, and nothing else (no list, search or other scope)
-  const gm = (c: string[]) => c.filter(u => u.includes('gmail.googleapis.com'))
+  // each tenant's sync opened only its own threads, by id, plus the one delivery-notice search (#415: mailer-daemon /
+  // postmaster senders only) - no other list, search or scope
+  const DSN_SEARCH = 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + encodeURIComponent(DSN_QUERY) + '&maxResults=50'
+  for (const c of [callsA, callsB]) assert.deepEqual(c.filter(u => /messages\?/.test(u)), [DSN_SEARCH])
+  const gm = (c: string[]) => c.filter(u => u.includes('gmail.googleapis.com') && u !== DSN_SEARCH)
   assert.deepEqual(gm(callsA).map(u => u.replace(/.*threads\//, '').replace(/\?.*/, '')).sort(), [a1.thread, a2.thread].sort())
   assert.deepEqual(gm(callsB).map(u => u.replace(/.*threads\//, '').replace(/\?.*/, '')).sort(), [b1.thread, b2.thread].sort())
-  assert.ok(![...callsA, ...callsB].some(u => /messages\?|q=|labels|\/send/.test(u)))
+  assert.ok(![...callsA, ...callsB].filter(u => u !== DSN_SEARCH).some(u => /messages\?|q=|labels|\/send/.test(u)))
   // stored excerpts are the new text only (the quoted "Interested, call me" is not kept)
   assert.equal((db.prepare("SELECT excerpt FROM inbound_messages WHERE gmail_id = 'a1-r'").get() as { excerpt: string }).excerpt, 'Bitte abmelden, danke.')
   // a later sync does not re-read or re-classify what was stored

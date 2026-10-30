@@ -1,4 +1,5 @@
 import { migrateConnectors } from '../lib/connectors/store.ts'
+import { DSN_QUERY } from '../lib/outreach/dsn.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
@@ -76,8 +77,10 @@ test('reading needs consent and the read grant; it opens only threads dazl start
   assert.equal(calls.length, 0)
   const db2 = await setup(true); const s = sentLead(db2, 'a@co.example'); const calls2: string[] = []
   await syncReplies(db2, 'A', { env: genv, master, now: NOW, fetchImpl: gmail({ [s.thread]: [] }, calls2) })
-  assert.ok(calls2.filter(u => u.includes('gmail.googleapis.com')).every(u => u.includes(`threads/${s.thread}`)))
-  assert.ok(!calls2.some(u => /messages\?|q=|labels/.test(u)))
+  // its own thread by id, and the one delivery-notice search (#415: mailer-daemon / postmaster only); nothing else
+  const DSN_SEARCH = 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + encodeURIComponent(DSN_QUERY) + '&maxResults=50'
+  assert.ok(calls2.filter(u => u.includes('gmail.googleapis.com') && u !== DSN_SEARCH).every(u => u.includes(`threads/${s.thread}`)))
+  assert.deepEqual(calls2.filter(u => /messages\?|q=|labels/.test(u)), [DSN_SEARCH])
   db2.prepare('DELETE FROM mail_read_consent').run()
   assert.equal((await syncReplies(db2, 'A', { env: genv, master, now: NOW, fetchImpl: gmail({}) })).error, 'reading_not_enabled')
 })

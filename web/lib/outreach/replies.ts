@@ -8,11 +8,13 @@ import { grantConsent, revokeAll } from './ledger.ts'
 import { norm } from './store.ts'
 import { suppress } from './service.ts'
 import { fullText, messageText, type GPart } from './reply-text.ts'
+import { ingestDeliveryNotices } from './dsn.ts'
 export { newText, messageText, htmlToText } from './reply-text.ts'
 
 // Reading replies is its own consent and its own Gmail scope (gmail.readonly). dazl opens only threads it started,
-// by thread id. It never lists or searches the mailbox, stores only a 200-character excerpt of a reply, and
-// reads nothing when the user has not consented or has turned it off.
+// by thread id, and delivery-failure notices for its sends (lib/outreach/dsn.ts: one search restricted to mailer-daemon /
+// postmaster senders; a notice not tied to a dazl send is not stored). It never lists or searches anything else,
+// stores only a 200-character excerpt of a reply, and reads nothing when the user has not consented or has turned it off.
 export const READ_CONSENT_VERSION = '2026-10-21'
 export const READ_CONSENT_TEXT = [
   'dazl will read replies in the email threads it started for you, and delivery-failure notices for them. It will not read any other email.',
@@ -153,10 +155,12 @@ const header = (m: GMsg, n: string) => m.payload?.headers?.find(h => h.name.toLo
 const addr = (v?: string) => norm((v?.match(/<([^>]+)>/)?.[1] ?? v ?? '').trim())
 
 export interface SyncDeps extends OAuthDeps { fetchImpl?: typeof fetch }
-export interface SyncResult { threads: number; replies: number; optOuts: number; bounces: number; consents: number; reviews: number; error?: string }
+// bounce_coverage: whether delivery notices outside the outreach threads were read this sync (#415). 'unknown' when they
+// could not be (no read permission, the search failed): unknown is never "no bounces".
+export interface SyncResult { threads: number; replies: number; optOuts: number; bounces: number; consents: number; reviews: number; bounce_coverage: 'checked' | 'unknown'; error?: string }
 
 export async function syncReplies(db: Database.Database, tenantId: string, d: SyncDeps = {}): Promise<SyncResult> {
-  const out: SyncResult = { threads: 0, replies: 0, optOuts: 0, bounces: 0, consents: 0, reviews: 0 }
+  const out: SyncResult = { threads: 0, replies: 0, optOuts: 0, bounces: 0, consents: 0, reviews: 0, bounce_coverage: 'unknown' }
   const now = d.now ?? Math.floor(Date.now() / 1000)
   const acct = db.prepare('SELECT email, read_granted, status FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string; read_granted: number; status: string } | undefined
   if (!hasReadConsent(db, tenantId) || !acct || acct.read_granted !== 1 || acct.status !== 'active') return { ...out, error: 'reading_not_enabled' }
@@ -219,6 +223,12 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
       auditAt(db, tenantId, 'sync_error', e instanceof Error ? e.message : 'error', m.lead_id, m.id, now)
     }
   }
+  // Delivery notices that came back as their own thread (#415): only mailer-daemon / postmaster, tied to the exact send.
+  try {
+    const dsn = await ingestDeliveryNotices(db, tenantId, acct.email, get, now)
+    out.bounces += dsn.bounces
+    out.bounce_coverage = dsn.checked ? 'checked' : 'unknown'
+  } catch (e) { auditAt(db, tenantId, 'sync_error', `delivery notices: ${e instanceof Error ? e.message : 'error'}`, undefined, undefined, now) }
   return out
 }
 
