@@ -699,6 +699,17 @@ CREATE TABLE tenant_plans (
       stripe_subscription_id TEXT
     , stripe_event_at INTEGER, stripe_reconcile_at INTEGER, subscription_status TEXT);
 
+CREATE TABLE tenant_requests (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('export','deletion')),
+    status TEXT NOT NULL CHECK (status IN ('delivered','pending','withdrawn','executed','refused')),
+    requested_at INTEGER NOT NULL,
+    decided_at INTEGER,
+    decided_by TEXT CHECK (decided_by IS NULL OR length(decided_by) <= 200),
+    note TEXT CHECK (note IS NULL OR length(note) <= 300)
+  );
+
 CREATE TABLE tenant_spend_pools (
     tenant_id TEXT NOT NULL, period TEXT NOT NULL CHECK (length(period) <= 12),
     reserved_usd REAL NOT NULL DEFAULT 0 CHECK (reserved_usd >= 0), reported_usd REAL NOT NULL DEFAULT 0 CHECK (reported_usd >= 0),
@@ -882,6 +893,8 @@ CREATE INDEX source_reviews_tenant ON source_reviews(tenant_id,lead_id);
 CREATE INDEX tenant_connections_tenant ON tenant_connections (tenant_id);
 
 CREATE INDEX tenant_plans_customer ON tenant_plans (stripe_customer_id);
+
+CREATE INDEX tenant_requests_tenant ON tenant_requests (tenant_id, kind, status);
 
 CREATE INDEX trial_reservations_day ON trial_reservations (day, tenant_id);
 
@@ -1085,6 +1098,8 @@ CREATE TRIGGER tomb_tenant_llm_keys BEFORE INSERT ON tenant_llm_keys WHEN EXISTS
 CREATE TRIGGER tomb_tenant_memory BEFORE INSERT ON tenant_memory WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
 CREATE TRIGGER tomb_tenant_plans BEFORE INSERT ON tenant_plans WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_tenant_requests BEFORE INSERT ON tenant_requests WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
 CREATE TRIGGER tomb_tenant_spend_pools BEFORE INSERT ON tenant_spend_pools WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 

@@ -2,7 +2,11 @@
 
 **Status:** the library and its tests (`lib/tenant/lifecycle.ts`, `lib/db/tenant-guard.ts`). No tenant has been exported or deleted anywhere, and no retention policy is decided here: every retention is an explicit argument, and the decisions are listed at the end for the owner.
 
-**Not built yet (next increment):** the authenticated, audited request flow (tenant self-service and operator confirmation), the UI that reports completion and retention exceptions, and the operator CLI.
+**Requests (part 2, `lib/tenant/requests.ts`).** Settings > Your data:
+- **Download my data:** the account's own export (`exportTenant`: every tenant-scoped table, secrets redacted, session tokens left out), as a JSON download. Each download is recorded (`tenant_requests`, kind `export`). Three an hour.
+- **Ask to delete my account:** the person types `delete my account` and their account email, and their password when the account has one (a Google-only account has none; fresh re-authentication is #358/#445). This **records a request only**: no tombstone, no revoked session, no changed row. One pending request at a time, and the person can withdraw it. Shared workspaces are refused, as `deleteTenant` would refuse them (decision 9).
+- **Operator:** `scripts/tenant-requests.mts list | execute | refuse`. `execute` needs the request id, the operator's name and an explicit policy file, and prints a dry run (row counts per table) unless `--confirm` is given. Confirmed, it runs `deleteTenant` with `requested_by` naming the request and the operator. That tombstone is the lasting record; the request rows themselves are the tenant's data and go with it unless the policy retains `tenant_requests`.
+- Still open: who may carry out deletions and how fast (decision 7); this increment lets only an operator do it. There is no completion notice to the person, because their account and email address are gone when it completes.
 
 ## Scope: what "a tenant's data" is
 

@@ -96,7 +96,7 @@ export function tombstoneLedgerEntry(t: Tombstone): string {
 // whose row also holds the workspace profile. Deleting a workspace that is shared (a team workspace, other members in
 // it, or a founder who belongs to another workspace) would either delete a person still using dazl elsewhere or leave
 // this workspace's profile on their account. Until the owner decides how that works, it is refused, never guessed.
-async function refuseSharedWorkspace(db: ReturnType<typeof asDb>, tenant: string): Promise<void> {
+export async function refuseSharedWorkspace(db: ReturnType<typeof asDb>, tenant: string): Promise<void> {
   const cols = await tableColumns(db)
   if (!cols.has('organizations') || !cols.has('memberships')) return
   const org = await db.get<{ kind: string }>('SELECT kind FROM organizations WHERE id = ?', [tenant])
