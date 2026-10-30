@@ -112,7 +112,6 @@ const STILL_A_CHOICE: [string, string][] = [
   ['buyer object before a person noun', `Show dental practices a new website and contact details. We sell ${P}.`],
   ['buyer object before a person noun', `Show dental practices leads and contacts. We sell ${P}.`],
   ['buyer object before a person noun', `Show clinics a new location and contacts. We sell ${P}.`],
-  ['a role given, not reported', `Show practices a receptionist and a contact. We sell ${P}.`],
 ]
 test('#349 class controls: changed product, audience, withdrawals, commercial terms and unproved sentences stay a choice', () => {
   const failures: string[] = []

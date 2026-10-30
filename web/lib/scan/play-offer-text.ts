@@ -384,7 +384,8 @@ function isOutputInstruction(x: string): boolean {
     // website and contact details" no, since a report noun in between is something handed to the buyers
     let person = false
     return item.every(w => {
-      const who = BUYERS.has(w) || BUYER_SINGULAR.has(w) || roleNoun(w) || ROLE_MODIFIERS.has(w)
+      // a report noun is read as one first: "company" and "lead" are columns of the report, not people handed something
+      const who = !REPORT_NOUNS.has(w) && (BUYERS.has(w) || BUYER_SINGULAR.has(w) || roleNoun(w) || ROLE_MODIFIERS.has(w))
       if (who) person = true
       if (person) return who || OUTPUT_FILLER.has(w) || OUTPUT_ADJ.has(w) || PERSON_NOUNS.has(w)
       return OUTPUT_FILLER.has(w) || OUTPUT_ADJ.has(w) || REPORT_NOUNS.has(w) || NUMBER.test(w)
