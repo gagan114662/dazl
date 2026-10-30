@@ -24,7 +24,7 @@ const browser = await chromium.launch()
 const row = (id, label, provider, unit_usd, note, usd, capped = false) => ({ id, label, provider, kind: capped ? 'model' : 'search', unit: 'u', unit_usd, units: { min: 1, max: 1 }, usd, capped, note })
 const EST = (o = {}) => ({ estimate: { rows: [row('extraction', 'Candidate extraction', 'AI model', '$3.00 in / $15.00 out per 1M tokens (claude-sonnet-4-5)', '1-3 call(s)', { min: 0.05, max: 0.4 }, true), row('tinyfish_search', 'Web search', 'TinyFish', 'free allowance', 'At most 13 searches', { min: 0, max: 0 }), row('fallback_research', 'Web-search research fallback', 'AI model web search', 'not priced', 'Only if nothing is found', null)],
   total: { min: 0.05, max: 0.4 }, unpriced: ['Web-search research fallback'], assumptions: ['Model: claude-sonnet-4-5.', 'This is an estimate, not a quote or a bill.'], payer: 'you',
-  cap: { max_usd: 0.5, reserved_usd: 0, remaining_usd: 0.5, capped_total: { min: 0.05, max: 0.4 } }, verdict: { ok: true, reason: null, message: 'Within your limit: even the worst case ($0.40) fits the $0.50 left.', change: [], warning: null }, ack: 'ack1', ...o } })
+  cap: { max_usd: 0.5, reserved_usd: 0, remaining_usd: 0.5, binding: 'daily', month_cap_usd: null, month_reserved_usd: 0, unknown: false, capped_total: { min: 0.05, max: 0.4 } }, verdict: { ok: true, reason: null, message: 'Within your limit: even the worst case ($0.40) fits the $0.50 left.', change: [], warning: null }, ack: 'ack1', ...o } })
 async function open(scanReply, estimateReply = route => json(route, EST())) {
   const calls = []; const posts = []; const estimates = []
   const page = await browser.newPage()
@@ -114,7 +114,7 @@ for (const [w, h, tag] of [[1280, 900, 'desktop'], [390, 844, 'mobile']]) {
 }
 // 5. over the remaining limit: blocked, no Run button, what to change is shown; a server 402 does the same
 for (const [w, h, tag] of [[1280, 900, 'desktop'], [390, 844, 'mobile']]) {
-  const blocked = EST({ verdict: { ok: false, reason: 'over_budget', message: 'Blocked: the model requests alone are expected to cost at least $0.05 but only $0.02 of your $0.02 limit is left.', change: ['Raise the dollar limit to at least $0.05 (about $0.40 covers the worst case).', 'Skip the verification judge (saves about $0.01-$0.03).'], warning: null }, cap: { max_usd: 0.02, reserved_usd: 0, remaining_usd: 0.02, capped_total: { min: 0.05, max: 0.4 } } })
+  const blocked = EST({ verdict: { ok: false, reason: 'over_budget', message: 'Blocked: the model requests alone are expected to cost at least $0.05 but only $0.02 of your $0.02 limit is left.', change: ['Raise the dollar limit to at least $0.05 (about $0.40 covers the worst case).', 'Skip the verification judge (saves about $0.01-$0.03).'], warning: null }, cap: { max_usd: 0.02, reserved_usd: 0, remaining_usd: 0.02, binding: 'daily', month_cap_usd: null, month_reserved_usd: 0, unknown: false, capped_total: { min: 0.05, max: 0.4 } } })
   const { page, posts } = await open(route => json(route, {}, 500), route => json(route, blocked))
   await page.setViewportSize({ width: w, height: h })
   await page.getByLabel('Limit what this run may spend (optional)').check(); await page.getByTestId('budget-max-usd').fill('0.02')
