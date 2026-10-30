@@ -17,9 +17,10 @@
 //   C. Conflict blocks drafting: on a contested play, Approve (the Draft email action) on Leads shows the refusal and
 //      writes nothing; Rewrite with AI on its Outreach page shows the refusal and leaves the draft as it was. A scan
 //      still in progress does not take the page over from the play the link names (?job_id=), and that scan's own link
-//      still shows its progress and Stop control.
+//      still shows its progress and Stop control; Leads with no run named still opens a scan in progress.
 //   D. Choosing on the Outreach page unblocks that play only; Approve then makes a draft stating the chosen offer.
-// "Writes nothing" compares full rows of the tenant's tables and the row count of every table; the only rows a refusal
+// "Writes nothing" compares full rows of the tenant's tables, the row count of every table, and the runner's work items for
+// the fixture plays; the only rows a refusal
 // adds are its own audit rows (outreach_llm_usage, outcome offer_conflict), which are checked as such.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
@@ -93,7 +94,10 @@ const read = () => { const d = new Database(DB, { readonly: true }); try {
     leads: d.prepare('SELECT * FROM leads ORDER BY id').all(),
     users: d.prepare('SELECT * FROM users ORDER BY id').all(),
     drafts: d.prepare('SELECT * FROM outreach_messages ORDER BY created_at, rowid').all(),
-    counts: Object.fromEntries(tables.filter(t => !['rate_limits', 'app_leases', 'scan_jobs', 'scan_events', 'work_queue', 'scan_source_stats', 'outreach_llm_usage'].includes(t)).map(t => [t, d.prepare(`SELECT count(*) AS n FROM "${t}"`).get().n])),
+    counts: Object.fromEntries(tables.filter(t => !['rate_limits', 'app_leases', 'scan_jobs', 'work_queue', 'scan_source_stats', 'outreach_llm_usage'].includes(t)).map(t => [t, d.prepare(`SELECT count(*) AS n FROM "${t}"`).get().n])),
+    // the runner's own tables, for the fixture plays only (the plays B creates and the scan in progress are the runner's)
+    fixtureWork: d.prepare(`SELECT * FROM work_queue WHERE dedupe_key IN (${[...FIXED].map(() => '?').join(',')}) ORDER BY id`).all(...FIXED),
+    fixtureStats: d.prepare(`SELECT count(*) AS n FROM scan_source_stats WHERE job_id IN (${[...FIXED].map(() => '?').join(',')})`).get(...FIXED).n,
     refusals: d.prepare("SELECT message_id, purpose, outcome FROM outreach_llm_usage ORDER BY rowid").all(),
   } } finally { d.close() } }
 const offerOf = id => read().jobs.find(j => j.id === id).offer
@@ -224,6 +228,10 @@ try {
       await page.getByRole('button', { name: 'Stop this scan' }).waitFor({ timeout: 15000 })
       assert.equal(new URL(page.url()).searchParams.get('job_id'), QUEUED); assert.ok(queuedActive())
       await shot(page, `states-C-own-scan-progress${tag}`)
+      // and Leads with no run named still opens a scan in progress (the autoselect the fix keeps for that case)
+      await page.goto(base + '/app/leads', { waitUntil: 'networkidle' })
+      await page.getByRole('button', { name: 'Stop this scan' }).waitFor({ timeout: 15000 })
+      assert.ok(/^[a-f0-9]{24}$/.test(new URL(page.url()).searchParams.get('job_id') ?? ''), `C${tag}: Leads opened a scan in progress`)
       await ctx.close() }
   }
   for (const w of WIDTHS) {
