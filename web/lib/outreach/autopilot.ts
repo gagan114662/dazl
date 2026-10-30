@@ -170,15 +170,30 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     const domain = to.split('@')[1]
     if (domainSentRecently(db, tenantId, domain, now)) { out.held++; audit(db, tenantId, 'held_domain_cap', 'one email per company per 7 days', l.id, id); continue }
     if (isSuppressed(db, tenantId, to)) { out.skipped++; audit(db, tenantId, 'skipped', 'suppressed', l.id, id); continue }
+    // Under a calibrated launch the send service re-checks, at its claim and again after its own awaits right before
+    // Gmail, that the launch is still the same acceptance from the same mailbox and that the final words are inside it.
+    const sendAuthority = gate.calibrated ? () => {
+      const g = launchGate(db, tenantId, mailbox(), now)
+      if (!g.calibrated || g.acceptanceId !== gate.acceptanceId) return 'launch_policy_changed'
+      const m = db.prepare('SELECT to_email, subject, body FROM outreach_messages WHERE id = ?').get(id) as { to_email: string; subject: string; body: string }
+      if (outsidePolicy(g.policy, l.play, m.to_email) || claimIssuesFor(g.policy, `${m.subject}\n${m.body}`, l.source_url ? [l.source_url] : []).length) return 'launch_policy_changed'
+      return null
+    } : undefined
     try {
       approve(db, tenantId, id)
-      const r = await sendMessage(db, tenantId, id, d)
+      const r = await sendMessage(db, tenantId, id, sendAuthority ? { ...d, sendAuthority } : d)
       if (r === 'sent') { out.sent++; audit(db, tenantId, 'sent', undefined, l.id, id) }
       else { audit(db, tenantId, 'uncertain', 'send outcome unknown', l.id, id); pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send') }
     } catch (e) {
       const code = e instanceof OutreachError ? e.code : 'error'
       audit(db, tenantId, 'send_failed', code, l.id, id)
       if (code === 'gmail_reconnect_needed' || code === 'gmail_not_connected') { pause(db, tenantId, code); return stop(code) }
+      // the launch changed under the send: the message goes back to a draft for the tenant (its approval was autopilot's,
+      // under authority that no longer holds) and the run stops
+      if (code === 'launch_policy_changed') {
+        db.prepare("UPDATE outreach_messages SET status = 'draft', approved_hash = NULL, error = ? WHERE id = ? AND tenant_id = ? AND status = 'approved'").run(code, id, tenantId)
+        return { ...out, held: out.held + 1, stopped: 'policy_changed' }
+      }
       out.held++
     }
   }

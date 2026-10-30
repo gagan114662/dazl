@@ -353,3 +353,31 @@ test('HOLD: a reported cost that cannot be recorded stops the launch before any 
   const rb = await runAutopilot(b.db, 'A', 'Acme', { ...gb.d, providers: vanish.providers } as never)
   assert.deepEqual([rb.stopped, vanish.calls.length, gb.sent.length], ['spend_check_unavailable', 1, 0])
 })
+
+test('HOLD: the send service rechecks the same acceptance after its token refresh, right before Gmail; unchanged policy still sends', async () => {
+  const { db, job } = await launchedWithKey(5)
+  const otherJob = play(db)
+  lead(db, job, 'd@four.example')
+  // policy B (another audience, uncalibrated) is accepted from inside the Gmail token refresh, after autopilot's own
+  // post-drafting check and before the provider handoff
+  const g = gmail()
+  let swapped = false
+  const fetchImpl = (async (url: string, init?: RequestInit) => {
+    if (String(url).includes('token') && !swapped) { swapped = true; acceptLaunchPolicy(db, 'A', policy([otherJob]), NOW + 1) }
+    return (g.d.fetchImpl as typeof fetch)(url, init)
+  }) as typeof fetch
+  const r = await runAutopilot(db, 'A', 'Acme', { ...g.d, fetchImpl })
+  assert.ok(swapped, 'the swap happened inside the send path')
+  assert.deepEqual([r.sent, r.stopped, g.sent.length], [0, 'policy_changed', 0])
+  const m = db.prepare("SELECT status, error FROM outreach_messages ORDER BY created_at DESC, rowid DESC LIMIT 1").get() as { status: string; error: string }
+  assert.deepEqual(m, { status: 'draft', error: 'launch_policy_changed' }, 'back to a draft for the tenant, not left approved')
+  assert.ok(!recentAutopilotAudit(db, 'A').some(a => a.action === 'held_warmup'))
+
+  // the same path with the policy unchanged: the token refresh happens and the message is sent
+  const b = await launchedWithKey(5); lead(b.db, b.job, 'd@four.example')
+  const gb = gmail()
+  let refreshed = 0
+  const counting = (async (url: string, init?: RequestInit) => { if (String(url).includes('token')) refreshed++; return (gb.d.fetchImpl as typeof fetch)(url, init) }) as typeof fetch
+  const rb = await runAutopilot(b.db, 'A', 'Acme', { ...gb.d, fetchImpl: counting })
+  assert.ok(refreshed > 0); assert.deepEqual([rb.sent, gb.to()], [1, ['d@four.example']])
+})
