@@ -11,6 +11,6 @@ test('tick route: refused, held and successful worker results are recorded as su
   const r = spawnSync(process.execPath, ['--experimental-strip-types', '--import', './test/helpers/net-fence.ts', '--loader', './test/helpers/tenant-route-loader.mjs', '--test', './test/helpers/scheduler-tick-outcomes-runtime.mts'],
     { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 90000 })
   assert.equal(r.status, 0, r.stdout + r.stderr)
-  assert.match(r.stdout, /^# pass 2$/m)
+  assert.match(r.stdout, /^# pass 5$/m)
   assert.match(r.stdout, /^# fail 0$/m)
 })
