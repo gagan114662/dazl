@@ -11,7 +11,61 @@ from unittest.mock import patch, Mock
 import safe_launch as m
 
 
+REAL_GATE = m.check_gate_report
+
+
+def gate_report(path, **over):
+    report = {'tool':'dazl-deploy-gate','ok':True,'decision':'allowed','repo':'gagan114662/dazl','branch':'main','commit':'a'*40,
+              'required':['test-sqlite','test-postgres','browser','migrations'],
+              'checks':{'test-sqlite':'success','test-postgres':'success','browser':'success','migrations':'success'},
+              'checked_at':m.time.strftime('%Y-%m-%dT%H:%M:%S.000Z', m.time.gmtime())}
+    report.update(over)
+    Path(path).write_text(m.json.dumps(report))
+    return str(path)
+
+
 class SafeLaunchTest(unittest.TestCase):
+    def setUp(self):
+        # every orchestration test below starts with an allowed gate; the gate's own tests use REAL_GATE
+        patcher = patch.object(m, 'check_gate_report')
+        patcher.start(); self.addCleanup(patcher.stop)
+
+    def test_gate_report_allows_only_that_commit_green_on_main_recent_and_complete(self):
+        with tempfile.TemporaryDirectory() as d:
+            ok = gate_report(Path(d)/'ok.json')
+            REAL_GATE(ok, 'a'*40)
+            now = m.time.time()
+            for over, code in [
+                ({'commit':'c'*40}, 'gate_commit_mismatch'),
+                ({'ok':False,'decision':'blocked'}, 'gate_not_allowed'),
+                ({'ok':False,'decision':'pending'}, 'gate_not_allowed'),
+                ({'decision':'pending'}, 'gate_not_allowed'),
+                ({'checks':{'test-sqlite':'success','test-postgres':'pending','browser':'success','migrations':'success'}}, 'gate_not_allowed'),
+                ({'branch':'feature'}, 'gate_scope_insufficient'),
+                ({'required':['browser']}, 'gate_scope_insufficient'),
+                ({'tool':'something-else'}, 'gate_report_unreadable'),
+                ({'checked_at':m.time.strftime('%Y-%m-%dT%H:%M:%S.000Z', m.time.gmtime(now - 7*3600))}, 'gate_report_stale'),
+                ({'checked_at':m.time.strftime('%Y-%m-%dT%H:%M:%S.000Z', m.time.gmtime(now + 3600))}, 'gate_report_stale'),
+                ({'checked_at':'yesterday'}, 'gate_report_unreadable'),
+            ]:
+                f = gate_report(Path(d)/'r.json', **over)
+                with self.assertRaisesRegex(m.LaunchError, code): REAL_GATE(f, 'a'*40)
+            with self.assertRaisesRegex(m.LaunchError, 'gate_report_required'): REAL_GATE(str(Path(d)/'missing.json'), 'a'*40)
+            (Path(d)/'bad.json').write_text('{not json')
+            with self.assertRaisesRegex(m.LaunchError, 'gate_report_unreadable'): REAL_GATE(str(Path(d)/'bad.json'), 'a'*40)
+            os.symlink(ok, Path(d)/'link.json')
+            with self.assertRaisesRegex(m.LaunchError, 'gate_report_required'): REAL_GATE(str(Path(d)/'link.json'), 'a'*40)
+
+    def test_run_refuses_without_an_allowed_gate_before_reading_env_or_signalling(self):
+        with tempfile.TemporaryDirectory() as d, contextlib.ExitStack() as stack:
+            stack.enter_context(patch.object(m, 'check_gate_report', REAL_GATE))
+            stack.enter_context(patch.object(m,'stage_path',side_effect=[Path('/new'),Path('/old')]))
+            read_env = stack.enter_context(patch.object(m,'read_env'))
+            kill = stack.enter_context(patch.object(m.os,'kill')); launch = stack.enter_context(patch.object(m,'launch'))
+            args = self.args(); args.gate_report = gate_report(Path(d)/'g.json', ok=False, decision='blocked')
+            with self.assertRaisesRegex(m.LaunchError, 'gate_not_allowed'): m.run(args)
+            read_env.assert_not_called(); kill.assert_not_called(); launch.assert_not_called()
+
     def test_parser_literal_and_fail_closed(self):
         self.assertEqual(m.parse_env('A=abc\nB="two words"\nexport C=abc#fragment\nD=\n# comment\n'),
                          {'A':'abc','B':'two words','C':'abc#fragment','D':''})
@@ -31,13 +85,13 @@ class SafeLaunchTest(unittest.TestCase):
             for content in [f'TOKEN={marker}\n', f'TOKEN="{marker}\n', f'TOKEN=${marker}\n']:
                 env.write_text(content);env.chmod(0o600)
                 proc=subprocess.run([sys.executable,str(Path(m.__file__)), '--stage',str(stage),'--commit','a'*40,
-                    '--rollback-stage',str(old),'--rollback-commit','b'*40,'--env-file',str(env),'--pid','99999999','--backup',str(root/'backup'),'--backup-db',str(root/'db')],capture_output=True,text=True)
+                    '--rollback-stage',str(old),'--rollback-commit','b'*40,'--env-file',str(env),'--pid','99999999','--backup',str(root/'backup'),'--backup-db',str(root/'db'),'--gate-report',gate_report(root/'gate.json')],capture_output=True,text=True)
                 self.assertNotIn(marker,proc.stdout+proc.stderr)
                 self.assertNotIn('Traceback',proc.stdout+proc.stderr)
                 self.assertNotEqual(proc.returncode,0)
 
     def args(self, execute=True):
-        return argparse.Namespace(stage='/new',commit='a'*40,rollback_stage='/old',rollback_commit='b'*40,env_file='/env',pid=987654,port=3100,execute=execute)
+        return argparse.Namespace(stage='/new',commit='a'*40,rollback_stage='/old',rollback_commit='b'*40,env_file='/env',pid=987654,port=3100,execute=execute,gate_report='/gate.json')
 
     def test_launch_uses_no_shell_no_env_argv_and_no_output(self):
         with patch.object(m,'RUNTIME',['/usr/bin/node','/usr/lib/npm-cli.js']), patch.object(m.subprocess,'Popen') as popen:

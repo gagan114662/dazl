@@ -41,6 +41,13 @@ Nothing in staging uses production data or keys: a fresh master key, test-mode S
   - is the same file under another name (same device and inode).
 
   It also refuses any `DATABASE_URL`, since staging is its own SQLite file.
+- **Deploy gate.** Before anything is built, `ops/deploy-gate.mjs` (installed beside `deploy.sh`) checks the exact `main` commit on GitHub: `test-sqlite`, `test-postgres`, `browser` and `migrations` must each have completed with `success`, posted by GitHub Actions, on that commit, and the commit must be on `main`.
+  - **CI still running** (or not started yet): nothing happens this run (`waiting for CI` in the journal); the next timer run asks again.
+  - **Blocked** (a failed, cancelled or skipped check, or a check that never ran within an hour of the commit, such as a docs-only commit): the commit is not built or deployed, a `gate_blocked` alert is sent (same channel and throttle as the disk alerts), and the live release keeps serving. The next code commit on `main` is gated on its own.
+  - **The gate cannot answer** (GitHub unreachable, no token for a private repository, `deploy-gate.mjs` not installed): `gate_error` alert, exit 1, nothing built.
+  - `DEPLOY_GATE_GITHUB_TOKEN` in the staging env file is needed only while the repository is private (see `env.example`); it is passed to the gate alone and never logged.
+
+  `test/deploy-gate.test.ts` runs the real `deploy.sh` and the real gate against a local stub of the GitHub API.
 - **Cutover.** From switching `current` until the new release passes the smoke check (`ops/health-smoke.mjs`: `/api/health` answers 200, `ok: true`, every configured database reachable, with the new commit), any failure goes to one handler: the switch itself, a non-zero restart command, or readiness. The handler:
   - puts the previous complete release and its `release.env` back, restarts it, and checks it is really serving again before reporting `rolled back: <sha> is live again`;
   - reports `NO LIVE STAGING SERVICE` if that rollback restart or readiness fails, rather than claiming recovery;
@@ -80,6 +87,7 @@ Nothing in staging uses production data or keys: a fresh master key, test-mode S
 4. **Units and the deploy script.** From a checkout of `main`:
    ```sh
    install -m 755 ops/staging/deploy.sh /srv/dazl-staging/deploy.sh
+   install -m 644 ops/deploy-gate.mjs /srv/dazl-staging/deploy-gate.mjs
    install -m 644 ops/staging/dazl-staging.service ops/staging/dazl-staging-deploy.service ops/staging/dazl-staging-deploy.timer /etc/systemd/system/
    # set PROD_ENV_FILE in dazl-staging-deploy.service to production's real env file
    systemctl edit --full dazl-staging-deploy.service

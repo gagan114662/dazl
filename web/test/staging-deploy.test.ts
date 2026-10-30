@@ -119,7 +119,7 @@ if [ -e ${T}/unready-$sha ]; then echo starting > ${served}; else echo "$sha" > 
     const r = spawnSync('bash', [script], { encoding: 'utf8', env: {
       PATH: process.env.PATH, HOME: process.env.HOME, STAGING_ROOT: root, STAGING_ENV_FILE: env, STAGING_PORT: String(port),
       STAGING_USER: execFileSync('id', ['-un'], { encoding: 'utf8' }).trim(), STAGING_REPO_URL: `file://${repo}`, STAGING_RESTART: restart,
-      STAGING_BUILD: 'true', STAGING_HEALTH_TRIES: '2', PROD_DB_PATH: prodDb, MIN_FREE_BYTES: '1', FIRST_RELEASE_BYTES: '1',
+      STAGING_BUILD: 'true', STAGING_HEALTH_TRIES: '2', PROD_DB_PATH: prodDb, MIN_FREE_BYTES: '1', FIRST_RELEASE_BYTES: '1', STAGING_GATE_CMD: 'true',
     } as unknown as NodeJS.ProcessEnv })
     return { code: r.status, out: r.stdout + r.stderr }
   }
@@ -206,7 +206,7 @@ test('low disk: skip and alert (throttled), stop a build at the floor, never tou
     const r = spawnSync('bash', [script], { encoding: 'utf8', env: {
       PATH: process.env.PATH, HOME: process.env.HOME, STAGING_ROOT: root, STAGING_ENV_FILE: env, STAGING_PORT: '1',
       STAGING_USER: execFileSync('id', ['-un'], { encoding: 'utf8' }).trim(), STAGING_REPO_URL: `file://${repo}`, STAGING_RESTART: 'true',
-      STAGING_BUILD: 'true', STAGING_HEALTH_TRIES: '1', PROD_DB_PATH: prodDb, FIRST_RELEASE_BYTES: '1', STAGING_ALERT_CMD: `bash ${path.join(T, 'alert.sh')}`,
+      STAGING_GATE_CMD: 'true', STAGING_BUILD: 'true', STAGING_HEALTH_TRIES: '1', PROD_DB_PATH: prodDb, FIRST_RELEASE_BYTES: '1', STAGING_ALERT_CMD: `bash ${path.join(T, 'alert.sh')}`,
       ...over,
     } as unknown as NodeJS.ProcessEnv })
     return { code: r.status, out: r.stdout + r.stderr }
@@ -279,7 +279,7 @@ test('low disk after or near the end of a build: never put live; the reserve abo
     const r = spawnSync('bash', [script], { encoding: 'utf8', env: {
       PATH: `${bin}:${process.env.PATH}`, HOME: process.env.HOME, STAGING_ROOT: root, STAGING_ENV_FILE: env, STAGING_PORT: '1',
       STAGING_USER: execFileSync('id', ['-un'], { encoding: 'utf8' }).trim(), STAGING_REPO_URL: `file://${repo}`, STAGING_RESTART: 'true',
-      STAGING_BUILD: build, STAGING_HEALTH_TRIES: '1', PROD_DB_PATH: prodDb, MIN_FREE_BYTES: String(FLOOR),
+      STAGING_BUILD: build, STAGING_HEALTH_TRIES: '1', PROD_DB_PATH: prodDb, MIN_FREE_BYTES: String(FLOOR), STAGING_GATE_CMD: 'true',
       STAGING_ALERT_CMD: `bash ${path.join(T, 'alert.sh')}`, STAGING_ALERT_EVERY_S: '0',
     } as unknown as NodeJS.ProcessEnv })
     return { code: r.status, out: r.stdout + r.stderr, ms: Date.now() - t0 }

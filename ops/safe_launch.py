@@ -7,6 +7,7 @@ Application stdout/stderr intentionally go to /dev/null to avoid secret logging.
 This does not rotate credentials or repair an incompatible env file.
 """
 import argparse
+import calendar
 import json
 import os
 from pathlib import Path
@@ -216,6 +217,42 @@ def check_database_backup(env, args):
         raise LaunchError('database_or_backup_unverifiable') from None
 
 
+# Deploy gate (issue #362): ops/deploy-gate.mjs --report FILE, run for the commit being launched. Launch only a commit
+# whose report is allowed, for that exact commit, on main, with every required check, and recent. The report is the
+# operator's evidence that CI passed on that commit; this check stops a wrong or stale one, it does not authenticate it.
+GATE_REQUIRED = {'test-sqlite', 'test-postgres', 'browser', 'migrations'}
+GATE_MAX_AGE_S = 6 * 3600
+
+
+def check_gate_report(path, commit, now=None):
+    now = time.time() if now is None else now
+    try:
+        p = Path(path)
+        if p.is_symlink() or not p.is_file() or p.stat().st_size > 65536:
+            raise LaunchError('gate_report_required')
+        report = json.loads(p.read_text())
+    except LaunchError:
+        raise
+    except Exception:
+        raise LaunchError('gate_report_unreadable') from None
+    if not isinstance(report, dict) or report.get('tool') != 'dazl-deploy-gate':
+        raise LaunchError('gate_report_unreadable')
+    if report.get('commit') != commit:
+        raise LaunchError('gate_commit_mismatch')
+    if report.get('ok') is not True or report.get('decision') != 'allowed':
+        raise LaunchError('gate_not_allowed')
+    if report.get('branch') != 'main' or not GATE_REQUIRED.issubset(set(report.get('required') or [])):
+        raise LaunchError('gate_scope_insufficient')
+    if any((report.get('checks') or {}).get(name) != 'success' for name in GATE_REQUIRED):
+        raise LaunchError('gate_not_allowed')
+    try:
+        checked = calendar.timegm(time.strptime(str(report.get('checked_at'))[:19], '%Y-%m-%dT%H:%M:%S'))
+    except Exception:
+        raise LaunchError('gate_report_unreadable') from None
+    if not -300 <= now - checked <= GATE_MAX_AGE_S:
+        raise LaunchError('gate_report_stale')
+
+
 RUNTIME = []
 
 def run(args):
@@ -226,6 +263,7 @@ def run(args):
     rollback = stage_path(args.rollback_stage, args.rollback_commit)
     if stage == rollback:
         raise LaunchError('same_stage_refused')
+    check_gate_report(args.gate_report, args.commit)
     env = read_env(args.env_file)
     for name in ['DB_PATH', 'DAZL_MASTER_KEY', 'PUBLIC_BASE_URL']:
         if not env.get(name, '').strip():
@@ -285,6 +323,7 @@ def main():
     p.add_argument('--backup', required=True)
     p.add_argument('--backup-db', required=True)
     p.add_argument('--backup-verified', action='store_true')
+    p.add_argument('--gate-report', required=True)
     p.add_argument('--execute', action='store_true')
     args = p.parse_args()
     try:

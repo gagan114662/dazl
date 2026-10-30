@@ -2,6 +2,9 @@
 # Staging deploy (docs/STAGING.md). Run by dazl-staging-deploy.timer every 2 minutes, as root. When origin/main has a
 # new commit it:
 #   1. checks the staging env file is safe (check_env: staging only, never production's database, Stripe test mode)
+#   1b. runs the deploy gate on that exact commit (ops/deploy-gate.mjs, installed beside this script): tests, typecheck,
+#      build, smoke checks and the migration gate must all be green on it. CI still running: nothing is done this run.
+#      Blocked (a failed or never-run check): it is not deployed, one alert, the live release is unchanged.
 #   2. checks the disk: a new release is started only if free space minus its estimated size stays above the floor
 #      (MIN_FREE_BYTES, 2 GiB by default), and the build is stopped if free space falls to the floor while it runs
 #   3. builds the commit in its own release directory as the service user, with the env file's values passed in by
@@ -39,6 +42,13 @@ HEALTH_TRIES=${STAGING_HEALTH_TRIES:-60}
 # reason per STAGING_ALERT_EVERY_S while the condition lasts; every skip is still logged to the journal.
 ALERT_CMD=${STAGING_ALERT_CMD:-}
 ALERT_EVERY_S=${STAGING_ALERT_EVERY_S:-3600}
+# The deploy gate, given the commit as its one argument; exit 0 allowed, 3 pending, anything else blocked. Tests replace
+# it. DEPLOY_GATE_GITHUB_TOKEN (read-only, only while the repository is private) is read from the staging env file and
+# passed to the gate alone.
+# Installed as /srv/dazl-staging/deploy-gate.mjs beside this script (or ops/deploy-gate.mjs when run from a checkout).
+here=$(dirname -- "$(realpath -- "$0")")
+gate_script=; for g in "$here/deploy-gate.mjs" "$here/../deploy-gate.mjs"; do [ -f "$g" ] && { gate_script=$g; break; }; done
+GATE_CMD=${STAGING_GATE_CMD:-${gate_script:+node $gate_script}}
 
 log() { echo "staging-deploy: $*"; }
 fail() { echo "staging-deploy: $*" >&2; exit 1; }
@@ -132,6 +142,18 @@ as git -C "$ROOT/repo" fetch -q origin main
 new=$(as git -C "$ROOT/repo" rev-parse origin/main)
 cur=$(cat "$ROOT/current-sha" 2>/dev/null || true)
 [ "$new" != "$cur" ] || exit 0
+
+# The deploy gate: no build, no disk use and no cutover for a commit without green CI on that exact commit.
+gate_rc=0
+[ -n "$GATE_CMD" ] || { alert gate_error "$(free_bytes)" 0 "did not deploy $new: deploy-gate.mjs is not installed beside deploy.sh; the live release is unchanged"; exit 1; }
+gate_out=$(DEPLOY_GATE_GITHUB_TOKEN=$(val DEPLOY_GATE_GITHUB_TOKEN "$ENV_FILE") $GATE_CMD "$new" 2>&1) || gate_rc=$?
+log "gate: $(printf '%s' "$gate_out" | tail -n 1)"
+case $gate_rc in
+  0) rm -f "$ROOT"/.alert-gate_* ;;
+  3) log "waiting for CI on $new; the live release is unchanged"; exit 0 ;;
+  1) alert gate_blocked "$(free_bytes)" 0 "did not deploy $new: the deploy gate blocked it (see the gate line above); the live release is unchanged"; exit 0 ;;
+  *) alert gate_error "$(free_bytes)" 0 "did not deploy $new: the deploy gate could not decide (exit $gate_rc); the live release is unchanged"; exit 1 ;;
+esac
 
 # the live release: only when `current` is a symlink (readlink -f of a missing path returns the path itself)
 live=; [ -L "$ROOT/current" ] && live=$(readlink -f "$ROOT/current")

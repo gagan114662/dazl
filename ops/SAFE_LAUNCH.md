@@ -2,6 +2,12 @@
 
 Not run on the host. No restart is authorized by this file.
 
+Deploy gate (issue #362): --gate-report FILE is required, the JSON written by
+`node ops/deploy-gate.mjs <sha> --report FILE`. It must be allowed, for exactly
+--commit, on main, with test-sqlite, test-postgres, browser and migrations all
+success, checked within 6 hours. Otherwise the helper refuses before reading
+the env file or signalling anything.
+
 Preflight requires explicit new/rollback web stage paths, full commit markers,
 private env-file path, exact listener PID, port, and readable /proc listener
 ownership. Checks .build-commit, .next/BUILD_ID, package.json, current listener

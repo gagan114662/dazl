@@ -1,10 +1,12 @@
 name: web-ci
+# ops/** too: web/test exercises the ops scripts (staging deploy, deploy gate, backups), and the deploy gate
+# (ops/deploy-gate.mjs) needs test-sqlite and test-postgres on every commit it is asked to allow.
 on:
   pull_request:
-    paths: ["web/**", ".github/workflows/web-ci.yml"]
+    paths: ["web/**", "ops/**", ".github/workflows/web-ci.yml"]
   push:
     branches: [main]
-    paths: ["web/**"]
+    paths: ["web/**", "ops/**", ".github/workflows/web-ci.yml"]
 jobs:
   # Full suite on SQLite, today's runtime store. PG-only tests skip here.
   test-sqlite:
