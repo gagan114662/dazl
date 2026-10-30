@@ -37,7 +37,8 @@ const CANDIDATES: Candidate[] = [
   cand('AI SDR Vendor', 'We just launched our AI SDR - check out our tool!', 'It writes cold emails for you. DM me for a demo.'),
 ]
 
-const pay = (c: string, d: number, status = 'paid') => ({ id: `${c}-pay-${d}-${status}`, at: T0 + d * DAY, customer: c, kind: 'payment', status }) as LifecycleEvent
+// each paid invoice carries the monthly service period it bought, as billing reports it
+const pay = (c: string, d: number, status = 'paid') => ({ id: `${c}-pay-${d}-${status}`, at: T0 + d * DAY, customer: c, kind: 'payment', status, periods: [{ start: T0 + d * DAY, end: T0 + (d + 30) * DAY, subscription: `sub_${c}` }] }) as LifecycleEvent
 const EVENTS: LifecycleEvent[] = [
   { id: 'a-touch', at: T0, customer: 'a', kind: 'touch', channel: 'email', identity: 'founder@clinicschedulingco.test' },
   { id: 'a-signup', at: T0 + DAY, customer: 'a', kind: 'signup', viaTaggedLink: true, consented: true, identity: 'founder@clinicschedulingco.test' },
